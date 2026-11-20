@@ -188,7 +188,9 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
     const runs = runsForTarget(model, target)
     const from = sameTarget(target, start) ? start.offset : 0
     const to = sameTarget(target, end) ? end.offset : runText(runs).length
-    const changed = sliceRuns(runs, from, to).map((run) => ({ ...run, ...patch }))
+    const selected = sliceRuns(runs, from, to)
+    if (!selected.length || selected.every((run) => Object.entries(patch).every(([key, value]) => Object.is(Reflect.get(run, key), value)))) return
+    const changed = selected.map((run) => ({ ...run, ...patch }))
     setTargetRuns(model, target, [...sliceRuns(runs, 0, from), ...changed, ...sliceRuns(runs, to)])
   })
 }

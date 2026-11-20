@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   calculateSelectionStatistics, createUniqueSheetName, formatSelectionStatistic,
-  parseSheetAddress, selectSelectionStatistic, validateSheetName, visibleSheetMenuEntries,
+  normalizeSheetViewState, parseSheetAddress, selectSelectionStatistic, validateSheetName, visibleSheetMenuEntries,
 } from '../src/features/sheet-workbench/sheet-workbench.ts'
 
 const bounds = { rowCount: 1_048_576, columnCount: 16_384 }
@@ -163,4 +163,32 @@ test('all-sheets menu shows normal hidden entries while veryHidden stays undisco
     { id: 'e', name: '恢复', hidden: false, selected: false },
     { id: 'f', name: '隐藏2', hidden: true, selected: false },
   ])
+})
+
+test('view restoration preserves a valid active cell, range anchor and zoom without mutating the session', () => {
+  const state = { key: 'b3', anchor: '$D$5', ranges: [range(2, 1, 4, 3)], zoom: 125 }
+  const snapshot = structuredClone(state)
+  assert.deepEqual(normalizeSheetViewState({ rowCount: 20, columnCount: 10 }, state), {
+    key: 'B3', anchor: 'D5', ranges: [range(2, 1, 4, 3)], zoom: 125,
+  })
+  assert.deepEqual(state, snapshot)
+})
+
+test('view restoration clamps axis deletions and removes overlapping selections', () => {
+  const restored = normalizeSheetViewState({ rowCount: 3, columnCount: 4 }, {
+    key: 'Z100', anchor: 'Y90', ranges: [range(1, 1, 99, 25), range(1, 1, 2, 2)], zoom: 900,
+  })
+  assert.deepEqual(restored, { key: 'D3', anchor: 'D3', ranges: [range(1, 1, 2, 3)], zoom: 400 })
+})
+
+test('view restoration repairs invalid sessions and keeps active cell and anchor inside the selection', () => {
+  assert.deepEqual(normalizeSheetViewState({ rowCount: 3, columnCount: 4 }), {
+    key: 'A1', anchor: 'A1', ranges: [range(0, 0)], zoom: 100,
+  })
+  assert.deepEqual(normalizeSheetViewState({ rowCount: 3, columnCount: 4 }, {
+    key: 'A0', anchor: 'D3', ranges: [range(1, 1)], zoom: NaN,
+  }), { key: 'B2', anchor: 'B2', ranges: [range(1, 1)], zoom: 100 })
+  assert.deepEqual(normalizeSheetViewState({ rowCount: 0, columnCount: 0 }, { zoom: 1 }), {
+    key: 'A1', anchor: 'A1', ranges: [], zoom: 10,
+  })
 })

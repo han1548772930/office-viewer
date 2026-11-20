@@ -1,0 +1,142 @@
+# Univer 顶部工具栏对齐核对
+
+核对日期：2026-11-20。固定参考：`D:\rust_test\univer-reference`，提交 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。
+
+本记录按 [完整功能清单](UNIVER_FEATURE_PARITY.md)、[源码规则](UNIVER_REFERENCE_RULES.md)核对顶部入口与实际行为。它记录部分实现及缺口，**不表示顶部所有功能或 Pro 能力已经对齐**。所有完整功能 ID 保持“未验收”；单个按钮、模型、Facade 或测试通过均不能代替整个功能的编辑、历史、保存、Office 往返、权限和性能验收。
+
+源码核对覆盖 Tab → Group → Item → 命令/服务，而非仅比较分类名称。上游 ID 与本项目独立实现的 ID 可不同；表中记录可观察行为的对应关系。Pro 在固定开源检出中没有菜单实现时，明确记为“公开菜单 ID 未核实”，不编造闭源 ID，也不把未知行为排除出最终范围。
+
+## 1. 当前装配与证据边界
+
+- 应用壳：[App.vue](../examples/workbench/src/App.vue)；共享 Ribbon：[WorkbenchRibbon.vue](../packages/office-studio/src/platform/ribbon/WorkbenchRibbon.vue)、[RibbonItem.vue](../packages/office-studio/src/platform/ribbon/RibbonItem.vue)、[schema/状态/溢出算法](../packages/office-studio/src/platform/ribbon/ribbon-schema.ts)。
+- Sheets：[sheet-ribbon.ts](../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) → [ExcelWorkbench.vue](../packages/office-studio/src/components/ExcelWorkbench.vue) 的 `executeRibbon`。分类为开始、插入、公式、数据、视图；顺序来自 `order`。
+- Docs：[document-ribbon.ts](../packages/office-studio/src/components/document/document-ribbon.ts) → [DocumentWorkbench.vue](../packages/office-studio/src/components/DocumentWorkbench.vue) 的 `onRibbonExecute` / `execute`。分类为开始、插入、布局、视图；传统分页与现代文档的大纲默认值分别处理。
+- 公共 Ribbon 只展示当前模型/选区计算的 schema 并派发命令。按钮、选择器、下拉及主按钮加下拉复用同一控件；`hidden`、`disabled`、`activated`、`value` 独立。控件层防止禁用项派发，但业务命令权限仍须由命令服务验证。
+- 普通格式操作、部分结构操作仍由工作台控制器映射到既有模型服务；排序、图表、透视及内容控件等使用对应 Facade。**全量 API、快捷键、右键和 Ribbon 是否共用同一命令注册及相同权限，尚须逐项核验，不能仅由 `commandId` 文本一致推断。**
+- 透视表、切片器和时间线的顶部入口及面板正在本轮接入。它们以所属任务最终浏览器/契约结果更新下表；“有入口”与“有完整 UI 闭环”分别记录。
+
+## 2. 共享工具栏与跨产品能力
+
+| 功能 ID | 上游依据 / 入口 | 本地入口与真实行为 | 缺口与验收边界 |
+| --- | --- | --- | --- |
+| COMMON-01、COMMON-03 | [Workbench/UIParts][workbench]；[Ribbon][ribbon]；[菜单类型][menu]；[菜单注册与分组][menu-manager] | Tab/Group/Item schema、36px 分类行 + 40px classic 工具行；测量实际宽度，把尾部溢出控件收入“更多功能”；键盘方向/Home/End、RTL、单一 roving Tab 焦点；空分类隐藏；上下文关闭回到之前普通分类 | 本轮交付 classic；grid/simple/collapsed 可选变体、完整插件注册/销毁链路及所有产品上下文未验收 |
+| COMMON-03 | [ToolbarItem → ICommandService][toolbar-item] | 格式选择器由当前选区反推；混合值独立表示；相同 item 在原工具行与更多菜单派发相同 ID/参数；禁用按钮/选项不能派发；下拉 Escape 归还触发器焦点 | 功能命令权限不能由控件禁用代替；所有跨入口语义仍须核验 |
+| COMMON-02、COMMON-04 | 命令/历史服务与各产品 schema | 顶部撤销/重做依赖文档历史状态；模型由当前应用服务保存 | 完整 Facade 兼容、协作 mutation/逆 mutation、跨文档会话和 savepoint 回归未整体验收 |
+| COMMON-05 | 共享主题/locale/方向公开规格 | Ribbon 有方向参数、RTL 键盘支持；中文可访问名称 | 完整主题/暗色/语言切换、所有弹层与编辑器主题同步未验收 |
+| COMMON-06、COMMON-07 | 权限、协作公开规格；产品权限菜单 | 目前未发现满足服务端持久权限/多人协作验收的顶部工作流 | 不能把隐藏按钮、只读 UI 或本地通信记为完整能力 |
+| COMMON-08、COMMON-09 | 持久历史、版本对比/恢复公开规格 | 撤销/重做与持久历史分开，当前顶部尚无完整版本服务面板 | 版本列表、语义对比、恢复后广播、服务重启后可查仍待实现/验证 |
+| COMMON-10 | 跨文档嵌入公开规格 | 无已验收顶部嵌入流程 | 父子模型、引用/快照语义、权限/焦点/保存未验收 |
+| COMMON-11 | [本项目 Canvas/WebGPU/WASM 标准](RENDERING_AND_COMPUTE_STANDARD.md) | Ribbon 外编辑内容由 Canvas；存在真实 WebGPU/2D 后端。渲染任务已覆盖部分冻结、缩放、隐藏轴、命中与输入桥契约 | 工具栏和布局测试不能证明大文件性能；本轮无完整前后性能测量，全部性能结论保留未验收 |
+| COMMON-12 | 图片/资源公开模型及 drawing 插件 | Docs 图片插入可接 URL/本地资源；有现有资源模型 | 图片复制、裁剪、旋转、引用计数、所有 Office 关系和跨产品往返未验收 |
+
+## 3. Sheets 顶部功能逐项映射
+
+上游分类由共享 START / INSERT / FORMULAS / DATA / VIEW / OTHERS 与插件实际菜单共同形成。[Sheets 实例装配][sheets-mount] 已注册筛选、排序、数据验证、条件格式、结构化表格、超链接、评论等；因此只读取 `sheets-ui` 本身不能代表完整工具栏。
+
+| 功能 ID | 上游菜单 / 命令依据 | 本地 item / 真实行为 | 尚缺行为或验证 |
+| --- | --- | --- | --- |
+| SHEET-01 | [Sheets schema][sheet-schema] 的 `CopySheetCommand`、`RenameSheetOperation`、`SetWorksheetHideCommand`、`SetTabColorCommand` 及 SheetBar | 工作表新增、激活、重命名、删除、隐藏/恢复主要位于组合底栏；不另在顶部重复一套 | 复制/重排/标签颜色、veryHidden 与所有关联引用事务仍未整体验收 |
+| SHEET-02 | [Sheets schema][sheet-schema] 的合并/取消合并与编辑/选区控制器 | `sheet.command.merge` / `unmerge`；Canvas 范围选择、名称框与公式栏 | 合并横向/纵向变体、多选、填充及完整编辑边界未全部覆盖 |
+| SHEET-03 | `InsertRowBeforeCommand`、`InsertColBeforeCommand`、`RemoveRowConfirmCommand`、`RemoveColConfirmCommand`、行列尺寸与显隐菜单 | 插入页：`sheet.command.insert-row` / `insert-column` / `delete-row` / `delete-column` 可修改真实模型 | 移动/复制、隐藏/显示、手动尺寸/自适应与所有引用资源变换仍不完整 |
+| SHEET-04 字体 | `sheet.command.set-range-font-family` / `set-range-fontsize` / `set-range-bold` / `set-range-italic` / `set-range-underline` | `set-font-family` / `set-font-size` / `toggle-bold` / `toggle-italic` / `toggle-underline`；字体字号与激活态由选区计算 | 字号增减、`set-range-stroke` 删除线等入口尚缺；全量样式 Office 往返未验收 |
+| SHEET-04 颜色 | `sheet.command.set-range-text-color`、`sheet.command.set-background-color` 及重置子项 | `sheet.menu.text-color`、`sheet.menu.fill` → `set-color` / `set-background`，有限颜色列表可执行 | 主题颜色、完整色板/自定义颜色、重置/继承语义与范围主题未完整实现 |
+| SHEET-04 对齐/样式 | `sheet.command.set-horizontal-text-align` / `set-vertical-text-align` / `set-text-wrap` / `set-shrink-to-fit` / `set-text-rotation` / `set-border-basic` | 水平左/中/右对齐、自动换行可执行 | 垂直对齐、旋转、缩小适应、边框工具、默认样式/范围主题仍缺真实顶部流程 |
+| SHEET-05 | 富文本/Docs 编辑桥 | 当前工具栏作用于单元格样式 | 单格多运行、部分文字格式、富文本复制/链接及 Office 往返未验收 |
+| SHEET-06 | [数字格式 schema][numfmt-schema]：`sheet.operation.open.numfmt.panel`、百分比/货币/增减小数位命令 | `sheet.command.set-number-format` 可选择常规、数字、百分比 | 货币/会计/日期/自定义格式、小数位、locale 与 1900/1904 全语义未验收 |
+| SHEET-07 | 冻结工具菜单、`ToggleGridlinesCommand`、`ZOOM_RATIO_MENU_ID` | `toggle-gridlines`；冻结选区/首行/首列/取消；放大/缩小/100%；各表选区与缩放会话 | 全部冻结分区/编辑/图形/打印组合仍待浏览器与文件样本验收；不由基础命中测试推断全部通过 |
+| SHEET-08 | [Sheets schema][sheet-schema]：`PASTE_RIBBON_MENU_ID` 与 PasteValue/Format/ColWidth/BesidesBorder；[公式 schema][formula-schema] 的公式粘贴 | `sheet.command.copy` / `cut` / `paste` 有真实模型操作 | 仅值/仅公式/仅格式/列宽/排除边框等选择性粘贴、HTML/TSV/引用与权限闭环未全部连通 |
+| SHEET-09 | [公式 schema][formula-schema]：`formula-ui.operation.insert-function.{common,financial,logical,text,date,lookup,math,statistical,engineering,information,database}`、`formula-ui.operation.more-functions` | 公式页：`sheet.operation.start-formula`、`sheet.command.recalculate` 可编辑当前单元格公式/重算 | 函数分类与选择器、定义名称管理、`sheets-formula-ui.operation.calculation-options` 尚缺顶部入口；完整依赖/结构引用语义未验收 |
+| SHEET-10（Pro） | 高级公式公开函数与行为目录；具体商业菜单 ID 未核实 | 有既有公式引擎，顶部目前仍是编辑/重算 | 不能用两个入口或 SUM 等函数样例声称全部高级公式已对齐；目录/数组/引用/错误/性能逐项待验收 |
+| SHEET-11 | [筛选 schema][filter-schema]：`sheet.command.smart-toggle-filter` / `clear-filter-criteria` / `re-calc-filter` | 已有筛选 engine/Facade；当前数据页未接筛选菜单 | 条件面板/列筛选器、可见行、恢复、颜色日期规则及结构变换闭环缺 |
+| SHEET-12 | [排序 schema][sort-schema]：`sheet.menu.sheets-sort` → `sheet.command.sort-range-{asc,asc-ext,desc,desc-ext,custom}` | 数据页 `sheet.command.sort-ascending` / `sort-descending`：当前单矩形至少两行，调用 `FRange.sort({column:0, ascending})` 按选区第一列排序 | 多关键字自定义、扩展选区交互与完整比较/关联引用/权限/大样本验证仍未完成 |
+| SHEET-13 | [验证 schema][validation-schema]：`sheet.menu.data-validation` / `quick-dropdown` / `quick-date`、`data-validation.operation.open-validation-panel` | 当前无对应本地顶部 item | 所有规则、快捷复选/日期/下拉、拒绝/提示与键入/粘贴/API 统一验证待实现/验收 |
+| SHEET-14 | [条件格式 schema][cf-schema]：`sheet.operation.open.conditional.formatting.panel`、AddDataBarConditionalRule / AddIconSetConditionalRule | 当前无对应本地顶部 item | 规则管理、优先级/公式、色阶/数据条/图标集、动态渲染和保存待实现/验收 |
+| SHEET-15 | 查找替换插件 schema | `sheet.operation.find`：真实匹配/定位 | 当前主要为查找；替换、作用域/完整选项、取消和大样本尚缺 |
+| SHEET-16 | sheets-hyper-link-ui schema 与插入/编辑弹层 | 当前无完整本地超链接顶部工具 | URL/内部范围/富文本链接、编辑/移除、引用变换和安全跳转未验收 |
+| SHEET-17 | sheets-note-ui、sheets-thread-comment-ui | 当前无已验收顶部批注/持久线程评论流程 | Note/ThreadComment 分模型、锚点/权限/回复/解决/服务同步未验收 |
+| SHEET-18 | [结构化表格 schema][table-schema]：`sheet.operation.open-table-selector` | 当前无对应本地顶部 item | 列/表头/汇总行、样式、自动扩展、结构化引用、筛选排序与导出未验收 |
+| SHEET-19 | drawing/watermark 插件 | 当前表格顶部插入对象以图表为主，非图片/水印的完整 UI | 图片插入/替换/裁剪/锚点、文字/图片水印、打印与文件资源保真待验收 |
+| SHEET-20 | sheets-crosshair-highlight schema | 当前无对应顶部十字高亮控件 | 颜色/冻结/滚动兼容及纯视图 operation 待验收 |
+| SHEET-21（含 Pro） | drawing 基础 + 公开形状目录；完整商业菜单 ID 未核实 | 当前无完整本地形状顶部流程 | 连接器/文字/分组/旋转/层级/命中/Office 映射待实现/验收 |
+| SHEET-22（Pro） | 公开图表规格；完整商业菜单 ID 未核实 | 插入 `sheet.operation.insert-chart`；可创建既有 bar/line 图表模型并绑定数据；已有图层选择/移动/缩放 | 全部图型、系列/分类/轴/图例/标签/主题属性面板、透视图/打印及可编辑 Office 往返未验收 |
+| SHEET-23（Pro） | 公开透视表规格；商业菜单 ID 未核实 | 插入/数据页共用 `sheet.operation.open-pivot`；`PivotTablePanel` 本轮接入中，已有真实 model/engine/命令 | 以面板最终浏览器结果补证；完整字段/汇总/排序筛选/分组/小计/下钻、Office Cache/Parts 与大规模性能未整体验收 |
+| SHEET-24（Pro） | 公开透视图规格；商业菜单 ID 未核实 | 当前无透视图顶部/编辑流程 | 透视与图表绑定、字段联动、筛选刷新、持久化/Office 输出待实现/验收 |
+| SHEET-25（Pro） | 公开切片器/时间线规格；商业菜单 ID 未核实 | 数据页 `sheet.operation.open-slicer` / `open-timeline`；真实面板本轮接入中，已有 SlicerModel/Facade | 以面板最终测试补证；结构化表格目标、多目标交叉筛选、日期系统、样式布局、画布对象与 Office 往返未整体验收 |
+| SHEET-26（Pro） | 公开迷你图规格；商业菜单 ID 未核实 | 当前无对应本地顶部 item | 完整图型、空值/负值/比例、分组、引用更新和 Office 往返待实现/验收 |
+| SHEET-27（Pro） | 公开分组规格；商业菜单 ID 未核实 | 当前无对应本地顶部 item | 行列嵌套层级、折叠展开、汇总方向与隐藏原因合并未验收 |
+| SHEET-28（Pro） | 公开打印/PDF 规格；商业菜单 ID 未核实 | 当前没有完整 Sheets 页面设置/分页预览/输出工作流 | 打印区域、适页、重复标题、页眉页脚、图形和隐藏处理、实际输出待实现/验收 |
+| SHEET-29 | 本项目 Office parser/writer 与公开导入导出规格 | 应用壳负责打开/保存/导出；真实 XLSX writer 已接入，JSON 不冒充 Office 输出 | XLS/XLSX/CSV/TSV 公开契约、保留 XLSB/ODS 读取、全部资源/样式/公式独立重开仍未验收 |
+| SHEET-30 | [Sheets schema][sheet-schema]：`AddRangeProtectionFromToolbarCommand` 等保护菜单 | 当前无完整顶部权限流程 | 服务端工作簿/表/范围权限、可执行操作、失败原子性/协作及恢复待验收 |
+
+## 4. Docs 顶部功能逐项映射
+
+[Docs schema][doc-schema] 的开始/插入/视图由各插件注入；[示例装配][docs-mount] 还包含 drawing、hyper-link、thread-comment 和 TOC。正文目录与左侧导航是两个能力；页眉页脚和 TOC 都有专用上下文分类，不能把普通插入按钮当作已覆盖。
+
+| 功能 ID | 上游菜单 / 命令依据 | 本地 item / 真实行为 | 尚缺行为或验证 |
+| --- | --- | --- | --- |
+| DOC-01 | 文档模型/排版与 [Docs schema][doc-schema] | 传统分页 Canvas、现有段落/文字运行模型；工具栏不以 HTML 作为权威源 | 节、复杂自动排版/跨页对象、所有模式差异与大文档性能未整体验收 |
+| DOC-02 字符 | 上游 `SetInlineFormat*Command`，包括 `doc.command.set-inline-format-subscript` / `superscript` | `doc-block-style`、`doc-font-family`、`doc-font-size`、bold/italic/underline/strike、颜色/高亮菜单及自定义颜色；选择值/混合态由真实范围计算 | 上下标、完整字符样式/主题/继承未实现；清除格式正在本轮补充，需最终测试 |
+| DOC-02 段落 | `SetParagraphNamedStyleCommand`、`AlignOperationCommand`、段落设置面板 | 正文/H1–H6、四对齐、缩进/列表、行距；`doc.command.format-paragraph` | 段前/后间距面板正在补充；Title/Subtitle 独立命名样式、混合/全段落语义及 Office 往返未完整验收 |
+| DOC-03 | `doc.menu.breaks`；`doc.menu.section-break.{next-page,continuous,next-column,even-page,odd-page}`；`docs.operation.insert-column-break` / `insert-section-break` | 当前普通 `doc.command.insert-page-break`；布局纸张 A4/Letter、纵横方向；边距设置正在补充 | 分节各类型、节级分栏、列断点均未接顶部；普通分页符不能代替分节 |
+| DOC-03 页眉页脚 | `doc.command.open-header-footer-panel`；[headerFooter schema][header-footer]：`docs-ui.ribbon.header-footer`、`DocHeaderFooterRibbonControl.{insertion,navigation,options,position}`、`doc.command.close-header-footer` | 当前无已实现本地页眉页脚上下文分类 | segment 切换、节关联、首页/奇偶页、页码/字段、距离、导航和结束编辑全部未验收 |
+| DOC-04 左侧大纲 | DocSideMenu/SideMenu；固定模式默认值 | `doc.operation.toggle-outline`；真实标题/层级/activeId、跳转、停靠/浮动、导航键盘、传统默认关闭/现代默认开启 | 宽表与浮动大纲实际裁剪交集尚未接；正文标题折叠、表格内标题和 Title/Subtitle 保真未验收 |
+| DOC-04 正文 TOC | [TOC schema][toc-schema]：`doc.menu.insert-table-of-contents`；`doc.operation.open-table-of-contents-dialog`；`ribbon.table-of-contents` 上下文 | 当前没有正文 TOC 插入、更新或上下文工具 | 不能以左侧大纲替代正文目录；目录内容/页码更新、删除、保存/Office 输出待实现/验收 |
+| DOC-05（含 Pro） | `doc.command.bullet-list` / `order-list` / `check-list` / `change-list-nesting-level` | 本地 bullet/numbered 及缩进可执行 | 复选列表、编号重启/连续、增强列表样式/嵌套、复制/导出语义未完整验收 |
+| DOC-06（含 Pro） | 表菜单 `doc.menu.table`；上下文 `DocTableInsertRowAbove/Bellow/ColumnLeft/RightCommand`、`doc.table.delete-{rows,columns,table}` | `doc.operation.open-table` 打开真实行列对话框并插入表格 | 尚无完整表格上下文分类/行列结构/合并拆分/尺寸边框/整表与文字对齐/跨页嵌套 UI 与 Office 验收 |
+| DOC-07 | docs-drawing-ui image schema | `doc.operation.open-image`，本地图片和 URL 输入，插入真实模型 | 环绕/锚点/偏移/裁剪/旋转/层级/替换、分页随对象更新及所有关系重开未验收 |
+| DOC-08 | docs-hyper-link-ui：`ShowDocHyperLinkEditPopupOperation` | `doc.operation.open-link` 可插入链接并保留范围 | 完整编辑/删除、书签/内部目标、位置变换和 Office 往返未验收 |
+| DOC-09 | docs-find-replace 与共享 find-replace schema | `doc.operation.toggle-find`，正文匹配/定位当前实现 | 完整替换、选项、表格/页眉页脚等作用域、可撤销全部替换未验收 |
+| DOC-10 | docs-thread-comment-ui 浮动工具/绘图上下文 | 当前无完整本地顶部/浮动持久评论流程 | 锚点变换、回复/解决、用户/权限/服务同步未验收 |
+| DOC-11（Pro） | 内容控件公开规格；完整商业菜单 ID 未核实 | `doc-controls` → `doc.operation.open-content-controls`；有 DocumentApi 时打开真实控件面板；无命令上下文时明确禁用 | 已有模型/API/面板不代表全公开控件类型完成；图片/分组/重复节、全部锁/编辑变换及 DOCX 往返仍未验收 |
+| DOC-12（Pro） | 脚注尾注公开规格；商业菜单 ID 未核实 | 当前无脚注/尾注顶部编辑流程；writer 现有 notes 写出不等于编辑器能力 | 规范模型/引用编号/注释区排版/导航/命令历史/导入重开待实现/验收 |
+| DOC-13（Pro） | 代码块公开规格；商业菜单 ID 未核实 | 当前无代码块顶部 item | 语言/源文本/高亮/块编辑/复制与保存待实现/验收 |
+| DOC-14（Pro） | 多栏组公开规格；商业菜单 ID 未核实 | 当前无多栏组顶部 item | 块级 2–5 栏、比例/间距、选择/导航、增删、保存；与节级分栏分开验收 |
+| DOC-15（Pro） | LaTeX 公开规格；商业菜单 ID 未核实 | 当前无公式插入/编辑顶部 item | 源文本、行内/块级形式、布局/错误/持久化/Office 映射待实现/验收 |
+| DOC-16（Pro） | 引用块公开规格；商业菜单 ID 未核实 | 命令转换允许 quote 类型，但当前没有已验收引用块顶部工作流 | 容器内部富文本、进入/退出/删除/复制/持久化待验收；不能以单独左边框计完成 |
+| DOC-17（Pro） | Callout 公开规格；商业菜单 ID 未核实 | 当前无 Callout 顶部 item | 图标/颜色/内容/容器属性、块编辑/布局/历史/保存待实现/验收 |
+| DOC-18（含 Pro） | drawing 基础：`doc.command.menu-insert-shape` 及矩形/椭圆命令；完整商业/SmartArt 菜单 ID 未核实 | 当前无已连通形状/SmartArt 顶部流程 | 形状文字/锚点/层级/连接器/完整目录/SmartArt 布局和 Office 映射未验收 |
+| DOC-19（Pro） | 共享/Docs 图表公开规格；商业菜单 ID 未核实 | 当前没有 Docs 图表顶部/属性面板 | 共享可编辑图表模型、内嵌数据、环绕/分页、属性与 Office 关系待实现/验收 |
+| DOC-20 | watermark 插件与公开规格 | 当前无已验收水印顶部流程 | 文本/图片、透明度/定位/页范围、打印与 Office 输出未验收 |
+| DOC-21（Pro） | 打印/PDF 公开规格；商业菜单 ID 未核实 | `doc.command.print` 调用已有文档布局打印服务，不以打印应用壳替代 | 页范围/字体资源/对象/页眉页脚/脚注、打印对话框与 PDF 输出独立文件验证仍未完成 |
+| DOC-22 | 本项目 duke-pages parser / DOCX writer | 应用壳打开/保存/导出真实 DOCX；本地 JSON 快照与 Office 输出分开 | DOC/DOCX/ODT 格式/节/列表/表格/图形资源的独立重开与完整保真未验收 |
+| DOC-23 | DocFooter/DocStatistics/DocLayoutProgress | 组合底栏：当前/总页、字符/选区字素统计、缩放、内容修改状态；不把 UI 状态伪称云保存成功 | 全部上游统计口径、真实布局任务进度、大文档与模式差异未完整验收 |
+
+另有未接入的公开基础插入项：`doc.menu.insert-emoji`、`doc.menu.insert-symbol`；剪贴板顶部目前主要为复制，未完整对齐上游 `doc.command.paste-special` 及源格式/目标格式/纯文本的粘贴模式切换。完整目标继续保留，不通过隐藏这些入口宣称完成。
+
+## 5. 本次已经执行的共享 Ribbon 检查
+
+```powershell
+node --experimental-strip-types --test packages/office-studio/tests/ribbon-component.browser.test.mjs packages/office-studio/tests/ribbon-schema.contract.test.mjs
+pnpm --filter @office-studio/office-studio check:types
+```
+
+核对结果：**13/13 通过**，包括 8 个纯契约和 5 个实际 Edge/Chromium 组件浏览器测试；类型检查通过。浏览器由测试启动临时 Vite 服务，使用安装的 `msedge`，默认 1200×700，窄屏 210×700，中文/LTR/RTL；没有截图或像素比较。
+
+- 契约：顺序稳定且不修改输入、隐藏/空分类、禁用项保留展示、方向/Home/End/RTL、上下文恢复、宽度/分组间隔/更多按钮预留、溢出每项仅出现一次、禁用和过期选项不派发、split 主动作与参数边界。
+- 浏览器：36px/40px 实际几何；隐藏分类不出现；roving 焦点；字体选择真实命令参数；加粗激活态与禁用撤销；窄屏“更多功能”里的真实命令、嵌套颜色菜单与字体 Select；Escape 归焦；无文档水平溢出；上下文移除回退；菜单暂空重建后的 ResizeObserver 与宽窄切换弹层状态。无 `pageerror`。
+- 浏览器暴露并修复了真实可访问性问题：所用 Select 的 `aria-label` 没有转发到内部 combobox，现用明确 input ID 与原生 `label for` 关联。隐藏测量树为 `aria-hidden` + `inert` + 零尺寸裁剪，不额外占文档滚动宽度。
+
+这些测试验证共享控件及派发契约，**不证明表中每个业务功能已经实现**。Sheets/Docs 集成、透视/切片器面板、Office 重开及性能结果由对应验收记录另列。没有同数据集的设备/帧时间/长任务/内存前后对照，本记录不作性能达标或优化完成声明。
+
+## 6. 更新方法
+
+后续每项接入须同时更新本表中的本地入口、真实命令/模型行为和测试证据。仅添加菜单、API 名称、弹层或禁用入口时，继续记“接入中/未验收”。接口存在与真实可操作、撤销/重做、保存重开、Office 往返分别核验。商业菜单 ID/模式限制待核实时保留“未核实”，功能目标不删除。
+
+[workbench]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/workbench/Workbench.tsx
+[ribbon]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/Ribbon.tsx
+[menu]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/menu.ts
+[menu-manager]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/menu-manager.service.ts
+[toolbar-item]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/ToolbarItem.tsx
+[sheet-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/menu/schema.ts
+[formula-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-formula-ui/src/menu/schema.ts
+[filter-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-filter-ui/src/menu/schema.ts
+[sort-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-sort-ui/src/menu/schema.ts
+[validation-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-data-validation-ui/src/menu/schema.ts
+[cf-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-conditional-formatting-ui/src/menu/schema.ts
+[numfmt-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-numfmt-ui/src/menu/schema.ts
+[table-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-table-ui/src/menu/schema.ts
+[doc-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/schema.ts
+[header-footer]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/header-footer-ribbon.ts
+[toc-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-toc-ui/src/menu/schema.ts
+[sheets-mount]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/sheets/mount.ts
+[docs-mount]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/docs/mount.ts

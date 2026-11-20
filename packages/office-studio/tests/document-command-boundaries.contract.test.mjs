@@ -20,6 +20,7 @@ after(async () => { await server?.close() })
 
 function paragraph(id, text) { return { ...modelUtils.createParagraph(text), id } }
 function documentWith(blocks) { return { ...domain.createBlankDocument(), id: 'boundary-doc', blocks } }
+const snapshot = (value) => JSON.parse(JSON.stringify(value))
 function selection(from, fromOffset, to, toOffset) {
   return { anchor: { blockId: from, offset: fromOffset }, focus: { blockId: to, offset: toOffset } }
 }
@@ -131,21 +132,30 @@ test('paragraph range commands replay through the shared document history and re
   const editor = useEditorStore(createPinia())
   editor.document.replace({ ...editor.state.document, blocks: [paragraph('one', 'Alpha'), paragraph('two', 'Beta')] })
   editor.setActiveKind('document')
-  const before = structuredClone(editor.document.model)
-  const draft = structuredClone(before)
+  const before = snapshot(editor.document.model)
+  const draft = snapshot(before)
   commands.executeDocumentCommand(draft, selection('one', 1, 'two', 0), { id: 'doc.command.format-paragraph', patch: { align: 'center' } })
   assert.equal(editor.replaceDocumentFromView(draft), true)
   assert.equal(editor.state.document.modified, true)
   assert.equal(editor.state.document.blocks[0].style.align, 'center')
-  assert.deepEqual(structuredClone(editor.document.model.blocks[1]), before.blocks[1])
+  assert.deepEqual(snapshot(editor.document.model.blocks[1]), before.blocks[1])
   editor.undo()
-  assert.deepEqual(structuredClone(editor.document.model), before)
+  assert.deepEqual(snapshot(editor.document.model), before)
   assert.equal(editor.state.document.modified, false)
   editor.redo()
   assert.equal(editor.state.document.blocks[0].style.align, 'center')
   editor.markSaved()
-  const collapsed = structuredClone(editor.document.model)
+  const collapsed = snapshot(editor.document.model)
   commands.executeDocumentCommand(collapsed, selection('two', 0, 'two', 0), { id: 'doc.command.format-text', patch: { bold: true } })
   assert.equal(editor.replaceDocumentFromView(collapsed), false)
   assert.equal(editor.state.document.modified, false)
+})
+
+test('applying an existing character format or formatting only a paragraph break preserves run identities', () => {
+  const model = documentWith([paragraph('one', 'Alpha'), paragraph('two', 'Beta')])
+  const before = structuredClone(model)
+  commands.executeDocumentCommand(model, selection('one', 1, 'one', 4), { id: 'doc.command.format-text', patch: { bold: false, fontFamily: 'Arial' } })
+  assert.deepEqual(model, before)
+  commands.executeDocumentCommand(model, selection('one', 5, 'two', 0), { id: 'doc.command.format-text', patch: { bold: true } })
+  assert.deepEqual(model, before)
 })

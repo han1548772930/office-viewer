@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
 import { Button, Popover, Select, Tooltip } from 'antdv-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { ribbonInvocation, visibleRibbonItems, type RibbonItem } from './ribbon-schema'
@@ -54,6 +54,10 @@ function onPanelKeydown(event: KeyboardEvent) {
   event.preventDefault()
   controls[next]?.focus()
 }
+
+watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unavailable) => {
+  if (unavailable) open.value = false
+})
 </script>
 
 <template>

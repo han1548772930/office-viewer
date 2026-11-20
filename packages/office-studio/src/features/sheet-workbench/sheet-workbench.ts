@@ -1,5 +1,6 @@
 import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
+import { addRange, containsCell } from '../../rendering/spreadsheet/selection.ts'
 
 export interface SheetAddressBounds { rowCount: number; columnCount: number }
 export interface ParsedSheetAddress { range: GridRange; address: string; anchor: string }
@@ -103,6 +104,38 @@ function normalizeSelection(range: GridRange, bounds: SheetAddressBounds): GridR
   const startColumn = Math.max(0, Math.min(range.startColumn, range.endColumn))
   const endColumn = Math.min(bounds.columnCount - 1, Math.max(range.startColumn, range.endColumn))
   return startRow <= endRow && startColumn <= endColumn ? { startRow, endRow, startColumn, endColumn } : undefined
+}
+
+export interface SheetViewState { key: string; anchor: string; ranges: GridRange[]; zoom: number }
+
+/** Restore a view after model/axis changes without putting view operations into content history. */
+export function normalizeSheetViewState(sheet: SheetAddressBounds, state: Partial<SheetViewState> = {}): SheetViewState {
+  const requestedZoom = state.zoom ?? 100
+  const zoom = Number.isFinite(requestedZoom) ? Math.max(10, Math.min(400, requestedZoom)) : 100
+  if (!hasValidBounds(sheet)) return { key: 'A1', anchor: 'A1', ranges: [], zoom }
+  const clampPoint = (key: string | undefined, fallback: { row: number; column: number }) => {
+    const parsed = key && /^\$?[A-Z]+\$?[1-9]\d*$/i.test(key)
+      ? parseSheetAddress(key, { rowCount: Number.MAX_SAFE_INTEGER, columnCount: Number.MAX_SAFE_INTEGER }) : undefined
+    return parsed ? {
+      row: Math.min(sheet.rowCount - 1, parsed.range.startRow),
+      column: Math.min(sheet.columnCount - 1, parsed.range.startColumn),
+    } : fallback
+  }
+  let point = clampPoint(state.key, { row: 0, column: 0 })
+  let ranges: GridRange[] = []
+  for (const range of state.ranges ?? []) {
+    const normalized = normalizeSelection(range, sheet)
+    if (normalized) ranges = addRange(ranges, normalized)
+  }
+  if (!ranges.length) ranges = [{ startRow: point.row, endRow: point.row, startColumn: point.column, endColumn: point.column }]
+  if (!containsCell(ranges, point.row, point.column)) point = { row: ranges[0]!.startRow, column: ranges[0]!.startColumn }
+  const candidate = clampPoint(state.anchor, point)
+  const anchor = containsCell(ranges, candidate.row, candidate.column) ? candidate : point
+  return {
+    key: `${columnLabel(point.column)}${point.row + 1}`,
+    anchor: `${columnLabel(anchor.column)}${anchor.row + 1}`,
+    ranges, zoom,
+  }
 }
 
 /** Match Univer's visible-row and countA/count display rules, visiting populated cells once. */

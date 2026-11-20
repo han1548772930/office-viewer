@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Button, Input, InputNumber, Modal, Tooltip } from 'antdv-next'
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import type { DocumentModel } from '../domain/model'
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import type { DocumentModel, DocumentPageSetup } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
 import DocumentContentControlPanel from './document/DocumentContentControlPanel.vue'
 import DocumentOutline from './document/DocumentOutline.vue'
 import DocumentFooter from './document/DocumentFooter.vue'
+import DocumentPageSettings from './document/DocumentPageSettings.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
+import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPaperSize } from './document/document-page-settings'
 import { executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
@@ -40,7 +42,7 @@ const imageInputRef = ref<HTMLInputElement | null>(null)
 const activeTab = ref('home')
 const documentTitle = ref(props.fileName || '无标题文档')
 const zoom = ref(100)
-const paperSize = ref<'A4' | 'Letter'>('A4')
+const paperSize = ref<DocumentPaperSize>('A4')
 const orientation = ref<'portrait' | 'landscape'>('portrait')
 const outlineOverride = ref<boolean>()
 const showOutline = computed({ get: () => documentOutlineEnabled(model.value, outlineOverride.value ?? props.showOutline), set: (value: boolean) => { outlineOverride.value = value } })
@@ -66,6 +68,7 @@ const tableCols = ref<number | null>(3)
 const modalError = ref('')
 const notice = ref('')
 const contentControlPanelOpen = ref(false)
+const pageSettingsOpen = ref(false)
 const pages = computed(() => layout.value.pages)
 const wordCount = computed(() => documentCharacterCount(textTargets(model.value).map((target) => runText(runsForTarget(model.value, target))).join('\n')))
 const selectedCharacters = computed(() => documentSelectionCharacterCount(model.value, selection.value))
@@ -74,12 +77,14 @@ const currentMarks = computed(() => toolbarState.value.marks)
 const modalTitle = computed(() => ({ table: '插入表格', image: '插入图片', link: '插入链接', color: '字体颜色', highlight: '文本高亮颜色' })[modalKind.value])
 const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }))
 let resizeObserver: ResizeObserver | undefined
+let imageRequest = 0
 onMounted(() => {
   if (!workbenchRef.value) return
   resizeObserver = new ResizeObserver(([entry]) => { if (entry) workbenchWidth.value = entry.contentRect.width })
   resizeObserver.observe(workbenchRef.value)
 })
-onUnmounted(() => resizeObserver?.disconnect())
+onUnmounted(() => { resizeObserver?.disconnect(); imageRequest++ })
+onDeactivated(() => { imageRequest++; modalOpen.value = false; contentControlPanelOpen.value = false; pageSettingsOpen.value = false; showFind.value = false })
 
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.modelValue, (value) => {
@@ -93,7 +98,7 @@ watch(() => props.modelValue, (value) => {
   model.value = normalizeDocument(next)
   documentTitle.value = next.name
   selection.value = { anchor: clampPoint(model.value, selection.value.anchor), focus: clampPoint(model.value, selection.value.focus) }
-  paperSize.value = Math.abs(Math.min(next.page.width, next.page.height) - 816) < 11 ? 'Letter' : 'A4'
+  paperSize.value = documentPaperSize(next.page)
   orientation.value = next.page.width > next.page.height ? 'landscape' : 'portrait'
 }, { immediate: true })
 watch(currentMarks, (marks) => {
@@ -133,11 +138,15 @@ function toggleFormat(field: 'bold' | 'italic' | 'underline') { execute({ id: 'd
 function undo() { pendingMarks.value = {}; emit('undo'); void nextTick(() => canvasRef.value?.focus()) }
 function redo() { pendingMarks.value = {}; emit('redo'); void nextTick(() => canvasRef.value?.focus()) }
 function changePageSetup() {
+  applyPageSetup(documentOrientedPage(model.value.page, orientation.value, paperSize.value))
+}
+function applyPageSetup(page: DocumentPageSetup) {
+  const error = documentPageSettingsError(page)
+  if (error) { notify(error); return }
   const next = cloneDocument(model.value)
-  const width = paperSize.value === 'A4' ? 794 : 816
-  const height = paperSize.value === 'A4' ? 1123 : 1056
-  next.page.width = orientation.value === 'portrait' ? width : height
-  next.page.height = orientation.value === 'portrait' ? height : width
+  next.page = { ...page }
+  paperSize.value = documentPaperSize(page)
+  orientation.value = page.width > page.height ? 'landscape' : 'portrait'
   publish(next)
   void nextTick(() => canvasRef.value?.focus())
 }
@@ -183,11 +192,22 @@ async function onImageFile(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
+  const request = ++imageRequest
+  const base = model.value
+  const range: DocumentSelection = { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } }
   const source = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) }).catch(() => '')
+  if (request !== imageRequest || !modalOpen.value || modalKind.value !== 'image') return
   if (!source) { notify('读取图片失败'); return }
   const image = new Image()
-  image.onload = () => { execute({ id: 'doc.command.insert-image', image: { src: source, alt: file.name, width: Math.min(500, image.naturalWidth), height: Math.min(500, image.naturalWidth) * image.naturalHeight / image.naturalWidth } }); modalOpen.value = false }
-  image.onerror = () => notify('无法读取该图片')
+  image.onload = () => {
+    if (request !== imageRequest || !modalOpen.value || modalKind.value !== 'image') return
+    if (model.value !== base) { notify('文档已更新，请重新插入图片'); return }
+    if (!image.naturalWidth || !image.naturalHeight) { notify('图片尺寸无效'); return }
+    selection.value = range
+    execute({ id: 'doc.command.insert-image', image: { src: source, alt: file.name, width: Math.min(500, image.naturalWidth), height: Math.min(500, image.naturalWidth) * image.naturalHeight / image.naturalWidth } })
+    modalOpen.value = false
+  }
+  image.onerror = () => { if (request === imageRequest && modalOpen.value && modalKind.value === 'image') notify('无法读取该图片') }
   image.src = source
 }
 function findNext() {
@@ -232,7 +252,8 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.custom-color':
       if (params === 'color' || params === 'highlight') { modalKind.value = params; modalValue.value = params === 'color' ? textColor.value : highlightColor.value; modalError.value = ''; modalOpen.value = true }
       break
-    case 'doc.command.set-paper-size': if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
+    case 'doc.operation.open-page-settings': pageSettingsOpen.value = true; break
+    case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
     case 'doc.command.set-orientation': if (params === 'portrait' || params === 'landscape') { orientation.value = params; changePageSetup() }; break
   }
 }
@@ -272,6 +293,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" @error="notify" />
+    <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
   </section>
 </template>
 

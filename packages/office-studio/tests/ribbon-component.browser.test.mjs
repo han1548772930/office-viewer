@@ -31,7 +31,7 @@ const tabs = computed(() => menusVisible.value ? [
     { id: 'font', title: '字体', items: [
       { id: 'family', type: 'select', title: '字体', commandId: 'doc.command.font', value: family.value, width: 112, options: [{ label: 'Arial', value: 'Arial' }, { label: '宋体', value: '宋体' }, { label: '不可用字体', value: 'locked', disabled: true }] },
       { id: 'bold', type: 'button', title: '加粗', icon: Bold, activated: bold.value, commandId: 'doc.command.bold' },
-      { id: 'colors', type: 'menu', title: '字体颜色', showLabel: true, children: [
+      { id: 'colors', type: 'menu', title: '字体颜色', showLabel: true, disabled: locked.value, children: [
         { id: 'red', type: 'button', title: '红色', commandId: 'doc.command.color', params: '#ef4444' },
         { id: 'blue', type: 'button', title: '蓝色', commandId: 'doc.command.color', params: '#3b82f6' },
       ] },
@@ -152,6 +152,18 @@ test('context category removal returns to the previous regular tab without dispa
   await page.evaluate(() => { window.ribbonFixture.showContext.value = false })
   await page.waitForFunction(() => window.ribbonFixture.active.value === 'insert')
   assert.equal(await page.getByRole('tab', { name: '插入', exact: true }).getAttribute('aria-selected'), 'true')
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [])
+  assert.deepEqual(errors, [])
+})
+
+test('a menu closes when the editor context becomes disabled and cannot keep active stale choices', async () => {
+  const trigger = page.getByRole('button', { name: '字体颜色', exact: true })
+  await trigger.click()
+  const popup = page.getByRole('menu', { name: '字体颜色', exact: true })
+  await popup.waitFor()
+  await page.evaluate(() => { window.ribbonFixture.locked.value = true })
+  await popup.waitFor({ state: 'hidden' })
+  assert.equal(await trigger.isDisabled(), true)
   assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [])
   assert.deepEqual(errors, [])
 })

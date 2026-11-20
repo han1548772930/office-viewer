@@ -89,11 +89,13 @@ export type {
   NumericSortColumnData,
   SortRangeOptions,
 } from './features/sheet-sort-filter/sort-filter-engine'
-export { useEditorStore } from './stores/editorStore'
+export { useEditorStore, type EditorSavepoint } from './stores/editorStore'
 export { useWorkbookStore } from './stores/workbookStore'
 export { useDocumentStore } from './stores/documentStore'
-export { useHistoryStore, type HistoryEntry, type UnitHistory } from './stores/historyStore'
+export { useHistoryStore, type HistoryEntry, type HistorySavepoint, type UnitHistory } from './stores/historyStore'
 export { useParserStore } from './stores/parserStore'
+export { default as WorkbenchRibbon } from './platform/ribbon/WorkbenchRibbon.vue'
+export type { RibbonTab, RibbonGroup, RibbonItem } from './platform/ribbon/ribbon-schema'
 
 export {
   applyExcelWorkbookView,

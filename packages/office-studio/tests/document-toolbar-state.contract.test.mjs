@@ -7,6 +7,7 @@ const { createBlankDocument } = await vite.ssrLoadModule('/packages/office-studi
 const { createParagraph, createRun, collapsedSelection } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/model/document-model.ts')
 const { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-toolbar-state.ts')
 const { createDocumentRibbon, documentCommandFromRibbon } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-ribbon.ts')
+const { documentOrientedPage, documentPageSettingsError, documentPaperSize } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-page-settings.ts')
 
 test('toolbar reports uniform and mixed formats from the actual selected run slices', () => {
   const model = createBlankDocument()
@@ -81,4 +82,22 @@ test('ribbon schemas derive current values, mixed toggle behavior and dispatch v
   assert.equal(documentCommandFromRibbon('doc.command.format-text', { patch: { bold: 'false' } }), undefined)
   assert.equal(documentCommandFromRibbon('doc.command.format-paragraph', { patch: { align: 'diagonal' } }), undefined)
   assert.equal(documentCommandFromRibbon('doc.command.set-block-type', { type: 'heading', level: 100 }), undefined)
+})
+
+test('custom imported page geometry is preserved by orientation and identified accurately', () => {
+  const page = { width: 960, height: 1200, marginTop: 45, marginRight: 55, marginBottom: 65, marginLeft: 75 }
+  assert.equal(documentPaperSize(page), 'Custom')
+  assert.deepEqual(documentOrientedPage(page, 'landscape', 'Custom'), { ...page, width: 1200, height: 960 })
+  assert.equal(documentPaperSize({ ...page, width: 1123, height: 794 }), 'A4')
+  assert.equal(documentPaperSize({ ...page, width: 1056, height: 816 }), 'Letter')
+  assert.equal(documentPageSettingsError(page), undefined)
+})
+
+test('page settings reject invalid dimensions and margins before a document mutation', () => {
+  const page = createBlankDocument().page
+  assert.match(documentPageSettingsError({ ...page, width: NaN }), /有效数字/)
+  assert.match(documentPageSettingsError({ ...page, width: 50 }), /宽度/)
+  assert.match(documentPageSettingsError({ ...page, marginTop: -1 }), /负数/)
+  assert.match(documentPageSettingsError({ ...page, marginLeft: page.width }), /之和/)
+  assert.match(documentPageSettingsError({ ...page, marginLeft: page.width * 0.45 }), /42%/)
 })

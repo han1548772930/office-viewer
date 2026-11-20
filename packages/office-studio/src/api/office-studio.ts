@@ -3,6 +3,7 @@ import type { Pinia } from 'pinia'
 import { watch } from 'vue'
 import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetFilterCriteria, SheetSortCriterion, SlicerTimelineRange, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
 import { useEditorStore } from '../stores/editorStore'
 import { applyCellValue, documentFromInput, workbookFromInput } from './model-utils'
@@ -26,6 +27,7 @@ import {
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
 import { createChart, updateChart, type ChartConfig } from '../features/charts/chart-engine'
+import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
 import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, type SlicerCreateInput } from '../features/slicer/slicer-engine'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
 import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortRange, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
@@ -110,7 +112,7 @@ export class OfficeStudio {
           if (created) this.events.emit('WorkbookCreated', { workbookId: id })
         } else {
           this.workbooks.set(id, next)
-          this.advanceWorkbookRevision(id)
+          if (!equivalentModelData(next, previous, ['modified', 'activeSheetId'])) this.advanceWorkbookRevision(id)
         }
       }, { flush: 'sync' }),
       watch(() => this.editor.document.model, (next, previous) => {
@@ -459,6 +461,11 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    this.registerCommand<ConfigurePivotFromPanelInput, boolean>(CONFIGURE_PIVOT_COMMAND, (input) => this.commitPivotChange(
+      input.unitId, input.pivotTableId, input.anchor.subUnitId, CONFIGURE_PIVOT_COMMAND,
+      input.mode === 'create' ? '插入数据透视表' : '配置数据透视表',
+      (draft) => { configurePivotFromPanel(draft, input) },
+    ))
     this.registerCommand<{ unitId: string; name: string }, boolean>('sheet.command.set-workbook-name', ({ unitId, name }) => this.commitWorkbook(unitId, 'Rename workbook', (model) => { model.name = name }))
     this.registerCommand<{ unitId: string; sheetId: string; name: string }, boolean>('sheet.command.set-worksheet-name', ({ unitId, sheetId, name }) => this.commitWorkbook(unitId, 'Rename worksheet', (model) => {
       const sheet = model.sheets.find((item) => item.id === sheetId)

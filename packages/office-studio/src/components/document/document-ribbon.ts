@@ -1,5 +1,5 @@
 import type { Component } from 'vue'
-import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, Clipboard, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTree, Maximize, Minus, Plus, Printer, Redo2, Search, Strikethrough, Table2, Underline, Undo2 } from 'lucide-vue-next'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, Clipboard, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTree, Maximize, Minus, Plus, Printer, Redo2, Search, Settings2, Strikethrough, Table2, Underline, Undo2 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
@@ -41,6 +41,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
         { id: 'doc-font-size', type: 'select', title: '字号', width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', options: [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((value) => ({ label: String(value), value })), valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
         format('doc-bold', '加粗', Bold, 'bold'), format('doc-italic', '斜体', Italic, 'italic'), format('doc-underline', '下划线', Underline, 'underline'), format('doc-strike', '删除线', Strikethrough, 'strike'),
         palette('doc-text-color', '字体颜色', 'color', FileText), palette('doc-highlight', '文本高亮', 'highlight', Highlighter),
+        action('doc-clear-format', '清除字符格式', Eraser, 'doc.command.format-text', { patch: { bold: false, italic: false, underline: false, strike: false, fontFamily: 'Arial', fontSize: 11, color: '#1f2937', highlight: '' } }),
       ] },
       { id: 'doc-paragraph', title: '段落', order: 2, items: [
         { id: 'doc-align', type: 'menu', title: '段落对齐', icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value })) },
@@ -49,6 +50,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
         action('doc-indent-less', '减少缩进', IndentDecrease, 'doc.command.format-paragraph', { patch: { indent: Math.max(0, (state.paragraph.indent ?? 0) - 1) } }, { disabled: state.paragraph.indent === 0, disabledReason: '当前段落已经位于最左侧' }),
         action('doc-indent-more', '增加缩进', IndentIncrease, 'doc.command.format-paragraph', { patch: { indent: Math.min(20, (state.paragraph.indent ?? 0) + 1) } }),
         { id: 'doc-line-height', type: 'select', title: '行距', width: 76, value: state.paragraph.lineHeight ?? null, placeholder: '混合', commandId: 'doc.command.format-paragraph', options: [1, 1.15, 1.5, 2, 2.5, 3].map((value) => ({ label: `${value} 倍`, value })), valueParams: (value) => ({ patch: { lineHeight: Number(value) } }) },
+        { id: 'doc-paragraph-spacing', type: 'menu', title: '段落间距', icon: IndentIncrease, children: (['spaceBefore', 'spaceAfter'] as const).map((key) => ({ id: `doc-${key}`, type: 'menu', title: key === 'spaceBefore' ? '段前间距' : '段后间距', children: [0, 6, 8, 12, 18, 24, 36].map((value) => action(`doc-${key}-${value}`, `${value} 像素`, IndentIncrease, 'doc.command.format-paragraph', { patch: { [key]: value } }, { activated: state.paragraph[key] === value })) })) },
       ] },
       { id: 'doc-editing', title: '编辑', order: 3, items: [action('doc-find', '查找', Search, 'doc.operation.toggle-find')] },
     ] },
@@ -61,9 +63,10 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
       action('doc-controls', '内容控件', FileText, 'doc.operation.open-content-controls', undefined, { showLabel: true, disabled: !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务' }),
     ] }] },
     { id: 'layout', title: '布局', order: 2, groups: [{ id: 'doc-paper', title: '页面设置', items: [
-      { id: 'doc-paper-size', type: 'select', title: '纸张', width: 90, value: context.paper, commandId: 'doc.command.set-paper-size', options: ['A4', 'Letter'].map((value) => ({ label: value, value })) },
+      { id: 'doc-paper-size', type: 'select', title: '纸张', width: 90, value: context.paper, commandId: 'doc.command.set-paper-size', options: [{ label: 'A4', value: 'A4' }, { label: 'Letter', value: 'Letter' }, { label: '自定义', value: 'Custom' }] },
       { id: 'doc-orientation', type: 'select', title: '方向', width: 90, value: context.orientation, commandId: 'doc.command.set-orientation', options: [{ label: '纵向', value: 'portrait' }, { label: '横向', value: 'landscape' }] },
       action('doc-insert-page', '插入分页', Plus, 'doc.command.insert-page-break', undefined, { showLabel: true }),
+      action('doc-page-settings', '页面设置', Settings2, 'doc.operation.open-page-settings', undefined, { showLabel: true }),
     ] }] },
     { id: 'view', title: '视图', order: 3, groups: [{ id: 'doc-display', title: '显示', items: [
       action('doc-outline', '文档大纲', ListTree, 'doc.operation.toggle-outline', undefined, { activated: context.outline, showLabel: true }),

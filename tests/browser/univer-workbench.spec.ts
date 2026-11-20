@@ -4,11 +4,14 @@ import { inflateRawSync } from 'node:zlib'
 import type { DocumentModel, WorkbookModel } from '../../packages/office-studio/src/domain/model'
 
 type RuntimeModule = typeof import('../../examples/workbench/src/runtime')
+const runtimeErrors = new WeakMap<Page, string[]>()
 
 /** Reading a model must not use FWorkbook/FDocument.save(), which creates a savepoint. */
 async function models(page: Page): Promise<{ workbook: WorkbookModel; document: DocumentModel; canUndo: boolean; canRedo: boolean }> {
   return page.evaluate(async () => {
-    const runtimePath = '/src/runtime.ts'
+    // Reuse Vite's loaded module URL, including its HMR query, instead of
+    // creating a second OfficeStudio instance by importing a bare URL.
+    const runtimePath = performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
     const { studio } = await import(runtimePath) as RuntimeModule
     const workbook = studio.getWorkbookModel(studio.activeWorkbookId)
     const document = studio.getDocumentModel(studio.activeDocumentId)
@@ -76,9 +79,14 @@ async function expectHeight(locator: Locator, height: number): Promise<void> {
 }
 
 test.beforeEach(async ({ page }) => {
+  const errors: string[] = []
+  runtimeErrors.set(page, errors)
+  page.on('pageerror', (error) => errors.push(error.message))
   await page.goto('/')
   await expect(page.getByRole('grid', { name: '工作表画布', exact: true })).toBeVisible()
 })
+
+test.afterEach(async ({ page }) => { expect(runtimeErrors.get(page) ?? []).toEqual([]) })
 
 test('Sheets uses classic Ribbon, a formula header, Canvas and one product footer', async ({ page }) => {
   const errors: string[] = []
@@ -191,6 +199,12 @@ test('narrow Sheets keeps overflow tools operable and the editor inside the view
   await menu.getByRole('button', { name: '清除内容', exact: true }).click()
   await expect.poll(() => cellValue(page, 'B2')).toBe('')
   await expect(menu).toBeHidden()
+  await trigger.focus()
+  await trigger.press('ArrowDown')
+  await expect(menu).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toBeHidden()
+  await expect(trigger).toBeFocused()
   const extent = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth }))
   expect(extent.scroll).toBeLessThanOrEqual(extent.width)
   await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
@@ -221,7 +235,7 @@ test('Docs keeps its logical text range while formatting through classic Ribbon'
 
 test('Docs traditional outline is configurable and navigates stable paragraph identities', async ({ page }) => {
   await page.evaluate(async () => {
-    const runtimePath = '/src/runtime.ts'
+    const runtimePath = performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
     const { univerAPI } = await import(runtimePath) as RuntimeModule
     const paragraphStyle = { align: 'left' as const, indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 }
     const run = (text: string) => ({ id: `run-${text}`, text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
@@ -378,4 +392,84 @@ test('a failed Office import reports its error and retains the editable workbook
   await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('仍可继续编辑')
   await page.getByRole('button', { name: '确认编辑', exact: true }).click()
   await expect.poll(() => cellValue(page, 'E2')).toBe('仍可继续编辑')
+})
+
+test('the name box navigates actual ranges and the footer statistics follow the selection', async ({ page }) => {
+  for (const [address, value] of [['B2', '10'], ['B3', '20']]) {
+    await gotoCell(page, address!)
+    await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill(value!)
+    await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  }
+  await gotoCell(page, 'B2:B3')
+  const statistic = page.getByRole('button', { name: '选区统计', exact: true })
+  await expect(statistic).toHaveAttribute('title', '求和: 30')
+  await statistic.click()
+  await page.getByRole('menuitem', { name: '计数: 2', exact: true }).click()
+  await expect(statistic).toHaveAttribute('title', '计数: 2')
+  const nameBox = page.getByRole('textbox', { name: '名称框', exact: true })
+  await nameBox.fill('A0')
+  await nameBox.press('Enter')
+  await expect(nameBox).toHaveAttribute('aria-invalid', 'true')
+  await nameBox.press('Escape')
+  await expect(nameBox).toHaveValue('B2:B3')
+  await gotoCell(page, 'D4')
+  await expect(statistic).toHaveCount(0)
+})
+
+test('sheet names validate duplicates and hidden sheets can be restored through the footer menu', async ({ page }) => {
+  const originalName = (await models(page)).workbook.sheets[0]!.name
+  await page.getByRole('button', { name: '添加工作表', exact: true }).click()
+  await page.getByRole('button', { name: '工作表操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '重命名工作表', exact: true })
+  const field = dialog.getByRole('textbox', { name: '工作表名称', exact: true })
+  await field.fill(originalName)
+  await field.press('Enter')
+  await expect(dialog.getByRole('alert')).toContainText(/已存在|重复/)
+  await field.fill('恢复测试表')
+  await field.press('Enter')
+  await expect(dialog).toBeHidden()
+  const tab = page.getByRole('tablist', { name: '工作表', exact: true }).getByRole('tab', { name: '恢复测试表', exact: true })
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  const id = (await models(page)).workbook.activeSheetId
+  await page.getByRole('button', { name: '工作表操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '隐藏工作表', exact: true }).click()
+  await expect(tab).toHaveCount(0)
+  await expect.poll(async () => (await models(page)).workbook.sheets.find((sheet) => sheet.id === id)?.visible).toBe(false)
+  await page.getByRole('button', { name: '所有工作表', exact: true }).click()
+  await page.getByRole('menuitem', { name: '恢复测试表（隐藏，点击显示）', exact: true }).click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  await expect.poll(async () => (await models(page)).workbook.sheets.find((sheet) => sheet.id === id)?.visible).toBe(true)
+  await visibleRibbonButton(page, '撤销').click()
+  await expect(tab).toHaveCount(0)
+  await visibleRibbonButton(page, '重做').click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+})
+
+test('editing a heading through Canvas updates its outline label and undo restores it', async ({ page }) => {
+  await switchWorkspace(page, '文档')
+  const bridge = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await bridge.focus()
+  await bridge.pressSequentially('原标题')
+  await bridge.press('Control+A')
+  await ribbon(page).getByRole('combobox', { name: '段落样式', exact: true }).click()
+  await page.getByRole('option', { name: '标题 1', exact: true }).click()
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.type).toBe('heading')
+  const blockId = (await models(page)).document.blocks[0]!.id
+  await ribbon(page).getByRole('tab', { name: '视图', exact: true }).click()
+  await visibleRibbonButton(page, '文档大纲').click()
+  const heading = page.getByRole('navigation', { name: '文档大纲', exact: true }).locator(`[data-outline-item="${blockId}"]`)
+  await expect(heading).toHaveText('原标题')
+  await heading.click()
+  await bridge.press('Control+A')
+  await bridge.evaluate((element) => {
+    element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
+    element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: '更新后的标题' }))
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '更新后的标题' }))
+  })
+  await expect(heading).toHaveText('更新后的标题')
+  await bridge.press('Control+Z')
+  await expect(heading).toHaveText('原标题')
+  await bridge.press('Control+Y')
+  await expect(heading).toHaveText('更新后的标题')
 })

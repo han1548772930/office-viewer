@@ -18,6 +18,8 @@ export interface SheetRibbonState {
   italic?: boolean
   underline?: boolean
   wrap?: boolean
+  color?: string
+  background?: string
   align?: string
   gridlines: boolean
   frozen: boolean
@@ -29,7 +31,7 @@ const fontSizes = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48, 72]
 const colors = [
   { label: '白色', value: '#ffffff' }, { label: '浅黄色', value: '#fff4cc' },
   { label: '浅蓝色', value: '#dceaff' }, { label: '浅绿色', value: '#dcf4e4' },
-  { label: '浅红色', value: '#ffe0e0' }, { label: '黑色', value: '#172033' },
+  { label: '浅红色', value: '#ffe0e0' }, { label: '黑色', value: '#1f2937' },
 ]
 
 /** The schema describes editor intents; UI, keyboard and menu callers use the same dispatcher. */
@@ -55,8 +57,8 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
           button('sheet.command.toggle-bold', '加粗', { icon: Bold, activated: state.bold === true }),
           button('sheet.command.toggle-italic', '斜体', { icon: Italic, activated: state.italic === true }),
           button('sheet.command.toggle-underline', '下划线', { icon: Underline, activated: state.underline === true }),
-          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Type, disabled: !state.hasSheet, children: colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value })) },
-          { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, children: colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value })) },
+          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Type, disabled: !state.hasSheet, children: colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, activated: state.color === color.value })) },
+          { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, children: colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value, activated: state.background === color.value })) },
         ] },
         { id: 'alignment', title: '对齐', order: 30, items: [
           button('sheet.command.align-left', '左对齐', { commandId: 'sheet.command.set-align', params: 'left', icon: AlignLeft, activated: state.align === 'left' }),

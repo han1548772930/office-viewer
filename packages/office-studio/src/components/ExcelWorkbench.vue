@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Button, Input, Modal, Select, Tooltip } from 'antdv-next'
 import { FUniver } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
@@ -16,7 +16,7 @@ import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import SheetFormulaBar from './spreadsheet/SheetFormulaBar.vue'
 import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
-import { calculateSelectionStatistics, createUniqueSheetName, parseSheetAddress, validateSheetName } from '../features/sheet-workbench/sheet-workbench'
+import { calculateSelectionStatistics, createUniqueSheetName, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
@@ -123,7 +123,7 @@ const searchInput = ref<{ focus: () => void } | null>(null)
 const renameSheetId = ref<string | null>(null)
 const renameValue = ref('')
 const renameError = ref('')
-const viewSessions = new Map<string, { key: string; anchor: string; ranges: GridRange[]; zoom: number }>()
+const viewSessions = new Map<string, SheetViewState>()
 const copiedCells = ref<ExcelCell[][] | null>(null)
 const chartCommands = ref<DrawCommand[]>([])
 const chartModalOpen = ref(false)
@@ -135,9 +135,12 @@ const pivotPanelOpen = ref(false)
 const pivotSource = ref('')
 const slicerPanelOpen = ref(false)
 const slicerKind = ref<'slicer' | 'timeline'>('slicer')
+const sortBusy = ref(false)
+const sortProgress = ref('')
+let sortController: AbortController | undefined
 const chartWorkbook = computed(() => workbook.value as ExcelWorkbookChartView)
 
-const activeSheet = computed(() => workbook.value.sheets.find((sheet) => sheet.id === activeSheetId.value) ?? workbook.value.sheets[0])
+const activeSheet = computed(() => workbook.value.sheets.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? workbook.value.sheets.find(sheet => sheet.visible !== false))
 const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
 const selectedAddress = computed(() => {
   const range = selectedRanges.value[0]
@@ -160,11 +163,12 @@ const selectionFormat = computed(() => {
     return values.every(value => value === values[0]) ? values[0] : undefined
   }
   return {
-    fontFamily: common('fontFamily', '等线') ?? null,
+    fontFamily: common('fontFamily', 'Aptos') ?? null,
     fontSize: common('fontSize', 11) ?? null,
     numberFormat: common('numberFormat', 'general') ?? null,
     bold: common('bold', false), italic: common('italic', false), underline: common('underline', false),
     align: common('align', 'left'), wrap: common('wrap', false),
+    color: common('color', '#1f2937'), background: common('background', '#ffffff'),
   }
 })
 const canUnmerge = computed(() => {
@@ -176,7 +180,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   canMerge: selectedCount.value > 1, canUnmerge: canUnmerge.value,
   canDeleteRow: totalRows.value > 1, canDeleteColumn: (activeSheet.value?.columnCount ?? 0) > 1,
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
-  canSort: Boolean(props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
+  canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
   frozen: isFrozen.value, zoom: zoom.value,
 }))
 const formulaValue = computed(() => editingKey.value ? editValue.value : activeCell.value.formula ?? activeCell.value.value)
@@ -208,24 +212,22 @@ function cloneWorkbook(value: ExcelWorkbook): ExcelWorkbook {
 function applyExternalWorkbook(value: ExcelWorkbook) {
   if (JSON.stringify(workbook.value) === JSON.stringify(value)) return
   const previousSheetId = activeSheetId.value
-  const sameDocument = value.sheets.some((sheet) => sheet.id === previousSheetId)
+  const sameDocument = value.id !== undefined || workbook.value.id !== undefined ? value.id === workbook.value.id : value.sheets.some(sheet => sheet.id === previousSheetId)
+  const requested = value.sheets.find(sheet => sheet.id === value.activeSheetId && sheet.visible !== false)
+  const nextSheetId = requested?.id ?? value.sheets.find(sheet => sheet.id === previousSheetId && sheet.visible !== false)?.id ?? value.sheets.find(sheet => sheet.visible !== false)?.id ?? ''
+  if (sameDocument) saveViewSession()
+  else { viewSessions.clear(); sortController?.abort(); editingKey.value = null }
+  const session = sameDocument ? viewSessions.get(nextSheetId) : undefined
   workbook.value = cloneWorkbook(value)
-  activeSheetId.value = sameDocument ? previousSheetId : workbook.value.sheets[0]?.id ?? ''
+  activeSheetId.value = nextSheetId
+  for (const id of viewSessions.keys()) if (!value.sheets.some(sheet => sheet.id === id)) viewSessions.delete(id)
   const sheet = activeSheet.value
-  const isValidAddress = (key: string) => {
-    const [column, row] = splitKey(key)
-    return Boolean(sheet && row >= 1 && row <= sheet.rowCount && column >= 0 && column < sheet.columnCount)
-  }
-  if (!sameDocument || !isValidAddress(selectedKey.value)) {
-    selectedKey.value = 'A1'
-    selectedRanges.value = [{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }]
-    selectionAnchor.value = 'A1'
-    editingKey.value = null
-  } else {
-    selectedRanges.value = selectedRanges.value.flatMap(range => sheet && range.startRow < sheet.rowCount && range.startColumn < sheet.columnCount ? [{ ...range, endRow: Math.min(sheet.rowCount - 1, range.endRow), endColumn: Math.min(sheet.columnCount - 1, range.endColumn) }] : [])
-    if (!selectedRanges.value.length) selectCell(selectedKey.value)
-    if (!isValidAddress(selectionAnchor.value)) selectionAnchor.value = selectedKey.value
-  }
+  const next = normalizeSheetViewState(sheet ?? { rowCount: 0, columnCount: 0 }, session)
+  selectedKey.value = next.key
+  selectedRanges.value = next.ranges
+  selectionAnchor.value = next.anchor
+  zoom.value = next.zoom
+  if (nextSheetId !== previousSheetId || (editingKey.value && !parseSheetAddress(editingKey.value, sheet ?? { rowCount: 0, columnCount: 0 }))) editingKey.value = null
 }
 
 function commitHistory() {
@@ -722,10 +724,11 @@ function activateSheet(id: string) {
   workbook.value.activeSheetId = id
   nameError.value = ''
   const session = viewSessions.get(id)
-  selectedKey.value = session?.key ?? 'A1'
-  selectionAnchor.value = session?.anchor ?? selectedKey.value
-  selectedRanges.value = session?.ranges.map(range => ({ ...range })) ?? [{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }]
-  zoom.value = session?.zoom ?? 100
+  const next = normalizeSheetViewState(sheet, session)
+  selectedKey.value = next.key
+  selectionAnchor.value = next.anchor
+  selectedRanges.value = next.ranges
+  zoom.value = next.zoom
   if (props.studio && workbook.value.id && props.studio.getWorkbookModel(workbook.value.id)?.sheets.some(candidate => candidate.id === id)) {
     FUniver.newAPI(props.studio).getWorkbook(workbook.value.id)?.setActiveSheet(id)
   }
@@ -893,16 +896,29 @@ function openPivotPanel() {
 
 function openSlicerPanel(kind: 'slicer' | 'timeline') { slicerKind.value = kind; slicerPanelOpen.value = true }
 
-function sortSelection(ascending: boolean) {
+async function sortSelection(ascending: boolean) {
   const bounds = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
   const worksheet = getChartWorksheet(activeSheet.value?.id ?? '')
-  if (!bounds || bounds.endRow <= bounds.startRow || !worksheet) return
-  worksheet.getRange(rangeNotation(bounds)).sort({ column: 0, ascending })
+  if (sortBusy.value || !bounds || bounds.endRow <= bounds.startRow || !worksheet) return
+  sortController = new AbortController()
+  sortBusy.value = true
+  sortProgress.value = '正在排序…'
+  try {
+    await worksheet.sortRange(rangeNotation(bounds), [{ column: bounds.startColumn, direction: ascending ? 'ascending' : 'descending' }], {
+      signal: sortController.signal,
+      onProgress: progress => { sortProgress.value = progress.phase === 'initializing' ? '正在准备排序…' : `排序：${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}` },
+    })
+  } catch (error) {
+    if (!sortController.signal.aborted) throw error
+  } finally {
+    sortBusy.value = false
+    sortController = undefined
+  }
 }
 
-function executeRibbon(commandId: string, params?: unknown) {
+async function executeRibbon(commandId: string, params?: unknown) {
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo' && !finishEdit()) return
-  const commands: Record<string, () => void> = {
+  const commands: Record<string, () => void | Promise<void>> = {
     'sheet.command.undo': undo, 'sheet.command.redo': redo,
     'sheet.command.copy': () => { copySelection() }, 'sheet.command.cut': cutSelection,
     'sheet.command.paste': () => { void pasteSelection() }, 'sheet.command.clear-content': clearSelection,
@@ -937,7 +953,7 @@ function executeRibbon(commandId: string, params?: unknown) {
   }
   const command = commands[commandId]
   if (!command) return
-  try { command() } catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '操作失败' }); return }
+  try { await command() } catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '操作失败' }); return }
   if (!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom')) void nextTick(() => spreadsheetCanvas.value?.focus())
 }
 
@@ -963,9 +979,11 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  sortController?.abort()
   window.removeEventListener('mouseup', stopSelecting)
   window.removeEventListener('keydown', onWindowKeydown)
 })
+onDeactivated(() => sortController?.abort())
 
 </script>
 
@@ -989,6 +1007,7 @@ onUnmounted(() => {
 
     <WorkbenchRibbon v-model="activeTab" :tabs="ribbonTabs" @execute="executeRibbon" />
     <SheetFormulaBar ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :error="nameError" @update:value="editValue = $event" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
+    <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
       <Search :size="15" />
       <Input ref="searchInput" v-model:value="searchText" size="small" placeholder="查找工作表内容" aria-label="查找工作表内容" @press-enter="findNext" />

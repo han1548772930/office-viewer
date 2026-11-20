@@ -24,7 +24,7 @@ async function snapshot(page: import('@playwright/test').Page): Promise<Workbenc
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
-  await page.locator('.workspace-tabs .workspace-tab').nth(1).click()
+  await page.getByRole('tab', { name: '文档', exact: true }).click()
   await expect(page.locator('.document-workbench')).toBeVisible()
   await page.getByRole('textbox', { name: '文档画布编辑区' }).waitFor()
 })
@@ -34,7 +34,7 @@ test('an antdv-next font selection retains the Canvas text range', async ({ page
   await bridge.focus()
   await bridge.pressSequentially('选区保留')
   await bridge.press('Control+A')
-  const font = page.locator('.document-workbench .font-select')
+  const font = page.locator('.document-workbench').getByRole('combobox', { name: '字体', exact: true })
   await font.click()
   await page.locator('.ant-select-dropdown:visible .ant-select-item').filter({ hasText: 'Georgia' }).click()
   const result = await snapshot(page)
@@ -54,13 +54,13 @@ test('Canvas input bridge commits Chinese composition as one undoable edit', asy
   await bridge.focus()
   await bridge.press('Control+Z')
   await expect.poll(async () => (await snapshot(page)).text).toBe('')
-  await page.locator('.document-workbench .tool-button[aria-label="重做"]').click()
+  await page.getByTestId('workbench-ribbon').getByRole('button', { name: '重做', exact: true }).click()
   await expect.poll(async () => (await snapshot(page)).text).toBe('中文输入')
 })
 
 test('table insertion modal applies dimensions and Ctrl+Z removes the inserted table', async ({ page }) => {
-  await page.locator('.ribbon-segmented .ant-segmented-item').filter({ hasText: '插入' }).click()
-  await page.locator('main[aria-label="文档编辑工作区"] .ribbon-action').filter({ hasText: '表格' }).click()
+  await page.getByTestId('workbench-ribbon').getByRole('tab', { name: '插入', exact: true }).click()
+  await page.getByTestId('workbench-ribbon').getByRole('button', { name: '表格', exact: true }).click()
   const dialog = page.locator('.ant-modal')
   await expect(dialog).toBeVisible()
   await dialog.getByRole('spinbutton').nth(0).fill('2')
@@ -68,6 +68,7 @@ test('table insertion modal applies dimensions and Ctrl+Z removes the inserted t
   await dialog.locator('.ant-modal-footer button').filter({ hasText: '确定' }).click()
   await expect(dialog).toBeHidden()
   await expect.poll(async () => (await snapshot(page)).blocks).toContain('table')
-  await page.locator('.document-workbench .tool-button[aria-label="撤销"]').click()
+  await page.getByTestId('workbench-ribbon').getByRole('tab', { name: '开始', exact: true }).click()
+  await page.getByTestId('workbench-ribbon').getByRole('button', { name: '撤销', exact: true }).click()
   await expect.poll(async () => (await snapshot(page)).blocks).not.toContain('table')
 })

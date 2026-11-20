@@ -10,9 +10,21 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
   await expect(grid).toBeVisible()
   await expect(page.locator('canvas[data-render-surface="true"]')).toHaveCount(1)
 
-  await page.getByRole('button', { name: '插入', exact: true }).click()
+  const nameBox = page.getByRole('textbox', { name: '名称框', exact: true })
+  await nameBox.fill('A1:C4')
+  await nameBox.press('Enter')
+  await grid.press('Control+V')
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find((entry) => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))
+    if (!resource) throw new Error('Workbench runtime module was not loaded')
+    const { univerAPI } = await import(resource.name)
+    univerAPI.getActiveWorkbook().getActiveSheet().getRange('A1:C4').setValues([
+      ['项目', '一月', '二月'], ['甲', 100, 150], ['乙', 200, 250], ['丙', 300, 350],
+    ])
+  })
+  await page.getByTestId('workbench-ribbon').getByRole('tab', { name: '插入', exact: true }).click()
   await page.getByRole('button', { name: '图表', exact: true }).click()
-  await page.getByPlaceholder('A1:C4').fill('A2:E5')
+  await page.getByPlaceholder('A1:C4').fill('A1:C4')
   await page.getByRole('button', { name: '插入', exact: true }).last().click()
 
   const chart = page.locator('.chart-hitbox')
@@ -26,19 +38,27 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
   await page.mouse.up()
   await expect.poll(() => chart.evaluate(element => (element as HTMLElement).style.left)).not.toBe(before)
 
-  const movedBounds = await chart.boundingBox()
-  expect(movedBounds).not.toBeNull()
-  const imageBefore = await page.screenshot({ clip: movedBounds! })
-  const gridBounds = await grid.boundingBox()
-  expect(gridBounds).not.toBeNull()
-  // B3 lies at x = row header + first column + half of the second column,
-  // y = column header + two row heights + half a row height.
-  await page.mouse.click(gridBounds!.x + 252, gridBounds!.y + 91)
+  const handle = chart.getByLabel('调整图表大小')
+  const resize = await handle.boundingBox()
+  expect(resize).not.toBeNull()
+  const widthBefore = await chart.evaluate((element) => (element as HTMLElement).style.width)
+  await page.mouse.move(resize!.x + resize!.width / 2, resize!.y + resize!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(resize!.x + 80, resize!.y + 40, { steps: 4 })
+  await page.mouse.up()
+  await expect.poll(() => chart.evaluate((element) => (element as HTMLElement).style.width)).not.toBe(widthBefore)
+
+  await nameBox.fill('B3')
+  await nameBox.press('Enter')
   const formula = page.locator('.formula-input')
   await formula.fill('1000')
   await formula.press('Enter')
-  await page.waitForTimeout(120)
-  const imageAfter = await page.screenshot({ clip: movedBounds! })
-  expect(imageAfter.equals(imageBefore)).toBe(false)
+  await expect.poll(() => page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find((entry) => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))
+    if (!resource) throw new Error('Workbench runtime module was not loaded')
+    const { univerAPI } = await import(resource.name)
+    return univerAPI.getActiveWorkbook().getActiveSheet().getCharts()[0].getData().series[0].values[1]
+  })).toBe(1000)
+  await expect(page.locator('canvas[data-render-surface="true"]')).toHaveCount(1)
   expect(pageErrors).toEqual([])
 })
