@@ -306,10 +306,12 @@ export class FWorksheet {
   getUnitId(): string { return this.unitId }
   getSheetId(): string { return this.id }
   getSheetName(): string { return this.sheet().name }
-  setAutoFilter(range: CellRange | FRangeCoordinates | string | null): this {
+  setAutoFilter(range: CellRange | FRangeCoordinates | FRange | string | null): this {
     const normalized = range === null ? null : typeof range === 'string'
       ? toCellRange(parseA1Range(range))
-      : range instanceof FRange ? toCellRange(range.getRange()) : normalizeToCellRange(range)
+      : range instanceof FRange ? toCellRange(range.getRange())
+      : 'startCol' in range ? normalizeToCellRange({ startRow: range.startRow, startColumn: range.startCol, endRow: range.endRow, endColumn: range.endCol })
+      : normalizeToCellRange(range)
     this.api.executeCommandSync('sheet.command.set-auto-filter', { unitId: this.unitId, sheetId: this.id, range: normalized })
     return this
   }
@@ -342,7 +344,7 @@ export class FWorksheet {
       })
       if (result) {
         const dataRowCount = normalized.endRow - normalized.startRow + 1 - (options.hasHeader ? 1 : 0)
-        order = expandVisibleSortOrder(dataRowCount, numeric.destinationOffsets, result.indices)
+        order = expandVisibleSortOrder(dataRowCount, numeric.destinationOffsets, Array.from(result.indices))
       }
     }
     if (this.sheet() !== sheet || this.api.getWorkbookRevision(this.unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')

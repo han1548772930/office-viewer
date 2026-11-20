@@ -1,0 +1,26 @@
+.workspace-header { min-width: 0; gap: 12px; }
+.workspace-tablist { display: flex; align-items: stretch; }
+.workspace-header .workspace-tab { height: 100%; border-radius: 0; box-shadow: none; }
+.workspace-header .workspace-file-menu { flex: 0 0 auto; height: 30px; padding-inline: 7px; gap: 4px; font-size: 13px; }
+.workspace-header .file-context { gap: 6px; }
+.workspace-header .file-context-name { display: block; min-width: 0; max-width: min(34vw, 480px); height: 30px; padding-inline: 5px; text-align: left; }
+.workspace-header .file-context-name > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-header .file-context-status { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+.workspace-header .file-context-status.busy { color: #4269d5; }
+.workspace-task-strip { display: flex; align-items: center; flex: 0 0 auto; gap: 9px; min-height: 30px; padding: 4px 14px; border-bottom: 1px solid #dce6fa; background: #f4f7ff; color: #345da8; font-size: 12px; }
+.workspace-task-strip button { margin-left: auto; border: 0; background: transparent; color: inherit; text-decoration: underline; }
+.workspace-task-spinner { width: 12px; height: 12px; flex: 0 0 12px; border: 2px solid #c8d6f3; border-top-color: #4269d5; border-radius: 50%; animation: workspace-task-spin .8s linear infinite; }
+.workspace-dialog-error { margin: 8px 0 0; color: #b42318; }
+.workspace-diagnostics { max-height: 55vh; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.workspace-diagnostics li { padding: 12px 0; border-bottom: 1px solid #e8ebf0; }
+.workspace-diagnostics li:first-child { padding-top: 0; }
+.workspace-diagnostics strong { font-weight: 600; color: #42516a; }
+.workspace-diagnostics [data-severity="error"] strong { color: #b42318; }
+.workspace-diagnostics [data-severity="warning"] strong { color: #986810; }
+.workspace-diagnostics p { margin: 6px 0; }
+.workspace-diagnostics pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.workspace-diagnostics-empty { color: #68748b; }
+@keyframes workspace-task-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .workspace-task-spinner { animation: none; } }
+@media (max-width: 850px) { .workspace-header { gap: 6px; } .workspace-header .file-context-status { display: none; } .workspace-header .file-context-name { max-width: 28vw; } }
+@media (max-width: 520px) { .workspace-header .brand { display: none; } .workspace-header .workspace-tab { min-width: 42px; padding-inline: 5px; gap: 4px; } .workspace-header .file-context { min-width: 0; } .workspace-header .file-context-name { max-width: 25vw; } }

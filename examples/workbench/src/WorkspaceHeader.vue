@@ -1,0 +1,83 @@
+<script setup lang="ts">
+import { Button, Dropdown, Tooltip, type MenuProps } from 'antdv-next'
+import { computed, nextTick, ref } from 'vue'
+import { BookOpenText, ChevronDown, FileSpreadsheet, FileText, FolderOpen, Save } from 'lucide-vue-next'
+import type { ExportTask, WorkspaceKind } from './workspace-file-operations'
+
+export type WorkspaceHeaderAction = 'new-workbook' | 'new-document' | 'open' | 'save' | 'export' | 'rename' | 'diagnostics' | 'cancel-import' | 'cancel-export'
+const props = defineProps<{
+  activeKind: WorkspaceKind
+  fileName: string
+  modified: boolean
+  parserStatus: 'idle' | 'loading' | 'ready' | 'error'
+  parserMessage: string
+  exportTask: ExportTask | null
+  diagnosticCount: number
+}>()
+const emit = defineEmits<{
+  action: [action: WorkspaceHeaderAction]
+  switch: [kind: WorkspaceKind]
+}>()
+const tabs = ref<HTMLElement | null>(null)
+const fileMenuOpen = ref(false)
+const menuItems = computed<MenuProps['items']>(() => [
+  { key: 'new-workbook', label: '新建工作簿' },
+  { key: 'new-document', label: '新建文档' },
+  { type: 'divider' },
+  { key: 'open', label: '打开 Office 文件' },
+  { key: 'rename', label: '重命名' },
+  { key: 'save', label: '保存 Office 文件', disabled: Boolean(props.exportTask) },
+  { key: 'export', label: '导出 Office 文件', disabled: Boolean(props.exportTask) },
+  ...(props.parserStatus === 'loading' ? [{ key: 'cancel-import', label: '取消文件导入' }] : []),
+  ...(props.exportTask ? [{ key: 'cancel-export', label: '取消文件导出' }] : []),
+  { type: 'divider' },
+  { key: 'diagnostics', label: `解析诊断${props.diagnosticCount ? `（${props.diagnosticCount}）` : ''}` },
+])
+const statusText = computed(() => props.exportTask?.message || (props.parserStatus === 'loading' ? props.parserMessage : props.modified ? '未保存更改' : '无未保存更改'))
+
+function onMenuClick(info: { key: string | number }): void {
+  const key = String(info.key)
+  if (key === 'new-workbook' || key === 'new-document' || key === 'open' || key === 'save' || key === 'export' || key === 'rename' || key === 'diagnostics' || key === 'cancel-import' || key === 'cancel-export') {
+    fileMenuOpen.value = false
+    emit('action', key)
+  }
+}
+
+async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
+  let kind: WorkspaceKind
+  if (event.key === 'Home') kind = 'workbook'
+  else if (event.key === 'End') kind = 'document'
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') kind = props.activeKind === 'workbook' ? 'document' : 'workbook'
+  else return
+  event.preventDefault()
+  emit('switch', kind)
+  await nextTick()
+  tabs.value?.querySelector<HTMLElement>(`[data-workspace="${kind}"]`)?.focus()
+}
+</script>
+
+<template>
+  <header class="app-header workspace-header" aria-label="Office Studio 应用栏">
+    <a class="brand" href="#" aria-label="Office Studio 工作台" @click.prevent="emit('switch', 'workbook')">
+      <span class="brand-mark"><BookOpenText :size="18" /></span>
+      <span class="brand-name">Office Studio</span>
+    </a>
+    <Dropdown v-model:open="fileMenuOpen" :menu="{ items: menuItems }" :trigger="['click']" :auto-focus="true" placement="bottomLeft" @menu-click="onMenuClick">
+      <Button type="text" class="workspace-file-menu" aria-label="文件菜单" aria-haspopup="menu" :aria-expanded="fileMenuOpen">文件<ChevronDown :size="13" /></Button>
+    </Dropdown>
+    <nav ref="tabs" class="workspace-tabs" aria-label="工作台" @keydown="onTabsKeydown">
+      <div class="workspace-tablist" role="tablist" aria-label="文档类型">
+        <Button id="workbook-tab" type="text" role="tab" :aria-selected="activeKind === 'workbook'" aria-controls="workbook-workspace" :tabindex="activeKind === 'workbook' ? 0 : -1" data-workspace="workbook" :class="['workspace-tab', { active: activeKind === 'workbook' }]" @click="emit('switch', 'workbook')"><FileSpreadsheet :size="16" /><span>表格</span></Button>
+        <Button id="document-tab" type="text" role="tab" :aria-selected="activeKind === 'document'" aria-controls="document-workspace" :tabindex="activeKind === 'document' ? 0 : -1" data-workspace="document" :class="['workspace-tab', { active: activeKind === 'document' }]" @click="emit('switch', 'document')"><FileText :size="16" /><span>文档</span></Button>
+      </div>
+    </nav>
+    <div class="file-context">
+      <Tooltip title="重命名当前文件"><Button type="text" class="file-context-name" :title="fileName" aria-label="重命名当前文件" @click="emit('action', 'rename')">{{ fileName }}</Button></Tooltip>
+      <span :class="['file-context-status', { modified, busy: exportTask || parserStatus === 'loading' }]" role="status" :title="statusText">{{ statusText }}</span>
+    </div>
+    <div class="header-actions">
+      <Tooltip title="打开 Office 文件（Ctrl+O）"><Button title="打开 Office 文件" aria-label="打开 Office 文件" @click="emit('action', 'open')"><FolderOpen :size="16" /><span>打开</span></Button></Tooltip>
+      <Tooltip :title="exportTask ? `${exportTask.fileName}：${exportTask.message}` : '保存 Office 文件（Ctrl+S）'"><Button type="primary" title="保存 Office 文件" aria-label="保存 Office 文件" :loading="Boolean(exportTask)" :disabled="Boolean(exportTask)" @mousedown.prevent @click="emit('action', 'save')"><Save v-if="!exportTask" :size="16" /><span>{{ exportTask ? '处理中' : '保存' }}</span></Button></Tooltip>
+    </div>
+  </header>
+</template>

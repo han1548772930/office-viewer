@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
@@ -7,6 +7,7 @@ import { blockAtPoint, executeDocumentCommand, graphemeOffsets, type DocumentCom
 import { caretRect, createTextMeasurer, emptyLayout, hitTestDocument, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { blocksFromHtml, cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection } from '../../features/document/model/document-model'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
+import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number }>()
 const emit = defineEmits<{
@@ -14,6 +15,7 @@ const emit = defineEmits<{
   'update:selection': [selection: DocumentSelection]
   layout: [layout: DocumentLayout]
   'active-page': [page: number]
+  'viewport-change': [location: DocumentViewportLocation]
   undo: []
   redo: []
   save: []
@@ -43,6 +45,7 @@ let pointerId: number | undefined
 let suppressCompositionInput = false
 let pendingText = ''
 let disposed = false
+let active = true
 const measurer = createTextMeasurer()
 const displayModel = computed(() => preview.value ?? props.model)
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
@@ -59,7 +62,31 @@ const inputStyle = computed(() => {
 
 watch(() => props.model, () => { if (!composing.value) preview.value = null; relayout() }, { deep: false })
 watch(() => props.selection, () => { caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible) }, { deep: true })
-watch(() => props.zoom, () => { viewport.value.zoom = props.zoom; requestDraw(); void nextTick(ensureCaretVisible) })
+watch(() => props.zoom, (zoom) => {
+  const offset = zoomedDocumentScrollOffset(layout.value, viewport.value, zoom)
+  viewport.value = { ...viewport.value, zoom }
+  requestDraw()
+  void nextTick(() => {
+    if (disposed || props.zoom !== zoom || !scrollRef.value) return
+    scrollRef.value.scrollLeft = offset.left
+    scrollRef.value.scrollTop = offset.top
+    onScroll()
+  })
+})
+
+onActivated(() => { active = true; void nextTick(resize) })
+onDeactivated(() => {
+  active = false
+  focused.value = false
+  inputRef.value?.blur()
+  if (pointerId != null && scrollRef.value?.hasPointerCapture(pointerId)) scrollRef.value.releasePointerCapture(pointerId)
+  pointerId = undefined
+  dragAnchor = undefined
+  cancelAnimationFrame(frame)
+  frame = 0
+  surface?.resize(0, 0, window.devicePixelRatio || 1)
+  lastSurfaceSize = undefined
+})
 
 onMounted(async () => {
   if (!hostRef.value || !scrollRef.value) return
@@ -97,11 +124,12 @@ function resize() {
   const width = scrollRef.value.clientWidth
   const height = scrollRef.value.clientHeight
   const dpr = Math.max(1, window.devicePixelRatio || 1)
-  viewport.value = { ...viewport.value, width, height }
+  viewport.value = { ...viewport.value, width, height, scrollLeft: scrollRef.value.scrollLeft, scrollTop: scrollRef.value.scrollTop }
   if (surface && (lastSurfaceSize?.width !== width || lastSurfaceSize.height !== height || lastSurfaceSize.dpr !== dpr)) {
     surface.resize(width, height, dpr)
     lastSurfaceSize = { width, height, dpr }
   }
+  publishViewport()
   requestDraw()
 }
 
@@ -123,21 +151,30 @@ function onViewportResize() {
 
 function relayout() {
   layout.value = layoutDocument(displayModel.value, measurer)
+  const sources = new Set(layout.value.images.map((image) => image.src))
+  for (const [src, image] of images) {
+    if (sources.has(src)) continue
+    image.onload = null
+    image.onerror = null
+    images.delete(src)
+  }
   for (const image of layout.value.images) {
     if (!image.src || images.has(image.src)) continue
     const source = new Image()
     source.crossOrigin = image.src.startsWith('data:') || image.src.startsWith('blob:') ? null : 'anonymous'
-    source.onload = () => requestDraw()
-    source.onerror = () => { emit('notify', `图片无法载入：${image.alt || image.src.slice(0, 80)}`); requestDraw() }
+    source.onload = () => { if (!disposed && images.get(image.src) === source) requestDraw() }
+    source.onerror = () => { if (!disposed && images.get(image.src) === source) { emit('notify', `图片无法载入：${image.alt || image.src.slice(0, 80)}`); requestDraw() } }
     images.set(image.src, source)
     source.src = image.src
   }
   emit('layout', layout.value)
+  publishViewport()
+  void nextTick(() => { if (!disposed) onScroll() })
   requestDraw()
 }
 
 function requestDraw() {
-  if (frame || disposed) return
+  if (frame || disposed || !active) return
   frame = requestAnimationFrame(() => {
     frame = 0
     surface?.render(sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value, images }))
@@ -147,10 +184,15 @@ function requestDraw() {
 function onScroll() {
   if (!scrollRef.value) return
   viewport.value = { ...viewport.value, scrollLeft: scrollRef.value.scrollLeft, scrollTop: scrollRef.value.scrollTop }
-  const center = (viewport.value.scrollTop + viewport.value.height / 2) / (props.zoom / 100)
-  const page = layout.value.pages.find((candidate) => center <= candidate.y + candidate.height) ?? layout.value.pages.at(-1)
-  if (page) emit('active-page', page.index)
+  publishViewport()
   requestDraw()
+}
+
+function publishViewport() {
+  if (!active || disposed) return
+  const location = documentViewportLocation(layout.value, viewport.value)
+  if (location.pageIndex != null) emit('active-page', location.pageIndex)
+  emit('viewport-change', location)
 }
 
 function pointFromEvent(event: PointerEvent | MouseEvent): DocumentPoint | undefined {
@@ -218,16 +260,10 @@ function ensureCaretVisible() {
   const element = scrollRef.value
   const caret = caretRect(layout.value, displaySelection.value.focus)
   if (!element || !caret || !focused.value) return
-  const scale = props.zoom / 100
-  const offset = sceneOffset(layout.value, viewport.value)
-  const left = offset.x + caret.x * scale
-  const right = offset.x + (caret.x + caret.width) * scale
-  const top = offset.y + caret.y * scale
-  const bottom = offset.y + (caret.y + caret.height) * scale
-  if (left < 18) element.scrollLeft = Math.max(0, element.scrollLeft + left - 28)
-  else if (right > element.clientWidth - 18) element.scrollLeft += right - element.clientWidth + 28
-  if (top < 18) element.scrollTop = Math.max(0, element.scrollTop + top - 28)
-  else if (bottom > element.clientHeight - 18) element.scrollTop += bottom - element.clientHeight + 28
+  const offset = documentRectScrollOffset(layout.value, viewport.value, caret)
+  if (element.scrollLeft !== offset.left) element.scrollLeft = offset.left
+  if (element.scrollTop !== offset.top) element.scrollTop = offset.top
+  onScroll()
 }
 
 function beforeInput(event: InputEvent) {

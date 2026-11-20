@@ -1,7 +1,7 @@
 import type { ExcelCellView } from '../../services/excelViewAdapter'
 import type { DrawCommand, RenderRect, RenderScene } from '../contracts'
-import { intersectRect } from '../geometry'
-import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout'
+import { intersectRect } from '../geometry.ts'
+import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout.ts'
 import type { GridRange, GridViewport } from './layout'
 
 export interface SpreadsheetSceneOptions {

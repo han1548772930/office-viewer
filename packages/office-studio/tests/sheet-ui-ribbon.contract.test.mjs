@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
+import { ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
+
+const state = {
+  canUndo: false, canRedo: true, hasSheet: true, canMerge: false, canUnmerge: false,
+  canDeleteRow: true, canDeleteColumn: true, chartAvailable: true,
+  fontFamily: 'Aptos', fontSize: 11, numberFormat: 'general', bold: false, italic: true, underline: false,
+  wrap: false, align: 'center', gridlines: true, frozen: false, zoom: 100,
+}
+
+function flatten(tabs) {
+  return tabs.flatMap(tab => tab.groups.flatMap(group => group.items.flatMap(item => [item, ...(item.children ?? [])])))
+}
+
+test('the sheet Ribbon exposes only populated semantic categories and stable editor intents', () => {
+  const tabs = visibleRibbonTabs(createSheetRibbon(state))
+  assert.deepEqual(tabs.map(tab => tab.title), ['开始', '插入', '公式', '视图'])
+  assert.deepEqual(tabs[0].groups.map(group => group.title), ['历史', '剪贴板', '字体', '对齐', '数字', '编辑'])
+  const items = flatten(tabs)
+  assert.equal(new Set(items.map(item => item.id)).size, items.length)
+  const leafItems = items.filter(item => item.type !== 'menu')
+  assert.ok(leafItems.every(item => /^sheet\.(command|operation)\./.test(item.commandId)))
+  assert.ok(!items.some(item => item.title === '打印'))
+})
+
+test('format activation and mixed selectors reflect supplied selection state', () => {
+  const items = flatten(createSheetRibbon({ ...state, fontFamily: null, fontSize: null, numberFormat: null, bold: undefined, align: undefined }))
+  assert.equal(items.find(item => item.title === '字体').value, null)
+  assert.equal(items.find(item => item.title === '字号').placeholder, '混合')
+  assert.equal(items.find(item => item.title === '加粗').activated, false)
+  assert.equal(items.find(item => item.title === '斜体').activated, true)
+  assert.equal(items.find(item => item.id === 'sheet.command.align-center').activated, false)
+})
+
+test('font changes carry their own scalar without overwriting the other format controls', () => {
+  const items = flatten(createSheetRibbon({ ...state, fontFamily: 'Imported Face', fontSize: 15 }))
+  const font = items.find(item => item.title === '字体')
+  const size = items.find(item => item.title === '字号')
+  assert.ok(font.options.some(option => option.value === 'Imported Face'))
+  assert.ok(size.options.some(option => option.value === 15))
+  assert.deepEqual(ribbonInvocation(font, 'Arial'), { commandId: 'sheet.command.set-font-family', params: 'Arial' })
+  assert.deepEqual(ribbonInvocation(size, 24), { commandId: 'sheet.command.set-font-size', params: 24 })
+})
+
+test('history, single-cell merges and unavailable chart contexts cannot dispatch', () => {
+  const items = flatten(createSheetRibbon({ ...state, chartAvailable: false }))
+  const undo = items.find(item => item.title === '撤销')
+  const merge = items.find(item => item.id === 'sheet.command.merge')
+  const chart = items.find(item => item.title === '图表')
+  assert.equal(ribbonInvocation(undo), undefined)
+  assert.equal(ribbonInvocation(merge), undefined)
+  assert.equal(ribbonInvocation(chart), undefined)
+  assert.match(chart.disabledReason, /工作簿/)
+  assert.deepEqual(ribbonInvocation(items.find(item => item.title === '重做')), { commandId: 'sheet.command.redo', params: undefined })
+})
+
+test('nested fill, merge and freeze controls share the same command contract as their main actions', () => {
+  const items = flatten(createSheetRibbon({ ...state, canMerge: true, canUnmerge: true, frozen: true }))
+  assert.deepEqual(ribbonInvocation(items.find(item => item.id === 'sheet.menu.fill.#fff4cc')), { commandId: 'sheet.command.set-background', params: '#fff4cc' })
+  assert.deepEqual(ribbonInvocation(items.find(item => item.id === 'sheet.command.merge-all')), { commandId: 'sheet.command.merge', params: undefined })
+  assert.equal(items.find(item => item.title === '取消冻结').disabled, false)
+  assert.equal(items.find(item => item.title === '网格线').activated, true)
+})

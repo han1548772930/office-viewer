@@ -8,16 +8,23 @@ export interface HistoryEntry {
   before: number
   after: number
 }
-export interface UnitHistory { undo: HistoryEntry[]; redo: HistoryEntry[]; revision: number; savedRevision: number }
+export interface HistorySavepoint {
+  readonly unitId: string
+  readonly revision: number
+  /** Distinguishes a reopened document from an earlier history using the same ID. */
+  readonly generation: number
+}
+export interface UnitHistory { undo: HistoryEntry[]; redo: HistoryEntry[]; revision: number; savedRevision: number; generation: number }
 export const useHistoryStore = defineStore('content-history', () => {
-  const units = reactive<Record<string, UnitHistory>>({})
+  const units = reactive<Record<string, UnitHistory>>(Object.create(null) as Record<string, UnitHistory>)
   const activeUnit = ref('')
   let revisionCounter = 0
+  let generationCounter = 0
   const current = computed(() => units[activeUnit.value])
   const canUndo = computed(() => Boolean(current.value?.undo.length))
   const canRedo = computed(() => Boolean(current.value?.redo.length))
   function unit(id: string): UnitHistory {
-    return units[id] ??= { undo: [], redo: [], revision: ++revisionCounter, savedRevision: revisionCounter }
+    return units[id] ??= { undo: [], redo: [], revision: ++revisionCounter, savedRevision: revisionCounter, generation: ++generationCounter }
   }
   function activate(id: string): void { unit(id); activeUnit.value = id }
   function execute(id: string, label: string, redo: () => void, undo: () => void): void {
@@ -50,7 +57,18 @@ export const useHistoryStore = defineStore('content-history', () => {
     return entry.label
   }
   function clear(id: string): void { delete units[id]; unit(id) }
-  function markSaved(id: string): void { const target = unit(id); target.savedRevision = target.revision }
+  function captureSavepoint(id: string): HistorySavepoint {
+    const target = unit(id)
+    return { unitId: id, revision: target.revision, generation: target.generation }
+  }
+  /** A completed asynchronous save acknowledges its input revision, never later edits. */
+  function markSaved(id: string, savepoint?: HistorySavepoint): boolean {
+    const target = savepoint ? units[id] : unit(id)
+    if (!target || (savepoint && (savepoint.unitId !== id || savepoint.generation !== target.generation
+      || !Number.isSafeInteger(savepoint.revision) || savepoint.revision <= 0 || savepoint.revision > revisionCounter))) return false
+    target.savedRevision = savepoint?.revision ?? target.revision
+    return true
+  }
   function isDirty(id: string): boolean { const target = units[id]; return Boolean(target && target.revision !== target.savedRevision) }
-  return { units, activeUnit, canUndo, canRedo, activate, execute, undo, redo, clear, markSaved, isDirty }
+  return { units, activeUnit, canUndo, canRedo, activate, execute, undo, redo, clear, captureSavepoint, markSaved, isDirty }
 })

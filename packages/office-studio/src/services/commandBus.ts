@@ -16,17 +16,19 @@ export class CommandBus<TContext> {
   }
 
   undo(context: TContext): EditorCommand<TContext> | undefined {
-    const command = this.undoStack.pop()
+    const command = this.undoStack.at(-1)
     if (!command) return undefined
     command.undo(context)
+    this.undoStack.pop()
     this.redoStack.push(command)
     return command
   }
 
   redo(context: TContext): EditorCommand<TContext> | undefined {
-    const command = this.redoStack.pop()
+    const command = this.redoStack.at(-1)
     if (!command) return undefined
     command.execute(context)
+    this.redoStack.pop()
     this.undoStack.push(command)
     return command
   }

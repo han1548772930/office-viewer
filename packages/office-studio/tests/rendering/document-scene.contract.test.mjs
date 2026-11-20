@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test, after } from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true }, appType: 'custom' })
+const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
 const { sceneFromDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/rendering/document-scene.ts')
 

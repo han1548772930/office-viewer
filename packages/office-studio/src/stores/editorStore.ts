@@ -2,11 +2,14 @@ import { defineStore } from 'pinia'
 import { computed, reactive, watch } from 'vue'
 import { createBlankDocument, createBlankWorkbook, type CellRange, type OfficeKind, type DocumentModel, type EditorDocumentState } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
-import { applyExcelWorkbookView, type ExcelWorkbookView } from '../services/excelViewAdapter'
+import { applyExcelWorkbookView, toExcelWorkbookView, type ExcelWorkbookView } from '../services/excelViewAdapter'
+import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { useWorkbookStore } from './workbookStore'
 import { useDocumentStore } from './documentStore'
 import { useParserStore } from './parserStore'
-import { useHistoryStore } from './historyStore'
+import { useHistoryStore, type HistorySavepoint } from './historyStore'
+
+export interface EditorSavepoint extends HistorySavepoint { readonly kind: OfficeKind }
 
 /** Session facade: orchestration only; models, parser tasks and per-unit history live in separate stores. */
 export const useEditorStore = defineStore('editor-session', () => {
@@ -18,7 +21,7 @@ export const useEditorStore = defineStore('editor-session', () => {
   workbook.model.id ??= crypto.randomUUID()
   document.model.id ??= crypto.randomUUID()
   const activeId = computed(() => session.activeKind === 'workbook' ? workbook.model.id! : document.model.id!)
-  watch(activeId, (id) => history.activate(id), { immediate: true })
+  watch(activeId, (id) => history.activate(id), { immediate: true, flush: 'sync' })
   const state: EditorDocumentState = reactive({
     get activeKind() { return session.activeKind },
     set activeKind(kind: OfficeKind) { session.activeKind = kind },
@@ -28,8 +31,7 @@ export const useEditorStore = defineStore('editor-session', () => {
     set document(model) { document.replace(model) },
     get fileName() { return session.activeKind === 'workbook' ? workbook.model.name : document.model.name },
     set fileName(name: string) {
-      if (session.activeKind === 'workbook') workbook.replace({ ...workbook.model, name })
-      else document.replace({ ...document.model, name })
+      renameActiveFile(name)
     },
     get parserStatus() { return parser.status },
     set parserStatus(value) { parser.status = value },
@@ -41,22 +43,65 @@ export const useEditorStore = defineStore('editor-session', () => {
     set selectedRange(value: CellRange) { session.selectedRange = value },
   })
   function refreshDirty(): void {
-    workbook.replace({ ...workbook.model, modified: history.isDirty(workbook.model.id!) })
-    document.replace({ ...document.model, modified: history.isDirty(document.model.id!) })
+    const workbookDirty = history.isDirty(workbook.model.id!)
+    const documentDirty = history.isDirty(document.model.id!)
+    if (workbook.model.modified !== workbookDirty) workbook.replace({ ...workbook.model, modified: workbookDirty })
+    if (document.model.modified !== documentDirty) document.replace({ ...document.model, modified: documentDirty })
   }
-  function replaceWorkbookFromView(view: ExcelWorkbookView): void {
-    const before = workbook.model
-    const after = applyExcelWorkbookView(before, view)
+  function replaceWorkbookFromView(view: ExcelWorkbookView): boolean {
+    const before = cloneModel(workbook.model)
+    // Viewport defaults (e.g. 100 visible rows) must not rewrite untouched imported geometry.
+    if (equivalentModelData(toExcelWorkbookView(before), view, ['id', 'activeSheetId'])) {
+      if (view.activeSheetId && view.activeSheetId !== before.activeSheetId && before.sheets.some((sheet) => sheet.id === view.activeSheetId)) {
+        workbook.replace({ ...before, activeSheetId: view.activeSheetId })
+      }
+      return false
+    }
+    const after = cloneModel(applyExcelWorkbookView(before, view))
     after.id = before.id
+    if (!after.sheets.some((sheet) => sheet.id === after.activeSheetId)) after.activeSheetId = after.sheets[0]?.id ?? ''
+    if (equivalentModelData(before, after, ['modified', 'activeSheetId'])) {
+      workbook.replace(after)
+      return false
+    }
     after.modified = true
-    history.execute(before.id!, '编辑工作簿', () => workbook.replace(after), () => workbook.replace(before))
+    let firstApplication = true
+    history.execute(before.id!, '编辑工作簿', () => {
+      // The initial gesture can activate a newly inserted sheet; a later redo keeps the user's current view.
+      replaceWorkbookContent(after, !firstApplication)
+      firstApplication = false
+    }, () => replaceWorkbookContent(before))
+    refreshDirty()
+    return true
   }
-  function replaceDocumentFromView(model: DocumentModel): void {
-    const before = document.model
+  function replaceDocumentFromView(model: DocumentModel): boolean {
+    const before = cloneModel(document.model)
     const after = cloneModel(model)
     after.id = before.id
+    if (equivalentModelData(before, after, ['modified'])) return false
     after.modified = true
     history.execute(before.id!, '编辑文档', () => document.replace(after), () => document.replace(before))
+    refreshDirty()
+    return true
+  }
+  function replaceWorkbookContent(model: typeof workbook.model, preserveActiveSheet = true): void {
+    const activeSheetId = preserveActiveSheet && workbook.model.id === model.id && model.sheets.some((sheet) => sheet.id === workbook.model.activeSheetId)
+      ? workbook.model.activeSheetId : model.activeSheetId
+    workbook.replace({ ...model, activeSheetId })
+  }
+  function renameActiveFile(name: string): void {
+    if (session.activeKind === 'workbook') {
+      if (workbook.model.name === name) return
+      const before = cloneModel(workbook.model)
+      const after = { ...before, name, modified: true }
+      history.execute(before.id!, '重命名工作簿', () => replaceWorkbookContent(after), () => replaceWorkbookContent(before))
+    } else {
+      if (document.model.name === name) return
+      const before = cloneModel(document.model)
+      const after = { ...before, name, modified: true }
+      history.execute(before.id!, '重命名文档', () => document.replace(after), () => document.replace(before))
+    }
+    refreshDirty()
   }
   function undo(): string | undefined { const label = history.undo(); refreshDirty(); return label }
   function redo(): string | undefined { const label = history.redo(); refreshDirty(); return label }
@@ -76,23 +121,33 @@ export const useEditorStore = defineStore('editor-session', () => {
     session.activeKind = 'document'
     history.activate(next.id)
   }
-  async function importFile(file: File): Promise<void> {
+  async function importFile(file: File): Promise<boolean> {
     const imported = await parser.parse(file)
-    if (!imported) return
+    if (!imported) return false
     imported.model.id ??= crypto.randomUUID()
     if (imported.kind === 'workbook') workbook.replace(imported.model)
     else document.replace(imported.model)
     session.activeKind = imported.kind
     history.activate(imported.model.id)
     history.clear(imported.model.id)
+    refreshDirty()
+    return true
   }
-  function markSaved(): void { history.markSaved(activeId.value); refreshDirty() }
+  function captureSavepoint(kind: OfficeKind = session.activeKind): EditorSavepoint {
+    const model = kind === 'workbook' ? workbook.model : document.model
+    return { kind, ...history.captureSavepoint(model.id!) }
+  }
+  function markSaved(savepoint: EditorSavepoint = captureSavepoint()): boolean {
+    const marked = history.markSaved(savepoint.unitId, savepoint)
+    if (marked) refreshDirty()
+    return marked
+  }
   return {
     state, workbook, document, parser, history,
     activeSheet: computed(() => workbook.model.sheets.find((sheet) => sheet.id === workbook.model.activeSheetId) ?? workbook.model.sheets[0]),
     canUndo: computed(() => history.canUndo), canRedo: computed(() => history.canRedo),
     setActiveKind: (kind: OfficeKind) => { session.activeKind = kind },
     setSelection: (range: CellRange) => { session.selectedRange = range },
-    replaceWorkbookFromView, replaceDocumentFromView, undo, redo, newWorkbook, newDocument, importFile, markSaved,
+    replaceWorkbookFromView, replaceDocumentFromView, undo, redo, newWorkbook, newDocument, importFile, captureSavepoint, markSaved,
   }
 })

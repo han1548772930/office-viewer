@@ -11,7 +11,10 @@ export interface RenderDriverFactories {
 export async function createRenderSurface(host: HTMLElement, options: RenderSurfaceOptions = {}, factories: RenderDriverFactories = { webgpu: createWebGPUDriver, canvas2d: createCanvas2DDriver }): Promise<RenderSurface> {
   let canvas: HTMLCanvasElement, driver: RenderDriver, disposed = false, fallingBack = false, initializing = true
   let pendingLoss: string | undefined, initialReason: string | undefined
-  let width = 1, height = 1, dpr = Math.max(1, window.devicePixelRatio || 1), lastScene: RenderScene | undefined
+  let backendAnnounced = false, driverLive = false
+  const normalizeDpr = (value: number) => Number.isFinite(value) && value > 0 ? Math.max(1, Math.min(4, value)) : 1
+  const normalizeSize = (value: number) => Number.isFinite(value) ? Math.max(0, value) : 0
+  let width = 1, height = 1, dpr = normalizeDpr(window.devicePixelRatio), lastScene: RenderScene | undefined
   const makeCanvas = () => {
     const next = document.createElement('canvas'); next.dataset.renderSurface = 'true'; next.setAttribute('aria-hidden', 'true')
     Object.assign(next.style, { display: 'block', width: '100%', height: '100%', position: 'absolute', inset: '0', pointerEvents: 'none' })
@@ -21,40 +24,62 @@ export async function createRenderSurface(host: HTMLElement, options: RenderSurf
     target.style.width = `${cssWidth}px`
     target.style.height = `${cssHeight}px`
   }
+  const disposeDriver = () => { if (driverLive) { driverLive = false; driver.dispose() } }
+  const release = () => {
+    disposed = true
+    lastScene = undefined
+    try { disposeDriver() } finally { canvas.remove() }
+  }
   const fallback = (reason: string) => {
     if (disposed || fallingBack || driver?.backend === 'canvas2d') return
     fallingBack = true
     try {
-      driver.dispose()
+      disposeDriver()
       const replacement = makeCanvas(); canvas.replaceWith(replacement); canvas = replacement
       setCanvasCssSize(canvas, width, height)
-      driver = factories.canvas2d(canvas); driver.resize(width, height, dpr)
+      driver = factories.canvas2d(canvas); driverLive = true
+      if (width && height) driver.resize(width, height, dpr)
       canvas.dataset.renderBackend = driver.backend
       canvas.dataset.renderBackendReason = reason
+      backendAnnounced = true
       options.onBackendChange?.('canvas2d', reason)
-      if (lastScene) driver.render(lastScene)
+      if (lastScene && width && height) driver.render(lastScene)
+    } catch (error) {
+      release()
+      throw error
     } finally { fallingBack = false }
   }
   canvas = makeCanvas(); host.appendChild(canvas)
   try {
-    if (options.preferredBackend === 'canvas2d') driver = factories.canvas2d(canvas)
-    else driver = await factories.webgpu(canvas, reason => { if (initializing) pendingLoss = reason; else fallback(reason) })
+    try {
+      if (options.preferredBackend === 'canvas2d') driver = factories.canvas2d(canvas)
+      else driver = await factories.webgpu(canvas, reason => { if (initializing) pendingLoss = reason; else fallback(reason) })
+      driverLive = true
+    } catch (error) {
+      if (options.preferredBackend === 'canvas2d') throw error
+      const replacement = makeCanvas(); canvas.replaceWith(replacement); canvas = replacement
+      driver = factories.canvas2d(canvas); driverLive = true
+      initialReason = error instanceof Error ? error.message : String(error)
+    }
+    setCanvasCssSize(canvas, width, height)
+    try { driver.resize(width, height, dpr) } catch (error) {
+      if (driver.backend === 'canvas2d') throw error
+      fallback(error instanceof Error ? error.message : String(error))
+    }
+    initializing = false
+    if (pendingLoss) fallback(pendingLoss)
+    canvas.dataset.renderBackend = driver.backend
+    if (initialReason) canvas.dataset.renderBackendReason = initialReason
+    if (!backendAnnounced) options.onBackendChange?.(driver.backend, initialReason)
   } catch (error) {
-    const replacement = makeCanvas(); canvas.replaceWith(replacement); canvas = replacement
-    try { driver = factories.canvas2d(canvas) } catch (fallbackError) { canvas.remove(); throw fallbackError }
-    initialReason = error instanceof Error ? error.message : String(error)
+    if (!disposed) release()
+    throw error
   }
-  initializing = false
-  if (pendingLoss) fallback(pendingLoss)
-  driver.resize(width, height, dpr)
-  canvas.dataset.renderBackend = driver.backend
-  if (initialReason) canvas.dataset.renderBackendReason = initialReason
-  if (!pendingLoss) options.onBackendChange?.(driver.backend, initialReason)
   return {
     get backend() { return driver.backend }, get canvas() { return canvas },
     resize(cssWidth, cssHeight, pixelRatio = window.devicePixelRatio || 1) {
       if (disposed) return
-      width = Math.max(0, cssWidth); height = Math.max(0, cssHeight); dpr = Math.max(1, Math.min(4, pixelRatio))
+      width = normalizeSize(cssWidth); height = normalizeSize(cssHeight); dpr = normalizeDpr(pixelRatio)
       setCanvasCssSize(canvas, width, height)
       if (!width || !height) return
       try { driver.resize(width, height, dpr) } catch (error) { if (driver.backend === 'canvas2d') throw error; fallback(String(error)) }
@@ -65,6 +90,6 @@ export async function createRenderSurface(host: HTMLElement, options: RenderSurf
       if (!width || !height) return
       try { driver.render(scene) } catch (error) { if (driver.backend === 'canvas2d') throw error; fallback(String(error)) }
     },
-    dispose() { if (disposed) return; disposed = true; lastScene = undefined; driver.dispose(); canvas.remove() },
+    dispose() { if (!disposed) release() },
   }
 }

@@ -545,7 +545,6 @@ function dateArgumentsToSerial(year: number, month: number, day: number, date190
   const normalizedDay = Math.trunc(day)
   if (!date1904 && normalizedYear === 1900 && normalizedMonthNumber === 2 && normalizedDay === 29) return 60
   const timestamp = Date.UTC(normalizedYear, normalizedMonth, normalizedDay)
-  const normalizedDate = new Date(timestamp)
   const epoch = Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 31)
   const serial = (timestamp - epoch) / MS_PER_DAY
   return Number.isFinite(serial) ? (!date1904 && serial >= 60 ? serial + 1 : serial) : formulaError('#NUM!')

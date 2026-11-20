@@ -1,5 +1,6 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
+import { watch } from 'vue'
 import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetFilterCriteria, SheetSortCriterion, SlicerTimelineRange, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
@@ -66,6 +67,7 @@ export class OfficeStudio {
   private readonly workbookRevisions = new Map<string, number>()
   private readonly computeClient: OfficeComputeClient
   private readonly ownsComputeClient: boolean
+  private readonly stopModelSync: Array<() => void> = []
 
   constructor(options: OfficeStudioOptions = {}) {
     this.pinia = createPinia()
@@ -94,6 +96,35 @@ export class OfficeStudio {
       unitId: workbook.id!,
     }
     this.registerBuiltinCommands()
+    this.stopModelSync.push(
+      watch(() => this.editor.workbook.model, (next, previous) => {
+        const id = next.id
+        if (!id || this.disposed) return
+        if (id !== this._activeWorkbookId) {
+          this.workbooks.set(this._activeWorkbookId, cloneModel(previous))
+          const created = !this.workbooks.has(id)
+          this._activeWorkbookId = id
+          this.workbooks.set(id, next)
+          this.advanceWorkbookRevision(id)
+          this.selection = { startRow: 0, startColumn: 0, endRow: 0, endColumn: 0, sheetId: next.activeSheetId, unitId: id }
+          if (created) this.events.emit('WorkbookCreated', { workbookId: id })
+        } else {
+          this.workbooks.set(id, next)
+          this.advanceWorkbookRevision(id)
+        }
+      }, { flush: 'sync' }),
+      watch(() => this.editor.document.model, (next, previous) => {
+        const id = next.id
+        if (!id || this.disposed) return
+        if (id !== this._activeDocumentId) {
+          this.documents.set(this._activeDocumentId, cloneModel(previous))
+          const created = !this.documents.has(id)
+          this._activeDocumentId = id
+          this.documents.set(id, next)
+          if (created) this.events.emit('DocCreated', { unitId: id, documentId: id })
+        } else this.documents.set(id, next)
+      }, { flush: 'sync' }),
+    )
     this.events.emit('LifeCycleChanged', { stage: 'ready' })
   }
 
@@ -143,7 +174,7 @@ export class OfficeStudio {
     if (this._activeWorkbookId !== id) this.workbooks.set(this._activeWorkbookId, this.editor.workbook.model)
     this._activeWorkbookId = id
     this.workbooks.set(id, model)
-    this.editor.workbook.replace(model)
+    this.editor.workbook.replace({ ...model, modified: this.editor.history.isDirty(id) })
     this.editor.setActiveKind('workbook')
     this.editor.history.activate(id)
   }
@@ -155,7 +186,7 @@ export class OfficeStudio {
     if (this._activeDocumentId !== id) this.documents.set(this._activeDocumentId, this.editor.document.model)
     this._activeDocumentId = id
     this.documents.set(id, model)
-    this.editor.document.replace(model)
+    this.editor.document.replace({ ...model, modified: this.editor.history.isDirty(id) })
     this.editor.setActiveKind('document')
     this.editor.history.activate(id)
   }
@@ -217,7 +248,9 @@ export class OfficeStudio {
     }
     this.events.emit('BeforeCommandExecute', event)
     if (event.cancel) throw new Error(`Command was canceled: ${commandId}`)
-    const changed = this.commitWorkbook(id, label, update)
+    const changed = commandId.includes('.operation.')
+      ? this.applyWorkbookOperation(id, update)
+      : this.commitWorkbook(id, label, update)
     if (changed) this.events.emit('CommandExecuted', { id: commandId, params, unitId: id, kind: 'workbook' })
     return changed
   }
@@ -254,7 +287,11 @@ export class OfficeStudio {
     recalculated.id = id
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
     recalculated.modified = true
-    this.editor.history.execute(id, label, () => this.replaceWorkbookModel(id, recalculated), () => this.replaceWorkbookModel(id, before))
+    let initial = true
+    this.editor.history.execute(id, label, () => {
+      if (initial) { this.replaceWorkbookModel(id, recalculated); initial = false }
+      else this.replaceWorkbookHistorySnapshot(id, recalculated)
+    }, () => this.replaceWorkbookHistorySnapshot(id, before))
     return true
   }
 
@@ -310,7 +347,6 @@ export class OfficeStudio {
     if (event.cancel) throw new Error('Undo was canceled')
     const label = this.editor.undo()
     if (!label) return false
-    if (kind === 'workbook') this.advanceWorkbookRevision(id)
     this.events.emit('Undo', { unitId: id, kind, label })
     return true
   }
@@ -324,7 +360,6 @@ export class OfficeStudio {
     if (event.cancel) throw new Error('Redo was canceled')
     const label = this.editor.redo()
     if (!label) return false
-    if (kind === 'workbook') this.advanceWorkbookRevision(id)
     this.events.emit('Redo', { unitId: id, kind, label })
     return true
   }
@@ -374,6 +409,7 @@ export class OfficeStudio {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    for (const stop of this.stopModelSync) stop()
     this.editor.parser.cancel()
     if (this.ownsComputeClient) this.computeClient.dispose()
     this.events.emit('LifeCycleChanged', { stage: 'disposed' })
@@ -386,7 +422,27 @@ export class OfficeStudio {
   private replaceWorkbookModel(id: string, model: WorkbookModel): void {
     this.workbooks.set(id, model)
     if (id === this._activeWorkbookId) this.editor.workbook.replace(model)
-    this.advanceWorkbookRevision(id)
+    else this.advanceWorkbookRevision(id)
+  }
+
+  private applyWorkbookOperation(id: string, update: (draft: WorkbookModel) => void): boolean {
+    this.assertAlive()
+    const current = this.getWorkbookModel(id)
+    if (!current) throw new Error(`Workbook not found: ${id}`)
+    const next = cloneModel(current)
+    update(next)
+    next.id = id
+    next.modified = current.modified
+    if (JSON.stringify(current) === JSON.stringify(next)) return false
+    this.replaceWorkbookModel(id, next)
+    return true
+  }
+
+  private replaceWorkbookHistorySnapshot(id: string, snapshot: WorkbookModel): void {
+    const current = this.getWorkbookModel(id)
+    const next = cloneModel(snapshot)
+    if (current && next.sheets.some((sheet) => sheet.id === current.activeSheetId)) next.activeSheetId = current.activeSheetId
+    this.replaceWorkbookModel(id, next)
   }
 
   private advanceWorkbookRevision(id: string): void {

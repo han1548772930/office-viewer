@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true }, appType: 'custom' })
+const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { createCanvas2DDriver } = await vite.ssrLoadModule('/packages/office-studio/src/rendering/canvas2d.ts')
 const { createRenderSurface } = await vite.ssrLoadModule('/packages/office-studio/src/rendering/createRenderSurface.ts')
 
@@ -189,4 +189,117 @@ test('surface reports Canvas2D and paints the first scene when WebGPU initializa
   surface.render(scene)
   assert.deepEqual(fallbackScenes, [scene])
   surface.dispose()
+})
+
+function createHost() {
+  return {
+    children: [],
+    appendChild(canvas) { this.children.push(canvas); canvas.parentNode = this },
+  }
+}
+
+test('surface falls back when the first WebGPU resize fails and releases the GPU driver', async () => {
+  installFakeDom()
+  const host = createHost()
+  const backendChanges = [], fallbackSizes = []
+  let gpuDisposals = 0
+  const surface = await createRenderSurface(host, {
+    onBackendChange: (backend, reason) => backendChanges.push([backend, reason]),
+  }, {
+    async webgpu() {
+      return { backend: 'webgpu', resize() { throw new Error('initial configure failed') }, render() {}, dispose() { gpuDisposals += 1 } }
+    },
+    canvas2d() {
+      return { backend: 'canvas2d', resize: (...args) => fallbackSizes.push(args), render() {}, dispose() {} }
+    },
+  })
+
+  assert.equal(surface.backend, 'canvas2d')
+  assert.equal(gpuDisposals, 1)
+  assert.equal(host.children.length, 1)
+  assert.deepEqual(fallbackSizes, [[1, 1, 1]])
+  assert.equal(backendChanges.length, 1)
+  assert.equal(backendChanges[0][0], 'canvas2d')
+  assert.match(backendChanges[0][1], /initial configure failed/)
+  surface.dispose()
+})
+
+test('hidden surfaces defer fallback drawing until they have a nonzero viewport', async () => {
+  installFakeDom()
+  let loseWebGPU
+  const fallbackSizes = [], fallbackScenes = []
+  const surface = await createRenderSurface(createHost(), {}, {
+    async webgpu(_canvas, onLost) {
+      loseWebGPU = onLost
+      return { backend: 'webgpu', resize() {}, render() {}, dispose() {} }
+    },
+    canvas2d() {
+      return { backend: 'canvas2d', resize: (...args) => fallbackSizes.push(args), render: scene => fallbackScenes.push(scene), dispose() {} }
+    },
+  })
+  const scene = { width: 500, height: 300, commands: [] }
+  surface.resize(500, 300, 2)
+  surface.render(scene)
+  surface.resize(0, 0, 2)
+  loseWebGPU('device lost while tab hidden')
+
+  assert.equal(surface.backend, 'canvas2d')
+  assert.equal(surface.canvas.style.width, '0px')
+  assert.deepEqual(fallbackSizes, [])
+  assert.deepEqual(fallbackScenes, [])
+  surface.resize(500, 300, 2)
+  surface.render(scene)
+  assert.deepEqual(fallbackSizes, [[500, 300, 2]])
+  assert.deepEqual(fallbackScenes, [scene])
+  surface.dispose()
+})
+
+test('surface removes its canvas and driver when even Canvas2D initialization fails', async () => {
+  installFakeDom()
+  const host = createHost()
+  let disposals = 0
+  await assert.rejects(createRenderSurface(host, { preferredBackend: 'canvas2d' }, {
+    async webgpu() { throw new Error('WebGPU should not be tried') },
+    canvas2d() {
+      return { backend: 'canvas2d', resize() { throw new Error('canvas sizing failed') }, render() {}, dispose() { disposals += 1 } }
+    },
+  }), /canvas sizing failed/)
+  assert.equal(disposals, 1)
+  assert.deepEqual(host.children, [])
+})
+
+test('surface never passes nonfinite viewport sizes or DPR to its driver', async () => {
+  installFakeDom()
+  const sizes = [], scenes = []
+  const surface = await createRenderSurface(createHost(), { preferredBackend: 'canvas2d' }, {
+    async webgpu() { throw new Error('WebGPU should not be tried') },
+    canvas2d() { return { backend: 'canvas2d', resize: (...args) => sizes.push(args), render: value => scenes.push(value), dispose() {} } },
+  })
+  surface.resize(Number.NaN, Number.POSITIVE_INFINITY, Number.NaN)
+  surface.render({ width: 100, height: 100, commands: [] })
+  assert.equal(surface.canvas.style.width, '0px')
+  assert.deepEqual(sizes, [[1, 1, 1]])
+  assert.deepEqual(scenes, [])
+  surface.resize(200, 100, Number.NaN)
+  assert.deepEqual(sizes.at(-1), [200, 100, 1])
+  surface.dispose()
+})
+
+test('failed fallback disposes the old GPU driver exactly once and removes the replacement canvas', async () => {
+  installFakeDom()
+  const host = createHost()
+  let loseWebGPU, gpuDisposals = 0
+  const surface = await createRenderSurface(host, {}, {
+    async webgpu(_canvas, onLost) {
+      loseWebGPU = onLost
+      return { backend: 'webgpu', resize() {}, render() {}, dispose() { gpuDisposals += 1 } }
+    },
+    canvas2d() { throw new Error('Canvas2D unavailable') },
+  })
+  assert.throws(() => loseWebGPU('lost'), /Canvas2D unavailable/)
+  assert.equal(gpuDisposals, 1)
+  assert.deepEqual(host.children, [])
+  surface.dispose()
+  loseWebGPU('late device lost notification')
+  assert.equal(gpuDisposals, 1)
 })

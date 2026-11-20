@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
+import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
 
 const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; overlayCommands?: readonly DrawCommand[] }>()
 const emit = defineEmits<{
@@ -25,19 +26,19 @@ const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollT
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
 const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText, overlayCommands: props.overlayCommands }))
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
-const editRect = computed(() => { const cell = props.editingKey ? parseAddress(props.editingKey) : undefined; return cell ? geometry.value.cellRect(cell.row, cell.column, viewport.value) : undefined })
-const editStyle = computed(() => editRect.value ? { left: `${Math.max(GRID_HEADER_WIDTH, editRect.value.x)}px`, top: `${Math.max(GRID_HEADER_HEIGHT, editRect.value.y)}px`, width: `${Math.max(24, editRect.value.width)}px`, height: `${Math.max(20, editRect.value.height)}px`, fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif', fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px` } : {})
+const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
+const editStyle = computed(() => editLayout.value ? { left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`, width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`, clipPath: editLayout.value.clipPath, fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif', fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px` } : { clipPath: 'inset(50%)' })
 const composing = ref(false)
 const surfaceError = ref('')
 const sheetViews = new Map<string, { left: number; top: number }>()
-let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, dragging = false
+let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, active = true, dragging = false
 let dprQuery: MediaQueryList | undefined
 let resizeDrag: { axis: 'row' | 'column'; index: number; size: number; origin: number } | undefined
 let lastPointer: { x: number; y: number } | undefined
-function queueRender() { if (!frame) frame = requestAnimationFrame(draw) }
+function queueRender() { if (active && !disposed && !frame) frame = requestAnimationFrame(draw) }
 function draw() {
   frame = 0
-  if (disposed || !surface) return
+  if (disposed || !active || !surface) return
   surface.render(scene.value)
   if (dragging && lastPointer && scroller.value) {
     const dx = lastPointer.x < GRID_HEADER_WIDTH ? -16 : lastPointer.x > viewport.value.width - 16 ? 16 : 0
@@ -52,9 +53,9 @@ function draw() {
   }
 }
 function resize() {
-  if (!scroller.value || !surface) return
+  if (!active || !scroller.value || !surface) return
   const width = scroller.value.clientWidth, height = scroller.value.clientHeight
-  viewport.value = { ...viewport.value, width, height }
+  viewport.value = { ...viewport.value, width, height, scrollLeft: scroller.value.scrollLeft, scrollTop: scroller.value.scrollTop }
   surface.resize(width, height, window.devicePixelRatio || 1)
   queueRender()
 }
@@ -113,17 +114,8 @@ function focusEditor() { void nextTick(() => input.value?.focus({ preventScroll:
 function ensureVisible(address: string) {
   const cell = parseAddress(address), scroll = scroller.value
   if (!cell || !scroll) return
-  const rect = geometry.value.cellRect(cell.row, cell.column, viewport.value)
-  const left = GRID_HEADER_WIDTH + geometry.value.columns.offset(geometry.value.frozenColumns) * viewport.value.zoom
-  const top = GRID_HEADER_HEIGHT + geometry.value.rows.offset(geometry.value.frozenRows) * viewport.value.zoom
-  if (cell.column >= geometry.value.frozenColumns) {
-    if (rect.x < left) scroll.scrollLeft += rect.x - left
-    else if (rect.x + rect.width > viewport.value.width) scroll.scrollLeft += rect.x + rect.width - viewport.value.width
-  }
-  if (cell.row >= geometry.value.frozenRows) {
-    if (rect.y < top) scroll.scrollTop += rect.y - top
-    else if (rect.y + rect.height > viewport.value.height) scroll.scrollTop += rect.y + rect.height - viewport.value.height
-  }
+  const next = geometry.value.scrollForCell(cell.row, cell.column, viewport.value)
+  scroll.scrollLeft = next.scrollLeft; scroll.scrollTop = next.scrollTop
   onScroll()
 }
 function focus() { root.value?.focus({ preventScroll: true }) }
@@ -148,6 +140,13 @@ onMounted(async () => {
   } catch (reason) {
     surfaceError.value = reason instanceof Error ? reason.message : String(reason)
   }
+})
+onActivated(() => { active = true; void nextTick(resize) })
+onDeactivated(() => {
+  active = false
+  cancelAnimationFrame(frame); frame = 0
+  dragging = false; lastPointer = undefined; resizeDrag = undefined
+  surface?.resize(0, 0, window.devicePixelRatio || 1)
 })
 onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
 </script>

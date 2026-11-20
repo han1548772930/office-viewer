@@ -1,0 +1,322 @@
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
+import { inflateRawSync } from 'node:zlib'
+import type { DocumentModel, WorkbookModel } from '../../packages/office-studio/src/domain/model'
+
+type RuntimeModule = typeof import('../../examples/workbench/src/runtime')
+
+/** Reading a model must not use FWorkbook/FDocument.save(), which creates a savepoint. */
+async function models(page: Page): Promise<{ workbook: WorkbookModel; document: DocumentModel; canUndo: boolean; canRedo: boolean }> {
+  return page.evaluate(async () => {
+    const runtimePath = '/src/runtime.ts'
+    const { studio } = await import(runtimePath) as RuntimeModule
+    const workbook = studio.getWorkbookModel(studio.activeWorkbookId)
+    const document = studio.getDocumentModel(studio.activeDocumentId)
+    if (!workbook || !document) throw new Error('The active workspace models are missing')
+    return JSON.parse(JSON.stringify({ workbook, document, canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo }))
+  })
+}
+
+async function cellValue(page: Page, address: string): Promise<unknown> {
+  const { workbook } = await models(page)
+  const parts = /^([A-Z]+)(\d+)$/.exec(address)
+  if (!parts) throw new Error(`Invalid test cell address: ${address}`)
+  const column = [...parts[1]!].reduce((value, character) => value * 26 + character.charCodeAt(0) - 64, 0) - 1
+  const key = `${Number(parts[2]) - 1}:${column}`
+  return workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId)?.cells[key]?.value
+}
+
+function ribbon(page: Page): Locator { return page.getByTestId('workbench-ribbon') }
+function visibleRibbonButton(page: Page, name: string): Locator { return ribbon(page).getByRole('button', { name, exact: true }) }
+
+/** Inspect the downloaded Office ZIP independently of the application's writer. */
+function readOfficePart(bytes: Buffer, expectedPath: string): string {
+  let end = bytes.length - 22
+  const earliestEnd = Math.max(0, bytes.length - 65_557)
+  while (end >= earliestEnd && bytes.readUInt32LE(end) !== 0x06054b50) end -= 1
+  if (end < earliestEnd) throw new Error('The downloaded file has no ZIP central directory')
+  const entries = bytes.readUInt16LE(end + 10)
+  let cursor = bytes.readUInt32LE(end + 16)
+  for (let index = 0; index < entries; index += 1) {
+    if (bytes.readUInt32LE(cursor) !== 0x02014b50) throw new Error('The Office central directory is invalid')
+    const method = bytes.readUInt16LE(cursor + 10)
+    const compressedSize = bytes.readUInt32LE(cursor + 20)
+    const nameLength = bytes.readUInt16LE(cursor + 28)
+    const extraLength = bytes.readUInt16LE(cursor + 30)
+    const commentLength = bytes.readUInt16LE(cursor + 32)
+    const path = bytes.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8')
+    const local = bytes.readUInt32LE(cursor + 42)
+    if (path === expectedPath) {
+      if (bytes.readUInt32LE(local) !== 0x04034b50) throw new Error('The Office part has no local ZIP header')
+      const dataStart = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28)
+      const compressed = bytes.subarray(dataStart, dataStart + compressedSize)
+      if (method === 0) return compressed.toString('utf8')
+      if (method === 8) return inflateRawSync(compressed).toString('utf8')
+      throw new Error(`Unsupported ZIP compression: ${method}`)
+    }
+    cursor += 46 + nameLength + extraLength + commentLength
+  }
+  throw new Error(`The downloaded Office file is missing ${expectedPath}`)
+}
+
+async function gotoCell(page: Page, address: string): Promise<void> {
+  const nameBox = page.getByRole('textbox', { name: '名称框', exact: true })
+  await nameBox.fill(address)
+  await nameBox.press('Enter')
+  await expect(nameBox).toHaveValue(address)
+}
+
+async function switchWorkspace(page: Page, name: '表格' | '文档'): Promise<void> {
+  await page.getByRole('navigation', { name: '工作台', exact: true }).getByRole('button', { name, exact: true }).click()
+  await expect(page.locator(name === '表格' ? '.excel-workbench' : '.document-workbench')).toBeVisible()
+}
+
+async function expectHeight(locator: Locator, height: number): Promise<void> {
+  await expect.poll(async () => (await locator.boundingBox())?.height).toBe(height)
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('grid', { name: '工作表画布', exact: true })).toBeVisible()
+})
+
+test('Sheets uses classic Ribbon, a formula header, Canvas and one product footer', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await expect(ribbon(page)).toHaveCount(1)
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-tabs'), 36)
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+  const formula = page.getByTestId('sheet-formula-bar')
+  await expectHeight(formula, 28)
+  await expect.poll(async () => (await page.getByLabel('名称框', { exact: true }).boundingBox())?.width).toBe(100)
+  await expectHeight(page.getByTestId('sheet-footer'), 36)
+  await expect(page.locator('.excel-workbench footer')).toHaveCount(1)
+  await expect(page.locator('.app-footer')).toHaveCount(0)
+  await expect(page.locator('canvas[data-render-surface="true"]')).toHaveCount(1)
+  await expect(page.locator('.excel-workbench [contenteditable="true"]')).toHaveCount(0)
+  const positions = await Promise.all([ribbon(page), formula, page.getByRole('grid', { name: '工作表画布' }), page.getByTestId('sheet-footer')].map((part) => part.boundingBox()))
+  expect(positions.every(Boolean)).toBe(true)
+  for (let index = 1; index < positions.length; index += 1) expect(positions[index]!.y).toBeGreaterThanOrEqual(positions[index - 1]!.y + positions[index - 1]!.height)
+  expect(errors).toEqual([])
+})
+
+test('Ribbon tabs implement roving keyboard focus and keep their classic row dimensions', async ({ page }) => {
+  const tabs = ribbon(page).getByRole('tab')
+  const names = await tabs.allTextContents()
+  expect(names).toContain('开始')
+  expect(names).toContain('插入')
+  expect(names).toContain('视图')
+  await tabs.first().focus()
+  await tabs.first().press('End')
+  await expect(tabs.last()).toBeFocused()
+  await expect(tabs.last()).toHaveAttribute('aria-selected', 'true')
+  await expect(tabs.last()).toHaveAttribute('tabindex', '0')
+  await tabs.last().press('Home')
+  await expect(tabs.first()).toBeFocused()
+  await tabs.first().press('ArrowRight')
+  await expect(tabs.nth(1)).toBeFocused()
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await expect(tabs.first()).toHaveAttribute('tabindex', '-1')
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+})
+
+test('the formula session cancels, commits and participates in the document history', async ({ page }) => {
+  await gotoCell(page, 'B3')
+  const input = page.getByRole('textbox', { name: '公式编辑', exact: true })
+  await input.fill('取消的值')
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  await expect.poll(() => cellValue(page, 'B3')).toBeUndefined()
+  await input.fill('314')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  await expect.poll(() => cellValue(page, 'B3')).toBe(314)
+  await visibleRibbonButton(page, '撤销').click()
+  await expect.poll(() => cellValue(page, 'B3')).toBeUndefined()
+  await visibleRibbonButton(page, '重做').click()
+  await expect.poll(() => cellValue(page, 'B3')).toBe(314)
+  await page.getByRole('button', { name: '展开公式栏', exact: true }).click()
+  await expectHeight(page.getByTestId('sheet-formula-bar'), 80)
+  await page.getByRole('button', { name: '折叠公式栏', exact: true }).click()
+  await expectHeight(page.getByTestId('sheet-formula-bar'), 28)
+})
+
+test('switching worksheets and products preserves content and isolated undo history', async ({ page }) => {
+  await gotoCell(page, 'C4')
+  await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('工作簿内容')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  await expect.poll(() => cellValue(page, 'C4')).toBe('工作簿内容')
+  const originalSheet = (await models(page)).workbook.activeSheetId
+  await page.getByRole('button', { name: '添加工作表', exact: true }).click()
+  await expect.poll(async () => (await models(page)).workbook.sheets.length).toBe(2)
+  const firstSheetName = (await models(page)).workbook.sheets.find((sheet) => sheet.id === originalSheet)!.name
+  await page.getByRole('tablist', { name: '工作表', exact: true }).getByRole('tab', { name: firstSheetName, exact: true }).click()
+  await gotoCell(page, 'C4')
+  await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue('工作簿内容')
+  await switchWorkspace(page, '文档')
+  const bridge = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await bridge.focus()
+  await bridge.evaluate((element) => {
+    element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
+    element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: '独立文档内容' }))
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '独立文档内容' }))
+  })
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('独立文档内容')
+  await bridge.press('Control+Z')
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('')
+  await switchWorkspace(page, '表格')
+  await gotoCell(page, 'C4')
+  await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue('工作簿内容')
+  await visibleRibbonButton(page, '撤销').click()
+  await expect.poll(async () => (await models(page)).workbook.sheets.length).toBe(1)
+  await expect.poll(() => cellValue(page, 'C4')).toBe('工作簿内容')
+  await switchWorkspace(page, '文档')
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('')
+  await visibleRibbonButton(page, '重做').click()
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('独立文档内容')
+})
+
+test('narrow Sheets keeps overflow tools operable and the editor inside the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 620, height: 800 })
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await gotoCell(page, 'B2')
+  await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('窄屏工具')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  const trigger = ribbon(page).getByRole('button', { name: '更多功能', exact: true })
+  await expect(trigger).toBeVisible()
+  await trigger.click()
+  const menu = page.getByRole('menu', { name: '更多功能', exact: true })
+  await expect(menu).toBeVisible()
+  await menu.getByRole('button', { name: '清除内容', exact: true }).click()
+  await expect.poll(() => cellValue(page, 'B2')).toBe('')
+  await expect(menu).toBeHidden()
+  const extent = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth }))
+  expect(extent.scroll).toBeLessThanOrEqual(extent.width)
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+  expect(errors).toEqual([])
+})
+
+test('Docs keeps its logical text range while formatting through classic Ribbon', async ({ page }) => {
+  await switchWorkspace(page, '文档')
+  await expect(ribbon(page)).toHaveCount(1)
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-tabs'), 36)
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+  await expect(page.locator('.document-workbench footer')).toHaveCount(1)
+  await expect(page.locator('.document-workbench [contenteditable="true"]')).toHaveCount(0)
+  const bridge = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await bridge.focus()
+  await bridge.pressSequentially('选区格式保留')
+  await bridge.press('Control+A')
+  await visibleRibbonButton(page, '加粗').click()
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.runs.every((run) => run.bold)).toBe(true)
+  await expect(visibleRibbonButton(page, '加粗')).toHaveAttribute('aria-pressed', 'true')
+  await visibleRibbonButton(page, '撤销').click()
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.runs.every((run) => run.bold)).toBe(false)
+  await visibleRibbonButton(page, '重做').click()
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.runs.map((run) => run.text).join('')).toBe('选区格式保留')
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.runs.every((run) => run.bold)).toBe(true)
+  await expect(page.locator('.document-workbench canvas[data-render-surface="true"]')).toHaveCount(1)
+})
+
+test('Docs traditional outline is configurable and navigates stable paragraph identities', async ({ page }) => {
+  await page.evaluate(async () => {
+    const runtimePath = '/src/runtime.ts'
+    const { univerAPI } = await import(runtimePath) as RuntimeModule
+    const paragraphStyle = { align: 'left' as const, indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 }
+    const run = (text: string) => ({ id: `run-${text}`, text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
+    univerAPI.createDocument({
+      id: 'outline-browser-fixture', name: '大纲导航测试', kind: 'document', modified: false, wordCount: 0,
+      page: { width: 794, height: 1123, marginTop: 72, marginRight: 72, marginBottom: 72, marginLeft: 72 },
+      blocks: [
+        { id: 'heading-a', type: 'heading', level: 1, runs: [run('第一章')], style: paragraphStyle, metadata: {} },
+        { id: 'paragraph-a', type: 'paragraph', level: 0, runs: [run('第一章正文')], style: paragraphStyle, metadata: {} },
+        { id: 'heading-b', type: 'heading', level: 2, runs: [run('第一节')], style: paragraphStyle, metadata: {} },
+        { id: 'paragraph-b', type: 'paragraph', level: 0, runs: [run('第一节正文')], style: paragraphStyle, metadata: {} },
+      ],
+    })
+  })
+  await expect(page.locator('.document-workbench')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '文档大纲', exact: true })).toHaveCount(0)
+  await ribbon(page).getByRole('tab', { name: '视图', exact: true }).click()
+  await visibleRibbonButton(page, '文档大纲').click()
+  const outline = page.getByRole('navigation', { name: '文档大纲', exact: true })
+  await expect(outline).toBeVisible()
+  const firstHeading = outline.locator('[data-outline-item="heading-a"]')
+  const nextHeading = outline.locator('[data-outline-item="heading-b"]')
+  await nextHeading.click()
+  await expect(nextHeading).toHaveAttribute('aria-current', 'location')
+  await firstHeading.focus()
+  await firstHeading.press('ArrowDown')
+  await expect(nextHeading).toBeFocused()
+  await nextHeading.press('ArrowUp')
+  await expect(firstHeading).toBeFocused()
+  await firstHeading.press('Enter')
+  await expect(firstHeading).toHaveAttribute('aria-current', 'location')
+  await visibleRibbonButton(page, '文档大纲').click()
+  await expect(outline).toHaveCount(0)
+  await expect.poll(async () => (await models(page)).document.blocks.map((block) => block.id)).toEqual(['heading-a', 'paragraph-a', 'heading-b', 'paragraph-b'])
+})
+
+test('Chinese Canvas composition is a single reversible document edit', async ({ page }) => {
+  await switchWorkspace(page, '文档')
+  const bridge = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await bridge.focus()
+  await bridge.evaluate((element) => {
+    element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
+    element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: '中文输入' }))
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中文输入' }))
+  })
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('中文输入')
+  await bridge.press('Control+Z')
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('')
+  await bridge.press('Control+Y')
+  await expect.poll(async () => (await models(page)).document.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')).toBe('中文输入')
+})
+
+test('Docs font selector applies to the retained Canvas text selection', async ({ page }) => {
+  await switchWorkspace(page, '文档')
+  const bridge = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await bridge.focus()
+  await bridge.pressSequentially('字体选区')
+  await bridge.press('Control+A')
+  await ribbon(page).getByRole('combobox', { name: '字体', exact: true }).click()
+  await page.getByRole('option', { name: 'Georgia', exact: true }).click()
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.runs.every((run) => run.fontFamily === 'Georgia')).toBe(true)
+  await expect.poll(async () => (await models(page)).document.blocks[0]!.runs.map((run) => run.text).join('')).toBe('字体选区')
+})
+
+test('switching products restores the worksheet viewport and a usable Canvas surface', async ({ page }) => {
+  await gotoCell(page, 'B45')
+  const scroller = page.locator('.excel-workbench .canvas-scroll')
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(300)
+  const top = await scroller.evaluate((element) => element.scrollTop)
+  await switchWorkspace(page, '文档')
+  await expect(page.locator('.document-workbench canvas[data-render-surface="true"]')).toHaveCount(1)
+  await switchWorkspace(page, '表格')
+  await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('B45')
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBe(top)
+  const surface = page.locator('.excel-workbench canvas[data-render-surface="true"]')
+  await expect.poll(() => surface.evaluate((canvas: HTMLCanvasElement) => canvas.width > 0 && canvas.height > 0)).toBe(true)
+  await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('恢复后编辑')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  await expect.poll(() => cellValue(page, 'B45')).toBe('恢复后编辑')
+})
+
+test('saving an edited document downloads a real DOCX with the edited text', async ({ page }) => {
+  await switchWorkspace(page, '文档')
+  const bridge = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await bridge.focus()
+  await bridge.pressSequentially('原生文件写出验证')
+  await expect.poll(async () => (await models(page)).document.modified).toBe(true)
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '保存 Office 文件', exact: true }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toMatch(/\.docx$/i)
+  const path = await download.path()
+  expect(path).not.toBeNull()
+  const bytes = await readFile(path!)
+  expect(bytes.subarray(0, 4).toString('hex')).toBe('504b0304')
+  const documentXml = readOfficePart(bytes, 'word/document.xml')
+  expect(documentXml.replace(/<[^>]+>/g, '')).toContain('原生文件写出验证')
+  expect(readOfficePart(bytes, '[Content_Types].xml')).toContain('wordprocessingml.document.main+xml')
+  await expect.poll(async () => (await models(page)).document.modified).toBe(false)
+})

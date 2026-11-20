@@ -1,0 +1,180 @@
+import assert from 'node:assert/strict'
+import { after, before, test } from 'node:test'
+import { createPinia } from 'pinia'
+import { reactive } from 'vue'
+import { createServer } from 'vite'
+
+let server
+let useEditorStore
+let toExcelWorkbookView
+let createBlankSheet
+
+before(async () => {
+  server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
+  ;({ useEditorStore } = await server.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
+  ;({ toExcelWorkbookView } = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts'))
+  ;({ createBlankSheet } = await server.ssrLoadModule('/packages/office-studio/src/domain/model.ts'))
+})
+
+after(async () => { await server?.close() })
+const freshEditor = () => useEditorStore(createPinia())
+const snapshot = (value) => JSON.parse(JSON.stringify(value))
+
+test('unchanged workbook and document view callbacks do not create edits', () => {
+  const editor = freshEditor()
+  const original = snapshot(editor.state.workbook)
+  assert.equal(editor.replaceWorkbookFromView(toExcelWorkbookView(editor.state.workbook)), false)
+  assert.deepEqual(snapshot(editor.state.workbook), original, 'viewport normalization must not change untouched source geometry')
+  assert.equal(editor.state.workbook.modified, false)
+  assert.equal(editor.canUndo, false)
+  assert.equal(editor.replaceDocumentFromView(snapshot(editor.state.document)), false)
+  editor.setActiveKind('document')
+  assert.equal(editor.state.document.modified, false)
+  assert.equal(editor.canUndo, false)
+})
+
+test('filename edits use the same per-unit history, including immediate kind switches', () => {
+  const editor = freshEditor()
+  const bookName = editor.state.fileName
+  editor.state.fileName = '已重命名.xlsx'
+  assert.equal(editor.state.workbook.modified, true)
+  assert.equal(editor.canUndo, true)
+  editor.setActiveKind('document')
+  const docName = editor.state.fileName
+  editor.state.fileName = '已重命名.docx'
+  editor.setActiveKind('workbook')
+  editor.undo()
+  assert.equal(editor.state.workbook.name, bookName)
+  assert.equal(editor.state.document.name, '已重命名.docx')
+  assert.equal(editor.state.workbook.modified, false)
+  assert.equal(editor.state.document.modified, true)
+  editor.setActiveKind('document')
+  editor.undo()
+  assert.equal(editor.state.document.name, docName)
+  assert.equal(editor.state.document.modified, false)
+})
+
+test('saving an exported snapshot after switching kinds never saves the other document', () => {
+  const editor = freshEditor()
+  editor.state.fileName = 'first.xlsx'
+  const ticket = editor.captureSavepoint('workbook')
+  editor.state.fileName = 'second.xlsx'
+  editor.setActiveKind('document')
+  editor.state.fileName = 'unsaved.docx'
+  assert.equal(editor.markSaved(ticket), true)
+  assert.equal(editor.state.document.modified, true)
+  assert.equal(editor.state.workbook.modified, true)
+  editor.setActiveKind('workbook')
+  editor.undo()
+  assert.equal(editor.state.workbook.name, 'first.xlsx')
+  assert.equal(editor.state.workbook.modified, false)
+  editor.redo()
+  assert.equal(editor.state.workbook.modified, true)
+})
+
+test('a workbook view that only switches sheets is an operation', () => {
+  const editor = freshEditor()
+  const model = snapshot(editor.state.workbook)
+  const second = createBlankSheet('Second')
+  model.sheets.push(second)
+  editor.workbook.replace(model)
+  const view = toExcelWorkbookView(model)
+  view.activeSheetId = second.id
+  assert.equal(editor.replaceWorkbookFromView(view), false)
+  assert.equal(editor.state.workbook.activeSheetId, second.id)
+  assert.equal(editor.canUndo, false)
+  assert.equal(editor.state.workbook.modified, false)
+})
+
+test('canceled imports return false instead of reporting successful replacement', async () => {
+  const editor = freshEditor()
+  const originalId = editor.state.workbook.id
+  editor.parser.parse = async () => undefined
+  assert.equal(await editor.importFile({ name: 'canceled.xlsx' }), false)
+  assert.equal(editor.state.workbook.id, originalId)
+})
+
+test('content undo and redo preserve a later sheet-navigation operation', () => {
+  const editor = freshEditor()
+  const model = snapshot(editor.state.workbook)
+  const second = createBlankSheet('Second')
+  model.sheets.push(second)
+  editor.workbook.replace(model)
+  const edited = toExcelWorkbookView(model)
+  edited.sheets[0].cells.A1 = { value: 'content edit' }
+  assert.equal(editor.replaceWorkbookFromView(edited), true)
+  const navigated = toExcelWorkbookView(editor.state.workbook)
+  navigated.activeSheetId = second.id
+  assert.equal(editor.replaceWorkbookFromView(navigated), false)
+  editor.undo()
+  assert.equal(editor.state.workbook.activeSheetId, second.id)
+  assert.deepEqual(editor.state.workbook.sheets[0].cells, {})
+  assert.equal(editor.state.workbook.modified, false)
+  editor.redo()
+  assert.equal(editor.state.workbook.activeSheetId, second.id)
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].value, 'content edit')
+})
+
+test('adding a sheet applies its initial activation and a canceled save token cannot mark a new unit', () => {
+  const editor = freshEditor()
+  const token = editor.captureSavepoint()
+  const view = toExcelWorkbookView(editor.state.workbook)
+  const second = createBlankSheet('Inserted')
+  const nextSheet = toExcelWorkbookView({ ...editor.state.workbook, sheets: [second] }).sheets[0]
+  view.sheets.push(nextSheet)
+  view.activeSheetId = second.id
+  editor.replaceWorkbookFromView(view)
+  assert.equal(editor.state.workbook.activeSheetId, second.id)
+  editor.newWorkbook()
+  editor.state.fileName = 'new unit.xlsx'
+  editor.markSaved(token)
+  assert.equal(editor.state.workbook.modified, true)
+  assert.equal(editor.canUndo, true)
+})
+
+test('malformed view input fails before changing the model, revision or redo stack', () => {
+  const editor = freshEditor()
+  editor.state.fileName = 'edit.xlsx'
+  editor.undo()
+  const original = snapshot(editor.state.workbook)
+  const revision = editor.captureSavepoint().revision
+  const view = toExcelWorkbookView(editor.state.workbook)
+  view.sheets[0].cells.A1 = null
+  assert.throws(() => editor.replaceWorkbookFromView(view), TypeError)
+  assert.deepEqual(snapshot(editor.state.workbook), original)
+  assert.equal(editor.captureSavepoint().revision, revision)
+  assert.equal(editor.canUndo, false)
+  assert.equal(editor.canRedo, true)
+})
+
+test('reactive view payloads and later caller mutations cannot corrupt recorded snapshots', () => {
+  const editor = freshEditor()
+  const bookView = reactive(toExcelWorkbookView(editor.state.workbook))
+  bookView.sheets[0].cells.A1 = { value: 'recorded cell' }
+  editor.replaceWorkbookFromView(bookView)
+  bookView.sheets[0].cells.A1.value = 'uncommitted external edit'
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].value, 'recorded cell')
+  editor.undo()
+  editor.redo()
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].value, 'recorded cell')
+  editor.setActiveKind('document')
+  const documentView = reactive(snapshot(editor.state.document))
+  documentView.blocks[0].runs[0].text = 'recorded text'
+  editor.replaceDocumentFromView(documentView)
+  documentView.blocks[0].runs[0].text = 'uncommitted external edit'
+  assert.equal(editor.state.document.blocks[0].runs[0].text, 'recorded text')
+  editor.undo()
+  assert.equal(editor.state.document.blocks[0].runs[0].text, '')
+  editor.redo()
+  assert.equal(editor.state.document.blocks[0].runs[0].text, 'recorded text')
+})
+
+test('only changing a document dirty flag is not a content edit', () => {
+  const editor = freshEditor()
+  editor.setActiveKind('document')
+  const view = snapshot(editor.state.document)
+  view.modified = true
+  assert.equal(editor.replaceDocumentFromView(view), false)
+  assert.equal(editor.state.document.modified, false)
+  assert.equal(editor.canUndo, false)
+})

@@ -105,13 +105,13 @@ export class AxisIndex {
   private readonly adjustments: number[]
   private readonly values: Map<number, number>
   constructor(count: number, defaultSize: number, sizes: Record<number, number> = {}, hidden: readonly number[] = []) {
-    this.count = Math.max(0, Math.floor(count))
+    this.count = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
     this.defaultSize = Number.isFinite(defaultSize) ? Math.max(0, defaultSize) : 0
     this.values = new Map(Object.entries(sizes).filter(([key, value]) => Number.isInteger(Number(key)) && Number(key) >= 0 && Number(key) < this.count && Number.isFinite(value)).map(([key, value]) => [Number(key), Math.max(0, value)]))
-    for (const index of hidden) this.values.set(index, 0)
+    for (const index of hidden) if (Number.isInteger(index) && index >= 0 && index < this.count) this.values.set(index, 0)
     this.indices = [...this.values.keys()].filter(index => index >= 0 && index < this.count).sort((a, b) => a - b)
     this.adjustments = [0]
-    for (const index of this.indices) this.adjustments.push(this.adjustments[this.adjustments.length - 1] + this.values.get(index)! - defaultSize)
+    for (const index of this.indices) this.adjustments.push(this.adjustments[this.adjustments.length - 1] + this.values.get(index)! - this.defaultSize)
   }
   size(index: number): number { return this.values.get(index) ?? this.defaultSize }
   offset(index: number): number {
@@ -196,14 +196,51 @@ export class SpreadsheetGeometry {
       height: (this.rows.offset(endRow + 1) - this.rows.offset(startRow)) * scale,
     }
   }
+  /** Scroll offsets in CSS pixels, shared by keyboard navigation and the input bridge. */
+  scrollForCell(row: number, column: number, viewport: GridViewport): { scrollLeft: number; scrollTop: number } {
+    const current = { scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop }
+    if (row < 0 || column < 0 || row >= this.rows.count || column >= this.columns.count || viewport.zoom <= 0 || !Number.isFinite(viewport.zoom)) return current
+    const merge = this.mergeAt(row, column)
+    const startRow = merge?.startRow ?? row, startColumn = merge?.startColumn ?? column
+    const rect = this.cellRect(row, column, viewport)
+    const reveal = (offset: number, position: number, size: number, leading: number, trailing: number, maximum: number) => {
+      if (trailing <= leading || size <= 0) return offset
+      // A wide column/tall row (including a merged range) cannot fit entirely.
+      // Reveal its beginning instead of scrolling to the far edge and hiding
+      // the active cell's input position behind the frozen panes.
+      const next = size >= trailing - leading || position < leading
+        ? offset + position - leading
+        : position + size > trailing ? offset + position + size - trailing : offset
+      return Math.max(0, Math.min(maximum, next))
+    }
+    return {
+      scrollLeft: startColumn < this.frozenColumns ? viewport.scrollLeft : reveal(
+        viewport.scrollLeft, rect.x, rect.width,
+        GRID_HEADER_WIDTH + this.columns.offset(this.frozenColumns) * viewport.zoom, viewport.width,
+        Math.max(0, GRID_HEADER_WIDTH + this.columns.offset(this.columns.count) * viewport.zoom - viewport.width),
+      ),
+      scrollTop: startRow < this.frozenRows ? viewport.scrollTop : reveal(
+        viewport.scrollTop, rect.y, rect.height,
+        GRID_HEADER_HEIGHT + this.rows.offset(this.frozenRows) * viewport.zoom, viewport.height,
+        Math.max(0, GRID_HEADER_HEIGHT + this.rows.offset(this.rows.count) * viewport.zoom - viewport.height),
+      ),
+    }
+  }
   hitTest(x: number, y: number, viewport: GridViewport): GridHit | undefined {
     if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) return undefined
     if (!this.rows.count || !this.columns.count) return undefined
     if (x < GRID_HEADER_WIDTH && y < GRID_HEADER_HEIGHT) return { kind: 'all' }
     const scale = viewport.zoom
     const frozenWidth = this.columns.offset(this.frozenColumns) * scale, frozenHeight = this.rows.offset(this.frozenRows) * scale
-    const column = this.columns.locate((x - GRID_HEADER_WIDTH + (x >= GRID_HEADER_WIDTH + frozenWidth ? viewport.scrollLeft : 0)) / scale)
-    const row = this.rows.locate((y - GRID_HEADER_HEIGHT + (y >= GRID_HEADER_HEIGHT + frozenHeight ? viewport.scrollTop : 0)) / scale)
+    const columnOffset = (x - GRID_HEADER_WIDTH + (x >= GRID_HEADER_WIDTH + frozenWidth ? viewport.scrollLeft : 0)) / scale
+    const rowOffset = (y - GRID_HEADER_HEIGHT + (y >= GRID_HEADER_HEIGHT + frozenHeight ? viewport.scrollTop : 0)) / scale
+    // AxisIndex.locate deliberately clamps for visible-range queries. A pointer
+    // in the unused canvas area must not select that clamped (possibly hidden)
+    // final row or column.
+    if (x >= GRID_HEADER_WIDTH && (!Number.isFinite(columnOffset) || columnOffset < 0 || columnOffset >= this.columns.offset(this.columns.count))) return undefined
+    if (y >= GRID_HEADER_HEIGHT && (!Number.isFinite(rowOffset) || rowOffset < 0 || rowOffset >= this.rows.offset(this.rows.count))) return undefined
+    const column = this.columns.locate(columnOffset)
+    const row = this.rows.locate(rowOffset)
     if (y < GRID_HEADER_HEIGHT) {
       const rect = this.cellRect(0, column, viewport, false)
       if (Math.abs(x - rect.x - rect.width) < 4) return { kind: 'resize-column', column, size: this.columns.size(column) }
