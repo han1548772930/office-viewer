@@ -3,7 +3,7 @@ import { Button, Input, Modal, Select, Switch } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
 import { FUniver } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
-import type { CellRange, PivotFieldArea } from '../../domain/model'
+import type { CellRange } from '../../domain/model'
 import {
   CONFIGURE_PIVOT_COMMAND, createPivotPanelDraft, pivotRangeAddress, preparePivotPanelInput,
   readPivotPanelSourceFields, type PivotPanelDraft,

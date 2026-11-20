@@ -1,13 +1,15 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
-import { transformContentControlsForBlockEdit } from '../services/content-controls'
+import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
+import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import {
-  clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
+  clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets,
   type DocumentImage, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
 } from '../model/document-model'
 
 export type DocumentCommand =
+  | DocumentTableCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch }
@@ -40,6 +42,11 @@ function pointForBlock(template: DocumentPoint, block: DocumentBlock, offset: nu
 /** Model mutation only. The application command bus owns the resulting history snapshot. */
 export function executeDocumentCommand(model: DocumentModel, selection: DocumentSelection, command: DocumentCommand): DocumentSelection {
   switch (command.id) {
+    case 'doc.command.table-insert-row':
+    case 'doc.command.table-insert-column':
+    case 'doc.command.table-delete-rows':
+    case 'doc.command.table-delete-columns':
+    case 'doc.command.table-delete': return executeDocumentTableCommand(model, selection, command)
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
     case 'doc.command.delete': return deleteContent(model, selection, command.direction)
     case 'doc.command.format-text': formatText(model, selection, command.patch); return selection
@@ -80,7 +87,18 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
     }
     case 'doc.command.insert-image': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'image', metadata: { image: command.image } }])
     case 'doc.command.insert-divider': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'divider', runs: [] }])
-    case 'doc.command.paste-blocks': return insertBlocks(model, selection, command.blocks)
+    case 'doc.command.paste-blocks': {
+      const paragraph = command.blocks.length === 1 && command.blocks[0]?.type === 'paragraph' ? command.blocks[0] : undefined
+      const text = paragraph && runText(paragraph.runs)
+      if (paragraph && text !== undefined && !/[\r\n]/.test(text)) {
+        const next = replaceSelectionText(model, selection, text)
+        const offset = next.focus.offset
+        const runs = runsForTarget(model, next.focus)
+        setTargetRuns(model, next.focus, [...sliceRuns(runs, 0, offset - text.length), ...paragraph.runs as DocumentRun[], ...sliceRuns(runs, offset)])
+        return next
+      }
+      return insertBlocks(model, selection, command.blocks)
+    }
     case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction)
   }
 }
@@ -104,9 +122,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const { start, end } = orderedSelection(model, selection)
   const startTargetId = start.cellBlockId ?? start.blockId
   const endTargetId = end.cellBlockId ?? end.blockId
-  if (startTargetId === endTargetId) {
-    transformContentControlsForBlockEdit(model, startTargetId, start.offset, end.offset, text.replace(/\r\n?/g, '\n').length)
-  } else {
+  if (startTargetId !== endTargetId) {
     // Replacing a paragraph break relocates the following paragraph, even at its offset zero.
     const targets = targetsForSelection(model, selection, true)
     const affectedIds = new Set(targets.map((target) => target.cellBlockId ?? target.blockId))
@@ -120,6 +136,23 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const inherited = { ...marksAtPoint(model, start), ...marks }
   const startBlock = blockAtPoint(model, start)
   if (!startBlock) return selection
+  const normalizedText = text.replace(/\r\n?/g, '\n')
+  const paragraphs = normalizedText.split('\n')
+  const additions = paragraphs.slice(1).map((part, index) => {
+    const paragraph = createParagraph(part, inherited)
+    paragraph.style = { ...startBlock.style }
+    if (['bullet', 'numbered', 'quote'].includes(startBlock.type)) { paragraph.type = startBlock.type; paragraph.level = startBlock.level }
+    if (index === paragraphs.length - 2) paragraph.runs = compactRuns([...paragraph.runs as DocumentRun[], ...after])
+    return paragraph
+  })
+  if (startTargetId === endTargetId) {
+    transformContentControlsForBlockEdit(model, startTargetId, start.offset, end.offset, normalizedText.length,
+      additions.length ? {
+        blockId: additions.at(-1)!.id,
+        firstBreakOffset: start.offset + normalizedText.indexOf('\n'),
+        lastParagraphOffset: start.offset + normalizedText.lastIndexOf('\n') + 1,
+      } : undefined)
+  }
 
   if (startContainer !== endContainer) {
     const targets = targetsForSelection(model, selection, true)
@@ -133,19 +166,11 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const endBlock = blockAtPoint(model, end)
   const endIndex = startContainer.findIndex((block) => block.id === endBlock?.id)
   if (endIndex > startIndex) startContainer.splice(startIndex + 1, endIndex - startIndex)
-  const paragraphs = text.replace(/\r\n?/g, '\n').split('\n')
   if (paragraphs.length === 1) {
     setTargetRuns(model, start, [...before, createRun(text, inherited), ...after])
     return collapsedSelection({ ...start, offset: start.offset + text.length })
   }
   setTargetRuns(model, start, [...before, createRun(paragraphs[0], inherited)])
-  const additions = paragraphs.slice(1).map((part, index) => {
-    const paragraph = createParagraph(part, inherited)
-    paragraph.style = { ...startBlock.style }
-    if (['bullet', 'numbered', 'quote'].includes(startBlock.type)) { paragraph.type = startBlock.type; paragraph.level = startBlock.level }
-    if (index === paragraphs.length - 2) paragraph.runs = compactRuns([...paragraph.runs as DocumentRun[], ...after])
-    return paragraph
-  })
   startContainer.splice(startIndex + 1, 0, ...additions)
   const last = additions.at(-1)!
   return collapsedSelection(pointForBlock(start, last, paragraphs.at(-1)!.length))
@@ -197,13 +222,23 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
 
 function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks: DocumentBlock[]): DocumentSelection {
   if (!blocks.length) return selection
+  const { start, end } = orderedSelection(model, selection)
+  const tail = createParagraph()
+  const controlPlan = { ...model, contentControls: getDocumentContentControls(model) }
+  if (sameTarget(start, end)) {
+    transformContentControlsForBlockEdit(controlPlan, start.cellBlockId ?? start.blockId, start.offset, end.offset, 0, {
+      blockId: tail.id, firstBreakOffset: start.offset, lastParagraphOffset: start.offset,
+    })
+  }
   const collapsed = replaceSelectionText(model, selection, '')
   const point = collapsed.focus
   const block = blockAtPoint(model, point)
   if (!block) return collapsed
   const container = blockContainer(model, point)
   const index = container.findIndex((candidate) => candidate.id === block.id)
-  const tail = { ...createParagraph(), style: { ...block.style }, runs: sliceRuns(block.runs as DocumentRun[], point.offset) }
+  tail.style = { ...block.style }
+  tail.runs = sliceRuns(block.runs as DocumentRun[], point.offset)
+  if (sameTarget(start, end) && model.contentControls) model.contentControls = controlPlan.contentControls
   setTargetRuns(model, point, sliceRuns(block.runs as DocumentRun[], 0, point.offset))
   container.splice(index + 1, 0, ...blocks, tail)
   return collapsedSelection(pointForBlock(point, tail, 0))
@@ -222,9 +257,10 @@ function moveTableCell(model: DocumentModel, selection: DocumentSelection, direc
   if (row < 0) return selection
   if (row >= table.rows.length) {
     if (direction === -1) return selection
-    const source = table.rows.at(-1)
-    if (!source) return selection
-    table.rows.push({ id: documentId('row'), cells: source.cells.map((cell) => ({ ...cell, id: documentId('cell'), blocks: [createParagraph()] })) })
+    const inserted = executeDocumentTableCommand(model, selection, { id: 'doc.command.table-insert-row', position: 'after' })
+    const insertedRow = inserted.focus.row ?? row
+    const paragraph = table.rows[insertedRow]?.cells[0]?.blocks[0]
+    return paragraph ? collapsedSelection({ blockId: point.blockId, row: insertedRow, col: 0, cellBlockId: paragraph.id, offset: 0 }) : selection
   }
   const paragraph = table.rows[row]?.cells[col]?.blocks[0]
   return paragraph ? collapsedSelection({ blockId: point.blockId, row, col, cellBlockId: paragraph.id, offset: 0 }) : selection

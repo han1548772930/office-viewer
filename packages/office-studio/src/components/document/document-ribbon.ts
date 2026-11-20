@@ -1,5 +1,5 @@
 import type { Component } from 'vue'
-import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, Clipboard, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTree, Maximize, Minus, Plus, Printer, Redo2, Search, Settings2, Strikethrough, Table2, Underline, Undo2 } from 'lucide-vue-next'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTree, Maximize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Smile, Strikethrough, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
@@ -34,6 +34,11 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
         action('doc-undo', '撤销', Undo2, 'core.command.undo', undefined, { disabled: !context.canUndo, disabledReason: '没有可撤销的文档更改', shortcut: 'Ctrl+Z' }),
         action('doc-redo', '重做', Redo2, 'core.command.redo', undefined, { disabled: !context.canRedo, disabledReason: '没有可重做的文档更改', shortcut: 'Ctrl+Y' }),
         action('doc-copy', '复制', Clipboard, 'doc.command.copy', undefined, { disabled: !state.hasSelection, disabledReason: '请先选择要复制的文字' }),
+        action('doc-cut', '剪切', Scissors, 'doc.command.cut', undefined, { disabled: !state.hasSelection, disabledReason: '请先选择要剪切的文字', shortcut: 'Ctrl+X' }),
+        { ...action('doc-paste', '粘贴', ClipboardPaste, 'doc.command.paste', undefined, { shortcut: 'Ctrl+V' }), type: 'split', children: [
+          action('doc-paste-source', '保留源格式粘贴', ClipboardPaste, 'doc.command.paste'),
+          action('doc-paste-text', '仅粘贴文本', FileText, 'doc.command.paste-text', undefined, { shortcut: 'Ctrl+Shift+V' }),
+        ] },
       ] },
       { id: 'doc-format', title: '字体与样式', order: 1, items: [
         { id: 'doc-block-style', type: 'select', title: '段落样式', width: 96, value: state.blockStyle ?? null, placeholder: '混合样式', commandId: 'doc.command.set-block-type', options: [{ label: '正文', value: 'P' }, ...[1, 2, 3, 4, 5, 6].map((level) => ({ label: `标题 ${level}`, value: `H${level}` }))], valueParams: (value) => ({ type: value === 'P' ? 'paragraph' : 'heading', level: value === 'P' ? 0 : Number(String(value).slice(1)) }) },
@@ -60,7 +65,11 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
       action('doc-link', '链接', Link2, 'doc.operation.open-link', undefined, { showLabel: true }),
       action('doc-page-break', '分页符', Plus, 'doc.command.insert-page-break', undefined, { showLabel: true }),
       action('doc-divider', '分隔线', Minus, 'doc.command.insert-divider', undefined, { showLabel: true }),
-      action('doc-controls', '内容控件', FileText, 'doc.operation.open-content-controls', undefined, { showLabel: true, disabled: !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务' }),
+      action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { showLabel: true }),
+      action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { showLabel: true }),
+      { ...action('doc-controls', '内容控件', FileText, 'doc.operation.open-content-controls', undefined, { showLabel: true, disabled: !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务' }), type: 'split', children: [
+        ...[{ type: 'text', title: '纯文本控件' }, { type: 'richText', title: '富文本控件' }, { type: 'checkbox', title: '复选框控件' }, { type: 'date', title: '日期控件' }, { type: 'dropDownList', title: '下拉列表控件' }, { type: 'comboBox', title: '组合框控件' }].map((item) => action(`doc-controls-${item.type}`, item.title, FileText, 'doc.operation.open-content-controls', item.type)),
+      ] },
     ] }] },
     { id: 'layout', title: '布局', order: 2, groups: [{ id: 'doc-paper', title: '页面设置', items: [
       { id: 'doc-paper-size', type: 'select', title: '纸张', width: 90, value: context.paper, commandId: 'doc.command.set-paper-size', options: [{ label: 'A4', value: 'A4' }, { label: 'Letter', value: 'Letter' }, { label: '自定义', value: 'Custom' }] },
@@ -74,6 +83,19 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
       { id: 'doc-zoom', type: 'select', title: '缩放', width: 90, value: context.zoom, commandId: 'doc.operation.set-zoom', options: [25, 50, 75, 100, 125, 150, 200, 300, 400].map((value) => ({ label: `${value}%`, value })) },
       action('doc-print', '打印文档', Printer, 'doc.command.print', undefined, { showLabel: true }),
     ] }] },
+    ...(state.table ? [{ id: 'table', title: '表格工具', order: 4, contextual: true, groups: [
+      { id: 'doc-table-insert', title: '插入行列', order: 0, items: [
+        action('doc-table-row-before', '在上方插入行', ArrowUp, 'doc.command.table-insert-row', { position: 'before' }, { showLabel: true }),
+        action('doc-table-row-after', '在下方插入行', ArrowDown, 'doc.command.table-insert-row', { position: 'after' }, { showLabel: true }),
+        action('doc-table-column-before', '在左侧插入列', ArrowLeft, 'doc.command.table-insert-column', { position: 'before' }, { showLabel: true }),
+        action('doc-table-column-after', '在右侧插入列', ArrowRight, 'doc.command.table-insert-column', { position: 'after' }, { showLabel: true }),
+      ] },
+      { id: 'doc-table-remove', title: '删除', order: 1, items: [
+        action('doc-table-delete-rows', '删除所选行', Trash2, 'doc.command.table-delete-rows', undefined, { showLabel: true }),
+        action('doc-table-delete-columns', '删除所选列', Trash2, 'doc.command.table-delete-columns', undefined, { showLabel: true }),
+        action('doc-table-delete', '删除表格', Trash2, 'doc.command.table-delete', undefined, { showLabel: true }),
+      ] },
+    ] }] : []),
   ]
 }
 
@@ -82,7 +104,12 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
   if (id === 'doc.command.insert-page-break' || id === 'doc.command.insert-divider') return { id }
+  if (id === 'doc.command.table-delete-rows' || id === 'doc.command.table-delete-columns' || id === 'doc.command.table-delete') return { id }
   if (!record(params)) return undefined
+  if (id === 'doc.command.table-insert-row' || id === 'doc.command.table-insert-column') {
+    return params.position === 'before' || params.position === 'after' ? { id, position: params.position } : undefined
+  }
+  if (id === 'doc.command.insert-text') return typeof params.text === 'string' ? { id, text: params.text } : undefined
   if (id === 'doc.command.set-block-type') {
     const type = params.type
     if (type !== 'paragraph' && type !== 'heading' && type !== 'bullet' && type !== 'numbered' && type !== 'quote') return undefined

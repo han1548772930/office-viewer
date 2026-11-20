@@ -58,6 +58,7 @@ export function workbookFromInput(input: Partial<WorkbookModel> & Record<string,
   const base = createBlankWorkbook()
   base.id = typeof input.id === 'string' ? input.id : randomId('workbook')
   base.name = typeof input.name === 'string' ? input.name : typeof input.title === 'string' ? input.title : base.name
+  base.date1904 = input.date1904 === true
   const sourceSheets = input.sheets
   if (Array.isArray(sourceSheets)) {
     base.sheets = sourceSheets.map((sheet) => normalizeSheet(sheet as Partial<SpreadsheetSheet> & Record<string, unknown>))

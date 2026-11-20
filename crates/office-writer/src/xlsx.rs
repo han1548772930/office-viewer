@@ -10,6 +10,9 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+#[path = "xlsx_filter.rs"]
+mod auto_filter;
+
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL_WORKBOOK: &str =
@@ -76,6 +79,8 @@ struct SheetInput {
     show_gridlines: bool,
     #[serde(default)]
     hidden_rows: Vec<u32>,
+    #[serde(default)]
+    auto_filter: Option<auto_filter::AutoFilterInput>,
     #[serde(default)]
     hidden_columns: Vec<u32>,
     #[serde(default)]
@@ -773,7 +778,7 @@ fn worksheet_xml(
     registry: &mut StyleRegistry,
     warnings: &mut Vec<ExportWarning>,
     drawing_rel_id: Option<&str>,
-) -> (String, Vec<(String, String)>) {
+) -> Result<(String, Vec<(String, String)>), ExportError> {
     let mut cells = Vec::<CellInput>::new();
     for (key, value) in &sheet.cells {
         if let Some(cell) = cell_from_entry(key, value) {
@@ -805,10 +810,23 @@ fn worksheet_xml(
         max_row = max_row.max(cell.row.unwrap_or(0));
         max_col = max_col.max(cell.col.unwrap_or(0));
     }
+    if let Some(filter) = &sheet.auto_filter {
+        if let Some((_, _, end_row, end_col)) = range_bounds(&filter.range) {
+            max_row = max_row.max(end_row);
+            max_col = max_col.max(end_col);
+        }
+    }
     let mut out = String::from(xml::DECL);
     out.push_str(&format!(
         "<worksheet xmlns=\"{MAIN_NS}\" xmlns:r=\"{REL_NS}\">"
     ));
+    if sheet
+        .auto_filter
+        .as_ref()
+        .is_some_and(|filter| !filter.columns.is_empty())
+    {
+        out.push_str("<sheetPr filterMode=\"1\"/>");
+    }
     out.push_str(&format!(
         "<dimension ref=\"{}:{}\"/>",
         cell_ref(0, 0),
@@ -878,7 +896,8 @@ fn worksheet_xml(
     for cell in cells {
         by_row.entry(cell.row.unwrap_or(0)).or_default().push(cell);
     }
-    for row in &sheet.hidden_rows {
+    let hidden_rows = auto_filter::hidden_rows(sheet);
+    for row in &hidden_rows {
         by_row.entry(*row).or_default();
     }
     for row in sheet.row_heights.keys().filter_map(|key| parse_index(key)) {
@@ -886,7 +905,7 @@ fn worksheet_xml(
     }
     for (row, mut row_cells) in by_row {
         row_cells.sort_by_key(|cell| cell.col.unwrap_or(0));
-        let hidden = sheet.hidden_rows.contains(&row);
+        let hidden = hidden_rows.contains(&row);
         let mut attrs = format!(" r=\"{}\"", row + 1);
         if let Some(height) = sheet.row_heights.get(&row.to_string()) {
             attrs.push_str(&format!(
@@ -904,6 +923,7 @@ fn worksheet_xml(
         out.push_str("</row>");
     }
     out.push_str("</sheetData>");
+    out.push_str(&auto_filter::write_xml(sheet, warnings)?);
     let mut merges = sheet
         .merged_ranges
         .iter()
@@ -941,7 +961,7 @@ fn worksheet_xml(
         out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
     }
     out.push_str("</worksheet>");
-    (out, hyperlinks)
+    Ok((out, hyperlinks))
 }
 
 fn range_bounds(range: &RangeInput) -> Option<(u32, u32, u32, u32)> {
@@ -1927,6 +1947,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             "worksheet coordinates exceed the XLSX row or column limit",
         ));
     }
+    for sheet in &workbook.sheets {
+        auto_filter::validate(sheet)?;
+    }
     let mut warnings = Vec::new();
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
@@ -1961,7 +1984,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             .unwrap_or_default();
         let drawing_rel_id = (!sheet_charts.is_empty()).then_some("rIdDrawing");
         let (content, hyperlinks) =
-            worksheet_xml(sheet, index, &mut registry, &mut warnings, drawing_rel_id);
+            worksheet_xml(sheet, index, &mut registry, &mut warnings, drawing_rel_id)?;
         let path = format!("xl/worksheets/sheet{}.xml", index + 1);
         package.add_xml(
             &path,
@@ -2217,6 +2240,218 @@ mod tests {
         );
         assert!(worksheet.contains("<row r=\"3\" hidden=\"1\"></row>"));
         assert!(worksheet.contains("<row r=\"4\" ht=\"32\" customHeight=\"1\"></row>"));
+    }
+
+    fn exported_filter_sheet(model: serde_json::Value) -> (String, Vec<ExportWarning>) {
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(package.finish().unwrap())).unwrap();
+        let mut worksheet = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("xl/worksheets/sheet1.xml").unwrap(),
+            &mut worksheet,
+        )
+        .unwrap();
+        (worksheet, warnings)
+    }
+
+    #[test]
+    fn exports_filter_columns_relative_to_range_and_unions_hidden_row_reasons() {
+        let (worksheet, warnings) = exported_filter_sheet(serde_json::json!({
+            "kind": "workbook", "sheets": [{"id": "data", "name": "Filters", "hiddenRows": [1],
+                "autoFilter": { "range": {"startRow": 2, "startCol": 1, "endRow": 6, "endCol": 3},
+                    "columns": {"1": {"kind": "values", "selectedItems": ["East", null, ""]},
+                        "3": {"kind": "condition", "operator": "between", "value": 100, "secondValue": 200}},
+                    "filteredRows": [3, 6]}
+            }]
+        }));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(worksheet.contains("<sheetPr filterMode=\"1\"/>"));
+        assert!(worksheet.contains("<dimension ref=\"A1:D7\"/>"));
+        assert!(worksheet.contains("<autoFilter ref=\"B3:D7\"><filterColumn colId=\"0\"><filters blank=\"1\"><filter val=\"East\"/></filters></filterColumn>"));
+        assert!(worksheet.contains("<filterColumn colId=\"2\"><customFilters and=\"1\"><customFilter operator=\"greaterThanOrEqual\" val=\"100\"/><customFilter operator=\"lessThanOrEqual\" val=\"200\"/></customFilters></filterColumn>"));
+        for row in [2, 4, 7] {
+            assert!(
+                worksheet.contains(&format!("<row r=\"{row}\" hidden=\"1\">")),
+                "{worksheet}"
+            );
+        }
+        assert!(!worksheet.contains("<row r=\"3\" hidden=\"1\">"));
+        assert!(worksheet.find("</sheetData>").unwrap() < worksheet.find("<autoFilter ").unwrap());
+    }
+
+    #[test]
+    fn serializes_comparisons_and_escaped_text_filter_patterns() {
+        let operators = [
+            (
+                "equals",
+                serde_json::json!("A*?~&"),
+                None,
+                "<customFilter operator=\"equal\" val=\"A~*~?~~&amp;\"/>",
+            ),
+            (
+                "doesNotEqual",
+                serde_json::json!(4),
+                None,
+                "<customFilter operator=\"notEqual\" val=\"4\"/>",
+            ),
+            (
+                "greaterThan",
+                serde_json::json!(4),
+                None,
+                "<customFilter operator=\"greaterThan\" val=\"4\"/>",
+            ),
+            (
+                "greaterThanOrEqual",
+                serde_json::json!(4),
+                None,
+                "<customFilter operator=\"greaterThanOrEqual\" val=\"4\"/>",
+            ),
+            (
+                "lessThan",
+                serde_json::json!(4),
+                None,
+                "<customFilter operator=\"lessThan\" val=\"4\"/>",
+            ),
+            (
+                "lessThanOrEqual",
+                serde_json::json!(4),
+                None,
+                "<customFilter operator=\"lessThanOrEqual\" val=\"4\"/>",
+            ),
+            (
+                "contains",
+                serde_json::json!("*?~"),
+                None,
+                "<customFilter operator=\"equal\" val=\"*~*~?~~*\"/>",
+            ),
+            (
+                "doesNotContain",
+                serde_json::json!("*?~"),
+                None,
+                "<customFilter operator=\"notEqual\" val=\"*~*~?~~*\"/>",
+            ),
+            (
+                "beginsWith",
+                serde_json::json!("*?~"),
+                None,
+                "<customFilter operator=\"equal\" val=\"~*~?~~*\"/>",
+            ),
+            (
+                "endsWith",
+                serde_json::json!("*?~"),
+                None,
+                "<customFilter operator=\"equal\" val=\"*~*~?~~\"/>",
+            ),
+            (
+                "between",
+                serde_json::json!(4),
+                Some(serde_json::json!(8)),
+                "<customFilters and=\"1\"><customFilter operator=\"greaterThanOrEqual\" val=\"4\"/><customFilter operator=\"lessThanOrEqual\" val=\"8\"/></customFilters>",
+            ),
+            (
+                "notBetween",
+                serde_json::json!(4),
+                Some(serde_json::json!(8)),
+                "<customFilters and=\"0\"><customFilter operator=\"lessThan\" val=\"4\"/><customFilter operator=\"greaterThan\" val=\"8\"/></customFilters>",
+            ),
+            (
+                "isBlank",
+                serde_json::Value::Null,
+                None,
+                "<filters blank=\"1\"/>",
+            ),
+            (
+                "isNotBlank",
+                serde_json::Value::Null,
+                None,
+                "<customFilter operator=\"notEqual\" val=\" \"/>",
+            ),
+        ];
+        for (operator, value, second, expected) in operators {
+            let mut criterion =
+                serde_json::json!({"kind": "condition", "operator": operator, "value": value});
+            if let Some(second) = second {
+                criterion["secondValue"] = second;
+            }
+            let (worksheet, warnings) = exported_filter_sheet(
+                serde_json::json!({"sheets": [{"name": "Filters", "autoFilter": {
+                    "range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "columns": {"0": criterion}, "filteredRows": []
+                }}]}),
+            );
+            assert!(
+                worksheet.contains(expected),
+                "operator={operator}: {worksheet}"
+            );
+            assert!(warnings.is_empty(), "operator={operator}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn empty_value_selection_is_an_impossible_predicate_and_error_filter_is_a_diagnosed_snapshot() {
+        let base = serde_json::json!({"sheets": [{"name": "Errors", "cells": {
+            "A2": {"value": "#DIV/0!", "dataType": "error"}, "A3": {"value": "#N/A", "dataType": "e"}, "A4": {"value": "normal"}
+        }, "autoFilter": {"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "columns": {"0": {"kind": "values", "selectedItems": []}}, "filteredRows": [1, 2, 3]}}]});
+        let (empty, warnings) = exported_filter_sheet(base.clone());
+        assert!(warnings.is_empty());
+        assert!(empty.contains("<customFilters and=\"1\"><customFilter operator=\"equal\" val=\" \"/><customFilter operator=\"notEqual\" val=\" \"/></customFilters>"));
+        let mut errors = base;
+        errors["sheets"][0]["autoFilter"]["columns"]["0"] =
+            serde_json::json!({"kind": "condition", "operator": "isError"});
+        let (worksheet, warnings) = exported_filter_sheet(errors);
+        assert!(worksheet.contains("<filter val=\"#DIV/0!\"/><filter val=\"#N/A\"/>"));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.code == "AUTOFILTER_ERROR_SNAPSHOT")
+        );
+    }
+
+    #[test]
+    fn diagnoses_filter_semantics_that_office_cannot_preserve_exactly() {
+        let (worksheet, warnings) = exported_filter_sheet(
+            serde_json::json!({"sheets": [{"name": "Typed", "cells": {"A2": {"value": 1}}, "autoFilter": {
+                "range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 2}, "columns": {
+                    "0": {"kind": "condition", "operator": "contains", "value": "East", "caseSensitive": true},
+                    "1": {"kind": "values", "selectedItems": [null]},
+                    "2": {"kind": "values", "selectedItems": [1, "1", true, "1"]}
+                }, "filteredRows": []
+            }}]}),
+        );
+        assert!(worksheet.contains("<autoFilter "));
+        for expected in [
+            "AUTOFILTER_CASE_SENSITIVE",
+            "AUTOFILTER_BLANK_TYPES",
+            "AUTOFILTER_VALUE_TYPES",
+            "AUTOFILTER_MIXED_TYPES",
+        ] {
+            assert!(
+                warnings.iter().any(|warning| warning.code == expected),
+                "missing {expected}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_filter_ranges_columns_rows_and_operands() {
+        let cases = [
+            serde_json::json!({"range": {"startRow": 2, "startCol": 0, "endRow": 2, "endCol": 0}}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 2, "endRow": 3, "endCol": 1}}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 1048576, "endCol": 0}}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "columns": {"1": {"kind": "values", "selectedItems": []}}}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "filteredRows": [0]}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "filteredRows": [4]}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "columns": {"0": {"kind": "condition", "operator": "between", "value": 2}}}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "columns": {"0": {"kind": "condition", "operator": "unknown"}}}),
+            serde_json::json!({"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0}, "columns": {"0": {"kind": "values", "selectedItems": [{}]}}}),
+        ];
+        for filter in cases {
+            let data = serde_json::json!({"sheets": [{"name": "Invalid", "autoFilter": filter}]})
+                .to_string();
+            let error = write(&data, &mut Package::new()).unwrap_err();
+            assert_eq!(error.code, "INVALID_MODEL", "{data}");
+        }
     }
 
     #[test]

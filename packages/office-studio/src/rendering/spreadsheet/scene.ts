@@ -3,6 +3,16 @@ import type { DrawCommand, RenderRect, RenderScene } from '../contracts'
 import { intersectRect } from '../geometry.ts'
 import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout.ts'
 import type { GridRange, GridViewport } from './layout'
+import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
+
+let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
+function decorationWidth(text: string, font: string, available: number): number {
+  if (textMeasureContext === undefined) textMeasureContext = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(1, 1).getContext('2d') : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
+  if (!textMeasureContext) return available
+  textMeasureContext.font = font
+  return Math.min(available, textMeasureContext.measureText(text).width)
+}
 
 export interface SpreadsheetSceneOptions {
   activeCell: string
@@ -12,12 +22,12 @@ export interface SpreadsheetSceneOptions {
   /** Drawing-object commands are expressed in unscaled worksheet CSS pixels. */
   overlayCommands?: readonly DrawCommand[]
 }
-export function displayCell(cell: ExcelCellView | undefined): string {
+export function displayCell(cell: ExcelCellView | undefined, date1904 = false): string {
   if (!cell) return ''
   const value = cell.formula ? cell.cachedValue ?? cell.formula : cell.value
-  if (cell.numberFormat === 'percent' && value !== '' && Number.isFinite(Number(value))) return `${(Number(value) * 100).toLocaleString('zh-CN')}%`
-  if (cell.numberFormat === 'number' && value !== '' && Number.isFinite(Number(value))) return Number(value).toLocaleString('zh-CN')
-  return value
+  const scalar = cell.rawValue !== undefined ? cell.rawValue : value !== '' && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ? Number(value) : value
+  const pattern = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : 'General')
+  return formatSheetValue(scalar, pattern, date1904) ?? cell.displayValue ?? value
 }
 
 /** Layout and hit-testing share the same sparse axes and frozen-pane transforms. */
@@ -32,7 +42,20 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? '#ffffff', clip })
     if (geometry.sheet.showGridlines !== false) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
     if (isSelected(row, column)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
-    const text = displayCell(cell)
+    if (cell?.border) for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+      const raw = cell.border[side]
+      const edge = raw && typeof raw === 'object' ? raw as Record<string, unknown> : undefined
+      const style = typeof raw === 'string' ? raw.split(':')[0] : edge?.style
+      if (!raw || style === 'none' || style === '') continue
+      const color = typeof edge?.color === 'string' ? edge.color : typeof raw === 'string' ? raw.split(':')[1] ?? '#1f2937' : '#1f2937'
+      const width = style === 'thick' ? 3 : style === 'medium' ? 2 : 1
+      const horizontal = side === 'top' || side === 'bottom'
+      const borderX = side === 'right' ? rect.x + rect.width : rect.x
+      const borderY = side === 'bottom' ? rect.y + rect.height : rect.y
+      commands.push({ kind: 'line', x1: borderX, y1: borderY, x2: horizontal ? rect.x + rect.width : borderX,
+        y2: horizontal ? borderY : rect.y + rect.height, color, width: width * z, clip })
+    }
+    const text = displayCell(cell, geometry.sheet.date1904)
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
     if (text) {
       const align = cell?.align ?? (column === 0 ? 'left' : Number.isFinite(Number(text)) ? 'right' : 'left')
@@ -40,8 +63,18 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const x = align === 'center' ? rect.x + rect.width / 2 : align === 'right' ? rect.x + rect.width - 6 * z : rect.x + 6 * z
       const font = `${cell?.italic ? 'italic ' : ''}${cell?.bold ? '600 ' : ''}${fontSize}px ${cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'}`
       const textClip = intersectRect(clip, { x: rect.x + 3 * z, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z), height: Math.max(0, rect.height - 2) })
-      commands.push({ kind: 'text', x, y: rect.y + rect.height / 2, text, font, color: cell?.color ?? '#243247', align, baseline: 'middle', clip: textClip })
-      if (cell?.underline) commands.push({ kind: 'line', x1: rect.x + 6 * z, y1: rect.y + rect.height / 2 + fontSize * 0.55, x2: rect.x + rect.width - 6 * z, y2: rect.y + rect.height / 2 + fontSize * 0.55, color: cell.color ?? '#243247', clip: textClip })
+      const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
+      const color = cell?.color ?? '#243247'
+      if (cell?.numberFormat === 'accounting' && /^[$¥￥€£] /.test(text)) {
+        commands.push({ kind: 'text', x: rect.x + 6 * z, y, text: text[0]!, font, color, align: 'left', baseline: 'middle', clip: textClip })
+        commands.push({ kind: 'text', x: rect.x + rect.width - 6 * z, y, text: text.slice(2), font, color, align: 'right', baseline: 'middle', clip: textClip })
+      } else commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', clip: textClip })
+      if (cell?.underline || cell?.strike) {
+        const width = decorationWidth(text, font, Math.max(0, rect.width - 12 * z))
+        const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
+        if (cell.underline) commands.push({ kind: 'line', x1: left, y1: y + fontSize * 0.55, x2: left + width, y2: y + fontSize * 0.55, color, clip: textClip })
+        if (cell.strike) commands.push({ kind: 'line', x1: left, y1: y, x2: left + width, y2: y, color, clip: textClip })
+      }
     }
   }
   for (const pane of panes) {

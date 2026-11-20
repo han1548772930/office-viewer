@@ -1,4 +1,6 @@
 import type { CellScalar, ChartModel, WorkbookModel, SpreadsheetCell } from '../domain/model.ts'
+import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
+import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 
 export interface ExcelCellView {
   value: string
@@ -12,7 +14,7 @@ export interface ExcelCellView {
   background?: string
   color?: string
   fontSize?: number
-  numberFormat?: 'general' | 'number' | 'percent'
+  numberFormat?: SheetNumberFormat
   cachedValue?: string
   fontFamily?: string
   rawValue?: CellScalar
@@ -20,6 +22,9 @@ export interface ExcelCellView {
   rawNumberFormat?: string
   wrap?: boolean
   border?: Record<string, unknown>
+  rotation?: number
+  indent?: number
+  shrinkToFit?: boolean
 }
 export interface ExcelSheetView {
   id: string
@@ -32,13 +37,16 @@ export interface ExcelSheetView {
   columnWidths?: Record<number, number>
   rowHeights?: Record<number, number>
   hiddenRows?: number[]
+  /** Derived view visibility. This must never be written back as manually hidden rows. */
+  filteredRows?: number[]
   hiddenColumns?: number[]
   showGridlines?: boolean
   visible?: boolean
   defaultColumnWidth?: number
   defaultRowHeight?: number
+  date1904?: boolean
 }
-export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[] }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; date1904?: boolean }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -57,13 +65,14 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   align: cell.style.horizontal === 'justify' ? 'left' : cell.style.horizontal,
   vertical: cell.style.vertical, background: cell.style.fill, color: cell.style.font.color,
   fontSize: cell.style.font.size, fontFamily: cell.style.font.family,
-  numberFormat: cell.style.numberFormat === 'General' ? 'general' : cell.style.numberFormat.includes('%') ? 'percent' : 'number',
+  numberFormat: classifySheetNumberFormat(cell.style.numberFormat) === 'custom' ? undefined : classifySheetNumberFormat(cell.style.numberFormat) as SheetNumberFormat,
   cachedValue: cell.formula ? cell.display : undefined, rawValue: cell.value, displayValue: cell.display,
   rawNumberFormat: cell.style.numberFormat, wrap: cell.style.wrap, border: cell.style.border,
+  rotation: cell.style.rotation, indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
 })
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
-    id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId,
+    id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId, date1904: workbook.date1904,
     charts: workbook.charts?.map(cloneChartModel),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
@@ -80,21 +89,23 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         freeze: { rows: sheet.frozenRows, columns: sheet.frozenCols },
         columnWidths: { ...sheet.columnWidths }, rowHeights: { ...sheet.rowHeights },
         hiddenRows: [...(sheet.hiddenRows ?? [])], hiddenColumns: [...(sheet.hiddenColumns ?? [])],
+        filteredRows: [...(sheet.autoFilter?.filteredRows ?? [])],
         showGridlines: sheet.showGridlines, visible: sheet.visible,
         defaultColumnWidth: sheet.defaultColumnWidth, defaultRowHeight: sheet.defaultRowHeight,
+        date1904: workbook.date1904,
       }
     }),
   }
 }
 function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
-  if (cell.formula) return original?.formula === cell.formula ? original.value : cell.cachedValue ?? null
+  if (cell.formula) return cell.rawValue !== undefined ? cell.rawValue : original?.formula === cell.formula ? original.value : cell.cachedValue ?? null
   if (original && String(original.value ?? '') === cell.value) return original.value
   if (cell.value.trim() && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(cell.value)) return Number(cell.value)
   return cell.value
 }
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView): WorkbookModel {
   return {
-    ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId,
+    ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904: view.date1904 ?? workbook.date1904,
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
     sheets: view.sheets.map((source) => {
       const original = workbook.sheets.find((sheet) => sheet.id === source.id)
@@ -105,9 +116,12 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         const id = position.row+':'+position.col
         const previous = original?.cells[id]
         const preserveDisplay = previous && previous.formula === (cell.formula ?? null) && String(previous.value ?? '') === cell.value
+        const numberFormat = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : previous?.style.numberFormat) ?? 'General'
+        const value = rawValue(cell, previous)
+        const display = formatSheetValue(value, numberFormat, view.date1904 ?? workbook.date1904)
         cells[id] = {
-          ...previous, id, ...position, value: rawValue(cell,previous), formula: cell.formula ?? null,
-          display: cell.formula ? cell.cachedValue ?? cell.formula : preserveDisplay ? previous.display : cell.value,
+          ...previous, id, ...position, value, formula: cell.formula ?? null,
+          display: display ?? (cell.formula ? cell.cachedValue ?? cell.formula : preserveDisplay ? previous.display : cell.value),
           style: {
             ...previous?.style,
             font: {
@@ -119,13 +133,12 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
             fill: cell.background ?? previous?.style.fill ?? '#fff',
             horizontal: cell.align ?? previous?.style.horizontal ?? 'left', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
             wrap: cell.wrap ?? previous?.style.wrap ?? false, border: cell.border ?? previous?.style.border,
-            numberFormat: cell.numberFormat === 'percent' ? '0%' : cell.numberFormat === 'number'
-              ? (previous?.style.numberFormat !== 'General' ? previous?.style.numberFormat ?? '#,##0.00' : '#,##0.00')
-              : cell.rawNumberFormat ?? previous?.style.numberFormat ?? 'General',
+            rotation: cell.rotation ?? previous?.style.rotation, indent: cell.indent ?? previous?.style.indent,
+            shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,
           },
         }
       }
-      return {
+      const next: WorkbookModel['sheets'][number] = {
         ...original, id: source.id, name: source.name, cells, visible: source.visible ?? original?.visible ?? true,
         rowCount: source.rowCount, columnCount: source.columnCount,
         columnWidths: { ...(source.columnWidths ?? original?.columnWidths) }, rowHeights: { ...(source.rowHeights ?? original?.rowHeights) },
@@ -141,6 +154,11 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
           return { startRow:first.row,startCol:first.col,endRow:last.row,endCol:last.col }
         }) ?? [],
       }
+      if (next.autoFilter) {
+        next.autoFilter = { ...next.autoFilter, columns: { ...next.autoFilter.columns }, filteredRows: [...next.autoFilter.filteredRows] }
+        refreshAutoFilter(next)
+      }
+      return next
     }),
   }
 }

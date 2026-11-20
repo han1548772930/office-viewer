@@ -2,6 +2,8 @@
 
 本记录依据当前共享工作区检查；并行任务仍在修改，内容是本次检查时的快照。它记录部分实现及实际验证边界，不构成完整功能验收。SHEET-22/23/25、COMMON-11、DOC-11/12 仍按主清单标为“未验收”。参考基线为 `D:\rust_test\univer-reference` 的 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。
 
+本文件保留早期检查快照。后续已有代码和测试变更，下文的“没有测试”“没有 UI”“编译失败”等描述不作为最新状态；当前复核与剩余缺口见[续作记录](continuation-2026-11-20.md)。
+
 ## COMMON-11 Canvas WebGPU Rust WASM
 
 - **规格依据**：本项目 `docs/RENDERING_AND_COMPUTE_STANDARD.md` 定义 WebGPU 优先、Canvas2D 回退、Worker/WASM 计算、取消/版本/内存边界；固定 Univer 源码只用于可观察渲染和交互契约，不表示上游采用相同后端。

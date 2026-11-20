@@ -1,6 +1,7 @@
 import type { OfficeStudio } from '../../api/office-studio'
 import { FUniver, type FSheetSlicer } from '../../api/facade'
 import type { CellScalar, SlicerModel, SlicerTimelineRange, SlicerType, TimelineLevel } from '../../domain/model'
+import { timelineCalendarToSerial, timelineDateToInput } from './timeline-date'
 
 export interface SlicerPanelTarget { workbookId: string; sheetId: string }
 export interface SlicerPanelField { id: string; name: string; available: boolean; reason?: string }
@@ -97,27 +98,18 @@ export async function applyPanelSlicerItems(studio: OfficeStudio, target: Slicer
   await control.setItems([...new Set(selectedItems)])
 }
 
-const DAY_MS = 86_400_000
-const excelEpoch = (date1904: boolean): number => Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 30)
-
 /** Date controls use ISO dates; the command receives workbook-system Excel serials. */
 export function timelineInputToSerial(value: string, date1904: boolean): number | undefined {
   if (!value.trim()) return undefined
-  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
-  const timestamp = parts ? Date.parse(`${value}T00:00:00.000Z`) : Number.NaN
-  const date = new Date(timestamp)
-  if (!parts || !Number.isFinite(timestamp) || date.getUTCFullYear() !== Number(parts[1])
-    || date.getUTCMonth() + 1 !== Number(parts[2]) || date.getUTCDate() !== Number(parts[3])) {
+  const serial = timelineCalendarToSerial(value, date1904)
+  if (serial === undefined) {
     throw new SlicerPanelError('INVALID_TIMELINE_DATE', '请输入有效日期，格式为年-月-日。')
   }
-  return (timestamp - excelEpoch(date1904)) / DAY_MS
+  return serial
 }
 
 export function timelineValueToInput(value: CellScalar | undefined, date1904: boolean): string {
-  if (value == null || value === '' || typeof value === 'boolean') return ''
-  const timestamp = typeof value === 'number' ? excelEpoch(date1904) + value * DAY_MS : Date.parse(value)
-  if (!Number.isFinite(timestamp)) return ''
-  return new Date(timestamp).toISOString().slice(0, 10)
+  return timelineDateToInput(value, date1904)
 }
 
 export function buildPanelTimelineRange(input: SlicerPanelTimelineInput, date1904: boolean): SlicerTimelineRange {

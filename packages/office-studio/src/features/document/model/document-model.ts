@@ -104,7 +104,15 @@ export function sliceRuns(runs: readonly DocumentRun[], start: number, end = Num
 
 export function clampPoint(model: DocumentModel, point: DocumentPoint): DocumentPoint {
   const targets = textTargets(model)
-  const target = targets.find((candidate) => sameTarget(candidate, point)) ?? targets[0]
+  const block = point.row == null ? undefined : model.blocks.find((candidate) => candidate.id === point.blockId)
+  const table = block && tableForBlock(block)
+  const row = table ? Math.max(0, Math.min(point.row ?? 0, table.rows.length - 1)) : undefined
+  const col = row == null ? undefined : Math.max(0, Math.min(point.col ?? 0, (table?.rows[row]?.cells.length ?? 1) - 1))
+  // Undo/redo can replace a cell paragraph id while retaining its logical table coordinate.
+  const target = targets.find((candidate) => sameTarget(candidate, point))
+    ?? targets.find((candidate) => candidate.blockId === point.blockId && candidate.row === row && candidate.col === col)
+    ?? targets.find((candidate) => candidate.blockId === point.blockId)
+    ?? targets[0]
   return target ? { ...target, offset: Math.max(0, Math.min(runText(runsForTarget(model, target)).length, point.offset)) } : { blockId: model.blocks[0]?.id ?? '', offset: 0 }
 }
 
@@ -166,7 +174,7 @@ export function createTable(rows: number, cols: number): DocumentTable {
 export function blocksFromHtml(html: string): DocumentBlock[] {
   const root = document.createElement('div')
   root.innerHTML = html
-  root.querySelectorAll('script,style,iframe,object,embed').forEach((node) => node.remove())
+  root.querySelectorAll('script,style,iframe,object,embed,meta,link,title,base').forEach((node) => node.remove())
   const blocks: DocumentBlock[] = []
   const append = (element: HTMLElement) => {
     const tag = element.tagName
@@ -238,7 +246,8 @@ function inlineRunsFromElement(root: HTMLElement, defaults: RunPatch = {}): Docu
     }
     node.childNodes.forEach((child) => walk(child, next))
   }
-  walk(root, { ...createRun(), ...defaults })
+  const { id: _id, text: _text, ...defaultMarks } = createRun('', defaults)
+  walk(root, defaultMarks)
   return compactRuns(runs)
 }
 

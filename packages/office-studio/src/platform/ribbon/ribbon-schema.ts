@@ -49,7 +49,13 @@ export interface RibbonTab {
   groups: RibbonGroup[]
 }
 
-export const CLASSIC_RIBBON = Object.freeze({ tabHeight: 36, toolbarHeight: 40, itemGap: 4, groupGap: 12, horizontalPadding: 12, moreWidth: 36 })
+/** Fixed reference Ribbon/ClassicMenu/ToolbarButton dimensions, in CSS pixels. */
+export const CLASSIC_RIBBON = Object.freeze({
+  tabHeight: 36, tabButtonHeight: 28, toolbarHeight: 40,
+  buttonHeight: 24, selectorHeight: 28, iconSize: 16,
+  itemGap: 8, groupPadding: 8, separatorWidth: 1,
+  horizontalPadding: 12, moreWidth: 32,
+})
 
 function ordered<T extends { order?: number }>(values: readonly T[]): T[] {
   return values.map((value, index) => ({ value, index }))
@@ -102,16 +108,21 @@ export function nextRibbonTab(tabs: readonly RibbonTab[], current: string, key: 
 
 export interface RibbonMeasurement { id: string; groupId: string; width: number }
 
-/** Collapse a suffix in source order; account for gaps only between remaining items/groups. */
+/** Collapse a suffix in source order, including each visible group's padding and borders. */
 export function fitRibbonItems(items: readonly RibbonMeasurement[], availableWidth: number): { visibleIds: string[]; overflowIds: string[] } {
   const usableWidth = Math.max(0, availableWidth - 2 * CLASSIC_RIBBON.horizontalPadding)
-  const widths = items.map((item, index) => Math.max(0, item.width) + (index === 0 ? 0 : item.groupId === items[index - 1]?.groupId ? CLASSIC_RIBBON.itemGap : CLASSIC_RIBBON.groupGap))
+  const widths = items.map((item, index) => Math.max(0, item.width) + (
+    index > 0 && item.groupId === items[index - 1]?.groupId
+      ? CLASSIC_RIBBON.itemGap
+      : 2 * CLASSIC_RIBBON.groupPadding + (index > 0 ? CLASSIC_RIBBON.separatorWidth : 0)
+  ))
   if (widths.reduce((sum, width) => sum + width, 0) <= usableWidth) return { visibleIds: items.map((item) => item.id), overflowIds: [] }
-  const limit = Math.max(0, usableWidth - CLASSIC_RIBBON.moreWidth - CLASSIC_RIBBON.itemGap)
+  const limit = Math.max(0, usableWidth - CLASSIC_RIBBON.moreWidth)
   let count = 0
   let occupied = 0
   for (const width of widths) {
-    if (occupied + width > limit) break
+    // More has an inline divider only when at least one group remains visible.
+    if (occupied + width + CLASSIC_RIBBON.separatorWidth > limit) break
     occupied += width
     count++
   }

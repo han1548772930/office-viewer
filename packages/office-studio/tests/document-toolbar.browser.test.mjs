@@ -53,10 +53,19 @@ before(async () => {
 after(async () => { await browser?.close(); await server?.close() })
 beforeEach(async () => {
   errors = []
+  const diagnostics = []
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   page.on('pageerror', (error) => errors.push(error.message))
+  page.on('console', (message) => { if (message.type() === 'error') diagnostics.push(`console: ${message.text()}`) })
+  page.on('requestfailed', (request) => diagnostics.push(`request: ${request.url()} ${request.failure()?.errorText ?? ''}`))
+  page.on('response', (response) => { if (response.status() >= 400) diagnostics.push(`HTTP ${response.status()}: ${response.url()}`) })
   await page.goto(baseURL)
-  await expect(page.getByRole('textbox', { name: '文档画布编辑区', exact: true })).toBeVisible()
+  try {
+    await expect(page.getByRole('textbox', { name: '文档画布编辑区', exact: true })).toBeVisible()
+  } catch (cause) {
+    const overlay = await page.evaluate(() => document.querySelector('vite-error-overlay')?.shadowRoot?.textContent ?? document.body.innerText)
+    throw new Error(`Docs fixture failed to mount.\n${[...errors, ...diagnostics, overlay].join('\n').slice(0, 8000)}`, { cause })
+  }
 }, { timeout: 60_000 })
 afterEach(async () => { await page?.close() })
 

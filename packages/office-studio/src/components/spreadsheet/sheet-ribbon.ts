@@ -1,4 +1,4 @@
-import { AlignCenter, AlignLeft, AlignRight, ArrowDownAZ, ArrowUpAZ, Bold, CalendarDays, ClipboardPaste, Copy, FileChartColumn, Grid2X2, Italic, ListFilter, Merge, PaintBucket, Plus, Redo2, RefreshCw, Scissors, Search, Snowflake, Trash2, Type, Underline, Undo2, WrapText, ZoomIn, ZoomOut } from 'lucide-vue-next'
+import { AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowDownAZ, ArrowUpAZ, AArrowDown, AArrowUp, Bold, CalendarDays, ClipboardPaste, Copy, Eraser, FileChartColumn, Grid2X2, Grid3X3, Italic, ListFilter, Merge, PaintBucket, Plus, Redo2, RefreshCw, Scissors, Search, Snowflake, Strikethrough, Trash2, Type, Underline, Undo2, WrapText, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 
 export interface SheetRibbonState {
@@ -17,10 +17,12 @@ export interface SheetRibbonState {
   bold?: boolean
   italic?: boolean
   underline?: boolean
+  strike?: boolean
   wrap?: boolean
   color?: string
   background?: string
   align?: string
+  vertical?: string
   gridlines: boolean
   frozen: boolean
   zoom: number
@@ -54,16 +56,27 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
         { id: 'font', title: '字体', order: 20, items: [
           { id: 'sheet.command.set-font-family', commandId: 'sheet.command.set-font-family', type: 'select', title: '字体', width: 112, disabled: !state.hasSheet, value: state.fontFamily, placeholder: '混合', options: [...new Set([...fonts, ...(state.fontFamily ? [state.fontFamily] : [])])].map(value => ({ label: value, value })) },
           { id: 'sheet.command.set-font-size', commandId: 'sheet.command.set-font-size', type: 'select', title: '字号', width: 66, disabled: !state.hasSheet, value: state.fontSize, placeholder: '混合', options: [...new Set([...fontSizes, ...(state.fontSize ? [state.fontSize] : [])])].sort((a, b) => a - b).map(value => ({ label: String(value), value })) },
+          button('sheet.command.increase-font-size', '增大字号', { icon: AArrowUp }),
+          button('sheet.command.decrease-font-size', '减小字号', { icon: AArrowDown }),
           button('sheet.command.toggle-bold', '加粗', { icon: Bold, activated: state.bold === true }),
           button('sheet.command.toggle-italic', '斜体', { icon: Italic, activated: state.italic === true }),
           button('sheet.command.toggle-underline', '下划线', { icon: Underline, activated: state.underline === true }),
+          button('sheet.command.toggle-strike', '删除线', { icon: Strikethrough, activated: state.strike === true }),
           { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Type, disabled: !state.hasSheet, children: colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, activated: state.color === color.value })) },
           { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, children: colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value, activated: state.background === color.value })) },
+          { id: 'sheet.menu.borders', type: 'menu', title: '边框', icon: Grid3X3, disabled: !state.hasSheet, children: [
+            ['all', '所有边框'], ['outside', '外侧框线'], ['inside', '内部框线'], ['top', '上框线'], ['bottom', '下框线'], ['left', '左框线'], ['right', '右框线'], ['none', '无框线'],
+          ].map(([value, label]) => button(`sheet.menu.border.${value}`, label!, { commandId: 'sheet.command.set-borders', params: value })) },
         ] },
         { id: 'alignment', title: '对齐', order: 30, items: [
           button('sheet.command.align-left', '左对齐', { commandId: 'sheet.command.set-align', params: 'left', icon: AlignLeft, activated: state.align === 'left' }),
           button('sheet.command.align-center', '居中', { commandId: 'sheet.command.set-align', params: 'center', icon: AlignCenter, activated: state.align === 'center' }),
           button('sheet.command.align-right', '右对齐', { commandId: 'sheet.command.set-align', params: 'right', icon: AlignRight, activated: state.align === 'right' }),
+          { id: 'sheet.menu.vertical-align', type: 'menu', title: '垂直对齐', icon: AlignVerticalJustifyCenter, disabled: !state.hasSheet, children: [
+            button('sheet.menu.vertical.top', '顶端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'top', icon: AlignVerticalJustifyStart, activated: state.vertical === 'top' }),
+            button('sheet.menu.vertical.middle', '垂直居中', { commandId: 'sheet.command.set-vertical-align', params: 'middle', icon: AlignVerticalJustifyCenter, activated: state.vertical === 'middle' }),
+            button('sheet.menu.vertical.bottom', '底端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'bottom', icon: AlignVerticalJustifyEnd, activated: state.vertical === 'bottom' }),
+          ] },
           button('sheet.command.toggle-wrap', '自动换行', { icon: WrapText, activated: state.wrap === true }),
           { ...button('sheet.command.merge', '合并单元格', { icon: Merge, disabled: !state.canMerge }), type: 'split', children: [
             button('sheet.command.merge-all', '合并单元格', { commandId: 'sheet.command.merge', disabled: !state.canMerge }),
@@ -71,11 +84,17 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
           ] },
         ] },
         { id: 'number', title: '数字', order: 40, items: [
-          { id: 'sheet.command.set-number-format', commandId: 'sheet.command.set-number-format', type: 'select', title: '数字格式', width: 90, disabled: !state.hasSheet, value: state.numberFormat, placeholder: '混合', options: [{ label: '常规', value: 'general' }, { label: '数字', value: 'number' }, { label: '百分比', value: 'percent' }] },
+          { id: 'sheet.command.set-number-format', commandId: 'sheet.command.set-number-format', type: 'select', title: '数字格式', width: 108, disabled: !state.hasSheet, value: state.numberFormat, placeholder: '混合或自定义', options: [
+            { label: '常规', value: 'general' }, { label: '数字', value: 'number' }, { label: '货币', value: 'currency' }, { label: '会计专用', value: 'accounting' },
+            { label: '百分比', value: 'percent' }, { label: '日期', value: 'date' }, { label: '时间', value: 'time' }, { label: '日期和时间', value: 'datetime' }, { label: '文本', value: 'text' },
+          ] },
+          button('sheet.command.increase-decimals', '增加小数位', { icon: Plus, showLabel: true }),
+          button('sheet.command.decrease-decimals', '减少小数位', { icon: Type, showLabel: true }),
         ] },
         { id: 'editing', title: '编辑', order: 50, items: [
           button('sheet.operation.find', '查找', { icon: Search, showLabel: true, shortcut: 'Ctrl+F' }),
           button('sheet.command.clear-content', '清除内容', { icon: Trash2, showLabel: true }),
+          button('sheet.command.clear-format', '清除格式', { icon: Eraser, showLabel: true }),
         ] },
       ],
     },
@@ -90,6 +109,8 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
         { id: 'objects', title: '对象', order: 10, items: [
           button('sheet.operation.insert-chart', '图表', { icon: FileChartColumn, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿' }),
           button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: Grid2X2, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿' }),
+          button('sheet.insert.slicer', '切片器', { commandId: 'sheet.operation.open-slicer', icon: ListFilter, showLabel: true, disabled: !state.chartAvailable }),
+          button('sheet.insert.timeline', '时间线', { commandId: 'sheet.operation.open-timeline', icon: CalendarDays, showLabel: true, disabled: !state.chartAvailable }),
         ] },
       ],
     },
@@ -98,6 +119,8 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
         { id: 'sort', title: '排序', items: [
           button('sheet.command.sort-ascending', '升序', { icon: ArrowDownAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围' }),
           button('sheet.command.sort-descending', '降序', { icon: ArrowUpAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围' }),
+          button('sheet.operation.open-data-panel', '自定义排序', { params: 'sort', icon: ArrowDownAZ, showLabel: true, disabled: !state.chartAvailable }),
+          button('sheet.data.filter', '筛选', { commandId: 'sheet.operation.open-data-panel', params: 'filter', icon: ListFilter, showLabel: true, disabled: !state.chartAvailable }),
         ] },
         { id: 'pivot', title: '数据分析', order: 10, items: [
           button('sheet.operation.open-pivot', '数据透视表', { icon: Grid2X2, showLabel: true, disabled: !state.chartAvailable }),
@@ -109,6 +132,7 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
     {
       id: 'formulas', title: '公式', order: 20, groups: [
         { id: 'formula-edit', title: '公式编辑', items: [
+          button('sheet.operation.open-function', '插入函数', { icon: Type, showLabel: true }),
           button('sheet.operation.start-formula', '编辑公式', { icon: Type, showLabel: true }),
           button('sheet.command.recalculate', '重新计算', { icon: RefreshCw, showLabel: true }),
         ] },

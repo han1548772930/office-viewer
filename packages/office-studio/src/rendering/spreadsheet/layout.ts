@@ -1,5 +1,6 @@
 import type { ExcelSheetView } from '../../services/excelViewAdapter'
 import type { RenderRect } from '../contracts'
+import { hiddenSheetRows } from '../../features/sheet-workbench/sheet-row-visibility.ts'
 
 export type SpreadsheetRenderSheet = ExcelSheetView & {
   columnWidths?: Record<number, number>
@@ -149,7 +150,7 @@ export class SpreadsheetGeometry {
     const columnWidths = sheet.defaultColumnWidth === undefined
       ? { 0: 152, ...sheet.columnWidths }
       : sheet.columnWidths
-    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, sheet.rowHeights, sheet.hiddenRows)
+    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, sheet.rowHeights, [...hiddenSheetRows(sheet)])
     this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, sheet.hiddenColumns)
     this.frozenRows = Math.max(0, Math.min(sheet.rowCount, sheet.freeze?.rows ?? 0))
     this.frozenColumns = Math.max(0, Math.min(sheet.columnCount, sheet.freeze?.columns ?? 0))

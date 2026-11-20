@@ -1,8 +1,9 @@
 import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { addRange, containsCell } from '../../rendering/spreadsheet/selection.ts'
+import { findVisibleSheetRow, hiddenSheetRows } from './sheet-row-visibility.ts'
 
-export interface SheetAddressBounds { rowCount: number; columnCount: number }
+export interface SheetAddressBounds { rowCount: number; columnCount: number; hiddenRows?: readonly number[]; filteredRows?: readonly number[]; rowHeights?: Readonly<Record<number, number>> }
 export interface ParsedSheetAddress { range: GridRange; address: string; anchor: string }
 
 function columnIndex(label: string): number {
@@ -129,8 +130,14 @@ export function normalizeSheetViewState(sheet: SheetAddressBounds, state: Partia
   }
   if (!ranges.length) ranges = [{ startRow: point.row, endRow: point.row, startColumn: point.column, endColumn: point.column }]
   if (!containsCell(ranges, point.row, point.column)) point = { row: ranges[0]!.startRow, column: ranges[0]!.startColumn }
+  const visibleRow = findVisibleSheetRow(sheet, point.row, 1)
+  if (visibleRow === undefined) return { key: 'A1', anchor: 'A1', ranges: [], zoom }
+  if (visibleRow !== point.row) {
+    point.row = visibleRow
+    if (!containsCell(ranges, point.row, point.column)) ranges = [{ startRow: point.row, endRow: point.row, startColumn: point.column, endColumn: point.column }]
+  }
   const candidate = clampPoint(state.anchor, point)
-  const anchor = containsCell(ranges, candidate.row, candidate.column) ? candidate : point
+  const anchor = containsCell(ranges, candidate.row, candidate.column) && !hiddenSheetRows(sheet).has(candidate.row) ? candidate : point
   return {
     key: `${columnLabel(point.column)}${point.row + 1}`,
     anchor: `${columnLabel(anchor.column)}${anchor.row + 1}`,
@@ -146,7 +153,7 @@ export function calculateSelectionStatistics(
   if (!hasValidBounds(sheet)) return result
   const selections = ranges.map(range => normalizeSelection(range, sheet)).filter((range): range is GridRange => range !== undefined)
   if (!selections.length) return result
-  const excludedRows = new Set([...(sheet.hiddenRows ?? []), ...(options.filteredRows ?? [])])
+  const excludedRows = hiddenSheetRows({ ...sheet, filteredRows: [...(sheet.filteredRows ?? []), ...(options.filteredRows ?? [])] })
   const visited = new Set<string>()
   for (const [key, cell] of Object.entries(sheet.cells)) {
     if (!/^\$?[A-Z]+\$?[1-9]\d*$/i.test(key)) continue

@@ -11,6 +11,7 @@ const props = defineProps<{
   selection: DocumentSelection
   model: DocumentModel
   documentApi?: FDocument
+  initialType?: DocumentContentControlType
 }>()
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -42,6 +43,15 @@ const lockOptions = [
   { label: '锁定控件', value: 'sdtLocked' },
   { label: '内容和控件都锁定', value: 'sdtContentLocked' },
 ]
+watch(() => [props.open, props.initialType] as const, ([open, initialType]) => {
+  if (open && initialType && visibleTypes.some((item) => item.value === initialType)) {
+    type.value = initialType
+    adding.value = true
+    title.value = ''
+    placeholder.value = '在此处输入'
+    lock.value = 'unlocked'
+  }
+})
 const selected = computed(() => props.controls.find((control) => control.id === selectedId.value))
 const rangeLabel = computed(() => {
   if (!sameTarget(props.selection.anchor, props.selection.focus)) return '请选择同一段落或表格单元格内的一段文字。'

@@ -6,7 +6,7 @@ const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url))
 /** Run after pnpm build; this server only serves production artifacts. */
 export default defineConfig({
   testDir: '.',
-  testMatch: 'production-office-io.spec.ts',
+  testMatch: ['production-office-io.spec.ts', 'office-worker-smoke.spec.ts'],
   outputDir: '../../test-results/production-office-io',
   fullyParallel: false,
   workers: 1,

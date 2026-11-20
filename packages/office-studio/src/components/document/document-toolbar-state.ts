@@ -1,5 +1,6 @@
 import type { DocumentModel, DocumentParagraphStyle } from '../../domain/model'
 import { blockAtPoint } from '../../features/document/commands/document-commands'
+import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
 import {
   marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
   selectionCollapsed, textTargets, type DocumentRun, type DocumentSelection, type RunPatch,
@@ -14,6 +15,7 @@ export interface DocumentToolbarState {
   paragraph: Partial<DocumentParagraphStyle>
   blockStyle?: string
   hasSelection: boolean
+  table?: DocumentTableSelection
 }
 
 /** Resolve the selected runs, rather than echoing the last clicked toolbar value. */
@@ -59,7 +61,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     const firstValue = paragraphs[0]?.[key]
     if (paragraphs.every((style) => style[key] === firstValue)) Object.assign(paragraph, { [key]: firstValue })
   }
-  return { marks: uniform, mixedMarks, paragraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, hasSelection: !collapsed }
+  return { marks: uniform, mixedMarks, paragraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
 }
 
 /** Count displayed characters as grapheme clusters, including composed emoji only once. */

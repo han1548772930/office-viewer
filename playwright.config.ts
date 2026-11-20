@@ -10,6 +10,7 @@ const systemBrowser = [
 export default defineConfig({
   testDir: './packages/office-studio/tests/browser',
   testMatch: '**/*.spec.mjs',
+  outputDir: './test-results/canvas-contracts',
   reporter: 'list',
   use: {
     baseURL: 'http://localhost:5177',

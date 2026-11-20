@@ -81,9 +81,9 @@
 
 ## 8. 当前迁移边界
 
-已有 ExcelWorkbench/DocumentWorkbench 含 DOM 网格/正文及 contenteditable 草稿，不能记为 Canvas/WebGPU 目标已完成。迁移时保留真实模型和可用操作，抽取布局、输入、交互与后端；完成情况链接到 COMMON-11、SHEET-02、DOC-01 的实际验收记录。
+2026-11-20 续作检查：代码现位于 `packages/office-studio/src`。Sheets/Docs 主路径已分别接入 `SpreadsheetCanvas.vue` 和 `DocumentCanvasViewport.vue`；布局、场景与 Canvas2D/WebGPU 后端分离，正文输入通过最小输入桥提交命令。不能再把现状概括为 DOM 网格或整页 contenteditable 草稿，也不能据此宣称全部绘制、复杂排版和大文件目标已完成。
 
-当前 WASM 前端适配仍有主线程直接调用解析的问题，应迁移到 Worker 协议；已有 Rust 解析 crate 不意味着大计算和 Worker 优化已经实现。
+`services/wasmAdapter.ts` 已通过 `parser/parser.worker.ts` 调用解析 WASM，使用 transferable ArrayBuffer，并在取消/超时/替换任务时终止 Worker；计算和写出拥有各自 Worker。各协议仍须分别验收版本、内存、过期结果及真实大样本行为；已有 Worker 或本轮正确性测试不等于性能优化达标。续作验证见[本轮记录](feature-evidence/continuation-2026-11-20.md)，既有性能测量另见 [COMMON-11 基准记录](feature-evidence/COMMON-11-compute-benchmark.md)。
 
 ## 9. 技术依据
 

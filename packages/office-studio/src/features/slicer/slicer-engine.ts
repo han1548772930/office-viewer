@@ -1,11 +1,11 @@
 import type {
-  CellScalar,
   SlicerModel,
   SlicerTimelineRange,
   SlicerType,
   WorkbookModel,
 } from '../../domain/model'
 import { getPivotSourceFields, setPivotLabelFilter } from '../pivot/services/pivot-engine'
+import { parseTimelineDate, timelinePeriodKey, type TimelineDate } from './timeline-date'
 
 export interface SlicerCreateInput {
   id: string
@@ -106,7 +106,7 @@ export function getSlicerItems(workbook: WorkbookModel, slicer: SlicerModel): st
   const items = new Set<string>()
   for (let row = pivot.source.range.startRow + 1; row <= pivot.source.range.endRow; row += 1) {
     const value = sheet.cells[`${row}:${field.sourceColumn}`]?.value ?? null
-    if (slicer.type === 'timeline' ? parseDate(value, workbook.date1904) != null : value !== null && value !== '') items.add(String(value))
+    if (slicer.type === 'timeline' ? parseTimelineDate(value, workbook.date1904) != null : value !== null && value !== '') items.add(String(value))
   }
   return [...items]
 }
@@ -134,7 +134,7 @@ function timelineItems(workbook: WorkbookModel, pivot: ReturnType<typeof require
   const values: string[] = []
   for (let row = pivot.source.range.startRow + 1; row <= pivot.source.range.endRow; row += 1) {
     const value = sheet.cells[`${row}:${field.sourceColumn}`]?.value ?? null
-    const date = parseDate(value, workbook.date1904)
+    const date = parseTimelineDate(value, workbook.date1904)
     if (!date) continue
     if (dateWithinRange(date, range, workbook.date1904)) {
       const key = String(value)
@@ -144,50 +144,19 @@ function timelineItems(workbook: WorkbookModel, pivot: ReturnType<typeof require
   return values
 }
 
-function dateWithinRange(date: Date, range: SlicerTimelineRange, date1904: boolean): boolean {
-  const startDate = range.start == null ? undefined : parseDate(range.start, date1904)
-  const endDate = range.end == null ? undefined : parseDate(range.end, date1904)
-  const start = startDate && periodBoundary(startDate, range.level, false)
-  const end = endDate && periodBoundary(endDate, range.level, true)
-  if (range.start != null && !start) throw new TypeError('Timeline start must be a valid date')
-  if (range.end != null && !end) throw new TypeError('Timeline end must be a valid date')
-  if (start && date < start) return false
-  if (end && date > end) return false
-  return true
-}
-
-function periodBoundary(date: Date, level: SlicerTimelineRange['level'], end: boolean): Date {
-  const year = date.getUTCFullYear()
-  const month = date.getUTCMonth()
-  const day = date.getUTCDate()
-  if (level === 'year') return new Date(Date.UTC(end ? year + 1 : year, 0, end ? 1 : 1) + (end ? -1 : 0))
-  if (level === 'quarter') {
-    const quarterMonth = Math.floor(month / 3) * 3
-    return end ? new Date(Date.UTC(year, quarterMonth + 3, 1) - 1) : new Date(Date.UTC(year, quarterMonth, 1))
-  }
-  if (level === 'month') return end ? new Date(Date.UTC(year, month + 1, 1) - 1) : new Date(Date.UTC(year, month, 1))
-  return end ? new Date(Date.UTC(year, month, day + 1) - 1) : new Date(Date.UTC(year, month, day))
-}
-
-function parseDate(value: CellScalar, date1904: boolean): Date | undefined {
-  if (typeof value === 'string') {
-    const timestamp = Date.parse(value)
-    return Number.isNaN(timestamp) ? undefined : new Date(timestamp)
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30)
-    const date = new Date(epoch + value * 86_400_000)
-    return Number.isNaN(date.getTime()) ? undefined : date
-  }
-  return undefined
+function dateWithinRange(date: TimelineDate, range: SlicerTimelineRange, date1904: boolean): boolean {
+  const start = range.start == null ? undefined : parseTimelineDate(range.start, date1904)
+  const end = range.end == null ? undefined : parseTimelineDate(range.end, date1904)
+  const key = timelinePeriodKey(date, range.level)
+  return (!start || key >= timelinePeriodKey(start, range.level)) && (!end || key <= timelinePeriodKey(end, range.level))
 }
 
 function validateTimelineRange(range: SlicerTimelineRange, date1904: boolean): void {
   if (!['day', 'month', 'quarter', 'year'].includes(range.level)) throw new TypeError(`Invalid timeline level: ${range.level}`)
-  const start = range.start == null ? undefined : parseDate(range.start, date1904)
-  const end = range.end == null ? undefined : parseDate(range.end, date1904)
+  const start = range.start == null ? undefined : parseTimelineDate(range.start, date1904)
+  const end = range.end == null ? undefined : parseTimelineDate(range.end, date1904)
   if (range.start != null && !start || range.end != null && !end) throw new TypeError('Timeline range must contain valid dates')
-  if (start && end && start > end) throw new RangeError('Timeline range start must not exceed end')
+  if (start && end && start.serial > end.serial) throw new RangeError('Timeline range start must not exceed end')
 }
 
 function validateNonNegative(value: number, name: string): void {

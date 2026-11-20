@@ -257,6 +257,27 @@ mod tests {
     use super::Package;
 
     #[test]
+    fn writes_deterministic_zip_entries_without_a_host_clock() {
+        let create = || {
+            let mut package = Package::new();
+            package
+                .add_xml("word/document.xml", "application/xml", "<document/>".into())
+                .unwrap();
+            package
+                .add_relationship(None, "rId1", "officeDocument", "word/document.xml", false)
+                .unwrap();
+            package.finish().unwrap()
+        };
+        let first = create();
+        assert_eq!(first, create());
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(first)).unwrap();
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index).unwrap();
+            assert_eq!(entry.last_modified(), Some(zip::DateTime::default()));
+        }
+    }
+
+    #[test]
     fn creates_root_relationships_and_content_types() {
         let mut package = Package::new();
         package

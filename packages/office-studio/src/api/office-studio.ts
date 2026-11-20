@@ -31,6 +31,7 @@ import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFr
 import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, type SlicerCreateInput } from '../features/slicer/slicer-engine'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
 import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortRange, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
+import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type ConfigureSheetFilterInput } from '../features/sheet-sort-filter/sheet-data-panel-state'
 import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
@@ -461,6 +462,10 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    this.registerCommand<ConfigureSheetFilterInput, boolean>(CONFIGURE_SHEET_FILTER_COMMAND, (input) => {
+      if (input.expectedRevision !== undefined && this.getWorkbookRevision(input.unitId) !== input.expectedRevision) throw new Error('数据已更改，请重新读取数据区域后再应用筛选。')
+      return this.commitWorkbook(input.unitId, '配置工作表筛选', (model) => configureFilterFromPanel(model, input))
+    })
     this.registerCommand<ConfigurePivotFromPanelInput, boolean>(CONFIGURE_PIVOT_COMMAND, (input) => this.commitPivotChange(
       input.unitId, input.pivotTableId, input.anchor.subUnitId, CONFIGURE_PIVOT_COMMAND,
       input.mode === 'create' ? '插入数据透视表' : '配置数据透视表',

@@ -6,6 +6,7 @@ const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url))
 export default defineConfig({
   testDir: '.',
   testMatch: 'document-workbench.spec.ts',
+  outputDir: '../../test-results/document-workbench',
   timeout: 60_000,
   expect: { timeout: 10_000 },
   reporter: 'list',

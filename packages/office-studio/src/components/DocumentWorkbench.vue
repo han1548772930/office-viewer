@@ -2,7 +2,7 @@
 import { ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Button, Input, InputNumber, Modal, Tooltip } from 'antdv-next'
 import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import type { DocumentModel, DocumentPageSetup } from '../domain/model'
+import type { DocumentContentControlType, DocumentModel, DocumentPageSetup } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
@@ -10,6 +10,7 @@ import DocumentContentControlPanel from './document/DocumentContentControlPanel.
 import DocumentOutline from './document/DocumentOutline.vue'
 import DocumentFooter from './document/DocumentFooter.vue'
 import DocumentPageSettings from './document/DocumentPageSettings.vue'
+import DocumentCharacterPicker from './document/DocumentCharacterPicker.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon } from './document/document-ribbon'
@@ -20,6 +21,7 @@ import { emptyLayout, type DocumentLayout } from '../features/document/layout/do
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
+import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean }>(), { showHeader: false, showOutline: undefined })
 const emit = defineEmits<{
@@ -68,7 +70,10 @@ const tableCols = ref<number | null>(3)
 const modalError = ref('')
 const notice = ref('')
 const contentControlPanelOpen = ref(false)
+const contentControlInitialType = ref<DocumentContentControlType>()
 const pageSettingsOpen = ref(false)
+const characterPickerOpen = ref(false)
+const characterPickerMode = ref<'symbol' | 'emoji'>('symbol')
 const pages = computed(() => layout.value.pages)
 const wordCount = computed(() => documentCharacterCount(textTargets(model.value).map((target) => runText(runsForTarget(model.value, target))).join('\n')))
 const selectedCharacters = computed(() => documentSelectionCharacterCount(model.value, selection.value))
@@ -78,13 +83,15 @@ const modalTitle = computed(() => ({ table: '插入表格', image: '插入图片
 const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }))
 let resizeObserver: ResizeObserver | undefined
 let imageRequest = 0
+let clipboardRequest = 0
 onMounted(() => {
   if (!workbenchRef.value) return
   resizeObserver = new ResizeObserver(([entry]) => { if (entry) workbenchWidth.value = entry.contentRect.width })
   resizeObserver.observe(workbenchRef.value)
 })
-onUnmounted(() => { resizeObserver?.disconnect(); imageRequest++ })
-onDeactivated(() => { imageRequest++; modalOpen.value = false; contentControlPanelOpen.value = false; pageSettingsOpen.value = false; showFind.value = false })
+onUnmounted(() => { resizeObserver?.disconnect(); imageRequest++; clipboardRequest++ })
+onDeactivated(() => { imageRequest++; clipboardRequest++; modalOpen.value = false; contentControlPanelOpen.value = false; pageSettingsOpen.value = false; characterPickerOpen.value = false; showFind.value = false })
+watch(() => toolbarState.value.table?.blockId, (id, previous) => { if (id && id !== previous) activeTab.value = 'table' })
 
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.modelValue, (value) => {
@@ -224,12 +231,35 @@ function findNext() {
   }
   notify('未找到匹配内容')
 }
-async function copySelection() {
+async function copySelection(cut = false) {
   const text = selectedPlainText(model.value, selection.value)
   if (!text) return
-  try { await navigator.clipboard.writeText(text) } catch { notify('无法访问剪贴板，请使用 Ctrl+C 复制') }
+  const base = model.value
+  const range = JSON.stringify(selection.value)
+  const request = ++clipboardRequest
+  try {
+    await navigator.clipboard.writeText(text)
+    if (cut) {
+      if (request !== clipboardRequest || model.value !== base || JSON.stringify(selection.value) !== range) { notify('文档或选区已变化，内容已复制，请重新剪切'); return }
+      execute({ id: 'doc.command.insert-text', text: '' })
+    }
+  } catch { notify(cut ? '无法访问剪贴板，内容未删除，请使用 Ctrl+X 剪切' : '无法访问剪贴板，请使用 Ctrl+C 复制') }
   canvasRef.value?.focus()
 }
+async function pasteSelection(plainText = false) {
+  const base = model.value
+  const range = JSON.stringify(selection.value)
+  const request = ++clipboardRequest
+  try {
+    if (!navigator.clipboard) throw new Error('Clipboard is unavailable')
+    const data = await readDocumentClipboard(navigator.clipboard, plainText)
+    if (request !== clipboardRequest || model.value !== base || JSON.stringify(selection.value) !== range) { notify('文档或选区已变化，请重新粘贴'); return }
+    const command = documentPasteCommand(data, plainText)
+    if (command) execute(command)
+  } catch { notify('无法读取剪贴板，请在文档中使用 Ctrl+V 或 Ctrl+Shift+V 粘贴') }
+  canvasRef.value?.focus()
+}
+function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
 function setZoom(value: number) { zoom.value = clampDocumentZoom(value) }
 function printDocument() { void printDocumentModel(model.value).catch((error: unknown) => notify(error instanceof Error ? error.message : String(error))) }
 function notify(message: string) { notice.value = message; emit('notify', message) }
@@ -240,11 +270,22 @@ function onRibbonExecute(id: string, params?: unknown) {
   if (command) { execute(command); return }
   switch (id) {
     case 'doc.command.copy': void copySelection(); break
+    case 'doc.command.cut': void copySelection(true); break
+    case 'doc.command.paste': void pasteSelection(); break
+    case 'doc.command.paste-text': void pasteSelection(true); break
     case 'doc.command.print': printDocument(); break
     case 'doc.operation.open-table': insertTable(); break
     case 'doc.operation.open-image': insertImage(); break
     case 'doc.operation.open-link': insertLink(); break
-    case 'doc.operation.open-content-controls': if (props.documentApi) contentControlPanelOpen.value = true; break
+    case 'doc.operation.open-content-controls':
+      if (props.documentApi) {
+        contentControlInitialType.value = typeof params === 'string' && ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox'].includes(params) ? params as DocumentContentControlType : undefined
+        contentControlPanelOpen.value = true
+      }
+      break
+    case 'doc.operation.open-characters':
+      if (params === 'symbol' || params === 'emoji') { characterPickerMode.value = params; characterPickerOpen.value = true }
+      break
     case 'doc.operation.toggle-outline': showOutline.value = !showOutline.value; break
     case 'doc.operation.toggle-focus': isFocusMode.value = !isFocusMode.value; void nextTick(() => canvasRef.value?.focus()); break
     case 'doc.operation.set-zoom': if (typeof params === 'number') { setZoom(params); void nextTick(() => canvasRef.value?.focus()) }; break
@@ -292,7 +333,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <div v-else class="insert-form"><label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label><Button v-if="modalKind === 'image'" type="primary" @click="imageInputRef?.click()"><FileUp :size="15" />选择本地图片</Button><input ref="imageInputRef" class="hidden-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" @change="onImageFile"></div>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
-    <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" @error="notify" />
+    <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" :initial-type="contentControlInitialType" @error="notify" />
+    <DocumentCharacterPicker v-model:open="characterPickerOpen" :mode="characterPickerMode" @insert="insertCharacter" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
   </section>
 </template>

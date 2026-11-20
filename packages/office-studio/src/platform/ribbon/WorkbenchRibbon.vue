@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { Button, Popover, Tooltip } from 'antdv-next'
-import { MoreHorizontal } from 'lucide-vue-next'
+import { EllipsisVertical } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
-import { fitRibbonItems, nextRibbonTab, resolveRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
+import { CLASSIC_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
 
 const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string }>(), { modelValue: undefined, direction: 'ltr', label: '功能区' })
 const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
 const id = useId()
+const classicStyle = {
+  '--ribbon-tab-height': `${CLASSIC_RIBBON.tabHeight}px`,
+  '--ribbon-tab-button-height': `${CLASSIC_RIBBON.tabButtonHeight}px`,
+  '--ribbon-toolbar-height': `${CLASSIC_RIBBON.toolbarHeight}px`,
+  '--ribbon-button-height': `${CLASSIC_RIBBON.buttonHeight}px`,
+  '--ribbon-item-gap': `${CLASSIC_RIBBON.itemGap}px`,
+  '--ribbon-group-padding': `${CLASSIC_RIBBON.groupPadding}px`,
+  '--ribbon-separator-width': `${CLASSIC_RIBBON.separatorWidth}px`,
+  '--ribbon-horizontal-padding': `${CLASSIC_RIBBON.horizontalPadding}px`,
+}
 const selectedId = ref(props.modelValue)
 const previousRegular = ref<string>()
 const tabs = computed(() => visibleRibbonTabs(props.tabs))
@@ -129,7 +139,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 </script>
 
 <template>
-  <section v-if="tabs.length" class="workbench-ribbon" data-testid="workbench-ribbon" :dir="direction" :aria-label="label">
+  <section v-if="tabs.length" class="workbench-ribbon" data-testid="workbench-ribbon" :dir="direction" :aria-label="label" :style="classicStyle">
     <div ref="tablist" class="workbench-ribbon-tabs" role="tablist" :aria-label="label" aria-orientation="horizontal" @keydown="onTabKeydown">
       <Button v-for="tab in tabs" :id="`${id}-tab-${tab.id}`" :key="tab.id" type="text" role="tab" class="workbench-ribbon-tab" :class="{ 'is-selected': tab.id === activeId, 'is-contextual': tab.contextual }" :aria-selected="tab.id === activeId" :aria-controls="`${id}-panel`" :tabindex="tab.id === activeId ? 0 : -1" :data-tab-id="tab.id" @mousedown.prevent @click="selectTab(tab.id)">{{ tab.title }}</Button>
       <div v-if="$slots['tab-extra']" class="ribbon-tab-extra"><slot name="tab-extra" /></div>
@@ -143,9 +153,9 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
           </template>
         </div>
       </div>
-      <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor">
-        <Popover v-model:open="moreOpen" trigger="click" placement="bottomRight" :destroy-on-hidden="true">
-          <Tooltip title="更多功能"><Button type="text" size="small" class="ribbon-more-button" aria-label="更多功能" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><MoreHorizontal :size="18" /></Button></Tooltip>
+      <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor" :class="{ 'has-visible-groups': visibleGroups.length > 0 }">
+        <Popover v-model:open="moreOpen" trigger="click" placement="bottomRight" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
+          <Tooltip title="更多功能"><Button type="text" size="small" class="ribbon-more-button" aria-label="更多功能" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><EllipsisVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
           <template #content>
             <div ref="morePanel" class="ribbon-overflow-menu" role="menu" aria-label="更多功能" @keydown="onMoreKeydown">
               <div v-for="group in overflowGroups" :key="group.id" class="ribbon-overflow-group" role="group" :aria-label="group.title">
@@ -173,24 +183,25 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 
 <style scoped>
 .workbench-ribbon { position: relative; flex: 0 0 auto; min-width: 0; background: #fff; color: #334155; border-bottom: 1px solid #e2e8f0; }
-.workbench-ribbon-tabs { display: flex; height: 36px; min-width: 0; gap: 4px; align-items: stretch; padding: 0 12px; overflow-x: auto; scrollbar-width: none; }
+.workbench-ribbon-tabs { display: flex; height: var(--ribbon-tab-height); min-width: 0; gap: 4px; align-items: center; justify-content: safe center; padding: 0 var(--ribbon-horizontal-padding); overflow-x: auto; scrollbar-width: none; border-radius: 6px; background: #f8fafc; box-sizing: border-box; }
 .workbench-ribbon-tabs::-webkit-scrollbar { display: none; }
-.workbench-ribbon-tab { position: relative; flex: 0 0 auto; height: 36px; min-width: 48px; padding: 0 14px; border-radius: 0; color: #475569; font-size: 13px; }
-.workbench-ribbon-tab.is-selected { color: #315bc2; background: transparent; font-weight: 600; }
-.workbench-ribbon-tab.is-selected::after { position: absolute; content: ''; inset-inline: 12px; bottom: 0; height: 2px; border-radius: 2px; background: #4268ce; }
+.workbench-ribbon-tab { position: relative; flex: 0 0 auto; height: var(--ribbon-tab-button-height); min-width: 0; padding: 4px 8px; border-radius: 2px; color: #475569; font-size: 14px; line-height: 20px; }
+.workbench-ribbon-tab.is-selected { color: #315bc2; background: #e7edfa; font-weight: 600; box-shadow: 0 1px 2px #1d2c4914; }
 .workbench-ribbon-tab.is-contextual { color: #7450af; }
 .workbench-ribbon-tab:focus-visible { outline: 2px solid #5274d7; outline-offset: -3px; }
 .ribbon-tab-extra { display: flex; flex: 0 0 auto; align-items: center; margin-inline-start: auto; }
-.workbench-ribbon-toolbar { display: flex; min-width: 0; height: 40px; align-items: center; gap: 4px; padding: 0 12px; box-sizing: border-box; }
-.ribbon-visible-groups { display: flex; min-width: 0; align-items: center; gap: 12px; }
-.workbench-ribbon-group { display: flex; flex: 0 0 auto; gap: 4px; align-items: center; position: relative; }
-.workbench-ribbon-group + .workbench-ribbon-group::before { position: absolute; content: ''; inset-inline-start: -6px; height: 20px; width: 1px; background: #e2e8f0; }
-.ribbon-more-anchor { display: flex; flex: 0 0 36px; margin-inline-start: auto; justify-content: flex-end; }
-.ribbon-more-button { display: inline-flex; height: 28px; width: 32px; align-items: center; justify-content: center; padding: 0; }
+.ribbon-tab-extra:empty { display: none; }
+.workbench-ribbon-toolbar { display: flex; min-width: 0; height: var(--ribbon-toolbar-height); align-items: center; justify-content: center; padding: 0 var(--ribbon-horizontal-padding); box-sizing: border-box; }
+.ribbon-visible-groups { display: flex; min-width: 0; align-items: center; }
+.workbench-ribbon-group { display: flex; flex: 0 0 auto; gap: var(--ribbon-item-gap); align-items: center; padding: 0 var(--ribbon-group-padding); box-sizing: border-box; }
+.workbench-ribbon-group + .workbench-ribbon-group { border-inline-start: var(--ribbon-separator-width) solid #e2e8f0; }
+.ribbon-more-anchor { display: flex; flex: 0 0 auto; padding-inline-start: var(--ribbon-group-padding); }
+.ribbon-more-anchor.has-visible-groups { border-inline-start: var(--ribbon-separator-width) solid #e2e8f0; }
+.ribbon-more-button { display: inline-flex; height: var(--ribbon-button-height); width: var(--ribbon-button-height); min-width: var(--ribbon-button-height); align-items: center; justify-content: center; padding: 0; }
 .ribbon-custom-item { display: inline-flex; align-items: center; min-height: 28px; flex: 0 0 auto; }
 .ribbon-measurer { position: absolute; inset-inline-start: 0; top: 0; display: flex; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; contain: layout; }
 .ribbon-measure-item { display: inline-flex; flex: 0 0 auto; }
-.ribbon-overflow-menu { display: flex; flex-direction: column; width: max-content; min-width: 210px; max-width: calc(100vw - 48px); max-height: min(520px, 70vh); overflow: auto; }
+.ribbon-overflow-menu { display: flex; flex-direction: column; width: max-content; min-width: min(210px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(520px, 70vh); overflow: auto; }
 .ribbon-overflow-group { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; }
 .ribbon-overflow-group + .ribbon-overflow-group { border-top: 1px solid #e2e8f0; }
 .ribbon-overflow-title { padding: 3px 6px; font-size: 11px; color: #64748b; }

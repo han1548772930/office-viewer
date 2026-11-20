@@ -69,10 +69,20 @@ function onDevicePixelRatioChange() {
   resize()
 }
 function onScroll() {
-  if (!scroller.value) return
+  // KeepAlive detaches the DOM and can reset its native scroll offsets. Those
+  // inactive events must not replace the worksheet's last visible viewport.
+  if (!active || !scroller.value) return
   const left = scroller.value.scrollLeft, top = scroller.value.scrollTop
   if (left !== viewport.value.scrollLeft || top !== viewport.value.scrollTop) viewport.value = { ...viewport.value, scrollLeft: left, scrollTop: top }
   sheetViews.set(props.sheet.id, { left, top }); queueRender()
+}
+function restoreViewport() {
+  if (!active || !scroller.value) return
+  const view = sheetViews.get(props.sheet.id)
+  scroller.value.scrollLeft = view?.left ?? 0
+  scroller.value.scrollTop = view?.top ?? 0
+  resize()
+  onScroll()
 }
 function point(event: MouseEvent) { const rect = root.value!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top } }
 function onPointerDown(event: PointerEvent) {
@@ -124,13 +134,7 @@ watch(scene, queueRender)
 watch(fullSize, () => { void nextTick(resize) })
 watch(() => props.zoom, () => { viewport.value = { ...viewport.value, zoom: props.zoom / 100 }; void nextTick(() => { resize(); ensureVisible(props.selectedKey) }) })
 watch(() => props.editingKey, key => { if (key) ensureVisible(key) })
-watch(() => props.sheet.id, () => {
-  void nextTick(() => {
-    const view = sheetViews.get(props.sheet.id)
-    if (scroller.value) { scroller.value.scrollLeft = view?.left ?? 0; scroller.value.scrollTop = view?.top ?? 0 }
-    onScroll()
-  })
-})
+watch(() => props.sheet.id, () => { void nextTick(restoreViewport) })
 onMounted(async () => {
   if (!canvasHost.value) return
   // Layout and navigation must be ready while the GPU adapter/pipeline is
@@ -147,8 +151,9 @@ onMounted(async () => {
     surfaceError.value = reason instanceof Error ? reason.message : String(reason)
   }
 })
-onActivated(() => { active = true; void nextTick(resize) })
+onActivated(() => { active = true; void nextTick(restoreViewport) })
 onDeactivated(() => {
+  sheetViews.set(props.sheet.id, { left: viewport.value.scrollLeft, top: viewport.value.scrollTop })
   active = false
   cancelAnimationFrame(frame); frame = 0
   dragging = false; lastPointer = undefined; resizeDrag = undefined

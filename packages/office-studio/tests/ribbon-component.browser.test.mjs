@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { before, after, beforeEach, test } from 'node:test'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { chromium } from '@playwright/test'
+import { chromium, expect } from '@playwright/test'
 
 let server
 let browser
@@ -21,10 +21,11 @@ const menusVisible = ref(true)
 const direction = ref('ltr')
 const family = ref('Arial')
 const bold = ref(false)
+const longTabTitles = ref(false)
 window.ribbonInvocations = []
-window.ribbonFixture = { active, locked, showContext, menusVisible, direction, family, bold }
+window.ribbonFixture = { active, locked, showContext, menusVisible, direction, family, bold, longTabTitles }
 const tabs = computed(() => menusVisible.value ? [
-  { id: 'home', title: '开始', order: 0, groups: [
+  { id: 'home', title: longTabTitles.value ? '开始与格式编辑' : '开始', order: 0, groups: [
     { id: 'history', title: '历史', items: [
       { id: 'undo', type: 'button', title: '撤销', icon: Undo2, commandId: 'history.command.undo', disabled: locked.value, disabledReason: '没有历史记录' },
     ] },
@@ -40,16 +41,18 @@ const tabs = computed(() => menusVisible.value ? [
   ] },
   { id: 'hidden', title: '隐藏', hidden: true, groups: [{ id: 'hidden-group', items: [{ id: 'hidden-tool', type: 'button', title: '隐藏工具', commandId: 'hidden' }] }] },
   { id: 'empty', title: '空分类', groups: [] },
-  { id: 'insert', title: '插入', order: 1, groups: [{ id: 'insert', items: [{ id: 'insert-table', type: 'button', title: '插入表格', commandId: 'doc.command.insert-table', showLabel: true }] }] },
-  { id: 'context', title: '表格', order: 2, contextual: true, hidden: !showContext.value, groups: [{ id: 'table', items: [{ id: 'delete-table', type: 'button', title: '删除表格', commandId: 'doc.command.delete-table', showLabel: true }] }] },
+  { id: 'insert', title: longTabTitles.value ? '插入与对象管理' : '插入', order: 1, groups: [{ id: 'insert', items: [{ id: 'insert-table', type: 'button', title: '插入表格', commandId: 'doc.command.insert-table', showLabel: true }] }] },
+  { id: 'context', title: longTabTitles.value ? '表格上下文工具' : '表格', order: 2, contextual: true, hidden: !showContext.value, groups: [{ id: 'table', items: [{ id: 'delete-table', type: 'button', title: '删除表格', commandId: 'doc.command.delete-table', showLabel: true }] }] },
 ] : [])
-createApp({ render() { return h(WorkbenchRibbon, { tabs: tabs.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }) } }).mount('#app')
+createApp({ render() { return h(WorkbenchRibbon, { tabs: tabs.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null }) } }).mount('#app')
 `
 
 before(async () => {
   server = await createServer({
     configFile: false,
     root: process.cwd(),
+    cacheDir: 'node_modules/.vite-ribbon-contract',
+    optimizeDeps: { noDiscovery: true, include: ['vue', 'antdv-next', 'lucide-vue-next'] },
     plugins: [vue(), {
       name: 'ribbon-browser-fixture',
       resolveId(id) { if (id === '/__ribbon_fixture.ts') return '\0ribbon-fixture' },
@@ -105,6 +108,48 @@ test('classic geometry, hidden categories and keyboard navigation use a single r
   assert.deepEqual(errors, [])
 })
 
+test('classic rows center their contents and match reference button, selector, group and icon geometry', async () => {
+  await expect(page.getByRole('button', { name: '更多功能', exact: true })).toHaveCount(0)
+  const geometry = await page.evaluate(() => {
+    const tabs = [...document.querySelectorAll('.workbench-ribbon-tabs [role="tab"]')].map(element => element.getBoundingClientRect())
+    const tabRow = document.querySelector('.workbench-ribbon-tabs').getBoundingClientRect()
+    const toolbar = document.querySelector('.workbench-ribbon-toolbar').getBoundingClientRect()
+    const controls = document.querySelector('.ribbon-visible-groups').getBoundingClientRect()
+    const groups = [...document.querySelectorAll('.workbench-ribbon-group')]
+    const undo = document.querySelector('[role="toolbar"] [aria-label="撤销"]').getBoundingClientRect()
+    const icon = document.querySelector('[role="toolbar"] [aria-label="撤销"] svg').getBoundingClientRect()
+    const selector = document.querySelector('[role="toolbar"] .ribbon-select').getBoundingClientRect()
+    return {
+      tabsHeight: tabRow.height, tabHeights: tabs.map(rect => rect.height), toolbarHeight: toolbar.height,
+      tabCenterDelta: (tabs[0].left + tabs.at(-1).right) / 2 - (tabRow.left + tabRow.right) / 2,
+      toolbarCenterDelta: (controls.left + controls.right - toolbar.left - toolbar.right) / 2,
+      undo: { width: undo.width, height: undo.height }, icon: { width: icon.width, height: icon.height }, selectorHeight: selector.height,
+      groupStyles: groups.map(element => { const style = getComputedStyle(element); return { gap: style.columnGap, left: style.paddingInlineStart, right: style.paddingInlineEnd, divider: style.borderInlineStartWidth } }),
+      itemGap: groups[1].children[1].getBoundingClientRect().left - groups[1].children[0].getBoundingClientRect().right,
+      emptyExtraHidden: getComputedStyle(document.querySelector('.ribbon-tab-extra')).display === 'none',
+      selectedTabBackground: getComputedStyle(document.querySelector('[role="tab"][aria-selected="true"]')).backgroundColor,
+      unselectedTabBackground: getComputedStyle(document.querySelector('[role="tab"][aria-selected="false"]')).backgroundColor,
+    }
+  })
+  assert.equal(geometry.tabsHeight, 36)
+  assert.deepEqual(geometry.tabHeights, [28, 28, 28])
+  assert.equal(geometry.toolbarHeight, 40)
+  assert.ok(Math.abs(geometry.tabCenterDelta) <= 1, JSON.stringify(geometry))
+  assert.ok(Math.abs(geometry.toolbarCenterDelta) <= 1, JSON.stringify(geometry))
+  assert.deepEqual(geometry.undo, { width: 24, height: 24 })
+  assert.deepEqual(geometry.icon, { width: 16, height: 16 })
+  assert.equal(geometry.selectorHeight, 28)
+  assert.deepEqual(geometry.groupStyles, [
+    { gap: '8px', left: '8px', right: '8px', divider: '0px' },
+    { gap: '8px', left: '8px', right: '8px', divider: '1px' },
+    { gap: '8px', left: '8px', right: '8px', divider: '1px' },
+  ])
+  assert.equal(geometry.itemGap, 8)
+  assert.equal(geometry.emptyExtraHidden, true)
+  assert.notEqual(geometry.selectedTabBackground, geometry.unselectedTabBackground)
+  assert.deepEqual(errors, [])
+})
+
 test('selectors and activated/disabled buttons reflect editor state and dispatch real command parameters', async () => {
   const font = page.getByRole('combobox', { name: '字体', exact: true })
   assert.equal(await font.count(), 1, await page.getByRole('combobox').evaluateAll((elements) => elements.map((element) => element.outerHTML).join('\n')))
@@ -127,6 +172,13 @@ test('narrow toolbar exposes overflow controls, nested menus and selectors witho
   await page.keyboard.press('ArrowDown')
   const popup = page.getByRole('menu', { name: '更多功能', exact: true })
   await popup.waitFor()
+  await expect.poll(async () => {
+    const bounds = await popup.boundingBox()
+    return bounds.x >= 12 && bounds.x + bounds.width <= 198
+  }).toBe(true)
+  const moreSize = await more.boundingBox()
+  assert.equal(moreSize.width, 24)
+  assert.equal(moreSize.height, 24)
   await popup.getByRole('button', { name: '段落工具4', exact: true }).click()
   await page.waitForFunction(() => window.ribbonInvocations.some(([id, value]) => id === 'doc.command.tool' && value === 4))
   await more.click()
@@ -143,6 +195,60 @@ test('narrow toolbar exposes overflow controls, nested menus and selectors witho
   await page.keyboard.press('Escape')
   assert.equal(await more.evaluate((element) => element === document.activeElement), true)
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true)
+  assert.deepEqual(errors, [])
+})
+
+test('classic fitting preserves every control once and centers the visible suffix trigger in both directions', async () => {
+  const expected = ['undo', 'family', 'bold', 'colors', ...Array.from({ length: 5 }, (_, index) => `tool-${index}`)]
+  for (const direction of ['ltr', 'rtl']) {
+    await page.evaluate(value => { window.ribbonFixture.direction.value = value }, direction)
+    for (const width of [210, 360, 620, 1200]) {
+      await page.setViewportSize({ width, height: 700 })
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      const toolbar = page.getByRole('toolbar', { name: '开始', exact: true })
+      const visibleIds = await toolbar.locator('[data-ribbon-item]').evaluateAll(elements => elements.map(element => element.dataset.ribbonItem))
+      const more = page.getByRole('button', { name: '更多功能', exact: true })
+      const overflowIds = []
+      if (await more.count()) {
+        await more.focus()
+        await more.press('ArrowDown')
+        const popup = page.getByRole('menu', { name: '更多功能', exact: true })
+        await expect(popup).toBeVisible()
+        overflowIds.push(...await popup.locator('.ribbon-overflow-group > [data-ribbon-item]').evaluateAll(elements => elements.map(element => element.dataset.ribbonItem)))
+        await page.keyboard.press('Escape')
+        await expect(more).toBeFocused()
+      }
+      assert.deepEqual([...visibleIds, ...overflowIds], expected, `${direction}, ${width}px`)
+      const bounds = await page.locator('.workbench-ribbon-toolbar').evaluate(element => {
+        const rect = element.getBoundingClientRect()
+        const visible = document.querySelector('.ribbon-visible-groups').getBoundingClientRect()
+        const more = document.querySelector('.ribbon-more-anchor')?.getBoundingClientRect()
+        const left = Math.min(visible.left, more?.left ?? visible.left)
+        const right = Math.max(visible.right, more?.right ?? visible.right)
+        return { width: innerWidth, scrollWidth: document.documentElement.scrollWidth, left, right, centerDelta: (left + right - rect.left - rect.right) / 2 }
+      })
+      assert.ok(bounds.left >= 12 && bounds.right <= width - 12, JSON.stringify(bounds))
+      assert.ok(Math.abs(bounds.centerDelta) <= 1, JSON.stringify(bounds))
+      assert.ok(bounds.scrollWidth <= width, JSON.stringify(bounds))
+    }
+  }
+  assert.deepEqual(errors, [])
+})
+
+test('overflowing classic tabs remain reachable from both ends using roving keyboard focus', async () => {
+  await page.setViewportSize({ width: 210, height: 700 })
+  await page.evaluate(() => { window.ribbonFixture.longTabTitles.value = true })
+  const tabs = page.getByRole('tab')
+  await tabs.first().focus()
+  await expect(tabs.first()).toBeInViewport()
+  await tabs.first().press('End')
+  await expect(tabs.last()).toBeFocused()
+  await expect(tabs.last()).toBeInViewport()
+  await tabs.last().press('Home')
+  await expect(tabs.first()).toBeFocused()
+  await expect(tabs.first()).toBeInViewport()
+  assert.equal(await page.locator('[role="tab"][tabindex="0"]').count(), 1)
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
   assert.deepEqual(errors, [])
 })
 

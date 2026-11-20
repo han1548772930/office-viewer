@@ -103,20 +103,24 @@ export function sortRange(sheet: FilteredSpreadsheetSheet, range: CellRange, cri
     return cells
   })
   const orderedIndices = order ? [...order] : getSortedRowOrder(sheet, range, criteria, options)
-  // Remove all destination cells in the range first, then copy complete cells;
-  // formulas, styles, rich-text payloads and metadata travel with their records.
-  for (let row = firstDataRow; row <= range.endRow; row += 1) {
-    for (let column = range.startCol; column <= range.endCol; column += 1) delete sheet.cells[cellKey(row, column)]
-  }
+  // Resolve every moved formula before mutating the sheet. A failed reference
+  // translation must not leave an emptied or partially reordered range.
+  const sortedCells: Array<[string, SpreadsheetCell]> = []
   for (let destinationOffset = 0; destinationOffset < orderedIndices.length; destinationOffset += 1) {
     const destinationRow = firstDataRow + destinationOffset
     const sourceRow = firstDataRow + orderedIndices[destinationOffset]!
     for (const [columnOffset, source] of sourceRows[orderedIndices[destinationOffset]!]!) {
       const column = range.startCol + columnOffset
       const formula = source.formula && translateFormula ? translateFormula(source.formula, destinationRow - sourceRow, 0) : source.formula
-      sheet.cells[cellKey(destinationRow, column)] = { ...source, row: destinationRow, col: column, id: `${destinationRow}:${column}`, formula }
+      sortedCells.push([cellKey(destinationRow, column), { ...source, row: destinationRow, col: column, id: `${destinationRow}:${column}`, formula }])
     }
   }
+  // Formulas, styles, rich text and metadata travel with complete cell records.
+  // Clearing destinations first also removes cells moved into sparse positions.
+  for (let row = firstDataRow; row <= range.endRow; row += 1) {
+    for (let column = range.startCol; column <= range.endCol; column += 1) delete sheet.cells[cellKey(row, column)]
+  }
+  for (const [key, cell] of sortedCells) sheet.cells[key] = cell
   if (sheet.autoFilter && rangesIntersect(sheet.autoFilter.range, range)) refreshAutoFilter(sheet)
 }
 
@@ -139,7 +143,12 @@ export function getSortedRowOrder(sheet: FilteredSpreadsheetSheet, range: CellRa
       const leftValue = readCellValue(sheet.cells[cellKey(firstDataRow + left, criterion.column)])
       const rightValue = readCellValue(sheet.cells[cellKey(firstDataRow + right, criterion.column)])
       const compared = compareValues(leftValue, rightValue, collator)
-      if (compared !== 0) return criterion.direction === 'ascending' ? compared : -compared
+      if (compared !== 0) {
+        // Blank placement is independent of direction; only nonblank values
+        // reverse their comparison in a descending sort.
+        if (rank(leftValue) === 4 || rank(rightValue) === 4) return compared
+        return criterion.direction === 'ascending' ? compared : -compared
+      }
     }
     return left - right
   })
@@ -188,7 +197,7 @@ export function getFilteredRows(sheet: FilteredSpreadsheetSheet): number[] {
 
 export function cellKey(row: number, column: number): string { return `${row}:${column}` }
 
-function readCellValue(cell: SpreadsheetCell | undefined): CellScalar | { error: string } | null {
+export function readCellValue(cell: SpreadsheetCell | undefined): CellScalar | { error: string } | null {
   if (!cell) return null
   if (cell.metadata?.error && typeof cell.metadata.error === 'string') return { error: cell.metadata.error }
   if (cell.dataType === 'e' || cell.dataType === 'error') return { error: typeof cell.value === 'string' ? cell.value : cell.display }

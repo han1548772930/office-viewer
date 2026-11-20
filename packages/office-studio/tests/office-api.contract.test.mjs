@@ -100,3 +100,43 @@ test('public API creates and edits documents through the same facade', () => {
   subscription.dispose()
   studio.dispose()
 })
+
+test('partial workbook inputs retain their date system through formulas, history and reopening', () => {
+  const studio = new apiModule.OfficeStudio({ workbook: { id: 'calendar-1904', date1904: true } })
+  const api = apiModule.FUniver.newAPI(studio)
+  try {
+    const workbook = api.getActiveWorkbook()
+    assert.equal(workbook.getId(), 'calendar-1904')
+    assert.equal(studio.getWorkbookModel(workbook.getId()).date1904, true)
+    const cell = workbook.getActiveSheet().getRange('A1')
+    cell.setValue('=DATE(1904,1,2)')
+    assert.equal(cell.getValue(), 1)
+    workbook.undo()
+    assert.equal(cell.getValue(), null)
+    workbook.redo()
+    assert.equal(cell.getValue(), 1)
+    const snapshot = JSON.parse(JSON.stringify(workbook.save()))
+    assert.equal(snapshot.date1904, true)
+    const reopened = api.createWorkbook({ ...snapshot, id: 'calendar-reopened' })
+    assert.equal(studio.getWorkbookModel(reopened.getId()).date1904, true)
+    reopened.getActiveSheet().getRange('A2').setValue('=DATE(1904,1,2)')
+    assert.equal(reopened.getActiveSheet().getRange('A2').getValue(), 1)
+    assert.equal(cell.getValue(), 1)
+  } finally { studio.dispose() }
+})
+
+test('new workbook facades keep calendar settings isolated and default to the 1900 system', () => {
+  const studio = new apiModule.OfficeStudio()
+  const api = apiModule.FUniver.newAPI(studio)
+  try {
+    const original = api.getActiveWorkbook()
+    const alternate = api.createWorkbook({ name: '1904 calendar', date1904: true })
+    const standard = api.createWorkbook({ name: '1900 calendar', date1904: false })
+    for (const [workbook, expected] of [[alternate, 1], [standard, 1463], [original, 1463]]) {
+      const cell = workbook.getActiveSheet().getRange('A1')
+      cell.setValue('=DATE(1904,1,2)')
+      assert.equal(cell.getValue(), expected)
+      assert.equal(workbook.save().date1904, expected === 1)
+    }
+  } finally { studio.dispose() }
+})

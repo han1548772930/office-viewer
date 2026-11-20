@@ -5,7 +5,8 @@ import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
 import { caretRect, createTextMeasurer, emptyLayout, hitTestDocument, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
-import { blocksFromHtml, cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection } from '../../features/document/model/document-model'
+import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection } from '../../features/document/model/document-model'
+import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 
@@ -402,10 +403,8 @@ function copy(event: ClipboardEvent) {
 function cut(event: ClipboardEvent) { copy(event); if (!selectionCollapsed(props.selection)) emit('command', { id: 'doc.command.insert-text', text: '' }) }
 function paste(event: ClipboardEvent) {
   event.preventDefault()
-  const html = event.clipboardData?.getData('text/html')
-  const blocks = html ? blocksFromHtml(html) : []
-  if (blocks.length && blocks.some((block) => ['table', 'image', 'heading', 'bullet', 'numbered'].includes(block.type))) emit('command', { id: 'doc.command.paste-blocks', blocks })
-  else emit('command', { id: 'doc.command.insert-text', text: event.clipboardData?.getData('text/plain') ?? '' })
+  const command = documentPasteCommand({ html: event.clipboardData?.getData('text/html'), text: event.clipboardData?.getData('text/plain') ?? '' })
+  if (command) emit('command', command)
 }
 
 function scrollToPage(index: number) {

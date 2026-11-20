@@ -18,9 +18,14 @@ import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
 import { calculateSelectionStatistics, createUniqueSheetName, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
+import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, nextSheetFontSize, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
+import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format'
+import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
+import { findVisibleSheetRow, hiddenSheetRows } from '../features/sheet-workbench/sheet-row-visibility'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const SlicerPanel = defineAsyncComponent(() => import('./spreadsheet/SlicerPanel.vue'))
+const SheetDataPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataPanel.vue'))
 
 export type ExcelCell = ExcelCellView
 export type ExcelSheet = SpreadsheetRenderSheet
@@ -135,6 +140,15 @@ const pivotPanelOpen = ref(false)
 const pivotSource = ref('')
 const slicerPanelOpen = ref(false)
 const slicerKind = ref<'slicer' | 'timeline'>('slicer')
+const dataPanelOpen = ref(false)
+const dataPanelMode = ref<'filter' | 'sort'>('filter')
+const dataPanelRange = ref('A1')
+const functionPanelOpen = ref(false)
+const functionName = ref('SUM')
+const functionArguments = ref('')
+const functionError = ref('')
+const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
+const functionOptions = SHEET_FUNCTION_CATALOG.map(entry => ({ label: `${entry.name} · ${entry.label}`, value: entry.name }))
 const sortBusy = ref(false)
 const sortProgress = ref('')
 let sortController: AbortController | undefined
@@ -165,9 +179,14 @@ const selectionFormat = computed(() => {
   return {
     fontFamily: common('fontFamily', 'Aptos') ?? null,
     fontSize: common('fontSize', 11) ?? null,
-    numberFormat: common('numberFormat', 'general') ?? null,
-    bold: common('bold', false), italic: common('italic', false), underline: common('underline', false),
-    align: common('align', 'left'), wrap: common('wrap', false),
+    numberFormat: (() => {
+      const formats = keys.map(key => sheetCells.value[key]?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[sheetCells.value[key]?.numberFormat ?? 'general'])
+      if (selectedCount.value > keys.length || !formats.length) formats.push('General')
+      const value = formats.every(format => format === formats[0]) ? classifySheetNumberFormat(formats[0]!) : 'custom'
+      return value === 'custom' ? null : value
+    })(),
+    bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
+    align: common('align', 'left'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
     color: common('color', '#1f2937'), background: common('background', '#ffffff'),
   }
 })
@@ -187,7 +206,8 @@ const formulaValue = computed(() => editingKey.value ? editValue.value : activeC
 const searchMatches = computed(() => {
   if (!searchText.value) return []
   const needle = searchText.value.toLocaleLowerCase()
-  return Object.entries(sheetCells.value).filter(([, cell]) => String(cell.formula ? cell.cachedValue ?? '' : cell.value).toLocaleLowerCase().includes(needle)).map(([key]) => key)
+  const hidden = hiddenSheetRows(activeSheet.value ?? { rowCount: 0 })
+  return Object.entries(sheetCells.value).filter(([key, cell]) => !hidden.has(splitKey(key)[1] - 1) && String(cell.formula ? cell.cachedValue ?? '' : cell.value).toLocaleLowerCase().includes(needle)).map(([key]) => key)
 })
 
 watch(
@@ -348,7 +368,11 @@ function getCell(key: string): ExcelCell {
 }
 
 function selectCell(key: string, extend = false) {
-  const [column, row] = splitKey(key)
+  const [column, requestedRow] = splitKey(key)
+  const visibleRow = activeSheet.value ? findVisibleSheetRow(activeSheet.value, requestedRow - 1, 1) : undefined
+  if (visibleRow === undefined) return
+  const row = visibleRow + 1
+  key = `${columnName(column)}${row}`
   if (extend) {
     const [anchorColumn, anchorRow] = splitKey(selectionAnchor.value)
     selectedRanges.value = [{ startRow: Math.min(anchorRow, row) - 1, endRow: Math.max(anchorRow, row) - 1, startColumn: Math.min(anchorColumn, column), endColumn: Math.max(anchorColumn, column) }]
@@ -385,11 +409,12 @@ function navigateToAddress(input: string) {
   if (!parsed) { nameError.value = '请输入当前工作表内的有效地址或范围，例如 A1、A1:C8'; return }
   finishEdit()
   nameError.value = ''
-  selectedKey.value = parsed.anchor
-  selectionAnchor.value = parsed.anchor
-  selectedRanges.value = [parsed.range]
+  const next = normalizeSheetViewState(sheet, { key: parsed.anchor, anchor: parsed.anchor, ranges: [parsed.range], zoom: zoom.value })
+  selectedKey.value = next.key
+  selectionAnchor.value = next.anchor
+  selectedRanges.value = next.ranges
   syncApiSelection()
-  spreadsheetCanvas.value?.ensureVisible(parsed.anchor)
+  spreadsheetCanvas.value?.ensureVisible(next.key)
   spreadsheetCanvas.value?.focus()
 }
 
@@ -407,8 +432,9 @@ function cancelEdit() {
 function moveSelection(rowOffset: number, columnOffset: number, extend = false) {
   const [column, row] = splitKey(selectedKey.value)
   const nextColumn = Math.max(0, Math.min((activeSheet.value?.columnCount ?? columnCount) - 1, column + columnOffset))
-  const nextRow = Math.max(1, Math.min(activeSheet.value?.rowCount ?? 100, row + rowOffset))
-  selectCell(`${columnName(nextColumn)}${nextRow}`, extend)
+  const nextRow = activeSheet.value ? findVisibleSheetRow(activeSheet.value, row - 1 + rowOffset, rowOffset < 0 ? -1 : 1, false) : undefined
+  if (nextRow === undefined) return
+  selectCell(`${columnName(nextColumn)}${nextRow + 1}`, extend)
 }
 
 function handleGridKeydown(event: KeyboardEvent) {
@@ -561,7 +587,7 @@ function redo() {
   emit('redo')
 }
 
-function toggleStyle(style: 'bold' | 'italic' | 'underline') {
+function toggleStyle(style: 'bold' | 'italic' | 'underline' | 'strike') {
   if (!activeSheet.value) return
   const value = selectionFormat.value[style] !== true
   if (!applyToSelection((key) => {
@@ -575,8 +601,20 @@ function setCellFormat<K extends keyof ExcelCell>(property: K, value: ExcelCell[
   if (!activeSheet.value) return
   if (!applyToSelection(key => {
     const cell = activeSheet.value?.cells[key] ?? { value: '' }
-    activeSheet.value!.cells[key] = { ...cell, [property]: value, ...(property === 'numberFormat' ? { rawNumberFormat: value === 'general' ? 'General' : value === 'percent' ? '0%' : '#,##0.00' } : {}) }
+    activeSheet.value!.cells[key] = { ...cell, [property]: value }
   })) return
+  commitHistory()
+}
+
+function changeSelectedCells(change: (cell: ExcelCell) => ExcelCell): void {
+  if (!activeSheet.value || !applyToSelection(key => { activeSheet.value!.cells[key] = change(activeSheet.value!.cells[key] ?? { value: '' }) })) return
+  commitHistory()
+}
+function setNumberFormat(format: SheetNumberFormat): void { changeSelectedCells(cell => applySheetNumberFormat(cell, format)) }
+function changeFontSize(direction: -1 | 1): void { changeSelectedCells(cell => ({ ...cell, fontSize: nextSheetFontSize(cell.fontSize ?? 11, direction) })) }
+function setBorders(preset: SheetBorderPreset): void {
+  if (!activeSheet.value || !checkDirectSelection()) return
+  applySheetBorders(activeSheet.value.cells, selectedRanges.value, preset)
   commitHistory()
 }
 
@@ -895,6 +933,24 @@ function openPivotPanel() {
 }
 
 function openSlicerPanel(kind: 'slicer' | 'timeline') { slicerKind.value = kind; slicerPanelOpen.value = true }
+function openDataPanel(mode: 'filter' | 'sort'): void {
+  const bounds = selectionBounds(selectedRanges.value)
+  dataPanelMode.value = mode
+  dataPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
+  dataPanelOpen.value = true
+}
+function openFunctionPanel(): void {
+  functionArguments.value = ''
+  functionError.value = ''
+  functionPanelOpen.value = true
+}
+function insertFunction(): void {
+  try {
+    const formula = buildSheetFunctionFormula(functionName.value, functionArguments.value)
+    functionPanelOpen.value = false
+    beginEdit(selectedKey.value, formula, 'formula')
+  } catch (error) { functionError.value = error instanceof Error ? error.message : '无法插入函数。' }
+}
 
 async function sortSelection(ascending: boolean) {
   const bounds = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
@@ -924,9 +980,17 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.paste': () => { void pasteSelection() }, 'sheet.command.clear-content': clearSelection,
     'sheet.command.toggle-bold': () => toggleStyle('bold'), 'sheet.command.toggle-italic': () => toggleStyle('italic'),
     'sheet.command.toggle-underline': () => toggleStyle('underline'),
+    'sheet.command.toggle-strike': () => toggleStyle('strike'),
     'sheet.command.set-font-family': () => { if (typeof params === 'string') setCellFormat('fontFamily', params) },
     'sheet.command.set-font-size': () => { if (typeof params === 'number' && params > 0) setCellFormat('fontSize', params) },
-    'sheet.command.set-number-format': () => { if (params === 'general' || params === 'number' || params === 'percent') setCellFormat('numberFormat', params) },
+    'sheet.command.increase-font-size': () => changeFontSize(1),
+    'sheet.command.decrease-font-size': () => changeFontSize(-1),
+    'sheet.command.set-number-format': () => { if (typeof params === 'string' && Object.hasOwn(SHEET_NUMBER_FORMATS, params)) setNumberFormat(params as SheetNumberFormat) },
+    'sheet.command.increase-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, 1)),
+    'sheet.command.decrease-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, -1)),
+    'sheet.command.clear-format': () => changeSelectedCells(clearSheetCellFormat),
+    'sheet.command.set-vertical-align': () => { if (params === 'top' || params === 'middle' || params === 'bottom') setCellFormat('vertical', params) },
+    'sheet.command.set-borders': () => { if (typeof params === 'string' && ['all', 'outside', 'inside', 'top', 'bottom', 'left', 'right', 'none'].includes(params)) setBorders(params as SheetBorderPreset) },
     'sheet.command.set-color': () => { if (typeof params === 'string') setCellFormat('color', params) },
     'sheet.command.set-background': () => { if (typeof params === 'string') setBackground(params) },
     'sheet.command.set-align': () => { if (params === 'left' || params === 'center' || params === 'right') setAlign(params) },
@@ -938,6 +1002,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-pivot': openPivotPanel,
     'sheet.operation.open-slicer': () => openSlicerPanel('slicer'),
     'sheet.operation.open-timeline': () => openSlicerPanel('timeline'),
+    'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
+    'sheet.operation.open-function': openFunctionPanel,
     'sheet.command.sort-ascending': () => sortSelection(true),
     'sheet.command.sort-descending': () => sortSelection(false),
     'sheet.command.recalculate': () => { recalculateFormulas(); commitHistory() },
@@ -1035,9 +1101,19 @@ onDeactivated(() => sortController?.abort())
       <Input v-model:value="renameValue" aria-label="工作表名称" :status="renameError ? 'error' : undefined" :maxlength="31" @press-enter="confirmRenameSheet" />
       <p v-if="renameError" class="chart-insert-error" role="alert">{{ renameError }}</p>
     </Modal>
+    <Modal v-model:open="functionPanelOpen" title="插入函数" ok-text="插入到公式栏" cancel-text="取消" :width="480" @ok="insertFunction">
+      <div class="chart-insert-form">
+        <label>函数<Select v-model:value="functionName" :options="functionOptions" aria-label="函数名称" show-search option-filter-prop="label" /></label>
+        <p>{{ functionEntry?.category }} · {{ functionEntry?.label }}</p>
+        <label>参数或区域<Input v-model:value="functionArguments" aria-label="函数参数" :placeholder="functionEntry?.example" @press-enter="insertFunction" /></label>
+        <p class="chart-insert-hint">例如 {{ functionEntry?.example }}。插入后可在公式栏修改并确认。目录列出当前引擎支持的函数。</p>
+        <p v-if="functionError" role="alert" class="chart-insert-error">{{ functionError }}</p>
+      </div>
+    </Modal>
     <SheetFooter :sheets="workbook.sheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :initial-kind="slicerKind" />
+    <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
   </section>
 </template>
 

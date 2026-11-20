@@ -6,6 +6,7 @@ const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url))
 export default defineConfig({
   testDir: '.',
   testMatch: 'compute-runtime.spec.ts',
+  outputDir: '../../test-results/compute-runtime',
   timeout: 45_000,
   expect: { timeout: 10_000 },
   reporter: 'list',

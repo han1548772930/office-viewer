@@ -193,8 +193,8 @@ function close(): void { emit('update:open', false) }
         </template>
         <template v-else>
           <label>日期粒度<Select v-model:value="level" :options="levels" aria-label="时间线粒度" :disabled="busy" /></label>
-          <label>开始日期<Input v-model:value="start" type="date" aria-label="时间线开始日期" :disabled="busy" /></label>
-          <label>结束日期<Input v-model:value="end" type="date" aria-label="时间线结束日期" :disabled="busy" /></label>
+          <label>开始日期<Input v-model:value="start" placeholder="YYYY-MM-DD" aria-label="时间线开始日期" :disabled="busy" /></label>
+          <label>结束日期<Input v-model:value="end" placeholder="YYYY-MM-DD" aria-label="时间线结束日期" :disabled="busy" /></label>
           <p class="slicer-panel__muted">边界按所选粒度包含整个日、月、季度或年。留空的一端不限范围。</p>
           <Button type="primary" :loading="busy" :disabled="busy" @click="applyTimeline">应用日期范围</Button>
         </template>

@@ -2,6 +2,8 @@
 
 Status: **未验收**. This record describes the current implementation slice; it does not claim full parity.
 
+This is the earlier implementation snapshot. Current paragraph-split/lock fixes, panel browser coverage, type-check results and remaining gaps are recorded in the [2026-11-20 continuation](continuation-2026-11-20.md#content-controls); the earlier in-flight build and UI limitations below are historical findings.
+
 ## Reference contract
 
 - Fixed source commit: `D:\rust_test\univer-reference` at `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.

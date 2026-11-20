@@ -21,7 +21,14 @@ export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: st
 export type ContentControlPatch = Partial<Omit<DocumentContentControl, 'id' | 'blockId' | 'startOffset' | 'endOffset' | 'value' | 'checked' | 'dateValue'>>
 
 const lockedContent = new Set<DocumentContentControl['lock']>(['contentLocked', 'sdtContentLocked'])
-const lockedControl = new Set<DocumentContentControl['lock']>(['sdtLocked', 'sdtContentLocked'])
+const lockedControl = new Set<DocumentContentControl['lock']>(['controlLocked', 'sdtLocked', 'sdtContentLocked'])
+
+/** A paragraph split maps the suffix of a linear replacement into its new paragraph. */
+export interface ContentControlParagraphSplit {
+  blockId: string
+  firstBreakOffset: number
+  lastParagraphOffset: number
+}
 
 export function getDocumentContentControls(model: DocumentModel): DocumentContentControl[] {
   return (model.contentControls ?? []).map((control) => cloneControl(control))
@@ -57,7 +64,7 @@ export function createDocumentContentControl(
 
 export function updateDocumentContentControl(model: DocumentModel, id: string, patch: ContentControlPatch): void {
   const control = requireControl(model, id)
-  if (hasControlStructurePatch(patch) && isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${id}`)
+  if (hasControlStructurePatch(control, patch) && isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${id}`)
   const next: DocumentContentControl = {
     ...control,
     ...patch,
@@ -74,6 +81,7 @@ export function updateDocumentContentControl(model: DocumentModel, id: string, p
 export function setDocumentContentControlValue(model: DocumentModel, id: string, value: string): void {
   const control = requireControl(model, id)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
+  assertAncestorContentEditable(model, control)
   if (!['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
     throw new TypeError(`Content control ${id} does not accept text values`)
   }
@@ -91,6 +99,7 @@ export function setDocumentContentControlChecked(model: DocumentModel, id: strin
   const control = requireControl(model, id)
   if (control.type !== 'checkbox') throw new TypeError(`Content control ${id} is not a checkbox`)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
+  assertAncestorContentEditable(model, control)
   control.checked = checked
   control.value = checked ? 'true' : 'false'
   control.showingPlaceholder = false
@@ -154,62 +163,19 @@ export function transformContentControlsForTextEdit(
   if (!model.contentControls?.length || (startOffset === endOffset && replacementLength === 0)) return
   const startSegment = segmentAt(segments, startOffset)
   const endSegment = segmentAt(segments, endOffset)
-  for (const control of model.contentControls) {
-    const segment = segments.find((candidate) => (candidate.cellBlockId ?? candidate.blockId) === control.blockId)
-    if (!segment) continue
-    const globalStart = segment.startOffset + control.startOffset
-    const globalEnd = segment.startOffset + control.endOffset
-    const hitsControl = startOffset === endOffset
-      ? startOffset > globalStart && startOffset < globalEnd
-      : startOffset < globalEnd && globalStart < endOffset
-    const editsControlBlock = startSegment && endSegment && startSegment !== endSegment
-      && (startSegment.cellBlockId ?? startSegment.blockId) !== control.blockId
-      && (endSegment.cellBlockId ?? endSegment.blockId) !== control.blockId
-      ? false
-      : segment === startSegment || segment === endSegment || (startOffset <= globalStart && endOffset >= globalEnd)
-    if (!editsControlBlock) continue
-    if (startOffset !== endOffset && startSegment !== endSegment && (hitsControl || (startOffset <= globalStart && endOffset >= globalEnd))) {
-      throw new RangeError(`A text edit cannot cross a content control paragraph: ${control.id}`)
-    }
-    if (startOffset === endOffset) {
-      if (startOffset <= globalStart) {
-        const delta = replacementLength
-        control.startOffset += delta
-        control.endOffset += delta
-      } else if (startOffset < globalEnd) {
-        if (isContentLocked(control)) throw new Error(`Content control content is locked: ${control.id}`)
-        control.endOffset += replacementLength
-      }
-      continue
-    }
-    if (globalEnd <= startOffset) continue
-    if (globalStart >= endOffset) {
-      const delta = replacementLength - (endOffset - startOffset)
-      control.startOffset += delta
-      control.endOffset += delta
-      continue
-    }
-    const localStart = startOffset - segment.startOffset
-    const localEnd = endOffset - segment.startOffset
-    const removesWholeControl = localStart <= control.startOffset && localEnd >= control.endOffset && replacementLength === 0
-    if (removesWholeControl) {
-      if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
-      removeControlTreeFromModel(model, control)
-      continue
-    }
-    if (isContentControlLockedAtEdit(model, control, localStart, localEnd, startOffset === endOffset)) throw new Error(`Content control content is locked: ${control.id}`)
-    const delta = replacementLength - (localEnd - localStart)
-    if (localStart <= control.startOffset && localEnd >= control.endOffset) {
-      control.startOffset = Math.max(0, localStart)
-      control.endOffset = control.startOffset + replacementLength
-    } else {
-      const oldStart = control.startOffset
-      const oldEnd = control.endOffset
-      control.startOffset = oldStart >= localEnd ? oldStart + delta : oldStart >= localStart ? localStart : oldStart
-      control.endOffset = oldEnd >= localEnd ? oldEnd + delta : oldEnd > localStart ? localStart + replacementLength : oldEnd
-      if (control.endOffset < control.startOffset) control.endOffset = control.startOffset
-    }
+  if (!startSegment || !endSegment) return
+  if (startSegment === endSegment) {
+    transformContentControlsForBlockEdit(model, startSegment.cellBlockId ?? startSegment.blockId,
+      startOffset - startSegment.startOffset, endOffset - startSegment.startOffset, replacementLength)
+    return
   }
+  const first = segments.indexOf(startSegment)
+  const last = segments.indexOf(endSegment)
+  const affectedIds = new Set(segments.slice(first, last + 1).map((segment) => segment.cellBlockId ?? segment.blockId))
+  const control = model.contentControls.find((candidate) => affectedIds.has(candidate.blockId)
+    && !((startSegment.cellBlockId ?? startSegment.blockId) === candidate.blockId
+      && candidate.endOffset <= startOffset - startSegment.startOffset))
+  if (control) throw new RangeError(`A text edit cannot cross a content control paragraph: ${control.id}`)
 }
 
 /** Local-offset variant for the editor's selection command path. */
@@ -219,9 +185,13 @@ export function transformContentControlsForBlockEdit(
   startOffset: number,
   endOffset: number,
   replacementLength: number,
+  split?: ContentControlParagraphSplit,
 ): void {
-  if (!model.contentControls?.length || (startOffset === endOffset && replacementLength === 0)) return
-  for (const control of model.contentControls) {
+  if (!model.contentControls?.length || (startOffset === endOffset && replacementLength === 0 && !split)) return
+  // Validate every affected range on a detached plan before changing any live anchors.
+  const next: DocumentModel = { ...model, contentControls: getDocumentContentControls(model) }
+  for (const control of next.contentControls!) {
+    if (!next.contentControls!.some((candidate) => candidate.id === control.id)) continue
     if (control.blockId !== blockId) continue
     const insertion = startOffset === endOffset
     const overlaps = insertion
@@ -230,7 +200,7 @@ export function transformContentControlsForBlockEdit(
     const removesWholeControl = overlaps && startOffset <= control.startOffset && endOffset >= control.endOffset && replacementLength === 0
     if (removesWholeControl) {
       if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
-      removeControlTreeFromModel(model, control)
+      removeControlTreeFromModel(next, control)
       continue
     }
     if (overlaps && isContentControlLockedAtEdit(model, control, startOffset, endOffset, insertion)) throw new Error(`Content control content is locked: ${control.id}`)
@@ -262,6 +232,29 @@ export function transformContentControlsForBlockEdit(
       if (control.endOffset < control.startOffset) control.endOffset = control.startOffset
     }
   }
+  if (split) {
+    const controls = next.contentControls!
+    const movesToSuffix = (control: DocumentContentControl): boolean => {
+      if (control.endOffset <= split.firstBreakOffset) {
+        // Empty children at the split boundary follow their enclosing wrapper.
+        const parent = control.startOffset === control.endOffset && control.parentId
+          ? controls.find((candidate) => candidate.id === control.parentId && candidate.startOffset < candidate.endOffset)
+          : undefined
+        return parent ? movesToSuffix(parent) : false
+      }
+      if (control.startOffset < split.lastParagraphOffset) {
+        throw new RangeError(`A paragraph break cannot split a content control range: ${control.id}`)
+      }
+      return true
+    }
+    const moving = controls.filter((control) => control.blockId === blockId && movesToSuffix(control))
+    for (const control of moving) {
+      control.blockId = split.blockId
+      control.startOffset -= split.lastParagraphOffset
+      control.endOffset -= split.lastParagraphOffset
+    }
+  }
+  model.contentControls = next.contentControls
 }
 
 export function assertContentControlBlockRemovable(model: DocumentModel, blockId: string): void {
@@ -274,6 +267,17 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
   const oldLength = control.endOffset - control.startOffset
+  for (const candidate of model.contentControls ?? []) {
+    if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
+    if (candidate.parentId === control.id || (candidate.startOffset >= control.startOffset && candidate.endOffset <= control.endOffset
+      && (candidate.startOffset > control.startOffset || candidate.endOffset < control.endOffset))) {
+      throw new RangeError(`Cannot replace content control text while a nested control is present: ${candidate.id}`)
+    }
+    if (candidate.startOffset < control.endOffset && control.startOffset < candidate.endOffset
+      && !(candidate.startOffset <= control.startOffset && candidate.endOffset >= control.endOffset)) {
+      throw new RangeError(`Cannot replace content control text across a partially overlapping control: ${candidate.id}`)
+    }
+  }
   const runs = runsForTarget(model, target)
   const prefix = sliceRuns(runs, 0, control.startOffset)
   const suffix = sliceRuns(runs, control.endOffset)
@@ -285,7 +289,10 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
   if (delta === 0) return
   for (const candidate of model.contentControls ?? []) {
     if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
-    if (candidate.startOffset >= control.endOffset) {
+    if (candidate.startOffset <= control.startOffset && candidate.endOffset >= control.endOffset
+      && candidate.id === control.parentId) {
+      candidate.endOffset += delta
+    } else if (candidate.startOffset >= control.endOffset) {
       candidate.startOffset += delta
       candidate.endOffset += delta
     } else if (candidate.startOffset <= control.startOffset && candidate.endOffset >= control.endOffset) {
@@ -378,8 +385,17 @@ function requireControl(model: DocumentModel, id: string): DocumentContentContro
 
 function isContentLocked(control: DocumentContentControl): boolean { return lockedContent.has(control.lock) }
 function isControlLocked(control: DocumentContentControl): boolean { return lockedControl.has(control.lock) }
-function hasControlStructurePatch(patch: ContentControlPatch): boolean {
-  return Object.keys(patch).some((key) => key !== 'lock')
+function hasControlStructurePatch(control: DocumentContentControl, patch: ContentControlPatch): boolean {
+  return Object.entries(patch).some(([key, value]) => key !== 'lock' && JSON.stringify(Reflect.get(control, key)) !== JSON.stringify(value))
+}
+
+function assertAncestorContentEditable(model: DocumentModel, control: DocumentContentControl): void {
+  for (const candidate of model.contentControls ?? []) {
+    if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
+    if (isContentControlLockedAtEdit(model, candidate, control.startOffset, control.endOffset, control.startOffset === control.endOffset)) {
+      throw new Error(`Content control content is locked: ${candidate.id}`)
+    }
+  }
 }
 function validIsoDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false

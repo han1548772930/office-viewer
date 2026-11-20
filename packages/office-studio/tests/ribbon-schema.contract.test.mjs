@@ -50,8 +50,17 @@ test('ending a contextual category restores the previous valid regular category'
 test('classic toolbar fits measured items, reserves a real more trigger only when needed and preserves order', () => {
   const items = [{ id: 'undo', groupId: 'history', width: 28 }, { id: 'redo', groupId: 'history', width: 28 }, { id: 'font', groupId: 'font', width: 100 }, { id: 'size', groupId: 'font', width: 60 }]
   assert.equal(CLASSIC_RIBBON.tabHeight, 36)
+  assert.equal(CLASSIC_RIBBON.tabButtonHeight, 28)
   assert.equal(CLASSIC_RIBBON.toolbarHeight, 40)
-  assert.deepEqual(fitRibbonItems(items, 260), { visibleIds: ['undo', 'redo', 'font', 'size'], overflowIds: [] })
+  assert.equal(CLASSIC_RIBBON.buttonHeight, 24)
+  assert.equal(CLASSIC_RIBBON.selectorHeight, 28)
+  assert.equal(CLASSIC_RIBBON.iconSize, 16)
+  assert.equal(CLASSIC_RIBBON.itemGap, 8)
+  assert.equal(CLASSIC_RIBBON.groupPadding, 8)
+  assert.deepEqual(fitRibbonItems(items, 289), { visibleIds: ['undo', 'redo', 'font', 'size'], overflowIds: [] })
+  assert.deepEqual(fitRibbonItems(items, 288), { visibleIds: ['undo', 'redo', 'font'], overflowIds: ['size'] })
+  assert.deepEqual(fitRibbonItems(items, 254), { visibleIds: ['undo', 'redo', 'font'], overflowIds: ['size'] })
+  assert.deepEqual(fitRibbonItems(items, 253), { visibleIds: ['undo', 'redo'], overflowIds: ['font', 'size'] })
   assert.deepEqual(fitRibbonItems(items, 200), { visibleIds: ['undo', 'redo'], overflowIds: ['font', 'size'] })
   assert.deepEqual(fitRibbonItems(items, 20), { visibleIds: [], overflowIds: ['undo', 'redo', 'font', 'size'] })
   assert.deepEqual(fitRibbonItems([], 0), { visibleIds: [], overflowIds: [] })
@@ -78,9 +87,23 @@ test('resizing keeps every command accessible exactly once and never overfills t
     assert.deepEqual([...fit.visibleIds, ...fit.overflowIds], items.map(({ id }) => id))
     assert.equal(new Set([...fit.visibleIds, ...fit.overflowIds]).size, items.length)
     const visible = items.slice(0, fit.visibleIds.length)
-    const occupied = visible.reduce((sum, item, index) => sum + item.width + (index === 0 ? 0 : item.groupId === visible[index - 1].groupId ? CLASSIC_RIBBON.itemGap : CLASSIC_RIBBON.groupGap), 0)
-    if (visible.length) assert.ok(occupied + 2 * CLASSIC_RIBBON.horizontalPadding + (fit.overflowIds.length ? CLASSIC_RIBBON.moreWidth + CLASSIC_RIBBON.itemGap : 0) <= available)
+    const occupied = visible.reduce((sum, item, index) => sum + item.width + (
+      index > 0 && item.groupId === visible[index - 1].groupId
+        ? CLASSIC_RIBBON.itemGap
+        : 2 * CLASSIC_RIBBON.groupPadding + (index > 0 ? CLASSIC_RIBBON.separatorWidth : 0)
+    ), 0)
+    if (visible.length) assert.ok(occupied + 2 * CLASSIC_RIBBON.horizontalPadding + (fit.overflowIds.length ? CLASSIC_RIBBON.moreWidth + CLASSIC_RIBBON.separatorWidth : 0) <= available)
   }
+})
+
+test('group edges and dividers are counted even for a single control per group', () => {
+  const items = [{ id: 'undo', groupId: 'history', width: 24 }, { id: 'bold', groupId: 'font', width: 24 }]
+  // 24 outer padding + (8 + 24 + 8) + divider + (8 + 24 + 8).
+  assert.deepEqual(fitRibbonItems(items, 105), { visibleIds: ['undo', 'bold'], overflowIds: [] })
+  assert.deepEqual(fitRibbonItems(items, 104), { visibleIds: ['undo'], overflowIds: ['bold'] })
+  // The final visible group keeps its trailing padding before More's divider.
+  assert.deepEqual(fitRibbonItems(items, 96), { visibleIds: [], overflowIds: ['undo', 'bold'] })
+  assert.deepEqual(fitRibbonItems(items, 97), { visibleIds: ['undo'], overflowIds: ['bold'] })
 })
 
 test('split buttons preserve their main action while a hidden-only submenu is removed', () => {

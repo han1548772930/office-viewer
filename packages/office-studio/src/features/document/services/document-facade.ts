@@ -1,5 +1,5 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
-import { transformContentControlsForTextEdit } from './content-controls'
+import { transformContentControlsForBlockEdit, transformContentControlsForTextEdit } from './content-controls'
 import {
   compactRuns,
   createParagraph,
@@ -242,7 +242,6 @@ export function replaceDocumentRange(
 
   const next = structuredCloneDocument(model)
   const nextBody = flattenDocumentBody(next)
-  transformContentControlsForTextEdit(next, nextBody.segments, startOffset, endOffset, text.replace(/\r\n?/g, '\n').length)
   if (!nextBody.segments.length) {
     if (text === '') return next
     next.blocks.splice(0, 0, ...text.replace(/\r\n?/g, '\n').split('\n').map((line) => createParagraph(line)))
@@ -266,7 +265,10 @@ export function replaceDocumentRange(
     throw new RangeError('A document text range cannot cross non-text blocks.')
   }
   if (sameTarget(start, end)) replaceWithinBlock(next, start, end, startRef, text)
-  else replaceAcrossBlocks(next, start, end, startRef, endRef, text)
+  else {
+    transformContentControlsForTextEdit(next, nextBody.segments, startOffset, endOffset, text.replace(/\r\n?/g, '\n').length)
+    replaceAcrossBlocks(next, start, end, startRef, endRef, text)
+  }
   updateDocumentStats(next)
   next.modified = true
   return next
@@ -431,19 +433,24 @@ function replaceWithinBlock(
   const suffix = sliceRuns(runs, end.offset)
   const inherited = marksAtPoint(model, start)
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
-  setTargetRuns(model, start, [
-    ...prefix,
-    ...(lines[0] ? [createRun(lines[0], inherited)] : []),
-    ...(lines.length === 1 ? suffix : []),
-  ])
-  if (lines.length < 2) return
-
   const additions = lines.slice(1).map((line, index) => {
     const block = paragraphAfter(reference.block, inherited)
     const isLast = index === lines.length - 2
     block.runs = compactRuns([...(line ? [createRun(line, inherited)] : []), ...(isLast ? suffix : [])])
     return block
   })
+  const normalizedText = lines.join('\n')
+  transformContentControlsForBlockEdit(model, start.cellBlockId ?? start.blockId, start.offset, end.offset, normalizedText.length,
+    additions.length ? {
+      blockId: additions.at(-1)!.id,
+      firstBreakOffset: start.offset + normalizedText.indexOf('\n'),
+      lastParagraphOffset: start.offset + normalizedText.lastIndexOf('\n') + 1,
+    } : undefined)
+  setTargetRuns(model, start, [
+    ...prefix,
+    ...(lines[0] ? [createRun(lines[0], inherited)] : []),
+    ...(lines.length === 1 ? suffix : []),
+  ])
   reference.container.splice(reference.index + 1, 0, ...additions)
 }
 
