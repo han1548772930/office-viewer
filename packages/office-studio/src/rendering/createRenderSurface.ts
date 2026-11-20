@@ -17,13 +17,20 @@ export async function createRenderSurface(host: HTMLElement, options: RenderSurf
     Object.assign(next.style, { display: 'block', width: '100%', height: '100%', position: 'absolute', inset: '0', pointerEvents: 'none' })
     return next
   }
+  const setCanvasCssSize = (target: HTMLCanvasElement, cssWidth: number, cssHeight: number) => {
+    target.style.width = `${cssWidth}px`
+    target.style.height = `${cssHeight}px`
+  }
   const fallback = (reason: string) => {
     if (disposed || fallingBack || driver?.backend === 'canvas2d') return
     fallingBack = true
     try {
       driver.dispose()
       const replacement = makeCanvas(); canvas.replaceWith(replacement); canvas = replacement
+      setCanvasCssSize(canvas, width, height)
       driver = factories.canvas2d(canvas); driver.resize(width, height, dpr)
+      canvas.dataset.renderBackend = driver.backend
+      canvas.dataset.renderBackendReason = reason
       options.onBackendChange?.('canvas2d', reason)
       if (lastScene) driver.render(lastScene)
     } finally { fallingBack = false }
@@ -40,12 +47,15 @@ export async function createRenderSurface(host: HTMLElement, options: RenderSurf
   initializing = false
   if (pendingLoss) fallback(pendingLoss)
   driver.resize(width, height, dpr)
+  canvas.dataset.renderBackend = driver.backend
+  if (initialReason) canvas.dataset.renderBackendReason = initialReason
   if (!pendingLoss) options.onBackendChange?.(driver.backend, initialReason)
   return {
     get backend() { return driver.backend }, get canvas() { return canvas },
     resize(cssWidth, cssHeight, pixelRatio = window.devicePixelRatio || 1) {
       if (disposed) return
       width = Math.max(0, cssWidth); height = Math.max(0, cssHeight); dpr = Math.max(1, Math.min(4, pixelRatio))
+      setCanvasCssSize(canvas, width, height)
       if (!width || !height) return
       try { driver.resize(width, height, dpr) } catch (error) { if (driver.backend === 'canvas2d') throw error; fallback(String(error)) }
     },

@@ -77,27 +77,30 @@ The public contract is covered by
 | `getActiveWorkbook()`, `getWorkbook(id)` | `f-univer.ts` | `FUniver.getActiveWorkbook` and `getWorkbook` return `FWorkbook` wrappers | implemented |
 | `getSheetCommandTarget`, `getActiveSheet`, `setFreezeSync` | `f-univer.ts` | `FUniver.getSheetCommandTarget/getActiveSheet` are implemented; the synchronous freeze helper is not | partial |
 | workbook identity, name, `save()` | `packages/sheets/src/facade/f-workbook.ts`, `getId`, `getName`, `setName`, `save` | `FWorkbook.getId/getName/setName/save` return detached model snapshots and mark the unit saved | implemented |
-| sheet collection and lifecycle: `getSheets`, `insertSheet`, `deleteSheet`, `setActiveSheet` | `f-workbook.ts` | `FWorkbook` implements all four operations with model mutations and history entries | implemented |
+| sheet collection and lifecycle: `getSheets`, `getSheetBySheetId`, `getSheetByName`, `insertSheet`, `deleteSheet`, `setActiveSheet`, `getNumSheets` | `packages/sheets/src/facade/f-workbook.ts`, matching methods | `FWorkbook` implements these lookups and lifecycle operations with model mutations and history entries | implemented |
 | workbook `undo`, `redo` | `f-workbook.ts` | `FWorkbook.undo/redo` route through the per-unit history store | implemented |
 | workbook command/selection hooks | `f-workbook.ts`, `onBeforeCommandExecute`, `onCommandExecuted`, `onSelectionChange`, each returning `IDisposable` | Global `FUniver.addEvent` provides command and selection subscriptions; workbook-specific convenience methods are not exposed | partial |
-| sheet duplication/movement, defined names, calculation settings, permissions | `f-workbook.ts` | No connected project service or facade found | planned |
+| sheet duplication and movement: `duplicateSheet`, `duplicateActiveSheet`, `moveSheet`, `moveActiveSheet`, `deleteActiveSheet` | `packages/sheets/src/facade/f-workbook.ts`, matching methods | No corresponding workbook facade methods or connected commands found | planned |
+| workbook defined names: `getDefinedName(s)`, `newDefinedNameBuilder`, `insertDefinedName(Builder)`, `updateDefinedNameBuilder`, `deleteDefinedName` | `packages/sheets/src/facade/f-workbook.ts`; `packages/sheets/src/facade/f-defined-name.ts` | No defined-name model or facade methods found | planned |
+| calculation settings: `getCalculationSettings`, `setCalculationSettings` | `packages/sheets/src/facade/f-workbook.ts`, matching methods; `IWorkbookCalculationSettings` from `@univerjs/core` | No workbook calculation-settings facade or connected calculation service found | planned |
+| workbook permissions: `setEditable`, `getWorkbookPermission` | `packages/sheets/src/facade/f-workbook.ts`; permission implementation under `packages/sheets/src/facade/permission/` | No workbook permission facade or connected permission service found | planned |
 | `FWorksheet.getRange(...)` overloads | `packages/sheets/src/facade/f-worksheet.ts`, `getRange` by row/column, A1 text, or `IRange` | `FWorksheet.getRange` supports row/column, A1, and coordinate object overloads | implemented |
-| row/column insert, delete, move, hide, show, size | `f-worksheet.ts`, `insertRows`, `deleteRows`, `moveRows`, `hideRows`, `showRows`, `setRowHeight`, and column counterparts | `ExcelWorkbench.vue` has direct insert/delete row and column actions; model stores widths/heights and optional hidden arrays; there is no worksheet command/facade layer | partial |
-| merge, freeze, gridlines, tab color, hidden state, naming | `f-worksheet.ts`, `setFreeze`, `setFrozenRows/Columns`, `setHiddenGridlines`, `setTabColor`, `hideSheet`, `showSheet`, `setName` | `FWorksheet` implements merge-related range operations, freeze rows/columns, gridline visibility, and naming; tab color and hide/show helpers are not exposed | partial |
-| clear/data range/append/count/metadata | `f-worksheet.ts`, `clear`, `getDataRange`, `appendRow`, `setRowCount`, `setColumnCount`, metadata methods | `FRange.clear` and worksheet row/column counts are exposed; data-region, append, and metadata helpers remain incomplete | partial |
+| row/column insert, delete, move, hide, show, size | `packages/sheets/src/facade/f-worksheet.ts`: `insertRows/Columns`, `deleteRows/Columns`, `moveRows/Columns`, `hideRows/Columns`, `unhideRow/Column`, `showRows/Columns`, `setRowHeight(s)`, `setColumnWidth(s)`, and auto-fit methods | `ExcelWorkbench.vue` has direct insert/delete actions and the model stores dimensions/hidden indexes, but `FWorksheet` exposes none of these mutations; only `getMaxRows/getMaxColumns` are available | partial |
+| merge, freeze, gridlines, tab color, hidden state, naming | `f-worksheet.ts`: `setFreeze`, `setFrozenRows/Columns`, `setHiddenGridlines`, `setTabColor`, `hideSheet/showSheet`, `setName`; merge operations are on `packages/sheets/src/facade/f-range.ts` | `FWorksheet` implements freeze rows/columns, gridline visibility, and naming; `FRange.merge` is available. Tab color and sheet visibility APIs are absent | partial |
+| worksheet clear/data range/append/count/metadata | `packages/sheets/src/facade/f-worksheet.ts`: `clear`, `clearContents`, `clearFormats`, `getDataRange`, `getLastColumn/Row`, `appendRow`, `setRowCount`, `setColumnCount`, and custom metadata methods | `FWorksheet` has no matching methods; it only exposes max row/column getters. `FRange.clear` is a separate range operation with a different option contract | partial |
 
 ## Range and selection mapping
 
 | Univer surface | Fixed source evidence | Project counterpart | Status |
 | --- | --- | --- | --- |
-| range coordinates and A1 notation | `packages/sheets/src/facade/f-range.ts`, `getRow`, `getLastRow`, `getColumn`, `getLastColumn`, `getA1Notation` | `FRange` implements zero-based coordinates and A1 conversion | implemented |
-| values, raw values, display values, cell data | `f-range.ts`, `getValue(s)`, `getRawValue(s)`, `getDisplayValue(s)`, `getCellData(s)` | `FRange` exposes all listed reads over sparse `SpreadsheetCell` data | implemented |
+| range coordinates and A1 notation | `packages/sheets/src/facade/f-range.ts`, `getRow`, `getLastRow`, `getColumn`, `getLastColumn`, `getWidth`, `getHeight`, `getA1Notation` (including sheet name and absolute-reference options) | `FRange` implements zero-based coordinates and basic A1 conversion, but not the reference API's absolute-reference options | partial |
+| values, raw values, display values, cell data | `packages/sheets/src/facade/f-range.ts`, `getValue(s)`, `getRawValue(s)`, `getDisplayValue(s)`, `getCellData(s)`, `getCellDataGrid`, rich-text overloads | `FRange` exposes plain-value, display, and cell-data reads over sparse `SpreadsheetCell` data; rich-text and cell-data-grid contracts are absent | partial |
 | formulas | `f-range.ts`, `getFormula(s)`, `setFormula(s)` | `FRange` preserves and reads/writes formula text; calculation evaluation is outside this contract | partial |
 | styles, alignment, wrap, font, background, borders | `f-range.ts`, style getters/setters and fluent methods | `FRange` exposes font, fill, alignment, and wrap setters; border and mixed-state semantics remain incomplete | partial |
 | `setValue(s)`, `setFormula(s)`, style setters | `f-range.ts`, mutating methods return `FRange`/`this` | `FRange` implements fluent value, formula, and style mutations through commands and history | implemented |
-| merge/unmerge, clear, insert/delete cells | `f-range.ts`, `merge`, `clear`, `insertCells`, `deleteCells` | `FRange.merge` and `clear` are implemented; unmerge and shift-cell operations are not | partial |
-| `activate`, `activateAsCurrentCell`, `getDataRegion`, `autoFill` | `f-range.ts` | `FRange.activate` is implemented; current-cell, data-region, and auto-fill methods are not | partial |
-| `FSelection` active range/list/current cell | `packages/sheets/src/facade/f-selection.ts` | `FWorksheet.getSelection` exposes active range, current cell, and active range list | implemented |
+| merge/unmerge, clear, insert/delete cells | `packages/sheets/src/facade/f-range.ts`: `merge`, `mergeAcross`, `mergeVertically`, `breakApart`, `clear`, `clearContent`, `clearFormat`, `insertCells`, `deleteCells` | `FRange.merge` and `clear` exist; merge variants, unmerge, dedicated content/format clears, and shift-cell operations are absent. The clear option names/semantics also differ | partial |
+| `activate`, `activateAsCurrentCell`, `getDataRegion`, `autoFill` | `packages/sheets/src/facade/f-range.ts`, matching methods | `FRange.activate` is implemented; current-cell activation, data-region expansion, and auto-fill are absent | partial |
+| `FSelection` active range/list/current cell and navigation | `packages/sheets/src/facade/f-selection.ts`: `getActiveRange`, `getActiveRangeList`, `getCurrentCell`, `updatePrimaryCell`, `getNextDataRange` | `FWorksheet.getSelection` exposes active range, current cell, and a single-item active range list; primary-cell update and data-range navigation are absent | partial |
 
 ## Sheets event mapping
 
@@ -138,8 +141,8 @@ not available; status for the complete catalog is **partial**.
 | --- | --- | --- | --- |
 | `FBlob` as a reusable byte/string stream facade | `packages/core/src/facade/f-blob.ts` | `FBlob` is exported and implements byte/string/content-type operations | implemented |
 | workbook/document snapshot save | `FWorkbook.save()` and `FDocument.save()` in their respective facade files | `FWorkbook.save` and `FDocument.save` return detached snapshots and mark the corresponding unit saved | implemented |
-| Office import and export API | Public Univer Facade class list and import/export guides; exact IO implementation depends on registered plugins | `useEditorStore.importFile` delegates to `parserStore`; `exportOfficeModel` uses `src/parser/export.worker.ts` and returns XLSX/DOCX bytes | partial |
-| export format enumeration, facade events, cancellation/disposable contract | No matching public project entry point found; reference plugin APIs are separate from `FBlob` | Export has worker progress and timeout internally, but no format enum, add-event API, or exported cancellation handle | not available |
+| Office import and export API | Public Univer Facade class list and import/export guides; exact IO implementation depends on registered plugins | `useEditorStore.importFile` delegates to `parserStore`; `exportOfficeModel` in `packages/office-studio/src/services/exportService.ts` sends work to `packages/office-studio/src/parser/export.worker.ts` and returns XLSX/DOCX bytes. `downloadOfficeBytes` and `officeDownloadName` are package exports used by `examples/workbench/src/App.vue`; worker progress and writer warnings are surfaced through the service/caller | partial |
+| export format enumeration, facade events, cancellation/disposable contract | No matching public project entry point found; reference plugin APIs are separate from `FBlob` | Package exports include the workbook/document writer service, but there is no full export-format facade, export event API, or caller-controlled cancellation/disposable handle. A timeout and replacement of an active task are internal service behavior | not available |
 
 ## Explicit gaps and implementation order
 
@@ -153,8 +156,9 @@ editing path. The remaining contract gaps are:
    mixed values, unmerge, and shift-cell operations.
 3. Extend Docs with sections, headers/footers, full rich-text style coverage,
    tables, page layout operations, and the Docs-specific event catalog.
-4. Connect the public save/export facade to the full format enumeration and
-   cancellation handles used by the parser/writer workers.
+4. Add a public export facade over the connected writer service, with the full
+   format enumeration, export events, and caller-controlled cancellation
+   handles.
 
 These gaps align with the still-unaccepted COMMON, SHEET, and DOC rows in
 `docs/UNIVER_FEATURE_PARITY.md`. The Docs text/style subset is covered by

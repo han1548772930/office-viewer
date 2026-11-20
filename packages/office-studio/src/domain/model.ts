@@ -48,9 +48,33 @@ export interface CellRange {
   endCol: number
 }
 
+export type SheetSortDirection = 'ascending' | 'descending'
+export interface SheetSortCriterion { column: number; direction: SheetSortDirection }
+export type SheetFilterConditionOperator = 'equals' | 'doesNotEqual' | 'greaterThan' | 'greaterThanOrEqual' |
+  'lessThan' | 'lessThanOrEqual' | 'between' | 'notBetween' | 'contains' | 'doesNotContain' |
+  'beginsWith' | 'endsWith' | 'isBlank' | 'isNotBlank' | 'isError'
+export interface SheetValueFilter { kind: 'values'; selectedItems: CellScalar[] }
+export interface SheetConditionFilter {
+  kind: 'condition'
+  operator: SheetFilterConditionOperator
+  value?: CellScalar
+  secondValue?: CellScalar
+  caseSensitive?: boolean
+}
+export type SheetFilterCriteria = SheetValueFilter | SheetConditionFilter
+export interface SheetAutoFilter {
+  range: CellRange
+  columns: Record<number, SheetFilterCriteria>
+  filteredRows: number[]
+}
+
 export type PivotFieldArea = 'filter' | 'row' | 'column' | 'value'
 export type PivotAggregation = 'sum' | 'count' | 'average' | 'min' | 'max'
 export type PivotSortDirection = 'ascending' | 'descending'
+export type PivotDateGroupType = 'year' | 'quarter' | 'month' | 'day'
+export type PivotDateGroupingMode = 'derived' | 'excelLike'
+export interface PivotNumberGroup { start: number; end: number; interval: number }
+export interface PivotManualGroup { name: string; members: CellScalar[] }
 export type PivotFilterOperator = 'valueGreaterThan' | 'valueGreaterThanOrEqual' | 'valueLessThan' |
   'valueLessThanOrEqual' | 'valueEqual' | 'valueNotEqual' | 'valueBetween' | 'valueNotBetween'
 
@@ -87,6 +111,9 @@ export interface PivotFieldModel {
   sort?: PivotSortDirection
   selectedItems?: string[]
   valueFilter?: PivotFieldFilter
+  numberGroup?: PivotNumberGroup
+  dateGroupType?: PivotDateGroupType
+  manualGroups?: PivotManualGroup[]
 }
 
 export interface PivotTableOptions {
@@ -104,12 +131,76 @@ export interface PivotTableModel {
   anchor: PivotTableAnchor
   fields: PivotFieldModel[]
   options: PivotTableOptions
+  dateGroupingMode?: PivotDateGroupingMode
   outputRange?: CellRange
   generatedCellKeys?: string[]
   drillDownMap?: Record<string, {
     fieldFilters: Record<string, CellScalar>
+    fieldMembers?: Record<string, CellScalar[]>
     valueFieldId: string
   }>
+  revision: number
+}
+
+export type ChartType = 'bar' | 'line'
+export type ChartSourceOrientation = 'columns' | 'rows'
+export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
+export type ChartAxisScaleType = 'linear' | 'log'
+
+export interface ChartSource {
+  range: CellRange
+  orientation: ChartSourceOrientation
+}
+
+export interface ChartAxisOptions {
+  title?: string
+  scaleType: ChartAxisScaleType
+  logBase?: number
+}
+
+export interface ChartLegendOptions {
+  visible: boolean
+  position: ChartLegendPosition
+}
+
+export interface ChartModel {
+  id: string
+  sheetId: string
+  type: ChartType
+  source: ChartSource
+  position: { x: number; y: number }
+  size: { width: number; height: number }
+  title?: string
+  legend: ChartLegendOptions
+  categoryField: number
+  valueFields: number[]
+  xAxis: ChartAxisOptions
+  yAxis: ChartAxisOptions
+  revision: number
+}
+
+export type SlicerType = 'slicer' | 'timeline'
+export type TimelineLevel = 'day' | 'month' | 'quarter' | 'year'
+
+export interface SlicerTimelineRange {
+  start?: CellScalar
+  end?: CellScalar
+  level: TimelineLevel
+}
+
+/** A persisted filter control bound to one pivot source field. */
+export interface SlicerModel {
+  id: string
+  unitId: string
+  hostSheetId: string
+  pivotTableId: string
+  sourceFieldId: string
+  type: SlicerType
+  caption: string
+  position: { row: number; column: number }
+  size: { rows: number; columns: number }
+  selectedItems?: string[]
+  timelineRange?: SlicerTimelineRange
   revision: number
 }
 
@@ -125,6 +216,7 @@ export interface SpreadsheetSheet {
   frozenCols: number
   showGridlines: boolean
   hiddenRows?: number[]
+  autoFilter?: SheetAutoFilter
   hiddenColumns?: number[]
   defaultColumnWidth?: number
   defaultRowHeight?: number
@@ -144,6 +236,8 @@ export interface WorkbookModel {
   id?: string
   metadata?: Record<string, unknown>
   pivotTables?: PivotTableModel[]
+  charts?: ChartModel[]
+  slicers?: SlicerModel[]
 }
 
 export type DocumentBlockType = 'paragraph' | 'heading' | 'bullet' | 'numbered' | 'quote' | 'divider' | 'table' | 'image' | 'pageBreak'
@@ -178,6 +272,66 @@ export interface DocumentBlock {
   metadata: Record<string, unknown>
 }
 
+export type DocumentContentControlType =
+  | 'richText'
+  | 'text'
+  | 'checkbox'
+  | 'date'
+  | 'dropDownList'
+  | 'comboBox'
+  | 'picture'
+  | 'group'
+  | 'repeatingSection'
+  | 'repeatingSectionItem'
+  | 'docPartObj'
+
+export type DocumentContentControlPlacement = 'inline' | 'block' | 'table' | 'row' | 'cell' | 'header' | 'footer'
+
+export interface DocumentContentControlListItem {
+  displayText?: string
+  value: string
+}
+
+/**
+ * A persisted SDT/content-control range. Offsets are UTF-16 offsets within
+ * the referenced paragraph block, so edits do not depend on a rendered DOM.
+ */
+export interface DocumentContentControl {
+  id: string
+  type: DocumentContentControlType
+  blockId: string
+  startOffset: number
+  endOffset: number
+  placement?: DocumentContentControlPlacement
+  alias?: string
+  title?: string
+  tag?: string
+  appearance?: string
+  color?: string
+  placeholder?: string
+  placeholderDocPart?: { name?: string; text?: string }
+  showingPlaceholder?: boolean
+  temporary?: boolean
+  lock?: 'unlocked' | 'controlLocked' | 'contentLocked' | 'sdtLocked' | 'sdtContentLocked'
+  value?: string
+  checked?: boolean
+  checkbox?: { checked: boolean; checkedState?: { value?: string; font?: string }; uncheckedState?: { value?: string; font?: string } }
+  multiLine?: boolean
+  dateValue?: string
+  dateFormat?: string
+  dateLocale?: string
+  dateCalendar?: string
+  dateStorage?: string
+  items?: DocumentContentControlListItem[]
+  parentId?: string
+  repeatingSection?: { sectionTitle?: string; doNotAllowInsertDelete?: boolean }
+  docPart?: { gallery?: string; category?: string; unique?: boolean }
+  dataBinding?: { prefixMappings?: string; xpath?: string; storeItemID?: string; cachedResult?: string; dirty?: boolean }
+  rawSdtPr?: string
+  rawSdtEndPr?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface DocumentPageSetup {
   width: number
   height: number
@@ -194,6 +348,7 @@ export interface DocumentModel {
   page: DocumentPageSetup
   modified: boolean
   wordCount: number
+  contentControls?: DocumentContentControl[]
   id?: string
   metadata?: Record<string, unknown>
 }
@@ -306,4 +461,5 @@ export const createBlankDocument = (): DocumentModel => ({
   },
   modified: false,
   wordCount: 0,
+  contentControls: [],
 })

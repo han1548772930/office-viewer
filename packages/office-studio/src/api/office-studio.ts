@@ -1,6 +1,6 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
-import type { DocumentModel, OfficeKind, PivotFieldArea, PivotFieldFilter, PivotTableOptions, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetFilterCriteria, SheetSortCriterion, SlicerTimelineRange, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
 import { useEditorStore } from '../stores/editorStore'
@@ -16,13 +16,37 @@ import {
   setPivotOptions,
   setPivotSort,
   setPivotValueFilter,
+  setPivotNumberGroup,
+  setPivotDateGroupingMode,
+  setPivotDateGroupType,
+  setPivotExcelDateGroup,
+  setPivotManualGroups,
   type PivotTableAnchorInput,
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
+import { createChart, updateChart, type ChartConfig } from '../features/charts/chart-engine'
+import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, type SlicerCreateInput } from '../features/slicer/slicer-engine'
+import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
+import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortRange, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
+import { OfficeComputeClient } from '../compute/client.ts'
+import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
+import { translateFormulaReferences } from '../features/formula/formula-references.ts'
+import {
+  createDocumentContentControl,
+  removeDocumentContentControl,
+  selectDocumentContentControlItem,
+  setDocumentContentControlChecked,
+  setDocumentContentControlValue,
+  updateDocumentContentControl,
+  type ContentControlInput,
+  type ContentControlPatch,
+} from '../features/document/services/content-controls'
 
 export interface OfficeStudioOptions {
   workbook?: Partial<WorkbookModel> & Record<string, unknown>
   document?: Partial<DocumentModel> & Record<string, unknown>
+  computeClient?: OfficeComputeClient
+  numericIndexMinRows?: number
 }
 
 export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
@@ -31,6 +55,7 @@ export class OfficeStudio {
   readonly pinia: Pinia
   readonly editor: ReturnType<typeof useEditorStore>
   readonly events = new EventHub<ApiEventMap>()
+  readonly numericIndexService: NumericIndexService
   private readonly workbooks = new Map<string, WorkbookModel>()
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
@@ -38,6 +63,9 @@ export class OfficeStudio {
   private _activeDocumentId: string
   private selection: ApiRange | null = null
   private disposed = false
+  private readonly workbookRevisions = new Map<string, number>()
+  private readonly computeClient: OfficeComputeClient
+  private readonly ownsComputeClient: boolean
 
   constructor(options: OfficeStudioOptions = {}) {
     this.pinia = createPinia()
@@ -47,6 +75,11 @@ export class OfficeStudio {
     this._activeWorkbookId = workbook.id!
     this._activeDocumentId = document.id!
     this.workbooks.set(workbook.id!, workbook)
+    this.workbookRevisions.set(workbook.id!, 0)
+    this.ownsComputeClient = options.computeClient === undefined
+    this.computeClient = options.computeClient ?? new OfficeComputeClient()
+    this.numericIndexService = new NumericIndexService(this.computeClient, { minRows: options.numericIndexMinRows })
+    this.numericIndexService.setDocumentRevision(workbook.id!, 0)
     this.documents.set(document.id!, document)
     this.editor.workbook.replace(workbook)
     this.editor.document.replace(document)
@@ -68,6 +101,11 @@ export class OfficeStudio {
   get activeDocumentId(): string { return this._activeDocumentId }
   get isDisposed(): boolean { return this.disposed }
 
+  getWorkbookRevision(id: string): number {
+    if (!this.getWorkbookModel(id)) throw new Error(`Workbook not found: ${id}`)
+    return this.workbookRevisions.get(id) ?? 0
+  }
+
   getWorkbookModel(id: string): WorkbookModel | undefined {
     return id === this._activeWorkbookId ? this.editor.workbook.model : this.workbooks.get(id)
   }
@@ -81,6 +119,8 @@ export class OfficeStudio {
     const model = workbookFromInput(input)
     if (this.workbooks.has(model.id!)) throw new Error(`Workbook id already exists: ${model.id}`)
     this.workbooks.set(model.id!, model)
+    this.workbookRevisions.set(model.id!, 0)
+    this.numericIndexService.setDocumentRevision(model.id!, 0)
     if (makeCurrent) this.activateWorkbook(model.id!)
     this.events.emit('WorkbookCreated', { workbookId: model.id! })
     return model
@@ -209,10 +249,12 @@ export class OfficeStudio {
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
-    after.id = id
-    if (JSON.stringify(before) === JSON.stringify(after)) return false
-    after.modified = true
-    this.editor.history.execute(id, label, () => this.replaceWorkbookModel(id, after), () => this.replaceWorkbookModel(id, before))
+    const recalculated = recalculateWorkbookFormulas(after, before).workbook
+    for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
+    recalculated.id = id
+    if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
+    recalculated.modified = true
+    this.editor.history.execute(id, label, () => this.replaceWorkbookModel(id, recalculated), () => this.replaceWorkbookModel(id, before))
     return true
   }
 
@@ -268,6 +310,7 @@ export class OfficeStudio {
     if (event.cancel) throw new Error('Undo was canceled')
     const label = this.editor.undo()
     if (!label) return false
+    if (kind === 'workbook') this.advanceWorkbookRevision(id)
     this.events.emit('Undo', { unitId: id, kind, label })
     return true
   }
@@ -281,6 +324,7 @@ export class OfficeStudio {
     if (event.cancel) throw new Error('Redo was canceled')
     const label = this.editor.redo()
     if (!label) return false
+    if (kind === 'workbook') this.advanceWorkbookRevision(id)
     this.events.emit('Redo', { unitId: id, kind, label })
     return true
   }
@@ -303,6 +347,8 @@ export class OfficeStudio {
   disposeUnit(id: string): boolean {
     this.assertAlive()
     if (this.workbooks.has(id)) {
+      this.computeClient.forgetDocument(id)
+      this.workbookRevisions.delete(id)
       this.workbooks.delete(id)
       this.editor.history.clear(id)
       this.events.emit('WorkbookDisposed', { workbookId: id })
@@ -329,6 +375,7 @@ export class OfficeStudio {
     if (this.disposed) return
     this.disposed = true
     this.editor.parser.cancel()
+    if (this.ownsComputeClient) this.computeClient.dispose()
     this.events.emit('LifeCycleChanged', { stage: 'disposed' })
     this.events.clear()
     this.commands.clear()
@@ -339,6 +386,13 @@ export class OfficeStudio {
   private replaceWorkbookModel(id: string, model: WorkbookModel): void {
     this.workbooks.set(id, model)
     if (id === this._activeWorkbookId) this.editor.workbook.replace(model)
+    this.advanceWorkbookRevision(id)
+  }
+
+  private advanceWorkbookRevision(id: string): void {
+    const revision = (this.workbookRevisions.get(id) ?? 0) + 1
+    this.workbookRevisions.set(id, revision)
+    this.numericIndexService.setDocumentRevision(id, revision)
   }
 
   private replaceDocumentModel(id: string, model: DocumentModel): void {
@@ -362,6 +416,33 @@ export class OfficeStudio {
         const key = `${row}:${col}`
         sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell as never)
       }
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Set auto-filter', (model) => {
+      setAutoFilter(requireSheet(model, sheetId), range)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; column: number; criteria: SheetFilterCriteria | null }, boolean>('sheet.command.set-filter-criteria', ({ unitId, sheetId, column, criteria }) => this.commitWorkbook(unitId, 'Filter worksheet rows', (model) => {
+      setFilterCriteria(requireSheet(model, sheetId), column, criteria)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; column?: number }, boolean>('sheet.command.clear-filter', ({ unitId, sheetId, column }) => this.commitWorkbook(unitId, 'Clear worksheet filter', (model) => {
+      clearFilter(requireSheet(model, sheetId), column)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', ({ unitId, sheetId, range, criteria, options, order, expectedRevision }) => {
+      if (expectedRevision !== undefined && this.getWorkbookRevision(unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
+      return this.commitWorkbook(unitId, 'Sort worksheet range', (model) => sortRange(requireSheet(model, sheetId), range, criteria, order, options, translateFormulaReferences))
+    })
+    this.registerCommand<{ unitId: string; sheetId: string; chartId: string; chart: ChartConfig }, boolean>('sheet.command.add-chart', ({ unitId, sheetId, chartId, chart }) => this.commitWorkbook(unitId, 'Insert chart', (model) => {
+      if (!model.sheets.some((item) => item.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
+      if (model.charts?.some((item) => item.id === chartId)) throw new Error(`Chart already exists: ${chartId}`)
+      const created = createChart(model, sheetId, chart, chartId)
+      model.charts ??= []
+      model.charts.push(created)
+    }))
+    this.registerCommand<{ unitId: string; chartId: string; patch: Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>> }, boolean>('sheet.command.update-chart', ({ unitId, chartId, patch }) => this.commitWorkbook(unitId, 'Update chart', (model) => {
+      updateChart(model, requireChart(model, chartId), patch)
+    }))
+    this.registerCommand<{ unitId: string; chartId: string }, boolean>('sheet.command.remove-chart', ({ unitId, chartId }) => this.commitWorkbook(unitId, 'Remove chart', (model) => {
+      if (!model.charts?.some((item) => item.id === chartId)) throw new Error(`Chart not found: ${chartId}`)
+      model.charts = model.charts.filter((item) => item.id !== chartId)
     }))
     this.registerCommand<{ unitId: string; pivotTableId: string; source: PivotTableSourceInput; anchor: PivotTableAnchorInput }, boolean>('sheet.command.add-pivot-table', ({ unitId, pivotTableId, source, anchor }) => this.commitPivotChange(unitId, pivotTableId, anchor.subUnitId, 'sheet.command.add-pivot-table', 'Add pivot table', (model) => {
       if (model.pivotTables?.some((pivot) => pivot.id === pivotTableId)) throw new Error(`Pivot table already exists: ${pivotTableId}`)
@@ -399,6 +480,21 @@ export class OfficeStudio {
       const pivot = requirePivot(model, pivotTableId)
       setPivotValueFilter(model, pivot, fieldId, filter)
     }))
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; settings: PivotNumberGroup | null }, boolean>('sheet.command.set-pivot-number-group', ({ unitId, pivotTableId, fieldId, settings }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-number-group', 'Group pivot numbers', (model) => {
+      setPivotNumberGroup(model, requirePivot(model, pivotTableId), fieldId, settings)
+    }))
+    this.registerCommand<{ unitId: string; pivotTableId: string; mode: PivotDateGroupingMode }, boolean>('sheet.command.set-pivot-date-grouping-mode', ({ unitId, pivotTableId, mode }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-date-grouping-mode', 'Set pivot date grouping mode', (model) => {
+      setPivotDateGroupingMode(model, requirePivot(model, pivotTableId), mode)
+    }))
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; type: PivotDateGroupType | null }, boolean>('sheet.command.set-pivot-date-group-type', ({ unitId, pivotTableId, fieldId, type }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-date-group-type', 'Group pivot dates', (model) => {
+      setPivotDateGroupType(model, requirePivot(model, pivotTableId), fieldId, type)
+    }))
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; type: PivotDateGroupType }, boolean>('sheet.command.set-pivot-excel-date-group', ({ unitId, pivotTableId, fieldId, type }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-excel-date-group', 'Group pivot dates (Excel)', (model) => {
+      setPivotExcelDateGroup(model, requirePivot(model, pivotTableId), fieldId, type)
+    }))
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; groups: PivotManualGroup[] }, boolean>('sheet.command.set-pivot-manual-groups', ({ unitId, pivotTableId, fieldId, groups }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-manual-groups', 'Group pivot members', (model) => {
+      setPivotManualGroups(model, requirePivot(model, pivotTableId), fieldId, groups)
+    }))
     this.registerCommand<{ unitId: string; pivotTableId: string; position: 'row' | 'column' }, boolean>('sheet.command.update-pivot-value-position', ({ unitId, pivotTableId, position }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.update-pivot-value-position', 'Update pivot value position', (model) => {
       const pivot = requirePivot(model, pivotTableId)
       setPivotOptions(model, pivot, { valuePosition: position })
@@ -409,9 +505,41 @@ export class OfficeStudio {
       if (target) for (const key of pivot.generatedCellKeys ?? []) if (target.cells[key]?.metadata?.pivotTableId === pivot.id) delete target.cells[key]
       model.pivotTables = (model.pivotTables ?? []).filter((candidate) => candidate.id !== pivotTableId)
     }))
+    this.registerCommand<{ unitId: string; slicer: SlicerCreateInput }, boolean>('sheet.command.add-slicer', ({ unitId, slicer }) => this.commitSlicerChange(unitId, slicer.id, slicer.hostSheetId, 'sheet.command.add-slicer', 'Add slicer', (model) => {
+      if (slicer.unitId !== unitId) throw new Error('Slicer workbook does not match the command workbook')
+      createSlicer(model, slicer)
+    }))
+    this.registerCommand<{ unitId: string; slicerId: string; selectedItems: string[] | null }, boolean>('sheet.command.set-slicer-items', ({ unitId, slicerId, selectedItems }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-slicer-items', 'Filter with slicer', (model) => {
+      setSlicerItems(model, requireSlicer(model, slicerId), selectedItems)
+    }))
+    this.registerCommand<{ unitId: string; slicerId: string; range: SlicerTimelineRange | null }, boolean>('sheet.command.set-timeline-range', ({ unitId, slicerId, range }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-timeline-range', 'Filter with timeline', (model) => {
+      setSlicerTimelineRange(model, requireSlicer(model, slicerId), range)
+    }))
+    this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.clear-slicer-filter', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.clear-slicer-filter', 'Clear slicer filter', (model) => {
+      clearSlicerFilter(model, requireSlicer(model, slicerId))
+    }))
+    this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId)))
     this.registerCommand<{ unitId: string; name: string }, boolean>('doc.command.set-name', ({ unitId, name }) => this.commitDocument(unitId, 'Rename document', (model) => { model.name = name }))
     this.registerCommand<{ unitId: string; index: number; text: string }, boolean>('doc.command.insert-text', ({ unitId, index, text }) => this.commitDocument(unitId, 'Insert text', (model) => Object.assign(model, insertDocumentText(model, index, text))))
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocument(unitId, 'Edit text range', (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
+    this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {
+      createDocumentContentControl(model, control, control.id)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string; patch: ContentControlPatch }, boolean>('doc.command.update-content-control', ({ unitId, controlId, patch }) => this.commitDocument(unitId, 'Update content control', (model) => {
+      updateDocumentContentControl(model, controlId, patch)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string; value: string }, boolean>('doc.command.set-content-control-value', ({ unitId, controlId, value }) => this.commitDocument(unitId, 'Set content control value', (model) => {
+      setDocumentContentControlValue(model, controlId, value)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string; checked: boolean }, boolean>('doc.command.set-content-control-checked', ({ unitId, controlId, checked }) => this.commitDocument(unitId, 'Set content control checkbox', (model) => {
+      setDocumentContentControlChecked(model, controlId, checked)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string; value: string }, boolean>('doc.command.select-content-control-item', ({ unitId, controlId, value }) => this.commitDocument(unitId, 'Select content control item', (model) => {
+      selectDocumentContentControlItem(model, controlId, value)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.remove-content-control', ({ unitId, controlId }) => this.commitDocument(unitId, 'Remove content control', (model) => {
+      removeDocumentContentControl(model, controlId)
+    }))
   }
 
   private commitPivotChange(
@@ -444,6 +572,38 @@ export class OfficeStudio {
     return true
   }
 
+  private commitSlicerChange(
+    unitId: string,
+    slicerId: string,
+    hostSheetId: string | undefined,
+    commandId: string,
+    label: string,
+    update: (model: WorkbookModel) => void,
+  ): boolean {
+    const current = this.getWorkbookModel(unitId)
+    if (!current) throw new Error(`Workbook not found: ${unitId}`)
+    const currentSlicer = current.slicers?.find((slicer) => slicer.id === slicerId)
+    const event: ApiEventMap['BeforeSlicerChange'] = {
+      unitId,
+      hostSheetId: hostSheetId ?? currentSlicer?.hostSheetId ?? '',
+      slicerId,
+      commandId,
+    }
+    this.events.emit('BeforeSlicerChange', event)
+    if (event.cancel) throw new Error(`Slicer change was canceled: ${commandId}`)
+    const changed = this.commitWorkbook(unitId, label, update)
+    if (!changed) return false
+    const next = this.getWorkbookModel(unitId)?.slicers?.find((slicer) => slicer.id === slicerId)
+    if (commandId === 'sheet.command.add-slicer' && next) {
+      this.events.emit('SlicerAdded', { unitId, hostSheetId: next.hostSheetId, slicerId, type: next.type })
+    } else if (commandId === 'sheet.command.remove-slicer') {
+      this.events.emit('SlicerRemoved', { unitId, hostSheetId: event.hostSheetId, slicerId })
+    } else if (next) {
+      this.events.emit('SlicerChanged', { unitId, hostSheetId: next.hostSheetId, slicerId, revision: next.revision })
+    }
+    return true
+  }
+
   private assertAlive(): void {
     if (this.disposed) throw new Error('OfficeStudio has been disposed')
   }
@@ -462,5 +622,23 @@ function requirePivot(model: WorkbookModel, pivotTableId: string) {
   const pivot = model.pivotTables?.find((candidate) => candidate.id === pivotTableId)
   if (!pivot) throw new Error(`Pivot table not found: ${pivotTableId}`)
   return pivot
+}
+
+function requireSheet(model: WorkbookModel, sheetId: string) {
+  const sheet = model.sheets.find((candidate) => candidate.id === sheetId)
+  if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
+  return sheet
+}
+
+function requireSlicer(model: WorkbookModel, slicerId: string) {
+  const slicer = model.slicers?.find((candidate) => candidate.id === slicerId)
+  if (!slicer) throw new Error(`Slicer not found: ${slicerId}`)
+  return slicer
+}
+
+function requireChart(model: WorkbookModel, chartId: string): ChartModel {
+  const chart = model.charts?.find((candidate) => candidate.id === chartId)
+  if (!chart) throw new Error(`Chart not found: ${chartId}`)
+  return chart
 }
 

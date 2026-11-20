@@ -6,7 +6,7 @@
 本地只读检出：`D:\rust_test\univer-reference`  
 适用项目：本项目的 Vue / TypeScript / Pinia / Rust / WASM 实现。
 
-本文件是项目执行标准的补充。下面把“上游代码事实”和“本项目执行要求”分开记录。功能范围以[完整功能对齐清单](UNIVER_FEATURE_PARITY.md)为准，包含 Pro；不能把开源仓库的范围当成产品目标上限。没有公开源码的功能依据公开规格独立实现，不推测其内部源码。
+本文件是项目执行标准的补充。下面把“上游代码事实”和“本项目执行要求”分开记录。功能范围以[完整功能对齐清单](UNIVER_FEATURE_PARITY.md)为准，覆盖 Sheets / Docs 的所有 Pro 功能。没有公开源码时，反推可观察行为并在本项目独立实现。
 
 用户指定的渲染和计算路径为 Canvas / WebGPU 优先，以及大计算优先 Rust/WASM；具体约束以[渲染与计算标准](RENDERING_AND_COMPUTE_STANDARD.md)执行。此为本项目技术决策，不冒称上游 Univer 已使用 WebGPU。
 
@@ -14,9 +14,27 @@
 
 1. 阅读对应 feature 的菜单 schema、menu factory、命令实现、model/service、controller、view 和现有测试，形成从入口到模型的调用链；不能看一个组件就宣称完成源码研究。
 2. 参考链接固定到上面的 commit；路径与符号是复查依据。升级参考版本时记录新增功能、菜单顺序、默认配置和数据结构差异，不能静默改变验收目标。
-3. 文档站是动态内容；Pro 规格以审阅日期记录，新增规格补入清单，不能覆盖旧证据。公开 API 或包名只能证明公开接口，不能证明掌握其闭源内部实现。
-4. 本地 reference 不安装依赖、不混入本项目依赖树、不作为生产运行依赖。按职责重写为 Vue，不把 React 的 TSX 直接复制进项目。
+3. 文档站是动态内容；Pro 规格以审阅日期记录，新增规格补入清单，不能覆盖旧证据。以公开文档、类型/API、可访问演示和标准 Office 文件逐项反推输入输出、状态变化、错误、界面交互和重开保真。把已证实行为和待核实推断分开，不能据此宣称掌握闭源内部实现。
+4. 借鉴本地参考仓库中有用的架构、数据结构、算法、界面、API 与测试。按 Vue / TypeScript / Rust/WASM 的边界改写；优化要维持公开行为，用同一数据和验收场景做前后对照。本地 reference 不安装依赖、不进生产依赖树。
 5. 源码限制是当前上游行为的证据，不自动成为本项目的最终限制。用户要求的增强功能仍保留为待实现目标。
+
+## 1.1 可访问工作台视觉基线
+
+用户指定以下 Univer 公共工作台作为 Sheets / Docs 布局与交互视觉对照入口（核对日期：2026-11-20；页面内容可能随线上版本变化）：
+
+| 产品模式 | 参考页面 |
+| --- | --- |
+| Sheets | [office.univer.ai/?filter=sheets](https://office.univer.ai/?filter=sheets) |
+| Docs Modern | [office.univer.ai/?filter=docs-modern](https://office.univer.ai/?filter=docs-modern) |
+| Docs Traditional | [office.univer.ai/?filter=docs-traditional](https://office.univer.ai/?filter=docs-traditional) |
+
+需要视觉对照时，使用相同浏览器、视口尺寸、设备像素比、语言和产品模式分别记录参考页与本项目截图；记录截图时间、可见页面状态、视口和无法复现的动态内容。优先比较 Header、Ribbon 分类/组、产品 Header、左右侧栏、编辑画布、底栏与弹层边界，并逐个执行可观察的控件交互。线上演示只证明被观察到的页面行为，不代替源码调用链、模型/命令契约、Office 导出重开或性能基准；未知/登录后/动态内容单列待核实，不推断内部实现。
+
+## 1.2 Exchange Office 互操作对照入口
+
+用户指定 [Univer Exchange Import / Export Compatibility](https://office.univer.ai/exchange) 作为上传 Office 文件检查导入、内容、格式和布局，并在线编辑、下载后与原文件比较的公开演示入口（核对日期：2026-11-20）。页面说明的流程是上传 → 检查导入 → 编辑并下载 → 与原文件对照；这不是自动字段差异或像素差异报告。验收记录需注明格式、文件哈希、样本内容/特性、浏览器、可见诊断、编辑动作、导出文件与独立重开结果；只用合成样本或获准公开的样本，不上传用户/业务文档。演示接受的扩展名或格式不证明本项目已支持对应格式。
+
+Exchange 仅用于观察公开转换行为和样本互操作对照，不是本项目运行依赖或服务端协议。项目仍用自身 `office-parser` / `office-writer` 链路；不依赖其后端、私有协议或内部实现。不能由页面宣称文件被服务端处理的措辞推断具体服务器实现、保留时长或隐私属性；上传前只使用无敏感合成数据。
 
 ## 2. 总工作台区域
 
@@ -193,6 +211,9 @@ UI stores 组合状态，不能倒置领域层依赖方向
 
 ## 8. Rust/WASM、保真与服务边界
 
+**转换参考（2026-11-20）：** [Univer 的应用架构](https://docs.univer.ai/server/architecture#integrate-file-import-and-export)把 Office 文件与文档数据之间的转换交给 Exchange，可由服务端或本地 Node.js 进程调用。独立快照转换不需要协作；协作文件导出取已确认版本。公开入口和适用格式见 [Sheets 导入导出](https://docs.univer.ai/guides/sheets/features/import-export)及 [Docs 导入导出](https://docs.univer.ai/guides/docs/features/import-export)。
+
+- 本项目复用已有 Office 转换能力：`crates/office-parser` 负责读取，`crates/office-writer` 负责写出，浏览器通过 Worker 调用；需要在服务端运行时扩展本项目后端。对齐公开 Facade 的输入、输出、格式和失败语义，从样本验证模型及资源保真，不接入 Univer Server 或 Exchange，也不依赖其私有协议。
 - `crates/office-parser` 包含 façade/API、版本化 DTO、格式路由、duke-pages 文档适配、rxls 工作簿适配、诊断与测试；复杂适配继续按功能拆模块，不全部放 parser.rs。
 - WASM 负责真实文件解析、规范化的解析 DTO 以及适合其环境的计算；不依赖 Vue，不操作 DOM，不管理工具栏与菜单。
 - `schemaVersion/parserVersion/format/fileName/size/model/payload/diagnostics` 契约由 Rust 和 TypeScript 共同验证；payload.modelType/data 不能被前端旧字段假设替代。
@@ -212,8 +233,8 @@ UI stores 组合状态，不能倒置领域层依赖方向
 
 1. 先在功能清单中选定 ID，注明参考文件/公开规格及具体交互。
 2. 从模型、参数、命令、服务、状态到视图连通，确保各入口一致。
-3. 对变更执行相应单元/契约/浏览器测试，保留真实文件样本、截图基线和导出重开结果。
-4. 同一视口、设备缩放、编辑器缩放、字体环境和 Ribbon 变体下对比布局；截图不能代替行为验收。
+3. 对变更执行相应单元、契约或浏览器行为测试；涉及 Office 互操作时保留真实文件样本和独立重开结果。
+4. 用布局、事件和交互测试验证相同视口、设备缩放、编辑器缩放、字体和 Ribbon 变体下的行为。只有用户明确要求视觉回归时才加截图或像素检查。
 5. 性能测试记录设备、数据规模、渲染节点、耗时与内存；禁止仅靠小型样例宣称大型文件可用。
 6. 当前静态草稿、解析支持、构建成功与完整功能验收分开记录；未通过的项保持未验收。
 7. 不以“Pro 没源码”“解析库不支持”结束任务；先登记缺口，明确独立实现模块和下一步验证，继续推进有依据的实现。

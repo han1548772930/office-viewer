@@ -1,4 +1,5 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
+import { transformContentControlsForTextEdit } from './content-controls'
 import {
   compactRuns,
   createParagraph,
@@ -241,6 +242,7 @@ export function replaceDocumentRange(
 
   const next = structuredCloneDocument(model)
   const nextBody = flattenDocumentBody(next)
+  transformContentControlsForTextEdit(next, nextBody.segments, startOffset, endOffset, text.replace(/\r\n?/g, '\n').length)
   if (!nextBody.segments.length) {
     if (text === '') return next
     next.blocks.splice(0, 0, ...text.replace(/\r\n?/g, '\n').split('\n').map((line) => createParagraph(line)))

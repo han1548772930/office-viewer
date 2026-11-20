@@ -15,25 +15,35 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const y = (value: number) => pageOffsetY + value * scale
   const rect = (source: RenderRect): RenderRect => ({ x: x(source.x), y: y(source.y), width: source.width * scale, height: source.height * scale })
   const visible = (source: RenderRect) => y(source.y + source.height) >= -20 && y(source.y) <= viewport.height + 20 && x(source.x + source.width) >= -20 && x(source.x) <= viewport.width + 20
+  // Layout objects are ordered by page. Keep a page index set so a long
+  // document does not run every cell/image/divider through viewport math on
+  // every animation frame. Objects on a visible page still use the precise
+  // rectangle test below because a page can be taller than the viewport.
+  const visiblePages = new Set<number>()
   for (const page of layout.pages) {
     if (!visible(page)) continue
+    visiblePages.add(page.index)
     commands.push({ kind: 'rect', ...rect({ ...page, x: page.x + 3, y: page.y + 4 }), fill: '#dce1e8' })
     commands.push({ kind: 'rect', ...rect(page), fill: '#ffffff', stroke: '#d9dfe7', strokeWidth: 1 })
     commands.push({ kind: 'text', x: x(page.x + page.width / 2), y: y(page.y + page.height - 24), text: String(page.index + 1), font: `${10 * scale}px Arial`, color: '#9ca3af', align: 'center', baseline: 'middle' })
   }
-  for (const cell of layout.cells) {
-    if (visible(cell)) commands.push({ kind: 'rect', ...rect(cell), fill: cell.fill, stroke: '#aeb8c6', strokeWidth: Math.max(0.5, scale) })
-  }
-  for (const divider of layout.dividers) {
-    if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: '#b3bdca', width: Math.max(1, scale) })
-  }
-  for (const image of layout.images) {
-    if (!visible(image)) continue
+  for (const pageIndex of visiblePages) {
+    const content = layout.pageContent[pageIndex]
+    if (!content) continue
+    for (const cell of content.cells) {
+      if (visible(cell)) commands.push({ kind: 'rect', ...rect(cell), fill: cell.fill, stroke: '#aeb8c6', strokeWidth: Math.max(0.5, scale) })
+    }
+    for (const divider of content.dividers) {
+      if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: '#b3bdca', width: Math.max(1, scale) })
+    }
+    for (const image of content.images) {
+      if (!visible(image)) continue
     const source = options.images.get(image.src)
     if (source?.complete && source.naturalWidth) commands.push({ kind: 'image', ...rect(image), source })
     else {
       commands.push({ kind: 'rect', ...rect(image), fill: '#f1f4f8', stroke: '#ccd5e0' })
       commands.push({ kind: 'text', x: x(image.x + 12), y: y(image.y + 22), text: image.alt || '图片', font: `${12 * scale}px Arial`, color: '#738096' })
+    }
     }
   }
   const ordered = orderedSelection(model, options.selection)
@@ -41,7 +51,8 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const first = targets.findIndex((target) => sameTarget(target, ordered.start))
   const last = targets.findIndex((target) => sameTarget(target, ordered.end))
   const selected = new Set(targets.slice(first, last + 1).map(targetKey))
-  for (const line of layout.lines) {
+  const visibleLines = [...visiblePages].flatMap((pageIndex) => layout.pageContent[pageIndex]?.lines ?? [])
+  for (const line of visibleLines) {
     if (!visible(line)) continue
     const clip = rect(layout.pages[line.page]!.content)
     const hasSelection = !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))

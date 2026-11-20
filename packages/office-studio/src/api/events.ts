@@ -21,6 +21,10 @@ export interface ApiEventMap {
   BeforePivotTableChange: { unitId: string; subUnitId: string; pivotTableId: string; commandId: string; cancel?: boolean }
   PivotTableChanged: { unitId: string; subUnitId: string; pivotTableId: string; revision: number }
   PivotTableRendered: { unitId: string; subUnitId: string; pivotTableId: string; revision: number; outputRange?: { startRow: number; startCol: number; endRow: number; endCol: number } }
+  BeforeSlicerChange: { unitId: string; hostSheetId: string; slicerId: string; commandId: string; cancel?: boolean }
+  SlicerAdded: { unitId: string; hostSheetId: string; slicerId: string; type: 'slicer' | 'timeline' }
+  SlicerChanged: { unitId: string; hostSheetId: string; slicerId: string; revision: number }
+  SlicerRemoved: { unitId: string; hostSheetId: string; slicerId: string }
 }
 
 export class FEventName {
@@ -42,6 +46,10 @@ export class FEventName {
   readonly BeforePivotTableChange = 'BeforePivotTableChange'
   readonly PivotTableChanged = 'PivotTableChanged'
   readonly PivotTableRendered = 'PivotTableRendered'
+  readonly BeforeSlicerChange = 'BeforeSlicerChange'
+  readonly SlicerAdded = 'SlicerAdded'
+  readonly SlicerChanged = 'SlicerChanged'
+  readonly SlicerRemoved = 'SlicerRemoved'
 }
 
 export interface ApiRange {

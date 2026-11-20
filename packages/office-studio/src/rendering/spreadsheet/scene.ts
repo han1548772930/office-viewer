@@ -9,6 +9,8 @@ export interface SpreadsheetSceneOptions {
   selectedCells: readonly string[]
   selectedRanges?: readonly GridRange[]
   searchText?: string
+  /** Drawing-object commands are expressed in unscaled worksheet CSS pixels. */
+  overlayCommands?: readonly DrawCommand[]
 }
 export function displayCell(cell: ExcelCellView | undefined): string {
   if (!cell) return ''
@@ -61,6 +63,9 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       }
     }
   }
+  // Overlay drawing objects share the same scroll/zoom transform as the sheet;
+  // headers are painted afterwards and therefore stay above floating objects.
+  for (const command of options.overlayCommands ?? []) commands.push(transformOverlayCommand(command, viewport))
   commands.push({ kind: 'rect', x: 0, y: 0, width: viewport.width, height: GRID_HEADER_HEIGHT, fill: '#f5f7fa' })
   commands.push({ kind: 'rect', x: 0, y: GRID_HEADER_HEIGHT, width: GRID_HEADER_WIDTH, height: Math.max(0, viewport.height - GRID_HEADER_HEIGHT), fill: '#f5f7fa' })
   const active = parseAddress(options.activeCell)
@@ -81,4 +86,33 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   if (geometry.frozenRows) { const y = GRID_HEADER_HEIGHT + geometry.rows.offset(geometry.frozenRows) * z; commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH, y1: y, x2: viewport.width, y2: y, color: '#9eacbf', width: 2 }) }
   if (geometry.frozenColumns) { const x = GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: GRID_HEADER_HEIGHT, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
   return { width: viewport.width, height: viewport.height, background: '#ffffff', commands }
+}
+
+function transformOverlayCommand(command: DrawCommand, viewport: GridViewport): DrawCommand {
+  const transformRect = (rect: RenderRect): RenderRect => ({
+    x: rect.x * viewport.zoom - viewport.scrollLeft,
+    y: rect.y * viewport.zoom - viewport.scrollTop,
+    width: rect.width * viewport.zoom,
+    height: rect.height * viewport.zoom,
+  })
+  const clip = command.clip ? transformRect(command.clip) : undefined
+  if (command.kind === 'rect') return { ...command, ...transformRect(command), strokeWidth: command.strokeWidth === undefined ? undefined : command.strokeWidth * viewport.zoom, ...(clip ? { clip } : {}) }
+  if (command.kind === 'line') return {
+    ...command,
+    x1: command.x1 * viewport.zoom - viewport.scrollLeft,
+    y1: command.y1 * viewport.zoom - viewport.scrollTop,
+    x2: command.x2 * viewport.zoom - viewport.scrollLeft,
+    y2: command.y2 * viewport.zoom - viewport.scrollTop,
+    width: command.width === undefined ? undefined : command.width * viewport.zoom,
+    ...(clip ? { clip } : {}),
+  }
+  if (command.kind === 'text') return {
+    ...command,
+    x: command.x * viewport.zoom - viewport.scrollLeft,
+    y: command.y * viewport.zoom - viewport.scrollTop,
+    font: command.font.replace(/(\d+(?:\.\d+)?)px/g, (_match, size: string) => `${Number(size) * viewport.zoom}px`),
+    maxWidth: command.maxWidth === undefined ? undefined : command.maxWidth * viewport.zoom,
+    ...(clip ? { clip } : {}),
+  }
+  return { ...command, ...transformRect(command), ...(clip ? { clip } : {}) }
 }

@@ -1,0 +1,251 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-20T07:44:37.095Z",
+  "environment": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "browserBrands": [
+      {
+        "brand": "Not-A.Brand",
+        "version": "99"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "157"
+      },
+      {
+        "brand": "Chromium",
+        "version": "157"
+      }
+    ],
+    "hardwareConcurrency": 16,
+    "deviceMemoryGiB": 32,
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "devicePixelRatio": 1
+    },
+    "usedJSHeapSizeBeforeBytes": 2674456,
+    "usedJSHeapSizeAfterBytes": 2788303,
+    "longTaskObserverAvailable": true
+  },
+  "routing": {
+    "configuredMinRows": 4096,
+    "benchmarkMinRowsOverride": 0,
+    "thresholdStatus": "4096 is a provisional routing threshold; benchmark results must be reviewed across supported devices before calibration."
+  },
+  "methodology": {
+    "inputGenerator": "Deterministic two-column values: column 0=((row*17)%8191)-4096 except row%127=0 is null; column 1=((row*7919)%12289)-6144 except row%199=0 is null.",
+    "keyCount": 2,
+    "sortDirections": [
+      "ascending",
+      "descending"
+    ],
+    "nullsLast": true,
+    "filterPredicates": [
+      "column 0 between -1000 and 1000",
+      "column 1 greater than or equal to 0",
+      "match=all"
+    ],
+    "iterations": 1,
+    "coldDefinition": "A newly constructed OfficeComputeClient and Worker for each single task. Browser/network/module caches may already be warm; this measures fresh Worker initialization, not a guaranteed disk-cold load.",
+    "warmDefinition": "A single client/Worker is initialized and both task types are run once as discarded warmup; subsequent samples reuse that Worker and WASM module.",
+    "memoryLimitations": [
+      "Worker metrics estimatedPeakBytes is a schema-based estimate including JS input, a WASM input copy, index allocation, and fixed runtime allowance; it is not measured resident WASM memory.",
+      "Chrome usedJSHeapSize is sampled before and after each operation when available; the delta includes garbage-collection and browser scheduling noise.",
+      "Typed input and result bytes are exact payload byte counts; JS Array baseline storage is implementation-dependent and is not equated to this byte count."
+    ]
+  },
+  "workloads": [
+    {
+      "rowCount": 64,
+      "keyCount": 2,
+      "defaultMinRows": 4096,
+      "defaultRoute": {
+        "sortUsesWorker": false,
+        "filterUsesWorker": false
+      },
+      "cold": [
+        {
+          "operation": "sort",
+          "regime": "new-worker",
+          "rowCount": 64,
+          "sample": 0,
+          "wallMs": 39.100000001490116,
+          "inputBytes": 1154,
+          "responseBytes": 256,
+          "boundaryBytes": 1410,
+          "workerComputeMs": 0.6000000014901161,
+          "workerQueueAndStartupMs": 37.5,
+          "clientTotalMs": 38.599999997764826,
+          "estimatedPeakBytes": 8391684,
+          "browserHeapBeforeBytes": 2674456,
+          "browserHeapAfterBytes": 2674456,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        },
+        {
+          "operation": "filter",
+          "regime": "new-worker",
+          "rowCount": 64,
+          "sample": 0,
+          "wallMs": 24.399999998509884,
+          "inputBytes": 1186,
+          "responseBytes": 0,
+          "boundaryBytes": 1186,
+          "workerComputeMs": 0.5999999977648258,
+          "workerQueueAndStartupMs": 23.199999999254942,
+          "clientTotalMs": 24.199999999254942,
+          "estimatedPeakBytes": 8391492,
+          "browserHeapBeforeBytes": 2674456,
+          "browserHeapAfterBytes": 2788303,
+          "browserHeapDeltaBytes": 113847,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        }
+      ],
+      "warm": [
+        {
+          "operation": "sort",
+          "regime": "reused-worker",
+          "rowCount": 64,
+          "sample": 0,
+          "wallMs": 0.30000000074505806,
+          "inputBytes": 1154,
+          "responseBytes": 256,
+          "boundaryBytes": 1410,
+          "workerComputeMs": 0.10000000149011612,
+          "workerQueueAndStartupMs": 0.09999999776482582,
+          "clientTotalMs": 0.30000000074505806,
+          "estimatedPeakBytes": 8391684,
+          "browserHeapBeforeBytes": 2788303,
+          "browserHeapAfterBytes": 2788303,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        },
+        {
+          "operation": "filter",
+          "regime": "reused-worker",
+          "rowCount": 64,
+          "sample": 0,
+          "wallMs": 0.29999999701976776,
+          "inputBytes": 1186,
+          "responseBytes": 0,
+          "boundaryBytes": 1186,
+          "workerComputeMs": 0.09999999776482582,
+          "workerQueueAndStartupMs": 0,
+          "clientTotalMs": 0.19999999925494194,
+          "estimatedPeakBytes": 8391492,
+          "browserHeapBeforeBytes": 2788303,
+          "browserHeapAfterBytes": 2788303,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        }
+      ],
+      "typescript": [
+        {
+          "operation": "sort",
+          "regime": "typescript",
+          "rowCount": 64,
+          "sample": 0,
+          "wallMs": 0,
+          "inputBytes": 1024,
+          "responseBytes": 256,
+          "boundaryBytes": 0,
+          "workerComputeMs": null,
+          "workerQueueAndStartupMs": null,
+          "clientTotalMs": null,
+          "estimatedPeakBytes": null,
+          "browserHeapBeforeBytes": 2674456,
+          "browserHeapAfterBytes": 2674456,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        },
+        {
+          "operation": "filter",
+          "regime": "typescript",
+          "rowCount": 64,
+          "sample": 0,
+          "wallMs": 0,
+          "inputBytes": 1024,
+          "responseBytes": 0,
+          "boundaryBytes": 0,
+          "workerComputeMs": null,
+          "workerQueueAndStartupMs": null,
+          "clientTotalMs": null,
+          "estimatedPeakBytes": null,
+          "browserHeapBeforeBytes": 2674456,
+          "browserHeapAfterBytes": 2674456,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        }
+      ],
+      "summary": [
+        {
+          "operation": "sort",
+          "regime": "typescript",
+          "p50WallMs": 0,
+          "p95WallMs": 0
+        },
+        {
+          "operation": "filter",
+          "regime": "typescript",
+          "p50WallMs": 0,
+          "p95WallMs": 0
+        },
+        {
+          "operation": "sort",
+          "regime": "new-worker",
+          "p50WallMs": 39.100000001490116,
+          "p95WallMs": 39.100000001490116
+        },
+        {
+          "operation": "filter",
+          "regime": "new-worker",
+          "p50WallMs": 24.399999998509884,
+          "p95WallMs": 24.399999998509884
+        },
+        {
+          "operation": "sort",
+          "regime": "reused-worker",
+          "p50WallMs": 0.30000000074505806,
+          "p95WallMs": 0.30000000074505806
+        },
+        {
+          "operation": "filter",
+          "regime": "reused-worker",
+          "p50WallMs": 0.29999999701976776,
+          "p95WallMs": 0.29999999701976776
+        }
+      ]
+    }
+  ]
+}

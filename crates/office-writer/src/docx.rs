@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{ExportError, ExportWarning, opc::Package, xml};
 
@@ -15,12 +15,20 @@ const REL_NUMBERING: &str =
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const REL_FOOTNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const REL_ENDNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
 const DOCUMENT_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 const STYLES_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
 const NUMBERING_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
+const FOOTNOTES_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
+const ENDNOTES_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
 const MAX_TABLE_SPAN: usize = 512;
 const EMU_PER_PIXEL: f64 = 9_525.0;
 const TWIPS_PER_PIXEL: f64 = 15.0;
@@ -34,6 +42,72 @@ enum ListKind {
 struct NumberingInstance {
     id: u32,
     kind: ListKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum NoteKind {
+    Footnote,
+    Endnote,
+}
+
+impl NoteKind {
+    fn field(self) -> &'static str {
+        match self {
+            Self::Footnote => "footnoteId",
+            Self::Endnote => "endnoteId",
+        }
+    }
+
+    fn collection(self) -> &'static str {
+        match self {
+            Self::Footnote => "footnotes",
+            Self::Endnote => "endnotes",
+        }
+    }
+
+    fn reference_tag(self) -> &'static str {
+        match self {
+            Self::Footnote => "footnoteReference",
+            Self::Endnote => "endnoteReference",
+        }
+    }
+
+    fn body_reference_tag(self) -> &'static str {
+        match self {
+            Self::Footnote => "footnoteRef",
+            Self::Endnote => "endnoteRef",
+        }
+    }
+
+    fn style(self) -> &'static str {
+        match self {
+            Self::Footnote => "FootnoteText",
+            Self::Endnote => "EndnoteText",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NoteEntry {
+    id: i64,
+    value: Value,
+}
+
+struct NoteBundle {
+    footnotes: Vec<NoteEntry>,
+    endnotes: Vec<NoteEntry>,
+    ids: HashMap<(NoteKind, String), i64>,
+    orphaned: Vec<(NoteKind, String)>,
+}
+
+#[derive(Clone)]
+struct ContentControl {
+    id: String,
+    kind: String,
+    numeric_id: u32,
+    start: usize,
+    end: usize,
+    value: Value,
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +125,9 @@ struct WriteContext<'a> {
     warnings: Vec<ExportWarning>,
     list_ids: HashMap<usize, u32>,
     numbering: Vec<NumberingInstance>,
+    note_ids: HashMap<(NoteKind, String), i64>,
+    controls_by_block: HashMap<String, Vec<ContentControl>>,
+    used_controls: BTreeSet<String>,
     next_relationship: u32,
     next_image: u32,
     page: PageGeometry,
@@ -125,7 +202,38 @@ impl<'a> WriteContext<'a> {
         let mut result = String::new();
         for run in runs {
             let text = string(get(run, "text")).unwrap_or_default();
-            let fragments = run_xml(run, &text);
+            let (fragments, has_note_reference) = if let Some((kind, source_id)) =
+                note_reference(run)
+            {
+                if let Some(id) = self.note_ids.get(&(kind, source_id.clone())) {
+                    let tag = kind.reference_tag();
+                    let style = match kind {
+                        NoteKind::Footnote => "FootnoteReference",
+                        NoteKind::Endnote => "EndnoteReference",
+                    };
+                    (
+                        format!(
+                            "<w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{tag} w:id=\"{id}\"/></w:r>"
+                        ),
+                        true,
+                    )
+                } else {
+                    self.warn(
+                        "DOCX_NOTE_MISSING",
+                        format!("A {0} reference to note {source_id:?} has no matching note body; its marker text was preserved.", kind.collection().trim_end_matches('s')),
+                    );
+                    (run_xml(run, &text), false)
+                }
+            } else {
+                (run_xml(run, &text), false)
+            };
+            if has_note_reference {
+                result.push_str(&fragments);
+                if !text.is_empty() {
+                    result.push_str(&run_xml(run, &text));
+                }
+                continue;
+            }
             let href = run_link(run);
             if let Some(href) = href {
                 if let Some(bookmark) = href.strip_prefix('#') {
@@ -156,6 +264,156 @@ impl<'a> WriteContext<'a> {
             result.push_str("<w:r><w:t></w:t></w:r>");
         }
         Ok(result)
+    }
+
+    fn runs_with_controls(&mut self, block: &Value, runs: &[Value]) -> Result<String, ExportError> {
+        let Some(block_id) = string(get(block, "id")) else {
+            return self.runs(runs);
+        };
+        let Some(controls) = self.controls_by_block.get(&block_id).cloned() else {
+            return self.runs(runs);
+        };
+        if controls.is_empty() {
+            return self.runs(runs);
+        }
+        let total = runs
+            .iter()
+            .map(|run| {
+                string(get(run, "text"))
+                    .unwrap_or_default()
+                    .encode_utf16()
+                    .count()
+            })
+            .sum::<usize>();
+        let mut result = self.render_control_range(runs, &controls, 0, total, None, 0)?;
+        if result.is_empty() {
+            result.push_str("<w:r><w:t></w:t></w:r>");
+        }
+        Ok(result)
+    }
+
+    fn render_control_range(
+        &mut self,
+        runs: &[Value],
+        controls: &[ContentControl],
+        start: usize,
+        end: usize,
+        parent_id: Option<&str>,
+        depth: usize,
+    ) -> Result<String, ExportError> {
+        if depth > 64 {
+            return Err(ExportError::invalid(
+                "Content control nesting exceeds the maximum depth of 64.",
+            ));
+        }
+        let mut children = controls
+            .iter()
+            .filter(|control| {
+                let candidate_parent = string(get(&control.value, "parentId"));
+                candidate_parent.as_deref() == parent_id
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        children.sort_by_key(|control| (control.start, control.end, control.id.clone()));
+        let mut cursor = start;
+        let mut result = String::new();
+        for control in children {
+            if control.start < start || control.end > end || control.start > control.end {
+                self.warn(
+                    "DOCX_CONTENT_CONTROL_RANGE",
+                    format!("Content control {:?} has a range outside its paragraph or parent; its wrapper was omitted.", control.id),
+                );
+                continue;
+            }
+            if control.start < cursor {
+                self.warn(
+                    "DOCX_CONTENT_CONTROL_OVERLAP",
+                    format!(
+                        "Content control {:?} overlaps a sibling control and was omitted.",
+                        control.id
+                    ),
+                );
+                continue;
+            }
+            result.push_str(&self.render_run_range(runs, cursor, control.start)?);
+            let content = self.render_control_range(
+                runs,
+                controls,
+                control.start,
+                control.end,
+                Some(&control.id),
+                depth + 1,
+            )?;
+            if let Some(wrapped) = content_control_xml(&control, &content) {
+                if get(&control.value, "rawSdtPr")
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                    || get(&control.value, "rawSdtEndPr")
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                {
+                    self.warn(
+                        "DOCX_SDT_RAW_PROPERTIES_UNSUPPORTED",
+                        format!("Content control {:?} contains preserved raw OOXML properties that this writer cannot safely merge into the generated SDT.", control.id),
+                    );
+                }
+                if !get(&control.value, "dataBinding").is_null() {
+                    self.warn(
+                        "DOCX_SDT_DATA_BINDING_UNSUPPORTED",
+                        format!("Content control {:?} references a custom XML binding, but no matching custom XML store is present in the document model.", control.id),
+                    );
+                }
+                result.push_str(&wrapped);
+                self.used_controls.insert(control.id);
+            } else {
+                self.warn(
+                    "DOCX_CONTENT_CONTROL_TYPE_UNSUPPORTED",
+                    format!("Content control {:?} has unsupported inline type {:?}; its text was preserved without the wrapper.", control.id, control.kind),
+                );
+                result.push_str(&content);
+            }
+            cursor = control.end;
+        }
+        result.push_str(&self.render_run_range(runs, cursor, end)?);
+        Ok(result)
+    }
+
+    fn render_run_range(
+        &mut self,
+        runs: &[Value],
+        start: usize,
+        end: usize,
+    ) -> Result<String, ExportError> {
+        if start == end {
+            return Ok(String::new());
+        }
+        let mut result = Vec::new();
+        let mut offset = 0usize;
+        for run in runs {
+            let text = string(get(run, "text")).unwrap_or_default();
+            let length = text.encode_utf16().count();
+            let run_end = offset.saturating_add(length);
+            let overlap_start = start.max(offset);
+            let overlap_end = end.min(run_end);
+            if overlap_start < overlap_end {
+                let Some(part) = slice_utf16(&text, overlap_start - offset, overlap_end - offset)
+                else {
+                    return Err(ExportError::invalid(
+                        "A content control boundary splits a UTF-16 surrogate pair.",
+                    ));
+                };
+                let mut clipped = run.clone();
+                if let Some(object) = clipped.as_object_mut() {
+                    object.insert("text".to_owned(), Value::String(part.to_owned()));
+                }
+                result.push(clipped);
+            }
+            offset = run_end;
+            if offset >= end {
+                break;
+            }
+        }
+        self.runs(&result)
     }
 
     fn block(&mut self, block: &Value) -> Result<String, ExportError> {
@@ -232,7 +490,7 @@ impl<'a> WriteContext<'a> {
             .map_or(&[][..], Vec::as_slice);
         Ok(format!(
             "<w:p>{paragraph_properties}{}</w:p>",
-            self.runs(runs)?
+            self.runs_with_controls(block, runs)?
         ))
     }
 
@@ -315,22 +573,22 @@ impl<'a> WriteContext<'a> {
                     continue;
                 }
                 while column < item.column {
-                    row_xml.push_str(&table_cell_xml(&[], 1, 1, false, None, &mut self.warnings)?);
+                    row_xml.push_str(&table_cell_xml(self, &[], 1, 1, false, None)?);
                     column += 1;
                 }
                 let span = item.span.max(1);
                 let merge = !item.continuation && item.row_span > 1;
                 let cell = if let Some(cell) = item.cell {
                     table_cell_xml(
+                        self,
                         cell_blocks(cell),
                         span,
                         item.row_span,
                         merge,
                         Some(cell),
-                        &mut self.warnings,
                     )?
                 } else {
-                    table_cell_xml(&[], span, 0, true, None, &mut self.warnings)?
+                    table_cell_xml(self, &[], span, 0, true, None)?
                 };
                 row_xml.push_str(&cell);
                 if merge {
@@ -409,12 +667,12 @@ fn cell_blocks(cell: &Value) -> &[Value] {
 }
 
 fn table_cell_xml(
+    context: &mut WriteContext<'_>,
     blocks: &[Value],
     span: usize,
     row_span: usize,
     merged: bool,
     cell: Option<&Value>,
-    warnings: &mut Vec<ExportWarning>,
 ) -> Result<String, ExportError> {
     let mut cell_properties = String::new();
     if span > 1 {
@@ -444,42 +702,17 @@ fn table_cell_xml(
         for block in blocks {
             match string(get(block, "type")).unwrap_or_default().as_str() {
                 "table" => {
-                    warnings.push(ExportWarning::new(
+                    context.warn(
                         "DOCX_NESTED_TABLE",
                         "Nested table content was converted to plain text.",
-                    ));
+                    );
                     let text = nested_table_text(block);
                     content.push_str(&format!(
                         "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
                         xml_text(&text)
                     ));
                 }
-                "image" => {
-                    warnings.push(ExportWarning::new(
-                        "DOCX_TABLE_IMAGE",
-                        "Image inside a table cell was exported as alt text.",
-                    ));
-                    let metadata = get(block, "metadata");
-                    let alt = string(get(get(metadata, "image"), "alt"))
-                        .unwrap_or_else(|| "Image".to_owned());
-                    content.push_str(&format!(
-                        "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
-                        xml_text(&format!("[Image: {alt}]"))
-                    ));
-                }
-                _ => {
-                    let runs = field(block, "runs")
-                        .and_then(Value::as_array)
-                        .map_or(&[][..], Vec::as_slice);
-                    let text = runs
-                        .iter()
-                        .map(|run| string(get(run, "text")).unwrap_or_default())
-                        .collect::<String>();
-                    content.push_str(&format!(
-                        "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
-                        xml_text(&text)
-                    ));
-                }
+                _ => content.push_str(&context.block(block)?),
             }
         }
     }
@@ -534,6 +767,562 @@ fn column_intersects(start: usize, other_start: usize, other_span: usize) -> boo
     start >= other_start && start < other_start.saturating_add(other_span)
 }
 
+fn note_reference(run: &Value) -> Option<(NoteKind, String)> {
+    let metadata = get(run, "metadata");
+    for kind in [NoteKind::Footnote, NoteKind::Endnote] {
+        let source = string(get(run, kind.field()))
+            .or_else(|| get(run, kind.field()).as_i64().map(|id| id.to_string()))
+            .or_else(|| string(get(metadata, kind.field())))
+            .or_else(|| {
+                get(metadata, kind.field())
+                    .as_i64()
+                    .map(|id| id.to_string())
+            });
+        if let Some(source) = source.filter(|source| !source.trim().is_empty()) {
+            return Some((kind, source));
+        }
+    }
+    let note = get(metadata, "note");
+    let kind = match string(get(note, "type")).as_deref() {
+        Some("footnote") => NoteKind::Footnote,
+        Some("endnote") => NoteKind::Endnote,
+        _ => return None,
+    };
+    string(get(note, "noteId"))
+        .or_else(|| get(note, "noteId").as_i64().map(|id| id.to_string()))
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| (kind, id))
+}
+
+fn note_sources<'a>(model: &'a Value, kind: NoteKind) -> Option<&'a Value> {
+    let collection = kind.collection();
+    field(model, collection)
+        .or_else(|| field(get(model, "metadata"), collection))
+        .or_else(|| field(get(model, "notes"), collection))
+}
+
+fn collect_note_entries(model: &Value, kind: NoteKind) -> Vec<(String, Value)> {
+    let Some(source) = note_sources(model, kind) else {
+        return Vec::new();
+    };
+    match source {
+        Value::Array(entries) => entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let id = string(get(entry, "noteId"))
+                    .or_else(|| string(get(entry, "id")))
+                    .or_else(|| get(entry, "noteId").as_i64().map(|id| id.to_string()))
+                    .or_else(|| get(entry, "id").as_i64().map(|id| id.to_string()))
+                    .unwrap_or_else(|| (index + 1).to_string());
+                (!id.trim().is_empty()).then(|| (id, entry.clone()))
+            })
+            .collect(),
+        Value::Object(entries) => entries
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn collect_references(blocks: &[Value], found: &mut BTreeSet<(NoteKind, String)>) {
+    for block in blocks {
+        if let Some(runs) = field(block, "runs").and_then(Value::as_array) {
+            for run in runs {
+                if let Some(reference) = note_reference(run) {
+                    found.insert(reference);
+                }
+            }
+        }
+        let rows = field(get(get(block, "metadata"), "table"), "rows").and_then(Value::as_array);
+        if let Some(rows) = rows {
+            for cell in rows.iter().flat_map(|row| {
+                field(row, "cells")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            }) {
+                collect_references(cell_blocks(cell), found);
+            }
+        }
+    }
+}
+
+fn collect_notes(model: &Value, blocks: &[Value]) -> NoteBundle {
+    let mut notes: [Vec<NoteEntry>; 2] = [Vec::new(), Vec::new()];
+    let mut ids = HashMap::new();
+    let mut next_id = [1i64, 1i64];
+    for kind in [NoteKind::Footnote, NoteKind::Endnote] {
+        let index = if kind == NoteKind::Endnote { 1 } else { 0 };
+        for (source_id, value) in collect_note_entries(model, kind) {
+            if ids.contains_key(&(kind, source_id.clone())) {
+                continue;
+            }
+            let id = next_id[index];
+            next_id[index] += 1;
+            ids.insert((kind, source_id.clone()), id);
+            notes[index].push(NoteEntry { id, value });
+        }
+    }
+
+    let mut references = BTreeSet::new();
+    collect_references(blocks, &mut references);
+    let mut orphaned = Vec::new();
+    for (kind, source_id) in references {
+        if ids.contains_key(&(kind, source_id.clone())) {
+            continue;
+        }
+        let index = if kind == NoteKind::Endnote { 1 } else { 0 };
+        let id = next_id[index];
+        next_id[index] += 1;
+        ids.insert((kind, source_id.clone()), id);
+        notes[index].push(NoteEntry {
+            id,
+            value: Value::Null,
+        });
+        orphaned.push((kind, source_id));
+    }
+    NoteBundle {
+        footnotes: std::mem::take(&mut notes[0]),
+        endnotes: std::mem::take(&mut notes[1]),
+        ids,
+        orphaned,
+    }
+}
+
+fn collect_content_controls(
+    model: &Value,
+    blocks: &[Value],
+) -> HashMap<String, Vec<ContentControl>> {
+    let Some(items) = field(model, "contentControls").and_then(Value::as_array) else {
+        return HashMap::new();
+    };
+    let mut block_ids = BTreeSet::new();
+    collect_block_ids(blocks, &mut block_ids);
+    let mut controls = HashMap::<String, Vec<ContentControl>>::new();
+    for (index, value) in items.iter().enumerate() {
+        let id = string(get(value, "id")).unwrap_or_default();
+        let block_id = string(get(value, "blockId")).unwrap_or_default();
+        let kind = string(get(value, "type")).unwrap_or_default();
+        let start = get(value, "startOffset")
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok());
+        let end = get(value, "endOffset")
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok());
+        let (Some(start), Some(end)) = (start, end) else {
+            continue;
+        };
+        if id.trim().is_empty() || block_id.trim().is_empty() || !block_ids.contains(&block_id) {
+            continue;
+        }
+        let numeric_id = u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX);
+        controls.entry(block_id).or_default().push(ContentControl {
+            id,
+            kind,
+            numeric_id,
+            start,
+            end,
+            value: value.clone(),
+        });
+    }
+    for block_controls in controls.values_mut() {
+        block_controls.sort_by_key(|control| {
+            (
+                control.start,
+                std::cmp::Reverse(control.end),
+                control.id.clone(),
+            )
+        });
+    }
+    controls
+}
+
+fn collect_block_ids(blocks: &[Value], found: &mut BTreeSet<String>) {
+    for block in blocks {
+        if let Some(id) = string(get(block, "id")).filter(|id| !id.trim().is_empty()) {
+            found.insert(id);
+        }
+        let rows = field(get(get(block, "metadata"), "table"), "rows").and_then(Value::as_array);
+        if let Some(rows) = rows {
+            for cell in rows.iter().flat_map(|row| {
+                field(row, "cells")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            }) {
+                collect_block_ids(cell_blocks(cell), found);
+            }
+        }
+    }
+}
+
+fn slice_utf16(text: &str, start: usize, end: usize) -> Option<&str> {
+    if start > end {
+        return None;
+    }
+    let byte_at = |offset: usize| {
+        if offset == 0 {
+            return Some(0);
+        }
+        let mut units = 0usize;
+        for (byte, character) in text.char_indices() {
+            if units == offset {
+                return Some(byte);
+            }
+            units = units.checked_add(character.len_utf16())?;
+            if units > offset {
+                return None;
+            }
+        }
+        (units == offset).then_some(text.len())
+    };
+    Some(&text[byte_at(start)?..byte_at(end)?])
+}
+
+fn content_control_xml(control: &ContentControl, content: &str) -> Option<String> {
+    let value = &control.value;
+    let title = string(get(value, "title")).or_else(|| string(get(value, "alias")));
+    let tag = string(get(value, "tag"));
+    let placeholder = string(get(value, "placeholder"));
+    let lock = match string(get(value, "lock")).as_deref() {
+        Some("controlLocked" | "sdtLocked") => Some("sdtLocked"),
+        Some("contentLocked") => Some("contentLocked"),
+        Some("sdtContentLocked") => Some("sdtContentLocked"),
+        _ => None,
+    };
+    let mut properties = format!("<w:id w:val=\"{}\"/>", control.numeric_id);
+    if let Some(title) = title {
+        properties.push_str(&format!("<w:alias w:val=\"{}\"/>", xml_attribute(&title)));
+    }
+    if let Some(tag) = tag {
+        properties.push_str(&format!("<w:tag w:val=\"{}\"/>", xml_attribute(&tag)));
+    }
+    if let Some(lock) = lock {
+        properties.push_str(&format!("<w:lock w:val=\"{lock}\"/>"));
+    }
+    match control.kind.as_str() {
+        "plainText" | "text" => {
+            if get(value, "multiLine").as_bool() == Some(true)
+                || get(get(value, "text"), "multiLine").as_bool() == Some(true)
+            {
+                properties.push_str("<w:text w:multiLine=\"1\"/>");
+            } else {
+                properties.push_str("<w:text/>");
+            }
+        }
+        "richText" => {}
+        "checkbox" => {
+            let checked = get(get(value, "checkbox"), "checked")
+                .as_bool()
+                .or_else(|| get(value, "checked").as_bool())
+                .unwrap_or(false);
+            let checked_value = string(get(get(get(value, "checkbox"), "checkedState"), "value"))
+                .unwrap_or_else(|| "2612".to_owned());
+            let checked_font = string(get(get(get(value, "checkbox"), "checkedState"), "font"))
+                .unwrap_or_else(|| "MS Gothic".to_owned());
+            let unchecked_value =
+                string(get(get(get(value, "checkbox"), "uncheckedState"), "value"))
+                    .unwrap_or_else(|| "2610".to_owned());
+            let unchecked_font = string(get(get(get(value, "checkbox"), "uncheckedState"), "font"))
+                .unwrap_or_else(|| "MS Gothic".to_owned());
+            properties.push_str(&format!(
+                "<w14:checkbox><w14:checked w14:val=\"{}\"/><w14:checkedState w14:val=\"{}\" w14:font=\"{}\"/><w14:uncheckedState w14:val=\"{}\" w14:font=\"{}\"/></w14:checkbox>",
+                u8::from(checked),
+                xml_attribute(&checked_value),
+                xml_attribute(&checked_font),
+                xml_attribute(&unchecked_value),
+                xml_attribute(&unchecked_font)
+            ));
+        }
+        "date" => {
+            let date_settings = get(value, "date");
+            let date = string(get(value, "dateValue"))
+                .or_else(|| string(get(date_settings, "fullDate")))
+                .or_else(|| string(get(value, "value")));
+            if let Some(date) = date.filter(|date| valid_iso_date(date) || valid_iso_datetime(date))
+            {
+                let full_date = if valid_iso_date(&date) {
+                    format!("{date}T00:00:00Z")
+                } else {
+                    date.clone()
+                };
+                let format = string(get(value, "dateFormat"))
+                    .or_else(|| string(get(date_settings, "format")))
+                    .unwrap_or_else(|| "yyyy-MM-dd".to_owned());
+                let locale = string(get(value, "dateLocale"))
+                    .or_else(|| string(get(date_settings, "locale")))
+                    .unwrap_or_else(|| "en-US".to_owned());
+                let calendar = string(get(value, "dateCalendar"))
+                    .or_else(|| string(get(date_settings, "calendar")));
+                let storage = string(get(value, "dateStorage"))
+                    .or_else(|| string(get(date_settings, "storage")))
+                    .unwrap_or_else(|| "dateTime".to_owned());
+                properties.push_str(&format!(
+                    "<w:date w:fullDate=\"{}T00:00:00Z\"><w:dateFormat w:val=\"{}\"/><w:lid w:val=\"{}\"/>{}<w:storeMappedDataAs w:val=\"{}\"/></w:date>",
+                    xml_attribute(&full_date),
+                    xml_attribute(&format),
+                    xml_attribute(&locale),
+                    calendar.map(|value| format!("<w:calendar w:val=\"{}\"/>", xml_attribute(&value))).unwrap_or_default(),
+                    xml_attribute(&storage)
+                ));
+            } else {
+                properties.push_str(
+                    "<w:date><w:dateFormat w:val=\"yyyy-MM-dd\"/><w:lid w:val=\"en-US\"/></w:date>",
+                );
+            }
+        }
+        "dropdown" | "dropDownList" | "comboBox" => {
+            let tag = if control.kind == "dropdown" || control.kind == "dropDownList" {
+                "dropDownList"
+            } else {
+                "comboBox"
+            };
+            let mut items = String::new();
+            if let Some(values) = field(value, "items")
+                .or_else(|| field(value, "listItems"))
+                .and_then(Value::as_array)
+            {
+                for item in values {
+                    let item_value = string(get(item, "value")).unwrap_or_default();
+                    let display = string(get(item, "displayText"))
+                        .or_else(|| string(get(item, "display")))
+                        .unwrap_or_else(|| item_value.clone());
+                    items.push_str(&format!(
+                        "<w:listItem w:displayText=\"{}\" w:value=\"{}\"/>",
+                        xml_attribute(&display),
+                        xml_attribute(&item_value)
+                    ));
+                }
+            }
+            properties.push_str(&format!("<w:{tag}>{items}</w:{tag}>"));
+        }
+        "picture" => properties.push_str("<w:picture/>"),
+        "group" => properties.push_str("<w:group/>"),
+        "repeatingSection" => {
+            let section = get(value, "repeatingSection");
+            let title = string(get(section, "sectionTitle"));
+            let lock_insert = get(section, "doNotAllowInsertDelete").as_bool() == Some(true);
+            properties.push_str(&format!(
+                "<w15:repeatingSection{}{} />",
+                title
+                    .map(|value| format!(" w15:sectionTitle=\"{}\"", xml_attribute(&value)))
+                    .unwrap_or_default(),
+                if lock_insert {
+                    " w15:doNotAllowInsertDelete=\"1\""
+                } else {
+                    ""
+                }
+            ));
+        }
+        "repeatingSectionItem" => properties.push_str("<w15:repeatingSectionItem/>"),
+        "docPartObj" => {
+            let doc_part = get(value, "docPart");
+            let gallery = string(get(doc_part, "gallery"));
+            let category = string(get(doc_part, "category"));
+            let unique = get(doc_part, "unique").as_bool() == Some(true);
+            properties.push_str(&format!(
+                "<w:docPartObj>{}{}{}</w:docPartObj>",
+                gallery
+                    .map(|value| format!("<w:docPartGallery w:val=\"{}\"/>", xml_attribute(&value)))
+                    .unwrap_or_default(),
+                category
+                    .map(|value| format!(
+                        "<w:docPartCategory w:val=\"{}\"/>",
+                        xml_attribute(&value)
+                    ))
+                    .unwrap_or_default(),
+                if unique { "<w:docPartUnique/>" } else { "" }
+            ));
+        }
+        _ => return None,
+    }
+    if let Some(appearance) = string(get(value, "appearance")) {
+        properties.push_str(&format!(
+            "<w:appearance w:val=\"{}\"/>",
+            xml_attribute(&appearance)
+        ));
+    }
+    if let Some(color) = string(get(value, "color")).and_then(color) {
+        properties.push_str(&format!("<w:color w:val=\"{color}\"/>"));
+    }
+    if get(value, "temporary").as_bool() == Some(true) {
+        properties.push_str("<w:temporary/>");
+    }
+    if get(value, "showingPlaceholder").as_bool() == Some(true) {
+        properties.push_str("<w:showingPlcHdr/>");
+    }
+    let placeholder_doc_part = get(value, "placeholderDocPart");
+    if let Some(name) = string(get(placeholder_doc_part, "name")) {
+        properties.push_str(&format!(
+            "<w:placeholder><w:docPart w:val=\"{}\"/></w:placeholder>",
+            xml_attribute(&name)
+        ));
+    }
+    let content = if content.is_empty() {
+        placeholder
+            .map(|text| {
+                format!(
+                    "<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r>",
+                    xml_text(&text)
+                )
+            })
+            .unwrap_or_else(|| "<w:r><w:t></w:t></w:r>".to_owned())
+    } else {
+        content.to_owned()
+    };
+    Some(format!(
+        "<w:sdt><w:sdtPr>{properties}</w:sdtPr><w:sdtContent>{content}</w:sdtContent></w:sdt>"
+    ))
+}
+
+fn valid_iso_date(value: &str) -> bool {
+    let parts = value.split('-').collect::<Vec<_>>();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return false;
+    }
+    let (Ok(year), Ok(month), Ok(day)) = (
+        parts[0].parse::<u32>(),
+        parts[1].parse::<u32>(),
+        parts[2].parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if parts[0].len() != 4
+        || parts[1].len() != 2
+        || parts[2].len() != 2
+        || !(1..=12).contains(&month)
+    {
+        return false;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days).contains(&day)
+}
+
+fn valid_iso_datetime(value: &str) -> bool {
+    value.len() >= 19
+        && value.as_bytes().get(10) == Some(&b'T')
+        && value.get(..10).is_some_and(valid_iso_date)
+        && value.chars().skip(11).all(|character| {
+            character.is_ascii_digit() || matches!(character, ':' | '.' | '+' | '-' | 'Z')
+        })
+        && value
+            .chars()
+            .any(|character| character == 'Z' || character == '+' || character == '-')
+}
+
+fn note_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    for candidate in [
+        get(value, "text"),
+        get(value, "content"),
+        get(value, "body"),
+    ] {
+        if let Some(text) = candidate.as_str() {
+            return Some(text.to_owned());
+        }
+        if let Some(text) = string(get(candidate, "text")) {
+            return Some(text);
+        }
+        if let Some(stream) = string(get(candidate, "dataStream")) {
+            return Some(stream.trim_end_matches(['\r', '\n']).to_owned());
+        }
+    }
+    None
+}
+
+fn note_runs(value: &Value) -> &[Value] {
+    for candidate in [value, get(value, "body")] {
+        if let Some(runs) = field(candidate, "runs").and_then(Value::as_array) {
+            return runs;
+        }
+        if let Some(blocks) = field(candidate, "blocks").and_then(Value::as_array) {
+            if let Some(runs) = blocks
+                .first()
+                .and_then(|block| field(block, "runs"))
+                .and_then(Value::as_array)
+            {
+                return runs;
+            }
+        }
+    }
+    &[]
+}
+
+fn note_body_xml(value: &Value, kind: NoteKind, id: i64) -> String {
+    let style = kind.style();
+    let reference = kind.body_reference_tag();
+    let mut paragraphs = String::new();
+    let runs = note_runs(value);
+    if !runs.is_empty() {
+        let content = runs
+            .iter()
+            .map(|run| {
+                let text = string(get(run, "text")).unwrap_or_default();
+                run_xml(run, &text)
+            })
+            .collect::<String>();
+        paragraphs.push_str(&format!(
+            "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{reference}/></w:r>{content}</w:p>"
+        ));
+    } else {
+        let text = note_text(value).unwrap_or_default();
+        let lines = text.split('\n').collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            if index == 0 {
+                paragraphs.push_str(&format!(
+                    "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{reference}/></w:r><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                    xml_text(line)
+                ));
+            } else {
+                paragraphs.push_str(&format!(
+                    "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                    xml_text(line)
+                ));
+            }
+        }
+    }
+    if paragraphs.is_empty() {
+        paragraphs.push_str(&format!(
+            "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{reference}/></w:r></w:p>"
+        ));
+    }
+    format!(
+        "<w:{} w:id=\"{id}\">{paragraphs}</w:{}>",
+        kind.collection().trim_end_matches('s'),
+        kind.collection().trim_end_matches('s')
+    )
+}
+
+fn notes_xml(kind: NoteKind, notes: &[NoteEntry]) -> String {
+    let element = kind.collection().trim_end_matches('s');
+    let mut body = format!(
+        "<w:{element} w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:{element}><w:{element} w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{element}>"
+    );
+    for note in notes {
+        body.push_str(&note_body_xml(&note.value, kind, note.id));
+    }
+    format!(
+        "{}<w:{} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{body}</w:{}>",
+        xml::DECL,
+        kind.collection(),
+        kind.collection()
+    )
+}
+
 pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarning>, ExportError> {
     let model: Value = serde_json::from_str(data)
         .map_err(|error| ExportError::invalid(format!("Invalid document JSON: {error}")))?;
@@ -545,6 +1334,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     let blocks = field(&model, "blocks")
         .and_then(Value::as_array)
         .ok_or_else(|| ExportError::invalid("The document model is missing its blocks array."))?;
+    let notes = collect_notes(&model, blocks);
+    let controls_by_block = collect_content_controls(&model, blocks);
+    let declared_control_count = field(&model, "contentControls")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     let page = page_geometry(get(&model, "page"))?;
     let title = string(get(&model, "name")).unwrap_or_else(|| "Document".to_owned());
     let core = core_properties(&model, &title);
@@ -588,6 +1382,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         warnings: Vec::new(),
         list_ids: HashMap::new(),
         numbering: Vec::new(),
+        note_ids: notes.ids.clone(),
+        controls_by_block,
+        used_controls: BTreeSet::new(),
         next_relationship: 3,
         next_image: 1,
         page,
@@ -628,6 +1425,41 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     let mut body = String::new();
     for block in blocks {
         body.push_str(&context.block(block)?);
+    }
+    for (kind, source_id) in &notes.orphaned {
+        context.warn(
+            "DOCX_NOTE_MISSING",
+            format!(
+                "A {0} reference to note {source_id:?} has no matching note body; an empty note was written to keep the reference valid.",
+                kind.collection().trim_end_matches('s')
+            ),
+        );
+    }
+    let used_control_count = context.used_controls.len();
+    if used_control_count < declared_control_count {
+        context.warn(
+            "DOCX_CONTENT_CONTROL_UNWRITTEN",
+            format!(
+                "{} content control(s) could not be mapped to a supported inline DOCX control and were preserved as ordinary paragraph text.",
+                declared_control_count - used_control_count
+            ),
+        );
+    }
+    if !notes.footnotes.is_empty() {
+        context.package.add_xml(
+            "word/footnotes.xml",
+            FOOTNOTES_CONTENT_TYPE,
+            notes_xml(NoteKind::Footnote, &notes.footnotes),
+        )?;
+        context.relationship(REL_FOOTNOTES, "footnotes.xml", false)?;
+    }
+    if !notes.endnotes.is_empty() {
+        context.package.add_xml(
+            "word/endnotes.xml",
+            ENDNOTES_CONTENT_TYPE,
+            notes_xml(NoteKind::Endnote, &notes.endnotes),
+        )?;
+        context.relationship(REL_ENDNOTES, "endnotes.xml", false)?;
     }
     if blocks.is_empty() {
         body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>");
@@ -732,7 +1564,7 @@ fn styles_xml() -> String {
         ));
     }
     format!(
-        "{}<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Aptos\" w:hAnsi=\"Aptos\" w:eastAsia=\"Aptos\"/><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/><w:lang w:val=\"zh-CN\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"120\" w:line=\"360\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style><w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"360\"/><w:pBdr><w:left w:val=\"single\" w:sz=\"12\" w:space=\"8\" w:color=\"94A3B8\"/></w:pBdr></w:pPr></w:style>{headings}</w:styles>",
+        "{}<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Aptos\" w:hAnsi=\"Aptos\" w:eastAsia=\"Aptos\"/><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/><w:lang w:val=\"zh-CN\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"120\" w:line=\"360\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style><w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"360\"/><w:pBdr><w:left w:val=\"single\" w:sz=\"12\" w:space=\"8\" w:color=\"94A3B8\"/></w:pBdr></w:pPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"FootnoteText\"><w:name w:val=\"footnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"EndnoteText\"><w:name w:val=\"endnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"FootnoteReference\"><w:name w:val=\"footnote reference\"/><w:basedOn w:val=\"DefaultParagraphFont\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"EndnoteReference\"><w:name w:val=\"endnote reference\"/><w:basedOn w:val=\"DefaultParagraphFont\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style>{headings}</w:styles>",
         xml::DECL
     )
 }
@@ -744,7 +1576,7 @@ fn document_xml(body: &str, page: PageGeometry) -> String {
         ""
     };
     format!(
-        "{}<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>",
+        "{}<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>",
         xml::DECL,
         page.width,
         page.height,
@@ -1070,5 +1902,206 @@ mod tests {
         assert_eq!(document.matches("<w:tr>").count(), 2);
         assert!(document.contains("<w:vMerge w:val=\"restart\"/>"));
         assert!(document.contains("<w:vMerge w:val=\"continue\"/>"));
+    }
+
+    #[test]
+    fn footnotes_and_endnotes_are_written_as_related_opc_parts() {
+        let model = json!({
+            "kind": "document",
+            "name": "Notes",
+            "blocks": [{
+                "type": "paragraph",
+                "runs": [
+                    {"text": "First", "footnoteId": "f-1"},
+                    {"text": " and ", "bold": true},
+                    {"text": "second", "metadata": {"endnoteId": "e-1"}}
+                ]
+            }],
+            "footnotes": {
+                "f-1": {"body": {"runs": [{"text": "Footnote body", "italic": true}]}}
+            },
+            "metadata": {
+                "endnotes": {
+                    "e-1": {"body": {"dataStream": "Endnote body\r\n"}}
+                }
+            }
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(warnings.is_empty());
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+        let mut footnotes = String::new();
+        archive
+            .by_name("word/footnotes.xml")
+            .unwrap()
+            .read_to_string(&mut footnotes)
+            .unwrap();
+        let mut endnotes = String::new();
+        archive
+            .by_name("word/endnotes.xml")
+            .unwrap()
+            .read_to_string(&mut endnotes)
+            .unwrap();
+        let mut relationships = String::new();
+        archive
+            .by_name("word/_rels/document.xml.rels")
+            .unwrap()
+            .read_to_string(&mut relationships)
+            .unwrap();
+        let mut content_types = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut content_types)
+            .unwrap();
+
+        assert!(document.contains("<w:footnoteReference w:id=\"1\"/>"));
+        assert!(document.contains("<w:endnoteReference w:id=\"1\"/>"));
+        assert!(footnotes.contains("w:type=\"separator\" w:id=\"-1\""));
+        assert!(footnotes.contains("Footnote body"));
+        assert!(footnotes.contains("<w:footnote w:id=\"1\">"));
+        assert!(endnotes.contains("Endnote body"));
+        assert!(endnotes.contains("<w:endnote w:id=\"1\">"));
+        assert!(relationships.contains(&format!(
+            "Type=\"{}\" Target=\"footnotes.xml\"",
+            super::REL_FOOTNOTES
+        )));
+        assert!(relationships.contains(&format!(
+            "Type=\"{}\" Target=\"endnotes.xml\"",
+            super::REL_ENDNOTES
+        )));
+        assert!(content_types.contains(super::FOOTNOTES_CONTENT_TYPE));
+        assert!(content_types.contains(super::ENDNOTES_CONTENT_TYPE));
+    }
+
+    #[test]
+    fn table_cell_note_references_use_the_same_note_parts() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [{
+                "type": "table",
+                "metadata": {"table": {"rows": [{"cells": [{"blocks": [{"id": "cell-p", "type": "paragraph", "runs": [{"text": "cell", "footnoteId": "cell-note"}]}]}]}]}}
+            }],
+            "footnotes": {"cell-note": {"body": {"text": "Cell footnote"}}},
+            "contentControls": [{"id": "cell-control", "type": "text", "blockId": "cell-p", "startOffset": 0, "endOffset": 4}]
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+        let mut footnotes = String::new();
+        archive
+            .by_name("word/footnotes.xml")
+            .unwrap()
+            .read_to_string(&mut footnotes)
+            .unwrap();
+        assert!(document.contains("<w:footnoteReference w:id=\"1\"/>"));
+        assert!(document.contains("<w:sdt><w:sdtPr><w:id w:val=\"1\"/><w:text/></w:sdtPr>"));
+        assert!(footnotes.contains("Cell footnote"));
+    }
+
+    #[test]
+    fn dangling_note_reference_gets_an_empty_definition_and_warning() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [{"type": "paragraph", "runs": [{"text": "marker", "footnoteId": "missing"}]}]
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.code == "DOCX_NOTE_MISSING")
+        );
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+        let mut footnotes = String::new();
+        archive
+            .by_name("word/footnotes.xml")
+            .unwrap()
+            .read_to_string(&mut footnotes)
+            .unwrap();
+        assert!(document.contains("<w:footnoteReference w:id=\"1\"/>"));
+        assert!(footnotes.contains("<w:footnote w:id=\"1\">"));
+        assert!(footnotes.contains("<w:footnoteRef/>"));
+    }
+
+    #[test]
+    fn content_controls_write_native_sdt_properties_and_preserve_utf16_ranges() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [
+                {"id": "text", "type": "paragraph", "runs": [{"text": "Alpha 🌏 beta"}]},
+                {"id": "check", "type": "paragraph", "runs": [{"text": "On"}]},
+                {"id": "list", "type": "paragraph", "runs": [{"text": "red"}]}
+            ],
+            "contentControls": [
+                {"id": "plain", "type": "text", "blockId": "text", "startOffset": 6, "endOffset": 8, "title": "Planet", "alias": "World", "tag": "planet-value", "lock": "contentLocked"},
+                {"id": "checkbox", "type": "checkbox", "blockId": "check", "startOffset": 0, "endOffset": 2, "checked": true},
+                {"id": "dropdown", "type": "dropDownList", "blockId": "list", "startOffset": 0, "endOffset": 3, "value": "r", "items": [{"displayText": "Red", "value": "r"}, {"displayText": "Blue & green", "value": "b"}]},
+                {"id": "group", "type": "group", "blockId": "text", "startOffset": 0, "endOffset": 5},
+                {"id": "nested", "parentId": "group", "type": "text", "blockId": "text", "startOffset": 0, "endOffset": 5, "alias": "Group label"}
+            ]
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+
+        assert!(
+            document.contains("xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"")
+        );
+        assert!(document.contains("<w:alias w:val=\"Planet\"/>"));
+        assert!(document.contains("<w:alias w:val=\"Group label\"/>"));
+        assert!(document.contains("<w:group/>"));
+        assert!(document.contains("<w:tag w:val=\"planet-value\"/>"));
+        assert!(document.contains("<w:lock w:val=\"contentLocked\"/>"));
+        assert!(document.contains("<w:text/>"));
+        assert!(document.contains("<w:t xml:space=\"preserve\">Alpha</w:t>"));
+        assert!(document.contains("<w:t xml:space=\"preserve\"> </w:t>"));
+        assert!(document.contains("<w:t xml:space=\"preserve\">🌏</w:t>"));
+        assert!(document.contains("<w:t xml:space=\"preserve\"> beta</w:t>"));
+        assert!(document.contains("<w14:checked w14:val=\"1\"/>"));
+        assert!(document.contains("<w:dropDownList><w:listItem w:displayText=\"Red\" w:value=\"r\"/><w:listItem w:displayText=\"Blue &amp; green\" w:value=\"b\"/></w:dropDownList>"));
+        assert_eq!(document.matches("<w:sdt>").count(), 5);
+    }
+
+    #[test]
+    fn content_control_boundary_cannot_split_a_utf16_surrogate_pair() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [{"id": "text", "type": "paragraph", "runs": [{"text": "🌏"}]}],
+            "contentControls": [{"id": "half", "type": "plainText", "blockId": "text", "startOffset": 1, "endOffset": 2}]
+        });
+        let mut package = Package::new();
+        let result = write(&model.to_string(), &mut package);
+        assert!(result.is_err());
     }
 }

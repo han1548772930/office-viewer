@@ -4,8 +4,10 @@ export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler } fro
 export {
   FBlob,
   FDocument,
+  FDocumentContentControl,
   FDocumentParagraph,
   FDocumentTextRange,
+  FSheetSlicer,
   FPivotTable,
   FRange,
   FSelection,
@@ -16,6 +18,9 @@ export {
   type CreateUnitOptions,
   type DocumentBodySegment,
   type DocumentBodySnapshot,
+  type DocumentContentControlCreateInfo,
+  type DocumentContentControlInfo,
+  type DocumentContentControlPatch,
   type DocumentParagraphIdentity,
   type DocumentParagraphInfo,
   type DocumentParagraphQuery,
@@ -26,6 +31,7 @@ export {
   type FRangeCoordinates,
   type PivotTableSourceInfo,
   type PivotTableAnchorInfo,
+  type SlicerInfo,
 } from './api/facade'
 export { FEventName, EventHub, type ApiEventMap, type ApiRange, type Disposable } from './api/events'
 export { type ApiCellData, type ApiCellValue } from './api/model-utils'
@@ -50,7 +56,39 @@ export {
   setPivotOptions,
   setPivotSort,
   setPivotValueFilter,
+  setPivotNumberGroup,
+  setPivotDateGroupingMode,
+  setPivotDateGroupType,
+  setPivotExcelDateGroup,
+  setPivotManualGroups,
 } from './features/pivot/services/pivot-engine'
+export {
+  clearSlicerFilter,
+  createSlicer,
+  getSlicer,
+  getSlicerItems,
+  removeSlicer,
+  setSlicerItems,
+  setSlicerTimelineRange,
+} from './features/slicer/slicer-engine'
+export {
+  clearFilter,
+  expandVisibleSortOrder,
+  getFilteredRows,
+  getNumericSortColumns,
+  getSortableRowOffsets,
+  getSortedRowOrder,
+  normalizeAutoFilterRange,
+  refreshAutoFilter,
+  setAutoFilter,
+  setFilterCriteria,
+  sortRange,
+} from './features/sheet-sort-filter/sort-filter-engine'
+export type {
+  FormulaReferenceTranslator,
+  NumericSortColumnData,
+  SortRangeOptions,
+} from './features/sheet-sort-filter/sort-filter-engine'
 export { useEditorStore } from './stores/editorStore'
 export { useWorkbookStore } from './stores/workbookStore'
 export { useDocumentStore } from './stores/documentStore'
@@ -70,6 +108,7 @@ export {
   downloadOfficeBytes,
   exportOfficeModel,
   officeDownloadName,
+  OfficeExportError,
   type ExportOptions,
 } from './services/exportService'
 export { ParserError } from './parser/errors'

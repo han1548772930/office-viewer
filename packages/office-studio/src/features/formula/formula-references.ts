@@ -1,0 +1,147 @@
+import type { FormulaReference } from './formula-types.ts'
+
+const MAX_COLUMN = 16_383
+const MAX_ROW = 1_048_575
+
+interface ReferenceSpan { start: number; end: number; replacementStart: number; reference: FormulaReference; raw: string }
+interface TextPatch { start: number; end: number; replacement: string }
+
+/**
+ * Translate relative references as a formula is copied/moved. Absolute row and
+ * column markers remain fixed; references moved outside the worksheet become
+ * #REF!. String literals and sheet names are never scanned as cell references.
+ */
+export function translateFormulaReferences(formula: string, rowDelta: number, columnDelta: number): string {
+  if (typeof formula !== 'string' || !formula.length) throw new TypeError('Formula must be a non-empty string')
+  if (!Number.isSafeInteger(rowDelta) || !Number.isSafeInteger(columnDelta)) throw new TypeError('Formula reference offsets must be safe integers')
+  const references = findReferenceSpans(formula)
+  const patches: TextPatch[] = []
+  for (let index = 0; index < references.length; index += 1) {
+    const current = references[index]!
+    const next = references[index + 1]
+    if (next && formula.slice(current.end, next.start).match(/^\s*:\s*$/)) {
+      const first = shiftReference(current.reference, rowDelta, columnDelta)
+      const second = shiftReference(next.reference, rowDelta, columnDelta)
+      if (!first || !second) {
+        patches.push({ start: current.replacementStart, end: next.end, replacement: '#REF!' })
+        index += 1
+        continue
+      }
+      patches.push({ start: current.replacementStart, end: current.end, replacement: `${sheetPrefix(formula, current)}${formatReference(first)}` })
+      patches.push({ start: next.replacementStart, end: next.end, replacement: `${sheetPrefix(formula, next)}${formatReference(second)}` })
+      index += 1
+      continue
+    }
+    const moved = shiftReference(current.reference, rowDelta, columnDelta)
+    patches.push({ start: current.replacementStart, end: current.end, replacement: moved ? `${sheetPrefix(formula, current)}${formatReference(moved)}` : '#REF!' })
+  }
+  let result = formula
+  for (const patch of patches.sort((left, right) => right.start - left.start)) {
+    result = result.slice(0, patch.start) + patch.replacement + result.slice(patch.end)
+  }
+  return result
+}
+
+function findReferenceSpans(source: string): ReferenceSpan[] {
+  const references: ReferenceSpan[] = []
+  let index = 0
+  while (index < source.length) {
+    const character = source[index]!
+    if (character === '"') {
+      index += 1
+      while (index < source.length) {
+        if (source[index] === '"') {
+          if (source[index + 1] === '"') { index += 2; continue }
+          index += 1; break
+        }
+        index += 1
+      }
+      continue
+    }
+    if (character === "'") {
+      const start = index++
+      while (index < source.length) {
+        if (source[index] === "'") {
+          if (source[index + 1] === "'") { index += 2; continue }
+          index += 1
+          if (source[index] === '!') {
+            const reference = readAddress(source, index + 1)
+            if (reference) {
+              references.push({ start, end: reference.end, replacementStart: start, reference: reference.reference, raw: source.slice(start, reference.end) })
+              index = reference.end
+              continue
+            }
+          }
+          break
+        }
+        index += 1
+      }
+      continue
+    }
+
+    if (isIdentifierPart(source[index - 1])) { index += 1; continue }
+    const address = readAddress(source, index)
+    if (!address) { index += 1; continue }
+
+    // A sheet called "Q1" is lexically indistinguishable from a cell reference
+    // until the following !. Do not shift the qualifier itself.
+    if (source[address.end] === '!') {
+      const sheetReference = readAddress(source, address.end + 1)
+      if (sheetReference) {
+        references.push({ start: index, end: sheetReference.end, replacementStart: index, reference: sheetReference.reference, raw: source.slice(index, sheetReference.end) })
+        index = sheetReference.end
+        continue
+      }
+    }
+    references.push({ start: index, end: address.end, replacementStart: index, reference: address.reference, raw: source.slice(index, address.end) })
+    index = address.end
+  }
+  return references
+}
+
+function readAddress(source: string, start: number): { reference: FormulaReference; end: number } | undefined {
+  let cursor = start
+  const absoluteColumn = source[cursor] === '$'
+  if (absoluteColumn) cursor += 1
+  const lettersStart = cursor
+  while (/[A-Za-z]/.test(source[cursor] ?? '')) cursor += 1
+  const letters = source.slice(lettersStart, cursor)
+  if (!letters || letters.length > 3) return undefined
+  const absoluteRow = source[cursor] === '$'
+  if (absoluteRow) cursor += 1
+  const digitsStart = cursor
+  while (/\d/.test(source[cursor] ?? '')) cursor += 1
+  const digits = source.slice(digitsStart, cursor)
+  if (!digits || /^0+$/.test(digits) || isIdentifierPart(source[cursor])) return undefined
+  const column = letters.toUpperCase().split('').reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0) - 1
+  const row = Number(digits) - 1
+  if (column < 0 || column > MAX_COLUMN || row < 0 || row > MAX_ROW) return undefined
+  return { reference: { kind: 'cell', row, column, absoluteRow, absoluteColumn }, end: cursor }
+}
+
+function shiftReference(reference: FormulaReference, rowDelta: number, columnDelta: number): FormulaReference | undefined {
+  const row = reference.absoluteRow ? reference.row : reference.row + rowDelta
+  const column = reference.absoluteColumn ? reference.column : reference.column + columnDelta
+  if (row < 0 || row > MAX_ROW || column < 0 || column > MAX_COLUMN) return undefined
+  return { ...reference, row, column }
+}
+
+function formatReference(reference: FormulaReference): string {
+  let column = reference.column + 1
+  let label = ''
+  while (column > 0) {
+    const remainder = (column - 1) % 26
+    label = String.fromCharCode(65 + remainder) + label
+    column = Math.floor((column - 1) / 26)
+  }
+  return `${reference.absoluteColumn ? '$' : ''}${label}${reference.absoluteRow ? '$' : ''}${reference.row + 1}`
+}
+
+function sheetPrefix(_source: string, span: ReferenceSpan): string {
+  const raw = span.raw
+  const bang = raw.lastIndexOf('!')
+  return bang < 0 ? '' : raw.slice(0, bang + 1)
+}
+
+function isIdentifierPart(value: string | undefined): boolean { return value !== undefined && /[A-Za-z0-9_.]/.test(value) }
+

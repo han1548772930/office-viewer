@@ -3,16 +3,21 @@ import type { RenderDriver, RenderScene } from './contracts'
 export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
   const context = canvas.getContext('2d', { alpha: false })
   if (!context) throw new Error('无法创建 Canvas2D 绘图上下文')
-  let dpr = 1
+  let scaleX = 1, scaleY = 1
   return {
     backend: 'canvas2d',
     resize(width, height, pixelRatio) {
-      dpr = pixelRatio
-      canvas.width = Math.max(1, Math.round(width * dpr))
-      canvas.height = Math.max(1, Math.round(height * dpr))
+      const safePixelRatio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1
+      const cssWidth = Math.max(0, width), cssHeight = Math.max(0, height)
+      canvas.width = Math.max(1, Math.round(cssWidth * safePixelRatio))
+      canvas.height = Math.max(1, Math.round(cssHeight * safePixelRatio))
+      // Rounding the backing store makes the effective ratio differ slightly from
+      // the requested DPR. Keep drawing coordinates aligned with its actual size.
+      scaleX = cssWidth > 0 ? canvas.width / cssWidth : 1
+      scaleY = cssHeight > 0 ? canvas.height / cssHeight : 1
     },
     render(scene: RenderScene) {
-      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.setTransform(scaleX, 0, 0, scaleY, 0, 0)
       context.fillStyle = scene.background ?? '#ffffff'
       context.fillRect(0, 0, scene.width, scene.height)
       for (const command of scene.commands) {

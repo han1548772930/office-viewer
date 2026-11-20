@@ -2,7 +2,7 @@
 import type { RenderDriver, RenderRect, RenderScene, TextCommand } from './contracts'
 import { intersectRect, parseColor } from './geometry'
 
-interface TextureEntry { texture: GPUTexture; bindGroup: GPUBindGroup; width: number; height: number; used: number; bytes: number }
+interface TextureEntry { texture: GPUTexture; bindGroup: GPUBindGroup; used: number; bytes: number }
 interface TextMetricsEntry { advance: number; left: number; top: number; right: number; bottom: number }
 interface Batch { texture: TextureEntry; clip: RenderRect; start: number; count: number }
 const SHADER = `
@@ -33,14 +33,15 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
     primitive: { topology: 'triangle-list' },
   }) } catch (error) { context.unconfigure(); device.destroy(); throw error }
   const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
-  let width = 1, height = 1, dpr = 1, frame = 0, disposed = false
+  let width = 1, height = 1, scaleX = 1, scaleY = 1, frame = 0, disposed = false
   let buffer: GPUBuffer | undefined, bufferSize = 0
   const textCache = new Map<string, TextureEntry>()
   const textMetrics = new Map<string, TextMetricsEntry>()
   const imageCache = new Map<CanvasImageSource, TextureEntry>()
   const scratch = document.createElement('canvas')
   const measure = scratch.getContext('2d')!
-  const makeEntry = (texture: GPUTexture, pixelWidth: number, pixelHeight: number): TextureEntry => ({ texture, width: pixelWidth / dpr, height: pixelHeight / dpr, used: frame, bytes: pixelWidth * pixelHeight * 4, bindGroup: device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: texture.createView() }, { binding: 1, resource: sampler }] }) })
+  measure.textAlign = 'left'
+  const makeEntry = (texture: GPUTexture, pixelWidth: number, pixelHeight: number): TextureEntry => ({ texture, used: frame, bytes: pixelWidth * pixelHeight * 4, bindGroup: device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: texture.createView() }, { binding: 1, resource: sampler }] }) })
   const textureFromCanvas = (source: HTMLCanvasElement): TextureEntry => {
     const texture = device.createTexture({ label: 'office-raster-texture', size: [source.width, source.height], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT })
     device.queue.copyExternalImageToTexture({ source }, { texture, premultipliedAlpha: false }, [source.width, source.height])
@@ -49,7 +50,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
   const whiteTexture = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST })
   device.queue.writeTexture({ texture: whiteTexture }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1])
   const white = makeEntry(whiteTexture, 1, 1)
-  const clearCache = () => { textCache.forEach(x => x.texture.destroy()); textCache.clear(); textMetrics.clear(); imageCache.forEach(x => x.texture.destroy()); imageCache.clear() }
+  const clearTextTiles = () => { textCache.forEach(entry => entry.texture.destroy()); textCache.clear() }
   const measureText = (command: TextCommand): TextMetricsEntry => {
     const key = `${command.baseline ?? 'alphabetic'}\u0000${command.font}\u0000${command.text}`
     const cached = textMetrics.get(key)
@@ -61,15 +62,20 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
     if (textMetrics.size >= 4096) textMetrics.delete(textMetrics.keys().next().value!)
     textMetrics.set(key, entry); return entry
   }
-  const getTextTile = (command: TextCommand, x: number, y: number, width: number, height: number): TextureEntry => {
-    const key = `${dpr}\u0000${command.font}\u0000${command.color}\u0000${command.baseline ?? 'alphabetic'}\u0000${x},${y},${width},${height}\u0000${command.text}`
+  const getTextTile = (command: TextCommand, x: number, y: number, width: number, height: number, phaseX: number): TextureEntry => {
+    const key = `${command.font}\u0000${command.color}\u0000${command.baseline ?? 'alphabetic'}\u0000${x},${y},${width},${height},${phaseX}\u0000${command.text}`
     const cached = textCache.get(key)
     if (cached) { cached.used = frame; return cached }
     const raster = document.createElement('canvas')
-    raster.width = Math.min(device.limits.maxTextureDimension2D, Math.max(1, Math.ceil(width * dpr)))
-    raster.height = Math.min(device.limits.maxTextureDimension2D, Math.max(1, Math.ceil(height * dpr)))
+    raster.width = width
+    raster.height = height
     const rasterContext = raster.getContext('2d')!
-    rasterContext.scale(dpr, dpr); rasterContext.font = command.font; rasterContext.fillStyle = command.color; rasterContext.textBaseline = command.baseline ?? 'alphabetic'; rasterContext.fillText(command.text, -x, -y)
+    rasterContext.setTransform(scaleX, 0, 0, scaleY, phaseX - x, -y)
+    rasterContext.font = command.font
+    rasterContext.fillStyle = command.color
+    rasterContext.textAlign = 'left'
+    rasterContext.textBaseline = command.baseline ?? 'alphabetic'
+    rasterContext.fillText(command.text, 0, 0)
     const entry = textureFromCanvas(raster); textCache.set(key, entry); return entry
   }
   const getImage = (source: CanvasImageSource): TextureEntry => {
@@ -82,7 +88,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
     raster.getContext('2d')!.drawImage(source, 0, 0, raster.width, raster.height)
     const entry = textureFromCanvas(raster); imageCache.set(source, entry); return entry
   }
-  const fontsChanged = () => { clearCache() }
+  const fontsChanged = () => { clearTextTiles(); textMetrics.clear() }
   document.fonts?.addEventListener('loadingdone', fontsChanged)
   void device.lost.then(info => { if (!disposed) onLost(`WebGPU 设备丢失：${info.message || info.reason}`) })
   device.addEventListener('uncapturederror', event => { if (!disposed) onLost(`WebGPU 绘制失败：${event.error.message}`) })
@@ -90,10 +96,13 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
   return {
     backend: 'webgpu',
     resize(cssWidth, cssHeight, pixelRatio) {
-      if (dpr !== pixelRatio) clearCache()
-      width = cssWidth; height = cssHeight; dpr = pixelRatio
-      canvas.width = Math.min(device.limits.maxTextureDimension2D, Math.max(1, Math.round(width * dpr)))
-      canvas.height = Math.min(device.limits.maxTextureDimension2D, Math.max(1, Math.round(height * dpr)))
+      const backingWidth = Math.min(device.limits.maxTextureDimension2D, Math.max(1, Math.round(cssWidth * pixelRatio)))
+      const backingHeight = Math.min(device.limits.maxTextureDimension2D, Math.max(1, Math.round(cssHeight * pixelRatio)))
+      const nextScaleX = cssWidth > 0 ? backingWidth / cssWidth : 1
+      const nextScaleY = cssHeight > 0 ? backingHeight / cssHeight : 1
+      if (scaleX !== nextScaleX || scaleY !== nextScaleY) clearTextTiles()
+      width = cssWidth; height = cssHeight; scaleX = nextScaleX; scaleY = nextScaleY
+      canvas.width = backingWidth; canvas.height = backingHeight
       context.configure({ device, format, alphaMode: 'opaque' })
     },
     render(scene: RenderScene) {
@@ -138,14 +147,24 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
               const x = command.x - (command.align === 'center' ? command.maxWidth / 2 : command.align === 'right' ? command.maxWidth : 0)
               clip = intersectRect(clip, { x, y: 0, width: command.maxWidth, height })
             }
-            // Tile only visible ink. Long shaped runs never require one oversized texture.
-            const tileSize = Math.min(2048, device.limits.maxTextureDimension2D) / dpr
-            const firstX = Math.max(0, Math.floor((clip.x - left - metrics.left) / tileSize)), lastX = Math.ceil((Math.min(metrics.right, clip.x + clip.width - left) - metrics.left) / tileSize)
-            const firstY = Math.max(0, Math.floor((clip.y - command.y - metrics.top) / tileSize)), lastY = Math.ceil((Math.min(metrics.bottom, clip.y + clip.height - command.y) - metrics.top) / tileSize)
+            if (clip.width <= 0 || clip.height <= 0) break
+            // Keep texture edges on device pixels so the GPU doesn't filter already
+            // antialiased text. Quarter-pixel horizontal offsets preserve glyph spacing and cache reuse.
+            const subpixelX = Math.round(left * scaleX * 4) / 4
+            const originX = Math.floor(subpixelX), originY = Math.round(command.y * scaleY)
+            const phaseX = subpixelX - originX
+            const inkLeft = Math.floor(metrics.left * scaleX + phaseX), inkRight = Math.ceil(metrics.right * scaleX + phaseX)
+            const inkTop = Math.floor(metrics.top * scaleY), inkBottom = Math.ceil(metrics.bottom * scaleY)
+            const tileSize = Math.min(2048, device.limits.maxTextureDimension2D)
+            const firstX = Math.max(0, Math.floor((Math.floor(clip.x * scaleX) - originX - inkLeft) / tileSize))
+            const lastX = Math.ceil((Math.min(inkRight, Math.ceil((clip.x + clip.width) * scaleX) - originX) - inkLeft) / tileSize)
+            const firstY = Math.max(0, Math.floor((Math.floor(clip.y * scaleY) - originY - inkTop) / tileSize))
+            const lastY = Math.ceil((Math.min(inkBottom, Math.ceil((clip.y + clip.height) * scaleY) - originY) - inkTop) / tileSize)
             for (let ty = firstY; ty < lastY; ty += 1) for (let tx = firstX; tx < lastX; tx += 1) {
-              const x = metrics.left + tx * tileSize, y = metrics.top + ty * tileSize
-              const texture = getTextTile(command, x, y, Math.min(tileSize, metrics.right - x), Math.min(tileSize, metrics.bottom - y))
-              rect({ x: left + x, y: command.y + y, width: texture.width, height: texture.height }, '#ffffff', clip, texture)
+              const x = inkLeft + tx * tileSize, y = inkTop + ty * tileSize
+              const tileWidth = Math.min(tileSize, inkRight - x), tileHeight = Math.min(tileSize, inkBottom - y)
+              const texture = getTextTile(command, x, y, tileWidth, tileHeight, phaseX)
+              rect({ x: (originX + x) / scaleX, y: (originY + y) / scaleY, width: tileWidth / scaleX, height: tileHeight / scaleY }, '#ffffff', clip, texture)
             }
             break
           }
@@ -161,9 +180,8 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
       if (data.byteLength) {
         pass.setPipeline(pipeline); pass.setVertexBuffer(0, buffer!)
         for (const batch of batches) {
-          const sx = canvas.width / width, sy = canvas.height / height
-          const x = Math.max(0, Math.floor(batch.clip.x * sx)), y = Math.max(0, Math.floor(batch.clip.y * sy))
-          const right = Math.min(canvas.width, Math.ceil((batch.clip.x + batch.clip.width) * sx)), bottom = Math.min(canvas.height, Math.ceil((batch.clip.y + batch.clip.height) * sy))
+          const x = Math.max(0, Math.floor(batch.clip.x * scaleX)), y = Math.max(0, Math.floor(batch.clip.y * scaleY))
+          const right = Math.min(canvas.width, Math.ceil((batch.clip.x + batch.clip.width) * scaleX)), bottom = Math.min(canvas.height, Math.ceil((batch.clip.y + batch.clip.height) * scaleY))
           if (right <= x || bottom <= y) continue
           pass.setScissorRect(x, y, right - x, bottom - y); pass.setBindGroup(0, batch.texture.bindGroup); pass.draw(batch.count, 1, batch.start)
         }
@@ -175,6 +193,6 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
       }
       evict(textCache); evict(imageCache)
     },
-    dispose() { if (disposed) return; disposed = true; document.fonts?.removeEventListener('loadingdone', fontsChanged); clearCache(); whiteTexture.destroy(); buffer?.destroy(); context.unconfigure(); device.destroy() },
+    dispose() { if (disposed) return; disposed = true; document.fonts?.removeEventListener('loadingdone', fontsChanged); fontsChanged(); imageCache.forEach(entry => entry.texture.destroy()); imageCache.clear(); whiteTexture.destroy(); buffer?.destroy(); context.unconfigure(); device.destroy() },
   }
 }

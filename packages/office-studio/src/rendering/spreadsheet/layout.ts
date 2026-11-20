@@ -106,7 +106,7 @@ export class AxisIndex {
   private readonly values: Map<number, number>
   constructor(count: number, defaultSize: number, sizes: Record<number, number> = {}, hidden: readonly number[] = []) {
     this.count = Math.max(0, Math.floor(count))
-    this.defaultSize = defaultSize
+    this.defaultSize = Number.isFinite(defaultSize) ? Math.max(0, defaultSize) : 0
     this.values = new Map(Object.entries(sizes).filter(([key, value]) => Number.isInteger(Number(key)) && Number(key) >= 0 && Number(key) < this.count && Number.isFinite(value)).map(([key, value]) => [Number(key), Math.max(0, value)]))
     for (const index of hidden) this.values.set(index, 0)
     this.indices = [...this.values.keys()].filter(index => index >= 0 && index < this.count).sort((a, b) => a - b)
@@ -142,8 +142,15 @@ export class SpreadsheetGeometry {
   readonly frozenColumns: number
   constructor(sheet: SpreadsheetRenderSheet) {
     this.sheet = sheet
-    this.rows = new AxisIndex(sheet.rowCount, 26, sheet.rowHeights, sheet.hiddenRows)
-    this.columns = new AxisIndex(sheet.columnCount, 112, { 0: 152, ...sheet.columnWidths }, sheet.hiddenColumns)
+    // Parsed Office sheets carry their default axis sizes. The workbench keeps
+    // its wider first column only for sheets without an explicit default.
+    const defaultRowHeight = sheet.defaultRowHeight ?? 26
+    const defaultColumnWidth = sheet.defaultColumnWidth ?? 112
+    const columnWidths = sheet.defaultColumnWidth === undefined
+      ? { 0: 152, ...sheet.columnWidths }
+      : sheet.columnWidths
+    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, sheet.rowHeights, sheet.hiddenRows)
+    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, sheet.hiddenColumns)
     this.frozenRows = Math.max(0, Math.min(sheet.rowCount, sheet.freeze?.rows ?? 0))
     this.frozenColumns = Math.max(0, Math.min(sheet.columnCount, sheet.freeze?.columns ?? 0))
     this.merges = (sheet.merges ?? []).flatMap(value => { const [a, b] = value.split(':'); const start = parseAddress(a), end = parseAddress(b ?? a); return start && end ? [{ startRow: Math.min(start.row, end.row), startColumn: Math.min(start.column, end.column), endRow: Math.max(start.row, end.row), endColumn: Math.max(start.column, end.column) }] : [] })

@@ -14,7 +14,7 @@ import {
   type DocumentModel,
   type ExcelWorkbookView,
 } from '@office-studio/office-studio'
-import { univerAPI } from './runtime'
+import { studio, univerAPI } from './runtime'
 
 const editor = useEditorStore()
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -191,6 +191,7 @@ onUnmounted(() => {
       <ExcelWorkbench
         v-if="editor.state.activeKind === 'workbook'"
         :model-value="excelView"
+        :studio="studio"
         :can-undo="editor.canUndo"
         :can-redo="editor.canRedo"
         class="workbench"

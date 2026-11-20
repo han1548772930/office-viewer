@@ -1,4 +1,5 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
+import { transformContentControlsForBlockEdit } from '../services/content-controls'
 import {
   clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
@@ -90,6 +91,16 @@ export function selectedTargets(model: DocumentModel, selection: DocumentSelecti
 
 export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch): DocumentSelection {
   const { start, end } = orderedSelection(model, selection)
+  const startTargetId = start.cellBlockId ?? start.blockId
+  const endTargetId = end.cellBlockId ?? end.blockId
+  if (startTargetId === endTargetId) {
+    transformContentControlsForBlockEdit(model, startTargetId, start.offset, end.offset, text.replace(/\r\n?/g, '\n').length)
+  } else {
+    const targets = selectedTargets(model, selection)
+    const affectedIds = new Set(targets.map((target) => target.cellBlockId ?? target.blockId))
+    const affectedControl = model.contentControls?.find((control) => affectedIds.has(control.blockId))
+    if (affectedControl) throw new RangeError(`A text edit cannot span content control paragraphs: ${affectedControl.id}`)
+  }
   const before = sliceRuns(runsForTarget(model, start), 0, start.offset)
   const after = sliceRuns(runsForTarget(model, end), end.offset)
   const startContainer = blockContainer(model, start)

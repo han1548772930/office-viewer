@@ -1,0 +1,251 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-20T07:54:47.491Z",
+  "environment": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "browserBrands": [
+      {
+        "brand": "Not-A.Brand",
+        "version": "99"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "157"
+      },
+      {
+        "brand": "Chromium",
+        "version": "157"
+      }
+    ],
+    "hardwareConcurrency": 16,
+    "deviceMemoryGiB": 32,
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "devicePixelRatio": 1
+    },
+    "usedJSHeapSizeBeforeBytes": 2674444,
+    "usedJSHeapSizeAfterBytes": 21551666,
+    "longTaskObserverAvailable": true
+  },
+  "routing": {
+    "configuredMinRows": 4096,
+    "benchmarkMinRowsOverride": 0,
+    "thresholdStatus": "4096 is a provisional routing threshold; benchmark results must be reviewed across supported devices before calibration."
+  },
+  "methodology": {
+    "inputGenerator": "Deterministic two-column values: column 0=((row*17)%8191)-4096 except row%127=0 is null; column 1=((row*7919)%12289)-6144 except row%199=0 is null.",
+    "keyCount": 2,
+    "sortDirections": [
+      "ascending",
+      "descending"
+    ],
+    "nullsLast": true,
+    "filterPredicates": [
+      "column 0 between -1000 and 1000",
+      "column 1 greater than or equal to 0",
+      "match=all"
+    ],
+    "iterations": 1,
+    "coldDefinition": "A newly constructed OfficeComputeClient and Worker for each single task. Browser/network/module caches may already be warm; this measures fresh Worker initialization, not a guaranteed disk-cold load.",
+    "warmDefinition": "A single client/Worker is initialized and both task types are run once as discarded warmup; subsequent samples reuse that Worker and WASM module.",
+    "memoryLimitations": [
+      "Worker metrics estimatedPeakBytes is a schema-based estimate including JS input, a WASM input copy, index allocation, and fixed runtime allowance; it is not measured resident WASM memory.",
+      "Chrome usedJSHeapSize is sampled before and after each operation when available; the delta includes garbage-collection and browser scheduling noise.",
+      "Typed input and result bytes are exact payload byte counts; JS Array baseline storage is implementation-dependent and is not equated to this byte count."
+    ]
+  },
+  "workloads": [
+    {
+      "rowCount": 262144,
+      "keyCount": 2,
+      "defaultMinRows": 4096,
+      "defaultRoute": {
+        "sortUsesWorker": true,
+        "filterUsesWorker": true
+      },
+      "cold": [
+        {
+          "operation": "sort",
+          "regime": "new-worker",
+          "rowCount": 262144,
+          "sample": 0,
+          "wallMs": 2160.7999999970198,
+          "inputBytes": 4718594,
+          "responseBytes": 1048576,
+          "boundaryBytes": 5767170,
+          "workerComputeMs": 1543.800000000745,
+          "workerQueueAndStartupMs": 27.400000002235174,
+          "clientTotalMs": 1571.699999999255,
+          "estimatedPeakBytes": 20971524,
+          "browserHeapBeforeBytes": 17750062,
+          "browserHeapAfterBytes": 18879874,
+          "browserHeapDeltaBytes": 1129812,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        },
+        {
+          "operation": "filter",
+          "regime": "new-worker",
+          "rowCount": 262144,
+          "sample": 0,
+          "wallMs": 677,
+          "inputBytes": 4718626,
+          "responseBytes": 126344,
+          "boundaryBytes": 4844970,
+          "workerComputeMs": 114.69999999925494,
+          "workerQueueAndStartupMs": 27.200000002980232,
+          "clientTotalMs": 142.30000000074506,
+          "estimatedPeakBytes": 19923012,
+          "browserHeapBeforeBytes": 18879874,
+          "browserHeapAfterBytes": 19036678,
+          "browserHeapDeltaBytes": 156804,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        }
+      ],
+      "warm": [
+        {
+          "operation": "sort",
+          "regime": "reused-worker",
+          "rowCount": 262144,
+          "sample": 0,
+          "wallMs": 1263.3999999985099,
+          "inputBytes": 4718594,
+          "responseBytes": 1048576,
+          "boundaryBytes": 5767170,
+          "workerComputeMs": 712.4000000022352,
+          "workerQueueAndStartupMs": 0.30000000074505806,
+          "clientTotalMs": 712.8000000007451,
+          "estimatedPeakBytes": 20971524,
+          "browserHeapBeforeBytes": 20318754,
+          "browserHeapAfterBytes": 21400982,
+          "browserHeapDeltaBytes": 1082228,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        },
+        {
+          "operation": "filter",
+          "regime": "reused-worker",
+          "rowCount": 262144,
+          "sample": 0,
+          "wallMs": 326.19999999925494,
+          "inputBytes": 4718626,
+          "responseBytes": 126344,
+          "boundaryBytes": 4844970,
+          "workerComputeMs": 54.80000000074506,
+          "workerQueueAndStartupMs": 0.10000000149011612,
+          "clientTotalMs": 55.100000001490116,
+          "estimatedPeakBytes": 19923012,
+          "browserHeapBeforeBytes": 21400982,
+          "browserHeapAfterBytes": 21551666,
+          "browserHeapDeltaBytes": 150684,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        }
+      ],
+      "typescript": [
+        {
+          "operation": "sort",
+          "regime": "typescript",
+          "rowCount": 262144,
+          "sample": 0,
+          "wallMs": 48.400000002235174,
+          "inputBytes": 4194304,
+          "responseBytes": 1048576,
+          "boundaryBytes": 0,
+          "workerComputeMs": null,
+          "workerQueueAndStartupMs": null,
+          "clientTotalMs": null,
+          "estimatedPeakBytes": null,
+          "browserHeapBeforeBytes": 11048084,
+          "browserHeapAfterBytes": 11048084,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        },
+        {
+          "operation": "filter",
+          "regime": "typescript",
+          "rowCount": 262144,
+          "sample": 0,
+          "wallMs": 0.8000000007450581,
+          "inputBytes": 4194304,
+          "responseBytes": 126344,
+          "boundaryBytes": 0,
+          "workerComputeMs": null,
+          "workerQueueAndStartupMs": null,
+          "clientTotalMs": null,
+          "estimatedPeakBytes": null,
+          "browserHeapBeforeBytes": 15825236,
+          "browserHeapAfterBytes": 15825236,
+          "browserHeapDeltaBytes": 0,
+          "longTasks": {
+            "count": 0,
+            "totalMs": 0,
+            "maxMs": 0
+          },
+          "parity": true
+        }
+      ],
+      "summary": [
+        {
+          "operation": "sort",
+          "regime": "typescript",
+          "p50WallMs": 48.400000002235174,
+          "p95WallMs": 48.400000002235174
+        },
+        {
+          "operation": "filter",
+          "regime": "typescript",
+          "p50WallMs": 0.8000000007450581,
+          "p95WallMs": 0.8000000007450581
+        },
+        {
+          "operation": "sort",
+          "regime": "new-worker",
+          "p50WallMs": 2160.7999999970198,
+          "p95WallMs": 2160.7999999970198
+        },
+        {
+          "operation": "filter",
+          "regime": "new-worker",
+          "p50WallMs": 677,
+          "p95WallMs": 677
+        },
+        {
+          "operation": "sort",
+          "regime": "reused-worker",
+          "p50WallMs": 1263.3999999985099,
+          "p95WallMs": 1263.3999999985099
+        },
+        {
+          "operation": "filter",
+          "regime": "reused-worker",
+          "p50WallMs": 326.19999999925494,
+          "p95WallMs": 326.19999999925494
+        }
+      ]
+    }
+  ]
+}

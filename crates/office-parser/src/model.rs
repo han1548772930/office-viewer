@@ -56,6 +56,7 @@ impl ParserDiagnostics {
                 block_count: None,
                 formula_count: Some(formula_count),
                 merge_count: Some(merge_count),
+                chart_count: Some(workbook.sheets.iter().map(|sheet| sheet.charts.len()).sum()),
             },
             capabilities: vec![
                 "typedCells".into(),
@@ -64,6 +65,7 @@ impl ParserDiagnostics {
                 "merges".into(),
                 "rowColumnGeometry".into(),
                 "sheetViews".into(),
+                "charts".into(),
             ],
         }
     }
@@ -79,6 +81,7 @@ impl ParserDiagnostics {
                 block_count: Some(block_count),
                 formula_count: None,
                 merge_count: None,
+                chart_count: None,
             },
             capabilities: vec![
                 "paragraphs".into(),
@@ -103,6 +106,7 @@ pub struct ParseStats {
     pub block_count: Option<usize>,
     pub formula_count: Option<usize>,
     pub merge_count: Option<usize>,
+    pub chart_count: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,6 +232,101 @@ pub struct SheetPayload {
     pub hyperlinks: Vec<HyperlinkPayload>,
     pub style_fidelity: String,
     pub style_losses: Vec<StyleLossPayload>,
+    /// Charts read from the worksheet drawing part. Unsupported chart
+    /// constructs remain in the sidecar metadata rather than being dropped.
+    pub charts: Vec<ChartPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartPayload {
+    pub index: usize,
+    pub kind: String,
+    pub title: Option<String>,
+    pub series: Vec<ChartSeriesPayload>,
+    pub legend: bool,
+    pub data_labels: bool,
+    pub x_axis_title: Option<String>,
+    pub y_axis_title: Option<String>,
+    pub from: AnchorCellPayload,
+    pub to: AnchorCellPayload,
+    pub drawing: Option<ChartDrawingPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartSeriesPayload {
+    pub name: Option<String>,
+    pub categories: Option<String>,
+    pub values: String,
+    pub bubble_sizes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchorCellPayload {
+    pub row: u32,
+    pub col: u16,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartDrawingPayload {
+    pub object_index: usize,
+    pub from_cell: Option<AnchorCellPayload>,
+    pub to_cell: Option<AnchorCellPayload>,
+    pub from_offset_emu: Option<[i64; 2]>,
+    pub to_offset_emu: Option<[i64; 2]>,
+    pub absolute_size_emu: Option<[u64; 2]>,
+    pub crop: Option<[u32; 4]>,
+    pub rotation_mdeg: Option<i32>,
+    pub z_order: Option<i32>,
+    pub alt_text: Option<String>,
+    pub name: Option<String>,
+    pub behavior: String,
+    pub chart_palette: Vec<String>,
+    pub chart_default_latin_font_family: Option<String>,
+    pub chart_category_axis_visible: Option<bool>,
+    pub chart_category_axis_shifted: Option<bool>,
+    pub chart_value_axis_visible: Option<bool>,
+    pub chart_category_major_gridlines: Option<bool>,
+    pub chart_value_major_gridlines: Option<bool>,
+    pub chart_bar_direction: String,
+    pub chart_frame_fill: String,
+    pub chart_frame_style_losses: Vec<String>,
+    pub chart_unsupported_reasons: Vec<String>,
+    pub chart_series_caches: Vec<ChartSeriesCachePayload>,
+    pub chart_series_styles: Vec<ChartSeriesStylePayload>,
+    /// Text styles use a stable JSON shape because rxls intentionally keeps
+    /// this sidecar non-exhaustive for renderer-specific consumers.
+    pub chart_text_styles: Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartSeriesCachePayload {
+    pub name: Vec<ChartCachedPointPayload>,
+    pub categories: Vec<ChartCachedPointPayload>,
+    pub values: Vec<ChartCachedPointPayload>,
+    pub bubble_sizes: Vec<ChartCachedPointPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartCachedPointPayload {
+    pub index: u32,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartSeriesStylePayload {
+    pub marker: String,
+    pub marker_size: Option<u8>,
+    pub line_visible: bool,
+    pub line_color: Option<String>,
+    pub line_width_emu: Option<u32>,
+    pub losses: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

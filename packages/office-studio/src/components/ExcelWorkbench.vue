@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Button, Tooltip } from 'antdv-next'
+import { Button, Input, Modal, Select, Tooltip } from 'antdv-next'
+import { FUniver } from '../api/facade'
+import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
+import type { ChartModel } from '../domain/model'
 import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
+import ChartOverlay from './ChartOverlay.vue'
+import { chartPositionForRange, type ExcelWorkbookChartView } from './chart-overlay-model'
+import type { DrawCommand } from '../rendering/contracts'
 import type { GridHit, GridRange, SpreadsheetRenderSheet } from '../rendering/spreadsheet/layout'
 import { addRange, containsCell, selectionBounds, selectionCount, subtractRange } from '../rendering/spreadsheet/selection'
 import {
@@ -36,14 +42,15 @@ import {
 
 export type ExcelCell = ExcelCellView
 export type ExcelSheet = SpreadsheetRenderSheet
-export type ExcelWorkbook = Omit<DomainExcelWorkbookView, 'sheets'> & { sheets: ExcelSheet[] }
+export type ExcelWorkbook = Omit<DomainExcelWorkbookView, 'sheets'> & { sheets: ExcelSheet[]; charts?: ChartModel[] }
 
-const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean }>(), {
+const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean; studio?: OfficeStudio }>(), {
   modelValue: undefined,
   model: undefined,
   canUndo: undefined,
   canRedo: undefined,
   showHeader: false,
+  studio: undefined,
 })
 
 const emit = defineEmits<{
@@ -132,6 +139,13 @@ const fontFamily = ref('等线')
 const fontSize = ref(11)
 const numberFormat = ref<'general' | 'number' | 'percent'>('general')
 const copiedCells = ref<ExcelCell[][] | null>(null)
+const chartCommands = ref<DrawCommand[]>([])
+const chartModalOpen = ref(false)
+const chartSource = ref('')
+const chartTitle = ref('')
+const chartType = ref<'bar' | 'line'>('bar')
+const chartError = ref('')
+const chartWorkbook = computed(() => workbook.value as ExcelWorkbookChartView)
 
 const activeSheet = computed(() => workbook.value.sheets.find((sheet) => sheet.id === activeSheetId.value) ?? workbook.value.sheets[0])
 const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
@@ -210,6 +224,67 @@ function commitHistory() {
   emit('update:modelValue', snapshot)
   emit('update:model', snapshot)
   emit('change', snapshot)
+}
+
+function rangeNotation(range: GridRange): string {
+  return `${columnName(range.startColumn)}${range.startRow + 1}:${columnName(range.endColumn)}${range.endRow + 1}`
+}
+
+function parseChartRange(value: string): GridRange | undefined {
+  const parts = value.trim().split(':')
+  const first = splitKey(parts[0] ?? '')
+  const last = splitKey(parts[1] ?? parts[0] ?? '')
+  if (!parts[0] || !/^[A-Z]+\d+$/i.test(parts[0]) || !/^[A-Z]+\d+$/i.test(parts[1] ?? parts[0])) return undefined
+  return {
+    startRow: Math.min(first[1], last[1]) - 1,
+    endRow: Math.max(first[1], last[1]) - 1,
+    startColumn: Math.min(first[0], last[0]),
+    endColumn: Math.max(first[0], last[0]),
+  }
+}
+
+function openChartDialog() {
+  const bounds = selectionBounds(selectedRanges.value)
+  chartSource.value = bounds ? rangeNotation(bounds) : 'A1:C4'
+  chartTitle.value = ''
+  chartType.value = 'bar'
+  chartError.value = ''
+  chartModalOpen.value = true
+}
+
+function confirmChartDialog() {
+  const sheet = activeSheet.value
+  const range = parseChartRange(chartSource.value)
+  if (!sheet || !range) { chartError.value = '请输入有效的数据范围，例如 A1:C4'; return }
+  try {
+    const target = getChartWorksheet(sheet.id)
+    if (!target) throw new Error('图表命令上下文尚未绑定到活动工作簿')
+    const position = chartPositionForRange(range, sheet)
+    target.insertChart(target.newChart(chartType.value)
+      .setSource(chartSource.value, 'columns')
+      .setAbsolutePosition(position.x, position.y)
+      .setSize(480, 300)
+      .setTitle(chartTitle.value.trim())
+      .build())
+    chartModalOpen.value = false
+  } catch (error) {
+    chartError.value = error instanceof Error ? error.message : '图表数据范围不可用'
+  }
+}
+
+function getChartWorksheet(sheetId: string) {
+  if (!props.studio || !workbook.value.id) return null
+  return FUniver.newAPI(props.studio).getWorkbook(workbook.value.id)?.getSheetBySheetId(sheetId) ?? null
+}
+
+async function updateChartLayout(payload: { chartId: string; patch: Partial<Pick<ChartModel, 'position' | 'size'>> }) {
+  const chart = getChartWorksheet(activeSheet.value?.id ?? '')?.getChartById(payload.chartId)
+  if (chart) await chart.update(payload.patch)
+}
+
+async function removeChart(chartId: string) {
+  const chart = getChartWorksheet(activeSheet.value?.id ?? '')?.getChartById(chartId)
+  if (chart) await chart.remove()
 }
 
 function setCellValue(key: string, value: string) {
@@ -893,9 +968,10 @@ onUnmounted(() => {
         <Tooltip title="删除行"><Button type="text" size="small" @click="deleteRow"><Trash2 :size="16" /> 行</Button></Tooltip>
         <Tooltip title="插入列"><Button type="text" size="small" @click="insertColumn"><Plus :size="16" /> 列</Button></Tooltip>
         <Tooltip title="删除列"><Button type="text" size="small" @click="deleteColumn"><Trash2 :size="16" /> 列</Button></Tooltip>
+        <Tooltip title="从选区插入图表"><Button type="primary" size="small" :disabled="!studio || !workbook.id" @click="openChartDialog"><FileSpreadsheet :size="15" /> 图表</Button></Tooltip>
       </div>
       <div class="toolbar-group ribbon-summary">
-        <span v-if="activeTab === 'insert'">图表、图片和链接可从解析模型继续扩展</span>
+        <span v-if="activeTab === 'insert'">从带表头的数据区域创建图表，拖动图表可调整位置</span>
         <span v-else-if="activeTab === 'view'">{{ isFrozen ? '已冻结前两行和首列' : '未冻结窗格' }}</span>
         <span v-else>编辑模式</span>
       </div>
@@ -908,7 +984,20 @@ onUnmounted(() => {
       <Button type="text" size="small" class="formula-confirm" :class="{ visible: editingKey }" @click="finishEdit"><Check :size="16" /></Button>
     </div>
 
-    <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" />
+    <div class="sheet-canvas-stack">
+      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" />
+      <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
+    </div>
+
+    <Modal v-model:open="chartModalOpen" title="插入图表" ok-text="插入" cancel-text="取消" :width="440" @ok="confirmChartDialog">
+      <div class="chart-insert-form">
+        <label>数据区域<Input v-model:value="chartSource" placeholder="A1:C4" /></label>
+        <label>图表类型<Select v-model:value="chartType" :options="[{ label: '簇状柱形图', value: 'bar' }, { label: '折线图', value: 'line' }]" /></label>
+        <label>图表标题<Input v-model:value="chartTitle" placeholder="可选" /></label>
+        <p v-if="chartError" role="alert" class="chart-insert-error">{{ chartError }}</p>
+        <p class="chart-insert-hint">数据区域首行作为系列名，首列作为分类标签。支持柱形图和折线图。</p>
+      </div>
+    </Modal>
 
     <div class="sheet-bar">
       <div class="sheet-controls">
@@ -991,6 +1080,12 @@ onUnmounted(() => {
 .number-format-select { width: 74px; gap: 4px; }
 .ribbon-summary { margin-left: auto; color: #8692a4; font-size: 11px; }
 .formula-toolbar { display: flex; flex: 0 0 38px; align-items: center; gap: 7px; border-bottom: 1px solid var(--line); padding: 0 17px; background: #fff; }
+.sheet-canvas-stack { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.sheet-canvas-stack :deep(.spreadsheet-canvas) { flex: 1; }
+.chart-insert-form { display: flex; flex-direction: column; gap: 14px; padding: 12px 0 4px; }
+.chart-insert-form label { display: flex; flex-direction: column; gap: 6px; color: #4b5563; font-size: 12px; }
+.chart-insert-error { margin: 0; color: #c2413a; }
+.chart-insert-hint { margin: 0; color: #8490a0; font-size: 11px; }
 .name-box { display: flex; width: 65px; height: 25px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 3px; padding: 0 6px 0 8px; color: #37445a; background: #fbfcfe; font-size: 12px; }
 .formula-symbol { width: 20px; color: #8792a4; font-family: Georgia, serif; font-size: 16px; font-style: italic; text-align: center; }
 .formula-input { height: 25px; min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 3px; outline: 0; padding: 0 8px; color: #364257; background: #fff; font-family: Consolas, monospace; font-size: 12px; }

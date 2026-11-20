@@ -8,10 +8,17 @@ export interface LayoutLine extends LayoutRect { target: TextTarget; start: numb
 export interface LayoutPage extends LayoutRect { index: number; content: LayoutRect }
 export interface LayoutCell extends LayoutRect { target: TextTarget; fill: string; page: number }
 export interface LayoutImage extends LayoutRect { blockId: string; src: string; alt: string; page: number }
+export interface LayoutPageContent {
+  lines: LayoutLine[]
+  cells: LayoutCell[]
+  images: LayoutImage[]
+  dividers: Array<LayoutRect & { page: number }>
+}
 export interface DocumentLayout {
   width: number
   height: number
   pages: LayoutPage[]
+  pageContent: LayoutPageContent[]
   lines: LayoutLine[]
   cells: LayoutCell[]
   images: LayoutImage[]
@@ -115,7 +122,7 @@ function positionLine(raw: RawLine, target: TextTarget, x: number, y: number, wi
 
 export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): DocumentLayout {
   const setup = pageSetup(model.page)
-  const result: DocumentLayout = { width: setup.width + PAGE_INSET * 2, height: 0, pages: [], lines: [], cells: [], images: [], dividers: [], headings: [] }
+  const result: DocumentLayout = { width: setup.width + PAGE_INSET * 2, height: 0, pages: [], pageContent: [], lines: [], cells: [], images: [], dividers: [], headings: [] }
   let currentPage: LayoutPage
   let cursor = 0
   const addPage = () => {
@@ -198,6 +205,11 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
     cursor += block.style.spaceAfter
   }
   result.height = result.pages.length * (setup.height + PAGE_GAP) + PAGE_INSET * 2 - PAGE_GAP
+  result.pageContent = result.pages.map(() => ({ lines: [], cells: [], images: [], dividers: [] }))
+  for (const line of result.lines) result.pageContent[line.page]?.lines.push(line)
+  for (const cell of result.cells) result.pageContent[cell.page]?.cells.push(cell)
+  for (const image of result.images) result.pageContent[image.page]?.images.push(image)
+  for (const divider of result.dividers) result.pageContent[divider.page]?.dividers.push(divider)
   return result
 }
 
@@ -234,5 +246,5 @@ export function linesByTarget(layout: DocumentLayout): Map<string, LayoutLine[]>
   return map
 }
 
-export const emptyLayout = (): DocumentLayout => ({ width: 850, height: 1179, pages: [], lines: [], cells: [], images: [], dividers: [], headings: [] })
+export const emptyLayout = (): DocumentLayout => ({ width: 850, height: 1179, pages: [], pageContent: [], lines: [], cells: [], images: [], dividers: [], headings: [] })
 export const defaultRun = createRun

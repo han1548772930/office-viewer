@@ -1,4 +1,4 @@
-import type { CellScalar, WorkbookModel, SpreadsheetCell } from '../domain/model.ts'
+import type { CellScalar, ChartModel, WorkbookModel, SpreadsheetCell } from '../domain/model.ts'
 
 export interface ExcelCellView {
   value: string
@@ -38,7 +38,7 @@ export interface ExcelSheetView {
   defaultColumnWidth?: number
   defaultRowHeight?: number
 }
-export interface ExcelWorkbookView { name: string; sheets: ExcelSheetView[]; activeSheetId?: string }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[] }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -63,7 +63,8 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
 })
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
-    name: workbook.name, activeSheetId: workbook.activeSheetId,
+    id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId,
+    charts: workbook.charts?.map(cloneChartModel),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
       let rowCount = Math.max(100, sheet.rowCount ?? 0)
@@ -93,7 +94,8 @@ function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
 }
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView): WorkbookModel {
   return {
-    ...workbook, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId,
+    ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId,
+    charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
     sheets: view.sheets.map((source) => {
       const original = workbook.sheets.find((sheet) => sheet.id === source.id)
       const cells: Record<string, SpreadsheetCell> = {}
@@ -140,5 +142,18 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         }) ?? [],
       }
     }),
+  }
+}
+
+function cloneChartModel(chart: ChartModel): ChartModel {
+  return {
+    ...chart,
+    source: { range: { ...chart.source.range }, orientation: chart.source.orientation },
+    position: { ...chart.position },
+    size: { ...chart.size },
+    legend: { ...chart.legend },
+    xAxis: { ...chart.xAxis },
+    yAxis: { ...chart.yAxis },
+    valueFields: [...chart.valueFields],
   }
 }

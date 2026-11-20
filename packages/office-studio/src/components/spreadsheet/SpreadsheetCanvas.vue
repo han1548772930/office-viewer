@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
+import type { DrawCommand } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; overlayCommands?: readonly DrawCommand[] }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -22,7 +23,7 @@ const emit = defineEmits<{
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<HTMLInputElement | null>(null)
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
-const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText }))
+const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText, overlayCommands: props.overlayCommands }))
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editRect = computed(() => { const cell = props.editingKey ? parseAddress(props.editingKey) : undefined; return cell ? geometry.value.cellRect(cell.row, cell.column, viewport.value) : undefined })
 const editStyle = computed(() => editRect.value ? { left: `${Math.max(GRID_HEADER_WIDTH, editRect.value.x)}px`, top: `${Math.max(GRID_HEADER_HEIGHT, editRect.value.y)}px`, width: `${Math.max(24, editRect.value.width)}px`, height: `${Math.max(20, editRect.value.height)}px`, fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif', fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px` } : {})
@@ -30,6 +31,7 @@ const composing = ref(false)
 const surfaceError = ref('')
 const sheetViews = new Map<string, { left: number; top: number }>()
 let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, dragging = false
+let dprQuery: MediaQueryList | undefined
 let resizeDrag: { axis: 'row' | 'column'; index: number; size: number; origin: number } | undefined
 let lastPointer: { x: number; y: number } | undefined
 function queueRender() { if (!frame) frame = requestAnimationFrame(draw) }
@@ -55,6 +57,15 @@ function resize() {
   viewport.value = { ...viewport.value, width, height }
   surface.resize(width, height, window.devicePixelRatio || 1)
   queueRender()
+}
+function watchDevicePixelRatio() {
+  dprQuery?.removeEventListener('change', onDevicePixelRatioChange)
+  dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+  dprQuery.addEventListener('change', onDevicePixelRatioChange, { once: true })
+}
+function onDevicePixelRatioChange() {
+  watchDevicePixelRatio()
+  resize()
 }
 function onScroll() {
   if (!scroller.value) return
@@ -133,12 +144,12 @@ onMounted(async () => {
   try {
     const created = await createRenderSurface(canvasHost.value, { onBackendChange: (backend, reason) => emit('backend-change', backend, reason) })
     if (disposed) { created.dispose(); return }
-    surface = created; observer = new ResizeObserver(resize); observer.observe(root.value!); window.addEventListener('resize', resize); document.fonts?.addEventListener('loadingdone', queueRender); resize()
+    surface = created; observer = new ResizeObserver(resize); observer.observe(root.value!); watchDevicePixelRatio(); window.addEventListener('resize', resize); window.visualViewport?.addEventListener('resize', resize); document.fonts?.addEventListener('loadingdone', queueRender); resize()
   } catch (reason) {
     surfaceError.value = reason instanceof Error ? reason.message : String(reason)
   }
 })
-onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disconnect(); window.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
+onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
 </script>
 
 <template>

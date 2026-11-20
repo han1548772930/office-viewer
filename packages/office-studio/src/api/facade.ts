@@ -1,14 +1,31 @@
 import type {
   CellScalar,
+  ChartAxisOptions,
+  ChartLegendOptions,
+  ChartModel,
+  ChartSource,
+  ChartSourceOrientation,
+  ChartType,
+  CellRange,
+  DocumentContentControl,
+  DocumentContentControlType,
   DocumentModel,
   DocumentParagraphStyle,
   PivotAggregation,
+  PivotDateGroupType,
+  PivotDateGroupingMode,
   PivotFieldArea,
   PivotFieldFilter,
+  PivotManualGroup,
+  PivotNumberGroup,
   PivotTableModel,
   PivotTableOptions,
+  SlicerModel,
+  SlicerTimelineRange,
   SpreadsheetCell,
   SpreadsheetSheet,
+  SheetFilterCriteria,
+  SheetSortCriterion,
   WorkbookModel,
 } from '../domain/model'
 import { createBlankSheet, createCell } from '../domain/model'
@@ -29,6 +46,14 @@ import {
   type DocumentTextStylePatch,
   type DocumentTextStyleRun,
 } from '../features/document/services/document-facade'
+import {
+  contentControlRange,
+  contentControlText,
+  getDocumentContentControl,
+  getDocumentContentControls,
+  type ContentControlInput,
+  type ContentControlPatch,
+} from '../features/document/services/content-controls'
 import type { OfficeStudio } from './office-studio'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
@@ -53,11 +78,27 @@ import {
   type PivotTableAnchorInput,
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
+import {
+  chartLayout,
+  chartRenderCommands,
+  readChartData,
+  type ChartConfig,
+} from '../features/charts/chart-engine'
+import { getSlicer, getSlicerItems, type SlicerCreateInput } from '../features/slicer/slicer-engine'
+import { expandVisibleSortOrder, getFilteredRows, getNumericSortColumns, getSortedRowOrder, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 
 export interface CreateUnitOptions { makeCurrent?: boolean }
 export interface FRangeCoordinates { startRow: number; startColumn: number; endRow: number; endColumn: number }
 export type PivotTableSourceInfo = PivotTableSourceInput
 export type PivotTableAnchorInfo = PivotTableAnchorInput
+export type ChartInfo = ChartConfig
+export type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
+export type SlicerInfo = Omit<SlicerCreateInput, 'id' | 'unitId' | 'hostSheetId'> & { id?: string }
+export interface SortRangeApiOptions extends SortRangeOptions { signal?: AbortSignal; timeoutMs?: number; onProgress?: (progress: import('../compute/protocol.ts').ComputeProgress) => void }
+export type SortColumnSpec = { column: number; ascending: boolean } | number
+export type DocumentContentControlInfo = DocumentContentControl
+export type DocumentContentControlCreateInfo = Omit<ContentControlInput, 'id'> & { id?: string }
+export type DocumentContentControlPatch = ContentControlPatch
 
 /**
  * Public root facade modelled after Univer's `FUniver.newAPI(...)` entrypoint.
@@ -225,6 +266,14 @@ export class FWorkbook {
     return (this.model().pivotTables ?? []).map((pivot) => new FPivotTable(this.api, this.id, pivot.id))
   }
 
+  getSlicers(): FSheetSlicer[] {
+    return (this.model().slicers ?? []).map((slicer) => new FSheetSlicer(this.api, this.id, slicer.id))
+  }
+
+  getSlicer(slicerId: string): FSheetSlicer | null {
+    return getSlicer(this.model(), slicerId) ? new FSheetSlicer(this.api, this.id, slicerId) : null
+  }
+
   getPivotTableByCell(subUnitId: string, row: number, col: number): FPivotTable | null
   getPivotTableByCell(unitId: string, subUnitId: string, row: number, col: number): FPivotTable | null
   getPivotTableByCell(unitIdOrSheetId: string, subUnitIdOrRow: string | number, rowOrCol: number, col?: number): FPivotTable | null {
@@ -257,10 +306,70 @@ export class FWorksheet {
   getUnitId(): string { return this.unitId }
   getSheetId(): string { return this.id }
   getSheetName(): string { return this.sheet().name }
+  setAutoFilter(range: CellRange | FRangeCoordinates | string | null): this {
+    const normalized = range === null ? null : typeof range === 'string'
+      ? toCellRange(parseA1Range(range))
+      : range instanceof FRange ? toCellRange(range.getRange()) : normalizeToCellRange(range)
+    this.api.executeCommandSync('sheet.command.set-auto-filter', { unitId: this.unitId, sheetId: this.id, range: normalized })
+    return this
+  }
+  getAutoFilter(): { range: CellRange; columns: Record<number, SheetFilterCriteria>; filteredRows: number[] } | null {
+    const filter = this.sheet().autoFilter
+    return filter ? cloneModel({ ...filter, filteredRows: getFilteredRows(this.sheet()) }) : null
+  }
+  setFilterCriteria(column: number, criteria: SheetFilterCriteria | null): this {
+    this.api.executeCommandSync('sheet.command.set-filter-criteria', { unitId: this.unitId, sheetId: this.id, column, criteria })
+    return this
+  }
+  clearFilter(column?: number): this {
+    this.api.executeCommandSync('sheet.command.clear-filter', { unitId: this.unitId, sheetId: this.id, column })
+    return this
+  }
+  getFilteredRows(): number[] { return getFilteredRows(this.sheet()) }
+  async sortRange(range: FRange | FRangeCoordinates | string, criteria: readonly SheetSortCriterion[], options: SortRangeApiOptions = {}): Promise<this> {
+    const normalized = typeof range === 'string' ? toCellRange(parseA1Range(range)) : range instanceof FRange ? toCellRange(range.getRange()) : normalizeToCellRange(range)
+    const sheet = this.sheet()
+    const expectedRevision = this.api.getWorkbookRevision(this.unitId)
+    const numeric = getNumericSortColumns(sheet, normalized, criteria, options)
+    let order: number[] | undefined
+    if (numeric && numeric.rowCount > 0) {
+      const result = await this.api.numericIndexService.sortRows(numeric, {
+        documentId: this.unitId,
+        modelRevision: expectedRevision,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+        onProgress: options.onProgress,
+      })
+      if (result) {
+        const dataRowCount = normalized.endRow - normalized.startRow + 1 - (options.hasHeader ? 1 : 0)
+        order = expandVisibleSortOrder(dataRowCount, numeric.destinationOffsets, result.indices)
+      }
+    }
+    if (this.sheet() !== sheet || this.api.getWorkbookRevision(this.unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
+    order ??= getSortedRowOrder(sheet, normalized, criteria, options)
+    this.api.executeCommandSync('sheet.command.sort-range', { unitId: this.unitId, sheetId: this.id, range: normalized, criteria: [...criteria], options: { hasHeader: options.hasHeader, locale: options.locale }, order, expectedRevision })
+    return this
+  }
   getPivotTableByCell(row: number, col: number): FPivotTable | null {
     const pivot = getPivotTableAtCell(this.workbook(), this.id, row, col)
     return pivot ? new FPivotTable(this.api, this.unitId, pivot.id) : null
   }
+  newChart(type: ChartType): ChartConfigBuilder { return new ChartConfigBuilder(type) }
+  async insertChart(info: ChartInfo): Promise<FChart> {
+    const chartId = randomId('chart')
+    this.api.executeCommandSync('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
+    return new FChart(this.api, this.unitId, chartId)
+  }
+  getCharts(): FChart[] { return (this.workbook().charts ?? []).filter((chart) => chart.sheetId === this.id).map((chart) => new FChart(this.api, this.unitId, chart.id)) }
+  getChartById(chartId: string): FChart | null { return this.workbook().charts?.some((chart) => chart.id === chartId && chart.sheetId === this.id) ? new FChart(this.api, this.unitId, chartId) : null }
+  async insertSlicer(info: SlicerInfo): Promise<FSheetSlicer> {
+    const slicerId = info.id ?? randomId(info.type === 'timeline' ? 'timeline' : 'slicer')
+    const slicer: SlicerCreateInput = { ...info, id: slicerId, unitId: this.unitId, hostSheetId: this.id }
+    this.api.executeCommandSync('sheet.command.add-slicer', { unitId: this.unitId, slicer })
+    return new FSheetSlicer(this.api, this.unitId, slicerId)
+  }
+  getSlicers(): FSheetSlicer[] { return (this.workbook().slicers ?? []).filter((slicer) => slicer.hostSheetId === this.id).map((slicer) => new FSheetSlicer(this.api, this.unitId, slicer.id)) }
+  getSlicer(slicerId: string): FSheetSlicer | null { return this.workbook().slicers?.some((slicer) => slicer.hostSheetId === this.id && slicer.id === slicerId) ? new FSheetSlicer(this.api, this.unitId, slicerId) : null }
   setName(name: string): this {
     const sheet = this.sheet()
     const oldName = sheet.name
@@ -366,6 +475,59 @@ export class FSelection {
   getActiveRangeList(): FRange[] { const range = this.getActiveRange(); return range ? [range] : [] }
 }
 
+export class ChartConfigBuilder {
+  private value: ChartConfig
+
+  constructor(type: ChartType) {
+    this.value = { type, source: { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 }, orientation: 'columns' }, position: { x: 0, y: 0 }, size: { width: 480, height: 300 } }
+  }
+  setSource(range: string | ChartSource, orientation: ChartSourceOrientation = 'columns'): this {
+    const source = typeof range === 'string' ? { range: parseChartA1Range(range), orientation } : range
+    this.value = { ...this.value, source: { range: { ...source.range }, orientation: source.orientation } }
+    return this
+  }
+  setPosition(cell: string): this {
+    const { row, column } = parseA1Cell(cell)
+    const x = column * 96, y = row * 24
+    this.value = { ...this.value, position: { x, y } }
+    return this
+  }
+  setAbsolutePosition(x: number, y: number): this { this.value = { ...this.value, position: { x, y } }; return this }
+  setSize(width: number, height: number): this { this.value = { ...this.value, size: { width, height } }; return this }
+  setCategoryField(index: number): this { this.value = { ...this.value, categoryField: index }; return this }
+  setValueFields(fields: number[]): this { this.value = { ...this.value, valueFields: [...fields] }; return this }
+  setTitle(title: string): this { this.value = { ...this.value, title }; return this }
+  setLegend(legend: Partial<ChartLegendOptions>): this { this.value = { ...this.value, legend: { ...this.value.legend, ...legend } }; return this }
+  setXAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: { ...this.value.xAxis, ...axis } }; return this }
+  setYAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, yAxis: { ...this.value.yAxis, ...axis } }; return this }
+  build(): ChartInfo { return cloneModel(this.value) }
+}
+
+export class FChart {
+  private readonly api: OfficeStudio
+  private readonly unitId: string
+  readonly id: string
+  constructor(api: OfficeStudio, unitId: string, id: string) { this.api = api; this.unitId = unitId; this.id = id }
+  getChartId(): string { return this.id }
+  getInfo(): ChartModel { return cloneModel(this.model()) }
+  getData(): ReturnType<typeof readChartData> { return readChartData(this.workbook(), this.model()) }
+  getLayout(): ReturnType<typeof chartLayout> { return chartLayout(this.workbook(), this.model()) }
+  getRenderCommands(): ReturnType<typeof chartRenderCommands> { return chartRenderCommands(this.workbook(), this.model()) }
+  async update(info: ChartPatch): Promise<this> { await this.api.executeCommand('sheet.command.update-chart', { unitId: this.unitId, chartId: this.id, patch: info }); return this }
+  async setDataSource(source: ChartSource): Promise<this> { return this.update({ source }) }
+  async remove(): Promise<boolean> { return this.api.executeCommand('sheet.command.remove-chart', { unitId: this.unitId, chartId: this.id }) }
+  private model(): ChartModel {
+    const chart = this.workbook().charts?.find((item) => item.id === this.id)
+    if (!chart) throw new Error(`Chart not found: ${this.id}`)
+    return chart
+  }
+  private workbook(): WorkbookModel {
+    const workbook = this.api.getWorkbookModel(this.unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${this.unitId}`)
+    return workbook
+  }
+}
+
 export class FRange {
   private readonly api: OfficeStudio
   readonly unitId: string
@@ -408,6 +570,18 @@ export class FRange {
   getDisplayValues(): string[][] { return this.mapCells((cell) => cell?.display ?? '') }
   getFormula(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.formula ?? '' }
   getFormulas(): string[][] { return this.mapCells((cell) => cell?.formula ?? '') }
+  sort(column: SortColumnSpec | SortColumnSpec[], options: SortRangeOptions = {}): this {
+    const specs = Array.isArray(column) ? column : [column]
+    const criteria: SheetSortCriterion[] = specs.map((spec) => {
+      const relative = typeof spec === 'number' ? { column: spec, direction: 'ascending' as const } : { column: spec.column, direction: spec.ascending ? 'ascending' as const : 'descending' as const }
+      if (!Number.isInteger(relative.column) || relative.column < 0 || relative.column >= this.getWidth()) throw new RangeError('Sort column must be relative to the range')
+      return { column: this.range.startColumn + relative.column, direction: relative.direction }
+    })
+    const range: CellRange = { startRow: this.range.startRow, startCol: this.range.startColumn, endRow: this.range.endRow, endCol: this.range.endColumn }
+    const order = getSortedRowOrder(this.sheet(), range, criteria, options)
+    this.api.executeCommandSync('sheet.command.sort-range', { unitId: this.unitId, sheetId: this.sheetId, range, criteria, options, order })
+    return this
+  }
   getCellData(): SpreadsheetCell | null { const cell = this.cellAt(this.range.startRow, this.range.startColumn); return cell ? cloneModel(cell) : null }
   getCellDatas(): (SpreadsheetCell | null)[][] { return this.mapCells((cell) => cell ? cloneModel(cell) : null) }
   setValue(value: ApiCellValue): this { return this.setValues(this.fill(value)) }
@@ -559,6 +733,21 @@ export class FPivotTable {
   async setValueFilter(fieldId: string, filter: PivotFieldFilter | null): Promise<this> {
     return this.execute('sheet.command.set-pivot-value-filter', { fieldId, filter })
   }
+  async setNumberGroup(fieldId: string, settings: PivotNumberGroup | null): Promise<this> {
+    return this.execute('sheet.command.set-pivot-number-group', { fieldId, settings })
+  }
+  async setDateGroupingMode(mode: PivotDateGroupingMode): Promise<this> {
+    return this.execute('sheet.command.set-pivot-date-grouping-mode', { mode })
+  }
+  async setDateGroupType(fieldId: string, type: PivotDateGroupType | null): Promise<this> {
+    return this.execute('sheet.command.set-pivot-date-group-type', { fieldId, type })
+  }
+  async setExcelDateGroup(fieldId: string, type: PivotDateGroupType): Promise<this> {
+    return this.execute('sheet.command.set-pivot-excel-date-group', { fieldId, type })
+  }
+  async setManualGroups(fieldId: string, groups: PivotManualGroup[]): Promise<this> {
+    return this.execute('sheet.command.set-pivot-manual-groups', { fieldId, groups })
+  }
   async updateValuePosition(position: 'row' | 'column', _index = 0): Promise<this> {
     return this.execute('sheet.command.update-pivot-value-position', { position })
   }
@@ -577,6 +766,47 @@ export class FPivotTable {
   private model(): PivotTableModel {
     const model = this.workbook().pivotTables?.find((pivot) => pivot.id === this.id)
     if (!model) throw new Error(`Pivot table not found: ${this.id}`)
+    return model
+  }
+  private workbook(): WorkbookModel {
+    const workbook = this.api.getWorkbookModel(this.unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${this.unitId}`)
+    return workbook
+  }
+}
+
+export class FSheetSlicer {
+  private readonly api: OfficeStudio
+  private readonly unitId: string
+  readonly id: string
+
+  constructor(api: OfficeStudio, unitId: string, id: string) {
+    this.api = api
+    this.unitId = unitId
+    this.id = id
+  }
+
+  getId(): string { return this.id }
+  getInfo(): SlicerModel { return cloneModel(this.model()) }
+  getItems(): string[] { return getSlicerItems(this.workbook(), this.model()) }
+  async setItems(items: string[] | null): Promise<this> {
+    await this.api.executeCommand('sheet.command.set-slicer-items', { unitId: this.unitId, slicerId: this.id, selectedItems: items })
+    return this
+  }
+  async setTimelineRange(range: SlicerTimelineRange | null): Promise<this> {
+    await this.api.executeCommand('sheet.command.set-timeline-range', { unitId: this.unitId, slicerId: this.id, range })
+    return this
+  }
+  async clearFilter(): Promise<this> {
+    await this.api.executeCommand('sheet.command.clear-slicer-filter', { unitId: this.unitId, slicerId: this.id })
+    return this
+  }
+  async remove(): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.remove-slicer', { unitId: this.unitId, slicerId: this.id })
+  }
+  private model(): SlicerModel {
+    const model = getSlicer(this.workbook(), this.id)
+    if (!model) throw new Error(`Slicer not found: ${this.id}`)
     return model
   }
   private workbook(): WorkbookModel {
@@ -623,11 +853,25 @@ export class FDocument {
     return this.getParagraphs().at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  getContentControls(): FDocumentContentControl[] {
+    return getDocumentContentControls(this.model()).map((control) => new FDocumentContentControl(this, control.id))
+  }
+  getContentControl(id: string): FDocumentContentControl | null {
+    return getDocumentContentControl(this.model(), id) ? new FDocumentContentControl(this, id) : null
+  }
+  addContentControl(info: DocumentContentControlCreateInfo): FDocumentContentControl {
+    const id = info.id ?? randomId('content-control')
+    this.api.executeCommandSync('doc.command.add-content-control', { unitId: this.id, control: { ...info, id } })
+    return new FDocumentContentControl(this, id)
+  }
   replaceRange(startOffset: number, endOffset: number, text: string): boolean {
     return this.api.executeCommandSync('doc.command.replace-range', { unitId: this.id, startOffset, endOffset, text })
   }
   mutate(label: string, commandId: string, update: (model: DocumentModel) => void): boolean {
     return this.api.mutateDocument(this.id, commandId, label, update)
+  }
+  executeContentControlCommand<P extends Record<string, unknown>>(commandId: string, params: P): boolean {
+    return this.api.executeCommandSync(commandId, { unitId: this.id, ...params })
   }
 
   private model(): DocumentModel {
@@ -635,6 +879,30 @@ export class FDocument {
     if (!model) throw new Error(`Document not found: ${this.id}`)
     return model
   }
+}
+
+export class FDocumentContentControl {
+  private readonly document: FDocument
+  readonly id: string
+
+  constructor(document: FDocument, id: string) {
+    this.document = document
+    this.id = id
+  }
+  getId(): string { return this.id }
+  getInfo(): DocumentContentControlInfo {
+    const control = getDocumentContentControl(this.document.getModel(), this.id)
+    if (!control) throw new Error(`Content control not found: ${this.id}`)
+    return control
+  }
+  getType(): DocumentContentControlType { return this.getInfo().type }
+  getText(): string { return contentControlText(this.document.getModel(), this.getInfo()) }
+  getRange(): { blockId: string; startOffset: number; endOffset: number } { return contentControlRange(this.getInfo()) }
+  setValue(value: string): this { this.document.executeContentControlCommand('doc.command.set-content-control-value', { controlId: this.id, value }); return this }
+  setChecked(checked: boolean): this { this.document.executeContentControlCommand('doc.command.set-content-control-checked', { controlId: this.id, checked }); return this }
+  selectItem(value: string): this { this.document.executeContentControlCommand('doc.command.select-content-control-item', { controlId: this.id, value }); return this }
+  update(patch: DocumentContentControlPatch): this { this.document.executeContentControlCommand('doc.command.update-content-control', { controlId: this.id, patch }); return this }
+  remove(): boolean { return this.document.executeContentControlCommand('doc.command.remove-content-control', { controlId: this.id }) }
 }
 
 export class FDocumentTextRange {
@@ -760,12 +1028,27 @@ function normalizePivotAnchorInfo(anchor: PivotTableAnchorInfo, workbookId: stri
   return { ...anchor }
 }
 
+function toCellRange(range: FRangeCoordinates): CellRange {
+  const normalized = normalizeToCellRange(range)
+  return normalized
+}
+
+function normalizeToCellRange(range: FRangeCoordinates): CellRange {
+  const normalized = normalizeRange(range)
+  return { startRow: normalized.startRow, startCol: normalized.startColumn, endRow: normalized.endRow, endCol: normalized.endColumn }
+}
+
 function parseA1Range(value: string): FRangeCoordinates {
   const refs = value.split('!').at(-1)?.split(':') ?? []
   if (refs.length < 1 || refs.length > 2) throw new TypeError(`Invalid A1 range: ${value}`)
   const first = parseA1Cell(refs[0]!)
   const last = parseA1Cell(refs[1] ?? refs[0]!)
   return normalizeRange({ startRow: first.row, startColumn: first.column, endRow: last.row, endColumn: last.column })
+}
+
+function parseChartA1Range(value: string): ChartSource['range'] {
+  const range = parseA1Range(value)
+  return { startRow: range.startRow, startCol: range.startColumn, endRow: range.endRow, endCol: range.endColumn }
 }
 
 function parseA1Cell(value: string): { row: number; column: number } {

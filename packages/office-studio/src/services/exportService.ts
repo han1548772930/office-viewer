@@ -40,11 +40,22 @@ function ensureWorker(): Worker {
   return worker
 }
 
-export interface ExportOptions { onProgress?: (progress: ExportProgress) => void; timeoutMs?: number }
+export interface ExportOptions { onProgress?: (progress: ExportProgress) => void; timeoutMs?: number; signal?: AbortSignal }
+
+export class OfficeExportError extends Error {
+  readonly code: 'CANCELLED' | 'EXPORT_FAILED'
+
+  constructor(code: 'CANCELLED' | 'EXPORT_FAILED', message: string) {
+    super(message)
+    this.code = code
+    this.name = 'OfficeExportError'
+  }
+}
 
 export async function exportOfficeModel(kind: OfficeKind, model: WorkbookModel | DocumentModel, options: ExportOptions = {}): Promise<ExportOutcome> {
   if (model.kind !== kind) throw new Error('导出类型与当前模型不一致')
-  if (pending) fail(new Error('已被新的导出任务替代'))
+  if (options.signal?.aborted) throw new OfficeExportError('CANCELLED', 'Office 文件导出已取消')
+  if (pending) fail(new OfficeExportError('CANCELLED', '已被新的导出任务替代'))
   const requestId = crypto.randomUUID()
   activeRequest = requestId
   const data: ExportRequest = {
@@ -53,8 +64,14 @@ export async function exportOfficeModel(kind: OfficeKind, model: WorkbookModel |
   }
   const writer = ensureWorker()
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => fail(new Error('Office 文件导出超时')), options.timeoutMs ?? 120_000)
-    pending = { resolve, reject, progress: options.onProgress, release: () => window.clearTimeout(timeout) }
+    const timeout = window.setTimeout(() => fail(new OfficeExportError('EXPORT_FAILED', 'Office 文件导出超时')), options.timeoutMs ?? 120_000)
+    const abort = () => fail(new OfficeExportError('CANCELLED', 'Office 文件导出已取消'))
+    pending = { resolve, reject, progress: options.onProgress, release: () => {
+      window.clearTimeout(timeout)
+      options.signal?.removeEventListener('abort', abort)
+    } }
+    options.signal?.addEventListener('abort', abort, { once: true })
+    if (options.signal?.aborted) { abort(); return }
     try { writer.postMessage(data) } catch (error: unknown) { fail(error instanceof Error ? error : new Error(String(error))) }
   })
 }

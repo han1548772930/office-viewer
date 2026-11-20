@@ -16,6 +16,9 @@ const REL_WORKBOOK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
 const REL_WORKSHEET: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet";
+const REL_DRAWING: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
+const REL_CHART: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 const REL_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
 const REL_CORE: &str =
@@ -44,6 +47,8 @@ struct WorkbookInput {
     metadata: Option<Value>,
     #[serde(default)]
     pivot_tables: Option<Vec<Value>>,
+    #[serde(default)]
+    charts: Option<Vec<ChartInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +90,84 @@ struct SheetInput {
     zoom: Option<f64>,
     #[serde(default)]
     metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChartInput {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    sheet_id: String,
+    #[serde(rename = "type")]
+    chart_type: String,
+    source: ChartSourceInput,
+    position: ChartPositionInput,
+    size: ChartSizeInput,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    legend: Option<ChartLegendInput>,
+    #[serde(default)]
+    category_field: usize,
+    #[serde(default)]
+    value_fields: Vec<usize>,
+    #[serde(default)]
+    x_axis: Option<ChartAxisInput>,
+    #[serde(default)]
+    y_axis: Option<ChartAxisInput>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChartSourceInput {
+    range: RangeInput,
+    #[serde(default = "default_chart_orientation")]
+    orientation: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct ChartPositionInput {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct ChartSizeInput {
+    width: f64,
+    height: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChartLegendInput {
+    #[serde(default = "default_true")]
+    visible: bool,
+    #[serde(default = "default_chart_legend_position")]
+    position: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChartAxisInput {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default = "default_chart_scale_type")]
+    scale_type: String,
+    #[serde(default)]
+    log_base: Option<f64>,
+}
+
+fn default_chart_orientation() -> String {
+    "columns".to_owned()
+}
+
+fn default_chart_legend_position() -> String {
+    "bottom".to_owned()
+}
+
+fn default_chart_scale_type() -> String {
+    "linear".to_owned()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -689,6 +772,7 @@ fn worksheet_xml(
     sheet_index: usize,
     registry: &mut StyleRegistry,
     warnings: &mut Vec<ExportWarning>,
+    drawing_rel_id: Option<&str>,
 ) -> (String, Vec<(String, String)>) {
     let mut cells = Vec::<CellInput>::new();
     for (key, value) in &sheet.cells {
@@ -853,8 +937,475 @@ fn worksheet_xml(
         }
         out.push_str("</hyperlinks>");
     }
+    if let Some(rel_id) = drawing_rel_id {
+        out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
+    }
     out.push_str("</worksheet>");
     (out, hyperlinks)
+}
+
+fn range_bounds(range: &RangeInput) -> Option<(u32, u32, u32, u32)> {
+    let start_row = range.start_row.or(range.first_row)?;
+    let start_col = range.start_col.or(range.first_col)?;
+    let end_row = range.end_row.or(range.last_row).unwrap_or(start_row);
+    let end_col = range.end_col.or(range.last_col).unwrap_or(start_col);
+    Some((start_row, start_col, end_row, end_col))
+}
+
+fn chart_range_formula(
+    sheet_name: &str,
+    first_row: u32,
+    first_col: u32,
+    last_row: u32,
+    last_col: u32,
+) -> String {
+    let escaped = sheet_name.replace('\'', "''");
+    format!(
+        "'{}'!${}${}:${}${}",
+        escaped,
+        column_name(first_col),
+        first_row + 1,
+        column_name(last_col),
+        last_row + 1
+    )
+}
+
+fn chart_cell_value(sheet: &SheetInput, row: u32, col: u32) -> Option<Value> {
+    let key = format!("{row}:{col}");
+    if let Some(value) = sheet.cells.get(&key) {
+        let cell = cell_from_entry(&key, value)?;
+        return cell
+            .value
+            .or_else(|| (!cell.display.is_empty()).then(|| Value::String(cell.display)));
+    }
+    let key = cell_ref(row, col);
+    let value = sheet.cells.get(&key)?;
+    let cell = cell_from_entry(&key, value)?;
+    cell.value
+        .or_else(|| (!cell.display.is_empty()).then(|| Value::String(cell.display)))
+}
+
+fn chart_value_text(value: Option<Value>, display: bool) -> String {
+    match value {
+        Some(Value::Number(number)) => number.to_string(),
+        Some(Value::Bool(value)) => {
+            if value {
+                "1".to_owned()
+            } else {
+                "0".to_owned()
+            }
+        }
+        Some(Value::String(value)) => value,
+        Some(Value::Object(map)) if display => map
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        _ => String::new(),
+    }
+}
+
+fn chart_number_text(value: Option<Value>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    match value {
+        Value::Number(number) => number
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+        Value::String(text) => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite())
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn chart_string_cache(values: impl IntoIterator<Item = String>) -> String {
+    let values = values.into_iter().collect::<Vec<_>>();
+    let mut out = format!("<c:strCache><c:ptCount val=\"{}\"/>", values.len());
+    for (index, value) in values.iter().enumerate() {
+        out.push_str(&format!(
+            "<c:pt idx=\"{}\"><c:v>{}</c:v></c:pt>",
+            index,
+            esc(value)
+        ));
+    }
+    out.push_str("</c:strCache>");
+    out
+}
+
+fn chart_number_cache(values: impl IntoIterator<Item = String>) -> String {
+    let values = values.into_iter().collect::<Vec<_>>();
+    let mut out = format!(
+        "<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val=\"{}\"/>",
+        values.len()
+    );
+    for (index, value) in values.iter().enumerate() {
+        if value.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "<c:pt idx=\"{}\"><c:v>{}</c:v></c:pt>",
+            index,
+            esc(value)
+        ));
+    }
+    out.push_str("</c:numCache>");
+    out
+}
+
+fn chart_title_xml(title: Option<&str>) -> String {
+    let Some(title) = title.filter(|value| !value.is_empty()) else {
+        return String::new();
+    };
+    format!(
+        "<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr/><a:r><a:rPr lang=\"zh-CN\"/><a:t>{}</a:t></a:r><a:endParaRPr lang=\"zh-CN\"/></a:p></c:rich></c:tx><c:layout/><c:overlay val=\"0\"/></c:title>",
+        esc(title)
+    )
+}
+
+fn chart_axis_title_xml(title: Option<&str>) -> String {
+    let Some(title) = title.filter(|value| !value.is_empty()) else {
+        return String::new();
+    };
+    format!(
+        "<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang=\"zh-CN\"/><a:t>{}</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val=\"0\"/></c:title>",
+        esc(title)
+    )
+}
+
+fn chart_series_xml(
+    sheet: &SheetInput,
+    sheet_name: &str,
+    chart: &ChartInput,
+    series_index: usize,
+    value_field: usize,
+    bounds: (u32, u32, u32, u32),
+) -> Result<String, ExportError> {
+    let (start_row, start_col, end_row, end_col) = bounds;
+    let orientation = chart.source.orientation.as_str();
+    let (name_formula, category_formula, value_formula, categories, values) = if orientation
+        == "rows"
+    {
+        let category_offset = u32::try_from(chart.category_field)
+            .map_err(|_| ExportError::invalid("chart category field exceeds worksheet limits"))?;
+        let value_offset = u32::try_from(value_field)
+            .map_err(|_| ExportError::invalid("chart value field exceeds worksheet limits"))?;
+        if chart.category_field >= (end_row.saturating_sub(start_row) + 1) as usize
+            || value_field >= (end_row.saturating_sub(start_row) + 1) as usize
+        {
+            return Err(ExportError::invalid(format!(
+                "chart {} field is outside source range",
+                chart.id
+            )));
+        }
+        let category_row = start_row + category_offset;
+        let value_row = start_row + value_offset;
+        (
+            chart_range_formula(sheet_name, value_row, start_col, value_row, start_col),
+            chart_range_formula(
+                sheet_name,
+                category_row,
+                start_col + 1,
+                category_row,
+                end_col,
+            ),
+            chart_range_formula(sheet_name, value_row, start_col + 1, value_row, end_col),
+            (start_col + 1..=end_col)
+                .map(|col| chart_value_text(chart_cell_value(sheet, category_row, col), false))
+                .collect::<Vec<_>>(),
+            (start_col + 1..=end_col)
+                .map(|col| chart_number_text(chart_cell_value(sheet, value_row, col)))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        let category_offset = u32::try_from(chart.category_field)
+            .map_err(|_| ExportError::invalid("chart category field exceeds worksheet limits"))?;
+        let value_offset = u32::try_from(value_field)
+            .map_err(|_| ExportError::invalid("chart value field exceeds worksheet limits"))?;
+        if chart.category_field >= (end_col.saturating_sub(start_col) + 1) as usize
+            || value_field >= (end_col.saturating_sub(start_col) + 1) as usize
+        {
+            return Err(ExportError::invalid(format!(
+                "chart {} field is outside source range",
+                chart.id
+            )));
+        }
+        let category_col = start_col + category_offset;
+        let value_col = start_col + value_offset;
+        (
+            chart_range_formula(sheet_name, start_row, value_col, start_row, value_col),
+            chart_range_formula(
+                sheet_name,
+                start_row + 1,
+                category_col,
+                end_row,
+                category_col,
+            ),
+            chart_range_formula(sheet_name, start_row + 1, value_col, end_row, value_col),
+            (start_row + 1..=end_row)
+                .map(|row| chart_value_text(chart_cell_value(sheet, row, category_col), false))
+                .collect::<Vec<_>>(),
+            (start_row + 1..=end_row)
+                .map(|row| chart_number_text(chart_cell_value(sheet, row, value_col)))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let name = if orientation == "rows" {
+        chart_value_text(
+            chart_cell_value(
+                sheet,
+                start_row
+                    + u32::try_from(value_field).map_err(|_| {
+                        ExportError::invalid("chart value field exceeds worksheet limits")
+                    })?,
+                start_col,
+            ),
+            false,
+        )
+    } else {
+        chart_value_text(
+            chart_cell_value(
+                sheet,
+                start_row,
+                start_col
+                    + u32::try_from(value_field).map_err(|_| {
+                        ExportError::invalid("chart value field exceeds worksheet limits")
+                    })?,
+            ),
+            false,
+        )
+    };
+    let mut out = format!(
+        "<c:ser><c:idx val=\"{}\"/><c:order val=\"{}\"/><c:tx><c:strRef><c:f>{}</c:f>{}</c:strRef></c:tx>",
+        series_index,
+        series_index,
+        esc(&name_formula),
+        chart_string_cache([name])
+    );
+    out.push_str(&format!(
+        "<c:cat><c:strRef><c:f>{}</c:f>{}</c:strRef></c:cat>",
+        esc(&category_formula),
+        chart_string_cache(categories)
+    ));
+    out.push_str(&format!(
+        "<c:val><c:numRef><c:f>{}</c:f>{}</c:numRef></c:val></c:ser>",
+        esc(&value_formula),
+        chart_number_cache(values)
+    ));
+    Ok(out)
+}
+
+fn chart_xml(
+    workbook: &WorkbookInput,
+    chart: &ChartInput,
+    chart_index: usize,
+) -> Result<String, ExportError> {
+    let sheet = workbook
+        .sheets
+        .iter()
+        .find(|sheet| sheet.id == chart.sheet_id)
+        .ok_or_else(|| {
+            ExportError::invalid(format!(
+                "chart {} references an unknown worksheet",
+                chart.id
+            ))
+        })?;
+    let sheet_name = safe_sheet_names(workbook.sheets.iter().map(|item| item.name.as_str()))
+        .into_iter()
+        .nth(
+            workbook
+                .sheets
+                .iter()
+                .position(|item| item.id == chart.sheet_id)
+                .unwrap_or(0),
+        )
+        .unwrap_or_else(|| sheet.name.clone());
+    let bounds = range_bounds(&chart.source.range).ok_or_else(|| {
+        ExportError::invalid(format!("chart {} source range is missing", chart.id))
+    })?;
+    if chart.source.orientation != "columns" && chart.source.orientation != "rows" {
+        return Err(ExportError::invalid(format!(
+            "chart {} has invalid source orientation",
+            chart.id
+        )));
+    }
+    let (start_row, start_col, end_row, end_col) = bounds;
+    if end_row < start_row || end_col < start_col {
+        return Err(ExportError::invalid(format!(
+            "chart {} source range is invalid",
+            chart.id
+        )));
+    }
+    if end_row > MAX_ROW_INDEX || end_col > MAX_COLUMN_INDEX {
+        return Err(ExportError::invalid(format!(
+            "chart {} source range exceeds XLSX worksheet limits",
+            chart.id
+        )));
+    }
+    if end_row == start_row || end_col == start_col {
+        return Err(ExportError::invalid(format!(
+            "chart {} source must include a header and at least one data point",
+            chart.id
+        )));
+    }
+    if let Some(legend) = chart.legend.as_ref() {
+        if !matches!(
+            legend.position.as_str(),
+            "top" | "right" | "bottom" | "left"
+        ) {
+            return Err(ExportError::invalid(format!(
+                "chart {} has an invalid legend position",
+                chart.id
+            )));
+        }
+    }
+    let field_count = if chart.source.orientation == "rows" {
+        end_row - start_row + 1
+    } else {
+        end_col - start_col + 1
+    };
+    let category = chart.category_field;
+    let fields = if chart.value_fields.is_empty() {
+        (0..field_count as usize)
+            .filter(|field| *field != category)
+            .collect::<Vec<_>>()
+    } else {
+        chart.value_fields.clone()
+    };
+    if fields.is_empty() {
+        return Err(ExportError::invalid(format!(
+            "chart {} has no value series",
+            chart.id
+        )));
+    }
+    let chart_kind = match chart.chart_type.as_str() {
+        "bar" => "barChart",
+        "line" => "lineChart",
+        other => {
+            return Err(ExportError::unsupported(format!(
+                "XLSX chart type {other} is not supported by the writer"
+            )));
+        }
+    };
+    let axis_base = u32::try_from(chart_index)
+        .ok()
+        .and_then(|index| index.checked_add(1))
+        .and_then(|index| index.checked_mul(2))
+        .and_then(|index| index.checked_add(1_000_000))
+        .ok_or_else(|| ExportError::invalid("too many charts in workbook"))?;
+    let axis_ids = axis_base;
+    let axis_id_y = axis_ids + 1;
+    let mut out = format!(
+        "{}<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><c:chart>{}",
+        xml::DECL,
+        chart_title_xml(chart.title.as_deref())
+    );
+    out.push_str("<c:autoTitleDeleted val=\"0\"/><c:plotArea><c:layout/>");
+    if chart_kind == "barChart" {
+        out.push_str("<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/><c:varyColors val=\"0\"/>");
+    } else {
+        out.push_str("<c:lineChart><c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>");
+    }
+    for (index, field) in fields.iter().enumerate() {
+        out.push_str(&chart_series_xml(
+            sheet,
+            &sheet_name,
+            chart,
+            index,
+            *field,
+            bounds,
+        )?);
+    }
+    out.push_str(&format!("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:{}>", axis_ids, axis_id_y, chart_kind));
+    out.push_str(&format!("<c:catAx><c:axId val=\"{}\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/>{}<c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:auto val=\"1\"/><c:lblAlgn val=\"ctr\"/><c:lblOffset val=\"100\"/></c:catAx>", axis_ids, chart_axis_title_xml(chart.x_axis.as_ref().and_then(|axis| axis.title.as_deref())), axis_id_y));
+    let y_axis = chart.y_axis.as_ref();
+    for axis in [chart.x_axis.as_ref(), y_axis].into_iter().flatten() {
+        if !matches!(axis.scale_type.as_str(), "linear" | "log") {
+            return Err(ExportError::invalid(format!(
+                "chart {} has an invalid axis scale type",
+                chart.id
+            )));
+        }
+        if axis
+            .log_base
+            .is_some_and(|base| !base.is_finite() || !(2.0..=1000.0).contains(&base))
+        {
+            return Err(ExportError::invalid(format!(
+                "chart {} logarithmic axis base must be between 2 and 1000",
+                chart.id
+            )));
+        }
+    }
+    let scaling = if let Some(axis) = y_axis.filter(|axis| axis.scale_type == "log") {
+        format!(
+            "<c:scaling><c:logBase val=\"{}\"/><c:orientation val=\"minMax\"/></c:scaling>",
+            axis.log_base.unwrap_or(10.0)
+        )
+    } else {
+        "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>".to_owned()
+    };
+    out.push_str(&format!("<c:valAx><c:axId val=\"{}\"/>{}<c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/>{}<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:crossBetween val=\"midCat\"/></c:valAx>", axis_id_y, scaling, chart_axis_title_xml(y_axis.and_then(|axis| axis.title.as_deref())), axis_ids));
+    out.push_str("</c:plotArea>");
+    if chart.legend.as_ref().is_none_or(|legend| legend.visible) {
+        let position = chart
+            .legend
+            .as_ref()
+            .map(|legend| legend.position.as_str())
+            .unwrap_or("bottom");
+        let position = match position {
+            "top" => "t",
+            "right" => "r",
+            "left" => "l",
+            "bottom" => "b",
+            _ => "b",
+        };
+        out.push_str(&format!(
+            "<c:legend><c:legendPos val=\"{}\"/><c:layout/><c:overlay val=\"0\"/></c:legend>",
+            position
+        ));
+    }
+    out.push_str(
+        "<c:plotVisOnly val=\"1\"/><c:dispBlanksAs val=\"gap\"/></c:chart></c:chartSpace>",
+    );
+    Ok(out)
+}
+
+fn emu(value: f64) -> Result<u32, ExportError> {
+    if !value.is_finite() || value < 0.0 || value > u32::MAX as f64 / 9525.0 {
+        return Err(ExportError::invalid(
+            "chart position and size must fit DrawingML coordinate limits",
+        ));
+    }
+    Ok((value * 9525.0).round() as u32)
+}
+
+fn drawing_xml(charts: &[(&ChartInput, usize)]) -> Result<String, ExportError> {
+    let mut out = format!(
+        "{}<xdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">",
+        xml::DECL
+    );
+    for (local_index, (chart, _global_index)) in charts.iter().enumerate() {
+        if chart.size.width <= 0.0 || chart.size.height <= 0.0 {
+            return Err(ExportError::invalid(format!(
+                "chart {} size must be greater than zero",
+                chart.id
+            )));
+        }
+        let x = emu(chart.position.x)?;
+        let y = emu(chart.position.y)?;
+        let cx = emu(chart.size.width)?;
+        let cy = emu(chart.size.height)?;
+        out.push_str(&format!("<xdr:absoluteAnchor><xdr:pos x=\"{}\" y=\"{}\"/><xdr:ext cx=\"{}\" cy=\"{}\"/><xdr:graphicFrame macro=\"\"><xdr:nvGraphicFramePr><xdr:cNvPr id=\"{}\" name=\"Chart {}\"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{}\" cy=\"{}\"/></xdr:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"rIdChart{}\"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:absoluteAnchor>", x, y, cx, cy, local_index + 1, local_index + 1, cx, cy, local_index + 1));
+    }
+    out.push_str("</xdr:wsDr>");
+    Ok(out)
 }
 
 fn width_to_excel(width: f64) -> f64 {
@@ -1263,7 +1814,6 @@ fn app_properties_xml(workbook: &WorkbookInput) -> String {
 
 fn add_unsupported_warnings(workbook: &WorkbookInput, warnings: &mut Vec<ExportWarning>) {
     let unsupported = [
-        "charts",
         "pivotTables",
         "slicers",
         "sparklines",
@@ -1381,8 +1931,37 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
     registry.register(None);
+    let charts = workbook.charts.as_deref().unwrap_or(&[]);
+    let mut chart_index_by_sheet = HashMap::<String, Vec<(usize, usize)>>::new();
+    for (chart_index, chart) in charts.iter().enumerate() {
+        let sheet_index = workbook
+            .sheets
+            .iter()
+            .position(|sheet| sheet.id == chart.sheet_id)
+            .ok_or_else(|| {
+                ExportError::invalid(format!(
+                    "chart {} references an unknown worksheet",
+                    chart.id
+                ))
+            })?;
+        chart_index_by_sheet
+            .entry(chart.sheet_id.clone())
+            .or_default()
+            .push((sheet_index, chart_index));
+    }
     for (index, sheet) in workbook.sheets.iter().enumerate() {
-        let (content, hyperlinks) = worksheet_xml(sheet, index, &mut registry, &mut warnings);
+        let sheet_charts = chart_index_by_sheet
+            .get(&sheet.id)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|(_, chart_index)| (&charts[*chart_index], *chart_index))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let drawing_rel_id = (!sheet_charts.is_empty()).then_some("rIdDrawing");
+        let (content, hyperlinks) =
+            worksheet_xml(sheet, index, &mut registry, &mut warnings, drawing_rel_id);
         let path = format!("xl/worksheets/sheet{}.xml", index + 1);
         package.add_xml(
             &path,
@@ -1396,6 +1975,41 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             &format!("worksheets/sheet{}.xml", index + 1),
             false,
         )?;
+        if !sheet_charts.is_empty() {
+            let drawing_path = format!("xl/drawings/drawing{}.xml", index + 1);
+            package.add_xml(
+                &drawing_path,
+                "application/vnd.openxmlformats-officedocument.drawing+xml",
+                drawing_xml(&sheet_charts)?,
+            )?;
+            package.add_relationship(
+                Some(&path),
+                "rIdDrawing",
+                REL_DRAWING,
+                &format!("../drawings/drawing{}.xml", index + 1),
+                false,
+            )?;
+            for (local_index, (_sheet_index, chart_index)) in chart_index_by_sheet
+                .get(&sheet.id)
+                .into_iter()
+                .flat_map(|items| items.iter())
+                .enumerate()
+            {
+                let chart = &charts[*chart_index];
+                package.add_xml(
+                    &format!("xl/charts/chart{}.xml", chart_index + 1),
+                    "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+                    chart_xml(&workbook, chart, *chart_index)?,
+                )?;
+                package.add_relationship(
+                    Some(&drawing_path),
+                    &format!("rIdChart{}", local_index + 1),
+                    REL_CHART,
+                    &format!("../charts/chart{}.xml", chart_index + 1),
+                    false,
+                )?;
+            }
+        }
         for (link_index, (_reference, target)) in hyperlinks.iter().enumerate() {
             if !target.starts_with('#') {
                 package.add_relationship(
@@ -1634,6 +2248,75 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "UNSUPPORTED_FEATURE");
         assert!(warnings[0].message.contains("pivotTables"));
+    }
+
+    #[test]
+    fn writes_chart_drawing_and_series_parts_with_source_ranges() {
+        let data = r##"{"kind":"workbook","name":"Chart book","sheets":[{"id":"sheet-1","name":"Q1 Sales","cells":{"A1":{"value":"Region"},"B1":{"value":"Revenue"},"A2":{"value":"North"},"B2":{"value":10},"A3":{"value":"South"},"B3":{"value":20}}}],"charts":[{"id":"chart-1","sheetId":"sheet-1","type":"bar","source":{"range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1},"orientation":"columns"},"position":{"x":16,"y":32},"size":{"width":640,"height":360},"title":"Revenue by region","legend":{"visible":true,"position":"bottom"},"categoryField":0,"valueFields":[1],"xAxis":{"title":"Region","scaleType":"linear"},"yAxis":{"title":"Revenue","scaleType":"linear"}}]}"##;
+        let mut package = Package::new();
+        let warnings = write(data, &mut package).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let read_part = |archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, path: &str| {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut archive.by_name(path).unwrap(), &mut text).unwrap();
+            text
+        };
+        let worksheet = read_part(&mut archive, "xl/worksheets/sheet1.xml");
+        let sheet_relationships = read_part(&mut archive, "xl/worksheets/_rels/sheet1.xml.rels");
+        let drawing = read_part(&mut archive, "xl/drawings/drawing1.xml");
+        let drawing_relationships = read_part(&mut archive, "xl/drawings/_rels/drawing1.xml.rels");
+        let chart = read_part(&mut archive, "xl/charts/chart1.xml");
+        let content_types = read_part(&mut archive, "[Content_Types].xml");
+
+        assert!(worksheet.contains("<drawing r:id=\"rIdDrawing\"/>"));
+        assert!(
+            sheet_relationships
+                .contains("relationships/drawing\" Target=\"../drawings/drawing1.xml\"")
+        );
+        assert!(drawing.contains("<xdr:absoluteAnchor><xdr:pos x=\"152400\" y=\"304800\"/>"));
+        assert!(drawing.contains("r:id=\"rIdChart1\""));
+        assert!(
+            drawing_relationships.contains("relationships/chart\" Target=\"../charts/chart1.xml\"")
+        );
+        assert!(chart.contains("<c:barChart>"));
+        assert!(chart.contains("<a:t>Revenue by region</a:t>"));
+        assert!(chart.contains("&apos;Q1 Sales&apos;!$B$1:$B$1"));
+        assert!(chart.contains("&apos;Q1 Sales&apos;!$A$2:$A$3"));
+        assert!(chart.contains("&apos;Q1 Sales&apos;!$B$2:$B$3"));
+        assert!(chart.contains("<c:v>North</c:v>"));
+        assert!(chart.contains("<c:v>20</c:v>"));
+        assert!(content_types.contains("/xl/drawings/drawing1.xml"));
+        assert!(content_types.contains("/xl/charts/chart1.xml"));
+    }
+
+    #[test]
+    fn rejects_chart_series_outside_source_and_unsupported_type() {
+        let base = r#"{"kind":"workbook","sheets":[{"id":"sheet-1","name":"Data","cells":{}}],"charts":[{"id":"chart-1","sheetId":"sheet-1","type":"bar","source":{"range":{"startRow":0,"startCol":0,"endRow":1,"endCol":1}},"position":{"x":0,"y":0},"size":{"width":300,"height":200},"categoryField":0,"valueFields":[4]}]}"#;
+        let mut package = Package::new();
+        assert!(write(base, &mut package).is_err());
+
+        let unsupported = base.replace("\"bar\"", "\"pie\"").replace("[4]", "[1]");
+        let mut package = Package::new();
+        let error = write(&unsupported, &mut package).unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED_EXPORT");
+    }
+
+    #[test]
+    fn writes_line_chart_with_row_oriented_source_and_log_axis() {
+        let workbook: WorkbookInput = serde_json::from_str(
+            r##"{"sheets":[{"id":"sheet-1","name":"Data","cells":{"A1":{"value":"Metric"},"B1":{"value":"Jan"},"C1":{"value":"Feb"},"A2":{"value":"Net"},"B2":{"value":5},"C2":{"value":8}}}],"charts":[{"id":"line-1","sheetId":"sheet-1","type":"line","source":{"range":{"startRow":0,"startCol":0,"endRow":1,"endCol":2},"orientation":"rows"},"position":{"x":0,"y":0},"size":{"width":320,"height":200},"legend":{"visible":false,"position":"right"},"categoryField":0,"valueFields":[1],"yAxis":{"scaleType":"log","logBase":2}}]}"##,
+        )
+        .unwrap();
+        let chart = chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0).unwrap();
+
+        assert!(chart.contains("<c:lineChart>"));
+        assert!(chart.contains("<c:grouping val=\"standard\"/>"));
+        assert!(chart.contains("<c:f>&apos;Data&apos;!$B$1:$C$1</c:f>"));
+        assert!(chart.contains("<c:f>&apos;Data&apos;!$B$2:$C$2</c:f>"));
+        assert!(chart.contains("<c:logBase val=\"2\"/>"));
+        assert!(!chart.contains("<c:legend>"));
     }
 
     #[test]
