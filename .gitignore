@@ -23,4 +23,4 @@ dist-ssr
 *.sln
 *.sw?
 
-/crates/office-parser/target
+/crates/**/target

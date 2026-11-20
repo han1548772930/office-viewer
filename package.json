@@ -1,27 +1,34 @@
 {
-  "name": "office-viewer",
+  "name": "office-viewer-workspace",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "check:types": "vue-tsc -b",
-    "build": "pnpm check:types && vite build",
+    "check:types": "pnpm --filter @office-studio/office-studio check:types && pnpm --filter @office-studio/workbench check:types",
+    "build": "pnpm --filter @office-studio/office-studio build && pnpm --filter @office-studio/workbench build",
     "build:wasm": "wasm-pack build crates/office-parser --target web --release --out-dir ../../public/wasm --out-name office_parser",
-    "dev": "vite",
-    "preview": "vite preview"
+    "build:compute": "wasm-pack build crates/office-compute --target web --release --out-dir ../../public/compute --out-name office_compute",
+    "build:writer": "wasm-pack build crates/office-writer --target web --release --out-dir ../../public/wasm-writer --out-name office_writer",
+    "test:compute": "node --experimental-strip-types --test packages/office-studio/tests/compute/*.test.mjs",
+    "test:parser": "node --experimental-strip-types --test packages/office-studio/tests/parser/*.test.mjs",
+    "test:api": "node --experimental-strip-types --test packages/office-studio/tests/document-facade.contract.test.mjs packages/office-studio/tests/office-api.contract.test.mjs",
+    "test:browser": "playwright test",
+    "dev": "pnpm --filter @office-studio/workbench dev",
+    "preview": "pnpm --filter @office-studio/workbench preview"
   },
   "dependencies": {
     "@antdv-next/icons": "^1.1.2",
     "antdv-next": "^1.8.2",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^4.1.0",
-    "vue": "^3.5.44",
-    "xlsx": "^0.18.5"
+    "vue": "^3.5.44"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^24.19.2",
     "@vitejs/plugin-vue": "^6.0.10",
     "@vue/tsconfig": "^0.9.1",
+    "@webgpu/types": "^0.1.74",
     "typescript": "~6.0.3",
     "vite": "^8.3.6",
     "vue-tsc": "^3.3.14"

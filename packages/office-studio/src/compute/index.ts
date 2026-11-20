@@ -1,0 +1,8 @@
+export { OfficeComputeClient } from './client.ts'
+export type { ComputeClientOptions, ComputeJob, ComputeWorkerPort, SubmitComputeOptions } from './client.ts'
+export { ComputeError } from './errors.ts'
+export { CELL_STATE, COMPUTE_LIMITS, COMPUTE_PROTOCOL_VERSION, FILTER_OPERATOR } from './protocol.ts'
+export type { AggregateTask, ComputeContext, ComputeErrorCode, ComputeMetrics, ComputeOutput, ComputeProgress, ComputeResult, ComputeTask, FilterTask, NumericColumn, NumericStatistics, SortTask } from './protocol.ts'
+export { packNumericColumn } from './adapters.ts'
+export type { NumericInputValue } from './adapters.ts'
+export { estimateTaskMemory } from './tasks.ts'

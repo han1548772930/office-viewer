@@ -8,6 +8,8 @@
 
 本文件是项目执行标准的补充。下面把“上游代码事实”和“本项目执行要求”分开记录。功能范围以[完整功能对齐清单](UNIVER_FEATURE_PARITY.md)为准，包含 Pro；不能把开源仓库的范围当成产品目标上限。没有公开源码的功能依据公开规格独立实现，不推测其内部源码。
 
+用户指定的渲染和计算路径为 Canvas / WebGPU 优先，以及大计算优先 Rust/WASM；具体约束以[渲染与计算标准](RENDERING_AND_COMPUTE_STANDARD.md)执行。此为本项目技术决策，不冒称上游 Univer 已使用 WebGPU。
+
 ## 1. 参考方法与版本控制
 
 1. 阅读对应 feature 的菜单 schema、menu factory、命令实现、model/service、controller、view 和现有测试，形成从入口到模型的调用链；不能看一个组件就宣称完成源码研究。
@@ -124,10 +126,11 @@ Pro 图表、透视表、切片器、打印等在本项目沿用同一模型、�
 
 `DocUIController` 注册 Footer、文档大纲、菜单、浮动工具和快捷键。[U33]
 
-- 左侧默认是按标题生成的文档大纲，不是固定页缩略图。标题使用稳定段落 ID，点击跳转，滚动同步高亮；无标题、标题删除/重命名/重排时同步更新。[U36]
+- 左侧导航采用按标题生成的文档大纲。上游默认在现代文档启用、传统文档关闭，并允许配置；本项目以可配置大纲对齐，不能误称上游所有文档默认都有大纲。标题使用稳定段落 ID，点击跳转，滚动同步高亮；无标题、标题删除/重命名/重排时同步更新。[U36]
 - 大纲支持停靠/浮动，在空间不足或宽表发生遮挡时调整；不能挤压纸张直至不可编辑。上游浮动边界及最大宽度由 DocSideMenu / SideMenu 处理。[U37] [U38]
 - 中央是文档布局视口：页尺寸、边距、节、页眉页脚、段落与文本运行影响排版；换行与分页来自布局，不由空行或固定文本长度伪造。
-- 用稳定坐标连接文本索引、布局结果、渲染和选择；字体度量变化、表格增高或图片加载后重新布局受影响范围。[U40]
+- 用稳定坐标连接文本索引、布局结果、渲染和选择；字体度量变化、表格增高或图片加载后重新布局受影响范围。[U46] [U47] [U48] [U49]
+- 页面外画布留白、页面物理几何、正文页边距分开建模。上游渲染控制器的页面外间距不能当成 Office 页边距；传统纸张设置与现代正文宽度设置分别处理。[U50] [U51]
 - 上游渲染和排版属于 engine-render，菜单/输入/交互属于 docs-ui。项目可独立实现渲染，但仍要分开文档模型、布局引擎、绘制与输入桥；整页 contenteditable 不能充当全部内核。
 - 传统分页和现代连续文档是不同 flavor，交互、页眉页脚、分节等能力按模式判断；默认以用户 Office 文档的分页工作台验收，公开的现代模式能力另列场景，不能混用语义。
 
@@ -136,9 +139,11 @@ Pro 图表、透视表、切片器、打印等在本项目沿用同一模型、�
 - 开始：字体/字号/字符格式/命名样式、段落对齐、列表与页眉页脚；插入：表格、分隔线、分隔符、符号等；视图：页面设置、缩放、全屏。新增功能按对应语义组注入。[U34]
 - schema 中 row/column/rowSpan 是 grid 变体数据；classic 仍使用紧凑单行工具区。
 - 格式应用于实际文本范围或段落范围，并从选区反映当前值；点击工具栏不丢失光标。
+- Docs 粘贴支持保留源格式、匹配目标格式、仅文本，以及最近一次粘贴后切换模式；纯文本处理表格、图片和链接的行为单独测试。
 - 文本范围、对象范围、表格、页眉页脚和正文使用不同上下文。插表/分节等检查合法位置和模式，不能无选区直接改全篇。[U35]
 - 上游开源插表在部分上下文受限，属于参考事实；增强表格仍是本项目交付目标，不能用此限制排除需求。
-- 页眉页脚支持正文与 header/footer segment 切换、节关联、页码字段和选中内容更新；页码不是手写静态数字。
+- 页眉页脚支持正文与 header/footer segment 切换、节关联、首页/奇偶页、距页边距离、页码/总页数/日期时间字段；仅在合法上下文显示专用分类，结束后回到有效正文分类。页码不是手写静态数字。[U53]
+- 复制、剪切、粘贴和删除分别判断有效内容及 Copy/Edit 等权限；不能把“有选区”当作所有菜单的唯一开关。[U35] [U52]
 - 段落、表格、图片、绘图、脚注等统一进入模型、命令、撤销和保存；表格不以 metadata.html 作为唯一数据源。
 - Footer 展示字数/统计、排版任务进度及 CountBar 的产品控件；未真正保存时不能固定显示“已保存”。[U39]
 - 文档布局 Worker 与应用装配分离，任务带模型版本，过期排版结果不能覆盖新输入。[U43]
@@ -197,6 +202,11 @@ UI stores 组合状态，不能倒置领域层依赖方向
 - duke-pages/rxls 的读取能力不意味着具备写出能力。XLSX/DOCX writer 是单独的服务/模块；纯文本、HTML、JSON 或改扩展名不满足 Office 导出。
 - 多人协作、跨设备版本和持久权限需要独立服务端。必要服务与协议留在本项目；本地解析/编辑不依赖服务端才能运行。
 - 浏览器能力、上游 parser 能力或模块尚未实现，只能形成开发缺口，不改变完整功能目标。
+- 公式与透视等计算各自只有一个权威引擎。Rust 和 TypeScript 的缓存可以服务渲染，但不能独立决定互相冲突的结果；异步计算结果带输入版本和应用版本。
+- 公式解析、依赖图、增量重算和结构变更后的引用调整属于计算/业务引擎，读取公式文本及缓存值不能算实现公式功能。[U54] [U55]
+- 筛选、排序、验证和条件格式拥有独立模型与服务。插删/移动/粘贴应通知各资源的范围变换处理器；不可只改变 DOM 顺序或永久写入条件底色。[U56] [U57] [U58] [U59]
+- 数字格式由原始值、locale 和日期系统决定，编辑后重新格式化；不能用 String(value) 覆盖全部格式。[U60]
+- “仓库有插件”“示例注册插件”“类型/Facade 可导入”“已连通实际服务”是不同状态。Docs 查找替换的范围、本地评论 datasource 的成功返回和 preset 的协作配置均需单独核实。[U61] [U62] [U63] [U64]
 
 ## 9. 实施和验收
 
@@ -306,3 +316,48 @@ UI stores 组合状态，不能倒置领域层依赖方向
 [U44]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/presets/src/preset.ts
 [U45]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/README.md
 
+## 11. 引擎与扩展的补充源码索引
+
+以下路径由并行审阅任务核对，用于补齐 UI 调用链背后的模型/引擎与服务事实。
+
+| 编号 | 源码文件 | 审阅重点 |
+| --- | --- | --- |
+| U46 | [packages/core/src/docs/data-model/document-data-model.ts][U46] | DocumentDataModel 与正文/页眉页脚结构 |
+| U47 | [packages/docs/src/services/doc-skeleton-manager.service.ts][U47] | 模型到布局发布 |
+| U48 | [packages/engine-render/src/components/docs/layout/doc-skeleton.ts][U48] | DocumentSkeleton 与文本位置/命中 |
+| U49 | [packages/docs-ui/src/services/selection/doc-selection-render.service.ts][U49] | 逻辑选择和 DOM 输入桥 |
+| U50 | [packages/docs-ui/src/services/doc-page-layout.service.ts][U50] | 页位置与视口几何 |
+| U51 | [packages/docs-ui/src/views/PageSettings.tsx][U51] | 现代/传统页面设置 |
+| U52 | [packages/docs-ui/src/menu/context-menu.ts][U52] | 复制/剪切/粘贴/表格上下文权限 |
+| U53 | [packages/docs-ui/src/menu/header-footer-ribbon.ts][U53] | 页眉页脚上下文分类 |
+| U54 | [packages/engine-formula/src/plugin.ts][U54] | 公式服务、语法/求值与依赖注册 |
+| U55 | [packages/sheets-formula/src/plugin.ts][U55] | 表格公式引用与结构更新 |
+| U56 | [packages/sheets-filter/src/plugin.ts][U56] | 筛选逻辑插件 |
+| U57 | [packages/sheets-sort/src/plugin.ts][U57] | 排序逻辑插件 |
+| U58 | [packages/sheets-data-validation/src/plugin.ts][U58] | 数据验证规则与服务 |
+| U59 | [packages/sheets-conditional-formatting/src/plugin.ts][U59] | 条件格式规则和计算 |
+| U60 | [packages/sheets-numfmt/src/plugin.ts][U60] | 数字格式命令与业务 |
+| U61 | [packages/docs-find-replace/README.md][U61] | 仓库存在与示例启用、查找范围的区别 |
+| U62 | [packages/thread-comment/src/services/tc-datasource.service.ts][U62] | 本地 datasource 与持久评论的边界 |
+| U63 | [presets/packages/preset-sheets-core/src/preset.ts][U63] | 核心模型、引擎和 Worker 配置 |
+| U64 | [docs/API_STABILITY.md][U64] | 类型、Facade 导入和插件注册的区别 |
+
+[U46]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/core/src/docs/data-model/document-data-model.ts
+[U47]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs/src/services/doc-skeleton-manager.service.ts
+[U48]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/engine-render/src/components/docs/layout/doc-skeleton.ts
+[U49]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/services/selection/doc-selection-render.service.ts
+[U50]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/services/doc-page-layout.service.ts
+[U51]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/views/PageSettings.tsx
+[U52]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/context-menu.ts
+[U53]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/header-footer-ribbon.ts
+[U54]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/engine-formula/src/plugin.ts
+[U55]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-formula/src/plugin.ts
+[U56]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-filter/src/plugin.ts
+[U57]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-sort/src/plugin.ts
+[U58]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-data-validation/src/plugin.ts
+[U59]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-conditional-formatting/src/plugin.ts
+[U60]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-numfmt/src/plugin.ts
+[U61]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-find-replace/README.md
+[U62]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/thread-comment/src/services/tc-datasource.service.ts
+[U63]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/presets/packages/preset-sheets-core/src/preset.ts
+[U64]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/docs/API_STABILITY.md

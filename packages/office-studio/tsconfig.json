@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.app.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "noEmit": false,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@office-studio/office-studio": ["./src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts", "tests/**/*.mjs"]
+}

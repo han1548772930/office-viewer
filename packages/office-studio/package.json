@@ -1,0 +1,27 @@
+{
+  "name": "@office-studio/office-studio",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": ["./dist/office-studio.css"],
+  "files": ["dist", "src", "README.md"],
+  "main": "./dist/office-studio.js",
+  "module": "./dist/office-studio.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/office-studio.js"
+    },
+    "./style.css": "./dist/office-studio.css"
+  },
+  "scripts": {
+    "check:types": "vue-tsc -p tsconfig.json --noEmit",
+    "build": "vue-tsc -p tsconfig.json --declaration --emitDeclarationOnly --outDir dist/types && vite build"
+  },
+  "peerDependencies": {
+    "antdv-next": ">=1.8.2",
+    "lucide-vue-next": ">=1.0.0",
+    "pinia": ">=4.1.0",
+    "vue": ">=3.5.0"
+  }
+}

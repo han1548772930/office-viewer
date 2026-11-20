@@ -1,0 +1,19 @@
+{
+  "name": "@office-studio/workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:types": "vue-tsc -p tsconfig.json --noEmit",
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@office-studio/office-studio": "workspace:*",
+    "antdv-next": "^1.8.2",
+    "lucide-vue-next": "^1.0.0",
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44"
+  }
+}

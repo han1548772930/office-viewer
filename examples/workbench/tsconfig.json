@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.app.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@office-studio/office-studio": ["../../packages/office-studio/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue"]
+}
