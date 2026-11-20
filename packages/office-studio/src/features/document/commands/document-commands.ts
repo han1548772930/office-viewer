@@ -51,11 +51,15 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
       return selection
     }
     case 'doc.command.set-block-type': {
-      selectedTargets(model, selection).forEach((target) => {
+      const targets = selectedTargets(model, selection)
+      const isList = command.type === 'bullet' || command.type === 'numbered'
+      const toggleOff = isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === command.type)
+      targets.forEach((target) => {
         const block = blockAtPoint(model, target)
         if (!block) return
-        block.type = block.type === command.type && ['bullet', 'numbered'].includes(command.type) ? 'paragraph' : command.type
-        block.level = command.level ?? 0
+        const wasList = block.type === 'bullet' || block.type === 'numbered'
+        block.type = toggleOff ? 'paragraph' : command.type
+        block.level = block.type === 'paragraph' ? 0 : command.level ?? (isList && wasList ? block.level : 0)
         if (command.type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: command.level === 1 ? 24 : command.level === 2 ? 18 : 14 }))
         if (command.type === 'paragraph') block.runs = block.runs.map((run) => ({ ...run, bold: false, fontSize: 11 }))
       })
@@ -82,11 +86,18 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
 }
 
 export function selectedTargets(model: DocumentModel, selection: DocumentSelection): TextTarget[] {
+  return targetsForSelection(model, selection, false)
+}
+
+function targetsForSelection(model: DocumentModel, selection: DocumentSelection, includeEndBoundary: boolean): TextTarget[] {
   const { start, end } = orderedSelection(model, selection)
   const targets = textTargets(model)
   const first = targets.findIndex((target) => sameTarget(target, start))
   const last = targets.findIndex((target) => sameTarget(target, end))
-  return targets.slice(first, last + 1)
+  if (first < 0 || last < first) return []
+  // Paragraph formatting uses a half-open range. A caret at offset zero still targets its own paragraph.
+  const excludesLast = !includeEndBoundary && last > first && end.offset === 0
+  return targets.slice(first, last + (excludesLast ? 0 : 1))
 }
 
 export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch): DocumentSelection {
@@ -96,7 +107,8 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (startTargetId === endTargetId) {
     transformContentControlsForBlockEdit(model, startTargetId, start.offset, end.offset, text.replace(/\r\n?/g, '\n').length)
   } else {
-    const targets = selectedTargets(model, selection)
+    // Replacing a paragraph break relocates the following paragraph, even at its offset zero.
+    const targets = targetsForSelection(model, selection, true)
     const affectedIds = new Set(targets.map((target) => target.cellBlockId ?? target.blockId))
     const affectedControl = model.contentControls?.find((control) => affectedIds.has(control.blockId))
     if (affectedControl) throw new RangeError(`A text edit cannot span content control paragraphs: ${affectedControl.id}`)
@@ -110,7 +122,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (!startBlock) return selection
 
   if (startContainer !== endContainer) {
-    const targets = selectedTargets(model, selection)
+    const targets = targetsForSelection(model, selection, true)
     targets.forEach((target, index) => {
       setTargetRuns(model, target, index === 0 ? [...before, createRun(text, inherited)] : index === targets.length - 1 ? after : [])
     })
@@ -170,6 +182,8 @@ function deleteContent(model: DocumentModel, selection: DocumentSelection, direc
 
 function formatText(model: DocumentModel, selection: DocumentSelection, patch: RunPatch): void {
   const { start, end } = orderedSelection(model, selection)
+  // Typing marks at a caret are session state; an empty range must not rewrite persistent run IDs.
+  if (sameTarget(start, end) && start.offset === end.offset) return
   selectedTargets(model, selection).forEach((target) => {
     const runs = runsForTarget(model, target)
     const from = sameTarget(target, start) ? start.offset : 0

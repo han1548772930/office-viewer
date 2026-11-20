@@ -53,10 +53,10 @@ function draw() {
   }
 }
 function resize() {
-  if (!active || !scroller.value || !surface) return
+  if (!active || !scroller.value) return
   const width = scroller.value.clientWidth, height = scroller.value.clientHeight
   viewport.value = { ...viewport.value, width, height, scrollLeft: scroller.value.scrollLeft, scrollTop: scroller.value.scrollTop }
-  surface.resize(width, height, window.devicePixelRatio || 1)
+  surface?.resize(width, height, window.devicePixelRatio || 1)
   queueRender()
 }
 function watchDevicePixelRatio() {
@@ -133,10 +133,16 @@ watch(() => props.sheet.id, () => {
 })
 onMounted(async () => {
   if (!canvasHost.value) return
+  // Layout and navigation must be ready while the GPU adapter/pipeline is
+  // still loading. Otherwise early name-box/keyboard navigation uses a 1px
+  // viewport and silently fails to scroll to the selected cell.
+  observer = new ResizeObserver(resize); observer.observe(root.value!); watchDevicePixelRatio(); window.addEventListener('resize', resize); window.visualViewport?.addEventListener('resize', resize); document.fonts?.addEventListener('loadingdone', queueRender); resize()
   try {
     const created = await createRenderSurface(canvasHost.value, { onBackendChange: (backend, reason) => emit('backend-change', backend, reason) })
     if (disposed) { created.dispose(); return }
-    surface = created; observer = new ResizeObserver(resize); observer.observe(root.value!); watchDevicePixelRatio(); window.addEventListener('resize', resize); window.visualViewport?.addEventListener('resize', resize); document.fonts?.addEventListener('loadingdone', queueRender); resize()
+    surface = created
+    if (active) resize()
+    else surface.resize(0, 0, window.devicePixelRatio || 1)
   } catch (reason) {
     surfaceError.value = reason instanceof Error ? reason.message : String(reason)
   }

@@ -7,6 +7,7 @@ const libraryStyles = fileURLToPath(new URL('../../packages/office-studio/src/st
 
 export default defineConfig({
   plugins: [vue()],
+  publicDir: fileURLToPath(new URL('../../public', import.meta.url)),
   resolve: {
     dedupe: ['vue', 'pinia'],
     alias: [

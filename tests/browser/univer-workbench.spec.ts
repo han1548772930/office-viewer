@@ -67,7 +67,7 @@ async function gotoCell(page: Page, address: string): Promise<void> {
 }
 
 async function switchWorkspace(page: Page, name: '表格' | '文档'): Promise<void> {
-  await page.getByRole('navigation', { name: '工作台', exact: true }).getByRole('button', { name, exact: true }).click()
+  await page.getByRole('navigation', { name: '工作台', exact: true }).getByRole('tab', { name, exact: true }).click()
   await expect(page.locator(name === '表格' ? '.excel-workbench' : '.document-workbench')).toBeVisible()
 }
 
@@ -90,6 +90,7 @@ test('Sheets uses classic Ribbon, a formula header, Canvas and one product foote
   await expectHeight(formula, 28)
   await expect.poll(async () => (await page.getByLabel('名称框', { exact: true }).boundingBox())?.width).toBe(100)
   await expectHeight(page.getByTestId('sheet-footer'), 36)
+  await expect(page.getByTestId('sheet-footer')).toBeInViewport()
   await expect(page.locator('.excel-workbench footer')).toHaveCount(1)
   await expect(page.locator('.app-footer')).toHaveCount(0)
   await expect(page.locator('canvas[data-render-surface="true"]')).toHaveCount(1)
@@ -97,6 +98,7 @@ test('Sheets uses classic Ribbon, a formula header, Canvas and one product foote
   const positions = await Promise.all([ribbon(page), formula, page.getByRole('grid', { name: '工作表画布' }), page.getByTestId('sheet-footer')].map((part) => part.boundingBox()))
   expect(positions.every(Boolean)).toBe(true)
   for (let index = 1; index < positions.length; index += 1) expect(positions[index]!.y).toBeGreaterThanOrEqual(positions[index - 1]!.y + positions[index - 1]!.height)
+  expect(positions.at(-1)!.y + positions.at(-1)!.height).toBeLessThanOrEqual(page.viewportSize()!.height)
   expect(errors).toEqual([])
 })
 
@@ -319,4 +321,61 @@ test('saving an edited document downloads a real DOCX with the edited text', asy
   expect(documentXml.replace(/<[^>]+>/g, '')).toContain('原生文件写出验证')
   expect(readOfficePart(bytes, '[Content_Types].xml')).toContain('wordprocessingml.document.main+xml')
   await expect.poll(async () => (await models(page)).document.modified).toBe(false)
+})
+
+test('the application file menu creates documents and the shared rename command is undoable', async ({ page }) => {
+  await page.getByRole('button', { name: '文件菜单', exact: true }).click()
+  await page.getByRole('menuitem', { name: '新建文档', exact: true }).click()
+  await expect(page.locator('.document-workbench')).toBeVisible()
+  await page.getByRole('button', { name: '重命名当前文件', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '重命名文件', exact: true })
+  const name = dialog.getByRole('textbox', { name: '文件名称', exact: true })
+  await name.fill('无效/名称')
+  await dialog.getByRole('button', { name: '确定', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  await name.fill('布局闭环文档.docx')
+  await name.press('Enter')
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('button', { name: '重命名当前文件', exact: true })).toHaveText('布局闭环文档.docx')
+  await expect.poll(async () => (await models(page)).document.name).toBe('布局闭环文档.docx')
+  await visibleRibbonButton(page, '撤销').click()
+  await expect.poll(async () => (await models(page)).document.name).toBe('未命名文档')
+  await visibleRibbonButton(page, '重做').click()
+  await expect.poll(async () => (await models(page)).document.name).toBe('布局闭环文档.docx')
+  await expect(page).toHaveTitle('布局闭环文档.docx · Office Studio')
+})
+
+test('header save commits a pending formula session to a genuine XLSX workbook', async ({ page }) => {
+  await gotoCell(page, 'B3')
+  await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('17')
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '保存 Office 文件', exact: true }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toMatch(/\.xlsx$/i)
+  const path = await download.path()
+  expect(path).not.toBeNull()
+  const bytes = await readFile(path!)
+  const worksheet = readOfficePart(bytes, 'xl/worksheets/sheet1.xml')
+  expect(worksheet).toMatch(/<c\b[^>]*r="B3"[^>]*>[\s\S]*?<v>17<\/v>/)
+  expect(readOfficePart(bytes, '[Content_Types].xml')).toContain('spreadsheetml.sheet.main+xml')
+  await expect.poll(() => cellValue(page, 'B3')).toBe(17)
+  await expect.poll(async () => (await models(page)).workbook.modified).toBe(false)
+})
+
+test('a failed Office import reports its error and retains the editable workbook', async ({ page }) => {
+  await gotoCell(page, 'D2')
+  await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('导入失败仍保留')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  const workbookId = (await models(page)).workbook.id
+  await page.getByLabel('选择 Office 文件', { exact: true }).setInputFiles({ name: 'empty.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.alloc(0) })
+  await expect(page.locator('.parser-error')).toBeVisible()
+  await expect(page.locator('.parser-error')).toContainText(/空|为空|解析|读取|损坏/)
+  await expect.poll(async () => (await models(page)).workbook.id).toBe(workbookId)
+  await expect.poll(() => cellValue(page, 'D2')).toBe('导入失败仍保留')
+  await page.getByRole('button', { name: '关闭错误提示', exact: true }).click()
+  await expect(page.locator('.parser-error')).toHaveCount(0)
+  await gotoCell(page, 'E2')
+  await page.getByRole('textbox', { name: '公式编辑', exact: true }).fill('仍可继续编辑')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  await expect.poll(() => cellValue(page, 'E2')).toBe('仍可继续编辑')
 })

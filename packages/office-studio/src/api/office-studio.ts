@@ -138,10 +138,12 @@ export class OfficeStudio {
   }
 
   getWorkbookModel(id: string): WorkbookModel | undefined {
+    if (this.disposed) return undefined
     return id === this._activeWorkbookId ? this.editor.workbook.model : this.workbooks.get(id)
   }
 
   getDocumentModel(id: string): DocumentModel | undefined {
+    if (this.disposed) return undefined
     return id === this._activeDocumentId ? this.editor.document.model : this.documents.get(id)
   }
 
@@ -171,7 +173,7 @@ export class OfficeStudio {
     this.assertAlive()
     const model = this.getWorkbookModel(id)
     if (!model) throw new Error(`Workbook not found: ${id}`)
-    if (this._activeWorkbookId !== id) this.workbooks.set(this._activeWorkbookId, this.editor.workbook.model)
+    if (this._activeWorkbookId !== id && this.workbooks.has(this._activeWorkbookId)) this.workbooks.set(this._activeWorkbookId, this.editor.workbook.model)
     this._activeWorkbookId = id
     this.workbooks.set(id, model)
     this.editor.workbook.replace({ ...model, modified: this.editor.history.isDirty(id) })
@@ -183,7 +185,7 @@ export class OfficeStudio {
     this.assertAlive()
     const model = this.getDocumentModel(id)
     if (!model) throw new Error(`Document not found: ${id}`)
-    if (this._activeDocumentId !== id) this.documents.set(this._activeDocumentId, this.editor.document.model)
+    if (this._activeDocumentId !== id && this.documents.has(this._activeDocumentId)) this.documents.set(this._activeDocumentId, this.editor.document.model)
     this._activeDocumentId = id
     this.documents.set(id, model)
     this.editor.document.replace({ ...model, modified: this.editor.history.isDirty(id) })

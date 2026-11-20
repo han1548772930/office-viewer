@@ -2,6 +2,7 @@ import type { DocumentLayout, LayoutRect } from './document-layout'
 import type { DocumentViewport } from '../rendering/document-scene'
 
 export interface DocumentViewportLocation {
+  reason?: 'scroll' | 'layout' | 'resize' | 'zoom' | 'selection'
   pageIndex: number | undefined
   firstVisibleBlockId?: string
   top: number

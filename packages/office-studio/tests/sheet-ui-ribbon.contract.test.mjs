@@ -5,7 +5,7 @@ import { ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribb
 
 const state = {
   canUndo: false, canRedo: true, hasSheet: true, canMerge: false, canUnmerge: false,
-  canDeleteRow: true, canDeleteColumn: true, chartAvailable: true,
+  canDeleteRow: true, canDeleteColumn: true, chartAvailable: true, canSort: true,
   fontFamily: 'Aptos', fontSize: 11, numberFormat: 'general', bold: false, italic: true, underline: false,
   wrap: false, align: 'center', gridlines: true, frozen: false, zoom: 100,
 }
@@ -16,7 +16,7 @@ function flatten(tabs) {
 
 test('the sheet Ribbon exposes only populated semantic categories and stable editor intents', () => {
   const tabs = visibleRibbonTabs(createSheetRibbon(state))
-  assert.deepEqual(tabs.map(tab => tab.title), ['开始', '插入', '公式', '视图'])
+  assert.deepEqual(tabs.map(tab => tab.title), ['开始', '插入', '公式', '数据', '视图'])
   assert.deepEqual(tabs[0].groups.map(group => group.title), ['历史', '剪贴板', '字体', '对齐', '数字', '编辑'])
   const items = flatten(tabs)
   assert.equal(new Set(items.map(item => item.id)).size, items.length)

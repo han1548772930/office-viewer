@@ -43,9 +43,10 @@ function onHeaderAction(action: WorkspaceHeaderAction): void {
 function onGlobalKeydown(event: KeyboardEvent): void {
   if (event.defaultPrevented || event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey)) return
   const key = event.key.toLowerCase()
+  const target = event.target
+  if (target instanceof HTMLElement && target.closest('[role="dialog"], .ant-modal')) return
   if (key === 'o') { event.preventDefault(); requestImport(); return }
   if (key === 's') { event.preventDefault(); requestExport(); return }
-  const target = event.target
   if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
   if (key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo() }
   else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); editor.redo() }

@@ -23,4 +23,4 @@
 @keyframes workspace-task-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .workspace-task-spinner { animation: none; } }
 @media (max-width: 850px) { .workspace-header { gap: 6px; } .workspace-header .file-context-status { display: none; } .workspace-header .file-context-name { max-width: 28vw; } }
-@media (max-width: 520px) { .workspace-header .brand { display: none; } .workspace-header .workspace-tab { min-width: 42px; padding-inline: 5px; gap: 4px; } .workspace-header .file-context { min-width: 0; } .workspace-header .file-context-name { max-width: 25vw; } }
+@media (max-width: 520px) { .workspace-header .brand { display: none; } .workspace-header .workspace-file-menu { padding-inline: 4px; } .workspace-header .workspace-tab { min-width: 42px; padding-inline: 5px; gap: 4px; } .workspace-header .file-context { min-width: 0; } .workspace-header .file-context-name { max-width: 25vw; } }

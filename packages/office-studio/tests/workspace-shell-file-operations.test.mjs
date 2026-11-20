@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createWorkspaceFileOperations } from '../../../examples/workbench/src/workspace-file-operations.ts'
+import { createWorkspaceFileOperations, workspaceFileNameError } from '../../../examples/workbench/src/workspace-file-operations.ts'
 
 function deferred() {
   let resolve
@@ -33,6 +33,13 @@ function fixture(overrides = {}) {
   }
   return { files: createWorkspaceFileOperations(services), calls, setCurrent: (value) => { current = { ...current, ...value } } }
 }
+
+test('file rename accepts Office names and rejects empty, reserved and unsafe download names', () => {
+  assert.equal(workspaceFileNameError('  季度预算 2026.xlsx  '), undefined)
+  assert.equal(workspaceFileNameError('项目说明（最终）.docx'), undefined)
+  assert.equal(workspaceFileNameError('a'.repeat(255)), undefined)
+  for (const name of ['', ' \t ', '.', '..', '...', 'a'.repeat(256), 'a/b', 'a\\b', 'a:b', 'a?b', 'a*b', 'a\nb', '<a>', 'a|b', 'a"b']) assert.ok(workspaceFileNameError(name), name)
+})
 
 test('save downloads the captured file and marks its exact savepoint after a document switch', async () => {
   const writer = deferred()

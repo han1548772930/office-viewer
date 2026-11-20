@@ -11,7 +11,7 @@ import {
   type WorkbookModel,
 } from '@office-studio/office-studio'
 import { studio, univerAPI } from './runtime'
-import { createWorkspaceFileOperations, type ExportTask, type FileAction, type NoticeType, type WorkspaceKind } from './workspace-file-operations'
+import { createWorkspaceFileOperations, workspaceFileNameError, type ExportTask, type FileAction, type NoticeType, type WorkspaceKind } from './workspace-file-operations'
 
 export function useWorkspaceController() {
   const editor = useEditorStore(studio.pinia)
@@ -90,8 +90,8 @@ export function useWorkspaceController() {
 
   function renameFile(): void {
     const name = renameValue.value.trim()
-    if (!name) { renameError.value = '文件名不能为空'; return }
-    if (name.length > 255 || /[\u0000-\u001f<>:"/\\|?*]/u.test(name)) { renameError.value = '文件名不能超过255个字符，且不能包含 <>:"/\\|?* 或控制字符'; return }
+    const error = workspaceFileNameError(name)
+    if (error) { renameError.value = error; return }
     try {
       const unit = renameTarget?.kind === 'workbook'
         ? univerAPI.getWorkbook(renameTarget.unitId)

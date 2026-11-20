@@ -15,6 +15,7 @@ import { createDocumentRibbon, documentCommandFromRibbon } from './document/docu
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
 import { executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
+import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
 
@@ -47,6 +48,7 @@ const isFocusMode = ref(false)
 const workbenchRef = ref<HTMLElement | null>(null)
 const workbenchWidth = ref(1440)
 const visibleBlockId = ref<string>()
+const outlineNavigationTarget = ref<string>()
 const outlineMode = computed(() => documentOutlinePlacement({ availableWidth: workbenchWidth.value, pageWidth: model.value.page.width, zoom: zoom.value }))
 const outlineItems = computed(() => buildDocumentOutline(model.value))
 const activeOutlineId = computed(() => activeOutlineIdForBlock(outlineItems.value, model.value, visibleBlockId.value ?? selection.value.focus.blockId))
@@ -117,6 +119,7 @@ function execute(command: DocumentCommand) {
     const next = cloneDocument(model.value)
     const nextCommand = command.id === 'doc.command.insert-text' ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
     selection.value = executeDocumentCommand(next, selection.value, nextCommand)
+    if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     publish(next)
     void nextTick(() => canvasRef.value?.focus())
   } catch (error) {
@@ -125,7 +128,8 @@ function execute(command: DocumentCommand) {
     void nextTick(() => canvasRef.value?.focus())
   }
 }
-function onSelection(value: DocumentSelection) { selection.value = value; visibleBlockId.value = value.focus.blockId; pendingMarks.value = {} }
+function onSelection(value: DocumentSelection) { selection.value = value; visibleBlockId.value = value.focus.blockId; if (outlineNavigationTarget.value !== value.focus.blockId) outlineNavigationTarget.value = undefined; pendingMarks.value = {} }
+function toggleFormat(field: 'bold' | 'italic' | 'underline') { execute({ id: 'doc.command.format-text', patch: { [field]: currentMarks.value[field] !== true } }) }
 function undo() { pendingMarks.value = {}; emit('undo'); void nextTick(() => canvasRef.value?.focus()) }
 function redo() { pendingMarks.value = {}; emit('redo'); void nextTick(() => canvasRef.value?.focus()) }
 function changePageSetup() {
@@ -143,7 +147,19 @@ function openImport() { fileInputRef.value?.click() }
 function onFileChange(event: Event) { const input = event.target as HTMLInputElement; if (input.files?.[0]) emit('import-file', input.files[0]); input.value = '' }
 function movePage(direction: -1 | 1) { setActivePage(Math.max(0, Math.min(pages.value.length - 1, activePageIndex.value + direction))) }
 function setActivePage(index: number) { activePageIndex.value = index; canvasRef.value?.scrollToPage(index) }
-function jumpToHeading(id: string) { const point = { blockId: id, offset: 0 }; onSelection(collapsedSelection(point)); canvasRef.value?.scrollToBlock(id); canvasRef.value?.focus() }
+function jumpToHeading(id: string) { const point = { blockId: id, offset: 0 }; outlineNavigationTarget.value = id; onSelection(collapsedSelection(point)); canvasRef.value?.scrollToBlock(id); canvasRef.value?.focus() }
+function onViewportChange(location: DocumentViewportLocation) {
+  const target = outlineNavigationTarget.value
+  if (target) {
+    const heading = layout.value.headings.find((candidate) => candidate.id === target)
+    // A short page may not scroll at all; keep the explicitly selected heading
+    // while it is visible, including the programmatic scroll emitted by navigation.
+    if (heading && heading.y >= location.top && heading.y < location.bottom) { visibleBlockId.value = target; return }
+    if (location.reason !== 'scroll') return
+    outlineNavigationTarget.value = undefined
+  }
+  visibleBlockId.value = location.firstVisibleBlockId
+}
 function navigateOutline(item: DocumentOutlineItem) { if (item.blockId) jumpToHeading(item.blockId); else setActivePage(0) }
 function insertTable() { modalKind.value = 'table'; modalError.value = ''; modalOpen.value = true }
 function insertImage() { modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
@@ -245,7 +261,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" @command="execute" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="visibleBlockId = $event.firstVisibleBlockId" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" @command="execute" @toggle-format="toggleFormat" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
     </main>
     <DocumentFooter :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>

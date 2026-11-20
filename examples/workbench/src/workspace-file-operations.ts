@@ -2,6 +2,14 @@ export type WorkspaceKind = 'workbook' | 'document'
 export type FileAction = 'save' | 'export'
 export type NoticeType = 'success' | 'error' | 'info'
 
+export function workspaceFileNameError(value: string): string | undefined {
+  const name = value.trim()
+  if (!name) return '文件名不能为空'
+  if (/^\.+$/u.test(name)) return '文件名不能只包含句点'
+  if (name.length > 255 || /[\u0000-\u001f<>:"/\\|?*]/u.test(name)) return '文件名不能超过255个字符，且不能包含 <>:"/\\|?* 或控制字符'
+  return undefined
+}
+
 export interface FileSavepoint {
   kind: WorkspaceKind
   unitId: string

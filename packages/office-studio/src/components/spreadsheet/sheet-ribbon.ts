@@ -1,4 +1,4 @@
-import { AlignCenter, AlignLeft, AlignRight, Bold, ClipboardPaste, Copy, FileChartColumn, Grid2X2, Italic, Merge, PaintBucket, Plus, Redo2, RefreshCw, Scissors, Search, Snowflake, Trash2, Type, Underline, Undo2, WrapText, ZoomIn, ZoomOut } from 'lucide-vue-next'
+import { AlignCenter, AlignLeft, AlignRight, ArrowDownAZ, ArrowUpAZ, Bold, CalendarDays, ClipboardPaste, Copy, FileChartColumn, Grid2X2, Italic, ListFilter, Merge, PaintBucket, Plus, Redo2, RefreshCw, Scissors, Search, Snowflake, Trash2, Type, Underline, Undo2, WrapText, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 
 export interface SheetRibbonState {
@@ -10,6 +10,7 @@ export interface SheetRibbonState {
   canDeleteRow: boolean
   canDeleteColumn: boolean
   chartAvailable: boolean
+  canSort: boolean
   fontFamily: string | null
   fontSize: number | null
   numberFormat: string | null
@@ -86,6 +87,20 @@ export function createSheetRibbon(state: SheetRibbonState): RibbonTab[] {
         ] },
         { id: 'objects', title: '对象', order: 10, items: [
           button('sheet.operation.insert-chart', '图表', { icon: FileChartColumn, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿' }),
+          button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: Grid2X2, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿' }),
+        ] },
+      ],
+    },
+    {
+      id: 'data', title: '数据', order: 30, groups: [
+        { id: 'sort', title: '排序', items: [
+          button('sheet.command.sort-ascending', '升序', { icon: ArrowDownAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围' }),
+          button('sheet.command.sort-descending', '降序', { icon: ArrowUpAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围' }),
+        ] },
+        { id: 'pivot', title: '数据分析', order: 10, items: [
+          button('sheet.operation.open-pivot', '数据透视表', { icon: Grid2X2, showLabel: true, disabled: !state.chartAvailable }),
+          button('sheet.operation.open-slicer', '切片器', { icon: ListFilter, showLabel: true, disabled: !state.chartAvailable }),
+          button('sheet.operation.open-timeline', '时间线', { icon: CalendarDays, showLabel: true, disabled: !state.chartAvailable }),
         ] },
       ],
     },

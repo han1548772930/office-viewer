@@ -6,7 +6,7 @@ import type { ExcelSheetView } from '../../services/excelViewAdapter'
 import { formatSelectionStatistic, selectSelectionStatistic, visibleSheetMenuEntries } from '../../features/sheet-workbench/sheet-workbench'
 import type { calculateSelectionStatistics, SelectionStatisticType } from '../../features/sheet-workbench/sheet-workbench'
 
-const props = defineProps<{ sheets: ExcelSheetView[]; activeSheetId: string; zoom: number; statistics: ReturnType<typeof calculateSelectionStatistics> }>()
+const props = defineProps<{ sheets: ExcelSheetView[]; activeSheetId: string; zoom: number; statistics: ReturnType<typeof calculateSelectionStatistics>; numberFormat?: string }>()
 const emit = defineEmits<{
   (event: 'activate', id: string): void
   (event: 'add'): void
@@ -21,8 +21,9 @@ const preferredStatistic = ref<SelectionStatisticType>('SUM')
 const visibleSheets = computed(() => props.sheets.filter(sheet => sheet.visible !== false))
 const menuEntries = computed(() => visibleSheetMenuEntries(props.sheets, props.activeSheetId))
 const statistic = computed(() => selectSelectionStatistic(props.statistics, preferredStatistic.value))
+function statisticCaption(item: NonNullable<typeof statistic.value>) { return formatSelectionStatistic(item, { numberFormat: props.numberFormat }) }
 const statisticsMenu = computed(() => ({
-  items: props.statistics.items.map(item => ({ key: item.id, label: formatSelectionStatistic(item) })),
+  items: props.statistics.items.map(item => ({ key: item.id, label: statisticCaption(item) })),
   selectedKeys: statistic.value ? [statistic.value.id] : [],
   onClick: ({ key }: { key: string | number }) => {
     const item = props.statistics.items.find(candidate => candidate.id === key)
@@ -110,7 +111,7 @@ onUnmounted(() => observer?.disconnect())
       </div>
     </div>
     <Dropdown v-if="statistic" :trigger="['click']" placement="topRight" :menu="statisticsMenu">
-      <Button class="selection-statistic" type="text" size="small" aria-label="选区统计" :title="formatSelectionStatistic(statistic)"><span class="statistic-caption">{{ formatSelectionStatistic(statistic) }}</span><span class="statistic-compact" aria-hidden="true">Σ</span><ChevronDown :size="12" /></Button>
+      <Button class="selection-statistic" type="text" size="small" aria-label="选区统计" :title="statisticCaption(statistic)"><span class="statistic-caption">{{ statisticCaption(statistic) }}</span><span class="statistic-compact" aria-hidden="true">Σ</span><ChevronDown :size="12" /></Button>
     </Dropdown>
     <Dropdown :trigger="['click']" placement="topRight" :menu="sheetMenu(activeSheetId)"><Button class="sheet-menu" type="text" size="small" aria-label="工作表操作"><MoreHorizontal :size="16" /></Button></Dropdown>
     <div class="sheet-zoom">

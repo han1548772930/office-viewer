@@ -229,10 +229,11 @@ function evaluateFunction(
   }
 
   const evaluated = args.map((argument) => evaluateNode(argument, sheet, resolve, workbook, byName))
-  for (const value of evaluated) if (isFormulaError(value)) return value
   if (name === 'SUM' || name === 'AVERAGE' || name === 'COUNT' || name === 'COUNTA' || name === 'MIN' || name === 'MAX') {
-    const values: RuntimeValue[] = []
-    for (const value of evaluated) {
+    if (args.length < 1 || args.length > 255) return formulaError('#VALUE!')
+    const values: FormulaValue[] = []
+    for (let index = 0; index < evaluated.length; index += 1) {
+      const value = evaluated[index]!
       if (isRangeValue(value)) {
         for (const cell of cellsInRange(value)) {
           const item = cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell)
@@ -241,15 +242,24 @@ function evaluateFunction(
             if (name === 'COUNT') continue
             return item
           }
-          if (name === 'COUNTA') { if (item !== null && item !== '') values.push(item) }
+          if (name === 'COUNTA') { if (item !== null) values.push(item) }
           else if (name === 'COUNT') { if (typeof item === 'number') values.push(item) }
           else if (typeof item === 'number') values.push(item)
         }
-      } else if (name === 'COUNTA') { if (value !== null && value !== '') values.push(value) }
-      else if (name === 'COUNT') { if (typeof value === 'number') values.push(value) }
+      } else if (isFormulaError(value)) {
+        if (name === 'COUNTA') values.push(value)
+        else if (name !== 'COUNT') return value
+      } else if (name === 'COUNTA') { if (value !== null) values.push(value) }
+      // A single cell reference has the same aggregation rules as a 1x1 range.
+      // Direct literals and scalar expressions keep their own coercion rules.
+      else if (args[index]!.kind === 'reference') { if (typeof value === 'number') values.push(value) }
+      else if (value === null) continue
       else {
-        const number = numericCoercion(value)
-        if (isFormulaError(number)) return number
+        const number = aggregateLiteralNumber(value, workbook)
+        if (isFormulaError(number)) {
+          if (name === 'COUNT') continue
+          return number
+        }
         values.push(number)
       }
     }
@@ -261,6 +271,7 @@ function evaluateFunction(
     if (!numbers.length) return 0
     return numbers.reduce((selected, value) => name === 'MIN' ? Math.min(selected, value) : Math.max(selected, value), numbers[0]!)
   }
+  for (const value of evaluated) if (isFormulaError(value)) return value
   if (name === 'AND' || name === 'OR') {
     if (evaluated.length === 0) return formulaError('#VALUE!')
     const booleans: boolean[] = []
@@ -378,6 +389,22 @@ function evaluateFunction(
   }
   if (name === 'NA' && args.length === 0) return formulaError('#N/A')
   return formulaError('#NAME?')
+}
+
+/** Aggregates coerce direct scalar text, while referenced text is ignored above. */
+function aggregateLiteralNumber(value: FormulaValue, workbook: WorkbookModel): number | FormulaErrorValue {
+  if (typeof value !== 'string') return numericCoercion(value)
+  const text = value.trim()
+  const date = parseDateText(text)
+  if (date) {
+    const serial = datePartsToSerial(date.year, date.month, date.day, workbook.date1904)
+    return typeof serial === 'number' ? serial : formulaError('#VALUE!')
+  }
+  // Decimal/scientific notation, conventional thousands groups and percentages.
+  // Locale-specific date/currency forms need the shared number-format parser.
+  if (!/^[+-]?(?:\d+\.?\d*|\d{1,3}(?:,\d{3})+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?%?$/i.test(text)) return formulaError('#VALUE!')
+  const number = Number(text.replaceAll(',', '').replace(/%$/, '')) / (text.endsWith('%') ? 100 : 1)
+  return Number.isFinite(number) ? number : formulaError('#NUM!')
 }
 
 function evaluateBinary(operator: string, left: FormulaValue, right: FormulaValue): FormulaValue {

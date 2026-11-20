@@ -12,6 +12,7 @@ import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrol
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
+  'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
   layout: [layout: DocumentLayout]
   'active-page': [page: number]
@@ -70,7 +71,7 @@ watch(() => props.zoom, (zoom) => {
     if (disposed || props.zoom !== zoom || !scrollRef.value) return
     scrollRef.value.scrollLeft = offset.left
     scrollRef.value.scrollTop = offset.top
-    onScroll()
+    syncViewport('zoom')
   })
 })
 
@@ -129,7 +130,7 @@ function resize() {
     surface.resize(width, height, dpr)
     lastSurfaceSize = { width, height, dpr }
   }
-  publishViewport()
+  publishViewport('resize')
   requestDraw()
 }
 
@@ -168,8 +169,8 @@ function relayout() {
     source.src = image.src
   }
   emit('layout', layout.value)
-  publishViewport()
-  void nextTick(() => { if (!disposed) onScroll() })
+  publishViewport('layout')
+  void nextTick(() => { if (!disposed) syncViewport('layout') })
   requestDraw()
 }
 
@@ -182,17 +183,21 @@ function requestDraw() {
 }
 
 function onScroll() {
+  syncViewport('scroll')
+}
+
+function syncViewport(reason: NonNullable<DocumentViewportLocation['reason']>) {
   if (!scrollRef.value) return
   viewport.value = { ...viewport.value, scrollLeft: scrollRef.value.scrollLeft, scrollTop: scrollRef.value.scrollTop }
-  publishViewport()
+  publishViewport(reason)
   requestDraw()
 }
 
-function publishViewport() {
+function publishViewport(reason: NonNullable<DocumentViewportLocation['reason']>) {
   if (!active || disposed) return
   const location = documentViewportLocation(layout.value, viewport.value)
   if (location.pageIndex != null) emit('active-page', location.pageIndex)
-  emit('viewport-change', location)
+  emit('viewport-change', { ...location, reason })
 }
 
 function pointFromEvent(event: PointerEvent | MouseEvent): DocumentPoint | undefined {
@@ -263,7 +268,7 @@ function ensureCaretVisible() {
   const offset = documentRectScrollOffset(layout.value, viewport.value, caret)
   if (element.scrollLeft !== offset.left) element.scrollLeft = offset.left
   if (element.scrollTop !== offset.top) element.scrollTop = offset.top
-  onScroll()
+  syncViewport('selection')
 }
 
 function beforeInput(event: InputEvent) {
@@ -370,7 +375,7 @@ function keydown(event: KeyboardEvent) {
   else if (command && ['b', 'i', 'u'].includes(key)) {
     event.preventDefault()
     const field = key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline'
-    emit('command', { id: 'doc.command.format-text', patch: { [field]: !marksAtPoint(props.model, props.selection.focus)[field] } })
+    emit('toggle-format', field)
   } else if (event.key === 'Enter') {
     event.preventDefault()
     emit('command', command ? { id: 'doc.command.insert-page-break' } : { id: 'doc.command.insert-text', text: event.shiftKey ? '\u2028' : '\n' })
