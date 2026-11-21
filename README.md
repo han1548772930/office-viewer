@@ -34,6 +34,7 @@ PowerShell 若禁止执行 `pnpm.ps1`，使用 `pnpm.cmd` 执行相同命令。�
 pnpm check:types
 pnpm test:unit
 pnpm test:components
+pnpm test:benchmark:smoke
 pnpm test:browser:features
 pnpm test:browser:toolbars
 pnpm test:browser

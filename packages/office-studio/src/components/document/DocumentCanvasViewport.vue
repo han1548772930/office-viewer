@@ -17,6 +17,7 @@ const emit = defineEmits<{
   'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
+  'context-menu': [payload: { x: number; y: number; point: DocumentPoint }]
   layout: [layout: DocumentLayout]
   'active-page': [page: number]
   'viewport-change': [location: DocumentViewportLocation]
@@ -249,6 +250,16 @@ function pointerDown(event: PointerEvent) {
   focus()
 }
 
+function contextMenu(event: MouseEvent) {
+  const point = pointFromEvent(event)
+  if (!point) return
+  event.preventDefault()
+  emit('update:selection', { anchor: { ...point }, focus: { ...point } })
+  emit('context-menu', { x: event.clientX, y: event.clientY, point })
+  caretVisible.value = true
+  requestDraw()
+}
+
 function pointerMove(event: PointerEvent) {
   if (pointerId !== event.pointerId || !dragAnchor) return
   const point = pointFromEvent(event)
@@ -458,7 +469,7 @@ defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => lay
 <template>
   <div class="document-canvas-viewport">
     <div ref="hostRef" class="document-surface" aria-hidden="true" />
-    <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick">
+    <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
     <textarea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />

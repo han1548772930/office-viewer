@@ -18,7 +18,7 @@ const invocations = ref([])
 window.contextFixture = { open, hit, invocations }
 createApp({ render() { return h('main', [
   h('button', { id: 'show', onClick: () => { open.value = true } }, 'Open menu'),
-  h(SheetContextMenu, { open: open.value, hit: hit.value, x: 48, y: 64, canDeleteRow: true, canDeleteColumn: true, frozen: false, 'onUpdate:open': value => { open.value = value }, onCommand: (id, params) => { invocations.value.push({ id, params }) } }),
+  h(SheetContextMenu, { open: open.value, hit: hit.value, sheetId: 'sheet-a', x: 48, y: 64, canDeleteRow: true, canDeleteColumn: true, frozen: false, hasHiddenRows: false, hasHiddenColumns: false, 'onUpdate:open': value => { open.value = value }, onCommand: (id, params) => { invocations.value.push({ id, params }) } }),
   h('output', { id: 'commands' }, JSON.stringify(invocations.value)),
 ]) } }).mount('#app')
 `
@@ -65,7 +65,7 @@ test('menu renders executable actions, supports keyboard navigation and closes a
   await page.getByRole('button', { name: 'Open menu' }).click()
   const menu = page.getByRole('menu', { name: '单元格上下文菜单' })
   await menu.waitFor()
-  assert.equal(await menu.getByRole('menuitem').count(), 17)
+  assert.equal(await menu.getByRole('menuitem').count(), 19)
   assert.equal(await menu.getByRole('menuitem', { name: '取消冻结' }).isDisabled(), true)
   await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')

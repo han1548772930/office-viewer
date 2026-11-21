@@ -40,6 +40,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 ## 3. Sheets 全量目标
 
+顶部 Ribbon 根入口、插件扩展、上下文菜单与 Microsoft Excel 补充候选项见[Docs 与 Sheets 顶部功能区对齐清单](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)及[Sheets 固定源码入口清点](feature-evidence/SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)。
+
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
 | SHEET-01 | 工作簿、工作表生命周期 | 公开源码 sheets、sheets-ui；[核心][sheet-core]、[API][sheet-api] | 新建/复制/删除/重命名/重排、颜色、隐藏/veryHidden、活动表、校验和可撤销事务 | 未验收 |
@@ -77,12 +79,14 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 ## 4. Docs 全量目标
 
+顶部 Ribbon 根入口、插件扩展、上下文菜单与 Microsoft Word 补充候选项见[Docs 与 Sheets 顶部功能区对齐清单](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。目录入口和闭环缺口见[DOC-04 目录证据](feature-evidence/DOC-04-table-of-contents.md)。
+
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
 | DOC-01 | 文档模型、运行与排版 | [核心][doc-core]、[API][doc-api]、公开源码 docs/engine-render | 文本运行/段落/节、样式/主题、页面尺寸边距、换行/自动分页、光标与布局映射；传统/现代 flavor 分开 | 未验收 |
 | DOC-02 | 字符和段落格式 | 核心 API、公开源码 docs-ui/menu | 字体/字号/颜色/高亮/上下标/字符样式、标题级别、对齐/缩进/行距/段前后、混合选区；格式与模型一致 | 未验收；[上下标实现切片](feature-evidence/DOC-02-vertical-align.md) |
 | DOC-03 | 分页、分栏、分节与页眉页脚 | 公开源码 header-footer、insert-break、布局引擎 | 连续/下一页/奇偶页等公开分节语义、节级布局、首页/奇偶页、与前节关联、页码与字段更新 | 未验收；[分节符切片证据](feature-evidence/DOC-03-section-breaks.md) |
-| DOC-04 | 左侧大纲、标题折叠和正文目录 | [目录规格][doc-toc]、公开源码 DocSideMenu/docs-toc/doc-heading-collapse | 大纲导航；现代标题折叠保留子状态、隐藏选区迁回可见标题、历史/保存/同步；正文目录支持整体/页码更新与删除 | 未验收 |
+| DOC-04 | 左侧大纲、标题折叠和正文目录 | [目录规格][doc-toc]、公开源码 DocSideMenu/docs-toc/doc-heading-collapse/docs-toc-ui | 大纲导航；现代标题折叠保留子状态、隐藏选区迁回可见标题、历史/保存/同步；正文目录支持整体/页码更新与删除 | 未验收；[正文目录源码对照与本地差异](feature-evidence/DOC-04-table-of-contents.md) |
 | DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收；[清单列表切片证据](feature-evidence/DOC-05-checklist.md) |
 | DOC-06 | 表格与增强表格（含 Pro 目标） | [表格规格][doc-table]、公开基础表格 | 行列/单元格模型、插删移动/尺寸、合并拆分、边框背景、文字对齐与整表对齐分别实现；上游整表对齐限传统模式，跨页/嵌套细项待核实并保留目标 | 未验收 |
 | DOC-07 | 图片和文字环绕 | [图片规格][doc-images]、公开源码 docs-drawing | 行内/环绕、锚点、偏移、尺寸/裁剪/旋转/层级、替换及 Office 关系；输入/分页随对象更新 | 未验收 |

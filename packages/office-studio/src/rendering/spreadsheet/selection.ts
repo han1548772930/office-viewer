@@ -1,7 +1,48 @@
-import type { GridRange } from './layout.ts'
+import type { GridRange, GridViewport, SpreadsheetGeometry } from './layout.ts'
+import type { RenderRect } from '../contracts.ts'
 
 export const SHEET_SELECTION_STROKE_WIDTH = 1
 export const SHEET_SELECTION_HANDLE_SIZE = 6
+const SHEET_SELECTION_HANDLE_HIT_SIZE = 14
+
+export function fillPreviewRange(
+  source: GridRange,
+  target: { row: number; column: number },
+): GridRange | undefined {
+  if (target.row >= source.startRow && target.row <= source.endRow
+      && target.column >= source.startColumn && target.column <= source.endColumn) return undefined
+  return {
+    startRow: Math.min(source.startRow, target.row),
+    endRow: Math.max(source.endRow, target.row),
+    startColumn: Math.min(source.startColumn, target.column),
+    endColumn: Math.max(source.endColumn, target.column),
+  }
+}
+
+export function selectionFillHandleHitRect(
+  geometry: SpreadsheetGeometry,
+  ranges: readonly GridRange[],
+  viewport: GridViewport,
+): RenderRect | undefined {
+  const range = ranges.at(-1)
+  if (!range) return undefined
+  const endpoint = geometry.cellRect(range.endRow, range.endColumn, viewport, false)
+  const size = SHEET_SELECTION_HANDLE_HIT_SIZE
+  return { x: endpoint.x + endpoint.width - size / 2, y: endpoint.y + endpoint.height - size / 2, width: size, height: size }
+}
+
+export function hitSelectionFillHandle(
+  geometry: SpreadsheetGeometry,
+  ranges: readonly GridRange[],
+  viewport: GridViewport,
+  x: number,
+  y: number,
+): GridRange | undefined {
+  const range = ranges.at(-1)
+  const rect = selectionFillHandleHitRect(geometry, ranges, viewport)
+  if (!range || !rect || x < rect.x || x >= rect.x + rect.width || y < rect.y || y >= rect.y + rect.height) return undefined
+  return range
+}
 
 export function containsCell(ranges: readonly GridRange[], row: number, column: number): boolean {
   return ranges.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)

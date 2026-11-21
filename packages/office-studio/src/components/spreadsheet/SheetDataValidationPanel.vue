@@ -6,7 +6,7 @@ import type { OfficeStudio } from '../../api/office-studio'
 import type { SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationType } from '../../domain/model'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
-const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string }>()
+const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
@@ -48,7 +48,7 @@ watch(() => [props.open, props.sourceRange, props.sheetId] as const, ([open]) =>
 function loadRule() {
   message.value = ''
   rule.value = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)?.getDataValidation(props.sourceRange) ?? null
-  type.value = rule.value?.type ?? 'whole'
+  type.value = rule.value?.type ?? props.initialType ?? 'whole'
   operator.value = rule.value?.operator ?? 'between'
   formula1.value = rule.value?.formula1 ?? '1'
   formula2.value = rule.value?.formula2 ?? '10'

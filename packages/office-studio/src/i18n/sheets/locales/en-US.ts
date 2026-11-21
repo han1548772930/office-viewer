@@ -1,4 +1,7 @@
 export const sheetsEnUS: Record<string, string> = {
+  'sheet.footer.copy-sheet': 'Copy Sheet', 'sheet.footer.tab-color': 'Tab Color', 'sheet.footer.no-color': 'No Color',
+  'sheet.footer.red': 'Red', 'sheet.footer.orange': 'Orange', 'sheet.footer.yellow': 'Yellow', 'sheet.footer.green': 'Green',
+  'sheet.footer.cyan': 'Cyan', 'sheet.footer.blue': 'Blue', 'sheet.footer.purple': 'Purple',
   'tabs.home': 'Start', 'tabs.insert': 'Insert', 'tabs.data': 'Data', 'tabs.formulas': 'Formulas', 'tabs.view': 'View',
   'groups.clipboard': 'Clipboard', 'groups.font': 'Font', 'groups.layout': 'Alignment', 'groups.number': 'Number', 'groups.tools': 'Editing',
   'groups.cells': 'Cells', 'groups.objects': 'Objects', 'groups.validation': 'Data Validation', 'groups.sort': 'Sort & Filter', 'groups.pivot': 'Analysis',
@@ -63,6 +66,10 @@ export const sheetsEnUS: Record<string, string> = {
   'sheet.context-menu.insert-row': 'Insert Row', 'sheet.context-menu.insert-column': 'Insert Column',
   'sheet.context-menu.insert-row-above': 'Insert Row Above', 'sheet.context-menu.insert-column-left': 'Insert Column Left',
   'sheet.context-menu.delete-row': 'Delete Row', 'sheet.context-menu.delete-column': 'Delete Column',
+  'sheet.context-menu.insert-row-below': 'Insert Row Below', 'sheet.context-menu.insert-column-right': 'Insert Column Right',
+  'sheet.context-menu.hide-row': 'Hide Row', 'sheet.context-menu.hide-column': 'Hide Column',
+  'sheet.context-menu.show-hidden-rows': 'Unhide Rows', 'sheet.context-menu.show-hidden-columns': 'Unhide Columns',
+  'sheet.context-menu.auto-fit-row': 'AutoFit Row Height', 'sheet.context-menu.auto-fit-column': 'AutoFit Column Width',
   'sparkline.title.insert': 'Insert Sparkline', 'sparkline.title.edit': 'Edit Sparkline', 'sparkline.type': 'Type',
   'sparkline.type.line': 'Line', 'sparkline.type.column': 'Column', 'sparkline.type.winloss': 'Win/Loss',
   'sparkline.source-range': 'Source Data Range', 'sparkline.target-range': 'Placement Range',

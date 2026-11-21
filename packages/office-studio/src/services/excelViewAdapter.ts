@@ -1,4 +1,4 @@
-import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SparklineSpec, SheetConditionalFormatRule } from '../domain/model.ts'
+import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
@@ -32,6 +32,7 @@ export interface ExcelCellView {
 export interface ExcelSheetView {
   id: string
   name: string
+  tabColor?: string
   cells: Record<string, ExcelCellView>
   rowCount: number
   columnCount: number
@@ -47,6 +48,7 @@ export interface ExcelSheetView {
   outlineHiddenColumns?: number[]
   /** Derived view visibility. This must never be written back as manually hidden rows. */
   filteredRows?: number[]
+  autoFilter?: SheetAutoFilter
   hiddenColumns?: number[]
   showGridlines?: boolean
   visible?: boolean
@@ -100,7 +102,7 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         columnCount = Math.max(columnCount, cell.col+1)
       }
       return {
-        id: sheet.id, name: sheet.name, cells, rowCount, columnCount,
+        id: sheet.id, name: sheet.name, tabColor: sheet.tabColor, cells, rowCount, columnCount,
         merges: sheet.mergedRanges.map((r) => cellKey(r.startRow,r.startCol)+':'+cellKey(r.endRow,r.endCol)),
         freeze: { rows: sheet.frozenRows, columns: sheet.frozenCols },
         columnWidths: { ...sheet.columnWidths }, rowHeights: { ...sheet.rowHeights },
@@ -109,6 +111,12 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         outlineHiddenRows: sheet.outline ? [...getCollapsedOutlineIndexes({ count: rowCount, groups: sheet.outline.groups.filter(group => group.axis === 'row') })] : [],
         outlineHiddenColumns: sheet.outline ? [...getCollapsedOutlineIndexes({ count: columnCount, groups: sheet.outline.groups.filter(group => group.axis === 'column') })] : [],
         filteredRows: [...(sheet.autoFilter?.filteredRows ?? [])],
+        autoFilter: sheet.autoFilter ? {
+          ...sheet.autoFilter,
+          range: { ...sheet.autoFilter.range },
+          columns: { ...sheet.autoFilter.columns },
+          filteredRows: [...sheet.autoFilter.filteredRows],
+        } : undefined,
         showGridlines: sheet.showGridlines, visible: sheet.visible,
         defaultColumnWidth: sheet.defaultColumnWidth, defaultRowHeight: sheet.defaultRowHeight,
         date1904: workbook.date1904,
@@ -120,7 +128,7 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
   }
 }
 function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
-  if (cell.formula) return cell.rawValue !== undefined ? cell.rawValue : original?.formula === cell.formula ? original.value : cell.cachedValue ?? null
+  if (cell.formula) return original?.formula === cell.formula ? original.value : cell.rawValue ?? cell.cachedValue ?? null
   if (original && cell.rawValue !== undefined && Object.is(cell.rawValue, original.value)
     && cell.value !== String(original.value ?? '') && cell.value !== original.display) {
     return parseEditedCellValue(cell.value)
@@ -175,7 +183,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         }
       }
       const next: WorkbookModel['sheets'][number] = {
-        ...original, id: source.id, name: source.name, cells, visible: source.visible ?? original?.visible ?? true,
+        ...original, id: source.id, name: source.name, tabColor: source.tabColor ?? original?.tabColor, cells, visible: source.visible ?? original?.visible ?? true,
         dataValidations: source.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })) ?? original?.dataValidations,
         conditionalFormats: source.conditionalFormats?.map(cloneConditionalFormatRule) ?? original?.conditionalFormats,
         rangeProtectionRules: source.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })) ?? original?.rangeProtectionRules,
@@ -193,6 +201,17 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
           const last = parseCellKey(end ?? start ?? '') ?? first
           return { startRow:first.row,startCol:first.col,endRow:last.row,endCol:last.col }
         }) ?? [],
+        autoFilter: source.autoFilter ? {
+          ...source.autoFilter,
+          range: { ...source.autoFilter.range },
+          columns: { ...source.autoFilter.columns },
+          filteredRows: [...source.autoFilter.filteredRows],
+        } : original?.autoFilter ? {
+          ...original.autoFilter,
+          range: { ...original.autoFilter.range },
+          columns: { ...original.autoFilter.columns },
+          filteredRows: [...original.autoFilter.filteredRows],
+        } : undefined,
       }
       if (next.autoFilter) {
         next.autoFilter = { ...next.autoFilter, columns: { ...next.autoFilter.columns }, filteredRows: [...next.autoFilter.filteredRows] }

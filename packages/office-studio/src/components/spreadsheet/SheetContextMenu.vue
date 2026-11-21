@@ -7,12 +7,15 @@ import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{
   hit: GridHit | null
+  sheetId: string
   x: number
   y: number
   open: boolean
   canDeleteRow: boolean
   canDeleteColumn: boolean
   frozen: boolean
+  hasHiddenRows: boolean
+  hasHiddenColumns: boolean
 }>()
 const emit = defineEmits<{
   'update:open': [value: boolean]

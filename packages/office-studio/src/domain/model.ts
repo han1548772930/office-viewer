@@ -320,6 +320,7 @@ export interface SpreadsheetSheet {
   id: string
   name: string
   visible: boolean
+  tabColor?: string
   cells: Record<string, SpreadsheetCell>
   mergedRanges: CellRange[]
   columnWidths: Record<number, number>
@@ -381,6 +382,27 @@ export interface DocumentParagraphStyle {
   lineHeight: number
   spaceBefore: number
   spaceAfter: number
+  indentStart?: number
+  indentEnd?: number
+  indentFirstLine?: number
+  hanging?: number
+  spacingRule?: 'auto' | 'atLeast' | 'exact'
+  wordWrap?: boolean
+  snapToGrid?: boolean
+}
+
+export interface DocumentSectionSetup {
+  width?: number
+  height?: number
+  orientation?: 'portrait' | 'landscape'
+  marginTop?: number
+  marginRight?: number
+  marginBottom?: number
+  marginLeft?: number
+  columnCount?: number
+  columnGap?: number
+  columnSeparator?: 'none' | 'line'
+  pageNumberStart?: number
 }
 
 export interface DocumentBlock {
@@ -391,7 +413,7 @@ export interface DocumentBlock {
   style: DocumentParagraphStyle
   metadata: Record<string, unknown>
   checklist?: { listId: string; checked: boolean }
-  sectionBreak?: { type: DocumentSectionBreakType }
+  sectionBreak?: { type: DocumentSectionBreakType; setup?: DocumentSectionSetup }
 }
 
 export type DocumentContentControlType =

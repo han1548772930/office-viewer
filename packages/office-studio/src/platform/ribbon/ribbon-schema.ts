@@ -17,6 +17,7 @@ export interface RibbonItem {
   width?: number
   showLabel?: boolean
   shortcut?: string
+  swatch?: string
   value?: string | number | null
   options?: RibbonOption[]
   placeholder?: string

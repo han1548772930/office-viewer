@@ -1,22 +1,26 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Button, Dropdown, Slider, Tooltip } from 'antdv-next'
 import { ChevronDown, ChevronLeft, ChevronRight, List, MoreHorizontal, Plus, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import type { ExcelSheetView } from '../../services/excelViewAdapter'
 import { formatSelectionStatistic, selectSelectionStatistic, visibleSheetMenuEntries } from '../../features/sheet-workbench/sheet-workbench'
 import type { calculateSelectionStatistics, SelectionStatisticType } from '../../features/sheet-workbench/sheet-workbench'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ sheets: ExcelSheetView[]; activeSheetId: string; zoom: number; statistics: ReturnType<typeof calculateSelectionStatistics>; numberFormat?: string }>()
 const emit = defineEmits<{
   (event: 'activate', id: string): void
   (event: 'add'): void
   (event: 'rename', id: string): void
+  (event: 'copy', id: string): void
+  (event: 'tab-color', id: string, color: string): void
   (event: 'delete', id: string): void
   (event: 'hide', id: string): void
   (event: 'show', id: string): void
   (event: 'update:zoom', value: number): void
 }>()
 const tabs = ref<HTMLElement | null>(null)
+const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const preferredStatistic = ref<SelectionStatisticType>('SUM')
 const visibleSheets = computed(() => props.sheets.filter(sheet => sheet.visible !== false))
 const menuEntries = computed(() => visibleSheetMenuEntries(props.sheets, props.activeSheetId))
@@ -44,11 +48,25 @@ function sheetMenu(id: string) {
   return {
     items: [
       { key: 'rename', label: '重命名' },
+      { key: 'copy', label: translate('sheet.footer.copy-sheet', '复制工作表') },
+      { key: 'tab-color', label: translate('sheet.footer.tab-color', '标签颜色'), children: [
+        { key: 'color-reset', label: translate('sheet.footer.no-color', '无颜色') },
+        { key: 'color:#c00000', label: translate('sheet.footer.red', '红色') },
+        { key: 'color:#ed7d31', label: translate('sheet.footer.orange', '橙色') },
+        { key: 'color:#ffc000', label: translate('sheet.footer.yellow', '黄色') },
+        { key: 'color:#70ad47', label: translate('sheet.footer.green', '绿色') },
+        { key: 'color:#00b0f0', label: translate('sheet.footer.cyan', '青色') },
+        { key: 'color:#4472c4', label: translate('sheet.footer.blue', '蓝色') },
+        { key: 'color:#7030a0', label: translate('sheet.footer.purple', '紫色') },
+      ] },
       { key: 'hide', label: '隐藏工作表', disabled: visibleSheets.value.length <= 1 },
       { key: 'delete', label: '删除工作表', danger: true, disabled: visibleSheets.value.length <= 1 },
     ],
     onClick: ({ key }: { key: string | number }) => {
       if (key === 'rename') emit('rename', id)
+      if (key === 'copy') emit('copy', id)
+      if (key === 'color-reset') emit('tab-color', id, '')
+      if (typeof key === 'string' && key.startsWith('color:#')) emit('tab-color', id, key.slice('color:'.length))
       if (key === 'hide' && visibleSheets.value.length > 1) emit('hide', id)
       if (key === 'delete' && visibleSheets.value.length > 1) emit('delete', id)
     },
@@ -102,7 +120,7 @@ onUnmounted(() => observer?.disconnect())
       <Dropdown :trigger="['click']" placement="topLeft" :menu="allSheetsMenu"><Button type="text" size="small" aria-label="所有工作表"><List :size="16" /></Button></Dropdown>
       <div ref="tabs" class="sheet-tabs" role="tablist" aria-label="工作表" @scroll="measureTabs">
         <Dropdown v-for="(sheet, index) in visibleSheets" :key="sheet.id" :trigger="['contextmenu']" placement="topLeft" :menu="sheetMenu(sheet.id)">
-          <Button class="sheet-tab" :class="{ active: activeSheetId === sheet.id }" type="text" html-type="button" role="tab" :aria-label="sheet.name" :aria-selected="activeSheetId === sheet.id" :tabindex="activeSheetId === sheet.id ? 0 : -1" :data-sheet-id="sheet.id" @click="emit('activate', sheet.id)" @dblclick="emit('rename', sheet.id)" @keydown="onTabKeydown($event, index)">{{ sheet.name }}</Button>
+          <Button class="sheet-tab" :class="{ active: activeSheetId === sheet.id }" :style="sheet.tabColor && activeSheetId !== sheet.id ? { borderBottomColor: sheet.tabColor } : undefined" type="text" html-type="button" role="tab" :aria-label="sheet.name" :aria-selected="activeSheetId === sheet.id" :tabindex="activeSheetId === sheet.id ? 0 : -1" :data-sheet-id="sheet.id" @click="emit('activate', sheet.id)" @dblclick="emit('rename', sheet.id)" @keydown="onTabKeydown($event, index)">{{ sheet.name }}</Button>
         </Dropdown>
       </div>
       <div v-if="canScrollLeft || canScrollRight" class="sheet-scroll-controls">

@@ -7,13 +7,15 @@ import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '.
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
-import { SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
+import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
+import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
 import SheetContextMenu from './SheetContextMenu.vue'
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[] }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; crosshairHighlight?: { enabled: boolean; color: string } }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
+  (event: 'fill-selection', source: GridRange, target: { row: number; column: number }, applyType?: SheetFillApplyType): void
   (event: 'select-header', hit: GridHit, pointer: PointerEvent): void
   (event: 'edit-cell', key: string): void
   (event: 'update:editValue', value: string): void
@@ -26,8 +28,9 @@ const emit = defineEmits<{
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<HTMLInputElement | null>(null)
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
+const fillPreview = ref<GridRange>()
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
-const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText, overlayCommands: props.overlayCommands }))
+const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, overlayCommands: props.overlayCommands, crosshairHighlight: props.crosshairHighlight }))
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
 const validationListId = computed(() => `sheet-validation-options-${props.sheet.id}`)
@@ -54,6 +57,7 @@ const sheetViews = new Map<string, { left: number; top: number }>()
 let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, active = true, dragging = false
 let dprQuery: MediaQueryList | undefined
 let resizeDrag: { axis: 'row' | 'column'; index: number; size: number; origin: number } | undefined
+let fillDrag: { source: GridRange; target?: { row: number; column: number } } | undefined
 let lastPointer: { x: number; y: number } | undefined
 function queueRender() { if (active && !disposed && !frame) frame = requestAnimationFrame(draw) }
 function draw() {
@@ -107,11 +111,16 @@ function restoreViewport() {
 function point(event: MouseEvent) { const rect = root.value!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top } }
 function onPointerDown(event: PointerEvent) {
   if ((event.target as HTMLElement).closest('input')) return
-  const position = point(event), hit = geometry.value.hitTest(position.x, position.y, viewport.value)
+  const position = point(event)
+  const fillRange = event.button === 0 && !props.editingKey ? hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y) : undefined
+  const hit: GridHit | undefined = fillRange ? { kind: 'fill-handle', range: fillRange } : geometry.value.hitTest(position.x, position.y, viewport.value)
   if (!hit) return
   if (event.button !== 0 && event.button !== 2) return
   event.preventDefault(); root.value?.focus({ preventScroll: true })
-  if (hit.kind === 'outline-toggle') {
+  if (hit.kind === 'fill-handle') {
+    fillDrag = { source: hit.range }
+    fillPreview.value = undefined
+  } else if (hit.kind === 'outline-toggle') {
     emit('context-command', 'sheet.operation.outline-toggle-group', { axis: hit.axis, groupId: hit.groupId })
   } else if (hit.kind === 'outline-level') {
     emit('context-command', 'sheet.operation.outline-set-level', { axis: hit.axis, level: hit.level })
@@ -126,13 +135,26 @@ function onPointerDown(event: PointerEvent) {
 function onPointerMove(event: PointerEvent) {
   const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
+  if (fillDrag && hit?.kind === 'cell') {
+    fillDrag.target = { row: hit.row, column: hit.column }
+    fillPreview.value = fillPreviewRange(fillDrag.source, fillDrag.target)
+    queueRender()
+  }
   if (dragging && hit?.kind === 'cell') { emit('extend-selection', hit.key); queueRender() }
-  if (root.value && !dragging) {
+  if (root.value && !dragging && !fillDrag) {
     const hover = geometry.value.hitTest(position.x, position.y, viewport.value)
-    root.value.style.cursor = hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
+    const fillHandle = !props.editingKey && hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y)
+    root.value.style.cursor = fillHandle ? 'crosshair' : hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
   }
 }
 function onPointerUp(event: PointerEvent) {
+  if (fillDrag && event.type !== 'pointercancel' && fillDrag.target) {
+    const { source, target } = fillDrag
+    const insideSource = target.row >= source.startRow && target.row <= source.endRow && target.column >= source.startColumn && target.column <= source.endColumn
+    if (!insideSource) emit('fill-selection', source, target)
+  }
+  fillDrag = undefined
+  fillPreview.value = undefined
   if (resizeDrag && event.type !== 'pointercancel') {
     const position = point(event), delta = ((resizeDrag.axis === 'column' ? position.x : position.y) - resizeDrag.origin) / viewport.value.zoom
     emit('resize-axis', resizeDrag.axis, resizeDrag.index, Math.max(resizeDrag.axis === 'column' ? 24 : 16, Math.round(resizeDrag.size + delta)))
@@ -141,7 +163,18 @@ function onPointerUp(event: PointerEvent) {
   dragging = false; lastPointer = undefined
   if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
 }
-function onDoubleClick(event: MouseEvent) { const p = point(event), hit = geometry.value.hitTest(p.x, p.y, viewport.value); if (hit?.kind === 'cell') emit('edit-cell', hit.key) }
+function onDoubleClick(event: MouseEvent) {
+  const p = point(event)
+  const source = hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, p.x, p.y)
+  if (source) {
+    const targetRow = detectSheetFillDownEndRow(source, props.sheet)
+    if (targetRow !== undefined) emit('fill-selection', source, { row: targetRow, column: source.endColumn }, 'SERIES')
+    return
+  }
+  const hit = geometry.value.hitTest(p.x, p.y, viewport.value)
+  if (hit?.kind === 'cell') emit('edit-cell', hit.key)
+}
+
 function onContextMenu(event: MouseEvent) {
   event.preventDefault()
   const bounds = root.value?.getBoundingClientRect()
@@ -192,7 +225,7 @@ onDeactivated(() => {
   sheetViews.set(props.sheet.id, { left: viewport.value.scrollLeft, top: viewport.value.scrollTop })
   active = false
   cancelAnimationFrame(frame); frame = 0
-  dragging = false; lastPointer = undefined; resizeDrag = undefined
+  dragging = false; fillDrag = undefined; fillPreview.value = undefined; lastPointer = undefined; resizeDrag = undefined
   surface?.resize(0, 0, window.devicePixelRatio || 1)
 })
 onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
@@ -210,11 +243,14 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
     <SheetContextMenu
       v-model:open="contextMenuOpen"
       :hit="contextMenuHit"
+      :sheet-id="sheet.id"
       :x="contextMenuPosition.x"
       :y="contextMenuPosition.y"
       :can-delete-row="sheet.rowCount > 1"
       :can-delete-column="sheet.columnCount > 1"
       :frozen="Boolean(sheet.freeze?.rows || sheet.freeze?.columns)"
+      :has-hidden-rows="Boolean(sheet.hiddenRows?.length)"
+      :has-hidden-columns="Boolean(sheet.hiddenColumns?.length)"
       @command="(commandId, params) => emit('context-command', commandId, params)"
     />
   </div>

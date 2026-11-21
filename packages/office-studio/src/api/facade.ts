@@ -945,6 +945,7 @@ export class FDocument {
 
   getId(): string { return this.id }
   getCurrentUserId(): string { return this.api.currentUserId }
+  getPermissionAdminUserId(): string { return this.api.permissionAdminUserId }
   getName(): string { return this.model().name }
   setName(name: string): this { this.api.executeCommandSync('doc.command.set-name', { unitId: this.id, name }); return this }
   save(): DocumentModel {

@@ -1,4 +1,7 @@
 export const sheetsZhCN: Record<string, string> = {
+  'sheet.footer.copy-sheet': '复制工作表', 'sheet.footer.tab-color': '标签颜色', 'sheet.footer.no-color': '无颜色',
+  'sheet.footer.red': '红色', 'sheet.footer.orange': '橙色', 'sheet.footer.yellow': '黄色', 'sheet.footer.green': '绿色',
+  'sheet.footer.cyan': '青色', 'sheet.footer.blue': '蓝色', 'sheet.footer.purple': '紫色',
   'tabs.home': '开始', 'tabs.insert': '插入', 'tabs.data': '数据', 'tabs.formulas': '公式', 'tabs.view': '视图',
   'groups.clipboard': '剪贴板', 'groups.font': '字体', 'groups.layout': '对齐方式', 'groups.number': '数字', 'groups.tools': '编辑',
   'groups.cells': '单元格', 'groups.objects': '对象', 'groups.validation': '数据验证', 'groups.sort': '排序和筛选', 'groups.pivot': '分析',
@@ -36,6 +39,10 @@ export const sheetsZhCN: Record<string, string> = {
   'sheet.context-menu.insert-row': '插入行', 'sheet.context-menu.insert-column': '插入列',
   'sheet.context-menu.insert-row-above': '在上方插入行', 'sheet.context-menu.insert-column-left': '在左侧插入列',
   'sheet.context-menu.delete-row': '删除行', 'sheet.context-menu.delete-column': '删除列',
+  'sheet.context-menu.insert-row-below': '在下方插入行', 'sheet.context-menu.insert-column-right': '在右侧插入列',
+  'sheet.context-menu.hide-row': '隐藏行', 'sheet.context-menu.hide-column': '隐藏列',
+  'sheet.context-menu.show-hidden-rows': '显示隐藏行', 'sheet.context-menu.show-hidden-columns': '显示隐藏列',
+  'sheet.context-menu.auto-fit-row': '自动调整行高', 'sheet.context-menu.auto-fit-column': '自动调整列宽',
   'validation.title': '数据验证', 'validation.edit-title': '编辑数据验证', 'validation.range': '应用区域', 'validation.range-aria': '数据验证应用区域',
   'validation.type': '验证类型', 'validation.condition': '条件', 'validation.options': '选项', 'validation.options-aria': '数据验证列表选项',
   'validation.rule-value': '规则值', 'validation.rule-value-aria': '数据验证规则值', 'validation.rule-placeholder': '数值、日期、时间、长度或公式',

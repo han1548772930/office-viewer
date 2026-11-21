@@ -1,0 +1,73 @@
+import type { OfficeLocale } from '../../office-i18n.ts'
+
+const en = {
+  'doc.context.menu-label': 'Document context menu', 'doc.context.layout-group': 'Layout', 'doc.context.table-group': 'Table',
+  'doc.context.paragraph-settings': 'Paragraph settings', 'doc.context.section-settings': 'Section settings',
+  'groups.doc-insert-edit': 'Editing',
+  'groups.doc-others': 'Other', 'groups.doc-insert-media': 'Media', 'groups.doc-insert-cell': 'Contents',
+  'groups.doc-insert-others': 'Other', 'groups.doc-view-visibility': 'Show', 'groups.doc-view-others': 'Other',
+  'doc.paragraph-settings.title': 'Paragraph settings', 'doc.paragraph-settings.alignment': 'Alignment',
+  'doc.paragraph-settings.align.left': 'Left', 'doc.paragraph-settings.align.center': 'Center', 'doc.paragraph-settings.align.right': 'Right', 'doc.paragraph-settings.align.justify': 'Justify',
+  'doc.paragraph-settings.indentation': 'Indentation', 'doc.paragraph-settings.left-indent': 'Left indent', 'doc.paragraph-settings.right-indent': 'Right indent',
+  'doc.paragraph-settings.first-line-indent': 'First-line indent', 'doc.paragraph-settings.hanging-indent': 'Hanging indent', 'doc.paragraph-settings.spacing': 'Spacing',
+  'doc.paragraph-settings.before': 'Before', 'doc.paragraph-settings.after': 'After', 'doc.paragraph-settings.line-rule': 'Line spacing rule',
+  'doc.paragraph-settings.spacing-rule.auto': 'Multiple', 'doc.paragraph-settings.spacing-rule.atLeast': 'At least', 'doc.paragraph-settings.spacing-rule.exact': 'Exactly',
+  'doc.paragraph-settings.line-spacing': 'Line spacing', 'doc.paragraph-settings.word-wrap': 'Wrap text', 'doc.paragraph-settings.snap-to-grid': 'Snap to document grid',
+  'doc.section-settings.title': 'Section settings', 'doc.section-settings.orientation': 'Orientation', 'doc.section-settings.orientation.portrait': 'Portrait',
+  'doc.section-settings.orientation.landscape': 'Landscape', 'doc.section-settings.page': 'Page size and margins', 'doc.section-settings.width': 'Width',
+  'doc.section-settings.height': 'Height', 'doc.section-settings.margin-top': 'Top margin', 'doc.section-settings.margin-right': 'Right margin',
+  'doc.section-settings.margin-bottom': 'Bottom margin', 'doc.section-settings.margin-left': 'Left margin', 'doc.section-settings.columns': 'Columns',
+  'doc.section-settings.column-count': 'Column count', 'doc.section-settings.column-gap': 'Column gap', 'doc.section-settings.separator': 'Separator',
+  'doc.section-settings.separator.none': 'None', 'doc.section-settings.separator.line': 'Line', 'doc.section-settings.page-number-start': 'Page number starts at',
+}
+
+const zh = {
+  'doc.context.menu-label': '文档上下文菜单', 'doc.context.layout-group': '布局', 'doc.context.table-group': '表格',
+  'doc.context.paragraph-settings': '段落设置', 'doc.context.section-settings': '分节设置',
+  'groups.doc-insert-edit': '编辑',
+  'groups.doc-others': '其他', 'groups.doc-insert-media': '媒体', 'groups.doc-insert-cell': '目录',
+  'groups.doc-insert-others': '其他', 'groups.doc-view-visibility': '显示选项', 'groups.doc-view-others': '其他',
+  'doc.paragraph-settings.title': '段落设置', 'doc.paragraph-settings.alignment': '对齐方式',
+  'doc.paragraph-settings.align.left': '左对齐', 'doc.paragraph-settings.align.center': '居中', 'doc.paragraph-settings.align.right': '右对齐', 'doc.paragraph-settings.align.justify': '两端对齐',
+  'doc.paragraph-settings.indentation': '缩进', 'doc.paragraph-settings.left-indent': '左缩进', 'doc.paragraph-settings.right-indent': '右缩进',
+  'doc.paragraph-settings.first-line-indent': '首行缩进', 'doc.paragraph-settings.hanging-indent': '悬挂缩进', 'doc.paragraph-settings.spacing': '间距',
+  'doc.paragraph-settings.before': '段前', 'doc.paragraph-settings.after': '段后', 'doc.paragraph-settings.line-rule': '行距规则',
+  'doc.paragraph-settings.spacing-rule.auto': '多倍', 'doc.paragraph-settings.spacing-rule.atLeast': '最小值', 'doc.paragraph-settings.spacing-rule.exact': '固定值',
+  'doc.paragraph-settings.line-spacing': '行距', 'doc.paragraph-settings.word-wrap': '自动换行', 'doc.paragraph-settings.snap-to-grid': '与文档网格对齐',
+  'doc.section-settings.title': '分节设置', 'doc.section-settings.orientation': '纸张方向', 'doc.section-settings.orientation.portrait': '纵向',
+  'doc.section-settings.orientation.landscape': '横向', 'doc.section-settings.page': '纸张尺寸和页边距', 'doc.section-settings.width': '宽度',
+  'doc.section-settings.height': '高度', 'doc.section-settings.margin-top': '上边距', 'doc.section-settings.margin-right': '右边距',
+  'doc.section-settings.margin-bottom': '下边距', 'doc.section-settings.margin-left': '左边距', 'doc.section-settings.columns': '分栏',
+  'doc.section-settings.column-count': '栏数', 'doc.section-settings.column-gap': '栏间距', 'doc.section-settings.separator': '分隔线',
+  'doc.section-settings.separator.none': '无', 'doc.section-settings.separator.line': '直线', 'doc.section-settings.page-number-start': '页码起始值',
+}
+
+const toolbarGroups: Record<OfficeLocale, Record<string, string>> = {
+  'ar-SA': { 'groups.doc-layout-extensions': 'Paragraph Tools', 'groups.doc-home-extensions': 'Other Tools', 'groups.doc-insert-extensions': 'More Insertions' },
+  'ca-ES': { 'groups.doc-layout-extensions': 'Eines de paràgraf', 'groups.doc-home-extensions': 'Altres eines', 'groups.doc-insert-extensions': 'Més insercions' },
+  'de-DE': { 'groups.doc-layout-extensions': 'Absatzwerkzeuge', 'groups.doc-home-extensions': 'Weitere Werkzeuge', 'groups.doc-insert-extensions': 'Weitere Einfügungen' },
+  'en-US': { 'groups.doc-layout-extensions': 'Paragraph Tools', 'groups.doc-home-extensions': 'Other Tools', 'groups.doc-insert-extensions': 'More Insertions' },
+  'es-ES': { 'groups.doc-layout-extensions': 'Herramientas de párrafo', 'groups.doc-home-extensions': 'Otras herramientas', 'groups.doc-insert-extensions': 'Más inserciones' },
+  'fa-IR': { 'groups.doc-layout-extensions': 'Paragraph Tools', 'groups.doc-home-extensions': 'Other Tools', 'groups.doc-insert-extensions': 'More Insertions' },
+  'fr-FR': { 'groups.doc-layout-extensions': 'Outils de paragraphe', 'groups.doc-home-extensions': 'Autres outils', 'groups.doc-insert-extensions': 'Autres insertions' },
+  'id-ID': { 'groups.doc-layout-extensions': 'Alat paragraf', 'groups.doc-home-extensions': 'Alat lainnya', 'groups.doc-insert-extensions': 'Sisipan lainnya' },
+  'it-IT': { 'groups.doc-layout-extensions': 'Strumenti paragrafo', 'groups.doc-home-extensions': 'Altri strumenti', 'groups.doc-insert-extensions': 'Altri inserimenti' },
+  'ja-JP': { 'groups.doc-layout-extensions': '段落ツール', 'groups.doc-home-extensions': 'その他のツール', 'groups.doc-insert-extensions': 'その他の挿入' },
+  'ko-KR': { 'groups.doc-layout-extensions': '단락 도구', 'groups.doc-home-extensions': '기타 도구', 'groups.doc-insert-extensions': '추가 삽입' },
+  'pl-PL': { 'groups.doc-layout-extensions': 'Narzędzia akapitu', 'groups.doc-home-extensions': 'Inne narzędzia', 'groups.doc-insert-extensions': 'Więcej wstawiania' },
+  'pt-BR': { 'groups.doc-layout-extensions': 'Ferramentas de parágrafo', 'groups.doc-home-extensions': 'Outras ferramentas', 'groups.doc-insert-extensions': 'Mais inserções' },
+  'ru-RU': { 'groups.doc-layout-extensions': 'Параметры абзаца', 'groups.doc-home-extensions': 'Другие инструменты', 'groups.doc-insert-extensions': 'Другие вставки' },
+  'sk-SK': { 'groups.doc-layout-extensions': 'Nástroje odseku', 'groups.doc-home-extensions': 'Ďalšie nástroje', 'groups.doc-insert-extensions': 'Ďalšie vloženia' },
+  'vi-VN': { 'groups.doc-layout-extensions': 'Công cụ đoạn văn', 'groups.doc-home-extensions': 'Công cụ khác', 'groups.doc-insert-extensions': 'Chèn thêm' },
+  'zh-CN': { 'groups.doc-layout-extensions': '段落工具', 'groups.doc-home-extensions': '其他工具', 'groups.doc-insert-extensions': '更多插入' },
+  'zh-HK': { 'groups.doc-layout-extensions': '段落工具', 'groups.doc-home-extensions': '其他工具', 'groups.doc-insert-extensions': '更多插入' },
+  'zh-TW': { 'groups.doc-layout-extensions': '段落工具', 'groups.doc-home-extensions': '其他工具', 'groups.doc-insert-extensions': '更多插入' },
+}
+
+export const documentSettingsLocaleMessages: Partial<Record<OfficeLocale, Record<string, string>>> = {
+  'ar-SA': { ...en, ...toolbarGroups['ar-SA'] }, 'ca-ES': { ...en, ...toolbarGroups['ca-ES'] }, 'de-DE': { ...en, ...toolbarGroups['de-DE'] }, 'en-US': { ...en, ...toolbarGroups['en-US'] },
+  'es-ES': { ...en, ...toolbarGroups['es-ES'] }, 'fa-IR': { ...en, ...toolbarGroups['fa-IR'] }, 'fr-FR': { ...en, ...toolbarGroups['fr-FR'] }, 'id-ID': { ...en, ...toolbarGroups['id-ID'] },
+  'it-IT': { ...en, ...toolbarGroups['it-IT'] }, 'ja-JP': { ...en, ...toolbarGroups['ja-JP'] }, 'ko-KR': { ...en, ...toolbarGroups['ko-KR'] }, 'pl-PL': { ...en, ...toolbarGroups['pl-PL'] },
+  'pt-BR': { ...en, ...toolbarGroups['pt-BR'] }, 'ru-RU': { ...en, ...toolbarGroups['ru-RU'] }, 'sk-SK': { ...en, ...toolbarGroups['sk-SK'] }, 'vi-VN': { ...en, ...toolbarGroups['vi-VN'] },
+  'zh-CN': { ...zh, ...toolbarGroups['zh-CN'] }, 'zh-HK': { ...zh, ...toolbarGroups['zh-HK'] }, 'zh-TW': { ...zh, ...toolbarGroups['zh-TW'] },
+}

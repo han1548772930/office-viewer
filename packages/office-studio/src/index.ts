@@ -40,6 +40,7 @@ export { FEventName, EventHub, type ApiEventMap, type ApiRange, type Disposable 
 export { type ApiCellData, type ApiCellValue } from './api/model-utils'
 
 export { default as DocumentWorkbench } from './components/DocumentWorkbench.vue'
+export { default as DocumentTableOfContentsDialog } from './components/document/DocumentTableOfContentsDialog.vue'
 export { default as ExcelWorkbench } from './components/ExcelWorkbench.vue'
 export type { ExcelCell, ExcelSheet, ExcelWorkbook } from './components/ExcelWorkbench.vue'
 

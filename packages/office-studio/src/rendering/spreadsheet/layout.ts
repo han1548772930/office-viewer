@@ -12,7 +12,7 @@ export type SpreadsheetRenderSheet = ExcelSheetView & {
 }
 export interface GridViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
 export interface GridRange { startRow: number; startColumn: number; endRow: number; endColumn: number }
-export type GridHit = { kind: 'cell'; row: number; column: number; key: string } | { kind: 'row'; row: number } | { kind: 'column'; column: number } | { kind: 'all' } | { kind: 'resize-row'; row: number; size: number } | { kind: 'resize-column'; column: number; size: number } | { kind: 'outline-toggle'; axis: 'row' | 'column'; groupId: string; collapsed: boolean } | { kind: 'outline-level'; axis: 'row' | 'column'; level: number }
+export type GridHit = { kind: 'cell'; row: number; column: number; key: string } | { kind: 'fill-handle'; range: GridRange } | { kind: 'row'; row: number } | { kind: 'column'; column: number } | { kind: 'all' } | { kind: 'resize-row'; row: number; size: number } | { kind: 'resize-column'; column: number; size: number } | { kind: 'outline-toggle'; axis: 'row' | 'column'; groupId: string; collapsed: boolean } | { kind: 'outline-level'; axis: 'row' | 'column'; level: number }
 export interface OutlineControlRect extends RenderRect { axis: 'row' | 'column'; groupId: string; collapsed: boolean }
 export const GRID_HEADER_WIDTH = 44
 export const GRID_HEADER_HEIGHT = 26

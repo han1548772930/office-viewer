@@ -1,7 +1,7 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
@@ -37,7 +37,7 @@ import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type Configur
 import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
-import { applySheetDataValidationRule, clearSheetDataValidationRanges, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { canEditProtectedRanges, removeSheetRangeProtectionRule, setSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import {
@@ -57,6 +57,8 @@ export interface OfficeStudioOptions {
   computeClient?: OfficeComputeClient
   numericIndexMinRows?: number
   currentUserId?: string
+  /** Local permission-rule manager. Defaults to currentUserId and is not server authorization. */
+  permissionAdminUserId?: string
 }
 
 export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
@@ -67,6 +69,7 @@ export class OfficeStudio {
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
   readonly currentUserId: string
+  readonly permissionAdminUserId: string
   private readonly workbooks = new Map<string, WorkbookModel>()
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
@@ -87,6 +90,7 @@ export class OfficeStudio {
     this._activeWorkbookId = workbook.id!
     this._activeDocumentId = document.id!
     this.currentUserId = options.currentUserId?.trim() || 'local-user'
+    this.permissionAdminUserId = options.permissionAdminUserId?.trim() || this.currentUserId
     this.workbooks.set(workbook.id!, workbook)
     this.workbookRevisions.set(workbook.id!, 0)
     this.ownsComputeClient = options.computeClient === undefined
@@ -321,13 +325,28 @@ export class OfficeStudio {
   }
 
   commitDocument(id: string, label: string, update: (draft: DocumentModel) => void): boolean {
+    return this.commitDocumentTransaction(id, label, update, false)
+  }
+
+  commitDocumentPermissionRules(id: string, rules: DocumentModel['permissionRules']): boolean {
+    if (this.currentUserId !== this.permissionAdminUserId) throw new Error('Only the document permission administrator can update permission rules')
+    return this.commitDocumentTransaction(id, 'Set document permission rules', (model) => {
+      const next = rules ?? []
+      validateDocumentPermissionRules(next)
+      model.permissionRules = next.map(rule => ({ ...rule, userIds: [...rule.userIds] }))
+    }, true)
+  }
+
+  private commitDocumentTransaction(id: string, label: string, update: (draft: DocumentModel) => void, permissionAdminCommand: boolean): boolean {
     this.assertAlive()
     const current = this.getDocumentModel(id)
     if (!current) throw new Error(`Document not found: ${id}`)
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
-    assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', permissionTargetsForChangedBlocks(before, after))
+    if (!permissionAdminCommand) {
+      assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', permissionTargetsForChangedBlocks(before, after))
+    }
     after.id = id
     if (JSON.stringify(before) === JSON.stringify(after)) return false
     after.modified = true
@@ -541,14 +560,25 @@ export class OfficeStudio {
       for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
       clearSheetDataValidationRanges(requireSheet(model, sheetId), ranges)
     }))
+    this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[]; types: SheetDataValidationType[] }, boolean>('sheet.command.clear-quick-data-validation', ({ unitId, sheetId, ranges, types }) => this.commitWorkbook(unitId, '清除快速数据验证', (model) => {
+      for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
+      clearSheetDataValidationTypes(requireSheet(model, sheetId), ranges, types)
+    }))
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Set auto-filter', (model) => {
       setAutoFilter(requireSheet(model, sheetId), range)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange }, boolean>('sheet.command.toggle-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Toggle auto-filter', (model) => {
+      const sheet = requireSheet(model, sheetId)
+      setAutoFilter(sheet, sheet.autoFilter ? null : range)
     }))
     this.registerCommand<{ unitId: string; sheetId: string; column: number; criteria: SheetFilterCriteria | null }, boolean>('sheet.command.set-filter-criteria', ({ unitId, sheetId, column, criteria }) => this.commitWorkbook(unitId, 'Filter worksheet rows', (model) => {
       setFilterCriteria(requireSheet(model, sheetId), column, criteria)
     }))
     this.registerCommand<{ unitId: string; sheetId: string; column?: number }, boolean>('sheet.command.clear-filter', ({ unitId, sheetId, column }) => this.commitWorkbook(unitId, 'Clear worksheet filter', (model) => {
       clearFilter(requireSheet(model, sheetId), column)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.reapply-filter', ({ unitId, sheetId }) => this.commitWorkbook(unitId, 'Reapply worksheet filter', (model) => {
+      refreshAutoFilter(requireSheet(model, sheetId))
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', ({ unitId, sheetId, range, criteria, options, order, expectedRevision }) => {
       if (expectedRevision !== undefined && this.getWorkbookRevision(unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
@@ -677,12 +707,7 @@ export class OfficeStudio {
     }))
     this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId)))
     this.registerCommand<{ unitId: string; name: string }, boolean>('doc.command.set-name', ({ unitId, name }) => this.commitDocument(unitId, 'Rename document', (model) => { model.name = name }))
-    this.registerCommand<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>('doc.command.set-document-permission-rules', ({ unitId, rules }) => this.commitDocument(unitId, 'Set document permission rules', (model) => {
-      assertDocumentPermission(model.permissionRules ?? [], { documentId: unitId, userId: this.currentUserId }, 'edit')
-      const next = rules ?? []
-      validateDocumentPermissionRules(next)
-      model.permissionRules = next.map(rule => ({ ...rule, userIds: [...rule.userIds] }))
-    }))
+    this.registerCommand<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>('doc.command.set-document-permission-rules', ({ unitId, rules }) => this.commitDocumentPermissionRules(unitId, rules))
     this.registerCommand<{ unitId: string; index: number; text: string }, boolean>('doc.command.insert-text', ({ unitId, index, text }) => this.commitDocumentWithRangePermission(unitId, 'Insert text', index, index, (model) => Object.assign(model, insertDocumentText(model, index, text))))
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocumentWithRangePermission(unitId, 'Edit text range', startOffset, endOffset, (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
     this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {

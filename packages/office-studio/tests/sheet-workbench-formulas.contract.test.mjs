@@ -50,6 +50,24 @@ test('formula dependency changes update caches and preserve source formulas', ()
   assert.equal(original.sheets[1].cells['0:0'].value, 8)
 })
 
+test('a stale formula view cache cannot overwrite the current domain cache during conversion', () => {
+  const source = workbook()
+  const original = applyExcelWorkbookView(createBlankWorkbook(), source)
+  original.sheets[0].cells['0:1'].value = 10
+  original.sheets[0].cells['0:1'].display = '10'
+  original.sheets[0].cells['0:2'].value = 20
+  original.sheets[0].cells['0:2'].display = '20'
+  source.sheets[0].cells.B1.rawValue = 2
+  source.sheets[1].cells.A1.value = '13'
+
+  const converted = applyExcelWorkbookView(original, source)
+  assert.equal(converted.sheets[0].cells['0:1'].value, 10)
+
+  const result = recalculateSheetViewFormulas(source, original)
+  assert.equal(result.workbook.sheets[0].cells.B1.rawValue, 15)
+  assert.equal(result.workbook.sheets[0].cells.C1.rawValue, 30)
+})
+
 test('standalone imported text remains text and does not become numeric because it looks numeric', () => {
   const source = workbook()
   source.sheets[0].cells.A1 = { value: '123', rawValue: '123' }

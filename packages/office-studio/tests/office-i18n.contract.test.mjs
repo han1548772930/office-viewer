@@ -8,6 +8,19 @@ import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts
 import { createDocumentRibbon } from '../src/components/document/document-ribbon.ts'
 import { localizeRibbon } from '../src/i18n/office-i18n.ts'
 
+test('document settings labels and the current Docs Ribbon groups come from the Docs locale catalog', () => {
+  const messages = createOfficeMessages()
+  assert.equal(messages['en-US']['doc.paragraph-settings.title'], 'Paragraph settings')
+  assert.equal(messages['en-US']['doc.section-settings.title'], 'Section settings')
+  assert.equal(messages['zh-CN']['doc.paragraph-settings.title'], '段落设置')
+  assert.equal(messages['zh-CN']['doc.section-settings.title'], '分节设置')
+  for (const locale of supportedOfficeLocales) {
+    for (const groupId of ['doc-others', 'doc-insert-media', 'doc-insert-cell', 'doc-insert-extensions', 'doc-view-visibility', 'doc-view-others']) {
+      assert.ok(messages[locale][`groups.${groupId}`], `${locale} missing groups.${groupId}`)
+    }
+  }
+})
+
 test('all fixed Univer locales have complete non-empty fallback catalogs', () => {
   const messages = createOfficeMessages()
   assert.deepEqual(supportedOfficeLocales, [
@@ -42,9 +55,9 @@ test('each supported locale translates every Ribbon and registered panel key', (
   const expected = supportedOfficeLocales.filter(locale => locale !== 'en-US')
   const identicalTerms = {
     'ca-ES': ['groups.font', 'items.sheet.command.set-font-family', 'items.sheet.operation.set-zoom', 'items.sheet.operation.open-function.category-3', 'options.sheet.command.set-number-format.general', 'options.sheet.command.set-number-format.text', 'options.sheet.command.set-calculation-mode.manual', 'items.doc-font-family', 'items.doc-emoji', 'items.doc-zoom', 'common.general', 'common.text', 'common.no', 'workspace.document', 'workspace.pending-document', 'workspace.severity-error', 'number-format.text', 'validation.type.decimal'],
-    'de-DE': ['items.sheet.operation.open-function.category-3', 'items.sheet.menu.text-rotation.0', 'options.sheet.command.set-number-format.text', 'items.doc-link', 'items.doc-symbol', 'items.doc-emoji', 'document.latex.inline', 'common.standard', 'common.text', 'number-format.text', 'page-settings.margin-top'],
+    'de-DE': ['items.sheet.operation.open-function.category-3', 'items.sheet.menu.text-rotation.0', 'options.sheet.command.set-number-format.text', 'items.doc-link', 'items.doc-symbol', 'items.doc-emoji', 'document.latex.inline', 'common.standard', 'common.text', 'number-format.text', 'page-settings.margin-top', 'colors.orange'],
     'es-ES': ['common.no'],
-    'fr-FR': ['options.sheet.command.set-number-format.date', 'items.doc-orientation', 'document.code-block.source', 'common.date', 'common.portrait', 'sparkline.minimum', 'number-format.date', 'validation.type.date', 'content-control.type.date'],
+    'fr-FR': ['options.sheet.command.set-number-format.date', 'items.doc-orientation', 'document.code-block.source', 'common.date', 'common.portrait', 'sparkline.minimum', 'number-format.date', 'validation.type.date', 'content-control.type.date', 'colors.orange'],
     'id-ID': ['tabs.data'],
     'it-IT': ['items.sheet.operation.set-zoom', 'items.doc-emoji', 'items.doc-zoom', 'common.no'],
     'pl-PL': ['items.doc-link', 'items.doc-symbol', 'items.doc-emoji'],
@@ -79,9 +92,9 @@ test('localized production Ribbons use a non-English catalog value for every vis
       for (const tab of localized) {
         assert.equal(tab.title, messages[locale][`tabs.${tab.id}`], `${locale} tab ${tab.id}`)
         for (const group of tab.groups) {
-          assert.equal(group.title, messages[locale][`groups.${group.id}`], `${locale} group ${group.id}`)
+          assert.equal(group.title, messages[locale][`doc.groups.${group.id}`] ?? messages[locale][`groups.${group.id}`], `${locale} group ${group.id}`)
           for (const item of group.items) {
-            assert.equal(item.title, messages[locale][`items.${item.id}`], `${locale} item ${item.id}`)
+            assert.equal(item.title, messages[locale][`doc.items.${item.id}`] ?? messages[locale][`items.${item.id}`], `${locale} item ${item.id}`)
             const original = source.find(candidate => candidate.id === tab.id)?.groups
               .find(candidate => candidate.id === group.id)?.items.find(candidate => candidate.id === item.id)
             for (const [index, option] of (item.options ?? []).entries()) {

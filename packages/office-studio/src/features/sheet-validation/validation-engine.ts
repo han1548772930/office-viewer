@@ -60,7 +60,7 @@ export function createSheetDataValidationRule(
   if (!DATA_VALIDATION_TYPES.includes(draft.type)) throw new TypeError('数据验证类型无效。')
   if (!ranges.length || ranges.some(range => !isValidRange(range))) throw new RangeError('请选择有效的数据验证区域。')
   if (draft.operator !== undefined && !DATA_VALIDATION_OPERATORS.includes(draft.operator)) throw new TypeError('数据验证条件无效。')
-  if (requiresFormula1(draft.type) && !draft.formula1?.trim()) throw new TypeError('此数据验证类型需要规则值。')
+  if (requiresFormula1(draft.type, draft.operator) && !draft.formula1?.trim()) throw new TypeError('此数据验证类型需要规则值。')
   if (requiresFormula2(draft.operator) && !draft.formula2?.trim()) throw new TypeError('此比较条件需要第二个规则值。')
   return {
     ...draft,
@@ -91,7 +91,25 @@ export function applySheetDataValidationRule(sheet: SpreadsheetSheet, rule: Shee
 }
 
 export function clearSheetDataValidationRanges(sheet: SpreadsheetSheet, ranges: readonly CellRange[]): void {
+  clearSheetDataValidation(sheet, ranges)
+}
+
+export function clearSheetDataValidationTypes(
+  sheet: SpreadsheetSheet,
+  ranges: readonly CellRange[],
+  types: readonly SheetDataValidationType[],
+): void {
+  if (types.length === 0) throw new RangeError('请选择要清除的数据验证类型。')
+  clearSheetDataValidation(sheet, ranges, new Set(types))
+}
+
+function clearSheetDataValidation(
+  sheet: SpreadsheetSheet,
+  ranges: readonly CellRange[],
+  types?: ReadonlySet<SheetDataValidationType>,
+): void {
   sheet.dataValidations = (sheet.dataValidations ?? []).flatMap(rule => {
+    if (types && !types.has(rule.type)) return [rule]
     const remaining = rule.ranges.flatMap(range => subtractRanges(range, ranges))
     return remaining.length ? [{ ...rule, ranges: remaining }] : []
   })
@@ -162,6 +180,7 @@ function isValidValue(
   if (isFormulaError(actual)) return false
 
   if (rule.type === 'checkbox') return typeof actual === 'boolean' || String(actual).toUpperCase() === 'TRUE' || String(actual).toUpperCase() === 'FALSE'
+  if (rule.type === 'date' && !rule.operator && !rule.formula1?.trim()) return parseTimelineDate(actual, workbook.date1904) !== undefined
   if (rule.type === 'list' || rule.type === 'listMultiple') {
     const options = sheetDataValidationOptions(rule, workbook, sheet.id).map(normalizeListValue)
     if (!options.length) return false
@@ -250,7 +269,9 @@ function isValidRange(range: CellRange): boolean {
   return Number.isInteger(range.startRow) && Number.isInteger(range.startCol) && Number.isInteger(range.endRow) && Number.isInteger(range.endCol)
     && range.startRow >= 0 && range.startCol >= 0 && range.endRow >= range.startRow && range.endCol >= range.startCol
 }
-function requiresFormula1(type: SheetDataValidationType): boolean { return type !== 'checkbox' }
+function requiresFormula1(type: SheetDataValidationType, operator?: SheetDataValidationOperator): boolean {
+  return type !== 'checkbox' && !(type === 'date' && operator === undefined)
+}
 function requiresFormula2(operator?: SheetDataValidationOperator): boolean { return operator === 'between' || operator === 'notBetween' }
 function contains(range: CellRange, row: number, column: number): boolean {
   return row >= range.startRow && row <= range.endRow && column >= range.startCol && column <= range.endCol

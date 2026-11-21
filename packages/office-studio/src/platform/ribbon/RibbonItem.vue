@@ -90,14 +90,15 @@ watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unav
             <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
           </Button>
           <template #content>
-            <div :id="popupId" ref="panel" class="ribbon-command-menu" role="menu" :aria-label="item.title" @keydown="onPanelKeydown">
+            <div :id="popupId" ref="panel" class="ribbon-command-menu" :class="{ 'ribbon-table-menu': item.id === 'doc-table' }" role="menu" :aria-label="item.title" @keydown="onPanelKeydown">
               <RibbonItem v-for="child in children" :key="child.id" :item="child" overflow @execute="forward" />
             </div>
           </template>
         </Popover>
       </span>
       <Button v-else type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
-        <component :is="item.icon" v-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span><span v-if="overflow && item.shortcut" class="ribbon-shortcut">{{ item.shortcut }}</span>
+        <span v-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" />
+        <component :is="item.icon" v-else-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span><span v-if="overflow && item.shortcut" class="ribbon-shortcut">{{ item.shortcut }}</span>
       </Button>
     </Tooltip>
   </span>
@@ -116,6 +117,7 @@ watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unav
 .workbench-ribbon-item:not(.has-icon) .ribbon-button { padding-inline: 8px; }
 .is-selector .ribbon-button { height: var(--ribbon-selector-height); }
 .ribbon-button :deep(svg) { flex-shrink: 0; }
+.ribbon-color-swatch { display: inline-block; width: 14px; height: 14px; flex: 0 0 14px; border: 1px solid #aeb7c2; border-radius: 2px; }
 .ribbon-button.is-active { background: #e7edfa; color: #315bc2; }
 .ribbon-button:focus-visible { outline: 2px solid #5274d7; outline-offset: -2px; }
 .ribbon-select-wrap { display: flex; align-items: center; gap: 12px; }
@@ -127,6 +129,7 @@ watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unav
 .ribbon-split .ribbon-button:not(.ribbon-split-arrow) { min-width: var(--ribbon-selector-height); padding-inline: 4px; }
 .ribbon-dropdown .ribbon-split-arrow { min-width: 24px; width: 24px; padding: 0; border-inline-start: 1px solid #e2e8f0; border-start-start-radius: 0; border-end-start-radius: 0; }
 .ribbon-command-menu { display: flex; min-width: 180px; max-height: min(460px, 65vh); flex-direction: column; gap: 3px; overflow: auto; }
+.ribbon-table-menu { display: grid; width: min(420px, calc(100vw - 32px)); min-width: 260px; grid-template-columns: repeat(10, minmax(0, 1fr)); }
 .is-overflow { width: 100%; min-width: 0; height: auto; min-height: 30px; }
 .workbench-ribbon-item.is-grid.is-overflow { height: auto; min-height: 30px; }
 .is-overflow > :deep(span), .is-overflow .ribbon-dropdown, .is-overflow .ribbon-select-wrap { width: 100%; }

@@ -2,7 +2,7 @@ import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
 import { translateFormulaReferences } from '../formula/formula-references.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
 
-export type SheetPasteMode = 'all' | 'values' | 'formats' | 'columnWidths' | 'exceptBorders'
+export type SheetPasteMode = 'all' | 'values' | 'formulas' | 'formats' | 'columnWidths' | 'exceptBorders'
 
 export interface SheetPasteCellPatch {
   rowOffset: number
@@ -60,6 +60,7 @@ export function createSheetPastePlan(request: SheetPasteRequest): SheetPastePlan
     const targetRow = request.targetCells[rowOffset] ?? []
     for (let columnOffset = 0; columnOffset < sourceRow.length; columnOffset += 1) {
       const source = sourceRow[columnOffset]
+      if (mode === 'formulas' && !source?.formula) continue
       const target = targetRow[columnOffset] ?? { value: '' }
       cellPatches.push({
         rowOffset,
@@ -78,6 +79,17 @@ function pasteCell(
   rowDelta: number,
   columnDelta: number,
 ): ExcelCellView {
+  if (mode === 'formulas') {
+    if (!source?.formula) return target
+    return {
+      ...target,
+      value: '',
+      formula: translateFormulaReferences(source.formula, rowDelta, columnDelta),
+      cachedValue: undefined,
+      rawValue: undefined,
+      displayValue: undefined,
+    }
+  }
   if (mode === 'values') return pasteValue(source, target)
   if (mode === 'formats') return pasteFormat(source, target)
   const copied = source ? cloneCell(source) : clearSheetCellFormat({ value: '' })

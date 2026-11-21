@@ -48,14 +48,13 @@ export function executeDocumentTableCommand(model: DocumentModel, selection: Doc
   const block = model.blocks.find((candidate) => candidate.id === context.blockId)!
   const table = tableForBlock(block)!
   if (command.id === 'doc.command.table-delete') return deleteTable(model, block, table)
-  if (context.hasMergedCells) throw new RangeError('此表格含合并单元格，行列结构编辑尚未支持该组合，原表格已保留')
-  if (!context.columnCount || table.rows.some((row) => row.cells.length !== context.columnCount)) throw new RangeError('表格行列网格不规则，无法安全调整结构，原表格已保留')
+  const grid = validateTableGrid(table, context.columnCount)
 
   switch (command.id) {
     case 'doc.command.table-insert-row': {
       const index = command.position === 'before' ? context.startRow : context.endRow + 1
       const template = table.rows[command.position === 'before' ? context.startRow : context.endRow]!
-      const row = { ...template, id: documentId('row'), cells: template.cells.map(emptyCellFrom) }
+      const row = { ...template, id: documentId('row'), cells: template.cells.map((cell) => emptyCellFrom(cell, cell.colSpan)) }
       table.rows.splice(index, 0, row)
       if (index < (table.headerRowCount ?? 0)) table.headerRowCount = (table.headerRowCount ?? 0) + 1
       delete block.metadata.html
@@ -65,7 +64,13 @@ export function executeDocumentTableCommand(model: DocumentModel, selection: Doc
       const index = command.position === 'before' ? context.startColumn : context.endColumn + 1
       const templateIndex = command.position === 'before' ? context.startColumn : context.endColumn
       for (const row of table.rows) row.cells.splice(index, 0, emptyCellFrom(row.cells[templateIndex]!))
-      if (table.columnWidths?.length === context.columnCount) table.columnWidths.splice(index, 0, table.columnWidths[templateIndex]!)
+      if (table.columnWidths?.length === grid.columnCount) {
+        const widthIndex = grid.columnOffsets[index]!
+        const widthSourceIndex = command.position === 'before'
+          ? grid.columnOffsets[templateIndex]!
+          : grid.columnOffsets[templateIndex + 1]! - 1
+        table.columnWidths.splice(widthIndex, 0, table.columnWidths[widthSourceIndex]!)
+      }
       delete block.metadata.html
       return cellSelection(block.id, table, context.startRow, index)
     }
@@ -86,18 +91,47 @@ export function executeDocumentTableCommand(model: DocumentModel, selection: Doc
       removeAnchoredControls(model, removing)
       const count = context.endColumn - context.startColumn + 1
       for (const row of table.rows) row.cells.splice(context.startColumn, count)
-      if (table.columnWidths?.length === context.columnCount) table.columnWidths.splice(context.startColumn, count)
+      if (table.columnWidths?.length === grid.columnCount) {
+        const widthStart = grid.columnOffsets[context.startColumn]!
+        const widthEnd = grid.columnOffsets[context.endColumn + 1]!
+        table.columnWidths.splice(widthStart, widthEnd - widthStart)
+      }
       delete block.metadata.html
       return cellSelection(block.id, table, context.startRow, Math.min(context.startColumn, context.columnCount - count - 1))
     }
   }
 }
 
-function emptyCellFrom(source: DocumentCell): DocumentCell {
+function emptyCellFrom(source: DocumentCell, colSpan = 1): DocumentCell {
   const paragraph = createParagraph()
   const sourceParagraph = source.blocks.find((block) => !['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type))
   if (sourceParagraph) paragraph.style = { ...sourceParagraph.style }
-  return { ...source, id: documentId('cell'), blocks: [paragraph], style: JSON.parse(JSON.stringify(source.style)) as Record<string, unknown>, rowSpan: 1, colSpan: 1 }
+  return { ...source, id: documentId('cell'), blocks: [paragraph], style: JSON.parse(JSON.stringify(source.style)) as Record<string, unknown>, rowSpan: 1, colSpan }
+}
+
+interface DocumentTableGrid {
+  columnCount: number
+  columnOffsets: number[]
+}
+
+function validateTableGrid(table: DocumentTable, selectionColumnCount: number): DocumentTableGrid {
+  if (!selectionColumnCount || table.rows.some((row) => row.cells.length !== selectionColumnCount)) {
+    throw new RangeError('表格行列网格不规则，无法安全调整结构，原表格已保留')
+  }
+  if (table.rows.some((row) => row.cells.some((cell) => !Number.isInteger(cell.colSpan) || cell.colSpan < 1 || cell.rowSpan !== 1))) {
+    throw new RangeError('含跨行合并或无效跨度的表格无法安全调整结构，原表格已保留')
+  }
+  const spans = table.rows[0]!.cells.map((cell) => cell.colSpan)
+  if (table.rows.some((row) => row.cells.some((cell, index) => cell.colSpan !== spans[index]))) {
+    throw new RangeError('表格各行的合并列结构不一致，无法安全调整结构，原表格已保留')
+  }
+  const columnOffsets = [0]
+  for (const span of spans) columnOffsets.push(columnOffsets.at(-1)! + span)
+  const columnCount = columnOffsets.at(-1)!
+  if (table.columnWidths?.length && table.columnWidths.length !== columnCount) {
+    throw new RangeError('表格列宽与合并网格不一致，无法安全调整结构，原表格已保留')
+  }
+  return { columnCount, columnOffsets }
 }
 
 function cellSelection(blockId: string, table: DocumentTable, row: number, col: number): DocumentSelection {

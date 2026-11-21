@@ -4,7 +4,11 @@ import { defaultCellStyle } from '../../domain/model.ts'
 import { cellAddress } from '../../rendering/spreadsheet/layout.ts'
 import { changeSheetDecimalPlaces, classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from './sheet-number-format.ts'
 
-export type SheetBorderPreset = 'all' | 'outside' | 'inside' | 'top' | 'bottom' | 'left' | 'right' | 'none'
+export type SheetBorderPreset = 'all' | 'outside' | 'inside' | 'top' | 'bottom' | 'left' | 'right' | 'horizontal' | 'vertical' | 'diagonal-down' | 'diagonal-up' | 'none'
+export type SheetBorderStyle = 'thin' | 'hair' | 'dotted' | 'dashed' | 'dash-dot' | 'dash-dot-dot' | 'medium' | 'medium-dashed' | 'medium-dash-dot' | 'medium-dash-dot-dot' | 'thick' | 'double'
+export interface SheetBorderOptions { style: SheetBorderStyle; color: string }
+
+const DEFAULT_BORDER_OPTIONS: SheetBorderOptions = { style: 'thin', color: '#1f2937' }
 const FONT_STEPS = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
 export function nextSheetFontSize(size: number, direction: -1 | 1): number {
   return direction === 1 ? FONT_STEPS.find(step => step > size) ?? Math.min(400, size + 1)
@@ -31,15 +35,24 @@ export function setSheetTextFit(cell: ExcelCellView, mode: 'wrap' | 'shrinkToFit
 }
 
 /** Scope perimeter borders to each selected rectangle; do not fake outside borders on every cell. */
-export function applySheetBorders(cells: Record<string, ExcelCellView>, ranges: readonly GridRange[], preset: SheetBorderPreset): void {
+export function applySheetBorders(
+  cells: Record<string, ExcelCellView>, ranges: readonly GridRange[], preset: SheetBorderPreset,
+  options: SheetBorderOptions = DEFAULT_BORDER_OPTIONS,
+): void {
   for (const range of ranges) for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
     const key = cellAddress(row, column), cell = cells[key] ?? { value: '' }
     const border: Record<string, unknown> = preset === 'none' ? {} : { ...cell.border }
     const edges = { top: row === range.startRow, bottom: row === range.endRow, left: column === range.startColumn, right: column === range.endColumn }
     for (const side of ['top', 'bottom', 'left', 'right'] as const) {
-      const selected = preset === 'all' || preset === 'outside' && edges[side] || preset === 'inside' && !edges[side] || preset === side && edges[side]
-      if (selected) border[side] = { style: 'thin', color: '#1f2937' }
+      const selected = preset === 'all' || preset === 'outside' && edges[side]
+        || preset === 'inside' && !edges[side]
+        || preset === side && edges[side]
+        || preset === 'horizontal' && (side === 'top' || side === 'bottom') && (edges[side] || row > range.startRow)
+        || preset === 'vertical' && (side === 'left' || side === 'right') && (edges[side] || column > range.startColumn)
+      if (selected) border[side] = { ...options }
     }
+    if (preset === 'diagonal-down') border.diagonalDown = { ...options }
+    if (preset === 'diagonal-up') border.diagonalUp = { ...options }
     cells[key] = { ...cell, border }
   }
 }

@@ -11,7 +11,7 @@ node scripts/benchmarks/compute-benchmark.mjs --sizes 4096,16384 --iterations 2 
 The runner starts a Vite page, loads the built `public/compute/office_compute.js` module through the production `OfficeComputeClient`, runs the browser harness in Chrome, and writes a JSON record plus a Markdown table. The smoke contract is:
 
 ```powershell
-node --test tests/benchmarks/compute-benchmark.smoke.test.mjs
+pnpm test:benchmark:smoke
 ```
 
 The smoke test uses 128 and 512 rows and checks that TypeScript and Worker/WASM results have identical indices, that the route remains TypeScript below the configured threshold, and that JSON/Markdown output includes the limitations.

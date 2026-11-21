@@ -25,7 +25,10 @@ import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { createQuickSheetDataValidationRule, type QuickSheetDataValidationPreset } from '../features/sheet-validation/quick-validation.ts'
 import { createSheetPastePlan, type SheetPasteMode } from '../features/sheet-workbench/sheet-paste.ts'
+import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
+import { canEditProtectedRanges } from '../features/sheet-protection/range-protection.ts'
 import { createFormatPainterPatches, type FormatPainterSource } from '../features/sheet-workbench/sheet-format-painter.ts'
 import { applySheetOutlineOperation, createSheetOutlineState, setSheetOutlineCollapsed, setSheetOutlineLevel, setSheetOutlineSummaryPosition } from '../features/sheet-outline/sheet-outline.ts'
 import { createOfficeTranslator, createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n.ts'
@@ -153,7 +156,8 @@ const renameSheetId = ref<string | null>(null)
 const renameValue = ref('')
 const renameError = ref('')
 const viewSessions = new Map<string, SheetViewState>()
-const copiedCells = ref<ExcelCell[][] | null>(null)
+const copiedCells = ref<Array<Array<ExcelCell | undefined>> | null>(null)
+const copiedFormulaCells = ref<Array<Array<ExcelCell | undefined>> | null>(null)
 const chartCommands = ref<DrawCommand[]>([])
 const chartModalOpen = ref(false)
 const chartSource = ref('')
@@ -177,8 +181,10 @@ const functionArguments = ref('')
 const functionError = ref('')
 const validationPanelOpen = ref(false)
 const validationPanelRange = ref('A1')
+const validationPanelInitialType = ref<'checkbox' | 'list' | 'date' | 'time' | undefined>()
 const protectionPanelOpen = ref(false)
 const copiedRange = ref<GridRange | null>(null)
+const copiedFormulaRange = ref<GridRange | null>(null)
 const copiedColumnWidths = ref<Record<number, number> | undefined>()
 const copiedDefaultColumnWidth = ref<number>()
 const sparklinePanelOpen = ref(false)
@@ -255,6 +261,8 @@ const ribbonTabs = computed(() => createSheetRibbon({
   pivotChartAvailable: Boolean(props.studio && workbook.value.pivotTables?.length),
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
+  filterEnabled: Boolean(activeSheet.value?.autoFilter),
+  filterCanToggle: Boolean(props.studio && workbook.value.id && (activeSheet.value?.autoFilter || (!sortBusy.value && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow))),
   frozen: isFrozen.value, zoom: zoom.value, fullscreen: isFullscreen.value,
   calculationMode: workbook.value.calculationMode ?? 'automatic',
   outlineSummaryAbove: activeSheet.value?.outline?.summaryAbove ?? false,
@@ -646,19 +654,26 @@ function applyToSelection(action: (key: string) => void): boolean {
 function selectedExistingKeys(): string[] {
   return Object.keys(sheetCells.value).filter(key => { const [column, row] = splitKey(key); return containsCell(selectedRanges.value, row - 1, column) })
 }
-function copySelection(): boolean {
+function copySelection(formulaOnly = false): boolean {
   const bounds = selectionBounds(selectedRanges.value)
   if (!activeSheet.value || !bounds || !checkDirectSelection(selectionCount([bounds]))) return false
-  copiedRange.value = { ...bounds }
-  copiedColumnWidths.value = Object.fromEntries(Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, offset) => {
-    const column = bounds.startColumn + offset
-    return [column, activeSheet.value?.columnWidths?.[column] ?? activeSheet.value?.defaultColumnWidth ?? 96]
-  }))
-  copiedDefaultColumnWidth.value = activeSheet.value.defaultColumnWidth ?? 96
-  copiedCells.value = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
+  if (formulaOnly) copiedFormulaRange.value = { ...bounds }
+  else copiedRange.value = { ...bounds }
+  if (!formulaOnly) {
+    copiedColumnWidths.value = Object.fromEntries(Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, offset) => {
+      const column = bounds.startColumn + offset
+      return [column, activeSheet.value?.columnWidths?.[column] ?? activeSheet.value?.defaultColumnWidth ?? 96]
+    }))
+    copiedDefaultColumnWidth.value = activeSheet.value.defaultColumnWidth ?? 96
+  }
+  const copiedRangeCells = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
     Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, columnOffset) => ({ ...getCell(`${columnName(bounds.startColumn + columnOffset)}${bounds.startRow + rowOffset + 1}`) })),
   )
-  const text = copiedCells.value.map((row) => row.map((cell) => cell.formula ?? cell.value).join('\t')).join('\n')
+  copiedFormulaCells.value = copiedRangeCells.map(row => row.map(cell => cell.formula ? { ...cell } : undefined))
+  if (!formulaOnly) copiedCells.value = copiedRangeCells
+  const text = formulaOnly
+    ? copiedFormulaCells.value.map(row => row.map(cell => cell?.formula ?? '').join('\t')).join('\n')
+    : copiedRangeCells.map(row => row.map(cell => cell.formula ?? cell.value).join('\t')).join('\n')
   if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).catch(() => emit('notify', { type: 'info', message: '系统剪贴板不可用，内容已保留在工作台内，可继续粘贴。' }))
   return true
 }
@@ -705,8 +720,8 @@ function applyPasteText(text: string) {
 
 function pasteInternal(mode: SheetPasteMode) {
   const sheet = activeSheet.value
-  const source = copiedCells.value
-  const sourceRange = copiedRange.value
+  const source = mode === 'formulas' ? copiedFormulaCells.value : copiedCells.value
+  const sourceRange = mode === 'formulas' ? copiedFormulaRange.value : copiedRange.value
   const targetRange = selectionBounds(selectedRanges.value)
   if (!sheet || !source || !sourceRange || !targetRange) {
     if (mode === 'all' || mode === 'values') void pasteSelection()
@@ -732,6 +747,7 @@ function pasteInternal(mode: SheetPasteMode) {
     key: `${columnName(targetRange.startColumn + columnOffset)}${targetRange.startRow + rowOffset + 1}`,
     cell,
   }))
+  if (!patches.length && !plan.columnWidthPatches.length) return
   if (!checkDirectSelection(patches.length) || !validateIncomingValues(patches.map(({ key, cell }) => ({ key, value: cell.formula ?? cell.value })))) return
   patches.forEach(({ key, cell }) => { sheet.cells[key] = cell })
   if (plan.columnWidthPatches.length) {
@@ -740,6 +756,55 @@ function pasteInternal(mode: SheetPasteMode) {
   }
   recalculateFormulas()
   commitHistory()
+}
+
+function fillSelection(source: GridRange, target: { row: number; column: number }, applyType: SheetFillApplyType = 'SERIES') {
+  const sheet = activeSheet.value
+  if (!sheet) return
+  const sourceCells = Array.from({ length: source.endRow - source.startRow + 1 }, (_, rowOffset) =>
+    Array.from({ length: source.endColumn - source.startColumn + 1 }, (_, columnOffset) => {
+      const key = `${columnName(source.startColumn + columnOffset)}${source.startRow + rowOffset + 1}`
+      return { ...getCell(key) }
+    }),
+  )
+  const targetRange = {
+    startRow: Math.min(source.startRow, target.row),
+    endRow: Math.max(source.endRow, target.row),
+    startColumn: Math.min(source.startColumn, target.column),
+    endColumn: Math.max(source.endColumn, target.column),
+  }
+  const targetCells = Array.from({ length: targetRange.endRow - targetRange.startRow + 1 }, (_, rowOffset) =>
+    Array.from({ length: targetRange.endColumn - targetRange.startColumn + 1 }, (_, columnOffset) => {
+      const key = `${columnName(targetRange.startColumn + columnOffset)}${targetRange.startRow + rowOffset + 1}`
+      return sheet.cells[key]
+    }),
+  )
+  const plan = createSheetFillPlan(source, target, sourceCells, { applyType, targetCells })
+  if (!plan.cellPatches.length || !checkDirectSelection(plan.cellPatches.length)) return
+  const destinations = plan.cellPatches.map(({ row, column }) => ({ startRow: row, endRow: row, startCol: column, endCol: column }))
+  if (!canEditProtectedRanges(sheet, destinations, props.studio?.currentUserId ?? 'local-user')) {
+    emit('notify', { type: 'warning', message: '填充范围包含受保护单元格，未修改数据。' })
+    return
+  }
+  const entries = plan.cellPatches.map(({ row, column, cell }) => ({
+    key: `${columnName(column)}${row + 1}`,
+    value: cell.formula ?? String(cell.rawValue ?? cell.value ?? ''),
+  }))
+  if (applyType !== 'ONLY_FORMAT' && !validateIncomingValues(entries)) return
+  const before = cloneWorkbook(workbook.value)
+  try {
+    for (const { row, column, cell } of plan.cellPatches) {
+      sheet.cells[`${columnName(column)}${row + 1}`] = cell
+    }
+    recalculateFormulas()
+    selectedRanges.value = [plan.range]
+    selectedKey.value = `${columnName(target.column)}${target.row + 1}`
+    selectionAnchor.value = selectedKey.value
+    commitHistory()
+  } catch (error) {
+    workbook.value = before
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '填充操作未能提交' })
+  }
 }
 
 function handlePaste(event: ClipboardEvent) {
@@ -757,7 +822,7 @@ async function pasteSelection() {
   } catch {
     text = ''
   }
-  if (!text && copiedCells.value) text = copiedCells.value.map((row) => row.map((cell) => cell.formula ?? cell.value).join('\t')).join('\n')
+  if (!text && copiedCells.value) text = copiedCells.value.map((row) => row.map((cell) => cell?.formula ?? cell?.value ?? '').join('\t')).join('\n')
   applyPasteText(text)
 }
 
@@ -835,9 +900,9 @@ function mergeSelection() {
   commitHistory()
 }
 
-function transformMerges(axis: 'row' | 'column', index: number, delta: 1 | -1) {
-  if (!activeSheet.value?.merges) return
-  activeSheet.value.merges = activeSheet.value.merges.flatMap((range) => {
+function transformMerges(axis: 'row' | 'column', index: number, delta: 1 | -1, targetSheet = activeSheet.value) {
+  if (!targetSheet?.merges) return
+  targetSheet.merges = targetSheet.merges.flatMap((range) => {
     const [start, end] = range.split(':')
     const [startColumn, startRow] = splitKey(start)
     const [endColumn, endRow] = splitKey(end)
@@ -872,67 +937,180 @@ function unmergeSelection() {
   }
 }
 
-function insertRow() {
-  if (!activeSheet.value) return
-  const [, selectedRow] = splitKey(selectedKey.value)
-  const updated: Record<string, ExcelCell> = {}
-  Object.entries(activeSheet.value.cells).forEach(([key, cell]) => {
-    const [column, row] = splitKey(key)
-    updated[`${columnName(column)}${row >= selectedRow ? row + 1 : row}`] = cell
-  })
-  activeSheet.value.cells = updated
-  transformMerges('row', selectedRow, 1)
-  activeSheet.value.rowCount += 1
-  moveSelection(1, 0)
-  commitHistory()
+interface SheetAxisTarget { sheetId: string; index: number }
+
+function readAxisTarget(params: unknown): SheetAxisTarget | undefined | null {
+  if (params === undefined) return undefined
+  if (typeof params !== 'object' || params === null || !('sheetId' in params) || !('index' in params)) return null
+  const value = params as { sheetId?: unknown; index?: unknown }
+  if (typeof value.sheetId !== 'string' || !Number.isSafeInteger(value.index) || Number(value.index) < 0) return null
+  return { sheetId: value.sheetId, index: Number(value.index) }
 }
 
-function deleteRow() {
-  if (!activeSheet.value || totalRows.value <= 1) return
-  const [, selectedRow] = splitKey(selectedKey.value)
-  const updated: Record<string, ExcelCell> = {}
-  Object.entries(activeSheet.value.cells).forEach(([key, cell]) => {
-    const [column, row] = splitKey(key)
-    if (row < selectedRow) updated[key] = cell
-    else if (row > selectedRow) updated[`${columnName(column)}${row - 1}`] = cell
-  })
-  activeSheet.value.cells = updated
-  transformMerges('row', selectedRow, -1)
-  activeSheet.value.rowCount -= 1
-  selectedKey.value = `${columnName(splitKey(selectedKey.value)[0])}${Math.min(selectedRow, totalRows.value)}`
+function axisTargetSheet(target: SheetAxisTarget | undefined) {
+  return target ? workbook.value.sheets.find(sheet => sheet.id === target.sheetId) : activeSheet.value
+}
+
+function setActiveCellForAxisTarget(sheet: ExcelSheet, row: number, column: number) {
+  if (sheet.id !== activeSheetId.value) return
+  selectedKey.value = `${columnName(Math.max(0, column))}${Math.max(1, row + 1)}`
   selectCell(selectedKey.value)
+}
+
+function insertRow(params?: unknown) {
+  const requestedTarget = readAxisTarget(params)
+  if (requestedTarget === null) return
+  const sheet = axisTargetSheet(requestedTarget)
+  if (!sheet) return
+  const [, selectedRow] = splitKey(selectedKey.value)
+  const insertionRow = requestedTarget?.index ?? selectedRow - 1
+  if (insertionRow >= sheet.rowCount) return
+  const updated: Record<string, ExcelCell> = {}
+  Object.entries(sheet.cells).forEach(([key, cell]) => {
+    const [column, row] = splitKey(key)
+    updated[`${columnName(column)}${row >= insertionRow + 1 ? row + 1 : row}`] = cell
+  })
+  sheet.cells = updated
+  transformMerges('row', insertionRow + 1, 1, sheet)
+  if (sheet.hiddenRows) sheet.hiddenRows = sheet.hiddenRows.map(row => row >= insertionRow ? row + 1 : row)
+  sheet.rowCount += 1
+  setActiveCellForAxisTarget(sheet, insertionRow, splitKey(selectedKey.value)[0] - 1)
   commitHistory()
 }
 
-function insertColumn() {
-  if (!activeSheet.value) return
-  const [selectedColumn] = splitKey(selectedKey.value)
+function deleteRow(params?: unknown) {
+  const requestedTarget = readAxisTarget(params)
+  if (requestedTarget === null) return
+  const sheet = axisTargetSheet(requestedTarget)
+  if (!sheet || sheet.rowCount <= 1) return
+  const [, selectedRow] = splitKey(selectedKey.value)
+  const deletedRow = requestedTarget?.index ?? selectedRow - 1
+  if (deletedRow >= sheet.rowCount) return
   const updated: Record<string, ExcelCell> = {}
-  Object.entries(activeSheet.value.cells).forEach(([key, cell]) => {
+  Object.entries(sheet.cells).forEach(([key, cell]) => {
     const [column, row] = splitKey(key)
-    updated[`${columnName(column >= selectedColumn ? column + 1 : column)}${row}`] = cell
+    if (row < deletedRow + 1) updated[key] = cell
+    else if (row > deletedRow + 1) updated[`${columnName(column)}${row - 1}`] = cell
   })
-  activeSheet.value.cells = updated
-  transformMerges('column', selectedColumn, 1)
-  activeSheet.value.columnCount += 1
-  moveSelection(0, 1)
+  sheet.cells = updated
+  transformMerges('row', deletedRow + 1, -1, sheet)
+  sheet.rowCount -= 1
+  if (sheet.hiddenRows) sheet.hiddenRows = sheet.hiddenRows.filter(row => row !== deletedRow).map(row => row > deletedRow ? row - 1 : row)
+  setActiveCellForAxisTarget(sheet, Math.min(deletedRow, sheet.rowCount - 1), splitKey(selectedKey.value)[0] - 1)
   commitHistory()
 }
 
-function deleteColumn() {
-  if (!activeSheet.value || activeSheet.value.columnCount <= 1) return
+function insertColumn(params?: unknown) {
+  const requestedTarget = readAxisTarget(params)
+  if (requestedTarget === null) return
+  const sheet = axisTargetSheet(requestedTarget)
+  if (!sheet) return
   const [selectedColumn] = splitKey(selectedKey.value)
+  const insertionColumn = requestedTarget?.index ?? selectedColumn - 1
+  if (insertionColumn >= sheet.columnCount) return
   const updated: Record<string, ExcelCell> = {}
-  Object.entries(activeSheet.value.cells).forEach(([key, cell]) => {
+  Object.entries(sheet.cells).forEach(([key, cell]) => {
     const [column, row] = splitKey(key)
-    if (column < selectedColumn) updated[key] = cell
-    else if (column > selectedColumn) updated[`${columnName(column - 1)}${row}`] = cell
+    updated[`${columnName(column >= insertionColumn ? column + 1 : column)}${row}`] = cell
   })
-  activeSheet.value.cells = updated
-  transformMerges('column', selectedColumn, -1)
-  activeSheet.value.columnCount -= 1
-  selectedKey.value = `${columnName(Math.min(selectedColumn, activeSheet.value.columnCount - 1))}${splitKey(selectedKey.value)[1]}`
-  selectCell(selectedKey.value)
+  sheet.cells = updated
+  transformMerges('column', insertionColumn, 1, sheet)
+  sheet.columnCount += 1
+  if (sheet.hiddenColumns) sheet.hiddenColumns = sheet.hiddenColumns.map(column => column >= insertionColumn ? column + 1 : column)
+  setActiveCellForAxisTarget(sheet, splitKey(selectedKey.value)[1] - 1, insertionColumn)
+  commitHistory()
+}
+
+function deleteColumn(params?: unknown) {
+  const requestedTarget = readAxisTarget(params)
+  if (requestedTarget === null) return
+  const sheet = axisTargetSheet(requestedTarget)
+  if (!sheet || sheet.columnCount <= 1) return
+  const [selectedColumn] = splitKey(selectedKey.value)
+  const deletedColumn = requestedTarget?.index ?? selectedColumn - 1
+  if (deletedColumn >= sheet.columnCount) return
+  const updated: Record<string, ExcelCell> = {}
+  Object.entries(sheet.cells).forEach(([key, cell]) => {
+    const [column, row] = splitKey(key)
+    if (column < deletedColumn) updated[key] = cell
+    else if (column > deletedColumn) updated[`${columnName(column - 1)}${row}`] = cell
+  })
+  sheet.cells = updated
+  transformMerges('column', deletedColumn, -1, sheet)
+  sheet.columnCount -= 1
+  if (sheet.hiddenColumns) sheet.hiddenColumns = sheet.hiddenColumns.filter(column => column !== deletedColumn).map(column => column > deletedColumn ? column - 1 : column)
+  setActiveCellForAxisTarget(sheet, splitKey(selectedKey.value)[1] - 1, Math.min(deletedColumn, sheet.columnCount - 1))
+  commitHistory()
+}
+
+function hideAxisTarget(axis: 'row' | 'column', params?: unknown) {
+  const target = readAxisTarget(params)
+  if (!target) return
+  const sheet = axisTargetSheet(target)
+  if (!sheet) return
+  const hidden = axis === 'row' ? (sheet.hiddenRows ??= []) : (sheet.hiddenColumns ??= [])
+  if (target.index >= (axis === 'row' ? sheet.rowCount : sheet.columnCount) || hidden.includes(target.index)) return
+  hidden.push(target.index)
+  hidden.sort((left, right) => left - right)
+  if (sheet.id === activeSheetId.value) {
+    const [column, row] = splitKey(selectedKey.value)
+    if (axis === 'row' && row - 1 === target.index) {
+      const next = Array.from({ length: sheet.rowCount }, (_, index) => index).find(index => !hidden.includes(index))
+      if (next !== undefined) setActiveCellForAxisTarget(sheet, next, column - 1)
+    }
+    if (axis === 'column' && column === target.index) {
+      const next = Array.from({ length: sheet.columnCount }, (_, index) => index).find(index => !hidden.includes(index))
+      if (next !== undefined) setActiveCellForAxisTarget(sheet, row - 1, next)
+    }
+  }
+  commitHistory()
+}
+
+function showHiddenAxisTargets(axis: 'row' | 'column', params?: unknown) {
+  if (typeof params !== 'object' || params === null || !('sheetId' in params) || typeof params.sheetId !== 'string') return
+  const sheet = workbook.value.sheets.find(candidate => candidate.id === params.sheetId)
+  if (!sheet) return
+  if (axis === 'row') sheet.hiddenRows = []
+  else sheet.hiddenColumns = []
+  commitHistory()
+}
+
+function sheetTextWidth(text: string, fontSize: number, fontFamily: string) {
+  const context = document.createElement('canvas').getContext('2d')
+  if (!context) return text.length * fontSize
+  context.font = `${fontSize}px ${fontFamily}`
+  return context.measureText(text).width
+}
+
+function autoFitAxisTarget(axis: 'row' | 'column', params?: unknown) {
+  const target = readAxisTarget(params)
+  if (!target) return
+  const sheet = axisTargetSheet(target)
+  if (!sheet || target.index >= (axis === 'row' ? sheet.rowCount : sheet.columnCount)) return
+  const baseFontSize = 14
+  if (axis === 'column') {
+    const width = Object.entries(sheet.cells).reduce((maximum, [key, cell]) => {
+      const [column] = splitKey(key)
+      if (column !== target.index) return maximum
+      const text = cell.displayValue ?? cell.value
+      const fontSize = cell.fontSize ?? baseFontSize
+      return Math.max(maximum, sheetTextWidth(text, fontSize, cell.fontFamily ?? 'Arial') + 16 + (cell.indent ?? 0) * fontSize)
+    }, 24)
+    sheet.columnWidths ??= {}
+    sheet.columnWidths[target.index] = Math.min(400, Math.ceil(width))
+  } else {
+    const height = Object.entries(sheet.cells).reduce((maximum, [key, cell]) => {
+      const [column, row] = splitKey(key)
+      if (row !== target.index + 1) return maximum
+      const text = cell.displayValue ?? cell.value
+      const fontSize = cell.fontSize ?? baseFontSize
+      const columnWidth = sheet.columnWidths?.[column] ?? sheet.defaultColumnWidth ?? 96
+      const lines = cell.wrap ? Math.max(1, Math.ceil(sheetTextWidth(text, fontSize, cell.fontFamily ?? 'Arial') / Math.max(1, columnWidth - 12))) : 1
+      return Math.max(maximum, lines * Math.max(fontSize + 5, 18) + 4)
+    }, 20)
+    sheet.rowHeights ??= {}
+    sheet.rowHeights[target.index] = Math.min(409, Math.ceil(height))
+  }
   commitHistory()
 }
 
@@ -965,6 +1143,36 @@ function addSheet() {
   const id = `sheet-${crypto.randomUUID()}`
   workbook.value.sheets.push({ id, name: createUniqueSheetName(workbook.value.sheets), cells: {}, rowCount: 100, columnCount })
   activateSheet(id)
+  commitHistory()
+}
+
+function copySheet(id: string) {
+  if (!finishEdit()) return
+  const sourceIndex = workbook.value.sheets.findIndex(sheet => sheet.id === id)
+  const source = workbook.value.sheets[sourceIndex]
+  if (!source) return
+  let suffix = 2
+  let name = `${source.name} (${suffix})`
+  while (workbook.value.sheets.some(sheet => sheet.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    suffix += 1
+    name = `${source.name} (${suffix})`
+  }
+  const duplicate = cloneWorkbook({ ...workbook.value, sheets: [source] }).sheets[0]
+  if (!duplicate) return
+  duplicate.id = `sheet-${crypto.randomUUID()}`
+  duplicate.name = name
+  duplicate.visible = true
+  workbook.value.sheets.splice(sourceIndex + 1, 0, duplicate)
+  viewSessions.set(duplicate.id, { key: selectedKey.value, anchor: selectionAnchor.value, ranges: selectedRanges.value.map(range => ({ ...range })), zoom: zoom.value })
+  activateSheet(duplicate.id)
+  commitHistory()
+  emit('notify', { type: 'info', message: `已复制工作表“${source.name}”的单元格和工作表设置。图表、透视表与结构化表格关联不会作为副本创建。` })
+}
+
+function setSheetTabColor(id: string, color: string) {
+  const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
+  if (!sheet || (color !== '' && !/^#[0-9a-f]{6}$/i.test(color))) return
+  sheet.tabColor = color || undefined
   commitHistory()
 }
 
@@ -1231,10 +1439,39 @@ function openDataPanel(mode: 'filter' | 'sort'): void {
   dataPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
   dataPanelOpen.value = true
 }
-function openDataValidationPanel(): void {
+function openDataValidationPanel(initialType?: 'checkbox' | 'list' | 'date' | 'time'): void {
   const bounds = selectionBounds(selectedRanges.value)
   validationPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
+  validationPanelInitialType.value = initialType
   validationPanelOpen.value = true
+}
+
+function applyQuickDataValidation(preset: QuickSheetDataValidationPreset): void {
+  if (preset === 'dropdown') {
+    openDataValidationPanel('list')
+    return
+  }
+  if (!props.studio || !workbook.value.id || !activeSheet.value) return
+  const ranges = selectedRanges.value.map(range => ({
+    startRow: range.startRow,
+    endRow: range.endRow,
+    startCol: range.startColumn,
+    endCol: range.endColumn,
+  }))
+  if (!ranges.length) return
+  try {
+    const rule = createQuickSheetDataValidationRule(preset, ranges)
+    props.studio.executeCommandSync('sheet.command.set-data-validation', {
+      unitId: workbook.value.id,
+      sheetId: activeSheet.value.id,
+      rule,
+    })
+    const model = props.studio.getWorkbookModel(workbook.value.id)
+    if (model) workbook.value = toExcelWorkbookView(model)
+    commitHistory()
+  } catch (error) {
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : t('sheet.validation.save-failed', 'Could not apply data validation') })
+  }
 }
 function openConditionalFormattingPanel(): void {
   const bounds = selectionBounds(selectedRanges.value)
@@ -1330,12 +1567,42 @@ async function sortSelection(ascending: boolean) {
   }
 }
 
+function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 'sheet.command.clear-filter' | 'sheet.command.reapply-filter'): void {
+  const sheet = activeSheet.value
+  const unitId = workbook.value.id
+  if (!props.studio || !unitId || !sheet) return
+  const bounds = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
+  const range = sheet.autoFilter?.range ?? (bounds && bounds.endRow > bounds.startRow ? {
+    startRow: bounds.startRow,
+    endRow: bounds.endRow,
+    startCol: bounds.startColumn,
+    endCol: bounds.endColumn,
+  } : undefined)
+  if (commandId === 'sheet.command.toggle-auto-filter' && !range) {
+    emit('notify', { type: 'info', message: '请选择包含标题行和数据行的区域后再启用筛选。' })
+    return
+  }
+  try {
+    props.studio.executeCommandSync(commandId, {
+      unitId,
+      sheetId: sheet.id,
+      ...(commandId === 'sheet.command.toggle-auto-filter' ? { range } : {}),
+    })
+    const model = props.studio.getWorkbookModel(unitId)
+    if (model) workbook.value = toExcelWorkbookView(model)
+    commitHistory()
+  } catch (error) {
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法更新工作表筛选。' })
+  }
+}
+
 async function executeRibbon(commandId: string, params?: unknown) {
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo' && !finishEdit()) return
   const commands: Record<string, () => void | Promise<void>> = {
     'sheet.command.undo': undo, 'sheet.command.redo': redo,
-    'sheet.command.copy': () => { copySelection() }, 'sheet.command.cut': cutSelection,
+    'sheet.command.copy': () => { copySelection() }, 'sheet.command.copy-formulas': () => { copySelection(true) }, 'sheet.command.cut': cutSelection,
     'sheet.command.paste': () => pasteInternal('all'),
+    'sheet.command.paste-formulas': () => pasteInternal('formulas'),
     'sheet.command.paste-values': () => pasteInternal('values'),
     'sheet.command.paste-formats': () => pasteInternal('formats'),
     'sheet.command.paste-column-widths': () => pasteInternal('columnWidths'),
@@ -1375,8 +1642,17 @@ async function executeRibbon(commandId: string, params?: unknown) {
       else if (typeof params === 'number' && [-90, -45, 0, 45, 90].includes(params)) setTextRotation(params)
     },
     'sheet.command.merge': mergeSelection, 'sheet.command.unmerge': unmergeSelection,
-    'sheet.command.insert-row': insertRow, 'sheet.command.insert-column': insertColumn,
-    'sheet.command.delete-row': deleteRow, 'sheet.command.delete-column': deleteColumn,
+    'sheet.command.insert-row': () => insertRow(params), 'sheet.command.insert-column': () => insertColumn(params),
+    'sheet.command.delete-row': () => deleteRow(params), 'sheet.command.delete-column': () => deleteColumn(params),
+    'sheet.command.hide-row': () => hideAxisTarget('row', params),
+    'sheet.command.hide-column': () => hideAxisTarget('column', params),
+    'sheet.command.show-hidden-rows': () => showHiddenAxisTargets('row', params),
+    'sheet.command.show-hidden-columns': () => showHiddenAxisTargets('column', params),
+    'sheet.command.auto-fit-row': () => autoFitAxisTarget('row', params),
+    'sheet.command.auto-fit-column': () => autoFitAxisTarget('column', params),
+    'sheet.command.toggle-auto-filter': () => runAutoFilterCommand('sheet.command.toggle-auto-filter'),
+    'sheet.command.clear-filter': () => runAutoFilterCommand('sheet.command.clear-filter'),
+    'sheet.command.reapply-filter': () => runAutoFilterCommand('sheet.command.reapply-filter'),
     'sheet.operation.insert-chart': openChartDialog,
     'sheet.operation.open-pivot': openPivotPanel,
     'sheet.operation.open-pivot-chart': openPivotChartPanel,
@@ -1384,11 +1660,22 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-timeline': () => openSlicerPanel('timeline'),
     'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
     'sheet.operation.open-data-validation': openDataValidationPanel,
+    'sheet.operation.quick-data-validation': () => {
+      if (params === 'checkbox' || params === 'dropdown' || params === 'date' || params === 'date-time') applyQuickDataValidation(params)
+    },
     'sheet.operation.open-conditional-formatting': openConditionalFormattingPanel,
     'sheet.operation.open-sparkline': openSparklinePanel,
     'sheet.operation.format-painter': armFormatPainter,
     'sheet.operation.open-custom-number-format': () => { customNumberFormatOpen.value = true },
-    'sheet.operation.open-range-protection': () => { const bounds = selectionBounds(selectedRanges.value); if (bounds) { validationPanelRange.value = rangeNotation(bounds); protectionPanelOpen.value = true } },
+    'sheet.operation.open-range-protection': () => {
+      if (typeof params === 'object' && params !== null && 'sheetId' in params && 'range' in params && typeof params.sheetId === 'string' && typeof params.range === 'string') {
+        const sheet = workbook.value.sheets.find(candidate => candidate.id === params.sheetId)
+        if (sheet) { activateSheet(sheet.id); validationPanelRange.value = params.range; protectionPanelOpen.value = true }
+        return
+      }
+      const bounds = selectionBounds(selectedRanges.value)
+      if (bounds) { validationPanelRange.value = rangeNotation(bounds); protectionPanelOpen.value = true }
+    },
     'sheet.operation.outline-group-rows': () => changeOutline('row', 'group'),
     'sheet.operation.outline-toggle-rows': () => changeOutline('row', 'toggle'),
     'sheet.operation.outline-remove-rows': () => changeOutline('row', 'remove'),
@@ -1424,7 +1711,15 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.recalculate': () => { recalculateWorkbook(); commitHistory() },
     'sheet.operation.start-formula': () => { beginEdit(selectedKey.value, activeCell.value.formula ?? '=', 'formula') },
     'sheet.command.toggle-gridlines': () => { if (activeSheet.value) { activeSheet.value.showGridlines = activeSheet.value.showGridlines === false; commitHistory() } },
-    'sheet.command.freeze-selection': () => { const [column, row] = splitKey(selectedKey.value); freeze(row - 1, column) },
+    'sheet.command.freeze-selection': () => {
+      if (typeof params === 'object' && params !== null && 'axis' in params && 'index' in params) {
+        const value = params as { axis?: unknown; index?: unknown }
+        if (value.axis === 'row' && Number.isSafeInteger(value.index)) freeze(Number(value.index) + 1, 0)
+        else if (value.axis === 'column' && Number.isSafeInteger(value.index)) freeze(0, Number(value.index) + 1)
+        return
+      }
+      const [column, row] = splitKey(selectedKey.value); freeze(row - 1, column)
+    },
     'sheet.command.freeze-first-row': () => freeze(1, 0), 'sheet.command.freeze-first-column': () => freeze(0, 1),
     'sheet.command.unfreeze': () => freeze(0, 0),
     'sheet.operation.zoom-in': () => { zoom.value = Math.min(400, zoom.value + 10) },
@@ -1525,7 +1820,7 @@ onDeactivated(() => {
     </div>
 
     <div class="sheet-canvas-stack">
-      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeRibbon" />
+      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeRibbon" />
       <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
     </div>
 
@@ -1552,12 +1847,12 @@ onDeactivated(() => {
         <p v-if="functionError" role="alert" class="chart-insert-error">{{ functionError }}</p>
       </div>
     </Modal>
-    <SheetFooter :sheets="workbook.sheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
+    <SheetFooter :sheets="workbook.sheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <PivotChartPanel v-if="pivotChartPanelOpen && activeSheet && studio && workbook.id" v-model:open="pivotChartPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :initial-kind="slicerKind" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
-    <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" />
+    <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" />
     <ConditionalFormattingPanel v-if="conditionalFormattingOpen && activeSheet" v-model:open="conditionalFormattingOpen" :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" @apply="applyConditionalFormatting" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" />
     <SparklinePanel v-if="sparklinePanelOpen && activeSheet && studio && workbook.id" :open="sparklinePanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :target-range="sparklineTargetRange" @update:open="sparklinePanelOpen = $event" />

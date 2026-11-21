@@ -36,6 +36,28 @@ test('values paste calculated/raw values while retaining destination formatting'
   ])
 })
 
+test('formula-only paste shifts references, preserves destination formatting and skips source constants', () => {
+  const plan = createSheetPastePlan({
+    mode: 'formulas',
+    sourceCells: [[sourceCell, { value: 'constant', rawValue: 23 }], [undefined, { value: '', formula: '=C3+$A4+B$2+$D$8', cachedValue: '9', rawValue: 9 }]],
+    targetCells: [[{ value: 'keep', bold: true, background: '#fafafa' }, { value: 'leave me' }], [{ value: 'also leave me' }, { value: 'keep format', italic: true, cachedValue: 'old' }]],
+    sourceStartRow: 0, sourceStartColumn: 0, targetStartRow: 2, targetStartColumn: 1,
+  })
+
+  assert.deepEqual(plan.cellPatches.map(({ rowOffset, columnOffset, cell }) => ({ rowOffset, columnOffset, cell })), [
+    { rowOffset: 0, columnOffset: 0, cell: { value: '', formula: '=B3+$B$2', bold: true, background: '#fafafa', cachedValue: undefined, rawValue: undefined, displayValue: undefined } },
+    { rowOffset: 1, columnOffset: 1, cell: { value: '', formula: '=D5+$A6+C$2+$D$8', italic: true, cachedValue: undefined, rawValue: undefined, displayValue: undefined } },
+  ])
+})
+
+test('formula-only paste leaves destinations untouched when the source range has no formulas', () => {
+  const plan = createSheetPastePlan({
+    mode: 'formulas', sourceCells: [[{ value: 'constant' }]], targetCells: [[{ value: 'keep', bold: true }]],
+    sourceStartRow: 0, sourceStartColumn: 0, targetStartRow: 1, targetStartColumn: 1,
+  })
+  assert.deepEqual(plan.cellPatches, [])
+})
+
 test('formats paste resets absent source formats but preserves content and formula cache', () => {
   const plan = createSheetPastePlan({
     mode: 'formats', sourceCells: [[{ value: 'format', bold: true }]],

@@ -6,16 +6,26 @@ import { coreZhCN } from './core/locales/zh-CN.ts'
 import { coreTranslations } from './core/locales/generated.ts'
 import { reviewedCoreTranslations } from './core/locales/reviewed.ts'
 import { docsEnUS } from './docs/locales/en-US.ts'
+import { documentTocLocales } from '../features/document/toc/locales.ts'
 import { docsZhCN } from './docs/locales/zh-CN.ts'
 import { docsTranslations } from './docs/locales/generated.ts'
 import { reviewedDocsTranslations } from './docs/locales/reviewed.ts'
 import { docPermissionLocaleMessages } from './docs/locales/permissions.ts'
+import { docToolbarColorLocales } from './docs/locales/toolbar-colors.ts'
+import { documentSettingsLocaleMessages } from './docs/locales/document-settings.ts'
+import { documentCommentLocaleMessages } from './docs/locales/document-comments.ts'
+import { documentTableInsertLocales } from './docs/locales/document-table-insert.ts'
 import { sheetsEnUS } from './sheets/locales/en-US.ts'
 import { sheetsZhCN } from './sheets/locales/zh-CN.ts'
 import { sheetsTranslations } from './sheets/locales/generated.ts'
 import { reviewedSheetsTranslations } from './sheets/locales/reviewed.ts'
 import { sheetFindReplaceLocales } from './sheets/locales/find-replace.ts'
+import { sheetFormulaClipboardLocales } from './sheets/locales/formula-clipboard.ts'
+import { sheetQuickValidationLocales } from './sheets/locales/quick-validation.ts'
+import { sheetTabContextLocales } from './sheets/locales/sheet-tab-context.ts'
+import { sheetFilterMenuLocales } from './sheets/locales/filter-menu.ts'
 import { conditionalFormattingLocaleMessages } from './sheets/locales/conditional-formatting.ts'
+import { sheetCrosshairHighlightLocales } from './sheets/locales/crosshair-highlight.ts'
 import { sheetLocalearSA, sheetLocaleesES, sheetLocalecaES, sheetLocaledeDE, sheetLocalefaIR, sheetLocalefrFR, sheetLocaleidID, sheetLocaleitIT, sheetLocalejaJP, sheetLocalekoKR, sheetLocaleplPL, sheetLocaleptBR, sheetLocaleruRU, sheetLocaleskSK, sheetLocaleviVN, sheetLocalezhHK, sheetLocalezhTW } from './sheets/locales/univer-parity.ts'
 import { docLocalearSA, docLocaleesES, docLocalecaES, docLocaledeDE, docLocalefaIR, docLocalefrFR, docLocaleidID, docLocaleitIT, docLocalejaJP, docLocalekoKR, docLocaleplPL, docLocaleptBR, docLocaleruRU, docLocaleskSK, docLocaleviVN, docLocalezhHK, docLocalezhTW } from './docs/locales/univer-parity.ts'
 
@@ -143,6 +153,13 @@ const additionalFeatureLabels: Partial<Record<OfficeLocale, Record<string, strin
   'zh-TW': { ...sheetLocalezhTW, ...docLocalezhTW },
 }
 
+const sheetRibbonRuleGroupLabels: Record<OfficeLocale, string> = {
+  'ar-SA': 'القواعد', 'ca-ES': 'Regles', 'de-DE': 'Regeln', 'en-US': 'Rules', 'es-ES': 'Reglas',
+  'fa-IR': 'قواعد', 'fr-FR': 'Règles', 'id-ID': 'Aturan', 'it-IT': 'Regole', 'ja-JP': 'ルール',
+  'ko-KR': '규칙', 'pl-PL': 'Reguły', 'pt-BR': 'Regras', 'ru-RU': 'Правила', 'sk-SK': 'Pravidlá',
+  'vi-VN': 'Quy tắc', 'zh-CN': '规则', 'zh-HK': '規則', 'zh-TW': '規則',
+}
+
 export function createOfficeMessages(): Record<OfficeLocale, Record<string, string>> {
   const messages = {} as Record<OfficeLocale, Record<string, string>>
   const englishFallback = { ...coreEnUS, ...sheetsEnUS, ...docsEnUS }
@@ -156,10 +173,27 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       ...sheetsTranslations[locale],
       ...reviewedSheetsTranslations[locale],
       ...sheetFindReplaceLocales[locale],
+      ...sheetFormulaClipboardLocales[locale],
+      ...sheetQuickValidationLocales[locale],
+      ...sheetTabContextLocales[locale],
+      ...sheetFilterMenuLocales[locale],
+      'groups.rules': sheetRibbonRuleGroupLabels[locale],
       ...conditionalFormattingLocaleMessages[locale],
+      ...sheetCrosshairHighlightLocales[locale],
       ...docsTranslations[locale],
+      ...documentTocLocales[locale as keyof typeof documentTocLocales],
+      'items.doc-insert-table-of-contents': documentTocLocales[locale]['document.toc.insert'],
+      'items.doc-insert-table-of-contents-automatic': documentTocLocales[locale]['document.toc.automatic'],
+      'items.doc-insert-table-of-contents-custom': documentTocLocales[locale]['document.toc.custom'],
+      'items.doc-update-table-of-contents': documentTocLocales[locale]['document.toc.update'],
+      'items.doc-delete-table-of-contents': documentTocLocales[locale]['document.toc.delete'],
+      'groups.table-of-contents-manage': documentTocLocales[locale]['document.toc.manage'],
       ...reviewedDocsTranslations[locale],
       ...docPermissionLocaleMessages[locale],
+      ...docToolbarColorLocales[locale],
+      ...documentSettingsLocaleMessages[locale],
+      ...documentCommentLocaleMessages[locale],
+      ...documentTableInsertLocales[locale],
       'groups.doc-access': locale === 'zh-CN' ? '权限' : locale === 'en-US' ? 'Access' : docPermissionLocaleMessages[locale]!['doc.permissions.scope.document']!,
       'items.doc-permissions': locale === 'zh-CN' ? '文档权限' : locale === 'en-US' ? 'Document Permissions' : docPermissionLocaleMessages[locale]!['doc.permissions.title']!,
       ...(locale === 'zh-CN' ? { ...coreZhCN, ...sheetsZhCN, ...docsZhCN } : {}),

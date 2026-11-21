@@ -7,6 +7,7 @@ import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-wor
 import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
 import { SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
+import { crosshairHighlightRanges } from '../../features/sheet-crosshair/crosshair-highlight.ts'
 
 let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
 function measureTextWidth(text: string, font: string): number | undefined {
@@ -37,9 +38,12 @@ export interface SpreadsheetSceneOptions {
   editing?: boolean
   selectedCells: readonly string[]
   selectedRanges?: readonly GridRange[]
+  /** Helper outline shown while the fill handle is being dragged. */
+  fillPreviewRange?: GridRange
   searchText?: string
   /** Drawing-object commands are expressed in unscaled worksheet CSS pixels. */
   overlayCommands?: readonly DrawCommand[]
+  crosshairHighlight?: { enabled: boolean; color: string }
 }
 export function displayCell(cell: ExcelCellView | undefined, date1904 = false): string {
   if (!cell) return ''
@@ -67,18 +71,21 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     if (conditionalStyle.fill) commands.push({ kind: 'rect', ...rect, fill: conditionalStyle.fill, clip })
     if (geometry.sheet.showGridlines !== false) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
     if (isSelected(row, column)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
-    if (cell?.border) for (const side of ['top', 'bottom', 'left', 'right'] as const) {
-      const raw = cell.border[side]
-      const edge = raw && typeof raw === 'object' ? raw as Record<string, unknown> : undefined
-      const style = typeof raw === 'string' ? raw.split(':')[0] : edge?.style
-      if (!raw || style === 'none' || style === '') continue
-      const color = typeof edge?.color === 'string' ? edge.color : typeof raw === 'string' ? raw.split(':')[1] ?? '#1f2937' : '#1f2937'
-      const width = style === 'thick' ? 3 : style === 'medium' ? 2 : 1
-      const horizontal = side === 'top' || side === 'bottom'
-      const borderX = side === 'right' ? rect.x + rect.width : rect.x
-      const borderY = side === 'bottom' ? rect.y + rect.height : rect.y
-      commands.push({ kind: 'line', x1: borderX, y1: borderY, x2: horizontal ? rect.x + rect.width : borderX,
-        y2: horizontal ? borderY : rect.y + rect.height, color, width: width * z, clip })
+    if (cell?.border) {
+      for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+        const raw = cell.border[side]
+        const edge = borderEdge(raw)
+        if (!edge) continue
+        const horizontal = side === 'top' || side === 'bottom'
+        const borderX = side === 'right' ? rect.x + rect.width : rect.x
+        const borderY = side === 'bottom' ? rect.y + rect.height : rect.y
+        commands.push(...createBorderLines(borderX, borderY, horizontal ? rect.x + rect.width : borderX,
+          horizontal ? borderY : rect.y + rect.height, edge.style, edge.color, z, clip))
+      }
+      const diagonalDown = borderEdge(cell.border.diagonalDown)
+      if (diagonalDown) commands.push(...createBorderLines(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, diagonalDown.style, diagonalDown.color, z, clip))
+      const diagonalUp = borderEdge(cell.border.diagonalUp)
+      if (diagonalUp) commands.push(...createBorderLines(rect.x, rect.y + rect.height, rect.x + rect.width, rect.y, diagonalUp.style, diagonalUp.color, z, clip))
     }
     const text = displayCell(cell, geometry.sheet.date1904)
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
@@ -146,6 +153,17 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       else paintCell(row, column, pane.clip)
     }
     for (const address of anchors) { const cell = parseAddress(address)!; paintCell(cell.row, cell.column, pane.clip) }
+    if (options.crosshairHighlight?.enabled) {
+      const ranges = crosshairHighlightRanges(selectionRanges, geometry.sheet.rowCount, geometry.sheet.columnCount)
+      for (const range of ranges) {
+        const rows = pane.rows.filter(row => row >= range.startRow && row <= range.endRow)
+        const columns = pane.columns.filter(column => column >= range.startColumn && column <= range.endColumn)
+        if (!rows.length || !columns.length) continue
+        const start = geometry.cellRect(rows[0]!, columns[0]!, viewport, false)
+        const end = geometry.cellRect(rows[rows.length - 1]!, columns[columns.length - 1]!, viewport, false)
+        commands.push({ kind: 'rect', x: start.x, y: start.y, width: end.x + end.width - start.x, height: end.y + end.height - start.y, fill: options.crosshairHighlight.color, clip: pane.clip })
+      }
+    }
     for (let rangeIndex = 0; rangeIndex < selectionRanges.length; rangeIndex += 1) {
       const range = selectionRanges[rangeIndex]!
       const rows = pane.rows.filter(row => row >= range.startRow && row <= range.endRow)
@@ -155,12 +173,13 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const rangeEnd = geometry.cellRect(range.endRow, range.endColumn, viewport, false)
       const left = rangeStart.x, top = rangeStart.y
       const right = rangeEnd.x + rangeEnd.width, bottom = rangeEnd.y + rangeEnd.height
+      const strokeOffset = SHEET_SELECTION_STROKE_WIDTH / 2
       const editingCellRange = options.editing && active && range.startRow === range.endRow && range.startColumn === range.endColumn && active.row === range.startRow && active.column === range.startColumn
       if (!editingCellRange) {
-        commands.push({ kind: 'line', x1: left, y1: top, x2: right, y2: top, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
-        commands.push({ kind: 'line', x1: left, y1: bottom, x2: right, y2: bottom, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
-        commands.push({ kind: 'line', x1: left, y1: top, x2: left, y2: bottom, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
-        commands.push({ kind: 'line', x1: right, y1: top, x2: right, y2: bottom, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left + strokeOffset, y1: top + strokeOffset, x2: right + strokeOffset, y2: top + strokeOffset, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left + strokeOffset, y1: bottom + strokeOffset, x2: right + strokeOffset, y2: bottom + strokeOffset, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left + strokeOffset, y1: top + strokeOffset, x2: left + strokeOffset, y2: bottom + strokeOffset, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: right + strokeOffset, y1: top + strokeOffset, x2: right + strokeOffset, y2: bottom + strokeOffset, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
       }
       const endpointIsFrozenRow = range.endRow < geometry.frozenRows
       const endpointIsFrozenColumn = range.endColumn < geometry.frozenColumns
@@ -168,7 +187,25 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         && pane.columns.some(column => (column < geometry.frozenColumns) === endpointIsFrozenColumn)
       if (rangeIndex === selectionRanges.length - 1 && !editingCellRange && paneHasEndpoint) {
         const handleSize = SHEET_SELECTION_HANDLE_SIZE
-        commands.push({ kind: 'rect', x: right - handleSize / 2, y: bottom - handleSize / 2, width: handleSize, height: handleSize, fill: '#246bfd', stroke: '#ffffff', clip: pane.clip })
+        commands.push({ kind: 'rect', x: right - handleSize / 2, y: bottom - handleSize / 2, width: handleSize - SHEET_SELECTION_STROKE_WIDTH, height: handleSize - SHEET_SELECTION_STROKE_WIDTH, fill: '#246bfd', stroke: '#ffffff', strokeWidth: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+      }
+    }
+    const preview = options.fillPreviewRange
+    if (preview) {
+      const rows = pane.rows.filter(row => row >= preview.startRow && row <= preview.endRow)
+      const columns = pane.columns.filter(column => column >= preview.startColumn && column <= preview.endColumn)
+      if (rows.length && columns.length) {
+        const start = geometry.cellRect(preview.startRow, preview.startColumn, viewport, false)
+        const end = geometry.cellRect(preview.endRow, preview.endColumn, viewport, false)
+        const left = start.x, top = start.y
+        const right = end.x + end.width, bottom = end.y + end.height
+        const width = SHEET_SELECTION_STROKE_WIDTH
+        const strokeOffset = width / 2
+        const color = '#246bfd'
+        commands.push({ kind: 'line', x1: left + strokeOffset, y1: top + strokeOffset, x2: right + strokeOffset, y2: top + strokeOffset, color, width, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left + strokeOffset, y1: bottom + strokeOffset, x2: right + strokeOffset, y2: bottom + strokeOffset, color, width, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left + strokeOffset, y1: top + strokeOffset, x2: left + strokeOffset, y2: bottom + strokeOffset, color, width, clip: pane.clip })
+        commands.push({ kind: 'line', x1: right + strokeOffset, y1: top + strokeOffset, x2: right + strokeOffset, y2: bottom + strokeOffset, color, width, clip: pane.clip })
       }
     }
   }
@@ -181,7 +218,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     for (const column of pane.columns) {
       const rect = geometry.cellRect(0, column, viewport, false), clip = { x: pane.clip.x, y: 0, width: pane.clip.width, height: GRID_HEADER_HEIGHT }
       commands.push({ kind: 'rect', x: rect.x, y: 0, width: rect.width, height: GRID_HEADER_HEIGHT, fill: active?.column === column ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
-      commands.push({ kind: 'text', x: rect.x + rect.width / 2, y: 7, text: columnLabel(column), font: '12px "Segoe UI", sans-serif', color: active?.column === column ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
+      commands.push({ kind: 'text', x: rect.x + rect.width / 2, y: GRID_HEADER_HEIGHT / 2, text: columnLabel(column), font: '12px "Segoe UI", sans-serif', color: active?.column === column ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
     }
     for (const row of pane.rows) {
       const rect = geometry.cellRect(row, 0, viewport, false), clip = { x: 0, y: pane.clip.y, width: GRID_HEADER_WIDTH, height: pane.clip.height }
@@ -215,6 +252,56 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   if (geometry.frozenRows) { const y = GRID_HEADER_HEIGHT + geometry.rows.offset(geometry.frozenRows) * z; commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH, y1: y, x2: viewport.width, y2: y, color: '#9eacbf', width: 2 }) }
   if (geometry.frozenColumns) { const x = GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: GRID_HEADER_HEIGHT, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
   return { width: viewport.width, height: viewport.height, background: '#ffffff', commands }
+}
+
+function borderEdge(raw: unknown): { style: string; color: string } | undefined {
+  if (!raw) return undefined
+  const edge = typeof raw === 'object' ? raw as Record<string, unknown> : undefined
+  const style = typeof raw === 'string' ? raw.split(':')[0] : edge?.style
+  if (typeof style !== 'string' || style === 'none' || style === '') return undefined
+  const color = typeof edge?.color === 'string' ? edge.color : typeof raw === 'string' ? raw.split(':')[1] ?? '#1f2937' : '#1f2937'
+  return { style, color }
+}
+
+function createBorderLines(
+  x1: number, y1: number, x2: number, y2: number, style: string, color: string, zoom: number, clip: RenderRect,
+): DrawCommand[] {
+  const width = style.startsWith('medium') ? 2 : style === 'thick' ? 3 : style === 'hair' ? 0.5 : 1
+  const pattern = borderDashPattern(style).map(value => value * zoom)
+  const double = style === 'double'
+  const dx = x2 - x1, dy = y2 - y1
+  const length = Math.hypot(dx, dy)
+  if (!length) return []
+  const perpendicularX = -dy / length, perpendicularY = dx / length
+  const offsets = double ? [-0.8 * zoom, 0.8 * zoom] : [0]
+  const lines: DrawCommand[] = []
+  for (const offset of offsets) {
+    const startX = x1 + perpendicularX * offset, startY = y1 + perpendicularY * offset
+    if (!pattern.length) {
+      lines.push({ kind: 'line', x1: startX, y1: startY, x2: x2 + perpendicularX * offset, y2: y2 + perpendicularY * offset, color, width: width * zoom, clip })
+      continue
+    }
+    const cycle = pattern.reduce((sum, value) => sum + value, 0)
+    for (let position = 0, index = 0; position < length; index += 1) {
+      const segment = Math.min(pattern[index % pattern.length]!, length - position)
+      if (index % 2 === 0 && segment > 0) {
+        lines.push({ kind: 'line', x1: startX + dx / length * position, y1: startY + dy / length * position,
+          x2: startX + dx / length * (position + segment), y2: startY + dy / length * (position + segment), color, width: width * zoom, clip })
+      }
+      position += Math.max(segment, Number.EPSILON)
+      if (position >= length) break
+      if (index > length / cycle * pattern.length + pattern.length) break
+    }
+  }
+  return lines
+}
+
+function borderDashPattern(style: string): number[] {
+  if (style.includes('dash-dot-dot')) return [4, 2, 1, 2, 1, 2]
+  if (style.includes('dash-dot')) return [4, 2, 1, 2]
+  if (style.includes('dotted')) return [1, 2]
+  if (style.includes('dashed')) return [4, 2]
+  return []
 }
 
 function transformOverlayCommand(command: DrawCommand, viewport: GridViewport): DrawCommand {

@@ -1,0 +1,23 @@
+import type { OfficeLocale } from '../../office-i18n.ts'
+
+export const sheetFormulaClipboardLocales: Record<OfficeLocale, Record<string, string>> = {
+  'ar-SA': { 'items.sheet.menu.copy-formulas': 'نسخ الصيغ فقط', 'items.sheet.menu.paste-formulas': 'لصق الصيغ فقط', 'sheet.context-menu.copy-formulas': 'نسخ الصيغ فقط', 'sheet.context-menu.paste-formulas': 'لصق الصيغ فقط' },
+  'ca-ES': { 'items.sheet.menu.copy-formulas': 'Copia només les fórmules', 'items.sheet.menu.paste-formulas': 'Enganxa només les fórmules', 'sheet.context-menu.copy-formulas': 'Copia només les fórmules', 'sheet.context-menu.paste-formulas': 'Enganxa només les fórmules' },
+  'de-DE': { 'items.sheet.menu.copy-formulas': 'Nur Formeln kopieren', 'items.sheet.menu.paste-formulas': 'Nur Formeln einfügen', 'sheet.context-menu.copy-formulas': 'Nur Formeln kopieren', 'sheet.context-menu.paste-formulas': 'Nur Formeln einfügen' },
+  'en-US': { 'items.sheet.menu.copy-formulas': 'Copy Formulas Only', 'items.sheet.menu.paste-formulas': 'Paste Formulas Only', 'sheet.context-menu.copy-formulas': 'Copy Formulas Only', 'sheet.context-menu.paste-formulas': 'Paste Formulas Only' },
+  'es-ES': { 'items.sheet.menu.copy-formulas': 'Copiar solo fórmulas', 'items.sheet.menu.paste-formulas': 'Pegar solo fórmulas', 'sheet.context-menu.copy-formulas': 'Copiar solo fórmulas', 'sheet.context-menu.paste-formulas': 'Pegar solo fórmulas' },
+  'fa-IR': { 'items.sheet.menu.copy-formulas': 'فقط فرمول‌ها را کپی کنید', 'items.sheet.menu.paste-formulas': 'فقط فرمول‌ها را جای‌گذاری کنید', 'sheet.context-menu.copy-formulas': 'فقط فرمول‌ها را کپی کنید', 'sheet.context-menu.paste-formulas': 'فقط فرمول‌ها را جای‌گذاری کنید' },
+  'fr-FR': { 'items.sheet.menu.copy-formulas': 'Copier uniquement les formules', 'items.sheet.menu.paste-formulas': 'Coller uniquement les formules', 'sheet.context-menu.copy-formulas': 'Copier uniquement les formules', 'sheet.context-menu.paste-formulas': 'Coller uniquement les formules' },
+  'id-ID': { 'items.sheet.menu.copy-formulas': 'Salin Rumus Saja', 'items.sheet.menu.paste-formulas': 'Tempel Rumus Saja', 'sheet.context-menu.copy-formulas': 'Salin Rumus Saja', 'sheet.context-menu.paste-formulas': 'Tempel Rumus Saja' },
+  'it-IT': { 'items.sheet.menu.copy-formulas': 'Copia solo formule', 'items.sheet.menu.paste-formulas': 'Incolla solo formule', 'sheet.context-menu.copy-formulas': 'Copia solo formule', 'sheet.context-menu.paste-formulas': 'Incolla solo formule' },
+  'ja-JP': { 'items.sheet.menu.copy-formulas': '数式のみコピー', 'items.sheet.menu.paste-formulas': '数式のみ貼り付け', 'sheet.context-menu.copy-formulas': '数式のみコピー', 'sheet.context-menu.paste-formulas': '数式のみ貼り付け' },
+  'ko-KR': { 'items.sheet.menu.copy-formulas': '수식만 복사', 'items.sheet.menu.paste-formulas': '수식만 붙여넣기', 'sheet.context-menu.copy-formulas': '수식만 복사', 'sheet.context-menu.paste-formulas': '수식만 붙여넣기' },
+  'pl-PL': { 'items.sheet.menu.copy-formulas': 'Kopiuj tylko formuły', 'items.sheet.menu.paste-formulas': 'Wklej tylko formuły', 'sheet.context-menu.copy-formulas': 'Kopiuj tylko formuły', 'sheet.context-menu.paste-formulas': 'Wklej tylko formuły' },
+  'pt-BR': { 'items.sheet.menu.copy-formulas': 'Copiar apenas fórmulas', 'items.sheet.menu.paste-formulas': 'Colar apenas fórmulas', 'sheet.context-menu.copy-formulas': 'Copiar apenas fórmulas', 'sheet.context-menu.paste-formulas': 'Colar apenas fórmulas' },
+  'ru-RU': { 'items.sheet.menu.copy-formulas': 'Копировать только формулы', 'items.sheet.menu.paste-formulas': 'Вставить только формулы', 'sheet.context-menu.copy-formulas': 'Копировать только формулы', 'sheet.context-menu.paste-formulas': 'Вставить только формулы' },
+  'sk-SK': { 'items.sheet.menu.copy-formulas': 'Kopírovať iba vzorce', 'items.sheet.menu.paste-formulas': 'Prilepiť iba vzorce', 'sheet.context-menu.copy-formulas': 'Kopírovať iba vzorce', 'sheet.context-menu.paste-formulas': 'Prilepiť iba vzorce' },
+  'vi-VN': { 'items.sheet.menu.copy-formulas': 'Chỉ sao chép công thức', 'items.sheet.menu.paste-formulas': 'Chỉ dán công thức', 'sheet.context-menu.copy-formulas': 'Chỉ sao chép công thức', 'sheet.context-menu.paste-formulas': 'Chỉ dán công thức' },
+  'zh-CN': { 'items.sheet.menu.copy-formulas': '仅复制公式', 'items.sheet.menu.paste-formulas': '仅粘贴公式', 'sheet.context-menu.copy-formulas': '仅复制公式', 'sheet.context-menu.paste-formulas': '仅粘贴公式' },
+  'zh-HK': { 'items.sheet.menu.copy-formulas': '只複製公式', 'items.sheet.menu.paste-formulas': '只貼上公式', 'sheet.context-menu.copy-formulas': '只複製公式', 'sheet.context-menu.paste-formulas': '只貼上公式' },
+  'zh-TW': { 'items.sheet.menu.copy-formulas': '僅複製公式', 'items.sheet.menu.paste-formulas': '僅貼上公式', 'sheet.context-menu.copy-formulas': '僅複製公式', 'sheet.context-menu.paste-formulas': '僅貼上公式' },
+}

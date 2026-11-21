@@ -12,6 +12,7 @@
     "test:unit": "vitest run --config vitest.config.ts",
     "test:components": "vitest run --config vitest.components.config.ts",
     "test:compute": "vitest run --config vitest.config.ts packages/office-studio/tests/compute-index-service.contract.test.mjs",
+    "test:benchmark:smoke": "vitest run --config vitest.benchmark.config.ts",
     "test:parser": "cargo test --manifest-path crates/office-parser/Cargo.toml",
     "test:api": "vitest run --config vitest.config.ts packages/office-studio/tests/document-facade.contract.test.mjs packages/office-studio/tests/office-api.contract.test.mjs",
     "test:browser": "playwright test --config tests/browser/univer-workbench.playwright.config.ts",

@@ -39,6 +39,8 @@ export const docsEnUS: Record<string, string> = {
   'items.doc-spaceAfter-0': '0 pt After', 'items.doc-spaceAfter-6': '6 pt After', 'items.doc-spaceAfter-8': '8 pt After',
   'items.doc-spaceAfter-12': '12 pt After', 'items.doc-spaceAfter-18': '18 pt After', 'items.doc-spaceAfter-24': '24 pt After', 'items.doc-spaceAfter-36': '36 pt After',
   'items.doc-text-color-custom': 'Custom Color', 'items.doc-highlight-custom': 'Custom Color', 'items.doc-paper-size-custom': 'Custom',
+  'items.doc-text-color-reset': 'Reset Font Color', 'items.doc-highlight-reset': 'No Background',
+  'colors.black': 'Black', 'colors.gray': 'Gray', 'colors.white': 'White', 'colors.red': 'Red', 'colors.orange': 'Orange', 'colors.yellow': 'Yellow', 'colors.green': 'Green', 'colors.teal': 'Teal', 'colors.blue': 'Blue', 'colors.navy': 'Navy', 'colors.purple': 'Purple', 'colors.pink': 'Pink', 'colors.brown': 'Brown', 'colors.light-gray': 'Light Gray', 'colors.light-blue': 'Light Blue', 'colors.light-yellow': 'Light Yellow',
   'options.doc.doc-block-style.P': 'Body', 'options.doc.doc-block-style.quote': 'Quote',
   'options.doc.doc-block-style.normal': 'Normal', 'options.doc.doc-block-style.title': 'Title', 'options.doc.doc-block-style.subtitle': 'Subtitle',
   'options.doc.doc-block-style.H1': 'Heading 1', 'options.doc.doc-block-style.H2': 'Heading 2',

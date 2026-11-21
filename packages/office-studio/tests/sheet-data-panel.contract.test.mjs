@@ -101,6 +101,36 @@ test('empty choices hide all rows while clear and remove keep manual hiding sepa
   } finally { studio.dispose() }
 })
 
+test('filter toggle, clear criteria and reapply are undoable worksheet commands', () => {
+  const { studio, workbook, sheet, range, target } = setup()
+  try {
+    studio.executeCommandSync('sheet.command.toggle-auto-filter', { ...target, range })
+    assert.equal(sheet.getAutoFilter().range.endRow, 4)
+    studio.executeCommandSync('sheet.command.set-filter-criteria', { ...target, column: 0, criteria: { kind: 'values', selectedItems: ['东'] } })
+    assert.deepEqual(sheet.getFilteredRows(), [2, 4])
+
+    studio.executeCommandSync('sheet.command.clear-filter', target)
+    assert.deepEqual(sheet.getFilteredRows(), [])
+    assert.deepEqual(sheet.getAutoFilter().columns, {})
+    workbook.undo()
+    assert.deepEqual(sheet.getFilteredRows(), [2, 4])
+
+    const modelSheet = studio.getWorkbookModel(workbook.getId()).sheets[0]
+    modelSheet.autoFilter.filteredRows = []
+    studio.executeCommandSync('sheet.command.reapply-filter', target)
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [2, 4])
+    workbook.undo()
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [])
+    workbook.redo()
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [2, 4])
+
+    studio.executeCommandSync('sheet.command.toggle-auto-filter', { ...target, range })
+    assert.equal(sheet.getAutoFilter(), null)
+    workbook.undo()
+    assert.deepEqual(sheet.getFilteredRows(), [2, 4])
+  } finally { studio.dispose() }
+})
+
 test('multi-key sort validates its fields, preserves stable payloads and uses one history transaction', async () => {
   const { studio, workbook, sheet, range } = setup()
   try {

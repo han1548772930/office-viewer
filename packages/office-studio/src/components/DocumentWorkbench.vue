@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, ColorPicker, Input, InputNumber, Modal, Tooltip } from 'antdv-next'
+import { Button, Checkbox, Input, Modal, Tooltip } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import type { DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentPermissionRule } from '../domain/model'
+import type { DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
@@ -15,28 +15,36 @@ import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
 import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
 import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
 import DocumentPermissionPanel from './document/DocumentPermissionPanel.vue'
+import DocumentParagraphSettingsPanel from './document/DocumentParagraphSettingsPanel.vue'
+import DocumentSectionSettingsPanel from './document/DocumentSectionSettingsPanel.vue'
+import DocumentCommentsPanel from './document/DocumentCommentsPanel.vue'
+import DocumentTableOfContentsDialog from './document/DocumentTableOfContentsDialog.vue'
 import DocumentCharacterPicker from './document/DocumentCharacterPicker.vue'
+import DocumentTableInsertDialog from './document/DocumentTableInsertDialog.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
-import { createDocumentRibbon, documentCommandFromRibbon } from './document/document-ribbon'
+import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
 import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPaperSize } from './document/document-page-settings'
-import { executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
+import { blockAtPoint, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
 import { sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
+import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
-import { permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
+import { createDocumentThreadComment, deleteDocumentThreadComment, editDocumentCommentMessage, replyToDocumentThreadComment, setDocumentThreadCommentResolved } from '../features/document/comments/thread-comments.ts'
+import { canManageDocumentPermissions, permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
 import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
+import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
 import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n'
 
-const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionDefaultAllow?: boolean }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true })
+const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true })
 const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
@@ -90,29 +98,53 @@ const searchMatches = computed(() => showFind.value ? findDocumentMatches(model.
   selection: searchInSelection.value ? searchScopeSelection.value : undefined,
 }) : [])
 const activePageIndex = ref(0)
-const textColor = ref('#1f2937')
-const highlightColor = ref('#fff1a8')
 const pendingMarks = shallowRef<RunPatch>({})
 const modalOpen = ref(false)
-const modalKind = ref<'table' | 'image' | 'link' | 'color' | 'highlight'>('table')
+const modalKind = ref<'image' | 'link'>('image')
 const modalValue = ref('')
-const tableRows = ref<number | null>(3)
-const tableCols = ref<number | null>(3)
 const modalError = ref('')
+const tableInsertOpen = ref(false)
 const notice = ref('')
+const documentContextMenu = ref<{ left: number; top: number }>()
 const contentControlPanelOpen = ref(false)
 const contentControlInitialType = ref<DocumentContentControlType>()
 const pageSettingsOpen = ref(false)
 const headerFooterPanelOpen = ref(false)
 const headerFooterSectionId = computed(() => sectionIdForBlock(model.value, selection.value.focus.blockId))
+const paragraphSettingsPanelOpen = ref(false)
+const sectionSettingsPanelOpen = ref(false)
+const activeParagraphBlock = computed(() => blockAtPoint(model.value, selection.value.focus))
+const paragraphSettingsStyle = computed<DocumentParagraphStyle>(() => ({
+  align: activeParagraphBlock.value?.style.align ?? 'left',
+  indent: activeParagraphBlock.value?.style.indent ?? 0,
+  lineHeight: activeParagraphBlock.value?.style.lineHeight ?? 1.5,
+  spaceBefore: activeParagraphBlock.value?.style.spaceBefore ?? 0,
+  spaceAfter: activeParagraphBlock.value?.style.spaceAfter ?? 8,
+  ...activeParagraphBlock.value?.style,
+}))
+const activeSectionSetup = computed(() => documentSectionSetup(model.value, headerFooterSectionId.value))
 const codeBlockPanelOpen = ref(false)
 const latexPanelOpen = ref(false)
 const notesPanelOpen = ref(false)
 const permissionPanelOpen = ref(false)
-const permissionTargets = computed(() => documentPermissionTargetOptions(model.value))
-const canManageDocumentPermissions = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], {
-  documentId: model.value.id ?? '', userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId, defaultAllow: props.permissionDefaultAllow,
-}, 'edit').allowed)
+const commentsPanelOpen = ref(false)
+const activeCommentId = ref('')
+const commentDraftSelection = shallowRef<DocumentSelection>()
+const commentDraftReference = ref('')
+const permissionContext = computed(() => ({
+  documentId: model.value.id ?? '',
+  userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId,
+  permissionAdminUserId: props.permissionAdminUserId ?? props.documentApi?.getPermissionAdminUserId(),
+  defaultAllow: props.permissionDefaultAllow,
+}))
+const permissionTargets = computed(() => documentPermissionTargetOptions(model.value, createRibbonTranslator(officeLocale.value, 'doc')))
+const canManagePermissionRules = computed(() => canManageDocumentPermissions(permissionContext.value))
+const canComment = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment').allowed)
+const canCreateComment = computed(() => canComment.value && !selectionCollapsed(selection.value)
+  && resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment', permissionTargetsForSelection(model.value, selection.value)).allowed)
+const deletableCommentIds = computed(() => Object.values(model.value.comments ?? {})
+  .filter(comment => canComment.value && (permissionContext.value.userId === permissionContext.value.permissionAdminUserId || comment.messages[0]?.authorId === permissionContext.value.userId))
+  .map(comment => comment.id))
 const activeCodeBlock = computed(() => model.value.blocks.find((block) => block.id === selection.value.focus.blockId))
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
 const activeLatexFormula = computed(() => {
@@ -135,9 +167,63 @@ const pages = computed(() => layout.value.pages)
 const wordCount = computed(() => documentCharacterCount(textTargets(model.value).map((target) => runText(runsForTarget(model.value, target))).join('\n')))
 const selectedCharacters = computed(() => documentSelectionCharacterCount(model.value, selection.value))
 const toolbarState = computed(() => documentToolbarState(model.value, selection.value, pendingMarks.value))
+const tableContextActions = computed(() => documentTableContextMenuItems(createRibbonTranslator(officeLocale.value, 'doc')))
+const selectedTocId = computed(() => supportsDocumentTableOfContents(model.value)
+  ? documentTocIdForSelection(model.value, selection.value)
+  : undefined)
+const selectedTocOptions = computed(() => documentTocOptionsAtBlock(blockAtPoint(model.value, selection.value.focus)) ?? { ...DEFAULT_DOCUMENT_TOC_OPTIONS })
+const previousTabBeforeToc = ref<string>()
+const canEditContextSelection = computed(() => resolveDocumentPermission(
+  model.value.permissionRules ?? [], permissionContext.value, 'edit', permissionTargetsForSelection(model.value, selection.value),
+).allowed)
+const canEditSelectedToc = computed(() => selectedTocId.value != null && resolveDocumentPermission(
+  model.value.permissionRules ?? [], permissionContext.value, 'edit', permissionTargetsForSelection(model.value, selection.value),
+).allowed)
+const canInsertToc = computed(() => supportsDocumentTableOfContents(model.value)
+  && selection.value.focus.row == null
+  && selectionCollapsed(selection.value)
+  && !documentTocIdAtBlock(blockAtPoint(model.value, selection.value.focus))
+  && canEditContextSelection.value)
+watch(selectedTocId, (tocId) => {
+  if (tocId) {
+    if (activeTab.value !== 'table-of-contents') previousTabBeforeToc.value = activeTab.value
+    activeTab.value = 'table-of-contents'
+  } else if (activeTab.value === 'table-of-contents') {
+    activeTab.value = previousTabBeforeToc.value ?? 'home'
+    previousTabBeforeToc.value = undefined
+  }
+})
+const tocDialog = ref<{ open: boolean; mode: 'insert' | 'update'; insertMode: 'automatic' | 'custom'; tocId?: string; updateMode: DocumentTocUpdateMode }>({
+  open: false,
+  mode: 'insert',
+  insertMode: 'custom',
+  updateMode: 'pageNumbersOnly',
+})
+const tocDialogOptions = ref<DocumentTocOptions>({ ...DEFAULT_DOCUMENT_TOC_OPTIONS })
+const contextMenuActions = computed(() => {
+  const translate = createRibbonTranslator(officeLocale.value, 'doc')
+  const paragraphSettings = {
+    id: 'doc-context-paragraph-settings', title: translate('doc.context.paragraph-settings', 'Paragraph settings'),
+    commandId: 'sidebar.operation.doc-paragraph-setting-panel', params: undefined,
+    disabled: !canEditContextSelection.value, group: 'layout' as const,
+  }
+  const layoutActions = [paragraphSettings]
+  if (selection.value.focus.row == null) layoutActions.push({
+    id: 'doc-context-section-settings', title: translate('doc.context.section-settings', 'Section settings'),
+    commandId: 'sidebar.operation.doc-section-setting-panel', params: undefined,
+    disabled: !canEditContextSelection.value, group: 'layout' as const,
+  })
+  const tableActions = toolbarState.value.table
+    ? tableContextActions.value.map(action => ({ ...action, disabled: !!action.disabled || !canEditContextSelection.value, group: 'table' as const }))
+    : []
+  const tocActions = selectedTocId.value
+    ? documentTocContextMenuItems(selectedTocId.value, !canEditSelectedToc.value, translate).map(action => ({ ...action, group: 'layout' as const }))
+    : []
+  return [...layoutActions, ...tocActions, ...tableActions]
+})
 const currentMarks = computed(() => toolbarState.value.marks)
-const modalTitle = computed(() => ({ table: '插入表格', image: '插入图片', link: '插入链接', color: '字体颜色', highlight: '文本高亮颜色' })[modalKind.value])
-const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, fullscreen: isFullscreen.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }, createRibbonTranslator(officeLocale.value, 'doc')))
+const modalTitle = computed(() => ({ image: '插入图片', link: '插入链接' })[modalKind.value])
+const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, fullscreen: isFullscreen.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi, commentsPanelOpen: commentsPanelOpen.value, canCreateComment: canCreateComment.value, tableOfContents: { available: supportsDocumentTableOfContents(model.value), insertDisabled: !canInsertToc.value, selectedId: selectedTocId.value, editDisabled: !canEditSelectedToc.value } }, createRibbonTranslator(officeLocale.value, 'doc')))
 let resizeObserver: ResizeObserver | undefined
 let imageRequest = 0
 let clipboardRequest = 0
@@ -154,6 +240,9 @@ onDeactivated(() => {
   modalOpen.value = false
   contentControlPanelOpen.value = false
   pageSettingsOpen.value = false
+  paragraphSettingsPanelOpen.value = false
+  sectionSettingsPanelOpen.value = false
+  commentsPanelOpen.value = false
   characterPickerOpen.value = false
   latexPanelOpen.value = false
   showFind.value = false
@@ -178,11 +267,6 @@ watch(() => props.modelValue, (value) => {
   paperSize.value = documentPaperSize(next.page)
   orientation.value = next.page.width > next.page.height ? 'landscape' : 'portrait'
 }, { immediate: true })
-watch(currentMarks, (marks) => {
-  textColor.value = marks.color?.startsWith('#') ? marks.color : '#1f2937'
-  highlightColor.value = marks.highlight?.startsWith('#') ? marks.highlight : '#fff1a8'
-}, { immediate: true })
-
 function publish(next: DocumentModel) {
   next.name = documentTitle.value
   next.modified = true
@@ -193,7 +277,7 @@ function publish(next: DocumentModel) {
 }
 function execute(command: DocumentCommand) {
   const targets = command.id === 'doc.command.set-document-permission-rules' ? [] : permissionTargetsForSelection(model.value, selection.value)
-  if (!canDocumentPermission('edit', targets)) return
+  if (command.id !== 'doc.command.set-document-permission-rules' && !canDocumentPermission('edit', targets)) return
   if (command.id === 'doc.command.insert-text') {
     const next = cloneDocument(model.value)
     const codeSelection = editCodeBlockText(next, selection.value, { text: command.text })
@@ -211,7 +295,7 @@ function execute(command: DocumentCommand) {
   try {
     const next = cloneDocument(model.value)
     const nextCommand = command.id === 'doc.command.insert-text' ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
-    selection.value = executeDocumentCommand(next, selection.value, nextCommand)
+    selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     publish(next)
     void nextTick(() => canvasRef.value?.focus())
@@ -311,11 +395,106 @@ function applyPageSetup(page: DocumentPageSetup) {
 function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
   execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch })
 }
+function applyParagraphSettings(patch: Partial<DocumentParagraphStyle>) {
+  execute({ id: 'doc.command.format-paragraph', patch })
+}
+function applySectionSettings(sectionId: string, patch: Partial<ReturnType<typeof documentSectionSetup>>) {
+  execute({ id: 'doc.command.set-section-setup', sectionId, patch })
+}
 function insertPageField(story: 'header' | 'footer', field: 'PAGE' | 'NUMPAGES') {
   execute({ id: 'doc.command.insert-page-field', sectionId: headerFooterSectionId.value, story, field })
 }
 function updateTitle() { emit('update:fileName', documentTitle.value); publish(cloneDocument(model.value)) }
 function saveDocument() { emit('save', { fileName: documentTitle.value, html: documentHtml(model.value), model: model.value }) }
+function toggleCommentsPanel() {
+  commentsPanelOpen.value = !commentsPanelOpen.value
+  if (!commentsPanelOpen.value) { activeCommentId.value = ''; commentDraftSelection.value = undefined; commentDraftReference.value = '' }
+}
+function startAddComment() {
+  if (!canCreateComment.value) {
+    const key = !canComment.value || !selectionCollapsed(selection.value) ? 'doc.comments.permission-denied' : 'doc.comments.select-text'
+    const fallback = key === 'doc.comments.permission-denied' ? 'You do not have permission to comment' : 'Select text to add a comment'
+    notify(createRibbonTranslator(officeLocale.value, 'doc')(key, fallback))
+    return
+  }
+  commentDraftSelection.value = { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } }
+  commentDraftReference.value = selectedPlainText(model.value, selection.value)
+  activeCommentId.value = ''
+  commentsPanelOpen.value = true
+}
+function commentActor() {
+  const userId = permissionContext.value.userId
+  return { ...permissionContext.value, userId, displayName: userId }
+}
+function commitCommentMutation(mutate: (next: DocumentModel) => void) {
+  const next = cloneDocument(model.value)
+  try {
+    mutate(next)
+    publish(next)
+    return true
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+    return false
+  }
+}
+function createComment(text: string) {
+  const range = commentDraftSelection.value
+  if (!range || !canComment.value) return
+  if (selectedPlainText(model.value, range) !== commentDraftReference.value) {
+    notify(createRibbonTranslator(officeLocale.value, 'doc')('doc.comments.selection-changed', 'The selected text changed. Select it again before commenting'))
+    commentDraftSelection.value = undefined
+    commentDraftReference.value = ''
+    return
+  }
+  let commentId = ''
+  const committed = commitCommentMutation(next => { commentId = createDocumentThreadComment(next, range, text, commentActor()).id })
+  if (committed) {
+    commentDraftSelection.value = undefined
+    commentDraftReference.value = ''
+    activeCommentId.value = commentId
+    selection.value = collapsedSelection(range.focus)
+    void nextTick(() => canvasRef.value?.focus())
+  }
+}
+function replyToComment(commentId: string, text: string) {
+  if (!canDocumentPermission('comment')) return
+  commitCommentMutation(next => { replyToDocumentThreadComment(next, commentId, text, commentActor()) })
+}
+function editComment(commentId: string, messageId: string, text: string) {
+  if (!canDocumentPermission('comment')) return
+  commitCommentMutation(next => { editDocumentCommentMessage(next, commentId, messageId, text, commentActor()) })
+}
+function removeComment(commentId: string) {
+  if (!deletableCommentIds.value.includes(commentId) || !canDocumentPermission('comment')) return
+  commitCommentMutation(next => { deleteDocumentThreadComment(next, commentId, commentActor()) })
+  if (!model.value.comments?.[commentId]) activeCommentId.value = ''
+}
+function resolveComment(commentId: string, resolved: boolean) {
+  if (!canDocumentPermission('comment')) return
+  commitCommentMutation(next => { setDocumentThreadCommentResolved(next, commentId, resolved, commentActor()) })
+}
+function selectComment(commentId: string) {
+  const comment = model.value.comments?.[commentId]
+  if (!comment) return
+  activeCommentId.value = commentId
+  const firstAnchor = comment.anchor[0]
+  const lastAnchor = comment.anchor.at(-1)
+  const targets = textTargets(model.value)
+  const firstTarget = firstAnchor && targets.find(target => (target.cellBlockId ?? target.blockId) === firstAnchor.blockId)
+  const lastTarget = lastAnchor && targets.find(target => (target.cellBlockId ?? target.blockId) === lastAnchor.blockId)
+  const firstBlock = firstTarget && blockAtPoint(model.value, firstTarget)
+  const lastBlock = lastTarget && blockAtPoint(model.value, lastTarget)
+  if (!firstAnchor || !lastAnchor || !firstTarget || !lastTarget || !firstBlock || !lastBlock) {
+    notify(createRibbonTranslator(officeLocale.value, 'doc')('doc.comments.anchor-unavailable', 'Text anchor unavailable'))
+    return
+  }
+  // Imported threads and command updates may leave anchors stale. Clamp before navigating.
+  const startOffset = Math.max(0, Math.min(firstAnchor.startOffset, runText(firstBlock.runs).length))
+  const endOffset = Math.max(0, Math.min(lastAnchor.endOffset, runText(lastBlock.runs).length))
+  onSelection({ anchor: { ...firstTarget, offset: startOffset }, focus: { ...lastTarget, offset: endOffset } })
+  canvasRef.value?.scrollToBlock(firstTarget.blockId)
+  canvasRef.value?.focus()
+}
 function openImport() { fileInputRef.value?.click() }
 function onFileChange(event: Event) { const input = event.target as HTMLInputElement; if (input.files?.[0]) emit('import-file', input.files[0]); input.value = '' }
 function movePage(direction: -1 | 1) { setActivePage(Math.max(0, Math.min(pages.value.length - 1, activePageIndex.value + direction))) }
@@ -334,21 +513,88 @@ function onViewportChange(location: DocumentViewportLocation) {
   visibleBlockId.value = location.firstVisibleBlockId
 }
 function navigateOutline(item: DocumentOutlineItem) { if (item.blockId) jumpToHeading(item.blockId); else setActivePage(0) }
-function insertTable() { modalKind.value = 'table'; modalError.value = ''; modalOpen.value = true }
+function openDocumentContextMenu(payload: { x: number; y: number }) {
+  const bounds = workbenchRef.value?.getBoundingClientRect()
+  if (!bounds) return
+  documentContextMenu.value = {
+    left: Math.max(4, Math.min(payload.x - bounds.left, bounds.width - 238)),
+    top: Math.max(4, Math.min(payload.y - bounds.top, bounds.height - 300)),
+  }
+}
+function runContextMenuAction(action: { id: string; commandId?: string; params?: unknown }) {
+  onRibbonExecute(action.commandId ?? action.id, action.params)
+  documentContextMenu.value = undefined
+  void nextTick(() => canvasRef.value?.focus())
+}
+function openTocInsertDialog(mode: 'automatic' | 'custom') {
+  if (!canInsertToc.value) return
+  if (!buildDocumentTocBlocks(model.value, DEFAULT_DOCUMENT_TOC_OPTIONS).length) {
+    notify(createRibbonTranslator(officeLocale.value, 'doc')('document.toc.no-headings', 'There are no headings to include in a table of contents.'))
+    return
+  }
+  if (mode === 'automatic') {
+    const translate = createRibbonTranslator(officeLocale.value, 'doc')
+    const blocks = buildDocumentTocBlocks(
+      model.value,
+      DEFAULT_DOCUMENT_TOC_OPTIONS,
+      documentTocPageNumbers(layout.value.headings),
+      undefined,
+      [],
+      translate('document.toc.contents-title', 'Contents'),
+    )
+    execute({ id: 'doc.command.paste-blocks', blocks })
+    return
+  }
+  tocDialogOptions.value = { ...DEFAULT_DOCUMENT_TOC_OPTIONS }
+  tocDialog.value = { open: true, mode: 'insert', insertMode: 'custom', updateMode: 'pageNumbersOnly' }
+}
+function openTocUpdateDialog(tocId: string) {
+  if (!canEditSelectedToc.value || selectedTocId.value !== tocId) return
+  tocDialogOptions.value = selectedTocOptions.value
+  tocDialog.value = { open: true, mode: 'update', insertMode: 'custom', tocId, updateMode: 'pageNumbersOnly' }
+}
+function applyTocDialog(payload: { options: DocumentTocOptions; updateMode?: DocumentTocUpdateMode }) {
+  if (tocDialog.value.mode === 'insert') {
+    if (!canInsertToc.value) return
+    const translate = createRibbonTranslator(officeLocale.value, 'doc')
+    const blocks = buildDocumentTocBlocks(
+      model.value,
+      payload.options,
+      documentTocPageNumbers(layout.value.headings),
+      undefined,
+      [],
+      translate('document.toc.contents-title', 'Contents'),
+    )
+    if (!blocks.length) {
+      notify(translate('document.toc.no-headings', 'There are no headings to include in a table of contents.'))
+      return
+    }
+    execute({ id: 'doc.command.paste-blocks', blocks })
+    return
+  }
+  const tocId = tocDialog.value.tocId
+  if (!tocId || selectedTocId.value !== tocId || !canEditSelectedToc.value) return
+  execute({
+    id: 'doc.command.update-table-of-contents',
+    tocId,
+    mode: payload.updateMode ?? 'pageNumbersOnly',
+    pageNumbers: documentTocPageNumbers(layout.value.headings),
+  })
+}
+function dismissTableContextMenu(event?: Event) {
+  if (event?.target instanceof HTMLElement && event.target.closest('.document-context-menu')) return
+  documentContextMenu.value = undefined
+}
+function onWorkbenchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus() }
+}
 function insertImage() { modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
 function insertLink() { modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
 function confirmModal() {
-  if (modalKind.value === 'table') execute({ id: 'doc.command.insert-table', rows: Math.max(1, Math.min(20, tableRows.value || 3)), cols: Math.max(1, Math.min(20, tableCols.value || 3)) })
-  else if (modalKind.value === 'color' || modalKind.value === 'highlight') {
-    if (!/^#[0-9a-f]{6}$/i.test(modalValue.value)) { modalError.value = '请输入六位十六进制颜色，例如 #2563eb'; return }
-    execute({ id: 'doc.command.format-text', patch: { [modalKind.value]: modalValue.value } })
-  }
-  else {
-    const value = safeUrl(modalValue.value)
-    if (!value) { modalError.value = '请输入有效的 http 或 https 地址'; return }
-    if (modalKind.value === 'link') execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })
-    else execute({ id: 'doc.command.insert-image', image: { src: value, width: 320, height: 0, alt: '图片' } })
-  }
+  const value = safeUrl(modalValue.value)
+  if (!value) { modalError.value = '请输入有效的 http 或 https 地址'; return }
+  if (modalKind.value === 'link') execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })
+  else execute({ id: 'doc.command.insert-image', image: { src: value, width: 320, height: 0, alt: '图片' } })
   modalOpen.value = false
 }
 async function onImageFile(event: Event) {
@@ -475,7 +721,10 @@ async function pasteSelection(plainText = false) {
   canvasRef.value?.focus()
 }
 function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
-function savePermissionRules(rules: DocumentPermissionRule[]) { execute({ id: 'doc.command.set-document-permission-rules', rules }) }
+function savePermissionRules(rules: DocumentPermissionRule[]) {
+  if (!canManagePermissionRules.value) return
+  execute({ id: 'doc.command.set-document-permission-rules', rules })
+}
 function setZoom(value: number) { zoom.value = clampDocumentZoom(value) }
 function printDocument() {
   if (!canDocumentPermission('print')) return
@@ -483,7 +732,7 @@ function printDocument() {
 }
 function canDocumentPermission(action: 'edit' | 'copy' | 'comment' | 'print' | 'export', targets: Array<{ scope: 'section' | 'paragraph' | 'entity'; id: string }> = []): boolean {
   const decision = resolveDocumentPermission(model.value.permissionRules ?? [], {
-    documentId: model.value.id ?? '', userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId, defaultAllow: props.permissionDefaultAllow,
+    ...permissionContext.value,
   }, action, targets)
   if (!decision.allowed) notify(`当前用户没有${({ edit: '编辑', copy: '复制', comment: '评论', print: '打印', export: '导出' })[action]}权限。`)
   return decision.allowed
@@ -506,6 +755,14 @@ function onRibbonExecute(id: string, params?: unknown) {
   const command = documentCommandFromRibbon(id, params)
   if (command) { execute(command); return }
   switch (id) {
+    case 'doc.operation.insert-table-of-contents':
+      if (params && typeof params === 'object' && 'mode' in params && (params.mode === 'automatic' || params.mode === 'custom')) openTocInsertDialog(params.mode)
+      break
+    case 'doc.operation.update-table-of-contents':
+      if (params && typeof params === 'object' && 'tocId' in params && typeof params.tocId === 'string') openTocUpdateDialog(params.tocId)
+      break
+    case 'docs.operation.toggle-comment-panel': toggleCommentsPanel(); break
+    case 'docs.operation.start-add-comment': startAddComment(); break
     case 'doc.operation.insert-footnote': insertNote('footnote'); break
     case 'doc.operation.insert-endnote': insertNote('endnote'); break
     case 'doc.operation.open-notes': notesPanelOpen.value = true; break
@@ -517,7 +774,7 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.paste': void pasteSelection(); break
     case 'doc.command.paste-text': void pasteSelection(true); break
     case 'doc.command.print': printDocument(); break
-    case 'doc.operation.open-table': insertTable(); break
+    case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image': insertImage(); break
     case 'doc.operation.open-link': insertLink(); break
     case 'doc.operation.open-content-controls':
@@ -534,11 +791,10 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.toggle-fullscreen': void toggleFullscreen(); break
     case 'doc.operation.set-zoom': if (typeof params === 'number') { setZoom(params); void nextTick(() => canvasRef.value?.focus()) }; break
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
-    case 'doc.operation.custom-color':
-      if (params === 'color' || params === 'highlight') { modalKind.value = params; modalValue.value = params === 'color' ? textColor.value : highlightColor.value; modalError.value = ''; modalOpen.value = true }
-      break
     case 'doc.operation.open-page-settings': pageSettingsOpen.value = true; break
     case 'doc.operation.open-header-footer': headerFooterPanelOpen.value = true; break
+    case 'sidebar.operation.doc-paragraph-setting-panel': paragraphSettingsPanelOpen.value = true; break
+    case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
     case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
     case 'doc.command.set-orientation': if (params === 'portrait' || params === 'landscape') { orientation.value = params; changePageSetup() }; break
   }
@@ -547,7 +803,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </script>
 
 <template>
-  <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" aria-label="文档工作台">
+  <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
     <header v-if="showHeader && !isFocusMode" class="document-header">
       <FileText class="document-mark" :size="20" />
       <Input v-model:value="documentTitle" class="document-name" aria-label="文档名称" variant="borderless" @change="updateTitle" @press-enter="($event.target as HTMLInputElement).blur()" />
@@ -580,24 +836,58 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <aside v-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">
+        <DocumentCommentsPanel
+          :comments="model.comments ?? {}"
+          :current-user-id="permissionContext.userId"
+          :can-comment="canComment"
+          :can-create="!!commentDraftSelection && canComment"
+          :deletable-comment-ids="deletableCommentIds"
+          :selected-comment-id="activeCommentId"
+          @create="createComment"
+          @reply="replyToComment"
+          @edit="editComment"
+          @delete="removeComment"
+          @resolve="resolveComment"
+          @select="selectComment"
+          @close="toggleCommentsPanel"
+        />
+      </aside>
     </main>
     <DocumentFooter :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
+    <div v-if="documentContextMenu" class="document-context-menu" role="menu" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.menu-label', 'Document context menu')" :style="{ left: `${documentContextMenu.left}px`, top: `${documentContextMenu.top}px` }">
+      <div role="group" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.layout-group', 'Layout')">
+        <Button v-for="action in contextMenuActions.filter(item => item.group === 'layout')" :key="action.id" type="text" role="menuitem" :disabled="action.disabled" @click="runContextMenuAction(action)">{{ action.title }}</Button>
+      </div>
+      <div v-if="contextMenuActions.some(item => item.group === 'table')" class="context-menu-divider" role="separator" />
+      <div v-if="toolbarState.table" role="group" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.table-group', 'Table')">
+        <Button v-for="action in contextMenuActions.filter(item => item.group === 'table')" :key="action.id" type="text" role="menuitem" :disabled="action.disabled" @click="runContextMenuAction(action)">{{ action.title }}</Button>
+      </div>
+    </div>
     <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden @ok="confirmModal">
-      <div v-if="modalKind === 'table'" class="insert-form"><label>行数<InputNumber v-model:value="tableRows" :min="1" :max="20" :precision="0" /></label><label>列数<InputNumber v-model:value="tableCols" :min="1" :max="20" :precision="0" /></label></div>
-      <div v-else-if="modalKind === 'color' || modalKind === 'highlight'" class="insert-form color-form"><label>{{ modalTitle }}<ColorPicker v-model:value="modalValue" value-format="hex" :aria-label="modalTitle" /></label><Input v-model:value="modalValue" aria-label="颜色值" placeholder="#1f2937" /></div>
-      <div v-else class="insert-form"><label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label><Button v-if="modalKind === 'image'" type="primary" @click="imageInputRef?.click()"><FileUp :size="15" />选择本地图片</Button><input ref="imageInputRef" class="hidden-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" @change="onImageFile"></div>
+      <div class="insert-form"><label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label><Button v-if="modalKind === 'image'" type="primary" @click="imageInputRef?.click()"><FileUp :size="15" />选择本地图片</Button><input ref="imageInputRef" class="hidden-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" @change="onImageFile"></div>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" :initial-type="contentControlInitialType" @error="notify" />
     <DocumentCharacterPicker v-model:open="characterPickerOpen" :mode="characterPickerMode" @insert="insertCharacter" />
+    <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="size => execute({ id: 'doc.command.insert-table', rows: size.rows, cols: size.columns })" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" @insert-page-field="insertPageField" />
+    <DocumentParagraphSettingsPanel v-model:open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" @apply="applyParagraphSettings" />
+    <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" @apply="applySectionSettings" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
     <DocumentNotesPanel v-model:open="notesPanelOpen" :footnotes="model.footnotes ?? {}" :endnotes="model.endnotes ?? {}" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" />
-    <DocumentPermissionPanel :open="permissionPanelOpen" :rules="model.permissionRules ?? []" :targets="permissionTargets" :read-only="!canManageDocumentPermissions" @update:open="permissionPanelOpen = $event" @save="savePermissionRules" />
+    <DocumentPermissionPanel :open="permissionPanelOpen" :rules="model.permissionRules ?? []" :targets="permissionTargets" :read-only="!canManagePermissionRules" @update:open="permissionPanelOpen = $event" @save="savePermissionRules" />
+    <DocumentTableOfContentsDialog
+      v-model:open="tocDialog.open"
+      :mode="tocDialog.mode"
+      :options="tocDialogOptions"
+      :update-mode="tocDialog.updateMode"
+      @apply="applyTocDialog"
+    />
   </section>
 </template>
 
@@ -610,6 +900,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 .hidden-input { display: none; }
 .document-ribbon { flex-shrink: 0; }
 .editor-workspace { position: relative; min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; }
+.document-comments-dock { z-index: 30; width: 320px; min-width: 280px; flex: 0 0 min(320px, 38vw); border-inline-start: 1px solid #d9dde4; background: #fff; }
 .find-replace-toolbar { position: absolute; z-index: 30; top: calc(100% - 1px); right: 8px; width: min(620px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #d8dde5; border-radius: 4px; background: #fff; box-shadow: 0 3px 10px #18283b20; }
 .find-row, .replace-row { min-width: 0; display: flex; align-items: center; gap: 4px; }
 .find-row { color: #77818d; }
@@ -621,6 +912,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 .replace-row :deep(.ant-checkbox-wrapper) { flex: 0 0 auto; white-space: nowrap; font-size: 12px; }
 .document-notice { position: absolute; z-index: 40; bottom: 44px; inset-inline: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #c9dcf4; border-radius: 4px; color: #4b6482; background: #eef5ff; font-size: 12px; box-shadow: 0 2px 8px #18375912; }
 .document-notice :deep(.ant-btn) { display: grid; place-items: center; padding: 0; color: inherit; }
+.document-context-menu { position: absolute; z-index: 60; width: 230px; display: flex; flex-direction: column; gap: 3px; padding: 5px; border: 1px solid #d7dce3; border-radius: 4px; background: #fff; box-shadow: 0 4px 14px #18283b24; }
+.document-context-menu [role="group"] { display: flex; flex-direction: column; gap: 2px; }
+.document-context-menu :deep(.ant-btn) { min-height: 28px; justify-content: flex-start; padding-inline: 8px; text-align: start; }
+.context-menu-divider { height: 1px; margin: 2px 5px; background: #e5e8ed; }
 .insert-form { display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
 .insert-form label { display: flex; align-items: center; gap: 12px; }
 .insert-form label > * { flex: 1; }

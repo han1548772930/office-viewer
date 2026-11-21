@@ -13,6 +13,12 @@ export interface DocumentPermissionContext {
   documentId: string
   userId: string
   defaultAllow?: boolean
+  /** Local workbench administrator identity, not authenticated server authorization. */
+  permissionAdminUserId?: string
+}
+
+export function canManageDocumentPermissions(context: DocumentPermissionContext): boolean {
+  return context.userId === (context.permissionAdminUserId ?? context.userId)
 }
 
 export interface DocumentPermissionDecision {

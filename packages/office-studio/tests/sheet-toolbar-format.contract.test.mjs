@@ -112,12 +112,23 @@ test('scene draws vertical alignment, strike and real borders at current zoom', 
   assert.ok(scene.commands.some(command => command.kind === 'line' && command.color === '#123456' && command.width === 3))
 })
 
-test('active cell selection outline keeps a one-pixel stroke at every sheet zoom', () => {
+test('active cell selection outline keeps a one-pixel stroke aligned to the pixel grid at every sheet zoom', () => {
   const geometry = new SpreadsheetGeometry({ id: 's', name: 'Selection', cells: {}, rowCount: 10, columnCount: 5 })
   for (const zoom of [0.5, 1, 1.5, 2]) {
     const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom }, { activeCell: 'A1', selectedCells: [] })
     const outline = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd')
     assert.equal(outline?.width, 1)
+  }
+})
+
+test('fill handle keeps the upstream six-pixel outer size and one-pixel white border across zoom levels', () => {
+  const geometry = new SpreadsheetGeometry({ id: 's', name: 'Selection', cells: {}, rowCount: 10, columnCount: 5 })
+  for (const zoom of [0.5, 1, 1.5, 2]) {
+    const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom }, {
+      activeCell: 'A1', selectedCells: [], selectedRanges: [{ startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }],
+    })
+    const handle = scene.commands.find(command => command.kind === 'rect' && command.fill === '#246bfd' && command.stroke === '#ffffff')
+    assert.deepEqual({ width: handle?.width, height: handle?.height, strokeWidth: handle?.strokeWidth }, { width: 5, height: 5, strokeWidth: 1 })
   }
 })
 
@@ -135,12 +146,13 @@ test('a selected range keeps its visible perimeter while a formula cell is being
   })
   const outline = scene.commands.filter(command => command.kind === 'line' && command.color === '#246bfd')
   assert.deepEqual(outline.map(({ x1, y1, x2, y2, width }) => ({ x1, y1, x2, y2, width })), [
-    { x1: 44, y1: 26, x2: 420, y2: 26, width: 1 },
-    { x1: 44, y1: 104, x2: 420, y2: 104, width: 1 },
-    { x1: 44, y1: 26, x2: 44, y2: 104, width: 1 },
-    { x1: 420, y1: 26, x2: 420, y2: 104, width: 1 },
+    { x1: 44.5, y1: 26.5, x2: 420.5, y2: 26.5, width: 1 },
+    { x1: 44.5, y1: 104.5, x2: 420.5, y2: 104.5, width: 1 },
+    { x1: 44.5, y1: 26.5, x2: 44.5, y2: 104.5, width: 1 },
+    { x1: 420.5, y1: 26.5, x2: 420.5, y2: 104.5, width: 1 },
   ])
-  assert.equal(scene.commands.some(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 6 && command.height === 6), true)
+  const handle = scene.commands.find(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 5 && command.height === 5)
+  assert.deepEqual({ x: handle?.x, y: handle?.y, stroke: handle?.stroke, strokeWidth: handle?.strokeWidth }, { x: 417, y: 101, stroke: '#ffffff', strokeWidth: 1 })
 })
 
 test('selection perimeter and fill handle follow hidden range endpoints', () => {
@@ -151,12 +163,12 @@ test('selection perimeter and fill handle follow hidden range endpoints', () => 
   const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom: 1 }, {
     activeCell: 'C3', selectedCells: [], selectedRanges: [{ startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }],
   })
-  const right = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd' && command.x1 === 308 && command.x2 === 308)
-  const bottom = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd' && command.y1 === 78 && command.y2 === 78)
-  const handle = scene.commands.find(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 6 && command.height === 6)
+  const right = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd' && command.x1 === 308.5 && command.x2 === 308.5)
+  const bottom = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd' && command.y1 === 78.5 && command.y2 === 78.5)
+  const handle = scene.commands.find(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 5 && command.height === 5)
   assert.ok(right)
   assert.ok(bottom)
-  assert.deepEqual({ x: handle?.x, y: handle?.y }, { x: 305, y: 75 })
+  assert.deepEqual({ x: handle?.x, y: handle?.y, strokeWidth: handle?.strokeWidth }, { x: 305, y: 75, strokeWidth: 1 })
 })
 
 test('expanded Ribbon offers executable style/data intents and Pro insert aliases', () => {
@@ -177,13 +189,25 @@ test('expanded Ribbon offers executable style/data intents and Pro insert aliase
 test('the function picker lists only formulas that the real engine can evaluate', () => {
   for (const entry of SHEET_FUNCTION_CATALOG) {
     const workbook = createBlankWorkbook()
-    workbook.sheets[0].cells['0:0'] = createCell(0, 0, 2)
-    workbook.sheets[0].cells['0:1'] = createCell(0, 1, 4)
-    const cell = createCell(0, 2, null)
+    const cells = workbook.sheets[0].cells
+    const fixtureValues = [
+      [0, 0, 4], [1, 0, -100], [2, 0, 110], [3, 0, 2], [4, 0, 3],
+      [5, 0, 5], [6, 0, 6], [7, 0, 7], [8, 0, 8], [9, 0, 9],
+      [0, 1, 'East'], [1, 1, 'East'], [2, 1, 'West'], [3, 1, 'East'],
+      [4, 1, 4], [5, 1, 5], [6, 1, 6], [7, 1, 7], [8, 1, 8], [9, 1, 9],
+      [0, 2, 0.05], [1, 2, 0.04], [2, 2, 0.03], [3, 2, 0.02], [4, 2, 0.01],
+      [0, 3, 100], [1, 3, 200], [2, 3, 300], [3, 3, 400], [4, 3, 500],
+      [0, 4, 46000], [1, 4, 46001], [2, 4, 46002], [3, 4, 46003], [4, 4, 46004],
+      [0, 5, 'North-West'], [1, 5, 'north-west'],
+    ]
+    for (const [row, column, value] of fixtureValues) {
+      cells[`${row}:${column}`] = createCell(row, column, value)
+    }
+    const cell = createCell(0, 6, null)
     cell.formula = buildSheetFunctionFormula(entry.name, entry.example)
-    workbook.sheets[0].cells['0:2'] = cell
+    workbook.sheets[0].cells['0:6'] = cell
     const result = recalculateWorkbookFormulas(workbook)
-    const value = result.workbook.sheets[0].cells['0:2'].value
+    const value = result.workbook.sheets[0].cells['0:6'].value
     assert.ok(!String(value).startsWith('#'), `${entry.name} should evaluate, received ${String(value)}`)
   }
   assert.throws(() => buildSheetFunctionFormula('XLOOKUP', 'A1,B1:B2,C1:C2'), /当前函数目录/)

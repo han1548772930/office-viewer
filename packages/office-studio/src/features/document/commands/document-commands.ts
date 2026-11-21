@@ -3,7 +3,10 @@ import { getDocumentContentControls, transformContentControlsForBlockEdit } from
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
-import { assertDocumentPermission, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
+import { deleteDocumentToc, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
+import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { documentTocIdAtBlock } from '../toc/document-toc'
 import {
   applyNamedParagraphStyle, applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
@@ -29,8 +32,11 @@ export type DocumentCommand =
   | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[] }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch }
+  | { id: 'doc.command.set-section-setup'; sectionId: string; patch: DocumentSectionSetupPatch }
   | { id: 'doc.command.insert-page-field'; sectionId: string; story: 'header' | 'footer'; field: 'PAGE' | 'NUMPAGES' }
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
+  | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers }
+  | { id: 'doc.command.delete-table-of-contents'; tocId: string }
 
 export function blockAtPoint(model: DocumentModel, point: TextTarget): DocumentBlock | undefined {
   const block = model.blocks.find((candidate) => candidate.id === point.blockId)
@@ -80,8 +86,12 @@ export function executeDocumentCommand(
   command: DocumentCommand,
   permissionContext?: DocumentPermissionContext,
 ): DocumentSelection {
-  const permissionTargets = command.id === 'doc.command.set-document-permission-rules' ? [] : permissionTargetsForSelection(model, selection)
-  assertDocumentPermission(model.permissionRules ?? [], permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }, 'edit', permissionTargets)
+  const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
+  if (command.id === 'doc.command.set-document-permission-rules') {
+    if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
+  } else {
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(model, selection))
+  }
   switch (command.id) {
     case 'doc.command.table-insert-row':
     case 'doc.command.table-insert-column':
@@ -165,9 +175,25 @@ export function executeDocumentCommand(
     case 'doc.command.set-section-header-footer':
       applySectionHeaderFooter(model, command.sectionId, command.patch)
       return selection
+    case 'doc.command.set-section-setup':
+      applyDocumentSectionSetupPatch(model, command.sectionId, command.patch)
+      return selection
     case 'doc.command.insert-page-field':
       insertSectionPageField(model, command.sectionId, command.story, command.field)
       return selection
+    case 'doc.command.update-table-of-contents':
+    case 'doc.command.delete-table-of-contents': {
+      const tocBlocks = model.blocks.filter((block) => documentTocIdAtBlock(block) === command.tocId)
+      const targets = selectedTargets(model, selection)
+      if (!tocBlocks.length || !targets.length || targets.some((target) => documentTocIdAtBlock(blockAtPoint(model, target)) !== command.tocId)) {
+        throw new RangeError('Table of contents commands require a selection inside the target table.')
+      }
+      const tocPermissionTargets = tocBlocks.flatMap((block) => permissionTargetsForSelection(model, collapsedSelection({ blockId: block.id, offset: 0 })))
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', tocPermissionTargets)
+      if (command.id === 'doc.command.update-table-of-contents') updateDocumentToc(model, command.tocId, command.mode, command.pageNumbers)
+      else deleteDocumentToc(model, command.tocId)
+      return selection
+    }
     case 'doc.command.set-document-permission-rules':
       validateDocumentPermissionRules(command.rules)
       model.permissionRules = command.rules.map(rule => ({ ...rule, userIds: [...rule.userIds] }))

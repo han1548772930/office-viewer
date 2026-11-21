@@ -105,3 +105,9 @@
 - 本次只读 Ribbon 审计确认 Docs 尚缺上游明确入口或行为：查找替换（DOC-09）、权限管理面板、评论（DOC-10）、正文目录（DOC-04）、单独清除字体颜色/高亮；段落 named styles 与字体/字号选择行为也未对齐。Docs 表格上下文 Ribbon 的单元格/行列对齐、合并拆分、边框底色和尺寸等仍是 DOC-06 缺口。
 - Sheets 尚缺上游插件注册的插入图片/背景图、超链接、评论和结构化表格入口；查找缺替换/全部替换（SHEET-15）；公式 UI 仍使用有限本地 catalog，不能代表固定版完整类别与函数集合。Sheets/Docs Ribbon 使用 Grid 并非其本身是错误变体，但须继续对照上游布局和产品上下文，不能仅以入口数量判定 parity。
 - `COMMON-01/02/03`、`SHEET-15`、`DOC-02/04/06/09/10` 继续未验收。以上缺口不因入口显示或本轮控件替换而关闭。
+
+## Test runner migration (2026-11-21)
+
+- JavaScript contract/unit tests now use Vitest 5.1.1. The default unit config excludes `.browser.test.mjs` files, which remain under the existing separate component command; Playwright browser suites continue to use their Playwright configs.
+- The compute benchmark smoke test is included only by `vitest.benchmark.config.ts` and runs with `pnpm test:benchmark:smoke`, keeping benchmark execution out of the default unit suite. The smoke test passed once after migration. Full test results are recorded only after the final combined run.
+- This changes the JavaScript test runner and adds no product feature coverage by itself. Office feature IDs remain subject to their existing evidence and acceptance requirements.

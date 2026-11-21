@@ -17,17 +17,24 @@ export interface DocumentPermissionTargetOption {
   label: string
 }
 
-export function documentPermissionTargetOptions(model: DocumentModel): DocumentPermissionTargetOption[] {
-  const sections = documentSectionIds(model).map((id, index) => ({ scope: 'section' as const, id, label: `Section ${index + 1}` }))
+export function documentPermissionTargetOptions(
+  model: DocumentModel,
+  translate: (key: string, fallback: string) => string = (_key, fallback) => fallback,
+): DocumentPermissionTargetOption[] {
+  const sections = documentSectionIds(model).map((id, index) => ({
+    scope: 'section' as const,
+    id,
+    label: `${translate('doc.permissions.scope.section', 'Section')} ${index + 1}`,
+  }))
   const paragraphs = findDocumentParagraphs(model, '').map((paragraph, index) => ({
     scope: 'paragraph' as const,
     id: paragraph.paragraphId,
-    label: `${index + 1}. ${paragraph.text.trim().slice(0, 80) || 'Paragraph'}`,
+    label: `${translate('doc.permissions.scope.paragraph', 'Paragraph')} ${index + 1}${paragraph.text.trim() ? ` · ${paragraph.text.trim().slice(0, 80)}` : ''}`,
   }))
   const entities = permissionEntities(model.blocks).map((block, index) => ({
     scope: 'entity' as const,
     id: block.id,
-    label: `${block.type} ${index + 1}`,
+    label: `${translate('doc.permissions.scope.entity', 'Object')} ${index + 1}`,
   }))
   return [...sections, ...paragraphs, ...entities]
 }

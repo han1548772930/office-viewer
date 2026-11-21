@@ -7,6 +7,7 @@ import { SHEET_FUNCTION_CATALOG } from '../src/features/sheet-workbench/sheet-fu
 const state = {
   canUndo: false, canRedo: true, hasSheet: true, canMerge: false, canUnmerge: false,
   canDeleteRow: true, canDeleteColumn: true, chartAvailable: true, dataValidationAvailable: true, canSort: true,
+  filterEnabled: false, filterCanToggle: true,
   fontFamily: 'Aptos', fontSize: 11, numberFormat: 'general', bold: false, italic: true, underline: false,
   wrap: false, align: 'center', gridlines: true, frozen: false, zoom: 100,
 }
@@ -23,9 +24,10 @@ test('the sheet Ribbon exposes only populated semantic categories and stable edi
   assert.equal(new Set(items.map(item => item.id)).size, items.length)
   const paste = tabs[0].groups[0].items.find(item => item.commandId === 'sheet.command.paste')
   assert.deepEqual(paste.children.map(item => item.commandId), [
-    'sheet.command.paste', 'sheet.command.paste-values', 'sheet.command.paste-formats',
+    'sheet.command.paste', 'sheet.command.paste-values', 'sheet.command.paste-formulas', 'sheet.command.paste-formats',
     'sheet.command.paste-column-widths', 'sheet.command.paste-except-borders',
   ])
+  assert.ok(items.some(item => item.commandId === 'sheet.command.paste-formulas'))
   assert.ok(items.some(item => item.commandId === 'sheet.operation.open-range-protection'))
   const leafItems = items.filter(item => item.type !== 'menu')
   assert.ok(leafItems.every(item => /^sheet\.(command|operation)\./.test(item.commandId)))
@@ -105,6 +107,31 @@ test('data validation ribbon entry opens the worksheet rule panel operation', ()
   const validation = items.find(item => item.id === 'sheet.operation.open-data-validation')
   assert.equal(validation.disabled, false)
   assert.deepEqual(ribbonInvocation(validation), { commandId: 'sheet.operation.open-data-validation', params: undefined })
+})
+
+test('filter split menu toggles auto-filter and exposes clear, reapply, and panel commands', () => {
+  const filter = flatten(createSheetRibbon(state)).find(item => item.id === 'sheet.data.filter')
+  assert.equal(filter.type, 'split')
+  assert.deepEqual(ribbonInvocation(filter), { commandId: 'sheet.command.toggle-auto-filter', params: undefined })
+  assert.deepEqual(filter.children.map(item => item.commandId), [
+    'sheet.command.clear-filter', 'sheet.command.reapply-filter', 'sheet.operation.open-data-panel',
+  ])
+  assert.ok(filter.children.every(item => item.disabled))
+
+  const enabled = flatten(createSheetRibbon({ ...state, filterEnabled: true, filterCanToggle: true })).find(item => item.id === 'sheet.data.filter')
+  assert.equal(enabled.activated, true)
+  assert.ok(enabled.children.every(item => !item.disabled))
+})
+
+test('data tools follow the source group order and row or column structure stays in header menus', () => {
+  const tabs = createSheetRibbon(state)
+  const insert = tabs.find(tab => tab.id === 'insert')
+  const data = tabs.find(tab => tab.id === 'data')
+  assert.deepEqual(data.groups.map(group => group.id), ['validation', 'rules', 'sort', 'pivot', 'outline'])
+  assert.deepEqual(data.groups.map(group => group.title), ['数据验证', '规则', '排序和筛选', '分析', '分组显示'])
+  assert.ok(data.groups.find(group => group.id === 'rules').items.some(item => item.commandId === 'sheet.operation.open-conditional-formatting'))
+  assert.ok(!tabs.some(tab => tab.groups.some(group => group.items.some(item => /^sheet\.command\.(insert|delete)-(row|column)$/.test(item.commandId)))))
+  assert.ok(insert.groups.some(group => group.items.some(item => item.commandId === 'sheet.operation.insert-chart')))
 })
 
 test('pivot chart is reachable from data analysis only when pivot tables are available', () => {

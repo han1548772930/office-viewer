@@ -68,6 +68,23 @@ test('assertion exposes a typed denial and rules reject ambiguous definitions', 
   assert.throws(() => permissionModule.validateDocumentPermissionRules([rule('same', 'document', 'edit', 'allow'), rule('same', 'document', 'copy', 'deny')]), /unique/)
 })
 
+test('local permission administrator can recover from an edit denial while other users cannot manage rules', () => {
+  const studio = new apiModule.OfficeStudio({ currentUserId: 'writer' })
+  const office = apiModule.FOffice.newAPI(studio)
+  const document = office.createDocument()
+  document.setPermissionRules([rule('lock-edit', 'document', 'edit', 'deny')])
+  assert.equal(document.getPermissionRules()[0].effect, 'deny')
+  document.setPermissionRules([rule('restore-edit', 'document', 'edit', 'allow')])
+  assert.equal(document.getPermissionRules()[0].effect, 'allow')
+  studio.dispose()
+
+  const guestStudio = new apiModule.OfficeStudio({ currentUserId: 'guest', permissionAdminUserId: 'owner' })
+  const guestOffice = apiModule.FOffice.newAPI(guestStudio)
+  const guestDocument = guestOffice.createDocument()
+  assert.throws(() => guestDocument.setPermissionRules([rule('guest-rule', 'document', 'edit', 'deny')]), /permission administrator/)
+  guestStudio.dispose()
+})
+
 test('Office API persists permission rules and blocks scoped edits through its command bus', () => {
   const studio = new apiModule.OfficeStudio({ currentUserId: 'writer' })
   const office = apiModule.FOffice.newAPI(studio)

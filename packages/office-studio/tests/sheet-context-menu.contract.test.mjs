@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { createSheetContextMenuItems } from '../src/components/spreadsheet/sheet-context-menu.ts'
 
-const options = { canDeleteRow: true, canDeleteColumn: true, frozen: true }
+const options = { sheetId: 'sheet-a', canDeleteRow: true, canDeleteColumn: true, frozen: true, hasHiddenRows: true, hasHiddenColumns: true }
 const commands = (hit, state = options) => createSheetContextMenuItems(hit, state).map(item => item.commandId)
 
 test('cell context menu exposes clipboard, editing, row/column, freeze and protection commands', () => {
   const items = createSheetContextMenuItems({ kind: 'cell', row: 2, column: 1, key: 'B3' }, options)
   assert.deepEqual(items.map(item => item.commandId), [
-    'sheet.command.cut', 'sheet.command.copy', 'sheet.command.paste', 'sheet.command.paste-values',
+    'sheet.command.cut', 'sheet.command.copy', 'sheet.command.copy-formulas', 'sheet.command.paste', 'sheet.command.paste-values', 'sheet.command.paste-formulas',
     'sheet.command.paste-formats', 'sheet.command.paste-column-widths', 'sheet.command.paste-except-borders',
     'sheet.command.clear-content', 'sheet.command.insert-row', 'sheet.command.insert-column',
     'sheet.command.delete-row', 'sheet.command.delete-column', 'sheet.command.freeze-selection',
@@ -28,13 +28,25 @@ test('row and column headers get axis-specific operations and preserve freeze/pr
   assert.ok(commands({ kind: 'column', column: 3 }).includes('sheet.command.delete-column'))
   assert.ok(!columnItems.some(item => ['sheet.command.insert-row', 'sheet.command.delete-row'].includes(item.commandId)))
   assert.ok(rowItems.some(item => item.commandId === 'sheet.operation.open-range-protection'))
+  assert.deepEqual(rowItems.find(item => item.id === 'insert-row-above')?.params, { sheetId: 'sheet-a', index: 4 })
+  assert.deepEqual(rowItems.find(item => item.id === 'insert-row-below')?.params, { sheetId: 'sheet-a', index: 5 })
+  assert.deepEqual(rowItems.find(item => item.id === 'delete-row')?.params, { sheetId: 'sheet-a', index: 4 })
+  assert.deepEqual(columnItems.find(item => item.id === 'insert-column-left')?.params, { sheetId: 'sheet-a', index: 3 })
+  assert.deepEqual(columnItems.find(item => item.id === 'insert-column-right')?.params, { sheetId: 'sheet-a', index: 4 })
+  assert.deepEqual(columnItems.find(item => item.id === 'delete-column')?.params, { sheetId: 'sheet-a', index: 3 })
+  assert.ok(rowItems.some(item => item.commandId === 'sheet.command.hide-row'))
+  assert.ok(columnItems.some(item => item.commandId === 'sheet.command.auto-fit-column'))
 })
 
-test('delete and unfreeze controls reflect model constraints', () => {
-  const items = createSheetContextMenuItems({ kind: 'cell', row: 0, column: 0, key: 'A1' }, { canDeleteRow: false, canDeleteColumn: false, frozen: false })
+test('delete, unhide and unfreeze controls reflect model constraints', () => {
+  const items = createSheetContextMenuItems({ kind: 'cell', row: 0, column: 0, key: 'A1' }, { ...options, canDeleteRow: false, canDeleteColumn: false, frozen: false, hasHiddenRows: false, hasHiddenColumns: false })
   assert.equal(items.find(item => item.id === 'delete-row').disabled, true)
   assert.equal(items.find(item => item.id === 'delete-column').disabled, true)
   assert.equal(items.find(item => item.id === 'unfreeze').disabled, true)
+  const rowItems = createSheetContextMenuItems({ kind: 'row', row: 0 }, { ...options, hasHiddenRows: false })
+  const columnItems = createSheetContextMenuItems({ kind: 'column', column: 0 }, { ...options, hasHiddenColumns: false })
+  assert.equal(rowItems.find(item => item.id === 'show-hidden-rows').disabled, true)
+  assert.equal(columnItems.find(item => item.id === 'show-hidden-columns').disabled, true)
 })
 
 test('whole-sheet context menu does not offer destructive row or column actions', () => {

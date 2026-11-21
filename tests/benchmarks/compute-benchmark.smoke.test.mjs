@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { test } from 'node:test'
+import { test } from 'vitest'
 
 const workspaceRoot = resolve(import.meta.dirname, '../..')
 const benchmarkScript = resolve(workspaceRoot, 'scripts/benchmarks/compute-benchmark.mjs')
