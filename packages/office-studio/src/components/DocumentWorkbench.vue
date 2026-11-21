@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Button, Input, InputNumber, Modal, Tooltip } from 'antdv-next'
-import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { DocumentContentControlType, DocumentModel, DocumentPageSetup } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
@@ -10,6 +10,8 @@ import DocumentContentControlPanel from './document/DocumentContentControlPanel.
 import DocumentOutline from './document/DocumentOutline.vue'
 import DocumentFooter from './document/DocumentFooter.vue'
 import DocumentPageSettings from './document/DocumentPageSettings.vue'
+import DocumentHeaderFooterPanel from './document/DocumentHeaderFooterPanel.vue'
+import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
 import DocumentCharacterPicker from './document/DocumentCharacterPicker.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
@@ -22,8 +24,12 @@ import type { DocumentViewportLocation } from '../features/document/layout/docum
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
+import { sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
+import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
+import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n'
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean }>(), { showHeader: false, showOutline: undefined })
+const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
   'update:fileName': [value: string]
@@ -73,6 +79,11 @@ const notice = ref('')
 const contentControlPanelOpen = ref(false)
 const contentControlInitialType = ref<DocumentContentControlType>()
 const pageSettingsOpen = ref(false)
+const headerFooterPanelOpen = ref(false)
+const headerFooterSectionId = computed(() => sectionIdForBlock(model.value, selection.value.focus.blockId))
+const codeBlockPanelOpen = ref(false)
+const activeCodeBlock = computed(() => model.value.blocks.find((block) => block.id === selection.value.focus.blockId))
+const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
 const characterPickerOpen = ref(false)
 const characterPickerMode = ref<'symbol' | 'emoji'>('symbol')
 const pages = computed(() => layout.value.pages)
@@ -81,7 +92,7 @@ const selectedCharacters = computed(() => documentSelectionCharacterCount(model.
 const toolbarState = computed(() => documentToolbarState(model.value, selection.value, pendingMarks.value))
 const currentMarks = computed(() => toolbarState.value.marks)
 const modalTitle = computed(() => ({ table: '插入表格', image: '插入图片', link: '插入链接', color: '字体颜色', highlight: '文本高亮颜色' })[modalKind.value])
-const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, fullscreen: isFullscreen.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }))
+const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, fullscreen: isFullscreen.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }, createRibbonTranslator(officeLocale.value, 'doc')))
 let resizeObserver: ResizeObserver | undefined
 let imageRequest = 0
 let clipboardRequest = 0
@@ -135,6 +146,15 @@ function publish(next: DocumentModel) {
   emit('document-change', next)
 }
 function execute(command: DocumentCommand) {
+  if (command.id === 'doc.command.insert-text') {
+    const next = cloneDocument(model.value)
+    const codeSelection = editCodeBlockText(next, selection.value, { text: command.text })
+    if (codeSelection) { selection.value = codeSelection; publish(next); return }
+  } else if (command.id === 'doc.command.delete') {
+    const next = cloneDocument(model.value)
+    const codeSelection = editCodeBlockText(next, selection.value, { deleteDirection: command.direction })
+    if (codeSelection) { selection.value = codeSelection; if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next); return }
+  }
   if (command.id === 'doc.command.format-text' && selectionCollapsed(selection.value)) {
     pendingMarks.value = { ...pendingMarks.value, ...command.patch }
     canvasRef.value?.focus()
@@ -153,6 +173,27 @@ function execute(command: DocumentCommand) {
     void nextTick(() => canvasRef.value?.focus())
   }
 }
+function openCodeBlockPanel() { codeBlockPanelOpen.value = true }
+function applyCodeBlock(data: DocumentCodeBlockData) {
+  const next = cloneDocument(model.value)
+  const existing = next.blocks.find((block) => block.id === selection.value.focus.blockId)
+  if (existing && codeBlockData(existing)) {
+    updateCodeBlock(next, existing.id, data)
+  } else {
+    const block = insertCodeBlock(next, selection.value.focus.blockId, data.source, data.language)
+    updateCodeBlock(next, block.id, data)
+    selection.value = collapsedSelection({ blockId: block.id, offset: 0 })
+  }
+  publish(next)
+  void nextTick(() => canvasRef.value?.focus())
+}
+function leaveCodeBlock(blockId: string) {
+  const next = cloneDocument(model.value)
+  const paragraph = exitCodeBlock(next, blockId)
+  if (!paragraph) return
+  selection.value = collapsedSelection({ blockId: paragraph.id, offset: 0 })
+  publish(next)
+}
 function onSelection(value: DocumentSelection) { selection.value = value; visibleBlockId.value = value.focus.blockId; if (outlineNavigationTarget.value !== value.focus.blockId) outlineNavigationTarget.value = undefined; pendingMarks.value = {} }
 function toggleFormat(field: 'bold' | 'italic' | 'underline') { execute({ id: 'doc.command.format-text', patch: { [field]: currentMarks.value[field] !== true } }) }
 function undo() { pendingMarks.value = {}; emit('undo'); void nextTick(() => canvasRef.value?.focus()) }
@@ -169,6 +210,9 @@ function applyPageSetup(page: DocumentPageSetup) {
   orientation.value = page.width > page.height ? 'landscape' : 'portrait'
   publish(next)
   void nextTick(() => canvasRef.value?.focus())
+}
+function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
+  execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch })
 }
 function updateTitle() { emit('update:fileName', documentTitle.value); publish(cloneDocument(model.value)) }
 function saveDocument() { emit('save', { fileName: documentTitle.value, html: documentHtml(model.value), model: model.value }) }
@@ -293,6 +337,7 @@ function onRibbonExecute(id: string, params?: unknown) {
   const command = documentCommandFromRibbon(id, params)
   if (command) { execute(command); return }
   switch (id) {
+    case 'doc.operation.insert-code-block': openCodeBlockPanel(); break
     case 'doc.command.copy': void copySelection(); break
     case 'doc.command.cut': void copySelection(true); break
     case 'doc.command.paste': void pasteSelection(); break
@@ -319,6 +364,7 @@ function onRibbonExecute(id: string, params?: unknown) {
       if (params === 'color' || params === 'highlight') { modalKind.value = params; modalValue.value = params === 'color' ? textColor.value : highlightColor.value; modalError.value = ''; modalOpen.value = true }
       break
     case 'doc.operation.open-page-settings': pageSettingsOpen.value = true; break
+    case 'doc.operation.open-header-footer': headerFooterPanelOpen.value = true; break
     case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
     case 'doc.command.set-orientation': if (params === 'portrait' || params === 'landscape') { orientation.value = params; changePageSetup() }; break
   }
@@ -336,7 +382,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Button type="primary" @click="openImport"><FileUp :size="15" />打开文档</Button>
     </header>
     <input ref="fileInputRef" class="hidden-input" type="file" accept=".doc,.docx,.odt,.txt" @change="onFileChange">
-    <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" label="文档功能区" @execute="onRibbonExecute">
+    <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" variant="grid" label="文档功能区" @execute="onRibbonExecute">
       <template #tab-extra>
         <label v-if="showFind" class="search-box">
           <Search :size="14" />
@@ -348,7 +394,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" @command="execute" @toggle-format="toggleFormat" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
     </main>
     <DocumentFooter :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
@@ -361,6 +407,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" :initial-type="contentControlInitialType" @error="notify" />
     <DocumentCharacterPicker v-model:open="characterPickerOpen" :mode="characterPickerMode" @insert="insertCharacter" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
+    <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" />
+    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
   </section>
 </template>
 

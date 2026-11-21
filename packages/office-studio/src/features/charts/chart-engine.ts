@@ -11,6 +11,7 @@ import type {
 } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
 import { randomId } from '../../api/model-utils'
+import { pivotOutputValues } from '../pivot/services/pivot-engine.ts'
 
 export interface ChartConfig {
   type: ChartType
@@ -21,6 +22,7 @@ export interface ChartConfig {
   legend?: Partial<ChartLegendOptions>
   categoryField?: number
   valueFields?: number[]
+  pivotTableId?: string
   xAxis?: Partial<ChartAxisOptions>
   yAxis?: Partial<ChartAxisOptions>
 }
@@ -58,7 +60,7 @@ const DEFAULT_AXIS: ChartAxisOptions = { scaleType: 'linear' }
 export function createChart(workbook: WorkbookModel, sheetId: string, config: ChartConfig, id = randomId('chart')): ChartModel {
   const sheet = requireSheet(workbook, sheetId)
   const source = normalizeSource(config.source)
-  validateSourceInSheet(source.range, sheet)
+  if (!config.pivotTableId) validateSourceInSheet(source.range, sheet)
   const type = config.type
   if (type !== 'bar' && type !== 'line') throw new TypeError(`Unsupported chart type: ${type}`)
   const position = normalizeSize(config.position, 'chart position', true)
@@ -77,12 +79,14 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
     legend: { ...DEFAULT_LEGEND, ...(config.legend ?? {}) },
     categoryField,
     valueFields: valueFields ?? [],
+    pivotTableId: config.pivotTableId,
     xAxis: { ...DEFAULT_AXIS, ...(config.xAxis ?? {}) },
     yAxis: { ...DEFAULT_AXIS, ...(config.yAxis ?? {}) },
     revision: 0,
   }
   validateAxis(model.xAxis, 'xAxis')
   validateAxis(model.yAxis, 'yAxis')
+  if (model.pivotTableId && !workbook.pivotTables?.some((pivot) => pivot.id === model.pivotTableId)) throw new Error(`Pivot table not found: ${model.pivotTableId}`)
   // Resolve once during creation so invalid field indexes fail atomically.
   readChartData(workbook, model)
   return model
@@ -102,7 +106,7 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
     revision: chart.revision + 1,
   }
   const sheet = requireSheet(workbook, chart.sheetId)
-  validateSourceInSheet(next.source.range, sheet)
+  if (!next.pivotTableId) validateSourceInSheet(next.source.range, sheet)
   if (next.type !== 'bar' && next.type !== 'line') throw new TypeError(`Unsupported chart type: ${next.type}`)
   next.categoryField = normalizeField(next.categoryField, 'categoryField')
   next.valueFields = next.valueFields.map((field) => normalizeField(field, 'valueField'))
@@ -114,6 +118,11 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
 }
 
 export function readChartData(workbook: WorkbookModel, chart: ChartModel): ChartData {
+  if (chart.pivotTableId) {
+    const pivot = workbook.pivotTables?.find((candidate) => candidate.id === chart.pivotTableId)
+    if (!pivot) throw new Error(`Pivot table not found: ${chart.pivotTableId}`)
+    return readPivotChartData(pivotOutputValues(workbook, pivot), chart)
+  }
   const sheet = requireSheet(workbook, chart.sheetId)
   const range = chart.source.range
   const matrix = readMatrix(sheet, range)
@@ -130,6 +139,38 @@ export function readChartData(workbook: WorkbookModel, chart: ChartModel): Chart
     values: matrix.slice(1).map((row) => numericValue(row[field])),
   }))
   return { categories, series }
+}
+
+function readPivotChartData(matrix: CellScalar[][], chart: ChartModel): ChartData {
+  if (matrix.length < 2 || matrix[0]!.length < 2) throw new RangeError('Pivot chart requires a pivot table with row and value fields')
+  const rows = matrix.slice(2).filter((row) => row.some((value) => typeof value === 'number') && !isPivotTotalRow(row))
+  if (!rows.length) throw new RangeError('Pivot chart has no numeric categories to display')
+  const firstValueField = matrix[0]!.findIndex((_value, index) => index > 0 && rows.some((row) => typeof row[index] === 'number'))
+  const valueFields = chart.valueFields.length
+    ? chart.valueFields
+    : matrix[0]!.map((_value, index) => index).filter((index) => index >= firstValueField && rows.some((row) => typeof row[index] === 'number') && !isPivotTotalColumn(matrix, index))
+  for (const field of valueFields) if (field <= 0 || field >= matrix[0]!.length || isPivotTotalColumn(matrix, field)) throw new RangeError('Pivot chart value field is outside pivot output')
+  const previousLabels = Array.from({ length: firstValueField }, () => '')
+  const categories = rows.map((row) => row.slice(0, firstValueField).map((value, index) => {
+    if (value != null && value !== '') previousLabels[index] = scalarLabel(value)
+    return previousLabels[index]!
+  }).filter(Boolean).join(' / '))
+  return {
+    categories,
+    series: valueFields.map((field) => ({
+      field,
+      name: [matrix[0]![field], matrix[1]![field]].filter((value) => value != null && value !== '').map(scalarLabel).join(' · ') || `Series ${field}`,
+      values: rows.map((row) => numericValue(row[field])),
+    })),
+  }
+}
+
+function isPivotTotalColumn(matrix: CellScalar[][], column: number): boolean {
+  return matrix.slice(0, 2).some((row) => typeof row[column] === 'string' && /(?:^|\s)(?:grand\s+)?total$/i.test(row[column]!.trim()))
+}
+
+function isPivotTotalRow(row: CellScalar[]): boolean {
+  return row.some((value) => typeof value === 'string' && /(?:^|\s)(?:grand\s+)?total$/i.test(value.trim()))
 }
 
 export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLayout {

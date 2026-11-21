@@ -1,6 +1,7 @@
-import type { CellScalar, ChartModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule } from '../domain/model.ts'
+import type { CellScalar, ChartModel, PivotTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SparklineSpec } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
+import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
 
 export interface ExcelCellView {
   value: string
@@ -26,6 +27,7 @@ export interface ExcelCellView {
   rotationVertical?: boolean
   indent?: number
   shrinkToFit?: boolean
+  sparkline?: SparklineSpec
 }
 export interface ExcelSheetView {
   id: string
@@ -38,6 +40,11 @@ export interface ExcelSheetView {
   columnWidths?: Record<number, number>
   rowHeights?: Record<number, number>
   hiddenRows?: number[]
+  outline?: SheetOutlineState
+  /** Derived collapsed rows. The domain outline is the persisted source of truth. */
+  outlineHiddenRows?: number[]
+  /** Derived collapsed columns. The domain outline is the persisted source of truth. */
+  outlineHiddenColumns?: number[]
   /** Derived view visibility. This must never be written back as manually hidden rows. */
   filteredRows?: number[]
   hiddenColumns?: number[]
@@ -49,7 +56,7 @@ export interface ExcelSheetView {
   dataValidations?: SheetDataValidationRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
 }
-export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; date1904?: boolean }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual' }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -74,11 +81,13 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   rotation: cell.style.rotation === 255 ? 0 : cell.style.rotation,
   rotationVertical: cell.style.rotationVertical === true || cell.style.rotation === 255,
   indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
+  sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
 })
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
-    id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId, date1904: workbook.date1904,
+    id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId, date1904: workbook.date1904, calculationMode: workbook.calculationMode ?? 'automatic',
     charts: workbook.charts?.map(cloneChartModel),
+    pivotTables: workbook.pivotTables?.map((pivot) => ({ ...pivot, source: { ...pivot.source, range: { ...pivot.source.range } }, anchor: { ...pivot.anchor }, fields: pivot.fields.map((field) => ({ ...field })), options: { ...pivot.options } })),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
       let rowCount = Math.max(100, sheet.rowCount ?? 0)
@@ -94,6 +103,9 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         freeze: { rows: sheet.frozenRows, columns: sheet.frozenCols },
         columnWidths: { ...sheet.columnWidths }, rowHeights: { ...sheet.rowHeights },
         hiddenRows: [...(sheet.hiddenRows ?? [])], hiddenColumns: [...(sheet.hiddenColumns ?? [])],
+        outline: sheet.outline ? { ...sheet.outline, groups: sheet.outline.groups.map(group => ({ ...group })) } : undefined,
+        outlineHiddenRows: sheet.outline ? [...getCollapsedOutlineIndexes({ count: rowCount, groups: sheet.outline.groups.filter(group => group.axis === 'row') })] : [],
+        outlineHiddenColumns: sheet.outline ? [...getCollapsedOutlineIndexes({ count: columnCount, groups: sheet.outline.groups.filter(group => group.axis === 'column') })] : [],
         filteredRows: [...(sheet.autoFilter?.filteredRows ?? [])],
         showGridlines: sheet.showGridlines, visible: sheet.visible,
         defaultColumnWidth: sheet.defaultColumnWidth, defaultRowHeight: sheet.defaultRowHeight,
@@ -114,6 +126,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
   return {
     ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904: view.date1904 ?? workbook.date1904,
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
+    calculationMode: view.calculationMode === 'manual' ? 'manual' : 'automatic',
     sheets: view.sheets.map((source) => {
       const original = workbook.sheets.find((sheet) => sheet.id === source.id)
       const cells: Record<string, SpreadsheetCell> = {}
@@ -130,6 +143,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
         cells[id] = {
           ...previous, id, ...position, value, formula: cell.formula ?? null,
+          sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
           display: display ?? (cell.formula ? cell.cachedValue ?? cell.formula : preserveDisplay ? previous.display : cell.value),
           style: {
             ...previous?.style,
@@ -154,6 +168,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         rowCount: source.rowCount, columnCount: source.columnCount,
         columnWidths: { ...(source.columnWidths ?? original?.columnWidths) }, rowHeights: { ...(source.rowHeights ?? original?.rowHeights) },
         hiddenRows: [...(source.hiddenRows ?? original?.hiddenRows ?? [])], hiddenColumns: [...(source.hiddenColumns ?? original?.hiddenColumns ?? [])],
+        outline: source.outline ? { ...source.outline, groups: source.outline.groups.map(group => ({ ...group })) } : original?.outline ? { ...original.outline, groups: original.outline.groups.map(group => ({ ...group })) } : undefined,
         showGridlines: source.showGridlines ?? original?.showGridlines ?? true,
         defaultColumnWidth: source.defaultColumnWidth ?? original?.defaultColumnWidth,
         defaultRowHeight: source.defaultRowHeight ?? original?.defaultRowHeight,

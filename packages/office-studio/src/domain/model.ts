@@ -39,7 +39,37 @@ export interface SpreadsheetCell {
   cachedDataType?: string | null
   richText?: ReadonlyArray<Record<string, unknown>>
   hyperlink?: string | null
+  sparkline?: SparklineSpec
   metadata?: Record<string, unknown>
+}
+
+export type SparklineType = 'line' | 'column' | 'winloss'
+export type SparklineEmptyCells = 'gap' | 'zero' | 'connect'
+export interface SparklineSpec {
+  type: SparklineType
+  sourceRange: string
+  color: string
+  negativeColor?: string
+  highPointColor?: string
+  lowPointColor?: string
+  emptyCells: SparklineEmptyCells
+  axis: 'individual' | 'custom'
+  min?: number
+  max?: number
+}
+
+export type OutlineAxis = 'row' | 'column'
+export interface SheetOutlineGroup {
+  id: string
+  axis: OutlineAxis
+  start: number
+  end: number
+  collapsed: boolean
+}
+export interface SheetOutlineState {
+  summaryAbove: boolean
+  summaryLeft: boolean
+  groups: SheetOutlineGroup[]
 }
 
 export interface CellRange {
@@ -220,6 +250,7 @@ export interface ChartModel {
   legend: ChartLegendOptions
   categoryField: number
   valueFields: number[]
+  pivotTableId?: string
   xAxis: ChartAxisOptions
   yAxis: ChartAxisOptions
   revision: number
@@ -262,6 +293,7 @@ export interface SpreadsheetSheet {
   frozenCols: number
   showGridlines: boolean
   hiddenRows?: number[]
+  outline?: SheetOutlineState
   autoFilter?: SheetAutoFilter
   dataValidations?: SheetDataValidationRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
@@ -277,6 +309,7 @@ export interface SpreadsheetSheet {
 export interface WorkbookModel {
   kind: 'workbook'
   name: string
+  calculationMode?: 'automatic' | 'manual'
   sheets: SpreadsheetSheet[]
   activeSheetId: string
   date1904: boolean
@@ -393,6 +426,18 @@ export interface DocumentPageSetup {
   marginLeft: number
 }
 
+export interface DocumentSectionHeaderFooter {
+  header: string
+  footer: string
+  firstPageHeader: string
+  firstPageFooter: string
+  evenPageHeader: string
+  evenPageFooter: string
+  differentFirstPage: boolean
+  differentOddEven: boolean
+  linkToPrevious: boolean
+}
+
 export interface DocumentModel {
   kind: 'document'
   name: string
@@ -401,6 +446,7 @@ export interface DocumentModel {
   modified: boolean
   wordCount: number
   contentControls?: DocumentContentControl[]
+  sectionHeaderFooters?: Record<string, DocumentSectionHeaderFooter>
   id?: string
   metadata?: Record<string, unknown>
 }

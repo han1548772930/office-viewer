@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { Input, Modal } from 'antdv-next'
-import { onMounted, onUnmounted, ref } from 'vue'
-import { DocumentWorkbench, ExcelWorkbench } from '@office-studio/office-studio'
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { DocumentWorkbench, ExcelWorkbench, OfficeLocaleKey, type OfficeLocale } from '@office-studio/office-studio'
 import WorkspaceHeader, { type WorkspaceHeaderAction } from './WorkspaceHeader.vue'
 import { useWorkspaceController } from './useWorkspaceController'
 import type { FileAction } from './workspace-file-operations'
@@ -17,6 +18,9 @@ const {
 interface WorkbenchHandle { save: () => void; focus?: () => void }
 const workbookRef = ref<WorkbenchHandle | null>(null)
 const documentRef = ref<WorkbenchHandle | null>(null)
+const { locale } = useI18n()
+provide(OfficeLocaleKey, computed(() => locale.value === 'en-US' ? 'en-US' : 'zh-CN'))
+watch(locale, value => localStorage.setItem('office-studio.locale', value), { flush: 'sync' })
 let requestedAction: FileAction = 'save'
 
 function requestExport(action: FileAction = 'save'): void {
@@ -61,8 +65,8 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     <WorkspaceHeader
       :active-kind="editor.state.activeKind" :file-name="activeFileName" :modified="modified"
       :parser-status="editor.state.parserStatus" :parser-message="editor.state.parserMessage"
-      :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length"
-      @action="onHeaderAction" @switch="switchWorkspace"
+      :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale === 'en-US' ? 'en-US' : 'zh-CN'"
+      @action="onHeaderAction" @switch="switchWorkspace" @locale="locale = $event"
     />
     <input :ref="setFileInput" class="file-input" type="file" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" aria-label="选择 Office 文件" @change="onFileChange">
 

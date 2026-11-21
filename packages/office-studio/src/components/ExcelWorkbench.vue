@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Button, Input, Modal, Select, Tooltip } from 'antdv-next'
 import { FUniver } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
-import { applyExcelWorkbookView } from '../services/excelViewAdapter'
+import { applyExcelWorkbookView, toExcelWorkbookView } from '../services/excelViewAdapter'
 import { createBlankWorkbook } from '../domain/model'
 import type { ChartModel } from '../domain/model'
 import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
@@ -25,11 +25,18 @@ import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow, hiddenSheetRows } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { createSheetPastePlan, type SheetPasteMode } from '../features/sheet-workbench/sheet-paste.ts'
+import { createSparklineGroupPatches } from '../features/sparkline/sparkline-model.ts'
+import { createFormatPainterPatches, type FormatPainterSource } from '../features/sheet-workbench/sheet-format-painter.ts'
+import { addSheetOutlineGroup, createSheetOutlineState, removeSheetOutlineGroup, setSheetOutlineCollapsed } from '../features/sheet-outline/sheet-outline.ts'
+import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n.ts'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const SlicerPanel = defineAsyncComponent(() => import('./spreadsheet/SlicerPanel.vue'))
 const SheetDataPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataPanel.vue'))
 const SheetDataValidationPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataValidationPanel.vue'))
+const SheetRangeProtectionPanel = defineAsyncComponent(() => import('./spreadsheet/SheetRangeProtectionPanel.vue'))
+const CustomNumberFormatPanel = defineAsyncComponent(() => import('./spreadsheet/CustomNumberFormatPanel.vue'))
 
 export type ExcelCell = ExcelCellView
 export type ExcelSheet = SpreadsheetRenderSheet
@@ -43,6 +50,7 @@ const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: Exc
   showHeader: false,
   studio: undefined,
 })
+const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: ExcelWorkbook): void
@@ -140,6 +148,8 @@ const chartSource = ref('')
 const chartTitle = ref('')
 const chartType = ref<'bar' | 'line'>('bar')
 const chartError = ref('')
+const workbenchRef = ref<HTMLElement | null>(null)
+const isFullscreen = ref(false)
 const pivotPanelOpen = ref(false)
 const pivotSource = ref('')
 const slicerPanelOpen = ref(false)
@@ -154,6 +164,17 @@ const functionArguments = ref('')
 const functionError = ref('')
 const validationPanelOpen = ref(false)
 const validationPanelRange = ref('A1')
+const protectionPanelOpen = ref(false)
+const copiedRange = ref<GridRange | null>(null)
+const copiedColumnWidths = ref<Record<number, number> | undefined>()
+const copiedDefaultColumnWidth = ref<number>()
+const sparklinePanelOpen = ref(false)
+const sparklineTargetRange = ref('A1')
+const sparklineSourceRange = ref('B1:F1')
+const sparklineType = ref<'line' | 'column' | 'winloss'>('line')
+const sparklineError = ref('')
+const customNumberFormatOpen = ref(false)
+const formatPainterSource = ref<FormatPainterSource | null>(null)
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
 const functionOptions = computed(() => SHEET_FUNCTION_CATALOG
   .filter(entry => functionCategory.value === null || entry.category === functionCategory.value)
@@ -219,8 +240,9 @@ const ribbonTabs = computed(() => createSheetRibbon({
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
-  frozen: isFrozen.value, zoom: zoom.value,
-}))
+  frozen: isFrozen.value, zoom: zoom.value, fullscreen: isFullscreen.value,
+  calculationMode: workbook.value.calculationMode ?? 'automatic',
+}, createRibbonTranslator(officeLocale.value, 'sheet')))
 const formulaValue = computed(() => editingKey.value ? editValue.value : activeCell.value.formula ?? activeCell.value.value)
 const searchMatches = computed(() => {
   if (!searchText.value) return []
@@ -402,9 +424,26 @@ function setCellValue(key: string, value: string): boolean {
 }
 
 function recalculateFormulas() {
+  if (workbook.value.calculationMode === 'manual') return
   const previous = workbook.value.id ? props.studio?.getWorkbookModel(workbook.value.id) : undefined
   const result = recalculateSheetViewFormulas(workbook.value, previous)
   workbook.value = result.workbook
+}
+
+function recalculateWorkbook() {
+  const workbookId = workbook.value.id
+  if (!workbookId || !props.studio) {
+    const result = recalculateSheetViewFormulas(workbook.value)
+    workbook.value = result.workbook
+    return
+  }
+  const book = FUniver.newAPI(props.studio).getWorkbook(workbookId)
+  if (book) {
+    book.recalculate()
+    const model = props.studio?.getWorkbookModel(workbookId)
+    if (model) workbook.value = toExcelWorkbookView(model)
+    return
+  }
 }
 
 function splitKey(key: string): [number, number] {
@@ -434,6 +473,30 @@ function selectCell(key: string, extend = false) {
   }
   selectedKey.value = key
   syncApiSelection()
+  applyFormatPainterToSelection()
+}
+
+function armFormatPainter(): void {
+  const range = selectionBounds(selectedRanges.value)
+  if (!range || !activeSheet.value) return
+  const cells = Array.from({ length: range.endRow - range.startRow + 1 }, (_, rowOffset) =>
+    Array.from({ length: range.endColumn - range.startColumn + 1 }, (_, columnOffset) =>
+      ({ ...getCell(`${columnName(range.startColumn + columnOffset)}${range.startRow + rowOffset + 1}`) })),
+  )
+  formatPainterSource.value = { range, cells }
+  emit('notify', { type: 'info', message: '格式刷已就绪，请选择目标单元格范围。' })
+}
+
+function applyFormatPainterToSelection(): void {
+  const source = formatPainterSource.value
+  const sheet = activeSheet.value
+  const targets = selectedRanges.value
+  if (!source || !sheet || !targets.length) return
+  const patches = createFormatPainterPatches(source, targets, sheet.cells, (row, column) => `${columnName(column)}${row + 1}`)
+  if (!checkDirectSelection(patches.length)) return
+  for (const patch of patches) sheet.cells[`${columnName(patch.column)}${patch.row + 1}`] = patch.cell
+  formatPainterSource.value = null
+  commitHistory()
 }
 
 function beginEdit(key = selectedKey.value, initialValue?: string, target: 'cell' | 'formula' = 'cell') {
@@ -571,6 +634,12 @@ function selectedExistingKeys(): string[] {
 function copySelection(): boolean {
   const bounds = selectionBounds(selectedRanges.value)
   if (!activeSheet.value || !bounds || !checkDirectSelection(selectionCount([bounds]))) return false
+  copiedRange.value = { ...bounds }
+  copiedColumnWidths.value = Object.fromEntries(Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, offset) => {
+    const column = bounds.startColumn + offset
+    return [column, activeSheet.value?.columnWidths?.[column] ?? activeSheet.value?.defaultColumnWidth ?? 96]
+  }))
+  copiedDefaultColumnWidth.value = activeSheet.value.defaultColumnWidth ?? 96
   copiedCells.value = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
     Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, columnOffset) => ({ ...getCell(`${columnName(bounds.startColumn + columnOffset)}${bounds.startRow + rowOffset + 1}`) })),
   )
@@ -615,6 +684,45 @@ function applyPasteText(text: string) {
     const formula = value.startsWith('=') ? value : undefined
     activeSheet.value!.cells[key] = { ...current, value: formula ? '' : value, formula, cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined }
   })
+  recalculateFormulas()
+  commitHistory()
+}
+
+function pasteInternal(mode: SheetPasteMode) {
+  const sheet = activeSheet.value
+  const source = copiedCells.value
+  const sourceRange = copiedRange.value
+  const targetRange = selectionBounds(selectedRanges.value)
+  if (!sheet || !source || !sourceRange || !targetRange) {
+    if (mode === 'all' || mode === 'values') void pasteSelection()
+    return
+  }
+  const targetCells = source.map((row, rowOffset) => row.map((_, columnOffset) => {
+    const rowIndex = targetRange.startRow + rowOffset
+    const columnIndex = targetRange.startColumn + columnOffset
+    return sheet.cells[`${columnName(columnIndex)}${rowIndex + 1}`] ?? { value: '' }
+  }))
+  const plan = createSheetPastePlan({
+    mode,
+    sourceCells: source,
+    targetCells,
+    sourceStartRow: sourceRange.startRow,
+    sourceStartColumn: sourceRange.startColumn,
+    targetStartRow: targetRange.startRow,
+    targetStartColumn: targetRange.startColumn,
+    sourceColumnWidths: copiedColumnWidths.value,
+    sourceDefaultColumnWidth: copiedDefaultColumnWidth.value,
+  })
+  const patches = plan.cellPatches.map(({ rowOffset, columnOffset, cell }) => ({
+    key: `${columnName(targetRange.startColumn + columnOffset)}${targetRange.startRow + rowOffset + 1}`,
+    cell,
+  }))
+  if (!checkDirectSelection(patches.length) || !validateIncomingValues(patches.map(({ key, cell }) => ({ key, value: cell.formula ?? cell.value })))) return
+  patches.forEach(({ key, cell }) => { sheet.cells[key] = cell })
+  if (plan.columnWidthPatches.length) {
+    sheet.columnWidths ??= {}
+    plan.columnWidthPatches.forEach(({ column, width }) => { sheet.columnWidths![column] = width })
+  }
   recalculateFormulas()
   commitHistory()
 }
@@ -989,6 +1097,17 @@ function findNext() {
   if (next) { selectCell(next); spreadsheetCanvas.value?.ensureVisible(next) }
 }
 function closeSearch() { searchOpen.value = false; searchText.value = ''; spreadsheetCanvas.value?.focus() }
+function syncFullscreen() { isFullscreen.value = document.fullscreenElement === workbenchRef.value }
+async function toggleFullscreen() {
+  const workbench = workbenchRef.value
+  if (!workbench) return
+  try {
+    if (document.fullscreenElement === workbench) await document.exitFullscreen()
+    else await workbench.requestFullscreen()
+  } catch (error) {
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法切换全屏' })
+  }
+}
 
 function openPivotPanel() {
   const bounds = selectionBounds(selectedRanges.value)
@@ -1007,6 +1126,53 @@ function openDataValidationPanel(): void {
   const bounds = selectionBounds(selectedRanges.value)
   validationPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
   validationPanelOpen.value = true
+}
+function openSparklinePanel(): void {
+  const bounds = selectionBounds(selectedRanges.value)
+  sparklineTargetRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
+  sparklineSourceRange.value = bounds
+    ? `${columnName(bounds.startColumn)}${bounds.startRow + 1}:${columnName(bounds.endColumn)}${bounds.endRow + 1}`
+    : 'B1:F1'
+  sparklineError.value = ''
+  sparklinePanelOpen.value = true
+}
+function insertSparklines(): void {
+  const sheet = activeSheet.value
+  if (!sheet) return
+  try {
+    const patches = createSparklineGroupPatches({ targetRange: sparklineTargetRange.value, sourceRange: sparklineSourceRange.value, type: sparklineType.value, color: '#2563eb' })
+    for (const [address, sparkline] of Object.entries(patches)) {
+      const cell = sheet.cells[address] ?? { value: '' }
+      sheet.cells[address] = { ...cell, sparkline }
+    }
+    sparklinePanelOpen.value = false
+    commitHistory()
+  } catch (error) { sparklineError.value = error instanceof Error ? error.message : '迷你图配置无效。' }
+}
+function changeOutline(axis: 'row' | 'column', operation: 'group' | 'toggle' | 'remove'): void {
+  const sheet = activeSheet.value
+  const range = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
+  if (!sheet || !range) return
+  const start = axis === 'row' ? range.startRow : range.startColumn
+  const end = axis === 'row' ? range.endRow : range.endColumn
+  const count = axis === 'row' ? sheet.rowCount : sheet.columnCount
+  const state = sheet.outline ?? createSheetOutlineState()
+  try {
+    if (operation === 'group') {
+      sheet.outline = addSheetOutlineGroup(state, axis, start, end, count, crypto.randomUUID())
+    } else {
+      const matching = state.groups.filter(group => group.axis === axis && group.start <= start && group.end >= end)
+      const target = matching.sort((left, right) => (left.end - left.start) - (right.end - right.start))[0]
+      if (!target) throw new Error(`当前选区没有可${operation === 'toggle' ? '折叠' : '取消分组'}的大纲组。`)
+      sheet.outline = operation === 'remove'
+        ? removeSheetOutlineGroup(state, target.id)
+        : setSheetOutlineCollapsed(state, target.id, !target.collapsed)
+    }
+    workbook.value = { ...workbook.value, sheets: workbook.value.sheets.map(candidate => candidate.id === sheet.id ? { ...candidate, outline: sheet.outline } : candidate) }
+    commitHistory()
+  } catch (error) {
+    emit('notify', { type: 'warning', message: error instanceof Error ? error.message : '大纲操作失败。' })
+  }
 }
 function openFunctionPanel(category?: string): void {
   if (category !== undefined && !SHEET_FUNCTION_CATALOG.some(entry => entry.category === category)) return
@@ -1052,7 +1218,21 @@ async function executeRibbon(commandId: string, params?: unknown) {
   const commands: Record<string, () => void | Promise<void>> = {
     'sheet.command.undo': undo, 'sheet.command.redo': redo,
     'sheet.command.copy': () => { copySelection() }, 'sheet.command.cut': cutSelection,
-    'sheet.command.paste': () => { void pasteSelection() }, 'sheet.command.clear-content': clearSelection,
+    'sheet.command.paste': () => pasteInternal('all'),
+    'sheet.command.paste-values': () => pasteInternal('values'),
+    'sheet.command.paste-formats': () => pasteInternal('formats'),
+    'sheet.command.paste-column-widths': () => pasteInternal('columnWidths'),
+    'sheet.command.paste-except-borders': () => pasteInternal('exceptBorders'),
+    'sheet.command.clear-content': clearSelection,
+    'sheet.command.set-calculation-mode': () => {
+      if ((params !== 'automatic' && params !== 'manual') || !props.studio || !workbook.value.id) return
+      const book = FUniver.newAPI(props.studio).getWorkbook(workbook.value.id)
+      if (!book) return
+      book.setCalculationMode(params)
+      const model = props.studio.getWorkbookModel(workbook.value.id)
+      if (model) workbook.value = toExcelWorkbookView(model)
+      commitHistory()
+    },
     'sheet.command.toggle-bold': () => toggleStyle('bold'), 'sheet.command.toggle-italic': () => toggleStyle('italic'),
     'sheet.command.toggle-underline': () => toggleStyle('underline'),
     'sheet.command.toggle-strike': () => toggleStyle('strike'),
@@ -1086,10 +1266,20 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-timeline': () => openSlicerPanel('timeline'),
     'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
     'sheet.operation.open-data-validation': openDataValidationPanel,
+    'sheet.operation.open-sparkline': openSparklinePanel,
+    'sheet.operation.format-painter': armFormatPainter,
+    'sheet.operation.open-custom-number-format': () => { customNumberFormatOpen.value = true },
+    'sheet.operation.open-range-protection': () => { const bounds = selectionBounds(selectedRanges.value); if (bounds) { validationPanelRange.value = rangeNotation(bounds); protectionPanelOpen.value = true } },
+    'sheet.operation.outline-group-rows': () => changeOutline('row', 'group'),
+    'sheet.operation.outline-toggle-rows': () => changeOutline('row', 'toggle'),
+    'sheet.operation.outline-remove-rows': () => changeOutline('row', 'remove'),
+    'sheet.operation.outline-group-columns': () => changeOutline('column', 'group'),
+    'sheet.operation.outline-toggle-columns': () => changeOutline('column', 'toggle'),
+    'sheet.operation.outline-remove-columns': () => changeOutline('column', 'remove'),
     'sheet.operation.open-function': () => openFunctionPanel(typeof params === 'string' ? params : undefined),
     'sheet.command.sort-ascending': () => sortSelection(true),
     'sheet.command.sort-descending': () => sortSelection(false),
-    'sheet.command.recalculate': () => { recalculateFormulas(); commitHistory() },
+    'sheet.command.recalculate': () => { recalculateWorkbook(); commitHistory() },
     'sheet.operation.start-formula': () => { beginEdit(selectedKey.value, activeCell.value.formula ?? '=', 'formula') },
     'sheet.command.toggle-gridlines': () => { if (activeSheet.value) { activeSheet.value.showGridlines = activeSheet.value.showGridlines === false; commitHistory() } },
     'sheet.command.freeze-selection': () => { const [column, row] = splitKey(selectedKey.value); freeze(row - 1, column) },
@@ -1098,12 +1288,14 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.zoom-in': () => { zoom.value = Math.min(400, zoom.value + 10) },
     'sheet.operation.zoom-out': () => { zoom.value = Math.max(10, zoom.value - 10) },
     'sheet.operation.reset-zoom': () => { zoom.value = 100 },
+    'sheet.operation.set-zoom': () => { if (typeof params === 'number' && Number.isFinite(params)) zoom.value = Math.min(400, Math.max(10, params)) },
+    'sheet.operation.toggle-fullscreen': toggleFullscreen,
     'sheet.operation.find': openSearch,
   }
   const command = commands[commandId]
   if (!command) return
   try { await command() } catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '操作失败' }); return }
-  if (!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom')) void nextTick(() => spreadsheetCanvas.value?.focus())
+  if (!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom') || commandId === 'sheet.operation.set-zoom') void nextTick(() => spreadsheetCanvas.value?.focus())
 }
 
 function onWindowKeydown(event: KeyboardEvent) {
@@ -1123,21 +1315,28 @@ watch(selectedKey, () => { nameError.value = ''; void nextTick(scrollToSelected)
 defineExpose({ save: saveWorkbook, focus: () => spreadsheetCanvas.value?.focus() })
 
 onMounted(() => {
+  document.addEventListener('fullscreenchange', syncFullscreen)
   window.addEventListener('mouseup', stopSelecting)
   window.addEventListener('keydown', onWindowKeydown)
 })
 
 onUnmounted(() => {
   sortController?.abort()
+  document.removeEventListener('fullscreenchange', syncFullscreen)
   window.removeEventListener('mouseup', stopSelecting)
   window.removeEventListener('keydown', onWindowKeydown)
 })
-onDeactivated(() => sortController?.abort())
+onDeactivated(() => {
+  sortController?.abort()
+  if (document.fullscreenElement === workbenchRef.value) {
+    void document.exitFullscreen().catch((error: unknown) => emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法退出全屏' }))
+  }
+})
 
 </script>
 
 <template>
-  <section class="excel-workbench" @keydown="handleGridKeydown">
+  <section ref="workbenchRef" class="excel-workbench" @keydown="handleGridKeydown">
     <input ref="fileInput" class="hidden-file-input" type="file" accept=".xlsx,.xls,.csv" @change="handleFile" />
     <header v-if="showHeader" class="excel-header">
       <div class="document-brand">
@@ -1154,7 +1353,7 @@ onDeactivated(() => sortController?.abort())
       </div>
     </header>
 
-    <WorkbenchRibbon v-model="activeTab" :tabs="ribbonTabs" @execute="executeRibbon" />
+    <WorkbenchRibbon v-model="activeTab" :tabs="ribbonTabs" variant="grid" @execute="executeRibbon" />
     <SheetFormulaBar ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :error="nameError" @update:value="editValue = $event" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
@@ -1166,7 +1365,7 @@ onDeactivated(() => sortController?.abort())
     </div>
 
     <div class="sheet-canvas-stack">
-      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" />
+      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeRibbon" />
       <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
     </div>
 
@@ -1198,6 +1397,16 @@ onDeactivated(() => sortController?.abort())
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :initial-kind="slicerKind" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
     <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" />
+    <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" />
+      <Modal v-model:open="sparklinePanelOpen" title="插入迷你图" ok-text="插入" cancel-text="取消" :width="420" @ok="insertSparklines">
+        <div class="chart-insert-form">
+          <label>目标单元格范围<Input v-model:value="sparklineTargetRange" aria-label="迷你图目标范围" placeholder="A1:A5" /></label>
+          <label>数据源范围<Input v-model:value="sparklineSourceRange" aria-label="迷你图数据源范围" placeholder="B1:F5" /></label>
+          <label>图表类型<Select v-model:value="sparklineType" aria-label="迷你图类型" :options="[{ label: '折线', value: 'line' }, { label: '柱形', value: 'column' }, { label: '胜负', value: 'winloss' }]" /></label>
+          <p v-if="sparklineError" class="chart-insert-error" role="alert">{{ sparklineError }}</p>
+        </div>
+      </Modal>
+      <CustomNumberFormatPanel v-model:open="customNumberFormatOpen" :current-pattern="activeCell.rawNumberFormat ?? 'General'" @apply="(pattern) => changeSelectedCells(cell => ({ ...cell, rawNumberFormat: pattern }))" />
   </section>
 </template>
 

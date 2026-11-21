@@ -9,10 +9,12 @@ import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, 
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
+import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
+  'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
   layout: [layout: DocumentLayout]
@@ -375,6 +377,18 @@ function keydown(event: KeyboardEvent) {
   const command = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
   const activeBlock = blockAtPoint(props.model, props.selection.focus)
+  if (activeBlock && codeBlockData(activeBlock)) {
+    if (command && event.key === 'Enter') {
+      event.preventDefault()
+      emit('code-block-exit', activeBlock.id)
+      return
+    }
+    if (event.key === 'Tab' && !command) {
+      event.preventDefault()
+      emit('command', { id: 'doc.command.insert-text', text: '\t' })
+      return
+    }
+  }
   if (event.key === ' ' && !command && activeBlock?.type === 'checklist' && props.selection.focus.offset === 0 && selectionCollapsed(props.selection)) {
     event.preventDefault()
     emit('command', { id: 'doc.command.toggle-checklist-item', blockId: activeBlock.id })
@@ -420,6 +434,11 @@ function copy(event: ClipboardEvent) {
 function cut(event: ClipboardEvent) { copy(event); if (!selectionCollapsed(props.selection)) emit('command', { id: 'doc.command.insert-text', text: '' }) }
 function paste(event: ClipboardEvent) {
   event.preventDefault()
+  const activeBlock = blockAtPoint(props.model, props.selection.focus)
+  if (activeBlock && codeBlockData(activeBlock)) {
+    emit('command', { id: 'doc.command.insert-text', text: event.clipboardData?.getData('text/plain') ?? '' })
+    return
+  }
   const command = documentPasteCommand({ html: event.clipboardData?.getData('text/html'), text: event.clipboardData?.getData('text/plain') ?? '' })
   if (command) emit('command', command)
 }

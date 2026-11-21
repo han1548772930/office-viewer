@@ -44,6 +44,7 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
     sheet.rangeProtectionRules ??= []
   })
   next.activeSheetId = next.sheets.some((sheet) => sheet.id === next.activeSheetId) ? next.activeSheetId : next.sheets[0]!.id
+  next.calculationMode ??= 'automatic'
   next.pivotTables ??= []
   return next
 }
@@ -60,6 +61,7 @@ export function workbookFromInput(input: Partial<WorkbookModel> & Record<string,
   base.id = typeof input.id === 'string' ? input.id : randomId('workbook')
   base.name = typeof input.name === 'string' ? input.name : typeof input.title === 'string' ? input.title : base.name
   base.date1904 = input.date1904 === true
+  base.calculationMode = input.calculationMode === 'manual' ? 'manual' : 'automatic'
   const sourceSheets = input.sheets
   if (Array.isArray(sourceSheets)) {
     base.sheets = sourceSheets.map((sheet) => normalizeSheet(sheet as Partial<SpreadsheetSheet> & Record<string, unknown>))

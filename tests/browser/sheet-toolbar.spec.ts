@@ -47,6 +47,20 @@ test.beforeEach(async ({ page }) => {
   await address(page, 'A1')
 })
 
+test('View tab separates display and visibility tools and toggles real fullscreen state', async ({ page }) => {
+  await ribbon(page).getByRole('tab', { name: '视图', exact: true }).click()
+  await expect(ribbon(page).getByRole('group', { name: '显示', exact: true })).toBeVisible()
+  await expect(ribbon(page).getByRole('group', { name: '可见性', exact: true })).toBeVisible()
+  await expect(ribbon(page).getByRole('button', { name: '冻结窗格', exact: true })).toBeVisible()
+  await expect(ribbon(page).getByRole('button', { name: '网格线', exact: true })).toBeVisible()
+  await expect(ribbon(page).getByRole('combobox', { name: '缩放', exact: true })).toBeVisible()
+  await click(page, '全屏')
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.classList.contains('excel-workbench') ?? false)).toBe(true)
+  await click(page, '退出全屏')
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true)
+  await expect(ribbon(page).getByRole('button', { name: '全屏', exact: true })).toBeVisible()
+})
+
 test('toolbar applies strike, font stepping, vertical alignment and range borders with undo/redo', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
   await click(page, '删除线')

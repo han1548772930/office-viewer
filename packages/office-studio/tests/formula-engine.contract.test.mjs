@@ -90,3 +90,40 @@ test('cross-sheet dependencies resolve by sheet name and unsupported imports pre
   assert.ok(preserved.diagnostics.some((entry) => entry.code === 'FORMULA_UNSUPPORTED_CACHE_PRESERVED'))
 })
 
+test('lookup functions resolve exact positions, table columns, blanks and invalid indexes', () => {
+  const data = structuredClone(model)
+  const sheet = data.sheets[0]
+  const put = (row, col, value) => {
+    const cell = { ...sheet.cells['0:0'], id: `${row}:${col}`, row, col, value, formula: null, display: value == null ? '' : String(value) }
+    sheet.cells[`${row}:${col}`] = cell
+  }
+  put(0, 0, 'East'); put(0, 1, 100); put(0, 2, 'West'); put(0, 3, 200)
+  put(1, 0, 'North'); put(1, 1, 300); put(1, 2, 'South'); put(1, 3, 400)
+  assert.equal(formula.evaluateFormula('=MATCH("West",A1:C1,0)', data, 'sheet-main'), 3)
+  assert.equal(formula.evaluateFormula('=INDEX(A1:D2,2,4)', data, 'sheet-main'), 400)
+  assert.equal(formula.evaluateFormula('=VLOOKUP("North",A1:B2,2,FALSE)', data, 'sheet-main'), 300)
+  assert.deepEqual(formula.evaluateFormula('=INDEX(A1:B2,3,1)', data, 'sheet-main'), { kind: 'error', code: '#REF!' })
+  assert.deepEqual(formula.evaluateFormula('=MATCH("Missing",A1:A2,0)', data, 'sheet-main'), { kind: 'error', code: '#N/A' })
+})
+
+test('financial and statistical functions calculate finite results and reject invalid domains', () => {
+  const data = structuredClone(model)
+  const sheet = data.sheets[0]
+  const put = (row, col, value) => {
+    const cell = { ...sheet.cells['0:0'], id: `${row}:${col}`, row, col, value, formula: null, display: value == null ? '' : String(value) }
+    sheet.cells[`${row}:${col}`] = cell
+  }
+  put(0, 0, 1); put(1, 0, 2); put(2, 0, 3); put(3, 0, 10)
+  assert.equal(formula.evaluateFormula('=MEDIAN(A1:A4)', data, 'sheet-main'), 2.5)
+  assert.equal(formula.evaluateFormula('=LARGE(A1:A4,2)', data, 'sheet-main'), 3)
+  assert.equal(formula.evaluateFormula('=SMALL(A1:A4,2)', data, 'sheet-main'), 2)
+  assert.equal(formula.evaluateFormula('=VAR.S(A1:A4)', data, 'sheet-main'), 50 / 3)
+  assert.equal(formula.evaluateFormula('=STDEV.S(A1:A4)', data, 'sheet-main'), Math.sqrt(50 / 3))
+  assert.equal(formula.evaluateFormula('=PMT(0,4,300)', data, 'sheet-main'), -75)
+  assert.equal(formula.evaluateFormula('=PV(0,4,-75)', data, 'sheet-main'), 300)
+  assert.equal(formula.evaluateFormula('=FV(0,4,-75)', data, 'sheet-main'), 300)
+  assert.equal(formula.evaluateFormula('=NPV(10%,100,100)', data, 'sheet-main'), 100 / 1.1 + 100 / 1.21)
+  assert.deepEqual(formula.evaluateFormula('=STDEV.S(A1:A1)', data, 'sheet-main'), { kind: 'error', code: '#DIV/0!' })
+  assert.deepEqual(formula.evaluateFormula('=LARGE(A1:A4,0)', data, 'sheet-main'), { kind: 'error', code: '#NUM!' })
+})
+

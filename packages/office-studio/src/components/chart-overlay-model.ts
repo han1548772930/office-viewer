@@ -19,6 +19,7 @@ export function toChartWorkbook(view: ExcelWorkbookChartView): WorkbookModel {
     modified: false,
     id: 'chart-overlay-workbook',
     charts: view.charts?.map((chart) => cloneChart(chart)),
+    pivotTables: view.pivotTables?.map((pivot) => ({ ...pivot, source: { ...pivot.source, range: { ...pivot.source.range } }, anchor: { ...pivot.anchor }, fields: pivot.fields.map((field) => ({ ...field })), options: { ...pivot.options } })),
     sheets: view.sheets.map((source) => ({
       id: source.id,
       name: source.name,

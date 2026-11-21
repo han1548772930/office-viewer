@@ -8,6 +8,7 @@
 
 - 对应 COMMON-01/02/03。参考固定版本 `packages/ui/src/views/components/ribbon/{Ribbon,ToolbarItem,ToolbarButton,RibbonOverflow}.tsx`、`ribbon-menu/ClassicMenu.tsx`、`views/custom-label/CustomLabel.tsx`。
 - `WorkbenchRibbon.vue`、`RibbonItem.vue`、`ribbon-schema.ts` 对齐 classic 分类/工具区居中、36/40px 两行、28px 分类和选择器、24px 普通工具按钮、16px 图标、组内及组边距 8px、相邻组 1px 分隔。溢出计算同步包含实际边距和分隔。
+- 后续 grid 变体复核发现跨两行大按钮缺少上游 56px 最小宽度，导致组宽测量和溢出边界偏小；`GRID_RIBBON.largeButtonSize` 与 `RibbonGridToolbar.vue` 已补齐该约束，浏览器契约验证无显式宽度的大按钮为 56px。该变体仍为 opt-in，生产 Sheets/Docs 默认 classic。
 - 修复空扩展槽破坏居中、窄屏“更多功能”弹层越界、Select small 样式覆盖高度。分类、嵌套菜单、下拉及更多菜单继续派发同一 schema 的命令/参数。
 - `ribbon-schema.contract.test.mjs` 9/9、`ribbon-component.browser.test.mjs` 9/9；覆盖实际几何、LTR/RTL、210/360/620/1200px 可达性、唯一入口与 Escape 归焦。没有截图或像素比较，不能据此宣称整个工作台像素一致。
 
@@ -65,6 +66,14 @@
 - 对应 SHEET-29、DOC-22。本轮独立模块 Worker 复现真实保存的 `RuntimeError: unreachable`，根因是 ZIP 的 `time` feature 在 WASM 写出时读取不可用的宿主 `SystemTime`。
 - `office-writer/Cargo.toml` 移除此可选 feature，保留原 OPC/OOXML 写出链路；Cargo 自动更新锁文件。新增固定 DOS 时间戳/字节确定性 Rust 测试和 `office-worker-smoke.spec.ts`，对真正的 DOCX/XLSX 二进制验证 ZIP 签名与重复写出。
 - 生产构建已实际执行 DOCX 导入→Canvas 编辑→下载→重导入、XLSX 导入→提交公式栏待编辑内容→保存→重导入，以及真实 compute WASM。此类样本只证明被测字段和动作，不证明复杂节/图形/全部 Pro 对象的保真。
+
+## Toolbar audit and Pro source boundary
+
+- 按固定提交的 OSS 菜单 schema 和当前 Ribbon schema 逐分类清点，Sheets 根入口计数为固定版 START/INSERT/FORMULAS/DATA/VIEW 30/9/12/6/6，本地为 28/8/3/8/4；Docs 固定版 Start/Insert/View 25 项，本地常规 Ribbon 42 项并有 7 个表格上下文项。统计范围是各分类直接注册项，不包括子菜单、动态隐藏入口或运行时上下文，不能把数量差直接等同于能力差。
+- Sheets 已确认的源码入口缺口包括公式分类和计算选项、特殊粘贴、格式刷、范围保护、快速数据验证/条件格式、结构化表格选择器、工作表背景图和十字高亮。Docs 已确认目标格式粘贴、权限面板、页眉页脚模型/编辑流程及上下文 Ribbon 缺失。对应的入口并不自动等于完整功能，仍需接入共享命令、领域状态和持久化。
+- 当前轮新增选择性粘贴菜单与内部复制数据的模式应用，含公式引用平移、值/格式/列宽/保留目标边框；新增工作表范围保护面板入口，使用既有范围保护 API。定向契约测试已覆盖粘贴计划和 Ribbon 入口；范围保护组件已有独立契约。尚未运行浏览器闭环测试，整批完成后再统一运行。
+- 固定源码仓库在 README 中明确区分 Apache-2.0 开源核心与单独发行、授权的商业 Web SDK 插件。已检查本地固定版本仓库，存在通用权限、菜单、工作簿/文档模型等源码，没有 `@univerjs-pro` 商业插件实现源码。本项目不安装商业 SDK。闭源能力按官方公开规格和 API 独立反推，来源包括 [Sheets 切片器与时间线](https://docs.univer.ai/zh-CN/guides/sheets/features/slicer)、[Sheets 透视图](https://docs.univer.ai/zh-CN/guides/sheets/features/pivot-chart)、[Docs LaTeX](https://docs.univer.ai/zh-CN/guides/docs/features/latex) 及官方 Sheets 功能比较页。已实现的切片器/时间线仍缺表格源、多目标连接、完整浮动布局和 Office parts 往返，保持 SHEET-25 未验收。
+- 根项计数和源码差异来自固定版本本地源码检查，非 Pro 菜单清单。Pro 插件的界面细节、持久化编码和未公开边界仍须按官方规格、演示与 Office 样本分别记录证据；本轮没有将此类行为标记为已核实。
 
 ## Verification boundaries
 

@@ -81,6 +81,7 @@ export const GRID_RIBBON = Object.freeze({
   compactItemGap: 4,
   moreWidth: 64,
   buttonSize: 28,
+  largeButtonSize: 56,
   largeIconSize: 24,
 })
 
@@ -224,8 +225,8 @@ export function placeRibbonGridItems(items: readonly RibbonItem[]): RibbonGridPl
       column,
       rowSpan,
       columnSpan,
-      showLabel: layout?.showLabel ?? false,
-      width: layout?.width,
+      showLabel: layout?.showLabel ?? item.showLabel ?? false,
+      width: layout?.width ?? item.width,
       minWidth: layout?.minWidth,
       iconSize: layout?.iconSize,
     })

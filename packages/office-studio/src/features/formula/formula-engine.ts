@@ -229,6 +229,14 @@ function evaluateFunction(
   }
 
   const evaluated = args.map((argument) => evaluateNode(argument, sheet, resolve, workbook, byName))
+  if (name === 'INDEX') return evaluateIndex(evaluated, args.length, resolve)
+  if (name === 'MATCH') return evaluateMatch(evaluated, args.length, resolve)
+  if (name === 'VLOOKUP') return evaluateVlookup(evaluated, args.length, resolve)
+  if (name === 'PMT' || name === 'PV' || name === 'FV') return evaluateFinancialValue(name, evaluated)
+  if (name === 'NPV') return evaluateNetPresentValue(evaluated, sheet, resolve)
+  if (name === 'MEDIAN' || name === 'LARGE' || name === 'SMALL' || name === 'VAR.S' || name === 'STDEV.S') {
+    return evaluateStatisticalValue(name, evaluated, sheet, resolve, workbook)
+  }
   if (name === 'SUM' || name === 'AVERAGE' || name === 'COUNT' || name === 'COUNTA' || name === 'MIN' || name === 'MAX') {
     if (args.length < 1 || args.length > 255) return formulaError('#VALUE!')
     const values: FormulaValue[] = []
@@ -389,6 +397,160 @@ function evaluateFunction(
   }
   if (name === 'NA' && args.length === 0) return formulaError('#N/A')
   return formulaError('#NAME?')
+}
+
+function evaluateIndex(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): RuntimeValue {
+  if ((argumentCount !== 2 && argumentCount !== 3) || !isRangeValue(values[0]!)) return formulaError('#VALUE!')
+  const source = values[0] as RangeValue
+  const rowNumber = numericCoercion(values[1]!)
+  const columnNumber = argumentCount === 3 ? numericCoercion(values[2]!) : 1
+  if (isFormulaError(rowNumber)) return rowNumber
+  if (isFormulaError(columnNumber)) return columnNumber
+  if (!Number.isInteger(rowNumber) || !Number.isInteger(columnNumber) || rowNumber < 0 || columnNumber < 0 || (rowNumber === 0 && columnNumber === 0)) return formulaError('#VALUE!')
+  const minRow = Math.min(source.reference.start.row, source.reference.end.row)
+  const maxRow = Math.max(source.reference.start.row, source.reference.end.row)
+  const minColumn = Math.min(source.reference.start.column, source.reference.end.column)
+  const maxColumn = Math.max(source.reference.start.column, source.reference.end.column)
+  const height = maxRow - minRow + 1
+  const width = maxColumn - minColumn + 1
+  if (rowNumber > height || columnNumber > width) return formulaError('#REF!')
+  if (rowNumber === 0 || columnNumber === 0) {
+    return {
+      ...source,
+      reference: {
+        ...source.reference,
+        start: { ...source.reference.start, row: rowNumber ? minRow + rowNumber - 1 : minRow, column: columnNumber ? minColumn + columnNumber - 1 : minColumn },
+        end: { ...source.reference.end, row: rowNumber ? minRow + rowNumber - 1 : maxRow, column: columnNumber ? minColumn + columnNumber - 1 : maxColumn },
+      },
+    }
+  }
+  const cell = source.sheet.cells[cellKey(minRow + rowNumber - 1, minColumn + columnNumber - 1)]
+  return cell ? cell.formula ? resolve(source.sheet, minRow + rowNumber - 1, minColumn + columnNumber - 1) : rawCellValue(cell) : null
+}
+
+function evaluateMatch(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
+  if (argumentCount < 2 || argumentCount > 3 || !isRangeValue(values[1]!)) return formulaError('#VALUE!')
+  const lookup = scalarValue(values[0]!)
+  const matchType = argumentCount === 3 ? numericCoercion(values[2]!) : 1
+  if (isFormulaError(lookup)) return lookup
+  if (isFormulaError(matchType)) return matchType
+  if (![-1, 0, 1].includes(matchType)) return formulaError('#VALUE!')
+  const range = values[1] as RangeValue
+  const minRow = Math.min(range.reference.start.row, range.reference.end.row)
+  const maxRow = Math.max(range.reference.start.row, range.reference.end.row)
+  const minColumn = Math.min(range.reference.start.column, range.reference.end.column)
+  const maxColumn = Math.max(range.reference.start.column, range.reference.end.column)
+  if (maxRow > minRow && maxColumn > minColumn) return formulaError('#N/A')
+  const length = Math.max(maxRow - minRow + 1, maxColumn - minColumn + 1)
+  let best = -1
+  for (let index = 0; index < length; index += 1) {
+    const row = maxRow === minRow ? minRow : minRow + index
+    const column = maxColumn === minColumn ? minColumn : minColumn + index
+    const cell = range.sheet.cells[cellKey(row, column)]
+    const value = cell ? cell.formula ? resolve(range.sheet, row, column) : rawCellValue(cell) : null
+    if (isFormulaError(value)) { if (matchType === 0) return value; continue }
+    const ordering = compare(value, lookup, '=') ? 0 : compare(value, lookup, '<') ? -1 : 1
+    if (matchType === 0 && ordering === 0) return index + 1
+    if (matchType === 1 && ordering <= 0) best = index
+    if (matchType === -1 && ordering >= 0 && best < 0) best = index
+  }
+  return best >= 0 ? best + 1 : formulaError('#N/A')
+}
+
+function evaluateVlookup(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
+  if ((argumentCount !== 3 && argumentCount !== 4) || !isRangeValue(values[1]!)) return formulaError('#VALUE!')
+  const lookup = scalarValue(values[0]!)
+  const columnNumber = numericCoercion(values[2]!)
+  const approximate = argumentCount === 3 ? true : booleanCoercion(values[3]!)
+  if (isFormulaError(lookup)) return lookup
+  if (isFormulaError(columnNumber)) return columnNumber
+  if (isFormulaError(approximate)) return approximate
+  if (!Number.isInteger(columnNumber) || columnNumber < 1) return formulaError('#VALUE!')
+  const range = values[1] as RangeValue
+  const minRow = Math.min(range.reference.start.row, range.reference.end.row)
+  const maxRow = Math.max(range.reference.start.row, range.reference.end.row)
+  const minColumn = Math.min(range.reference.start.column, range.reference.end.column)
+  const maxColumn = Math.max(range.reference.start.column, range.reference.end.column)
+  const width = maxColumn - minColumn + 1
+  if (columnNumber > width) return formulaError('#REF!')
+  let bestRow = -1
+  for (let row = minRow; row <= maxRow; row += 1) {
+    const first = range.sheet.cells[cellKey(row, minColumn)]
+    const value = first ? first.formula ? resolve(range.sheet, row, minColumn) : rawCellValue(first) : null
+    if (isFormulaError(value)) { if (!approximate) return value; continue }
+    if (compare(value, lookup, '=')) { bestRow = row; break }
+    if (approximate && compare(value, lookup, '<')) bestRow = row
+    else if (approximate && compare(value, lookup, '>')) break
+  }
+  if (bestRow < 0) return formulaError('#N/A')
+  const resultCell = range.sheet.cells[cellKey(bestRow, minColumn + columnNumber - 1)]
+  return resultCell ? resultCell.formula ? resolve(range.sheet, bestRow, minColumn + columnNumber - 1) : rawCellValue(resultCell) : null
+}
+
+function evaluateFinancialValue(name: 'PMT' | 'PV' | 'FV', values: RuntimeValue[]): FormulaValue {
+  if (values.length < 3 || values.length > 5) return formulaError('#VALUE!')
+  const [rateValue, periodsValue, amountValue] = values
+  const rate = numericCoercion(rateValue!), periods = numericCoercion(periodsValue!), amount = numericCoercion(amountValue!)
+  for (const value of [rate, periods, amount]) if (isFormulaError(value)) return value
+  const future = values.length > 3 ? numericCoercion(values[3]!) : 0
+  const type = values.length > 4 ? numericCoercion(values[4]!) : 0
+  if (isFormulaError(future)) return future
+  if (isFormulaError(type)) return type
+  const r = rate as number, n = periods as number, principal = amount as number, fv = future as number, due = type as number
+  if (n <= 0 || !Number.isInteger(n) || ![0, 1].includes(due)) return formulaError('#NUM!')
+  const factor = r === 0 ? n : (1 - (1 + r) ** n) / r * (1 + r * due)
+  if (!Number.isFinite(factor) || factor === 0) return formulaError('#NUM!')
+  if (name === 'PMT') return finiteResult(-(principal * (1 + r) ** n + fv) / factor)
+  if (name === 'PV') return finiteResult(-(principal * factor + fv) / (1 + r) ** n)
+  return finiteResult(-principal * factor - fv)
+}
+
+function evaluateNetPresentValue(values: RuntimeValue[], sheet: SpreadsheetSheet, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
+  if (values.length < 2) return formulaError('#VALUE!')
+  const rate = numericCoercion(values[0]!)
+  if (isFormulaError(rate) || rate <= -1) return isFormulaError(rate) ? rate : formulaError('#NUM!')
+  let total = 0, period = 1
+  for (const value of values.slice(1)) for (const item of flattenScalar(value!, sheet, resolve)) {
+    if (isFormulaError(item)) return item
+    const number = numericCoercion(item)
+    if (isFormulaError(number)) return number
+    total += number / (1 + rate) ** period
+    period += 1
+  }
+  return finiteResult(total)
+}
+
+function evaluateStatisticalValue(name: 'MEDIAN' | 'LARGE' | 'SMALL' | 'VAR.S' | 'STDEV.S', values: RuntimeValue[], sheet: SpreadsheetSheet, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue, workbook: WorkbookModel): FormulaValue {
+  if (!values.length || (['LARGE', 'SMALL'].includes(name) && values.length !== 2) || (['VAR.S', 'STDEV.S'].includes(name) && values.length > 255)) return formulaError('#VALUE!')
+  const numbers: number[] = []
+  const sourceValues = values.slice(0, ['LARGE', 'SMALL'].includes(name) ? 1 : values.length)
+  for (const value of sourceValues) {
+    for (const item of flattenScalar(value!, sheet, resolve)) {
+      if (isFormulaError(item)) return item
+      if (typeof item === 'number') numbers.push(item)
+      else if (!isRangeValue(value) && item !== null && item !== '') {
+        const coerced = aggregateLiteralNumber(item, workbook)
+        if (isFormulaError(coerced)) return coerced
+        numbers.push(coerced)
+      }
+    }
+  }
+  if (name === 'LARGE' || name === 'SMALL') {
+    const rank = numericCoercion(values[1]!)
+    if (isFormulaError(rank) || !Number.isInteger(rank) || rank < 1 || rank > numbers.length) return formulaError('#NUM!')
+    numbers.sort((a, b) => a - b)
+    return numbers[name === 'LARGE' ? numbers.length - rank : rank - 1]!
+  }
+  if (!numbers.length) return formulaError('#NUM!')
+  numbers.sort((a, b) => a - b)
+  if (name === 'MEDIAN') {
+    const middle = Math.floor(numbers.length / 2)
+    return numbers.length % 2 ? numbers[middle]! : (numbers[middle - 1]! + numbers[middle]!) / 2
+  }
+  if (numbers.length < 2) return formulaError('#DIV/0!')
+  const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length
+  const variance = numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (numbers.length - 1)
+  return name === 'STDEV.S' ? Math.sqrt(variance) : variance
 }
 
 /** Aggregates coerce direct scalar text, while referenced text is ignored above. */

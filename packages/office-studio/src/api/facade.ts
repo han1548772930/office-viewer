@@ -191,6 +191,15 @@ export class FWorkbook {
 
   getId(): string { return this.id }
   getName(): string { return this.model().name }
+  getCalculationMode(): 'automatic' | 'manual' { return this.model().calculationMode ?? 'automatic' }
+  setCalculationMode(mode: 'automatic' | 'manual'): this {
+    this.api.executeCommandSync('sheet.command.set-calculation-mode', { unitId: this.id, mode })
+    return this
+  }
+  recalculate(): this {
+    this.api.executeCommandSync('sheet.command.recalculate-workbook', { unitId: this.id })
+    return this
+  }
   setName(name: string): this {
     this.api.executeCommandSync('sheet.command.set-workbook-name', { unitId: this.id, name })
     return this
@@ -408,6 +417,13 @@ export class FWorksheet {
     this.api.executeCommandSync('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
     return new FChart(this.api, this.unitId, chartId)
   }
+  async insertPivotChart(info: ChartInfo & { pivotTableId: string }): Promise<FChart> {
+    if (!info.pivotTableId) throw new TypeError('Pivot chart requires a pivot table id')
+    if (!this.workbook().pivotTables?.some((pivot) => pivot.id === info.pivotTableId)) throw new Error(`Pivot table not found: ${info.pivotTableId}`)
+    const chartId = randomId('pivot-chart')
+    this.api.executeCommandSync('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
+    return new FChart(this.api, this.unitId, chartId)
+  }
   getCharts(): FChart[] { return (this.workbook().charts ?? []).filter((chart) => chart.sheetId === this.id).map((chart) => new FChart(this.api, this.unitId, chart.id)) }
   getChartById(chartId: string): FChart | null { return this.workbook().charts?.some((chart) => chart.id === chartId && chart.sheetId === this.id) ? new FChart(this.api, this.unitId, chartId) : null }
   async insertSlicer(info: SlicerInfo): Promise<FSheetSlicer> {
@@ -543,6 +559,11 @@ export class ChartConfigBuilder {
   setAbsolutePosition(x: number, y: number): this { this.value = { ...this.value, position: { x, y } }; return this }
   setSize(width: number, height: number): this { this.value = { ...this.value, size: { width, height } }; return this }
   setCategoryField(index: number): this { this.value = { ...this.value, categoryField: index }; return this }
+  setPivotTableId(pivotTableId: string): this {
+    if (!pivotTableId.trim()) throw new TypeError('Pivot table id is required')
+    this.value = { ...this.value, pivotTableId }
+    return this
+  }
   setValueFields(fields: number[]): this { this.value = { ...this.value, valueFields: [...fields] }; return this }
   setTitle(title: string): this { this.value = { ...this.value, title }; return this }
   setLegend(legend: Partial<ChartLegendOptions>): this { this.value = { ...this.value, legend: { ...this.value.legend, ...legend } }; return this }
@@ -767,6 +788,11 @@ export class FPivotTable {
   }
 
   getPivotTableId(): string { return this.id }
+  newChart(type: ChartType): ChartConfigBuilder { return new ChartConfigBuilder(type).setPivotTableId(this.id) }
+  async insertChart(info: ChartInfo): Promise<FChart> {
+    const sheet = new FWorksheet(this.api, this.unitId, this.model().anchor.subUnitId)
+    return sheet.insertPivotChart({ ...info, pivotTableId: this.id })
+  }
   getSourceFieldsInfo(): Array<{ fieldId: string; fieldName: string; sourceColumn: number }> {
     return getPivotSourceFields(this.workbook(), this.model())
   }

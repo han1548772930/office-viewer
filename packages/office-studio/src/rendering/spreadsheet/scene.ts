@@ -4,6 +4,7 @@ import { intersectRect } from '../geometry.ts'
 import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout.ts'
 import type { GridRange, GridViewport } from './layout'
 import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
+import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
 
 let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
 function measureTextWidth(text: string, font: string): number | undefined {
@@ -125,6 +126,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         if (cell.strike) decoration(0)
       }
     }
+    commands.push(...sparklineCommandsForCell(geometry.sheet, cell, rect))
   }
   for (const pane of panes) {
     if (pane.clip.width <= 0 || pane.clip.height <= 0) continue

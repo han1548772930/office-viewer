@@ -295,14 +295,16 @@ export class OfficeStudio {
     return changed
   }
 
-  commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void): boolean {
+  commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, forceRecalculation = false): boolean {
     this.assertAlive()
     const current = this.getWorkbookModel(id)
     if (!current) throw new Error(`Workbook not found: ${id}`)
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
-    const recalculated = recalculateWorkbookFormulas(after, before).workbook
+    const recalculated = !forceRecalculation && before.calculationMode === 'manual' && after.calculationMode === 'manual'
+      ? after
+      : recalculateWorkbookFormulas(after, before).workbook
     for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
     recalculated.id = id
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
@@ -477,6 +479,13 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    this.registerCommand<{ unitId: string; mode: 'automatic' | 'manual' }, boolean>('sheet.command.set-calculation-mode', ({ unitId, mode }) => {
+      if (mode !== 'automatic' && mode !== 'manual') throw new TypeError('Calculation mode must be automatic or manual')
+      return this.commitWorkbook(unitId, 'Set calculation mode', (model) => { model.calculationMode = mode })
+    })
+    this.registerCommand<{ unitId: string }, boolean>('sheet.command.recalculate-workbook', ({ unitId }) =>
+      this.commitWorkbook(unitId, 'Recalculate workbook', () => {}, true),
+    )
     this.registerCommand<ConfigureSheetFilterInput, boolean>(CONFIGURE_SHEET_FILTER_COMMAND, (input) => {
       if (input.expectedRevision !== undefined && this.getWorkbookRevision(input.unitId) !== input.expectedRevision) throw new Error('数据已更改，请重新读取数据区域后再应用筛选。')
       return this.commitWorkbook(input.unitId, '配置工作表筛选', (model) => configureFilterFromPanel(model, input))

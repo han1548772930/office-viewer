@@ -97,6 +97,24 @@ test('supports label filtering, sorting, value settings, refresh and drill down'
   studio.dispose()
 })
 
+test('linked pivot charts follow pivot fields and filtering, and become available again after same-id restoration', async () => {
+  const { studio, workbook, source, target } = setup()
+  const pivot = await addBasicPivot(workbook, source, target)
+  const chart = await pivot.insertChart(pivot.newChart('line').setPosition('F2').setSize(480, 300).setTitle('Sales by region').build())
+  assert.equal(workbook.save().charts[0].pivotTableId, pivot.getPivotTableId())
+  assert.deepEqual(chart.getData().categories, ['East', 'West'])
+  assert.deepEqual(chart.getData().series.map((series) => series.values), [[100, 80], [150, 120]])
+  await pivot.setLabelManualFilter('0', ['West'])
+  assert.deepEqual(chart.getData().categories, ['West'])
+  assert.deepEqual(chart.getData().series.map((series) => series.values), [[80], [120]])
+  const chartId = chart.getChartId()
+  await pivot.remove()
+  assert.throws(() => chart.getData(), /Pivot table not found/)
+  workbook.undo()
+  assert.deepEqual(target.getChartById(chartId).getData().categories, ['West'])
+  studio.dispose()
+})
+
 test('rejects pivot output conflicts and records pivot operations in workbook history', async () => {
   const { studio, workbook, source, target } = setup()
   target.getRange('A1').setValue('occupied')

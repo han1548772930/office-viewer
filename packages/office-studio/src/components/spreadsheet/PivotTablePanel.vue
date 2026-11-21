@@ -97,6 +97,19 @@ async function refreshPivot() {
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { busy.value = false }
 }
+async function insertPivotChart() {
+  if (!selectedId.value || busy.value) return
+  error.value = ''; status.value = ''; busy.value = true
+  try {
+    const { book } = requireApi()
+    const pivot = book.getPivotTables().find(candidate => candidate.getPivotTableId() === selectedId.value)
+    if (!pivot) throw new Error('所选数据透视表已被删除。')
+    await pivot.insertChart(pivot.newChart('bar').setPosition('F2').setSize(480, 300).build())
+    status.value = '透视图已创建，并与此数据透视表关联。'
+    reportChange(selectedId.value)
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { busy.value = false }
+}
 async function removePivot() {
   if (!selectedId.value || busy.value) return
   error.value = ''; status.value = ''; busy.value = true
@@ -162,6 +175,7 @@ function close() { if (!busy.value) emit('update:open', false) }
         <Button size="small" :disabled="busy || !history?.undo.length" @click="navigateHistory('undo')">撤销透视操作</Button>
         <Button size="small" :disabled="busy || !history?.redo.length" @click="navigateHistory('redo')">重做透视操作</Button>
         <Button v-if="selectedId" size="small" :loading="busy" @click="refreshPivot">刷新数据</Button>
+        <Button v-if="selectedId && selectedPivot?.outputRange" size="small" :disabled="busy" @click="insertPivotChart">插入关联透视图</Button>
         <Button v-if="selectedId" size="small" danger :disabled="busy" @click="removePivot">删除数据透视表</Button>
         <span class="pivot-actions-spacer" />
         <Button @click="close">关闭</Button>

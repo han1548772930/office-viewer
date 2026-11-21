@@ -7,6 +7,7 @@ export type SpreadsheetRenderSheet = ExcelSheetView & {
   rowHeights?: Record<number, number>
   hiddenRows?: number[]
   hiddenColumns?: number[]
+  outlineHiddenColumns?: number[]
   showGridlines?: boolean
 }
 export interface GridViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
@@ -151,7 +152,7 @@ export class SpreadsheetGeometry {
       ? { 0: 152, ...sheet.columnWidths }
       : sheet.columnWidths
     this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, sheet.rowHeights, [...hiddenSheetRows(sheet)])
-    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, sheet.hiddenColumns)
+    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, [...(sheet.hiddenColumns ?? []), ...(sheet.outlineHiddenColumns ?? [])])
     this.frozenRows = Math.max(0, Math.min(sheet.rowCount, sheet.freeze?.rows ?? 0))
     this.frozenColumns = Math.max(0, Math.min(sheet.columnCount, sheet.freeze?.columns ?? 0))
     this.merges = (sheet.merges ?? []).flatMap(value => { const [a, b] = value.split(':'); const start = parseAddress(a), end = parseAddress(b ?? a); return start && end ? [{ startRow: Math.min(start.row, end.row), startColumn: Math.min(start.column, end.column), endRow: Math.max(start.row, end.row), endColumn: Math.max(start.column, end.column) }] : [] })

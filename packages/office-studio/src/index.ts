@@ -98,6 +98,8 @@ export { useDocumentStore } from './stores/documentStore'
 export { useHistoryStore, type HistoryEntry, type HistorySavepoint, type UnitHistory } from './stores/historyStore'
 export { useParserStore } from './stores/parserStore'
 export { default as WorkbenchRibbon } from './platform/ribbon/WorkbenchRibbon.vue'
+export { createOfficeI18n, OfficeLocaleKey, createOfficeMessages, createRibbonTranslator, localizeRibbon } from './i18n/office-i18n.ts'
+export type { OfficeLocale, OfficeTranslator } from './i18n/office-i18n.ts'
 export type { RibbonTab, RibbonGroup, RibbonItem } from './platform/ribbon/ribbon-schema'
 
 export {

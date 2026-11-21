@@ -7,6 +7,7 @@ import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '.
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
+import SheetContextMenu from './SheetContextMenu.vue'
 
 const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[] }>()
 const emit = defineEmits<{
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   (event: 'editor-keydown', eventValue: KeyboardEvent): void
   (event: 'paste', eventValue: ClipboardEvent): void
   (event: 'resize-axis', axis: 'row' | 'column', index: number, size: number): void
+  (event: 'context-command', commandId: string, params?: unknown): void
   (event: 'backend-change', backend: RenderBackend, reason?: string): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<HTMLInputElement | null>(null)
@@ -31,6 +33,9 @@ const validationListId = computed(() => `sheet-validation-options-${props.sheet.
 const editStyle = computed(() => editLayout.value ? { left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`, width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`, clipPath: editLayout.value.clipPath, fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif', fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px` } : { clipPath: 'inset(50%)' })
 const composing = ref(false)
 const surfaceError = ref('')
+const contextMenuOpen = ref(false)
+const contextMenuHit = ref<GridHit | null>(null)
+const contextMenuPosition = ref({ x: 0, y: 0 })
 const sheetViews = new Map<string, { left: number; top: number }>()
 let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, active = true, dragging = false
 let dprQuery: MediaQueryList | undefined
@@ -119,6 +124,18 @@ function onPointerUp(event: PointerEvent) {
   if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
 }
 function onDoubleClick(event: MouseEvent) { const p = point(event), hit = geometry.value.hitTest(p.x, p.y, viewport.value); if (hit?.kind === 'cell') emit('edit-cell', hit.key) }
+function onContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  const bounds = root.value?.getBoundingClientRect()
+  if (!bounds) return
+  const localX = event.clientX - bounds.left
+  const localY = event.clientY - bounds.top
+  const hit = geometry.value.hitTest(localX, localY, viewport.value)
+  if (!hit || hit.kind === 'resize-row' || hit.kind === 'resize-column') { contextMenuOpen.value = false; return }
+  contextMenuHit.value = hit
+  contextMenuPosition.value = { x: event.clientX, y: event.clientY }
+  contextMenuOpen.value = true
+}
 function onInputKeydown(event: KeyboardEvent) { if (!composing.value && !event.isComposing) emit('editor-keydown', event) }
 function onPaste(event: ClipboardEvent) { if (!(event.target as HTMLElement).closest('input')) emit('paste', event) }
 function focusEditor() { void nextTick(() => input.value?.focus({ preventScroll: true })) }
@@ -164,13 +181,23 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @paste="onPaste">
+  <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
     <input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false">
     <datalist v-if="validationOptions?.length" :id="validationListId"><option v-for="value in validationOptions" :key="value" :value="value" /></datalist>
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey]) }}</span></div>
     <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
+    <SheetContextMenu
+      v-model:open="contextMenuOpen"
+      :hit="contextMenuHit"
+      :x="contextMenuPosition.x"
+      :y="contextMenuPosition.y"
+      :can-delete-row="sheet.rowCount > 1"
+      :can-delete-column="sheet.columnCount > 1"
+      :frozen="Boolean(sheet.freeze?.rows || sheet.freeze?.columns)"
+      @command="(commandId, params) => emit('context-command', commandId, params)"
+    />
   </div>
 </template>
 

@@ -55,7 +55,7 @@ const tabs = computed(() => menusVisible.value ? [
   { id: 'context', title: longTabTitles.value ? '表格上下文工具' : '表格', order: 2, contextual: true, hidden: !showContext.value, groups: [{ id: 'table', items: [{ id: 'delete-table', type: 'button', title: '删除表格', commandId: 'doc.command.delete-table', showLabel: true }] }] },
 ] : [])
 const gridLayoutById = {
-  undo: { row: 1, column: 1, rowSpan: 2, width: 56, showLabel: true },
+  undo: { row: 1, column: 1, rowSpan: 2, showLabel: true },
   family: { row: 1, column: 1, rowSpan: 2, width: 112, minWidth: 84, showLabel: true },
   bold: { row: 1, column: 2, width: 32 },
   colors: { row: 2, column: 2, width: 32, showLabel: false },
@@ -195,6 +195,7 @@ test('grid variant is opt-in and uses two-row placements with large controls spa
       groupJustify: getComputedStyle(document.querySelector('.workbench-ribbon-tabs')).justifyContent,
       largeRow: getComputedStyle(largeCell).gridRow,
       largeHeight: document.querySelector('[data-ribbon-item="undo"] .ribbon-button').getBoundingClientRect().height,
+      largeWidth: largeCell.getBoundingClientRect().width,
       familyLabelVisible: getComputedStyle(document.querySelector('[data-ribbon-item="family"] label')).clipPath !== 'inset(50%)',
     }
   })
@@ -208,6 +209,7 @@ test('grid variant is opt-in and uses two-row placements with large controls spa
   assert.equal(geometry.groupJustify, 'flex-start')
   assert.match(geometry.largeRow, /span 2/)
   assert.equal(geometry.largeHeight, 64)
+  assert.equal(geometry.largeWidth, 56)
   assert.equal(geometry.familyLabelVisible, true)
   assert.equal(await page.locator('.ribbon-visible-groups').count(), 0)
   assert.deepEqual(errors, [])

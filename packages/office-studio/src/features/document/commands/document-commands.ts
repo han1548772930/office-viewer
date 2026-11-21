@@ -1,6 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, DocumentSectionBreakType } from '../../../domain/model'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
+import { applySectionHeaderFooter, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import {
   applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
@@ -24,6 +25,7 @@ export type DocumentCommand =
   | { id: 'doc.command.insert-divider' }
   | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[] }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
+  | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch }
 
 export function blockAtPoint(model: DocumentModel, point: TextTarget): DocumentBlock | undefined {
   const block = model.blocks.find((candidate) => candidate.id === point.blockId)
@@ -141,6 +143,9 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
       return insertBlocks(model, selection, command.blocks)
     }
     case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction)
+    case 'doc.command.set-section-header-footer':
+      applySectionHeaderFooter(model, command.sectionId, command.patch)
+      return selection
   }
 }
 

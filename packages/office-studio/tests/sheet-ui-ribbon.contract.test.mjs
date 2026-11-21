@@ -21,10 +21,27 @@ test('the sheet Ribbon exposes only populated semantic categories and stable edi
   assert.deepEqual(tabs[0].groups.map(group => group.title), ['剪贴板', '字体', '布局', '数字', '工具'])
   const items = flatten(tabs)
   assert.equal(new Set(items.map(item => item.id)).size, items.length)
+  const paste = tabs[0].groups[0].items.find(item => item.commandId === 'sheet.command.paste')
+  assert.deepEqual(paste.children.map(item => item.commandId), [
+    'sheet.command.paste', 'sheet.command.paste-values', 'sheet.command.paste-formats',
+    'sheet.command.paste-column-widths', 'sheet.command.paste-except-borders',
+  ])
+  assert.ok(items.some(item => item.commandId === 'sheet.operation.open-range-protection'))
   const leafItems = items.filter(item => item.type !== 'menu')
   assert.ok(leafItems.every(item => /^sheet\.(command|operation)\./.test(item.commandId)))
   assert.ok(!items.some(item => item.title === '剪切' || item.title === '复制'))
   assert.ok(!items.some(item => item.title === '打印'))
+})
+
+test('the View tab groups display and visibility controls and binds zoom to the sheet view', () => {
+  const view = createSheetRibbon(state).find(tab => tab.id === 'view')
+  assert.deepEqual(view.groups.map(group => group.title), ['显示', '可见性'])
+  assert.deepEqual(view.groups[0].items.map(item => item.title), ['冻结窗格', '缩放'])
+  assert.deepEqual(view.groups[1].items.map(item => item.title), ['网格线', '全屏'])
+  const zoom = view.groups[0].items.find(item => item.id === 'sheet.operation.set-zoom')
+  assert.equal(zoom.value, 100)
+  assert.deepEqual(zoom.options.map(option => option.value), [50, 75, 100, 125, 150, 175, 200, 400])
+  assert.deepEqual(ribbonInvocation(zoom, 150), { commandId: 'sheet.operation.set-zoom', params: 150 })
 })
 
 test('format activation and mixed selectors reflect supplied selection state', () => {
@@ -66,20 +83,17 @@ test('nested fill, merge and freeze controls share the same command contract as 
   assert.equal(items.find(item => item.title === '网格线').activated, true)
 })
 
-test('formula categories route to the same supported-function picker operation', () => {
+test('formula categories expose separate entries routed to the supported-function picker', () => {
   const items = flatten(createSheetRibbon(state))
   const picker = items.find(item => item.id === 'sheet.operation.open-function')
   const categories = items.filter(item => item.id.startsWith('sheet.operation.open-function.category-'))
   const supportedCategories = [...new Set(SHEET_FUNCTION_CATALOG.map(entry => entry.category))]
 
-  assert.equal(picker.type, 'split')
+  assert.equal(picker.type, 'button')
   assert.deepEqual(ribbonInvocation(picker), { commandId: 'sheet.operation.open-function', params: undefined })
   assert.deepEqual(categories.map(item => item.title), supportedCategories)
-  assert.deepEqual(ribbonInvocation(categories.find(item => item.title === '逻辑')), {
-    commandId: 'sheet.operation.open-function', params: '逻辑',
-  })
-  assert.deepEqual(ribbonInvocation(items.find(item => item.id === 'sheet.operation.open-function.all')),
-    { commandId: 'sheet.operation.open-function', params: undefined })
+  assert.ok(categories.every(item => item.showLabel && item.children === undefined))
+  assert.deepEqual(ribbonInvocation(categories[0]), { commandId: 'sheet.operation.open-function', params: supportedCategories[0] })
 })
 
 test('data validation ribbon entry opens the worksheet rule panel operation', () => {

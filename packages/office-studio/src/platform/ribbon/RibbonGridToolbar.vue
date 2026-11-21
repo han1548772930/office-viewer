@@ -27,6 +27,7 @@ const gridStyle = {
   '--ribbon-grid-compact-item-gap': `${GRID_RIBBON.compactItemGap}px`,
   '--ribbon-grid-more-width': `${GRID_RIBBON.moreWidth}px`,
   '--ribbon-grid-button-size': `${GRID_RIBBON.buttonSize}px`,
+  '--ribbon-grid-large-button-size': `${GRID_RIBBON.largeButtonSize}px`,
 }
 let observer: ResizeObserver | undefined
 let disposed = false
@@ -154,7 +155,7 @@ onBeforeUnmount(() => {
             v-for="placement in items"
             :key="placement.item.id"
             class="ribbon-grid-cell"
-            :class="{ 'is-full-width': placement.width !== undefined }"
+            :class="{ 'is-full-width': placement.width !== undefined, 'is-large': placement.rowSpan > 1 }"
             :style="{
               gridRow: `${placement.row} / span ${placement.rowSpan}`,
               gridColumn: `${placement.column} / span ${placement.columnSpan}`,
@@ -235,6 +236,7 @@ onBeforeUnmount(() => {
 .ribbon-grid-group.is-hidden { position: absolute; visibility: hidden; pointer-events: none; }
 .ribbon-grid-cells { display: grid; min-height: 0; flex: 1; grid-auto-flow: column; grid-template-rows: repeat(2, var(--ribbon-grid-row-height)); align-content: center; column-gap: var(--ribbon-grid-item-gap); row-gap: var(--ribbon-grid-row-gap); padding: var(--ribbon-grid-vertical-padding) 0; }
 .ribbon-grid-cell { display: flex; min-width: var(--ribbon-grid-button-size); align-items: stretch; }
+.ribbon-grid-cell.is-large { min-width: var(--ribbon-grid-large-button-size); }
 .ribbon-grid-cell.is-full-width > :deep(.workbench-ribbon-item) { width: 100%; }
 .ribbon-grid-divider { position: absolute; inset-block: 14px 6px; inset-inline-end: 0; border-inline-end: 1px solid #cbd5e1; opacity: .6; pointer-events: none; }
 .ribbon-grid-more-anchor { display: flex; box-sizing: border-box; width: var(--ribbon-grid-more-width); flex: 0 0 var(--ribbon-grid-more-width); align-items: center; padding-block: 8px; padding-inline-start: var(--ribbon-grid-group-padding); }

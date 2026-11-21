@@ -2,12 +2,13 @@ export interface SheetRowVisibility {
   rowCount: number
   hiddenRows?: readonly number[]
   filteredRows?: readonly number[]
+  outlineHiddenRows?: readonly number[]
   rowHeights?: Readonly<Record<number, number>>
 }
 
 /** Keep manual and filter reasons distinct in the model; combine them only for viewing. */
 export function hiddenSheetRows(sheet: SheetRowVisibility): Set<number> {
-  const hidden = new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? [])])
+  const hidden = new Set([...(sheet.hiddenRows ?? []), ...(sheet.filteredRows ?? []), ...(sheet.outlineHiddenRows ?? [])])
   for (const [key, height] of Object.entries(sheet.rowHeights ?? {})) if (height === 0) hidden.add(Number(key))
   return new Set([...hidden].filter(row => Number.isInteger(row) && row >= 0 && row < sheet.rowCount))
 }

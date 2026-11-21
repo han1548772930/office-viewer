@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { Button, Dropdown, Tooltip, type MenuProps } from 'antdv-next'
+import { Button, Dropdown, Select, Tooltip, type MenuProps } from 'antdv-next'
 import { computed, nextTick, ref } from 'vue'
 import { BookOpenText, ChevronDown, FileSpreadsheet, FileText, FolderOpen, Save } from 'lucide-vue-next'
 import type { ExportTask, WorkspaceKind } from './workspace-file-operations'
+import type { OfficeLocale } from '@office-studio/office-studio'
 
 export type WorkspaceHeaderAction = 'new-workbook' | 'new-document' | 'open' | 'save' | 'export' | 'rename' | 'diagnostics' | 'cancel-import' | 'cancel-export'
 const props = defineProps<{
@@ -13,10 +14,12 @@ const props = defineProps<{
   parserMessage: string
   exportTask: ExportTask | null
   diagnosticCount: number
+  locale: OfficeLocale
 }>()
 const emit = defineEmits<{
   action: [action: WorkspaceHeaderAction]
   switch: [kind: WorkspaceKind]
+  locale: [locale: OfficeLocale]
 }>()
 const tabs = ref<HTMLElement | null>(null)
 const fileMenuOpen = ref(false)
@@ -71,6 +74,14 @@ async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
         <Button id="document-tab" type="text" role="tab" :aria-selected="activeKind === 'document'" aria-controls="document-workspace" :tabindex="activeKind === 'document' ? 0 : -1" data-workspace="document" :class="['workspace-tab', { active: activeKind === 'document' }]" @click="emit('switch', 'document')"><FileText :size="16" /><span>文档</span></Button>
       </div>
     </nav>
+    <Select
+      :value="locale"
+      class="workspace-locale"
+      aria-label="Language"
+      :options="[{ label: '简体中文', value: 'zh-CN' }, { label: 'English', value: 'en-US' }]"
+      :popup-match-select-width="false"
+      @change="emit('locale', $event as OfficeLocale)"
+    />
     <div class="file-context">
       <Tooltip title="重命名当前文件"><Button type="text" class="file-context-name" :title="fileName" aria-label="重命名当前文件" @click="emit('action', 'rename')">{{ fileName }}</Button></Tooltip>
       <span :class="['file-context-status', { modified, busy: exportTask || parserStatus === 'loading' }]" role="status" :title="statusText">{{ statusText }}</span>

@@ -1,8 +1,9 @@
 import type { Component } from 'vue'
-import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTodo, ListTree, Maximize, Minimize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Smile, Strikethrough, Subscript, Superscript, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTodo, ListTree, Maximize, Minimize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Sigma, Smile, Strikethrough, Subscript, Superscript, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
+import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 
 interface DocumentRibbonContext {
   state: DocumentToolbarState
@@ -21,7 +22,7 @@ const action = (id: string, title: string, icon: Component, commandId = id, para
 const colors = [{ label: '黑色', value: '#1f2937' }, { label: '灰色', value: '#6b7280' }, { label: '红色', value: '#dc2626' }, { label: '橙色', value: '#ea580c' }, { label: '黄色', value: '#facc15' }, { label: '绿色', value: '#16a34a' }, { label: '蓝色', value: '#2563eb' }, { label: '紫色', value: '#9333ea' }]
 
 /** Menu ordering follows docs-ui/menu/schema at the fixed Univer baseline. */
-export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[] {
+export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
   const { state } = context
   const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { activated: state.marks[key] === true, tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title })
   const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title })
@@ -30,7 +31,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
     id, type: 'menu', title, icon,
     children: [...colors.map((color) => action(`${id}-${color.value}`, color.label, icon, 'doc.command.format-text', { patch: { [key]: color.value } }, { activated: state.marks[key] === color.value })), action(`${id}-custom`, '自定义颜色', icon, 'doc.operation.custom-color', key)],
   })
-  return [
+  const tabs: RibbonTab[] = [
     { id: 'home', title: '开始', order: 0, groups: [
       { id: 'doc-history', title: '历史与剪贴板', order: 0, items: [
         action('doc-undo', '撤销', Undo2, 'core.command.undo', undefined, { disabled: !context.canUndo, disabledReason: '没有可撤销的文档更改', shortcut: 'Ctrl+Z' }),
@@ -61,6 +62,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
         action('doc-indent-more', '增加缩进', IndentIncrease, 'doc.command.format-paragraph', { patch: { indent: Math.min(20, (state.paragraph.indent ?? 0) + 1) } }),
         { id: 'doc-line-height', type: 'select', title: '行距', width: 76, value: state.paragraph.lineHeight ?? null, placeholder: '混合', commandId: 'doc.command.format-paragraph', options: [1, 1.15, 1.5, 2, 2.5, 3].map((value) => ({ label: `${value} 倍`, value })), valueParams: (value) => ({ patch: { lineHeight: Number(value) } }) },
         { id: 'doc-paragraph-spacing', type: 'menu', title: '段落间距', icon: IndentIncrease, children: (['spaceBefore', 'spaceAfter'] as const).map((key) => ({ id: `doc-${key}`, type: 'menu', title: key === 'spaceBefore' ? '段前间距' : '段后间距', children: [0, 6, 8, 12, 18, 24, 36].map((value) => action(`doc-${key}-${value}`, `${value} 像素`, IndentIncrease, 'doc.command.format-paragraph', { patch: { [key]: value } }, { activated: state.paragraph[key] === value })) })) },
+        action('doc-header-footer', '页眉和页脚', FileText, 'doc.operation.open-header-footer', undefined, { showLabel: true }),
       ] },
     ] },
     { id: 'insert', title: '插入', order: 1, groups: [{ id: 'doc-insert', title: '插入内容', items: [
@@ -81,6 +83,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
         ] },
       ] },
       action('doc-divider', '分隔线', Minus, 'doc.command.insert-divider', undefined, { showLabel: true }),
+      action('doc-latex', 'LaTeX 公式', Sigma, 'doc.operation.open-latex', undefined, { showLabel: true }),
       action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { showLabel: true }),
       action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { showLabel: true }),
       { ...action('doc-controls', '内容控件', FileText, 'doc.operation.open-content-controls', undefined, { showLabel: true, disabled: !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务' }), type: 'split', children: [
@@ -111,6 +114,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext): RibbonTab[
       ] },
     ] }] : []),
   ]
+  return translate ? localizeRibbon(tabs, 'doc', translate) : tabs
 }
 
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
