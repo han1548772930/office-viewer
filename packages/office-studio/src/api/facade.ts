@@ -205,6 +205,7 @@ export class FWorkbook {
     return this
   }
   save(): WorkbookModel {
+    for (const sheet of this.model().sheets) this.api.assertCanViewWorksheet(this.id, sheet.id)
     const snapshot = cloneModel(this.model())
     snapshot.modified = false
     this.api.markSaved('workbook', this.id)
@@ -227,6 +228,7 @@ export class FWorkbook {
   setActiveSheet(sheet: FWorksheet | string): FWorksheet {
     const id = typeof sheet === 'string' ? sheet : sheet.getSheetId()
     if (!this.model().sheets.some((item) => item.id === id)) throw new Error(`Worksheet not found: ${id}`)
+    this.api.assertCanViewWorksheet(this.id, id)
     this.api.mutateWorkbook(this.id, 'sheet.operation.set-active-sheet', 'Set active worksheet', (model) => { model.activeSheetId = id })
     this.api.activateWorkbook(this.id)
     return new FWorksheet(this.api, this.id, id)
@@ -540,6 +542,7 @@ export class FWorksheet {
   private sheet(model = this.workbook()): SpreadsheetSheet {
     const sheet = model.sheets.find((item) => item.id === this.id)
     if (!sheet) throw new Error(`Worksheet not found: ${this.id}`)
+    this.api.assertCanViewWorksheet(this.unitId, this.id)
     return sheet
   }
 }
@@ -584,6 +587,10 @@ export class ChartConfigBuilder {
     return this
   }
   setValueFields(fields: number[]): this { this.value = { ...this.value, valueFields: [...fields] }; return this }
+  setSeriesToCategory(mapping: Record<number, number[]>): this {
+    this.value = { ...this.value, seriesToCategory: Object.fromEntries(Object.entries(mapping).map(([field, categories]) => [field, [...categories]])) }
+    return this
+  }
   setTitle(title: string): this { this.value = { ...this.value, title }; return this }
   setLegend(legend: Partial<ChartLegendOptions>): this { this.value = { ...this.value, legend: { ...this.value.legend, ...legend } }; return this }
   setXAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: { ...this.value.xAxis, ...axis } }; return this }
@@ -785,6 +792,7 @@ export class FRange {
     if (!model) throw new Error(`Workbook not found: ${this.unitId}`)
     const sheet = model.sheets.find((item) => item.id === this.sheetId)
     if (!sheet) throw new Error(`Worksheet not found: ${this.sheetId}`)
+    this.api.assertCanViewWorksheet(this.unitId, this.sheetId)
     return sheet
   }
   private fill(value: ApiCellValue): ApiCellValue[][] {

@@ -1,4 +1,4 @@
-import type { CellRange, SheetRangeProtectionDraft, SheetRangeProtectionRule, SpreadsheetSheet } from '../../domain/model.ts'
+import type { CellRange, SheetRangeProtectionDraft, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SpreadsheetSheet } from '../../domain/model.ts'
 
 const MAX_ROW_INDEX = 1_048_575
 const MAX_COLUMN_INDEX = 16_383
@@ -52,6 +52,86 @@ export function canEditProtectedRanges(
   const rules = sheet.rangeProtectionRules ?? []
   return rules.every(rule => !rule.ranges.some(protectedRange => ranges.some(range => rangesIntersect(protectedRange, range))) ||
     rule.ownerUserId === userId || (rule.editState === 'designedUserCanEdit' && rule.allowedUserIds.includes(userId)))
+}
+
+export function canEditWorksheetProtection(
+  sheet: Pick<SpreadsheetSheet, 'worksheetProtection'>,
+  userId: string,
+): boolean {
+  const rule = sheet.worksheetProtection
+  if (!rule) return true
+  return rule.ownerUserId === userId || (rule.editState === 'designedUserCanEdit' && rule.allowedUserIds.includes(userId))
+}
+
+export function canViewWorksheetProtection(
+  sheet: Pick<SpreadsheetSheet, 'worksheetProtection'>,
+  userId: string,
+): boolean {
+  const rule = sheet.worksheetProtection
+  return !rule || rule.viewState !== 'noOneElseCanView' || rule.ownerUserId === userId ||
+    (rule.editState === 'designedUserCanEdit' && rule.allowedUserIds.includes(userId))
+}
+
+export function createWorksheetProtectionRule(
+  input: Omit<SheetWorksheetProtectionRule, 'id' | 'permissionId' | 'unitType' | 'ownerUserId'>,
+  ownerUserId: string,
+): SheetWorksheetProtectionRule {
+  return validateWorksheetProtectionRule({
+    ...input,
+    id: crypto.randomUUID(),
+    permissionId: crypto.randomUUID(),
+    unitType: 'worksheet',
+    ownerUserId,
+  })
+}
+
+export function validateWorksheetProtectionRule(
+  rule: SheetWorksheetProtectionRule,
+): SheetWorksheetProtectionRule {
+  if (!rule || typeof rule.id !== 'string' || !rule.id.trim() ||
+      typeof rule.permissionId !== 'string' || !rule.permissionId.trim() || rule.unitType !== 'worksheet' ||
+      typeof rule.ownerUserId !== 'string' || !rule.ownerUserId.trim()) {
+    throw new TypeError('工作表保护规则不完整。')
+  }
+  if (rule.editState !== 'onlyMe' && rule.editState !== 'designedUserCanEdit') throw new TypeError('工作表编辑权限无效。')
+  if (rule.viewState !== 'othersCanView' && rule.viewState !== 'noOneElseCanView') throw new TypeError('工作表查看权限无效。')
+  if (rule.description !== undefined && typeof rule.description !== 'string') throw new TypeError('保护说明必须是文本。')
+  const description = rule.description?.trim()
+  if (description && description.length > 255) throw new RangeError('保护说明不能超过 255 个字符。')
+  if (!Array.isArray(rule.allowedUserIds) || rule.allowedUserIds.some(userId => typeof userId !== 'string')) {
+    throw new TypeError('允许编辑的用户必须是用户 ID 列表。')
+  }
+  const allowedUserIds = [...new Set(rule.allowedUserIds.map(userId => userId.trim()).filter(Boolean))]
+  if (allowedUserIds.some(userId => userId.length > 255)) throw new RangeError('用户 ID 不能超过 255 个字符。')
+  if (rule.editState === 'designedUserCanEdit' && !allowedUserIds.length) throw new RangeError('请至少填写一个允许编辑的用户 ID。')
+  return { ...rule, id: rule.id.trim(), permissionId: rule.permissionId.trim(), ownerUserId: rule.ownerUserId.trim(), description, allowedUserIds }
+}
+
+export function setWorksheetProtectionRule(sheet: SpreadsheetSheet, rule: SheetWorksheetProtectionRule): void {
+  sheet.worksheetProtection = validateWorksheetProtectionRule(rule)
+}
+
+export function assertWorksheetProtectionChanges(before: { sheets: SpreadsheetSheet[] }, after: { sheets: SpreadsheetSheet[] }, userId: string): void {
+  for (const sheet of before.sheets) {
+    const next = after.sheets.find(candidate => candidate.id === sheet.id)
+    if (sheet.worksheetProtection && JSON.stringify(sheet.worksheetProtection) !== JSON.stringify(next?.worksheetProtection) &&
+        sheet.worksheetProtection.ownerUserId !== userId) {
+      throw new Error('只有工作表保护创建者可以修改或移除该保护。')
+    }
+    if (!canEditWorksheetProtection(sheet, userId)) {
+      const { worksheetProtection: _beforeRule, ...previousContent } = sheet
+      const { worksheetProtection: _afterRule, ...nextContent } = next ?? {}
+      if (JSON.stringify(previousContent) !== JSON.stringify(nextContent)) throw new Error('该工作表受保护，当前用户没有编辑权限。')
+    }
+  }
+  for (const sheet of after.sheets) {
+    if (!sheet.worksheetProtection) continue
+    const previous = before.sheets.find(candidate => candidate.id === sheet.id)?.worksheetProtection
+    if (JSON.stringify(previous) === JSON.stringify(sheet.worksheetProtection)) continue
+    const rule = validateWorksheetProtectionRule(sheet.worksheetProtection)
+    if (rule.ownerUserId !== userId) throw new Error('工作表保护创建者必须是当前用户。')
+    sheet.worksheetProtection = rule
+  }
 }
 
 export function setSheetRangeProtectionRule(sheet: SpreadsheetSheet, rule: SheetRangeProtectionRule): void {

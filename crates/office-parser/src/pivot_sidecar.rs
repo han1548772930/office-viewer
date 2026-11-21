@@ -5,11 +5,13 @@ use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use serde_json::{Value, json};
 use zip::ZipArchive;
+use crate::model::ChartAxisPayload;
 
 #[derive(Debug, Default)]
 pub(crate) struct PivotSidecar {
     pub(crate) pivot_tables: Vec<Value>,
     pub(crate) chart_pivot_ids: HashMap<(String, usize), String>,
+    pub(crate) chart_axes: HashMap<(String, usize), (ChartAxisPayload, ChartAxisPayload)>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -107,6 +109,15 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
                     let Some(chart_xml) = parse_part(&mut archive, chart_path)? else {
                         continue;
                     };
+                    let axis = |positions: &[&str]| {
+                        chart_xml.descendants("valAx").into_iter().find(|node| {
+                            node.descendants("axPos").into_iter().any(|position| position.attrs.get("val").is_some_and(|value| positions.contains(&value.as_str())))
+                        }).map(|node| {
+                            let log_base = node.descendants("logBase").into_iter().find_map(|base| base.attrs.get("val").and_then(|value| value.parse::<f64>().ok())).filter(|value| value.is_finite() && (2.0..=1000.0).contains(value));
+                            ChartAxisPayload { scale_type: if log_base.is_some() { "log" } else { "linear" }.into(), log_base }
+                        }).unwrap_or_else(|| ChartAxisPayload { scale_type: "linear".into(), log_base: None })
+                    };
+                    sidecar.chart_axes.insert((sheet_name.clone(), index), (axis(&["b", "t"]), axis(&["l", "r"])));
                     let Some(source_name) = chart_xml
                         .descendants("name")
                         .into_iter()

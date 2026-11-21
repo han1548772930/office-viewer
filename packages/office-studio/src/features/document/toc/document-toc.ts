@@ -1,6 +1,6 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
 import type { DocumentSelection } from '../model/document-model'
-import { createParagraph, createRun, documentId, orderedSelection, runText, sameTarget, textTargets } from '../model/document-model'
+import { createParagraph, createRun, documentId, orderedSelection, runText, sameTarget, sliceRuns, textTargets, type DocumentRun } from '../model/document-model'
 
 export type DocumentTocFormat = 'fromTemplate' | 'classic' | 'modern' | 'simple'
 export type DocumentTocTabLeader = 'none' | 'dots' | 'dashes' | 'underline'
@@ -43,6 +43,17 @@ interface DocumentTocMetadata {
 
 const TOC_METADATA_KEY = 'documentToc'
 
+function normalizeTocOptions(options: Partial<DocumentTocOptions>): DocumentTocOptions {
+  const showPageNumbers = options.showPageNumbers ?? true
+  return {
+    levels: typeof options.levels === 'number' && Number.isFinite(options.levels) ? Math.min(9, Math.max(1, Math.trunc(options.levels))) : 3,
+    showPageNumbers,
+    rightAlignPageNumbers: showPageNumbers && (options.rightAlignPageNumbers ?? true),
+    tabLeader: options.tabLeader === 'none' || options.tabLeader === 'dashes' || options.tabLeader === 'underline' ? options.tabLeader : 'dots',
+    format: options.format === 'classic' || options.format === 'modern' || options.format === 'simple' ? options.format : 'fromTemplate',
+  }
+}
+
 function tocMetadata(block: DocumentBlock): DocumentTocMetadata | undefined {
   const value = block.metadata[TOC_METADATA_KEY]
   if (!value || typeof value !== 'object') return undefined
@@ -84,11 +95,15 @@ function createTocBlock(
 }
 
 export function collectDocumentTocHeadings(model: DocumentModel, levels: number): DocumentTocHeading[] {
-  const maxLevel = Math.min(9, Math.max(1, Math.floor(levels)))
+  const maxLevel = normalizeTocOptions({ levels }).levels
+  const seen = new Set<string>()
   return model.blocks.flatMap((block) => {
-    if (block.type !== 'heading' || !block.id || block.level < 1 || block.level > maxLevel) return []
+    if (block.type !== 'heading' || !block.id || seen.has(block.id) || !Number.isInteger(block.level) || block.level < 1 || block.level > maxLevel) return []
     const text = runText(block.runs).replace(/[\r\n\t]/g, ' ').trim()
-    return text ? [{ id: block.id, text, level: block.level }] : []
+    const listLabel = block.metadata.listLabel
+    const prefix = typeof listLabel === 'string' ? listLabel.trim() : ''
+    if (text) seen.add(block.id)
+    return text ? [{ id: block.id, text: prefix ? `${prefix} ${text}` : text, level: block.level }] : []
   })
 }
 
@@ -101,6 +116,7 @@ export function buildDocumentTocBlocks(
   titleText = 'Contents',
   includeTitle = true,
 ): DocumentBlock[] {
+  options = normalizeTocOptions(options)
   const headings = collectDocumentTocHeadings(model, options.levels)
   if (!headings.length) return []
   const existingIds = new Map(existingBlocks.flatMap((block) => {
@@ -133,13 +149,24 @@ export function updateDocumentToc(
   if (!tocBlocks.length) return false
 
   if (mode === 'pageNumbersOnly') {
+    const replacements: Array<{ block: DocumentBlock; metadata: DocumentTocMetadata; pageNumber: number; runs: DocumentRun[] }> = []
     for (const block of tocBlocks) {
       const metadata = tocMetadata(block)
       if (metadata?.role !== 'entry' || !metadata.headingId || !metadata.options) continue
+      if (!metadata.options.showPageNumbers) continue
       const pageNumber = pageNumbers[metadata.headingId]
-      if (pageNumber == null) continue
-      const heading = { id: metadata.headingId, text: metadata.headingText ?? runText(block.runs), level: metadata.level ?? 1 }
-      block.runs = [createRun(displayText(heading, metadata.options, pageNumber))]
+      if (pageNumber == null || !Number.isInteger(pageNumber) || pageNumber < 1) return false
+      const text = runText(block.runs)
+      const separator = metadata.options.rightAlignPageNumbers ? '\t' : ' '
+      const separatorIndex = text.lastIndexOf(separator)
+      const prefixEnd = separatorIndex >= 0 ? separatorIndex + 1 : text.length
+      const prefix = sliceRuns(block.runs as DocumentRun[], 0, prefixEnd)
+      const pageRun = { ...(block.runs.at(-1) ?? createRun()), id: documentId('run'), text: String(pageNumber) }
+      if (separatorIndex < 0) prefix.push({ ...pageRun, id: documentId('run'), text: separator })
+      replacements.push({ block, metadata, pageNumber, runs: [...prefix, pageRun] })
+    }
+    for (const { block, metadata, pageNumber, runs } of replacements) {
+      block.runs = runs
       block.metadata[TOC_METADATA_KEY] = { ...metadata, pageNumber }
     }
     return true
@@ -169,9 +196,16 @@ export function documentTocIdAtBlock(block: DocumentBlock | undefined): string |
   return block ? tocMetadata(block)?.id : undefined
 }
 
+export function documentTocHeadingTarget(model: DocumentModel, block: DocumentBlock | undefined): string | undefined {
+  const metadata = block && tocMetadata(block)
+  const headingId = metadata?.role === 'entry' ? metadata.headingId : undefined
+  if (!headingId) return undefined
+  return model.blocks.some(candidate => candidate.id === headingId && candidate.type === 'heading') ? headingId : undefined
+}
+
 export function documentTocOptionsAtBlock(block: DocumentBlock | undefined): DocumentTocOptions | undefined {
   const options = block && tocMetadata(block)?.options
-  return options && { ...options }
+  return options && normalizeTocOptions(options)
 }
 
 export function documentTocIdForSelection(model: DocumentModel, selection: DocumentSelection): string | undefined {

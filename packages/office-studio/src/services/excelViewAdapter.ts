@@ -1,4 +1,4 @@
-import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
+import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
@@ -28,6 +28,7 @@ export interface ExcelCellView {
   rotationVertical?: boolean
   indent?: number
   shrinkToFit?: boolean
+  hyperlink?: string | null
   sparkline?: SparklineSpec
 }
 export interface ExcelSheetView {
@@ -58,6 +59,7 @@ export interface ExcelSheetView {
   date1904?: boolean
   dataValidations?: SheetDataValidationRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
+  worksheetProtection?: SheetWorksheetProtectionRule
   conditionalFormats?: SheetConditionalFormatRule[]
 }
 export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; slicers?: SlicerModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual'; metadata?: Record<string, unknown> }
@@ -85,6 +87,7 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   rotation: cell.style.rotation === 255 ? 0 : cell.style.rotation,
   rotationVertical: cell.style.rotationVertical === true || cell.style.rotation === 255,
   indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
+  hyperlink: cell.hyperlink ?? undefined,
   sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
 })
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
@@ -128,6 +131,7 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         date1904: workbook.date1904,
         dataValidations: sheet.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })),
         rangeProtectionRules: sheet.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })),
+        worksheetProtection: sheet.worksheetProtection ? { ...sheet.worksheetProtection, allowedUserIds: [...sheet.worksheetProtection.allowedUserIds] } : undefined,
         conditionalFormats: sheet.conditionalFormats?.map(cloneConditionalFormatRule),
       }
     }),
@@ -172,6 +176,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
         cells[id] = {
           ...previous, id, ...position, value, formula: cell.formula ?? null,
+          hyperlink: cell.hyperlink === undefined ? previous?.hyperlink ?? null : cell.hyperlink,
           sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
           display: display ?? (cell.formula ? cell.cachedValue ?? cell.formula : preserveDisplay ? previous.display : cell.value),
           style: {
@@ -195,6 +200,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         dataValidations: source.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })) ?? original?.dataValidations,
         conditionalFormats: source.conditionalFormats?.map(cloneConditionalFormatRule) ?? original?.conditionalFormats,
         rangeProtectionRules: source.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })) ?? original?.rangeProtectionRules,
+        worksheetProtection: source.worksheetProtection ? { ...source.worksheetProtection, allowedUserIds: [...source.worksheetProtection.allowedUserIds] } : original?.worksheetProtection,
         rowCount: source.rowCount, columnCount: source.columnCount,
         columnWidths: { ...(source.columnWidths ?? original?.columnWidths) }, rowHeights: { ...(source.rowHeights ?? original?.rowHeights) },
         hiddenRows: [...(source.hiddenRows ?? original?.hiddenRows ?? [])], hiddenColumns: [...(source.hiddenColumns ?? original?.hiddenColumns ?? [])],
@@ -244,6 +250,7 @@ function cloneChartModel(chart: ChartModel): ChartModel {
     xAxis: { ...chart.xAxis },
     yAxis: { ...chart.yAxis },
     valueFields: [...chart.valueFields],
+    seriesToCategory: chart.seriesToCategory ? Object.fromEntries(Object.entries(chart.seriesToCategory).map(([field, categories]) => [field, [...categories]])) : undefined,
   }
 }
 

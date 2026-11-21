@@ -475,6 +475,10 @@ fn parse_workbook(
         .collect::<Vec<_>>();
     for sheet in &mut sheets {
         for chart in &mut sheet.charts {
+            if let Some((x_axis, y_axis)) = pivot_sidecar.chart_axes.get(&(sheet.name.clone(), chart.index)) {
+                chart.x_axis = Some(x_axis.clone());
+                chart.y_axis = Some(y_axis.clone());
+            }
             chart.pivot_table_id = pivot_sidecar
                 .chart_pivot_ids
                 .get(&(sheet.name.clone(), chart.index))
@@ -787,6 +791,8 @@ fn chart_payload(
         data_labels: chart.data_labels,
         x_axis_title: chart.x_axis_title.clone(),
         y_axis_title: chart.y_axis_title.clone(),
+        x_axis: None,
+        y_axis: None,
         from: AnchorCellPayload {
             row: chart.from.0,
             col: chart.from.1,
@@ -1591,6 +1597,35 @@ mod tests {
         assert_eq!(pivot["fields"][1]["aggregation"], "sum");
         let chart = &payload["payload"]["data"]["sheets"][1]["charts"][0];
         assert_eq!(chart["pivotTableId"], pivot["id"], "chart payload: {chart}");
+    }
+
+    #[test]
+    fn writer_scatter_chart_xlsx_reopens_with_independent_x_fields_and_log_axes() {
+        let model = serde_json::json!({
+            "kind": "workbook", "name": "Scatter", "sheets": [{ "id": "data", "name": "Data", "cells": {
+                "A1": { "value": "Shared X" }, "B1": { "value": "First Y" }, "C1": { "value": "Other X" }, "D1": { "value": "Second Y" },
+                "A2": { "value": 1 }, "B2": { "value": 10 }, "C2": { "value": 5 }, "D2": { "value": 30 },
+                "A3": { "value": 2 }, "B3": { "value": 20 }, "C3": { "value": 9 }, "D3": { "value": 40 }
+            }}], "charts": [{
+                "id": "scatter-1", "sheetId": "data", "type": "scatter",
+                "source": { "range": { "startRow": 0, "startCol": 0, "endRow": 2, "endCol": 3 }, "orientation": "columns" },
+                "position": { "x": 20, "y": 20 }, "size": { "width": 400, "height": 240 },
+                "categoryField": 0, "valueFields": [1, 3], "seriesToCategory": { "3": [2] },
+                "xAxis": { "scaleType": "log", "logBase": 2 }, "yAxis": { "scaleType": "linear" }
+            }]
+        });
+        let (bytes, warnings) = office_writer::export_xlsx_bytes(&model.to_string()).expect("scatter chart exports");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let envelope = parse_office_bytes(&bytes, "scatter.xlsx").expect("scatter chart reopens");
+        let payload = serde_json::to_value(envelope).expect("parse payload serializes");
+        let chart = &payload["payload"]["data"]["sheets"][0]["charts"][0];
+        assert_eq!(chart["kind"], "scatter");
+        assert_eq!(chart["series"][0]["categories"], "'Data'!$A$2:$A$3");
+        assert_eq!(chart["series"][1]["categories"], "'Data'!$C$2:$C$3");
+        assert_eq!(chart["series"][1]["values"], "'Data'!$D$2:$D$3");
+        assert_eq!(chart["xAxis"]["scaleType"], "log");
+        assert_eq!(chart["xAxis"]["logBase"], 2.0);
+        assert_eq!(chart["yAxis"]["scaleType"], "linear");
     }
 
     fn add_xlsx_validation_attributes(bytes: &[u8]) -> Vec<u8> {

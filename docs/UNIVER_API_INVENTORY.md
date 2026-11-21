@@ -6,6 +6,8 @@ Reference repository: `E:\rust_test\univer`
 
 Reference commit: `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`
 
+This inventory is a historical audit against the previous checkout. Its Facade signatures and row-level parity statuses have not yet been re-audited against the current Univer v1.6.0 checkout.
+
 This inventory records the public Univer Facade surface that is relevant to the
 Sheets and Docs workbench, then maps it to the current project. It is an
 evidence document, not a declaration that the target feature set is complete.

@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Button, Checkbox, ConfigProvider, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
 import { applyExcelWorkbookView, toExcelWorkbookView } from '../services/excelViewAdapter'
 import { createBlankWorkbook } from '../domain/model'
-import type { ChartModel } from '../domain/model'
+import type { ChartModel, ChartSourceOrientation, ChartType } from '../domain/model'
 import type { SlicerModel } from '../domain/model'
 import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
 import ChartOverlay from './ChartOverlay.vue'
@@ -29,7 +29,7 @@ import { validateSheetDataValidationChanges } from '../features/sheet-validation
 import { createQuickSheetDataValidationRule, type QuickSheetDataValidationPreset } from '../features/sheet-validation/quick-validation.ts'
 import { createSheetPastePlan, type SheetPasteMode } from '../features/sheet-workbench/sheet-paste.ts'
 import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
-import { canEditProtectedRanges } from '../features/sheet-protection/range-protection.ts'
+import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
 import { createFormatPainterPatches, type FormatPainterSource } from '../features/sheet-workbench/sheet-format-painter.ts'
 import { applySheetOutlineOperation, createSheetOutlineState, setSheetOutlineCollapsed, setSheetOutlineLevel, setSheetOutlineSummaryPosition } from '../features/sheet-outline/sheet-outline.ts'
 import { createOfficeTranslator, createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n.ts'
@@ -37,6 +37,7 @@ import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type 
 import { convertTextToNumber } from '../features/sheet-workbench/text-to-number.ts'
 import { moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit, type SheetCellMoveDirection } from '../features/sheet-workbench/sheet-cell-range-move.ts'
 import { resolveSlicerBounds } from '../features/slicer/slicer-drawing.ts'
+import { canSetSheetHyperlink, normalizeExternalSheetHyperlink, SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND } from '../features/sheet-workbench/sheet-hyperlink.ts'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const PivotChartPanel = defineAsyncComponent(() => import('./spreadsheet/PivotChartPanel.vue'))
@@ -45,6 +46,7 @@ const SlicerPanel = defineAsyncComponent(() => import('./spreadsheet/SlicerPanel
 const SheetDataPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataPanel.vue'))
 const SheetDataValidationPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataValidationPanel.vue'))
 const SheetRangeProtectionPanel = defineAsyncComponent(() => import('./spreadsheet/SheetRangeProtectionPanel.vue'))
+const SheetProtectionPanel = defineAsyncComponent(() => import('./spreadsheet/SheetProtectionPanel.vue'))
 const CustomNumberFormatPanel = defineAsyncComponent(() => import('./spreadsheet/CustomNumberFormatPanel.vue'))
 const ConditionalFormattingPanel = defineAsyncComponent(() => import('./spreadsheet/ConditionalFormattingPanel.vue'))
 
@@ -131,7 +133,9 @@ function createDefaultWorkbook(): ExcelWorkbook {
 }
 
 const workbook = ref<ExcelWorkbook>(cloneWorkbook(props.modelValue ?? props.model ?? createDefaultWorkbook()))
-const activeSheetId = ref(workbook.value.sheets.find(sheet => sheet.id === workbook.value.activeSheetId && sheet.visible !== false)?.id ?? workbook.value.sheets.find(sheet => sheet.visible !== false)?.id ?? '')
+const userId = computed(() => props.studio?.currentUserId ?? 'local-user')
+const availableSheets = computed(() => workbook.value.sheets.filter(sheet => canViewWorksheetProtection(sheet, userId.value)))
+const activeSheetId = ref(availableSheets.value.find(sheet => sheet.id === workbook.value.activeSheetId && sheet.visible !== false)?.id ?? availableSheets.value.find(sheet => sheet.visible !== false)?.id ?? '')
 const selectedKey = ref('A2')
 const selectionAnchor = ref('A2')
 const selectedRanges = ref<GridRange[]>([{ startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }])
@@ -166,8 +170,41 @@ const chartCommands = ref<DrawCommand[]>([])
 const chartModalOpen = ref(false)
 const chartSource = ref('')
 const chartTitle = ref('')
-const chartType = ref<'bar' | 'line'>('bar')
+const chartType = ref<ChartType>('bar')
+const chartOrientation = ref<ChartSourceOrientation>('columns')
+const chartCategoryField = ref(0)
+const chartValueFields = ref<number[]>([])
+const chartSeriesXFields = ref<Record<number, number>>({})
+const chartXScale = ref<'linear' | 'log'>('linear')
+const chartYScale = ref<'linear' | 'log'>('linear')
+const chartFieldOptions = computed(() => {
+  const range = parseChartRange(chartSource.value)
+  const sheet = activeSheet.value
+  if (!range || !sheet) return []
+  const count = chartOrientation.value === 'columns' ? range.endColumn - range.startColumn + 1 : range.endRow - range.startRow + 1
+  return Array.from({ length: count }, (_unused, value) => {
+    const row = range.startRow + (chartOrientation.value === 'rows' ? value : 0)
+    const column = range.startColumn + (chartOrientation.value === 'columns' ? value : 0)
+    const address = `${columnName(column)}${row + 1}`
+    const title = sheet.cells[address]?.value
+    return { value, label: title == null || title === '' ? address : `${address} · ${title}` }
+  })
+})
+watch([chartSource, chartOrientation], () => {
+  chartCategoryField.value = 0
+  chartValueFields.value = []
+  chartSeriesXFields.value = {}
+})
 const chartError = ref('')
+const hyperlinkDialogOpen = ref(false)
+const hyperlinkTarget = ref('')
+const hyperlinkDisplay = ref('')
+const hyperlinkError = ref('')
+const hyperlinkCell = ref<{ unitId: string; sheetId: string; key: string } | null>(null)
+const editingHyperlink = computed(() => {
+  const target = hyperlinkCell.value
+  return target && target.unitId === workbook.value.id ? workbook.value.sheets.find(sheet => sheet.id === target.sheetId)?.cells[target.key]?.hyperlink : undefined
+})
 const workbenchRef = ref<HTMLElement | null>(null)
 const isFullscreen = ref(false)
 const pivotPanelOpen = ref(false)
@@ -188,6 +225,7 @@ const validationPanelOpen = ref(false)
 const validationPanelRange = ref('A1')
 const validationPanelInitialType = ref<'checkbox' | 'list' | 'date' | 'time' | undefined>()
 const protectionPanelOpen = ref(false)
+const worksheetProtectionSheetId = ref<string | null>(null)
 const protectionStartNew = ref(false)
 const axisSizeDialogOpen = ref(false)
 const axisSizeDialogKind = ref<'row' | 'column'>('row')
@@ -236,7 +274,7 @@ const slicerControls = computed(() => {
   })
 })
 
-const activeSheet = computed(() => workbook.value.sheets.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? workbook.value.sheets.find(sheet => sheet.visible !== false))
+const activeSheet = computed(() => availableSheets.value.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? availableSheets.value.find(sheet => sheet.visible !== false))
 const translate = computed(() => createOfficeTranslator(officeLocale.value))
 function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
 const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
@@ -305,6 +343,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
   pivotChartAvailable: Boolean(props.studio && workbook.value.pivotTables?.length),
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
+  hyperlinkAvailable: canOpenHyperlinkDialog(),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
   filterEnabled: Boolean(activeSheet.value?.autoFilter),
   filterCanToggle: Boolean(props.studio && workbook.value.id && (activeSheet.value?.autoFilter || (!sortBusy.value && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow))),
@@ -315,7 +354,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   outlineSummaryLeft: activeSheet.value?.outline?.summaryLeft ?? false,
 }, createRibbonTranslator(officeLocale.value, 'sheet')))
 const formulaValue = computed(() => editingKey.value ? editValue.value : activeCell.value.formula ?? activeCell.value.value)
-const searchMatches = computed(() => findSheetMatches(workbook.value.sheets, activeSheetId.value, {
+const searchMatches = computed(() => findSheetMatches(availableSheets.value, activeSheetId.value, {
   text: searchText.value, replacement: replaceText.value, findBy: findBy.value, direction: findDirection.value,
   scope: findScope.value, caseSensitive: findCaseSensitive.value, wholeCell: findWholeCell.value,
 }, findScope.value === 'sheet' && findSelectionOnly.value ? findSelectionRanges.value : [], findScope.value === 'sheet' && findSelectionOnly.value))
@@ -343,8 +382,9 @@ function applyExternalWorkbook(value: ExcelWorkbook) {
   if (JSON.stringify(workbook.value) === JSON.stringify(value)) return
   const previousSheetId = activeSheetId.value
   const sameDocument = value.id !== undefined || workbook.value.id !== undefined ? value.id === workbook.value.id : value.sheets.some(sheet => sheet.id === previousSheetId)
-  const requested = value.sheets.find(sheet => sheet.id === value.activeSheetId && sheet.visible !== false)
-  const nextSheetId = requested?.id ?? value.sheets.find(sheet => sheet.id === previousSheetId && sheet.visible !== false)?.id ?? value.sheets.find(sheet => sheet.visible !== false)?.id ?? ''
+  const viewableSheets = value.sheets.filter(sheet => canViewWorksheetProtection(sheet, userId.value))
+  const requested = viewableSheets.find(sheet => sheet.id === value.activeSheetId && sheet.visible !== false)
+  const nextSheetId = requested?.id ?? viewableSheets.find(sheet => sheet.id === previousSheetId && sheet.visible !== false)?.id ?? viewableSheets.find(sheet => sheet.visible !== false)?.id ?? ''
   if (sameDocument) saveViewSession()
   else { viewSessions.clear(); sortController?.abort(); editingKey.value = null }
   const session = sameDocument ? viewSessions.get(nextSheetId) : undefined
@@ -372,6 +412,10 @@ function commitHistory() {
 function validateIncomingValues(entries: readonly { key: string; value: string }[]): boolean {
   const sheet = activeSheet.value
   if (!sheet || !entries.length) return true
+  if (!canEditWorksheetProtection(sheet, props.studio?.currentUserId ?? 'local-user')) {
+    emit('notify', { type: 'warning', message: '此工作表受保护，当前用户没有编辑权限。' })
+    return false
+  }
   const candidateView = cloneWorkbook(workbook.value)
   const candidateSheet = candidateView.sheets.find(item => item.id === sheet.id)
   if (!candidateSheet) return false
@@ -431,11 +475,17 @@ function openChartDialog() {
   chartSource.value = bounds ? rangeNotation(bounds) : 'A1:C4'
   chartTitle.value = ''
   chartType.value = 'bar'
+  chartOrientation.value = 'columns'
+  chartCategoryField.value = 0
+  chartValueFields.value = []
+  chartSeriesXFields.value = {}
+  chartXScale.value = 'linear'
+  chartYScale.value = 'linear'
   chartError.value = ''
   chartModalOpen.value = true
 }
 
-function confirmChartDialog() {
+async function confirmChartDialog() {
   const sheet = activeSheet.value
   const range = parseChartRange(chartSource.value)
   if (!sheet || !range) { chartError.value = '请输入有效的数据范围，例如 A1:C4'; return }
@@ -443,8 +493,15 @@ function confirmChartDialog() {
     const target = getChartWorksheet(sheet.id)
     if (!target) throw new Error('图表命令上下文尚未绑定到活动工作簿')
     const position = chartPositionForRange(range, sheet)
-    target.insertChart(target.newChart(chartType.value)
-      .setSource(chartSource.value, 'columns')
+    await target.insertChart(target.newChart(chartType.value)
+      .setSource(chartSource.value, chartOrientation.value)
+      .setCategoryField(chartCategoryField.value)
+      .setValueFields(chartValueFields.value)
+      .setSeriesToCategory(chartType.value === 'scatter' ? Object.fromEntries(chartValueFields.value
+        .filter((field) => chartSeriesXFields.value[field] !== undefined)
+        .map((field) => [field, [chartSeriesXFields.value[field]!]])) : {})
+      .setXAxis({ scaleType: chartType.value === 'scatter' ? chartXScale.value : 'linear' })
+      .setYAxis({ scaleType: chartType.value === 'scatter' ? chartYScale.value : 'linear' })
       .setAbsolutePosition(position.x, position.y)
       .setSize(480, 300)
       .setTitle(chartTitle.value.trim())
@@ -452,6 +509,65 @@ function confirmChartDialog() {
     chartModalOpen.value = false
   } catch (error) {
     chartError.value = error instanceof Error ? error.message : '图表数据范围不可用'
+  }
+}
+
+function openHyperlinkDialog(): void {
+  const sheet = activeSheet.value
+  const unitId = workbook.value.id
+  const key = hyperlinkSelectionKey()
+  if (!sheet || !unitId || !canOpenHyperlinkDialog()) return
+  const cell = sheet.cells[key]
+  hyperlinkCell.value = { unitId, sheetId: sheet.id, key }
+  hyperlinkTarget.value = cell?.hyperlink ?? ''
+  hyperlinkDisplay.value = cell?.displayValue ?? cell?.value ?? ''
+  hyperlinkError.value = ''
+  hyperlinkDialogOpen.value = true
+}
+
+function confirmHyperlinkDialog(): void {
+  runHyperlinkCommand(SET_SHEET_HYPERLINK_COMMAND)
+}
+
+function deleteSelectedHyperlink(): void {
+  runHyperlinkCommand(REMOVE_SHEET_HYPERLINK_COMMAND)
+}
+
+function openSelectedHyperlink(): void {
+  const target = normalizeExternalSheetHyperlink(editingHyperlink.value ?? '')
+  if (target) window.open(target, '_blank', 'noopener,noreferrer')
+}
+
+function hyperlinkSelectionKey(): string {
+  const range = selectedRanges.value[0]
+  return range ? `${columnName(range.startColumn)}${range.startRow + 1}` : selectedKey.value
+}
+
+function canOpenHyperlinkDialog(): boolean {
+  const sheet = activeSheet.value
+  if (!props.studio || !workbook.value.id || !sheet) return false
+  const key = hyperlinkSelectionKey()
+  const [col, row] = splitKey(key)
+  const range = { startRow: row - 1, endRow: row - 1, startCol: col, endCol: col }
+  return canSetSheetHyperlink(sheet, row - 1, col, sheet.cells[key]?.formula)
+    && canEditWorksheetProtection(sheet, userId.value) && canEditProtectedRanges(sheet, [range], userId.value)
+}
+
+function runHyperlinkCommand(commandId: typeof SET_SHEET_HYPERLINK_COMMAND | typeof REMOVE_SHEET_HYPERLINK_COMMAND): void {
+  const target = hyperlinkCell.value
+  if (!props.studio || !target || target.unitId !== workbook.value.id) return
+  const [col, row] = splitKey(target.key)
+  try {
+    props.studio.executeCommandSync(commandId, {
+      unitId: target.unitId, sheetId: target.sheetId, row: row - 1, col,
+      ...(commandId === SET_SHEET_HYPERLINK_COMMAND ? { draft: { target: hyperlinkTarget.value, display: hyperlinkDisplay.value } } : {}),
+    })
+    const model = props.studio.getWorkbookModel(target.unitId)
+    if (model) workbook.value = toExcelWorkbookView(model)
+    commitHistory()
+    hyperlinkDialogOpen.value = false
+  } catch (error) {
+    hyperlinkError.value = error instanceof Error ? error.message : '无法修改超链接。'
   }
 }
 
@@ -540,6 +656,10 @@ async function removeChart(chartId: string) {
 function setCellValue(key: string, value: string): boolean {
   const sheet = activeSheet.value
   if (!sheet) return false
+  if (!canEditWorksheetProtection(sheet, props.studio?.currentUserId ?? 'local-user')) {
+    emit('notify', { type: 'warning', message: '此工作表受保护，当前用户没有编辑权限。' })
+    return false
+  }
   if (!validateIncomingValues([{ key, value }])) return false
   const previous = sheet.cells[key]
   const current = previous ?? { value: '' }
@@ -712,6 +832,11 @@ function handleGridKeydown(event: KeyboardEvent) {
     }
     return
   }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    void executeRibbon('sheet.operation.insert-hyperlink')
+    return
+  }
   if (event.key === 'Enter' || event.key === 'F2') {
     event.preventDefault()
     beginEdit()
@@ -760,6 +885,11 @@ function checkDirectSelection(count = selectedCount.value): boolean {
   return false
 }
 function applyToSelection(action: (key: string) => void): boolean {
+  const sheet = activeSheet.value
+  if (sheet && !canEditWorksheetProtection(sheet, props.studio?.currentUserId ?? 'local-user')) {
+    emit('notify', { type: 'warning', message: '此工作表受保护，当前用户没有编辑权限。' })
+    return false
+  }
   if (!checkDirectSelection()) return false
   for (const range of selectedRanges.value) for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) action(`${columnName(column)}${row + 1}`)
   return true
@@ -1367,7 +1497,12 @@ function saveViewSession() {
 
 function activateSheet(id: string) {
   const sheet = workbook.value.sheets.find(candidate => candidate.id === id && candidate.visible !== false)
-  if (!sheet || id === activeSheetId.value) return
+  if (!sheet) return
+  if (!canViewWorksheetProtection(sheet, userId.value)) {
+    emit('notify', { type: 'warning', message: '此工作表受保护，当前用户没有查看权限。' })
+    return
+  }
+  if (id === activeSheetId.value) return
   if (!finishEdit()) return
   saveViewSession()
   activeSheetId.value = id
@@ -1398,6 +1533,7 @@ function copySheet(id: string) {
   const sourceIndex = workbook.value.sheets.findIndex(sheet => sheet.id === id)
   const source = workbook.value.sheets[sourceIndex]
   if (!source) return
+  if (!canChangeWorksheet(id)) return
   let suffix = 2
   let name = `${source.name} (${suffix})`
   while (workbook.value.sheets.some(sheet => sheet.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
@@ -1416,15 +1552,41 @@ function copySheet(id: string) {
   emit('notify', { type: 'info', message: `已复制工作表“${source.name}”的单元格和工作表设置。图表、透视表与结构化表格关联不会作为副本创建。` })
 }
 
+function openWorksheetProtection(id: string) {
+  if (!workbook.value.sheets.some(sheet => sheet.id === id)) return
+  activateSheet(id)
+  worksheetProtectionSheetId.value = id
+}
+
+function removeWorksheetProtection(id: string) {
+  if (!workbook.value.id || !props.studio) return
+  try {
+    props.studio.executeCommandSync('sheet.command.delete-worksheet-protection', { unitId: workbook.value.id, sheetId: id })
+    refreshWorksheetProtection()
+  } catch (reason) {
+    emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : '无法移除工作表保护。' })
+  }
+}
+
+function refreshWorksheetProtection() {
+  const id = workbook.value.id
+  if (!id || !props.studio) return
+  const model = props.studio.getWorkbookModel(id)
+  if (!model) return
+  workbook.value = toExcelWorkbookView(model)
+  commitHistory()
+}
+
 function setSheetTabColor(id: string, color: string) {
   const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
   if (!sheet || (color !== '' && !/^#[0-9a-f]{6}$/i.test(color))) return
+  if (!canChangeWorksheet(id)) return
   sheet.tabColor = color || undefined
   commitHistory()
 }
 
 function switchNextSheet() {
-  const sheets = workbook.value.sheets.filter(sheet => sheet.visible !== false)
+  const sheets = availableSheets.value.filter(sheet => sheet.visible !== false)
   const index = sheets.findIndex(sheet => sheet.id === activeSheetId.value)
   const next = sheets[(index + 1) % sheets.length]
   if (next) activateSheet(next.id)
@@ -1445,6 +1607,7 @@ function confirmRenameSheet() {
   if (!validation.valid) { renameError.value = validation.message; return }
   const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
   if (!sheet) return
+  if (!canChangeWorksheet(id)) return
   sheet.name = renameValue.value.trim()
   renameSheetId.value = null
   commitHistory()
@@ -1454,10 +1617,11 @@ function deleteSheet(id: string) {
   const sheets = workbook.value.sheets
   const sheet = sheets.find(candidate => candidate.id === id)
   if (!sheet || (sheet.visible !== false && sheets.filter(candidate => candidate.visible !== false).length <= 1)) return
+  if (!canChangeWorksheet(id)) return
   finishEdit()
   const remaining = sheets.filter(candidate => candidate.id !== id)
   if (activeSheetId.value === id) {
-    const next = remaining.find(candidate => candidate.visible !== false)
+    const next = remaining.find(candidate => candidate.visible !== false && canViewWorksheetProtection(candidate, userId.value))
     if (next) activateSheet(next.id)
   }
   workbook.value.sheets = remaining
@@ -1467,8 +1631,9 @@ function deleteSheet(id: string) {
 
 function hideSheet(id: string) {
   const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
-  const next = workbook.value.sheets.find(candidate => candidate.id !== id && candidate.visible !== false)
+  const next = availableSheets.value.find(candidate => candidate.id !== id && candidate.visible !== false)
   if (!sheet || !next) return
+  if (!canChangeWorksheet(id)) return
   if (id === activeSheetId.value) activateSheet(next.id)
   sheet.visible = false
   commitHistory()
@@ -1477,6 +1642,7 @@ function hideSheet(id: string) {
 function showSheet(id: string) {
   const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
   if (!sheet) return
+  if (!canChangeWorksheet(id)) return
   sheet.visible = true
   activateSheet(id)
   commitHistory()
@@ -1489,12 +1655,27 @@ function importWorkbook(file: File): false {
 
 function saveWorkbook() {
   if (!finishEdit()) return
+  if (!canReadEntireWorkbook()) return
   emit('save', cloneWorkbook(workbook.value))
 }
 
 function exportWorkbook() {
   if (!finishEdit()) return
+  if (!canReadEntireWorkbook()) return
   emit('export', cloneWorkbook(workbook.value))
+}
+
+function canReadEntireWorkbook(): boolean {
+  if (availableSheets.value.length === workbook.value.sheets.length) return true
+  emit('notify', { type: 'warning', message: '工作簿包含当前用户无权查看的工作表，无法保存或导出完整内容。' })
+  return false
+}
+
+function canChangeWorksheet(id: string): boolean {
+  const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
+  if (sheet && canEditWorksheetProtection(sheet, userId.value)) return true
+  emit('notify', { type: 'warning', message: '此工作表受保护，当前用户没有编辑权限。' })
+  return false
 }
 
 function scrollToSelected() {
@@ -1924,6 +2105,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.clear-filter': () => runAutoFilterCommand('sheet.command.clear-filter'),
     'sheet.command.reapply-filter': () => runAutoFilterCommand('sheet.command.reapply-filter'),
     'sheet.operation.insert-chart': openChartDialog,
+    'sheet.operation.insert-hyperlink': openHyperlinkDialog,
     'sheet.operation.open-pivot': openPivotPanel,
     'sheet.operation.open-pivot-chart': openPivotChartPanel,
     'sheet.operation.open-slicer': () => openSlicerPanel('slicer'),
@@ -2033,6 +2215,8 @@ function onWindowKeydown(event: KeyboardEvent) {
 }
 
 watch(selectedKey, () => { nameError.value = ''; void nextTick(scrollToSelected) })
+watch(hyperlinkDialogOpen, open => { if (!open) void nextTick(() => spreadsheetCanvas.value?.focus()) })
+watch(() => workbook.value.id, id => { if (hyperlinkCell.value?.unitId !== id) hyperlinkDialogOpen.value = false })
 defineExpose({ save: saveWorkbook, focus: () => spreadsheetCanvas.value?.focus() })
 
 onMounted(() => {
@@ -2107,45 +2291,74 @@ onDeactivated(() => {
     </div>
 
     <Modal v-model:open="chartModalOpen" title="插入图表" ok-text="插入" cancel-text="取消" :width="440" @ok="confirmChartDialog">
-      <div class="chart-insert-form">
-        <label>数据区域<Input v-model:value="chartSource" placeholder="A1:C4" /></label>
-        <label>图表类型<Select v-model:value="chartType" :options="[{ label: '簇状柱形图', value: 'bar' }, { label: '折线图', value: 'line' }]" /></label>
-        <label>图表标题<Input v-model:value="chartTitle" placeholder="可选" /></label>
+      <Form layout="vertical" class="chart-insert-form" @submit.prevent>
+        <FormItem label="数据区域"><Input v-model:value="chartSource" placeholder="A1:C4" /></FormItem>
+        <FormItem label="图表类型"><Select v-model:value="chartType" :options="[{ label: '簇状柱形图', value: 'bar' }, { label: '折线图', value: 'line' }, { label: '面积图', value: 'area' }, { label: '饼图', value: 'pie' }, { label: '圆环图', value: 'doughnut' }, { label: '堆积柱形图', value: 'stacked-column' }, { label: '散点图', value: 'scatter' }]" /></FormItem>
+        <FormItem label="系列方向"><Select v-model:value="chartOrientation" :options="[{ label: '按列', value: 'columns' }, { label: '按行', value: 'rows' }]" /></FormItem>
+        <FormItem :label="chartType === 'scatter' ? '共享 X 字段' : '分类字段'"><Select v-model:value="chartCategoryField" :options="chartFieldOptions" /></FormItem>
+        <FormItem :label="chartType === 'scatter' ? 'Y 系列字段' : '数值系列字段'"><Select v-model:value="chartValueFields" mode="multiple" :options="chartFieldOptions" placeholder="留空时使用其余字段" /></FormItem>
+        <template v-if="chartType === 'scatter'">
+          <FormItem v-for="field in chartValueFields" :key="field" :label="`${chartFieldOptions.find(option => option.value === field)?.label ?? field} 的 X 字段`"><Select v-model:value="chartSeriesXFields[field]" :options="chartFieldOptions" allow-clear placeholder="使用共享 X 字段" /></FormItem>
+          <FormItem label="X 轴刻度"><Select v-model:value="chartXScale" :options="[{ label: '线性', value: 'linear' }, { label: '对数', value: 'log' }]" /></FormItem>
+          <FormItem label="Y 轴刻度"><Select v-model:value="chartYScale" :options="[{ label: '线性', value: 'linear' }, { label: '对数', value: 'log' }]" /></FormItem>
+        </template>
+        <FormItem label="图表标题"><Input v-model:value="chartTitle" placeholder="可选" /></FormItem>
         <p v-if="chartError" role="alert" class="chart-insert-error">{{ chartError }}</p>
-        <p class="chart-insert-hint">数据区域首行作为系列名，首列作为分类标签。支持柱形图和折线图。</p>
+        <p class="chart-insert-hint">{{ chartOrientation === 'columns' ? '数据区域首行作为字段名。' : '数据区域首列作为字段名。' }}{{ chartType === 'scatter' ? 'X 与 Y 按数据位置配对，空值和无效数值不绘制。对数轴仅绘制正数。' : '饼图和圆环图需选择一个数值系列。' }}</p>
+      </Form>
+    </Modal>
+
+    <Modal v-model:open="hyperlinkDialogOpen" :title="editingHyperlink ? '编辑超链接' : '插入超链接'" ok-text="确定" cancel-text="取消" :width="440" @ok="confirmHyperlinkDialog">
+      <Form layout="vertical" @submit.prevent>
+        <FormItem label="链接地址" :validate-status="hyperlinkError ? 'error' : undefined" :help="hyperlinkError || undefined">
+          <Input v-model:value="hyperlinkTarget" aria-label="链接地址" placeholder="https://example.com" allow-clear @press-enter="confirmHyperlinkDialog" />
+        </FormItem>
+        <FormItem label="显示文字">
+          <Input v-model:value="hyperlinkDisplay" aria-label="显示文字" placeholder="留空时保留单元格内容" @press-enter="confirmHyperlinkDialog" />
+        </FormItem>
+      </Form>
+      <div class="hyperlink-actions">
+        <Button v-if="editingHyperlink" danger @click="deleteSelectedHyperlink">移除超链接</Button>
+        <Button v-if="editingHyperlink" type="text" @click="openSelectedHyperlink">打开链接</Button>
       </div>
     </Modal>
 
     <Modal :open="Boolean(renameSheetId)" title="重命名工作表" ok-text="确定" cancel-text="取消" :width="360" @ok="confirmRenameSheet" @cancel="renameSheetId = null">
-      <Input v-model:value="renameValue" aria-label="工作表名称" :status="renameError ? 'error' : undefined" :maxlength="31" @press-enter="confirmRenameSheet" />
-      <p v-if="renameError" class="chart-insert-error" role="alert">{{ renameError }}</p>
+      <Form layout="vertical" @submit.prevent>
+        <FormItem label="工作表名称" :validate-status="renameError ? 'error' : undefined">
+          <Input v-model:value="renameValue" aria-label="工作表名称" :status="renameError ? 'error' : undefined" :maxlength="31" @press-enter="confirmRenameSheet" />
+          <template #help><span v-if="renameError" role="alert">{{ renameError }}</span></template>
+        </FormItem>
+      </Form>
     </Modal>
     <Modal v-model:open="functionPanelOpen" title="插入函数" ok-text="插入到公式栏" cancel-text="取消" :width="480" @ok="insertFunction">
-      <div class="chart-insert-form">
-        <label>函数<Select v-model:value="functionName" :options="functionOptions" aria-label="函数名称" show-search option-filter-prop="label" /></label>
+      <Form layout="vertical" class="chart-insert-form" @submit.prevent>
+        <FormItem label="函数"><Select v-model:value="functionName" :options="functionOptions" aria-label="函数名称" show-search option-filter-prop="label" /></FormItem>
         <p>{{ functionEntry?.category }} · {{ functionEntry?.label }}</p>
-        <label>参数或区域<Input v-model:value="functionArguments" aria-label="函数参数" :placeholder="functionEntry?.example" @press-enter="insertFunction" /></label>
+        <FormItem label="参数或区域"><Input v-model:value="functionArguments" aria-label="函数参数" :placeholder="functionEntry?.example" @press-enter="insertFunction" /></FormItem>
         <p class="chart-insert-hint">例如 {{ functionEntry?.example }}。插入后可在公式栏修改并确认。目录列出当前引擎支持的函数。</p>
         <p v-if="functionError" role="alert" class="chart-insert-error">{{ functionError }}</p>
-      </div>
+      </Form>
     </Modal>
     <Modal v-model:open="axisSizeDialogOpen" :title="axisSizeDialogKind === 'row' ? '行高' : '列宽'" ok-text="确定" cancel-text="取消" :width="360" @ok="confirmAxisSize">
-      <label class="sheet-axis-size-field">
-        {{ axisSizeDialogKind === 'row' ? '行高（像素）' : '列宽（像素）' }}
+      <Form layout="vertical" @submit.prevent>
+        <FormItem :label="axisSizeDialogKind === 'row' ? '行高（像素）' : '列宽（像素）'">
         <InputNumber v-model:value="axisSizeValue" :min="0" :max="1000" :precision="0" :aria-label="axisSizeDialogKind === 'row' ? '行高' : '列宽'" @press-enter="confirmAxisSize" />
-      </label>
+        </FormItem>
+      </Form>
       <p v-if="axisSizeError" class="chart-insert-error" role="alert">{{ axisSizeError }}</p>
     </Modal>
     <Modal v-model:open="cellMoveConfirmOpen" title="合并单元格" ok-text="继续" cancel-text="取消" :width="420" @ok="confirmCellRangeMove" @cancel="pendingCellMove = null">
       <p>此操作会拆分与移位区域交叉的合并单元格，是否继续？</p>
     </Modal>
-    <SheetFooter :sheets="workbook.sheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
+    <SheetFooter :sheets="availableSheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <PivotChartPanel v-if="pivotChartPanelOpen && activeSheet && studio && workbook.id" v-model:open="pivotChartPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
     <ConditionalFormattingPanel v-if="conditionalFormattingOpen && activeSheet" v-model:open="conditionalFormattingOpen" :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" @apply="applyConditionalFormatting" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
+    <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
     <SparklinePanel v-if="sparklinePanelOpen && activeSheet && studio && workbook.id" :open="sparklinePanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :target-range="sparklineTargetRange" @update:open="sparklinePanelOpen = $event" />
       <CustomNumberFormatPanel v-model:open="customNumberFormatOpen" :current-pattern="activeCell.rawNumberFormat ?? 'General'" @apply="(pattern) => changeSelectedCells(cell => ({ ...cell, rawNumberFormat: pattern }))" />
   </section>
@@ -2154,7 +2367,6 @@ onDeactivated(() => {
 
 <style scoped>
 .excel-workbench { --ink: #172033; --muted: #718096; --line: #dfe5ee; --blue: #246bfd; display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; color: var(--ink); background: #fff; font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
-.sheet-axis-size-field { display: grid; gap: 8px; }
 .excel-header { display: flex; flex: 0 0 53px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 0 18px; background: #fff; }
 .document-brand, .header-actions { display: flex; align-items: center; gap: 10px; }
 .excel-logo { display: grid; width: 30px; height: 30px; place-items: center; color: #fff; border-radius: 6px; background: #1f9d68; }
@@ -2166,7 +2378,8 @@ onDeactivated(() => {
 .sheet-canvas-stack { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .sheet-canvas-stack :deep(.spreadsheet-canvas) { flex: 1; }
 .chart-insert-form { display: flex; flex-direction: column; gap: 14px; padding: 12px 0 4px; }
-.chart-insert-form label { display: flex; flex-direction: column; gap: 6px; color: #4b5563; font-size: 12px; }
+.chart-insert-form :deep(.ant-form-item) { margin-bottom: 0; }
+.hyperlink-actions { display: flex; justify-content: space-between; gap: 8px; }
 .chart-insert-error { margin: 8px 0 0; color: #c2413a; }
 .chart-insert-hint { margin: 0; color: #8490a0; font-size: 11px; }
 .sheet-find-panel { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px; box-sizing: border-box; min-width: 0; border-bottom: 1px solid var(--line); padding: 6px 12px; color: #526071; background: #f8faff; }

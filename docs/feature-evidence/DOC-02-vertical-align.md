@@ -4,7 +4,7 @@ Status: **Not accepted**. This evidence covers superscript and subscript only. I
 
 ## Reference
 
-- Fixed Univer commit: `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.
+- Fixed Univer commit: `eaf4cfa04fabdbcfc922c692f3450459f8a29546`.
 - `packages/docs-ui/src/menu/schema.ts` registers `SetInlineFormatSubscriptCommand` and `SetInlineFormatSuperscriptCommand` in the Docs START/FORMAT group.
 
 ## Local behavior

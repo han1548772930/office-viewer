@@ -1,6 +1,6 @@
 # Univer 顶部工具栏对齐核对
 
-核对日期：2026-11-20。固定参考：`E:\rust_test\univer`，提交 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。
+核对日期：2026-11-21。固定 OSS 参考：`E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
 
 本记录按 [完整功能清单](UNIVER_FEATURE_PARITY.md)、[源码规则](UNIVER_REFERENCE_RULES.md)核对顶部入口与实际行为。它记录部分实现及缺口，**不表示顶部所有功能或 Pro 能力已经对齐**。所有完整功能 ID 保持“未验收”；单个按钮、模型、Facade 或测试通过均不能代替整个功能的编辑、历史、保存、Office 往返、权限和性能验收。
 
@@ -17,9 +17,9 @@
 
 ## 根入口统计与布局
 
-固定版 desktop OSS preset 在 Sheets 有 62 个常驻 Ribbon 根入口，在 Docs 有 38 个，合计 100 个。入口数量按顶层 schema 节点统计，split/menu/select 的子项不重复计数；宽度引起的 More 溢出不另计入口。Sheets 分别为 START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 5。Docs 分别为 Home 25、Insert 10、View 3。
+历史 desktop OSS preset 计数基于前一参考提交：Sheets 62 个、Docs 38 个，合计 100 个。入口数量按顶层 schema 节点统计，split/menu/select 的子项不重复计数；宽度引起的 More 溢出不另计入口。Sheets 分别为 START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 5；Docs 分别为 Home 25、Insert 10、View 3。v1.6.0 已确认这些清单引用的 OSS 源码路径存在，但尚未重新合并全部插件 schema 并复算根入口总数，因此这些数字不应当作 v1.6.0 的最终统计。
 
-Univer 1.5.2 的官方 Pro UI npm 包包含 20 个 Docs/Sheets 菜单 schema 包。通过固定版本官方包内已发布 bundle 静态审阅，可识别 24 个 Pro Ribbon 根节点，其中 Sheets 15 个、Docs 9 个；其中至少 6 个包还导出 contextual Ribbon schema。它们不包含在 OSS 的 100 项中。这个统计来自发布包而不是闭源 TypeScript 源码或动态演示运行态；扩展加载条件、权限隐藏和运行时显隐需按模块单独核实。Pro 包和声明见 [research manifest](../.research.local/univer/resources.json)，manifest 由 [research script](../scripts/research-univer-toolbar.py) 生成。
+历史 Pro 统计来自 Univer 1.5.2 官方发布包：当时识别 20 个 Docs/Sheets 菜单 schema 包和 24 个 Pro Ribbon 根节点，其中 Sheets 15 个、Docs 9 个，至少 6 个包另导出 contextual Ribbon schema。此计数只属于 1.5.2，不代表 1.6.0。1.6.0 registry 元信息及 `sheets-chart-ui`、`sheets-pivot-ui`、`sheets-slicer-ui` 三个发布 bundle 已静态审阅。通过同一 AST 计数脚本只对这三个 bundle 得到 5 个常驻 Ribbon 根项：图表 Insert > Media 1 项、透视表 Data > Analysis / Organization 各 1 项、切片器 Data > Analysis 2 项。统计脚本没有把 contextual groups 计入这 5 项。其余 1.6.0 Docs/Sheets Pro 包及上下文 schema 未完成清点，因此不推导全量 1.6.0 Pro 总数。已审阅的 1.5.2 包记录见 [research manifest](../.research.local/univer/resources.json)，1.6.0 只读缓存位于 `.research.local/univer-1.6.0`。
 
 经典布局和网格布局共享同一套入口。Classic 依序呈现分类标签、单行工具区；`order` 决定同组顺序。Grid 使用每组两行网格，`gridLayout.row` / `column` 从 1 开始，支持 `rowSpan`、`columnSpan`、`width`、`minWidth`、`iconSize` 和 `showLabel`。上下文标签按对象/选区条件显隐，宽度不足时按上游逻辑整组进入 More；入口总数不因当前布局、溢出或重复呈现增加。各项位置和交互仍须由对应 schema、命令状态及动态演示逐项核实。
 
@@ -132,21 +132,21 @@ pnpm --filter @office-studio/office-studio check:types
 
 后续每项接入须同时更新本表中的本地入口、真实命令/模型行为和测试证据。仅添加菜单、API 名称、弹层或禁用入口时，继续记“接入中/未验收”。接口存在与真实可操作、撤销/重做、保存重开、Office 往返分别核验。商业菜单 ID/模式限制待核实时保留“未核实”，功能目标不删除。
 
-[workbench]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/workbench/Workbench.tsx
-[ribbon]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/Ribbon.tsx
-[menu]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/menu.ts
-[menu-manager]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/menu-manager.service.ts
-[toolbar-item]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/ToolbarItem.tsx
-[sheet-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/menu/schema.ts
-[formula-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-formula-ui/src/menu/schema.ts
-[filter-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-filter-ui/src/menu/schema.ts
-[sort-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-sort-ui/src/menu/schema.ts
-[validation-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-data-validation-ui/src/menu/schema.ts
-[cf-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-conditional-formatting-ui/src/menu/schema.ts
-[numfmt-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-numfmt-ui/src/menu/schema.ts
-[table-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-table-ui/src/menu/schema.ts
-[doc-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/schema.ts
-[header-footer]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/header-footer-ribbon.ts
-[toc-schema]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-toc-ui/src/menu/schema.ts
-[sheets-mount]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/sheets/mount.ts
-[docs-mount]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/docs/mount.ts
+[workbench]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/workbench/Workbench.tsx
+[ribbon]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/components/ribbon/Ribbon.tsx
+[menu]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/menu/menu.ts
+[menu-manager]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/menu/menu-manager.service.ts
+[toolbar-item]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/components/ribbon/ToolbarItem.tsx
+[sheet-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/schema.ts
+[formula-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-formula-ui/src/menu/schema.ts
+[filter-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-filter-ui/src/menu/schema.ts
+[sort-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-sort-ui/src/menu/schema.ts
+[validation-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-data-validation-ui/src/menu/schema.ts
+[cf-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/schema.ts
+[numfmt-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt-ui/src/menu/schema.ts
+[table-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-table-ui/src/menu/schema.ts
+[doc-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/schema.ts
+[header-footer]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/header-footer-ribbon.ts
+[toc-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-toc-ui/src/menu/schema.ts
+[sheets-mount]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/examples/src/sheets/mount.ts
+[docs-mount]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/examples/src/docs/mount.ts

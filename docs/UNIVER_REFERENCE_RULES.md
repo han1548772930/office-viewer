@@ -1,8 +1,8 @@
 # Univer 源码、页面布局与分层规则
 
-审阅日期：2026-11-20  
+审阅日期：2026-11-21
 参考仓库：dream-num/univer  
-固定提交：`6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`  
+固定提交：`eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 本地只读检出：`E:\rust_test\univer`
 适用项目：本项目的 Vue / TypeScript / Pinia / Rust / WASM 实现。
 
@@ -306,51 +306,51 @@ UI stores 组合状态，不能倒置领域层依赖方向
 | U44 | [presets/src/preset.ts][U44] | preset 展开及依赖装配 |
 | U45 | [README.md][U45] | 开源仓库与单独分发扩展的边界 |
 
-[U01]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/CONTRIBUTING.md
-[U02]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/docs/ISOMORPHIC.md
-[U03]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/docs/NAMING_CONVENTION.md
-[U04]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/workbench/Workbench.tsx
-[U05]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/parts/parts.service.ts
-[U06]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/types.ts
-[U07]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/menu-manager.service.ts
-[U08]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/menu/menu.ts
-[U09]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/services/ribbon/ribbon.service.ts
-[U10]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/Ribbon.tsx
-[U11]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/RibbonGrid.tsx
-[U12]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/ToolbarItem.tsx
-[U13]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/ui/src/views/components/ribbon/ribbon-menu/use-ribbon-tabs.ts
-[U14]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/core/src/services/command/command.service.ts
-[U15]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/core/src/services/undoredo/undoredo.service.ts
-[U16]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/core/src/services/lifecycle/lifecycle.ts
-[U17]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/controllers/ui.controller.ts
-[U18]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/sheet-container/SheetContainer.tsx
-[U19]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/menu/schema.ts
-[U20]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/formula-bar/FormulaBar.tsx
-[U21]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/defined-name/DefinedName.tsx
-[U22]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/sheet-bar/SheetBar.tsx
-[U23]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/sheet-bar/sheet-bar-tabs/SheetBarTabs.tsx
-[U24]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/sheet-bar/sheet-bar-menu/SheetBarMenu.tsx
-[U25]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/services/status-bar.service.ts
-[U26]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/controllers/status-bar.controller.ts
-[U27]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/status-bar/StatusBar.tsx
-[U28]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/views/sheet-slider/ZoomSlider.tsx
-[U29]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/controllers/render-controllers/contextmenu.render-controller.ts
-[U30]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/services/selection/selection-render.service.ts
-[U31]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/controllers/editor/editing.render-controller.ts
-[U32]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-ui/src/menu/menu.ts
-[U33]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/controllers/ui.controller.ts
-[U34]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/schema.ts
-[U35]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/menu.ts
-[U36]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/views/DocSideMenu.tsx
-[U37]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/views/SideMenu.tsx
-[U38]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/views/doc-side-menu-layout.ts
-[U39]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/views/doc-footer/DocFooter.tsx
-[U40]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/engine-render/src/components/docs/document.ts
-[U41]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/main.ts
-[U42]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/sheets/mount.ts
-[U43]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/examples/src/docs/mount.ts
-[U44]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/presets/src/preset.ts
-[U45]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/README.md
+[U01]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/CONTRIBUTING.md
+[U02]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/docs/ISOMORPHIC.md
+[U03]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/docs/NAMING_CONVENTION.md
+[U04]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/workbench/Workbench.tsx
+[U05]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/parts/parts.service.ts
+[U06]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/menu/types.ts
+[U07]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/menu/menu-manager.service.ts
+[U08]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/menu/menu.ts
+[U09]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/ribbon/ribbon.service.ts
+[U10]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/components/ribbon/Ribbon.tsx
+[U11]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/components/ribbon/RibbonGrid.tsx
+[U12]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/components/ribbon/ToolbarItem.tsx
+[U13]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/components/ribbon/ribbon-menu/use-ribbon-tabs.ts
+[U14]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/services/command/command.service.ts
+[U15]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/services/undoredo/undoredo.service.ts
+[U16]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/services/lifecycle/lifecycle.ts
+[U17]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/controllers/ui.controller.ts
+[U18]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/sheet-container/SheetContainer.tsx
+[U19]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/schema.ts
+[U20]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/formula-bar/FormulaBar.tsx
+[U21]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/defined-name/DefinedName.tsx
+[U22]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/sheet-bar/SheetBar.tsx
+[U23]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/sheet-bar/sheet-bar-tabs/SheetBarTabs.tsx
+[U24]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/sheet-bar/sheet-bar-menu/SheetBarMenu.tsx
+[U25]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/services/status-bar.service.ts
+[U26]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/controllers/status-bar.controller.ts
+[U27]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/status-bar/StatusBar.tsx
+[U28]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/views/sheet-slider/ZoomSlider.tsx
+[U29]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/controllers/render-controllers/contextmenu.render-controller.ts
+[U30]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/services/selection/selection-render.service.ts
+[U31]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/controllers/editor/editing.render-controller.ts
+[U32]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/menu.ts
+[U33]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/controllers/ui.controller.ts
+[U34]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/schema.ts
+[U35]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/menu.ts
+[U36]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/DocSideMenu.tsx
+[U37]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/SideMenu.tsx
+[U38]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/doc-side-menu-layout.ts
+[U39]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/doc-footer/DocFooter.tsx
+[U40]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/engine-render/src/components/docs/document.ts
+[U41]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/examples/src/main.ts
+[U42]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/examples/src/sheets/mount.ts
+[U43]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/examples/src/docs/mount.ts
+[U44]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/presets/src/preset.ts
+[U45]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/README.md
 
 ## 11. 引擎与扩展的补充源码索引
 
@@ -378,22 +378,22 @@ UI stores 组合状态，不能倒置领域层依赖方向
 | U63 | [presets/packages/preset-sheets-core/src/preset.ts][U63] | 核心模型、引擎和 Worker 配置 |
 | U64 | [docs/API_STABILITY.md][U64] | 类型、Facade 导入和插件注册的区别 |
 
-[U46]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/core/src/docs/data-model/document-data-model.ts
-[U47]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs/src/services/doc-skeleton-manager.service.ts
-[U48]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/engine-render/src/components/docs/layout/doc-skeleton.ts
-[U49]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/services/selection/doc-selection-render.service.ts
-[U50]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/services/doc-page-layout.service.ts
-[U51]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/views/PageSettings.tsx
-[U52]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/context-menu.ts
-[U53]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-ui/src/menu/header-footer-ribbon.ts
-[U54]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/engine-formula/src/plugin.ts
-[U55]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-formula/src/plugin.ts
-[U56]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-filter/src/plugin.ts
-[U57]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-sort/src/plugin.ts
-[U58]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-data-validation/src/plugin.ts
-[U59]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-conditional-formatting/src/plugin.ts
-[U60]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/sheets-numfmt/src/plugin.ts
-[U61]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/docs-find-replace/README.md
-[U62]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/packages/thread-comment/src/services/tc-datasource.service.ts
-[U63]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/presets/packages/preset-sheets-core/src/preset.ts
-[U64]: https://github.com/dream-num/univer/blob/6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68/docs/API_STABILITY.md
+[U46]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/docs/data-model/document-data-model.ts
+[U47]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs/src/services/doc-skeleton-manager.service.ts
+[U48]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/engine-render/src/components/docs/layout/doc-skeleton.ts
+[U49]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/selection/doc-selection-render.service.ts
+[U50]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/doc-page-layout.service.ts
+[U51]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/PageSettings.tsx
+[U52]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/context-menu.ts
+[U53]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/header-footer-ribbon.ts
+[U54]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/engine-formula/src/plugin.ts
+[U55]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-formula/src/plugin.ts
+[U56]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-filter/src/plugin.ts
+[U57]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-sort/src/plugin.ts
+[U58]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-data-validation/src/plugin.ts
+[U59]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting/src/plugin.ts
+[U60]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt/src/plugin.ts
+[U61]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-find-replace/README.md
+[U62]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/thread-comment/src/services/tc-datasource.service.ts
+[U63]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/presets/packages/preset-sheets-core/src/preset.ts
+[U64]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/docs/API_STABILITY.md

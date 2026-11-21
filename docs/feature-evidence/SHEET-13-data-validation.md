@@ -1,6 +1,6 @@
 # SHEET-13 数据验证进度记录
 
-状态：部分实现，功能未验收。基线为 `dream-num/univer@6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`，公开行为按 2026-11-20 可访问的 Univer Sheets 数据验证文档 v1.4.0 核对。
+状态：部分实现，功能未验收。基线为 `dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`，公开行为按 2026-11-20 可访问的 Univer Sheets 数据验证文档 v1.4.0 核对。
 
 ## 参考依据
 

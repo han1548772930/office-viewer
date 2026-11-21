@@ -145,6 +145,16 @@ export interface SheetDataValidationRule {
 
 export type SheetProtectionEditState = 'onlyMe' | 'designedUserCanEdit'
 export type SheetProtectionViewState = 'othersCanView' | 'noOneElseCanView'
+export interface SheetWorksheetProtectionRule {
+  id: string
+  permissionId: string
+  unitType: 'worksheet'
+  description?: string
+  ownerUserId: string
+  allowedUserIds: string[]
+  editState: SheetProtectionEditState
+  viewState: SheetProtectionViewState
+}
 export interface SheetRangeProtectionRule {
   id: string
   permissionId: string
@@ -279,7 +289,7 @@ export interface PivotTableModel {
   revision: number
 }
 
-export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-column'
+export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-column' | 'scatter'
 export type ChartSourceOrientation = 'columns' | 'rows'
 export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
 export type ChartAxisScaleType = 'linear' | 'log'
@@ -311,6 +321,7 @@ export interface ChartModel {
   legend: ChartLegendOptions
   categoryField: number
   valueFields: number[]
+  seriesToCategory?: Record<number, number[]>
   pivotTableId?: string
   xAxis: ChartAxisOptions
   yAxis: ChartAxisOptions
@@ -383,6 +394,7 @@ export interface SpreadsheetSheet {
   dataValidations?: SheetDataValidationRule[]
   conditionalFormats?: SheetConditionalFormatRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
+  worksheetProtection?: SheetWorksheetProtectionRule
   hiddenColumns?: number[]
   defaultColumnWidth?: number
   defaultRowHeight?: number

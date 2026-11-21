@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
-import { Button, Checkbox, Form, FormItem, Input, Select } from 'antdv-next'
-import { ChevronDown, ChevronUp, MousePointer2, Trash2, X } from 'lucide-vue-next'
+import { Button, Checkbox, Collapse, Form, FormItem, Input, Select } from 'antdv-next'
+import { MousePointer2, Trash2, X } from 'lucide-vue-next'
 import { FOffice, type DataValidationRule } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationRenderMode, SheetDataValidationType } from '../../domain/model'
@@ -27,6 +27,12 @@ const rulesRevision = ref(0)
 const selectedRuleId = ref<string>()
 const detailOpen = ref(false)
 const advancedOptionsOpen = ref(false)
+const advancedOptionsKeys = computed({
+  get: () => advancedOptionsOpen.value ? ['advanced'] : [],
+  set: (keys: string | number | Array<string | number>) => {
+    advancedOptionsOpen.value = (Array.isArray(keys) ? keys : [keys]).includes('advanced')
+  },
+})
 const rangeValue = ref('')
 const type = ref<SheetDataValidationType>('whole')
 const operator = ref<SheetDataValidationOperator>('between')
@@ -344,13 +350,9 @@ function columnLabel(index: number): string {
         </div>
       </FormItem>
       <Checkbox v-model:checked="allowBlank">{{ t('sheet.validation.allow-blank', '允许空白') }}</Checkbox>
-      <div class="validation-options">
-        <Button type="text" class="validation-options-trigger" :aria-expanded="advancedOptionsOpen" @click="advancedOptionsOpen = !advancedOptionsOpen">
-          {{ t('sheet.validation.options', '选项') }}
-          <ChevronUp v-if="advancedOptionsOpen" :size="14" />
-          <ChevronDown v-else :size="14" />
-        </Button>
-        <div v-if="advancedOptionsOpen" class="validation-options-content">
+      <Collapse v-model:active-key="advancedOptionsKeys" class="validation-options" :items="[{ key: 'advanced', label: t('sheet.validation.options', '选项') }]" ghost size="small" expand-icon-placement="end" destroy-on-hidden>
+        <template #contentRender>
+          <div class="validation-options-content">
           <template v-if="isList">
             <Checkbox v-model:checked="showDropDown">{{ t('sheet.validation.show-dropdown', '显示下拉选项') }}</Checkbox>
             <FormItem :label="t('sheet.validation.display-mode', '显示方式')">
@@ -368,8 +370,9 @@ function columnLabel(index: number): string {
           <Checkbox v-model:checked="showErrorMessage">{{ t('sheet.validation.show-error', '输入无效时显示消息') }}</Checkbox>
           <FormItem v-if="showErrorMessage" :label="t('sheet.validation.error-title', '错误标题')"><Input v-model:value="errorTitle" :aria-label="t('sheet.validation.error-title', '数据验证错误标题')" /></FormItem>
           <FormItem v-if="showErrorMessage" :label="t('sheet.validation.error-message', '错误消息')"><Input v-model:value="error" :aria-label="t('sheet.validation.error-message', '数据验证错误消息')" /></FormItem>
-        </div>
-      </div>
+          </div>
+        </template>
+      </Collapse>
       <p v-if="message" class="validation-error" role="alert">{{ message }}</p>
       <div class="validation-actions">
         <Button v-if="rule" danger :disabled="busy" @click="clearRule(rule)">{{ t('sheet.validation.clear', '清除规则') }}</Button>
@@ -400,8 +403,9 @@ function columnLabel(index: number): string {
 .validation-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: #667085; font-size: 12px; }
 .validation-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .validation-options { min-width: 0; }
-.validation-options-trigger { display: inline-flex; align-items: center; gap: 4px; padding-inline: 0; color: #344054; font-size: 13px; }
-.validation-options-content { display: grid; gap: 10px; padding-top: 12px; }
+.validation-options :deep(.ant-collapse-header) { padding-inline: 0; }
+.validation-options :deep(.ant-collapse-body) { padding-inline: 0; }
+.validation-options-content { display: grid; gap: 10px; }
 .validation-options-content .ant-form-item { margin-bottom: 0; }
 .validation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .validation-error { margin: 0; color: #b42318; }

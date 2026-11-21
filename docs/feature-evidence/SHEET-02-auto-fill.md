@@ -1,7 +1,7 @@
 # SHEET-02 Auto-Fill Evidence
 
 Review date: 2026-11-21  
-Reference revision: `dream-num/univer@6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`
+Reference revision: `dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 
 ## Fixed-source contract
 

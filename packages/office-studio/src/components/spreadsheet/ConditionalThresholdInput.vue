@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Input, Select } from 'antdv-next'
+import { FormItem, Input, Select } from 'antdv-next'
 import type { SheetConditionalFormatValueConfig } from '../../domain/model.ts'
 
 const props = defineProps<{ value: SheetConditionalFormatValueConfig; boundary?: 'min' | 'max'; label: string }>()
@@ -20,13 +20,15 @@ function changeValue(value: string) {
 </script>
 
 <template>
-  <div class="conditional-threshold">
-    <span>{{ label }}</span>
-    <Select :value="value.type" :options="options" :aria-label="`${label}类型`" @update:value="changeType" />
-    <Input v-if="value.type !== 'min' && value.type !== 'max'" :value="String(value.value ?? '')" :aria-label="`${label}值`" :inputmode="value.type === 'formula' ? undefined : 'decimal'" @update:value="changeValue" />
-  </div>
+  <FormItem :label="label" class="conditional-threshold-item">
+    <div class="conditional-threshold-controls">
+      <Select :value="value.type" :options="options" :aria-label="`${label}类型`" @update:value="changeType" />
+      <Input v-if="value.type !== 'min' && value.type !== 'max'" :value="String(value.value ?? '')" :aria-label="`${label}值`" :inputmode="value.type === 'formula' ? undefined : 'decimal'" @update:value="changeValue" />
+    </div>
+  </FormItem>
 </template>
 
 <style scoped>
-.conditional-threshold { display: grid; grid-template-columns: 52px minmax(80px, 1fr) minmax(0, 1fr); align-items: center; gap: 8px; font-size: 12px; }
+.conditional-threshold-item { margin-bottom: 0; }
+.conditional-threshold-controls { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 1fr); gap: 8px; }
 </style>

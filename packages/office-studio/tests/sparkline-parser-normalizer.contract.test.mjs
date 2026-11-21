@@ -35,3 +35,23 @@ test('parser pivot cache and pivotSource become editable workbook pivot and char
   assert.equal(workbook.charts[0].sheetId, workbook.sheets[1].id)
   assert.deepEqual(workbook.charts[0].source.range, workbook.pivotTables[0].outputRange)
 })
+
+test('parser scatter chart references recover X/Y bindings and numeric axis scales', () => {
+  const workbook = normalizeWorkbook({
+    schemaVersion: 1, parserVersion: 'test', format: 'xlsx', fileName: 'scatter.xlsx', size: 10, model: 'spreadsheet',
+    payload: { modelType: 'spreadsheet', data: { activeSheet: 0, date1904: false, sheets: [{ name: 'Data', cells: [], charts: [{
+      index: 0, kind: 'scatter', title: 'Measurements', legend: true,
+      series: [
+        { name: 'A', categories: 'Data!$A$2:$A$4', values: 'Data!$B$2:$B$4' },
+        { name: 'B', categories: 'Data!$C$2:$C$4', values: 'Data!$D$2:$D$4' },
+      ], xAxis: { scaleType: 'log', logBase: 2 }, yAxis: { scaleType: 'linear' },
+      drawing: { fromOffsetEmu: [95250, 190500], absoluteSizeEmu: [3810000, 2286000] },
+    }] }] } },
+    diagnostics: { warnings: [], errors: [], stats: {}, capabilities: ['charts'] },
+  })
+  assert.equal(workbook.charts.length, 1)
+  assert.equal(workbook.charts[0].type, 'scatter')
+  assert.deepEqual(workbook.charts[0].source.range, { startRow: 0, startCol: 0, endRow: 3, endCol: 3 })
+  assert.deepEqual(workbook.charts[0].seriesToCategory, { 1: [0], 3: [2] })
+  assert.deepEqual(workbook.charts[0].xAxis, { scaleType: 'log', logBase: 2 })
+})

@@ -1,4 +1,4 @@
-import { defaultCellStyle, type CellScalar, type ChartModel, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel, type SheetDataValidationRule } from '../domain/model.ts'
+import { defaultCellStyle, type CellScalar, type ChartModel, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel, type SheetDataValidationRule } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 
@@ -217,6 +217,21 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
       metadata: record(item.metadata),
     }]
   })
+  const worksheetProtectionInput = record(raw.worksheetProtection)
+  const worksheetProtection: SheetWorksheetProtectionRule | undefined = typeof worksheetProtectionInput.id === 'string' &&
+    typeof worksheetProtectionInput.permissionId === 'string' &&
+    typeof worksheetProtectionInput.ownerUserId === 'string'
+    ? {
+      id: worksheetProtectionInput.id,
+      permissionId: worksheetProtectionInput.permissionId,
+      unitType: 'worksheet' as const,
+      description: typeof worksheetProtectionInput.description === 'string' ? worksheetProtectionInput.description : undefined,
+      ownerUserId: worksheetProtectionInput.ownerUserId,
+      allowedUserIds: array(worksheetProtectionInput.allowedUserIds).filter((userId): userId is string => typeof userId === 'string'),
+      editState: worksheetProtectionInput.editState === 'designedUserCanEdit' ? 'designedUserCanEdit' as const : 'onlyMe' as const,
+      viewState: worksheetProtectionInput.viewState === 'noOneElseCanView' ? 'noOneElseCanView' as const : 'othersCanView' as const,
+    }
+    : undefined
   return {
     id: id+'-sheet-'+index, name: text(raw.name, 'Sheet'+(index+1)),
     visible: raw.visible !== 'hidden' && raw.visible !== 'veryHidden' && raw.visible !== false,
@@ -234,6 +249,7 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
     dataValidations,
     conditionalFormats,
     rangeProtectionRules,
+    worksheetProtection,
     defaultColumnWidth: positive(raw.defaultColumnWidth, 96), defaultRowHeight: positive(raw.defaultRowHeight, 24),
     rowCount: Math.max(rowCount, finite(dimensions.lastRow, -1) + 1),
     columnCount: Math.max(columnCount, finite(dimensions.lastCol, -1) + 1),
@@ -269,6 +285,65 @@ function normalizePivotCharts(rawSheets: unknown, sheets: SpreadsheetSheet[], pi
       }]
     })
   })
+}
+
+function normalizeScatterCharts(rawSheets: unknown, sheets: SpreadsheetSheet[]): ChartModel[] {
+  return array(rawSheets).flatMap((sheetValue, sheetIndex) => {
+    const sheet = sheets[sheetIndex]
+    if (!sheet) return []
+    return array(record(sheetValue).charts).flatMap((chartValue, chartIndex): ChartModel[] => {
+      const raw = record(chartValue)
+      if (raw.kind !== 'scatter' || raw.pivotTableId) return []
+      const vectors = array(raw.series).map((value) => {
+        const series = record(value)
+        return { x: parseChartVector(series.categories, sheet.name), y: parseChartVector(series.values, sheet.name) }
+      })
+      if (!vectors.length || vectors.some((vector) => !vector.x || !vector.y)) return []
+      const first = vectors[0]!.x!
+      const orientation = first.startCol === first.endCol ? 'columns' : 'rows'
+      const ranges = vectors.flatMap((vector) => [vector.x!, vector.y!])
+      const aligned = orientation === 'columns'
+        ? ranges.every((range) => range.startCol === range.endCol && range.startRow === first.startRow && range.endRow === first.endRow)
+        : ranges.every((range) => range.startRow === range.endRow && range.startCol === first.startCol && range.endCol === first.endCol)
+      if (!aligned || (orientation === 'columns' ? first.startRow === 0 : first.startCol === 0)) return []
+      const range = {
+        startRow: Math.min(...ranges.map((value) => value.startRow)) - (orientation === 'columns' ? 1 : 0),
+        startCol: Math.min(...ranges.map((value) => value.startCol)) - (orientation === 'rows' ? 1 : 0),
+        endRow: Math.max(...ranges.map((value) => value.endRow)),
+        endCol: Math.max(...ranges.map((value) => value.endCol)),
+      }
+      const field = (vector: NonNullable<ReturnType<typeof parseChartVector>>) => orientation === 'columns' ? vector.startCol - range.startCol : vector.startRow - range.startRow
+      const drawing = record(raw.drawing)
+      const offset = array(drawing.fromOffsetEmu), size = array(drawing.absoluteSizeEmu)
+      return [{
+        id: `scatter-chart-${sheetIndex + 1}-${chartIndex + 1}`, sheetId: sheet.id, type: 'scatter',
+        source: { range, orientation }, categoryField: field(first), valueFields: vectors.map((vector) => field(vector.y!)),
+        seriesToCategory: Object.fromEntries(vectors.map((vector) => [field(vector.y!), [field(vector.x!)]])),
+        position: { x: Math.max(0, finite(offset[0]) / 9525), y: Math.max(0, finite(offset[1]) / 9525) },
+        size: { width: Math.max(1, finite(size[0], 480 * 9525) / 9525), height: Math.max(1, finite(size[1], 300 * 9525) / 9525) },
+        ...(typeof raw.title === 'string' ? { title: raw.title } : {}), legend: { visible: raw.legend !== false, position: 'bottom' },
+        xAxis: normalizeChartAxis(raw.xAxis, raw.xAxisTitle), yAxis: normalizeChartAxis(raw.yAxis, raw.yAxisTitle), revision: 0,
+      }]
+    })
+  })
+}
+
+function normalizeChartAxis(value: unknown, title: unknown): ChartModel['xAxis'] {
+  const raw = record(value)
+  const logBase = finite(raw.logBase, 10)
+  return {
+    ...(typeof title === 'string' ? { title } : {}), scaleType: raw.scaleType === 'log' ? 'log' : 'linear',
+    ...(raw.scaleType === 'log' && logBase >= 2 && logBase <= 1000 ? { logBase } : {}),
+  }
+}
+
+function parseChartVector(value: unknown, sheetName: string): { startRow: number; startCol: number; endRow: number; endCol: number } | undefined {
+  if (typeof value !== 'string') return undefined
+  const match = /^(?:'((?:[^']|'')+)'|([^!]+))!\$?([A-Z]+)\$?([1-9]\d*)(?::\$?([A-Z]+)\$?([1-9]\d*))?$/i.exec(value)
+  if (!match || (match[1]?.replaceAll("''", "'") ?? match[2]) !== sheetName) return undefined
+  const column = (label: string) => [...label.toUpperCase()].reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1
+  const range = { startRow: Number(match[4]) - 1, startCol: column(match[3]!), endRow: Number(match[6] ?? match[4]) - 1, endCol: column(match[5] ?? match[3]!) }
+  return range.startRow <= range.endRow && range.startCol <= range.endCol ? range : undefined
 }
 
 function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId: string): PivotTableModel[] {
@@ -360,7 +435,7 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
     date1904: data.date1904 === true, modified: false,
     pivotTables,
     tables: normalizeTables(data.tables, sheets),
-    charts: normalizePivotCharts(data.sheets, sheets, pivotTables),
+    charts: [...normalizePivotCharts(data.sheets, sheets, pivotTables), ...normalizeScatterCharts(data.sheets, sheets)],
     metadata: {
       format: envelope.format, parserVersion: envelope.parserVersion,
       definedNames: array(data.definedNames), localDefinedNames: array(data.localDefinedNames),

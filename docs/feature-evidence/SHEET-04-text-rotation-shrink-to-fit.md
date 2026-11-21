@@ -1,6 +1,6 @@
 # SHEET-04 文字方向与缩小适应切片
 
-状态：部分实现，SHEET-04 整体未验收。参考版本为 `E:\rust_test\univer` 的 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。
+状态：部分实现，SHEET-04 整体未验收。参考版本为 `E:\rust_test\univer` 的 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
 
 ## 参考依据
 

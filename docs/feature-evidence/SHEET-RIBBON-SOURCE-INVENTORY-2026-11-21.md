@@ -1,6 +1,8 @@
 # Sheets Ribbon 源码入口清点（2026-11-21）
 
-参考源码固定为 Univer `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`，本地固定检出位于 `E:\rust_test\univer`。本清点只追踪 desktop Sheets preset 的 Ribbon、上下文菜单注册和本地 command dispatcher，不包含浏览器或像素验收。
+参考源码固定为 Univer `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，本地固定检出位于 `E:\rust_test\univer`。本清点只追踪 desktop Sheets preset 的 Ribbon、上下文菜单注册和本地 command dispatcher，不包含浏览器或像素验收。
+
+本轮已核实清单引用的源码路径与代表菜单符号在 v1.6.0 存在。下文 `30/9/12/6/5` 等完整根项计数和本地差异表是前一参考提交的记录，尚未在 v1.6.0 重新合并所有插件 schema 复算，不能作为 v1.6.0 全量入口统计。
 
 ## 口径
 

@@ -15,6 +15,7 @@ function chartModel() {
     legend: { visible: true, position: 'bottom' },
     categoryField: 0,
     valueFields: [1],
+    seriesToCategory: { 1: [0] },
     xAxis: { scaleType: 'linear' },
     yAxis: { scaleType: 'log', logBase: 10 },
     revision: 2,
@@ -43,6 +44,9 @@ test('Excel view preserves chart data bindings, style and object layout across e
   assert.equal(next.charts?.[0]?.position.x, 320)
   assert.equal(next.charts?.[0]?.size.height, 360)
   assert.equal(next.charts?.[0]?.yAxis.logBase, 10)
+  assert.deepEqual(next.charts?.[0]?.seriesToCategory, { 1: [0] })
+  view.charts[0].seriesToCategory[1].push(3)
+  assert.deepEqual(original.charts?.[0]?.seriesToCategory, { 1: [0] })
   assert.equal(original.charts?.[0]?.position.x, 144)
   assert.notEqual(next.charts?.[0], original.charts?.[0])
 })

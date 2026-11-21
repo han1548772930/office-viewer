@@ -4,7 +4,7 @@ Status: **未验收**. This record covers the checklist slice only and does not 
 
 ## Reference contract
 
-- Fixed Univer commit: `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.
+- Fixed Univer commit: `eaf4cfa04fabdbcfc922c692f3450459f8a29546`.
 - `packages/docs-ui/src/menu/schema.ts` registers `CheckListCommand` under `RibbonStartGroup.LAYOUT`.
 - `packages/docs-ui/src/commands/commands/list.command.ts` uses paragraph bullet types `CHECK_LIST` and `CHECK_LIST_CHECKED`. `CheckListCommand` applies a checklist to the selected paragraph range. `ToggleCheckListCommand` changes one item's checked state.
 - `packages/docs-ui/src/controllers/render-controllers/doc-checklist.render-controller.ts` routes a click on the list symbol to the toggle command.

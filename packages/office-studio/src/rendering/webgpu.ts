@@ -38,6 +38,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
   const textCache = new Map<string, TextureEntry>()
   const textMetrics = new Map<string, TextMetricsEntry>()
   const imageCache = new Map<CanvasImageSource, TextureEntry>()
+  const imageVersions = new Map<CanvasImageSource, number>()
   const scratch = document.createElement('canvas')
   const measure = scratch.getContext('2d')!
   measure.textAlign = 'left'
@@ -78,15 +79,16 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
     rasterContext.fillText(command.text, 0, 0, command.maxWidth)
     const entry = textureFromCanvas(raster); textCache.set(key, entry); return entry
   }
-  const getImage = (source: CanvasImageSource): TextureEntry => {
+  const getImage = (source: CanvasImageSource, sourceVersion = 0): TextureEntry => {
     const cached = imageCache.get(source)
-    if (cached) { cached.used = frame; return cached }
+    if (cached && imageVersions.get(source) === sourceVersion) { cached.used = frame; return cached }
+    if (cached) { cached.texture.destroy(); imageCache.delete(source) }
     const raster = document.createElement('canvas')
     const sourceWidth = 'naturalWidth' in source ? source.naturalWidth : 'videoWidth' in source ? source.videoWidth : 'width' in source ? Number(source.width) : 'displayWidth' in source ? source.displayWidth : 1
     const sourceHeight = 'naturalHeight' in source ? source.naturalHeight : 'videoHeight' in source ? source.videoHeight : 'height' in source ? Number(source.height) : 'displayHeight' in source ? source.displayHeight : 1
     raster.width = Math.min(device.limits.maxTextureDimension2D, Math.max(1, sourceWidth)); raster.height = Math.min(device.limits.maxTextureDimension2D, Math.max(1, sourceHeight))
     raster.getContext('2d')!.drawImage(source, 0, 0, raster.width, raster.height)
-    const entry = textureFromCanvas(raster); imageCache.set(source, entry); return entry
+    const entry = textureFromCanvas(raster); imageCache.set(source, entry); imageVersions.set(source, sourceVersion); return entry
   }
   const fontsChanged = () => { clearTextTiles(); textMetrics.clear() }
   document.fonts?.addEventListener('loadingdone', fontsChanged)
@@ -200,7 +202,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             }
             break
           }
-          case 'image': rect(command, '#ffffff', clip, getImage(command.source), command.opacity ?? 1); break
+          case 'image': rect(command, '#ffffff', clip, getImage(command.source, command.sourceVersion), command.opacity ?? 1); break
         }
       }
       const data = new Float32Array(vertices)
@@ -219,12 +221,12 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
         }
       }
       pass.end(); device.queue.submit([encoder.finish()])
-      const evict = <K>(cache: Map<K, TextureEntry>) => {
+      const evict = <K>(cache: Map<K, TextureEntry>, onEvict?: (key: K) => void) => {
         let bytes = [...cache.values()].reduce((total, entry) => total + entry.bytes, 0)
-        for (const [key, entry] of cache.entries()) if (entry.used < frame - 120 || cache.size > 1024 || bytes > 64 * 1024 * 1024) { entry.texture.destroy(); cache.delete(key); bytes -= entry.bytes }
+        for (const [key, entry] of cache.entries()) if (entry.used < frame - 120 || cache.size > 1024 || bytes > 64 * 1024 * 1024) { entry.texture.destroy(); cache.delete(key); onEvict?.(key); bytes -= entry.bytes }
       }
-      evict(textCache); evict(imageCache)
+      evict(textCache); evict(imageCache, source => imageVersions.delete(source))
     },
-    dispose() { if (disposed) return; disposed = true; document.fonts?.removeEventListener('loadingdone', fontsChanged); fontsChanged(); imageCache.forEach(entry => entry.texture.destroy()); imageCache.clear(); whiteTexture.destroy(); buffer?.destroy(); context.unconfigure(); device.destroy() },
+    dispose() { if (disposed) return; disposed = true; document.fonts?.removeEventListener('loadingdone', fontsChanged); fontsChanged(); imageCache.forEach(entry => entry.texture.destroy()); imageCache.clear(); imageVersions.clear(); whiteTexture.destroy(); buffer?.destroy(); context.unconfigure(); device.destroy() },
   }
 }

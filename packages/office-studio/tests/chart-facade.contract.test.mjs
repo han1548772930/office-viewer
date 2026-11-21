@@ -104,6 +104,27 @@ test('stacked columns accumulate positive and negative values independently', as
   studio.dispose()
 })
 
+test('scatter chart API persists independent X-field bindings and applies numeric log axes', async () => {
+  const { studio, workbook, sheet } = setup()
+  sheet.getRange('A1:D4').setValues([
+    ['Shared X', 'North', 'Other X', 'South'],
+    [1, 10, 5, 30], [2, 20, 9, 40], [3, 25, 12, 50],
+  ])
+  const chart = await sheet.insertChart(sheet.newChart('scatter').setSource('A1:D4')
+    .setCategoryField(0).setValueFields([1, 3]).setSeriesToCategory({ 3: [2] })
+    .setXAxis({ scaleType: 'log', logBase: 2 }).build())
+  assert.deepEqual(chart.getData().series.map((series) => series.xValues), [[1, 2, 3], [5, 9, 12]])
+  const layout = chart.getLayout()
+  assert.ok(layout.xMin > 0 && layout.xMax > layout.xMin)
+  await chart.update({ seriesToCategory: { 3: [0] } })
+  assert.deepEqual(chart.getData().series[1].xValues, [1, 2, 3])
+  workbook.undo()
+  assert.deepEqual(chart.getData().series[1].xValues, [5, 9, 12])
+  workbook.redo()
+  assert.deepEqual(chart.getInfo().seriesToCategory, { 3: [0] })
+  studio.dispose()
+})
+
 test('area charts split fills at the zero crossing and pie charts draw category slices', async () => {
   const { studio, sheet } = setup()
   sheet.getRange('B2:B4').setValues([[-10], [20], [30]])

@@ -8,6 +8,7 @@ let createBlankWorkbook
 let createChart
 let chartLayout
 let chartRenderCommands
+let readChartData
 
 beforeAll(async () => {
   server = await createServer({
@@ -23,6 +24,7 @@ beforeAll(async () => {
   createChart = engine.createChart
   chartLayout = engine.chartLayout
   chartRenderCommands = engine.chartRenderCommands
+  readChartData = engine.readChartData
 })
 
 afterAll(async () => {
@@ -124,4 +126,50 @@ test('logarithmic chart axes stay finite for constant or non-positive data', () 
     if (command.kind === 'rect') return [command.x, command.y, command.width, command.height].every(Number.isFinite)
     return true
   }))
+})
+
+test('scatter charts map independent numeric X fields to Y series and render two value axes', () => {
+  const workbook = createBlankWorkbook()
+  const sheet = workbook.sheets[0]
+  sheet.cells = {
+    '0:0': { value: 'Shared X' }, '0:1': { value: 'First Y' }, '0:2': { value: 'Other X' }, '0:3': { value: 'Second Y' },
+    '1:0': { value: 1 }, '1:1': { value: 10 }, '1:2': { value: 5 }, '1:3': { value: 30 },
+    '2:0': { value: 2 }, '2:1': { value: 20 }, '2:2': { value: 9 }, '2:3': { value: 40 },
+    '3:0': { value: 3 }, '3:1': { value: 25 }, '3:2': { value: 12 }, '3:3': { value: 50 },
+  }
+  const chart = createChart(workbook, sheet.id, {
+    type: 'scatter', source: { range: { startRow: 0, startCol: 0, endRow: 3, endCol: 3 }, orientation: 'columns' },
+    position: { x: 0, y: 0 }, size: { width: 400, height: 260 }, categoryField: 0, valueFields: [1, 3],
+    seriesToCategory: { 3: [2] }, legend: { visible: false }, xAxis: { scaleType: 'linear' }, yAxis: { scaleType: 'linear' },
+  })
+  const data = readChartData(workbook, chart)
+  assert.deepEqual(data.series.map((series) => series.xValues), [[1, 2, 3], [5, 9, 12]])
+  const layout = chartLayout(workbook, chart)
+  const expectedX = [[1, 2, 3], [5, 9, 12]]
+  layout.series.forEach((series, seriesIndex) => series.points.forEach((point, index) => {
+    assert.ok(Math.abs(point.x - (layout.plot.x + expectedX[seriesIndex][index] / 12 * layout.plot.width)) < 1e-9)
+  }))
+  const commands = chartRenderCommands(workbook, chart)
+  assert.equal(commands.filter((command) => command.kind === 'rect' && command.width === 6).length, 6)
+  assert.equal(commands.filter((command) => command.kind === 'line' && command.x1 !== command.x2 && command.y1 !== command.y2).length, 0)
+  assert.equal(commands.filter((command) => command.kind === 'text').filter((command) => /^\d/.test(command.text)).length, 10)
+})
+
+test('scatter charts reject category labels as X data and respect row-oriented field mapping', () => {
+  const workbook = createBlankWorkbook()
+  const sheet = workbook.sheets[0]
+  sheet.cells = {
+    '0:0': { value: 'Series' }, '0:1': { value: 'Jan' }, '0:2': { value: 'Feb' },
+    '1:0': { value: 'Shared X' }, '1:1': { value: 2 }, '1:2': { value: 4 },
+    '2:0': { value: 'Sales' }, '2:1': { value: 10 }, '2:2': { value: 30 },
+  }
+  const config = {
+    type: 'scatter', source: { range: { startRow: 0, startCol: 0, endRow: 2, endCol: 2 }, orientation: 'rows' },
+    position: { x: 0, y: 0 }, size: { width: 360, height: 240 }, categoryField: 1, valueFields: [2],
+  }
+  const chart = createChart(workbook, sheet.id, config)
+  assert.deepEqual(readChartData(workbook, chart).series[0].xValues, [2, 4])
+  sheet.cells['1:1'].value = 'not numeric'
+  sheet.cells['1:2'].value = null
+  assert.throws(() => createChart(workbook, sheet.id, config), /numeric X\/Y pair/)
 })

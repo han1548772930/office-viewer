@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Checkbox, Form, FormItem, Input, Modal, Select, Switch } from 'antdv-next'
+import { Button, Checkbox, Form, FormItem, Input, Modal, Segmented, Select, Switch } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
@@ -140,7 +140,7 @@ async function applySort(): Promise<void> {
 <template>
   <Modal :open="open" title="排序与筛选" :footer="null" :width="700" @cancel="emit('update:open', false)">
     <Form layout="vertical" class="sheet-data-panel" :aria-busy="busy" @submit.prevent>
-      <div class="data-mode"><Button :type="mode === 'filter' ? 'primary' : 'default'" :disabled="busy" @click="mode = 'filter'">筛选设置</Button><Button :type="mode === 'sort' ? 'primary' : 'default'" :disabled="busy" @click="mode = 'sort'">排序设置</Button></div>
+      <Segmented v-model:value="mode" :options="[{ label: '筛选设置', value: 'filter' }, { label: '排序设置', value: 'sort' }]" :disabled="busy" aria-label="筛选或排序设置" />
       <FormItem label="数据区域"><Input v-model:value="address" aria-label="排序筛选数据区域" :disabled="busy" placeholder="A1:C20" @press-enter="loadFields" /></FormItem>
       <Button :disabled="busy" @click="loadFields">读取字段</Button>
       <p v-if="error" class="data-error" role="alert">{{ error }}</p><p v-if="status" role="status">{{ status }}</p>
@@ -182,7 +182,7 @@ async function applySort(): Promise<void> {
 .sheet-data-panel > :deep(.ant-form-item .ant-form-item-row) { display: contents; }
 .sheet-data-panel > :deep(.ant-form-item .ant-form-item-label) { padding: 0; text-align: start; }
 .sheet-data-panel > :deep(.ant-form-item .ant-form-item-control) { min-width: 0; }
-.data-mode, .data-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.data-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .data-values { display: grid; gap: 6px; max-height: 220px; padding: 10px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 4px; }
 .data-sort-key { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto; gap: 8px; }
 .data-sort-item :deep(.ant-form-item-label) { position: absolute; width: 1px; height: 1px; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }

@@ -60,6 +60,7 @@ export function cloneChart(chart: ChartModel): ChartModel {
     xAxis: { ...chart.xAxis },
     yAxis: { ...chart.yAxis },
     valueFields: [...chart.valueFields],
+    seriesToCategory: chart.seriesToCategory ? Object.fromEntries(Object.entries(chart.seriesToCategory).map(([field, categories]) => [field, [...categories]])) : undefined,
   }
 }
 

@@ -1,7 +1,7 @@
 # Docs 与 Sheets 顶部功能区对齐清单
 
 审阅日期：2026-11-21  
-固定 Univer 版本：`6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`  
+固定 Univer 版本：`eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公开说明为准。
 
 本清单先核对固定版 Univer 的顶部入口、插件扩展和上下文菜单，再核对本项目的入口、网格布局和命令处理器。Microsoft Word / Excel 的公开功能用于发现可补充能力，不代替 Univer 固定版入口对照。功能 ID 的验收状态仍以[完整功能对齐表](../UNIVER_FEATURE_PARITY.md)为准。
@@ -30,7 +30,7 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Docs
 
-固定版常规 Ribbon 根入口共 **38 项**，分组如下。计数包括 OSS 插件扩展注册到默认 Ribbon 的入口，不含子菜单。Univer 1.5.2 Pro 发布包另有 9 个 Docs Ribbon 根项，其模块清点见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+历史 OSS 常规 Ribbon 计数为 **38 项**，分组如下。该数是在前一参考提交按 OSS 插件扩展注册到默认 Ribbon 统计，不含子菜单，尚未在 v1.6.0 上复算。Univer 1.5.2 Pro 发布包另有 9 个 Docs Ribbon 根项，该数仅代表 1.5.2 发布包，其模块清点见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版分组和入口数 | 本地当前根项 | 对齐状态 |
 | --- | --- | ---: | --- |
@@ -47,7 +47,7 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Sheets
 
-固定版常规 Ribbon 根入口共 **62 项**，本地当前 schema 共 **75 项**。Univer 1.5.2 Pro 发布包另有 15 个 Sheets Ribbon 根项。按标签统计见下表。完整逐组、上下文、处理器和 Pro 边界记录在[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+历史 OSS 常规 Ribbon 根入口为 **62 项**，本地当前 schema 共 **75 项**。该数是在前一参考提交按插件 schema 统计，尚未在 v1.6.0 上复算。Univer 1.5.2 Pro 发布包另有 15 个 Sheets Ribbon 根项，该数仅代表 1.5.2 发布包。按标签统计见下表。完整逐组、上下文、处理器和 Pro 边界记录在[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版根项 | 本地当前根项 | 主要差异 |
 | --- | ---: | ---: | --- |

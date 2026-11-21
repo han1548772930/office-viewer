@@ -18,6 +18,9 @@
     "check:types": "vue-tsc -p tsconfig.json --noEmit",
     "build": "vue-tsc -p tsconfig.json --declaration --emitDeclarationOnly --outDir dist/types && vite build"
   },
+  "dependencies": {
+    "echarts": "6.1.0"
+  },
   "peerDependencies": {
     "antdv-next": ">=1.8.2",
     "lucide-vue-next": ">=1.0.0",

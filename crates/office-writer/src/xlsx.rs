@@ -179,6 +179,8 @@ struct ChartInput {
     #[serde(default)]
     value_fields: Vec<usize>,
     #[serde(default)]
+    series_to_category: BTreeMap<usize, Vec<usize>>,
+    #[serde(default)]
     pivot_table_id: Option<String>,
     #[serde(default)]
     x_axis: Option<ChartAxisInput>,
@@ -1489,17 +1491,49 @@ fn chart_series_xml(
         esc(&name_formula),
         chart_string_cache([name])
     );
-    out.push_str(&format!(
-        "<c:cat><c:strRef><c:f>{}</c:f>{}</c:strRef></c:cat>",
-        esc(&category_formula),
-        chart_string_cache(categories)
-    ));
-    out.push_str(&format!(
-        "<c:val><c:numRef><c:f>{}</c:f>{}</c:numRef></c:val></c:ser>",
-        esc(&value_formula),
-        chart_number_cache(values)
-    ));
+    if chart.chart_type == "scatter" {
+        let x_field = chart.series_to_category.get(&value_field)
+            .and_then(|fields| fields.first().copied())
+            .unwrap_or(chart.category_field);
+        let (x_formula, x_values) = chart_axis_range(sheet, chart, x_field, bounds, sheet_name)?;
+        out.push_str(&format!("<c:xVal><c:numRef><c:f>{}</c:f>{}</c:numRef></c:xVal>", esc(&x_formula), chart_number_cache(x_values)));
+        out.push_str(&format!("<c:yVal><c:numRef><c:f>{}</c:f>{}</c:numRef></c:yVal></c:ser>", esc(&value_formula), chart_number_cache(values)));
+    } else {
+        out.push_str(&format!(
+            "<c:cat><c:strRef><c:f>{}</c:f>{}</c:strRef></c:cat>",
+            esc(&category_formula),
+            chart_string_cache(categories)
+        ));
+        out.push_str(&format!(
+            "<c:val><c:numRef><c:f>{}</c:f>{}</c:numRef></c:val></c:ser>",
+            esc(&value_formula),
+            chart_number_cache(values)
+        ));
+    }
     Ok(out)
+}
+
+fn chart_axis_range(
+    sheet: &SheetInput,
+    chart: &ChartInput,
+    field: usize,
+    bounds: (u32, u32, u32, u32),
+    sheet_name: &str,
+) -> Result<(String, Vec<String>), ExportError> {
+    let (start_row, start_col, end_row, end_col) = bounds;
+    if chart.source.orientation == "rows" {
+        if field > (end_row - start_row) as usize {
+            return Err(ExportError::invalid(format!("chart {} X field is outside source range", chart.id)));
+        }
+        let row = start_row + field as u32;
+        Ok((chart_range_formula(sheet_name, row, start_col + 1, row, end_col), (start_col + 1..=end_col).map(|column| chart_number_text(chart_cell_value(sheet, row, column))).collect()))
+    } else {
+        if field > (end_col - start_col) as usize {
+            return Err(ExportError::invalid(format!("chart {} X field is outside source range", chart.id)));
+        }
+        let column = start_col + field as u32;
+        Ok((chart_range_formula(sheet_name, start_row + 1, column, end_row, column), (start_row + 1..=end_row).map(|row| chart_number_text(chart_cell_value(sheet, row, column))).collect()))
+    }
 }
 
 fn chart_xml(
@@ -1578,11 +1612,18 @@ fn chart_xml(
     let category = chart.category_field;
     let fields = if chart.value_fields.is_empty() {
         (0..field_count as usize)
-            .filter(|field| *field != category)
+            .filter(|field| *field != category && (chart.chart_type != "scatter" || !chart.series_to_category.values().any(|x_fields| x_fields.contains(field))))
             .collect::<Vec<_>>()
     } else {
         chart.value_fields.clone()
     };
+    if chart.chart_type == "scatter" {
+        for (series_field, x_fields) in &chart.series_to_category {
+            if !fields.contains(series_field) || x_fields.len() != 1 || x_fields[0] >= field_count as usize {
+                return Err(ExportError::invalid(format!("chart {} has an invalid scatter X mapping", chart.id)));
+            }
+        }
+    }
     if fields.is_empty() {
         return Err(ExportError::invalid(format!(
             "chart {} has no value series",
@@ -1613,6 +1654,7 @@ fn chart_xml(
         "area" => "areaChart",
         "pie" => "pieChart",
         "doughnut" => "doughnutChart",
+        "scatter" => "scatterChart",
         other => {
             return Err(ExportError::unsupported(format!(
                 "XLSX chart type {other} is not supported by the writer"
@@ -1652,6 +1694,7 @@ fn chart_xml(
         }
         "pieChart" => out.push_str("<c:pieChart><c:varyColors val=\"1\"/>"),
         "doughnutChart" => out.push_str("<c:doughnutChart><c:varyColors val=\"1\"/>"),
+        "scatterChart" => out.push_str("<c:scatterChart><c:scatterStyle val=\"marker\"/><c:varyColors val=\"0\"/>"),
         _ => unreachable!("chart type validated above"),
     }
     for (index, field) in fields.iter().enumerate() {
@@ -1670,6 +1713,10 @@ fn chart_xml(
             out.push_str("<c:holeSize val=\"55\"/>");
         }
         out.push_str(&format!("</c:{}>", chart_kind));
+    } else if chart.chart_type == "scatter" {
+        out.push_str(&format!("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:scatterChart>", axis_ids, axis_id_y));
+        let x_axis_scaling = chart.x_axis.as_ref().filter(|axis| axis.scale_type == "log").map(|axis| format!("<c:scaling><c:logBase val=\"{}\"/><c:orientation val=\"minMax\"/></c:scaling>", axis.log_base.unwrap_or(10.0))).unwrap_or_else(|| "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>".to_owned());
+        out.push_str(&format!("<c:valAx><c:axId val=\"{}\"/>{}<c:delete val=\"0\"/><c:axPos val=\"b\"/>{}<c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/></c:valAx>", axis_ids, x_axis_scaling, chart_axis_title_xml(chart.x_axis.as_ref().and_then(|axis| axis.title.as_deref())), axis_id_y));
     } else {
         if chart.chart_type == "stacked-column" {
             out.push_str("<c:gapWidth val=\"150\"/><c:overlap val=\"100\"/>");
@@ -3063,6 +3110,21 @@ mod tests {
         assert!(chart.contains("<c:f>&apos;Data&apos;!$B$2:$C$2</c:f>"));
         assert!(chart.contains("<c:logBase val=\"2\"/>"));
         assert!(!chart.contains("<c:legend>"));
+    }
+
+    #[test]
+    fn writes_scatter_chart_with_numeric_x_and_y_series() {
+        let workbook: WorkbookInput = serde_json::from_str(
+            r##"{"sheets":[{"id":"sheet-1","name":"Data","cells":{"A1":{"value":"X"},"B1":{"value":"Y"},"A2":{"value":1},"B2":{"value":10},"A3":{"value":2},"B3":{"value":20}}}],"charts":[{"id":"scatter-1","sheetId":"sheet-1","type":"scatter","source":{"range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1},"orientation":"columns"},"position":{"x":0,"y":0},"size":{"width":320,"height":200},"categoryField":0,"valueFields":[1]}]}"##,
+        )
+        .unwrap();
+        let chart = chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0, None).unwrap();
+
+        assert!(chart.contains("<c:scatterChart><c:scatterStyle val=\"marker\"/>"));
+        assert!(chart.contains("<c:xVal><c:numRef><c:f>&apos;Data&apos;!$A$2:$A$3</c:f>"));
+        assert!(chart.contains("<c:yVal><c:numRef><c:f>&apos;Data&apos;!$B$2:$B$3</c:f>"));
+        assert!(chart.contains("<c:valAx><c:axId val=\"1000003\"/>"));
+        assert!(!chart.contains("<c:catAx>"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Checkbox, ColorPicker, Drawer, Input, InputNumber, Select, Tooltip } from 'antdv-next'
+import { Button, Checkbox, ColorPicker, Drawer, Form, FormItem, Input, InputNumber, Select, Tooltip } from 'antdv-next'
 import { ArrowDown, ArrowLeft, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
 import type { CellRange, SheetConditionalFormatOperator, SheetConditionalFormatRule, SheetConditionalFormatType, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
 import { validateConditionalFormatDraft } from '../../features/conditional-formatting/conditional-formatting.ts'
@@ -328,19 +328,19 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
           <Tooltip :title="t('conditional.delete', '删除规则')"><Button type="text" size="small" danger :aria-label="t('conditional.delete', '删除规则')" @click="removeRule(rule.id)"><Trash2 :size="14" /></Button></Tooltip>
         </div>
       </aside>
-      <section v-else class="conditional-rule-editor">
+      <Form v-else layout="vertical" class="conditional-rule-editor" @submit.prevent>
         <Button type="text" class="conditional-back" @click="returnToRules"><ArrowLeft :size="14" />{{ t('conditional.rules', '规则') }}</Button>
-        <label>{{ t('conditional.range', '应用范围') }}<Input v-model:value="draftRanges" :aria-label="t('conditional.range', '应用范围')" /></label>
-        <label>规则类型<Select v-model:value="ruleType" :options="typeOptions" /></label>
-        <label v-if="ruleType === 'highlightCell'">条件类型<Select v-model:value="highlightSubtype" :options="[{value:'text',label:'文本'},{value:'number',label:'数值'},{value:'timePeriod',label:'日期期间'},{value:'duplicateValues',label:'重复值'},{value:'uniqueValues',label:'唯一值'}]" /></label>
-        <label v-if="ruleType === 'highlightCell' && highlightSubtype === 'number'">{{ t('conditional.operator', '条件') }}<Select v-model:value="operator" :options="operatorOptions" /></label>
-        <label v-if="ruleType === 'highlightCell' && highlightSubtype === 'text'">文本条件<Select v-model:value="operator" :options="[{value:'containsText',label:'包含'},{value:'notContainsText',label:'不包含'},{value:'beginsWith',label:'开头为'},{value:'endsWith',label:'结尾为'},{value:'equal',label:'等于'},{value:'notEqual',label:'不等于'},{value:'containsBlanks',label:'包含空白'},{value:'notContainsBlanks',label:'不包含空白'},{value:'containsErrors',label:'包含错误'},{value:'notContainsErrors',label:'不包含错误'}]" /></label>
-        <label v-if="ruleType === 'top10'">排名类型<Select v-model:value="operator" :options="[{value:'isNotBottom',label:'前几项'},{value:'isBottom',label:'后几项'},{value:'greaterThanAverage',label:'高于平均值'},{value:'lessThanAverage',label:'低于平均值'},{value:'equalAverage',label:'等于平均值'}]" /></label>
+        <FormItem :label="t('conditional.range', '应用范围')"><Input v-model:value="draftRanges" :aria-label="t('conditional.range', '应用范围')" /></FormItem>
+        <FormItem label="规则类型"><Select v-model:value="ruleType" :options="typeOptions" /></FormItem>
+        <FormItem v-if="ruleType === 'highlightCell'" label="条件类型"><Select v-model:value="highlightSubtype" :options="[{value:'text',label:'文本'},{value:'number',label:'数值'},{value:'timePeriod',label:'日期期间'},{value:'duplicateValues',label:'重复值'},{value:'uniqueValues',label:'唯一值'}]" /></FormItem>
+        <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number'" :label="t('conditional.operator', '条件')"><Select v-model:value="operator" :options="operatorOptions" /></FormItem>
+        <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'text'" label="文本条件"><Select v-model:value="operator" :options="[{value:'containsText',label:'包含'},{value:'notContainsText',label:'不包含'},{value:'beginsWith',label:'开头为'},{value:'endsWith',label:'结尾为'},{value:'equal',label:'等于'},{value:'notEqual',label:'不等于'},{value:'containsBlanks',label:'包含空白'},{value:'notContainsBlanks',label:'不包含空白'},{value:'containsErrors',label:'包含错误'},{value:'notContainsErrors',label:'不包含错误'}]" /></FormItem>
+        <FormItem v-if="ruleType === 'top10'" label="排名类型"><Select v-model:value="operator" :options="[{value:'isNotBottom',label:'前几项'},{value:'isBottom',label:'后几项'},{value:'greaterThanAverage',label:'高于平均值'},{value:'lessThanAverage',label:'低于平均值'},{value:'equalAverage',label:'等于平均值'}]" /></FormItem>
         <div v-if="typeNeedsValue || ruleType === 'highlightCell' && highlightSubtype === 'timePeriod'" class="conditional-values">
-          <label>{{ ruleType === 'expression' ? '公式' : highlightSubtype === 'number' ? t('conditional.value', '数值') : highlightSubtype === 'timePeriod' ? '日期期间' : '匹配内容' }}<Select v-if="ruleType === 'highlightCell' && highlightSubtype === 'timePeriod'" v-model:value="operator" :options="[{value:'today',label:'今天'},{value:'yesterday',label:'昨天'},{value:'tomorrow',label:'明天'},{value:'last7Days',label:'最近 7 天'},{value:'thisWeek',label:'本周'},{value:'lastWeek',label:'上周'},{value:'nextWeek',label:'下周'},{value:'thisMonth',label:'本月'},{value:'lastMonth',label:'上月'},{value:'nextMonth',label:'下月'}]" /><Input v-else v-model:value="formula1" :inputmode="ruleType === 'highlightCell' && highlightSubtype === 'number' ? 'decimal' : undefined" /></label>
-          <label v-if="ruleType === 'highlightCell' && highlightSubtype === 'number' && needsSecondValue">{{ t('conditional.second-value', '第二个数值') }}<Input v-model:value="formula2" inputmode="decimal" /></label>
+          <FormItem :label="ruleType === 'expression' ? '公式' : highlightSubtype === 'number' ? t('conditional.value', '数值') : highlightSubtype === 'timePeriod' ? '日期期间' : '匹配内容'"><Select v-if="ruleType === 'highlightCell' && highlightSubtype === 'timePeriod'" v-model:value="operator" :options="[{value:'today',label:'今天'},{value:'yesterday',label:'昨天'},{value:'tomorrow',label:'明天'},{value:'last7Days',label:'最近 7 天'},{value:'thisWeek',label:'本周'},{value:'lastWeek',label:'上周'},{value:'nextWeek',label:'下周'},{value:'thisMonth',label:'本月'},{value:'lastMonth',label:'上月'},{value:'nextMonth',label:'下月'}]" /><Input v-else v-model:value="formula1" :inputmode="ruleType === 'highlightCell' && highlightSubtype === 'number' ? 'decimal' : undefined" /></FormItem>
+          <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number' && needsSecondValue" :label="t('conditional.second-value', '第二个数值')"><Input v-model:value="formula2" inputmode="decimal" /></FormItem>
         </div>
-        <div v-if="ruleType === 'top10' && (operator === 'isNotBottom' || operator === 'isBottom')" class="conditional-values"><label>项数<InputNumber v-model:value="rank" :min="1" :max="1000" /></label><Checkbox v-model:checked="rankPercent">百分比</Checkbox></div>
+        <div v-if="ruleType === 'top10' && (operator === 'isNotBottom' || operator === 'isBottom')" class="conditional-values"><FormItem label="项数"><InputNumber v-model:value="rank" :min="1" :max="1000" /></FormItem><FormItem :label="null"><Checkbox v-model:checked="rankPercent">百分比</Checkbox></FormItem></div>
         <div v-if="ruleType === 'dataBar' || ruleType === 'colorScale'" class="conditional-rule-editor">
           <ConditionalThresholdInput v-model:value="minimum" boundary="min" label="最小值" />
           <template v-if="ruleType === 'colorScale'">
@@ -348,31 +348,31 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
             <ConditionalThresholdInput v-if="useMidpoint" v-model:value="midpoint" label="中间值" />
           </template>
           <ConditionalThresholdInput v-model:value="maximum" boundary="max" label="最大值" />
-          <div v-if="ruleType === 'dataBar'" class="conditional-colors"><label>正值颜色<ColorPicker v-model:value="fill" value-format="hex" /></label><label>负值颜色<ColorPicker v-model:value="negativeColor" value-format="hex" /></label></div>
-          <template v-if="ruleType === 'dataBar'"><Checkbox v-model:checked="isGradient">渐变填充</Checkbox><Checkbox v-model:checked="showValue">显示数值</Checkbox></template>
-          <div v-else class="conditional-colors"><label>最小值颜色<ColorPicker v-model:value="minimumColor" value-format="hex" /></label><label v-if="useMidpoint">中间值颜色<ColorPicker v-model:value="fill" value-format="hex" /></label><label>最大值颜色<ColorPicker v-model:value="maximumColor" value-format="hex" /></label></div>
+          <div v-if="ruleType === 'dataBar'" class="conditional-colors"><FormItem label="正值颜色"><ColorPicker v-model:value="fill" value-format="hex" /></FormItem><FormItem label="负值颜色"><ColorPicker v-model:value="negativeColor" value-format="hex" /></FormItem></div>
+          <template v-if="ruleType === 'dataBar'"><FormItem :label="null"><Checkbox v-model:checked="isGradient">渐变填充</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="showValue">显示数值</Checkbox></FormItem></template>
+          <div v-else class="conditional-colors"><FormItem label="最小值颜色"><ColorPicker v-model:value="minimumColor" value-format="hex" /></FormItem><FormItem v-if="useMidpoint" label="中间值颜色"><ColorPicker v-model:value="fill" value-format="hex" /></FormItem><FormItem label="最大值颜色"><ColorPicker v-model:value="maximumColor" value-format="hex" /></FormItem></div>
         </div>
         <div v-if="ruleType === 'iconSet'" class="conditional-rule-editor">
-          <label>图标集<Select :value="iconSet" :options="iconSetOptions" @update:value="changeIconSet" /></label>
+          <FormItem label="图标集"><Select :value="iconSet" :options="iconSetOptions" @update:value="changeIconSet" /></FormItem>
           <div class="conditional-icon-preview" :aria-label="iconSetLabel(iconSet)"><ConditionalIcon v-for="(icon, index) in previewIcons" :key="index" :icon-type="icon.iconType ?? 'EMPTY_ICON_TYPE'" :icon-id="icon.iconId ?? ''" /></div>
           <div v-for="(threshold, index) in iconThresholds" :key="index" class="conditional-icon-threshold">
-            <label>图标 {{ index + 1 }}<Select :value="`${threshold.iconType}:${threshold.iconId}`" :options="individualIconOptions" @update:value="changeIndividualIcon(threshold, $event)" /></label>
-            <label v-if="index < iconThresholds.length - 1">比较<Select v-model:value="threshold.operator" :options="[{value:'greaterThanOrEqual',label:'大于或等于'},{value:'greaterThan',label:'大于'}]" /></label>
+            <FormItem :label="`图标 ${index + 1}`"><Select :value="`${threshold.iconType}:${threshold.iconId}`" :options="individualIconOptions" @update:value="changeIndividualIcon(threshold, $event)" /></FormItem>
+            <FormItem v-if="index < iconThresholds.length - 1" label="比较"><Select v-model:value="threshold.operator" :options="[{value:'greaterThanOrEqual',label:'大于或等于'},{value:'greaterThan',label:'大于'}]" /></FormItem>
             <ConditionalThresholdInput v-if="index < iconThresholds.length - 1" v-model:value="threshold.value" :label="`阈值 ${index + 1}`" />
             <span v-else class="conditional-hint">其余值使用此图标。</span>
           </div>
-          <Checkbox v-model:checked="showValue">显示数值</Checkbox><Checkbox v-model:checked="reverseIcons">反转图标顺序</Checkbox>
+          <FormItem :label="null"><Checkbox v-model:checked="showValue">显示数值</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="reverseIcons">反转图标顺序</Checkbox></FormItem>
         </div>
         <div v-if="styleRule" class="conditional-colors">
-          <label><Checkbox v-model:checked="useFill">{{ t('conditional.fill', '填充') }}</Checkbox><ColorPicker v-model:value="fill" :disabled="!useFill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></label>
-          <label><Checkbox v-model:checked="useFontColor">{{ t('conditional.font-color', '文字颜色') }}</Checkbox><ColorPicker v-model:value="fontColor" :disabled="!useFontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></label>
-          <Checkbox v-model:checked="bold">{{ t('conditional.bold', '加粗') }}</Checkbox>
-          <Checkbox v-model:checked="italic">斜体</Checkbox><Checkbox v-model:checked="underline">下划线</Checkbox><Checkbox v-model:checked="strike">删除线</Checkbox>
+          <FormItem :label="null"><Checkbox v-model:checked="useFill">{{ t('conditional.fill', '填充') }}</Checkbox><ColorPicker v-model:value="fill" :disabled="!useFill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="useFontColor">{{ t('conditional.font-color', '文字颜色') }}</Checkbox><ColorPicker v-model:value="fontColor" :disabled="!useFontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="bold">{{ t('conditional.bold', '加粗') }}</Checkbox></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="italic">斜体</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="underline">下划线</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="strike">删除线</Checkbox></FormItem>
         </div>
-        <Checkbox v-if="!visualRule" v-model:checked="stopIfTrue">{{ t('conditional.stop-if-true', '匹配后停止') }}</Checkbox>
+        <FormItem v-if="!visualRule" :label="null"><Checkbox v-model:checked="stopIfTrue">{{ t('conditional.stop-if-true', '匹配后停止') }}</Checkbox></FormItem>
         <p v-if="error" class="conditional-error" role="alert">{{ error }}</p>
         <Button type="primary" @click="saveDraft">{{ draftId ? t('conditional.update', '更新规则') : t('conditional.save-rule', '保存规则') }}</Button>
-      </section>
+      </Form>
     </div>
     <template #footer>
       <Button @click="emit('update:open', false)">{{ t('common.cancel', '取消') }}</Button>
@@ -388,11 +388,11 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 .conditional-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center; }
 .conditional-rule-select.ant-btn { min-width: 0; height: auto; justify-content: flex-start; overflow: hidden; padding: 6px 8px; border: 1px solid #d0d5dd; background: #fff; color: #344054; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .conditional-rule-select.ant-btn[aria-pressed="true"] { border-color: #246bfd; background: #eff4ff; color: #244c91; }
-.conditional-rule-editor label { display: grid; gap: 5px; color: #475467; font-size: 12px; }
+.conditional-rule-editor :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .conditional-back { justify-self: start; padding-inline: 0; }
 .conditional-values, .conditional-colors { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
-.conditional-values > label { flex: 1; min-width: 0; }
-.conditional-colors > label { flex: 1; min-width: 0; }
+.conditional-values > :deep(.ant-form-item) { flex: 1; min-width: 0; }
+.conditional-colors > :deep(.ant-form-item) { flex: 1; min-width: 0; }
 .conditional-colors :deep(.ant-color-picker-trigger) { width: 100%; }
 .conditional-icon-preview { display: flex; align-items: center; gap: 4px; min-height: 28px; }
 .conditional-icon-swatch { font-size: 11px; color: #667085; }

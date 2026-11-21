@@ -11,6 +11,7 @@ import { documentPasteCommand } from '../../features/document/services/document-
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
+import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
 
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
+  'navigate-to-heading': [headingId: string]
   'context-menu': [payload: { x: number; y: number; point: DocumentPoint }]
   layout: [layout: DocumentLayout]
   'active-page': [page: number]
@@ -245,6 +247,11 @@ function pointerDown(event: PointerEvent) {
   if (!point) return
   event.preventDefault()
   if (event.ctrlKey || event.metaKey) {
+    const headingId = documentTocHeadingTarget(props.model, blockAtPoint(props.model, point))
+    if (headingId) {
+      emit('navigate-to-heading', headingId)
+      return
+    }
     const href = marksAtPoint(props.model, point).href
     if (href) { window.open(href, '_blank', 'noopener,noreferrer'); return }
   }

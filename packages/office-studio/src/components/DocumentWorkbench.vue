@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, ConfigProvider, Input, Modal, Tooltip, Upload } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Tooltip, Upload } from 'antdv-next'
+import type { MenuItemType } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
@@ -233,6 +234,14 @@ const contextMenuActions = computed(() => {
     ? documentTocContextMenuItems(selectedTocId.value, !canEditSelectedToc.value, translate).map(action => ({ ...action, group: 'layout' as const }))
     : []
   return [...layoutActions, ...tocActions, ...tableActions]
+})
+const documentContextMenuItems = computed<MenuItemType[]>(() => {
+  const layoutItems = contextMenuActions.value.filter(item => item.group === 'layout')
+  const tableItems = contextMenuActions.value.filter(item => item.group === 'table')
+  return [
+    ...layoutItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled })),
+    ...(tableItems.length ? [{ type: 'divider' as const }, ...tableItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled }))] : []),
+  ]
 })
 const currentMarks = computed(() => toolbarState.value.marks)
 const modalTitle = computed(() => ({ image: '插入图片', link: '插入链接' })[modalKind.value])
@@ -650,6 +659,10 @@ function runContextMenuAction(action: { id: string; commandId?: string; params?:
   onRibbonExecute(action.commandId ?? action.id, action.params)
   documentContextMenu.value = undefined
   void nextTick(() => canvasRef.value?.focus())
+}
+function selectDocumentContextMenuItem(info: { key: string | number }) {
+  const action = contextMenuActions.value.find(item => item.id === String(info.key))
+  if (action && !action.disabled) runContextMenuAction(action)
 }
 function openTocInsertDialog(mode: 'automatic' | 'custom') {
   if (!canInsertToc.value) return
@@ -1078,7 +1091,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
       <aside v-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">
         <DocumentCommentsPanel
           :comments="model.comments ?? {}"
@@ -1102,22 +1115,16 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </main>
     <DocumentFooter :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
-    <div v-if="documentContextMenu" class="document-context-menu" role="menu" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.menu-label', 'Document context menu')" :style="{ left: `${documentContextMenu.left}px`, top: `${documentContextMenu.top}px` }">
-      <div role="group" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.layout-group', 'Layout')">
-        <Button v-for="action in contextMenuActions.filter(item => item.group === 'layout')" :key="action.id" type="text" role="menuitem" :disabled="action.disabled" @click="runContextMenuAction(action)">{{ action.title }}</Button>
-      </div>
-      <div v-if="contextMenuActions.some(item => item.group === 'table')" class="context-menu-divider" role="separator" />
-      <div v-if="toolbarState.table" role="group" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.table-group', 'Table')">
-        <Button v-for="action in contextMenuActions.filter(item => item.group === 'table')" :key="action.id" type="text" role="menuitem" :disabled="action.disabled" @click="runContextMenuAction(action)">{{ action.title }}</Button>
-      </div>
+    <div v-if="documentContextMenu" class="document-context-menu" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.menu-label', 'Document context menu')" :style="{ left: `${documentContextMenu.left}px`, top: `${documentContextMenu.top}px` }">
+      <Menu mode="vertical" :selectable="false" :items="documentContextMenuItems" @click="selectDocumentContextMenuItem" />
     </div>
     <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden @ok="confirmModal">
-      <div class="insert-form">
-        <label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label>
+      <Form layout="vertical" class="insert-form" @submit.prevent>
+        <FormItem :label="modalKind === 'image' ? '图片地址' : '链接地址'"><Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></FormItem>
         <Upload v-if="modalKind === 'image'" accept="image/png,image/jpeg,image/gif,image/webp" :show-upload-list="false" :before-upload="beforeImageUpload">
           <Button type="primary"><FileUp :size="15" />选择本地图片</Button>
         </Upload>
-      </div>
+      </Form>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" @error="notify" />
@@ -1161,13 +1168,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 .replace-row :deep(.ant-checkbox-wrapper) { flex: 0 0 auto; white-space: nowrap; font-size: 12px; }
 .document-notice { position: absolute; z-index: 40; bottom: 44px; inset-inline: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #c9dcf4; border-radius: 4px; color: #4b6482; background: #eef5ff; font-size: 12px; box-shadow: 0 2px 8px #18375912; }
 .document-notice :deep(.ant-btn) { display: grid; place-items: center; padding: 0; color: inherit; }
-.document-context-menu { position: absolute; z-index: 60; width: 230px; display: flex; flex-direction: column; gap: 3px; padding: 5px; border: 1px solid #d7dce3; border-radius: 4px; background: #fff; box-shadow: 0 4px 14px #18283b24; }
-.document-context-menu [role="group"] { display: flex; flex-direction: column; gap: 2px; }
-.document-context-menu :deep(.ant-btn) { min-height: 28px; justify-content: flex-start; padding-inline: 8px; text-align: start; }
-.context-menu-divider { height: 1px; margin: 2px 5px; background: #e5e8ed; }
+.document-context-menu { position: absolute; z-index: 60; width: 230px; overflow: auto; border-radius: 4px; }
+.document-context-menu :deep(.ant-menu) { border-inline-end: 0; box-shadow: 0 4px 14px #18283b24; }
 .insert-form { display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
-.insert-form label { display: flex; align-items: center; gap: 12px; }
-.insert-form label > * { flex: 1; }
+.insert-form :deep(.ant-form-item) { margin-bottom: 0; }
 .insert-error { color: #c14444; }
 @media (max-width: 650px) { .find-replace-toolbar { right: 4px; width: calc(100vw - 16px); } .replace-row { flex-wrap: wrap; } .replace-row :deep(.ant-input) { flex: 1 1 100px; } .document-header { padding: 0 6px; } }
 @media print { .document-header, .document-ribbon, .document-notice, :deep(.document-outline), :deep(.document-statusbar) { display: none !important; } .document-workbench, .editor-workspace { height: auto; overflow: visible; background: #fff; } }

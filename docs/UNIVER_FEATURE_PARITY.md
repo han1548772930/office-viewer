@@ -1,7 +1,7 @@
 # 完整功能与 Pro 对齐清单
 
-基线日期：2026-11-20  
-源码：`dream-num/univer@6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`  
+基线日期：2026-11-21
+源码：`dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 公开规格：当日官方 Sheets / Docs 功能导航、功能说明、API 与产品对照页。  
 执行依据：[项目标准](../PROJECT_EXECUTION_STANDARD.md)和[源码布局规则](UNIVER_REFERENCE_RULES.md)。
 

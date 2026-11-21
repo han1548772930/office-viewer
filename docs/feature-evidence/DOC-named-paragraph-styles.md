@@ -1,6 +1,6 @@
 # Docs named paragraph styles
 
-Reference baseline: `dream-num/univer@6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.
+Reference baseline: `dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`.
 
 The upstream Docs paragraph menu exposes Normal, Title, Subtitle, and Heading 1 through Heading 5. Its `SetParagraphNamedStyleCommand` stores the named style separately from outline level. The fixed source defines run defaults of 26 pt bold for Title, 15 pt gray for Subtitle, and 20/18/16/14/12 pt bold for Heading 1 through 5.
 

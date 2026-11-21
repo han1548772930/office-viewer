@@ -75,12 +75,12 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     const style = defaultCellStyle()
     style.font.bold = cell.bold ?? false
     style.font.italic = cell.italic ?? false
-    style.font.color = cell.color ?? '#1f2937'
+    style.font.color = cell.hyperlink ? '#0563c1' : cell.color ?? '#1f2937'
     style.fill = cell.background ?? '#ffffff'
     const modelCell: SpreadsheetCell = {
       id: `${position.row}:${position.column}`, row: position.row, col: position.column,
       value: cell.rawValue ?? cell.value, formula: cell.formula ? (cell.formula.startsWith('=') ? cell.formula : `=${cell.formula}`) : null,
-      display: cell.displayValue ?? cell.value, style,
+      display: cell.displayValue ?? cell.value, style, hyperlink: cell.hyperlink,
     }
     return [[`${position.row}:${position.column}`, modelCell]]
   }))
@@ -161,7 +161,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const rotation = cell?.rotation ?? 0
       const textClip = intersectRect(clip, { x: rect.x + 3 * z + iconPadding, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z - iconPadding), height: Math.max(0, rect.height - 2) })
       const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
-      const color = conditionalStyle.fontColor ?? cell?.color ?? '#243247'
+      const color = conditionalStyle.fontColor ?? (cell?.hyperlink ? '#0563c1' : cell?.color) ?? '#243247'
       if (cell?.rotationVertical) {
         const glyphs = graphemes(text)
         const lineHeight = fontSize
@@ -173,10 +173,10 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         for (const [index, glyph] of glyphs.entries()) {
           const glyphY = top + index * lineHeight + lineHeight / 2
           commands.push({ kind: 'text', x: centerX, y: glyphY, text: glyph, font, color, align: 'center', baseline: 'middle', clip: textClip })
-          if ((conditionalStyle.underline ?? cell.underline) || (conditionalStyle.strike ?? cell.strike)) {
+          if ((conditionalStyle.underline ?? (cell.hyperlink ? true : cell.underline)) || (conditionalStyle.strike ?? cell.strike)) {
             const width = decorationWidth(glyph, font, availableTextWidth)
             const left = centerX - width / 2
-            if (conditionalStyle.underline ?? cell.underline) commands.push({ kind: 'line', x1: left, y1: glyphY + lineHeight * 0.55, x2: left + width, y2: glyphY + lineHeight * 0.55, color, clip: textClip })
+            if (conditionalStyle.underline ?? (cell.hyperlink ? true : cell.underline)) commands.push({ kind: 'line', x1: left, y1: glyphY + lineHeight * 0.55, x2: left + width, y2: glyphY + lineHeight * 0.55, color, clip: textClip })
             if (conditionalStyle.strike ?? cell.strike) commands.push({ kind: 'line', x1: left, y1: glyphY, x2: left + width, y2: glyphY, color, clip: textClip })
           }
         }
@@ -186,7 +186,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
           commands.push({ kind: 'text', x: rect.x + rect.width - 6 * z, y, text: text.slice(2), font, color, align: 'right', baseline: 'middle', rotation, maxWidth, clip: textClip })
         } else commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', rotation, maxWidth, clip: textClip })
       }
-      if (!cell?.rotationVertical && ((conditionalStyle.underline ?? cell?.underline) || (conditionalStyle.strike ?? cell?.strike))) {
+      if (!cell?.rotationVertical && ((conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) || (conditionalStyle.strike ?? cell?.strike))) {
         const width = decorationWidth(text, font, Math.max(0, rect.width - 12 * z))
         const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
         const decoration = (offsetY: number) => {
@@ -194,7 +194,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
           const [x2, y2] = rotatePoint(left + width, y + offsetY, x, y, rotation)
           commands.push({ kind: 'line', x1, y1, x2, y2, color, clip: textClip })
         }
-        if (conditionalStyle.underline ?? cell?.underline) decoration(fontSize * 0.55)
+        if (conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) decoration(fontSize * 0.55)
         if (conditionalStyle.strike ?? cell?.strike) decoration(0)
       }
     }

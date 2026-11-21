@@ -22,6 +22,7 @@ export interface ChartConfig {
   legend?: Partial<ChartLegendOptions>
   categoryField?: number
   valueFields?: number[]
+  seriesToCategory?: Record<number, number[]>
   pivotTableId?: string
   xAxis?: Partial<ChartAxisOptions>
   yAxis?: Partial<ChartAxisOptions>
@@ -31,6 +32,7 @@ export interface ChartSeriesData {
   field: number
   name: string
   values: Array<number | null>
+  xValues?: Array<number | null>
 }
 
 export interface ChartData {
@@ -49,6 +51,8 @@ export interface ChartLayout {
   plot: RenderRect
   min: number
   max: number
+  xMin?: number
+  xMax?: number
   categories: string[]
   series: ChartSeriesLayout[]
 }
@@ -79,6 +83,7 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
     legend: { ...DEFAULT_LEGEND, ...(config.legend ?? {}) },
     categoryField,
     valueFields: valueFields ?? [],
+    ...(config.seriesToCategory ? { seriesToCategory: cloneSeriesCategories(config.seriesToCategory) } : {}),
     pivotTableId: config.pivotTableId,
     xAxis: { ...DEFAULT_AXIS, ...(config.xAxis ?? {}) },
     yAxis: { ...DEFAULT_AXIS, ...(config.yAxis ?? {}) },
@@ -104,6 +109,7 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
     xAxis: patch.xAxis ? { ...chart.xAxis, ...patch.xAxis } : chart.xAxis,
     yAxis: patch.yAxis ? { ...chart.yAxis, ...patch.yAxis } : chart.yAxis,
     valueFields: patch.valueFields ? [...patch.valueFields] : chart.valueFields,
+    seriesToCategory: cloneSeriesCategories(patch.seriesToCategory ?? chart.seriesToCategory ?? {}),
     revision: chart.revision + 1,
   }
   const sheet = requireSheet(workbook, chart.sheetId)
@@ -122,12 +128,18 @@ export function readChartData(workbook: WorkbookModel, chart: ChartModel): Chart
   if (chart.pivotTableId) {
     const pivot = workbook.pivotTables?.find((candidate) => candidate.id === chart.pivotTableId)
     if (!pivot) throw new Error(`Pivot table not found: ${chart.pivotTableId}`)
-    return readPivotChartData(pivotOutputValues(workbook, pivot), pivot, chart)
+    const data = readPivotChartData(pivotOutputValues(workbook, pivot), pivot, chart)
+    if (chart.type === 'scatter') {
+      if (Object.keys(chart.seriesToCategory ?? {}).length) throw new RangeError('Pivot scatter charts use the shared pivot row field for X values')
+      return { ...data, series: data.series.map((series) => ({ ...series, xValues: data.categories.map(numericValue) })) }
+    }
+    return data
   }
   const sheet = requireSheet(workbook, chart.sheetId)
   const range = chart.source.range
   const matrix = readMatrix(sheet, range)
   if (matrix.length < 2 || matrix[0]!.length < 2) throw new RangeError('Chart source must contain a header and at least one data value')
+  if (chart.type === 'scatter') return readScatterChartData(matrix, chart)
   if (chart.source.orientation === 'rows') return readRowsChartData(matrix, chart)
   const categoryOffset = chart.categoryField
   if (categoryOffset >= matrix[0]!.length) throw new RangeError('Chart category field is outside source range')
@@ -199,6 +211,80 @@ function isPivotTotalRow(row: CellScalar[], rowFieldCount: number): boolean {
   return row.slice(0, rowFieldCount).some((value) => typeof value === 'string' && /^grand\s+total$/i.test(value.trim()))
 }
 
+function cloneSeriesCategories(mapping: Record<number, number[]>): Record<number, number[]> {
+  return Object.fromEntries(Object.entries(mapping).map(([field, categories]) => {
+    normalizeField(Number(field), 'seriesToCategory value field')
+    if (!Array.isArray(categories) || categories.length !== 1) throw new RangeError('Scatter series require exactly one X field')
+    return [field, categories.map((category) => normalizeField(category, 'seriesToCategory X field'))]
+  }))
+}
+
+function readScatterChartData(matrix: CellScalar[][], chart: ChartModel): ChartData {
+  const vectors = chart.source.orientation === 'rows'
+    ? matrix
+    : matrix[0]!.map((_value, column) => matrix.map((row) => row[column] ?? null))
+  const categoryField = normalizeField(chart.categoryField, 'categoryField')
+  const categoryVector = vectors[categoryField]
+  if (!categoryVector) throw new RangeError('Chart X field is outside source range')
+  const mapping = cloneSeriesCategories(chart.seriesToCategory ?? {})
+  const xFields = new Set([categoryField, ...Object.values(mapping).flat()])
+  const fields = chart.valueFields.length ? chart.valueFields : vectors.map((_vector, field) => field).filter((field) => !xFields.has(field))
+  for (const [valueField, xField] of Object.entries(mapping)) {
+    if (!fields.includes(Number(valueField)) || !vectors[xField[0]!]) throw new RangeError('Scatter series mapping is outside selected source fields')
+  }
+  return {
+    categories: categoryVector.slice(1).map(scalarLabel),
+    series: fields.map((field) => {
+      const vector = vectors[field]
+      if (!vector) throw new RangeError('Chart Y field is outside source range')
+      const xField = mapping[field]?.[0] ?? categoryField
+      return {
+        field,
+        name: scalarLabel(vector[0]) || `Series ${field + 1}`,
+        values: vector.slice(1).map(numericValue),
+        xValues: vectors[xField]!.slice(1).map(numericValue),
+      }
+    }),
+  }
+}
+
+function axisExtent(values: number[], axis: ChartAxisOptions): { min: number; max: number } {
+  if (!values.length) return { min: axis.scaleType === 'log' ? 1 : 0, max: axis.scaleType === 'log' ? axis.logBase ?? 10 : 1 }
+  let min = values[0]!, max = values[0]!
+  for (const value of values) { min = Math.min(min, value); max = Math.max(max, value) }
+  if (axis.scaleType !== 'log') min = Math.min(0, min)
+  if (min === max) max = axis.scaleType === 'log' ? min * (axis.logBase ?? 10) : min + 1
+  return { min, max }
+}
+
+function axisRatio(value: number, min: number, max: number, axis: ChartAxisOptions): number {
+  return axis.scaleType === 'log'
+    ? (Math.log(value) - Math.log(min)) / (Math.log(max) - Math.log(min))
+    : (value - min) / (max - min)
+}
+
+function scatterLayout(data: ChartData, chart: ChartModel, frame: RenderRect, plot: RenderRect): ChartLayout {
+  const pairs = data.series.map((series) => series.values.flatMap((value, categoryIndex) => {
+    const xValue = series.xValues?.[categoryIndex]
+    if (value == null || xValue == null || !Number.isFinite(value) || !Number.isFinite(xValue)) return []
+    if (chart.xAxis.scaleType === 'log' && xValue <= 0 || chart.yAxis.scaleType === 'log' && value <= 0) return []
+    return [{ xValue, value, categoryIndex }]
+  }))
+  const xExtent = axisExtent(pairs.flatMap((points) => points.map((point) => point.xValue)), chart.xAxis)
+  const yExtent = axisExtent(pairs.flatMap((points) => points.map((point) => point.value)), chart.yAxis)
+  return {
+    frame, plot, ...yExtent, xMin: xExtent.min, xMax: xExtent.max, categories: data.categories,
+    series: data.series.map((series, index) => ({
+      name: series.name, color: CHART_COLORS[index % CHART_COLORS.length]!,
+      points: pairs[index]!.map(({ xValue, value, categoryIndex }) => ({
+        x: plot.x + axisRatio(xValue, xExtent.min, xExtent.max, chart.xAxis) * plot.width,
+        y: plot.y + plot.height - axisRatio(value, yExtent.min, yExtent.max, chart.yAxis) * plot.height,
+        value, category: scalarLabel(xValue), categoryIndex,
+      })),
+    })),
+  }
+}
+
 export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLayout {
   const data = readChartData(workbook, chart)
   const frame = { x: chart.position.x, y: chart.position.y, width: chart.size.width, height: chart.size.height }
@@ -214,6 +300,7 @@ export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLa
     width: Math.max(1, frame.width - left - right),
     height: Math.max(1, frame.height - top - bottom),
   }
+  if (chart.type === 'scatter') return scatterLayout(data, chart, frame, plot)
   const values = data.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value) && (chart.yAxis.scaleType !== 'log' || value > 0)))
   const stackTotals = chart.type === 'stacked-column' ? stackedExtents(data) : undefined
   const rangeValues = stackTotals ? [...stackTotals] : values
@@ -283,7 +370,14 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
   commands.push({ kind: 'line', x1: layout.plot.x, y1: zero, x2: layout.plot.x + layout.plot.width, y2: zero, color: '#64748b', width: 1.25 })
   commands.push({ kind: 'line', x1: layout.plot.x, y1: layout.plot.y, x2: layout.plot.x, y2: layout.plot.y + layout.plot.height, color: '#64748b', width: 1 })
   const categoryStep = layout.categories.length ? layout.plot.width / Math.max(1, layout.categories.length) : layout.plot.width
-  layout.categories.forEach((category, index) => commands.push({
+  if (chart.type === 'scatter') {
+    const min = layout.xMin!, max = layout.xMax!
+    axisTickValues(min, max, chart.xAxis.scaleType).forEach((value) => {
+      const x = layout.plot.x + axisRatio(value, min, max, chart.xAxis) * layout.plot.width
+      commands.push({ kind: 'line', x1: x, y1: layout.plot.y, x2: x, y2: layout.plot.y + layout.plot.height, color: '#e5e7eb', width: 1 })
+      commands.push({ kind: 'text', x, y: layout.plot.y + layout.plot.height + 14, text: formatAxisValue(value), font: '10px Aptos, Arial, sans-serif', color: '#64748b', align: 'center', baseline: 'middle' })
+    })
+  } else layout.categories.forEach((category, index) => commands.push({
     kind: 'text',
     x: layout.plot.x + (index + 0.5) * categoryStep,
     y: layout.plot.y + layout.plot.height + 14,
@@ -324,6 +418,10 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
       }
       series.points.forEach((point) => commands.push({ kind: 'rect', x: point.x - 2, y: point.y - 2, width: 4, height: 4, fill: series.color }))
     })
+  } else if (chart.type === 'scatter') {
+    layout.series.forEach((series) => series.points.forEach((point) => {
+      commands.push({ kind: 'rect', x: point.x - 3, y: point.y - 3, width: 6, height: 6, fill: series.color })
+    }))
   } else {
     layout.series.forEach((series) => {
       for (let index = 1; index < series.points.length; index++) {
@@ -355,12 +453,14 @@ export function normalizeSource(source: ChartSource): ChartSource {
 }
 
 function validateChartType(type: ChartType): void {
-  if (!['bar', 'line', 'area', 'pie', 'doughnut', 'stacked-column'].includes(type)) throw new TypeError(`Unsupported chart type: ${type}`)
+  if (!['bar', 'line', 'area', 'pie', 'doughnut', 'stacked-column', 'scatter'].includes(type)) throw new TypeError(`Unsupported chart type: ${type}`)
 }
 
 function validateChartData(type: ChartType, data: ChartData, axis: ChartAxisOptions): void {
   if (!data.categories.length || !data.series.length) throw new RangeError('Chart source must contain at least one category and value series')
   if (data.series.some((series) => !series.values.length || series.values.length !== data.categories.length)) throw new RangeError('Chart series must have one value per category')
+  if (type === 'scatter' && data.series.some((series) => !series.xValues || series.xValues.length !== series.values.length)) throw new RangeError('Scatter series must have one X value per Y value')
+  if (type === 'scatter' && !data.series.some((series) => series.values.some((value, index) => value !== null && series.xValues?.[index] != null))) throw new RangeError('Scatter chart requires at least one numeric X/Y pair')
   if (type === 'stacked-column' && axis.scaleType !== 'linear') throw new TypeError('Stacked column charts require a linear value axis')
   if (type === 'pie' || type === 'doughnut') {
     if (data.series.length !== 1) throw new RangeError(`${type} charts require exactly one value series`)

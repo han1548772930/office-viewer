@@ -1,10 +1,11 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
+import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
 import type { DocumentImage } from '../features/document/model/document-model'
@@ -39,7 +40,7 @@ import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
-import { canEditProtectedRanges, removeSheetRangeProtectionRule, setSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
+import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import {
   createDocumentContentControl,
@@ -165,8 +166,25 @@ export class OfficeStudio {
   assertCanEditRange(unitId: string, sheetId: string, range: CellRange): void {
     const workbook = this.getWorkbookModel(unitId)
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
-    if (!canEditProtectedRanges(requireSheet(workbook, sheetId), [range], this.currentUserId)) {
+    const sheet = requireSheet(workbook, sheetId)
+    if (!canEditWorksheetProtection(sheet, this.currentUserId) || !canEditProtectedRanges(sheet, [range], this.currentUserId)) {
       throw new Error('该区域受保护，当前用户没有编辑权限。')
+    }
+  }
+
+  assertCanViewWorksheet(unitId: string, sheetId: string): void {
+    const workbook = this.getWorkbookModel(unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+    if (!canViewWorksheetProtection(requireSheet(workbook, sheetId), this.currentUserId)) {
+      throw new Error('该工作表受保护，当前用户没有查看权限。')
+    }
+  }
+
+  assertCanEditWorksheet(unitId: string, sheetId: string): void {
+    const workbook = this.getWorkbookModel(unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+    if (!canEditWorksheetProtection(requireSheet(workbook, sheetId), this.currentUserId)) {
+      throw new Error('该工作表受保护，当前用户没有编辑权限。')
     }
   }
 
@@ -244,6 +262,7 @@ export class OfficeStudio {
     const workbook = this.getWorkbookModel(unitId)
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
     if (!workbook.sheets.some((sheet) => sheet.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
+    this.assertCanViewWorksheet(unitId, sheetId)
     const next: ApiRange = {
       startRow: range.startRow,
       startColumn: range.startColumn,
@@ -314,6 +333,7 @@ export class OfficeStudio {
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
+    assertWorksheetProtectionChanges(before, after, this.currentUserId)
     const recalculated = !forceRecalculation && before.calculationMode === 'manual' && after.calculationMode === 'manual'
       ? after
       : recalculateWorkbookFormulas(after, before).workbook
@@ -494,6 +514,8 @@ export class OfficeStudio {
     if (!current) throw new Error(`Workbook not found: ${id}`)
     const next = cloneModel(current)
     update(next)
+    assertWorksheetProtectionChanges(current, next, this.currentUserId)
+    if (next.activeSheetId && next.activeSheetId !== current.activeSheetId) this.assertCanViewWorksheet(id, next.activeSheetId)
     next.id = id
     next.modified = current.modified
     if (JSON.stringify(current) === JSON.stringify(next)) return false
@@ -520,6 +542,18 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number; draft: SheetHyperlinkDraft }, boolean>(SET_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col, draft }) => this.commitWorkbook(unitId, '设置单元格超链接', (model) => {
+      this.assertCanEditWorksheet(unitId, sheetId)
+      this.assertCanEditRange(unitId, sheetId, { startRow: row, endRow: row, startCol: col, endCol: col })
+      setSheetCellHyperlink(requireSheet(model, sheetId), row, col, draft)
+      const validation = validateSheetDataValidationChanges(model, sheetId, [{ row, column: col }])
+      if (validation.blocked) throw new Error(validation.issues[0]?.message ?? '超链接显示文字未通过数据验证。')
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number }, boolean>(REMOVE_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col }) => this.commitWorkbook(unitId, '移除单元格超链接', (model) => {
+      this.assertCanEditWorksheet(unitId, sheetId)
+      this.assertCanEditRange(unitId, sheetId, { startRow: row, endRow: row, startCol: col, endCol: col })
+      removeSheetCellHyperlink(requireSheet(model, sheetId), row, col)
+    }))
     this.registerCommand<{ unitId: string; mode: 'automatic' | 'manual' }, boolean>('sheet.command.set-calculation-mode', ({ unitId, mode }) => {
       if (mode !== 'automatic' && mode !== 'manual') throw new TypeError('Calculation mode must be automatic or manual')
       return this.commitWorkbook(unitId, 'Set calculation mode', (model) => { model.calculationMode = mode })
@@ -543,6 +577,7 @@ export class OfficeStudio {
       sheet.name = name
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: { startRow: number; startColumn: number; endRow: number; endColumn: number }; values: Array<Array<unknown>> }, boolean>('sheet.command.set-range-values', ({ unitId, sheetId, range, values }) => this.commitWorkbook(unitId, 'Set range values', (model) => {
+      this.assertCanEditWorksheet(unitId, sheetId)
       this.assertCanEditRange(unitId, sheetId, { startRow: range.startRow, startCol: range.startColumn, endRow: range.endRow, endCol: range.endColumn })
       const sheet = model.sheets.find((item) => item.id === sheetId)
       if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
@@ -611,6 +646,21 @@ export class OfficeStudio {
     }))
     this.registerCommand<{ unitId: string; sheetId: string; ruleId: string }, boolean>('sheet.command.remove-range-protection', ({ unitId, sheetId, ruleId }) => this.commitWorkbook(unitId, 'Remove range protection', (model) => {
       removeSheetRangeProtectionRule(requireSheet(model, sheetId), ruleId, this.currentUserId)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; rule: SheetWorksheetProtectionRule }, boolean>('sheet.command.add-worksheet-protection', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, 'Protect worksheet', (model) => {
+      const sheet = requireSheet(model, sheetId)
+      const existing = sheet.worksheetProtection
+      if (existing && existing.ownerUserId !== this.currentUserId) throw new Error('只有工作表保护创建者可以修改该保护。')
+      if (rule.ownerUserId !== this.currentUserId) throw new Error('工作表保护创建者必须是当前用户。')
+      if (rule.unitType !== 'worksheet') throw new TypeError('工作表保护范围必须是整个工作表。')
+      setWorksheetProtectionRule(sheet, rule)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.delete-worksheet-protection', ({ unitId, sheetId }) => this.commitWorkbook(unitId, 'Unprotect worksheet', (model) => {
+      const sheet = requireSheet(model, sheetId)
+      const rule = sheet.worksheetProtection
+      if (!rule) return
+      if (rule.ownerUserId !== this.currentUserId) throw new Error('只有工作表保护创建者可以移除该保护。')
+      delete sheet.worksheetProtection
     }))
     this.registerCommand<{ unitId: string; sheetId: string; patches: Record<string, SparklineSpec | null> }, boolean>('sheet.command.set-sparklines', ({ unitId, sheetId, patches }) => {
       const normalizedPatches = Object.fromEntries(Object.entries(patches).map(([address, sparkline]) => [

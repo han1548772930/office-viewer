@@ -362,6 +362,10 @@ pub struct ChartPayload {
     pub data_labels: bool,
     pub x_axis_title: Option<String>,
     pub y_axis_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x_axis: Option<ChartAxisPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y_axis: Option<ChartAxisPayload>,
     pub from: AnchorCellPayload,
     pub to: AnchorCellPayload,
     pub drawing: Option<ChartDrawingPayload>,
@@ -375,6 +379,14 @@ pub struct ChartSeriesPayload {
     pub categories: Option<String>,
     pub values: String,
     pub bubble_sizes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartAxisPayload {
+    pub scale_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_base: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]

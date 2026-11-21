@@ -4,6 +4,8 @@ Reference baseline: `dream-num/univer@6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`
 Reference root: `E:\rust_test\univer`  
 Comparison date: 2026-11-21
 
+This remains a historical local-support comparison. A v1.6.0 source recount on 2026-11-21 found 27/49/21/37/55 active registrations in the Date/Text/Logical/Lookup/Financial maps respectively. The Text count below is stale, and the local support columns have not yet been re-audited, so they are not v1.6.0 completion evidence.
+
 The upstream set below is taken from active entries in each `packages/engine-formula/src/functions/<category>/function-map.ts`. Commented-out registrations are excluded. Local support means the formula evaluator executes the function and the insert-function catalog lists it. Catalog exposure alone does not count as implementation.
 
 | Category | Upstream registered | Locally executable and listed | Remaining |

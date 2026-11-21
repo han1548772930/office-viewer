@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { Button, Checkbox, Dropdown, Form, FormItem, Input, Modal, Select, Switch } from 'antdv-next'
+import { Button, Checkbox, Dropdown, Form, FormItem, Input, Modal, RadioGroup, Select, Switch } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
-import { ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, Ellipsis, GripVertical } from 'lucide-vue-next'
+import { ArrowDownAZ, ArrowUpAZ, ChevronDown, Ellipsis, GripVertical } from 'lucide-vue-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, PivotAggregation } from '../../domain/model'
@@ -436,7 +436,7 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
   <Modal :open="Boolean(settingsFieldId)" title="字段设置" :width="400" :footer="null" :mask="false" :mask-closable="false" :confirm-loading="fieldDialogBusy" destroy-on-hidden @cancel="settingsFieldId = ''">
     <Form v-if="settingsField" layout="vertical" class="pivot-settings-dialog" @submit.prevent>
       <FormItem class="pivot-settings-name" label="字段名称"><span class="pivot-settings-source">源字段：{{ settingsField.fieldName }}</span><Input v-model:value="fieldDisplayName" size="small" /></FormItem>
-      <FormItem label="汇总方式"><div class="pivot-aggregation-list" role="listbox" aria-label="汇总方式"><Button v-for="option in aggregationOptions" :key="option.value" type="text" role="option" :aria-selected="fieldAggregation === option.value" :disabled="fieldDialogBusy" :class="{ 'is-selected': fieldAggregation === option.value }" @click="fieldAggregation = option.value"><span>{{ option.label }}</span><Check v-if="fieldAggregation === option.value" :size="16" /></Button></div></FormItem>
+      <FormItem label="汇总方式"><RadioGroup v-model:value="fieldAggregation" class="pivot-aggregation-list" :options="aggregationOptions" orientation="vertical" :disabled="fieldDialogBusy" aria-label="汇总方式" /></FormItem>
       <Button :disabled="fieldDialogBusy" @click="numberFormatDraft = fieldFormat || 'General'; numberFormatOpen = true">数字格式</Button>
       <p v-if="error" class="pivot-error" role="alert">{{ error }}</p>
       <div class="pivot-settings-footer"><Button :disabled="fieldDialogBusy" @click="settingsFieldId = ''">取消</Button><Button type="primary" :disabled="!fieldDisplayName.trim() || fieldDialogBusy" @click="applyFieldSettings">确定</Button></div>
@@ -500,8 +500,7 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
 .pivot-settings-name :deep(.ant-form-item-control-input-content) { display: flex; flex-direction: column; gap: 6px; }
 .pivot-settings-source { color: #7b8797; font-size: 12px; }
 .pivot-aggregation-list { display: flex; flex-direction: column; height: 160px; overflow-y: auto; padding: 4px; border: 1px solid #e4e7ec; border-radius: 4px; }
-.pivot-aggregation-list :deep(.ant-btn) { display: flex; flex: 0 0 28px; justify-content: space-between; text-align: left; padding: 2px 8px; }
-.pivot-aggregation-list :deep(.is-selected) { color: #1677ff; background: #e6f4ff; }
+.pivot-aggregation-list :deep(.ant-radio-wrapper) { flex: 0 0 28px; align-items: center; margin: 0; padding: 2px 8px; }
 .pivot-format-preview { padding: 12px; border: 1px solid #e4e7ec; border-radius: 4px; text-align: right; }
 .pivot-settings-footer { justify-content: flex-end; padding-top: 12px; }
 @media (max-width: 620px) { .pivot-locations, .pivot-area-layout { grid-template-columns: 1fr; } .pivot-area-grid { grid-template-columns: 1fr; } .pivot-field { gap: 3px; } .pivot-actions-spacer { display: none; } }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Button, ColorPicker, Popover, Select, Tooltip } from 'antdv-next'
+import { Button, ColorPicker, Form, FormItem, Popover, Select, Tooltip } from 'antdv-next'
 import { ChevronDown, Grid3X3 } from 'lucide-vue-next'
 import type { SheetBorderOptions, SheetBorderPreset, SheetBorderStyle } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 
@@ -74,16 +74,14 @@ function apply(preset: SheetBorderPreset): void {
             </Button>
           </Tooltip>
         </div>
-        <div class="border-selector-fields">
-          <label class="border-color-field">
-            <span>{{ colorLabel }}</span>
+        <Form class="border-selector-fields" layout="vertical" @submit.prevent>
+          <FormItem class="border-color-field" :label="colorLabel">
             <ColorPicker :value="selectedColor" value-format="hex" :aria-label="colorLabel" @update:value="updateColor" />
-          </label>
-          <label class="border-style-field">
-            <span>{{ styleLabel }}</span>
+          </FormItem>
+          <FormItem class="border-style-field" :label="styleLabel">
             <Select :value="selectedStyle" :options="styleOptions" :aria-label="styleLabel" size="small" @change="updateStyle" />
-          </label>
-        </div>
+          </FormItem>
+        </Form>
       </section>
     </template>
   </Popover>
@@ -109,8 +107,9 @@ function apply(preset: SheetBorderPreset): void {
 .border-preview.is-diagonal-down::after { transform: rotate(45deg); }
 .border-preview.is-diagonal-up::after { transform: rotate(-45deg); }
 .border-preview.is-none { border: 1px dashed #98a2b3; }
-.border-selector-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; }
-.border-selector-fields label { display: grid; min-width: 0; gap: 4px; color: #475467; font-size: 12px; }
+.border-selector-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
+.border-selector-fields :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
+.border-selector-fields :deep(.ant-form-item-label) { padding-bottom: 4px; color: #475467; font-size: 12px; }
 .border-color-field :deep(.ant-color-picker-trigger) { width: 100%; height: 28px; justify-content: flex-start; }
 .border-style-field :deep(.ant-select) { width: 100%; }
 </style>

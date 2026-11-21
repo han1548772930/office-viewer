@@ -4,7 +4,7 @@ export interface RectCommand extends RenderRect { kind: 'rect'; fill: string; st
 export interface LineCommand { kind: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; width?: number; clip?: RenderRect }
 export interface PolygonCommand { kind: 'polygon'; points: Array<{ x: number; y: number }>; fill: string; clip?: RenderRect }
 export interface TextCommand { kind: 'text'; x: number; y: number; text: string; font: string; color: string; align?: 'left' | 'center' | 'right'; baseline?: 'top' | 'middle' | 'alphabetic' | 'bottom'; maxWidth?: number; rotation?: number; clip?: RenderRect }
-export interface ImageCommand extends RenderRect { kind: 'image'; source: CanvasImageSource; opacity?: number; clip?: RenderRect }
+export interface ImageCommand extends RenderRect { kind: 'image'; source: CanvasImageSource; sourceVersion?: number; opacity?: number; clip?: RenderRect }
 export type DrawCommand = RectCommand | LineCommand | PolygonCommand | TextCommand | ImageCommand
 export interface RenderScene { width: number; height: number; background?: string; commands: DrawCommand[] }
 export type RenderBackend = 'webgpu' | 'canvas2d'

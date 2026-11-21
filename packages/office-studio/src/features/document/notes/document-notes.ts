@@ -1,5 +1,5 @@
 import type { DocumentBlock, DocumentModel, DocumentNote } from '../../../domain/model'
-import { collapsedSelection, createRun, documentId, marksAtPoint, orderedSelection, runText, runsForTarget, setTargetRuns, sliceRuns, tableForBlock, type DocumentPoint, type DocumentSelection } from '../model/document-model'
+import { collapsedSelection, createRun, documentId, marksAtPoint, orderedSelection, runText, runsForTarget, setTargetRuns, sliceRuns, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
 
 export type DocumentNoteKind = 'footnote' | 'endnote'
 
@@ -19,7 +19,7 @@ function rawNoteText(value: unknown): string {
     if (typeof candidate === 'string') return candidate
     const nested = rawRecord(candidate)
     if (typeof nested.text === 'string') return nested.text
-    if (typeof nested.dataStream === 'string') return nested.dataStream.replace(/[\r\n]+$/, '')
+    if (typeof nested.dataStream === 'string') return nested.dataStream.replace(/[\r\n\u0000]+$/, '').replace(/\r/g, '\n')
   }
   return ''
 }
@@ -39,11 +39,18 @@ export function normalizeDocumentNotes(data: Record<string, unknown>, blocks: Do
   for (const kind of ['footnote', 'endnote'] as const) {
     const property = kind === 'footnote' ? 'footnotes' : 'endnotes'
     const notes: Record<string, DocumentNote> = {}
-    for (const [sourceId, value] of noteEntries(data[property])) {
+    const entries = new Map(noteEntries(data[property]).map(([sourceId, value]) => [rawNoteId(value, sourceId), value]))
+    // Univer v1.6.0 IDocumentData.notes stores both kinds in one IDocumentNote map.
+    for (const [sourceId, value] of noteEntries(data.notes)) {
+      const id = rawNoteId(value, sourceId)
+      if (rawRecord(value).type === kind && !entries.has(id)) entries.set(id, value)
+    }
+    for (const [sourceId, value] of entries) {
       const id = rawNoteId(value, sourceId)
       const reference = blockIndex.flatMap((block) => block.runs.map((run) => ({ block, run }))).find(({ run }) => {
-        const raw = rawRecord(run.metadata?.noteReference)
-        const referenceId = raw.noteId ?? raw.id ?? raw.footnoteId ?? raw.endnoteId ?? run.metadata?.noteReference
+        const sourceReference = run.metadata?.noteReference ?? run.metadata?.note
+        const raw = rawRecord(sourceReference)
+        const referenceId = raw.noteId ?? raw.id ?? raw.footnoteId ?? raw.endnoteId ?? sourceReference
         const referenceKind = raw.type ?? raw.kind ?? raw.noteType
         return String(referenceId ?? '') === id && (referenceKind === undefined || referenceKind === kind)
       })
@@ -73,15 +80,16 @@ function noteCollection(model: DocumentModel, kind: DocumentNoteKind): Record<st
 }
 
 function renumberNotes(model: DocumentModel, kind: DocumentNoteKind): void {
-  const notes = Object.values(noteCollection(model, kind))
-    .map((note) => ({ note, point: noteReferencePoint(model, note) }))
-    .filter((entry): entry is { note: DocumentNote; point: DocumentPoint } => entry.point !== undefined)
-    .sort((a, b) => model.blocks.findIndex((block) => block.id === a.point.blockId) - model.blocks.findIndex((block) => block.id === b.point.blockId) || a.point.offset - b.point.offset)
-  notes.forEach(({ note, point }, index) => {
-    const runs = runsForTarget(model, point)
-    const run = runs.find((candidate) => isReferenceRun(candidate, note, kind))
-    if (run) run.text = String(index + 1)
-  })
+  const notes = noteCollection(model, kind)
+  const notesByRunId = new Map(Object.values(notes).filter(note => note.referenceRunId).map(note => [note.referenceRunId, note]))
+  let index = 0
+  for (const block of allBlocks(model.blocks)) {
+    for (const run of block.runs) {
+      const reference = rawRecord(run.metadata?.note)
+      const note = notesByRunId.get(run.id) ?? notes[String(reference.noteId)]
+      if (note?.referenceBlockId === block.id && isReferenceRun(run, note, kind)) run.text = String(++index)
+    }
+  }
 }
 
 export function insertDocumentNote(model: DocumentModel, selection: DocumentSelection, kind: DocumentNoteKind): { selection: DocumentSelection; note: DocumentNote } {
@@ -105,7 +113,7 @@ export function insertDocumentNote(model: DocumentModel, selection: DocumentSele
   if (persistedReference) note.referenceRunId = persistedReference.id
   noteCollection(model, kind)[noteId] = note
   renumberNotes(model, kind)
-  const point: DocumentPoint = { ...start, offset: before.length + 1 }
+  const point: DocumentPoint = { ...start, offset: before.length + (persistedReference?.text.length ?? reference.text.length) }
   return { selection: collapsedSelection(point), note }
 }
 
@@ -119,17 +127,11 @@ export function deleteDocumentNote(model: DocumentModel, kind: DocumentNoteKind,
   const notes = noteCollection(model, kind)
   const note = notes[id]
   if (!note) return false
-  for (const block of model.blocks) {
-    const table = tableForBlock(block)
-    const paragraphs = block.id === note.referenceBlockId ? [block] : table
-      ? table.rows.flatMap((row) => row.cells.flatMap((cell) => cell.blocks)).filter((candidate) => candidate.id === note.referenceBlockId)
-      : []
-    for (const paragraph of paragraphs) {
-      const runIndex = paragraph.runs.findIndex((run) => isReferenceRun(run, note, kind))
-      if (runIndex < 0) continue
-      paragraph.runs.splice(runIndex, 1)
-      if (!paragraph.runs.length) paragraph.runs.push({ id: documentId('run'), text: '', bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
-    }
+  const paragraph = allBlocks(model.blocks).find((block) => block.id === note.referenceBlockId)
+  const runIndex = paragraph?.runs.findIndex((run) => isReferenceRun(run, note, kind)) ?? -1
+  if (paragraph && runIndex >= 0) {
+    paragraph.runs.splice(runIndex, 1)
+    if (!paragraph.runs.length) paragraph.runs.push({ id: documentId('run'), text: '', bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
   }
   delete notes[id]
   renumberNotes(model, kind)
@@ -137,25 +139,14 @@ export function deleteDocumentNote(model: DocumentModel, kind: DocumentNoteKind,
 }
 
 export function noteReferencePoint(model: DocumentModel, note: DocumentNote): DocumentPoint | undefined {
-  for (const block of model.blocks) {
-    if (block.id === note.referenceBlockId) {
-      let offset = 0
-      for (const run of block.runs) {
-        if (isReferenceRun(run, note)) return { blockId: block.id, offset }
-        offset += run.text.length
-      }
-    }
-    const table = tableForBlock(block)
-    if (!table) continue
-    for (const [row, rowData] of table.rows.entries()) for (const [col, cell] of rowData.cells.entries()) {
-      const paragraph = cell.blocks.find((candidate) => candidate.id === note.referenceBlockId)
-      if (!paragraph) continue
-      let offset = 0
-      for (const run of paragraph.runs) {
-        if (isReferenceRun(run, note)) return { blockId: block.id, row, col, cellBlockId: paragraph.id, offset }
-        offset += run.text.length
-      }
-    }
-  }
-  return undefined
+  const paragraph = allBlocks(model.blocks).find(block => block.id === note.referenceBlockId)
+  const runIndex = paragraph?.runs.findIndex(run => isReferenceRun(run, note)) ?? -1
+  if (!paragraph || runIndex < 0) return undefined
+
+  // TextTarget resolves a body paragraph or a direct table-cell paragraph. A
+  // deeper table path cannot be represented by its single row/col pair.
+  const target = textTargets(model).find(candidate => (candidate.cellBlockId ?? candidate.blockId) === paragraph.id)
+  if (!target) return undefined
+  const offset = paragraph.runs.slice(0, runIndex).reduce((total, run) => total + run.text.length, 0)
+  return { ...target, offset }
 }

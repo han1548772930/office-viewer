@@ -5,7 +5,7 @@ import {
   BadgeDollarSign, Baseline, BetweenHorizontalStart, Bold, Brush, Calculator, CalendarDays,
   ChartColumnIncreasing, ChartLine, ChartNoAxesColumnIncreasing, ChartNoAxesCombined, ChevronDown,
   ClipboardCheck, ClipboardPaste, Clock, Crosshair, DecimalsArrowLeft, DecimalsArrowRight, Expand,
-  Database, Filter, FilterX, FunctionSquare, Grid2X2, Group, Info, Italic, ListFilter, Minimize, PaintBucket, Palette,
+  Database, Filter, FilterX, FunctionSquare, Grid2X2, Group, Info, Italic, Link, ListFilter, Minimize, PaintBucket, Palette,
   PanelBottom, PanelLeft, PanelRight, PanelTop, Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
   RotateCw, Search, SearchCode, Settings2, ShieldCheck, Shrink, Sigma, SquareCheck, SquareDashed, Strikethrough,
   TableCellsMerge, TableCellsSplit, TableProperties, TextCursor, Underline, Undo2, Ungroup, Workflow,
@@ -26,6 +26,7 @@ export interface SheetRibbonState {
   chartAvailable: boolean
   pivotChartAvailable?: boolean
   dataValidationAvailable: boolean
+  hyperlinkAvailable?: boolean
   canSort: boolean
   filterEnabled?: boolean
   filterCanToggle?: boolean
@@ -167,7 +168,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     },
     {
       id: 'insert', title: '插入', order: 10, groups: [
-        { id: 'objects', title: '对象', order: 10, items: [
+        { id: 'media', title: '媒体', order: 10, items: [
+          button('sheet.operation.insert-hyperlink', '超链接', { icon: Link, showLabel: true, disabled: !state.hyperlinkAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+        ] },
+        { id: 'objects', title: '对象', order: 20, items: [
           button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.insert.slicer', '切片器', { commandId: 'sheet.operation.open-slicer', icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),

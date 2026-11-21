@@ -22,4 +22,4 @@ This record covers the numeric `cellIs` slice of SHEET-14. It does not change th
 
 - Formula-based rules, color scales, data bars, icon sets, and range migration after structural edits are not implemented by this slice.
 - Browser interaction, Excel/LibreOffice reopening, and Office sample interoperability remain unverified. Browser validation is deferred to the consolidated run requested for this work batch.
-- The upstream feature scope is documented at [Univer Sheets conditional formatting](https://docs.univer.ai/zh-CN/guides/sheets/features/conditional-formatting). The fixed source reference remains commit `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.
+- The upstream feature scope is documented at [Univer Sheets conditional formatting](https://docs.univer.ai/zh-CN/guides/sheets/features/conditional-formatting). The fixed source reference remains commit `eaf4cfa04fabdbcfc922c692f3450459f8a29546`.

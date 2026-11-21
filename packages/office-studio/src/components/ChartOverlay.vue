@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Button } from 'antdv-next'
 import type { ChartModel } from '../domain/model'
 import { chartRenderCommands } from '../features/charts/chart-engine'
 import type { DrawCommand } from '../rendering/contracts'
@@ -146,14 +147,15 @@ onUnmounted(() => {
 
 <template>
   <div ref="root" class="chart-overlay" aria-label="工作表图表图层">
-    <div
+    <Button
       v-for="item in displayCharts"
       :key="item.chart.id"
+      type="text"
       class="chart-hitbox"
       :class="{ selected: selectedId === item.chart.id }"
       :style="chartStyle(item)"
       :aria-label="item.chart.title || '图表'"
-      role="button"
+      :aria-pressed="selectedId === item.chart.id"
       tabindex="0"
       @pointerdown="beginDrag($event, item, 'move')"
       @click.stop="selectChart(item.chart.id)"
@@ -161,13 +163,14 @@ onUnmounted(() => {
       @keydown="removeChart($event, item.chart.id)"
     >
       <span v-if="selectedId === item.chart.id" class="chart-resize-handle" aria-label="调整图表大小" @pointerdown="beginDrag($event, item, 'resize')" />
-    </div>
+    </Button>
   </div>
 </template>
 
 <style scoped>
 .chart-overlay { position: absolute; z-index: 2; inset: 0; overflow: hidden; clip-path: inset(26px 0 0 44px); pointer-events: none; }
-.chart-hitbox { position: absolute; box-sizing: border-box; border: 1px solid transparent; pointer-events: auto; cursor: move; outline: none; }
+.chart-hitbox { position: absolute; display: block; box-sizing: border-box; margin: 0; border: 1px solid transparent; padding: 0; color: inherit; background: transparent; pointer-events: auto; cursor: move; outline: none; text-align: left; }
+.chart-hitbox:hover, .chart-hitbox:focus-visible { background: transparent; }
 .chart-hitbox:hover, .chart-hitbox.selected { border-color: #246bfd; box-shadow: 0 0 0 1px rgb(36 107 253 / 18%); }
 .chart-resize-handle { position: absolute; right: -5px; bottom: -5px; width: 9px; height: 9px; border: 1px solid #fff; border-radius: 2px; background: #246bfd; cursor: nwse-resize; }
 </style>

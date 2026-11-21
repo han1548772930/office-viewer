@@ -12,6 +12,7 @@ import {
   type WorkbookModel,
 } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 
 export type ApiCellData = {
   v?: CellScalar
@@ -42,6 +43,7 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
     sheet.visible ??= true
     sheet.showGridlines ??= true
     sheet.rangeProtectionRules ??= []
+    if (sheet.worksheetProtection) setWorksheetProtectionRule(sheet, sheet.worksheetProtection)
   })
   next.activeSheetId = next.sheets.some((sheet) => sheet.id === next.activeSheetId) ? next.activeSheetId : next.sheets[0]!.id
   next.calculationMode ??= 'automatic'
@@ -101,6 +103,9 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
   sheet.name = typeof input.name === 'string' ? input.name : sheet.name
   if (Array.isArray(input.dataValidations)) sheet.dataValidations = clone(input.dataValidations)
   if (Array.isArray(input.rangeProtectionRules)) sheet.rangeProtectionRules = clone(input.rangeProtectionRules)
+  if (input.worksheetProtection && typeof input.worksheetProtection === 'object') {
+    setWorksheetProtectionRule(sheet, input.worksheetProtection)
+  }
   sheet.rowCount = numberOrUndefined(input.rowCount)
   sheet.columnCount = numberOrUndefined(input.columnCount)
   sheet.visible = input.visible !== false

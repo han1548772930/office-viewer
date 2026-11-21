@@ -29,6 +29,7 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
 
   const chart = page.locator('.chart-hitbox')
   await expect(chart).toHaveCount(1)
+  await expect(chart).toHaveRole('button')
   const before = await chart.evaluate(element => (element as HTMLElement).style.left)
   const bounds = await chart.boundingBox()
   expect(bounds).not.toBeNull()
@@ -37,6 +38,7 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
   await page.mouse.move(bounds!.x + 130, bounds!.y + 82, { steps: 4 })
   await page.mouse.up()
   await expect.poll(() => chart.evaluate(element => (element as HTMLElement).style.left)).not.toBe(before)
+  await expect(chart).toHaveAttribute('aria-pressed', 'true')
 
   const handle = chart.getByLabel('调整图表大小')
   const resize = await handle.boundingBox()
