@@ -121,9 +121,17 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
 }
 function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
   if (cell.formula) return cell.rawValue !== undefined ? cell.rawValue : original?.formula === cell.formula ? original.value : cell.cachedValue ?? null
+  if (original && cell.rawValue !== undefined && Object.is(cell.rawValue, original.value)
+    && cell.value !== String(original.value ?? '') && cell.value !== original.display) {
+    return parseEditedCellValue(cell.value)
+  }
+  if (cell.rawValue !== undefined) return cell.rawValue
   if (original && String(original.value ?? '') === cell.value) return original.value
-  if (cell.value.trim() && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(cell.value)) return Number(cell.value)
-  return cell.value
+  return parseEditedCellValue(cell.value)
+}
+function parseEditedCellValue(value: string): CellScalar {
+  if (value.trim() && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(value)) return Number(value)
+  return value
 }
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView): WorkbookModel {
   return {

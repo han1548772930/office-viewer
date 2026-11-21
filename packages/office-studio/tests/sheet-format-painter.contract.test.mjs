@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createFormatPainterPatches } from '../src/features/sheet-workbench/sheet-format-painter.ts'
 import { previewCustomNumberFormat, validateCustomNumberFormat } from '../src/features/sheet-workbench/custom-number-format.ts'
 

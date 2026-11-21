@@ -7,6 +7,7 @@ import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '.
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
+import { SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
 import SheetContextMenu from './SheetContextMenu.vue'
 
 const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[] }>()
@@ -26,11 +27,24 @@ const emit = defineEmits<{
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<HTMLInputElement | null>(null)
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
-const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText, overlayCommands: props.overlayCommands }))
+const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText, overlayCommands: props.overlayCommands }))
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
 const validationListId = computed(() => `sheet-validation-options-${props.sheet.id}`)
-const editStyle = computed(() => editLayout.value ? { left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`, width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`, clipPath: editLayout.value.clipPath, fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif', fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px` } : { clipPath: 'inset(50%)' })
+const editStyle = computed(() => editLayout.value ? {
+  left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
+  width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`,
+  clipPath: editLayout.value.clipPath,
+  borderWidth: `${SHEET_SELECTION_STROKE_WIDTH}px`,
+  paddingLeft: `${Math.max(0, 6 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
+  fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif',
+  fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px`,
+} : { clipPath: 'inset(50%)' })
+const fillHandleStyle = computed(() => editLayout.value ? {
+  left: `${editLayout.value.fillHandle.x}px`, top: `${editLayout.value.fillHandle.y}px`,
+  width: `${editLayout.value.fillHandle.width}px`, height: `${editLayout.value.fillHandle.height}px`,
+  clipPath: editLayout.value.fillHandleClipPath,
+} : { clipPath: 'inset(50%)' })
 const composing = ref(false)
 const surfaceError = ref('')
 const contextMenuOpen = ref(false)
@@ -189,6 +203,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
     <input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false">
+    <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
     <datalist v-if="validationOptions?.length" :id="validationListId"><option v-for="value in validationOptions" :key="value" :value="value" /></datalist>
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey]) }}</span></div>
     <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
@@ -210,7 +225,8 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 .spreadsheet-canvas:focus-visible { box-shadow: inset 0 0 0 1px #246bfd; }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.canvas-cell-input { position: absolute; z-index: 3; box-sizing: border-box; margin: 0; padding: 2px 5px; border: 2px solid #246bfd; border-radius: 0; outline: none; color: #243247; background: #fff; user-select: text; }
+.canvas-cell-input { position: absolute; z-index: 3; box-sizing: border-box; margin: 0; padding: 2px 5px; border-style: solid; border-color: #246bfd; border-radius: 0; outline: none; color: #243247; background: #fff; user-select: text; }
+.canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid #fff; background: #246bfd; pointer-events: none; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; left: 12px; max-width: calc(100% - 24px); padding: 8px 12px; border: 1px solid #e3b3b3; color: #922f2f; background: #fff2f2; font-size: 12px; }
 </style>

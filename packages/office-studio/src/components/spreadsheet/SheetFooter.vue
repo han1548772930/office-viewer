@@ -102,7 +102,7 @@ onUnmounted(() => observer?.disconnect())
       <Dropdown :trigger="['click']" placement="topLeft" :menu="allSheetsMenu"><Button type="text" size="small" aria-label="所有工作表"><List :size="16" /></Button></Dropdown>
       <div ref="tabs" class="sheet-tabs" role="tablist" aria-label="工作表" @scroll="measureTabs">
         <Dropdown v-for="(sheet, index) in visibleSheets" :key="sheet.id" :trigger="['contextmenu']" placement="topLeft" :menu="sheetMenu(sheet.id)">
-          <button class="sheet-tab" :class="{ active: activeSheetId === sheet.id }" type="button" role="tab" :aria-label="sheet.name" :aria-selected="activeSheetId === sheet.id" :tabindex="activeSheetId === sheet.id ? 0 : -1" :data-sheet-id="sheet.id" @click="emit('activate', sheet.id)" @dblclick="emit('rename', sheet.id)" @keydown="onTabKeydown($event, index)">{{ sheet.name }}</button>
+          <Button class="sheet-tab" :class="{ active: activeSheetId === sheet.id }" type="text" html-type="button" role="tab" :aria-label="sheet.name" :aria-selected="activeSheetId === sheet.id" :tabindex="activeSheetId === sheet.id ? 0 : -1" :data-sheet-id="sheet.id" @click="emit('activate', sheet.id)" @dblclick="emit('rename', sheet.id)" @keydown="onTabKeydown($event, index)">{{ sheet.name }}</Button>
         </Dropdown>
       </div>
       <div v-if="canScrollLeft || canScrollRight" class="sheet-scroll-controls">
@@ -129,8 +129,8 @@ onUnmounted(() => observer?.disconnect())
 .sheet-bar :deep(.ant-btn) { display: inline-flex; flex-shrink: 0; height: 28px; align-items: center; justify-content: center; padding: 0 6px; color: #627087; font-size: 12px; }
 .sheet-tabs { position: relative; display: flex; min-width: 0; height: 100%; flex: 1; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
 .sheet-tabs::-webkit-scrollbar { display: none; }
-.sheet-tab { display: flex; flex-shrink: 0; align-items: center; border: 0; border-right: 1px solid transparent; border-left: 1px solid transparent; padding: 0 15px; color: #657187; background: transparent; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
-.sheet-tab.active { color: #246bfd; background: #edf4ff; box-shadow: inset 0 -2px 0 #246bfd; font-weight: 600; }
+.sheet-tab.ant-btn { display: flex; flex-shrink: 0; height: 100%; align-items: center; border: 0; border-radius: 0; border-right: 1px solid transparent; border-left: 1px solid transparent; padding: 0 15px; color: #657187; background: transparent; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.sheet-tab.ant-btn.active { color: #246bfd; background: #edf4ff; box-shadow: inset 0 -2px 0 #246bfd; font-weight: 600; }
 .sheet-tab:focus-visible { outline: 2px solid #91b5fe; outline-offset: -3px; }
 .sheet-scroll-controls, .sheet-zoom { display: flex; flex-shrink: 0; align-items: center; }
 .selection-statistic { max-width: 230px; }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createBlankWorkbook, createCell } from '../src/domain/model.ts'
 import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { applySheetBorders, applySheetNumberFormat, adjustSheetDecimals, clearSheetCellFormat, nextSheetFontSize } from '../src/features/sheet-workbench/sheet-toolbar-format.ts'
@@ -112,6 +112,53 @@ test('scene draws vertical alignment, strike and real borders at current zoom', 
   assert.ok(scene.commands.some(command => command.kind === 'line' && command.color === '#123456' && command.width === 3))
 })
 
+test('active cell selection outline keeps a one-pixel stroke at every sheet zoom', () => {
+  const geometry = new SpreadsheetGeometry({ id: 's', name: 'Selection', cells: {}, rowCount: 10, columnCount: 5 })
+  for (const zoom of [0.5, 1, 1.5, 2]) {
+    const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom }, { activeCell: 'A1', selectedCells: [] })
+    const outline = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd')
+    assert.equal(outline?.width, 1)
+  }
+})
+
+test('editing delegates the active cell frame to the input overlay without a duplicate canvas frame', () => {
+  const geometry = new SpreadsheetGeometry({ id: 's', name: 'Selection', cells: {}, rowCount: 10, columnCount: 5 })
+  const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom: 1 }, { activeCell: 'A1', editing: true, selectedCells: [] })
+  assert.equal(scene.commands.some(command => command.kind === 'rect' && command.stroke === '#246bfd'), false)
+  assert.equal(scene.commands.some(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 6 && command.height === 6), false)
+})
+
+test('a selected range keeps its visible perimeter while a formula cell is being edited', () => {
+  const geometry = new SpreadsheetGeometry({ id: 's', name: 'Selection', cells: {}, rowCount: 10, columnCount: 5 })
+  const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom: 1 }, {
+    activeCell: 'C3', editing: true, selectedCells: [], selectedRanges: [{ startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }],
+  })
+  const outline = scene.commands.filter(command => command.kind === 'line' && command.color === '#246bfd')
+  assert.deepEqual(outline.map(({ x1, y1, x2, y2, width }) => ({ x1, y1, x2, y2, width })), [
+    { x1: 44, y1: 26, x2: 420, y2: 26, width: 1 },
+    { x1: 44, y1: 104, x2: 420, y2: 104, width: 1 },
+    { x1: 44, y1: 26, x2: 44, y2: 104, width: 1 },
+    { x1: 420, y1: 26, x2: 420, y2: 104, width: 1 },
+  ])
+  assert.equal(scene.commands.some(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 6 && command.height === 6), true)
+})
+
+test('selection perimeter and fill handle follow hidden range endpoints', () => {
+  const geometry = new SpreadsheetGeometry({
+    id: 's', name: 'Selection', cells: {}, rowCount: 10, columnCount: 5,
+    hiddenRows: [2], hiddenColumns: [2],
+  })
+  const scene = createSpreadsheetScene(geometry, { width: 600, height: 300, scrollLeft: 0, scrollTop: 0, zoom: 1 }, {
+    activeCell: 'C3', selectedCells: [], selectedRanges: [{ startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }],
+  })
+  const right = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd' && command.x1 === 308 && command.x2 === 308)
+  const bottom = scene.commands.find(command => command.kind === 'line' && command.color === '#246bfd' && command.y1 === 78 && command.y2 === 78)
+  const handle = scene.commands.find(command => command.kind === 'rect' && command.fill === '#246bfd' && command.width === 6 && command.height === 6)
+  assert.ok(right)
+  assert.ok(bottom)
+  assert.deepEqual({ x: handle?.x, y: handle?.y }, { x: 305, y: 75 })
+})
+
 test('expanded Ribbon offers executable style/data intents and Pro insert aliases', () => {
   const state = { canUndo: true, canRedo: true, hasSheet: true, canMerge: true, canUnmerge: false, canDeleteRow: true, canDeleteColumn: true, chartAvailable: true, canSort: true,
     fontFamily: 'Aptos', fontSize: 11, numberFormat: 'currency', strike: true, vertical: 'bottom', gridlines: true, frozen: false, zoom: 100 }
@@ -136,7 +183,8 @@ test('the function picker lists only formulas that the real engine can evaluate'
     cell.formula = buildSheetFunctionFormula(entry.name, entry.example)
     workbook.sheets[0].cells['0:2'] = cell
     const result = recalculateWorkbookFormulas(workbook)
-    assert.ok(!String(result.workbook.sheets[0].cells['0:2'].value).startsWith('#'), `${entry.name} should evaluate`)
+    const value = result.workbook.sheets[0].cells['0:2'].value
+    assert.ok(!String(value).startsWith('#'), `${entry.name} should evaluate, received ${String(value)}`)
   }
   assert.throws(() => buildSheetFunctionFormula('XLOOKUP', 'A1,B1:B2,C1:C2'), /当前函数目录/)
   assert.throws(() => buildSheetFunctionFormula('SUM', ''), /请输入/)

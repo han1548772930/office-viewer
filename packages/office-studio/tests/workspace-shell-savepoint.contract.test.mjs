@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 import { createWorkspaceFileOperations } from '../../../examples/workbench/src/workspace-file-operations.ts'
@@ -10,14 +10,14 @@ let useEditorStore
 let cloneModel
 let toExcelWorkbookView
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ configFile: resolve(process.cwd(), 'vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   ;({ createPinia } = await server.ssrLoadModule('pinia'))
   ;({ useEditorStore } = await server.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
   ;({ cloneModel } = await server.ssrLoadModule('/packages/office-studio/src/domain/serialization.ts'))
   ;({ toExcelWorkbookView } = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts'))
 })
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 function deferred() {
   let resolve

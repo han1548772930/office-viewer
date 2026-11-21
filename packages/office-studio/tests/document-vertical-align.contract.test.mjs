@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, test } from 'node:test'
+import { afterAll, test } from 'vitest'
 import { createServer } from 'vite'
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
@@ -8,7 +8,7 @@ const { createParagraph, createRun } = await vite.ssrLoadModule('/packages/offic
 const { normalizeDocument } = await vite.ssrLoadModule('/packages/office-studio/src/parser/documentNormalizer.ts')
 const { executeDocumentCommand } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-commands.ts')
 
-after(() => vite.close())
+afterAll(() => vite.close())
 
 test('parser normalization recognizes vertical alignment from inline style DTOs', () => {
   const imported = normalizeDocument({

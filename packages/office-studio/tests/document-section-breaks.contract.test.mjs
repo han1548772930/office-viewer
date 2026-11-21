@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { after, test } from 'node:test'
+import { afterAll, test } from 'vitest'
 import { createServer } from 'vite'
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
-after(() => vite.close())
+afterAll(() => vite.close())
 const { normalizeDocument } = await vite.ssrLoadModule('/packages/office-studio/src/parser/documentNormalizer.ts')
 
 function envelope(blocks) {

@@ -1,4 +1,4 @@
-import { createBlankDocument, type DocumentBlock, type DocumentModel, type DocumentPageField, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type InlineRun } from '../domain/model.ts'
+import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, type DocumentModel, type DocumentPageField, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type DocumentThreadComment, type InlineRun } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 import { normalizeDocumentNotes } from '../features/document/notes/document-notes.ts'
@@ -212,6 +212,59 @@ function appendPageFields(
   }
 }
 
+function normalizeDocumentComments(value: unknown, blocks: DocumentBlock[]): Record<string, DocumentThreadComment> | undefined {
+  const rawComments = array(value).map(record)
+  if (!rawComments.length) return undefined
+  const comments: Record<string, DocumentThreadComment> = {}
+  for (const raw of rawComments) {
+    if (raw.parentId !== undefined && raw.parentId !== null) continue
+    const id = text(raw.id)
+    if (!id) continue
+    const anchor = array(raw.targets).flatMap(targetValue => {
+      const target = record(targetValue)
+      if (text(target.story, 'body') !== 'body') return []
+      const nodeId = text(target.nodeId)
+      const block = blocks.find(candidate => candidate.id === nodeId)
+        ?? blocks.find(candidate => array(record(candidate.metadata.source).sourceRefs).some(ref => text(record(ref).nodeId) === nodeId))
+      if (!block) return []
+      const startOffset = Math.max(0, finite(target.start))
+      const endOffset = Math.max(startOffset, finite(target.end, startOffset))
+      if (endOffset === startOffset) return []
+      const sourceText = block.runs.map(run => run.text).join('')
+      const anchorText = sourceText.slice(startOffset, endOffset)
+      if (!anchorText) return []
+      return [{ blockId: block.id, startOffset, endOffset: startOffset + anchorText.length, text: anchorText }]
+    })
+    const rootMessage = importedCommentMessage(raw, id)
+    const replies = rawComments.filter(reply => String(reply.parentId ?? '') === id).map(reply => importedCommentMessage(reply, text(reply.id)))
+    const messages = [rootMessage, ...replies]
+    const date = rootMessage.createdAt
+    comments[`docx-comment-${id}`] = {
+      id: `docx-comment-${id}`,
+      anchor,
+      referenceText: anchor.map(segment => segment.text).join('\n'),
+      messages,
+      resolved: raw.resolved === true,
+      createdAt: date,
+      updatedAt: messages.map(message => message.updatedAt ?? message.createdAt).sort().at(-1) ?? date,
+      metadata: { importedCommentId: id },
+    }
+  }
+  return Object.keys(comments).length ? comments : undefined
+}
+
+function importedCommentMessage(raw: Record<string, unknown>, id: string): DocumentCommentMessage {
+  const authorName = text(raw.author, 'Unknown author')
+  const createdAt = text(raw.date, '1970-01-01T00:00:00.000Z')
+  return {
+    id: `docx-message-${id}`,
+    authorId: `docx-author-${authorName}`,
+    authorName,
+    text: text(raw.text),
+    createdAt,
+  }
+}
+
 export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   const data = envelope.payload.data
   const result = createBlankDocument()
@@ -236,6 +289,7 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   }
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks
   Object.assign(result, normalizeDocumentNotes(data, result.blocks))
+  result.comments = normalizeDocumentComments(data.comments, result.blocks)
   result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks)
   result.modified = false
   result.wordCount = result.blocks.reduce((count, block) => count+block.runs.reduce((sum, run) => sum+run.text.length, 0), 0)

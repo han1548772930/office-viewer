@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { Button, Popover, Tooltip } from 'antdv-next'
 import { EllipsisVertical } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import RibbonGridToolbar from './RibbonGridToolbar.vue'
 import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 
 const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: 'classic' | 'grid' }>(), { modelValue: undefined, direction: 'ltr', label: '功能区', variant: 'classic' })
 const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
 const id = useId()
+const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const ribbonStyle = computed(() => ({
   '--ribbon-tab-height': `${props.variant === 'grid' ? GRID_RIBBON.tabHeight : CLASSIC_RIBBON.tabHeight}px`,
   '--ribbon-tab-button-height': `${props.variant === 'grid' ? GRID_RIBBON.tabHeight : CLASSIC_RIBBON.tabButtonHeight}px`,
@@ -172,9 +174,9 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
         </div>
         <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor" :class="{ 'has-visible-groups': visibleGroups.length > 0 }">
           <Popover v-model:open="moreOpen" trigger="click" placement="bottomRight" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
-            <Tooltip title="更多功能"><Button type="text" size="small" class="ribbon-more-button" aria-label="更多功能" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><EllipsisVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
+            <Tooltip :title="translate('common.more', '更多功能')"><Button type="text" size="small" class="ribbon-more-button" :aria-label="translate('common.more', '更多功能')" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><EllipsisVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
             <template #content>
-              <div ref="morePanel" class="ribbon-overflow-menu" role="menu" aria-label="更多功能" @keydown="onMoreKeydown">
+              <div ref="morePanel" class="ribbon-overflow-menu" role="menu" :aria-label="translate('common.more', '更多功能')" @keydown="onMoreKeydown">
                 <div v-for="group in overflowGroups" :key="group.id" class="ribbon-overflow-group" role="group" :aria-label="group.title">
                   <div v-if="group.title" class="ribbon-overflow-title">{{ group.title }}</div>
                   <template v-for="item in group.items" :key="item.id">

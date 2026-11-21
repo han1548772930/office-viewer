@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
@@ -8,7 +8,7 @@ let formula
 let model
 let functionCatalog
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ configFile: resolve(process.cwd(), 'vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   formula = await server.ssrLoadModule('/packages/office-studio/src/features/formula/index.ts')
   functionCatalog = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-workbench/sheet-function-catalog.ts')
@@ -30,7 +30,7 @@ before(async () => {
   put(0, 4, null, '=IF(D1>=10,"ok","bad")')
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 test('parser preserves references, ranges, functions and absolute markers', () => {
   const node = formula.parseFormula('=SUM($A1:B$2)+Data!C3')
@@ -265,6 +265,49 @@ test('business-day and year/date functions honor weekend codes, holidays and wor
   assert.equal(formula.evaluateFormula('=WEEKNUM(DATE(2021,1,1),21)', date1904, 'sheet-main'), 53)
 
   for (const name of ['WEEKNUM', 'YEARFRAC', 'NETWORKDAYS', 'NETWORKDAYS.INTL', 'WORKDAY', 'WORKDAY.INTL']) {
+    assert.ok(functionCatalog.SHEET_FUNCTION_CATALOG.some(entry => entry.name === name), `${name} is in the insert-function catalog`)
+  }
+})
+
+test('DATEDIF, NOW and TODAY follow date-system and recalculation clock semantics', () => {
+  const data = structuredClone(model)
+  const evaluate = (formulaText, workbook = data, now) => formula.evaluateFormula(formulaText, workbook, 'sheet-main', { now })
+  const start = 'DATE(2011,1,29)'
+  const end = 'DATE(2021,3,31)'
+  assert.equal(evaluate(`=DATEDIF(${start},${end},"Y")`), 10)
+  assert.equal(evaluate(`=DATEDIF(${start},${end},"M")`), 122)
+  assert.equal(evaluate(`=DATEDIF(${start},${end},"D")`), 3714)
+  assert.equal(evaluate(`=DATEDIF(${start},${end},"MD")`), 2)
+  assert.equal(evaluate(`=DATEDIF(${start},${end},"YM")`), 2)
+  assert.equal(evaluate(`=DATEDIF(${start},${end},"YD")`), 61)
+  assert.deepEqual(evaluate('=DATEDIF(DATE(2021,1,1),DATE(2020,1,1),"Y")'), { kind: 'error', code: '#NUM!' })
+  assert.deepEqual(evaluate('=DATEDIF(DATE(2020,1,1),DATE(2021,1,1),"YY")'), { kind: 'error', code: '#NUM!' })
+  assert.deepEqual(evaluate('=DATEDIF(DATE(2020,1,1),DATE(2021,1,1),1)'), { kind: 'error', code: '#NUM!' })
+  assert.equal(evaluate('=DATEDIF(60,90,"MD")'), 1)
+
+  const date1904 = structuredClone(data)
+  date1904.date1904 = true
+  assert.equal(evaluate('=DATEDIF(0,60,"M")', date1904), 2)
+
+  const clock = new Date(2024, 0, 2, 3, 4, 5, 987)
+  const daySerial = evaluate('=DATE(2024,1,2)')
+  const expectedNow = daySerial + (3 * 3600 + 4 * 60 + 5) / 86400
+  assert.equal(evaluate('=TODAY()', data, clock), daySerial)
+  assert.ok(Math.abs(evaluate('=NOW()', data, clock) - expectedNow) < 1e-12)
+  assert.deepEqual(evaluate('=TODAY(1)', data, clock), { kind: 'error', code: '#VALUE!' })
+
+  const recalculation = structuredClone(data)
+  const sheet = recalculation.sheets[0]
+  for (const [row, formulaText] of [[2, '=NOW()'], [3, '=TODAY()'], [4, '=NOW()-TODAY()']]) {
+    const cell = { ...sheet.cells['0:0'], id: `${row}:0`, row, col: 0, value: null, formula: formulaText, display: '' }
+    sheet.cells[`${row}:0`] = cell
+  }
+  const calculated = formula.recalculateWorkbookFormulas(recalculation, undefined, { now: clock }).workbook.sheets[0]
+  assert.ok(Math.abs(calculated.cells['2:0'].value - expectedNow) < 1e-12)
+  assert.equal(calculated.cells['3:0'].value, daySerial)
+  assert.ok(Math.abs(calculated.cells['4:0'].value - (expectedNow - daySerial)) < 1e-12)
+
+  for (const name of ['DATEDIF', 'NOW', 'TODAY']) {
     assert.ok(functionCatalog.SHEET_FUNCTION_CATALOG.some(entry => entry.name === name), `${name} is in the insert-function catalog`)
   }
 })

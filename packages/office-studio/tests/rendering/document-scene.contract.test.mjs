@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { test, after } from 'node:test'
+import { test, afterAll } from 'vitest'
 import { createServer } from 'vite'
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { hitTestChecklist, layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
 const { sceneFromDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/rendering/document-scene.ts')
 
-after(() => vite.close())
+afterAll(() => vite.close())
 
 function paragraph(id, text) {
   return {
@@ -50,6 +50,24 @@ test('document scene emits Canvas commands for visible page text and caret', () 
   assert.ok(!text.includes('S'))
   assert.ok(scene.commands.some(command => command.kind === 'rect' && command.fill === '#24569c'))
   assert.equal(scene.background, '#eef1f5')
+})
+
+test('document scene highlights every search match on visible lines', () => {
+  const documentModel = model()
+  const layout = layoutDocument(documentModel, { measure: text => text.length * 8 })
+  const selection = { anchor: { blockId: 'first', offset: 2 }, focus: { blockId: 'first', offset: 2 } }
+  const scene = sceneFromDocument(documentModel, layout, { width: 900, height: 700, scrollLeft: 0, scrollTop: 0, zoom: 100 }, {
+    selection,
+    focused: false,
+    caretVisible: false,
+    composing: false,
+    images: new Map(),
+    searchMatches: [
+      { target: { blockId: 'first' }, start: 0, end: 5 },
+      { target: { blockId: 'first' }, start: 6, end: 10 },
+    ],
+  })
+  assert.equal(scene.commands.filter(command => command.kind === 'rect' && command.fill === '#ffe58f').length, 9)
 })
 
 test('document scene switches page content with scroll without changing the model', () => {

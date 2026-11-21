@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createOfficeMessages, createOfficeTranslator, supportedOfficeLocales } from '../src/i18n/office-i18n.ts'
 import { sheetsEnUS } from '../src/i18n/sheets/locales/en-US.ts'
 import { docsEnUS } from '../src/i18n/docs/locales/en-US.ts'
@@ -18,6 +18,17 @@ test('all fixed Univer locales have complete non-empty fallback catalogs', () =>
   for (const locale of supportedOfficeLocales) {
     assert.ok(Object.keys(messages[locale]).length >= 300, `${locale} catalog is incomplete`)
     assert.ok(Object.values(messages[locale]).every(value => typeof value === 'string' && value.length > 0), `${locale} has an empty translation`)
+  }
+})
+
+test('sheet find and replace controls have feature-localized messages in every supported locale', () => {
+  const messages = createOfficeMessages()
+  const keys = ['find', 'find-placeholder', 'match-count', 'enter-query', 'previous-match', 'next-match', 'close', 'replace-placeholder',
+    'replace', 'replace-all', 'scope', 'current-sheet', 'workbook', 'direction', 'by-row', 'by-column', 'find-by', 'value', 'formula',
+    'case-sensitive', 'whole-cell', 'replace-error', 'replaced-all', 'replaced-one'].map(key => `sheet.find.${key}`)
+  for (const locale of supportedOfficeLocales) {
+    for (const key of keys) assert.ok(messages[locale][key], `${locale} missing ${key}`)
+    if (locale !== 'en-US') assert.notEqual(messages[locale]['sheet.find.replace-all'], messages['en-US']['sheet.find.replace-all'], `${locale} uses English fallback`)
   }
 })
 

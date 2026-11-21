@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createPinia } from 'pinia'
 import { createServer } from 'vite'
 
@@ -12,7 +12,7 @@ let clipboard
 let toolbar
 let ribbon
 let useEditorStore
-before(async () => {
+beforeAll(async () => {
   vite = await createServer({ cacheDir: 'node_modules/.vite/docs-table-toolbar', optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error' })
   api = await vite.ssrLoadModule('/packages/office-studio/src/index.ts')
   commands = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-commands.ts')
@@ -23,7 +23,7 @@ before(async () => {
   ribbon = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-ribbon.ts')
   ;({ useEditorStore } = await vite.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
 })
-after(async () => { await vite?.close() })
+afterAll(async () => { await vite?.close() })
 
 function fixture(rows = 3, columns = 3) {
   const model = api.createBlankDocument()

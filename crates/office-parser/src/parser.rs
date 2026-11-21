@@ -2,7 +2,8 @@ use crate::model::{
     AnchorCellPayload, AxisPayload, BorderPayload, CellPayload, ChartCachedPointPayload,
     ChartDrawingPayload, ChartPayload, ChartSeriesCachePayload, ChartSeriesPayload,
     ChartSeriesStylePayload, DataValidationPayload, DataValidationRangePayload, DimensionPayload,
-    DocumentModel, DocumentNotePayload, DocumentPayload, DocumentSectionLayoutPayload, DocumentStoryReferencePayload,
+    DocumentCommentPayload, DocumentCommentTargetPayload, DocumentModel, DocumentNotePayload,
+    DocumentPayload, DocumentSectionLayoutPayload, DocumentStoryReferencePayload,
     FontPayload, FreezePanePayload, HyperlinkPayload, LocalDefinedNamePayload,
     ParseEnvelope, ParseFailure, ParserDiagnostics, ProtectionPayload, RangePayload,
     RichTextRunPayload, SCHEMA_VERSION, SheetPayload, StyleLossPayload, StylePayload,
@@ -12,7 +13,7 @@ use crate::validation_sidecar::ValidationSidecar;
 use crate::sparkline_sidecar::SparklineSidecar;
 use crate::pivot_sidecar::PivotSidecar;
 use crate::conditional_format_sidecar::ConditionalFormatSidecar;
-use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, extract_document_blocks, parse_document_model};
+use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, extract_document_blocks, extract_document_review, parse_document_model};
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use rxls::{Cell, Workbook};
@@ -104,6 +105,23 @@ fn parse_document_impl(
         .unwrap_or(false);
     let footnotes = source_model.metadata.footnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
     let endnotes = source_model.metadata.endnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
+    let comments = extract_document_review(&source_model).comments.into_iter().map(|comment| DocumentCommentPayload {
+        id: comment.id.to_string(),
+        author: comment.author,
+        date: comment.date,
+        text: comment.text,
+        parent_id: comment.parent_id.map(|id| id.to_string()),
+        resolved: comment.resolved,
+        targets: comment.targets.into_iter().filter(|target| target.source.story == "body").map(|target| DocumentCommentTargetPayload {
+            node_id: target.source.node_id,
+            part_name: target.source.part_name,
+            story: target.source.story,
+            start: target.source.start,
+            end: target.source.end,
+            offset_encoding: target.source.offset_encoding,
+        }).collect(),
+    }).collect::<Vec<_>>();
+    let comments = (!comments.is_empty()).then_some(comments);
     Ok(ParseEnvelope {
         schema_version: SCHEMA_VERSION,
         parser_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -117,6 +135,7 @@ fn parse_document_impl(
             even_and_odd_headers,
             footnotes,
             endnotes,
+            comments,
         }),
         diagnostics,
     })
@@ -1263,6 +1282,42 @@ mod tests {
         let inlines = data["blocks"][0]["details"]["inlines"].as_array().expect("inline runs");
         assert!(inlines.iter().any(|inline| inline["noteReference"]["kind"] == "footnote" && inline["noteReference"]["id"] == 1));
         assert!(inlines.iter().any(|inline| inline["noteReference"]["kind"] == "endnote" && inline["noteReference"]["id"] == 1));
+    }
+
+    #[test]
+    fn docx_comment_threads_and_range_anchors_roundtrip_through_the_writer() {
+        let model = json!({
+            "kind": "document",
+            "name": "comments.docx",
+            "page": { "width": 794, "height": 1123, "marginTop": 72, "marginBottom": 72, "marginLeft": 72, "marginRight": 72 },
+            "blocks": [{ "id": "commented-paragraph", "type": "paragraph", "runs": [{ "text": "Hello World" }] }],
+            "comments": {
+                "thread-1": {
+                    "id": "thread-1",
+                    "anchor": [{ "blockId": "commented-paragraph", "startOffset": 6, "endOffset": 11, "text": "World" }],
+                    "referenceText": "World",
+                    "messages": [
+                        { "id": "message-1", "authorId": "alice", "authorName": "Alice", "text": "Please review this word.", "createdAt": "2026-01-01T00:00:00Z" },
+                        { "id": "message-2", "authorId": "bob", "authorName": "Bob", "text": "Updated.", "createdAt": "2026-01-02T00:00:00Z" }
+                    ],
+                    "resolved": true
+                }
+            }
+        });
+        let (bytes, warnings) = office_writer::export_docx_bytes(&model.to_string()).expect("writer exports DOCX comment parts");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let envelope = parse_office_bytes(&bytes, "comments.docx").expect("writer output parses");
+        let value = serde_json::to_value(envelope).expect("parser envelope serializes");
+        let comments = value["payload"]["data"]["comments"].as_array().expect("comment payload is included");
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0]["text"], "Please review this word.");
+        assert_eq!(comments[0]["resolved"], true);
+        assert!(!comments[0]["targets"][0]["nodeId"].as_str().unwrap_or_default().is_empty());
+        assert_eq!(comments[0]["targets"][0]["start"], 6);
+        assert_eq!(comments[0]["targets"][0]["end"], 11);
+        assert_eq!(comments[1]["parentId"], comments[0]["id"]);
+        assert_eq!(comments[1]["text"], "Updated.");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createPinia } from 'pinia'
 import { createServer } from 'vite'
 
@@ -9,14 +9,14 @@ let modelUtils
 let domain
 let useEditorStore
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   commands = await server.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-commands.ts')
   modelUtils = await server.ssrLoadModule('/packages/office-studio/src/features/document/model/document-model.ts')
   domain = await server.ssrLoadModule('/packages/office-studio/src/domain/model.ts')
   ;({ useEditorStore } = await server.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
 })
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 function paragraph(id, text) { return { ...modelUtils.createParagraph(text), id } }
 function documentWith(blocks) { return { ...domain.createBlankDocument(), id: 'boundary-doc', blocks } }

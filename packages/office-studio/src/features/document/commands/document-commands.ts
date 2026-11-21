@@ -1,13 +1,14 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
+import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import { assertDocumentPermission, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import {
-  applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
+  applyNamedParagraphStyle, applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets,
-  type DocumentImage, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
+  type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
 } from '../model/document-model'
 
 export type DocumentCommand =
@@ -16,6 +17,7 @@ export type DocumentCommand =
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
+  | { id: 'doc.command.set-paragraph-named-style'; namedStyle: DocumentNamedParagraphStyle }
   | { id: 'doc.command.set-block-type'; type: DocumentBlock['type']; level?: number }
   | { id: 'doc.command.toggle-checklist-item'; blockId: string }
   | { id: 'doc.command.insert-page-break' }
@@ -78,7 +80,8 @@ export function executeDocumentCommand(
   command: DocumentCommand,
   permissionContext?: DocumentPermissionContext,
 ): DocumentSelection {
-  assertDocumentPermission(model.permissionRules ?? [], permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }, 'edit', permissionTargetsForSelection(model, selection))
+  const permissionTargets = command.id === 'doc.command.set-document-permission-rules' ? [] : permissionTargetsForSelection(model, selection)
+  assertDocumentPermission(model.permissionRules ?? [], permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }, 'edit', permissionTargets)
   switch (command.id) {
     case 'doc.command.table-insert-row':
     case 'doc.command.table-insert-column':
@@ -92,6 +95,13 @@ export function executeDocumentCommand(
       selectedTargets(model, selection).forEach((target) => {
         const block = blockAtPoint(model, target)
         if (block) block.style = { ...block.style, ...command.patch }
+      })
+      return selection
+    }
+    case 'doc.command.set-paragraph-named-style': {
+      selectedTargets(model, selection).forEach((target) => {
+        const block = blockAtPoint(model, target)
+        if (block && ['paragraph', 'heading', 'quote'].includes(block.type)) applyNamedParagraphStyle(block, command.namedStyle)
       })
       return selection
     }
@@ -240,6 +250,9 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (endIndex > startIndex) startContainer.splice(startIndex + 1, endIndex - startIndex)
   if (paragraphs.length === 1) {
     setTargetRuns(model, start, [...before, createRun(text, inherited), ...after])
+    if (startTargetId === endTargetId) {
+      transformDocumentCommentAnchorsForTextEdit(model, startTargetId, start.offset, end.offset, text)
+    }
     return collapsedSelection({ ...start, offset: start.offset + text.length })
   }
   setTargetRuns(model, start, [...before, createRun(paragraphs[0], inherited)])

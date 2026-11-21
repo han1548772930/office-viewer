@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { after, before } from 'node:test'
+import { test } from 'vitest'
+import { afterAll, beforeAll } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
@@ -8,13 +8,13 @@ let server
 let apiModule
 let permissionModule
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ configFile: resolve(process.cwd(), 'vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   apiModule = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   permissionModule = await server.ssrLoadModule('/packages/office-studio/src/features/document/permissions/document-permissions.ts')
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 const context = { documentId: 'doc-1', userId: 'writer' }
 const rule = (id, scope, action, effect, userIds = [], targetId) => ({ id, scope, action, effect, userIds, ...(targetId ? { targetId } : {}) })

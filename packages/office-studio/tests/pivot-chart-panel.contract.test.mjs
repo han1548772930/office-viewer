@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { addressToPosition, createPivotChartDraft, pivotChartConfig, pivotChartPatch } from '../src/features/pivot/services/pivot-chart-panel-state.ts'
 
 test('pivot chart draft maps linked chart settings and creates a valid facade update patch', () => {

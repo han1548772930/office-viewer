@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, afterEach, before, beforeEach, test } from 'node:test'
+import { afterAll, afterEach, beforeAll, beforeEach, test } from 'vitest'
 import { chromium, expect } from '@playwright/test'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
@@ -58,7 +58,7 @@ let browser
 let page
 let baseURL
 let errors
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ configFile: false, root: process.cwd(), plugins: [vue(), {
     name: 'document-toolbar-interaction-fixture',
     configureServer(vite) {
@@ -73,7 +73,7 @@ before(async () => {
   baseURL = `http://127.0.0.1:${address.port}${fixturePath}`
   browser = await chromium.launch({ channel: 'msedge', headless: true })
 }, { timeout: 60_000 })
-after(async () => { await browser?.close(); await server?.close() })
+afterAll(async () => { await browser?.close(); await server?.close() })
 beforeEach(async () => {
   errors = []
   const diagnostics = []

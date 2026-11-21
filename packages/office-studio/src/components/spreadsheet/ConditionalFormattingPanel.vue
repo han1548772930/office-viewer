@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Input, Modal, Select } from 'antdv-next'
+import { Button, Checkbox, ColorPicker, Input, Modal, Select } from 'antdv-next'
 import type { CellRange, SheetConditionalFormatOperator, SheetConditionalFormatRule } from '../../domain/model.ts'
 import { validateConditionalFormatDraft } from '../../features/conditional-formatting/conditional-formatting.ts'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -165,9 +165,9 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
       <aside class="conditional-rule-list" :aria-label="t('conditional.rules', '规则')">
         <Button size="small" @click="newRule">{{ t('conditional.add', '新建规则') }}</Button>
         <div v-for="(rule, index) in localRules" :key="rule.id" class="conditional-rule-row">
-          <button class="conditional-rule-select" :aria-pressed="draftId === rule.id" @click="selectRule(rule)">
+          <Button class="conditional-rule-select" type="text" :aria-pressed="draftId === rule.id" @click="selectRule(rule)">
             {{ index + 1 }}. {{ t(`conditional.operator.${rule.operator}`, rule.operator) }} {{ rule.formula1 }}<template v-if="rule.formula2"> – {{ rule.formula2 }}</template>
-          </button>
+          </Button>
           <Button size="small" :disabled="index === 0" :aria-label="t('conditional.move-up', '上移规则')" @click="moveRule(rule.id, -1)">↑</Button>
           <Button size="small" :disabled="index === localRules.length - 1" :aria-label="t('conditional.move-down', '下移规则')" @click="moveRule(rule.id, 1)">↓</Button>
           <Button size="small" :aria-label="t('conditional.delete', '删除规则')" @click="removeRule(rule.id)">×</Button>
@@ -181,11 +181,11 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
           <label v-if="needsSecondValue">{{ t('conditional.second-value', '第二个数值') }}<Input v-model:value="formula2" inputmode="decimal" /></label>
         </div>
         <div class="conditional-colors">
-          <label>{{ t('conditional.fill', '填充') }}<input v-model="fill" type="color" :aria-label="t('conditional.fill', '填充')" /></label>
-          <label>{{ t('conditional.font-color', '文字颜色') }}<input v-model="fontColor" type="color" :aria-label="t('conditional.font-color', '文字颜色')" /></label>
-          <label class="conditional-check"><input v-model="bold" type="checkbox" />{{ t('conditional.bold', '加粗') }}</label>
+          <label>{{ t('conditional.fill', '填充') }}<ColorPicker v-model:value="fill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></label>
+          <label>{{ t('conditional.font-color', '文字颜色') }}<ColorPicker v-model:value="fontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></label>
+          <Checkbox v-model:checked="bold">{{ t('conditional.bold', '加粗') }}</Checkbox>
         </div>
-        <label class="conditional-check"><input v-model="stopIfTrue" type="checkbox" />{{ t('conditional.stop-if-true', '匹配后停止') }}</label>
+        <Checkbox v-model:checked="stopIfTrue">{{ t('conditional.stop-if-true', '匹配后停止') }}</Checkbox>
         <p v-if="error" class="conditional-error" role="alert">{{ error }}</p>
         <Button type="primary" @click="saveDraft">{{ draftId ? t('conditional.update', '更新规则') : t('conditional.save-rule', '保存规则') }}</Button>
       </section>
@@ -197,14 +197,13 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 .conditional-panel { display: grid; grid-template-columns: minmax(220px, 0.85fr) minmax(280px, 1.15fr); gap: 18px; min-height: 300px; }
 .conditional-rule-list, .conditional-rule-editor { display: grid; align-content: start; gap: 10px; min-width: 0; }
 .conditional-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center; }
-.conditional-rule-select { min-width: 0; overflow: hidden; padding: 6px 8px; border: 1px solid #d0d5dd; border-radius: 4px; background: #fff; color: #344054; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-.conditional-rule-select[aria-pressed="true"] { border-color: #246bfd; background: #eff4ff; }
+.conditional-rule-select.ant-btn { min-width: 0; height: auto; justify-content: flex-start; overflow: hidden; padding: 6px 8px; border: 1px solid #d0d5dd; background: #fff; color: #344054; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.conditional-rule-select.ant-btn[aria-pressed="true"] { border-color: #246bfd; background: #eff4ff; color: #244c91; }
 .conditional-rule-editor label { display: grid; gap: 5px; color: #475467; font-size: 12px; }
 .conditional-values, .conditional-colors { display: flex; align-items: end; gap: 10px; }
 .conditional-values > label { flex: 1; min-width: 0; }
 .conditional-colors > label { flex: 1; min-width: 0; }
-.conditional-colors input[type="color"] { width: 100%; height: 34px; padding: 3px; border: 1px solid #d0d5dd; border-radius: 4px; background: #fff; }
-.conditional-rule-editor .conditional-check { display: flex; align-items: center; gap: 8px; }
+.conditional-colors :deep(.ant-color-picker-trigger) { width: 100%; }
 .conditional-error { margin: 0; color: #b42318; font-size: 12px; }
 @media (max-width: 620px) { .conditional-panel { grid-template-columns: minmax(0, 1fr); } }
 </style>

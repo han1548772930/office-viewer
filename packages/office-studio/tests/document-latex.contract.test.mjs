@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createBlankDocument } from '../src/domain/model.ts'
 import { collapsedSelection, createParagraph } from '../src/features/document/model/document-model.ts'
 import {

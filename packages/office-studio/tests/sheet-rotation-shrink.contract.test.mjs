@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
 import { createCanvas2DDriver } from '../src/rendering/canvas2d.ts'
 import { createSpreadsheetScene } from '../src/rendering/spreadsheet/scene.ts'

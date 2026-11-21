@@ -15,6 +15,46 @@ export interface DocumentTable { rows: Array<{ id: string; cells: DocumentCell[]
 export interface DocumentImage { src: string; alt: string; width: number; height: number }
 export type RunPatch = Partial<Omit<DocumentRun, 'id' | 'text'>>
 
+export type DocumentNamedParagraphStyle = 'normal' | 'title' | 'subtitle' | 'heading1' | 'heading2' | 'heading3' | 'heading4' | 'heading5'
+
+export const DOCUMENT_NAMED_PARAGRAPH_STYLES: Record<DocumentNamedParagraphStyle, {
+  fontSize: number
+  bold: boolean
+  color?: string
+  level: number
+  spaceBefore: number
+  spaceAfter: number
+}> = {
+  normal: { fontSize: 11, bold: false, level: 0, spaceBefore: 0, spaceAfter: 16 },
+  title: { fontSize: 26, bold: true, level: 0, spaceBefore: 0, spaceAfter: 9.3 },
+  subtitle: { fontSize: 15, bold: false, color: '#999999', level: 0, spaceBefore: 0, spaceAfter: 16 },
+  heading1: { fontSize: 20, bold: true, level: 1, spaceBefore: 26.7, spaceAfter: 13.3 },
+  heading2: { fontSize: 18, bold: true, level: 2, spaceBefore: 24, spaceAfter: 13.3 },
+  heading3: { fontSize: 16, bold: true, level: 3, spaceBefore: 21.3, spaceAfter: 13.3 },
+  heading4: { fontSize: 14, bold: true, level: 4, spaceBefore: 18.7, spaceAfter: 10.7 },
+  heading5: { fontSize: 12, bold: true, level: 5, spaceBefore: 16, spaceAfter: 10.7 },
+}
+
+export function applyNamedParagraphStyle(block: DocumentBlock, namedStyle: DocumentNamedParagraphStyle): void {
+  const style = DOCUMENT_NAMED_PARAGRAPH_STYLES[namedStyle]
+  block.metadata = { ...block.metadata, namedStyleType: namedStyle }
+  block.type = style.level > 0 ? 'heading' : 'paragraph'
+  block.level = style.level
+  block.style = {
+    ...block.style,
+    indent: 0,
+    lineHeight: 1.5,
+    spaceBefore: style.spaceBefore,
+    spaceAfter: style.spaceAfter,
+  }
+  block.runs = block.runs.map((run) => ({
+    ...run,
+    fontSize: style.fontSize,
+    bold: style.bold,
+    ...(style.color ? { color: style.color } : namedStyle === 'normal' ? { color: '#1f2937' } : {}),
+  }))
+}
+
 export function applyRunPatch(run: DocumentRun, patch: RunPatch): DocumentRun {
   const updated = { ...run, ...patch }
   if (patch.verticalAlign === 'baseline') {

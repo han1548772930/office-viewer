@@ -6,6 +6,7 @@ import type { GridRange, GridViewport } from './layout'
 import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
 import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
+import { SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
 
 let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
 function measureTextWidth(text: string, font: string): number | undefined {
@@ -33,6 +34,7 @@ function graphemes(text: string): string[] {
 
 export interface SpreadsheetSceneOptions {
   activeCell: string
+  editing?: boolean
   selectedCells: readonly string[]
   selectedRanges?: readonly GridRange[]
   searchText?: string
@@ -51,6 +53,10 @@ export function displayCell(cell: ExcelCellView | undefined, date1904 = false): 
 export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: GridViewport, options: SpreadsheetSceneOptions): RenderScene {
   const commands: DrawCommand[] = [], selected = new Set(options.selectedCells), search = options.searchText?.toLocaleLowerCase()
   const panes = geometry.panes(viewport), z = viewport.zoom
+  const active = parseAddress(options.activeCell)
+  const selectionRanges = options.selectedRanges?.length
+    ? options.selectedRanges
+    : active ? [{ startRow: active.row, endRow: active.row, startColumn: active.column, endColumn: active.column }] : []
   const isSelected = (row: number, column: number) => selected.has(cellAddress(row, column)) || options.selectedRanges?.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)
   const paintCell = (row: number, column: number, clip: RenderRect) => {
     const key = cellAddress(row, column), cell = geometry.sheet.cells[key], rect = geometry.cellRect(row, column, viewport)
@@ -140,13 +146,29 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       else paintCell(row, column, pane.clip)
     }
     for (const address of anchors) { const cell = parseAddress(address)!; paintCell(cell.row, cell.column, pane.clip) }
-    const active = parseAddress(options.activeCell)
-    if (active) {
-      const rect = geometry.cellRect(active.row, active.column, viewport)
-      const intersection = intersectRect(rect, pane.clip)
-      if (intersection.width > 0 && intersection.height > 0) {
-        commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2, clip: pane.clip })
-        commands.push({ kind: 'rect', x: rect.x + rect.width - 3, y: rect.y + rect.height - 3, width: 6, height: 6, fill: '#246bfd', stroke: '#ffffff', clip: pane.clip })
+    for (let rangeIndex = 0; rangeIndex < selectionRanges.length; rangeIndex += 1) {
+      const range = selectionRanges[rangeIndex]!
+      const rows = pane.rows.filter(row => row >= range.startRow && row <= range.endRow)
+      const columns = pane.columns.filter(column => column >= range.startColumn && column <= range.endColumn)
+      if (!rows.length || !columns.length) continue
+      const rangeStart = geometry.cellRect(range.startRow, range.startColumn, viewport, false)
+      const rangeEnd = geometry.cellRect(range.endRow, range.endColumn, viewport, false)
+      const left = rangeStart.x, top = rangeStart.y
+      const right = rangeEnd.x + rangeEnd.width, bottom = rangeEnd.y + rangeEnd.height
+      const editingCellRange = options.editing && active && range.startRow === range.endRow && range.startColumn === range.endColumn && active.row === range.startRow && active.column === range.startColumn
+      if (!editingCellRange) {
+        commands.push({ kind: 'line', x1: left, y1: top, x2: right, y2: top, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left, y1: bottom, x2: right, y2: bottom, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: left, y1: top, x2: left, y2: bottom, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+        commands.push({ kind: 'line', x1: right, y1: top, x2: right, y2: bottom, color: '#246bfd', width: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
+      }
+      const endpointIsFrozenRow = range.endRow < geometry.frozenRows
+      const endpointIsFrozenColumn = range.endColumn < geometry.frozenColumns
+      const paneHasEndpoint = pane.rows.some(row => (row < geometry.frozenRows) === endpointIsFrozenRow)
+        && pane.columns.some(column => (column < geometry.frozenColumns) === endpointIsFrozenColumn)
+      if (rangeIndex === selectionRanges.length - 1 && !editingCellRange && paneHasEndpoint) {
+        const handleSize = SHEET_SELECTION_HANDLE_SIZE
+        commands.push({ kind: 'rect', x: right - handleSize / 2, y: bottom - handleSize / 2, width: handleSize, height: handleSize, fill: '#246bfd', stroke: '#ffffff', clip: pane.clip })
       }
     }
   }
@@ -155,7 +177,6 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   for (const command of options.overlayCommands ?? []) commands.push(transformOverlayCommand(command, viewport))
   commands.push({ kind: 'rect', x: 0, y: 0, width: viewport.width, height: GRID_HEADER_HEIGHT, fill: '#f5f7fa' })
   commands.push({ kind: 'rect', x: 0, y: GRID_HEADER_HEIGHT, width: GRID_HEADER_WIDTH, height: Math.max(0, viewport.height - GRID_HEADER_HEIGHT), fill: '#f5f7fa' })
-  const active = parseAddress(options.activeCell)
   for (const pane of panes) {
     for (const column of pane.columns) {
       const rect = geometry.cellRect(0, column, viewport, false), clip = { x: pane.clip.x, y: 0, width: pane.clip.width, height: GRID_HEADER_HEIGHT }

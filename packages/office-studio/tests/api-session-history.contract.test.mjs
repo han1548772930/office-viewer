@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createServer } from 'vite'
 
 let server
 let api
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
 })
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 function runtime(t, options) {
   const studio = new api.OfficeStudio(options)
-  t.after(() => studio.dispose())
+  t.onTestFinished(() => studio.dispose())
   return { studio, officeApi: api.FOffice.newAPI(studio), editor: studio.editor }
 }
 

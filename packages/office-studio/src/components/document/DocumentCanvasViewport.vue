@@ -5,13 +5,13 @@ import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
 import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
-import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection } from '../../features/document/model/document-model'
+import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../../features/document/model/document-model'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
   'code-block-exit': [blockId: string]
@@ -66,6 +66,7 @@ const inputStyle = computed(() => {
 
 watch(() => props.model, () => { if (!composing.value) preview.value = null; relayout() }, { deep: false })
 watch(() => props.selection, () => { caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible) }, { deep: true })
+watch(() => props.searchMatches, requestDraw, { deep: true })
 watch(() => props.zoom, (zoom) => {
   const offset = zoomedDocumentScrollOffset(layout.value, viewport.value, zoom)
   viewport.value = { ...viewport.value, zoom }
@@ -181,7 +182,7 @@ function requestDraw() {
   if (frame || disposed || !active) return
   frame = requestAnimationFrame(() => {
     frame = 0
-    surface?.render(sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value, images }))
+    surface?.render(sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value, images, searchMatches: props.searchMatches }))
   })
 }
 

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId, watch } from 'vue'
+import { computed, inject, nextTick, ref, useId, watch } from 'vue'
 import { Button, Popover, Select, Tooltip } from 'antdv-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { CLASSIC_RIBBON, GRID_RIBBON, ribbonInvocation, visibleRibbonItems, type RibbonItem } from './ribbon-schema'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 
 const props = withDefaults(defineProps<{ item: RibbonItem; overflow?: boolean; measurement?: boolean; grid?: boolean; large?: boolean; showLabel?: boolean; iconSize?: number; fullWidth?: boolean }>(), { overflow: false, measurement: false, grid: false, large: false, fullWidth: false })
 const emit = defineEmits<{ execute: [commandId: string, params?: unknown] }>()
+const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const open = ref(false)
 const root = ref<HTMLElement>()
 const panel = ref<HTMLElement>()
@@ -74,7 +76,7 @@ watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unav
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
         <Select
           :id="`${popupId}-select`" :value="item.value == null ? undefined : item.value" :options="item.options ?? []" :disabled="item.disabled || measurement"
-          :placeholder="item.placeholder ?? (item.value === null ? '混合' : item.title)" :aria-label="item.title" size="small"
+          :placeholder="item.placeholder ?? (item.value === null ? translate('common.mixed', '混合') : item.title)" :aria-label="item.title" size="small"
           class="ribbon-select" :style="{ width: overflow ? '150px' : grid && fullWidth ? '100%' : `${item.width ?? 96}px`, height: `${CLASSIC_RIBBON.selectorHeight}px`, alignItems: 'center', flex: overflow ? '1 1 0' : undefined, minWidth: overflow || (grid && fullWidth) ? '0' : undefined, maxWidth: overflow ? '150px' : undefined }" :popup-match-select-width="false"
           @change="execute"
         />

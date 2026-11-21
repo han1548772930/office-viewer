@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonGridGroups, fitRibbonItems, groupRibbonGridOverflowItems, nextRibbonTab, placeRibbonGridItems, resolveRibbonTab, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 
 const button = (id, extra = {}) => ({ id, title: id, type: 'button', commandId: `doc.command.${id}`, ...extra })
@@ -148,9 +148,12 @@ test('grid overflow groups retain row and icon distinctions', () => {
 
 test('grid density compresses before complete trailing groups move to overflow', () => {
   assert.equal(GRID_RIBBON.tabHeight, 32)
-  assert.equal(GRID_RIBBON.toolbarHeight, 73)
-  assert.equal(GRID_RIBBON.rowHeight, 28)
-  assert.equal(GRID_RIBBON.moreWidth, 64)
+  assert.equal(GRID_RIBBON.toolbarHeight, 69)
+  assert.equal(GRID_RIBBON.rowHeight, 24)
+  assert.equal(GRID_RIBBON.rowGap, 4)
+  assert.equal(GRID_RIBBON.verticalPadding, 8)
+  assert.equal(GRID_RIBBON.itemGap, 4)
+  assert.equal(GRID_RIBBON.moreWidth, 72)
   const groups = [{ regular: 90, compact: 75 }, { regular: 85, compact: 70 }, { regular: 40, compact: 32 }]
   assert.deepEqual(fitRibbonGridGroups(groups, 180), { visibleCount: 3, compact: true })
   assert.deepEqual(fitRibbonGridGroups(groups, 149), { visibleCount: 1, compact: true })

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { after, test } from 'node:test'
+import { afterAll, test } from 'vitest'
 import { createServer } from 'vite'
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
-after(() => vite.close())
+afterAll(() => vite.close())
 const { createBlankDocument } = await vite.ssrLoadModule('/packages/office-studio/src/domain/model.ts')
 const { createParagraph, createRun, collapsedSelection } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/model/document-model.ts')
 const { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-toolbar-state.ts')

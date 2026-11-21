@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Button, Input, Modal, Select, Tooltip } from 'antdv-next'
+import { Button, Checkbox, Input, Modal, Select, Tooltip } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
@@ -13,7 +13,7 @@ import { chartPositionForRange, type ExcelWorkbookChartView } from './chart-over
 import type { DrawCommand } from '../rendering/contracts'
 import type { GridHit, GridRange, SpreadsheetRenderSheet } from '../rendering/spreadsheet/layout'
 import { addRange, containsCell, selectionBounds, selectionCount, subtractRange } from '../rendering/spreadsheet/selection'
-import { Download, FileSpreadsheet, FolderOpen, Save, Search, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, Download, FileSpreadsheet, FolderOpen, ListRestart, Replace, Save, Search, X } from 'lucide-vue-next'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import SheetFormulaBar from './spreadsheet/SheetFormulaBar.vue'
 import SheetFooter from './spreadsheet/SheetFooter.vue'
@@ -23,12 +23,13 @@ import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-
 import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, nextSheetFontSize, setSheetTextFit, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
 import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format'
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
-import { findVisibleSheetRow, hiddenSheetRows } from '../features/sheet-workbench/sheet-row-visibility'
+import { findVisibleSheetRow } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { createSheetPastePlan, type SheetPasteMode } from '../features/sheet-workbench/sheet-paste.ts'
 import { createFormatPainterPatches, type FormatPainterSource } from '../features/sheet-workbench/sheet-format-painter.ts'
 import { applySheetOutlineOperation, createSheetOutlineState, setSheetOutlineCollapsed, setSheetOutlineLevel, setSheetOutlineSummaryPosition } from '../features/sheet-outline/sheet-outline.ts'
-import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n.ts'
+import { createOfficeTranslator, createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n.ts'
+import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type SheetFindBy, type SheetFindDirection, type SheetFindScope } from '../features/sheet-find-replace/sheet-find-replace.ts'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const PivotChartPanel = defineAsyncComponent(() => import('./spreadsheet/PivotChartPanel.vue'))
@@ -135,10 +136,19 @@ const spreadsheetCanvas = ref<InstanceType<typeof SpreadsheetCanvas> | null>(nul
 const fileInput = ref<HTMLInputElement | null>(null)
 const zoom = ref(100)
 const searchText = ref('')
+const replaceText = ref('')
+const findBy = ref<SheetFindBy>('value')
+const findDirection = ref<SheetFindDirection>('row')
+const findScope = ref<SheetFindScope>('sheet')
+const findCaseSensitive = ref(false)
+const findWholeCell = ref(false)
+const findSelectionOnly = ref(false)
+const findSelectionRanges = ref<GridRange[]>([])
 const activeTab = ref('home')
 const nameError = ref('')
 const searchOpen = ref(false)
 const searchInput = ref<{ focus: () => void } | null>(null)
+const replaceInput = ref<{ focus: () => void } | null>(null)
 const renameSheetId = ref<string | null>(null)
 const renameValue = ref('')
 const renameError = ref('')
@@ -187,6 +197,8 @@ let sortController: AbortController | undefined
 const chartWorkbook = computed(() => workbook.value as ExcelWorkbookChartView)
 
 const activeSheet = computed(() => workbook.value.sheets.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? workbook.value.sheets.find(sheet => sheet.visible !== false))
+const translate = computed(() => createOfficeTranslator(officeLocale.value))
+function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
 const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
 const selectedAddress = computed(() => {
   const range = selectedRanges.value[0]
@@ -249,12 +261,10 @@ const ribbonTabs = computed(() => createSheetRibbon({
   outlineSummaryLeft: activeSheet.value?.outline?.summaryLeft ?? false,
 }, createRibbonTranslator(officeLocale.value, 'sheet')))
 const formulaValue = computed(() => editingKey.value ? editValue.value : activeCell.value.formula ?? activeCell.value.value)
-const searchMatches = computed(() => {
-  if (!searchText.value) return []
-  const needle = searchText.value.toLocaleLowerCase()
-  const hidden = hiddenSheetRows(activeSheet.value ?? { rowCount: 0 })
-  return Object.entries(sheetCells.value).filter(([key, cell]) => !hidden.has(splitKey(key)[1] - 1) && String(cell.formula ? cell.cachedValue ?? '' : cell.value).toLocaleLowerCase().includes(needle)).map(([key]) => key)
-})
+const searchMatches = computed(() => findSheetMatches(workbook.value.sheets, activeSheetId.value, {
+  text: searchText.value, replacement: replaceText.value, findBy: findBy.value, direction: findDirection.value,
+  scope: findScope.value, caseSensitive: findCaseSensitive.value, wholeCell: findWholeCell.value,
+}, findScope.value === 'sheet' && findSelectionOnly.value ? findSelectionRanges.value : [], findScope.value === 'sheet' && findSelectionOnly.value))
 
 watch(
   () => props.modelValue,
@@ -463,9 +473,9 @@ function getCell(key: string): ExcelCell {
   return sheetCells.value[key] ?? { value: '' }
 }
 
-function selectCell(key: string, extend = false) {
+function selectCell(key: string, extend = false, keepHidden = false) {
   const [column, requestedRow] = splitKey(key)
-  const visibleRow = activeSheet.value ? findVisibleSheetRow(activeSheet.value, requestedRow - 1, 1) : undefined
+  const visibleRow = keepHidden ? requestedRow - 1 : activeSheet.value ? findVisibleSheetRow(activeSheet.value, requestedRow - 1, 1) : undefined
   if (visibleRow === undefined) return
   const row = visibleRow + 1
   key = `${columnName(column)}${row}`
@@ -1095,16 +1105,99 @@ function freeze(rows: number, columns: number) {
   commitHistory()
 }
 
-function openSearch() {
+function openSearch(focusReplacement = false) {
+  if (!searchOpen.value) {
+    findSelectionRanges.value = selectedRanges.value.map(range => ({ ...range }))
+    findSelectionOnly.value = selectedRanges.value.some(range => range.startRow !== range.endRow || range.startColumn !== range.endColumn)
+  }
   searchOpen.value = true
-  void nextTick(() => searchInput.value?.focus())
+  void nextTick(() => (focusReplacement ? replaceInput.value : searchInput.value)?.focus())
 }
-function findNext() {
-  if (!searchMatches.value.length) return
-  const next = searchMatches.value[(searchMatches.value.indexOf(selectedKey.value) + 1) % searchMatches.value.length]
-  if (next) { selectCell(next); spreadsheetCanvas.value?.ensureVisible(next) }
+function focusFindMatch(index: number) {
+  const match = searchMatches.value[index]
+  if (!match) return
+  activeSheetId.value = match.sheetId
+  selectCell(match.key, false, true)
+  spreadsheetCanvas.value?.ensureVisible(match.key)
 }
-function closeSearch() { searchOpen.value = false; searchText.value = ''; spreadsheetCanvas.value?.focus() }
+function moveFindMatch(direction: 1 | -1) {
+  const sheetId = activeSheetId.value
+  const index = nextSheetMatchIndex(searchMatches.value, sheetId, selectedKey.value, direction, findDirection.value, workbook.value.sheets.map(sheet => sheet.id))
+  focusFindMatch(index)
+}
+function findNext() { moveFindMatch(1) }
+function findPrevious() { moveFindMatch(-1) }
+function applyFindReplace(replaceAll: boolean) {
+  const matches = searchMatches.value
+  const selectedIndex = matches.findIndex(match => match.sheetId === activeSheetId.value && match.key === selectedKey.value)
+  const targetIndex = selectedIndex >= 0 ? selectedIndex : nextSheetMatchIndex(matches, activeSheetId.value, selectedKey.value, 1)
+  const patches = createSheetReplacePatches(workbook.value.sheets, matches, {
+    text: searchText.value, replacement: replaceText.value, findBy: findBy.value, direction: findDirection.value,
+    scope: findScope.value, caseSensitive: findCaseSensitive.value, wholeCell: findWholeCell.value,
+  }, replaceAll, targetIndex)
+  if (!patches.length) return
+
+  if (props.studio && workbook.value.id) {
+    try {
+      for (const patch of patches) {
+        const [column, row] = splitKey(patch.key)
+        props.studio.assertCanEditRange(workbook.value.id, patch.sheetId, {
+          startRow: row - 1, endRow: row - 1, startCol: column, endCol: column,
+        })
+      }
+    } catch (error) {
+      emit('notify', { type: 'error', message: error instanceof Error ? error.message : t('find.replace-error', 'Replace failed') })
+      return
+    }
+  }
+
+  const candidate = cloneWorkbook(workbook.value)
+  const grouped = new Map<string, typeof patches>()
+  for (const patch of patches) {
+    const sheet = candidate.sheets.find(item => item.id === patch.sheetId)
+    if (!sheet) continue
+    sheet.cells[patch.key] = patch.cell
+    const entries = grouped.get(patch.sheetId) ?? []
+    entries.push(patch)
+    grouped.set(patch.sheetId, entries)
+  }
+
+  const baseModel = props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook()
+  const candidateModel = applyExcelWorkbookView(baseModel, candidate)
+  for (const [sheetId, entries] of grouped) {
+    const positions = entries.map(({ key }) => {
+      const [column, row] = splitKey(key)
+      return { row: row - 1, column }
+    })
+    const result = validateSheetDataValidationChanges(candidateModel, sheetId, positions)
+    const issue = result.issues.find(item => item.severity === 'stop')
+    if (issue) {
+      emit('notify', { type: 'error', message: `${issue.title}: ${issue.message}` })
+      return
+    }
+    if (result.issues.length) {
+      const warning = result.issues[0]!
+      emit('notify', { type: warning.severity === 'warning' ? 'warning' : 'info', message: `${warning.title}: ${warning.message}` })
+    }
+  }
+
+  const previous = workbook.value
+  workbook.value = candidate
+  try {
+    recalculateFormulas()
+  } catch (error) {
+    workbook.value = previous
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : t('find.replace-error', 'Replace failed') })
+    return
+  }
+  commitHistory()
+  const replaced = patches.length
+  emit('notify', { type: 'success', message: replaceAll
+    ? t('find.replaced-all', `Replaced ${replaced} matches`).replace('{count}', String(replaced))
+    : t('find.replaced-one', 'Replaced 1 match') })
+  if (replaceAll) moveFindMatch(1)
+}
+function closeSearch() { searchOpen.value = false; searchText.value = ''; replaceText.value = ''; findSelectionOnly.value = false; findSelectionRanges.value = []; spreadsheetCanvas.value?.focus() }
 function syncFullscreen() { isFullscreen.value = document.fullscreenElement === workbenchRef.value }
 async function toggleFullscreen() {
   const workbench = workbenchRef.value
@@ -1339,7 +1432,12 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.reset-zoom': () => { zoom.value = 100 },
     'sheet.operation.set-zoom': () => { if (typeof params === 'number' && Number.isFinite(params)) zoom.value = Math.min(400, Math.max(10, params)) },
     'sheet.operation.toggle-fullscreen': toggleFullscreen,
-    'sheet.operation.find': openSearch,
+    'sheet.operation.find': () => openSearch(),
+    'sheet.operation.find-replace': () => openSearch(true),
+    'sheet.operation.find-next': findNext,
+    'sheet.operation.find-previous': findPrevious,
+    'sheet.operation.replace': () => applyFindReplace(false),
+    'sheet.operation.replace-all': () => applyFindReplace(true),
   }
   const command = commands[commandId]
   if (!command) return
@@ -1354,9 +1452,9 @@ function onWindowKeydown(event: KeyboardEvent) {
     event.preventDefault()
     saveWorkbook()
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && document.activeElement?.closest('.excel-workbench')) {
+  if ((event.ctrlKey || event.metaKey) && ['f', 'h'].includes(event.key.toLowerCase()) && document.activeElement?.closest('.excel-workbench')) {
     event.preventDefault()
-    openSearch()
+    void executeRibbon(event.key.toLowerCase() === 'h' ? 'sheet.operation.find-replace' : 'sheet.operation.find')
   }
 }
 
@@ -1406,11 +1504,24 @@ onDeactivated(() => {
     <SheetFormulaBar ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :error="nameError" @update:value="editValue = $event" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
-      <Search :size="15" />
-      <Input ref="searchInput" v-model:value="searchText" size="small" placeholder="查找工作表内容" aria-label="查找工作表内容" @press-enter="findNext" />
-      <span class="search-count">{{ searchText ? `${searchMatches.length} 个匹配` : '输入查找内容' }}</span>
-      <Button size="small" :disabled="!searchMatches.length" @click="findNext">下一个</Button>
-      <Button type="text" size="small" aria-label="关闭查找" @click="closeSearch"><X :size="15" /></Button>
+      <div class="find-input-row">
+        <Search :size="15" />
+        <Input ref="searchInput" v-model:value="searchText" size="small" :placeholder="t('find.find-placeholder', 'Find')" :aria-label="t('find.find', 'Find')" @press-enter="executeRibbon('sheet.operation.find-next')" />
+        <span class="search-count">{{ searchText ? t('find.match-count', '{count} matches').replace('{count}', String(searchMatches.length)) : t('find.enter-query', 'Enter search text') }}</span>
+        <Button size="small" :disabled="!searchMatches.length" :title="t('find.previous-match', 'Previous match')" :aria-label="t('find.previous-match', 'Previous match')" @click="executeRibbon('sheet.operation.find-previous')"><ArrowUp :size="14" /></Button>
+        <Button size="small" :disabled="!searchMatches.length" :title="t('find.next-match', 'Next match')" :aria-label="t('find.next-match', 'Next match')" @click="executeRibbon('sheet.operation.find-next')"><ArrowDown :size="14" /></Button>
+        <Button type="text" size="small" :aria-label="t('find.close', 'Close find and replace')" @click="closeSearch"><X :size="15" /></Button>
+      </div>
+      <div class="find-options-row">
+        <Input ref="replaceInput" v-model:value="replaceText" size="small" :placeholder="t('find.replace-placeholder', 'Replace with')" :aria-label="t('find.replace', 'Replace')" @press-enter="executeRibbon('sheet.operation.replace')" />
+        <Button size="small" :disabled="!searchMatches.some(match => match.replaceable)" @click="executeRibbon('sheet.operation.replace')"><Replace :size="14" />{{ t('find.replace', 'Replace') }}</Button>
+        <Button size="small" :disabled="!searchMatches.some(match => match.replaceable)" @click="executeRibbon('sheet.operation.replace-all')"><ListRestart :size="14" />{{ t('find.replace-all', 'Replace All') }}</Button>
+        <Select v-model:value="findScope" size="small" :aria-label="t('find.scope', 'Find range')" :options="[{ value: 'sheet', label: t('find.current-sheet', 'Current Sheet') }, { value: 'workbook', label: t('find.workbook', 'Workbook') }]" />
+        <Select v-model:value="findDirection" size="small" :aria-label="t('find.direction', 'Find direction')" :options="[{ value: 'row', label: t('find.by-row', 'By row') }, { value: 'column', label: t('find.by-column', 'By column') }]" />
+        <Select v-model:value="findBy" size="small" :aria-label="t('find.find-by', 'Find by')" :options="[{ value: 'value', label: t('find.value', 'Value') }, { value: 'formula', label: t('find.formula', 'Formula') }]" />
+        <Checkbox v-model:checked="findCaseSensitive">{{ t('find.case-sensitive', 'Match case') }}</Checkbox>
+        <Checkbox v-model:checked="findWholeCell">{{ t('find.whole-cell', 'Match entire cell') }}</Checkbox>
+      </div>
     </div>
 
     <div class="sheet-canvas-stack">
@@ -1470,8 +1581,13 @@ onDeactivated(() => {
 .chart-insert-form label { display: flex; flex-direction: column; gap: 6px; color: #4b5563; font-size: 12px; }
 .chart-insert-error { margin: 8px 0 0; color: #c2413a; }
 .chart-insert-hint { margin: 0; color: #8490a0; font-size: 11px; }
-.sheet-find-panel { display: flex; flex: 0 0 40px; box-sizing: border-box; min-width: 0; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 4px 12px; color: #718096; background: #f8faff; }
-.sheet-find-panel :deep(.ant-input) { width: 240px; min-width: 40px; }
+.sheet-find-panel { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px; box-sizing: border-box; min-width: 0; border-bottom: 1px solid var(--line); padding: 6px 12px; color: #526071; background: #f8faff; }
+.find-input-row, .find-options-row { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.find-input-row :deep(.ant-input) { width: min(300px, 32vw); min-width: 100px; }
+.find-options-row :deep(.ant-input) { width: min(240px, 25vw); min-width: 100px; }
+.find-options-row :deep(.ant-select) { min-width: 105px; }
+.find-options-row :deep(.ant-checkbox-wrapper) { flex-shrink: 0; font-size: 12px; }
 .search-count { flex-shrink: 0; font-size: 12px; }
-@media (max-width: 600px) { .sheet-find-panel { gap: 4px; padding: 4px; } .sheet-find-panel :deep(.ant-input) { flex: 1; } }
+@media (max-width: 760px) { .find-options-row { flex-wrap: wrap; } .find-options-row :deep(.ant-input) { flex: 1 1 160px; width: auto; } }
+@media (max-width: 600px) { .sheet-find-panel { gap: 6px; padding: 6px; } .find-input-row :deep(.ant-input) { flex: 1; width: auto; } .find-options-row :deep(.ant-select) { flex: 1 1 105px; } .search-count { display: none; } }
 </style>

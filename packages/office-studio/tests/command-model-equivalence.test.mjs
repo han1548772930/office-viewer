@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { equivalentModelData } from '../src/platform/commands/model-equivalence.ts'
 
 test('model equivalence ignores key order and absent optional data, but only excludes root state', () => {

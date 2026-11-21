@@ -1,6 +1,7 @@
 import type { Component } from 'vue'
-import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTodo, ListTree, Maximize, Minimize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Sigma, Smile, StickyNote, Strikethrough, Subscript, Superscript, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTodo, ListTree, LockKeyhole, Maximize, Minimize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Sigma, Smile, StickyNote, Strikethrough, Subscript, Superscript, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
+import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
@@ -44,8 +45,17 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         ] },
       ] },
       { id: 'doc-editing', title: '编辑', order: 1, items: [action('doc-find', '查找', Search, 'doc.operation.toggle-find')] },
+      { id: 'doc-access', title: '权限', order: 4, items: [action('doc-permissions', '文档权限', LockKeyhole, 'doc.operation.open-permissions')] },
       { id: 'doc-format', title: '字体与样式', order: 2, items: [
-        { id: 'doc-block-style', type: 'select', title: '段落样式', width: 96, value: state.blockStyle ?? null, placeholder: '混合样式', commandId: 'doc.command.set-block-type', options: [{ label: '正文', value: 'P' }, ...[1, 2, 3, 4, 5, 6].map((level) => ({ label: `标题 ${level}`, value: `H${level}` })), { label: '引用', value: 'quote', params: { type: 'quote' } }], valueParams: (value) => ({ type: value === 'P' ? 'paragraph' : 'heading', level: value === 'P' ? 0 : Number(String(value).slice(1)) }) },
+        { id: 'doc-block-style', type: 'select', title: '段落样式', width: 120, value: state.blockStyle ?? null, placeholder: '混合样式', options: [
+          ...([
+            ['normal', 'normal', 'Normal'], ['title', 'title', 'Title'], ['subtitle', 'subtitle', 'Subtitle'],
+            ['H1', 'heading1', 'Heading 1'], ['H2', 'heading2', 'Heading 2'], ['H3', 'heading3', 'Heading 3'],
+            ['H4', 'heading4', 'Heading 4'], ['H5', 'heading5', 'Heading 5'],
+          ] as const).map(([value, namedStyle, label]) => ({ label, value, commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle } })),
+          { label: 'Heading 6', value: 'H6', commandId: 'doc.command.set-block-type', params: { type: 'heading', level: 6 } },
+          { label: 'Quote', value: 'quote', commandId: 'doc.command.set-block-type', params: { type: 'quote' } },
+        ] },
         { id: 'doc-font-family', type: 'select', title: '字体', width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', options: ['Arial', 'Aptos', 'Calibri', 'Georgia', 'Times New Roman', 'Microsoft YaHei', 'SimSun'].map((value) => ({ label: value === 'Microsoft YaHei' ? '微软雅黑' : value === 'SimSun' ? '宋体' : value, value })), valueParams: (value) => ({ patch: { fontFamily: value } }) },
         { id: 'doc-font-size', type: 'select', title: '字号', width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', options: [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((value) => ({ label: String(value), value })), valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
         format('doc-bold', '加粗', Bold, 'bold'), format('doc-italic', '斜体', Italic, 'italic'), format('doc-underline', '下划线', Underline, 'underline'), format('doc-strike', '删除线', Strikethrough, 'strike'),
@@ -138,6 +148,12 @@ export function documentCommandFromRibbon(id: string, params: unknown): Document
     return params.position === 'before' || params.position === 'after' ? { id, position: params.position } : undefined
   }
   if (id === 'doc.command.insert-text') return typeof params.text === 'string' ? { id, text: params.text } : undefined
+  if (id === 'doc.command.set-paragraph-named-style') {
+    const namedStyle = params.namedStyle
+    return typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)
+      ? { id, namedStyle: namedStyle as DocumentNamedParagraphStyle }
+      : undefined
+  }
   if (id === 'doc.command.set-block-type') {
     const type = params.type
     if (type !== 'paragraph' && type !== 'heading' && type !== 'bullet' && type !== 'numbered' && type !== 'checklist' && type !== 'quote') return undefined

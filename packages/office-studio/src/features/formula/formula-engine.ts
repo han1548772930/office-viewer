@@ -2,7 +2,7 @@ import type { CellScalar, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } fro
 import { formulaCellKey, formulaError, isFormulaError } from './formula-types.ts'
 import type {
   FormulaCellAddress, FormulaDependencyGraph, FormulaEngineDiagnostic, FormulaErrorValue, FormulaNode,
-  FormulaRangeReference, FormulaRecalculationResult, FormulaReference, FormulaValue,
+  FormulaEvaluationOptions, FormulaRangeReference, FormulaRecalculationResult, FormulaReference, FormulaValue,
 } from './formula-types.ts'
 import { FormulaSyntaxError, parseFormula } from './formula-parser.ts'
 
@@ -51,7 +51,8 @@ export function createFormulaDependencyGraph(workbook: WorkbookModel): FormulaDe
  * formulas keep their previous cached result and receive a diagnostic instead
  * of being silently replaced by a false value.
  */
-export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: WorkbookModel): FormulaRecalculationResult {
+export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: WorkbookModel, options: FormulaEvaluationOptions = {}): FormulaRecalculationResult {
+  const evaluationTime = validEvaluationTime(options.now) ?? new Date()
   const graph = createFormulaDependencyGraph(workbook)
   const sheetsByName = new Map(workbook.sheets.map((sheet) => [sheet.name.toLocaleLowerCase(), sheet]))
   const memo = new Map<string, FormulaValue>()
@@ -86,7 +87,7 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
     let result: FormulaValue
     const previousCell = previous?.sheets.find((candidate) => candidate.id === sheet.id)?.cells[cellKey(row, column)]
     try {
-      result = normalizeResult(evaluateNode(parseFormula(current.formula), sheet, evaluateCell, workbook, sheetsByName, { row, column }))
+      result = normalizeResult(evaluateNode(parseFormula(current.formula), sheet, evaluateCell, workbook, sheetsByName, { row, column }, evaluationTime))
     } catch (error) {
       const failure = toFormulaError(error)
       // Keep a cached result for an unchanged imported formula outside our grammar/catalog.
@@ -141,7 +142,8 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
   return { workbook: nextWorkbook, graph, recalculatedCells, diagnostics }
 }
 
-export function evaluateFormula(formula: string, workbook: WorkbookModel, currentSheetId: string): FormulaValue {
+export function evaluateFormula(formula: string, workbook: WorkbookModel, currentSheetId: string, options: FormulaEvaluationOptions = {}): FormulaValue {
+  const evaluationTime = validEvaluationTime(options.now) ?? new Date()
   const sheet = workbook.sheets.find((candidate) => candidate.id === currentSheetId)
   if (!sheet) return formulaError('#REF!')
   const byName = new Map(workbook.sheets.map((item) => [item.name.toLocaleLowerCase(), item]))
@@ -155,13 +157,13 @@ export function evaluateFormula(formula: string, workbook: WorkbookModel, curren
     if (active.includes(key)) return formulaError('#CIRCULAR!')
     active.push(key)
     let value: FormulaValue
-    try { value = normalizeResult(evaluateNode(parseFormula(cell.formula), targetSheet, resolve, workbook, byName, { row, column })) }
+    try { value = normalizeResult(evaluateNode(parseFormula(cell.formula), targetSheet, resolve, workbook, byName, { row, column }, evaluationTime)) }
     catch (error) { value = toFormulaError(error) }
     active.pop()
     memo.set(key, value)
     return value
   }
-  try { return normalizeResult(evaluateNode(parseFormula(formula), sheet, resolve, workbook, byName)) }
+  try { return normalizeResult(evaluateNode(parseFormula(formula), sheet, resolve, workbook, byName, undefined, evaluationTime)) }
   catch (error) { return toFormulaError(error) }
 }
 
@@ -175,6 +177,7 @@ function evaluateNode(
   workbook: WorkbookModel,
   sheetsByName: Map<string, SpreadsheetSheet>,
   formulaCell?: Pick<FormulaCellAddress, 'row' | 'column'>,
+  evaluationTime: Date = new Date(),
 ): RuntimeValue {
   switch (node.kind) {
     case 'literal': return typeof node.value === 'string' && ERROR_CODES.has(node.value.toUpperCase()) ? formulaError(node.value.toUpperCase()) : node.value
@@ -187,20 +190,20 @@ function evaluateNode(
       return targetSheet ? { kind: 'rangeValue', sheet: targetSheet, reference: node.reference } : formulaError('#REF!')
     }
     case 'unary': {
-      const value = evaluateNode(node.operand, currentSheet, resolveCell, workbook, sheetsByName, formulaCell)
+      const value = evaluateNode(node.operand, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
       if (isFormulaError(value)) return value
       const number = numericCoercion(value)
       if (isFormulaError(number)) return number
       return finiteResult(node.operator === '-' ? -number : number)
     }
     case 'binary': {
-      const left = evaluateNode(node.left, currentSheet, resolveCell, workbook, sheetsByName, formulaCell)
+      const left = evaluateNode(node.left, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
       if (isFormulaError(left)) return left
-      const right = evaluateNode(node.right, currentSheet, resolveCell, workbook, sheetsByName, formulaCell)
+      const right = evaluateNode(node.right, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
       if (isFormulaError(right)) return right
       return evaluateBinary(node.operator, scalarValue(left), scalarValue(right))
     }
-    case 'function': return evaluateFunction(node.name, node.arguments, currentSheet, resolveCell, workbook, sheetsByName, formulaCell)
+    case 'function': return evaluateFunction(node.name, node.arguments, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
     case 'error': return formulaError(node.code)
   }
   return formulaError('#VALUE!')
@@ -214,8 +217,9 @@ function evaluateFunction(
   workbook: WorkbookModel,
   byName: Map<string, SpreadsheetSheet>,
   formulaCell?: Pick<FormulaCellAddress, 'row' | 'column'>,
+  evaluationTime: Date = new Date(),
 ): RuntimeValue {
-  const evaluateArgument = (argument: FormulaNode): RuntimeValue => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell)
+  const evaluateArgument = (argument: FormulaNode): RuntimeValue => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
   if (name === 'ADDRESS') return evaluateAddress(args, evaluateArgument)
   if (name === 'ROW' || name === 'COLUMN') return evaluateReferenceIndex(name, args, evaluateArgument, formulaCell, workbook, sheet, byName)
   if (name === 'AREAS') return evaluateReferenceAreas(args, evaluateArgument)
@@ -377,6 +381,17 @@ function evaluateFunction(
     if (evaluated.length !== 1) return formulaError('#VALUE!')
     return singleRangeValue(evaluated[0]!, resolve)
   }
+  if (name === 'NOW' || name === 'TODAY') {
+    if (evaluated.length !== 0) return formulaError('#VALUE!')
+    const year = evaluationTime.getFullYear()
+    const month = evaluationTime.getMonth() + 1
+    const day = evaluationTime.getDate()
+    const serial = datePartsToSerial(year, month, day, workbook.date1904)
+    if (isFormulaError(serial) || typeof serial !== 'number') return formulaError('#NUM!')
+    if (name === 'TODAY') return serial
+    const seconds = evaluationTime.getHours() * 3600 + evaluationTime.getMinutes() * 60 + evaluationTime.getSeconds()
+    return serial + seconds / 86_400
+  }
   if (name === 'EPOCHTODATE') {
     if (evaluated.length < 1 || evaluated.length > 2) return formulaError('#VALUE!')
     const timestamp = singleRangeValue(evaluated[0]!, resolve)
@@ -441,6 +456,49 @@ function evaluateFunction(
     const basis = Math.floor(basisValue)
     if (basis < 0 || basis > 4) return formulaError('#NUM!')
     return finiteResult(yearFraction(start, end, basis, workbook))
+  }
+  if (name === 'DATEDIF') {
+    if (evaluated.length !== 3) return formulaError('#VALUE!')
+    const start = formulaDateSerial(evaluated[0]!, workbook)
+    const end = formulaDateSerial(evaluated[1]!, workbook)
+    if (isFormulaError(start)) return start
+    if (isFormulaError(end)) return end
+    if (end < start) return formulaError('#NUM!')
+    if (typeof evaluated[2] !== 'string') return formulaError('#NUM!')
+    const unit = evaluated[2].toLocaleUpperCase()
+    const startParts = serialToDateParts(start, workbook.date1904)
+    const endParts = serialToDateParts(end, workbook.date1904)
+    if (!startParts || !endParts) return formulaError('#NUM!')
+    const startYear = !workbook.date1904 && start === 0 ? 1900 : startParts.year
+    const startMonth = !workbook.date1904 && start === 0 ? 1 : startParts.month
+    const startDay = !workbook.date1904 && start === 0 ? 0 : startParts.day
+    if (unit === 'D') return Math.floor(end) - Math.floor(start)
+    if (unit === 'Y') {
+      return endParts.year - startYear - Number(endParts.month < startMonth || (endParts.month === startMonth && endParts.day < startDay))
+    }
+    if (unit === 'M') {
+      return (endParts.year - startYear) * 12 + endParts.month - startMonth - Number(endParts.day < startDay)
+    }
+    if (unit === 'YM') {
+      let months = endParts.month - startMonth
+      if (endParts.month < startMonth || (endParts.month === startMonth && endParts.day < startDay)) months += 12
+      if (endParts.day < startDay) months -= 1
+      return months
+    }
+    if (unit === 'MD') {
+      let days = endParts.day - startDay
+      if (endParts.day < startDay) days += new Date(Date.UTC(endParts.year, endParts.month - 1, 0)).getUTCDate()
+      return days
+    }
+    if (unit === 'YD') {
+      const targetYear = endParts.month < startMonth || (endParts.month === startMonth && endParts.day < startDay)
+        ? startYear + 1
+        : startYear
+      const target = datePartsToSerial(targetYear, endParts.month, endParts.day, workbook.date1904)
+      if (isFormulaError(target) || typeof target !== 'number') return formulaError('#NUM!')
+      return Math.floor(target) - Math.floor(start)
+    }
+    return formulaError('#NUM!')
   }
   if (name === 'NETWORKDAYS' || name === 'NETWORKDAYS.INTL') {
     const international = name.endsWith('.INTL')
@@ -1333,6 +1391,10 @@ function evaluateCountValue(name: 'COUNTBLANK' | 'COUNTA', values: RuntimeValue[
       count++
       continue
     }
+    if (name === 'COUNTA' && !isRangeValue(value)) {
+      if (value !== null) count++
+      continue
+    }
     const cells = conditionalCells(value, args[index]!, sheet, resolve)
     if (isFormulaError(cells)) return cells
     for (const cell of cells) {
@@ -1693,6 +1755,10 @@ function toFormulaError(error: unknown): FormulaErrorValue {
   return formulaError('#VALUE!')
 }
 function cellKey(row: number, column: number): string { return `${row}:${column}` }
+
+function validEvaluationTime(value: Date | undefined): Date | undefined {
+  return value instanceof Date && Number.isFinite(value.getTime()) ? value : undefined
+}
 
 interface DateParts { year: number; month: number; day: number }
 const MS_PER_DAY = 86_400_000

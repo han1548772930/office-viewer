@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
@@ -9,7 +9,7 @@ let apiModule
 let chartEngine
 let pivotPanelState
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: resolve(process.cwd(), 'vite.config.ts'),
     root: process.cwd(),
@@ -22,7 +22,7 @@ before(async () => {
   pivotPanelState = await server.ssrLoadModule('/packages/office-studio/src/features/pivot/services/pivot-panel-state.ts')
 })
 
-after(async () => {
+afterAll(async () => {
   await server?.close()
 })
 

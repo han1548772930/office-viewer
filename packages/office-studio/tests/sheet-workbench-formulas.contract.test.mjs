@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createBlankWorkbook } from '../src/domain/model.ts'
 import { applyExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { recalculateSheetViewFormulas } from '../src/features/sheet-workbench/sheet-view-formulas.ts'

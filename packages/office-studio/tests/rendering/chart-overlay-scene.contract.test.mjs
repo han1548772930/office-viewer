@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createBlankSheet } from '../../src/domain/model.ts'
 import { createSpreadsheetScene } from '../../src/rendering/spreadsheet/scene.ts'
 import { SpreadsheetGeometry } from '../../src/rendering/spreadsheet/layout.ts'

@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Popover, Tooltip } from 'antdv-next'
 import { Ellipsis, ChevronDown } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import { fitRibbonGridGroups, GRID_RIBBON, groupRibbonGridOverflowItems, placeRibbonGridItems, type RibbonGroup } from './ribbon-schema'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 
 const props = withDefaults(defineProps<{ groups: RibbonGroup[]; title: string; direction?: 'ltr' | 'rtl' }>(), { direction: 'ltr' })
 const emit = defineEmits<{ execute: [commandId: string, params?: unknown] }>()
+const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
 const container = ref<HTMLElement>()
 const moreAnchor = ref<HTMLElement>()
@@ -188,11 +190,11 @@ onBeforeUnmount(() => {
       :inert="overflowGroups.length === 0"
     >
       <Popover v-model:open="moreOpen" trigger="click" placement="bottomRight" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
-        <Tooltip title="更多功能">
+        <Tooltip :title="translate('common.more', '更多功能')">
           <Button
             type="text"
             class="ribbon-grid-more-button"
-            aria-label="更多功能"
+            :aria-label="translate('common.more', '更多功能')"
             aria-haspopup="menu"
             :aria-expanded="moreOpen"
             @mousedown.prevent
@@ -200,12 +202,12 @@ onBeforeUnmount(() => {
             @keydown.esc="closeOverflow"
           >
             <Ellipsis :size="20" />
-            <span>更多</span>
+            <span>{{ translate('common.more', '更多') }}</span>
             <ChevronDown :size="12" />
           </Button>
         </Tooltip>
         <template #content>
-          <div ref="overflowPanel" class="ribbon-grid-overflow" role="menu" aria-label="更多功能" @keydown="onOverflowKeydown">
+          <div ref="overflowPanel" class="ribbon-grid-overflow" role="menu" :aria-label="translate('common.more', '更多功能')" @keydown="onOverflowKeydown">
             <section v-for="{ group } in overflowGroups" :key="group.id" class="ribbon-grid-overflow-group" role="group" :aria-label="group.title">
               <h3 v-if="group.title">{{ group.title }}</h3>
               <div v-for="(row, rowIndex) in groupRibbonGridOverflowItems(group.items)" :key="`${group.id}-${rowIndex}`" class="ribbon-grid-overflow-row">

@@ -1,5 +1,8 @@
 import type { GridRange } from './layout.ts'
 
+export const SHEET_SELECTION_STROKE_WIDTH = 1
+export const SHEET_SELECTION_HANDLE_SIZE = 6
+
 export function containsCell(ranges: readonly GridRange[], row: number, column: number): boolean {
   return ranges.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)
 }

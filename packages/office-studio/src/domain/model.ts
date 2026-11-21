@@ -488,6 +488,33 @@ export interface DocumentNote {
   referenceRunId: string
 }
 
+export interface DocumentCommentAnchorSegment {
+  blockId: string
+  startOffset: number
+  endOffset: number
+  text: string
+}
+
+export interface DocumentCommentMessage {
+  id: string
+  authorId: string
+  authorName: string
+  text: string
+  createdAt: string
+  updatedAt?: string
+}
+
+export interface DocumentThreadComment {
+  id: string
+  anchor: DocumentCommentAnchorSegment[]
+  referenceText: string
+  messages: DocumentCommentMessage[]
+  resolved: boolean
+  createdAt: string
+  updatedAt: string
+  metadata?: Record<string, unknown>
+}
+
 export type DocumentPermissionAction = 'edit' | 'copy' | 'comment' | 'print' | 'export'
 export type DocumentPermissionScope = 'document' | 'section' | 'paragraph' | 'entity'
 
@@ -512,6 +539,7 @@ export interface DocumentModel {
   permissionRules?: DocumentPermissionRule[]
   footnotes?: Record<string, DocumentNote>
   endnotes?: Record<string, DocumentNote>
+  comments?: Record<string, DocumentThreadComment>
   id?: string
   metadata?: Record<string, unknown>
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createSheetContextMenuItems } from '../src/components/spreadsheet/sheet-context-menu.ts'
 
 const options = { canDeleteRow: true, canDeleteColumn: true, frozen: true }

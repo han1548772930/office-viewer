@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { afterEach, test } from 'node:test'
+import { afterAll, afterEach, test } from 'vitest'
 import { createServer } from 'vite'
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
@@ -63,7 +63,7 @@ afterEach(() => {
   globalThis.window = originalWindow
 })
 
-test.after(() => vite.close())
+afterAll(() => vite.close())
 
 test('Canvas2D uses the effective rounded backing-store scale after resize', () => {
   const transforms = []

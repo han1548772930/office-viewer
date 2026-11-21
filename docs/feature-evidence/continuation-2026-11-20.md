@@ -64,9 +64,10 @@
 ## Chart type coverage
 
 - 对应 SHEET-22、SHEET-24。图表模型及透视图面板现在提供簇状柱形、折线、面积、饼、圆环和堆积柱形六类。`chart-engine.ts` 实现面积零线交叉分段、正负堆积值域/基线及饼/圆环扇区；饼/圆环约束为一个非负且总和为正的序列，堆积柱形要求线性值轴。缺失值不会被折线或面积图跨越连接。
+- 图表绘制现在生成分类标签、线性/对数数值刻度、水平网格线及模型中已有的 x/y 轴标题；折线/面积点和分类标签使用一致的分类中心位置。新增渲染契约覆盖这些命令及对数刻度。固定参考包的 `sheet-chart-render-object.config.ts` 只定义通用绘图对象外框配置，未找到 Sheets 图表引擎实现可供逐项比照。
 - 普通 XLSX 图表 writer 写出 area、pie、doughnut 及 stacked-column OOXML，并保留既有 bar/line 写出。PivotChart writer 已生成 cache definition/records、pivot table、workbook/worksheet/cache/table relationships、`pivotTableParts` 和 chart `c:pivotSource`。缺失关联 pivot definition 仍会明确返回 `UNSUPPORTED_EXPORT`。
 - `office-writer` 当前全量 47/47、`office-parser` 17/17 通过。同一生成 XLSX 的 Writer→Parser 契约验证 PivotCache/PivotTable/PivotChart 部件、关系、来源/输出范围、字段配置和图表关联能恢复到 canonical pivot model。Studio normalizer 定向契约 2/2、类型检查通过。Excel/LibreOffice 实际重开未验收；复杂筛选、分组等配置的导入保真仍有缺口。
-- 按本轮安排未运行浏览器测试。完整轴/数据标签/主题编辑和真实 Office 重开仍待验收，SHEET-22/24 继续标为未验收。
+- 按本轮安排未运行浏览器测试。轴属性编辑、图例位置完整布局、数据标签、主题编辑和真实 Office 重开仍待验收，SHEET-22/24 继续标为未验收。
 
 ## Office IO
 
@@ -93,3 +94,14 @@
 浏览器使用 headless Edge，计算专项使用 Chrome；Windows 受限进程清理会使 Playwright webServer 收尾滞留，因此最终浏览器命令以允许正常子进程回收的权限运行。compute/docs/charts 等配置新增独立 outputDir，避免并行测试清理 `test-results` 根目录而删除彼此的 trace、下载和报告。
 
 本轮没有进行性能优化验收或像素对比。全部功能 ID 维持未验收；完整图表/透视/切片器、权限、协作、持久版本、打印、Docs 脚注/代码/分栏/LaTeX/引用块/Callout/形状/SmartArt/图表以及其它 Pro 目标均继续保留，不能以当前工具栏已扩充替代其实现和验收。
+
+## 工具栏细节续查（2026-11-21）
+
+- 对照固定提交 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68` 复核 `packages/ui/src/views/components/ribbon/RibbonGrid.tsx`。该实现工具区高度为 `calc(4.25rem + 1px)`，网格两行各 24px，行列 gap 为 4px，组内 padding 为 8px，溢出区宽 72px。本项目原参数为 73/28/8/64，现已改为 69/24/4/72，垂直 padding 改为 8px、项间距改为 4px。此前本节曾将生产 Ribbon 记为默认 classic/opt-in，实际 `ExcelWorkbench.vue` 与 `DocumentWorkbench.vue` 都明确传入 `variant="grid"`，现以实际生产入口为准。
+- `RibbonGridToolbar.vue`、`WorkbenchRibbon.vue` 的“更多”提示/无障碍名称及 `RibbonItem.vue` 的“混合”占位已改用 Vue I18n 插件 translator 和 `common.more`/`common.mixed` keys。定向 i18n 与 Ribbon schema 契约通过。菜单项的 menuitem ARIA 角色和嵌套左右键行为仍需补验。
+- 普通组件控件审计将页眉页脚字段迁移到 `Input.TextArea`，条件格式面板迁移规则 `Button`、`ColorPicker` 和 `Checkbox`，工作表标签与右键命令迁移到 `Button`，Docs 颜色字段迁移到 `ColorPicker`，Docs 缩放滑杆迁移到 `Slider`。画布编辑桥和隐藏文件选择器仍使用原生输入元素。Vue 类型检查通过；右键及标签键盘行为尚待统一浏览器验证。
+- 活动单元格选区描边宽度与 Univer 默认 `genNormalSelectionStyle().strokeWidth` 同为 1 CSS px。Canvas 活动框和输入框边缘过去重叠且绘制模型不同，现编辑态隐藏同一单元格的重复 Canvas 边框，输入层外扩半个像素并拥有单一边框；右下角选择柄以覆盖层保留。布局契约覆盖缩放、冻结窗格和合并单元格。
+- 多格选区原先只有填充色和活动单元格框，缺少范围外沿。现按可见范围的四条真实外沿绘制，冻结窗格内部不额外补边，柄落在末端选中单元格。选区/编辑专项 8 项契约与 `vue-tsc` 通过。仍未进行浏览器像素或 WebGPU/Canvas2D 对照，截图视觉验收待整批功能稳定后统一运行。
+- 本次只读 Ribbon 审计确认 Docs 尚缺上游明确入口或行为：查找替换（DOC-09）、权限管理面板、评论（DOC-10）、正文目录（DOC-04）、单独清除字体颜色/高亮；段落 named styles 与字体/字号选择行为也未对齐。Docs 表格上下文 Ribbon 的单元格/行列对齐、合并拆分、边框底色和尺寸等仍是 DOC-06 缺口。
+- Sheets 尚缺上游插件注册的插入图片/背景图、超链接、评论和结构化表格入口；查找缺替换/全部替换（SHEET-15）；公式 UI 仍使用有限本地 catalog，不能代表固定版完整类别与函数集合。Sheets/Docs Ribbon 使用 Grid 并非其本身是错误变体，但须继续对照上游布局和产品上下文，不能仅以入口数量判定 parity。
+- `COMMON-01/02/03`、`SHEET-15`、`DOC-02/04/06/09/10` 继续未验收。以上缺口不因入口显示或本轮控件替换而关闭。

@@ -35,6 +35,8 @@ pub struct DocumentPayload {
     pub footnotes: Option<Vec<DocumentNotePayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endnotes: Option<Vec<DocumentNotePayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comments: Option<Vec<DocumentCommentPayload>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +44,29 @@ pub struct DocumentPayload {
 pub struct DocumentNotePayload {
     pub id: String,
     pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentCommentPayload {
+    pub id: String,
+    pub author: Option<String>,
+    pub date: Option<String>,
+    pub text: String,
+    pub parent_id: Option<String>,
+    pub resolved: Option<bool>,
+    pub targets: Vec<DocumentCommentTargetPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentCommentTargetPayload {
+    pub node_id: String,
+    pub part_name: String,
+    pub story: String,
+    pub start: Option<usize>,
+    pub end: Option<usize>,
+    pub offset_encoding: String,
 }
 
 #[derive(Debug, Serialize)]

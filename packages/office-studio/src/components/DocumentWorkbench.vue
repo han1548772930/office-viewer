@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Input, InputNumber, Modal, Tooltip } from 'antdv-next'
+import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
+import { Button, Checkbox, ColorPicker, Input, InputNumber, Modal, Tooltip } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import type { DocumentContentControlType, DocumentModel, DocumentPageSetup } from '../domain/model'
+import type { DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
@@ -14,6 +14,7 @@ import DocumentHeaderFooterPanel from './document/DocumentHeaderFooterPanel.vue'
 import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
 import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
 import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
+import DocumentPermissionPanel from './document/DocumentPermissionPanel.vue'
 import DocumentCharacterPicker from './document/DocumentCharacterPicker.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
@@ -31,6 +32,8 @@ import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updat
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
 import { permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
+import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
+import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
 import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n'
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionDefaultAllow?: boolean }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true })
@@ -70,6 +73,22 @@ const outlineItems = computed(() => buildDocumentOutline(model.value))
 const activeOutlineId = computed(() => activeOutlineIdForBlock(outlineItems.value, model.value, visibleBlockId.value ?? selection.value.focus.blockId))
 const showFind = ref(false)
 const searchText = ref('')
+const replaceText = ref('')
+const searchCaseSensitive = ref(false)
+const searchWholeWord = ref(false)
+const searchInSelection = ref(false)
+const searchScopeSelection = shallowRef<DocumentSelection>()
+watch(searchInSelection, (enabled) => {
+  searchScopeSelection.value = enabled && !selectionCollapsed(selection.value)
+    ? { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } }
+    : undefined
+})
+const searchMatches = computed(() => showFind.value ? findDocumentMatches(model.value, searchText.value, {
+  caseSensitive: searchCaseSensitive.value,
+  wholeWord: searchWholeWord.value,
+  locale: officeLocale.value,
+  selection: searchInSelection.value ? searchScopeSelection.value : undefined,
+}) : [])
 const activePageIndex = ref(0)
 const textColor = ref('#1f2937')
 const highlightColor = ref('#fff1a8')
@@ -89,6 +108,11 @@ const headerFooterSectionId = computed(() => sectionIdForBlock(model.value, sele
 const codeBlockPanelOpen = ref(false)
 const latexPanelOpen = ref(false)
 const notesPanelOpen = ref(false)
+const permissionPanelOpen = ref(false)
+const permissionTargets = computed(() => documentPermissionTargetOptions(model.value))
+const canManageDocumentPermissions = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], {
+  documentId: model.value.id ?? '', userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId, defaultAllow: props.permissionDefaultAllow,
+}, 'edit').allowed)
 const activeCodeBlock = computed(() => model.value.blocks.find((block) => block.id === selection.value.focus.blockId))
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
 const activeLatexFormula = computed(() => {
@@ -168,7 +192,8 @@ function publish(next: DocumentModel) {
   emit('document-change', next)
 }
 function execute(command: DocumentCommand) {
-  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
+  const targets = command.id === 'doc.command.set-document-permission-rules' ? [] : permissionTargetsForSelection(model.value, selection.value)
+  if (!canDocumentPermission('edit', targets)) return
   if (command.id === 'doc.command.insert-text') {
     const next = cloneDocument(model.value)
     const codeSelection = editCodeBlockText(next, selection.value, { text: command.text })
@@ -349,19 +374,75 @@ async function onImageFile(event: Event) {
   image.onerror = () => { if (request === imageRequest && modalOpen.value && modalKind.value === 'image') notify('无法读取该图片') }
   image.src = source
 }
-function findNext() {
-  if (!searchText.value) return
-  const targets = textTargets(model.value)
-  const current = targets.findIndex((target) => target.blockId === selection.value.focus.blockId && target.row === selection.value.focus.row && target.col === selection.value.focus.col)
-  for (let step = 0; step <= targets.length; step++) {
-    const index = (Math.max(0, current) + step) % targets.length
-    const target = targets[index]!
-    const text = runText(runsForTarget(model.value, target)).toLocaleLowerCase()
-    const start = step === 0 ? selection.value.focus.offset : 0
-    const offset = text.indexOf(searchText.value.toLocaleLowerCase(), start)
-    if (offset >= 0) { onSelection({ anchor: { ...target, offset }, focus: { ...target, offset: offset + searchText.value.length } }); canvasRef.value?.scrollToBlock(target.blockId); canvasRef.value?.focus(); return }
+function currentSearchMatchIndex() {
+  return searchMatches.value.findIndex((match) => JSON.stringify(pointForMatch(match)) === JSON.stringify(selection.value))
+}
+function navigateSearch(direction: -1 | 1) {
+  const matches = searchMatches.value
+  if (!matches.length) return
+  const selectedIndex = currentSearchMatchIndex()
+  let index = selectedIndex + direction
+  if (selectedIndex < 0) {
+    const targets = textTargets(model.value)
+    const targetIndex = targets.findIndex((target) => target.blockId === selection.value.focus.blockId && target.row === selection.value.focus.row && target.col === selection.value.focus.col && target.cellBlockId === selection.value.focus.cellBlockId)
+    const isEligible = (match: typeof matches[number]) => {
+      const matchTargetIndex = targets.findIndex((target) => target.blockId === match.target.blockId && target.row === match.target.row && target.col === match.target.col && target.cellBlockId === match.target.cellBlockId)
+      const sameTextTarget = match.target.blockId === selection.value.focus.blockId && match.target.row === selection.value.focus.row && match.target.col === selection.value.focus.col && match.target.cellBlockId === selection.value.focus.cellBlockId
+      return direction > 0
+        ? matchTargetIndex > targetIndex || (sameTextTarget && match.start >= selection.value.focus.offset)
+        : matchTargetIndex < targetIndex || (sameTextTarget && match.end <= selection.value.focus.offset)
+    }
+    if (direction > 0) index = matches.findIndex(isEligible)
+    else {
+      for (let candidate = matches.length - 1; candidate >= 0; candidate--) {
+        if (isEligible(matches[candidate]!)) { index = candidate; break }
+      }
+    }
+    if (index < 0) index = direction > 0 ? 0 : matches.length - 1
   }
-  notify('未找到匹配内容')
+  index = (index + matches.length) % matches.length
+  const match = matches[index]!
+  onSelection(pointForMatch(match))
+  canvasRef.value?.scrollToBlock(match.target.blockId)
+  canvasRef.value?.focus()
+}
+function findNext() { navigateSearch(1) }
+function findPrevious() { navigateSearch(-1) }
+function findLabel(key: string, fallback: string) { return createRibbonTranslator(officeLocale.value, 'doc')(`document.search.${key}`, fallback) }
+function searchPermissionTargets(matches: typeof searchMatches.value) {
+  const targets = matches.flatMap((match) => permissionTargetsForSelection(model.value, pointForMatch(match)))
+  return [...new Map(targets.map((target) => [`${target.scope}:${target.id}`, target])).values()]
+}
+function replaceCurrent() {
+  const match = searchMatches.value[currentSearchMatchIndex()]
+  if (!match) { findNext(); return }
+  if (!canDocumentPermission('edit', searchPermissionTargets([match]))) return
+  try {
+    const next = cloneDocument(model.value)
+    const range = replaceDocumentMatches(next, [match], replaceText.value, { documentId: next.id ?? '', userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId, defaultAllow: props.permissionDefaultAllow })
+    if (!range) return
+    selection.value = range
+    publish(next)
+    searchInSelection.value = false
+    void nextTick(() => canvasRef.value?.focus())
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+  }
+}
+function replaceAll() {
+  const matches = searchMatches.value
+  if (!matches.length || !canDocumentPermission('edit', searchPermissionTargets(matches))) return
+  try {
+    const next = cloneDocument(model.value)
+    const range = replaceDocumentMatches(next, matches, replaceText.value, { documentId: next.id ?? '', userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId, defaultAllow: props.permissionDefaultAllow })
+    if (!range) return
+    selection.value = range
+    publish(next)
+    searchInSelection.value = false
+    void nextTick(() => canvasRef.value?.focus())
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+  }
 }
 async function copySelection(cut = false) {
   const targets = permissionTargetsForSelection(model.value, selection.value)
@@ -394,6 +475,7 @@ async function pasteSelection(plainText = false) {
   canvasRef.value?.focus()
 }
 function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
+function savePermissionRules(rules: DocumentPermissionRule[]) { execute({ id: 'doc.command.set-document-permission-rules', rules }) }
 function setZoom(value: number) { zoom.value = clampDocumentZoom(value) }
 function printDocument() {
   if (!canDocumentPermission('print')) return
@@ -427,6 +509,7 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.insert-footnote': insertNote('footnote'); break
     case 'doc.operation.insert-endnote': insertNote('endnote'); break
     case 'doc.operation.open-notes': notesPanelOpen.value = true; break
+    case 'doc.operation.open-permissions': permissionPanelOpen.value = true; break
     case 'doc.operation.insert-code-block': openCodeBlockPanel(); break
     case 'doc.operation.open-latex': latexPanelOpen.value = true; break
     case 'doc.command.copy': void copySelection(); break
@@ -450,7 +533,7 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.toggle-focus': isFocusMode.value = !isFocusMode.value; void nextTick(() => canvasRef.value?.focus()); break
     case 'doc.operation.toggle-fullscreen': void toggleFullscreen(); break
     case 'doc.operation.set-zoom': if (typeof params === 'number') { setZoom(params); void nextTick(() => canvasRef.value?.focus()) }; break
-    case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('input[aria-label="查找内容"]')?.focus()); break
+    case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
     case 'doc.operation.custom-color':
       if (params === 'color' || params === 'highlight') { modalKind.value = params; modalValue.value = params === 'color' ? textColor.value : highlightColor.value; modalError.value = ''; modalOpen.value = true }
       break
@@ -475,23 +558,35 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <input ref="fileInputRef" class="hidden-input" type="file" accept=".doc,.docx,.odt,.txt" @change="onFileChange">
     <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" variant="grid" label="文档功能区" @execute="onRibbonExecute">
       <template #tab-extra>
-        <label v-if="showFind" class="search-box">
-          <Search :size="14" />
-          <Input v-model:value="searchText" variant="borderless" placeholder="查找内容" aria-label="查找内容" @press-enter="findNext" @keydown.esc="showFind = false; canvasRef?.focus()" />
-          <Tooltip title="查找下一个"><Button type="text" size="small" aria-label="查找下一个" @mousedown.prevent @click="findNext"><ChevronRight :size="14" /></Button></Tooltip>
-          <Tooltip title="关闭查找"><Button type="text" size="small" aria-label="关闭查找" @click="showFind = false; canvasRef?.focus()"><X :size="14" /></Button></Tooltip>
-        </label>
+        <div v-if="showFind" class="find-replace-toolbar">
+          <div class="find-row">
+            <Search :size="14" />
+            <Input v-model:value="searchText" data-document-search-input variant="borderless" :placeholder="findLabel('find-placeholder', 'Find')" :aria-label="findLabel('find-placeholder', 'Find')" @press-enter="findNext" @keydown.esc="showFind = false; canvasRef?.focus()" />
+            <span class="match-count">{{ searchMatches.length ? `${currentSearchMatchIndex() + 1} / ${searchMatches.length}` : '0 / 0' }}</span>
+            <Tooltip :title="findLabel('previous', 'Previous match')"><Button type="text" size="small" :aria-label="findLabel('previous', 'Previous match')" @mousedown.prevent @click="findPrevious"><ChevronLeft :size="14" /></Button></Tooltip>
+            <Tooltip :title="findLabel('next', 'Next match')"><Button type="text" size="small" :aria-label="findLabel('next', 'Next match')" @mousedown.prevent @click="findNext"><ChevronRight :size="14" /></Button></Tooltip>
+            <Tooltip :title="findLabel('close', 'Close find')"><Button type="text" size="small" :aria-label="findLabel('close', 'Close find')" @click="showFind = false; canvasRef?.focus()"><X :size="14" /></Button></Tooltip>
+          </div>
+          <div class="replace-row">
+            <Input v-model:value="replaceText" variant="borderless" :placeholder="findLabel('replace-placeholder', 'Replace with')" :aria-label="findLabel('replace-placeholder', 'Replace with')" @press-enter="replaceCurrent" />
+            <Button size="small" @click="replaceCurrent">{{ findLabel('replace', 'Replace') }}</Button>
+            <Button size="small" @click="replaceAll">{{ findLabel('replace-all', 'Replace all') }}</Button>
+            <Checkbox v-model:checked="searchCaseSensitive">{{ findLabel('case-sensitive', 'Match case') }}</Checkbox>
+            <Checkbox v-model:checked="searchWholeWord">{{ findLabel('whole-word', 'Whole words') }}</Checkbox>
+            <Checkbox v-model:checked="searchInSelection" :disabled="selectionCollapsed(selection)">{{ findLabel('selection-only', 'Selection only') }}</Checkbox>
+          </div>
+        </div>
       </template>
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
     </main>
     <DocumentFooter :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
     <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden @ok="confirmModal">
       <div v-if="modalKind === 'table'" class="insert-form"><label>行数<InputNumber v-model:value="tableRows" :min="1" :max="20" :precision="0" /></label><label>列数<InputNumber v-model:value="tableCols" :min="1" :max="20" :precision="0" /></label></div>
-      <div v-else-if="modalKind === 'color' || modalKind === 'highlight'" class="insert-form color-form"><label>{{ modalTitle }}<input v-model="modalValue" type="color" :aria-label="modalTitle"></label><Input v-model:value="modalValue" aria-label="颜色值" placeholder="#1f2937" /></div>
+      <div v-else-if="modalKind === 'color' || modalKind === 'highlight'" class="insert-form color-form"><label>{{ modalTitle }}<ColorPicker v-model:value="modalValue" value-format="hex" :aria-label="modalTitle" /></label><Input v-model:value="modalValue" aria-label="颜色值" placeholder="#1f2937" /></div>
       <div v-else class="insert-form"><label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label><Button v-if="modalKind === 'image'" type="primary" @click="imageInputRef?.click()"><FileUp :size="15" />选择本地图片</Button><input ref="imageInputRef" class="hidden-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" @change="onImageFile"></div>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
@@ -502,6 +597,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
     <DocumentNotesPanel v-model:open="notesPanelOpen" :footnotes="model.footnotes ?? {}" :endnotes="model.endnotes ?? {}" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" />
+    <DocumentPermissionPanel :open="permissionPanelOpen" :rules="model.permissionRules ?? []" :targets="permissionTargets" :read-only="!canManageDocumentPermissions" @update:open="permissionPanelOpen = $event" @save="savePermissionRules" />
   </section>
 </template>
 
@@ -514,16 +610,21 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 .hidden-input { display: none; }
 .document-ribbon { flex-shrink: 0; }
 .editor-workspace { position: relative; min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; }
-.search-box { align-self: center; height: 26px; min-width: 120px; max-width: 240px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e2e6eb; border-radius: 4px; color: #77818d; background: #fafbfc; }
-.search-box :deep(.ant-input) { width: 125px; min-width: 0; padding: 0; color: #424a54; background: transparent; font: inherit; }
-.search-box :deep(.ant-btn) { width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: #5b6672; }
+.find-replace-toolbar { position: absolute; z-index: 30; top: calc(100% - 1px); right: 8px; width: min(620px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #d8dde5; border-radius: 4px; background: #fff; box-shadow: 0 3px 10px #18283b20; }
+.find-row, .replace-row { min-width: 0; display: flex; align-items: center; gap: 4px; }
+.find-row { color: #77818d; }
+.find-row :deep(.ant-input), .replace-row :deep(.ant-input) { min-width: 0; padding: 0 4px; color: #424a54; background: transparent; font: inherit; }
+.find-row :deep(.ant-input) { flex: 1; }
+.replace-row :deep(.ant-input) { width: 145px; }
+.find-row :deep(.ant-btn) { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; color: #5b6672; }
+.match-count { flex: 0 0 auto; min-width: 42px; color: #6e7783; font-variant-numeric: tabular-nums; text-align: center; }
+.replace-row :deep(.ant-checkbox-wrapper) { flex: 0 0 auto; white-space: nowrap; font-size: 12px; }
 .document-notice { position: absolute; z-index: 40; bottom: 44px; inset-inline: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #c9dcf4; border-radius: 4px; color: #4b6482; background: #eef5ff; font-size: 12px; box-shadow: 0 2px 8px #18375912; }
 .document-notice :deep(.ant-btn) { display: grid; place-items: center; padding: 0; color: inherit; }
 .insert-form { display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
 .insert-form label { display: flex; align-items: center; gap: 12px; }
 .insert-form label > * { flex: 1; }
-.color-form input[type="color"] { height: 36px; padding: 2px; border: 1px solid #d6dce4; border-radius: 4px; background: #fff; }
 .insert-error { color: #c14444; }
-@media (max-width: 650px) { .search-box { width: 120px; } .search-box :deep(.ant-input) { width: 60px; } .document-header { padding: 0 6px; } }
+@media (max-width: 650px) { .find-replace-toolbar { right: 4px; width: calc(100vw - 16px); } .replace-row { flex-wrap: wrap; } .replace-row :deep(.ant-input) { flex: 1 1 100px; } .document-header { padding: 0 6px; } }
 @media print { .document-header, .document-ribbon, .document-notice, :deep(.document-outline), :deep(.document-statusbar) { display: none !important; } .document-workbench, .editor-workspace { height: auto; overflow: visible; background: #fff; } }
 </style>

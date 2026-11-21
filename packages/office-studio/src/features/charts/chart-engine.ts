@@ -202,9 +202,12 @@ function isPivotTotalRow(row: CellScalar[], rowFieldCount: number): boolean {
 export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLayout {
   const data = readChartData(workbook, chart)
   const frame = { x: chart.position.x, y: chart.position.y, width: chart.size.width, height: chart.size.height }
-  const top = chart.title ? 32 : 12
-  const legendSize = chart.legend.visible ? 24 : 0
-  const left = 46, right = chart.yAxis.title ? 18 : 10, bottom = 34 + legendSize
+  const top = (chart.title ? 32 : 12) + (chart.legend.visible && chart.legend.position === 'top' ? 24 : 0)
+  const bottomLegendSize = chart.legend.visible && chart.legend.position === 'bottom' ? 24 : 0
+  const axisTitleSize = chart.xAxis.title ? 16 : 0
+  const left = 54 + (chart.yAxis.title ? 18 : 0)
+  const right = 10
+  const bottom = 40 + bottomLegendSize + axisTitleSize
   const plot: RenderRect = {
     x: frame.x + left,
     y: frame.y + top,
@@ -214,10 +217,16 @@ export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLa
   const values = data.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value) && (chart.yAxis.scaleType !== 'log' || value > 0)))
   const stackTotals = chart.type === 'stacked-column' ? stackedExtents(data) : undefined
   const rangeValues = stackTotals ? [...stackTotals] : values
-  if (!rangeValues.length) return { frame, plot, min: 0, max: 1, categories: data.categories, series: data.series.map((series, index) => ({ name: series.name, color: CHART_COLORS[index % CHART_COLORS.length]!, points: [] })) }
+  if (!rangeValues.length) {
+    const min = chart.yAxis.scaleType === 'log' ? 1 : 0
+    const max = chart.yAxis.scaleType === 'log' ? chart.yAxis.logBase ?? 10 : 1
+    return { frame, plot, min, max, categories: data.categories, series: data.series.map((series, index) => ({ name: series.name, color: CHART_COLORS[index % CHART_COLORS.length]!, points: [] })) }
+  }
   const rawMin = Math.min(...rangeValues), rawMax = Math.max(...rangeValues)
   const min = chart.yAxis.scaleType === 'log' ? Math.max(Number.MIN_VALUE, rawMin) : Math.min(0, rawMin)
-  const max = chart.yAxis.scaleType === 'log' ? rawMax : rawMax === min ? min + 1 : rawMax
+  const max = chart.yAxis.scaleType === 'log'
+    ? rawMax === min ? min * (chart.yAxis.logBase ?? 10) : rawMax
+    : rawMax === min ? min + 1 : rawMax
   const toY = (value: number): number => {
     if (chart.yAxis.scaleType === 'log') {
       const base = chart.yAxis.logBase ?? 10
@@ -238,7 +247,7 @@ export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLa
         else negativeStacks[index] = baseValue + value
       }
       return {
-        x: plot.x + (data.categories.length <= 1 ? plot.width / 2 : index * plot.width / (data.categories.length - 1)),
+        x: plot.x + (index + 0.5) * plot.width / Math.max(1, data.categories.length),
         y: toY(baseValue + value), value, category: data.categories[index] ?? '', categoryIndex: index,
         ...(chart.type === 'stacked-column' ? { baseY: toY(baseValue) } : {}),
       }
@@ -259,12 +268,34 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
     return commands
   }
   commands.push({ kind: 'rect', ...layout.plot, fill: '#ffffff', stroke: '#e2e8f0', strokeWidth: 1 })
+  const tickValues = axisTickValues(layout.min, layout.max, chart.yAxis.scaleType)
+  tickValues.forEach((value) => {
+    const ratio = chart.yAxis.scaleType === 'log'
+      ? (Math.log(value) - Math.log(layout.min)) / (Math.log(layout.max) - Math.log(layout.min))
+      : (value - layout.min) / (layout.max - layout.min)
+    const y = layout.plot.y + layout.plot.height - ratio * layout.plot.height
+    commands.push({ kind: 'line', x1: layout.plot.x, y1: y, x2: layout.plot.x + layout.plot.width, y2: y, color: '#e5e7eb', width: 1 })
+    commands.push({ kind: 'text', x: layout.plot.x - 8, y, text: formatAxisValue(value), font: '10px Aptos, Arial, sans-serif', color: '#64748b', align: 'right', baseline: 'middle' })
+  })
   const zero = chart.yAxis.scaleType === 'linear' && layout.min < 0 && layout.max > 0
     ? layout.plot.y + layout.plot.height - ((0 - layout.min) / (layout.max - layout.min)) * layout.plot.height
     : layout.plot.y + layout.plot.height
-  commands.push({ kind: 'line', x1: layout.plot.x, y1: zero, x2: layout.plot.x + layout.plot.width, y2: zero, color: '#64748b', width: 1 })
+  commands.push({ kind: 'line', x1: layout.plot.x, y1: zero, x2: layout.plot.x + layout.plot.width, y2: zero, color: '#64748b', width: 1.25 })
   commands.push({ kind: 'line', x1: layout.plot.x, y1: layout.plot.y, x2: layout.plot.x, y2: layout.plot.y + layout.plot.height, color: '#64748b', width: 1 })
   const categoryStep = layout.categories.length ? layout.plot.width / Math.max(1, layout.categories.length) : layout.plot.width
+  layout.categories.forEach((category, index) => commands.push({
+    kind: 'text',
+    x: layout.plot.x + (index + 0.5) * categoryStep,
+    y: layout.plot.y + layout.plot.height + 14,
+    text: category,
+    font: '10px Aptos, Arial, sans-serif',
+    color: '#64748b',
+    align: 'center',
+    baseline: 'middle',
+    maxWidth: Math.max(1, categoryStep - 4),
+  }))
+  if (chart.xAxis.title) commands.push({ kind: 'text', x: layout.plot.x + layout.plot.width / 2, y: layout.plot.y + layout.plot.height + 34, text: chart.xAxis.title, font: '11px Aptos, Arial, sans-serif', color: '#475569', align: 'center', baseline: 'middle' })
+  if (chart.yAxis.title) commands.push({ kind: 'text', x: layout.frame.x + 13, y: layout.plot.y + layout.plot.height / 2, text: chart.yAxis.title, font: '11px Aptos, Arial, sans-serif', color: '#475569', align: 'center', baseline: 'middle', rotation: -90 })
   if (chart.type === 'bar' || chart.type === 'stacked-column') {
     const groupWidth = categoryStep * 0.72
     if (chart.type === 'stacked-column') {
@@ -304,7 +335,9 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
     })
   }
   if (chart.legend.visible) {
-    const y = chart.legend.position === 'top' ? layout.frame.y + 12 : layout.frame.y + layout.frame.height - 12
+    const y = chart.legend.position === 'top'
+      ? layout.frame.y + (chart.title ? 44 : 12)
+      : layout.frame.y + layout.frame.height - 12
     layout.series.forEach((series, index) => {
       const x = layout.frame.x + 12 + index * Math.max(72, layout.frame.width / Math.max(1, layout.series.length + 1))
       commands.push({ kind: 'rect', x, y: y - 5, width: 10, height: 10, fill: series.color })
@@ -334,6 +367,20 @@ function validateChartData(type: ChartType, data: ChartData, axis: ChartAxisOpti
     const values = data.series[0]!.values.filter((value): value is number => value !== null && Number.isFinite(value))
     if (!values.length || values.some((value) => value < 0) || values.every((value) => value === 0)) throw new RangeError(`${type} charts require non-negative values with a positive total`)
   }
+}
+
+function axisTickValues(min: number, max: number, scaleType: ChartAxisOptions['scaleType']): number[] {
+  if (min === max) return [min]
+  return Array.from({ length: 5 }, (_unused, index) => {
+    const ratio = index / 4
+    return scaleType === 'log'
+      ? min * (max / min) ** ratio
+      : min + (max - min) * ratio
+  })
+}
+
+function formatAxisValue(value: number): string {
+  return String(Number(value.toPrecision(4)))
 }
 
 function stackedExtents(data: ChartData): number[] {
@@ -386,7 +433,9 @@ function renderPieChart(commands: DrawCommand[], layout: ChartLayout, data: Char
     }
   }
   if (chart.legend.visible) {
-    const y = chart.legend.position === 'top' ? layout.frame.y + 12 : layout.frame.y + layout.frame.height - 12
+    const y = chart.legend.position === 'top'
+      ? layout.frame.y + (chart.title ? 44 : 12)
+      : layout.frame.y + layout.frame.height - 12
     data.categories.forEach((category, index) => {
       const x = layout.frame.x + 12 + index * Math.max(72, layout.frame.width / Math.max(1, data.categories.length + 1))
       commands.push({ kind: 'rect', x, y: y - 5, width: 10, height: 10, fill: colors[index]! })

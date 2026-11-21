@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { AxisIndex, cellAddress, SpreadsheetGeometry } from '../../src/rendering/spreadsheet/layout.ts'
 
 function createGeometry(merges, columnCount = 100) {

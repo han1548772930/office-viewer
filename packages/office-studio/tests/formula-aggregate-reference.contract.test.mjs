@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createBlankSheet, createBlankWorkbook, createCell } from '../src/domain/model.ts'
 import { evaluateFormula, recalculateWorkbookFormulas } from '../src/features/formula/formula-engine.ts'
 

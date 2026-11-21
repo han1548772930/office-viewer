@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createPinia } from 'pinia'
 import { reactive } from 'vue'
 import { createServer } from 'vite'
@@ -9,14 +9,14 @@ let useEditorStore
 let toExcelWorkbookView
 let createBlankSheet
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   ;({ useEditorStore } = await server.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
   ;({ toExcelWorkbookView } = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts'))
   ;({ createBlankSheet } = await server.ssrLoadModule('/packages/office-studio/src/domain/model.ts'))
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 const freshEditor = () => useEditorStore(createPinia())
 const snapshot = (value) => JSON.parse(JSON.stringify(value))
 

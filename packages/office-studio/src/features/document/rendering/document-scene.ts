@@ -1,12 +1,12 @@
 import type { DocumentModel } from '../../../domain/model'
 import type { DrawCommand, RenderRect, RenderScene } from '../../../rendering/contracts'
 import type { DocumentSelection } from '../model/document-model'
-import { orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets } from '../model/document-model'
+import { orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets, type TextTarget } from '../model/document-model'
 import { caretRect, type DocumentLayout } from '../layout/document-layout'
 import { codeBlockData, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
 
 export interface DocumentViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
-export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement> }
+export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }
 
 export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, viewport: DocumentViewport, options: DocumentSceneOptions): RenderScene {
   const commands: DrawCommand[] = []
@@ -55,6 +55,14 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const first = targets.findIndex((target) => sameTarget(target, ordered.start))
   const last = targets.findIndex((target) => sameTarget(target, ordered.end))
   const selected = new Set(targets.slice(first, last + 1).map(targetKey))
+  const matchesByTarget = new Map<string, Array<{ start: number; end: number }>>()
+  for (const match of options.searchMatches ?? []) {
+    const key = targetKey(match.target)
+    const matches = matchesByTarget.get(key) ?? []
+    matches.push({ start: match.start, end: match.end })
+    matchesByTarget.set(key, matches)
+  }
+  for (const matches of matchesByTarget.values()) matches.sort((a, b) => a.start - b.start)
   const visibleLines = [...visiblePages].flatMap((pageIndex) => layout.pageContent[pageIndex]?.lines ?? [])
   const codeBlocks = new Map(model.blocks.map((block) => [block.id, codeBlockData(block)]).filter((entry): entry is [string, NonNullable<ReturnType<typeof codeBlockData>>] => entry[1] !== undefined))
   const codeTokens = new Map([...codeBlocks].map(([blockId, data]) => [blockId, tokenizeCode(data.source, data.language)]))
@@ -62,6 +70,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     if (!visible(line)) continue
     const clip = rect(layout.pages[line.page]!.content)
     const hasSelection = !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))
+    const lineMatches = matchesByTarget.get(targetKey(line.target)) ?? []
     const start = sameTarget(line.target, ordered.start) ? ordered.start.offset : 0
     const end = sameTarget(line.target, ordered.end) ? ordered.end.offset : Number.POSITIVE_INFINITY
     const codeData = line.codeBlock ? codeBlocks.get(line.target.blockId) : undefined
@@ -85,6 +94,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       const baselineOffset = glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0
       const baseline = line.baseline + baselineOffset
       if (glyph.run.highlight) commands.push({ kind: 'rect', ...rect(glyph), fill: glyph.run.highlight, clip })
+      if (overlapsSearchMatch(lineMatches, glyph.offset, glyph.end)) commands.push({ kind: 'rect', ...rect(glyph), fill: '#ffe58f', clip })
       if (hasSelection && glyph.end > start && glyph.offset < end) commands.push({ kind: 'rect', ...rect(glyph), fill: options.focused ? '#bdd8ff' : '#dde6f2', clip })
       if (glyph.latex) {
         for (const primitive of glyph.latex.primitives) {
@@ -111,6 +121,17 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     if (caret && visible(caret)) commands.push({ kind: 'rect', ...rect(caret), width: Math.max(1, scale), fill: '#24569c' })
   }
   return { width: viewport.width, height: viewport.height, background: '#eef1f5', commands }
+}
+
+function overlapsSearchMatch(matches: readonly { start: number; end: number }[], start: number, end: number): boolean {
+  let low = 0
+  let high = matches.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (matches[middle]!.end <= start) low = middle + 1
+    else high = middle
+  }
+  return low < matches.length && matches[low]!.start < end
 }
 
 function codeTokenColor(kind: CodeTokenKind): string {

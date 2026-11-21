@@ -2,7 +2,7 @@ import type { DocumentModel, DocumentParagraphStyle } from '../../domain/model'
 import { blockAtPoint } from '../../features/document/commands/document-commands'
 import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
 import {
-  marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
+  DOCUMENT_NAMED_PARAGRAPH_STYLES, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
   selectionCollapsed, textTargets, type DocumentRun, type DocumentSelection, type RunPatch,
 } from '../../features/document/model/document-model'
 
@@ -45,7 +45,11 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     const block = blockAtPoint(model, target)
     if (block) {
       paragraphs.push(block.style)
-      styles.push(block.type === 'heading' ? `H${block.level}` : block.type === 'paragraph' ? 'P' : block.type)
+      const namedStyle = block.metadata.namedStyleType
+      if (typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)) styles.push(namedStyle.startsWith('heading') ? `H${namedStyle.slice(-1)}` : namedStyle)
+      else if (block.type === 'heading' && block.level >= 1 && block.level <= 5) styles.push(`H${block.level}`)
+      else if (block.type === 'heading' && block.level === 6) styles.push('H6')
+      else styles.push(block.type === 'paragraph' ? 'normal' : block.type)
     }
   }
   if (collapsed || !marks.length) marks.push({ ...marksAtPoint(model, selection.focus), ...pending })

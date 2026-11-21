@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createServer } from 'vite'
 
 let server
@@ -8,7 +8,7 @@ let commands
 let controls
 let modelUtils
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ cacheDir: 'node_modules/.vite/content-control-boundaries', optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
@@ -16,7 +16,7 @@ before(async () => {
   controls = await server.ssrLoadModule('/packages/office-studio/src/features/document/services/content-controls.ts')
   modelUtils = await server.ssrLoadModule('/packages/office-studio/src/features/document/model/document-model.ts')
 })
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 function fixture(text = 'Left NAME right') {
   const model = api.createBlankDocument()

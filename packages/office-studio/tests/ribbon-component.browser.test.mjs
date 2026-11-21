@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { before, after, beforeEach, test } from 'node:test'
+import { beforeAll, afterAll, beforeEach, test } from 'vitest'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { chromium, expect } from '@playwright/test'
@@ -69,7 +69,7 @@ const gridTabs = computed(() => tabs.value.map((tab) => ({ ...tab, groups: tab.g
 createApp({ render() { return h(WorkbenchRibbon, { tabs: gridTabs.value, variant: variant.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null }) } }).mount('#app')
 `
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: false,
     root: process.cwd(),
@@ -97,7 +97,7 @@ before(async () => {
   browser = await chromium.launch({ channel: 'msedge', headless: true })
 }, { timeout: 60_000 })
 
-after(async () => {
+afterAll(async () => {
   await page?.close()
   await browser?.close()
   await server?.close()

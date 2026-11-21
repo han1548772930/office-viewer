@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { activeOutlineIdForBlock, activeOutlineIdInViewport, buildDocumentOutline, documentOutlineEnabled, documentOutlineOverlapsTable, documentOutlinePlacement, nextOutlineFocusId } from '../src/features/document/services/document-outline.ts'
 
 function block(id, text, type = 'heading', level = 1) {

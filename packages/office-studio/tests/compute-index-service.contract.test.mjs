@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
@@ -7,7 +7,7 @@ let server
 let serviceModule
 let ComputeError
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: resolve(process.cwd(), 'vite.config.ts'),
     root: process.cwd(),
@@ -20,7 +20,7 @@ before(async () => {
   ComputeError = errors.ComputeError
 })
 
-after(async () => {
+afterAll(async () => {
   await server?.close()
 })
 

@@ -45,6 +45,11 @@ export interface FormulaRecalculationResult {
   diagnostics: FormulaEngineDiagnostic[]
 }
 
+export interface FormulaEvaluationOptions {
+  /** A fixed clock value for deterministic evaluation and consistent recalculation. */
+  now?: Date
+}
+
 export interface FormulaErrorValue { kind: 'error'; code: string }
 export type FormulaValue = CellScalar | FormulaErrorValue
 

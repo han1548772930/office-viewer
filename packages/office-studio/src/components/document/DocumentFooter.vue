@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Maximize, Minus, Plus } from 'lucide-vue-next'
-import { Button, Select, Tooltip } from 'antdv-next'
+import { Button, Select, Slider, Tooltip } from 'antdv-next'
 
 defineProps<{ activePage: number; pageCount: number; characterCount: number; selectedCharacters: number; zoom: number; modified: boolean; focusMode: boolean }>()
 const emit = defineEmits<{ navigate: [direction: -1 | 1]; zoom: [value: number]; 'exit-focus': [] }>()
@@ -21,7 +21,7 @@ const zoomOptions = [25, 50, 75, 100, 125, 150, 200, 300, 400].map((value) => ({
       <Tooltip title="下一页"><Button type="text" aria-label="下一页" :disabled="activePage >= pageCount - 1" @click="emit('navigate', 1)"><ChevronRight :size="15" /></Button></Tooltip>
       <span class="status-divider" aria-hidden="true"></span>
       <Tooltip title="缩小"><Button type="text" aria-label="缩小" :disabled="zoom <= 10" @click="emit('zoom', zoom - 10)"><Minus :size="14" /></Button></Tooltip>
-      <input class="status-zoom" type="range" min="10" max="400" :value="zoom" aria-label="缩放比例" @input="emit('zoom', Number(($event.target as HTMLInputElement).value))">
+      <Slider class="status-zoom" :min="10" :max="400" :step="1" :value="zoom" :tooltip="{ formatter: (value?: number) => `${value}%` }" aria-label="缩放比例" @change="value => { if (typeof value === 'number') emit('zoom', value) }" />
       <Tooltip title="放大"><Button type="text" aria-label="放大" :disabled="zoom >= 400" @click="emit('zoom', zoom + 10)"><Plus :size="14" /></Button></Tooltip>
       <Select class="zoom-value" :value="zoom" :options="zoomOptions" size="small" aria-label="文档缩放" @change="emit('zoom', Number($event))" />
     </div>
@@ -37,7 +37,7 @@ const zoomOptions = [25, 50, 75, 100, 125, 150, 200, 300, 400].map((value) => ({
 .status-right { flex-shrink: 0; gap: 2px; }
 .status-right :deep(.ant-btn) { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: #606b77; }
 .status-right :deep(.ant-btn:disabled) { color: #b7bec8; }
-.status-zoom { width: 90px; height: 20px; margin: 0 5px; accent-color: #367ddd; }
+.status-right :deep(.status-zoom) { width: 90px; margin: 0 5px; }
 .zoom-value { width: 76px; }
 .save-status { margin-left: 4px; color: #9299a3; }
 .save-status.modified { color: #a46a18; }

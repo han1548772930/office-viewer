@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test, after } from 'node:test'
+import { test, afterAll } from 'vitest'
 import { createServer } from 'vite'
 import { createBlankDocument } from '../src/domain/model.ts'
 import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter } from '../src/features/document/services/section-header-footer.ts'
@@ -9,7 +9,7 @@ const vite = await createServer({ configFile: './vite.config.ts', server: { midd
 const { layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
 const { executeDocumentCommand } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-commands.ts')
 const { sceneFromDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/rendering/document-scene.ts')
-after(() => vite.close())
+afterAll(() => vite.close())
 
 function modelWithSection() {
   const model = createBlankDocument()

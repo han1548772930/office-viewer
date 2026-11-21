@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { createBlankWorkbook } from '../src/domain/model.ts'
 import { toExcelWorkbookView, applyExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { createSparklineCommands, parseSparklineRange, readSparklineValues } from '../src/features/sparkline/sparkline-render.ts'

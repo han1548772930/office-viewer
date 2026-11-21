@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
 let server
 let apiModule
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: resolve(process.cwd(), 'vite.config.ts'),
     root: process.cwd(),
@@ -17,7 +17,7 @@ before(async () => {
   apiModule = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
 })
 
-after(async () => {
+afterAll(async () => {
   await server?.close()
 })
 

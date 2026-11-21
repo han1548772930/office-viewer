@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Button } from 'antdv-next'
 import type { GridHit } from '../../rendering/spreadsheet/layout.ts'
 import { createSheetContextMenuItems } from './sheet-context-menu.ts'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -85,16 +86,17 @@ onBeforeUnmount(() => {
     <div v-if="open && items.length" ref="panel" class="sheet-context-menu" role="menu" :aria-label="translate('sheet.context-menu.aria-label', '单元格上下文菜单')" :style="position" @keydown="onKeydown">
       <template v-for="item in items" :key="item.id">
         <div v-if="item.separatorBefore" class="sheet-context-menu__separator" role="separator" />
-        <button
+        <Button
           :data-menu-item="item.id"
-          type="button"
+          type="text"
+          html-type="button"
           role="menuitem"
           class="sheet-context-menu__item"
           :class="{ 'is-disabled': item.disabled }"
           :disabled="item.disabled"
           tabindex="-1"
           @click="execute(item)"
-        >{{ item.label }}</button>
+        >{{ item.label }}</Button>
       </template>
     </div>
   </Teleport>
@@ -102,8 +104,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .sheet-context-menu { position: fixed; z-index: 3000; box-sizing: border-box; display: flex; width: 224px; max-width: calc(100vw - 8px); max-height: min(520px, calc(100vh - 8px)); flex-direction: column; overflow: auto; padding: 4px; border: 1px solid #d8dde5; border-radius: 4px; background: #fff; box-shadow: 0 8px 24px #1720332b; color: #263244; }
-.sheet-context-menu__item { display: flex; min-height: 30px; align-items: center; padding: 4px 9px; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: start; cursor: pointer; }
-.sheet-context-menu__item:hover, .sheet-context-menu__item:focus-visible { outline: none; background: #edf3fc; }
-.sheet-context-menu__item:disabled { color: #9aa3af; cursor: default; }
+.sheet-context-menu .sheet-context-menu__item.ant-btn { display: flex; width: 100%; min-height: 30px; height: auto; align-items: center; justify-content: flex-start; padding: 4px 9px; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: start; white-space: normal; }
+.sheet-context-menu .sheet-context-menu__item.ant-btn:hover, .sheet-context-menu .sheet-context-menu__item.ant-btn:focus-visible { outline: none; background: #edf3fc; }
+.sheet-context-menu .sheet-context-menu__item.ant-btn:disabled { color: #9aa3af; cursor: default; }
 .sheet-context-menu__separator { height: 1px; flex: 0 0 1px; margin: 4px 3px; background: #e3e7ed; }
 </style>

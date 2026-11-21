@@ -8,7 +8,7 @@ The upstream set below is taken from active entries in each `packages/engine-for
 
 | Category | Upstream registered | Locally executable and listed | Remaining |
 | --- | ---: | ---: | ---: |
-| Date | 27 | 24 | 3 |
+| Date | 27 | 27 | 0 |
 | Text | 46 | 26 | 20 |
 | Logical | 21 | 11 | 10 |
 | Lookup | 37 | 11 | 26 |
@@ -16,9 +16,9 @@ The upstream set below is taken from active entries in each `packages/engine-for
 
 ## Date
 
-Implemented: `DATE`, `DATEVALUE`, `DAY`, `DAYS`, `DAYS360`, `EDATE`, `EOMONTH`, `EPOCHTODATE`, `HOUR`, `ISOWEEKNUM`, `MINUTE`, `MONTH`, `NETWORKDAYS`, `NETWORKDAYS.INTL`, `SECOND`, `TIME`, `TIMEVALUE`, `TO_DATE`, `WEEKDAY`, `WEEKNUM`, `WORKDAY`, `WORKDAY.INTL`, `YEAR`, `YEARFRAC`.
+Implemented: `DATE`, `DATEDIF`, `DATEVALUE`, `DAY`, `DAYS`, `DAYS360`, `EDATE`, `EOMONTH`, `EPOCHTODATE`, `HOUR`, `ISOWEEKNUM`, `MINUTE`, `MONTH`, `NETWORKDAYS`, `NETWORKDAYS.INTL`, `NOW`, `SECOND`, `TIME`, `TIMEVALUE`, `TODAY`, `TO_DATE`, `WEEKDAY`, `WEEKNUM`, `WORKDAY`, `WORKDAY.INTL`, `YEAR`, `YEARFRAC`.
 
-Remaining: `DATEDIF`, `NOW`, `TODAY`.
+Remaining: none in the fixed upstream date-function map. `NOW` and `TODAY` use the local clock and calendar date. A single evaluation captures one clock snapshot, and whole-workbook recalculation shares one snapshot across all formulas. A fixed `now` option supports deterministic callers and contract tests. `DATEDIF` supports `Y`, `M`, `D`, `MD`, `YM`, and `YD`, and applies the workbook's 1900/1904 date system.
 
 `EPOCHTODATE` uses UTC Unix timestamps with unit codes 1/2/3 for seconds, milliseconds, and microseconds, then offsets into the workbook's 1900 or 1904 serial system. `TIMEVALUE` supports ISO date-only text and 24-hour/AM-PM time text, optionally following an ISO date. `TO_DATE` preserves nonnumeric scalar values and returns numeric serials unchanged. Timezone-qualified TIMEVALUE strings and number-format metadata propagation for TO_DATE are not represented by this scalar formula runtime and remain unverified.
 

@@ -9,11 +9,11 @@
     "build:wasm": "wasm-pack build crates/office-parser --target web --release --out-dir ../../public/wasm --out-name office_parser",
     "build:compute": "wasm-pack build crates/office-compute --target web --release --out-dir ../../public/compute --out-name office_compute",
     "build:writer": "wasm-pack build crates/office-writer --target web --release --out-dir ../../public/wasm-writer --out-name office_writer",
-    "test:unit": "node scripts/run-tests.mjs unit",
-    "test:components": "node scripts/run-tests.mjs components",
-    "test:compute": "node --experimental-strip-types --test packages/office-studio/tests/compute-index-service.contract.test.mjs",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:components": "vitest run --config vitest.components.config.ts",
+    "test:compute": "vitest run --config vitest.config.ts packages/office-studio/tests/compute-index-service.contract.test.mjs",
     "test:parser": "cargo test --manifest-path crates/office-parser/Cargo.toml",
-    "test:api": "node --experimental-strip-types --test packages/office-studio/tests/document-facade.contract.test.mjs packages/office-studio/tests/office-api.contract.test.mjs",
+    "test:api": "vitest run --config vitest.config.ts packages/office-studio/tests/document-facade.contract.test.mjs packages/office-studio/tests/office-api.contract.test.mjs",
     "test:browser": "playwright test --config tests/browser/univer-workbench.playwright.config.ts",
     "test:browser:features": "playwright test --config tests/browser/feature-panels.playwright.config.ts",
     "test:browser:toolbars": "playwright test --config tests/browser/toolbar-parity.playwright.config.ts",
@@ -39,6 +39,7 @@
     "@webgpu/types": "^0.1.74",
     "typescript": "~6.0.3",
     "vite": "^8.3.6",
+    "vitest": "5.1.1",
     "vue-tsc": "^3.3.14"
   }
 }

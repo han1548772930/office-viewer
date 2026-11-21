@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
@@ -7,7 +7,7 @@ let server
 let api
 let engine
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: resolve(process.cwd(), 'vite.config.ts'),
     root: process.cwd(),
@@ -19,7 +19,7 @@ before(async () => {
   engine = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sort-filter-engine.ts')
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 function makeSheet(rows, columns = 3) {
   const sheet = api.createBlankSheet('Rows')

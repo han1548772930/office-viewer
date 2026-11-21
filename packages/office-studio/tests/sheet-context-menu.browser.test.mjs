@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, beforeEach, test } from 'node:test'
+import { afterAll, beforeAll, beforeEach, test } from 'vitest'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { chromium } from '@playwright/test'
@@ -23,7 +23,7 @@ createApp({ render() { return h('main', [
 ]) } }).mount('#app')
 `
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: false,
     root: process.cwd(),
@@ -49,7 +49,7 @@ before(async () => {
   browser = await chromium.launch({ channel: 'msedge', headless: true })
 }, { timeout: 60_000 })
 
-after(async () => { await page?.close(); await browser?.close(); await server?.close() })
+afterAll(async () => { await page?.close(); await browser?.close(); await server?.close() })
 
 beforeEach(async () => {
   page = await browser.newPage({ viewport: { width: 420, height: 280 } })

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createPinia } from 'pinia'
 import { createServer } from 'vite'
 
@@ -7,13 +7,13 @@ let server
 let useHistoryStore
 let CommandBus
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   ;({ useHistoryStore } = await server.ssrLoadModule('/packages/office-studio/src/stores/historyStore.ts'))
   ;({ CommandBus } = await server.ssrLoadModule('/packages/office-studio/src/services/commandBus.ts'))
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 test('savepoints describe the exported revision, including an undo/redo branch', () => {
   const history = useHistoryStore(createPinia())

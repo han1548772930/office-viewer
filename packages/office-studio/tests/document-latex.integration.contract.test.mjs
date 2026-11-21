@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test, after } from 'node:test'
+import { test, afterAll } from 'vitest'
 import { createServer } from 'vite'
 import { createBlankDocument } from '../src/domain/model.ts'
 import { collapsedSelection } from '../src/features/document/model/document-model.ts'
@@ -8,7 +8,7 @@ import { insertLatexFormula } from '../src/features/document/latex/latex-formula
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
 const { sceneFromDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/rendering/document-scene.ts')
-after(() => vite.close())
+afterAll(() => vite.close())
 
 const measurer = { measure: (text, font) => text.length * (Number(/([\d.]+)px/.exec(font)?.[1] ?? 12) * 0.58) }
 

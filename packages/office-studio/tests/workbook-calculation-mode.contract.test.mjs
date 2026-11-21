@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
 let server
 let apiModule
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ configFile: resolve(process.cwd(), 'vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   apiModule = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 test('calculation mode persists and manual mode recalculates only on request', () => {
   const studio = new apiModule.OfficeStudio()

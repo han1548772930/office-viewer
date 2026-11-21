@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
 let server, api, panel
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ configFile: resolve('vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   panel = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sheet-data-panel-state.ts')
 })
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 function setup() {
   const studio = new api.OfficeStudio(), officeApi = api.FOffice.newAPI(studio), workbook = officeApi.getActiveWorkbook(), sheet = workbook.getActiveSheet()
   sheet.getRange('A1:C5').setValues([['地区', '销售', '序号'], ['东', 10, 'a'], ['西', 20, 'b'], ['东', 30, 'c'], ['西', 40, 'd']])

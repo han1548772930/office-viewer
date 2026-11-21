@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { createServer } from 'vite'
 import { createBlankWorkbook, createCell } from '../src/domain/model.ts'
 import { toExcelWorkbookView, applyExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
@@ -11,12 +11,12 @@ import { findVisibleSheetRow, hiddenSheetRows } from '../src/features/sheet-work
 import { applySheetNumberFormat } from '../src/features/sheet-workbench/sheet-toolbar-format.ts'
 
 let server, api, adapter
-before(async () => {
+beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   adapter = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts')
 })
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 function filteredWorkbook() {
   const workbook = createBlankWorkbook()

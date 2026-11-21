@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
@@ -7,7 +7,7 @@ let server
 let api
 let panel
 
-before(async () => {
+beforeAll(async () => {
   server = await createServer({
     configFile: resolve(process.cwd(), 'vite.config.ts'),
     root: process.cwd(),
@@ -19,7 +19,7 @@ before(async () => {
   panel = await server.ssrLoadModule('/packages/office-studio/src/features/slicer/slicer-panel-state.ts')
 })
 
-after(async () => { await server?.close() })
+afterAll(async () => { await server?.close() })
 
 async function setup(rows, { date1904 = false, labels = [0] } = {}) {
   const model = api.createBlankWorkbook()

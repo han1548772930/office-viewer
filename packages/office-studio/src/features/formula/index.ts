@@ -10,6 +10,7 @@ export { translateFormulaReferences } from './formula-references.ts'
 export type {
   FormulaCellAddress,
   FormulaDependencyGraph,
+  FormulaEvaluationOptions,
   FormulaEngineDiagnostic,
   FormulaErrorValue,
   FormulaNode,

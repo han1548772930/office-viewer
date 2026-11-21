@@ -25,6 +25,10 @@ const REL_FOOTNOTES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
 const REL_ENDNOTES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
+const REL_COMMENTS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const REL_COMMENTS_EXTENDED: &str =
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended";
 const DOCUMENT_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 const STYLES_CONTENT_TYPE: &str =
@@ -35,6 +39,10 @@ const FOOTNOTES_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 const ENDNOTES_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
+const COMMENTS_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
+const COMMENTS_EXTENDED_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml";
 const HEADER_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
 const FOOTER_CONTENT_TYPE: &str =
@@ -107,6 +115,26 @@ struct NoteEntry {
     value: Value,
 }
 
+#[derive(Clone)]
+struct CommentEntry {
+    id: u32,
+    paragraph_id: String,
+    parent_paragraph_id: Option<String>,
+    author: String,
+    date: String,
+    text: String,
+    resolved: bool,
+}
+
+#[derive(Clone)]
+struct CommentAnchor {
+    id: u32,
+    start: usize,
+    end: usize,
+    starts_here: bool,
+    ends_here: bool,
+}
+
 struct NoteBundle {
     footnotes: Vec<NoteEntry>,
     endnotes: Vec<NoteEntry>,
@@ -146,6 +174,8 @@ struct WriteContext<'a> {
     list_ids: HashMap<usize, u32>,
     numbering: Vec<NumberingInstance>,
     note_ids: HashMap<(NoteKind, String), i64>,
+    comment_entries: Vec<CommentEntry>,
+    comment_anchors: HashMap<String, Vec<CommentAnchor>>,
     controls_by_block: HashMap<String, Vec<ContentControl>>,
     used_controls: BTreeSet<String>,
     next_relationship: u32,
@@ -329,6 +359,58 @@ impl<'a> WriteContext<'a> {
             result.push_str("<w:r><w:t></w:t></w:r>");
         }
         Ok(result)
+    }
+
+    fn runs_with_comments(&mut self, block: &Value, runs: &[Value]) -> Result<String, ExportError> {
+        let Some(block_id) = string(get(block, "id")) else {
+            return self.runs_with_controls(block, runs);
+        };
+        let marks = self.comment_anchors.get(&block_id).cloned().unwrap_or_default();
+        if marks.is_empty() {
+            return self.runs_with_controls(block, runs);
+        }
+        if self.controls_by_block.get(&block_id).is_some_and(|controls| !controls.is_empty()) {
+            self.warn(
+                "DOCX_COMMENT_CONTENT_CONTROL_OVERLAP",
+                format!("Comment ranges in paragraph {block_id:?} could not be combined with inline content controls."),
+            );
+            return self.runs_with_controls(block, runs);
+        }
+        let total = runs.iter().map(|run| string(get(run, "text")).unwrap_or_default().encode_utf16().count()).sum::<usize>();
+        let mut events = Vec::<(usize, u8, u32, String)>::new();
+        for mark in marks {
+            if mark.start > mark.end || mark.end > total {
+                self.warn("DOCX_COMMENT_RANGE_INVALID", format!("Comment range for comment {} exceeds paragraph {block_id:?} and was omitted.", mark.id));
+                continue;
+            }
+            if mark.starts_here {
+                events.push((mark.start, 2, mark.id, format!("<w:commentRangeStart w:id=\"{}\"/>", mark.id)));
+            }
+            if mark.ends_here {
+                events.push((mark.end, 0, mark.id, format!("<w:commentRangeEnd w:id=\"{}\"/>", mark.id)));
+                events.push((mark.end, 1, mark.id, format!("<w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id)));
+            }
+        }
+        events.sort_by_key(|event| (event.0, event.1, event.2));
+        if events.is_empty() {
+            return self.runs_with_controls(block, runs);
+        }
+        let mut rendered = String::new();
+        let mut offset = 0;
+        for (event_offset, _, _, marker) in events {
+            if event_offset > offset {
+                rendered.push_str(&self.render_run_range(runs, offset, event_offset)?);
+            }
+            rendered.push_str(&marker);
+            offset = event_offset;
+        }
+        if offset < total {
+            rendered.push_str(&self.render_run_range(runs, offset, total)?);
+        }
+        if rendered.is_empty() {
+            rendered.push_str("<w:r><w:t></w:t></w:r>");
+        }
+        Ok(rendered)
     }
 
     fn render_control_range(
@@ -567,7 +649,7 @@ impl<'a> WriteContext<'a> {
         let runs = code_runs.as_deref().unwrap_or(source_runs);
         let paragraph = format!(
             "<w:p>{paragraph_properties}{}</w:p>",
-            self.runs_with_controls(block, runs)?
+            self.runs_with_comments(block, runs)?
         );
         if !is_code_block {
             return Ok(paragraph);
@@ -1419,6 +1501,97 @@ fn notes_xml(kind: NoteKind, notes: &[NoteEntry]) -> String {
     )
 }
 
+fn collect_comments(
+    model: &Value,
+) -> Result<(Vec<CommentEntry>, HashMap<String, Vec<CommentAnchor>>, Vec<ExportWarning>), ExportError> {
+    let mut entries = Vec::new();
+    let mut anchors = HashMap::<String, Vec<CommentAnchor>>::new();
+    let mut warnings = Vec::new();
+    let Some(comments) = field(model, "comments").and_then(Value::as_object) else {
+        return Ok((entries, anchors, warnings));
+    };
+    let mut next_id = 1u32;
+    for comment in comments.values() {
+        let messages = field(comment, "messages").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        if messages.is_empty() {
+            warnings.push(ExportWarning::new("DOCX_COMMENT_EMPTY", "A comment thread without messages was not written."));
+            continue;
+        }
+        let root_id = next_id;
+        let root_para_id = format!("{root_id:08X}");
+        for (message_index, message) in messages.iter().enumerate() {
+            let id = next_id;
+            next_id = next_id.checked_add(1).ok_or_else(|| ExportError::invalid("The DOCX comment count exceeds the supported ID range."))?;
+            let paragraph_id = format!("{id:08X}");
+            let author = string(get(message, "authorName")).unwrap_or_else(|| "Unknown author".to_owned());
+            let date = string(get(message, "createdAt")).unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned());
+            let text = string(get(message, "text")).unwrap_or_default();
+            entries.push(CommentEntry {
+                id,
+                paragraph_id: paragraph_id.clone(),
+                parent_paragraph_id: (message_index > 0).then(|| root_para_id.clone()),
+                author,
+                date,
+                text,
+                resolved: message_index == 0 && get(comment, "resolved").as_bool() == Some(true),
+            });
+            if message_index == 0 {
+                let ranges = field(comment, "anchor").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+                if ranges.is_empty() {
+                    warnings.push(ExportWarning::new("DOCX_COMMENT_UNANCHORED", "A thread comment without a text anchor was written without a DOCX range marker."));
+                }
+                for (range_index, range) in ranges.iter().enumerate() {
+                    let block_id = string(get(range, "blockId")).unwrap_or_default();
+                    let Some(start) = integer(get(range, "startOffset")).and_then(|value| usize::try_from(value).ok()) else {
+                        warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range with an invalid start offset was omitted."));
+                        continue;
+                    };
+                    let Some(end) = integer(get(range, "endOffset")).and_then(|value| usize::try_from(value).ok()) else {
+                        warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range with an invalid end offset was omitted."));
+                        continue;
+                    };
+                    if block_id.is_empty() || start >= end {
+                        warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range without a block ID or text was omitted."));
+                        continue;
+                    }
+                    anchors.entry(block_id).or_default().push(CommentAnchor {
+                        id: root_id,
+                        start,
+                        end,
+                        starts_here: range_index == 0,
+                        ends_here: range_index + 1 == ranges.len(),
+                    });
+                }
+            }
+        }
+    }
+    Ok((entries, anchors, warnings))
+}
+
+fn comments_xml(comments: &[CommentEntry]) -> String {
+    let mut body = String::new();
+    for comment in comments {
+        body.push_str(&format!(
+            "<w:comment w:id=\"{}\" w:author=\"{}\" w:date=\"{}\"><w:p w14:paraId=\"{}\"><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p></w:comment>",
+            comment.id,
+            xml_attribute(&comment.author),
+            xml_attribute(&comment.date),
+            comment.paragraph_id,
+            xml_text(&comment.text)
+        ));
+    }
+    format!("{}<w:comments xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\">{body}</w:comments>", xml::DECL)
+}
+
+fn comments_extended_xml(comments: &[CommentEntry]) -> String {
+    let entries = comments.iter().map(|comment| {
+        let parent = comment.parent_paragraph_id.as_ref().map_or(String::new(), |id| format!(" w15:paraIdParent=\"{id}\""));
+        let resolved = if comment.resolved { "1" } else { "0" };
+        format!("<w15:commentEx w15:paraId=\"{}\"{parent} w15:done=\"{resolved}\"/>", comment.paragraph_id)
+    }).collect::<String>();
+    format!("{}<w15:commentsEx xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\">{entries}</w15:commentsEx>", xml::DECL)
+}
+
 pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarning>, ExportError> {
     let model: Value = serde_json::from_str(data)
         .map_err(|error| ExportError::invalid(format!("Invalid document JSON: {error}")))?;
@@ -1431,6 +1604,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         .and_then(Value::as_array)
         .ok_or_else(|| ExportError::invalid("The document model is missing its blocks array."))?;
     let notes = collect_notes(&model, blocks);
+    let (comment_entries, comment_anchors, comment_warnings) = collect_comments(&model)?;
     let controls_by_block = collect_content_controls(&model, blocks);
     let declared_control_count = field(&model, "contentControls")
         .and_then(Value::as_array)
@@ -1482,6 +1656,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         list_ids: HashMap::new(),
         numbering: Vec::new(),
         note_ids: notes.ids.clone(),
+        comment_entries,
+        comment_anchors,
         controls_by_block,
         used_controls: BTreeSet::new(),
         next_relationship: 3,
@@ -1529,6 +1705,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     for block in blocks {
         body.push_str(&context.block(block)?);
     }
+    context.warnings.extend(comment_warnings);
     for (kind, source_id) in &notes.orphaned {
         context.warn(
             "DOCX_NOTE_MISSING",
@@ -1563,6 +1740,21 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             notes_xml(NoteKind::Endnote, &notes.endnotes),
         )?;
         context.relationship(REL_ENDNOTES, "endnotes.xml", false)?;
+    }
+    if !context.comment_entries.is_empty() {
+        let entries = context.comment_entries.clone();
+        context.package.add_xml(
+            "word/comments.xml",
+            COMMENTS_CONTENT_TYPE,
+            comments_xml(&entries),
+        )?;
+        context.package.add_xml(
+            "word/commentsExtended.xml",
+            COMMENTS_EXTENDED_CONTENT_TYPE,
+            comments_extended_xml(&entries),
+        )?;
+        context.relationship(REL_COMMENTS, "comments.xml", false)?;
+        context.relationship(REL_COMMENTS_EXTENDED, "commentsExtended.xml", false)?;
     }
     if blocks.is_empty() {
         body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>");

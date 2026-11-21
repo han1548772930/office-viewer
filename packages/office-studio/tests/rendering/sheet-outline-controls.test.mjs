@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { test } from 'node:test'
+import { test } from 'vitest'
 import { SpreadsheetGeometry } from '../../src/rendering/spreadsheet/layout.ts'
 import { createSpreadsheetScene } from '../../src/rendering/spreadsheet/scene.ts'
 import { createSheetOutlineState, addSheetOutlineGroup, getCollapsedOutlineIndexes, setSheetOutlineCollapsed, setSheetOutlineLevel } from '../../src/features/sheet-outline/sheet-outline.ts'
