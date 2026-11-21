@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'vitest'
@@ -32,10 +32,9 @@ test('compute benchmark smoke keeps JS and Worker/WASM indices equivalent at sma
     assert.match(result.routing.thresholdStatus, /provisional/)
     assert.match(result.methodology.coldDefinition, /not a guaranteed disk-cold load/)
     await stat(output.jsonPath)
-    await stat(output.markdownPath)
-    const markdown = await readFile(output.markdownPath, 'utf8')
-    assert.match(markdown, /does not claim a performance target was met/)
-    assert.match(markdown, /Limitations/)
+    const outputs = await readdir(outputDirectory)
+    assert.equal(outputs.length, 1)
+    assert.match(outputs[0], /^compute-.*\.json$/)
   } finally {
     await rm(outputDirectory, { recursive: true, force: true })
   }

@@ -1,7 +1,7 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
@@ -30,19 +30,22 @@ import {
 } from '../features/pivot/services/pivot-engine'
 import { createChart, updateChart, type ChartConfig } from '../features/charts/chart-engine'
 import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
-import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, type SlicerCreateInput } from '../features/slicer/slicer-engine'
+import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, updateSlicerPresentation, type SlicerCreateInput, type SlicerPresentationPatch } from '../features/slicer/slicer-engine'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
 import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortRange, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type ConfigureSheetFilterInput } from '../features/sheet-sort-filter/sheet-data-panel-state'
 import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
-import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { canEditProtectedRanges, removeSheetRangeProtectionRule, setSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import {
   createDocumentContentControl,
+  deleteRepeatingSectionItem,
+  duplicateRepeatingSectionItem,
   removeDocumentContentControl,
+  resetDocumentContentControlPlaceholder,
   selectDocumentContentControlItem,
   setDocumentContentControlChecked,
   setDocumentContentControlValue,
@@ -556,6 +559,18 @@ export class OfficeStudio {
       for (const range of rule.ranges) this.assertCanEditRange(unitId, sheetId, range)
       applySheetDataValidationRule(requireSheet(model, sheetId), rule)
     }))
+    this.registerCommand<{ unitId: string; sheetId: string; rule: SheetDataValidationRule }, boolean>('sheet.command.replace-data-validation', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, 'Update data validation range', (model) => {
+      const sheet = requireSheet(model, sheetId)
+      const previousRanges = sheet.dataValidations?.find(existing => existing.id === rule.id)?.ranges ?? []
+      for (const range of [...previousRanges, ...rule.ranges]) this.assertCanEditRange(unitId, sheetId, range)
+      replaceSheetDataValidationRule(sheet, rule)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; ruleId: string }, boolean>('sheet.command.remove-data-validation', ({ unitId, sheetId, ruleId }) => this.commitWorkbook(unitId, 'Remove data validation rule', (model) => {
+      const sheet = requireSheet(model, sheetId)
+      const rule = sheet.dataValidations?.find(existing => existing.id === ruleId)
+      for (const range of rule?.ranges ?? []) this.assertCanEditRange(unitId, sheetId, range)
+      removeSheetDataValidationRule(sheet, ruleId)
+    }))
     this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[] }, boolean>('sheet.command.clear-data-validation', ({ unitId, sheetId, ranges }) => this.commitWorkbook(unitId, '清除数据验证', (model) => {
       for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
       clearSheetDataValidationRanges(requireSheet(model, sheetId), ranges)
@@ -659,7 +674,7 @@ export class OfficeStudio {
       const pivot = requirePivot(model, pivotTableId)
       setPivotLabelFilter(model, pivot, fieldId, selectedItems)
     }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; setting: { displayName?: string; format?: string; subtotalType?: 'sum' | 'count' | 'average' | 'min' | 'max' } }, boolean>('sheet.command.set-pivot-field-setting', ({ unitId, pivotTableId, fieldId, setting }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-field-setting', 'Set pivot field setting', (model) => {
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; setting: { displayName?: string; format?: string; subtotalType?: PivotAggregation } }, boolean>('sheet.command.set-pivot-field-setting', ({ unitId, pivotTableId, fieldId, setting }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-field-setting', 'Set pivot field setting', (model) => {
       const pivot = requirePivot(model, pivotTableId)
       setPivotFieldSetting(model, pivot, fieldId, setting)
     }))
@@ -702,6 +717,9 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; slicerId: string; range: SlicerTimelineRange | null }, boolean>('sheet.command.set-timeline-range', ({ unitId, slicerId, range }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-timeline-range', 'Filter with timeline', (model) => {
       setSlicerTimelineRange(model, requireSlicer(model, slicerId), range)
     }))
+    this.registerCommand<{ unitId: string; slicerId: string; patch: SlicerPresentationPatch }, boolean>('sheet.command.update-slicer-presentation', ({ unitId, slicerId, patch }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.update-slicer-presentation', 'Update slicer presentation', (model) => {
+      updateSlicerPresentation(requireSlicer(model, slicerId), patch)
+    }))
     this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.clear-slicer-filter', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.clear-slicer-filter', 'Clear slicer filter', (model) => {
       clearSlicerFilter(model, requireSlicer(model, slicerId))
     }))
@@ -721,6 +739,15 @@ export class OfficeStudio {
     }))
     this.registerCommand<{ unitId: string; controlId: string; checked: boolean }, boolean>('doc.command.set-content-control-checked', ({ unitId, controlId, checked }) => this.commitDocument(unitId, 'Set content control checkbox', (model) => {
       setDocumentContentControlChecked(model, controlId, checked)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.reset-content-control-placeholder', ({ unitId, controlId }) => this.commitDocument(unitId, 'Reset content control placeholder', (model) => {
+      resetDocumentContentControlPlaceholder(model, controlId)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.duplicate-repeating-section-item', ({ unitId, controlId }) => this.commitDocument(unitId, 'Duplicate repeating-section item', (model) => {
+      duplicateRepeatingSectionItem(model, controlId)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.delete-repeating-section-item', ({ unitId, controlId }) => this.commitDocument(unitId, 'Delete repeating-section item', (model) => {
+      deleteRepeatingSectionItem(model, controlId)
     }))
     this.registerCommand<{ unitId: string; controlId: string; value: string }, boolean>('doc.command.select-content-control-item', ({ unitId, controlId, value }) => this.commitDocument(unitId, 'Select content control item', (model) => {
       selectDocumentContentControlItem(model, controlId, value)

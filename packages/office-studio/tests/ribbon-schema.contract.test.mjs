@@ -148,12 +148,12 @@ test('grid overflow groups retain row and icon distinctions', () => {
 
 test('grid density compresses before complete trailing groups move to overflow', () => {
   assert.equal(GRID_RIBBON.tabHeight, 32)
-  assert.equal(GRID_RIBBON.toolbarHeight, 69)
-  assert.equal(GRID_RIBBON.rowHeight, 24)
-  assert.equal(GRID_RIBBON.rowGap, 4)
-  assert.equal(GRID_RIBBON.verticalPadding, 8)
-  assert.equal(GRID_RIBBON.itemGap, 4)
-  assert.equal(GRID_RIBBON.moreWidth, 72)
+  assert.equal(GRID_RIBBON.toolbarHeight, 73)
+  assert.equal(GRID_RIBBON.rowHeight, 28)
+  assert.equal(GRID_RIBBON.rowGap, 8)
+  assert.equal(GRID_RIBBON.verticalPadding, 4)
+  assert.equal(GRID_RIBBON.itemGap, 8)
+  assert.equal(GRID_RIBBON.moreWidth, 64)
   const groups = [{ regular: 90, compact: 75 }, { regular: 85, compact: 70 }, { regular: 40, compact: 32 }]
   assert.deepEqual(fitRibbonGridGroups(groups, 180), { visibleCount: 3, compact: true })
   assert.deepEqual(fitRibbonGridGroups(groups, 149), { visibleCount: 1, compact: true })

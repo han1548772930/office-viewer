@@ -47,4 +47,4 @@ pnpm test:browser:production
 
 工作台浏览器测试使用本机 Microsoft Edge 的 headless 模式；计算专项配置使用 Chrome。实际 Office 保存/重导入测试还需要上面的 WASM 构建产物。`test:browser:features` 覆盖切片器、时间线与内容控件；`test:browser:toolbars` 联合覆盖 Sheets 样式/格式/函数/筛选排序、Docs 剪贴板/符号/表格上下文和 Pro 控件。内部快照测试不代替 XLSX/DOCX 往返保真。
 
-完整范围、逐项证据及剩余缺口见 [功能对齐清单](docs/UNIVER_FEATURE_PARITY.md) 和 [本轮续作记录](docs/feature-evidence/continuation-2026-11-20.md)。性能与完整 Office 互操作分别验收。
+完整范围、逐项证据及剩余缺口见 [功能对齐清单](docs/UNIVER_FEATURE_PARITY.md)。性能与完整 Office 互操作分别验收。

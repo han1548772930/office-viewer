@@ -8,6 +8,7 @@ let server
 let apiModule
 let chartEngine
 let pivotPanelState
+let pivotEngine
 
 beforeAll(async () => {
   server = await createServer({
@@ -20,6 +21,7 @@ beforeAll(async () => {
   apiModule = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   chartEngine = await server.ssrLoadModule('/packages/office-studio/src/features/charts/chart-engine.ts')
   pivotPanelState = await server.ssrLoadModule('/packages/office-studio/src/features/pivot/services/pivot-panel-state.ts')
+  pivotEngine = await server.ssrLoadModule('/packages/office-studio/src/features/pivot/services/pivot-engine.ts')
 })
 
 afterAll(async () => {
@@ -99,6 +101,77 @@ test('supports label filtering, sorting, value settings, refresh and drill down'
   await pivot.refresh()
   assert.ok(studio.getWorkbookModel(workbook.getId()).pivotTables[0].revision > beforeRevision)
   assert.equal(officeApi.getPivotTableByCell(workbook.getId(), target.getSheetId(), 2, 1)?.getPivotTableId(), pivot.getPivotTableId())
+  studio.dispose()
+})
+
+test('pivot panel field sorting is applied, persisted through history, and cleared when the field changes area', async () => {
+  const { studio, workbook, source, target } = setup()
+  const model = studio.getWorkbookModel(workbook.getId())
+  const draft = pivotPanelState.createPivotPanelDraft(model, source.getSheetId(), 'A1:C5')
+  draft.targetSheetId = target.getSheetId()
+  draft.fields.find(field => field.fieldId === '0').area = 'row'
+  draft.fields.find(field => field.fieldId === '0').sort = 'descending'
+  draft.fields.find(field => field.fieldId === '2').area = 'value'
+
+  const input = pivotPanelState.preparePivotPanelInput(model, draft, 'pivot-panel-sort')
+  studio.executeCommandSync(pivotPanelState.CONFIGURE_PIVOT_COMMAND, input)
+  let pivot = studio.getWorkbookModel(workbook.getId()).pivotTables[0]
+  assert.equal(pivot.fields.find(field => field.id === '0').sort, 'descending')
+  assert.equal(target.getRange('E2').getValue(), 'West')
+
+  workbook.undo()
+  assert.equal(studio.getWorkbookModel(workbook.getId()).pivotTables.length, 0)
+  workbook.redo()
+  pivot = studio.getWorkbookModel(workbook.getId()).pivotTables[0]
+  assert.equal(pivot.fields.find(field => field.id === '0').sort, 'descending')
+
+  const reopenedDraft = pivotPanelState.createPivotPanelDraft(studio.getWorkbookModel(workbook.getId()), source.getSheetId(), 'A1:C5', 'pivot-panel-sort')
+  assert.equal(reopenedDraft.fields.find(field => field.fieldId === '0').sort, 'descending')
+  reopenedDraft.fields.find(field => field.fieldId === '0').area = 'filter'
+  studio.executeCommandSync(pivotPanelState.CONFIGURE_PIVOT_COMMAND, pivotPanelState.preparePivotPanelInput(studio.getWorkbookModel(workbook.getId()), reopenedDraft, 'pivot-panel-sort'))
+  assert.equal(studio.getWorkbookModel(workbook.getId()).pivotTables[0].fields.find(field => field.id === '0').sort, undefined)
+  studio.dispose()
+})
+
+test('pivot aggregation functions follow numeric cell types and apply value formats to generated cells', async () => {
+  const { studio, workbook, source, target } = setup()
+  source.getRange('D1:D6').setValues([
+    ['Measure'],
+    [2],
+    [3],
+    ['7'],
+    [true],
+    [null],
+  ])
+  const model = studio.getWorkbookModel(workbook.getId())
+  const pivot = pivotEngine.createPivotTable(model, {
+    unitId: model.id,
+    subUnitId: source.getSheetId(),
+    sheetName: source.getSheetName(),
+    range: { startRow: 0, startColumn: 3, endRow: 5, endColumn: 3 },
+  }, { unitId: model.id, subUnitId: target.getSheetId(), row: 0, col: 0 }, 'pivot-aggregations')
+  pivot.fields = [{ id: '0', sourceColumn: 3, name: 'Measure', area: 'value', position: 0, aggregation: 'count' }]
+  pivotEngine.refreshPivotTable(model, pivot)
+  const output = pivot.outputRange
+  assert.ok(output)
+  const values = () => pivotEngine.pivotOutputValues(model, pivot).flat().filter(value => typeof value === 'number')
+  assert.deepEqual(values(), [4])
+
+  const expected = new Map([
+    ['countNums', 2], ['sum', 5], ['average', 2.5], ['product', 6], ['min', 2], ['max', 3],
+    ['stdDev', Math.sqrt(0.5)], ['var', 0.5], ['stdDevp', 0.5], ['varp', 0.25],
+  ])
+  for (const [aggregation, result] of expected) {
+    pivot.fields[0].aggregation = aggregation
+    pivotEngine.refreshPivotTable(model, pivot)
+    assert.equal(values()[0], result, `${aggregation} aggregation`)
+  }
+  pivot.fields[0].aggregation = 'sum'
+  pivot.fields[0].format = '$#,##0.00'
+  pivotEngine.refreshPivotTable(model, pivot)
+  const targetModel = model.sheets.find(sheet => sheet.id === target.getSheetId())
+  const generated = pivot.generatedCellKeys.map(key => targetModel.cells[key])
+  assert.ok(generated.some(cell => cell.style.numberFormat === '$#,##0.00'))
   studio.dispose()
 })
 

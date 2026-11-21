@@ -19,6 +19,10 @@ export interface DocumentCommentActor extends DocumentPermissionContext {
 
 export type DocumentCommentAnchorStatus = 'current' | 'stale' | 'orphaned'
 
+function assertMessageAuthor(message: DocumentCommentMessage | undefined, actor: DocumentCommentActor): void {
+  if (message?.authorId !== actor.userId) throw new Error('Only the message author can edit or delete this comment.')
+}
+
 function commentsFor(model: DocumentModel): Record<string, DocumentThreadComment> {
   return model.comments ??= {}
 }
@@ -108,10 +112,13 @@ export function replyToDocumentThreadComment(
   text: string,
   actor: DocumentCommentActor,
   now = new Date().toISOString(),
+  mentions: readonly { userId: string; label: string }[] = [],
 ): DocumentCommentMessage {
   assertCanComment(model, actor)
   const comment = requireComment(model, commentId)
   const message = createMessage(actor, text, now)
+  const retainedMentions = mentions.filter(mention => mention.userId && mention.label && message.text.startsWith(mention.label))
+  if (retainedMentions.length) message.mentions = retainedMentions.map(mention => ({ ...mention }))
   comment.messages.push(message)
   updateTimestamp(comment, now)
   model.modified = true
@@ -130,7 +137,7 @@ export function editDocumentCommentMessage(
   const comment = requireComment(model, commentId)
   const message = comment.messages.find(candidate => candidate.id === messageId)
   if (!message) throw new RangeError(`Unknown comment message id: ${messageId}`)
-  if (message.authorId !== actor.userId) throw new Error('Only the message author can edit this comment.')
+  assertMessageAuthor(message, actor)
   message.text = commentText(text)
   message.updatedAt = now
   updateTimestamp(comment, now)
@@ -156,7 +163,27 @@ export function deleteDocumentThreadComment(model: DocumentModel, commentId: str
   assertCanComment(model, actor)
   const comments = commentsFor(model)
   if (!comments[commentId]) return false
+  assertMessageAuthor(comments[commentId].messages[0], actor)
   delete comments[commentId]
+  model.modified = true
+  return true
+}
+
+export function deleteDocumentCommentMessage(
+  model: DocumentModel,
+  commentId: string,
+  messageId: string,
+  actor: DocumentCommentActor,
+  now = new Date().toISOString(),
+): boolean {
+  assertCanComment(model, actor)
+  const comment = requireComment(model, commentId)
+  const index = comment.messages.findIndex(message => message.id === messageId)
+  if (index < 0) return false
+  assertMessageAuthor(comment.messages[index], actor)
+  if (index === 0) return deleteDocumentThreadComment(model, commentId, actor)
+  comment.messages.splice(index, 1)
+  updateTimestamp(comment, now)
   model.modified = true
   return true
 }

@@ -26,7 +26,7 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   const details = record(raw.details)
   const sectionBreakData = record(details.sectionBreak)
   const sectionBreakType = sectionBreakData.type ?? record(raw.sectionBreak).type
-  const sectionBreak = sectionBreakType === 'nextPage' || sectionBreakType === 'continuous' || sectionBreakType === 'nextColumn' || sectionBreakType === 'evenPage' || sectionBreakType === 'oddPage'
+  const sectionBreak = sectionBreakType === 'unspecified' || sectionBreakType === 'nextPage' || sectionBreakType === 'continuous' || sectionBreakType === 'nextColumn' || sectionBreakType === 'evenPage' || sectionBreakType === 'oddPage'
     ? { type: sectionBreakType as DocumentSectionBreakType }
     : undefined
   const pageBreak = details.pageBreak === true || raw.pageBreak === true || raw.type === 'page_break' || raw.type === 'pageBreak'

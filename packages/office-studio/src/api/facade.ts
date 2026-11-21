@@ -915,6 +915,10 @@ export class FSheetSlicer {
     await this.api.executeCommand('sheet.command.set-timeline-range', { unitId: this.unitId, slicerId: this.id, range })
     return this
   }
+  async updatePresentation(patch: import('../features/slicer/slicer-engine').SlicerPresentationPatch): Promise<this> {
+    await this.api.executeCommand('sheet.command.update-slicer-presentation', { unitId: this.unitId, slicerId: this.id, patch })
+    return this
+  }
   async clearFilter(): Promise<this> {
     await this.api.executeCommand('sheet.command.clear-slicer-filter', { unitId: this.unitId, slicerId: this.id })
     return this
@@ -1025,6 +1029,9 @@ export class FDocumentContentControl {
   getRange(): { blockId: string; startOffset: number; endOffset: number } { return contentControlRange(this.getInfo()) }
   setValue(value: string): this { this.document.executeContentControlCommand('doc.command.set-content-control-value', { controlId: this.id, value }); return this }
   setChecked(checked: boolean): this { this.document.executeContentControlCommand('doc.command.set-content-control-checked', { controlId: this.id, checked }); return this }
+  resetPlaceholder(): boolean { return this.document.executeContentControlCommand('doc.command.reset-content-control-placeholder', { controlId: this.id }) }
+  duplicateRepeatingItem(): boolean { return this.document.executeContentControlCommand('doc.command.duplicate-repeating-section-item', { controlId: this.id }) }
+  deleteRepeatingItem(): boolean { return this.document.executeContentControlCommand('doc.command.delete-repeating-section-item', { controlId: this.id }) }
   selectItem(value: string): this { this.document.executeContentControlCommand('doc.command.select-content-control-item', { controlId: this.id, value }); return this }
   update(patch: DocumentContentControlPatch): this { this.document.executeContentControlCommand('doc.command.update-content-control', { controlId: this.id, patch }); return this }
   remove(): boolean { return this.document.executeContentControlCommand('doc.command.remove-content-control', { controlId: this.id }) }

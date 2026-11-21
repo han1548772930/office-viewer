@@ -1,10 +1,12 @@
 import type { OfficeStudio } from '../../api/office-studio'
 import { FOffice, type FSheetSlicer } from '../../api/facade'
 import type { CellScalar, SlicerModel, SlicerTimelineRange, SlicerType, TimelineLevel } from '../../domain/model'
-import { timelineCalendarToSerial, timelineDateToInput } from './timeline-date'
+import { parseTimelineDate, timelineCalendarToSerial, timelineDateToInput } from './timeline-date'
+import { classifySheetNumberFormat } from '../sheet-workbench/sheet-number-format'
+import type { SlicerCreateInput, SlicerPresentationPatch } from './slicer-engine'
 
 export interface SlicerPanelTarget { workbookId: string; sheetId: string }
-export interface SlicerPanelField { id: string; name: string; available: boolean; reason?: string }
+export interface SlicerPanelField { id: string; name: string; available: boolean; controls: SlicerType[]; reason?: string }
 export interface SlicerPanelPivot { id: string; label: string; fields: SlicerPanelField[] }
 export interface SlicerPanelControl { info: SlicerModel; items: string[]; selectedItems?: string[]; error?: string }
 export interface SlicerPanelSnapshot {
@@ -14,12 +16,7 @@ export interface SlicerPanelSnapshot {
   pivots: SlicerPanelPivot[]
   controls: SlicerPanelControl[]
 }
-export interface SlicerPanelInsert {
-  pivotTableId: string
-  sourceFieldId: string
-  type: SlicerType
-  caption?: string
-}
+export type SlicerPanelInsert = Omit<SlicerCreateInput, 'id' | 'unitId' | 'hostSheetId'>
 export interface SlicerPanelTimelineInput { start: string; end: string; level: TimelineLevel }
 
 export class SlicerPanelError extends Error {
@@ -53,12 +50,30 @@ export function readSlicerPanelState(studio: OfficeStudio, target: SlicerPanelTa
   const pivots = workbook.getPivotTables().map((pivot, index) => {
     const id = pivot.getPivotTableId()
     const pivotModel = model.pivotTables!.find((candidate) => candidate.id === id)!
+    const source = model.sheets.find((candidate) => candidate.id === pivotModel.source.subUnitId)
+    const sourceRange = pivotModel.source.range
     const labelFields = new Set(['row', 'column', 'filter'].flatMap((area) => pivot.getFieldIdsByArea(area as 'row' | 'column' | 'filter')))
     const fields = pivot.getSourceFieldsInfo().map((field) => {
       const occupied = allControls.some((control) => control.pivotTableId === id && control.sourceFieldId === field.fieldId)
       const reason = !labelFields.has(field.fieldId) ? '请先将字段放到透视表的行、列或筛选区域。'
         : occupied ? '此字段已绑定切片器或时间线。' : undefined
-      return { id: field.fieldId, name: field.fieldName, available: !reason, reason }
+      const controls: SlicerType[] = ['slicer']
+      if (source) {
+        const heading = String(source.cells[`${sourceRange.startRow}:${field.sourceColumn}`]?.value ?? field.fieldName).trim()
+        const dateHeading = /(?:date|time|日期|时间|年月|日付)/i.test(heading)
+        for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
+          const cell = source.cells[`${row}:${field.sourceColumn}`]
+          const numberFormat = classifySheetNumberFormat(cell?.style.numberFormat ?? 'General')
+          const rawValue = cell?.value ?? null
+          const numericSerial = typeof rawValue === 'number' && (numberFormat === 'date' || numberFormat === 'datetime' || dateHeading)
+          const textualDate = typeof rawValue === 'string' && !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(rawValue.trim())
+          if ((numericSerial || textualDate) && parseTimelineDate(rawValue, model.date1904)) {
+            controls.push('timeline')
+            break
+          }
+        }
+      }
+      return { id: field.fieldId, name: field.fieldName, available: !reason, controls, reason }
     })
     const sheetName = workbook.getSheetBySheetId(pivotModel.anchor.subUnitId)?.getSheetName() ?? '工作表'
     return { id, label: `${sheetName} · 透视表 ${index + 1}`, fields }
@@ -84,8 +99,13 @@ export async function insertPanelSlicer(studio: OfficeStudio, target: SlicerPane
   const field = pivot.fields.find((candidate) => candidate.id === input.sourceFieldId)
   if (!field) throw new SlicerPanelError('SOURCE_FIELD_NOT_FOUND', '请选择有效的源字段。')
   if (!field.available) throw new SlicerPanelError('SOURCE_FIELD_UNAVAILABLE', field.reason ?? '所选字段暂不可用。')
+  if (!field.controls.includes(input.type)) throw new SlicerPanelError('UNSUPPORTED_SOURCE_FIELD', '所选字段不支持此控件，请选择包含有效日期的字段。')
   const control = await requireTarget(studio, target).sheet.insertSlicer({ ...input, caption: input.caption?.trim() || field.name })
   return control.getId()
+}
+
+export async function applyPanelSlicerPresentation(studio: OfficeStudio, target: SlicerPanelTarget, slicerId: string, patch: SlicerPresentationPatch): Promise<void> {
+  await requireControl(studio, target, slicerId).updatePresentation(patch)
 }
 
 export async function applyPanelSlicerItems(studio: OfficeStudio, target: SlicerPanelTarget, slicerId: string, selectedItems: readonly string[]): Promise<void> {

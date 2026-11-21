@@ -135,6 +135,16 @@ struct ConditionalFormatInput {
     priority: u32,
     #[serde(default)]
     stop_if_true: bool,
+    #[serde(default)]
+    sub_type: Option<String>,
+    #[serde(default)]
+    value: Option<Value>,
+    #[serde(default)]
+    is_bottom: bool,
+    #[serde(default)]
+    is_percent: bool,
+    #[serde(default)]
+    config: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
@@ -143,6 +153,9 @@ struct ConditionalFormatStyleInput {
     fill: Option<String>,
     font_color: Option<String>,
     bold: Option<bool>,
+    italic: Option<bool>,
+    underline: Option<bool>,
+    strike: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -802,11 +815,12 @@ fn style_xml(registry: &StyleRegistry) -> String {
     xml_out.push_str(&format!("<dxfs count=\"{}\">", registry.conditional_styles.len()));
     for style in &registry.conditional_styles {
         xml_out.push_str("<dxf>");
-        if style.font_color.is_some() || style.bold == Some(true) {
+        if style.font_color.is_some() || style.bold.is_some() || style.italic.is_some() || style.underline.is_some() || style.strike.is_some() {
             xml_out.push_str("<font>");
-            if style.bold == Some(true) {
-                xml_out.push_str("<b/>");
-            }
+            if let Some(bold) = style.bold { xml_out.push_str(if bold { "<b/>" } else { "<b val=\"0\"/>" }); }
+            if let Some(italic) = style.italic { xml_out.push_str(if italic { "<i/>" } else { "<i val=\"0\"/>" }); }
+            if let Some(underline) = style.underline { xml_out.push_str(if underline { "<u/>" } else { "<u val=\"0\"/>" }); }
+            if let Some(strike) = style.strike { xml_out.push_str(if strike { "<strike/>" } else { "<strike val=\"0\"/>" }); }
             if let Some(color) = style.font_color.as_deref() {
                 let color = normalize_color(color);
                 if color != "none" {
@@ -1061,7 +1075,7 @@ fn worksheet_xml(
 fn write_conditional_formats(
     sheet: &SheetInput,
     registry: &mut StyleRegistry,
-    warnings: &mut Vec<ExportWarning>,
+    _warnings: &mut Vec<ExportWarning>,
 ) -> Result<String, ExportError> {
     if sheet.conditional_formats.is_empty() {
         return Ok(String::new());
@@ -1071,36 +1085,148 @@ fn write_conditional_formats(
     let mut out = String::new();
     let mut emitted_priority = 0u32;
     for rule in rules {
-        if rule.rule_type != "cellIs" {
-            warnings.push(ExportWarning::new("UNSUPPORTED_CONDITIONAL_FORMAT", format!("Conditional format {} uses an unsupported rule type", rule.id)));
-            continue;
-        }
         let operator = match rule.operator.as_str() {
             "equal" => "equal", "notEqual" => "notEqual", "greaterThan" => "greaterThan",
             "greaterThanOrEqual" => "greaterThanOrEqual", "lessThan" => "lessThan",
             "lessThanOrEqual" => "lessThanOrEqual", "between" => "between", "notBetween" => "notBetween",
-            _ => return Err(ExportError::invalid(format!("conditional format {} has an unsupported operator", rule.id))),
+            _ => rule.operator.as_str(),
         };
-        if rule.ranges.is_empty() || rule.formula1.trim().parse::<f64>().is_err()
-            || matches!(operator, "between" | "notBetween") && rule.formula2.as_deref().and_then(|value| value.trim().parse::<f64>().ok()).is_none()
-        {
-            return Err(ExportError::invalid(format!("conditional format {} has invalid ranges or numeric operands", rule.id)));
-        }
-        let dxf_id = registry.register_conditional_style(&rule.style);
+        if rule.ranges.is_empty() { return Err(ExportError::invalid(format!("conditional format {} has no ranges", rule.id))); }
         let ranges = rule.ranges.iter().filter_map(range_ref).collect::<Vec<_>>();
         if ranges.len() != rule.ranges.len() {
             return Err(ExportError::invalid(format!("conditional format {} contains an invalid range", rule.id)));
         }
         emitted_priority += 1;
         let priority = emitted_priority;
-        out.push_str(&format!("<conditionalFormatting sqref=\"{}\"><cfRule type=\"cellIs\" dxfId=\"{}\" priority=\"{}\" operator=\"{}\"{}>", ranges.join(" "), dxf_id, priority, operator, if rule.stop_if_true { " stopIfTrue=\"1\"" } else { "" }));
-        out.push_str(&format!("<formula>{}</formula>", esc(rule.formula1.trim().trim_start_matches('='))));
-        if matches!(operator, "between" | "notBetween") {
-            out.push_str(&format!("<formula>{}</formula>", esc(rule.formula2.as_deref().unwrap_or_default().trim().trim_start_matches('='))));
-        }
-        out.push_str("</cfRule></conditionalFormatting>");
+        out.push_str(&format!("<conditionalFormatting sqref=\"{}\">", ranges.join(" ")));
+        write_conditional_rule(&mut out, rule, registry, priority, operator)?;
+        out.push_str("</conditionalFormatting>");
     }
     Ok(out)
+}
+
+fn write_conditional_rule(out: &mut String, rule: &ConditionalFormatInput, registry: &mut StyleRegistry, priority: u32, operator: &str) -> Result<(), ExportError> {
+    let xml_type = match rule.rule_type.as_str() {
+        "cellIs" => "cellIs",
+        "highlightCell" if rule.sub_type.as_deref().unwrap_or("number") == "number" => "cellIs",
+        "highlightCell" if rule.sub_type.as_deref() == Some("text") => "containsText",
+        "highlightCell" if rule.sub_type.as_deref() == Some("timePeriod") => "timePeriod",
+        "highlightCell" if rule.sub_type.as_deref() == Some("duplicateValues") => "duplicateValues",
+        "highlightCell" if rule.sub_type.as_deref() == Some("uniqueValues") => "uniqueValues",
+        "highlightCell" if rule.sub_type.as_deref() == Some("rank") => "top10",
+        "highlightCell" if rule.sub_type.as_deref() == Some("average") => "aboveAverage",
+        "highlightCell" if rule.sub_type.as_deref() == Some("formula") => "expression",
+        "containsText" | "notContainsText" | "beginsWith" | "endsWith" => "containsText",
+        "duplicateValues" => "duplicateValues", "uniqueValues" => "uniqueValues",
+        "timePeriod" => "timePeriod", "top10" | "rank" => "top10", "average" => "aboveAverage",
+        "expression" => "expression", "dataBar" => "dataBar", "colorScale" => "colorScale", "iconSet" => "iconSet",
+        _ => return Err(ExportError::invalid(format!("conditional format {} has an unsupported rule type", rule.id))),
+    };
+    let visual = matches!(xml_type, "dataBar" | "colorScale" | "iconSet");
+    let dxf_id = if visual { None } else { Some(registry.register_conditional_style(&rule.style)) };
+    let mut attrs = format!("type=\"{}\" priority=\"{}\"", xml_type, priority);
+    if let Some(id) = dxf_id { attrs.push_str(&format!(" dxfId=\"{id}\"")); }
+    if xml_type == "cellIs" { attrs.push_str(&format!(" operator=\"{}\"", esc(operator))); }
+    if xml_type == "top10" {
+        if rule.is_bottom { attrs.push_str(" bottom=\"1\""); }
+        if rule.is_percent { attrs.push_str(" percent=\"1\""); }
+        attrs.push_str(&format!(" rank=\"{}\"", rule.value.as_ref().and_then(Value::as_u64).unwrap_or(10)));
+    }
+    if xml_type == "aboveAverage" {
+        if operator == "lessThan" || operator == "lessThanOrEqual" { attrs.push_str(" aboveAverage=\"0\""); }
+        if operator == "equal" || operator == "notEqual" { attrs.push_str(&format!(" equalAverage=\"{}\"", if operator == "equal" { "1" } else { "0" })); }
+    }
+    if xml_type == "timePeriod" { attrs.push_str(&format!(" timePeriod=\"{}\"", esc(operator))); }
+    if xml_type == "containsText" {
+        let text = rule.value.as_ref().and_then(Value::as_str).unwrap_or(&rule.formula1);
+        let text_operator = match rule.rule_type.as_str() {
+            "notContainsText" => "notContains",
+            "beginsWith" => "beginsWith",
+            "endsWith" => "endsWith",
+            "highlightCell" => match rule.operator.as_str() { "notContainsText" => "notContains", "beginsWith" => "beginsWith", "endsWith" => "endsWith", _ => "containsText" },
+            _ => "containsText",
+        };
+        attrs.push_str(&format!(" operator=\"{}\" text=\"{}\"", text_operator, esc(text)));
+    }
+    if rule.stop_if_true && !visual { attrs.push_str(" stopIfTrue=\"1\""); }
+    out.push_str(&format!("<cfRule {attrs}>"));
+    match xml_type {
+        "cellIs" | "expression" | "containsText" => {
+            let formula = if xml_type == "containsText" {
+                let (row, column) = rule.ranges.first().and_then(range_bounds).map(|(row, column, _, _)| (row, column)).unwrap_or((0, 0));
+                let address = format!("{}{}", column_name(column), row + 1);
+                let text = rule.value.as_ref().and_then(Value::as_str).unwrap_or(&rule.formula1).replace('"', "\"\"");
+                format!("NOT(ISERROR(SEARCH(\"{}\",{})))", text, address)
+            } else { rule.formula1.trim().trim_start_matches('=').to_owned() };
+            if !formula.is_empty() { out.push_str(&format!("<formula>{}</formula>", esc(&formula))); }
+            if xml_type == "cellIs" && matches!(operator, "between" | "notBetween") {
+                let second = rule.formula2.as_deref().ok_or_else(|| ExportError::invalid("conditional format is missing its second operand"))?;
+                out.push_str(&format!("<formula>{}</formula>", esc(second.trim().trim_start_matches('='))));
+            }
+        }
+        "dataBar" => write_data_bar(out, rule),
+        "colorScale" => write_color_scale(out, rule),
+        "iconSet" => write_icon_set(out, rule),
+        _ => {}
+    }
+    out.push_str("</cfRule>");
+    Ok(())
+}
+
+fn write_data_bar(out: &mut String, rule: &ConditionalFormatInput) {
+    let config = rule.config.as_ref().and_then(Value::as_object);
+    let color = config.and_then(|item| item.get("positiveColor")).and_then(Value::as_str).unwrap_or("FF638EC6").trim_start_matches('#');
+    let min = config.and_then(|item| item.get("min")).and_then(Value::as_object);
+    let max = config.and_then(|item| item.get("max")).and_then(Value::as_object);
+    let minimum = min.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("min");
+    let maximum = max.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("max");
+    let show_value = config.and_then(|item| item.get("isShowValue")).and_then(Value::as_bool).unwrap_or(true);
+    let gradient = config.and_then(|item| item.get("isGradient")).and_then(Value::as_bool).unwrap_or(true);
+    let native_color = config.and_then(|item| item.get("nativeColor")).and_then(Value::as_str).unwrap_or("#FFFFFF").trim_start_matches('#');
+    let min_value = min.and_then(|item| item.get("value")).and_then(json_scalar_string);
+    let max_value = max.and_then(|item| item.get("value")).and_then(json_scalar_string);
+    let min_attr = min_value.map(|value| format!(" val=\"{}\"", esc(&value))).unwrap_or_default();
+    let max_attr = max_value.map(|value| format!(" val=\"{}\"", esc(&value))).unwrap_or_default();
+    out.push_str(&format!("<dataBar showValue=\"{}\" gradient=\"{}\"><cfvo type=\"{}\"{} /><cfvo type=\"{}\"{} />", if show_value { 1 } else { 0 }, if gradient { 1 } else { 0 }, esc(minimum), min_attr, esc(maximum), max_attr));
+    out.push_str(&format!("<color rgb=\"FF{}\"/><negativeFillColor rgb=\"FF{}\"/></dataBar>", color, native_color));
+}
+
+fn write_color_scale(out: &mut String, rule: &ConditionalFormatInput) {
+    let thresholds = rule.config.as_ref().and_then(|value| value.get("thresholds")).and_then(Value::as_array);
+    let Some(thresholds) = thresholds else { return };
+    out.push_str("<colorScale>");
+    for threshold in thresholds {
+        let value = threshold.get("value");
+        let kind = value.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("percentile");
+        let amount = value.and_then(|item| item.get("value")).and_then(json_scalar_string).unwrap_or_default();
+        out.push_str(&format!("<cfvo type=\"{}\"{} />", esc(kind), if amount.is_empty() { String::new() } else { format!(" val=\"{}\"", esc(&amount)) }));
+    }
+    for threshold in thresholds {
+        let color = threshold.get("color").and_then(Value::as_str).unwrap_or("#FFFFFF").trim_start_matches('#');
+        out.push_str(&format!("<color rgb=\"FF{}\"/>", color));
+    }
+    out.push_str("</colorScale>");
+}
+
+fn write_icon_set(out: &mut String, rule: &ConditionalFormatInput) {
+    let icons = rule.config.as_ref().and_then(|value| value.get("icons")).and_then(Value::as_array);
+    let Some(icons) = icons else { return };
+    let config = rule.config.as_ref().and_then(Value::as_object);
+    let icon_set = config.and_then(|item| item.get("iconSet")).and_then(Value::as_str).unwrap_or("3TrafficLights1");
+    let show_value = config.and_then(|item| item.get("isShowValue")).and_then(Value::as_bool).unwrap_or(true);
+    let reverse = config.and_then(|item| item.get("reverse")).and_then(Value::as_bool).unwrap_or(false);
+    out.push_str(&format!("<iconSet iconSet=\"{}\" showValue=\"{}\" reverse=\"{}\">", esc(icon_set), if show_value { 1 } else { 0 }, if reverse { 1 } else { 0 }));
+    for icon in icons.iter().rev() {
+        let value = icon.get("value");
+        let kind = value.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("percent");
+        let amount = value.and_then(|item| item.get("value")).and_then(json_scalar_string).unwrap_or_default();
+        out.push_str(&format!("<cfvo type=\"{}\"{} />", esc(kind), if amount.is_empty() { String::new() } else { format!(" val=\"{}\"", esc(&amount)) }));
+    }
+    out.push_str("</iconSet>");
+}
+
+fn json_scalar_string(value: &Value) -> Option<String> {
+    match value { Value::String(text) => Some(text.clone()), Value::Number(number) => Some(number.to_string()), _ => None }
 }
 
 fn range_bounds(range: &RangeInput) -> Option<(u32, u32, u32, u32)> {
@@ -2399,7 +2525,11 @@ mod tests {
                     { "id": "low", "type": "cellIs", "ranges": [
                         { "startRow": 0, "startCol": 0, "endRow": 4, "endCol": 0 }
                     ], "operator": "lessThan", "formula1": "60", "priority": 1,
-                      "style": { "fill": "#ee3344" } }
+                      "style": { "fill": "#ee3344" } },
+                    { "id": "text", "type": "containsText", "ranges": [
+                        { "startRow": 2, "startCol": 1, "endRow": 4, "endCol": 1 }
+                    ], "operator": "containsText", "formula1": "A\"B", "value": "A\"B", "priority": 3,
+                      "style": { "italic": true } }
                 ]
             }]
         }).to_string();
@@ -2415,7 +2545,9 @@ mod tests {
 
         assert!(worksheet.contains("sqref=\"A1:A5\"><cfRule type=\"cellIs\" dxfId=\"0\" priority=\"1\" operator=\"lessThan\"><formula>60</formula>"));
         assert!(worksheet.contains("sqref=\"A1:A5 C1:C5\"><cfRule type=\"cellIs\" dxfId=\"1\" priority=\"2\" operator=\"greaterThanOrEqual\" stopIfTrue=\"1\"><formula>90</formula>"));
-        assert!(styles.contains("<dxfs count=\"2\"><dxf><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEE3344\"/>"));
+        assert!(worksheet.contains("sqref=\"B3:B5\"><cfRule type=\"containsText\" dxfId=\"2\" priority=\"3\" operator=\"containsText\" text=\"A&quot;B\">") );
+        assert!(worksheet.contains("NOT(ISERROR(SEARCH(\"A\"\"B\",B3)))"), "{worksheet}");
+        assert!(styles.contains("<dxfs count=\"3\"><dxf><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEE3344\"/>"));
         assert!(styles.contains("<dxf><font><b/><color rgb=\"FFFFFFFF\"/></font><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF00AA55\"/>"));
     }
 

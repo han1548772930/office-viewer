@@ -6,7 +6,8 @@ export {
   recalculateWorkbookFormulas,
 } from './formula-engine.ts'
 export { parseFormula, FormulaSyntaxError } from './formula-parser.ts'
-export { translateFormulaReferences } from './formula-references.ts'
+export { transformFormulaReferencesForStructureEdit, translateFormulaReferences } from './formula-references.ts'
+export type { FormulaStructureEdit } from './formula-references.ts'
 export type {
   FormulaCellAddress,
   FormulaDependencyGraph,

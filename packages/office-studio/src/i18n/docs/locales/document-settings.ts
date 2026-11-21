@@ -1,6 +1,8 @@
 import type { OfficeLocale } from '../../office-i18n.ts'
 
 const en = {
+  'doc.page-settings.paper-size.custom': 'Custom',
+  'page-settings.modern-width': 'Content width', 'page-settings.modern-width-narrow': 'Narrow', 'page-settings.modern-width-medium': 'Medium', 'page-settings.modern-width-wide': 'Wide',
   'doc.context.menu-label': 'Document context menu', 'doc.context.layout-group': 'Layout', 'doc.context.table-group': 'Table',
   'doc.context.paragraph-settings': 'Paragraph settings', 'doc.context.section-settings': 'Section settings',
   'groups.doc-insert-edit': 'Editing',
@@ -14,6 +16,10 @@ const en = {
   'doc.paragraph-settings.spacing-rule.auto': 'Multiple', 'doc.paragraph-settings.spacing-rule.atLeast': 'At least', 'doc.paragraph-settings.spacing-rule.exact': 'Exactly',
   'doc.paragraph-settings.line-spacing': 'Line spacing', 'doc.paragraph-settings.word-wrap': 'Wrap text', 'doc.paragraph-settings.snap-to-grid': 'Snap to document grid',
   'doc.section-settings.title': 'Section settings', 'doc.section-settings.orientation': 'Orientation', 'doc.section-settings.orientation.portrait': 'Portrait',
+  'doc.section-settings.section': 'Section', 'doc.section-settings.start.unspecified': 'Unspecified',
+  'doc.section-settings.section-start': 'Section starts',
+  'doc.section-settings.start.next-page': 'Next page', 'doc.section-settings.start.continuous': 'Continuous',
+  'doc.section-settings.start.next-column': 'Next column', 'doc.section-settings.start.even-page': 'Even page', 'doc.section-settings.start.odd-page': 'Odd page',
   'doc.section-settings.orientation.landscape': 'Landscape', 'doc.section-settings.page': 'Page size and margins', 'doc.section-settings.width': 'Width',
   'doc.section-settings.height': 'Height', 'doc.section-settings.margin-top': 'Top margin', 'doc.section-settings.margin-right': 'Right margin',
   'doc.section-settings.margin-bottom': 'Bottom margin', 'doc.section-settings.margin-left': 'Left margin', 'doc.section-settings.columns': 'Columns',
@@ -22,6 +28,8 @@ const en = {
 }
 
 const zh = {
+  'doc.page-settings.paper-size.custom': '自定义',
+  'page-settings.modern-width': '内容宽度', 'page-settings.modern-width-narrow': '窄', 'page-settings.modern-width-medium': '适中', 'page-settings.modern-width-wide': '宽',
   'doc.context.menu-label': '文档上下文菜单', 'doc.context.layout-group': '布局', 'doc.context.table-group': '表格',
   'doc.context.paragraph-settings': '段落设置', 'doc.context.section-settings': '分节设置',
   'groups.doc-insert-edit': '编辑',
@@ -35,6 +43,10 @@ const zh = {
   'doc.paragraph-settings.spacing-rule.auto': '多倍', 'doc.paragraph-settings.spacing-rule.atLeast': '最小值', 'doc.paragraph-settings.spacing-rule.exact': '固定值',
   'doc.paragraph-settings.line-spacing': '行距', 'doc.paragraph-settings.word-wrap': '自动换行', 'doc.paragraph-settings.snap-to-grid': '与文档网格对齐',
   'doc.section-settings.title': '分节设置', 'doc.section-settings.orientation': '纸张方向', 'doc.section-settings.orientation.portrait': '纵向',
+  'doc.section-settings.section': '节', 'doc.section-settings.start.unspecified': '未指定',
+  'doc.section-settings.section-start': '节起始位置',
+  'doc.section-settings.start.next-page': '下一页', 'doc.section-settings.start.continuous': '连续',
+  'doc.section-settings.start.next-column': '下一栏', 'doc.section-settings.start.even-page': '偶数页', 'doc.section-settings.start.odd-page': '奇数页',
   'doc.section-settings.orientation.landscape': '横向', 'doc.section-settings.page': '纸张尺寸和页边距', 'doc.section-settings.width': '宽度',
   'doc.section-settings.height': '高度', 'doc.section-settings.margin-top': '上边距', 'doc.section-settings.margin-right': '右边距',
   'doc.section-settings.margin-bottom': '下边距', 'doc.section-settings.margin-left': '左边距', 'doc.section-settings.columns': '分栏',

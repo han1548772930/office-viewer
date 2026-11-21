@@ -105,6 +105,102 @@ export function setDocumentContentControlChecked(model: DocumentModel, id: strin
   control.showingPlaceholder = false
 }
 
+export function resetDocumentContentControlPlaceholder(model: DocumentModel, id: string): void {
+  const control = requireControl(model, id)
+  if (!control.placeholder) throw new Error(`Content control has no placeholder: ${id}`)
+  if (control.showingPlaceholder) return
+  if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
+  assertAncestorContentEditable(model, control)
+  if (!['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
+    throw new TypeError(`Content control ${id} does not accept text placeholders`)
+  }
+  replaceControlText(model, control, control.placeholder)
+  control.value = control.placeholder
+  control.showingPlaceholder = true
+}
+
+export function duplicateRepeatingSectionItem(model: DocumentModel, id: string): DocumentContentControl {
+  const item = requireControl(model, id)
+  if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
+  if (['row', 'cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be duplicated')
+  const section = item.parentId ? requireControl(model, item.parentId) : undefined
+  if (section?.type !== 'repeatingSection') throw new Error(`Repeating-section parent is missing: ${id}`)
+  if (section.repeatingSection?.doNotAllowInsertDelete) throw new Error(`Repeating-section items cannot be changed: ${section.id}`)
+  if (isControlLocked(item) || isContentLocked(item) || isContentLocked(section)) throw new Error(`Repeating-section item is locked: ${id}`)
+  assertAncestorContentEditable(model, item)
+
+  const target = targetForControl(model, item)
+  if (!target) throw new Error(`Content control paragraph not found: ${item.blockId}`)
+  const runs = runsForTarget(model, target)
+  const text = sliceRuns(runs, item.startOffset, item.endOffset)
+  const textLength = item.endOffset - item.startOffset
+  const insertionOffset = item.endOffset
+  setTargetRuns(model, target, [
+    ...sliceRuns(runs, 0, insertionOffset),
+    ...text,
+    ...sliceRuns(runs, insertionOffset),
+  ])
+
+  const controls = model.contentControls ?? []
+  const descendants = controls.filter((control) => control.blockId === item.blockId
+    && control.startOffset >= item.startOffset && control.endOffset <= item.endOffset
+    && (control.id === item.id || hasAncestor(controls, control, item.id)))
+  const idMap = new Map(descendants.map((control) => [control.id, newContentControlId()]))
+  for (const control of controls) {
+    if (control.id === item.id || hasAncestor(controls, control, item.id)) continue
+    if (control.blockId !== item.blockId) continue
+    if (control.startOffset >= insertionOffset) {
+      control.startOffset += textLength
+      control.endOffset += textLength
+    } else if (control.startOffset <= item.startOffset && control.endOffset >= insertionOffset) {
+      control.endOffset += textLength
+    }
+  }
+  const copies = descendants.map((control) => ({
+    ...cloneControl(control),
+    id: idMap.get(control.id)!,
+    startOffset: insertionOffset + control.startOffset - item.startOffset,
+    endOffset: insertionOffset + control.endOffset - item.startOffset,
+    parentId: control.id === item.id ? section.id : idMap.get(control.parentId ?? '') ?? control.parentId,
+  }))
+  controls.push(...copies)
+  controls.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
+  return cloneControl(copies.find((control) => control.type === 'repeatingSectionItem')!)
+}
+
+export function deleteRepeatingSectionItem(model: DocumentModel, id: string): void {
+  const item = requireControl(model, id)
+  if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
+  if (['cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be deleted')
+  const section = item.parentId ? requireControl(model, item.parentId) : undefined
+  if (section?.type !== 'repeatingSection') throw new Error(`Repeating-section parent is missing: ${id}`)
+  if (section.repeatingSection?.doNotAllowInsertDelete) throw new Error(`Repeating-section items cannot be changed: ${section.id}`)
+  const removed = (model.contentControls ?? []).filter((control) => control.blockId === item.blockId
+    && control.startOffset >= item.startOffset && control.endOffset <= item.endOffset
+    && (control.id === item.id || hasAncestor(model.contentControls ?? [], control, item.id)))
+  if (removed.some((control) => isControlLocked(control) || isContentLocked(control))) throw new Error(`Repeating-section item is locked: ${id}`)
+  assertAncestorContentEditable(model, item)
+  const target = targetForControl(model, item)
+  if (!target) throw new Error(`Content control paragraph not found: ${item.blockId}`)
+  const runs = runsForTarget(model, target)
+  const textLength = item.endOffset - item.startOffset
+  setTargetRuns(model, target, [
+    ...sliceRuns(runs, 0, item.startOffset),
+    ...sliceRuns(runs, item.endOffset),
+  ])
+  const removedIds = new Set(removed.map((control) => control.id))
+  model.contentControls = (model.contentControls ?? []).filter((control) => !removedIds.has(control.id))
+  for (const control of model.contentControls) {
+    if (control.blockId !== item.blockId) continue
+    if (control.startOffset >= item.endOffset) {
+      control.startOffset -= textLength
+      control.endOffset -= textLength
+    } else if (control.startOffset <= item.startOffset && control.endOffset >= item.endOffset) {
+      control.endOffset -= textLength
+    }
+  }
+}
+
 export function selectDocumentContentControlItem(model: DocumentModel, id: string, value: string): void {
   const control = requireControl(model, id)
   if (control.type !== 'dropDownList' && control.type !== 'comboBox') throw new TypeError(`Content control ${id} is not a list control`)
@@ -404,6 +500,19 @@ function validIsoDate(value: string): boolean {
 }
 function cloneControl(control: DocumentContentControl): DocumentContentControl {
   return JSON.parse(JSON.stringify(control)) as DocumentContentControl
+}
+
+function hasAncestor(controls: readonly DocumentContentControl[], control: DocumentContentControl, ancestorId: string): boolean {
+  let parentId = control.parentId
+  while (parentId) {
+    if (parentId === ancestorId) return true
+    parentId = controls.find((candidate) => candidate.id === parentId)?.parentId
+  }
+  return false
+}
+
+function newContentControlId(): string {
+  return `content-control-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function removeControlTreeFromModel(model: DocumentModel, control: DocumentContentControl): void {

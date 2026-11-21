@@ -98,17 +98,34 @@ fn parse_rules(xml: &str, dxfs: &[Node], warnings: &mut Vec<String>) -> Vec<Valu
             continue;
         }
         for rule in group.children.iter().filter(|node| node.name == "cfRule") {
-            if rule.attrs.get("type").map(String::as_str) != Some("cellIs") {
-                warnings.push("Skipped unsupported XLSX conditional formatting rule type".into());
-                continue;
-            }
-            let operator = rule.attrs.get("operator").map(String::as_str).unwrap_or_default();
-            if !matches!(operator, "equal" | "notEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween") {
+            let xml_type = rule.attrs.get("type").map(String::as_str).unwrap_or_default();
+            let (rule_type, sub_type) = match xml_type {
+                "cellIs" => ("cellIs", Some("number")), "expression" => ("expression", Some("formula")),
+                "containsText" => match rule.attrs.get("operator").map(String::as_str).unwrap_or("containsText") {
+                    "notContains" => ("notContainsText", Some("text")), "beginsWith" => ("beginsWith", Some("text")),
+                    "endsWith" => ("endsWith", Some("text")), _ => ("containsText", Some("text")),
+                },
+                "duplicateValues" => ("duplicateValues", None), "uniqueValues" => ("uniqueValues", None),
+                "timePeriod" => ("timePeriod", Some("timePeriod")), "top10" => ("top10", Some("rank")),
+                "aboveAverage" => ("average", Some("average")), "dataBar" => ("dataBar", None),
+                "colorScale" => ("colorScale", None), "iconSet" => ("iconSet", None),
+                _ => {
+                    warnings.push(format!("Skipped unsupported XLSX conditional formatting rule type: {xml_type}"));
+                    continue;
+                }
+            };
+            let operator = rule.attrs.get("operator").or_else(|| rule.attrs.get("timePeriod")).map(String::as_str).unwrap_or_else(|| {
+                if xml_type == "aboveAverage" {
+                    if rule.attrs.get("equalAverage").is_some_and(|value| value == "1") { "equal" }
+                    else if rule.attrs.get("aboveAverage").is_some_and(|value| value == "0") { "lessThan" } else { "greaterThan" }
+                } else { "" }
+            });
+            if xml_type == "cellIs" && !matches!(operator, "equal" | "notEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween") {
                 warnings.push("Skipped XLSX conditional formatting with unsupported operator".into());
                 continue;
             }
             let formulas = rule.children.iter().filter(|node| node.name == "formula").map(|node| node.text.trim().to_owned()).collect::<Vec<_>>();
-            if formulas.is_empty() || matches!(operator, "between" | "notBetween") && formulas.len() < 2 {
+            if xml_type == "cellIs" && (formulas.is_empty() || matches!(operator, "between" | "notBetween") && formulas.len() < 2) {
                 warnings.push("Skipped XLSX conditional formatting with missing formula operands".into());
                 continue;
             }
@@ -121,16 +138,56 @@ fn parse_rules(xml: &str, dxfs: &[Node], warnings: &mut Vec<String>) -> Vec<Valu
                 warnings.push("XLSX conditional formatting references an unavailable differential style".into());
             }
             let priority = rule.attrs.get("priority").and_then(|value| value.parse::<u32>().ok()).unwrap_or((rules.len() + 1) as u32);
-            rules.push(json!({
-                "id": format!("conditional-{priority}-{}", rules.len() + 1),
-                "type": "cellIs", "ranges": ranges, "operator": operator,
-                "formula1": formulas[0], "formula2": formulas.get(1),
+            let config = parse_visual_config(rule);
+            let formula1 = formulas.first().cloned().or_else(|| rule.attrs.get("text").cloned()).unwrap_or_default();
+            let mut output = json!({
+                "id": format!("conditional-{priority}-{}", rules.len() + 1), "type": rule_type,
+                "ranges": ranges, "operator": operator, "formula1": formula1,
                 "style": style, "priority": priority,
                 "stopIfTrue": rule.attrs.get("stopIfTrue").is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            }));
+            });
+            if let Some(sub_type) = sub_type { output["subType"] = json!(sub_type); }
+            if let Some(formula) = formulas.get(1) { output["formula2"] = json!(formula); }
+            if let Some(rank) = rule.attrs.get("rank").and_then(|value| value.parse::<u32>().ok()) { output["value"] = json!(rank); }
+            if rule.attrs.get("bottom").is_some_and(|value| value == "1") { output["isBottom"] = json!(true); }
+            if rule.attrs.get("percent").is_some_and(|value| value == "1") { output["isPercent"] = json!(true); }
+            if let Some(config) = config { output["config"] = config; }
+            rules.push(output);
         }
     }
     rules
+}
+
+fn parse_visual_config(rule: &Node) -> Option<Value> {
+    let data_bar = rule.descendants("dataBar").first().cloned();
+    let color_scale = rule.descendants("colorScale").first().cloned();
+    let icon_set = rule.descendants("iconSet").first().cloned();
+    if let Some(node) = data_bar {
+        let color = node.descendants("color").first().and_then(color_value).unwrap_or_else(|| "#638EC6".into());
+        let values = node.children.iter().filter(|child| child.name == "cfvo").collect::<Vec<_>>();
+        let min = values.first().map(|value| json!({ "type": value.attrs.get("type"), "value": value.attrs.get("val") }));
+        let max = values.get(1).map(|value| json!({ "type": value.attrs.get("type"), "value": value.attrs.get("val") }));
+        return Some(json!({ "positiveColor": color, "isShowValue": node.attrs.get("showValue").is_none_or(|value| value != "0"), "min": min, "max": max }));
+    }
+    if let Some(node) = color_scale {
+        let cfvo = node.children.iter().filter(|child| child.name == "cfvo").collect::<Vec<_>>();
+        let colors = node.children.iter().filter(|child| child.name == "color").collect::<Vec<_>>();
+        let thresholds = cfvo.iter().zip(colors).enumerate().filter_map(|(index, (value, color))| Some(json!({
+            "value": { "type": value.attrs.get("type")?, "value": value.attrs.get("val") },
+            "color": color_value(color)? , "index": index
+        }))).collect::<Vec<_>>();
+        return Some(json!({ "thresholds": thresholds }));
+    }
+    if let Some(node) = icon_set {
+        let values = node.children.iter().filter(|child| child.name == "cfvo").collect::<Vec<_>>();
+        let icons = values.iter().enumerate().rev().map(|(index, value)| json!({
+            "value": { "type": value.attrs.get("type"), "value": value.attrs.get("val") },
+            "iconType": node.attrs.get("iconSet"), "iconId": values.len() - index - 1,
+            "operator": "greaterThanOrEqual"
+        })).collect::<Vec<_>>();
+        return Some(json!({ "icons": icons, "iconSet": node.attrs.get("iconSet"), "reverse": node.attrs.get("reverse"), "isShowValue": node.attrs.get("showValue").is_none_or(|value| value != "0") }));
+    }
+    None
 }
 
 fn differential_style(node: &Node) -> Value {
@@ -142,6 +199,12 @@ fn differential_style(node: &Node) -> Value {
     }
     if let Some(bold) = font.and_then(|font| font.children.iter().find(|child| child.name == "b")) {
         style.insert("bold".into(), Value::Bool(bold.attrs.get("val").is_none_or(|value| value != "0" && !value.eq_ignore_ascii_case("false"))));
+    }
+    for (xml_name, field) in [("i", "italic"), ("u", "underline"), ("strike", "strike")] {
+        if let Some(node) = font.and_then(|font| font.children.iter().find(|child| child.name == xml_name)) {
+            let enabled = node.attrs.get("val").is_none_or(|value| value != "0" && !value.eq_ignore_ascii_case("false"));
+            style.insert(field.into(), Value::Bool(enabled));
+        }
     }
     if let Some(color) = fill.and_then(|fill| fill.descendants("fgColor").first().and_then(color_value)) {
         style.insert("fill".into(), Value::String(color));

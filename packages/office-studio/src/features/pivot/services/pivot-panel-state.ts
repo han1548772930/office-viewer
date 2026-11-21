@@ -1,6 +1,6 @@
-import type { CellRange, PivotAggregation, PivotFieldArea, PivotFieldModel, PivotTableModel, PivotTableOptions, SpreadsheetSheet, WorkbookModel } from '../../../domain/model'
+import type { CellRange, PivotAggregation, PivotFieldArea, PivotFieldModel, PivotSortDirection, PivotTableModel, PivotTableOptions, SpreadsheetSheet, WorkbookModel } from '../../../domain/model'
 import { parseSheetAddress } from '../../sheet-workbench/sheet-workbench.ts'
-import { createPivotTable, normalizePivotSource, refreshPivotTable, type PivotTableAnchorInput, type PivotTableSourceInput } from './pivot-engine.ts'
+import { createPivotTable, normalizePivotSource, PIVOT_AGGREGATIONS, refreshPivotTable, type PivotTableAnchorInput, type PivotTableSourceInput } from './pivot-engine.ts'
 
 export const CONFIGURE_PIVOT_COMMAND = 'sheet.command.configure-pivot-table'
 export interface PivotPanelField {
@@ -9,6 +9,7 @@ export interface PivotPanelField {
   sourceColumn: number
   area: PivotFieldArea | 'unused'
   aggregation: PivotAggregation
+  sort?: PivotSortDirection
 }
 export interface PivotPanelDraft {
   pivotId: string
@@ -25,12 +26,11 @@ export interface ConfigurePivotFromPanelInput {
   mode: 'create' | 'update'
   source: PivotTableSourceInput
   anchor: PivotTableAnchorInput
-  fields: Array<{ fieldId: string; area: PivotFieldArea; aggregation?: PivotAggregation }>
+  fields: Array<{ fieldId: string; area: PivotFieldArea; aggregation?: PivotAggregation; sort?: PivotSortDirection }>
   options: Partial<PivotTableOptions>
 }
 const maxRows = 1_048_576, maxColumns = 16_384
 const areas: readonly PivotFieldArea[] = ['filter', 'row', 'column', 'value']
-const aggregations: readonly PivotAggregation[] = ['sum', 'count', 'average', 'min', 'max']
 const defaultOptions = (): PivotTableOptions => ({ repeatRowLabels: false, showRowGrandTotal: true, showColGrandTotal: true, showRowSubtotals: true, showColSubtotals: true, valuePosition: 'column' })
 
 function columnLabel(column: number): string {
@@ -78,11 +78,17 @@ export function createPivotPanelDraft(workbook: WorkbookModel, sheetId: string, 
     } else {
       draft.fields = draft.fields.map(field => {
         const existing = pivot.fields.find(candidate => candidate.id === field.fieldId)
-        return existing ? { ...field, area: existing.area, aggregation: existing.aggregation ?? 'sum' } : field
-      }).sort((a, b) => {
-        const first = pivot.fields.find(candidate => candidate.id === a.fieldId), second = pivot.fields.find(candidate => candidate.id === b.fieldId)
-        return first && second && first.area === second.area ? first.position - second.position : 0
+        return existing ? { ...field, area: existing.area, aggregation: existing.aggregation ?? 'sum', sort: existing.sort } : field
       })
+      for (const area of areas) {
+        const positions = draft.fields.map((field, index) => field.area === area ? index : -1).filter(index => index >= 0)
+        const ordered = draft.fields.filter(field => field.area === area).sort((first, second) => {
+          const firstPosition = pivot.fields.find(field => field.id === first.fieldId)?.position ?? 0
+          const secondPosition = pivot.fields.find(field => field.id === second.fieldId)?.position ?? 0
+          return firstPosition - secondPosition
+        })
+        positions.forEach((position, index) => { draft.fields[position] = ordered[index]! })
+      }
     }
   } catch { /* Keep an invalid current selection editable; validation is shown on field loading/submission. */ }
   return draft
@@ -99,7 +105,12 @@ export function preparePivotPanelInput(workbook: WorkbookModel, draft: PivotPane
     if (!available.some(candidate => candidate.fieldId === field.fieldId)) throw new Error(`字段“${field.fieldName}”已不在当前数据区域中，请重新读取字段。`)
     if (!areas.some(area => area === field.area)) throw new Error('字段区域无效。')
     const area: PivotFieldArea = field.area === 'unused' ? 'row' : field.area
-    return { fieldId: field.fieldId, area, ...(area === 'value' ? { aggregation: field.aggregation } : {}) }
+    return {
+      fieldId: field.fieldId,
+      area,
+      ...(area === 'value' ? { aggregation: field.aggregation } : {}),
+      ...((area === 'row' || area === 'column') && field.sort ? { sort: field.sort } : {}),
+    }
   })
   const input: ConfigurePivotFromPanelInput = {
     unitId: workbook.id, pivotTableId, mode: draft.pivotId ? 'update' : 'create',
@@ -125,7 +136,8 @@ function validateConfiguration(workbook: WorkbookModel, input: ConfigurePivotFro
     if (!/^\d+$/.test(field.fieldId) || Number(field.fieldId) > source.range.endCol - source.range.startCol || !areas.includes(field.area)) throw new Error('配置中存在无效字段。')
     if (seen.has(field.fieldId)) throw new Error('同一个字段不能重复放置。')
     seen.add(field.fieldId)
-    if (field.area === 'value' && !aggregations.includes(field.aggregation ?? 'sum')) throw new Error('请选择有效的汇总方式。')
+    if (field.area === 'value' && !PIVOT_AGGREGATIONS.includes(field.aggregation ?? 'sum')) throw new Error('请选择有效的汇总方式。')
+    if (field.sort !== undefined && (!['row', 'column'].includes(field.area) || !['ascending', 'descending'].includes(field.sort))) throw new Error('排序只能用于行字段或列字段。')
   }
   if (!input.fields.some(field => field.area === 'value')) throw new Error('请至少将一个字段放入“值”区域。')
   for (const key of ['repeatRowLabels', 'showRowGrandTotal', 'showColGrandTotal', 'showRowSubtotals', 'showColSubtotals'] as const) {
@@ -157,8 +169,10 @@ export function configurePivotFromPanel(workbook: WorkbookModel, input: Configur
       ...old, id: field.fieldId, name: header == null || header === '' ? `Column ${Number(field.fieldId) + 1}` : String(header),
       sourceColumn, area: field.area, position: positions[field.area]++,
       ...(field.area === 'value' ? { aggregation: field.aggregation ?? 'sum' } : {}),
+      ...((field.area === 'row' || field.area === 'column') && field.sort ? { sort: field.sort } : {}),
     }
     if (field.area !== 'value') delete next.aggregation
+    if (field.area !== 'row' && field.area !== 'column' || !field.sort) delete next.sort
     return next
   })
   pivot.options = { ...pivot.options, ...input.options }

@@ -13,6 +13,19 @@
 - [Canvas/WebGPU 与 WASM 计算标准](docs/RENDERING_AND_COMPUTE_STANDARD.md)：Canvas 编辑器、WebGPU 优先后端、Worker/WASM 大计算、内存与性能验收。
 - [AGENTS.md](AGENTS.md)：进入本项目工作的执行入口。
 
+### 目标与实现顺序
+
+1. 以本固定版本 Univer 的 Sheets / Docs 开源工作台和全部官方 Pro 能力为完整功能与布局目标。使用 Vue 3 / TypeScript、Rust/WASM 和 `antdv-next` 实现；不得安装或依赖商业 Univer SDK。
+2. Microsoft 365 专属行为只作为 Univer/Pro 全部功能闭环后的补充，不计入首轮入口统计，不得替代 Univer 已有目标。
+
+### Ribbon 清点基线
+
+固定参考 commit 的 desktop 开源菜单注册计数为 Sheets 62 项、Docs 38 项，合计 100 个 Ribbon 根入口。Sheets 分类是 START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 5；Docs 是 Home 25、Insert 10、View 3。根入口按顶层 schema 节点统计，子菜单项不重复计数。
+
+Univer 1.5.2 的已发布 Pro Docs / Sheets UI 包共有 20 个导出菜单 schema 声明的包；发布 bundle 的静态注册表识别出 24 个 Pro Ribbon 根节点，其中 Sheets 15 项、Docs 9 项。至少 6 个包另声明上下文 Ribbon schema。固定开源版和 Pro 包清单、来源路径、统计口径及当前入口差异见 [工具栏清点](docs/UNIVER_TOOLBAR_PARITY.md) 和 [Docs / Sheets 入口表](docs/feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。Pro 根入口计数来自已发布编译包，不等于动态运行态或功能完成验收。
+
+每个根入口同时记录 classic 单行工具区顺序及 grid 两行布局的 `row`、`column`、跨行列、尺寸和标签配置；上下文标签、菜单、footer 与 More 溢出分开统计。classic 与 grid 是同一入口集合的呈现变体，布局变更不得丢失入口或命令语义。
+
 参考基线审阅日期为 2026-11-20，Univer 提交为 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。标准中的“目标”“必须”描述待实现及待验收要求，不代表现有代码已完成。
 
 ## 2. 不得降低的标准

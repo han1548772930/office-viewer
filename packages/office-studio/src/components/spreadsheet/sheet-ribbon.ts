@@ -1,4 +1,16 @@
-import { AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowDownAZ, ArrowUpAZ, AArrowDown, AArrowUp, Bold, CalendarDays, CheckSquare, ClipboardPaste, Crosshair, Eraser, FileChartColumn, Grid2X2, Grid3X3, Italic, ListChecks, ListFilter, Maximize, Merge, Minimize, PaintBucket, Paintbrush, Plus, Redo2, RefreshCw, RotateCw, Search, ShieldCheck, Shrink, Snowflake, Sparkles, Strikethrough, TextCursorInput, Trash2, Type, Underline, Undo2, WrapText } from 'lucide-vue-next'
+import type { Component } from 'vue'
+import {
+  AArrowDown, AArrowUp, AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowDownAZ, ArrowDownWideNarrow, ArrowUpAZ,
+  BadgeDollarSign, Baseline, BetweenHorizontalStart, Bold, Brush, Calculator, CalendarDays,
+  ChartColumnIncreasing, ChartLine, ChartNoAxesColumnIncreasing, ChartNoAxesCombined, ChevronDown,
+  ClipboardCheck, ClipboardPaste, Clock, Crosshair, DecimalsArrowLeft, DecimalsArrowRight, Expand,
+  Filter, FilterX, FunctionSquare, Grid2X2, Group, Italic, ListFilter, Minimize, PaintBucket, Palette,
+  PanelBottom, PanelLeft, PanelRight, PanelTop, Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
+  RotateCw, Search, SearchCode, ShieldCheck, Shrink, Sigma, SquareCheck, SquareDashed, Strikethrough,
+  TableCellsMerge, TableCellsSplit, TableProperties, TextCursor, Underline, Undo2, Ungroup, Workflow,
+  WrapText,
+} from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 import { SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
@@ -51,6 +63,10 @@ const colors = [
   { label: '浅红色', value: '#ffe0e0' }, { label: '黑色', value: '#1f2937' },
 ]
 const functionCategories = [...new Set(SHEET_FUNCTION_CATALOG.map(entry => entry.category))]
+const functionCategoryIcons: Record<string, Component> = {
+  '常用与统计': FunctionSquare, 数学: Sigma, 逻辑: Workflow, 统计: ChartNoAxesColumnIncreasing,
+  '查找与引用': SearchCode, 财务: BadgeDollarSign,
+}
 const textRotationOptions: Array<[number | 'v', string]> = [
   [0, '水平'], [-45, '左斜 45°'], [45, '右斜 45°'], ['v', '竖排'], [-90, '左转 90°'], [90, '右转 90°'],
 ]
@@ -66,8 +82,8 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         { id: 'clipboard', title: '剪贴板', order: 0, items: [
           button('sheet.command.undo', '撤销', { icon: Undo2, disabled: !state.canUndo, shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1 } }),
           button('sheet.command.redo', '重做', { icon: Redo2, disabled: !state.canRedo, shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1 } }),
-          button('sheet.command.clear-format', '清除格式', { icon: Eraser, showLabel: true, gridLayout: { row: 1, column: 2 } }),
-          button('sheet.operation.format-painter', '格式刷', { icon: Paintbrush, showLabel: true, gridLayout: { row: 2, column: 2 } }),
+          button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 1, column: 2 } }),
+          button('sheet.operation.format-painter', '格式刷', { icon: Brush, showLabel: true, gridLayout: { row: 2, column: 2 } }),
           { ...button('sheet.command.paste', '粘贴', { icon: ClipboardPaste, shortcut: 'Ctrl+V', gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'split', children: [
             button('sheet.menu.paste-all', '保留源格式粘贴', { commandId: 'sheet.command.paste' }),
             button('sheet.menu.paste-values', '仅粘贴值', { commandId: 'sheet.command.paste-values' }),
@@ -86,11 +102,11 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.command.toggle-italic', '斜体', { icon: Italic, activated: state.italic === true, gridLayout: { row: 2, column: 2 } }),
           button('sheet.command.toggle-underline', '下划线', { icon: Underline, activated: state.underline === true, gridLayout: { row: 2, column: 3 } }),
           button('sheet.command.toggle-strike', '删除线', { icon: Strikethrough, activated: state.strike === true, gridLayout: { row: 2, column: 4 } }),
-          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Type, disabled: !state.hasSheet, gridLayout: { row: 2, column: 5 }, children: colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, activated: state.color === color.value })) },
+          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Palette, disabled: !state.hasSheet, gridLayout: { row: 2, column: 5 }, children: colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, activated: state.color === color.value })) },
           { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, gridLayout: { row: 2, column: 6 }, children: colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value, activated: state.background === color.value })) },
-          { id: 'sheet.menu.borders', type: 'menu', title: '边框', icon: Grid3X3, disabled: !state.hasSheet, gridLayout: { row: 2, column: 7 }, children: [
+          { id: 'sheet.menu.borders', type: 'menu', title: '边框', icon: Grid2X2, disabled: !state.hasSheet, gridLayout: { row: 2, column: 7 }, children: [
             ['all', '所有边框'], ['outside', '外侧框线'], ['inside', '内部框线'], ['top', '上框线'], ['bottom', '下框线'], ['left', '左框线'], ['right', '右框线'], ['none', '无框线'],
-          ].map(([value, label]) => button(`sheet.menu.border.${value}`, label!, { commandId: 'sheet.command.set-borders', params: value })) },
+          ].map(([value, label]) => button(`sheet.menu.border.${value}`, label!, { commandId: 'sheet.command.set-borders', params: value, icon: ({ all: Grid2X2, outside: PanelTop, inside: BetweenHorizontalStart, top: PanelTop, bottom: PanelBottom, left: PanelLeft, right: PanelRight, none: SquareDashed } as const)[value as 'all' | 'outside' | 'inside' | 'top' | 'bottom' | 'left' | 'right' | 'none'] })) },
         ] },
         { id: 'layout', title: '布局', order: 20, items: [
           button('sheet.command.align-left', '左对齐', { commandId: 'sheet.command.set-align', params: 'left', icon: AlignLeft, activated: state.align === 'left', gridLayout: { row: 1, column: 1 } }),
@@ -102,10 +118,11 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.menu.vertical.bottom', '底端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'bottom', icon: AlignVerticalJustifyEnd, activated: state.vertical === 'bottom' }),
           ] },
           button('sheet.command.toggle-wrap', '自动换行', { icon: WrapText, activated: state.wrap === true, gridLayout: { row: 1, column: 4 } }),
-          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', icon: RotateCw, disabled: !state.hasSheet, gridLayout: { row: 1, column: 5 }, children: [
+          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, disabled: !state.hasSheet, gridLayout: { row: 1, column: 5 }, children: [
             ...textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
             commandId: 'sheet.command.set-text-rotation', params: angle,
             activated: angle === 'v' ? state.rotationVertical === true : state.rotationVertical !== true && state.rotation === angle,
+            icon: angle === 'v' ? TextCursor : angle === 0 ? Baseline : angle === -45 ? RotateCcw : angle === 45 ? RotateCw : angle === -90 ? RotateCcw : RotateCw,
           }))] },
           button('sheet.command.set-shrink-to-fit', '缩小字体填充', {
             icon: Shrink, params: !(state.shrinkToFit === true && state.wrap !== true),
@@ -113,9 +130,9 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             disabledReason: state.wrap === true ? '关闭自动换行后可使用缩小字体填充' : undefined,
             gridLayout: { row: 2, column: 2 },
           }),
-          { ...button('sheet.command.merge', '合并单元格', { icon: Merge, disabled: !state.canMerge, gridLayout: { row: 2, column: 3 } }), type: 'split', children: [
-            button('sheet.command.merge-all', '合并单元格', { commandId: 'sheet.command.merge', disabled: !state.canMerge }),
-            button('sheet.command.unmerge', '取消合并', { disabled: !state.canUnmerge }),
+          { ...button('sheet.command.merge', '合并单元格', { icon: TableCellsMerge, disabled: !state.canMerge, gridLayout: { row: 2, column: 3 } }), type: 'split', children: [
+            button('sheet.command.merge-all', '合并单元格', { commandId: 'sheet.command.merge', icon: TableCellsMerge, disabled: !state.canMerge }),
+            button('sheet.command.unmerge', '取消合并', { icon: TableCellsSplit, disabled: !state.canUnmerge }),
           ] },
         ] },
         { id: 'number', title: '数字', order: 30, items: [
@@ -123,13 +140,13 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             { label: '常规', value: 'general' }, { label: '数字', value: 'number' }, { label: '货币', value: 'currency' }, { label: '会计专用', value: 'accounting' },
             { label: '百分比', value: 'percent' }, { label: '日期', value: 'date' }, { label: '时间', value: 'time' }, { label: '日期和时间', value: 'datetime' }, { label: '文本', value: 'text' },
           ] },
-          button('sheet.command.increase-decimals', '增加小数位', { icon: Plus, gridLayout: { row: 2, column: 1 } }),
-          button('sheet.command.decrease-decimals', '减少小数位', { icon: Type, gridLayout: { row: 2, column: 2 } }),
-          button('sheet.operation.open-custom-number-format', '自定义格式', { icon: Type, gridLayout: { row: 2, column: 3 } }),
+          button('sheet.command.increase-decimals', '增加小数位', { icon: DecimalsArrowRight, gridLayout: { row: 2, column: 1 } }),
+          button('sheet.command.decrease-decimals', '减少小数位', { icon: DecimalsArrowLeft, gridLayout: { row: 2, column: 2 } }),
+          button('sheet.operation.open-custom-number-format', '自定义格式', { icon: Calculator, gridLayout: { row: 2, column: 3 } }),
         ] },
         { id: 'tools', title: '工具', order: 40, items: [
           button('sheet.operation.find', '查找', { icon: Search, showLabel: true, shortcut: 'Ctrl+F', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.command.clear-content', '清除内容', { icon: Trash2, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
         ] },
       ],
@@ -137,14 +154,14 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'insert', title: '插入', order: 10, groups: [
         { id: 'objects', title: '对象', order: 10, items: [
-          button('sheet.operation.insert-chart', '图表', { icon: FileChartColumn, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: Grid2X2, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.insert.slicer', '切片器', { commandId: 'sheet.operation.open-slicer', icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          button('sheet.insert.timeline', '时间线', { commandId: 'sheet.operation.open-timeline', icon: CalendarDays, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
+          button('sheet.insert.timeline', '时间线', { commandId: 'sheet.operation.open-timeline', icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'quick-validation', title: '快速数据验证', order: 20, items: [
-          button('sheet.operation.quick-data-validation.checkbox', '复选框', { commandId: 'sheet.operation.quick-data-validation', params: 'checkbox', icon: CheckSquare, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.quick-data-validation.dropdown', '下拉列表', { commandId: 'sheet.operation.quick-data-validation', params: 'dropdown', icon: ListFilter, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.quick-data-validation.checkbox', '复选框', { commandId: 'sheet.operation.quick-data-validation', params: 'checkbox', icon: SquareCheck, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.quick-data-validation.dropdown', '下拉列表', { commandId: 'sheet.operation.quick-data-validation', params: 'dropdown', icon: ChevronDown, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.quick-data-validation.date', '日期', { commandId: 'sheet.operation.quick-data-validation', params: 'date', icon: CalendarDays, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.quick-data-validation.date-time', '日期和时间', { commandId: 'sheet.operation.quick-data-validation', params: 'date-time', icon: CalendarDays, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
         ] },
@@ -153,35 +170,35 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'data', title: '数据', order: 30, groups: [
         { id: 'validation', title: '数据验证', order: 0, items: [
-          button('sheet.operation.open-data-validation', '数据验证', { icon: ListChecks, showLabel: true, disabled: !state.dataValidationAvailable, disabledReason: '数据验证需要连接工作簿命令服务', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-data-validation', '数据验证', { icon: ClipboardCheck, showLabel: true, disabled: !state.dataValidationAvailable, disabledReason: '数据验证需要连接工作簿命令服务', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'rules', title: '规则', order: 10, items: [
-          button('sheet.operation.open-conditional-formatting', '条件格式', { icon: PaintBucket, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-conditional-formatting', '条件格式', { icon: ChartColumnIncreasing, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'sort', title: '排序和筛选', order: 20, items: [
-          button('sheet.command.sort-ascending', '升序', { icon: ArrowDownAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.command.sort-descending', '降序', { icon: ArrowUpAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-data-panel', '自定义排序', { params: 'sort', icon: ArrowDownAZ, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          { ...button('sheet.data.filter', '筛选', { commandId: 'sheet.command.toggle-auto-filter', icon: ListFilter, showLabel: true, activated: state.filterEnabled, disabled: !state.filterCanToggle, disabledReason: translate?.('sheet.filter.select-range', '请选择包含标题行和数据行的区域后再启用筛选'), gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }), type: 'split', children: [
-            button('sheet.menu.filter.clear', '清除筛选', { commandId: 'sheet.command.clear-filter', disabled: !state.filterEnabled }),
+          button('sheet.command.sort-ascending', '升序', { icon: ArrowUpAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.command.sort-descending', '降序', { icon: ArrowDownAZ, showLabel: true, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-data-panel', '自定义排序', { params: 'sort', icon: ArrowDownWideNarrow, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          { ...button('sheet.data.filter', '筛选', { commandId: 'sheet.command.toggle-auto-filter', icon: Filter, showLabel: true, activated: state.filterEnabled, disabled: !state.filterCanToggle, disabledReason: translate?.('sheet.filter.select-range', '请选择包含标题行和数据行的区域后再启用筛选'), gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }), type: 'split', children: [
+            button('sheet.menu.filter.clear', '清除筛选', { commandId: 'sheet.command.clear-filter', icon: FilterX, disabled: !state.filterEnabled }),
             button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterEnabled }),
             button('sheet.menu.filter.panel', '筛选条件', { commandId: 'sheet.operation.open-data-panel', params: 'filter', disabled: !state.filterEnabled }),
           ] },
         ] },
         { id: 'pivot', title: '分析', order: 30, items: [
-          button('sheet.operation.open-pivot', '数据透视表', { icon: Grid2X2, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-pivot', '数据透视表', { icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.open-slicer', '切片器', { icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-timeline', '时间线', { icon: CalendarDays, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-sparkline', '迷你图', { icon: Sparkles, showLabel: true, disabled: !state.hasSheet, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-pivot-chart', '透视图', { icon: FileChartColumn, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请先创建数据透视表', gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-timeline', '时间线', { icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-sparkline', '迷你图', { icon: ChartLine, showLabel: true, disabled: !state.hasSheet, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-pivot-chart', '透视图', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请先创建数据透视表', gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'outline', title: '分组显示', order: 40, items: [
-          button('sheet.operation.outline-group-rows', '组合行', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-toggle-rows', '折叠/展开行组', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-remove-rows', '取消行分组', { icon: Eraser, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-group-columns', '组合列', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-remove-columns', '取消列分组', { icon: Eraser, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.outline-group-rows', '组合行', { icon: Group, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.outline-toggle-rows', '折叠/展开行组', { icon: Grid2X2, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.outline-remove-rows', '取消行分组', { icon: Ungroup, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.outline-group-columns', '组合列', { icon: Group, showLabel: true, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: Grid2X2, showLabel: true, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.outline-remove-columns', '取消列分组', { icon: Ungroup, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
           { id: 'sheet.operation.outline-summary-rows', commandId: 'sheet.operation.outline-summary-position', type: 'select', title: '汇总行位置', width: 112, value: state.outlineSummaryAbove ? 'above' : 'below', valueParams: value => ({ axis: 'row', atStart: value === 'above' }), gridLayout: { row: 1, column: 7, rowSpan: 2, width: 112, showLabel: true }, options: [
             { label: '汇总行在下方', value: 'below' }, { label: '汇总行在上方', value: 'above' },
           ] },
@@ -194,12 +211,12 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'formulas', title: '公式', order: 20, groups: [
         { id: 'formula-edit', title: '公式编辑', items: [
-          button('sheet.operation.open-function', '插入函数', { icon: Type, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-function', '插入函数', { icon: FunctionSquare, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           ...functionCategories.map((category, index) => ({
             id: `sheet.operation.open-function.category-${index}`,
             type: 'menu' as const,
             title: category,
-            icon: Type,
+            icon: functionCategoryIcons[category] ?? FunctionSquare,
             disabled: !state.hasSheet,
             gridLayout: { row: index % 2 + 1, column: Math.floor(index / 2) + 2, showLabel: true },
             children: SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category).map(entry => button(
@@ -208,8 +225,8 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
               { commandId: 'sheet.operation.insert-function', params: entry.name },
             )),
           })),
-          button('sheet.operation.start-formula', '编辑公式', { icon: Type, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
-          button('sheet.command.recalculate', '重新计算', { icon: RefreshCw, showLabel: true, gridLayout: { row: 1, column: 7, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.start-formula', '编辑公式', { icon: FunctionSquare, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
+          button('sheet.command.recalculate', '重新计算', { icon: Calculator, showLabel: true, gridLayout: { row: 1, column: 7, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'calculation-options', title: '计算选项', order: 10, items: [
           { id: 'sheet.command.set-calculation-mode', commandId: 'sheet.command.set-calculation-mode', type: 'select', title: '计算模式', width: 116, value: state.calculationMode ?? 'automatic', gridLayout: { row: 1, column: 1, rowSpan: 2, width: 116, showLabel: true }, options: [
@@ -221,17 +238,17 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'view', title: '视图', order: 40, groups: [
         { id: 'display', title: '显示', order: 0, items: [
-          { ...button('sheet.command.freeze-selection', '冻结窗格', { icon: Snowflake, showLabel: true, activated: state.frozen, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }), type: 'split', children: [
-            button('sheet.menu.freeze.selection', '冻结到当前单元格', { commandId: 'sheet.command.freeze-selection' }),
-            button('sheet.command.freeze-first-row', '冻结首行'),
-            button('sheet.command.freeze-first-column', '冻结首列'),
-            button('sheet.command.unfreeze', '取消冻结', { disabled: !state.frozen }),
+          { ...button('sheet.command.freeze-selection', '冻结窗格', { icon: Pin, showLabel: true, activated: state.frozen, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }), type: 'split', children: [
+            button('sheet.menu.freeze.selection', '冻结到当前单元格', { commandId: 'sheet.command.freeze-selection', icon: Pin }),
+            button('sheet.command.freeze-first-row', '冻结首行', { icon: Pin }),
+            button('sheet.command.freeze-first-column', '冻结首列', { icon: Pin }),
+            button('sheet.command.unfreeze', '取消冻结', { icon: PinOff, disabled: !state.frozen }),
           ] },
           { id: 'sheet.operation.set-zoom', commandId: 'sheet.operation.set-zoom', type: 'select', title: '缩放', width: 88, value: state.zoom, valueParams: value => Number(value), gridLayout: { row: 1, column: 2, rowSpan: 2, width: 88, showLabel: true }, options: [50, 75, 100, 125, 150, 175, 200, 400].map(value => ({ label: `${value}%`, value })) },
         ] },
         { id: 'visibility', title: '可见性', order: 10, items: [
           button('sheet.command.toggle-gridlines', '网格线', { icon: Grid2X2, showLabel: true, activated: state.gridlines, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.toggle-fullscreen', state.fullscreen ? '退出全屏' : '全屏', { icon: state.fullscreen ? Minimize : Maximize, showLabel: true, activated: state.fullscreen, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.toggle-fullscreen', state.fullscreen ? '退出全屏' : '全屏', { icon: state.fullscreen ? Minimize : Expand, showLabel: true, activated: state.fullscreen, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           { ...button('sheet.operation.toggle-crosshair-highlight', '十字高亮', { icon: Crosshair, activated: state.crosshairEnabled, gridLayout: { row: 2, column: 2 } }), type: 'split', children: [
             ...[
               ['blue', '蓝色', 'rgba(91, 141, 239, 0.18)'], ['teal', '青色', 'rgba(36, 166, 153, 0.18)'],

@@ -161,17 +161,41 @@ export interface SheetConditionalFormatStyle {
   fill?: string
   fontColor?: string
   bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strike?: boolean
+}
+export type SheetConditionalFormatType = 'cellIs' | 'highlightCell' | 'top10' | 'average' | 'duplicateValues' | 'uniqueValues' | 'timePeriod' | 'containsText' | 'notContainsText' | 'beginsWith' | 'endsWith' | 'expression' | 'dataBar' | 'colorScale' | 'iconSet'
+export type SheetConditionalFormatSubType = 'number' | 'text' | 'timePeriod' | 'formula' | 'rank' | 'average' | 'duplicateValues' | 'uniqueValues'
+export interface SheetConditionalFormatValueConfig { type: string; value?: number | string }
+export interface SheetConditionalFormatVisualConfig {
+  min?: SheetConditionalFormatValueConfig
+  max?: SheetConditionalFormatValueConfig
+  isGradient?: boolean
+  positiveColor?: string
+  nativeColor?: string
+  thresholds?: Array<{ value: SheetConditionalFormatValueConfig; color: string }>
+  icons?: Array<{ operator?: string; value: SheetConditionalFormatValueConfig; iconType?: string; iconId?: string }>
+  isShowValue?: boolean
+  iconSet?: string
+  reverse?: boolean
 }
 export interface SheetConditionalFormatRule {
   id: string
-  type: 'cellIs'
+  type: SheetConditionalFormatType
+  subType?: SheetConditionalFormatSubType
   ranges: CellRange[]
-  operator: SheetConditionalFormatOperator
+  operator: SheetConditionalFormatOperator | string
   formula1: string
   formula2?: string
+  value?: string | number | [number, number]
+  isBottom?: boolean
+  isPercent?: boolean
+  config?: SheetConditionalFormatVisualConfig
   style: SheetConditionalFormatStyle
   priority: number
   stopIfTrue: boolean
+  metadata?: Record<string, unknown>
 }
 export type SheetRangeProtectionDraft = Omit<SheetRangeProtectionRule, 'id' | 'permissionId' | 'ownerUserId'> & {
   id?: string
@@ -180,7 +204,7 @@ export type SheetRangeProtectionDraft = Omit<SheetRangeProtectionRule, 'id' | 'p
 }
 
 export type PivotFieldArea = 'filter' | 'row' | 'column' | 'value'
-export type PivotAggregation = 'sum' | 'count' | 'average' | 'min' | 'max'
+export type PivotAggregation = 'average' | 'count' | 'countNums' | 'max' | 'min' | 'product' | 'stdDev' | 'stdDevp' | 'sum' | 'var' | 'varp'
 export type PivotSortDirection = 'ascending' | 'descending'
 export type PivotDateGroupType = 'year' | 'quarter' | 'month' | 'day'
 export type PivotDateGroupingMode = 'derived' | 'excelLike'
@@ -309,8 +333,23 @@ export interface SlicerModel {
   sourceFieldId: string
   type: SlicerType
   caption: string
+  name?: string
   position: { row: number; column: number }
   size: { rows: number; columns: number }
+  layout?: { left: number; top: number; width: number; height: number }
+  style?: string
+  startItem?: number
+  columnCount?: number
+  rowHeight?: number
+  showCaption?: boolean
+  lockedPosition?: boolean
+  level?: TimelineLevel
+  selectionLevel?: TimelineLevel
+  showHeader?: boolean
+  showSelectionLabel?: boolean
+  showTimeLevel?: boolean
+  showHorizontalScrollbar?: boolean
+  scrollPosition?: number
   selectedItems?: string[]
   timelineRange?: SlicerTimelineRange
   revision: number
@@ -359,7 +398,7 @@ export interface WorkbookModel {
   slicers?: SlicerModel[]
 }
 
-export type DocumentSectionBreakType = 'nextPage' | 'continuous' | 'nextColumn' | 'evenPage' | 'oddPage'
+export type DocumentSectionBreakType = 'unspecified' | 'nextPage' | 'continuous' | 'nextColumn' | 'evenPage' | 'oddPage'
 export type DocumentBlockType = 'paragraph' | 'heading' | 'bullet' | 'numbered' | 'checklist' | 'quote' | 'divider' | 'table' | 'image' | 'pageBreak' | 'columnBreak' | 'sectionBreak'
 
 export interface InlineRun {
@@ -402,6 +441,7 @@ export interface DocumentSectionSetup {
   columnCount?: number
   columnGap?: number
   columnSeparator?: 'none' | 'line'
+  sectionStart?: DocumentSectionBreakType
   pageNumberStart?: number
 }
 
@@ -524,6 +564,7 @@ export interface DocumentCommentMessage {
   text: string
   createdAt: string
   updatedAt?: string
+  mentions?: Array<{ userId: string; label: string }>
 }
 
 export interface DocumentThreadComment {
@@ -554,6 +595,7 @@ export interface DocumentModel {
   name: string
   blocks: DocumentBlock[]
   page: DocumentPageSetup
+  sectionSetup?: DocumentSectionSetup
   modified: boolean
   wordCount: number
   contentControls?: DocumentContentControl[]

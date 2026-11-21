@@ -6,6 +6,8 @@ import {
   clearSheetDataValidationRanges,
   createSheetDataValidationRule,
   dataValidationsAt,
+  removeSheetDataValidationRule,
+  replaceSheetDataValidationRule,
   sheetDataValidationOptions,
   validateSheetDataValidationChanges,
 } from '../src/features/sheet-validation/validation-engine.ts'
@@ -152,4 +154,33 @@ test('updating one range of a rule keeps that rule on its other cells', () => {
   assert.equal(dataValidationsAt(sheet, 2, 0)[0]?.formula1, '10')
   assert.equal(dataValidationsAt(sheet, 0, 0)[0]?.formula1, '0')
   assert.equal(sheet.dataValidations?.length, 2)
+})
+
+test('replacing a validation rule range removes its prior coverage and preserves its rule identity', () => {
+  const workbook = createBlankWorkbook()
+  const sheet = workbook.sheets[0]
+  const id = 'range-edit-rule'
+  const originalRange = { startRow: 0, startCol: 0, endRow: 2, endCol: 0 }
+  const nextRange = { startRow: 4, startCol: 1, endRow: 5, endCol: 2 }
+  sheet.dataValidations = [rule('whole', originalRange, { id, operator: 'greaterThan', formula1: '0' })]
+
+  replaceSheetDataValidationRule(sheet, createSheetDataValidationRule({ id, type: 'whole', operator: 'greaterThan', formula1: '10' }, [nextRange]))
+
+  assert.equal(dataValidationsAt(sheet, 1, 0).length, 0)
+  assert.equal(dataValidationsAt(sheet, 4, 1)[0]?.id, id)
+  assert.equal(dataValidationsAt(sheet, 4, 1)[0]?.formula1, '10')
+})
+
+test('removing one rule by ID preserves overlapping validation rules', () => {
+  const workbook = createBlankWorkbook()
+  const sheet = workbook.sheets[0]
+  const overlap = { startRow: 0, startCol: 0, endRow: 2, endCol: 2 }
+  sheet.dataValidations = [
+    rule('whole', overlap, { id: 'remove-this-rule', operator: 'greaterThan', formula1: '0' }),
+    rule('decimal', overlap, { id: 'keep-overlap-rule', operator: 'lessThan', formula1: '10' }),
+  ]
+
+  assert.equal(removeSheetDataValidationRule(sheet, 'remove-this-rule'), true)
+  assert.deepEqual(dataValidationsAt(sheet, 1, 1).map(item => item.id), ['keep-overlap-rule'])
+  assert.equal(removeSheetDataValidationRule(sheet, 'missing-rule'), false)
 })

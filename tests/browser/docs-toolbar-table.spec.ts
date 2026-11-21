@@ -27,6 +27,7 @@ async function history(page: Page, label: '撤销' | '重做'): Promise<void> {
 async function insertTable(page: Page): Promise<void> {
   await ribbon(page).getByRole('tab', { name: '插入', exact: true }).click()
   await ribbon(page).getByRole('button', { name: '表格', exact: true }).click()
+  await page.getByRole('menu', { name: '表格', exact: true }).getByRole('button', { name: '插入表格', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '插入表格', exact: true })
   await dialog.getByRole('spinbutton').nth(0).fill('2')
   await dialog.getByRole('spinbutton').nth(1).fill('2')

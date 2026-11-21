@@ -129,12 +129,14 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
   })
   const conditionalFormats = array(raw.conditionalFormats).flatMap((value): SheetConditionalFormatRule[] => {
     const item = record(value)
-    if (item.type !== 'cellIs' || typeof item.id !== 'string') return []
+    if (typeof item.id !== 'string' || typeof item.type !== 'string') return []
+    const supportedTypes: SheetConditionalFormatRule['type'][] = ['cellIs', 'highlightCell', 'top10', 'average', 'duplicateValues', 'uniqueValues', 'timePeriod', 'containsText', 'notContainsText', 'beginsWith', 'endsWith', 'expression', 'dataBar', 'colorScale', 'iconSet']
+    if (!supportedTypes.includes(item.type as SheetConditionalFormatRule['type'])) return []
     const operators: Record<string, SheetConditionalFormatRule['operator']> = {
       equal: 'equal', notequal: 'notEqual', greaterthan: 'greaterThan', greaterthanorequal: 'greaterThanOrEqual',
       lessthan: 'lessThan', lessthanorequal: 'lessThanOrEqual', between: 'between', notbetween: 'notBetween',
     }
-    const operator = typeof item.operator === 'string' ? operators[item.operator.toLowerCase()] : undefined
+    const operator = typeof item.operator === 'string' ? operators[item.operator.toLowerCase()] ?? item.operator : undefined
     const ranges = array(item.ranges).flatMap(rangeValue => {
       const range = record(rangeValue)
       const startRow = finite(range.startRow, -1), startCol = finite(range.startCol, -1)
@@ -144,17 +146,51 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
         ? [{ startRow, startCol, endRow, endCol }]
         : []
     })
-    if (!operator || !ranges.length || typeof item.formula1 !== 'string') return []
+    if (!ranges.length || (item.type === 'cellIs' && (!operator || typeof item.formula1 !== 'string'))) return []
     const style = record(item.style)
+    const config = record(item.config)
+    const normalizeValueConfig = (input: unknown): { type: string; value?: number | string } | undefined => {
+      const value = record(input)
+      if (typeof value.type !== 'string') return undefined
+      return { type: value.type, ...(typeof value.value === 'string' || typeof value.value === 'number' ? { value: value.value } : {}) }
+    }
+    const thresholds = array(config.thresholds).flatMap(entry => {
+      const threshold = record(entry), value = normalizeValueConfig(threshold.value)
+      return value && typeof threshold.color === 'string' ? [{ value, color: threshold.color }] : []
+    })
+    const icons = array(config.icons).flatMap(entry => {
+      const icon = record(entry), value = normalizeValueConfig(icon.value)
+      return value ? [{ value, ...(typeof icon.operator === 'string' ? { operator: icon.operator } : {}), ...(typeof icon.iconType === 'string' ? { iconType: icon.iconType } : {}), ...(typeof icon.iconId === 'string' || typeof icon.iconId === 'number' ? { iconId: String(icon.iconId) } : {}) }] : []
+    })
     return [{
-      id: item.id, type: 'cellIs', ranges, operator, formula1: item.formula1,
+      id: item.id, type: item.type as SheetConditionalFormatRule['type'], ranges,
+      ...(typeof item.subType === 'string' ? { subType: item.subType as SheetConditionalFormatRule['subType'] } : {}),
+      operator: operator ?? '', formula1: typeof item.formula1 === 'string' ? item.formula1 : '',
       ...(typeof item.formula2 === 'string' ? { formula2: item.formula2 } : {}),
+      ...(typeof item.value === 'string' || typeof item.value === 'number' || Array.isArray(item.value) ? { value: item.value as string | number | [number, number] } : {}),
+      ...(typeof item.isBottom === 'boolean' ? { isBottom: item.isBottom } : {}),
+      ...(typeof item.isPercent === 'boolean' ? { isPercent: item.isPercent } : {}),
+      ...(Object.keys(config).length ? { config: {
+        ...(normalizeValueConfig(config.min) ? { min: normalizeValueConfig(config.min) } : {}),
+        ...(normalizeValueConfig(config.max) ? { max: normalizeValueConfig(config.max) } : {}),
+        ...(typeof config.isGradient === 'boolean' ? { isGradient: config.isGradient } : {}),
+        ...(typeof config.positiveColor === 'string' ? { positiveColor: config.positiveColor } : {}),
+        ...(typeof config.nativeColor === 'string' ? { nativeColor: config.nativeColor } : {}),
+        ...(thresholds.length ? { thresholds } : {}), ...(icons.length ? { icons } : {}),
+        ...(typeof config.isShowValue === 'boolean' ? { isShowValue: config.isShowValue } : {}),
+        ...(typeof config.iconSet === 'string' ? { iconSet: config.iconSet } : {}),
+        ...(typeof config.reverse === 'boolean' ? { reverse: config.reverse } : {}),
+      } } : {}),
       style: {
         ...(typeof style.fill === 'string' ? { fill: style.fill } : {}),
         ...(typeof style.fontColor === 'string' ? { fontColor: style.fontColor } : {}),
         ...(typeof style.bold === 'boolean' ? { bold: style.bold } : {}),
+        ...(typeof style.italic === 'boolean' ? { italic: style.italic } : {}),
+        ...(typeof style.underline === 'boolean' ? { underline: style.underline } : {}),
+        ...(typeof style.strike === 'boolean' ? { strike: style.strike } : {}),
       },
       priority: Math.max(1, Math.floor(finite(item.priority, 1))), stopIfTrue: item.stopIfTrue === true,
+      ...(Object.keys(record(item.metadata)).length ? { metadata: record(item.metadata) } : {}),
     }]
   })
   const rangeProtectionRules = array(raw.rangeProtectionRules).flatMap((value): SheetRangeProtectionRule[] => {
@@ -265,7 +301,7 @@ function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId
       return [{
         id: text(field.id), sourceColumn: finite(field.sourceColumn), name: text(field.name), area, position: finite(field.position),
         ...(typeof field.displayName === 'string' ? { displayName: field.displayName } : {}),
-        ...(aggregation === 'sum' || aggregation === 'count' || aggregation === 'average' || aggregation === 'min' || aggregation === 'max' ? { aggregation } : {}),
+        ...(aggregation === 'average' || aggregation === 'count' || aggregation === 'countNums' || aggregation === 'max' || aggregation === 'min' || aggregation === 'product' || aggregation === 'stdDev' || aggregation === 'stdDevp' || aggregation === 'sum' || aggregation === 'var' || aggregation === 'varp' ? { aggregation } : {}),
       }]
     })
     if (!fields.length) return []

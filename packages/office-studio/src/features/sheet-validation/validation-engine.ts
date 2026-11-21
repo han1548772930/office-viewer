@@ -90,6 +90,19 @@ export function applySheetDataValidationRule(sheet: SpreadsheetSheet, rule: Shee
   sheet.dataValidations = [...next, updatedRule]
 }
 
+export function replaceSheetDataValidationRule(sheet: SpreadsheetSheet, rule: SheetDataValidationRule): void {
+  sheet.dataValidations = (sheet.dataValidations ?? []).filter(existing => existing.id !== rule.id)
+  applySheetDataValidationRule(sheet, rule)
+}
+
+export function removeSheetDataValidationRule(sheet: SpreadsheetSheet, ruleId: string): boolean {
+  const existingRules = sheet.dataValidations ?? []
+  const nextRules = existingRules.filter(rule => rule.id !== ruleId)
+  if (nextRules.length === existingRules.length) return false
+  sheet.dataValidations = nextRules
+  return true
+}
+
 export function clearSheetDataValidationRanges(sheet: SpreadsheetSheet, ranges: readonly CellRange[]): void {
   clearSheetDataValidation(sheet, ranges)
 }

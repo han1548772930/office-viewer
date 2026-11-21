@@ -2,7 +2,7 @@
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Button, Checkbox, Input, Modal, Tooltip } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import type { DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
+import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
@@ -24,26 +24,26 @@ import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
-import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPaperSize } from './document/document-page-settings'
+import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
 import { blockAtPoint, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
-import { sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
+import { documentSectionIds, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
-import { createDocumentThreadComment, deleteDocumentThreadComment, editDocumentCommentMessage, replyToDocumentThreadComment, setDocumentThreadCommentResolved } from '../features/document/comments/thread-comments.ts'
+import { createDocumentThreadComment, deleteDocumentCommentMessage, deleteDocumentThreadComment, editDocumentCommentMessage, replyToDocumentThreadComment, setDocumentThreadCommentResolved } from '../features/document/comments/thread-comments.ts'
 import { canManageDocumentPermissions, permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
 import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
 import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
 import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n'
 
-const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true })
+const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: 'classic' | 'grid' }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
 const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
@@ -106,7 +106,21 @@ const tableInsertOpen = ref(false)
 const notice = ref('')
 const documentContextMenu = ref<{ left: number; top: number }>()
 const contentControlPanelOpen = ref(false)
-const contentControlInitialType = ref<DocumentContentControlType>()
+const activeContentControlId = ref<string>()
+const pictureReplacementControlId = ref<string>()
+const selectedContentControlId = computed(() => {
+  if (activeContentControlId.value && model.value.contentControls?.some(control => control.id === activeContentControlId.value)) return activeContentControlId.value
+  const anchor = selection.value.anchor
+  const focus = selection.value.focus
+  const blockId = focus.cellBlockId ?? focus.blockId
+  const start = Math.min(anchor.offset, focus.offset)
+  const end = Math.max(anchor.offset, focus.offset)
+  return model.value.contentControls?.find(control => control.blockId === blockId
+    && (start === end ? start >= control.startOffset && start <= control.endOffset : start < control.endOffset && end > control.startOffset))?.id
+})
+const selectedContentControl = computed(() => selectedContentControlId.value
+  ? model.value.contentControls?.find(control => control.id === selectedContentControlId.value)
+  : undefined)
 const pageSettingsOpen = ref(false)
 const headerFooterPanelOpen = ref(false)
 const headerFooterSectionId = computed(() => sectionIdForBlock(model.value, selection.value.focus.blockId))
@@ -121,7 +135,10 @@ const paragraphSettingsStyle = computed<DocumentParagraphStyle>(() => ({
   spaceAfter: activeParagraphBlock.value?.style.spaceAfter ?? 8,
   ...activeParagraphBlock.value?.style,
 }))
+const paragraphSettingsFontSize = computed(() => activeParagraphBlock.value?.runs[0]?.fontSize ?? 11)
 const activeSectionSetup = computed(() => documentSectionSetup(model.value, headerFooterSectionId.value))
+const sectionOptions = computed(() => documentSectionIds(model.value).map((value, index) => ({ value, label: `#${index + 1}` })))
+const pageMode = computed<DocumentPageMode>(() => documentOutlineEnabled(model.value) ? 'modern' : 'traditional')
 const codeBlockPanelOpen = ref(false)
 const latexPanelOpen = ref(false)
 const notesPanelOpen = ref(false)
@@ -142,7 +159,7 @@ const canComment = computed(() => resolveDocumentPermission(model.value.permissi
 const canCreateComment = computed(() => canComment.value && !selectionCollapsed(selection.value)
   && resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment', permissionTargetsForSelection(model.value, selection.value)).allowed)
 const deletableCommentIds = computed(() => Object.values(model.value.comments ?? {})
-  .filter(comment => canComment.value && (permissionContext.value.userId === permissionContext.value.permissionAdminUserId || comment.messages[0]?.authorId === permissionContext.value.userId))
+  .filter(comment => canComment.value && comment.messages[0]?.authorId === permissionContext.value.userId)
   .map(comment => comment.id))
 const activeCodeBlock = computed(() => model.value.blocks.find((block) => block.id === selection.value.focus.blockId))
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
@@ -220,7 +237,44 @@ const contextMenuActions = computed(() => {
 })
 const currentMarks = computed(() => toolbarState.value.marks)
 const modalTitle = computed(() => ({ image: '插入图片', link: '插入链接' })[modalKind.value])
-const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, fullscreen: isFullscreen.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi, commentsPanelOpen: commentsPanelOpen.value, canCreateComment: canCreateComment.value, tableOfContents: { available: supportsDocumentTableOfContents(model.value), insertDisabled: !canInsertToc.value, selectedId: selectedTocId.value, editDisabled: !canEditSelectedToc.value } }, createRibbonTranslator(officeLocale.value, 'doc')))
+const ribbonTabs = computed(() => {
+  const control = selectedContentControl.value
+  return createDocumentRibbon({
+    state: toolbarState.value,
+    canUndo: !!props.canUndo,
+    canRedo: !!props.canRedo,
+    outline: showOutline.value,
+    focus: isFocusMode.value,
+    fullscreen: isFullscreen.value,
+    paper: paperSize.value,
+    orientation: orientation.value,
+    zoom: zoom.value,
+    contentControlsAvailable: !!props.documentApi,
+    selectedContentControl: control ? {
+      id: control.id,
+      type: control.type,
+      lock: control.lock,
+      placeholder: control.placeholder,
+      showingPlaceholder: control.showingPlaceholder,
+      appearance: control.appearance,
+      multiLine: control.multiLine,
+      temporary: control.temporary,
+      checkboxStyle: typeof control.metadata?.checkboxStyle === 'string' ? control.metadata.checkboxStyle : undefined,
+      dateFormat: control.dateFormat,
+      parentId: control.parentId,
+      placement: control.placement,
+      canSelectParent: !!control.parentId && !!model.value.contentControls?.some(candidate => candidate.id === control.parentId),
+      canResetPlaceholder: !!control.placeholder && !control.showingPlaceholder && !['contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''),
+      canDuplicateItem: control.type === 'repeatingSectionItem'
+        && !['row', 'cell', 'table'].includes(control.placement ?? ''),
+      canDeleteItem: control.type === 'repeatingSectionItem'
+        && !['cell', 'table'].includes(control.placement ?? ''),
+    } : undefined,
+    commentsPanelOpen: commentsPanelOpen.value,
+    canCreateComment: canCreateComment.value,
+    tableOfContents: { available: supportsDocumentTableOfContents(model.value), insertDisabled: !canInsertToc.value, selectedId: selectedTocId.value, editDisabled: !canEditSelectedToc.value },
+  }, createRibbonTranslator(officeLocale.value, 'doc'))
+})
 let resizeObserver: ResizeObserver | undefined
 let imageRequest = 0
 let clipboardRequest = 0
@@ -247,6 +301,10 @@ onDeactivated(() => {
   }
 })
 watch(() => toolbarState.value.table?.blockId, (id, previous) => { if (id && id !== previous) activeTab.value = 'table' })
+watch(selectedContentControlId, (id) => {
+  if (id) activeTab.value = 'content-control'
+  else if (activeTab.value === 'content-control') activeTab.value = 'home'
+})
 
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.modelValue, (value) => {
@@ -271,7 +329,7 @@ function publish(next: DocumentModel) {
   emit('update:modelValue', next)
   emit('document-change', next)
 }
-function execute(command: DocumentCommand) {
+function execute(command: DocumentCommand, restoreFocus = true) {
   const targets = command.id === 'doc.command.set-document-permission-rules' ? [] : permissionTargetsForSelection(model.value, selection.value)
   if (command.id !== 'doc.command.set-document-permission-rules' && !canDocumentPermission('edit', targets)) return
   if (command.id === 'doc.command.insert-text') {
@@ -294,11 +352,11 @@ function execute(command: DocumentCommand) {
     selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     publish(next)
-    void nextTick(() => canvasRef.value?.focus())
+    if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
   } catch (error) {
     pendingMarks.value = {}
     notify(error instanceof Error ? error.message : String(error))
-    void nextTick(() => canvasRef.value?.focus())
+    if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
   }
 }
 function openCodeBlockPanel() { codeBlockPanelOpen.value = true }
@@ -370,19 +428,20 @@ function leaveCodeBlock(blockId: string) {
   selection.value = collapsedSelection({ blockId: paragraph.id, offset: 0 })
   publish(next)
 }
-function onSelection(value: DocumentSelection) { selection.value = value; visibleBlockId.value = value.focus.blockId; if (outlineNavigationTarget.value !== value.focus.blockId) outlineNavigationTarget.value = undefined; pendingMarks.value = {} }
+function onSelection(value: DocumentSelection) { activeContentControlId.value = undefined; selection.value = value; visibleBlockId.value = value.focus.blockId; if (outlineNavigationTarget.value !== value.focus.blockId) outlineNavigationTarget.value = undefined; pendingMarks.value = {} }
 function toggleFormat(field: 'bold' | 'italic' | 'underline') { execute({ id: 'doc.command.format-text', patch: { [field]: currentMarks.value[field] !== true } }) }
 function undo() { pendingMarks.value = {}; emit('undo'); void nextTick(() => canvasRef.value?.focus()) }
 function redo() { pendingMarks.value = {}; emit('redo'); void nextTick(() => canvasRef.value?.focus()) }
 function changePageSetup() {
   applyPageSetup(documentOrientedPage(model.value.page, orientation.value, paperSize.value))
 }
-function applyPageSetup(page: DocumentPageSetup) {
+function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMode.value) {
   if (!canDocumentPermission('edit')) return
   const error = documentPageSettingsError(page)
   if (error) { notify(error); return }
   const next = cloneDocument(model.value)
   next.page = { ...page }
+  next.metadata = { ...next.metadata, documentFlavor: mode === 'modern' ? 2 : 0 }
   paperSize.value = documentPaperSize(page)
   orientation.value = page.width > page.height ? 'landscape' : 'portrait'
   publish(next)
@@ -392,10 +451,68 @@ function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
   execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch })
 }
 function applyParagraphSettings(patch: Partial<DocumentParagraphStyle>) {
-  execute({ id: 'doc.command.format-paragraph', patch })
+  execute({ id: 'doc.command.format-paragraph', patch }, false)
 }
 function applySectionSettings(sectionId: string, patch: Partial<ReturnType<typeof documentSectionSetup>>) {
-  execute({ id: 'doc.command.set-section-setup', sectionId, patch })
+  execute({ id: 'doc.command.set-section-setup', sectionId, patch }, false)
+}
+function selectSection(sectionId: string) {
+  if (!documentSectionIds(model.value).includes(sectionId)) return
+  const targets = textTargets(model.value).filter(target => sectionIdForBlock(model.value, target.blockId) === sectionId)
+  const target = targets.at(-1)
+  if (target) {
+    const offset = runText(runsForTarget(model.value, target)).length
+    onSelection(collapsedSelection({ ...target, offset }))
+    canvasRef.value?.scrollToBlock(target.blockId)
+  }
+}
+function insertContentControl(type: DocumentContentControlType) {
+  if (!props.documentApi) return
+  const anchor = selection.value.anchor
+  const focus = selection.value.focus
+  const blockId = focus.cellBlockId ?? focus.blockId
+  if ((anchor.cellBlockId ?? anchor.blockId) !== blockId) {
+    notify('内容控件必须位于同一段落或单元格内')
+    return
+  }
+  try {
+    const text = '在此处输入'
+    const checkboxStyles = {
+      Cross: { checkedState: { value: '2612', font: 'Segoe UI Symbol' }, uncheckedState: { value: '2610', font: 'Segoe UI Symbol' } },
+      Check: { checkedState: { value: '2611', font: 'Segoe UI Symbol' }, uncheckedState: { value: '2610', font: 'Segoe UI Symbol' } },
+      Minimal: { checkedState: { value: '2713', font: 'Segoe UI Symbol' }, uncheckedState: { value: '25A1', font: 'Segoe UI Symbol' } },
+      Round: { checkedState: { value: '25CF', font: 'Segoe UI Symbol' }, uncheckedState: { value: '25CB', font: 'Segoe UI Symbol' } },
+    } as const
+    const typeDefaults: Partial<Record<DocumentContentControlType, Record<string, unknown>>> = {
+      richText: { placeholder: text, showingPlaceholder: true },
+      text: { placeholder: text, showingPlaceholder: true, multiLine: false },
+      checkbox: { checked: false, checkbox: { checked: false, ...checkboxStyles.Cross }, metadata: { checkboxStyle: 'Cross' } },
+      date: { placeholder: '选择日期', showingPlaceholder: true, dateFormat: 'yyyy-MM-dd', dateCalendar: 'gregorian', dateStorage: 'dateTime' },
+      dropDownList: { placeholder: '选择一项', showingPlaceholder: true, items: [{ displayText: '选择一项', value: '选择一项' }] },
+      comboBox: { placeholder: '选择或输入一项', showingPlaceholder: true, items: [{ displayText: '选择一项', value: '选择一项' }] },
+      picture: { placeholder: '选择图片', showingPlaceholder: true },
+      repeatingSection: { placement: 'block', repeatingSection: { doNotAllowInsertDelete: false } },
+      group: {},
+      docPartObj: { docPart: { gallery: 'Quick Parts', category: 'General', unique: false } },
+    }
+    if (type === 'repeatingSectionItem') {
+      notify('重复节项由重复节控件生成，不能单独插入')
+      return
+    }
+    props.documentApi.addContentControl({
+      ...(typeDefaults[type] as Partial<DocumentContentControl>),
+      type,
+      blockId,
+      startOffset: Math.min(anchor.offset, focus.offset),
+      endOffset: Math.max(anchor.offset, focus.offset),
+      placement: type === 'repeatingSection' ? 'block' : focus.cellBlockId ? 'cell' : 'inline',
+    })
+    contentControlPanelOpen.value = false
+    activeTab.value = 'content-control'
+    void nextTick(() => canvasRef.value?.focus())
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+  }
 }
 function insertPageField(story: 'header' | 'footer', field: 'PAGE' | 'NUMPAGES') {
   execute({ id: 'doc.command.insert-page-field', sectionId: headerFooterSectionId.value, story, field })
@@ -452,9 +569,9 @@ function createComment(text: string) {
     void nextTick(() => canvasRef.value?.focus())
   }
 }
-function replyToComment(commentId: string, text: string) {
+function replyToComment(commentId: string, text: string, mentions: readonly { userId: string; label: string }[] = []) {
   if (!canDocumentPermission('comment')) return
-  commitCommentMutation(next => { replyToDocumentThreadComment(next, commentId, text, commentActor()) })
+  commitCommentMutation(next => { replyToDocumentThreadComment(next, commentId, text, commentActor(), new Date().toISOString(), mentions) })
 }
 function editComment(commentId: string, messageId: string, text: string) {
   if (!canDocumentPermission('comment')) return
@@ -463,6 +580,11 @@ function editComment(commentId: string, messageId: string, text: string) {
 function removeComment(commentId: string) {
   if (!deletableCommentIds.value.includes(commentId) || !canDocumentPermission('comment')) return
   commitCommentMutation(next => { deleteDocumentThreadComment(next, commentId, commentActor()) })
+  if (!model.value.comments?.[commentId]) activeCommentId.value = ''
+}
+function removeCommentMessage(commentId: string, messageId: string) {
+  if (!canDocumentPermission('comment')) return
+  commitCommentMutation(next => { deleteDocumentCommentMessage(next, commentId, messageId, commentActor()) })
   if (!model.value.comments?.[commentId]) activeCommentId.value = ''
 }
 function resolveComment(commentId: string, resolved: boolean) {
@@ -584,12 +706,13 @@ function dismissTableContextMenu(event?: Event) {
 function onWorkbenchKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus() }
 }
-function insertImage() { modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
+function insertImage() { pictureReplacementControlId.value = undefined; modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
 function insertLink() { modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
 function confirmModal() {
   const value = safeUrl(modalValue.value)
   if (!value) { modalError.value = '请输入有效的 http 或 https 地址'; return }
   if (modalKind.value === 'link') execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })
+  else if (pictureReplacementControlId.value) replaceSelectedPicture({ src: value, width: 320, height: 0, alt: 'Image' })
   else execute({ id: 'doc.command.insert-image', image: { src: value, width: 320, height: 0, alt: '图片' } })
   modalOpen.value = false
 }
@@ -610,11 +733,26 @@ async function onImageFile(event: Event) {
     if (model.value !== base) { notify('文档已更新，请重新插入图片'); return }
     if (!image.naturalWidth || !image.naturalHeight) { notify('图片尺寸无效'); return }
     selection.value = range
-    execute({ id: 'doc.command.insert-image', image: { src: source, alt: file.name, width: Math.min(500, image.naturalWidth), height: Math.min(500, image.naturalWidth) * image.naturalHeight / image.naturalWidth } })
+    const imageInfo = { src: source, alt: file.name, width: Math.min(500, image.naturalWidth), height: Math.min(500, image.naturalWidth) * image.naturalHeight / image.naturalWidth }
+    if (pictureReplacementControlId.value) replaceSelectedPicture(imageInfo)
+    else execute({ id: 'doc.command.insert-image', image: imageInfo })
     modalOpen.value = false
   }
   image.onerror = () => { if (request === imageRequest && modalOpen.value && modalKind.value === 'image') notify('无法读取该图片') }
   image.src = source
+}
+function replaceSelectedPicture(image: { src: string; alt: string; width: number; height: number }) {
+  const controlId = pictureReplacementControlId.value
+  const control = controlId && props.documentApi?.getContentControl(controlId)
+  if (!control || control.getType() !== 'picture') return
+  const current = control.getInfo()
+  const oldBlockIds = new Set(model.value.blocks.map(block => block.id))
+  selection.value = { anchor: { blockId: current.blockId, offset: current.startOffset }, focus: { blockId: current.blockId, offset: current.endOffset } }
+  execute({ id: 'doc.command.insert-image', image })
+  const imageBlock = model.value.blocks.find(block => !oldBlockIds.has(block.id) && block.type === 'image')
+  if (imageBlock) control.update({ metadata: { ...current.metadata, pictureBlockId: imageBlock.id, pictureImage: image } })
+  activeContentControlId.value = controlId
+  pictureReplacementControlId.value = undefined
 }
 function currentSearchMatchIndex() {
   return searchMatches.value.findIndex((match) => JSON.stringify(pointForMatch(match)) === JSON.stringify(selection.value))
@@ -773,11 +911,110 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image': insertImage(); break
     case 'doc.operation.open-link': insertLink(); break
-    case 'doc.operation.open-content-controls':
-      if (props.documentApi) {
-        contentControlInitialType.value = typeof params === 'string' && ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox'].includes(params) ? params as DocumentContentControlType : undefined
-        contentControlPanelOpen.value = true
+    case 'doc.operation.insert-content-control':
+      if (typeof params === 'string' && ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox', 'picture', 'group', 'repeatingSection', 'repeatingSectionItem', 'docPartObj'].includes(params)) insertContentControl(params as DocumentContentControlType)
+      else insertContentControl('richText')
+      break
+    case 'doc.command.open-selected-sdt-properties':
+      if (selectedContentControlId.value) contentControlPanelOpen.value = true
+      break
+    case 'doc.command.select-parent-sdt': {
+      const parentId = selectedContentControl.value?.parentId
+      const parent = parentId && model.value.contentControls?.find(control => control.id === parentId)
+      if (parent) {
+        activeContentControlId.value = parent.id
+        onSelection({ anchor: { blockId: parent.blockId, offset: parent.startOffset }, focus: { blockId: parent.blockId, offset: parent.endOffset } })
+        activeContentControlId.value = parent.id
+        canvasRef.value?.scrollToBlock(parent.blockId)
       }
+      break
+    }
+    case 'doc.command.reset-selected-sdt-placeholder':
+      if (selectedContentControl.value && props.documentApi) {
+        try { props.documentApi.getContentControl(selectedContentControl.value.id)?.resetPlaceholder() }
+        catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+      }
+      break
+    case 'doc.command.change-selected-sdt-picture':
+      if (selectedContentControl.value?.type === 'picture') {
+        pictureReplacementControlId.value = selectedContentControl.value.id
+        modalKind.value = 'image'
+        modalValue.value = ''
+        modalError.value = ''
+        modalOpen.value = true
+      }
+      break
+    case 'doc.command.duplicate-selected-repeating-sdt-item': {
+      const item = selectedContentControl.value
+      if (item?.type === 'repeatingSectionItem' && props.documentApi) {
+        const start = item.endOffset
+        try {
+          if (props.documentApi.getContentControl(item.id)?.duplicateRepeatingItem()) {
+            const duplicate = model.value.contentControls?.find(control => control.type === 'repeatingSectionItem'
+              && control.parentId === item.parentId && control.blockId === item.blockId && control.startOffset === start)
+            if (duplicate) {
+              activeContentControlId.value = duplicate.id
+              onSelection({ anchor: { blockId: duplicate.blockId, offset: duplicate.startOffset }, focus: { blockId: duplicate.blockId, offset: duplicate.endOffset } })
+              activeContentControlId.value = duplicate.id
+            }
+          }
+        } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+      }
+      break
+    }
+    case 'doc.command.delete-selected-repeating-sdt-item': {
+      const item = selectedContentControl.value
+      if (item?.type === 'repeatingSectionItem' && props.documentApi) {
+        try {
+          props.documentApi.getContentControl(item.id)?.deleteRepeatingItem()
+          onSelection({ anchor: { blockId: item.blockId, offset: item.startOffset }, focus: { blockId: item.blockId, offset: item.startOffset } })
+        } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+      }
+      break
+    }
+    case 'doc.command.remove-selected-sdt':
+      if (selectedContentControlId.value && props.documentApi) {
+        try {
+          props.documentApi.getContentControl(selectedContentControlId.value)?.remove()
+        } catch (error) {
+          notify(error instanceof Error ? error.message : String(error))
+        }
+      }
+      break
+    case 'doc.command.set-selected-sdt-checkbox-style':
+      if (selectedContentControl.value && props.documentApi && params && typeof params === 'object' && 'value' in params) {
+        const styles = {
+          Cross: { checkedState: { value: '2612', font: 'Segoe UI Symbol' }, uncheckedState: { value: '2610', font: 'Segoe UI Symbol' } },
+          Check: { checkedState: { value: '2611', font: 'Segoe UI Symbol' }, uncheckedState: { value: '2610', font: 'Segoe UI Symbol' } },
+          Minimal: { checkedState: { value: '2713', font: 'Segoe UI Symbol' }, uncheckedState: { value: '25A1', font: 'Segoe UI Symbol' } },
+          Round: { checkedState: { value: '25CF', font: 'Segoe UI Symbol' }, uncheckedState: { value: '25CB', font: 'Segoe UI Symbol' } },
+        } as const
+        const name = params.value
+        if (typeof name === 'string' && name in styles && selectedContentControl.value.type === 'checkbox') {
+          const style = styles[name as keyof typeof styles]
+          props.documentApi.getContentControl(selectedContentControl.value.id)?.update({
+            checkbox: { checked: selectedContentControl.value.checkbox?.checked ?? false, ...style },
+            metadata: { ...selectedContentControl.value.metadata, checkboxStyle: name },
+          })
+        }
+      }
+      break
+    case 'doc.command.set-selected-sdt-appearance':
+    case 'doc.command.set-selected-sdt-lock':
+    case 'doc.command.set-selected-sdt-date-format':
+      if (selectedContentControl.value && props.documentApi && params && typeof params === 'object' && 'value' in params && typeof params.value === 'string') {
+        const value = params.value
+        const control = props.documentApi.getContentControl(selectedContentControl.value.id)
+        if (id === 'doc.command.set-selected-sdt-appearance' && ['boundingBox', 'tags', 'hidden'].includes(value)) control?.update({ appearance: value })
+        if (id === 'doc.command.set-selected-sdt-lock' && ['unlocked', 'sdtLocked', 'contentLocked', 'sdtContentLocked'].includes(value)) control?.update({ lock: value as DocumentContentControl['lock'] })
+        if (id === 'doc.command.set-selected-sdt-date-format' && selectedContentControl.value.type === 'date') control?.update({ dateFormat: value })
+      }
+      break
+    case 'doc.command.toggle-selected-sdt-multiline':
+      if (selectedContentControl.value?.type === 'text' && props.documentApi) props.documentApi.getContentControl(selectedContentControl.value.id)?.update({ multiLine: !selectedContentControl.value.multiLine })
+      break
+    case 'doc.command.toggle-selected-sdt-temporary':
+      if ((selectedContentControl.value?.type === 'text' || selectedContentControl.value?.type === 'richText') && props.documentApi) props.documentApi.getContentControl(selectedContentControl.value.id)?.update({ temporary: !selectedContentControl.value.temporary })
       break
     case 'doc.command.insert-character':
       if (typeof params === 'string') insertCharacter(params)
@@ -808,7 +1045,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Button type="primary" @click="openImport"><FileUp :size="15" />打开文档</Button>
     </header>
     <input ref="fileInputRef" class="hidden-input" type="file" accept=".doc,.docx,.odt,.txt" @change="onFileChange">
-    <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" variant="grid" label="文档功能区" @execute="onRibbonExecute">
+    <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant" label="文档功能区" @execute="onRibbonExecute">
       <template #tab-extra>
         <div v-if="showFind" class="find-replace-toolbar">
           <div class="find-row">
@@ -839,14 +1076,17 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
           :current-user-id="permissionContext.userId"
           :can-comment="canComment"
           :can-create="!!commentDraftSelection && canComment"
+          :can-start-create="canCreateComment"
           :deletable-comment-ids="deletableCommentIds"
           :selected-comment-id="activeCommentId"
           @create="createComment"
           @reply="replyToComment"
           @edit="editComment"
           @delete="removeComment"
+          @delete-message="removeCommentMessage"
           @resolve="resolveComment"
           @select="selectComment"
+          @add="startAddComment"
           @close="toggleCommentsPanel"
         />
       </aside>
@@ -866,12 +1106,12 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <div class="insert-form"><label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label><Button v-if="modalKind === 'image'" type="primary" @click="imageInputRef?.click()"><FileUp :size="15" />选择本地图片</Button><input ref="imageInputRef" class="hidden-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" @change="onImageFile"></div>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
-    <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" :initial-type="contentControlInitialType" @error="notify" />
+    <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" @error="notify" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="size => execute({ id: 'doc.command.insert-table', rows: size.rows, cols: size.columns })" />
-    <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
+    <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" @insert-page-field="insertPageField" />
-    <DocumentParagraphSettingsPanel v-model:open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" @apply="applyParagraphSettings" />
-    <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" @apply="applySectionSettings" />
+    <DocumentParagraphSettingsPanel v-model:open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" :font-size="paragraphSettingsFontSize" @apply="applyParagraphSettings" />
+    <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
     <DocumentNotesPanel v-model:open="notesPanelOpen" :footnotes="model.footnotes ?? {}" :endnotes="model.endnotes ?? {}" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" />

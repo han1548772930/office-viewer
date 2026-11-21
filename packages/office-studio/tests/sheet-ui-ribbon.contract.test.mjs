@@ -3,6 +3,7 @@ import { test } from 'vitest'
 import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
 import { ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 import { SHEET_FUNCTION_CATALOG } from '../src/features/sheet-workbench/sheet-function-catalog.ts'
+import { frozenPaneCountsForSelection } from '../src/features/sheet-workbench/sheet-workbench.ts'
 
 const state = {
   canUndo: false, canRedo: true, hasSheet: true, canMerge: false, canUnmerge: false,
@@ -83,6 +84,11 @@ test('nested fill, merge and freeze controls share the same command contract as 
   assert.deepEqual(ribbonInvocation(items.find(item => item.id === 'sheet.command.merge-all')), { commandId: 'sheet.command.merge', params: undefined })
   assert.equal(items.find(item => item.title === '取消冻结').disabled, false)
   assert.equal(items.find(item => item.title === '网格线').activated, true)
+})
+
+test('freezing a selected range keeps both the rows above and columns to its left frozen', () => {
+  assert.deepEqual(frozenPaneCountsForSelection({ startRow: 4, startColumn: 3, endRow: 8, endColumn: 7 }), { rows: 4, columns: 3 })
+  assert.deepEqual(frozenPaneCountsForSelection({ startRow: 0, startColumn: 0, endRow: 2, endColumn: 2 }), { rows: 0, columns: 0 })
 })
 
 test('formula categories expose function dropdowns and insert functions directly', () => {

@@ -55,6 +55,54 @@ test('text content controls preserve their range and values through the public f
   studio.dispose()
 })
 
+test('placeholder reset restores placeholder text and remains undoable', () => {
+  const { studio, document } = createDocument('Mira')
+  const control = document.addContentControl({
+    id: 'placeholder', type: 'text', blockId: 'paragraph-1', startOffset: 0, endOffset: 4,
+    placeholder: 'Enter name', showingPlaceholder: false,
+  })
+
+  assert.equal(control.resetPlaceholder(), true)
+  assert.equal(control.getText(), 'Enter name')
+  assert.equal(control.getInfo().showingPlaceholder, true)
+  assert.equal(document.undo(), true)
+  assert.equal(control.getText(), 'Mira')
+  assert.equal(document.redo(), true)
+  assert.equal(control.getText(), 'Enter name')
+  studio.dispose()
+})
+
+test('repeating-section item duplication copies nested controls and deletion shifts following ranges', () => {
+  const { studio, document } = createDocument('AB')
+  const section = document.addContentControl({
+    id: 'section', type: 'repeatingSection', blockId: 'paragraph-1', startOffset: 0, endOffset: 2,
+    repeatingSection: { doNotAllowInsertDelete: false },
+  })
+  const first = document.addContentControl({
+    id: 'item-1', type: 'repeatingSectionItem', blockId: 'paragraph-1', startOffset: 0, endOffset: 1, parentId: section.id,
+  })
+  document.addContentControl({
+    id: 'child-1', type: 'text', blockId: 'paragraph-1', startOffset: 0, endOffset: 1, parentId: first.id,
+  })
+  const second = document.addContentControl({
+    id: 'item-2', type: 'repeatingSectionItem', blockId: 'paragraph-1', startOffset: 1, endOffset: 2, parentId: section.id,
+  })
+
+  assert.equal(first.duplicateRepeatingItem(), true)
+  assert.equal(document.getText(), 'AAB')
+  const duplicatedItem = document.getContentControls().find(control => control.getType() === 'repeatingSectionItem'
+    && control.getRange().startOffset === 1)
+  assert.ok(duplicatedItem)
+  assert.equal(duplicatedItem.getInfo().parentId, section.id)
+  assert.equal(document.getContentControls().some(control => control.getInfo().parentId === duplicatedItem.id), true)
+  assert.deepEqual(second.getRange(), { blockId: 'paragraph-1', startOffset: 2, endOffset: 3 })
+  assert.equal(duplicatedItem.deleteRepeatingItem(), true)
+  assert.equal(document.getText(), 'AB')
+  assert.deepEqual(section.getRange(), { blockId: 'paragraph-1', startOffset: 0, endOffset: 2 })
+  assert.deepEqual(second.getRange(), { blockId: 'paragraph-1', startOffset: 1, endOffset: 2 })
+  studio.dispose()
+})
+
 test('ordinary text insertion moves content-control anchors and content locks reject edits atomically', () => {
   const { studio, document } = createDocument('ABCD')
   const control = document.addContentControl({ id: 'locked', type: 'text', blockId: 'paragraph-1', startOffset: 1, endOffset: 3, lock: 'contentLocked' })

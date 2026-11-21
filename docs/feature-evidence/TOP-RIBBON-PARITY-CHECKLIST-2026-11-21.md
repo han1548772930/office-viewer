@@ -30,7 +30,7 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Docs
 
-固定版常规 Ribbon 根入口共 **38 项**，分组如下。计数包括 OSS 插件扩展注册到默认 Ribbon 的入口，不含子菜单。
+固定版常规 Ribbon 根入口共 **38 项**，分组如下。计数包括 OSS 插件扩展注册到默认 Ribbon 的入口，不含子菜单。Univer 1.5.2 Pro 发布包另有 9 个 Docs Ribbon 根项，其模块清点见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版分组和入口数 | 本地当前根项 | 对齐状态 |
 | --- | --- | ---: | --- |
@@ -47,7 +47,7 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Sheets
 
-固定版常规 Ribbon 根入口共 **62 项**，本地当前 schema 共 **78 项**。按标签统计见下表。完整逐组、上下文、处理器和 Pro 边界记录在[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)。
+固定版常规 Ribbon 根入口共 **62 项**，本地当前 schema 共 **75 项**。Univer 1.5.2 Pro 发布包另有 15 个 Sheets Ribbon 根项。按标签统计见下表。完整逐组、上下文、处理器和 Pro 边界记录在[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版根项 | 本地当前根项 | 主要差异 |
 | --- | ---: | ---: | --- |
@@ -174,15 +174,6 @@ Microsoft 的标签和可用项会随桌面/Web、版本、许可、视口和当
 
 官方来源：[Excel Ribbon 标签和功能说明](https://support.microsoft.com/en-us/accessibility/excel/keyboard-shortcuts-in-excel)、[Excel 数据导入与 Power Query](https://support.microsoft.com/en-us/excel/power-query-for-excel-help)、[Excel Office Scripts / Automate](https://support.microsoft.com/en-us/excel/office-scripts/introduction-to-office-scripts-in-excel)、[Excel 记录 Office Scripts](https://support.microsoft.com/en-us/excel/office-scripts/record-your-actions-as-office-scripts)、[Excel Analyze Data](https://support.microsoft.com/en-us/excel/analyze-data-in-excel)、[Excel 页面设置](https://support.microsoft.com/en-us/excel/page-setup)、[Excel 批注与 Note](https://support.microsoft.com/en-us/accessibility/excel/use-a-screen-reader-to-work-with-comments-in-excel)、[Excel 工作簿保护](https://support.microsoft.com/en-us/excel/protect-a-workbook)、[Excel 排序与筛选](https://support.microsoft.com/en-gb/excel/sort-data-in-a-range-or-table-in-excel)。
 
-## 本轮已完成与仍待完成
+## 后续 Microsoft 365 补充项
 
-- [x] 写入项目级规则，要求主任务和全部子任务先清点各标签、插件扩展、分组/行列、条件、命令和统计范围，再实现功能闭环。
-- [x] 固定版 Sheets 插件菜单合并和本地入口/handler 差异已写入独立清点文件。
-- [x] 固定版 Docs 顶层菜单计数和 Insert MEDIA 网格位置已源码复核；本地媒体网格契约测试通过。
-- [ ] 将 Docs Insert CELL 目录入口、contextual 更新/删除与本地 TOC dialog/commands 接通。
-- [ ] 接通 Docs 评论入口、线程模型/服务及保存同步；当前面板契约组件未接入 Workbench。
-- [ ] 根据本清单逐项修正 Docs 和 Sheets 的错组、错序、缺入口、错 handler 与实际功能差异。
-- [ ] 实现或如实保留所有 Univer Pro 目标和 Microsoft 补充候选项，按功能 ID 提供契约/集成及 Office 文件验证。
-- [ ] 按用户要求，等整批入口和功能实现稳定后统一进行浏览器验收；此清单的源码对照及契约测试不代替该步骤。
-
-本清单的源码与类型/契约检查不能代替可编辑工作流、权限、撤销重做、持久化、独立 Office 文件重开和浏览器布局验收。当前未修改功能对齐表中任何功能的验收状态。
+以下 Word/Excel 差异在 Univer 与 Pro 功能完整闭环之后单独评估，不计入当前 Univer 功能范围、入口统计或阶段验收。对应候选项以可验证的 Microsoft 365 行为为依据。

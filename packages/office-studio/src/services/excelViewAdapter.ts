@@ -1,4 +1,4 @@
-import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule } from '../domain/model.ts'
+import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
@@ -59,7 +59,7 @@ export interface ExcelSheetView {
   rangeProtectionRules?: SheetRangeProtectionRule[]
   conditionalFormats?: SheetConditionalFormatRule[]
 }
-export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual' }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; slicers?: SlicerModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual'; metadata?: Record<string, unknown> }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -89,8 +89,10 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
     id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId, date1904: workbook.date1904, calculationMode: workbook.calculationMode ?? 'automatic',
+    metadata: workbook.metadata ? structuredClone(workbook.metadata) : undefined,
     charts: workbook.charts?.map(cloneChartModel),
     pivotTables: workbook.pivotTables?.map(clonePivotTableModel),
+    slicers: workbook.slicers?.map((slicer) => ({ ...slicer, position: { ...slicer.position }, size: { ...slicer.size }, layout: slicer.layout ? { ...slicer.layout } : undefined, selectedItems: slicer.selectedItems ? [...slicer.selectedItems] : undefined, timelineRange: slicer.timelineRange ? { ...slicer.timelineRange } : undefined })),
     tables: workbook.tables?.map(cloneSheetTable),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
@@ -144,8 +146,10 @@ function parseEditedCellValue(value: string): CellScalar {
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView): WorkbookModel {
   return {
     ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904: view.date1904 ?? workbook.date1904,
+    metadata: view.metadata ? structuredClone(view.metadata) : workbook.metadata,
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
     pivotTables: view.pivotTables?.map(clonePivotTableModel) ?? workbook.pivotTables,
+    slicers: view.slicers?.map((slicer) => ({ ...slicer, position: { ...slicer.position }, size: { ...slicer.size }, layout: slicer.layout ? { ...slicer.layout } : undefined, selectedItems: slicer.selectedItems ? [...slicer.selectedItems] : undefined, timelineRange: slicer.timelineRange ? { ...slicer.timelineRange } : undefined })) ?? workbook.slicers,
     tables: view.tables?.map(cloneSheetTable) ?? workbook.tables,
     calculationMode: view.calculationMode === 'manual' ? 'manual' : 'automatic',
     sheets: view.sheets.map((source) => {
@@ -263,5 +267,17 @@ function clonePivotTableModel(pivot: PivotTableModel): PivotTableModel {
 }
 
 function cloneConditionalFormatRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule {
-  return { ...rule, ranges: rule.ranges.map(range => ({ ...range })), style: { ...rule.style } }
+  return {
+    ...rule,
+    ranges: rule.ranges.map(range => ({ ...range })),
+    style: { ...rule.style },
+    config: rule.config ? {
+      ...rule.config,
+      min: rule.config.min ? { ...rule.config.min } : undefined,
+      max: rule.config.max ? { ...rule.config.max } : undefined,
+      thresholds: rule.config.thresholds?.map(item => ({ ...item, value: { ...item.value } })),
+      icons: rule.config.icons?.map(item => ({ ...item, value: { ...item.value } })),
+    } : undefined,
+    metadata: rule.metadata ? { ...rule.metadata } : undefined,
+  }
 }

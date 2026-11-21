@@ -55,6 +55,8 @@ export interface PivotRenderResult {
   drillDownMap: Record<string, PivotDrillDownEntry>
 }
 
+export const PIVOT_AGGREGATIONS: readonly PivotAggregation[] = ['average', 'count', 'countNums', 'max', 'min', 'product', 'stdDev', 'stdDevp', 'sum', 'var', 'varp']
+
 interface SourceRecord {
   values: CellScalar[]
 }
@@ -201,6 +203,8 @@ export function setPivotFieldSetting(
   setting: { displayName?: string; format?: string; subtotalType?: PivotAggregation }
 ): void {
   const field = requirePivotField(pivot, fieldId)
+  if (setting.subtotalType !== undefined && !PIVOT_AGGREGATIONS.includes(setting.subtotalType)) throw new TypeError('Invalid pivot aggregation')
+  if (setting.subtotalType !== undefined && field.area !== 'value') throw new Error('Aggregation settings require a value field')
   if (setting.displayName !== undefined) field.displayName = setting.displayName
   if (setting.format !== undefined) field.format = setting.format
   if (setting.subtotalType !== undefined) field.aggregation = setting.subtotalType
@@ -304,6 +308,8 @@ export function renderPivotTable(workbook: WorkbookModel, pivot: PivotTableModel
       const key = `${targetRow}:${targetCol}`
       const cell = createCell(targetRow, targetCol, result.values[row]![col] ?? null)
       cell.style = { ...defaultCellStyle(), font: { ...defaultCellStyle().font, bold: row < result.headerRows } }
+      const numberFormat = result.numberFormats[`${row}:${col}`]
+      if (numberFormat) cell.style.numberFormat = numberFormat
       cell.metadata = { pivotTableId: pivot.id, pivotGenerated: true }
       target.cells[key] = cell
       generatedCellKeys.push(key)
@@ -354,14 +360,14 @@ export function pivotFieldIds(pivot: PivotTableModel, area: PivotFieldArea): str
   return pivot.fields.filter((field) => field.area === area).sort((a, b) => a.position - b.position).map((field) => field.id)
 }
 
-function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { values: CellScalar[][]; headerRows: number; drillDownMap: Record<string, PivotDrillDownEntry> } {
+function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { values: CellScalar[][]; headerRows: number; drillDownMap: Record<string, PivotDrillDownEntry>; numberFormats: Record<string, string> } {
   const fields = getPivotSourceFields(workbook, pivot)
   const byId = new Map(pivot.fields.map((field) => [field.id, field]))
   const rows = sortedFields(pivot, 'row')
   const columns = sortedFields(pivot, 'column')
   const filters = sortedFields(pivot, 'filter')
   const values = sortedFields(pivot, 'value')
-  if (!values.length) return { values: [], headerRows: 0, drillDownMap: {} }
+  if (!values.length) return { values: [], headerRows: 0, drillDownMap: {}, numberFormats: {} }
   const allRecords = readSourceRecords(sourceSheet(workbook, pivot), pivot)
   let records = allRecords.filter((record) => filters.every((field) => field.selectedItems == null || field.selectedItems.includes(String(record.values[field.sourceColumn - pivot.source.range.startCol] ?? ''))))
   records = records.filter((record) => [...rows, ...columns].every((field) => field.selectedItems == null || field.selectedItems.includes(String(record.values[field.sourceColumn - pivot.source.range.startCol] ?? ''))))
@@ -390,6 +396,7 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
   // Pivot output is a rectangular range even when a field has no matching records.
   const matrix: CellScalar[][] = Array.from({ length: headerRows + outputRows.length }, () => Array.from({ length: width }, () => null))
   const drillDownMap: Record<string, PivotDrillDownEntry> = {}
+  const numberFormats: Record<string, string> = {}
   const rowHeaderCount = rows.length + (valueRows ? 1 : 0)
   rows.forEach((field, index) => { matrix[headerRows - 1]![index] = field.displayName ?? field.name })
   if (valueRows) matrix[headerRows - 1]![rows.length] = 'Values'
@@ -439,10 +446,11 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
       const aggregate = aggregateValue(aggregateRecords, valueField, pivot)
       const cellColumn = rowHeaderCount + colIndex
       matrix[targetRow]![cellColumn] = aggregate
+      if (valueField.format) numberFormats[`${targetRow}:${cellColumn}`] = valueField.format
       if (!outputRow.total && !outputColumn.total) drillDownMap[`${targetRow}:${cellColumn}`] = { fieldFilters: groupFilter, fieldMembers: groupMembers, valueFieldId }
     }
   }
-  return { values: matrix, headerRows, drillDownMap }
+  return { values: matrix, headerRows, drillDownMap, numberFormats }
 }
 
 function applyValueFilters(records: SourceRecord[], dimensionFields: PivotFieldModel[], _values: PivotFieldModel[], byId: Map<string, PivotFieldModel>, pivot: PivotTableModel): SourceRecord[] {
@@ -508,12 +516,21 @@ function aggregateValue(records: SourceRecord[], field: PivotFieldModel, pivot: 
   const values = records.map((record) => record.values[index]).filter((value) => value !== null && value !== '')
   const aggregation = field.aggregation ?? 'sum'
   if (aggregation === 'count') return values.length
-  const numbers = values.map(Number).filter(Number.isFinite)
-  if (!numbers.length) return null
-  if (aggregation === 'min') return Math.min(...numbers)
-  if (aggregation === 'max') return Math.max(...numbers)
-  const sum = numbers.reduce((total, value) => total + value, 0)
-  if (aggregation === 'average') return sum / numbers.length
+  const numericValues = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  if (aggregation === 'countNums') return numericValues.length
+  if (!numericValues.length) return null
+  if (aggregation === 'product') return numericValues.reduce((product, value) => product * value, 1)
+  if (aggregation === 'stdDev' || aggregation === 'stdDevp' || aggregation === 'var' || aggregation === 'varp') {
+    if ((aggregation === 'stdDev' || aggregation === 'var') && numericValues.length < 2) return null
+    const mean = numericValues.reduce((total, value) => total + value, 0) / numericValues.length
+    const divisor = aggregation === 'stdDevp' || aggregation === 'varp' ? numericValues.length : numericValues.length - 1
+    const variance = numericValues.reduce((total, value) => total + (value - mean) ** 2, 0) / divisor
+    return aggregation === 'stdDev' || aggregation === 'stdDevp' ? Math.sqrt(variance) : variance
+  }
+  if (aggregation === 'min') return Math.min(...numericValues)
+  if (aggregation === 'max') return Math.max(...numericValues)
+  const sum = numericValues.reduce((total, value) => total + value, 0)
+  if (aggregation === 'average') return sum / numericValues.length
   return sum
 }
 

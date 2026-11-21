@@ -6,10 +6,19 @@ import type { GridRange, GridViewport } from './layout'
 import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
 import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
+import { conditionalIconPreset } from '../../features/conditional-formatting/conditional-icon-presets.ts'
+import { evaluateFormula } from '../../features/formula/formula-engine.ts'
+import { translateFormulaReferences } from '../../features/formula/formula-references.ts'
+import { createBlankSheet, defaultCellStyle, type SpreadsheetCell, type WorkbookModel } from '../../domain/model.ts'
 import { SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
 import { crosshairHighlightRanges } from '../../features/sheet-crosshair/crosshair-highlight.ts'
 
 let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
+function gradientDataBarColor(color: string, strength: number): string {
+  const channels = color.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
+  if (!channels) return color
+  return `#${channels.slice(1).map(channel => Math.round(255 + (parseInt(channel, 16) - 255) * (0.2 + 0.8 * strength)).toString(16).padStart(2, '0')).join('')}`
+}
 function measureTextWidth(text: string, font: string): number | undefined {
   if (textMeasureContext === undefined) textMeasureContext = typeof OffscreenCanvas !== 'undefined'
     ? new OffscreenCanvas(1, 1).getContext('2d') : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
@@ -57,6 +66,28 @@ export function displayCell(cell: ExcelCellView | undefined, date1904 = false): 
 export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: GridViewport, options: SpreadsheetSceneOptions): RenderScene {
   const commands: DrawCommand[] = [], selected = new Set(options.selectedCells), search = options.searchText?.toLocaleLowerCase()
   const panes = geometry.panes(viewport), z = viewport.zoom
+  const conditionalScopeValues = Object.values(geometry.sheet.cells).map(cell => ({ row: cell.row, column: cell.col, value: cell.rawValue }))
+  const formulaSheet = createBlankSheet(geometry.sheet.name)
+  formulaSheet.id = geometry.sheet.id
+  formulaSheet.cells = Object.fromEntries(Object.entries(geometry.sheet.cells).flatMap(([address, cell]) => {
+    const position = parseAddress(address)
+    if (!position) return []
+    const style = defaultCellStyle()
+    style.font.bold = cell.bold ?? false
+    style.font.italic = cell.italic ?? false
+    style.font.color = cell.color ?? '#1f2937'
+    style.fill = cell.background ?? '#ffffff'
+    const modelCell: SpreadsheetCell = {
+      id: `${position.row}:${position.column}`, row: position.row, col: position.column,
+      value: cell.rawValue ?? cell.value, formula: cell.formula ? (cell.formula.startsWith('=') ? cell.formula : `=${cell.formula}`) : null,
+      display: cell.displayValue ?? cell.value, style,
+    }
+    return [[`${position.row}:${position.column}`, modelCell]]
+  }))
+  const formulaWorkbook: WorkbookModel = {
+    kind: 'workbook', name: geometry.sheet.name, sheets: [formulaSheet], activeSheetId: formulaSheet.id,
+    date1904: geometry.sheet.date1904 ?? false, modified: false, pivotTables: [],
+  }
   const active = parseAddress(options.activeCell)
   const selectionRanges = options.selectedRanges?.length
     ? options.selectedRanges
@@ -67,8 +98,32 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     const visible = intersectRect(rect, clip)
     if (visible.width <= 0 || visible.height <= 0) return
     commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? '#ffffff', clip })
-    const conditionalStyle = conditionalFormatStyleAt(geometry.sheet.conditionalFormats ?? [], row, column, cell?.rawValue)
+    const conditionalFormulaValue = (formula: string, rule: NonNullable<typeof geometry.sheet.conditionalFormats>[number]) => {
+        const firstRange = [...rule.ranges].sort((left, right) => left.startRow - right.startRow || left.startCol - right.startCol)[0]
+        if (!firstRange) return undefined
+        try {
+          const translated = translateFormulaReferences(formula, row - firstRange.startRow, column - firstRange.startCol)
+          return evaluateFormula(translated.startsWith('=') ? translated : `=${translated}`, formulaWorkbook, formulaSheet.id)
+        } catch { return undefined }
+      }
+    const conditionalStyle = conditionalFormatStyleAt(geometry.sheet.conditionalFormats ?? [], row, column, cell?.rawValue, [], conditionalScopeValues,
+      (formula, rule) => { const result = conditionalFormulaValue(formula, rule); return result === true || typeof result === 'number' && result !== 0 }, conditionalFormulaValue)
     if (conditionalStyle.fill) commands.push({ kind: 'rect', ...rect, fill: conditionalStyle.fill, clip })
+    if (conditionalStyle.dataBar) {
+      const bar = conditionalStyle.dataBar
+      const width = rect.width * bar.fraction
+      const x = rect.x + rect.width * bar.start - (bar.negative ? width : 0)
+      if (bar.gradient) {
+        const segments = Math.max(1, Math.min(32, Math.ceil(width / 4)))
+        for (let index = 0; index < segments; index++) {
+          const fraction = (index + 0.5) / segments
+          const color = gradientDataBarColor(bar.color, bar.negative ? fraction : 1 - fraction)
+          commands.push({ kind: 'rect', x: x + width * index / segments, y: rect.y + rect.height * 0.18, width: width / segments, height: rect.height * 0.64, fill: color, clip })
+        }
+      } else commands.push({ kind: 'rect', x, y: rect.y + rect.height * 0.18, width, height: rect.height * 0.64, fill: bar.color, clip })
+    }
+    const conditionalIcon = conditionalStyle.icon ? conditionalIconPreset(conditionalStyle.icon.iconType, conditionalStyle.icon.iconId) : undefined
+    if (conditionalIcon) commands.push({ kind: 'text', x: rect.x + 10 * z, y: rect.y + rect.height / 2, text: conditionalIcon.symbol, font: `${16 * z}px "Segoe UI Symbol", sans-serif`, color: conditionalIcon.color, align: 'center', baseline: 'middle', clip })
     if (geometry.sheet.showGridlines !== false) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
     if (isSelected(row, column)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
     if (cell?.border) {
@@ -87,23 +142,24 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const diagonalUp = borderEdge(cell.border.diagonalUp)
       if (diagonalUp) commands.push(...createBorderLines(rect.x, rect.y + rect.height, rect.x + rect.width, rect.y, diagonalUp.style, diagonalUp.color, z, clip))
     }
-    const text = displayCell(cell, geometry.sheet.date1904)
+    const text = conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue ? '' : displayCell(cell, geometry.sheet.date1904)
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
     if (text) {
       const align = cell?.align ?? (column === 0 ? 'left' : Number.isFinite(Number(text)) ? 'right' : 'left')
       const baseFontSize = (cell?.fontSize ?? 11) * 4 / 3 * z
       const fontFamily = cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'
-      const fontPrefix = `${cell?.italic ? 'italic ' : ''}${conditionalStyle.bold ?? cell?.bold ? '600 ' : ''}`
+      const fontPrefix = `${conditionalStyle.italic ?? cell?.italic ? 'italic ' : ''}${conditionalStyle.bold ?? cell?.bold ? '600 ' : ''}`
       const font = `${fontPrefix}${baseFontSize}px ${fontFamily}`
-      const availableTextWidth = Math.max(0, rect.width - 12 * z)
+      const iconPadding = conditionalIcon ? 18 * z : 0
+      const availableTextWidth = Math.max(0, rect.width - 12 * z - iconPadding)
       const measuredWidth = cell?.shrinkToFit && cell.wrap !== true ? measureTextWidth(text, font) : undefined
       const maxWidth = measuredWidth !== undefined && measuredWidth > availableTextWidth && availableTextWidth > 0
         ? availableTextWidth
         : undefined
       const fontSize = baseFontSize
-      const x = align === 'center' ? rect.x + rect.width / 2 : align === 'right' ? rect.x + rect.width - 6 * z : rect.x + 6 * z
+      const x = align === 'center' ? rect.x + (rect.width + iconPadding) / 2 : align === 'right' ? rect.x + rect.width - 6 * z : rect.x + 6 * z + iconPadding
       const rotation = cell?.rotation ?? 0
-      const textClip = intersectRect(clip, { x: rect.x + 3 * z, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z), height: Math.max(0, rect.height - 2) })
+      const textClip = intersectRect(clip, { x: rect.x + 3 * z + iconPadding, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z - iconPadding), height: Math.max(0, rect.height - 2) })
       const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
       const color = conditionalStyle.fontColor ?? cell?.color ?? '#243247'
       if (cell?.rotationVertical) {
@@ -117,11 +173,11 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         for (const [index, glyph] of glyphs.entries()) {
           const glyphY = top + index * lineHeight + lineHeight / 2
           commands.push({ kind: 'text', x: centerX, y: glyphY, text: glyph, font, color, align: 'center', baseline: 'middle', clip: textClip })
-          if (cell.underline || cell.strike) {
+          if ((conditionalStyle.underline ?? cell.underline) || (conditionalStyle.strike ?? cell.strike)) {
             const width = decorationWidth(glyph, font, availableTextWidth)
             const left = centerX - width / 2
-            if (cell.underline) commands.push({ kind: 'line', x1: left, y1: glyphY + lineHeight * 0.55, x2: left + width, y2: glyphY + lineHeight * 0.55, color, clip: textClip })
-            if (cell.strike) commands.push({ kind: 'line', x1: left, y1: glyphY, x2: left + width, y2: glyphY, color, clip: textClip })
+            if (conditionalStyle.underline ?? cell.underline) commands.push({ kind: 'line', x1: left, y1: glyphY + lineHeight * 0.55, x2: left + width, y2: glyphY + lineHeight * 0.55, color, clip: textClip })
+            if (conditionalStyle.strike ?? cell.strike) commands.push({ kind: 'line', x1: left, y1: glyphY, x2: left + width, y2: glyphY, color, clip: textClip })
           }
         }
       } else {
@@ -130,7 +186,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
           commands.push({ kind: 'text', x: rect.x + rect.width - 6 * z, y, text: text.slice(2), font, color, align: 'right', baseline: 'middle', rotation, maxWidth, clip: textClip })
         } else commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', rotation, maxWidth, clip: textClip })
       }
-      if (!cell?.rotationVertical && (cell?.underline || cell?.strike)) {
+      if (!cell?.rotationVertical && ((conditionalStyle.underline ?? cell?.underline) || (conditionalStyle.strike ?? cell?.strike))) {
         const width = decorationWidth(text, font, Math.max(0, rect.width - 12 * z))
         const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
         const decoration = (offsetY: number) => {
@@ -138,8 +194,8 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
           const [x2, y2] = rotatePoint(left + width, y + offsetY, x, y, rotation)
           commands.push({ kind: 'line', x1, y1, x2, y2, color, clip: textClip })
         }
-        if (cell.underline) decoration(fontSize * 0.55)
-        if (cell.strike) decoration(0)
+        if (conditionalStyle.underline ?? cell?.underline) decoration(fontSize * 0.55)
+        if (conditionalStyle.strike ?? cell?.strike) decoration(0)
       }
     }
     commands.push(...sparklineCommandsForCell(geometry.sheet, cell, rect))

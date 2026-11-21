@@ -74,6 +74,17 @@ test('reference translation shifts only relative axes and emits ref for boundary
   assert.equal(formula.translateFormulaReferences('="A1"&A1', 1, 0), '="A1"&A2')
 })
 
+test('structural edits update only references on the edited sheet and preserve reference qualifiers', () => {
+  const right = { kind: 'insert', axis: 'column', start: 1, count: 2, bandStart: 0, bandEnd: 0 }
+  assert.equal(formula.transformFormulaReferencesForStructureEdit('=SUM(A1:C1)+Other!B1+"B1"', right, 'Data', 'Data'), '=SUM(A1:E1)+Other!B1+"B1"')
+  assert.equal(formula.transformFormulaReferencesForStructureEdit("='Data'!$B$1", right, 'Other', 'Data'), "='Data'!$D$1")
+
+  const deleteColumn = { kind: 'delete', axis: 'column', start: 1, count: 1, bandStart: 0, bandEnd: 0 }
+  assert.equal(formula.transformFormulaReferencesForStructureEdit('=B1', deleteColumn, 'Data', 'Data'), '=#REF!')
+  assert.equal(formula.transformFormulaReferencesForStructureEdit('=A1:B1', deleteColumn, 'Data', 'Data'), '=A1:A1')
+  assert.equal(formula.transformFormulaReferencesForStructureEdit('=A1:C1', deleteColumn, 'Data', 'Data'), '=A1:B1')
+})
+
 test('cross-sheet dependencies resolve by sheet name and unsupported imports preserve cached values', () => {
   const imported = structuredClone(model)
   const other = { ...structuredClone(imported.sheets[0]), id: 'sheet-other', name: 'Other', cells: {} }

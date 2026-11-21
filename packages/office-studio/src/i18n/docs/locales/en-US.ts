@@ -53,6 +53,7 @@ export const docsEnUS: Record<string, string> = {
   'document.code-block.line-numbers': 'Line Numbers', 'document.code-block.source': 'Source', 'document.code-block.language-label': 'Code Language',
   'document.code-block.show-line-numbers': 'Show Line Numbers',
   'page-settings.title': 'Page Setup', 'page-settings.units': 'Dimensions and margins are in pixels (96 DPI).',
+  'page-settings.modern-width': 'Content Width', 'page-settings.modern-width-narrow': 'Narrow', 'page-settings.modern-width-medium': 'Medium', 'page-settings.modern-width-wide': 'Wide',
   'page-settings.paper': 'Paper Size', 'page-settings.width': 'Width', 'page-settings.width-aria': 'Paper Width',
   'page-settings.height': 'Height', 'page-settings.height-aria': 'Paper Height', 'page-settings.margins': 'Margins',
   'page-settings.margin-top': 'Top', 'page-settings.margin-top-aria': 'Top Margin', 'page-settings.margin-bottom': 'Bottom',

@@ -34,6 +34,12 @@ export interface LayoutMeasurer { measure(text: string, font: string): number }
 export const PAGE_GAP = 24
 export const PAGE_INSET = 28
 
+function paragraphLineHeight(fontHeight: number, style: DocumentBlock['style']): number {
+  if (style.spacingRule === 'exact') return Math.max(1, style.lineHeight)
+  if (style.spacingRule === 'atLeast') return Math.max(fontHeight, style.lineHeight)
+  return fontHeight * Math.max(1, style.lineHeight)
+}
+
 export function runFont(run: DocumentRun, scale = 1): string {
   const verticalScale = run.verticalAlign === 'subscript' || run.verticalAlign === 'superscript' ? 0.65 : 1
   return `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${Math.max(8, run.fontSize * 4 / 3) * verticalScale * scale}px ${run.fontFamily || 'Arial'}, "Microsoft YaHei", sans-serif`
@@ -60,10 +66,10 @@ function pageSetup(source: DocumentPageSetup): DocumentPageSetup {
   const height = Math.max(240, source.height)
   return {
     width, height,
-    marginLeft: Math.max(0, Math.min(source.marginLeft, width * 0.42)),
-    marginRight: Math.max(0, Math.min(source.marginRight, width * 0.42)),
-    marginTop: Math.max(0, Math.min(source.marginTop, height * 0.42)),
-    marginBottom: Math.max(0, Math.min(source.marginBottom, height * 0.42)),
+    marginLeft: Math.max(0, Math.min(source.marginLeft, width / 2)),
+    marginRight: Math.max(0, Math.min(source.marginRight, width / 2)),
+    marginTop: Math.max(0, Math.min(source.marginTop, height / 2)),
+    marginBottom: Math.max(0, Math.min(source.marginBottom, height / 2)),
   }
 }
 
@@ -152,7 +158,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
   for (const block of model.blocks) {
     if (block.type === 'pageBreak' || block.type === 'columnBreak') { addPage(); orderedIndex = 0; continue }
     if (block.type === 'sectionBreak') {
-      const type = block.sectionBreak?.type ?? 'nextPage'
+      const type = block.sectionBreak?.type === 'unspecified' ? 'nextPage' : block.sectionBreak?.type ?? 'nextPage'
       sectionId = block.id
       if (type !== 'continuous') {
         addPage()
@@ -176,7 +182,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           const xOffset = widths.slice(0, column).reduce((sum, value) => sum + value, 0)
           column += Math.max(1, cell.colSpan)
           const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => ({ paragraph, inset: paragraph.type === 'checklist' ? 28 : 0, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16 - (paragraph.type === 'checklist' ? 28 : 0)), measurer) }))
-          const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.lines.reduce((lineSum, line) => lineSum + line.fontHeight * item.paragraph.style.lineHeight, 0) + item.paragraph.style.spaceAfter, 0))
+          const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.lines.reduce((lineSum, line) => lineSum + paragraphLineHeight(line.fontHeight, item.paragraph.style), 0) + item.paragraph.style.spaceAfter, 0))
           return { cell, colIndex, width, xOffset, paragraphs, height }
         })
         const rowHeight = Math.max(34, ...prepared.map((cell) => cell.height))
@@ -189,7 +195,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           let cellY = cursor + 8
           for (const item of paragraphs) {
             item.lines.forEach((line, index) => {
-              const lineHeight = line.fontHeight * Math.max(1, item.paragraph.style.lineHeight)
+              const lineHeight = paragraphLineHeight(line.fontHeight, item.paragraph.style)
               const layoutLine = positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8 + item.inset, cellY, width - 16 - item.inset, lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1)
               if (index === 0 && item.paragraph.type === 'checklist') layoutLine.checklist = { blockId: item.paragraph.id, checked: item.paragraph.checklist?.checked === true }
               result.lines.push(layoutLine)
@@ -223,7 +229,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
       const codeFont = codeData ? 'Consolas, "Cascadia Code", monospace' : undefined
       const lines = wrapRuns(block.runs as DocumentRun[], width, measurer)
       lines.forEach((line, index) => {
-        const height = line.fontHeight * Math.max(1, block.style.lineHeight)
+        const height = paragraphLineHeight(line.fontHeight, block.style)
         ensureRoom(height)
         if (index === 0 && block.type === 'heading') result.headings.push({ id: block.id, text: runText(block.runs), level: block.level || 1, y: cursor, page: currentPage!.index })
         const marker = index === 0 ? block.type === 'bullet' ? '•' : block.type === 'numbered' ? `${orderedIndex}.` : block.type === 'quote' ? '│' : undefined : undefined

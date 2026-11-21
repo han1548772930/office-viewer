@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { Button, Checkbox, Input, Modal, Select } from 'antdv-next'
+import { Button, Drawer, Input, InputNumber, Modal, Select, Switch, Tabs } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import type { OfficeStudio } from '../../api/office-studio'
-import type { SlicerType, TimelineLevel } from '../../domain/model'
+import type { SlicerModel, SlicerType, TimelineLevel } from '../../domain/model'
+import { slicerPalette } from '../../features/slicer/slicer-renderer'
 import {
-  applyPanelSlicerItems, applyPanelTimelineRange, clearPanelSlicer, insertPanelSlicer,
-  readSlicerPanelState, removePanelSlicer, timelineValueToInput,
+  applyPanelSlicerPresentation, insertPanelSlicer, readSlicerPanelState, removePanelSlicer,
   type SlicerPanelSnapshot,
 } from '../../features/slicer/slicer-panel-state'
 
@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<{
   workbookId: string
   sheetId: string
   initialKind?: SlicerType
+  selectedSlicerId?: string
 }>(), { initialKind: 'slicer' })
 const emit = defineEmits<{
   'update:open': [open: boolean]
@@ -23,48 +24,52 @@ const emit = defineEmits<{
 }>()
 
 const snapshot = shallowRef<SlicerPanelSnapshot | null>(null)
-const selectedId = ref('')
-const adding = ref(true)
-const type = ref<SlicerType>(props.initialKind)
 const pivotId = ref('')
 const fieldId = ref('')
-const caption = ref('')
-const selectedValues = ref<string[]>([])
-const level = ref<TimelineLevel>('month')
-const start = ref('')
-const end = ref('')
 const busy = ref(false)
 const error = ref('')
-let generation = 0
+const settingsId = ref('')
+const draft = ref<SlicerModel | null>(null)
+const originalDraft = ref<SlicerModel | null>(null)
+const settingsTab = ref('control')
 let unsubscribe: (() => void) | undefined
 const target = computed(() => ({ workbookId: props.workbookId, sheetId: props.sheetId }))
-const selected = computed(() => snapshot.value?.controls.find((control) => control.info.id === selectedId.value))
-const pivot = computed(() => snapshot.value?.pivots.find((candidate) => candidate.id === pivotId.value))
-const field = computed(() => pivot.value?.fields.find((candidate) => candidate.id === fieldId.value))
-const pivotOptions = computed(() => snapshot.value?.pivots.map((candidate) => ({ label: candidate.label, value: candidate.id })) ?? [])
-const fieldOptions = computed(() => pivot.value?.fields.map((candidate) => ({ label: `${candidate.name}${candidate.reason ? `（${candidate.reason}）` : ''}`, value: candidate.id, disabled: !candidate.available })) ?? [])
-const levels = [{ label: '日', value: 'day' }, { label: '月', value: 'month' }, { label: '季度', value: 'quarter' }, { label: '年', value: 'year' }]
-const kinds = [{ label: '切片器', value: 'slicer' }, { label: '时间线', value: 'timeline' }]
-
-function messageFor(failure: unknown): string {
-  const message = failure instanceof Error ? failure.message : String(failure)
-  if (/Timeline requires a date field/.test(message)) return '所选字段没有有效日期。请选择包含日期的源字段。'
-  if (/Slicer change was canceled|Command was canceled/.test(message)) return '当前权限或命令规则拒绝了这次操作。'
-  return message
-}
+const setting = computed(() => snapshot.value?.controls.find(({ info }) => info.id === settingsId.value))
+const pivot = computed(() => snapshot.value?.pivots.find(({ id }) => id === pivotId.value))
+const pivotOptions = computed(() => snapshot.value?.pivots.map(({ id, label }) => ({ label, value: id })) ?? [])
+const fieldOptions = computed(() => pivot.value?.fields.flatMap(({ id, name, available, controls, reason }) => {
+  if (!available || !controls.includes(props.initialKind)) return []
+  return [{ label: name, value: id, title: reason }]
+}) ?? [])
+const slicerStyles = ['SlicerStyleLight1', 'SlicerStyleLight2', 'SlicerStyleLight3', 'SlicerStyleLight4', 'SlicerStyleLight5', 'SlicerStyleLight6', 'SlicerStyleOther1', 'SlicerStyleOther2', 'SlicerStyleDark1', 'SlicerStyleDark2', 'SlicerStyleDark3', 'SlicerStyleDark4', 'SlicerStyleDark5', 'SlicerStyleDark6']
+const timelineStyles = ['TimelineStyleLight1', 'TimelineStyleLight2', 'TimelineStyleLight3', 'TimelineStyleLight4', 'TimelineStyleLight5', 'TimelineStyleLight6', 'TimelineStyleDark1', 'TimelineStyleDark2', 'TimelineStyleDark3', 'TimelineStyleDark4', 'TimelineStyleDark5', 'TimelineStyleDark6']
+const styleOptions = computed(() => (draft.value?.type === 'timeline' ? timelineStyles : slicerStyles).map((value, index) => ({ label: `快速样式 ${index + 1}`, value })))
+const settingsTabs = computed(() => [
+  { key: 'control', label: draft.value?.type === 'timeline' ? '日程表' : '切片器' },
+  { key: 'position', label: '大小与属性' },
+])
+const settingsDirty = computed(() => Boolean(draft.value && originalDraft.value && JSON.stringify(draft.value) !== JSON.stringify(originalDraft.value)))
+const settingsValid = computed(() => Boolean(draft.value?.caption.trim() && draft.value.style && draft.value.layout && Number.isFinite(draft.value.layout.left) && Number.isFinite(draft.value.layout.top) && draft.value.layout.width >= 80 && draft.value.layout.height >= 48 && (draft.value.type !== 'slicer' || Number(draft.value.columnCount) >= 1 && Number(draft.value.rowHeight) > 0)))
+const timelineLevels: Array<{ label: string; value: TimelineLevel }> = [
+  { label: '年', value: 'year' }, { label: '季度', value: 'quarter' }, { label: '月', value: 'month' }, { label: '日', value: 'day' },
+]
 
 function refresh(): void {
   if (!props.open) return
   try {
     snapshot.value = readSlicerPanelState(props.studio, target.value)
-    if (!snapshot.value.pivots.some((candidate) => candidate.id === pivotId.value)) pivotId.value = snapshot.value.pivots[0]?.id ?? ''
-    if (selectedId.value && !snapshot.value.controls.some((control) => control.info.id === selectedId.value)) {
-      selectedId.value = ''
-      adding.value = true
+    if (!snapshot.value.pivots.some(({ id }) => id === pivotId.value)) pivotId.value = snapshot.value.pivots[0]?.id ?? ''
+    if (settingsId.value) {
+      const current = snapshot.value.controls.find(({ info }) => info.id === settingsId.value)?.info
+      if (current) {
+        const layout = current.layout ? { ...current.layout } : { left: 200, top: 200, width: current.type === 'timeline' ? 420 : 220, height: current.type === 'timeline' ? 140 : 280 }
+        draft.value = { ...current, layout }; originalDraft.value = { ...current, layout: { ...layout } }
+      }
+      else { settingsId.value = ''; draft.value = null; originalDraft.value = null }
     }
   } catch (failure) {
     snapshot.value = null
-    error.value = messageFor(failure)
+    error.value = failure instanceof Error ? failure.message : String(failure)
   }
 }
 
@@ -81,146 +86,151 @@ watch(() => props.studio, (studio) => {
   refresh()
 }, { immediate: true })
 watch([() => props.open, () => props.workbookId, () => props.sheetId], () => {
-  generation += 1
-  selectedId.value = ''
-  adding.value = true
+  fieldId.value = ''
+  settingsId.value = props.selectedSlicerId ?? ''
+  draft.value = null
+  originalDraft.value = null
+  settingsTab.value = 'control'
   error.value = ''
-  caption.value = ''
-  type.value = props.initialKind
   refresh()
 }, { immediate: true })
-watch(() => props.initialKind, (value) => { type.value = value; adding.value = true })
+watch(() => props.selectedSlicerId, (id) => {
+  settingsId.value = id ?? ''
+  if (settingsId.value) refresh()
+})
 watch(pivot, (value) => {
-  if (!value?.fields.some((candidate) => candidate.id === fieldId.value && candidate.available)) fieldId.value = value?.fields.find((candidate) => candidate.available)?.id ?? ''
+  if (!value?.fields.some(({ id, available, controls }) => id === fieldId.value && available && controls.includes(props.initialKind))) {
+    fieldId.value = value?.fields.find(({ available, controls }) => available && controls.includes(props.initialKind))?.id ?? ''
+  }
 })
-watch(selected, (value) => {
-  if (!value) return
-  selectedValues.value = value.selectedItems ? [...value.selectedItems] : [...value.items]
-  level.value = value.info.timelineRange?.level ?? 'month'
-  start.value = timelineValueToInput(value.info.timelineRange?.start, snapshot.value?.date1904 ?? false)
-  end.value = timelineValueToInput(value.info.timelineRange?.end, snapshot.value?.date1904 ?? false)
+watch(setting, (value) => {
+  if (!value) { draft.value = null; return }
+  draft.value = {
+    ...value.info,
+    layout: value.info.layout ? { ...value.info.layout } : { left: 200, top: 200, width: value.info.type === 'timeline' ? 420 : 220, height: value.info.type === 'timeline' ? 140 : 280 },
+    style: value.info.style ?? (value.info.type === 'timeline' ? timelineStyles[0] : slicerStyles[0]),
+  }
+  originalDraft.value = { ...draft.value, layout: draft.value.layout ? { ...draft.value.layout } : undefined }
 })
-onBeforeUnmount(() => { generation += 1; unsubscribe?.() })
+onBeforeUnmount(() => unsubscribe?.())
 
 async function perform(action: () => Promise<string | void>): Promise<void> {
   if (busy.value) return
-  const version = generation
   busy.value = true
   error.value = ''
   try {
-    const changedId = await action()
-    if (version !== generation) return
+    const id = await action()
     refresh()
-    if (changedId) selectedId.value = changedId
-    adding.value = false
-    emit('changed', changedId || selectedId.value)
+    if (id) emit('changed', id)
   } catch (failure) {
-    if (version !== generation) return
-    error.value = messageFor(failure)
+    error.value = failure instanceof Error ? failure.message : String(failure)
     emit('error', error.value)
-  } finally {
-    busy.value = false
-  }
+  } finally { busy.value = false }
 }
 
 function insert(): void {
   const currentTarget = target.value
-  void perform(() => insertPanelSlicer(props.studio, currentTarget, { pivotTableId: pivotId.value, sourceFieldId: fieldId.value, type: type.value, caption: caption.value }))
+  const input = { pivotTableId: pivotId.value, sourceFieldId: fieldId.value, type: props.initialKind }
+  void perform(async () => {
+    const id = await insertPanelSlicer(props.studio, currentTarget, input)
+    emit('update:open', false)
+    return id
+  })
 }
-function toggleValue(item: string): void {
-  const values = new Set(selectedValues.value)
-  if (values.has(item)) values.delete(item)
-  else values.add(item)
-  selectedValues.value = [...values]
-}
-function applyValues(): void {
+
+function saveSettings(): void {
+  if (!draft.value) return
   const currentTarget = target.value
-  const id = selectedId.value
-  const values = [...selectedValues.value]
-  void perform(() => applyPanelSlicerItems(props.studio, currentTarget, id, values))
+  const { id, type: kind, caption: title, style, columnCount, rowHeight, showCaption, lockedPosition, level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, layout } = draft.value
+  const patch = kind === 'slicer'
+    ? { caption: title, style, columnCount, rowHeight, showCaption, lockedPosition, ...(layout ? { layout } : {}) }
+    : { caption: title, style, level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, ...(layout ? { layout } : {}) }
+  void perform(async () => { await applyPanelSlicerPresentation(props.studio, currentTarget, id, patch); emit('update:open', false); return id })
 }
-function applyTimeline(): void {
-  const currentTarget = target.value
-  const id = selectedId.value
-  const range = { start: start.value, end: end.value, level: level.value }
-  void perform(() => applyPanelTimelineRange(props.studio, currentTarget, id, range))
-}
-function clear(): void {
-  const currentTarget = target.value
-  const id = selectedId.value
-  void perform(() => clearPanelSlicer(props.studio, currentTarget, id))
+
+function close(): void { settingsId.value = ''; emit('update:open', false) }
+function stylePreview(style: string): Record<string, string> {
+  const palette = slicerPalette(style, style.startsWith('Timeline'))
+  return { '--slicer-preview-header': palette.header, '--slicer-preview-item': palette.item, '--slicer-preview-border': palette.itemBorder }
 }
 function remove(): void {
+  if (!settingsId.value) return
   const currentTarget = target.value
-  const id = selectedId.value
-  void perform(async () => { await removePanelSlicer(props.studio, currentTarget, id); adding.value = true })
+  const id = settingsId.value
+  void perform(async () => { await removePanelSlicer(props.studio, currentTarget, id); settingsId.value = ''; emit('update:open', false); emit('changed', ''); return undefined })
 }
-function selectControl(id: string): void { selectedId.value = id; adding.value = false; error.value = '' }
-function close(): void { emit('update:open', false) }
 </script>
 
 <template>
-  <Modal :open="open" title="切片器与时间线" :width="760" :footer="null" destroy-on-hidden @cancel="close">
-    <div class="slicer-panel" :aria-busy="busy">
-      <section class="slicer-panel__list" aria-label="当前工作表切片器列表">
-        <div class="slicer-panel__list-header"><span>当前工作表（{{ snapshot?.controls.length ?? 0 }}）</span><Button size="small" :disabled="busy" @click="adding = true; error = ''">新增</Button></div>
-        <Button v-for="control in snapshot?.controls ?? []" :key="control.info.id" type="text" block class="slicer-panel__control" :class="{ 'is-selected': selectedId === control.info.id && !adding }" :aria-pressed="selectedId === control.info.id && !adding" :disabled="busy" @click="selectControl(control.info.id)">
-          <span>{{ control.info.caption }}</span><small>{{ control.info.type === 'timeline' ? '时间线' : '切片器' }} · {{ control.selectedItems ? `已选 ${control.selectedItems.length} 项` : '全部数据' }}</small>
-        </Button>
-        <p v-if="!snapshot?.controls.length" class="slicer-panel__muted">此工作表还没有切片器或时间线。</p>
-      </section>
-      <section v-if="adding" class="slicer-panel__editor" aria-label="插入切片器配置">
-        <h3>插入筛选控件</h3>
-        <label>类型<Select v-model:value="type" :options="kinds" aria-label="筛选控件类型" :disabled="busy" /></label>
-        <label>目标透视表<Select v-model:value="pivotId" :options="pivotOptions" aria-label="目标透视表" placeholder="选择数据透视表" :disabled="busy" /></label>
-        <label>源字段<Select v-model:value="fieldId" :options="fieldOptions" aria-label="切片器源字段" placeholder="选择行、列或筛选字段" :disabled="busy || !pivot" /></label>
-        <label>标题<Input v-model:value="caption" aria-label="切片器标题" :placeholder="field?.name || '使用源字段名称'" :disabled="busy" /></label>
-        <p v-if="!snapshot?.pivots.length" class="slicer-panel__muted">工作簿中还没有数据透视表。请先从“数据透视表”入口创建，并将要筛选的字段放入行、列或筛选区域，再来插入切片器或时间线。</p>
-        <p v-else-if="pivot && !pivot.fields.some((candidate) => candidate.available)" class="slicer-panel__muted">此透视表没有可绑定的新字段。请在透视表中配置标签字段，或选择已有控件进行筛选。</p>
-        <p v-if="type === 'timeline'" class="slicer-panel__muted">时间线使用日期字段，支持日、月、季度和年。日期范围将按工作簿日期系统筛选。</p>
-        <Button type="primary" :loading="busy" :disabled="!field?.available || busy" @click="insert">插入{{ type === 'timeline' ? '时间线' : '切片器' }}</Button>
-      </section>
-      <section v-else-if="selected" class="slicer-panel__editor" aria-label="切片器筛选设置">
-        <h3>{{ selected.info.caption }}</h3>
-        <p v-if="selected.error" role="alert" class="slicer-panel__error">{{ selected.error }}</p>
-        <template v-else-if="selected.info.type === 'slicer'">
-          <div class="slicer-panel__actions"><Button size="small" :disabled="busy" @click="selectedValues = [...selected.items]">全选</Button><Button size="small" :disabled="busy" @click="selectedValues = []">全不选</Button><span>已选 {{ selectedValues.length }} 项</span></div>
-          <div class="slicer-panel__items" role="group" :aria-label="`${selected.info.caption}筛选值`">
-            <Checkbox v-for="item in selected.items" :key="item" :checked="selectedValues.includes(item)" :disabled="busy" @change="toggleValue(item)">{{ item }}</Checkbox>
-          </div>
-          <p v-if="!selected.items.length" class="slicer-panel__muted">源字段中没有可用的值。</p>
-          <Button type="primary" :loading="busy" :disabled="busy" @click="applyValues">应用筛选</Button>
-        </template>
-        <template v-else>
-          <label>日期粒度<Select v-model:value="level" :options="levels" aria-label="时间线粒度" :disabled="busy" /></label>
-          <label>开始日期<Input v-model:value="start" placeholder="YYYY-MM-DD" aria-label="时间线开始日期" :disabled="busy" /></label>
-          <label>结束日期<Input v-model:value="end" placeholder="YYYY-MM-DD" aria-label="时间线结束日期" :disabled="busy" /></label>
-          <p class="slicer-panel__muted">边界按所选粒度包含整个日、月、季度或年。留空的一端不限范围。</p>
-          <Button type="primary" :loading="busy" :disabled="busy" @click="applyTimeline">应用日期范围</Button>
-        </template>
-        <div class="slicer-panel__footer"><Button :disabled="busy || !!selected.error" @click="clear">清除筛选</Button><Button danger :disabled="busy" @click="remove">删除控件</Button></div>
-      </section>
-      <section v-else class="slicer-panel__editor"><p class="slicer-panel__muted">选择当前工作表中的筛选控件，或新增一个控件。</p></section>
+  <Modal :open="open && !settingsId" :title="initialKind === 'timeline' ? '插入日程表' : '插入切片器'" :width="400" :footer="null" :mask-closable="false" destroy-on-hidden @cancel="close">
+    <div class="slicer-insert">
+      <label>字段<Select v-model:value="fieldId" :options="fieldOptions" aria-label="字段" placeholder="选择字段" :disabled="busy || !pivot" /></label>
+      <p v-if="!snapshot?.pivots.length" class="slicer-muted">沒有可用的数据透视表。</p>
+      <label v-else-if="snapshot.pivots.length > 1">目标透视表<Select v-model:value="pivotId" :options="pivotOptions" aria-label="目标透视表" :disabled="busy" /></label>
+      <p v-if="error" role="alert" class="slicer-error">{{ error }}</p>
+      <div class="slicer-actions"><Button @click="close">取消</Button><Button type="primary" :loading="busy" :disabled="!fieldId || busy" @click="insert">应用</Button></div>
     </div>
-    <p v-if="error" role="alert" class="slicer-panel__error">{{ error }}</p>
   </Modal>
+
+  <Drawer :open="open && !!settingsId" :title="draft?.type === 'timeline' ? '日程表设置' : '切片器设置'" :width="388" placement="right" destroy-on-hidden @close="close">
+    <div v-if="draft" class="slicer-settings">
+      <Tabs v-model:active-key="settingsTab" :items="settingsTabs" />
+      <template v-if="settingsTab === 'control'">
+        <section class="slicer-settings__group">
+          <label>标题<Input v-model:value="draft.caption" aria-label="标题" :disabled="busy" /></label>
+          <label class="slicer-toggle"><Switch v-if="draft.type === 'slicer'" v-model:checked="draft.showCaption" aria-label="显示页眉" :disabled="busy" /><Switch v-else v-model:checked="draft.showHeader" aria-label="显示页眉" :disabled="busy" />显示页眉</label>
+        </section>
+        <section v-if="draft.type === 'slicer'" class="slicer-settings__group">
+          <label>列<InputNumber v-model:value="draft.columnCount" :min="1" :max="20000" :precision="0" aria-label="列数" :disabled="busy" /></label>
+          <label>按钮高度<InputNumber v-model:value="draft.rowHeight" :min="0.01" :max="450678" :precision="2" aria-label="按钮高度" :disabled="busy" /></label>
+          <label class="slicer-toggle"><Switch v-model:checked="draft.lockedPosition" aria-label="禁止移动和调整大小" :disabled="busy" />禁止移动和调整大小</label>
+        </section>
+        <section v-else class="slicer-settings__group">
+          <label>时间级别<Select v-model:value="draft.level" :options="timelineLevels" aria-label="时间级别" :disabled="busy" /></label>
+          <label>选择级别<Select v-model:value="draft.selectionLevel" :options="timelineLevels" aria-label="选择级别" :disabled="busy" /></label>
+          <label class="slicer-toggle"><Switch v-model:checked="draft.showSelectionLabel" aria-label="显示选择标签" :disabled="busy" />显示选择标签</label>
+          <label class="slicer-toggle"><Switch v-model:checked="draft.showTimeLevel" aria-label="显示时间级别" :disabled="busy" />显示时间级别</label>
+          <label class="slicer-toggle"><Switch v-model:checked="draft.showHorizontalScrollbar" aria-label="显示滚动条" :disabled="busy" />显示滚动条</label>
+        </section>
+        <section class="slicer-settings__group">
+          <label>快速样式</label>
+          <div class="slicer-style-gallery" role="group" aria-label="快速样式">
+            <Button v-for="option in styleOptions" :key="option.value" class="slicer-style-option" :class="{ 'is-selected': draft.style === option.value }" :aria-pressed="draft.style === option.value" :disabled="busy" @click="draft.style = option.value">
+              <span class="slicer-style-preview" :style="stylePreview(option.value)"><i /><i /><i /></span>
+              <span>{{ option.label }}</span>
+            </Button>
+          </div>
+        </section>
+      </template>
+      <template v-else>
+        <section class="slicer-settings__group">
+          <label>水平位置<InputNumber v-model:value="draft.layout!.left" :min="0" :max="1000000" :precision="0" aria-label="水平位置" :disabled="busy || draft.lockedPosition" /></label>
+          <label>垂直位置<InputNumber v-model:value="draft.layout!.top" :min="0" :max="1000000" :precision="0" aria-label="垂直位置" :disabled="busy || draft.lockedPosition" /></label>
+          <label>宽度<InputNumber v-model:value="draft.layout!.width" :min="80" :max="100000" :precision="0" aria-label="宽度" :disabled="busy || draft.lockedPosition" /></label>
+          <label>高度<InputNumber v-model:value="draft.layout!.height" :min="48" :max="100000" :precision="0" aria-label="高度" :disabled="busy || draft.lockedPosition" /></label>
+          <label v-if="draft.type === 'slicer'" class="slicer-toggle"><Switch v-model:checked="draft.lockedPosition" aria-label="禁止移动和调整大小" :disabled="busy" />禁止移动和调整大小</label>
+        </section>
+      </template>
+      <p v-if="error" role="alert" class="slicer-error">{{ error }}</p>
+      <div class="slicer-actions"><Button @click="remove">删除</Button><span /><Button @click="close">取消</Button><Button type="primary" :loading="busy" :disabled="busy || !settingsValid || !settingsDirty" @click="saveSettings">应用</Button></div>
+    </div>
+  </Drawer>
 </template>
 
 <style scoped>
-.slicer-panel { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(250px, 1.2fr); gap: 20px; min-height: 340px; }
-.slicer-panel__list { min-width: 0; padding-inline-end: 14px; border-inline-end: 1px solid #e7ebf0; }
-.slicer-panel__list-header, .slicer-panel__actions, .slicer-panel__footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.slicer-panel__list-header { margin-bottom: 10px; color: #5c6979; font-size: 12px; }
-.slicer-panel__control.ant-btn { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; height: auto; min-height: 46px; gap: 2px; padding: 8px; white-space: normal; text-align: start; }
-.slicer-panel__control.is-selected { color: #2563ba; background: #eaf2ff; }
-.slicer-panel__control small { color: #7f8b99; font-size: 11px; }
-.slicer-panel__editor { display: flex; flex-direction: column; min-width: 0; gap: 12px; }
-.slicer-panel__editor h3 { margin: 0; font-size: 14px; font-weight: 600; }
-.slicer-panel__editor label { display: flex; flex-direction: column; gap: 5px; color: #596779; font-size: 12px; }
-.slicer-panel__muted { margin: 0; color: #7d8896; font-size: 12px; line-height: 1.8; }
-.slicer-panel__error { margin-bottom: 0; color: #c43737; font-size: 12px; line-height: 1.7; }
-.slicer-panel__items { display: flex; flex-direction: column; min-height: 80px; max-height: 260px; overflow: auto; gap: 8px; padding: 8px; border: 1px solid #e4e9ef; border-radius: 4px; }
-.slicer-panel__actions { justify-content: flex-start; color: #788595; font-size: 12px; }
-.slicer-panel__footer { justify-content: flex-start; margin-top: auto; padding-top: 12px; border-top: 1px solid #e9edf2; }
-@media (max-width: 640px) { .slicer-panel { grid-template-columns: 1fr; } .slicer-panel__list { padding: 0 0 12px; border-inline-end: 0; border-bottom: 1px solid #e7ebf0; } }
+.slicer-insert, .slicer-settings { display: flex; flex-direction: column; gap: 16px; }
+.slicer-insert label, .slicer-settings label:not(.slicer-toggle) { display: flex; flex-direction: column; gap: 7px; color: #596779; font-size: 13px; }
+.slicer-insert :deep(.ant-select), .slicer-settings :deep(.ant-select), .slicer-settings :deep(.ant-input-number) { width: 100%; }
+.slicer-settings__group { display: flex; flex-direction: column; gap: 13px; padding: 14px; border: 1px solid #e3e7ec; border-radius: 8px; }
+.slicer-style-gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.slicer-style-option { height: auto; min-width: 0; min-height: 62px; display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 5px; font-size: 11px; }
+.slicer-style-option.is-selected { border-color: #246bfd; box-shadow: inset 0 0 0 1px #246bfd; }
+.slicer-style-preview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; height: 25px; padding: 3px; background: var(--slicer-preview-header); }
+.slicer-style-preview i { display: block; background: var(--slicer-preview-item); border: 1px solid var(--slicer-preview-border); }
+.slicer-actions > span { flex: 1; }
+.slicer-toggle { display: flex; align-items: center; gap: 9px; min-height: 24px; color: #344152; font-size: 13px; }
+.slicer-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.slicer-muted, .slicer-error { margin: 0; font-size: 12px; line-height: 1.6; }
+.slicer-muted { color: #7d8896; }
+.slicer-error { color: #c43737; }
 </style>

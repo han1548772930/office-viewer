@@ -4,9 +4,13 @@ export interface SheetContextMenuItem {
   id: string
   label: string
   commandId: string
+  type?: 'divider'
   params?: unknown
   disabled?: boolean
   separatorBefore?: boolean
+  quick?: boolean
+  icon?: string
+  children?: SheetContextMenuItem[]
 }
 
 export interface SheetContextMenuContext {
@@ -16,6 +20,7 @@ export interface SheetContextMenuContext {
   frozen: boolean
   hasHiddenRows: boolean
   hasHiddenColumns: boolean
+  canConvertText?: boolean
 }
 
 function targetParams(hit: GridHit, sheetId: string, axis: 'row' | 'column', offset = 0) {
@@ -26,53 +31,72 @@ function targetParams(hit: GridHit, sheetId: string, axis: 'row' | 'column', off
 }
 
 export function createSheetContextMenuItems(hit: GridHit, options: SheetContextMenuContext): SheetContextMenuItem[] {
-  if (hit.kind === 'resize-row' || hit.kind === 'resize-column') return []
+  if (hit.kind !== 'cell' && hit.kind !== 'row' && hit.kind !== 'column' && hit.kind !== 'all') return []
 
   const clipboard: SheetContextMenuItem[] = [
-    { id: 'cut', label: '剪切', commandId: 'sheet.command.cut' },
-    { id: 'copy', label: '复制', commandId: 'sheet.command.copy' },
-    { id: 'copy-formulas', label: '仅复制公式', commandId: 'sheet.command.copy-formulas' },
-    { id: 'paste', label: '粘贴', commandId: 'sheet.command.paste' },
-    { id: 'paste-values', label: '仅粘贴值', commandId: 'sheet.command.paste-values' },
-    { id: 'paste-formulas', label: '仅粘贴公式', commandId: 'sheet.command.paste-formulas' },
-    { id: 'paste-formats', label: '仅粘贴格式', commandId: 'sheet.command.paste-formats' },
-    { id: 'paste-column-widths', label: '仅粘贴列宽', commandId: 'sheet.command.paste-column-widths' },
-    { id: 'paste-except-borders', label: '保留目标边框粘贴', commandId: 'sheet.command.paste-except-borders' },
-    { id: 'clear-content', label: '清除内容', commandId: 'sheet.command.clear-content', separatorBefore: true },
+    { id: 'copy', label: '复制', commandId: 'sheet.command.copy', quick: true, icon: 'CopyDoubleIcon' },
+    { id: 'cut', label: '剪切', commandId: 'sheet.command.cut', quick: true, icon: 'CutIcon' },
+    { id: 'paste', label: '粘贴', commandId: 'sheet.command.paste', quick: true, icon: 'PasteSpecialDoubleIcon' },
+    { id: 'copy-special', label: '选择性复制', commandId: '', icon: 'CopyDoubleIcon', separatorBefore: true, children: [
+      { id: 'copy-formulas', label: '仅复制公式', commandId: 'sheet.command.copy-formulas' },
+    ] },
+    {
+      id: 'paste-special', label: '选择性粘贴', commandId: '', icon: 'PasteSpecialDoubleIcon', children: [
+        { id: 'paste-values', label: '仅粘贴值', commandId: 'sheet.command.paste-values' },
+        { id: 'paste-formats', label: '仅粘贴格式', commandId: 'sheet.command.paste-formats' },
+        { id: 'paste-column-widths', label: '仅粘贴列宽', commandId: 'sheet.command.paste-column-widths' },
+        { id: 'paste-except-borders', label: '仅粘贴边框以外内容', commandId: 'sheet.command.paste-except-borders' },
+        { id: 'paste-formulas', label: '仅粘贴公式', commandId: 'sheet.command.paste-formulas' },
+      ],
+    },
+    { id: 'clear-selection', label: '清除', commandId: '', icon: 'ClearFormatDoubleIcon', children: [
+      { id: 'clear-content', label: '清除内容', commandId: 'sheet.command.clear-content' },
+      { id: 'clear-format', label: '清除格式', commandId: 'sheet.command.clear-format' },
+      { id: 'clear-all', label: '清除全部', commandId: 'sheet.command.clear-all' },
+    ] },
+    ...(options.canConvertText ? [{ id: 'text-to-number', label: '文本转数字', commandId: 'sheet.command.text-to-number', icon: 'ConvertToNumberIcon' }] : []),
   ]
   const freeze: SheetContextMenuItem[] = [
-    { id: 'freeze-selection', label: '冻结到当前选区', commandId: 'sheet.command.freeze-selection', params: hit.kind === 'row' ? { sheetId: options.sheetId, axis: 'row', index: hit.row } : hit.kind === 'column' ? { sheetId: options.sheetId, axis: 'column', index: hit.column } : undefined },
-    { id: 'freeze-first-row', label: '冻结首行', commandId: 'sheet.command.freeze-first-row' },
-    { id: 'freeze-first-column', label: '冻结首列', commandId: 'sheet.command.freeze-first-column' },
-    { id: 'unfreeze', label: '取消冻结', commandId: 'sheet.command.unfreeze', disabled: !options.frozen },
+    { id: 'freeze', label: '冻结', commandId: '', icon: 'FreezeToSelectedIcon', children: [
+      { id: 'freeze-selection', label: hit.kind === 'row' ? `冻结至第 ${hit.row + 1} 行` : hit.kind === 'column' ? `冻结至第 ${hit.column + 1} 列` : hit.kind === 'cell' ? `冻结至活动单元格（${hit.row + 1}行${hit.column + 1}列）` : '冻结至活动单元格', commandId: 'sheet.command.freeze-selection', icon: hit.kind === 'row' ? 'FreezeRowIcon' : hit.kind === 'column' ? 'FreezeColumnIcon' : 'FreezeToSelectedIcon', params: hit.kind === 'row' ? { sheetId: options.sheetId, axis: 'row', index: hit.row } : hit.kind === 'column' ? { sheetId: options.sheetId, axis: 'column', index: hit.column } : undefined },
+      ...(hit.kind === 'column' ? [] : [{ id: 'freeze-first-row', label: '冻结首行', commandId: 'sheet.command.freeze-first-row', icon: 'FreezeRowIcon' }]),
+      ...(hit.kind === 'row' ? [] : [{ id: 'freeze-first-column', label: '冻结首列', commandId: 'sheet.command.freeze-first-column', icon: 'FreezeColumnIcon' }]),
+      { id: 'unfreeze', label: '取消冻结', commandId: 'sheet.command.unfreeze', icon: 'CancelFreezeIcon', disabled: !options.frozen },
+    ] },
   ]
+  const range = hit.kind === 'row' ? `A${hit.row + 1}:${columnLabel(16383)}${hit.row + 1}`
+    : hit.kind === 'column' ? `${columnLabel(hit.column)}1:${columnLabel(hit.column)}1048576`
+      : hit.kind === 'cell' ? hit.key : undefined
   const protect: SheetContextMenuItem = {
-    id: 'protect-range', label: '保护范围', commandId: 'sheet.operation.open-range-protection',
-    params: hit.kind === 'row' ? { sheetId: options.sheetId, range: `A${hit.row + 1}:${columnLabel(16383)}${hit.row + 1}` }
-      : hit.kind === 'column' ? { sheetId: options.sheetId, range: `${columnLabel(hit.column)}1:${columnLabel(hit.column)}1048576` }
-        : hit.kind === 'cell' ? { sheetId: options.sheetId, range: hit.key } : { sheetId: options.sheetId },
-    separatorBefore: true,
+    id: 'protect-range', label: '保护行列', commandId: '', icon: 'ProtectIcon', children: [
+      { id: 'protect-range-add', label: '新增保护范围', commandId: 'sheet.operation.open-range-protection', icon: 'LockIcon', params: { sheetId: options.sheetId, ...(range ? { range } : {}), mode: 'add' } },
+      { id: 'protect-range-view', label: '查看所有保护范围', commandId: 'sheet.operation.open-range-protection', icon: 'EyeIcon', params: { sheetId: options.sheetId, ...(range ? { range } : {}) } },
+    ],
   }
   const rowTarget = targetParams(hit, options.sheetId, 'row')
   const columnTarget = targetParams(hit, options.sheetId, 'column')
 
   if (hit.kind === 'row') return [
-    { id: 'insert-row-above', label: '在上方插入行', commandId: 'sheet.command.insert-row', params: rowTarget },
-    { id: 'insert-row-below', label: '在下方插入行', commandId: 'sheet.command.insert-row', params: targetParams(hit, options.sheetId, 'row', 1) },
-    { id: 'delete-row', label: '删除行', commandId: 'sheet.command.delete-row', params: rowTarget, disabled: !options.canDeleteRow },
-    { id: 'hide-row', label: '隐藏行', commandId: 'sheet.command.hide-row', params: rowTarget, separatorBefore: true },
-    { id: 'show-hidden-rows', label: '显示隐藏行', commandId: 'sheet.command.show-hidden-rows', params: { sheetId: options.sheetId }, disabled: !options.hasHiddenRows },
-    { id: 'auto-fit-row', label: '自动调整行高', commandId: 'sheet.command.auto-fit-row', params: rowTarget },
+    ...clipboard,
+    { id: 'insert-row-above', label: '在上方插入 1 行', commandId: 'sheet.command.insert-row', icon: 'InsertRowAboveDoubleIcon', params: rowTarget, separatorBefore: true },
+    { id: 'insert-row-below', label: '在下方插入 1 行', commandId: 'sheet.command.insert-row', icon: 'InsertRowBelowDoubleIcon', params: targetParams(hit, options.sheetId, 'row', 1) },
+    { id: 'delete-row', label: '删除选中行', commandId: 'sheet.command.delete-row', icon: 'DeleteRowDoubleIcon', params: rowTarget, disabled: !options.canDeleteRow },
+    { id: 'hide-row', label: '隐藏选中行', commandId: 'sheet.command.hide-row', icon: 'HideDoubleIcon', params: rowTarget },
+    { id: 'show-hidden-rows', label: '显示隐藏行', commandId: 'sheet.command.show-hidden-rows', icon: 'EyeIcon', params: { sheetId: options.sheetId }, disabled: !options.hasHiddenRows },
+    { id: 'row-height', label: '行高', commandId: 'sheet.command.set-row-height', icon: 'AdjustHeightDoubleIcon', params: rowTarget },
+    { id: 'auto-fit-row', label: '适合数据', commandId: 'sheet.command.auto-fit-row', icon: 'AutoHeightDoubleIcon', params: rowTarget },
     ...freeze,
     protect,
   ]
   if (hit.kind === 'column') return [
-    { id: 'insert-column-left', label: '在左侧插入列', commandId: 'sheet.command.insert-column', params: columnTarget },
-    { id: 'insert-column-right', label: '在右侧插入列', commandId: 'sheet.command.insert-column', params: targetParams(hit, options.sheetId, 'column', 1) },
-    { id: 'delete-column', label: '删除列', commandId: 'sheet.command.delete-column', params: columnTarget, disabled: !options.canDeleteColumn },
-    { id: 'hide-column', label: '隐藏列', commandId: 'sheet.command.hide-column', params: columnTarget, separatorBefore: true },
-    { id: 'show-hidden-columns', label: '显示隐藏列', commandId: 'sheet.command.show-hidden-columns', params: { sheetId: options.sheetId }, disabled: !options.hasHiddenColumns },
-    { id: 'auto-fit-column', label: '自动调整列宽', commandId: 'sheet.command.auto-fit-column', params: columnTarget },
+    ...clipboard,
+    { id: 'insert-column-left', label: '在左侧插入 1 列', commandId: 'sheet.command.insert-column', icon: 'LeftInsertColumnDoubleIcon', params: columnTarget, separatorBefore: true },
+    { id: 'insert-column-right', label: '在右侧插入 1 列', commandId: 'sheet.command.insert-column', icon: 'RightInsertColumnDoubleIcon', params: targetParams(hit, options.sheetId, 'column', 1) },
+    { id: 'hide-column', label: '隐藏选中列', commandId: 'sheet.command.hide-column', icon: 'HideDoubleIcon', params: columnTarget },
+    { id: 'show-hidden-columns', label: '显示隐藏列', commandId: 'sheet.command.show-hidden-columns', icon: 'EyeIcon', params: { sheetId: options.sheetId }, disabled: !options.hasHiddenColumns },
+    { id: 'delete-column', label: '删除选中列', commandId: 'sheet.command.delete-column', icon: 'DeleteColumnDoubleIcon', params: columnTarget, disabled: !options.canDeleteColumn },
+    { id: 'column-width', label: '列宽', commandId: 'sheet.command.set-worksheet-col-width', icon: 'AdjustWidthDoubleIcon', params: columnTarget },
+    { id: 'auto-fit-column', label: '适合数据', commandId: 'sheet.command.auto-fit-column', icon: 'AutoWidthDoubleIcon', params: columnTarget },
     ...freeze,
     protect,
   ]
@@ -83,10 +107,18 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
   ]
   return [
     ...clipboard,
-    { id: 'insert-row', label: '在此处插入行', commandId: 'sheet.command.insert-row', params: rowTarget, separatorBefore: true },
-    { id: 'insert-column', label: '在此处插入列', commandId: 'sheet.command.insert-column', params: columnTarget },
-    { id: 'delete-row', label: '删除此行', commandId: 'sheet.command.delete-row', params: rowTarget, disabled: !options.canDeleteRow },
-    { id: 'delete-column', label: '删除此列', commandId: 'sheet.command.delete-column', params: columnTarget, disabled: !options.canDeleteColumn },
+    {
+      id: 'insert-cells', label: '插入', commandId: '', icon: 'InsertDoubleIcon', separatorBefore: true, children: [
+        { id: 'insert-row', label: '在上方插入行', commandId: 'sheet.command.insert-row', icon: 'InsertRowAboveDoubleIcon', params: rowTarget },
+        { id: 'insert-column', label: '在左侧插入列', commandId: 'sheet.command.insert-column', icon: 'LeftInsertColumnDoubleIcon', params: columnTarget },
+      ],
+    },
+    {
+      id: 'delete-cells', label: '删除', commandId: '', icon: 'ReduceDoubleIcon', children: [
+        { id: 'delete-column', label: '删除选中列', commandId: 'sheet.command.delete-column', icon: 'DeleteColumnDoubleIcon', params: columnTarget, disabled: !options.canDeleteColumn },
+        { id: 'delete-row', label: '删除选中行', commandId: 'sheet.command.delete-row', icon: 'DeleteRowDoubleIcon', params: rowTarget, disabled: !options.canDeleteRow },
+      ],
+    },
     ...freeze,
     protect,
   ]

@@ -80,7 +80,7 @@ export function resolveSectionHeaderFooter(model: DocumentModel, sectionId: stri
 export function sectionIdForBlock(model: DocumentModel, blockId: string): string {
   let sectionId = DEFAULT_DOCUMENT_SECTION_ID
   for (const block of model.blocks) {
-    if (block.id === blockId) return sectionId
+    if (block.id === blockId) return block.type === 'sectionBreak' ? block.id : sectionId
     if (block.type === 'sectionBreak') sectionId = block.id
   }
   return sectionId

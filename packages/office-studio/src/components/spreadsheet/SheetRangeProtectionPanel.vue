@@ -7,7 +7,7 @@ import type { SheetProtectionEditState, SheetProtectionViewState, SheetRangeProt
 import { formatProtectionRange, formatProtectionUserIds } from '../../features/sheet-protection/range-protection'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
-const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string }>()
+const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; startNew?: boolean }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
@@ -31,7 +31,10 @@ const selectedRule = computed(() => rules.value.find(rule => rule.id === selecte
 const isOwner = computed(() => !selectedRule.value || selectedRule.value.ownerUserId === props.studio.currentUserId)
 
 watch(() => [props.open, props.workbookId, props.sheetId] as const, ([open]) => {
-  if (open) loadRules()
+  if (open) {
+    loadRules()
+    if (props.startNew) beginNewRule()
+  }
 }, { immediate: true })
 
 function sheet() {

@@ -2,6 +2,7 @@ import type {
   SlicerModel,
   SlicerTimelineRange,
   SlicerType,
+  TimelineLevel,
   WorkbookModel,
 } from '../../domain/model'
 import { getPivotSourceFields, setPivotLabelFilter } from '../pivot/services/pivot-engine'
@@ -15,8 +16,23 @@ export interface SlicerCreateInput {
   sourceFieldId: string
   type: SlicerType
   caption?: string
+  name?: string
+  style?: string
+  columnCount?: number
+  rowHeight?: number
+  showCaption?: boolean
+  lockedPosition?: boolean
+  level?: TimelineLevel
+  selectionLevel?: TimelineLevel
+  showHeader?: boolean
+  showSelectionLabel?: boolean
+  showTimeLevel?: boolean
+  showHorizontalScrollbar?: boolean
+  scrollPosition?: number
+  startItem?: number
   position?: { row: number; column: number }
   size?: { rows: number; columns: number }
+  layout?: { left: number; top: number; width: number; height: number }
 }
 
 export function createSlicer(workbook: WorkbookModel, input: SlicerCreateInput): SlicerModel {
@@ -48,15 +64,85 @@ export function createSlicer(workbook: WorkbookModel, input: SlicerCreateInput):
     sourceFieldId: sourceField.fieldId,
     type: input.type,
     caption: input.caption?.trim() || sourceField.fieldName,
+    name: input.name?.trim() || sourceField.fieldName,
     position: { ...position },
     size: { ...size },
+    layout: input.layout ? { ...input.layout } : { left: 200, top: 200, width: input.type === 'timeline' ? 420 : 220, height: input.type === 'timeline' ? 140 : 280 },
+    style: input.style || (input.type === 'timeline' ? 'TimelineStyleLight1' : 'SlicerStyleLight1'),
+    startItem: input.startItem ?? 0,
+    columnCount: input.columnCount ?? 1,
+    rowHeight: input.rowHeight ?? 24,
+    showCaption: input.showCaption ?? true,
+    lockedPosition: input.lockedPosition ?? false,
+    ...(input.type === 'timeline' ? {
+      level: input.level ?? 'month',
+      selectionLevel: input.selectionLevel ?? 'month',
+      showHeader: input.showHeader ?? true,
+      showSelectionLabel: input.showSelectionLabel ?? true,
+      showTimeLevel: input.showTimeLevel ?? true,
+      showHorizontalScrollbar: input.showHorizontalScrollbar ?? true,
+      scrollPosition: input.scrollPosition ?? 0,
+    } : {}),
     revision: 0,
   }
+  validateSlicerPresentation(model)
   if (model.type === 'timeline' && getSlicerItems(workbook, model).length === 0) throw new Error('Timeline requires a date field with at least one valid date')
   workbook.slicers ??= []
   if (workbook.slicers.some((candidate) => candidate.id === model.id)) throw new Error(`Slicer already exists: ${model.id}`)
   workbook.slicers.push(model)
   return model
+}
+
+export type SlicerPresentationPatch = Partial<Pick<SlicerModel,
+  | 'name' | 'caption' | 'style' | 'startItem' | 'columnCount' | 'rowHeight' | 'showCaption' | 'lockedPosition'
+  | 'level' | 'selectionLevel' | 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar' | 'scrollPosition'
+>> & Partial<Pick<SlicerModel, 'position' | 'size' | 'layout'>>
+
+export function updateSlicerPresentation(slicer: SlicerModel, patch: SlicerPresentationPatch): void {
+  validateSlicerPresentation(patch)
+  const allowed = new Set([
+    'name', 'caption', 'style', 'startItem', 'columnCount', 'rowHeight', 'showCaption', 'lockedPosition',
+    'level', 'selectionLevel', 'showHeader', 'showSelectionLabel', 'showTimeLevel', 'showHorizontalScrollbar', 'scrollPosition',
+    'position', 'size', 'layout',
+  ])
+  if (Object.keys(patch).some((key) => !allowed.has(key))) throw new TypeError('Unknown slicer presentation property')
+  Object.assign(slicer, {
+    ...patch,
+    ...(patch.position ? { position: { ...patch.position } } : {}),
+    ...(patch.size ? { size: { ...patch.size } } : {}),
+    ...(patch.layout ? { layout: { ...patch.layout } } : {}),
+  })
+  slicer.revision += 1
+}
+
+function validateSlicerPresentation(patch: SlicerPresentationPatch): void {
+  if (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name.trim())) throw new TypeError('Slicer name must not be empty')
+  if (patch.caption !== undefined && (typeof patch.caption !== 'string' || !patch.caption.trim() || patch.caption.length > 32767)) throw new TypeError('Slicer caption must contain between 1 and 32767 characters')
+  if (patch.style !== undefined && (typeof patch.style !== 'string' || !patch.style.trim() || patch.style.length > 255)) throw new TypeError('Slicer style must contain between 1 and 255 characters')
+  if (patch.columnCount !== undefined && (!Number.isInteger(patch.columnCount) || patch.columnCount < 1 || patch.columnCount > 20000)) {
+    throw new RangeError('Slicer column count must be an integer between 1 and 20000')
+  }
+  // This model stores CSS pixels. Upstream resources store button height as unsigned EMU.
+  if (patch.rowHeight !== undefined && (!Number.isFinite(patch.rowHeight) || patch.rowHeight <= 0 || patch.rowHeight > 4294967295 / 9525)) throw new RangeError('Slicer row height is outside the supported range')
+  if (patch.startItem !== undefined && (!Number.isInteger(patch.startItem) || patch.startItem < 0 || patch.startItem > 4294967295)) throw new RangeError('Slicer start item must be an unsigned 32-bit integer')
+  if (patch.scrollPosition !== undefined && !Number.isFinite(patch.scrollPosition)) throw new RangeError('Timeline scroll position must be finite')
+  if (patch.position !== undefined) {
+    validateNonNegative(patch.position.row, 'slicer row')
+    validateNonNegative(patch.position.column, 'slicer column')
+  }
+  if (patch.size !== undefined) {
+    validatePositive(patch.size.rows, 'slicer rows')
+    validatePositive(patch.size.columns, 'slicer columns')
+  }
+  if (patch.layout !== undefined) {
+    for (const key of ['left', 'top'] as const) if (!Number.isFinite(patch.layout[key])) throw new RangeError(`Slicer ${key} must be finite`)
+    for (const key of ['width', 'height'] as const) if (!Number.isFinite(patch.layout[key]) || patch.layout[key] <= 0) throw new RangeError(`Slicer ${key} must be positive and finite`)
+  }
+  if (patch.level !== undefined && !['day', 'month', 'quarter', 'year'].includes(patch.level)) throw new TypeError('Invalid timeline level')
+  if (patch.selectionLevel !== undefined && !['day', 'month', 'quarter', 'year'].includes(patch.selectionLevel)) throw new TypeError('Invalid timeline selection level')
+  for (const key of ['showCaption', 'lockedPosition', 'showHeader', 'showSelectionLabel', 'showTimeLevel', 'showHorizontalScrollbar'] as const) {
+    if (patch[key] !== undefined && typeof patch[key] !== 'boolean') throw new TypeError(`Slicer ${key} must be a boolean`)
+  }
 }
 
 export function setSlicerItems(workbook: WorkbookModel, slicer: SlicerModel, selectedItems: string[] | null): void {

@@ -6,6 +6,8 @@ import { createServer } from 'vite'
 let server
 let api
 let panel
+let renderer
+let layoutApi
 
 beforeAll(async () => {
   server = await createServer({
@@ -17,6 +19,8 @@ beforeAll(async () => {
   })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   panel = await server.ssrLoadModule('/packages/office-studio/src/features/slicer/slicer-panel-state.ts')
+  renderer = await server.ssrLoadModule('/packages/office-studio/src/features/slicer/slicer-renderer.ts')
+  layoutApi = await server.ssrLoadModule('/packages/office-studio/src/rendering/spreadsheet/layout.ts')
 })
 
 afterAll(async () => { await server?.close() })
@@ -232,5 +236,74 @@ test('panel selection follows authoritative pivot state and rejects controls fro
     assert.deepEqual(boundField(studio, workbook).selectedItems, ['West'])
     assert.equal(panel.readSlicerPanelState(studio, foreignTarget).controls.length, 0)
     assert.throws(() => panel.readSlicerPanelState(studio, { ...target, sheetId: 'gone' }), (error) => error.code === 'WORKSHEET_NOT_FOUND')
+  } finally { studio.dispose() }
+})
+
+test('slicer insertion exposes only supported controls and presentation settings use undoable commands', async () => {
+  const { studio, workbook, output, pivot, target } = await setup([
+    ['Region', 'Date', 'Amount'], ['East', '2026-01-02', 100], ['West', '2026-02-03', 80],
+  ], { labels: [0, 1] })
+  try {
+    const before = panel.readSlicerPanelState(studio, target)
+    assert.deepEqual(before.pivots[0].fields.map(({ controls }) => controls), [['slicer'], ['slicer', 'timeline'], ['slicer']])
+    await assert.rejects(() => panel.insertPanelSlicer(studio, target, {
+      pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'timeline',
+    }), (error) => error.code === 'UNSUPPORTED_SOURCE_FIELD')
+
+    const slicerId = await panel.insertPanelSlicer(studio, target, {
+      pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'slicer',
+    })
+    await panel.applyPanelSlicerPresentation(studio, target, slicerId, {
+      caption: 'Region filter', columnCount: 2, rowHeight: 30, showCaption: false,
+      lockedPosition: true, style: 'SlicerStyleLight2', layout: { left: 240, top: 260, width: 280, height: 320 },
+    })
+    assert.deepEqual(
+      (({ caption, columnCount, rowHeight, showCaption, lockedPosition, style, layout }) => ({ caption, columnCount, rowHeight, showCaption, lockedPosition, style, layout }))(output.getSlicer(slicerId).getInfo()),
+      { caption: 'Region filter', columnCount: 2, rowHeight: 30, showCaption: false, lockedPosition: true, style: 'SlicerStyleLight2', layout: { left: 240, top: 260, width: 280, height: 320 } },
+    )
+    workbook.undo()
+    assert.equal(output.getSlicer(slicerId).getInfo().columnCount, 1)
+    assert.equal(output.getSlicer(slicerId).getInfo().caption, 'Region')
+    assert.deepEqual(output.getSlicer(slicerId).getInfo().layout, { left: 200, top: 200, width: 220, height: 280 })
+    workbook.redo()
+    assert.equal(output.getSlicer(slicerId).getInfo().style, 'SlicerStyleLight2')
+
+    const timelineId = await panel.insertPanelSlicer(studio, target, {
+      pivotTableId: pivot.getPivotTableId(), sourceFieldId: '1', type: 'timeline',
+    })
+    await panel.applyPanelSlicerPresentation(studio, target, timelineId, {
+      level: 'year', selectionLevel: 'quarter', showHeader: false,
+      showSelectionLabel: false, showTimeLevel: true, showHorizontalScrollbar: false,
+      style: 'TimelineStyleDark1',
+    })
+    assert.deepEqual(
+      (({ level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, style }) => ({ level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, style }))(output.getSlicer(timelineId).getInfo()),
+      { level: 'year', selectionLevel: 'quarter', showHeader: false, showSelectionLabel: false, showTimeLevel: true, showHorizontalScrollbar: false, style: 'TimelineStyleDark1' },
+    )
+  } finally { studio.dispose() }
+})
+
+test('slicer canvas uses Pro pixel defaults, continuous timeline periods, and matching hit targets', async () => {
+  const { studio, workbook, output, pivot } = await setup([
+    ['Region', 'Date'], ['East', '2026-01-15'], ['West', '2026-03-02'],
+  ], { labels: [0, 1] })
+  try {
+    const slicer = await output.insertSlicer({ pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'slicer' })
+    const timeline = await output.insertSlicer({ pivotTableId: pivot.getPivotTableId(), sourceFieldId: '1', type: 'timeline' })
+    assert.deepEqual(slicer.getInfo().layout, { left: 200, top: 200, width: 220, height: 280 })
+    assert.deepEqual(timeline.getInfo().layout, { left: 200, top: 200, width: 420, height: 140 })
+    const periods = renderer.timelinePeriods(['2026-01-15', '2026-03-02'], 'month', false)
+    assert.equal(periods.length, 3)
+    assert.deepEqual(periods.map(({ label }) => label), ['1月', '2月', '3月'])
+    const sheetView = api.toExcelWorkbookView(studio.getWorkbookModel(workbook.getId())).sheets.find(sheet => sheet.id === output.getSheetId())
+    const geometry = new layoutApi.SpreadsheetGeometry(sheetView)
+    const controls = [slicer, timeline].map(control => ({ model: control.getInfo(), items: control.getItems() }))
+    const layouts = renderer.slicerObjectLayouts(geometry, controls, false)
+    assert.deepEqual(layouts.map(({ rect }) => rect), [
+      { x: 200, y: 200, width: 220, height: 280 },
+      { x: 200, y: 200, width: 420, height: 140 },
+    ])
+    assert.equal(renderer.hitTestSlicerObjects(layouts, layouts[0].clear.x + 2, layouts[0].clear.y + 2).type, 'clear')
+    assert.equal(renderer.slicerPalette('SlicerStyleLight1', false).selected, '#3F83F8')
   } finally { studio.dispose() }
 })

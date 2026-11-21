@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Checkbox, Input, Modal, Select } from 'antdv-next'
+import { Button, Checkbox, Input, Select } from 'antdv-next'
+import { ChevronDown, ChevronUp, Trash2, X } from 'lucide-vue-next'
 import { FOffice, type DataValidationRule } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
-import type { SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationType } from '../../domain/model'
+import type { CellRange, SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationRenderMode, SheetDataValidationType } from '../../domain/model'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import { createSheetDataValidationRule } from '../../features/sheet-validation/validation-engine.ts'
 
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [] }>()
@@ -19,6 +21,11 @@ const operators = computed<Array<{ label: string; value: SheetDataValidationOper
 const errorStyles = computed<Array<{ label: string; value: SheetDataValidationErrorStyle }>>(() =>
   (['stop', 'warning', 'info'] as const).map(value => ({ value, label: t(`sheet.validation.errorStyle.${value}`, value) })))
 const rule = ref<DataValidationRule | null>(null)
+const rulesRevision = ref(0)
+const selectedRuleId = ref<string>()
+const detailOpen = ref(false)
+const advancedOptionsOpen = ref(false)
+const rangeValue = ref('')
 const type = ref<SheetDataValidationType>('whole')
 const operator = ref<SheetDataValidationOperator>('between')
 const formula1 = ref('1')
@@ -26,6 +33,7 @@ const formula2 = ref('10')
 const listValues = ref('')
 const allowBlank = ref(true)
 const showDropDown = ref(true)
+const ruleRenderMode = ref<SheetDataValidationRenderMode>('arrow')
 const showErrorMessage = ref(true)
 const errorStyle = ref<SheetDataValidationErrorStyle>('stop')
 const errorTitle = ref(t('sheet.validation.error-default', '数据验证未通过'))
@@ -38,30 +46,63 @@ const message = ref('')
 const needsFormula = computed(() => type.value !== 'checkbox')
 const needsSecondFormula = computed(() => operator.value === 'between' || operator.value === 'notBetween')
 const isList = computed(() => type.value === 'list' || type.value === 'listMultiple')
-const title = computed(() => t(rule.value ? 'sheet.validation.edit-title' : 'sheet.validation.title', rule.value ? '编辑数据验证' : '数据验证'))
+const title = computed(() => detailOpen.value
+  ? t(rule.value ? 'sheet.validation.edit-title' : 'sheet.validation.title', rule.value ? '编辑数据验证' : '数据验证')
+  : t('sheet.validation.title', '数据验证'))
+const sheet = computed(() => FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId) ?? null)
+const rules = computed(() => {
+  rulesRevision.value
+  return sheet.value?.getDataValidations() ?? []
+})
 
-watch(() => [props.open, props.sourceRange, props.sheetId] as const, ([open]) => {
+watch(() => [props.open, props.sourceRange, props.sheetId, props.initialType] as const, ([open]) => {
   if (!open) return
-  loadRule()
+  message.value = ''
+  selectedRuleId.value = undefined
+  detailOpen.value = Boolean(props.initialType)
+  if (props.initialType) {
+    loadRule(null, props.initialType)
+    return
+  }
+  const matchingRule = sheet.value?.getDataValidation(props.sourceRange) ?? null
+  selectedRuleId.value = matchingRule?.id
+  if (matchingRule) loadRule(matchingRule)
+  else loadRule(null)
 }, { immediate: true })
 
-function loadRule() {
+function loadRule(current: DataValidationRule | null, initialType?: SheetDataValidationType) {
+  rule.value = current
+  rangeValue.value = current ? rangeLabel(current) : props.sourceRange
+  type.value = current?.type ?? initialType ?? 'whole'
+  operator.value = current?.operator ?? 'between'
+  formula1.value = current?.formula1 ?? '1'
+  formula2.value = current?.formula2 ?? '10'
+  listValues.value = current?.formula1?.replace(/^"|"$/g, '').replace(/""/g, '"') ?? ''
+  allowBlank.value = current?.allowBlank ?? true
+  showDropDown.value = current?.showDropDown ?? true
+  ruleRenderMode.value = current?.renderMode ?? 'arrow'
+  showErrorMessage.value = current?.showErrorMessage ?? true
+  errorStyle.value = current?.errorStyle ?? 'stop'
+  errorTitle.value = current?.errorTitle ?? t('sheet.validation.error-default', '数据验证未通过')
+  error.value = current?.error ?? ''
+  showInputMessage.value = current?.showInputMessage ?? false
+  promptTitle.value = current?.promptTitle ?? ''
+  prompt.value = current?.prompt ?? ''
+  advancedOptionsOpen.value = false
+}
+
+function openNewRule(initialType?: SheetDataValidationType) {
+  selectedRuleId.value = undefined
+  detailOpen.value = true
   message.value = ''
-  rule.value = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)?.getDataValidation(props.sourceRange) ?? null
-  type.value = rule.value?.type ?? props.initialType ?? 'whole'
-  operator.value = rule.value?.operator ?? 'between'
-  formula1.value = rule.value?.formula1 ?? '1'
-  formula2.value = rule.value?.formula2 ?? '10'
-  listValues.value = rule.value?.formula1?.replace(/^"|"$/g, '').replace(/""/g, '"') ?? ''
-  allowBlank.value = rule.value?.allowBlank ?? true
-  showDropDown.value = rule.value?.showDropDown ?? true
-  showErrorMessage.value = rule.value?.showErrorMessage ?? true
-  errorStyle.value = rule.value?.errorStyle ?? 'stop'
-  errorTitle.value = rule.value?.errorTitle ?? t('sheet.validation.error-default', '数据验证未通过')
-  error.value = rule.value?.error ?? ''
-  showInputMessage.value = rule.value?.showInputMessage ?? false
-  promptTitle.value = rule.value?.promptTitle ?? ''
-  prompt.value = rule.value?.prompt ?? ''
+  loadRule(null, initialType)
+}
+
+function editRule(current: DataValidationRule) {
+  selectedRuleId.value = current.id
+  detailOpen.value = true
+  message.value = ''
+  loadRule(current)
 }
 
 function listFormula(): string {
@@ -75,11 +116,12 @@ function listFormula(): string {
 
 function apply(): void {
   message.value = ''
-  const sheet = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
-  if (!sheet) { message.value = t('sheet.validation.sheet-closed', '工作表已关闭，请重新打开数据验证。'); return }
+  const activeSheet = sheet.value
+  if (!activeSheet) { message.value = t('sheet.validation.sheet-closed', '工作表已关闭，请重新打开数据验证。'); return }
   busy.value = true
   try {
     const nextFormula1 = isList.value ? listFormula() : formula1.value.trim()
+    const ranges = parseRanges(rangeValue.value)
     const next = {
       ...(rule.value ? { id: rule.value.id } : {}), type: type.value,
       ...(type.value !== 'checkbox' ? { formula1: nextFormula1 } : {}),
@@ -88,36 +130,150 @@ function apply(): void {
       allowBlank: allowBlank.value, showDropDown: showDropDown.value, showErrorMessage: showErrorMessage.value,
       errorStyle: errorStyle.value, errorTitle: errorTitle.value, error: error.value,
       showInputMessage: showInputMessage.value, promptTitle: promptTitle.value, prompt: prompt.value,
-      renderMode: 'arrow' as const,
+      renderMode: ruleRenderMode.value,
     }
-    sheet.setDataValidation(props.sourceRange, next)
-    rule.value = sheet.getDataValidation(props.sourceRange)
+    const updatedRule = createSheetDataValidationRule({ ...next, ...(rule.value ? { id: rule.value.id } : {}) }, ranges)
+    props.studio.executeCommandSync('sheet.command.replace-data-validation', {
+      unitId: props.workbookId,
+      sheetId: props.sheetId,
+      rule: updatedRule,
+    })
+    const savedRule = activeSheet.getDataValidations().find(candidate => candidate.id === updatedRule.id) ?? null
+    rulesRevision.value += 1
     emit('applied')
-    emit('update:open', false)
+    if (savedRule) {
+      selectedRuleId.value = savedRule.id
+      loadRule(savedRule)
+      detailOpen.value = false
+    }
   } catch (reason) {
     message.value = reason instanceof Error ? reason.message : t('sheet.validation.save-failed', '数据验证规则未能保存。')
   } finally { busy.value = false }
 }
 
-function clear(): void {
-  const sheet = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
-  if (!sheet) { message.value = t('sheet.validation.clear-sheet-closed', '工作表已关闭。'); return }
+function clearRule(current: DataValidationRule): void {
+  const activeSheet = sheet.value
+  if (!activeSheet) { message.value = t('sheet.validation.clear-sheet-closed', '工作表已关闭。'); return }
   busy.value = true
+  message.value = ''
   try {
-    sheet.setDataValidation(props.sourceRange, null)
-    rule.value = null
+    props.studio.executeCommandSync('sheet.command.remove-data-validation', {
+      unitId: props.workbookId,
+      sheetId: props.sheetId,
+      ruleId: current.id,
+    })
+    rulesRevision.value += 1
+    if (selectedRuleId.value === current.id) {
+      selectedRuleId.value = undefined
+      detailOpen.value = false
+    }
     emit('applied')
-    emit('update:open', false)
   } catch (reason) {
     message.value = reason instanceof Error ? reason.message : t('sheet.validation.clear-failed', '无法清除当前区域的数据验证。')
   } finally { busy.value = false }
 }
+
+function clearAll(): void {
+  const currentRules = rules.value
+  if (!currentRules.length) return
+  clearRuleRanges(currentRules)
+}
+
+function clearRuleRanges(currentRules: DataValidationRule[]): void {
+  busy.value = true
+  message.value = ''
+  try {
+    props.studio.executeCommandSync('sheet.command.clear-data-validation', {
+      unitId: props.workbookId,
+      sheetId: props.sheetId,
+      ranges: currentRules.flatMap(current => current.ranges),
+    })
+    rulesRevision.value += 1
+    selectedRuleId.value = undefined
+    detailOpen.value = false
+    emit('applied')
+  } catch (reason) {
+    message.value = reason instanceof Error ? reason.message : t('sheet.validation.clear-failed', '无法清除当前区域的数据验证。')
+  } finally { busy.value = false }
+}
+
+function rangeLabel(current: DataValidationRule): string {
+  return current.ranges.map(range => `${columnLabel(range.startCol)}${range.startRow + 1}${range.startRow === range.endRow && range.startCol === range.endCol ? '' : `:${columnLabel(range.endCol)}${range.endRow + 1}`}`).join(', ')
+}
+
+function ruleLabel(current: DataValidationRule): string {
+  const typeLabel = types.value.find(option => option.value === current.type)?.label ?? current.type
+  if (current.type === 'list' || current.type === 'listMultiple' || current.type === 'checkbox') return typeLabel
+  if (current.type === 'custom') return `${typeLabel} ${current.formula1 ?? ''}`.trim()
+  if (!current.operator) return `${typeLabel} ${t('sheet.validation.legal', '有效值')}`
+  const operatorLabel = operators.value.find(option => option.value === current.operator)?.label ?? current.operator
+  const formulas = [current.formula1, needsSecondFormulaFor(current.operator) ? current.formula2 : undefined].filter(Boolean)
+  return `${typeLabel} ${operatorLabel} ${formulas.join(' ')}`.trim()
+}
+
+function needsSecondFormulaFor(value?: SheetDataValidationOperator): boolean {
+  return value === 'between' || value === 'notBetween'
+}
+
+function parseRanges(value: string): CellRange[] {
+  const ranges = value.split(/[;,]/).map(token => token.trim()).filter(Boolean).map(token => {
+    const match = /^\$?([A-Z]{1,3})\$?([1-9]\d*)(?::\$?([A-Z]{1,3})\$?([1-9]\d*))?$/i.exec(token)
+    if (!match) throw new TypeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1 或 A1:B4。'))
+    const startCol = parseColumn(match[1]!)
+    const startRow = Number(match[2]) - 1
+    const endCol = match[3] ? parseColumn(match[3]) : startCol
+    const endRow = match[4] ? Number(match[4]) - 1 : startRow
+    if (startCol > endCol || startRow > endRow || endCol > 16_383 || endRow > 1_048_575) {
+      throw new RangeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1 或 A1:B4。'))
+    }
+    return { startRow, startCol, endRow, endCol }
+  })
+  if (!ranges.length) throw new TypeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1 或 A1:B4。'))
+  return ranges
+}
+
+function parseColumn(value: string): number {
+  return [...value.toUpperCase()].reduce((index, character) => index * 26 + character.charCodeAt(0) - 64, 0) - 1
+}
+
+function columnLabel(index: number): string {
+  let current = index + 1
+  let label = ''
+  while (current > 0) {
+    const remainder = (current - 1) % 26
+    label = String.fromCharCode(65 + remainder) + label
+    current = Math.floor((current - 1) / 26)
+  }
+  return label
+}
 </script>
 
 <template>
-  <Modal :open="open" :title="title" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.cancel', '取消')" :confirm-loading="busy" :width="520" @ok="apply" @cancel="emit('update:open', false)">
-    <div class="validation-form">
-      <label>{{ t('sheet.validation.range', '应用区域') }}<Input :value="sourceRange" readonly :aria-label="t('sheet.validation.range-aria', '数据验证应用区域')" /></label>
+  <aside v-if="open" class="validation-sidebar" aria-label="数据验证">
+    <header class="validation-header">
+      <strong>{{ title }}</strong>
+      <div class="validation-header-actions">
+        <Button v-if="!detailOpen" type="primary" size="small" @click="openNewRule">{{ t('sheet.validation.add', '添加规则') }}</Button>
+        <Button type="text" size="small" :aria-label="t('common.close', '关闭')" @click="emit('update:open', false)"><X :size="16" /></Button>
+      </div>
+    </header>
+    <div v-if="!detailOpen" class="validation-body validation-list" aria-label="数据验证规则">
+      <p v-if="!rules.length" class="validation-empty">{{ t('sheet.validation.empty', '此工作表尚无数据验证规则。') }}</p>
+      <article v-for="item in rules" :key="item.id" class="validation-rule" :class="{ 'is-selected': item.id === selectedRuleId }">
+        <button type="button" class="validation-rule-main" @click="editRule(item)">
+          <strong>{{ ruleLabel(item) }}</strong>
+          <span>{{ rangeLabel(item) }}</span>
+        </button>
+        <Button class="validation-rule-delete" type="text" danger size="small" :disabled="busy" :aria-label="`${t('sheet.validation.remove-rule', '删除规则')} ${rangeLabel(item)}`" @click.stop="clearRule(item)"><Trash2 :size="14" /></Button>
+      </article>
+      <Button v-if="rules.length" danger type="text" :disabled="busy" @click="clearAll">{{ t('sheet.validation.remove-all', '清除全部规则') }}</Button>
+      <p v-if="message" class="validation-error" role="alert">{{ message }}</p>
+    </div>
+    <form v-else class="validation-body validation-form" @submit.prevent="apply">
+      <div class="validation-heading">
+        <Button type="text" size="small" @click="detailOpen = false">{{ t('common.back', '返回规则列表') }}</Button>
+      </div>
+      <label for="sheet-validation-range">{{ t('sheet.validation.range', '应用区域') }}<Input id="sheet-validation-range" v-model:value="rangeValue" :aria-label="t('sheet.validation.range-aria', '数据验证应用区域')" placeholder="A1:B4" /></label>
       <label for="sheet-validation-type">{{ t('sheet.validation.type', '验证类型') }}</label>
       <Select id="sheet-validation-type" v-model:value="type" :options="types" :aria-label="t('sheet.validation.type', '数据验证类型')" />
       <label v-if="needsFormula && !isList" for="sheet-validation-operator">{{ t('sheet.validation.condition', '条件') }}</label>
@@ -125,30 +281,66 @@ function clear(): void {
       <label v-if="isList">{{ t('sheet.validation.options', '选项') }}<Input v-model:value="listValues" :aria-label="t('sheet.validation.options-aria', '数据验证列表选项')" :placeholder="t('sheet.validation.prompt-range', '例如：高,中,低')" /></label>
       <label v-else-if="needsFormula">{{ t('sheet.validation.rule-value', '规则值') }}<Input v-model:value="formula1" :aria-label="t('sheet.validation.rule-value-aria', '数据验证规则值')" :placeholder="t('sheet.validation.rule-placeholder', '数值、日期、时间、长度或公式')" /></label>
       <label v-if="needsSecondFormula">{{ t('sheet.validation.second-rule', '第二个规则值') }}<Input v-model:value="formula2" :aria-label="t('sheet.validation.second-rule', '数据验证第二个规则值')" /></label>
-      <div class="validation-switches">
-        <Checkbox v-model:checked="allowBlank">{{ t('sheet.validation.allow-blank', '允许空白') }}</Checkbox>
-        <Checkbox v-if="isList" v-model:checked="showDropDown">{{ t('sheet.validation.show-dropdown', '显示下拉选项') }}</Checkbox>
-        <Checkbox v-model:checked="showInputMessage">{{ t('sheet.validation.show-input-prompt', '显示输入提示') }}</Checkbox>
-        <Checkbox v-model:checked="showErrorMessage">{{ t('sheet.validation.show-error', '输入无效时显示消息') }}</Checkbox>
-      </div>
-      <label v-if="showInputMessage">{{ t('sheet.validation.prompt-title', '提示标题') }}<Input v-model:value="promptTitle" :aria-label="t('sheet.validation.prompt-title', '数据验证提示标题')" /></label>
-      <label v-if="showInputMessage">{{ t('sheet.validation.input-prompt', '输入提示') }}<Input v-model:value="prompt" :aria-label="t('sheet.validation.input-prompt', '数据验证输入提示')" /></label>
-      <template v-if="showErrorMessage">
-        <label for="sheet-validation-error-style">{{ t('sheet.validation.invalid-action', '无效输入处理') }}</label>
-        <Select id="sheet-validation-error-style" v-model:value="errorStyle" :options="errorStyles" :aria-label="t('sheet.validation.invalid-action', '无效输入处理')" />
-        <label>{{ t('sheet.validation.error-title', '错误标题') }}<Input v-model:value="errorTitle" :aria-label="t('sheet.validation.error-title', '数据验证错误标题')" /></label>
-        <label>{{ t('sheet.validation.error-message', '错误消息') }}<Input v-model:value="error" :aria-label="t('sheet.validation.error-message', '数据验证错误消息')" /></label>
-      </template>
+      <Checkbox v-model:checked="allowBlank">{{ t('sheet.validation.allow-blank', '允许空白') }}</Checkbox>
+      <details class="validation-options" :open="advancedOptionsOpen" @toggle="advancedOptionsOpen = ($event.target as HTMLDetailsElement).open">
+        <summary>
+          {{ t('sheet.validation.options', '选项') }}
+          <ChevronUp v-if="advancedOptionsOpen" :size="14" />
+          <ChevronDown v-else :size="14" />
+        </summary>
+        <div class="validation-options-content">
+          <template v-if="isList">
+            <Checkbox v-model:checked="showDropDown">{{ t('sheet.validation.show-dropdown', '显示下拉选项') }}</Checkbox>
+            <label>{{ t('sheet.validation.display-mode', '显示方式') }}
+              <Select v-model:value="ruleRenderMode" :options="[
+                { value: 'custom', label: t('sheet.validation.renderMode.chip', '标签') },
+                { value: 'arrow', label: t('sheet.validation.renderMode.arrow', '箭头') },
+                { value: 'text', label: t('sheet.validation.renderMode.text', '文本') },
+              ]" />
+            </label>
+          </template>
+          <Checkbox v-model:checked="showInputMessage">{{ t('sheet.validation.show-input-prompt', '显示输入提示') }}</Checkbox>
+          <label v-if="showInputMessage">{{ t('sheet.validation.prompt-title', '提示标题') }}<Input v-model:value="promptTitle" :aria-label="t('sheet.validation.prompt-title', '数据验证提示标题')" /></label>
+          <label v-if="showInputMessage">{{ t('sheet.validation.input-prompt', '输入提示') }}<Input v-model:value="prompt" :aria-label="t('sheet.validation.input-prompt', '数据验证输入提示')" /></label>
+          <label for="sheet-validation-error-style">{{ t('sheet.validation.invalid-action', '无效输入处理') }}</label>
+          <Select id="sheet-validation-error-style" v-model:value="errorStyle" :options="errorStyles" :aria-label="t('sheet.validation.invalid-action', '无效输入处理')" />
+          <Checkbox v-model:checked="showErrorMessage">{{ t('sheet.validation.show-error', '输入无效时显示消息') }}</Checkbox>
+          <label v-if="showErrorMessage">{{ t('sheet.validation.error-title', '错误标题') }}<Input v-model:value="errorTitle" :aria-label="t('sheet.validation.error-title', '数据验证错误标题')" /></label>
+          <label v-if="showErrorMessage">{{ t('sheet.validation.error-message', '错误消息') }}<Input v-model:value="error" :aria-label="t('sheet.validation.error-message', '数据验证错误消息')" /></label>
+        </div>
+      </details>
       <p v-if="message" class="validation-error" role="alert">{{ message }}</p>
-      <Button v-if="rule" type="text" danger :disabled="busy" @click="clear">{{ t('sheet.validation.clear', '清除当前区域验证') }}</Button>
-    </div>
-  </Modal>
+      <div class="validation-actions">
+        <Button v-if="rule" danger :disabled="busy" @click="clearRule(rule)">{{ t('sheet.validation.clear', '清除规则') }}</Button>
+        <Button type="primary" :loading="busy" @click="apply">{{ t('common.apply', '应用') }}</Button>
+      </div>
+    </form>
+  </aside>
 </template>
 
 <style scoped>
-.validation-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.validation-sidebar { display: flex; flex: 0 0 312px; width: 312px; min-width: 280px; min-height: 0; flex-direction: column; border-left: 1px solid #dfe5ee; color: #172033; background: #fff; }
+.validation-header { display: flex; box-sizing: border-box; min-height: 48px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 16px 16px 8px; color: #344054; font-size: 16px; font-weight: 500; }
+.validation-header-actions { display: flex; align-items: center; gap: 4px; }
+.validation-body { box-sizing: border-box; min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 8px 16px 16px; }
+.validation-list { display: flex; flex-direction: column; gap: 8px; }
+.validation-empty { margin: 0; color: #667085; }
+.validation-rule { position: relative; display: flex; align-items: center; gap: 8px; margin: 0 -8px; border-radius: 6px; padding: 8px 36px 8px 8px; }
+.validation-rule:hover, .validation-rule:focus-within { background: #f2f4f7; }
+.validation-rule.is-selected { outline: 1px solid #c7d7fe; outline-offset: -1px; }
+.validation-rule-main { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 3px; border: 0; padding: 4px; background: transparent; color: inherit; text-align: start; cursor: pointer; }
+.validation-rule-main span { overflow: hidden; max-width: 100%; color: #667085; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.validation-rule-delete { position: absolute; top: 50%; right: 8px; display: none; transform: translateY(-50%); }
+.validation-rule:hover .validation-rule-delete, .validation-rule:focus-within .validation-rule-delete { display: inline-flex; }
+.validation-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .validation-form > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
-.validation-switches { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 12px; }
-.validation-error { grid-column: 1 / -1; margin: 0; color: #b42318; }
-@media (max-width: 560px) { .validation-form { grid-template-columns: minmax(0, 1fr); } }
+.validation-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: #667085; font-size: 12px; }
+.validation-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.validation-options { min-width: 0; }
+.validation-options summary { display: flex; align-items: center; gap: 4px; color: #344054; cursor: pointer; font-size: 13px; list-style: none; }
+.validation-options summary::-webkit-details-marker { display: none; }
+.validation-options-content { display: grid; gap: 10px; padding-top: 12px; }
+.validation-options-content > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
+.validation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.validation-error { margin: 0; color: #b42318; }
 </style>

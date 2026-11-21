@@ -13,7 +13,17 @@
 - Docs：[document-ribbon.ts](../packages/office-studio/src/components/document/document-ribbon.ts) → [DocumentWorkbench.vue](../packages/office-studio/src/components/DocumentWorkbench.vue) 的 `onRibbonExecute` / `execute`。分类为开始、插入、布局、视图；传统分页与现代文档的大纲默认值分别处理。
 - 公共 Ribbon 只展示当前模型/选区计算的 schema 并派发命令。按钮、选择器、下拉及主按钮加下拉复用同一控件；`hidden`、`disabled`、`activated`、`value` 独立。控件层防止禁用项派发，但业务命令权限仍须由命令服务验证。
 - 普通格式操作、部分结构操作仍由工作台控制器映射到既有模型服务；排序、图表、透视及内容控件等使用对应 Facade。**全量 API、快捷键、右键和 Ribbon 是否共用同一命令注册及相同权限，尚须逐项核验，不能仅由 `commandId` 文本一致推断。**
-- 透视表、切片器、时间线与内容控件已有真实面板及部分浏览器闭环；本轮继续扩充样式、函数、筛选排序、剪贴板和表格上下文。最新实现及联合验证见[续作证据](feature-evidence/continuation-2026-11-20.md)，完整 Pro 范围仍未验收。
+- Pro 图表、透视分析、切片器、内容控件及其他功能以功能清单和对应当前证据记录跟踪；完整 Pro 范围仍未验收。
+
+## 根入口统计与布局
+
+固定版 desktop OSS preset 在 Sheets 有 62 个常驻 Ribbon 根入口，在 Docs 有 38 个，合计 100 个。入口数量按顶层 schema 节点统计，split/menu/select 的子项不重复计数；宽度引起的 More 溢出不另计入口。Sheets 分别为 START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 5。Docs 分别为 Home 25、Insert 10、View 3。
+
+Univer 1.5.2 的官方 Pro UI npm 包包含 20 个 Docs/Sheets 菜单 schema 包。通过固定版本官方包内已发布 bundle 静态审阅，可识别 24 个 Pro Ribbon 根节点，其中 Sheets 15 个、Docs 9 个；其中至少 6 个包还导出 contextual Ribbon schema。它们不包含在 OSS 的 100 项中。这个统计来自发布包而不是闭源 TypeScript 源码或动态演示运行态；扩展加载条件、权限隐藏和运行时显隐需按模块单独核实。Pro 包和声明见 [research manifest](../.research.local/univer/resources.json)，manifest 由 [research script](../scripts/research-univer-toolbar.py) 生成。
+
+经典布局和网格布局共享同一套入口。Classic 依序呈现分类标签、单行工具区；`order` 决定同组顺序。Grid 使用每组两行网格，`gridLayout.row` / `column` 从 1 开始，支持 `rowSpan`、`columnSpan`、`width`、`minWidth`、`iconSize` 和 `showLabel`。上下文标签按对象/选区条件显隐，宽度不足时按上游逻辑整组进入 More；入口总数不因当前布局、溢出或重复呈现增加。各项位置和交互仍须由对应 schema、命令状态及动态演示逐项核实。
+
+官方 Docs/Sheets 功能目录分别收录 73 和 83 项能力。这是产品功能数，不是工具栏入口数。Microsoft Office 补充能力另列为后续，不加入上述 Univer/Pro 统计。
 
 ## 2. 共享工具栏与跨产品能力
 

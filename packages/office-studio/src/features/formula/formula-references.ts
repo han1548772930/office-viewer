@@ -5,6 +5,14 @@ const MAX_ROW = 1_048_575
 
 interface ReferenceSpan { start: number; end: number; replacementStart: number; reference: FormulaReference; raw: string }
 interface TextPatch { start: number; end: number; replacement: string }
+export interface FormulaStructureEdit {
+  kind: 'insert' | 'delete'
+  axis: 'row' | 'column'
+  start: number
+  count: number
+  bandStart: number
+  bandEnd: number
+}
 
 /**
  * Translate relative references as a formula is copied/moved. Absolute row and
@@ -42,6 +50,85 @@ export function translateFormulaReferences(formula: string, rowDelta: number, co
   return result
 }
 
+/** Update references affected by inserting or deleting cells in one worksheet band. */
+export function transformFormulaReferencesForStructureEdit(
+  formula: string,
+  edit: FormulaStructureEdit,
+  formulaSheetName: string | undefined,
+  targetSheetName: string,
+): string {
+  if (typeof formula !== 'string' || !formula.length) throw new TypeError('Formula must be a non-empty string')
+  if (!Number.isSafeInteger(edit.start) || edit.start < 0 || !Number.isSafeInteger(edit.count) || edit.count < 1
+    || !Number.isSafeInteger(edit.bandStart) || edit.bandStart < 0 || !Number.isSafeInteger(edit.bandEnd) || edit.bandEnd < edit.bandStart) {
+    throw new RangeError('Invalid worksheet structure edit')
+  }
+  const references = findReferenceSpans(formula)
+  const patches: TextPatch[] = []
+  for (let index = 0; index < references.length; index += 1) {
+    const first = references[index]!
+    const qualifiedSheet = referenceSheetName(first.raw)
+    const applies = qualifiedSheet === undefined
+      ? formulaSheetName === targetSheetName
+      : qualifiedSheet.toLowerCase() === targetSheetName.toLowerCase()
+    if (!applies) continue
+
+    const second = references[index + 1]
+    if (second && formula.slice(first.end, second.start).match(/^\s*:\s*$/)) {
+      const firstResult = transformStructureReference(first.reference, edit)
+      const secondResult = transformStructureReference(second.reference, edit)
+      const firstAxisIndex = edit.axis === 'row' ? first.reference.row : first.reference.column
+      const secondAxisIndex = edit.axis === 'row' ? second.reference.row : second.reference.column
+      const replacement = firstResult.deleted && secondResult.deleted
+        ? '#REF!'
+        : `${firstResult.deleted ? formatReference(editBoundaryReference(first.reference, edit, firstAxisIndex <= secondAxisIndex ? 0 : -1)) : formatReference(firstResult.reference)}:${secondResult.deleted ? formatReference(editBoundaryReference(second.reference, edit, secondAxisIndex <= firstAxisIndex ? 0 : -1)) : formatReference(secondResult.reference)}`
+      patches.push({ start: first.replacementStart, end: second.end, replacement: `${sheetPrefix(formula, first)}${replacement}` })
+      index += 1
+      continue
+    }
+
+    const result = transformStructureReference(first.reference, edit)
+    patches.push({
+      start: first.replacementStart,
+      end: first.end,
+      replacement: result.deleted ? '#REF!' : `${sheetPrefix(formula, first)}${formatReference(result.reference)}`,
+    })
+  }
+
+  let result = formula
+  for (const patch of patches.sort((left, right) => right.start - left.start)) {
+    result = result.slice(0, patch.start) + patch.replacement + result.slice(patch.end)
+  }
+  return result
+}
+
+function transformStructureReference(reference: FormulaReference, edit: FormulaStructureEdit): { reference: FormulaReference; deleted: boolean } {
+  const bandIndex = edit.axis === 'row' ? reference.column : reference.row
+  const axisIndex = edit.axis === 'row' ? reference.row : reference.column
+  if (bandIndex < edit.bandStart || bandIndex > edit.bandEnd || axisIndex < edit.start) return { reference, deleted: false }
+  if (edit.kind === 'insert') {
+    return { reference: setAxisIndex(reference, edit.axis, axisIndex + edit.count), deleted: false }
+  }
+  if (axisIndex < edit.start + edit.count) return { reference, deleted: true }
+  return { reference: setAxisIndex(reference, edit.axis, axisIndex - edit.count), deleted: false }
+}
+
+function editBoundaryReference(reference: FormulaReference, edit: FormulaStructureEdit, offset: 0 | -1): FormulaReference {
+  return setAxisIndex(reference, edit.axis, Math.max(0, edit.start + offset))
+}
+
+function setAxisIndex(reference: FormulaReference, axis: FormulaStructureEdit['axis'], value: number): FormulaReference {
+  return axis === 'row' ? { ...reference, row: value } : { ...reference, column: value }
+}
+
+function referenceSheetName(raw: string): string | undefined {
+  const separator = raw.lastIndexOf('!')
+  if (separator < 0) return undefined
+  const source = raw.slice(0, separator)
+  return source.startsWith("'") && source.endsWith("'")
+    ? source.slice(1, -1).replace(/''/g, "'")
+    : source
+}
+
 function findReferenceSpans(source: string): ReferenceSpan[] {
   const references: ReferenceSpan[] = []
   let index = 0
@@ -77,6 +164,22 @@ function findReferenceSpans(source: string): ReferenceSpan[] {
         index += 1
       }
       continue
+    }
+
+    const unquotedQualifier = /^([A-Za-z_][A-Za-z0-9_.]*)!/.exec(source.slice(index))
+    if (unquotedQualifier) {
+      const qualifiedAddress = readAddress(source, index + unquotedQualifier[0].length)
+      if (qualifiedAddress) {
+        references.push({
+          start: index,
+          end: qualifiedAddress.end,
+          replacementStart: index,
+          reference: { ...qualifiedAddress.reference, sheetName: unquotedQualifier[1] },
+          raw: source.slice(index, qualifiedAddress.end),
+        })
+        index = qualifiedAddress.end
+        continue
+      }
     }
 
     if (isIdentifierPart(source[index - 1])) { index += 1; continue }

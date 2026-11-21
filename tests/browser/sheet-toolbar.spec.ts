@@ -90,7 +90,7 @@ test('format painter applies once to the completed drag range and participates i
   await address(page, 'A1')
   await click(page, '鏍煎紡鍒?')
 
-  const grid = page.getByRole('grid', { name: '宸ヤ綔琛ㄧ敾甯?, exact: true })
+  const grid = page.getByRole('grid', { name: '工作表画布', exact: true })
   const bounds = await grid.boundingBox()
   expect(bounds).not.toBeNull()
   if (!bounds) return

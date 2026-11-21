@@ -2,6 +2,7 @@
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
+import type { TimelineLevel } from '../../domain/model'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
@@ -9,9 +10,11 @@ import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
+import { convertTextToNumber } from '../../features/sheet-workbench/text-to-number.ts'
+import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; crosshairHighlight?: { enabled: boolean; color: string } }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string } }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -25,12 +28,30 @@ const emit = defineEmits<{
   (event: 'resize-axis', axis: 'row' | 'column', index: number, size: number): void
   (event: 'context-command', commandId: string, params?: unknown): void
   (event: 'backend-change', backend: RenderBackend, reason?: string): void
+  (event: 'select-slicer', slicerId: string): void
+  (event: 'slicer-item', payload: { slicerId: string; value: string; index: number; anchorIndex?: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; multiSelect: boolean }): void
+  (event: 'slicer-clear', slicerId: string): void
+  (event: 'slicer-range', payload: { slicerId: string; start: number; end: number; level: TimelineLevel }): void
+  (event: 'slicer-scroll-to', payload: { slicerId: string; position: number }): void
+  (event: 'slicer-level', payload: { slicerId: string; level: TimelineLevel }): void
+  (event: 'slicer-settings', slicerId: string): void
+  (event: 'slicer-move', payload: { slicerId: string; left: number; top: number }): void
+  (event: 'slicer-resize', payload: { slicerId: string; width: number; height: number }): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<HTMLInputElement | null>(null)
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const fillPreview = ref<GridRange>()
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
-const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, overlayCommands: props.overlayCommands, crosshairHighlight: props.crosshairHighlight }))
+const slicerLayouts = computed(() => slicerObjectLayouts(geometry.value, props.slicers ?? [], props.sheet.date1904 ?? false))
+const timelineMenuId = ref('')
+const focusedSlicerItems = ref(new Map<string, number>())
+const focusedTimelinePeriods = ref(new Map<string, number>())
+const scene = computed(() => {
+  const selectionCommands: DrawCommand[] = []
+  const selected = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
+  if (selected) selectionCommands.push({ kind: 'rect', ...selected.rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2 })
+  return createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
+})
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
 const validationListId = computed(() => `sheet-validation-options-${props.sheet.id}`)
@@ -53,11 +74,22 @@ const surfaceError = ref('')
 const contextMenuOpen = ref(false)
 const contextMenuHit = ref<GridHit | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
+const canConvertSelectedText = computed(() => contextMenuOpen.value && Object.entries(props.sheet.cells).some(([key, cell]) => {
+  const address = parseAddress(key)
+  if (!address) return false
+  const selected = props.selectedRanges?.length
+    ? props.selectedRanges.some(range => address.row >= range.startRow && address.row <= range.endRow && address.column >= range.startColumn && address.column <= range.endColumn)
+    : key === props.selectedKey
+  return selected && Boolean(convertTextToNumber(cell))
+}))
 const sheetViews = new Map<string, { left: number; top: number }>()
 let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, active = true, dragging = false
 let dprQuery: MediaQueryList | undefined
 let resizeDrag: { axis: 'row' | 'column'; index: number; size: number; origin: number } | undefined
 let fillDrag: { source: GridRange; target?: { row: number; column: number } } | undefined
+let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; startPoint: { x: number; y: number } } | undefined
+const slicerAnchor = new Map<string, number>()
+const multiSelect = ref(new Set<string>())
 let lastPointer: { x: number; y: number } | undefined
 function queueRender() { if (active && !disposed && !frame) frame = requestAnimationFrame(draw) }
 function draw() {
@@ -112,6 +144,28 @@ function point(event: MouseEvent) { const rect = root.value!.getBoundingClientRe
 function onPointerDown(event: PointerEvent) {
   if ((event.target as HTMLElement).closest('input')) return
   const position = point(event)
+  const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
+  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  if (slicerHit) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    root.value?.focus({ preventScroll: true })
+    emit('select-slicer', slicerHit.id)
+    if (slicerHit.type === 'item') {
+      const next = new Map(focusedSlicerItems.value)
+      next.set(slicerHit.id, slicerHit.index)
+      focusedSlicerItems.value = next
+    }
+    if (slicerHit.type === 'period') {
+      const next = new Map(focusedTimelinePeriods.value)
+      next.set(slicerHit.id, slicerHit.index)
+      focusedTimelinePeriods.value = next
+    }
+    slicerPress = { hit: slicerHit, start: slicerHit, startPoint: content }
+    root.value?.setPointerCapture(event.pointerId)
+    return
+  }
   const fillRange = event.button === 0 && !props.editingKey ? hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y) : undefined
   const hit: GridHit | undefined = fillRange ? { kind: 'fill-handle', range: fillRange } : geometry.value.hitTest(position.x, position.y, viewport.value)
   if (!hit) return
@@ -135,6 +189,12 @@ function onPointerDown(event: PointerEvent) {
 function onPointerMove(event: PointerEvent) {
   const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
+  if (slicerPress && ['period', 'timelineStart', 'timelineEnd', 'scroll'].includes(slicerPress.start.type)) {
+    const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
+    const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+    if (hit?.id === slicerPress.hit.id) slicerPress.hit = hit
+    return
+  }
   if (fillDrag && hit?.kind === 'cell') {
     fillDrag.target = { row: hit.row, column: hit.column }
     fillPreview.value = fillPreviewRange(fillDrag.source, fillDrag.target)
@@ -148,6 +208,86 @@ function onPointerMove(event: PointerEvent) {
   }
 }
 function onPointerUp(event: PointerEvent) {
+  if (slicerPress) {
+    const press = slicerPress
+    slicerPress = undefined
+    if (event.type !== 'pointercancel') {
+      const position = point(event)
+      const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
+      const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+      if (timelineMenuId.value && hit?.type !== 'timelineMenu' && hit?.type !== 'timelineLevel') timelineMenuId.value = ''
+      if (press.start.type === 'move' || press.start.type === 'resize') {
+        const layout = slicerLayouts.value.find(({ id }) => id === press.start.id)
+        const dx = content.x - press.startPoint.x
+        const dy = content.y - press.startPoint.y
+        if (layout && !layout.model.lockedPosition && (Math.abs(dx) >= 1 || Math.abs(dy) >= 1)) {
+          if (press.start.type === 'move') emit('slicer-move', { slicerId: layout.id, left: Math.max(0, layout.rect.x + dx), top: Math.max(0, layout.rect.y + dy) })
+          else emit('slicer-resize', { slicerId: layout.id, width: Math.max(80, layout.rect.width + dx), height: Math.max(48, layout.rect.height + dy) })
+        }
+      } else if (press.start.type === 'scroll' && press.start.part === 'thumb') {
+        const layout = slicerLayouts.value.find(({ id }) => id === press.start.id)
+        if (layout && layout.scrollbar && layout.scrollThumb) {
+          const delta = layout.model.type === 'timeline' ? content.x - press.startPoint.x : content.y - press.startPoint.y
+          const trackLength = layout.model.type === 'timeline' ? layout.scrollbar.width - layout.scrollThumb.width : layout.scrollbar.height - layout.scrollThumb.height
+          const position = trackLength > 0 ? clampOffset(layout.scrollOffset + delta / trackLength * layout.maxScrollOffset, layout.maxScrollOffset) : 0
+          if (layout.model.type === 'timeline') {
+            const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? []
+            const serial = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, position)
+            if (serial !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position: serial })
+          } else emit('slicer-scroll-to', { slicerId: layout.id, position })
+        }
+      } else if (hit?.id === press.start.id) {
+        if (press.start.type === 'clear' && hit.type === 'clear') emit('slicer-clear', hit.id)
+        else if (press.start.type === 'multiSelect' && hit.type === 'multiSelect') {
+          const next = new Set(multiSelect.value)
+          next.has(hit.id) ? next.delete(hit.id) : next.add(hit.id)
+          multiSelect.value = next
+        } else if (press.start.type === 'item' && hit.type === 'item') {
+          emit('slicer-item', { slicerId: hit.id, value: hit.value, index: hit.index, anchorIndex: slicerAnchor.get(hit.id), ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, multiSelect: multiSelect.value.has(hit.id) })
+          if (!event.shiftKey) slicerAnchor.set(hit.id, hit.index)
+        } else if (press.start.type === 'period' && hit.type === 'period') {
+          const layout = slicerLayouts.value.find(({ id }) => id === hit.id)
+          const first = Math.min(press.start.index, hit.index), last = Math.max(press.start.index, hit.index)
+          const periods = layout?.periods.filter(({ period }) => period.key >= first && period.key <= last).sort((a, b) => a.period.key - b.period.key)
+          if (periods?.length && layout) emit('slicer-range', { slicerId: hit.id, start: periods[0]!.period.start, end: periods[periods.length - 1]!.period.end, level: layout.model.selectionLevel ?? layout.model.level ?? 'month' })
+        } else if ((press.start.type === 'timelineStart' || press.start.type === 'timelineEnd') && (hit.type === 'period' || hit.type === 'timelineStart' || hit.type === 'timelineEnd')) {
+          const layout = slicerLayouts.value.find(({ id }) => id === press.start.id)
+          const period = hit.type === 'period' ? hit.period : layout?.periods.find(({ selected }) => selected)?.period
+          if (layout && period) {
+            const current = layout.model.timelineRange
+            const start = press.start.type === 'timelineStart' ? period.start : Number(current?.start ?? period.start)
+            const end = press.start.type === 'timelineEnd' ? period.end : Number(current?.end ?? period.end)
+            if (start <= end) emit('slicer-range', { slicerId: layout.id, start, end, level: layout.model.selectionLevel ?? layout.model.level ?? 'month' })
+          }
+        } else if (press.start.type === 'timelineLevel' && hit.type === 'timelineLevel') {
+          timelineMenuId.value = timelineMenuId.value === hit.id ? '' : hit.id
+          queueRender()
+        } else if (press.start.type === 'timelineMenu' && hit.type === 'timelineMenu') {
+          const layout = slicerLayouts.value.find(({ id }) => id === hit.id)
+          const index = layout?.menu?.findIndex(rect => content.y >= rect.y && content.y <= rect.y + rect.height) ?? -1
+          const levels: TimelineLevel[] = ['year', 'quarter', 'month', 'day']
+          if (index >= 0 && layout) emit('slicer-level', { slicerId: hit.id, level: levels[index]! })
+          timelineMenuId.value = ''
+          queueRender()
+        } else if (press.start.type === 'scroll' && hit.type === 'scroll' && press.start.part === 'track') {
+          const layout = slicerLayouts.value.find(({ id }) => id === hit.id)
+          if (layout && layout.scrollbar) {
+            const coordinate = layout.model.type === 'timeline' ? content.x - layout.scrollbar.x : content.y - layout.scrollbar.y
+            const extent = layout.model.type === 'timeline' ? layout.scrollbar.width : layout.scrollbar.height
+            const position = clampOffset(Math.round(coordinate / Math.max(1, extent) * layout.maxScrollOffset), layout.maxScrollOffset)
+            if (layout.model.type === 'timeline') {
+              const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? []
+              const serial = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, position)
+              if (serial !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position: serial })
+            } else emit('slicer-scroll-to', { slicerId: layout.id, position })
+          }
+        }
+        else if (press.start.type === 'timelineMenu' && hit.type === 'timelineMenu') emit('slicer-settings', hit.id)
+      }
+    }
+    if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
+    return
+  }
   if (fillDrag && event.type !== 'pointercancel' && fillDrag.target) {
     const { source, target } = fillDrag
     const insideSource = target.row >= source.startRow && target.row <= source.endRow && target.column >= source.startColumn && target.column <= source.endColumn
@@ -165,6 +305,9 @@ function onPointerUp(event: PointerEvent) {
 }
 function onDoubleClick(event: MouseEvent) {
   const p = point(event)
+  const content = slicerObjectContentPoint(p.x, p.y, viewport.value)
+  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  if (slicerHit) { emit('slicer-settings', slicerHit.id); return }
   const source = hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, p.x, p.y)
   if (source) {
     const targetRow = detectSheetFillDownEndRow(source, props.sheet)
@@ -181,6 +324,9 @@ function onContextMenu(event: MouseEvent) {
   if (!bounds) return
   const localX = event.clientX - bounds.left
   const localY = event.clientY - bounds.top
+  const content = slicerObjectContentPoint(localX, localY, viewport.value)
+  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  if (slicerHit) { emit('select-slicer', slicerHit.id); emit('slicer-settings', slicerHit.id); return }
   const hit = geometry.value.hitTest(localX, localY, viewport.value)
   if (!hit || hit.kind === 'resize-row' || hit.kind === 'resize-column') { contextMenuOpen.value = false; return }
   contextMenuHit.value = hit
@@ -189,6 +335,85 @@ function onContextMenu(event: MouseEvent) {
 }
 function onInputKeydown(event: KeyboardEvent) { if (!composing.value && !event.isComposing) emit('editor-keydown', event) }
 function onPaste(event: ClipboardEvent) { if (!(event.target as HTMLElement).closest('input')) emit('paste', event) }
+function onWheel(event: WheelEvent) {
+  const position = point(event)
+  const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
+  const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  if (!hit) return
+  event.preventDefault()
+  const layout = slicerLayouts.value.find(item => item.id === hit.id)
+  if (!layout || !event.deltaY) return
+  if (layout.model.type === 'timeline') {
+    const step = Math.max(1, Math.round(Math.abs(event.deltaY) / 100))
+    const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? []
+    const position = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, layout.scrollOffset + Math.sign(event.deltaY) * step)
+    if (position !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position })
+  } else {
+    const columns = Math.max(1, layout.model.columnCount ?? 1)
+    const step = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, layout.model.rowHeight ?? 24))) * columns
+    emit('slicer-scroll-to', { slicerId: layout.id, position: clampOffset(layout.scrollOffset + Math.sign(event.deltaY) * step, layout.maxScrollOffset) })
+  }
+}
+function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
+function onKeydown(event: KeyboardEvent) {
+  if (!props.selectedSlicerId || props.editingKey || event.isComposing) return
+  const layout = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
+  if (!layout) return
+  if (layout.model.type === 'slicer') {
+    const visible = layout.items.map(item => item.index)
+    if (!visible.length) return
+    const current = focusedSlicerItems.value.get(layout.id) ?? visible[0]!
+    const columns = Math.max(1, layout.model.columnCount ?? 1)
+    let next = current
+    if (event.key === 'ArrowDown') next += columns
+    else if (event.key === 'ArrowUp') next -= columns
+    else if (event.key === 'ArrowRight') next += 1
+    else if (event.key === 'ArrowLeft') next -= 1
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = layout.items.at(-1)!.index
+    else if (event.key === 'Enter' || event.key === ' ') {
+      const item = layout.items.find(candidate => candidate.index === current)
+      if (item) {
+        emit('slicer-item', { slicerId: layout.id, value: item.value, index: item.index, anchorIndex: slicerAnchor.get(layout.id), ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, multiSelect: multiSelect.value.has(layout.id) })
+        if (!event.shiftKey) slicerAnchor.set(layout.id, item.index)
+      }
+      event.preventDefault(); event.stopPropagation(); return
+    } else if (event.key === 'Escape') { multiSelect.value.delete(layout.id); event.preventDefault(); event.stopPropagation(); queueRender(); return }
+    else return
+    const bounded = Math.min(layout.items.at(-1)!.index, Math.max(0, next))
+    if (bounded < visible[0]! || bounded > visible.at(-1)!) {
+      const startItem = bounded > visible.at(-1)! ? Math.max(0, bounded - layout.visibleCount + columns) : Math.floor(bounded / columns) * columns
+      emit('slicer-scroll-to', { slicerId: layout.id, position: startItem })
+    }
+    focusedSlicerItems.value = new Map(focusedSlicerItems.value).set(layout.id, bounded)
+  } else {
+    const periods = layout.periods
+    if (event.key === 'Escape' && timelineMenuId.value === layout.id) { timelineMenuId.value = ''; event.preventDefault(); queueRender(); return }
+    if (!periods.length) return
+    const current = focusedTimelinePeriods.value.get(layout.id) ?? periods[0]!.period.key
+    if (timelineMenuId.value === layout.id) {
+      const levels: TimelineLevel[] = ['year', 'quarter', 'month', 'day']
+      const index = levels.indexOf(layout.model.level ?? 'month')
+      if (event.key === 'Enter' || event.key === ' ') emit('slicer-level', { slicerId: layout.id, level: levels[index]! })
+      else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') emit('slicer-level', { slicerId: layout.id, level: levels[Math.min(3, index + 1)]! })
+      else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') emit('slicer-level', { slicerId: layout.id, level: levels[Math.max(0, index - 1)]! })
+      else return
+      timelineMenuId.value = ''; event.preventDefault(); event.stopPropagation(); queueRender(); return
+    }
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      const delta = event.key === 'ArrowRight' ? 1 : -1
+      const period = periods.find(item => item.period.key === current + delta) ?? periods[delta > 0 ? periods.length - 1 : 0]!
+      focusedTimelinePeriods.value = new Map(focusedTimelinePeriods.value).set(layout.id, period.period.key)
+    } else if (event.key === 'Home' || event.key === 'End') {
+      const period = event.key === 'Home' ? periods[0]!.period : periods.at(-1)!.period
+      focusedTimelinePeriods.value = new Map(focusedTimelinePeriods.value).set(layout.id, period.key)
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      const period = periods.find(item => item.period.key === current)?.period
+      if (period) emit('slicer-range', { slicerId: layout.id, start: period.start, end: period.end, level: layout.model.selectionLevel ?? layout.model.level ?? 'month' })
+    } else return
+  }
+  event.preventDefault(); event.stopPropagation(); queueRender()
+}
 function focusEditor() { void nextTick(() => input.value?.focus({ preventScroll: true })) }
 function ensureVisible(address: string) {
   const cell = parseAddress(address), scroll = scroller.value
@@ -232,7 +457,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste">
+  <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
     <input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false">
@@ -251,6 +476,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
       :frozen="Boolean(sheet.freeze?.rows || sheet.freeze?.columns)"
       :has-hidden-rows="Boolean(sheet.hiddenRows?.length)"
       :has-hidden-columns="Boolean(sheet.hiddenColumns?.length)"
+      :can-convert-text="canConvertSelectedText"
       @command="(commandId, params) => emit('context-command', commandId, params)"
     />
   </div>

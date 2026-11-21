@@ -6,6 +6,10 @@ import { findVisibleSheetRow, hiddenSheetRows } from './sheet-row-visibility.ts'
 export interface SheetAddressBounds { rowCount: number; columnCount: number; hiddenRows?: readonly number[]; filteredRows?: readonly number[]; rowHeights?: Readonly<Record<number, number>> }
 export interface ParsedSheetAddress { range: GridRange; address: string; anchor: string }
 
+export function frozenPaneCountsForSelection(range: GridRange): { rows: number; columns: number } {
+  return { rows: range.startRow, columns: range.startColumn }
+}
+
 function columnIndex(label: string): number {
   let index = 0
   for (const character of label.toUpperCase()) {

@@ -61,14 +61,12 @@ beforeEach(async () => {
   })
 })
 
-test('menu renders executable actions, supports keyboard navigation and closes after dispatch', async () => {
+test('menu renders quick actions, supports submenu navigation and dispatches commands', async () => {
   await page.getByRole('button', { name: 'Open menu' }).click()
   const menu = page.getByRole('menu', { name: '单元格上下文菜单' })
   await menu.waitFor()
-  assert.equal(await menu.getByRole('menuitem').count(), 19)
-  assert.equal(await menu.getByRole('menuitem', { name: '取消冻结' }).isDisabled(), true)
-  await page.keyboard.press('ArrowDown')
-  await page.keyboard.press('Enter')
+  assert.equal(await page.getByRole('group', { name: '快捷操作' }).getByRole('button').count(), 3)
+  await page.getByRole('button', { name: '复制', exact: true }).click()
   assert.equal(await menu.count(), 0)
   assert.match(await page.locator('#commands').textContent(), /"id":"sheet.command.copy"/)
 })
@@ -80,8 +78,23 @@ test('disabled constraints remain disabled and Escape closes without dispatch', 
   })
   const menu = page.getByRole('menu')
   await menu.waitFor()
-  assert.equal(await menu.getByRole('menuitem', { name: '删除行' }).isDisabled(), false)
+  await menu.getByRole('menuitem', { name: '冻结' }).hover()
+  assert.equal(await page.getByRole('menuitem', { name: '取消冻结' }).isDisabled(), true)
   await page.keyboard.press('Escape')
   assert.equal(await menu.count(), 0)
   assert.equal(await page.locator('#commands').textContent(), '[]')
+})
+
+test('submenu leaf dispatches its mapped command and row menu uses row-specific targets', async () => {
+  await page.getByRole('button', { name: 'Open menu' }).click()
+  await page.getByRole('menuitem', { name: '选择性复制' }).hover()
+  await page.getByRole('menuitem', { name: '仅复制公式' }).click()
+  assert.match(await page.locator('#commands').textContent(), /"id":"sheet.command.copy-formulas"/)
+
+  await page.evaluate(() => {
+    window.contextFixture.hit.value = { kind: 'row', row: 4 }
+    window.contextFixture.open.value = true
+  })
+  await page.getByRole('menuitem', { name: '在上方插入 1 行' }).click()
+  assert.match(await page.locator('#commands').textContent(), /"index":4/)
 })

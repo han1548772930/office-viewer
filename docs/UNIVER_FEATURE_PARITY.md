@@ -33,7 +33,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | COMMON-08 | 持久历史版本（Pro/Server 目标） | [共享历史][shared-history]、[Sheets][sheet-history]、[Docs][doc-history] | 版本列表、快照+变更日志、版本内容、对比、恢复和恢复后广播；重启后可查；区别于本地撤销 | 未验收 |
 | COMMON-09 | 语义对比与恢复 | [公开对比规格][shared-compare]及历史规格 | 内容/样式/结构差异、范围定位与只读历史视图；恢复形成新版本而非清空日志 | 未验收 |
 | COMMON-10 | 跨文档嵌入（Pro 目标） | [公开嵌入规格][shared-embed] | Docs 嵌 Sheets、Sheets 对象/标签嵌 Docs；父子独立模型、焦点/权限/保存/生命周期；明确引用与快照语义 | 未验收 |
-| COMMON-11 | Canvas/WebGPU、大文件与 Worker/WASM | 公开源码引擎边界 + 用户技术要求 | Canvas 内容渲染、WebGPU 优先/2D 回退；大计算优先 Rust/WASM；进度/取消/过期结果、稀疏/视口、内存与真实基准 | 未验收；[在途证据](feature-evidence/in-progress-2026-11-20.md#common-11-canvas-webgpu-rust-wasm) |
+| COMMON-11 | Canvas/WebGPU、大文件与 Worker/WASM | 公开源码引擎边界 + 用户技术要求 | Canvas 内容渲染、WebGPU 优先/2D 回退；大计算优先 Rust/WASM；进度/取消/过期结果、稀疏/视口、内存与真实基准 | 未验收；基准方法见 [COMMON-11 基准记录](feature-evidence/COMMON-11-compute-benchmark.md) |
 | COMMON-12 | 图片/媒体资源管理 | 公开源码 drawing、ImageIo | 资源 ID、二进制/关系、锚点/尺寸/裁剪/旋转/层级、引用计数；复制粘贴和保存后资源不丢失 | 未验收 |
 
 协作、版本历史、持久评论与权限需要本项目内的真实服务及协议。BroadcastChannel 或多个本地数组只能作为辅助测试，不能替代跨用户服务验收。公开的“collaboration: true”、命令常量或数据类型并不构成能力实现。
@@ -65,8 +65,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-19 | 图片与水印 | [图片][sheet-images]、[水印][sheet-watermark]、公开源码 drawing/watermark | 插入/替换/移动/裁剪/缩放、锚点、文字/图片水印；打印及文件写回资源保真 | 未验收 |
 | SHEET-20 | 十字高亮 | [公开规格][sheet-crosshair]、公开源码 crosshair-highlight | 活动行列提示、颜色配置、冻结/滚动兼容；纯视图 operation 不改文档内容 | 未验收 |
 | SHEET-21 | 形状及绘图（含 Pro 目标） | [形状规格][sheet-shapes]、公开 drawing 基础 | 几何、箭头/连接线、填充/边框/文本、移动/调整/旋转/层级/组合、命中与 Office 映射 | 未验收 |
-| SHEET-22 | 可编辑图表（Pro 目标） | [图表规格][sheet-charts] | 图表类型目录、系列/分类/区域绑定、轴/图例/标签/主题、数据变更刷新、属性面板、可编辑导出 | 未验收；[在途证据](feature-evidence/in-progress-2026-11-20.md#sheet-22-editable-charts) |
-| SHEET-23 | 数据透视表（Pro 目标） | [透视表规格][sheet-pivot] | 数据源/cache、字段行列筛选值、公开汇总方式、小计总计、排序筛选、日期/数字/手工分组、下钻、刷新 | 未验收；[在途证据](feature-evidence/in-progress-2026-11-20.md#sheet-23-pivot-tables) |
+| SHEET-22 | 可编辑图表（Pro 目标） | [图表规格][sheet-charts] | 图表类型目录、系列/分类/区域绑定、轴/图例/标签/主题、数据变更刷新、属性面板、可编辑导出 | 未验收 |
+| SHEET-23 | 数据透视表（Pro 目标） | [透视表规格][sheet-pivot] | 数据源/cache、字段行列筛选值、公开汇总方式、小计总计、排序筛选、日期/数字/手工分组、下钻、刷新 | 未验收 |
 | SHEET-24 | 透视图（Pro 目标） | [透视图规格][sheet-pivot-chart] | 依赖透视模型和图表模型、字段联动、筛选刷新、编辑与持久化；不生成独立静态图 | 未验收 |
 | SHEET-25 | 切片器和时间线（Pro 目标） | [公开规格][sheet-slicer] | 表格/透视目标绑定、多选/清除、交叉筛选、日期粒度与时间范围、样式/布局及保存 | 未验收；[续作证据](feature-evidence/continuation-2026-11-20.md#slicer-timeline) |
 | SHEET-26 | 迷你图（Pro 目标） | [公开规格][sheet-sparkline] | 公开图型、源范围、分组/比例/空值/负值样式、源更新与复制移动引用、导出 | 未验收 |
@@ -79,7 +79,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 ## 4. Docs 全量目标
 
-顶部 Ribbon 根入口、插件扩展、上下文菜单与 Microsoft Word 补充候选项见[Docs 与 Sheets 顶部功能区对齐清单](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。目录入口和闭环缺口见[DOC-04 目录证据](feature-evidence/DOC-04-table-of-contents.md)。
+顶部 Ribbon 根入口、插件扩展、classic/grid 布局及上下文工具栏清点见[Docs 与 Sheets 顶部功能区对齐清单](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。Microsoft 365 补充功能单列在 Univer/Pro 完整闭环之后，不计入当前 Univer 入口数和实现阶段。目录入口和闭环缺口见[DOC-04 目录证据](feature-evidence/DOC-04-table-of-contents.md)。
 
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
@@ -93,8 +93,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | DOC-08 | 超链接和书签/锚点 | [超链接规格][doc-links]、公开源码 docs-hyper-link | 范围目标、插入/编辑/删除、位置变换、跳转、序列化与文件映射 | 未验收 |
 | DOC-09 | 查找替换 | [查找替换规格][doc-find]、公开源码 docs-find-replace | 遍历与作用域明确、匹配高亮/定位、可撤销替换；正文表格、页眉页脚等覆盖分别记录，不虚报上游一期限制 | 未验收 |
 | DOC-10 | 线程评论 | [评论规格][doc-comments]、公开源码 docs-thread-comment | 范围锚点、编辑后的定位、回复/解决、权限、用户与持久化同步；不以本地数组验收多人评论 | 未验收 |
-| DOC-11 | 内容控件（Pro 目标） | [内容控件规格][doc-controls] | 富/纯文本、复选、日期、列表、图片、分组/重复节等公开类型；占位、属性、内容锁/控件锁、导出映射 | 未验收；[续作证据](feature-evidence/continuation-2026-11-20.md#content-controls) |
-| DOC-12 | 脚注与尾注（Pro 目标） | [公开规格][doc-footnotes] | 上游 API 适用传统分页；引用与注释内容同一历史事务、编号/重排、跳转、分页排版、DOCX 结构保持；不冒称现代模式已支持 | 未验收；[在途证据](feature-evidence/in-progress-2026-11-20.md#doc-12-footnotes-and-endnotes) |
+| DOC-11 | 内容控件（Pro 目标） | [内容控件规格][doc-controls] | 富/纯文本、复选、日期、列表、图片、分组/重复节等公开类型；占位、属性、内容锁/控件锁、导出映射 | 未验收 |
+| DOC-12 | 脚注与尾注（Pro 目标） | [公开规格][doc-footnotes] | 上游 API 适用传统分页；引用与注释内容同一历史事务、编号/重排、跳转、分页排版、DOCX 结构保持；不冒称现代模式已支持 | 未验收 |
 | DOC-13 | 代码块（Pro 目标） | [公开规格][doc-code] | 语言、源文本、语法高亮、块级选择/编辑、复制粘贴及保存；高亮 HTML 不作为唯一模型 | 未验收 |
 | DOC-14 | 多栏组（Pro 目标） | [分栏规格][doc-columns] | 块级 2–5 栏、比例/间距/增删、选择/导航和统一命令；区分节级分栏，支持模式/嵌套规则按公开契约核验，不擅自限定现代模式 | 未验收 |
 | DOC-15 | LaTeX（Pro 目标） | [公开规格][doc-latex] | 公式源文本、行内/块级公开形式、编辑/测量/渲染、错误反馈、保存与可行的 Office 映射 | 未验收 |
@@ -141,26 +141,14 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 这些模块是项目架构责任，不意味着必须一个模块一个 crate 或引入微服务。Rust 原生服务和浏览器 WASM 可共享纯模型/算法 crate，禁止把后端网络职责塞进 WASM 解析 API。
 
-## 7. 当前已确认的集成缺口
-
-以下由 2026-11-20 续作检查更新。路径已迁移到 `packages/office-studio/src`；早期在途记录保留为历史快照，当前进度见[续作证据](feature-evidence/continuation-2026-11-20.md)。
-
-- 解析契约已使用 `format/fileName`、tagged payload 和结构化 diagnostics；`parser/contracts.ts`、Worker 和归一化路径已接通。完整格式字段、损坏文件、资源保真及跨版本兼容仍需按样本验证。
-- `editorStore.ts` 已拆为会话编排，模型、解析任务和按文档隔离的历史分别由 store 管理；视图回传使用 `cloneModel`，已有 Proxy/历史契约。工作台与 API 的全部命令、权限、协作事务仍需继续统一验收。
-- `parser/documentNormalizer.ts` 已读取真实 blocks/runs/表格并保留原始数据，不能再描述为占位段落；完整节/纸张几何仍使用默认值并附诊断，SDT/脚注及复杂资源的导入保真尚待补齐。
-- Sheets/Docs 主编辑路径已经接入 Canvas 视口及输入桥；WebGPU/Canvas2D 后端存在，不代表所有复杂对象、排版、设备丢失场景和大样本性能均已验收。
-- XLSX/DOCX 二进制写出已接入 Rust/WASM writer、导出服务、Worker 和下载入口。完整格式覆盖、Pro 对象 parts、独立 Office 程序重开仍未完成；SHEET-29 与 DOC-22 保持未验收。
-- 切片器和内容控件已有真实面板、命令、历史及定向契约；本轮继续修复时间线日期和段落拆分锚点。表格/多目标切片器、跨段 SDT、图片/重复节完整交互及 Office 往返仍是缺口。
-
-修复后应将记录改为对应功能的进度和证据，不能只删除这份缺口列表就宣称产品完成。
-
-## 8. 实施顺序与不缩水原则
+## 7. 实施顺序与不缩水原则
 
 1. 统一 DTO、真实模型与导入闭环，消除内容丢失；完成 Pinia/命令/历史/Worker 的边界。
 2. 以固定布局实现共享壳、Sheets 和 Docs 的真实基础行为，补充真实文件写出。
 3. 在同一架构中接入公式/数据功能、绘图图表/透视、文档高级节点、打印。
 4. 接入实际协作/持久版本服务，完成权限与并发边界。
 5. 按 ID 覆盖跨 feature 的插删/粘贴/保存/重开/并发回归、界面行为及性能验证。
+6. Univer 与全部 Pro 能力完成后，再评估 Microsoft 365 专属补充项；这些候选能力不替代或挤占前五阶段的完整目标。
 
 以上是实施顺序，不是把第 1 阶段改叫“最终完成”。子任务可以并行，但文件归属、共享模型和命令协议先明确；交付清单与未完成项始终保留。
 

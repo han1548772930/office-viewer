@@ -284,7 +284,7 @@ export function blocksFromHtml(html: string): DocumentBlock[] {
     if (tag === 'BLOCKQUOTE') block.type = 'quote'
     if (tag === 'HR') {
       const sectionType = element.dataset.officeSectionBreak
-      if (sectionType === 'nextPage' || sectionType === 'continuous' || sectionType === 'nextColumn' || sectionType === 'evenPage' || sectionType === 'oddPage') {
+      if (sectionType === 'unspecified' || sectionType === 'nextPage' || sectionType === 'continuous' || sectionType === 'nextColumn' || sectionType === 'evenPage' || sectionType === 'oddPage') {
         block.type = 'sectionBreak'
         block.sectionBreak = { type: sectionType }
       } else if (element.dataset.officeColumnBreak) block.type = 'columnBreak'

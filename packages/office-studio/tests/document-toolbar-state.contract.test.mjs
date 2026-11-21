@@ -139,5 +139,6 @@ test('page settings reject invalid dimensions and margins before a document muta
   assert.match(documentPageSettingsError({ ...page, width: 50 }), /宽度/)
   assert.match(documentPageSettingsError({ ...page, marginTop: -1 }), /负数/)
   assert.match(documentPageSettingsError({ ...page, marginLeft: page.width }), /之和/)
-  assert.match(documentPageSettingsError({ ...page, marginLeft: page.width * 0.45 }), /42%/)
+  assert.equal(documentPageSettingsError({ ...page, marginLeft: page.width * 0.45 }), undefined)
+  assert.match(documentPageSettingsError({ ...page, marginLeft: page.width * 0.51 }), /一半/)
 })

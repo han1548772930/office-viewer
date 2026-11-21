@@ -7,6 +7,9 @@ import { createParagraph, cloneDocument } from '../src/features/document/model/d
 import { executeDocumentCommand } from '../src/features/document/commands/document-commands.ts'
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, documentSectionSetup, validateDocumentParagraphStylePatch, validateDocumentSectionSetupPatch } from '../src/features/document/services/document-settings.ts'
 import { saveDocumentSnapshot } from '../src/features/document/services/document-facade.ts'
+import { DOCUMENT_MODERN_WIDTHS, DOCUMENT_PAPER_SIZES, documentModernWidth, documentPaperSize } from '../src/components/document/document-page-settings.ts'
+import { layoutDocument } from '../src/features/document/layout/document-layout.ts'
+import { sectionIdForBlock } from '../src/features/document/services/section-header-footer.ts'
 
 const workbenchSource = readFileSync(new URL('../src/components/DocumentWorkbench.vue', import.meta.url), 'utf8')
 const canvasSource = readFileSync(new URL('../src/components/document/DocumentCanvasViewport.vue', import.meta.url), 'utf8')
@@ -28,6 +31,10 @@ test('paragraph setting updates cover alignment, four indent modes, spacing rule
   })
   assert.throws(() => validateDocumentParagraphStylePatch({ indentStart: -1 }), /non-negative/)
   assert.throws(() => validateDocumentParagraphStylePatch({ lineHeight: 0 }), /positive/)
+  assert.throws(() => validateDocumentParagraphStylePatch({ spacingRule: 'auto', lineHeight: 6 }), /between 1 and 5/)
+  assert.throws(() => validateDocumentParagraphStylePatch({ spacingRule: 'exact', lineHeight: 101 }), /between 1 and 100/)
+  assert.doesNotThrow(() => applyDocumentParagraphStylePatch({ ...block, style: { ...block.style, spacingRule: 'exact', lineHeight: 18 } }, { align: 'center' }))
+  assert.doesNotThrow(() => applyDocumentParagraphStylePatch({ ...block, style: { ...block.style, spacingRule: 'exact', lineHeight: 18 } }, { lineHeight: 20 }))
   assert.throws(() => validateDocumentParagraphStylePatch({ align: 'distributed' }), /alignment/)
 })
 
@@ -48,13 +55,14 @@ test('section setup updates are validated, section scoped and preserved by snaps
   const selection = { anchor: paragraph(first.id), focus: paragraph(first.id) }
   executeDocumentCommand(model, selection, {
     id: 'doc.command.set-section-setup', sectionId: section.id,
-    patch: { orientation: 'landscape', width: 900, height: 700, marginTop: 30, columnCount: 2, columnGap: 24, columnSeparator: 'line', pageNumberStart: 3 },
+    patch: { orientation: 'landscape', sectionStart: 'continuous', width: 900, height: 700, marginTop: 30, columnCount: 2, columnGap: 24, columnSeparator: 'line', pageNumberStart: 3 },
   })
   assert.deepEqual(documentSectionSetup(model, section.id), {
     width: 900, height: 700, orientation: 'landscape', marginTop: 30, marginRight: 72, marginBottom: 72, marginLeft: 72,
-    columnCount: 2, columnGap: 24, columnSeparator: 'line', pageNumberStart: 3,
+    columnCount: 2, columnGap: 24, columnSeparator: 'line', sectionStart: 'continuous', pageNumberStart: 3,
   })
   assert.deepEqual(saveDocumentSnapshot(cloneDocument(model)).blocks[1].sectionBreak.setup, section.sectionBreak.setup)
+  assert.equal(section.sectionBreak.type, 'continuous')
   assert.throws(() => validateDocumentSectionSetupPatch({ columnCount: 0 }), /between 1 and 12/)
   assert.throws(() => validateDocumentSectionSetupPatch({ pageNumberStart: 0 }), /positive integer/)
   assert.throws(() => applyDocumentSectionSetupPatch(model, 'missing', { columnCount: 2 }), /Unknown document section/)
@@ -62,20 +70,65 @@ test('section setup updates are validated, section scoped and preserved by snaps
 
 test('default section page setup remains compatible with legacy document page fields', () => {
   const model = createBlankDocument()
-  applyDocumentSectionSetupPatch(model, 'first', { width: 800, height: 1100, orientation: 'portrait', marginLeft: 64 })
+  applyDocumentSectionSetupPatch(model, 'first', { width: 800, height: 1100, orientation: 'portrait', marginLeft: 64, columnCount: 3, columnGap: 26, columnSeparator: 'line', pageNumberStart: 4 })
   assert.equal(model.page.width, 800)
   assert.equal(model.page.height, 1100)
   assert.equal(model.page.marginLeft, 64)
-  assert.equal(documentSectionSetup(model, 'first').columnCount, 1)
+  assert.equal(documentSectionSetup(model, 'first').columnCount, 3)
+  assert.equal(documentSectionSetup(model, 'first').columnGap, 26)
+  assert.equal(documentSectionSetup(model, 'first').pageNumberStart, 4)
+  assert.equal(saveDocumentSnapshot(cloneDocument(model)).sectionSetup.columnSeparator, 'line')
+})
+
+test('section settings preserve unused single-column gaps and enforce upstream numeric limits', () => {
+  assert.doesNotThrow(() => validateDocumentSectionSetupPatch({ columnCount: 1, columnGap: 18, width: 1, height: 1 }))
+  assert.doesNotThrow(() => validateDocumentSectionSetupPatch({ columnCount: 12, columnGap: 1000, sectionStart: 'unspecified' }))
+  assert.throws(() => validateDocumentSectionSetupPatch({ columnGap: 1000.1 }), /1000/)
+  assert.throws(() => validateDocumentSectionSetupPatch({ width: 0 }), /at least 1/)
+  assert.throws(() => validateDocumentSectionSetupPatch({ height: 0 }), /at least 1/)
+  const model = createBlankDocument()
+  const section = { ...createParagraph(), type: 'sectionBreak', runs: [], sectionBreak: { type: 'continuous' } }
+  model.blocks.push(section, createParagraph('Second section'))
+  applyDocumentSectionSetupPatch(model, section.id, { sectionStart: 'unspecified' })
+  assert.equal(documentSectionSetup(saveDocumentSnapshot(model), section.id).sectionStart, 'unspecified')
+  assert.equal(sectionIdForBlock(model, section.id), section.id)
+})
+
+test('page setup presets match the fixed Univer dimensions and modern widths', () => {
+  assert.deepEqual(DOCUMENT_PAPER_SIZES, {
+    A3: { width: 1123, height: 1587 }, A4: { width: 794, height: 1124 }, A5: { width: 559, height: 794 },
+    B4: { width: 944, height: 1344 }, B5: { width: 665, height: 944 }, Executive: { width: 696, height: 1008 },
+    Folio: { width: 816, height: 1248 }, Legal: { width: 816, height: 1344 }, Letter: { width: 816, height: 1056 },
+    Statement: { width: 528, height: 816 }, Tabloid: { width: 1056, height: 1632 },
+  })
+  assert.deepEqual(DOCUMENT_MODERN_WIDTHS, { narrow: 794, medium: 960, wide: 1123 })
+  assert.equal(documentPaperSize({ width: 794, height: 1124, marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0 }), 'A4')
+  assert.equal(documentModernWidth({ width: 960, height: 1124, marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0 }), 'medium')
+})
+
+test('paragraph line spacing rules produce multiple, minimum and exact rendered line heights', () => {
+  const model = createBlankDocument()
+  const block = model.blocks[0]
+  block.style = { ...block.style, lineHeight: 18, spacingRule: 'exact' }
+  const exact = layoutDocument(model, { measure: text => text.length * 8 }).lines[0].height
+  block.style = { ...block.style, lineHeight: 20, spacingRule: 'atLeast' }
+  const atLeast = layoutDocument(model, { measure: text => text.length * 8 }).lines[0].height
+  block.style = { ...block.style, lineHeight: 1.5, spacingRule: 'auto' }
+  const automatic = layoutDocument(model, { measure: text => text.length * 8 }).lines[0].height
+  assert.equal(exact, 18)
+  assert.equal(atLeast, 20)
+  assert.ok(automatic > atLeast)
 })
 
 test('paragraph and section settings operations open their real panels and commit through document commands', () => {
+  assert.match(workbenchSource, /ribbonVariant: 'classic'/)
+  assert.match(workbenchSource, /<DocumentSectionSettingsPanel[^>]*:section-options="sectionOptions"[^>]*@select-section="selectSection"/)
   assert.match(workbenchSource, /case 'sidebar\.operation\.doc-paragraph-setting-panel': paragraphSettingsPanelOpen\.value = true/)
   assert.match(workbenchSource, /case 'sidebar\.operation\.doc-section-setting-panel': sectionSettingsPanelOpen\.value = true/)
   assert.match(workbenchSource, /<DocumentParagraphSettingsPanel[^>]*:style="paragraphSettingsStyle"[^>]*@apply="applyParagraphSettings"/)
   assert.match(workbenchSource, /<DocumentSectionSettingsPanel[^>]*:section-id="headerFooterSectionId"[^>]*:setup="activeSectionSetup"[^>]*@apply="applySectionSettings"/)
-  assert.match(workbenchSource, /execute\(\{ id: 'doc\.command\.format-paragraph', patch \}\)/)
-  assert.match(workbenchSource, /execute\(\{ id: 'doc\.command\.set-section-setup', sectionId, patch \}\)/)
+  assert.match(workbenchSource, /execute\(\{ id: 'doc\.command\.format-paragraph', patch \}, false\)/)
+  assert.match(workbenchSource, /execute\(\{ id: 'doc\.command\.set-section-setup', sectionId, patch \}, false\)/)
 })
 
 test('document context menu exposes the ordered LAYOUT operations and applies table scope and edit permission rules', () => {

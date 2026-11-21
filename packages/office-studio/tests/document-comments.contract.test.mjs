@@ -5,6 +5,7 @@ import { createBlankDocument } from '../src/domain/model.ts'
 import { createParagraph } from '../src/features/document/model/document-model.ts'
 import {
   createDocumentThreadComment,
+  deleteDocumentCommentMessage,
   deleteDocumentThreadComment,
   documentThreadCommentAnchorStatus,
   editDocumentCommentMessage,
@@ -53,7 +54,8 @@ test('supports replies, author-only edits, resolve and reopen transitions, and d
   const { model, selection, author } = setup()
   const comment = createDocumentThreadComment(model, selection, 'Initial', author, '2026-11-21T00:00:00.000Z')
   const other = { documentId: 'doc-1', userId: 'other', displayName: 'Other' }
-  const reply = replyToDocumentThreadComment(model, comment.id, 'A reply', other, '2026-11-21T00:01:00.000Z')
+  const reply = replyToDocumentThreadComment(model, comment.id, '@Author A reply', other, '2026-11-21T00:01:00.000Z', [{ userId: 'author', label: '@Author' }])
+  assert.deepEqual(reply.mentions, [{ userId: 'author', label: '@Author' }])
 
   assert.equal(comment.messages.length, 2)
   assert.equal(reply.authorName, 'Other')
@@ -68,4 +70,19 @@ test('supports replies, author-only edits, resolve and reopen transitions, and d
   assert.equal(comment.resolved, false)
   assert.equal(deleteDocumentThreadComment(model, comment.id, author), true)
   assert.equal(deleteDocumentThreadComment(model, comment.id, author), false)
+})
+
+test('deletes only the selected author message and removes the thread with its root message', () => {
+  const { model, selection, author } = setup()
+  const comment = createDocumentThreadComment(model, selection, 'Initial', author, '2026-11-21T00:00:00.000Z')
+  const other = { documentId: 'doc-1', userId: 'other', displayName: 'Other' }
+  const reply = replyToDocumentThreadComment(model, comment.id, '@Author A reply', other, '2026-11-21T00:01:00.000Z', [{ userId: 'author', label: '@Author' }])
+  assert.deepEqual(reply.mentions, [{ userId: 'author', label: '@Author' }])
+
+  assert.throws(() => deleteDocumentCommentMessage(model, comment.id, reply.id, author), /Only the message author/)
+  assert.equal(deleteDocumentCommentMessage(model, comment.id, reply.id, other, '2026-11-21T00:02:00.000Z'), true)
+  assert.deepEqual(comment.messages.map(message => message.id), [comment.messages[0].id])
+  assert.equal(comment.updatedAt, '2026-11-21T00:02:00.000Z')
+  assert.equal(deleteDocumentCommentMessage(model, comment.id, comment.messages[0].id, author), true)
+  assert.equal(model.comments[comment.id], undefined)
 })

@@ -95,7 +95,7 @@ beforeAll(async () => {
   if (!address || typeof address === 'string') throw new Error('Vite did not allocate an HTTP port')
   baseURL = `http://127.0.0.1:${address.port}`
   browser = await chromium.launch({ channel: 'msedge', headless: true })
-}, { timeout: 60_000 })
+}, 60_000)
 
 afterAll(async () => {
   await page?.close()
@@ -110,7 +110,7 @@ beforeEach(async () => {
   page.on('pageerror', (error) => errors.push(error.message))
   await page.goto(`${baseURL}/__ribbon_contract/`)
   await page.getByRole('tab', { name: '开始', exact: true }).waitFor()
-}, { timeout: 60_000 })
+}, 60_000)
 
 test('classic geometry, hidden categories and keyboard navigation use a single roving tab stop', async () => {
   assert.equal(await page.getByRole('tab').count(), 3)
@@ -185,7 +185,10 @@ test('grid variant is opt-in and uses two-row placements with large controls spa
     return {
       tabsHeight: tabs.height,
       toolbarHeight: toolbar.height,
+      toolbarInlinePadding: getComputedStyle(toolbar).paddingInlineStart,
       rowTracks: getComputedStyle(cells).gridTemplateRows,
+      rowGap: getComputedStyle(cells).rowGap,
+      verticalPadding: getComputedStyle(cells).paddingBlock,
       columnGap: getComputedStyle(cells).columnGap,
       tabBorder: getComputedStyle(menu).borderBottomWidth,
       tabIndicatorHeight: getComputedStyle(menu, '::after').height,
@@ -196,20 +199,25 @@ test('grid variant is opt-in and uses two-row placements with large controls spa
       largeRow: getComputedStyle(largeCell).gridRow,
       largeHeight: document.querySelector('[data-ribbon-item="undo"] .ribbon-button').getBoundingClientRect().height,
       largeWidth: largeCell.getBoundingClientRect().width,
+      moreWidth: document.querySelector('.ribbon-grid-more-anchor').getBoundingClientRect().width,
       familyLabelVisible: getComputedStyle(document.querySelector('[data-ribbon-item="family"] label')).clipPath !== 'inset(50%)',
     }
   })
   assert.equal(geometry.tabsHeight, 32)
   assert.equal(geometry.toolbarHeight, 73)
+  assert.equal(geometry.toolbarInlinePadding, '8px')
   assert.deepEqual(geometry.rowTracks.split(' ').slice(0, 2), ['28px', '28px'])
+  assert.equal(geometry.rowGap, '8px')
+  assert.equal(geometry.verticalPadding, '4px')
   assert.equal(geometry.columnGap, '8px')
   assert.equal(geometry.tabBorder, '0px', JSON.stringify(geometry))
   assert.equal(geometry.tabIndicatorHeight, '3px', JSON.stringify(geometry))
   assert.equal(geometry.tabIndicatorColor, 'rgb(49, 91, 194)', JSON.stringify(geometry))
-  assert.equal(geometry.groupJustify, 'flex-start')
+  assert.ok(geometry.groupJustify.endsWith('start'), JSON.stringify(geometry))
   assert.match(geometry.largeRow, /span 2/)
-  assert.equal(geometry.largeHeight, 64)
+  assert.equal(geometry.largeHeight, 56)
   assert.equal(geometry.largeWidth, 56)
+  assert.equal(geometry.moreWidth, 64)
   assert.equal(geometry.familyLabelVisible, true)
   assert.equal(await page.locator('.ribbon-visible-groups').count(), 0)
   assert.deepEqual(errors, [])

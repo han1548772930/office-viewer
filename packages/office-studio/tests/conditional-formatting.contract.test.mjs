@@ -73,3 +73,50 @@ test('parser conditional-format payload normalizes into the editable sheet model
     priority: 1, stopIfTrue: true,
   }])
 })
+
+test('visual rules resolve explicit thresholds, formulas, negative data bars and ordered icon boundaries', () => {
+  const range = [{ startRow: 0, startCol: 0, endRow: 3, endCol: 0 }]
+  const scope = [-100, -50, 0, 100].map((value, row) => ({ row, column: 0, value }))
+  const dataBar = {
+    ...baseRule, id: 'bar', type: 'dataBar', ranges: range, config: {
+      min: { type: 'formula', value: '=-100' }, max: { type: 'num', value: 100 },
+      positiveColor: '#008000', nativeColor: '#ff0000', isGradient: true, isShowValue: false,
+    },
+  }
+  const bar = conditionalFormatStyleAt([dataBar], 0, 0, -100, [], scope, undefined, formula => formula === '=-100' ? -100 : undefined)
+  assert.deepEqual(bar.dataBar, { fraction: 0.5, start: 0.5, color: '#ff0000', showValue: false, gradient: true, negative: true })
+  const icons = ['3Arrows', '3Arrows', '3Arrows'].map((iconType, index) => ({
+    value: { type: 'num', value: [67, 33, 0][index] }, operator: 'greaterThanOrEqual', iconType, iconId: String(index),
+  }))
+  const iconRule = { ...baseRule, id: 'icons', type: 'iconSet', ranges: range, config: { iconSet: '3Arrows', icons } }
+  assert.equal(conditionalFormatStyleAt([iconRule], 0, 0, 80, [], scope).icon.iconId, '0')
+  assert.equal(conditionalFormatStyleAt([iconRule], 1, 0, 50, [], scope).icon.iconId, '1')
+  assert.equal(conditionalFormatStyleAt([iconRule], 2, 0, 5, [], scope).icon.iconId, '2')
+  const reversed = conditionalFormatStyleAt([{ ...iconRule, config: { ...iconRule.config, reverse: true } }], 0, 0, 80, [], scope)
+  assert.equal(reversed.icon.iconId, '2')
+})
+
+test('color scales support two or three threshold stops and ignore invalid formula thresholds', () => {
+  const range = [{ startRow: 0, startCol: 0, endRow: 2, endCol: 0 }]
+  const scope = [0, 50, 100].map((value, row) => ({ row, column: 0, value }))
+  const rule = { ...baseRule, id: 'scale', type: 'colorScale', ranges: range, config: { thresholds: [
+    { value: { type: 'min' }, color: '#000000' },
+    { value: { type: 'percentile', value: 50 }, color: '#808080' },
+    { value: { type: 'max' }, color: '#ffffff' },
+  ] } }
+  assert.equal(conditionalFormatStyleAt([rule], 1, 0, 50, [], scope).fill, '#808080')
+  const formulaScale = { ...rule, config: { thresholds: [
+    { value: { type: 'formula', value: '=NA()' }, color: '#000000' },
+    { value: { type: 'max' }, color: '#ffffff' },
+  ] } }
+  assert.deepEqual(conditionalFormatStyleAt([formulaScale], 1, 0, 50, [], scope), {})
+})
+
+test('text rules handle case-insensitive matching, empty cells, and spreadsheet error values', () => {
+  const textRule = { ...baseRule, type: 'containsText', subType: 'text', operator: 'beginsWith', formula1: 'sales', value: 'sales' }
+  assert.equal(evaluateConditionalFormatRule(textRule, 'SALES total'), true)
+  assert.equal(evaluateConditionalFormatRule(textRule, 'total sales'), false)
+  assert.equal(evaluateConditionalFormatRule({ ...textRule, operator: 'containsBlanks' }, '   '), true)
+  assert.equal(evaluateConditionalFormatRule({ ...textRule, operator: 'containsErrors' }, '#DIV/0!'), true)
+  assert.equal(evaluateConditionalFormatRule({ ...textRule, operator: 'notContainsErrors' }, '#DIV/0!'), false)
+})

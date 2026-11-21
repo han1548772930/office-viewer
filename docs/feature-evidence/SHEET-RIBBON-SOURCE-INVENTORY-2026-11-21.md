@@ -7,7 +7,7 @@
 - 一个“根入口”是合并菜单后位于 Ribbon Tab / Group 下的顶层菜单节点。Split、menu/select 的子项不重复计数；动态公式分类按实际生成的分类菜单计数。Context menu、浮动对象菜单和 Footer 菜单单列。
 - Univer 菜单由 `packages/ui/src/services/menu/menu-manager.service.ts` 提供 Tab/Group 顺序，再由 `examples/src/sheets/mount.ts` 装配 preset，以及 sheets-ui、numfmt、formula、filter、sort、table、drawing、hyperlink、thread-comment、data-validation、conditional-formatting 和共享 find-replace 插件合并注册。
 - 本地按当前工作树的 `createSheetRibbon()` schema 统计。拆分项/子菜单的 children 不计根项。公式 Ribbon 的 8 个根分类由当前 117 项 `SHEET_FUNCTION_CATALOG` 动态生成。2026-11-21 本轮归组修正及十字高亮加入后，按 START、INSERT、FORMULAS、DATA、VIEW 顺序，本地根项为 `31/8/12/19/5`，共 75 项。条件格式从 Home 移到 Data 的 RULES 组，因此跨 Tab 总数不变；Insert 根栏移除行列插删四项，它们保留在 ROW_HEADER/COL_HEADER 上下文菜单。View 中十字高亮为本地扩展入口。
-- 既有续作记录曾报告上游 `30/9/12/6/6` 与本地旧版 `28/8/3/8/4`。当前固定源码按上述根节点口径复算为上游 `30/9/12/6/5`。旧 View 计数为 6，但按固定 schema 的独立父节点只能对应冻结、缩放、网格线、全屏、工作表背景图这 5 项；旧计数暂无法映射到第六个独立根节点。后续更新的旧本地计数 `32/12/12/18/4` 也已过时，不能用来描述当前工作树。
+- 固定源码按顶层父菜单 schema 计数为上游 `30/9/12/6/5`，本地当前根项为 `31/8/12/19/5`。
 - 根入口数只比较 schema 规模，不能说明功能完整。子菜单、上下文入口、权限隐藏、动态状态、溢出菜单、Pro 规格入口和实际命令效果分开核对。
 
 ## 标签与分组

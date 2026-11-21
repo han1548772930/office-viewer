@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Popover, Tooltip } from 'antdv-next'
-import { Ellipsis, ChevronDown } from 'lucide-vue-next'
+import { ChevronDown, MoreHorizontal } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import { fitRibbonGridGroups, GRID_RIBBON, groupRibbonGridOverflowItems, placeRibbonGridItems, type RibbonGroup } from './ribbon-schema'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
             @keydown.down.prevent="openOverflow"
             @keydown.esc="closeOverflow"
           >
-            <Ellipsis :size="20" />
+            <MoreHorizontal :size="20" />
             <span>{{ translate('common.more', '更多') }}</span>
             <ChevronDown :size="12" />
           </Button>
@@ -232,7 +232,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ribbon-grid-toolbar { position: relative; display: flex; box-sizing: border-box; width: 100%; min-width: 0; height: var(--ribbon-grid-toolbar-height); align-items: stretch; overflow: hidden; padding: 0 var(--ribbon-grid-group-padding); background: #f8fafc; color: #334155; }
+.ribbon-grid-toolbar { position: relative; display: flex; box-sizing: border-box; width: 100%; min-width: 0; height: var(--ribbon-grid-toolbar-height); align-items: stretch; overflow: hidden; padding: 0 8px; background: #f9fafb; color: #334155; }
 .ribbon-grid-groups { display: flex; min-width: 0; overflow: hidden; }
 .ribbon-grid-group { position: relative; display: flex; box-sizing: border-box; width: max-content; flex: 0 0 auto; padding-inline: var(--ribbon-grid-group-padding); }
 .ribbon-grid-group.is-hidden { position: absolute; visibility: hidden; pointer-events: none; }
@@ -240,14 +240,14 @@ onBeforeUnmount(() => {
 .ribbon-grid-cell { display: flex; min-width: var(--ribbon-grid-button-size); align-items: stretch; }
 .ribbon-grid-cell.is-large { min-width: var(--ribbon-grid-large-button-size); }
 .ribbon-grid-cell.is-full-width > :deep(.workbench-ribbon-item) { width: 100%; }
-.ribbon-grid-divider { position: absolute; inset-block: 14px 6px; inset-inline-end: 0; border-inline-end: 1px solid #cbd5e1; opacity: .6; pointer-events: none; }
+.ribbon-grid-divider { position: absolute; inset-block: 14px 6px; inset-inline-end: 0; border-inline-end: 1px solid #d1d5db; opacity: .5; pointer-events: none; }
 .ribbon-grid-more-anchor { display: flex; box-sizing: border-box; width: var(--ribbon-grid-more-width); flex: 0 0 var(--ribbon-grid-more-width); align-items: center; padding-block: 8px; padding-inline-start: var(--ribbon-grid-group-padding); }
 .ribbon-grid-more-anchor.is-hidden { position: absolute; visibility: hidden; pointer-events: none; }
-.ribbon-grid-more-button { display: inline-flex; box-sizing: border-box; width: 56px; min-width: 56px; height: 56px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 2px; font-size: 11px; line-height: 14px; }
+.ribbon-grid-more-button { display: inline-flex; box-sizing: border-box; width: 56px; min-width: 56px; height: 56px; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 2px; font-size: 12px; line-height: 16px; }
 .ribbon-grid-more-button:focus-visible { outline: 2px solid #5274d7; outline-offset: -2px; }
-.ribbon-grid-overflow { display: flex; box-sizing: border-box; width: min(360px, calc(100vw - 24px)); min-width: min(240px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(520px, 70vh); flex-direction: column; gap: 4px; overflow: auto; padding: 4px 8px; }
-.ribbon-grid-overflow-group { display: flex; flex-direction: column; gap: 4px; padding-block: 4px; }
+.ribbon-grid-overflow { display: flex; box-sizing: border-box; width: min(320px, calc(100vw - 24px)); min-width: 0; max-width: calc(100vw - 24px); max-height: min(520px, 70vh); flex-direction: column; gap: 4px; overflow: auto; padding: 4px 8px; }
+.ribbon-grid-overflow-group { display: flex; flex-direction: column; gap: 4px; padding-block: 6px; }
 .ribbon-grid-overflow-group + .ribbon-grid-overflow-group { border-top: 1px solid #e2e8f0; }
-.ribbon-grid-overflow-group h3 { margin: 0; padding: 2px 4px; color: #64748b; font-size: 11px; font-weight: 500; }
+.ribbon-grid-overflow-group h3 { margin: 0 0 4px; padding: 0 4px; color: #64748b; font-size: 11px; font-weight: 500; }
 .ribbon-grid-overflow-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 </style>

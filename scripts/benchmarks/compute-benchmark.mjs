@@ -25,11 +25,9 @@ try {
   })
   const stamp = result.generatedAt.replaceAll(/[:.]/g, '-')
   const jsonPath = resolve(args.output ?? outputDirectory, `compute-${stamp}.json`)
-  const markdownPath = resolve(args.output ?? outputDirectory, `compute-${stamp}.md`)
   await mkdir(args.output ?? outputDirectory, { recursive: true })
   await writeFile(jsonPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8')
-  await writeFile(markdownPath, renderMarkdown(result), 'utf8')
-  process.stdout.write(`${JSON.stringify({ jsonPath, markdownPath, result }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ jsonPath, result }, null, 2)}\n`)
 } finally {
   await browser.close()
   await server.close()
@@ -54,51 +52,3 @@ function parseArgs(values) {
   if (!Number.isFinite(options.dpr) || options.dpr <= 0) throw new Error('Invalid --dpr')
   return options
 }
-
-function renderMarkdown(result) {
-  const lines = [
-    '# Office compute benchmark',
-    '',
-    `Generated: ${result.generatedAt}`,
-    '',
-    'This is a measurement record. It does not claim a performance target was met.',
-    '',
-    '## Environment',
-    '',
-    `- User agent: ${result.environment.userAgent}`,
-    `- Hardware concurrency: ${result.environment.hardwareConcurrency}`,
-    `- Device memory (GiB): ${result.environment.deviceMemoryGiB ?? 'unavailable'}`,
-    `- Viewport: ${result.environment.viewport.width}×${result.environment.viewport.height} @ DPR ${result.environment.viewport.devicePixelRatio}`,
-    `- Long task observer: ${result.environment.longTaskObserverAvailable ? 'available' : 'unavailable'}`,
-    '',
-    '## Routing',
-    '',
-    `- Configured NumericIndexService minRows: ${result.routing.configuredMinRows}`,
-    `- Threshold status: ${result.routing.thresholdStatus}`,
-    '',
-    '## Measurements',
-    '',
-    '| Rows | Operation | Regime | P50 wall (ms) | P95 wall (ms) | Worker compute (ms) | Queue/startup (ms) | Boundary bytes | Peak estimate (bytes) | Long-task max (ms) |',
-    '| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
-  ]
-  for (const workload of result.workloads) {
-    const all = [...workload.typescript, ...workload.cold, ...workload.warm]
-    for (const summary of workload.summary) {
-      const matching = all.filter((sample) => sample.operation === summary.operation && sample.regime === summary.regime)
-      const workerCompute = averageOrDash(matching.map((sample) => sample.workerComputeMs))
-      const queue = averageOrDash(matching.map((sample) => sample.workerQueueAndStartupMs))
-      const boundary = averageOrDash(matching.map((sample) => sample.boundaryBytes))
-      const peak = averageOrDash(matching.map((sample) => sample.estimatedPeakBytes))
-      const longTask = averageOrDash(matching.map((sample) => sample.longTasks.maxMs))
-      lines.push(`| ${workload.rowCount} | ${summary.operation} | ${summary.regime} | ${format(summary.p50WallMs)} | ${format(summary.p95WallMs)} | ${workerCompute} | ${queue} | ${boundary} | ${peak} | ${longTask} |`)
-    }
-  }
-  lines.push('', '## Limitations', '', ...result.methodology.memoryLimitations.map((item) => `- ${item}`), '')
-  return `${lines.join('\n')}\n`
-}
-
-function averageOrDash(values) {
-  const finite = values.filter((value) => typeof value === 'number' && Number.isFinite(value))
-  return finite.length ? format(finite.reduce((sum, value) => sum + value, 0) / finite.length) : '—'
-}
-function format(value) { return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(3) : '—' }
