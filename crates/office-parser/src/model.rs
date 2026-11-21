@@ -66,6 +66,7 @@ impl ParserDiagnostics {
                 "rowColumnGeometry".into(),
                 "sheetViews".into(),
                 "charts".into(),
+                "dataValidations".into(),
             ],
         }
     }
@@ -230,11 +231,42 @@ pub struct SheetPayload {
     pub hidden_rows: Vec<u32>,
     pub hidden_columns: Vec<u16>,
     pub hyperlinks: Vec<HyperlinkPayload>,
+    pub data_validations: Vec<DataValidationPayload>,
     pub style_fidelity: String,
     pub style_losses: Vec<StyleLossPayload>,
     /// Charts read from the worksheet drawing part. Unsupported chart
     /// constructs remain in the sidecar metadata rather than being dropped.
     pub charts: Vec<ChartPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataValidationPayload {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub validation_type: String,
+    pub ranges: Vec<DataValidationRangePayload>,
+    pub operator: String,
+    pub formula1: String,
+    pub formula2: Option<String>,
+    pub allow_blank: bool,
+    pub show_drop_down: Option<bool>,
+    pub show_error_message: bool,
+    pub error_style: Option<String>,
+    pub error_title: Option<String>,
+    pub error: Option<String>,
+    pub show_input_message: bool,
+    pub prompt_title: Option<String>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataValidationRangePayload {
+    pub start_row: u32,
+    pub start_col: u32,
+    pub end_row: u32,
+    pub end_col: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -354,6 +386,7 @@ pub struct StylePayload {
     pub vertical: Option<String>,
     pub wrap: bool,
     pub rotation: i16,
+    pub rotation_vertical: bool,
     pub indent: u8,
     pub shrink_to_fit: bool,
     pub fill_pattern: Option<String>,

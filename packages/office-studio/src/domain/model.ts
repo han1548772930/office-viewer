@@ -21,6 +21,7 @@ export interface CellStyle {
   numberFormat: string
   border?: Record<string, unknown>
   rotation?: number
+  rotationVertical?: boolean
   indent?: number
   shrinkToFit?: boolean
   metadata?: Record<string, unknown>
@@ -66,6 +67,51 @@ export interface SheetAutoFilter {
   range: CellRange
   columns: Record<number, SheetFilterCriteria>
   filteredRows: number[]
+}
+
+export type SheetDataValidationType = 'whole' | 'decimal' | 'textLength' | 'date' | 'time' | 'checkbox' | 'list' | 'listMultiple' | 'custom'
+export type SheetDataValidationOperator = 'between' | 'equal' | 'greaterThan' | 'greaterThanOrEqual' |
+  'lessThan' | 'lessThanOrEqual' | 'notBetween' | 'notEqual'
+export type SheetDataValidationErrorStyle = 'stop' | 'warning' | 'info'
+export type SheetDataValidationRenderMode = 'text' | 'arrow' | 'custom'
+
+export interface SheetDataValidationRule {
+  id: string
+  type: SheetDataValidationType
+  ranges: CellRange[]
+  operator?: SheetDataValidationOperator
+  formula1?: string
+  formula2?: string
+  allowBlank?: boolean
+  showDropDown?: boolean
+  showErrorMessage?: boolean
+  error?: string
+  errorTitle?: string
+  errorStyle?: SheetDataValidationErrorStyle
+  showInputMessage?: boolean
+  prompt?: string
+  promptTitle?: string
+  renderMode?: SheetDataValidationRenderMode
+  metadata?: Record<string, unknown>
+}
+
+export type SheetProtectionEditState = 'onlyMe' | 'designedUserCanEdit'
+export type SheetProtectionViewState = 'othersCanView' | 'noOneElseCanView'
+export interface SheetRangeProtectionRule {
+  id: string
+  permissionId: string
+  ranges: CellRange[]
+  description?: string
+  ownerUserId: string
+  allowedUserIds: string[]
+  editState: SheetProtectionEditState
+  viewState: SheetProtectionViewState
+  metadata?: Record<string, unknown>
+}
+export type SheetRangeProtectionDraft = Omit<SheetRangeProtectionRule, 'id' | 'permissionId' | 'ownerUserId'> & {
+  id?: string
+  permissionId?: string
+  ownerUserId?: string
 }
 
 export type PivotFieldArea = 'filter' | 'row' | 'column' | 'value'
@@ -217,6 +263,8 @@ export interface SpreadsheetSheet {
   showGridlines: boolean
   hiddenRows?: number[]
   autoFilter?: SheetAutoFilter
+  dataValidations?: SheetDataValidationRule[]
+  rangeProtectionRules?: SheetRangeProtectionRule[]
   hiddenColumns?: number[]
   defaultColumnWidth?: number
   defaultRowHeight?: number
@@ -240,7 +288,8 @@ export interface WorkbookModel {
   slicers?: SlicerModel[]
 }
 
-export type DocumentBlockType = 'paragraph' | 'heading' | 'bullet' | 'numbered' | 'quote' | 'divider' | 'table' | 'image' | 'pageBreak'
+export type DocumentSectionBreakType = 'nextPage' | 'continuous' | 'nextColumn' | 'evenPage' | 'oddPage'
+export type DocumentBlockType = 'paragraph' | 'heading' | 'bullet' | 'numbered' | 'checklist' | 'quote' | 'divider' | 'table' | 'image' | 'pageBreak' | 'columnBreak' | 'sectionBreak'
 
 export interface InlineRun {
   id: string
@@ -252,6 +301,7 @@ export interface InlineRun {
   color: string
   fontFamily: string
   fontSize: number
+  verticalAlign?: 'baseline' | 'subscript' | 'superscript'
   metadata?: Record<string, unknown>
 }
 
@@ -270,6 +320,8 @@ export interface DocumentBlock {
   runs: InlineRun[]
   style: DocumentParagraphStyle
   metadata: Record<string, unknown>
+  checklist?: { listId: string; checked: boolean }
+  sectionBreak?: { type: DocumentSectionBreakType }
 }
 
 export type DocumentContentControlType =
@@ -385,6 +437,10 @@ export const defaultCellStyle = (): CellStyle => ({
   horizontal: 'left',
   vertical: 'middle',
   wrap: false,
+  rotation: 0,
+  rotationVertical: false,
+  indent: 0,
+  shrinkToFit: false,
   numberFormat: 'General',
 })
 

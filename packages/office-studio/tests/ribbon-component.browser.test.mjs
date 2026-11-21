@@ -15,6 +15,7 @@ import { createApp, computed, h, ref } from 'vue'
 import { Bold, Undo2 } from 'lucide-vue-next'
 import WorkbenchRibbon from '/packages/office-studio/src/platform/ribbon/WorkbenchRibbon.vue'
 const active = ref('home')
+const variant = ref('classic')
 const locked = ref(false)
 const showContext = ref(true)
 const menusVisible = ref(true)
@@ -23,7 +24,7 @@ const family = ref('Arial')
 const bold = ref(false)
 const longTabTitles = ref(false)
 window.ribbonInvocations = []
-window.ribbonFixture = { active, locked, showContext, menusVisible, direction, family, bold, longTabTitles }
+window.ribbonFixture = { active, variant, locked, showContext, menusVisible, direction, family, bold, longTabTitles }
 const tabs = computed(() => menusVisible.value ? [
   { id: 'home', title: longTabTitles.value ? '开始与格式编辑' : '开始', order: 0, groups: [
     { id: 'history', title: '历史', items: [
@@ -37,14 +38,35 @@ const tabs = computed(() => menusVisible.value ? [
         { id: 'blue', type: 'button', title: '蓝色', commandId: 'doc.command.color', params: '#3b82f6' },
       ] },
     ] },
-    { id: 'paragraph', title: '段落', items: Array.from({ length: 5 }, (_, n) => ({ id: 'tool-' + n, type: 'button', title: '段落工具' + n, commandId: 'doc.command.tool', params: n, showLabel: true })) },
+    { id: 'paragraph', title: '段落', items: [
+      ...Array.from({ length: 5 }, (_, n) => ({ id: 'tool-' + n, type: 'button', title: '段落工具' + n, commandId: 'doc.command.tool', params: n, showLabel: true })),
+      { id: 'validation-rule', type: 'select', title: '验证规则', commandId: 'sheet.command.set-validation', value: 'whole', options: [
+        { label: '整数', value: 'whole', commandId: 'sheet.command.set-validation', params: { rule: { type: 'whole', operator: 'between', formula1: 1, formula2: 9 } } },
+        { label: '列表', value: 'list', commandId: 'sheet.command.set-validation-list', params: { values: ['A', 'B'] } },
+      ] },
+      { id: 'list-toggle', type: 'split', title: '列表', commandId: 'doc.command.list-toggle', params: { type: 'bullet' }, children: [
+        { id: 'list-numbered', type: 'button', title: '有序列表', commandId: 'doc.command.set-block-type', params: { type: 'numbered' } },
+      ] },
+    ] },
   ] },
   { id: 'hidden', title: '隐藏', hidden: true, groups: [{ id: 'hidden-group', items: [{ id: 'hidden-tool', type: 'button', title: '隐藏工具', commandId: 'hidden' }] }] },
   { id: 'empty', title: '空分类', groups: [] },
   { id: 'insert', title: longTabTitles.value ? '插入与对象管理' : '插入', order: 1, groups: [{ id: 'insert', items: [{ id: 'insert-table', type: 'button', title: '插入表格', commandId: 'doc.command.insert-table', showLabel: true }] }] },
   { id: 'context', title: longTabTitles.value ? '表格上下文工具' : '表格', order: 2, contextual: true, hidden: !showContext.value, groups: [{ id: 'table', items: [{ id: 'delete-table', type: 'button', title: '删除表格', commandId: 'doc.command.delete-table', showLabel: true }] }] },
 ] : [])
-createApp({ render() { return h(WorkbenchRibbon, { tabs: tabs.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null }) } }).mount('#app')
+const gridLayoutById = {
+  undo: { row: 1, column: 1, rowSpan: 2, width: 56, showLabel: true },
+  family: { row: 1, column: 1, rowSpan: 2, width: 112, minWidth: 84, showLabel: true },
+  bold: { row: 1, column: 2, width: 32 },
+  colors: { row: 2, column: 2, width: 32, showLabel: false },
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => ['tool-' + index, { row: index % 2 + 1, column: Math.floor(index / 2) + 1, width: 90, minWidth: 64, showLabel: true }])),
+  'validation-rule': { row: 1, column: 4, rowSpan: 2, width: 116, minWidth: 92, showLabel: true },
+  'list-toggle': { row: 1, column: 5, rowSpan: 2, width: 84, showLabel: true },
+  'insert-table': { row: 1, column: 1, rowSpan: 2, width: 72, showLabel: true },
+  'delete-table': { row: 1, column: 1, rowSpan: 2, width: 72, showLabel: true },
+}
+const gridTabs = computed(() => tabs.value.map((tab) => ({ ...tab, groups: tab.groups.map((group) => ({ ...group, items: group.items.map((item) => ({ ...item, gridLayout: gridLayoutById[item.id] })) })) })))
+createApp({ render() { return h(WorkbenchRibbon, { tabs: gridTabs.value, variant: variant.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null }) } }).mount('#app')
 `
 
 before(async () => {
@@ -150,6 +172,127 @@ test('classic rows center their contents and match reference button, selector, g
   assert.deepEqual(errors, [])
 })
 
+test('grid variant is opt-in and uses two-row placements with large controls spanning both rows', async () => {
+  await page.evaluate(() => { window.ribbonFixture.variant.value = 'grid' })
+  const toolbar = page.getByTestId('ribbon-grid-toolbar')
+  await toolbar.waitFor()
+  const geometry = await page.evaluate(() => {
+    const tabs = document.querySelector('.workbench-ribbon-tabs').getBoundingClientRect()
+    const toolbar = document.querySelector('.workbench-ribbon-toolbar').getBoundingClientRect()
+    const menu = document.querySelector('[role="tab"][aria-selected="true"]')
+    const largeCell = document.querySelector('[data-ribbon-item="undo"]').closest('.ribbon-grid-cell')
+    const cells = document.querySelector('.ribbon-grid-cells')
+    return {
+      tabsHeight: tabs.height,
+      toolbarHeight: toolbar.height,
+      rowTracks: getComputedStyle(cells).gridTemplateRows,
+      columnGap: getComputedStyle(cells).columnGap,
+      tabBorder: getComputedStyle(menu).borderBottomWidth,
+      tabIndicatorHeight: getComputedStyle(menu, '::after').height,
+      tabIndicatorColor: getComputedStyle(menu, '::after').backgroundColor,
+      tabClass: menu.className,
+      tabStyle: menu.getAttribute('style'),
+      groupJustify: getComputedStyle(document.querySelector('.workbench-ribbon-tabs')).justifyContent,
+      largeRow: getComputedStyle(largeCell).gridRow,
+      largeHeight: document.querySelector('[data-ribbon-item="undo"] .ribbon-button').getBoundingClientRect().height,
+      familyLabelVisible: getComputedStyle(document.querySelector('[data-ribbon-item="family"] label')).clipPath !== 'inset(50%)',
+    }
+  })
+  assert.equal(geometry.tabsHeight, 32)
+  assert.equal(geometry.toolbarHeight, 73)
+  assert.deepEqual(geometry.rowTracks.split(' ').slice(0, 2), ['28px', '28px'])
+  assert.equal(geometry.columnGap, '8px')
+  assert.equal(geometry.tabBorder, '0px', JSON.stringify(geometry))
+  assert.equal(geometry.tabIndicatorHeight, '3px', JSON.stringify(geometry))
+  assert.equal(geometry.tabIndicatorColor, 'rgb(49, 91, 194)', JSON.stringify(geometry))
+  assert.equal(geometry.groupJustify, 'flex-start')
+  assert.match(geometry.largeRow, /span 2/)
+  assert.equal(geometry.largeHeight, 64)
+  assert.equal(geometry.familyLabelVisible, true)
+  assert.equal(await page.locator('.ribbon-visible-groups').count(), 0)
+  assert.deepEqual(errors, [])
+})
+
+test('grid density preserves whole groups and exposes every overflow command exactly once', async () => {
+  await page.evaluate(() => { window.ribbonFixture.variant.value = 'grid' })
+  await page.setViewportSize({ width: 210, height: 700 })
+  const toolbar = page.getByTestId('ribbon-grid-toolbar')
+  await toolbar.waitFor()
+  await expect.poll(() => toolbar.evaluate(element => element.style.getPropertyValue('--ribbon-grid-density'))).toBe('1')
+  const visibleGroupIds = await toolbar.locator('.ribbon-grid-group:not(.is-hidden)').evaluateAll(elements => elements.map(element => element.dataset.groupId))
+  assert.ok(visibleGroupIds.length > 0 && visibleGroupIds.length < 3, JSON.stringify(visibleGroupIds))
+  const visibleIds = await toolbar.locator('.ribbon-grid-group:not(.is-hidden) [data-ribbon-item]').evaluateAll(elements => elements.map(element => element.dataset.ribbonItem))
+  const more = page.getByRole('button', { name: '更多功能', exact: true })
+  const triggerGeometry = await page.evaluate(() => {
+    const toolbarBounds = document.querySelector('[data-testid="ribbon-grid-toolbar"]').getBoundingClientRect()
+    const anchorBounds = document.querySelector('.ribbon-grid-more-anchor').getBoundingClientRect()
+    const triggerBounds = document.querySelector('.ribbon-grid-more-button').getBoundingClientRect()
+    const visibleGroups = [...document.querySelectorAll('.ribbon-grid-group:not(.is-hidden)')].map(element => element.getBoundingClientRect())
+    const visibleRight = Math.max(toolbarBounds.left, ...visibleGroups.map(bounds => bounds.right))
+    return { toolbarLeft: toolbarBounds.left, toolbarRight: toolbarBounds.right, anchorLeft: anchorBounds.left, anchorRight: anchorBounds.right, triggerWidth: triggerBounds.width, visibleRight }
+  })
+  assert.equal(triggerGeometry.anchorRight - triggerGeometry.anchorLeft, 64)
+  assert.ok(triggerGeometry.anchorLeft >= triggerGeometry.visibleRight - 1, JSON.stringify(triggerGeometry))
+  assert.ok(triggerGeometry.anchorRight <= triggerGeometry.toolbarRight, JSON.stringify(triggerGeometry))
+  assert.ok(triggerGeometry.triggerWidth <= 56, JSON.stringify(triggerGeometry))
+  await more.focus()
+  await page.keyboard.press('ArrowDown')
+  const popup = page.getByRole('menu', { name: '更多功能', exact: true })
+  await popup.waitFor()
+  const popupBounds = await popup.boundingBox()
+  assert.ok(popupBounds.x >= 12 && popupBounds.x + popupBounds.width <= 198, JSON.stringify(popupBounds))
+  const overflowIds = await popup.locator('[data-ribbon-item]').evaluateAll(elements => elements.map(element => element.dataset.ribbonItem))
+  const allIds = [...visibleIds, ...overflowIds]
+  const expectedIds = ['undo', 'family', 'bold', 'colors', ...Array.from({ length: 5 }, (_, index) => `tool-${index}`), 'validation-rule', 'list-toggle']
+  assert.deepEqual([...allIds].sort(), [...expectedIds].sort())
+  assert.equal(new Set(allIds).size, expectedIds.length)
+  await popup.getByRole('button', { name: '段落工具4', exact: true }).click()
+  await page.waitForFunction(() => window.ribbonInvocations.some(([id, value]) => id === 'doc.command.tool' && value === 4))
+  const documentWidth = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth, bodyWidth: document.body.scrollWidth, oversized: [...document.querySelectorAll('body *')].map(element => ({ tag: element.tagName, className: String(element.className), left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right })).filter(element => element.right > innerWidth + 0.5).slice(-8) }))
+  assert.ok(documentWidth.scrollWidth <= documentWidth.viewportWidth, JSON.stringify(documentWidth))
+  assert.deepEqual(errors, [])
+})
+
+test('grid overflow preserves selector params and split main/dropdown commands', async () => {
+  await page.evaluate(() => { window.ribbonFixture.variant.value = 'grid' })
+  await page.setViewportSize({ width: 210, height: 700 })
+  const more = page.getByRole('button', { name: '更多功能', exact: true })
+  await more.focus()
+  await page.keyboard.press('ArrowDown')
+  const popup = page.getByRole('menu', { name: '更多功能', exact: true })
+  await popup.waitFor()
+
+  const rule = popup.getByRole('combobox', { name: '验证规则', exact: true })
+  assert.equal(await rule.count(), 1)
+  await rule.click()
+  await page.getByTitle('列表', { exact: true }).click()
+  await page.waitForFunction(() => window.ribbonInvocations.some(([id]) => id === 'sheet.command.set-validation-list'))
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['sheet.command.set-validation-list', { values: ['A', 'B'] }])
+
+  const list = popup.getByRole('button', { name: '列表', exact: true })
+  await list.click()
+  await page.waitForFunction(() => window.ribbonInvocations.some(([id]) => id === 'doc.command.list-toggle'))
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['doc.command.list-toggle', { type: 'bullet' }])
+
+  await more.focus()
+  await page.keyboard.press('ArrowDown')
+  await popup.waitFor()
+  const dropdown = popup.getByRole('button', { name: '列表选项', exact: true })
+  await dropdown.click()
+  const numbered = page.getByRole('menu', { name: '列表', exact: true }).getByRole('button', { name: '有序列表', exact: true })
+  await numbered.click()
+  await page.waitForFunction(() => window.ribbonInvocations.some(([id]) => id === 'doc.command.set-block-type'))
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['doc.command.set-block-type', { type: 'numbered' }])
+
+  const splitBounds = await popup.locator('.ribbon-split').evaluate(element => {
+    const parent = element.getBoundingClientRect()
+    const buttons = [...element.querySelectorAll(':scope > button, :scope > span > button')].map(button => button.getBoundingClientRect())
+    return { width: parent.width, buttonWidths: buttons.map(button => button.width), rightmost: Math.max(...buttons.map(button => button.right)), parentRight: parent.right }
+  })
+  assert.ok(splitBounds.rightmost <= splitBounds.parentRight + 1, JSON.stringify(splitBounds))
+  assert.deepEqual(errors, [])
+})
+
 test('selectors and activated/disabled buttons reflect editor state and dispatch real command parameters', async () => {
   const font = page.getByRole('combobox', { name: '字体', exact: true })
   assert.equal(await font.count(), 1, await page.getByRole('combobox').evaluateAll((elements) => elements.map((element) => element.outerHTML).join('\n')))
@@ -199,7 +342,7 @@ test('narrow toolbar exposes overflow controls, nested menus and selectors witho
 })
 
 test('classic fitting preserves every control once and centers the visible suffix trigger in both directions', async () => {
-  const expected = ['undo', 'family', 'bold', 'colors', ...Array.from({ length: 5 }, (_, index) => `tool-${index}`)]
+  const expected = ['undo', 'family', 'bold', 'colors', ...Array.from({ length: 5 }, (_, index) => `tool-${index}`), 'validation-rule', 'list-toggle']
   for (const direction of ['ltr', 'rtl']) {
     await page.evaluate(value => { window.ribbonFixture.direction.value = value }, direction)
     for (const width of [210, 360, 620, 1200]) {

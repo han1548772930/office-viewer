@@ -1,9 +1,11 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
 import { transformContentControlsForBlockEdit, transformContentControlsForTextEdit } from './content-controls'
 import {
+  applyRunPatch,
   compactRuns,
   createParagraph,
   createRun,
+  documentId,
   marksAtPoint,
   runText,
   runsForTarget,
@@ -49,7 +51,7 @@ export interface DocumentTextRange {
   text: string
 }
 
-export type DocumentTextStyle = Partial<Pick<DocumentRun, 'bold' | 'italic' | 'underline' | 'strike' | 'color' | 'fontFamily' | 'fontSize' | 'highlight' | 'href'>>
+export type DocumentTextStyle = Partial<Pick<DocumentRun, 'bold' | 'italic' | 'underline' | 'strike' | 'verticalAlign' | 'color' | 'fontFamily' | 'fontSize' | 'highlight' | 'href'>>
 export type DocumentTextStylePatch = DocumentTextStyle
 export interface DocumentParagraphIdentity { paragraphId: string }
 
@@ -94,7 +96,7 @@ export function findDocumentParagraphs(
   const body = flattenDocumentBody(model)
   return body.segments.flatMap((segment) => {
     const block = blockForTarget(model, segment)
-    if (!block || ['table', 'image', 'divider', 'pageBreak'].includes(block.type)) return []
+    if (!block || ['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) return []
     const paragraphId = segment.cellBlockId ?? segment.blockId
     if (normalized.paragraphId && normalized.paragraphId !== paragraphId) return []
     if (normalized.blockId && normalized.blockId !== segment.blockId) return []
@@ -194,7 +196,7 @@ export function setDocumentTextStyle(
     const from = rangeStart - segment.startOffset
     const to = rangeEnd - segment.startOffset
     const runs = runsForTarget(model, segment)
-    const selected = sliceRuns(runs, from, to).map((run) => ({ ...run, ...effectivePatch }))
+    const selected = sliceRuns(runs, from, to).map((run) => applyRunPatch(run, effectivePatch))
     setTargetRuns(model, segment, [
       ...sliceRuns(runs, 0, from),
       ...selected,
@@ -306,16 +308,19 @@ function structuredCloneDocument(model: DocumentModel): DocumentModel {
   return JSON.parse(JSON.stringify(model)) as DocumentModel
 }
 
-const textStyleKeys = ['bold', 'italic', 'underline', 'strike', 'color', 'fontFamily', 'fontSize', 'highlight', 'href'] as const satisfies ReadonlyArray<keyof DocumentTextStyle>
+const textStyleKeys = ['bold', 'italic', 'underline', 'strike', 'verticalAlign', 'color', 'fontFamily', 'fontSize', 'highlight', 'href'] as const satisfies ReadonlyArray<keyof DocumentTextStyle>
 
 function textStyleOf(run: DocumentRun): DocumentTextStyle {
-  const { bold, italic, underline, strike, color, fontFamily, fontSize, highlight, href } = run
-  return { bold, italic, underline, strike, color, fontFamily, fontSize, ...(highlight === undefined ? {} : { highlight }), ...(href === undefined ? {} : { href }) }
+  const { bold, italic, underline, strike, verticalAlign, color, fontFamily, fontSize, highlight, href } = run
+  return { bold, italic, underline, strike, ...(verticalAlign === undefined ? {} : { verticalAlign }), color, fontFamily, fontSize, ...(highlight === undefined ? {} : { highlight }), ...(href === undefined ? {} : { href }) }
 }
 
 function validateTextStylePatch(patch: DocumentTextStylePatch): void {
   if (patch.fontSize !== undefined && (!Number.isFinite(patch.fontSize) || patch.fontSize <= 0)) {
     throw new RangeError('Font size must be a positive number')
+  }
+  if (patch.verticalAlign !== undefined && !['baseline', 'subscript', 'superscript'].includes(patch.verticalAlign)) {
+    throw new TypeError(`Unsupported vertical alignment: ${patch.verticalAlign}`)
   }
 }
 
@@ -334,7 +339,7 @@ function locateParagraphTarget(model: DocumentModel, identity: DocumentParagraph
   const target = textTargets(model).find((candidate) => (candidate.cellBlockId ?? candidate.blockId) === identity.paragraphId)
   if (!target) return undefined
   const reference = locateTarget(model, { ...target, offset: 0 })
-  if (!reference || ['table', 'image', 'divider', 'pageBreak'].includes(reference.block.type)) return undefined
+  if (!reference || ['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(reference.block.type)) return undefined
   return reference
 }
 
@@ -363,7 +368,7 @@ interface TargetReference {
 function hasUnaddressableBlocksBetween(start: TargetReference, end: TargetReference): boolean {
   return start.container
     .slice(start.index + 1, end.index)
-    .some((block) => !['paragraph', 'heading', 'bullet', 'numbered', 'quote'].includes(block.type))
+    .some((block) => !['paragraph', 'heading', 'bullet', 'numbered', 'checklist', 'quote'].includes(block.type))
 }
 
 function locateTarget(model: DocumentModel, point: DocumentPoint): TargetReference | undefined {
@@ -457,9 +462,10 @@ function replaceWithinBlock(
 function paragraphAfter(source: DocumentBlock, marks: ReturnType<typeof marksAtPoint>): DocumentBlock {
   const block = createParagraph('', marks)
   block.style = { ...source.style }
-  if (['bullet', 'numbered', 'quote'].includes(source.type)) {
+  if (['bullet', 'numbered', 'checklist', 'quote'].includes(source.type)) {
     block.type = source.type
     block.level = source.level
+    if (source.type === 'checklist') block.checklist = { listId: source.checklist?.listId ?? documentId('checklist'), checked: false }
   }
   return block
 }

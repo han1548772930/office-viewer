@@ -1,8 +1,8 @@
-import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
+import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, DocumentSectionBreakType } from '../../../domain/model'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import {
-  clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable,
+  applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets,
   type DocumentImage, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
@@ -15,7 +15,10 @@ export type DocumentCommand =
   | { id: 'doc.command.format-text'; patch: RunPatch }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
   | { id: 'doc.command.set-block-type'; type: DocumentBlock['type']; level?: number }
+  | { id: 'doc.command.toggle-checklist-item'; blockId: string }
   | { id: 'doc.command.insert-page-break' }
+  | { id: 'doc.command.insert-column-break' }
+  | { id: 'doc.command.insert-section-break'; type: DocumentSectionBreakType }
   | { id: 'doc.command.insert-table'; rows: number; cols: number }
   | { id: 'doc.command.insert-image'; image: DocumentImage }
   | { id: 'doc.command.insert-divider' }
@@ -33,6 +36,30 @@ function blockContainer(model: DocumentModel, point: TextTarget): DocumentBlock[
   if (point.row == null) return model.blocks
   const block = model.blocks.find((candidate) => candidate.id === point.blockId)
   return block ? tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]?.blocks ?? model.blocks : model.blocks
+}
+
+function findBlockById(blocks: readonly DocumentBlock[], id: string): DocumentBlock | undefined {
+  for (const block of blocks) {
+    if (block.id === id) return block
+    const table = tableForBlock(block)
+    for (const row of table?.rows ?? []) {
+      for (const cell of row.cells) {
+        const nested = findBlockById(cell.blocks, id)
+        if (nested) return nested
+      }
+    }
+  }
+  return undefined
+}
+
+function adjacentChecklistId(model: DocumentModel, target: TextTarget | undefined): string | undefined {
+  if (!target || target.row != null) return undefined
+  const index = model.blocks.findIndex((block) => block.id === target.blockId)
+  if (index < 0) return undefined
+  for (const block of [model.blocks[index - 1], model.blocks[index + 1]]) {
+    if (block?.type === 'checklist' && block.checklist?.listId) return block.checklist.listId
+  }
+  return undefined
 }
 
 function pointForBlock(template: DocumentPoint, block: DocumentBlock, offset: number): DocumentPoint {
@@ -57,16 +84,28 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
       })
       return selection
     }
+    case 'doc.command.toggle-checklist-item': {
+      const block = findBlockById(model.blocks, command.blockId)
+      if (!block || block.type !== 'checklist') throw new RangeError('The selected block is not a checklist item.')
+      block.checklist = { listId: block.checklist?.listId || documentId('checklist'), checked: block.checklist?.checked !== true }
+      return selection
+    }
     case 'doc.command.set-block-type': {
       const targets = selectedTargets(model, selection)
-      const isList = command.type === 'bullet' || command.type === 'numbered'
+      const isList = command.type === 'bullet' || command.type === 'numbered' || command.type === 'checklist'
       const toggleOff = isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === command.type)
+      const selectedChecklist = targets.map((target) => blockAtPoint(model, target)).find((block) => block?.type === 'checklist')
+      const checklistListId = command.type === 'checklist' && !toggleOff
+        ? selectedChecklist?.checklist?.listId ?? adjacentChecklistId(model, targets[0]) ?? documentId('checklist')
+        : undefined
       targets.forEach((target) => {
         const block = blockAtPoint(model, target)
         if (!block) return
-        const wasList = block.type === 'bullet' || block.type === 'numbered'
+        const wasList = block.type === 'bullet' || block.type === 'numbered' || block.type === 'checklist'
         block.type = toggleOff ? 'paragraph' : command.type
         block.level = block.type === 'paragraph' ? 0 : command.level ?? (isList && wasList ? block.level : 0)
+        if (block.type === 'checklist') block.checklist = { listId: checklistListId ?? block.checklist?.listId ?? documentId('checklist'), checked: block.checklist?.checked === true }
+        else delete block.checklist
         if (command.type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: command.level === 1 ? 24 : command.level === 2 ? 18 : 14 }))
         if (command.type === 'paragraph') block.runs = block.runs.map((run) => ({ ...run, bold: false, fontSize: 11 }))
       })
@@ -79,6 +118,8 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
       if (split.focus.row == null) container.splice(index, 0, { ...createParagraph(), type: 'pageBreak', runs: [] })
       return split
     }
+    case 'doc.command.insert-column-break': return insertBreakBlock(model, selection, 'columnBreak')
+    case 'doc.command.insert-section-break': return insertBreakBlock(model, selection, 'sectionBreak', command.type)
     case 'doc.command.insert-table': {
       const block = { ...createParagraph(), type: 'table' as const, metadata: { table: createTable(command.rows, command.cols) } }
       insertBlocks(model, selection, [block])
@@ -137,11 +178,21 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const startBlock = blockAtPoint(model, start)
   if (!startBlock) return selection
   const normalizedText = text.replace(/\r\n?/g, '\n')
+  if (normalizedText === '\n' && selectionCollapsed(selection) && startBlock.type === 'checklist' && !runText(runsForTarget(model, start)).length) {
+    startBlock.type = 'paragraph'
+    startBlock.level = 0
+    delete startBlock.checklist
+    return collapsedSelection(start)
+  }
   const paragraphs = normalizedText.split('\n')
   const additions = paragraphs.slice(1).map((part, index) => {
     const paragraph = createParagraph(part, inherited)
     paragraph.style = { ...startBlock.style }
-    if (['bullet', 'numbered', 'quote'].includes(startBlock.type)) { paragraph.type = startBlock.type; paragraph.level = startBlock.level }
+    if (['bullet', 'numbered', 'checklist', 'quote'].includes(startBlock.type)) {
+      paragraph.type = startBlock.type
+      paragraph.level = startBlock.level
+      if (startBlock.type === 'checklist') paragraph.checklist = { listId: startBlock.checklist?.listId ?? documentId('checklist'), checked: false }
+    }
     if (index === paragraphs.length - 2) paragraph.runs = compactRuns([...paragraph.runs as DocumentRun[], ...after])
     return paragraph
   })
@@ -194,11 +245,11 @@ function deleteContent(model: DocumentModel, selection: DocumentSelection, direc
   const block = blockAtPoint(model, point)
   const index = container.findIndex((candidate) => candidate.id === block?.id)
   const neighbor = container[index + direction]
-  if (neighbor && ['image', 'divider', 'pageBreak'].includes(neighbor.type)) {
+  if (neighbor && ['image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(neighbor.type)) {
     container.splice(index + direction, 1)
     return collapsedSelection(point)
   }
-  if (neighbor && !['table', 'image', 'divider', 'pageBreak'].includes(neighbor.type)) {
+  if (neighbor && !['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(neighbor.type)) {
     const neighborPoint = pointForBlock(point, neighbor, direction === -1 ? runText(neighbor.runs).length : 0)
     return replaceSelectionText(model, { anchor: point, focus: neighborPoint }, '')
   }
@@ -215,7 +266,7 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
     const to = sameTarget(target, end) ? end.offset : runText(runs).length
     const selected = sliceRuns(runs, from, to)
     if (!selected.length || selected.every((run) => Object.entries(patch).every(([key, value]) => Object.is(Reflect.get(run, key), value)))) return
-    const changed = selected.map((run) => ({ ...run, ...patch }))
+    const changed = selected.map((run) => applyRunPatch(run, patch))
     setTargetRuns(model, target, [...sliceRuns(runs, 0, from), ...changed, ...sliceRuns(runs, to)])
   })
 }
@@ -242,6 +293,19 @@ function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks
   setTargetRuns(model, point, sliceRuns(block.runs as DocumentRun[], 0, point.offset))
   container.splice(index + 1, 0, ...blocks, tail)
   return collapsedSelection(pointForBlock(point, tail, 0))
+}
+
+function insertBreakBlock(model: DocumentModel, selection: DocumentSelection, type: 'columnBreak' | 'sectionBreak', sectionType?: DocumentSectionBreakType): DocumentSelection {
+  if (selection.anchor.row != null || selection.focus.row != null) throw new RangeError('Breaks can only be inserted in the document body.')
+  const split = replaceSelectionText(model, selection, '\n')
+  const index = model.blocks.findIndex((block) => block.id === split.focus.blockId)
+  if (index < 0) return split
+  const marker = createParagraph()
+  marker.type = type
+  marker.runs = []
+  if (type === 'sectionBreak' && sectionType) marker.sectionBreak = { type: sectionType }
+  model.blocks.splice(index, 0, marker)
+  return split
 }
 
 function moveTableCell(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1): DocumentSelection {

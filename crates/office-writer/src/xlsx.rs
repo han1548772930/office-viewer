@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[path = "xlsx_filter.rs"]
 mod auto_filter;
+#[path = "xlsx_validation.rs"]
+mod data_validation;
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -81,6 +83,8 @@ struct SheetInput {
     hidden_rows: Vec<u32>,
     #[serde(default)]
     auto_filter: Option<auto_filter::AutoFilterInput>,
+    #[serde(default)]
+    data_validations: Vec<data_validation::DataValidationInput>,
     #[serde(default)]
     hidden_columns: Vec<u32>,
     #[serde(default)]
@@ -244,6 +248,8 @@ struct StyleInput {
     border: Option<Value>,
     #[serde(default)]
     rotation: Option<i32>,
+    #[serde(default)]
+    rotation_vertical: bool,
     #[serde(default)]
     indent: Option<i32>,
     #[serde(default)]
@@ -467,7 +473,11 @@ fn style_key(style: Option<&StyleInput>) -> StyleKey {
             .clone()
             .unwrap_or_else(|| "General".to_owned()),
         border: border_key(style.border.as_ref()),
-        rotation: style.rotation.unwrap_or(0).clamp(-90, 180),
+        rotation: if style.rotation_vertical || style.rotation == Some(255) {
+            255
+        } else {
+            style.rotation.unwrap_or(0).clamp(-90, 180)
+        },
         indent: style.indent.unwrap_or(0).clamp(0, 255),
         shrink_to_fit: style.shrink_to_fit,
     }
@@ -938,6 +948,7 @@ fn worksheet_xml(
         }
         out.push_str("</mergeCells>");
     }
+    out.push_str(&data_validation::write_xml(sheet, warnings)?);
     if !hyperlinks.is_empty() {
         out.push_str("<hyperlinks>");
         for (link_index, (reference, target)) in hyperlinks.iter().enumerate() {
@@ -1838,7 +1849,6 @@ fn add_unsupported_warnings(workbook: &WorkbookInput, warnings: &mut Vec<ExportW
         "slicers",
         "sparklines",
         "conditionalFormatting",
-        "dataValidations",
         "tables",
         "drawings",
         "comments",
@@ -1949,6 +1959,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     }
     for sheet in &workbook.sheets {
         auto_filter::validate(sheet)?;
+        data_validation::validate(sheet)?;
     }
     let mut warnings = Vec::new();
     add_unsupported_warnings(&workbook, &mut warnings);
@@ -2111,6 +2122,7 @@ mod tests {
             number_format: None,
             border: None,
             rotation: None,
+            rotation_vertical: false,
             indent: None,
             shrink_to_fit: false,
             metadata: None,
@@ -2119,6 +2131,20 @@ mod tests {
             registry.register(Some(&style)),
             registry.register(Some(&style))
         );
+    }
+
+    #[test]
+    fn vertical_text_uses_the_ooxml_255_rotation_sentinel() {
+        let data = r#"{"kind":"workbook","sheets":[{"id":"sheet-1","name":"Vertical","cells":{"A1":{"value":"Vertical","style":{"rotationVertical":true}}}}]}"#;
+        let mut package = Package::new();
+        write(data, &mut package).unwrap();
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut styles = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("xl/styles.xml").unwrap(), &mut styles)
+            .unwrap();
+
+        assert!(styles.contains("textRotation=\"255\""), "{styles}");
     }
 
     #[test]

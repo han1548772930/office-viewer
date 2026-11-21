@@ -6,12 +6,27 @@ import type { GridRange, GridViewport } from './layout'
 import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
 
 let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
-function decorationWidth(text: string, font: string, available: number): number {
+function measureTextWidth(text: string, font: string): number | undefined {
   if (textMeasureContext === undefined) textMeasureContext = typeof OffscreenCanvas !== 'undefined'
     ? new OffscreenCanvas(1, 1).getContext('2d') : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
-  if (!textMeasureContext) return available
+  if (!textMeasureContext) return undefined
   textMeasureContext.font = font
-  return Math.min(available, textMeasureContext.measureText(text).width)
+  return textMeasureContext.measureText(text).width
+}
+function decorationWidth(text: string, font: string, available: number): number {
+  return Math.min(available, measureTextWidth(text, font) ?? available)
+}
+function rotatePoint(x: number, y: number, originX: number, originY: number, degrees: number): [number, number] {
+  const radians = degrees * Math.PI / 180
+  const cosine = Math.cos(radians), sine = Math.sin(radians)
+  return [originX + (x - originX) * cosine - (y - originY) * sine,
+    originY + (x - originX) * sine + (y - originY) * cosine]
+}
+function graphemes(text: string): string[] {
+  if (typeof Intl.Segmenter === 'function') {
+    return [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map(item => item.segment)
+  }
+  return Array.from(text)
 }
 
 export interface SpreadsheetSceneOptions {
@@ -59,21 +74,55 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
     if (text) {
       const align = cell?.align ?? (column === 0 ? 'left' : Number.isFinite(Number(text)) ? 'right' : 'left')
-      const fontSize = (cell?.fontSize ?? 11) * 4 / 3 * z
+      const baseFontSize = (cell?.fontSize ?? 11) * 4 / 3 * z
+      const fontFamily = cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'
+      const fontPrefix = `${cell?.italic ? 'italic ' : ''}${cell?.bold ? '600 ' : ''}`
+      const font = `${fontPrefix}${baseFontSize}px ${fontFamily}`
+      const availableTextWidth = Math.max(0, rect.width - 12 * z)
+      const measuredWidth = cell?.shrinkToFit && cell.wrap !== true ? measureTextWidth(text, font) : undefined
+      const maxWidth = measuredWidth !== undefined && measuredWidth > availableTextWidth && availableTextWidth > 0
+        ? availableTextWidth
+        : undefined
+      const fontSize = baseFontSize
       const x = align === 'center' ? rect.x + rect.width / 2 : align === 'right' ? rect.x + rect.width - 6 * z : rect.x + 6 * z
-      const font = `${cell?.italic ? 'italic ' : ''}${cell?.bold ? '600 ' : ''}${fontSize}px ${cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'}`
+      const rotation = cell?.rotation ?? 0
       const textClip = intersectRect(clip, { x: rect.x + 3 * z, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z), height: Math.max(0, rect.height - 2) })
       const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
       const color = cell?.color ?? '#243247'
-      if (cell?.numberFormat === 'accounting' && /^[$¥￥€£] /.test(text)) {
-        commands.push({ kind: 'text', x: rect.x + 6 * z, y, text: text[0]!, font, color, align: 'left', baseline: 'middle', clip: textClip })
-        commands.push({ kind: 'text', x: rect.x + rect.width - 6 * z, y, text: text.slice(2), font, color, align: 'right', baseline: 'middle', clip: textClip })
-      } else commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', clip: textClip })
-      if (cell?.underline || cell?.strike) {
+      if (cell?.rotationVertical) {
+        const glyphs = graphemes(text)
+        const lineHeight = fontSize
+        const blockHeight = glyphs.length * lineHeight
+        const top = cell.vertical === 'top' ? rect.y + 3 * z
+          : cell.vertical === 'bottom' ? rect.y + rect.height - 3 * z - blockHeight
+            : rect.y + (rect.height - blockHeight) / 2
+        const centerX = rect.x + rect.width / 2
+        for (const [index, glyph] of glyphs.entries()) {
+          const glyphY = top + index * lineHeight + lineHeight / 2
+          commands.push({ kind: 'text', x: centerX, y: glyphY, text: glyph, font, color, align: 'center', baseline: 'middle', clip: textClip })
+          if (cell.underline || cell.strike) {
+            const width = decorationWidth(glyph, font, availableTextWidth)
+            const left = centerX - width / 2
+            if (cell.underline) commands.push({ kind: 'line', x1: left, y1: glyphY + lineHeight * 0.55, x2: left + width, y2: glyphY + lineHeight * 0.55, color, clip: textClip })
+            if (cell.strike) commands.push({ kind: 'line', x1: left, y1: glyphY, x2: left + width, y2: glyphY, color, clip: textClip })
+          }
+        }
+      } else {
+        if (cell?.numberFormat === 'accounting' && /^[$¥￥€£] /.test(text)) {
+          commands.push({ kind: 'text', x: rect.x + 6 * z, y, text: text[0]!, font, color, align: 'left', baseline: 'middle', rotation, maxWidth, clip: textClip })
+          commands.push({ kind: 'text', x: rect.x + rect.width - 6 * z, y, text: text.slice(2), font, color, align: 'right', baseline: 'middle', rotation, maxWidth, clip: textClip })
+        } else commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', rotation, maxWidth, clip: textClip })
+      }
+      if (!cell?.rotationVertical && (cell?.underline || cell?.strike)) {
         const width = decorationWidth(text, font, Math.max(0, rect.width - 12 * z))
         const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
-        if (cell.underline) commands.push({ kind: 'line', x1: left, y1: y + fontSize * 0.55, x2: left + width, y2: y + fontSize * 0.55, color, clip: textClip })
-        if (cell.strike) commands.push({ kind: 'line', x1: left, y1: y, x2: left + width, y2: y, color, clip: textClip })
+        const decoration = (offsetY: number) => {
+          const [x1, y1] = rotatePoint(left, y + offsetY, x, y, rotation)
+          const [x2, y2] = rotatePoint(left + width, y + offsetY, x, y, rotation)
+          commands.push({ kind: 'line', x1, y1, x2, y2, color, clip: textClip })
+        }
+        if (cell.underline) decoration(fontSize * 0.55)
+        if (cell.strike) decoration(0)
       }
     }
   }

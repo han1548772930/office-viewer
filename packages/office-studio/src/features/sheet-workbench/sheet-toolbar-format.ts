@@ -22,7 +22,12 @@ export function clearSheetCellFormat(cell: ExcelCellView): ExcelCellView {
   const style = defaultCellStyle()
   return { ...cell, fontFamily: style.font.family, fontSize: style.font.size, bold: false, italic: false,
     underline: false, strike: false, color: style.font.color, background: style.fill, align: 'left', vertical: style.vertical,
-    wrap: false, border: {}, rotation: 0, indent: 0, shrinkToFit: false, numberFormat: 'general', rawNumberFormat: 'General' }
+    wrap: false, border: {}, rotation: 0, rotationVertical: false, indent: 0, shrinkToFit: false, numberFormat: 'general', rawNumberFormat: 'General' }
+}
+
+export function setSheetTextFit(cell: ExcelCellView, mode: 'wrap' | 'shrinkToFit', enabled: boolean): ExcelCellView {
+  if (mode === 'wrap') return { ...cell, wrap: enabled, ...(enabled ? { shrinkToFit: false } : {}) }
+  return { ...cell, shrinkToFit: enabled, ...(enabled ? { wrap: false } : {}) }
 }
 
 /** Scope perimeter borders to each selected rectangle; do not fake outside borders on every cell. */

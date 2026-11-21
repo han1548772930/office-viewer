@@ -59,13 +59,25 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     const start = sameTarget(line.target, ordered.start) ? ordered.start.offset : 0
     const end = sameTarget(line.target, ordered.end) ? ordered.end.offset : Number.POSITIVE_INFINITY
     if (line.marker) commands.push({ kind: 'text', x: x(line.x - 17), y: y(line.baseline), text: line.marker, font: `${14 * scale}px Arial`, color: '#445166', clip })
+    if (line.checklist) {
+      const size = 14 * scale
+      const left = x(line.x - 23)
+      const top = y(line.y + (line.height - 14) / 2)
+      commands.push({ kind: 'rect', x: left, y: top, width: size, height: size, fill: '#ffffff', stroke: line.checklist.checked ? '#28744b' : '#718096', strokeWidth: Math.max(1, scale), clip })
+      if (line.checklist.checked) {
+        commands.push({ kind: 'line', x1: left + 3 * scale, y1: top + 7 * scale, x2: left + 6 * scale, y2: top + 10 * scale, color: '#28744b', width: Math.max(1.4, scale), clip })
+        commands.push({ kind: 'line', x1: left + 6 * scale, y1: top + 10 * scale, x2: left + 12 * scale, y2: top + 3 * scale, color: '#28744b', width: Math.max(1.4, scale), clip })
+      }
+    }
     for (const glyph of line.glyphs) {
+      const baselineOffset = glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0
+      const baseline = line.baseline + baselineOffset
       if (glyph.run.highlight) commands.push({ kind: 'rect', ...rect(glyph), fill: glyph.run.highlight, clip })
       if (hasSelection && glyph.end > start && glyph.offset < end) commands.push({ kind: 'rect', ...rect(glyph), fill: options.focused ? '#bdd8ff' : '#dde6f2', clip })
       const font = glyph.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`)
-      commands.push({ kind: 'text', x: x(glyph.x), y: y(line.baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: glyph.run.href ? '#2563b6' : glyph.run.color, clip })
-      if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline + 2), x2: x(glyph.x + glyph.width), y2: y(line.baseline + 2), color: glyph.run.color, width: Math.max(0.7, scale), clip })
-      if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(line.baseline - glyph.run.fontSize * 0.4), color: glyph.run.color, width: Math.max(0.7, scale), clip })
+      commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: glyph.run.href ? '#2563b6' : glyph.run.color, clip })
+      if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: glyph.run.color, width: Math.max(0.7, scale), clip })
+      if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: glyph.run.color, width: Math.max(0.7, scale), clip })
       if (options.composing && sameTarget(line.target, options.selection.focus) && glyph.end <= options.selection.focus.offset) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline + 3), x2: x(glyph.x + glyph.width), y2: y(line.baseline + 3), color: '#3478df', width: 1, clip })
     }
     if (hasSelection && !line.glyphs.length && start <= line.start && end >= line.end) commands.push({ kind: 'rect', x: x(line.x), y: y(line.y), width: 5 * scale, height: line.height * scale, fill: '#bdd8ff', clip })

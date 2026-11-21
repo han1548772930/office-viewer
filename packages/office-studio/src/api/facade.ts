@@ -24,6 +24,9 @@ import type {
   SlicerTimelineRange,
   SpreadsheetCell,
   SpreadsheetSheet,
+  SheetDataValidationRule,
+  SheetRangeProtectionDraft,
+  SheetRangeProtectionRule,
   SheetFilterCriteria,
   SheetSortCriterion,
   WorkbookModel,
@@ -86,6 +89,8 @@ import {
 } from '../features/charts/chart-engine'
 import { getSlicer, getSlicerItems, type SlicerCreateInput } from '../features/slicer/slicer-engine'
 import { expandVisibleSortOrder, getFilteredRows, getNumericSortColumns, getSortedRowOrder, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
+import { createSheetDataValidationRule, sheetDataValidationOptions, validateSheetDataValidationChanges, type SheetDataValidationDraft, type SheetValidationIssue } from '../features/sheet-validation/validation-engine.ts'
+import { createSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 
 export interface CreateUnitOptions { makeCurrent?: boolean }
 export interface FRangeCoordinates { startRow: number; startColumn: number; endRow: number; endColumn: number }
@@ -95,6 +100,9 @@ export type ChartInfo = ChartConfig
 export type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
 export type SlicerInfo = Omit<SlicerCreateInput, 'id' | 'unitId' | 'hostSheetId'> & { id?: string }
 export interface SortRangeApiOptions extends SortRangeOptions { signal?: AbortSignal; timeoutMs?: number; onProgress?: (progress: import('../compute/protocol.ts').ComputeProgress) => void }
+export type DataValidationRuleInput = SheetDataValidationDraft
+export type DataValidationRule = SheetDataValidationRule
+export type DataValidationError = SheetValidationIssue
 export type SortColumnSpec = { column: number; ascending: boolean } | number
 export type DocumentContentControlInfo = DocumentContentControl
 export type DocumentContentControlCreateInfo = Omit<ContentControlInput, 'id'> & { id?: string }
@@ -306,6 +314,44 @@ export class FWorksheet {
   getUnitId(): string { return this.unitId }
   getSheetId(): string { return this.id }
   getSheetName(): string { return this.sheet().name }
+  getDataValidations(): DataValidationRule[] { return cloneModel(this.sheet().dataValidations ?? []) }
+  getDataValidation(range: FRange | FRangeCoordinates | string): DataValidationRule | null {
+    const bounds = normalizeValidationRange(range)
+    return cloneModel(this.sheet().dataValidations?.find(rule => rule.ranges.some(item => rangesIntersect(item, bounds))) ?? null)
+  }
+  setDataValidation(range: FRange | FRangeCoordinates | string, input: DataValidationRuleInput | null): this {
+    const bounds = normalizeValidationRange(range)
+    if (input === null) this.api.executeCommandSync('sheet.command.clear-data-validation', { unitId: this.unitId, sheetId: this.id, ranges: [bounds] })
+    else {
+      const rule = createSheetDataValidationRule(input, [bounds])
+      this.api.executeCommandSync('sheet.command.set-data-validation', { unitId: this.unitId, sheetId: this.id, rule })
+    }
+    return this
+  }
+  getDataValidationErrors(range: FRange | FRangeCoordinates | string): DataValidationError[] {
+    const bounds = normalizeValidationRange(range)
+    const positions = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
+      Array.from({ length: bounds.endCol - bounds.startCol + 1 }, (_, columnOffset) => ({ row: bounds.startRow + rowOffset, column: bounds.startCol + columnOffset })),
+    ).flat()
+    return validateSheetDataValidationChanges(this.workbook(), this.id, positions).issues
+  }
+  getRangeProtectionRules(): SheetRangeProtectionRule[] { return cloneModel(this.sheet().rangeProtectionRules ?? []) }
+  getRangeProtectionRulesForRange(range: FRange | FRangeCoordinates | string): SheetRangeProtectionRule[] {
+    const bounds = normalizeValidationRange(range)
+    return cloneModel((this.sheet().rangeProtectionRules ?? []).filter(rule => rule.ranges.some(item => rangesIntersect(item, bounds))))
+  }
+  setRangeProtection(range: FRange | FRangeCoordinates | string, draft: SheetRangeProtectionDraft): SheetRangeProtectionRule {
+    const rule = createSheetRangeProtectionRule(draft, [normalizeValidationRange(range)], this.api.currentUserId)
+    this.api.executeCommandSync('sheet.command.set-range-protection', { unitId: this.unitId, sheetId: this.id, rule })
+    return cloneModel(rule)
+  }
+  removeRangeProtection(ruleId: string): boolean {
+    return this.api.executeCommandSync('sheet.command.remove-range-protection', { unitId: this.unitId, sheetId: this.id, ruleId })
+  }
+  getCellValidationOptions(row: number, column: number): string[] {
+    const rules = this.sheet().dataValidations?.filter(rule => rule.ranges.some(range => row >= range.startRow && row <= range.endRow && column >= range.startCol && column <= range.endCol)) ?? []
+    return rules.flatMap(rule => sheetDataValidationOptions(rule, this.workbook(), this.id))
+  }
   setAutoFilter(range: CellRange | FRangeCoordinates | FRange | string | null): this {
     const normalized = range === null ? null : typeof range === 'string'
       ? toCellRange(parseA1Range(range))
@@ -572,6 +618,17 @@ export class FRange {
   getDisplayValues(): string[][] { return this.mapCells((cell) => cell?.display ?? '') }
   getFormula(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.formula ?? '' }
   getFormulas(): string[][] { return this.mapCells((cell) => cell?.formula ?? '') }
+  getDataValidation(): DataValidationRule | null { return new FWorksheet(this.api, this.unitId, this.sheetId).getDataValidation(this.range) }
+  setDataValidation(rule: DataValidationRuleInput | null): this {
+    new FWorksheet(this.api, this.unitId, this.sheetId).setDataValidation(this.range, rule)
+    return this
+  }
+  getDataValidationErrors(): DataValidationError[] { return new FWorksheet(this.api, this.unitId, this.sheetId).getDataValidationErrors(this.range) }
+  getRangeProtectionRules(): SheetRangeProtectionRule[] { return new FWorksheet(this.api, this.unitId, this.sheetId).getRangeProtectionRulesForRange(this.range) }
+  setRangeProtection(draft: SheetRangeProtectionDraft): this {
+    new FWorksheet(this.api, this.unitId, this.sheetId).setRangeProtection(this.range, draft)
+    return this
+  }
   sort(column: SortColumnSpec | SortColumnSpec[], options: SortRangeOptions = {}): this {
     const specs = Array.isArray(column) ? column : [column]
     const criteria: SheetSortCriterion[] = specs.map((spec) => {
@@ -589,6 +646,20 @@ export class FRange {
   setValue(value: ApiCellValue): this { return this.setValues(this.fill(value)) }
   setValues(values: ApiCellValue[][]): this {
     assertMatrixSize(values, this.getHeight(), this.getWidth())
+    const current = this.api.getWorkbookModel(this.unitId)
+    if (!current) throw new Error(`Workbook not found: ${this.unitId}`)
+    const candidate = cloneModel(current)
+    const candidateSheet = candidate.sheets.find(sheet => sheet.id === this.sheetId)
+    if (!candidateSheet) throw new Error(`Worksheet not found: ${this.sheetId}`)
+    const positions: Array<{ row: number; column: number }> = []
+    for (let row = 0; row < this.getHeight(); row++) for (let column = 0; column < this.getWidth(); column++) {
+      const targetRow = this.range.startRow + row
+      const targetColumn = this.range.startColumn + column
+      candidateSheet.cells[`${targetRow}:${targetColumn}`] = applyCellValue(candidateSheet.cells[`${targetRow}:${targetColumn}`], targetRow, targetColumn, values[row]![column]!)
+      positions.push({ row: targetRow, column: targetColumn })
+    }
+    const validation = validateSheetDataValidationChanges(candidate, this.sheetId, positions)
+    if (validation.blocked) throw new Error(validation.issues.find(issue => issue.severity === 'stop')?.message ?? 'Input violates data validation')
     this.mutate('sheet.command.set-range-values', 'Set range values', (model) => {
       const sheet = this.sheet(model)
       for (let row = 0; row < this.getHeight(); row++) for (let column = 0; column < this.getWidth(); column++) {
@@ -1033,6 +1104,17 @@ function normalizePivotAnchorInfo(anchor: PivotTableAnchorInfo, workbookId: stri
 function toCellRange(range: FRangeCoordinates): CellRange {
   const normalized = normalizeToCellRange(range)
   return normalized
+}
+
+function normalizeValidationRange(range: FRange | FRangeCoordinates | string): CellRange {
+  if (typeof range === 'string') return toCellRange(parseA1Range(range))
+  if (range instanceof FRange) return toCellRange(range.getRange())
+  return toCellRange(range)
+}
+
+function rangesIntersect(left: CellRange, right: CellRange): boolean {
+  return left.startRow <= right.endRow && left.endRow >= right.startRow
+    && left.startCol <= right.endCol && left.endCol >= right.startCol
 }
 
 function normalizeToCellRange(range: FRangeCoordinates): CellRange {

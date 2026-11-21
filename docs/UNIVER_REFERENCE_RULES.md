@@ -3,7 +3,7 @@
 审阅日期：2026-11-20  
 参考仓库：dream-num/univer  
 固定提交：`6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`  
-本地只读检出：`D:\rust_test\univer-reference`  
+本地只读检出：`E:\rust_test\univer`
 适用项目：本项目的 Vue / TypeScript / Pinia / Rust / WASM 实现。
 
 本文件是项目执行标准的补充。下面把“上游代码事实”和“本项目执行要求”分开记录。功能范围以[完整功能对齐清单](UNIVER_FEATURE_PARITY.md)为准，覆盖 Sheets / Docs 的所有 Pro 功能。没有公开源码时，反推可观察行为并在本项目独立实现。

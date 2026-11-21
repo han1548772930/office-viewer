@@ -8,7 +8,7 @@ import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometr
 import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; overlayCommands?: readonly DrawCommand[] }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[] }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -27,6 +27,7 @@ const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
 const scene = computed(() => createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, searchText: props.searchText, overlayCommands: props.overlayCommands }))
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
+const validationListId = computed(() => `sheet-validation-options-${props.sheet.id}`)
 const editStyle = computed(() => editLayout.value ? { left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`, width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`, clipPath: editLayout.value.clipPath, fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif', fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px` } : { clipPath: 'inset(50%)' })
 const composing = ref(false)
 const surfaceError = ref('')
@@ -166,7 +167,8 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
   <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @paste="onPaste">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
-    <input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false">
+    <input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false">
+    <datalist v-if="validationOptions?.length" :id="validationListId"><option v-for="value in validationOptions" :key="value" :value="value" /></datalist>
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey]) }}</span></div>
     <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
   </div>

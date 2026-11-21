@@ -63,7 +63,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
     textMetrics.set(key, entry); return entry
   }
   const getTextTile = (command: TextCommand, x: number, y: number, width: number, height: number, phaseX: number): TextureEntry => {
-    const key = `${command.font}\u0000${command.color}\u0000${command.baseline ?? 'alphabetic'}\u0000${x},${y},${width},${height},${phaseX}\u0000${command.text}`
+    const key = `${command.font}\u0000${command.color}\u0000${command.baseline ?? 'alphabetic'}\u0000${command.maxWidth ?? ''}\u0000${x},${y},${width},${height},${phaseX}\u0000${command.text}`
     const cached = textCache.get(key)
     if (cached) { cached.used = frame; return cached }
     const raster = document.createElement('canvas')
@@ -75,7 +75,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
     rasterContext.fillStyle = command.color
     rasterContext.textAlign = 'left'
     rasterContext.textBaseline = command.baseline ?? 'alphabetic'
-    rasterContext.fillText(command.text, 0, 0)
+    rasterContext.fillText(command.text, 0, 0, command.maxWidth)
     const entry = textureFromCanvas(raster); textCache.set(key, entry); return entry
   }
   const getImage = (source: CanvasImageSource): TextureEntry => {
@@ -142,8 +142,9 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
           case 'text': {
             if (!command.text) break
             const metrics = measureText(command)
-            const left = command.x - (command.align === 'center' ? metrics.advance / 2 : command.align === 'right' ? metrics.advance : 0)
-            if (command.maxWidth !== undefined) {
+            const textWidth = command.maxWidth === undefined ? metrics.advance : Math.min(metrics.advance, command.maxWidth)
+            const left = command.x - (command.align === 'center' ? textWidth / 2 : command.align === 'right' ? textWidth : 0)
+            if (command.maxWidth !== undefined && !command.rotation) {
               const x = command.x - (command.align === 'center' ? command.maxWidth / 2 : command.align === 'right' ? command.maxWidth : 0)
               clip = intersectRect(clip, { x, y: 0, width: command.maxWidth, height })
             }
@@ -153,7 +154,14 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             const subpixelX = Math.round(left * scaleX * 4) / 4
             const originX = Math.floor(subpixelX), originY = Math.round(command.y * scaleY)
             const phaseX = subpixelX - originX
-            const inkLeft = Math.floor(metrics.left * scaleX + phaseX), inkRight = Math.ceil(metrics.right * scaleX + phaseX)
+            const radians = (command.rotation ?? 0) * Math.PI / 180
+            const cosine = Math.cos(radians), sine = Math.sin(radians)
+            const rotate = (x: number, y: number): [number, number] => [
+              command.x + (x - command.x) * cosine - (y - command.y) * sine,
+              command.y + (x - command.x) * sine + (y - command.y) * cosine,
+            ]
+            const fitScale = metrics.advance > 0 ? textWidth / metrics.advance : 1
+            const inkLeft = Math.floor(metrics.left * fitScale * scaleX + phaseX), inkRight = Math.ceil(metrics.right * fitScale * scaleX + phaseX)
             const inkTop = Math.floor(metrics.top * scaleY), inkBottom = Math.ceil(metrics.bottom * scaleY)
             const tileSize = Math.min(2048, device.limits.maxTextureDimension2D)
             const firstX = Math.max(0, Math.floor((Math.floor(clip.x * scaleX) - originX - inkLeft) / tileSize))
@@ -164,7 +172,13 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
               const x = inkLeft + tx * tileSize, y = inkTop + ty * tileSize
               const tileWidth = Math.min(tileSize, inkRight - x), tileHeight = Math.min(tileSize, inkBottom - y)
               const texture = getTextTile(command, x, y, tileWidth, tileHeight, phaseX)
-              rect({ x: (originX + x) / scaleX, y: (originY + y) / scaleY, width: tileWidth / scaleX, height: tileHeight / scaleY }, '#ffffff', clip, texture)
+              const tileLeft = (originX + x) / scaleX, tileTop = (originY + y) / scaleY
+              const tileRight = tileLeft + tileWidth / scaleX, tileBottom = tileTop + tileHeight / scaleY
+              const points = [
+                ...rotate(tileLeft, tileTop), ...rotate(tileRight, tileTop),
+                ...rotate(tileRight, tileBottom), ...rotate(tileLeft, tileBottom),
+              ]
+              quad(points, '#ffffff', texture, clip)
             }
             break
           }

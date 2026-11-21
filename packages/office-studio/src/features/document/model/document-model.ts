@@ -15,12 +15,27 @@ export interface DocumentTable { rows: Array<{ id: string; cells: DocumentCell[]
 export interface DocumentImage { src: string; alt: string; width: number; height: number }
 export type RunPatch = Partial<Omit<DocumentRun, 'id' | 'text'>>
 
+export function applyRunPatch(run: DocumentRun, patch: RunPatch): DocumentRun {
+  const updated = { ...run, ...patch }
+  if (patch.verticalAlign === 'baseline') {
+    delete updated.verticalAlign
+    if (updated.metadata?.verticalAlign !== undefined) {
+      const metadata = { ...updated.metadata }
+      delete metadata.verticalAlign
+      if (Object.keys(metadata).length) updated.metadata = metadata
+      else delete updated.metadata
+    }
+  }
+  return updated
+}
+
 let sequence = 0
 export const documentId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${(++sequence).toString(36)}`
 export const cloneDocument = (value: DocumentModel): DocumentModel => JSON.parse(JSON.stringify(value)) as DocumentModel
 export const defaultParagraphStyle = (): DocumentParagraphStyle => ({ align: 'left', indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 })
-export const createRun = (text = '', patch: RunPatch = {}): DocumentRun => ({ id: documentId('run'), text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11, ...patch })
+export const createRun = (text = '', patch: RunPatch = {}): DocumentRun => applyRunPatch({ id: documentId('run'), text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11, ...patch }, patch)
 export const createParagraph = (text = '', patch: RunPatch = {}): DocumentBlock => ({ id: documentId('paragraph'), type: 'paragraph', level: 0, runs: [createRun(text, patch)], style: defaultParagraphStyle(), metadata: {} })
+export const createChecklistParagraph = (text = '', checked = false, listId = documentId('checklist')): DocumentBlock => ({ ...createParagraph(text), type: 'checklist', checklist: { listId, checked } })
 export const targetKey = (target: TextTarget): string => target.row == null ? target.blockId : `${target.blockId}/r${target.row}/c${target.col ?? 0}/${target.cellBlockId ?? ''}`
 export const sameTarget = (a: TextTarget, b: TextTarget): boolean => targetKey(a) === targetKey(b)
 export const collapsedSelection = (point: DocumentPoint): DocumentSelection => ({ anchor: { ...point }, focus: { ...point } })
@@ -45,9 +60,9 @@ export function textTargets(model: DocumentModel): TextTarget[] {
     const table = tableForBlock(block)
     if (block.type === 'table' && table) {
       table.rows.forEach((row, rowIndex) => row.cells.forEach((cell, colIndex) => cell.blocks.forEach((cellBlock) => {
-        if (!['table', 'image', 'divider', 'pageBreak'].includes(cellBlock.type)) targets.push({ blockId: block.id, row: rowIndex, col: colIndex, cellBlockId: cellBlock.id })
+        if (!['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(cellBlock.type)) targets.push({ blockId: block.id, row: rowIndex, col: colIndex, cellBlockId: cellBlock.id })
       })))
-    } else if (!['image', 'divider', 'pageBreak'].includes(block.type)) targets.push({ blockId: block.id })
+    } else if (!['image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) targets.push({ blockId: block.id })
   }
   return targets
 }
@@ -78,13 +93,14 @@ export function compactRuns(runs: DocumentRun[]): DocumentRun[] {
   const result: DocumentRun[] = []
   for (const source of runs) {
     if (!source.text) continue
+    const normalized = source.verticalAlign === 'baseline' ? applyRunPatch(source, { verticalAlign: 'baseline' }) : source
     const last = result.at(-1)
-    const { id: _id, text: _text, ...marks } = source
+    const { id: _id, text: _text, ...marks } = normalized
     if (last) {
       const { id: _lastId, text: _lastText, ...lastMarks } = last
-      if (JSON.stringify(marks) === JSON.stringify(lastMarks)) { last.text += source.text; continue }
+      if (JSON.stringify(marks) === JSON.stringify(lastMarks)) { last.text += normalized.text; continue }
     }
-    result.push({ ...source, id: documentId('run') })
+    result.push({ ...normalized, id: documentId('run') })
   }
   return result.length ? result : [createRun()]
 }
@@ -156,6 +172,12 @@ export function normalizeDocument(model: DocumentModel): DocumentModel {
   })
   for (const block of result.blocks) {
     if (block.type === 'table' && !tableForBlock(block)) block.metadata.table = createTable(1, 1)
+    if (block.type === 'checklist') {
+      block.checklist = {
+        listId: typeof block.checklist?.listId === 'string' && block.checklist.listId ? block.checklist.listId : documentId('checklist'),
+        checked: block.checklist?.checked === true,
+      }
+    } else delete block.checklist
     if (block.type === 'image' && !imageForBlock(block)) {
       const src = typeof block.metadata.src === 'string' ? block.metadata.src : typeof block.metadata.source === 'string' ? block.metadata.source : ''
       block.metadata.image = { src, alt: String(block.metadata.alt ?? ''), width: Number(block.metadata.width ?? 0), height: Number(block.metadata.height ?? 0) } satisfies DocumentImage
@@ -179,10 +201,19 @@ export function blocksFromHtml(html: string): DocumentBlock[] {
   const append = (element: HTMLElement) => {
     const tag = element.tagName
     if (tag === 'UL' || tag === 'OL') {
+      const checklist = tag === 'UL' && element.dataset.officeListType === 'checklist'
+      const listId = checklist ? element.dataset.officeListId || documentId('checklist') : undefined
       Array.from(element.children).forEach((child) => {
         const block = createParagraph()
-        block.type = tag === 'UL' ? 'bullet' : 'numbered'
-        block.runs = inlineRunsFromElement(child as HTMLElement)
+        const item = child as HTMLElement
+        const checkbox = item.querySelector<HTMLInputElement>('input[type="checkbox"]')
+        const isChecklistItem = checklist || checkbox !== null
+        block.type = isChecklistItem ? 'checklist' : tag === 'UL' ? 'bullet' : 'numbered'
+        if (isChecklistItem) block.checklist = {
+          listId: listId ?? documentId('checklist'),
+          checked: item.dataset.officeChecked === 'true' || checkbox?.checked === true,
+        }
+        block.runs = inlineRunsFromElement(item)
         blocks.push(block)
       })
       return
@@ -190,7 +221,14 @@ export function blocksFromHtml(html: string): DocumentBlock[] {
     const block = createParagraph()
     if (/^H[1-6]$/.test(tag)) { block.type = 'heading'; block.level = Number(tag.slice(1)) }
     if (tag === 'BLOCKQUOTE') block.type = 'quote'
-    if (tag === 'HR') block.type = element.dataset.officePageBreak ? 'pageBreak' : 'divider'
+    if (tag === 'HR') {
+      const sectionType = element.dataset.officeSectionBreak
+      if (sectionType === 'nextPage' || sectionType === 'continuous' || sectionType === 'nextColumn' || sectionType === 'evenPage' || sectionType === 'oddPage') {
+        block.type = 'sectionBreak'
+        block.sectionBreak = { type: sectionType }
+      } else if (element.dataset.officeColumnBreak) block.type = 'columnBreak'
+      else block.type = element.dataset.officePageBreak ? 'pageBreak' : 'divider'
+    }
     if (tag === 'TABLE') {
       block.type = 'table'
       const rows = Array.from((element as HTMLTableElement).rows).map((row) => ({ id: documentId('row'), cells: Array.from(row.cells).map((cell) => {
@@ -238,6 +276,7 @@ function inlineRunsFromElement(root: HTMLElement, defaults: RunPatch = {}): Docu
       italic: patch.italic || ['I', 'EM'].includes(node.tagName) || style.fontStyle === 'italic',
       underline: patch.underline || node.tagName === 'U' || style.textDecoration.includes('underline'),
       strike: patch.strike || ['S', 'STRIKE'].includes(node.tagName) || style.textDecoration.includes('line-through'),
+      verticalAlign: node.tagName === 'SUP' ? 'superscript' : node.tagName === 'SUB' ? 'subscript' : normalizeVerticalAlign(style.verticalAlign) ?? patch.verticalAlign,
       color: style.color || node.getAttribute('color') || patch.color,
       fontFamily: style.fontFamily || node.getAttribute('face') || patch.fontFamily,
       fontSize: fontSize ? (style.fontSize.endsWith('px') ? fontSize * 0.75 : fontSize) : patch.fontSize,
@@ -251,6 +290,13 @@ function inlineRunsFromElement(root: HTMLElement, defaults: RunPatch = {}): Docu
   return compactRuns(runs)
 }
 
+function normalizeVerticalAlign(value: string): DocumentRun['verticalAlign'] | undefined {
+  if (value === 'super' || value === 'superscript') return 'superscript'
+  if (value === 'sub' || value === 'subscript') return 'subscript'
+  if (value === 'baseline') return 'baseline'
+  return undefined
+}
+
 const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)
 function runsHtml(runs: readonly InlineRun[]): string {
   return runs.map((source) => {
@@ -260,19 +306,36 @@ function runsHtml(runs: readonly InlineRun[]): string {
     if (run.italic) value = `<em>${value}</em>`
     if (run.underline) value = `<u>${value}</u>`
     if (run.strike) value = `<s>${value}</s>`
+    if (run.verticalAlign === 'superscript') value = `<sup>${value}</sup>`
+    else if (run.verticalAlign === 'subscript') value = `<sub>${value}</sub>`
     value = `<span style="font-family:${escapeHtml(run.fontFamily)};font-size:${run.fontSize}pt;color:${escapeHtml(run.color)}${run.highlight ? `;background-color:${escapeHtml(run.highlight)}` : ''}">${value}</span>`
     return run.href ? `<a href="${escapeHtml(run.href)}">${value}</a>` : value
   }).join('') || '<br>'
 }
 
 export function documentHtml(model: DocumentModel): string {
-  return model.blocks.map((block) => {
+  return model.blocks.map((block, index) => {
     const table = tableForBlock(block)
     if (table) return `<table style="border-collapse:collapse;width:100%"><tbody>${table.rows.map((row) => `<tr>${row.cells.map((cell) => `<td rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="border:1px solid #aab3bf;background:${escapeHtml(String(cell.style.fill ?? '#ffffff'))};padding:8px">${cell.blocks.map((paragraph) => `<p style="text-align:${paragraph.style.align}">${runsHtml(paragraph.runs)}</p>`).join('')}</td>`).join('')}</tr>`).join('')}</tbody></table>`
     const image = imageForBlock(block)
     if (image) return `<p><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt)}"${image.width ? ` width="${image.width}"` : ''}${image.height ? ` height="${image.height}"` : ''}></p>`
     if (block.type === 'pageBreak') return '<hr data-office-page-break="true" style="break-after:page">'
+    if (block.type === 'columnBreak') return '<hr data-office-column-break="true">'
+    if (block.type === 'sectionBreak') return `<hr data-office-section-break="${block.sectionBreak?.type ?? 'nextPage'}">`
     if (block.type === 'divider') return '<hr>'
+    if (block.type === 'checklist') {
+      const listId = block.checklist?.listId ?? block.id
+      const previous = model.blocks[index - 1]
+      if (previous?.type === 'checklist' && (previous.checklist?.listId ?? previous.id) === listId) return ''
+      const items: string[] = []
+      for (let cursor = index; cursor < model.blocks.length; cursor++) {
+        const item = model.blocks[cursor]
+        if (item?.type !== 'checklist' || (item.checklist?.listId ?? item.id) !== listId) break
+        const content = `<p style="text-align:${item.style.align};padding-left:${item.style.indent * 24}px;line-height:${item.style.lineHeight};margin:${item.style.spaceBefore}px 0 ${item.style.spaceAfter}px">${runsHtml(item.runs)}</p>`
+        items.push(`<li data-office-checked="${item.checklist?.checked === true}">${content}</li>`)
+      }
+      return `<ul data-office-list-type="checklist" data-office-list-id="${escapeHtml(listId)}">${items.join('')}</ul>`
+    }
     const tag = block.type === 'heading' ? `h${Math.max(1, Math.min(6, block.level))}` : block.type === 'quote' ? 'blockquote' : 'p'
     const content = `<${tag} style="text-align:${block.style.align};padding-left:${block.style.indent * 24}px;line-height:${block.style.lineHeight};margin:${block.style.spaceBefore}px 0 ${block.style.spaceAfter}px">${runsHtml(block.runs)}</${tag}>`
     return block.type === 'bullet' || block.type === 'numbered' ? `<${block.type === 'bullet' ? 'ul' : 'ol'}><li>${content}</li></${block.type === 'bullet' ? 'ul' : 'ol'}>` : content

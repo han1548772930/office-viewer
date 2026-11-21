@@ -126,6 +126,32 @@ test('production DOCX import, Canvas edit, real file download and reimport retai
   await attachEvidence(testInfo, { format: 'DOCX', sourceSha256: createHash('sha256').update(source).digest('hex'), downloadSha256: createHash('sha256').update(downloaded.bytes).digest('hex'), downloadedBytes: downloaded.bytes.length, importDiagnostics, reimportDiagnostics: await diagnostics(page), resources, before, reimported, independentReader: 'Node ZIP/DEFLATE XML inspection; full Office application fidelity remains unverified' })
 })
 
+test('production DOCX numbering roundtrip retains unchecked and checked checklist labels', async ({ page }) => {
+  await page.goto('/')
+  const labels = await page.evaluate(async () => {
+    const writerURL = new URL('/wasm-writer/office_writer.js', location.href).href
+    const parserURL = new URL('/wasm/office_parser.js', location.href).href
+    const writer = await import(writerURL)
+    const parser = await import(parserURL)
+    await writer.default()
+    await parser.default()
+    const model = {
+      kind: 'document',
+      name: 'Checklist roundtrip',
+      blocks: [
+        { id: 'unchecked', type: 'checklist', level: 0, checklist: { listId: 'tasks', checked: false }, runs: [{ text: 'Prepare files' }] },
+        { id: 'checked', type: 'checklist', level: 0, checklist: { listId: 'tasks', checked: true }, runs: [{ text: 'Review changes' }] },
+      ],
+    }
+    const output = writer.write_office('document', JSON.stringify(model))
+    try {
+      const parsed = JSON.parse(parser.parse_document(output.bytes, 'checklist-roundtrip.docx'))
+      return parsed.payload.data.blocks.map((block: { details?: { listLabel?: string } }) => block.details?.listLabel)
+    } finally { output.free() }
+  })
+  expect(labels).toEqual(['☐', '☑'])
+})
+
 test('production XLSX import, pending formula-bar edit, save and reimport retain cell data and formulas', async ({ page }, testInfo) => {
   const resources = trackResources(page)
   const errors: string[] = []

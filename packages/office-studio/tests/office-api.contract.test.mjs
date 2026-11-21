@@ -140,3 +140,44 @@ test('new workbook facades keep calendar settings isolated and default to the 19
     }
   } finally { studio.dispose() }
 })
+
+test('worksheet data validation rejects API writes atomically and persists through history and snapshots', () => {
+  const studio = new apiModule.OfficeStudio()
+  const univer = apiModule.FUniver.newAPI(studio)
+  try {
+    const workbook = univer.getActiveWorkbook()
+    const sheet = workbook.getActiveSheet()
+    const range = sheet.getRange('A1:A3')
+    sheet.setDataValidation('A1:A3', {
+      type: 'whole', operator: 'between', formula1: '1', formula2: '10', allowBlank: false,
+      errorStyle: 'stop', errorTitle: 'Invalid quantity', error: 'Enter an integer from 1 to 10.',
+    })
+    const rule = range.getDataValidation()
+    assert.equal(rule.type, 'whole')
+    assert.equal(rule.ranges[0].endRow, 2)
+
+    range.setValues([[2], [4], [8]])
+    const beforeRejectedWrite = workbook.save()
+    assert.throws(() => range.setValues([[2], [11], [8]]), /Enter an integer from 1 to 10/)
+    assert.deepEqual(workbook.save().sheets[0].cells, beforeRejectedWrite.sheets[0].cells)
+
+    workbook.undo()
+    assert.deepEqual(range.getValues(), [[null], [null], [null]])
+    workbook.redo()
+    assert.deepEqual(range.getValues(), [[2], [4], [8]])
+
+    sheet.setDataValidation('B1', { type: 'whole', operator: 'greaterThan', formula1: '10', errorStyle: 'warning' })
+    sheet.getRange('B1').setValue(2)
+    assert.equal(sheet.getDataValidationErrors('B1')[0].type, 'whole')
+    const snapshot = JSON.parse(JSON.stringify(workbook.save()))
+    assert.equal(snapshot.sheets[0].dataValidations.find(item => item.id === rule.id).formula1, '1')
+    const reopened = univer.createWorkbook({ ...snapshot, id: 'validated-reopened' })
+    const reopenedSheet = reopened.getActiveSheet()
+    assert.equal(reopenedSheet.getDataValidation('A1').id, rule.id)
+    assert.throws(() => reopenedSheet.getRange('A1').setValue(100), /Enter an integer from 1 to 10/)
+    reopenedSheet.setDataValidation('A1:A3', null)
+    assert.equal(reopenedSheet.getDataValidations().length, 1)
+    reopenedSheet.setDataValidation('B1', null)
+    assert.equal(reopenedSheet.getDataValidations().length, 0)
+  } finally { studio.dispose() }
+})

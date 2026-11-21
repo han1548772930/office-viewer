@@ -1,5 +1,6 @@
 mod model;
 mod parser;
+mod validation_sidecar;
 mod wasm_api;
 
 pub use model::{

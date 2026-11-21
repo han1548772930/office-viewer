@@ -36,6 +36,20 @@ test('collapsed pending marks affect only the caret and backwards ranges resolve
   assert.equal(range.hasSelection, true)
 })
 
+test('subscript and superscript expose uniform and mixed selection state', () => {
+  const model = createBlankDocument()
+  const paragraph = createParagraph()
+  paragraph.runs = [createRun('H', { verticalAlign: 'baseline' }), createRun('2', { verticalAlign: 'subscript' }), createRun('O', { verticalAlign: 'superscript' })]
+  model.blocks = [paragraph]
+
+  const subscript = documentToolbarState(model, { anchor: { blockId: paragraph.id, offset: 1 }, focus: { blockId: paragraph.id, offset: 2 } })
+  assert.equal(subscript.marks.verticalAlign, 'subscript')
+  assert.deepEqual(subscript.mixedMarks, [])
+  const mixed = documentToolbarState(model, { anchor: { blockId: paragraph.id, offset: 0 }, focus: { blockId: paragraph.id, offset: 2 } })
+  assert.equal(mixed.marks.verticalAlign, undefined)
+  assert.ok(mixed.mixedMarks.includes('verticalAlign'))
+})
+
 test('a range ending at the next paragraph offset zero excludes its toolbar styles', () => {
   const model = createBlankDocument()
   const first = createParagraph('first', { bold: true })
@@ -69,19 +83,45 @@ test('ribbon schemas derive current values, mixed toggle behavior and dispatch v
   const state = { marks: { fontSize: 18 }, mixedMarks: ['bold', 'fontFamily'], paragraph: { align: 'right', indent: 0 }, blockStyle: 'H2', hasSelection: true }
   const tabs = createDocumentRibbon({ state, canUndo: true, canRedo: false, outline: true, focus: false, paper: 'A4', orientation: 'portrait', zoom: 125, contentControlsAvailable: true })
   const items = tabs.flatMap((tab) => tab.groups.flatMap((group) => group.items))
-  assert.deepEqual(tabs.map((tab) => tab.id), ['home', 'insert', 'layout', 'view'])
+  assert.deepEqual(tabs.map((tab) => tab.id), ['home', 'insert', 'view'])
+  const breakMenu = items.find((item) => item.id === 'doc-breaks')
+  assert.ok(breakMenu)
+  const columnBreak = breakMenu.children.find((item) => item.id === 'doc-column-break')
+  assert.deepEqual(documentCommandFromRibbon(columnBreak.commandId, columnBreak.params), { id: 'doc.command.insert-column-break' })
+  const sectionMenu = breakMenu.children.find((item) => item.id === 'doc-section-breaks')
+  assert.deepEqual(sectionMenu.children.map((item) => item.params.type), ['nextPage', 'continuous', 'nextColumn', 'evenPage', 'oddPage'])
+  for (const item of sectionMenu.children) {
+    assert.deepEqual(documentCommandFromRibbon(item.commandId, item.params), { id: 'doc.command.insert-section-break', type: item.params.type })
+  }
+  assert.equal(documentCommandFromRibbon('doc.command.insert-section-break', { type: 'unexpected' }), undefined)
   const font = items.find((item) => item.id === 'doc-font-family')
   assert.equal(font.value, null)
   assert.equal(font.placeholder, '混合字体')
   const bold = items.find((item) => item.id === 'doc-bold')
   assert.equal(bold.activated, false)
   assert.deepEqual(documentCommandFromRibbon(bold.commandId, bold.params), { id: 'doc.command.format-text', patch: { bold: true } })
+  const superscript = items.find((item) => item.id === 'doc-superscript')
+  assert.equal(superscript.activated, false)
+  assert.deepEqual(documentCommandFromRibbon(superscript.commandId, superscript.params), { id: 'doc.command.format-text', patch: { verticalAlign: 'superscript' } })
+  const activeSubscript = createDocumentRibbon({ state: { ...state, marks: { verticalAlign: 'subscript' } }, canUndo: true, canRedo: false, outline: true, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 125, contentControlsAvailable: true })
+    .flatMap((tab) => tab.groups.flatMap((group) => group.items)).find((item) => item.id === 'doc-subscript')
+  assert.equal(activeSubscript.activated, true)
+  assert.deepEqual(documentCommandFromRibbon(activeSubscript.commandId, activeSubscript.params), { id: 'doc.command.format-text', patch: { verticalAlign: 'baseline' } })
   assert.deepEqual(documentCommandFromRibbon(font.commandId, font.valueParams('Georgia')), { id: 'doc.command.format-text', patch: { fontFamily: 'Georgia' } })
   assert.equal(items.find((item) => item.id === 'doc-redo').disabled, true)
+  const viewItems = tabs.find((tab) => tab.id === 'view').groups.flatMap((group) => group.items)
+  assert.ok(viewItems.find((item) => item.id === 'doc-page-settings'))
+  assert.ok(viewItems.find((item) => item.id === 'doc-fullscreen'))
+  assert.equal(tabs.some((tab) => tab.id === 'layout'), false)
   assert.equal(documentCommandFromRibbon('doc.command.format-text', { patch: { fontSize: NaN } }), undefined)
   assert.equal(documentCommandFromRibbon('doc.command.format-text', { patch: { bold: 'false' } }), undefined)
   assert.equal(documentCommandFromRibbon('doc.command.format-paragraph', { patch: { align: 'diagonal' } }), undefined)
   assert.equal(documentCommandFromRibbon('doc.command.set-block-type', { type: 'heading', level: 100 }), undefined)
+  const quote = items.find((item) => item.id === 'doc-block-style').options.find((option) => option.value === 'quote')
+  assert.deepEqual(documentCommandFromRibbon('doc.command.set-block-type', quote.params), { id: 'doc.command.set-block-type', type: 'quote', level: undefined })
+  const checklist = items.find((item) => item.id === 'doc-checklist')
+  assert.equal(checklist.commandId, 'doc.command.set-block-type')
+  assert.deepEqual(documentCommandFromRibbon(checklist.commandId, checklist.params), { id: 'doc.command.set-block-type', type: 'checklist', level: undefined })
 })
 
 test('custom imported page geometry is preserved by orientation and identified accurately', () => {

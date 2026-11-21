@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { CLASSIC_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
+import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonGridGroups, fitRibbonItems, groupRibbonGridOverflowItems, nextRibbonTab, placeRibbonGridItems, resolveRibbonTab, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 
 const button = (id, extra = {}) => ({ id, title: id, type: 'button', commandId: `doc.command.${id}`, ...extra })
 const group = (id, items, extra = {}) => ({ id, items, ...extra })
@@ -114,4 +114,47 @@ test('split buttons preserve their main action while a hidden-only submenu is re
   const size = { id: 'size', title: '字号', type: 'select', commandId: 'doc.command.size', options: [{ label: '0', value: 0 }, { label: '自动', value: '' }] }
   assert.deepEqual(ribbonInvocation(size, 0), { commandId: 'doc.command.size', params: 0 })
   assert.deepEqual(ribbonInvocation(size, ''), { commandId: 'doc.command.size', params: '' })
+})
+
+test('grid placement honors two-row spans, columns and deterministic fallback for conflicts', () => {
+  const items = [
+    button('large', { gridLayout: { row: 1, column: 1, rowSpan: 2, width: 84, minWidth: 56, showLabel: true } }),
+    button('top', { gridLayout: { row: 1, column: 2 } }),
+    button('bottom', { gridLayout: { row: 2, column: 2 } }),
+    button('fallback'),
+    button('collision', { gridLayout: { row: 1, column: 1, width: 48 } }),
+    button('outside', { gridLayout: { row: 3, column: 1, width: 48 } }),
+  ]
+  const placements = placeRibbonGridItems(items)
+  assert.deepEqual(placements.map(({ item, row, column, rowSpan }) => [item.id, row, column, rowSpan]), [
+    ['large', 1, 1, 2], ['top', 1, 2, 1], ['fallback', 1, 3, 1], ['outside', 1, 4, 1], ['bottom', 2, 2, 1], ['collision', 2, 3, 1],
+  ])
+  assert.equal(placements[0].width, 84)
+  assert.equal(placements[0].minWidth, 56)
+  assert.equal(placements[0].showLabel, true)
+})
+
+test('grid overflow groups retain row and icon distinctions', () => {
+  const items = [
+    button('icon-one', { icon: 'icon', gridLayout: { row: 1, column: 1 } }),
+    button('icon-two', { icon: 'icon', gridLayout: { row: 1, column: 2 } }),
+    button('text', { gridLayout: { row: 1, column: 3 } }),
+    button('next-row', { icon: 'icon', gridLayout: { row: 2, column: 1 } }),
+  ]
+  assert.deepEqual(groupRibbonGridOverflowItems(items).map((group) => group.map(({ id }) => id)), [
+    ['icon-one', 'icon-two'], ['text'], ['next-row'],
+  ])
+})
+
+test('grid density compresses before complete trailing groups move to overflow', () => {
+  assert.equal(GRID_RIBBON.tabHeight, 32)
+  assert.equal(GRID_RIBBON.toolbarHeight, 73)
+  assert.equal(GRID_RIBBON.rowHeight, 28)
+  assert.equal(GRID_RIBBON.moreWidth, 64)
+  const groups = [{ regular: 90, compact: 75 }, { regular: 85, compact: 70 }, { regular: 40, compact: 32 }]
+  assert.deepEqual(fitRibbonGridGroups(groups, 180), { visibleCount: 3, compact: true })
+  assert.deepEqual(fitRibbonGridGroups(groups, 149), { visibleCount: 1, compact: true })
+  assert.deepEqual(fitRibbonGridGroups(groups, 138), { visibleCount: 0, compact: true })
+  assert.deepEqual(fitRibbonGridGroups(groups, 260), { visibleCount: 3, compact: false })
+  assert.deepEqual(fitRibbonGridGroups([], 0), { visibleCount: 0, compact: false })
 })

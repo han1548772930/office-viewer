@@ -32,11 +32,15 @@ export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
             context.strokeStyle = command.color; context.lineWidth = command.width ?? 1; context.beginPath(); context.moveTo(command.x1, command.y1); context.lineTo(command.x2, command.y2); context.stroke(); break
           case 'text': {
             context.font = command.font; context.fillStyle = command.color; context.textAlign = command.align ?? 'left'; context.textBaseline = command.baseline ?? 'alphabetic'
-            if (command.maxWidth !== undefined) {
+            if (command.maxWidth !== undefined && !command.rotation) {
               const left = command.x - (command.align === 'center' ? command.maxWidth / 2 : command.align === 'right' ? command.maxWidth : 0)
               context.beginPath(); context.rect(left, -1e7, command.maxWidth, 2e7); context.clip()
             }
-            context.fillText(command.text, command.x, command.y)
+            if (command.rotation) {
+              context.translate(command.x, command.y)
+              context.rotate(command.rotation * Math.PI / 180)
+              context.fillText(command.text, 0, 0, command.maxWidth)
+            } else context.fillText(command.text, command.x, command.y, command.maxWidth)
             break
           }
           case 'image':

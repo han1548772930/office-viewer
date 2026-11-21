@@ -48,13 +48,36 @@ test('a positive end offset includes the final paragraph, while a collapsed care
 })
 
 test('heading and list commands preserve the first unselected paragraph and its text runs', () => {
-  for (const type of ['heading', 'bullet', 'numbered', 'quote']) {
+  for (const type of ['heading', 'bullet', 'numbered', 'checklist', 'quote']) {
     const model = documentWith([paragraph('one', 'Alpha'), paragraph('two', 'Beta')])
     const untouched = structuredClone(model.blocks[1])
     commands.executeDocumentCommand(model, selection('one', 0, 'two', 0), { id: 'doc.command.set-block-type', type, level: 1 })
     assert.equal(model.blocks[0].type, type)
     assert.deepEqual(model.blocks[1], untouched)
   }
+})
+
+test('checklist commands preserve an unchecked shared list model, toggle one item, and exit after an empty item', () => {
+  const model = documentWith([paragraph('one', 'Prepare files'), paragraph('two', 'Review changes'), paragraph('three', '')])
+  const originalTail = structuredClone(model.blocks[2])
+  commands.executeDocumentCommand(model, selection('one', 0, 'two', 1), { id: 'doc.command.set-block-type', type: 'checklist' })
+  const [first, second] = model.blocks
+  assert.deepEqual(model.blocks.map((block) => block.type), ['checklist', 'checklist', 'paragraph'])
+  assert.equal(first.checklist.checked, false)
+  assert.equal(second.checklist.checked, false)
+  assert.equal(first.checklist.listId, second.checklist.listId)
+  commands.executeDocumentCommand(model, selection('two', 0, 'two', 0), { id: 'doc.command.toggle-checklist-item', blockId: 'two' })
+  assert.equal(first.checklist.checked, false)
+  assert.equal(second.checklist.checked, true)
+  commands.executeDocumentCommand(model, selection('one', 'Prepare files'.length, 'one', 'Prepare files'.length), { id: 'doc.command.insert-text', text: '\n' })
+  assert.equal(model.blocks[1].type, 'checklist')
+  assert.equal(model.blocks[1].checklist.checked, false)
+  assert.equal(model.blocks[1].checklist.listId, first.checklist.listId)
+  assert.deepEqual(model.blocks[3], originalTail)
+  commands.executeDocumentCommand(model, selection(model.blocks[1].id, 0, model.blocks[1].id, 0), { id: 'doc.command.insert-text', text: '\n' })
+  assert.equal(model.blocks[1].type, 'paragraph')
+  assert.equal(model.blocks[1].checklist, undefined)
+  assert.equal(model.blocks[2].type, 'checklist')
 })
 
 test('table-cell paragraph formatting obeys the same half-open boundary', () => {
@@ -99,6 +122,64 @@ test('a replacement that relocates the boundary paragraph cannot bypass its cont
   const before = structuredClone(model)
   assert.throws(() => commands.executeDocumentCommand(model, selection('one', 2, 'two', 0), { id: 'doc.command.insert-text', text: 'X' }), /content control paragraphs/)
   assert.deepEqual(model, before)
+})
+
+test('section and column breaks split selected text into undoable body markers', () => {
+  for (const command of [
+    { id: 'doc.command.insert-section-break', type: 'nextPage' },
+    { id: 'doc.command.insert-section-break', type: 'continuous' },
+    { id: 'doc.command.insert-section-break', type: 'nextColumn' },
+    { id: 'doc.command.insert-section-break', type: 'evenPage' },
+    { id: 'doc.command.insert-section-break', type: 'oddPage' },
+    { id: 'doc.command.insert-column-break' },
+  ]) {
+    const model = documentWith([paragraph('one', 'Alpha Beta'), paragraph('kept', 'Tail')])
+    const kept = snapshot(model.blocks[1])
+    const inserted = commands.executeDocumentCommand(model, selection('one', 5, 'one', 5), command)
+    const marker = model.blocks[1]
+    assert.equal(marker.type, command.id === 'doc.command.insert-column-break' ? 'columnBreak' : 'sectionBreak')
+    if (command.id === 'doc.command.insert-section-break') assert.deepEqual(marker.sectionBreak, { type: command.type })
+    assert.equal(model.blocks[0].runs.map((run) => run.text).join(''), 'Alpha')
+    assert.equal(model.blocks[2].runs.map((run) => run.text).join(''), ' Beta')
+    assert.deepEqual(snapshot(model.blocks[3]), kept)
+
+    commands.executeDocumentCommand(model, selection(inserted.focus.blockId, 0, inserted.focus.blockId, 0), { id: 'doc.command.delete', direction: -1 })
+    assert.equal(model.blocks.some((block) => block.type === 'sectionBreak' || block.type === 'columnBreak'), false)
+    assert.equal(model.blocks[1].runs.map((run) => run.text).join(''), ' Beta')
+  }
+})
+
+test('section and column breaks reject table-cell selections before changing the model', () => {
+  const table = paragraph('table', '')
+  table.type = 'table'
+  table.runs = []
+  table.metadata.table = { rows: [{ id: 'row', cells: [{ id: 'cell', blocks: [paragraph('cell-p', 'Cell')], style: {}, rowSpan: 1, colSpan: 1 }] }] }
+  for (const command of [
+    { id: 'doc.command.insert-section-break', type: 'nextPage' },
+    { id: 'doc.command.insert-column-break' },
+  ]) {
+    const model = documentWith([table])
+    const before = snapshot(model)
+    const point = { blockId: 'table', row: 0, col: 0, cellBlockId: 'cell-p', offset: 2 }
+    assert.throws(() => commands.executeDocumentCommand(model, { anchor: point, focus: point }, command), /document body/)
+    assert.deepEqual(snapshot(model), before)
+  }
+})
+
+test('section break insertion is recorded in document history and restored by undo and redo', () => {
+  const editor = useEditorStore(createPinia())
+  editor.document.replace(documentWith([paragraph('one', 'Alpha'), paragraph('two', 'Beta')]))
+  editor.setActiveKind('document')
+  const before = snapshot(editor.document.model)
+  const draft = snapshot(before)
+  commands.executeDocumentCommand(draft, selection('one', 2, 'one', 2), { id: 'doc.command.insert-section-break', type: 'oddPage' })
+
+  assert.equal(editor.replaceDocumentFromView(draft), true)
+  assert.equal(editor.state.document.blocks[1].sectionBreak.type, 'oddPage')
+  editor.undo()
+  assert.deepEqual(snapshot(editor.document.model), before)
+  editor.redo()
+  assert.equal(editor.state.document.blocks[1].sectionBreak.type, 'oddPage')
 })
 
 test('an empty paragraph selected through its paragraph break is included', () => {

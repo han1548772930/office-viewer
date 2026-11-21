@@ -49,6 +49,7 @@ const orientation = ref<'portrait' | 'landscape'>('portrait')
 const outlineOverride = ref<boolean>()
 const showOutline = computed({ get: () => documentOutlineEnabled(model.value, outlineOverride.value ?? props.showOutline), set: (value: boolean) => { outlineOverride.value = value } })
 const isFocusMode = ref(false)
+const isFullscreen = ref(false)
 const workbenchRef = ref<HTMLElement | null>(null)
 const workbenchWidth = ref(1440)
 const visibleBlockId = ref<string>()
@@ -80,17 +81,29 @@ const selectedCharacters = computed(() => documentSelectionCharacterCount(model.
 const toolbarState = computed(() => documentToolbarState(model.value, selection.value, pendingMarks.value))
 const currentMarks = computed(() => toolbarState.value.marks)
 const modalTitle = computed(() => ({ table: '插入表格', image: '插入图片', link: '插入链接', color: '字体颜色', highlight: '文本高亮颜色' })[modalKind.value])
-const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }))
+const ribbonTabs = computed(() => createDocumentRibbon({ state: toolbarState.value, canUndo: !!props.canUndo, canRedo: !!props.canRedo, outline: showOutline.value, focus: isFocusMode.value, fullscreen: isFullscreen.value, paper: paperSize.value, orientation: orientation.value, zoom: zoom.value, contentControlsAvailable: !!props.documentApi }))
 let resizeObserver: ResizeObserver | undefined
 let imageRequest = 0
 let clipboardRequest = 0
 onMounted(() => {
+  document.addEventListener('fullscreenchange', syncFullscreen)
   if (!workbenchRef.value) return
   resizeObserver = new ResizeObserver(([entry]) => { if (entry) workbenchWidth.value = entry.contentRect.width })
   resizeObserver.observe(workbenchRef.value)
 })
-onUnmounted(() => { resizeObserver?.disconnect(); imageRequest++; clipboardRequest++ })
-onDeactivated(() => { imageRequest++; clipboardRequest++; modalOpen.value = false; contentControlPanelOpen.value = false; pageSettingsOpen.value = false; characterPickerOpen.value = false; showFind.value = false })
+onUnmounted(() => { document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); imageRequest++; clipboardRequest++ })
+onDeactivated(() => {
+  imageRequest++
+  clipboardRequest++
+  modalOpen.value = false
+  contentControlPanelOpen.value = false
+  pageSettingsOpen.value = false
+  characterPickerOpen.value = false
+  showFind.value = false
+  if (document.fullscreenElement === workbenchRef.value) {
+    void document.exitFullscreen().catch((error: unknown) => notify(error instanceof Error ? error.message : '无法退出全屏'))
+  }
+})
 watch(() => toolbarState.value.table?.blockId, (id, previous) => { if (id && id !== previous) activeTab.value = 'table' })
 
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
@@ -262,6 +275,17 @@ async function pasteSelection(plainText = false) {
 function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
 function setZoom(value: number) { zoom.value = clampDocumentZoom(value) }
 function printDocument() { void printDocumentModel(model.value).catch((error: unknown) => notify(error instanceof Error ? error.message : String(error))) }
+function syncFullscreen() { isFullscreen.value = document.fullscreenElement === workbenchRef.value }
+async function toggleFullscreen() {
+  const workbench = workbenchRef.value
+  if (!workbench) return
+  try {
+    if (document.fullscreenElement === workbench) await document.exitFullscreen()
+    else await workbench.requestFullscreen()
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '无法切换全屏')
+  }
+}
 function notify(message: string) { notice.value = message; emit('notify', message) }
 function onRibbonExecute(id: string, params?: unknown) {
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
@@ -288,6 +312,7 @@ function onRibbonExecute(id: string, params?: unknown) {
       break
     case 'doc.operation.toggle-outline': showOutline.value = !showOutline.value; break
     case 'doc.operation.toggle-focus': isFocusMode.value = !isFocusMode.value; void nextTick(() => canvasRef.value?.focus()); break
+    case 'doc.operation.toggle-fullscreen': void toggleFullscreen(); break
     case 'doc.operation.set-zoom': if (typeof params === 'number') { setZoom(params); void nextTick(() => canvasRef.value?.focus()) }; break
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('input[aria-label="查找内容"]')?.focus()); break
     case 'doc.operation.custom-color':

@@ -3,21 +3,22 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } fro
 import { Button, Popover, Tooltip } from 'antdv-next'
 import { EllipsisVertical } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
-import { CLASSIC_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
+import RibbonGridToolbar from './RibbonGridToolbar.vue'
+import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
 
-const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string }>(), { modelValue: undefined, direction: 'ltr', label: '功能区' })
+const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: 'classic' | 'grid' }>(), { modelValue: undefined, direction: 'ltr', label: '功能区', variant: 'classic' })
 const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
 const id = useId()
-const classicStyle = {
-  '--ribbon-tab-height': `${CLASSIC_RIBBON.tabHeight}px`,
-  '--ribbon-tab-button-height': `${CLASSIC_RIBBON.tabButtonHeight}px`,
-  '--ribbon-toolbar-height': `${CLASSIC_RIBBON.toolbarHeight}px`,
+const ribbonStyle = computed(() => ({
+  '--ribbon-tab-height': `${props.variant === 'grid' ? GRID_RIBBON.tabHeight : CLASSIC_RIBBON.tabHeight}px`,
+  '--ribbon-tab-button-height': `${props.variant === 'grid' ? GRID_RIBBON.tabHeight : CLASSIC_RIBBON.tabButtonHeight}px`,
+  '--ribbon-toolbar-height': `${props.variant === 'grid' ? GRID_RIBBON.toolbarHeight : CLASSIC_RIBBON.toolbarHeight}px`,
   '--ribbon-button-height': `${CLASSIC_RIBBON.buttonHeight}px`,
   '--ribbon-item-gap': `${CLASSIC_RIBBON.itemGap}px`,
   '--ribbon-group-padding': `${CLASSIC_RIBBON.groupPadding}px`,
   '--ribbon-separator-width': `${CLASSIC_RIBBON.separatorWidth}px`,
-  '--ribbon-horizontal-padding': `${CLASSIC_RIBBON.horizontalPadding}px`,
-}
+  '--ribbon-horizontal-padding': `${props.variant === 'grid' ? GRID_RIBBON.groupPadding : CLASSIC_RIBBON.horizontalPadding}px`,
+}))
 const selectedId = ref(props.modelValue)
 const previousRegular = ref<string>()
 const tabs = computed(() => visibleRibbonTabs(props.tabs))
@@ -55,6 +56,20 @@ function selectTab(tabId: string) {
   emit('update:modelValue', tabId)
 }
 
+function tabStyle(tab: RibbonTab) {
+  if (props.variant !== 'grid') return undefined
+  const selected = tab.id === activeId.value
+  return {
+    height: `${GRID_RIBBON.tabHeight}px`,
+    padding: '0 12px',
+    borderRadius: '0',
+    background: 'transparent',
+    color: selected ? '#315bc2' : '#475569',
+    fontWeight: 600,
+    boxShadow: 'none',
+  }
+}
+
 function onTabKeydown(event: KeyboardEvent) {
   const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[role="tab"]') : null
   if (!target) return
@@ -76,7 +91,7 @@ function executeSlot(item: RibbonItem, commandId: string, params?: unknown) {
 }
 
 async function measure() {
-  if (measurePending || disposed) return
+  if (measurePending || disposed || props.variant === 'grid') return
   measurePending = true
   await nextTick()
   measurePending = false
@@ -139,38 +154,41 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 </script>
 
 <template>
-  <section v-if="tabs.length" class="workbench-ribbon" data-testid="workbench-ribbon" :dir="direction" :aria-label="label" :style="classicStyle">
-    <div ref="tablist" class="workbench-ribbon-tabs" role="tablist" :aria-label="label" aria-orientation="horizontal" @keydown="onTabKeydown">
-      <Button v-for="tab in tabs" :id="`${id}-tab-${tab.id}`" :key="tab.id" type="text" role="tab" class="workbench-ribbon-tab" :class="{ 'is-selected': tab.id === activeId, 'is-contextual': tab.contextual }" :aria-selected="tab.id === activeId" :aria-controls="`${id}-panel`" :tabindex="tab.id === activeId ? 0 : -1" :data-tab-id="tab.id" @mousedown.prevent @click="selectTab(tab.id)">{{ tab.title }}</Button>
+  <section v-if="tabs.length" class="workbench-ribbon" data-testid="workbench-ribbon" :dir="direction" :aria-label="label" :style="ribbonStyle">
+    <div ref="tablist" class="workbench-ribbon-tabs" :class="{ 'is-grid': variant === 'grid' }" role="tablist" :aria-label="label" aria-orientation="horizontal" @keydown="onTabKeydown">
+      <Button v-for="tab in tabs" :id="`${id}-tab-${tab.id}`" :key="tab.id" type="text" role="tab" class="workbench-ribbon-tab" :class="{ 'is-selected': tab.id === activeId, 'is-contextual': tab.contextual, 'is-grid-tab': variant === 'grid' }" :style="tabStyle(tab)" :aria-selected="tab.id === activeId" :aria-controls="`${id}-panel`" :tabindex="tab.id === activeId ? 0 : -1" :data-tab-id="tab.id" @mousedown.prevent @click="selectTab(tab.id)">{{ tab.title }}</Button>
       <div v-if="$slots['tab-extra']" class="ribbon-tab-extra"><slot name="tab-extra" /></div>
     </div>
-    <div :id="`${id}-panel`" ref="toolbar" class="workbench-ribbon-toolbar" role="tabpanel" :aria-labelledby="`${id}-tab-${activeId}`">
-      <div class="ribbon-visible-groups" role="toolbar" :aria-label="activeTab?.title">
-        <div v-for="group in visibleGroups" :key="group.id" class="workbench-ribbon-group" role="group" :aria-label="group.title">
-          <template v-for="item in group.items" :key="item.id">
-            <div v-if="$slots[`item-${item.id}`]" class="ribbon-custom-item" :data-ribbon-item="item.id"><slot :name="`item-${item.id}`" :item="item" :execute="(commandId: string, params?: unknown) => executeSlot(item, commandId, params)" /></div>
-            <RibbonItemControl v-else :item="item" @execute="execute" />
-          </template>
+    <div :id="`${id}-panel`" ref="toolbar" class="workbench-ribbon-toolbar" :class="{ 'is-grid': variant === 'grid' }" role="tabpanel" :aria-labelledby="`${id}-tab-${activeId}`">
+      <RibbonGridToolbar v-if="variant === 'grid' && activeTab" :groups="activeTab.groups" :title="activeTab.title" :direction="direction" @execute="execute" />
+      <template v-else>
+        <div class="ribbon-visible-groups" role="toolbar" :aria-label="activeTab?.title">
+          <div v-for="group in visibleGroups" :key="group.id" class="workbench-ribbon-group" role="group" :aria-label="group.title">
+            <template v-for="item in group.items" :key="item.id">
+              <div v-if="$slots[`item-${item.id}`]" class="ribbon-custom-item" :data-ribbon-item="item.id"><slot :name="`item-${item.id}`" :item="item" :execute="(commandId: string, params?: unknown) => executeSlot(item, commandId, params)" /></div>
+              <RibbonItemControl v-else :item="item" @execute="execute" />
+            </template>
+          </div>
         </div>
-      </div>
-      <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor" :class="{ 'has-visible-groups': visibleGroups.length > 0 }">
-        <Popover v-model:open="moreOpen" trigger="click" placement="bottomRight" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
-          <Tooltip title="更多功能"><Button type="text" size="small" class="ribbon-more-button" aria-label="更多功能" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><EllipsisVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
-          <template #content>
-            <div ref="morePanel" class="ribbon-overflow-menu" role="menu" aria-label="更多功能" @keydown="onMoreKeydown">
-              <div v-for="group in overflowGroups" :key="group.id" class="ribbon-overflow-group" role="group" :aria-label="group.title">
-                <div v-if="group.title" class="ribbon-overflow-title">{{ group.title }}</div>
-                <template v-for="item in group.items" :key="item.id">
-                  <div v-if="$slots[`item-${item.id}`]" class="ribbon-custom-item"><slot :name="`item-${item.id}`" :item="item" :overflow="true" :execute="(commandId: string, params?: unknown) => executeSlot(item, commandId, params)" /></div>
-                  <RibbonItemControl v-else :item="item" overflow @execute="execute" />
-                </template>
+        <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor" :class="{ 'has-visible-groups': visibleGroups.length > 0 }">
+          <Popover v-model:open="moreOpen" trigger="click" placement="bottomRight" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
+            <Tooltip title="更多功能"><Button type="text" size="small" class="ribbon-more-button" aria-label="更多功能" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><EllipsisVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
+            <template #content>
+              <div ref="morePanel" class="ribbon-overflow-menu" role="menu" aria-label="更多功能" @keydown="onMoreKeydown">
+                <div v-for="group in overflowGroups" :key="group.id" class="ribbon-overflow-group" role="group" :aria-label="group.title">
+                  <div v-if="group.title" class="ribbon-overflow-title">{{ group.title }}</div>
+                  <template v-for="item in group.items" :key="item.id">
+                    <div v-if="$slots[`item-${item.id}`]" class="ribbon-custom-item"><slot :name="`item-${item.id}`" :item="item" :overflow="true" :execute="(commandId: string, params?: unknown) => executeSlot(item, commandId, params)" /></div>
+                    <RibbonItemControl v-else :item="item" overflow @execute="execute" />
+                  </template>
+                </div>
               </div>
-            </div>
-          </template>
-        </Popover>
-      </span>
+            </template>
+          </Popover>
+        </span>
+      </template>
     </div>
-    <div ref="measurer" class="ribbon-measurer" aria-hidden="true" inert>
+    <div v-if="variant === 'classic'" ref="measurer" class="ribbon-measurer" aria-hidden="true" inert>
       <template v-for="group in activeTab?.groups ?? []" :key="group.id">
         <span v-for="item in group.items" :key="item.id" :data-measure-item="item.id" class="ribbon-measure-item">
           <slot v-if="$slots[`item-${item.id}`]" :name="`item-${item.id}`" :item="item" :measurement="true" :execute="() => undefined" />
@@ -185,13 +203,19 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 .workbench-ribbon { position: relative; flex: 0 0 auto; min-width: 0; background: #fff; color: #334155; border-bottom: 1px solid #e2e8f0; }
 .workbench-ribbon-tabs { display: flex; height: var(--ribbon-tab-height); min-width: 0; gap: 4px; align-items: center; justify-content: safe center; padding: 0 var(--ribbon-horizontal-padding); overflow-x: auto; scrollbar-width: none; border-radius: 6px; background: #f8fafc; box-sizing: border-box; }
 .workbench-ribbon-tabs::-webkit-scrollbar { display: none; }
+.workbench-ribbon-tabs.is-grid { align-items: flex-end; justify-content: flex-start; gap: 0; padding-inline: 8px; border-radius: 0; }
 .workbench-ribbon-tab { position: relative; flex: 0 0 auto; height: var(--ribbon-tab-button-height); min-width: 0; padding: 4px 8px; border-radius: 2px; color: #475569; font-size: 14px; line-height: 20px; }
 .workbench-ribbon-tab.is-selected { color: #315bc2; background: #e7edfa; font-weight: 600; box-shadow: 0 1px 2px #1d2c4914; }
 .workbench-ribbon-tab.is-contextual { color: #7450af; }
+.workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab { border: 0 !important; border-radius: 0; background: transparent; color: #475569; font-weight: 600; }
+.workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab::after { position: absolute; inset-inline: 0; bottom: 0; height: 3px; background: transparent; content: ''; }
+.workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab.is-selected { background: transparent; color: #315bc2; box-shadow: none; }
+.workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab.is-selected::after { background: #315bc2; }
 .workbench-ribbon-tab:focus-visible { outline: 2px solid #5274d7; outline-offset: -3px; }
 .ribbon-tab-extra { display: flex; flex: 0 0 auto; align-items: center; margin-inline-start: auto; }
 .ribbon-tab-extra:empty { display: none; }
 .workbench-ribbon-toolbar { display: flex; min-width: 0; height: var(--ribbon-toolbar-height); align-items: center; justify-content: center; padding: 0 var(--ribbon-horizontal-padding); box-sizing: border-box; }
+.workbench-ribbon-toolbar.is-grid { display: block; padding: 0; }
 .ribbon-visible-groups { display: flex; min-width: 0; align-items: center; }
 .workbench-ribbon-group { display: flex; flex: 0 0 auto; gap: var(--ribbon-item-gap); align-items: center; padding: 0 var(--ribbon-group-padding); box-sizing: border-box; }
 .workbench-ribbon-group + .workbench-ribbon-group { border-inline-start: var(--ribbon-separator-width) solid #e2e8f0; }

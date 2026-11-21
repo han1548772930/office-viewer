@@ -188,6 +188,7 @@ test('reads and writes text styles through the public range facade with undo and
   ])
   assert.deepEqual(range.getTextStyle(), {})
   assert.throws(() => range.setTextStyle({ fontSize: 0 }), RangeError)
+  assert.throws(() => range.setTextStyle({ verticalAlign: 'middle' }), TypeError)
 
   assert.equal(range.setTextStyle({ color: '#cc0033', italic: true }), true)
   const styled = document.getModel()
@@ -219,6 +220,22 @@ test('reads and writes text styles through the public range facade with undo and
   assert.equal(paragraphFacade.getParagraphStyle().align, 'left')
   assert.equal(document.redo(), true)
   assert.equal(paragraphFacade.getParagraphStyle().align, 'center')
+
+  studio.dispose()
+})
+
+test('public text-style facade supports subscript, superscript, and compact baseline restoration', () => {
+  const source = modelWith([paragraph('formula', 'H2O')])
+  const studio = new apiModule.OfficeStudio({ document: source })
+  const document = apiModule.FUniver.newAPI(studio).getActiveDocument()
+  const range = document.getTextRange(1, 2)
+
+  assert.equal(range.setTextStyle({ verticalAlign: 'subscript' }), true)
+  let model = document.getModel()
+  assert.deepEqual(model.blocks[0].runs.map(run => [run.text, run.verticalAlign]), [['H', undefined], ['2', 'subscript'], ['O', undefined]])
+  assert.equal(range.setTextStyle({ verticalAlign: 'baseline' }), true)
+  model = document.getModel()
+  assert.deepEqual(model.blocks[0].runs.map(run => [run.text, run.verticalAlign]), [['H2O', undefined]])
 
   studio.dispose()
 })

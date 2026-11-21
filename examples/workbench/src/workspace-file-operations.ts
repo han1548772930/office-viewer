@@ -1,6 +1,6 @@
 export type WorkspaceKind = 'workbook' | 'document'
 export type FileAction = 'save' | 'export'
-export type NoticeType = 'success' | 'error' | 'info'
+export type NoticeType = 'success' | 'error' | 'info' | 'warning'
 
 export function workspaceFileNameError(value: string): string | undefined {
   const name = value.trim()

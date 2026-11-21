@@ -2,7 +2,7 @@
 
 Audit date: 2026-11-20
 
-Reference repository: `D:\rust_test\univer-reference`
+Reference repository: `E:\rust_test\univer`
 
 Reference commit: `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`
 
@@ -13,8 +13,8 @@ The fixed source commit and the source paths in this file are the authority for
 the signatures. Public documentation is used as a secondary check:
 
 - Context7: `https://reference.univer.ai/en-US`
-- API stability policy: `D:\rust_test\univer-reference\docs\API_STABILITY.md`
-- Facade contribution policy: `D:\rust_test\univer-reference\docs\CONTRIBUTING-FACADE.md`
+- API stability policy: `E:\rust_test\univer\docs\API_STABILITY.md`
+- Facade contribution policy: `E:\rust_test\univer\docs\CONTRIBUTING-FACADE.md`
 - Project reference rules: `docs/UNIVER_REFERENCE_RULES.md`
 
 ## Status vocabulary

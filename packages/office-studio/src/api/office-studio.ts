@@ -1,7 +1,7 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetFilterCriteria, SheetSortCriterion, SlicerTimelineRange, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
@@ -35,6 +35,8 @@ import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type Configur
 import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
+import { applySheetDataValidationRule, clearSheetDataValidationRanges, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { canEditProtectedRanges, removeSheetRangeProtectionRule, setSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import {
   createDocumentContentControl,
   removeDocumentContentControl,
@@ -51,6 +53,7 @@ export interface OfficeStudioOptions {
   document?: Partial<DocumentModel> & Record<string, unknown>
   computeClient?: OfficeComputeClient
   numericIndexMinRows?: number
+  currentUserId?: string
 }
 
 export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
@@ -60,6 +63,7 @@ export class OfficeStudio {
   readonly editor: ReturnType<typeof useEditorStore>
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
+  readonly currentUserId: string
   private readonly workbooks = new Map<string, WorkbookModel>()
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
@@ -79,6 +83,7 @@ export class OfficeStudio {
     const document = documentFromInput(options.document ?? this.editor.document.model)
     this._activeWorkbookId = workbook.id!
     this._activeDocumentId = document.id!
+    this.currentUserId = options.currentUserId?.trim() || 'local-user'
     this.workbooks.set(workbook.id!, workbook)
     this.workbookRevisions.set(workbook.id!, 0)
     this.ownsComputeClient = options.computeClient === undefined
@@ -143,6 +148,14 @@ export class OfficeStudio {
   getWorkbookModel(id: string): WorkbookModel | undefined {
     if (this.disposed) return undefined
     return id === this._activeWorkbookId ? this.editor.workbook.model : this.workbooks.get(id)
+  }
+
+  assertCanEditRange(unitId: string, sheetId: string, range: CellRange): void {
+    const workbook = this.getWorkbookModel(unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+    if (!canEditProtectedRanges(requireSheet(workbook, sheetId), [range], this.currentUserId)) {
+      throw new Error('该区域受保护，当前用户没有编辑权限。')
+    }
   }
 
   getDocumentModel(id: string): DocumentModel | undefined {
@@ -253,6 +266,8 @@ export class OfficeStudio {
     }
     this.events.emit('BeforeCommandExecute', event)
     if (event.cancel) throw new Error(`Command was canceled: ${commandId}`)
+    const rangeEdit = rangeEditFromParams(params)
+    if (rangeEdit) this.assertCanEditRange(id, rangeEdit.sheetId, rangeEdit.range)
     const changed = commandId.includes('.operation.')
       ? this.applyWorkbookOperation(id, update)
       : this.commitWorkbook(id, label, update)
@@ -478,14 +493,27 @@ export class OfficeStudio {
       sheet.name = name
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: { startRow: number; startColumn: number; endRow: number; endColumn: number }; values: Array<Array<unknown>> }, boolean>('sheet.command.set-range-values', ({ unitId, sheetId, range, values }) => this.commitWorkbook(unitId, 'Set range values', (model) => {
+      this.assertCanEditRange(unitId, sheetId, { startRow: range.startRow, startCol: range.startColumn, endRow: range.endRow, endCol: range.endColumn })
       const sheet = model.sheets.find((item) => item.id === sheetId)
       if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
+      const positions: Array<{ row: number; column: number }> = []
       for (let row = range.startRow; row <= range.endRow; row++) for (let col = range.startColumn; col <= range.endColumn; col++) {
         const cell = values[row - range.startRow]?.[col - range.startColumn]
         if (cell === undefined) continue
         const key = `${row}:${col}`
         sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell as never)
+        positions.push({ row, column: col })
       }
+      const validation = validateSheetDataValidationChanges(model, sheetId, positions)
+      if (validation.blocked) throw new Error(validation.issues[0]?.message ?? '输入值未通过数据验证，数据没有修改。')
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; rule: SheetDataValidationRule }, boolean>('sheet.command.set-data-validation', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, '设置数据验证', (model) => {
+      for (const range of rule.ranges) this.assertCanEditRange(unitId, sheetId, range)
+      applySheetDataValidationRule(requireSheet(model, sheetId), rule)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[] }, boolean>('sheet.command.clear-data-validation', ({ unitId, sheetId, ranges }) => this.commitWorkbook(unitId, '清除数据验证', (model) => {
+      for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
+      clearSheetDataValidationRanges(requireSheet(model, sheetId), ranges)
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Set auto-filter', (model) => {
       setAutoFilter(requireSheet(model, sheetId), range)
@@ -498,8 +526,19 @@ export class OfficeStudio {
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', ({ unitId, sheetId, range, criteria, options, order, expectedRevision }) => {
       if (expectedRevision !== undefined && this.getWorkbookRevision(unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
+      this.assertCanEditRange(unitId, sheetId, range)
       return this.commitWorkbook(unitId, 'Sort worksheet range', (model) => sortRange(requireSheet(model, sheetId), range, criteria, order, options, translateFormulaReferences))
     })
+    this.registerCommand<{ unitId: string; sheetId: string; rule: SheetRangeProtectionRule }, boolean>('sheet.command.set-range-protection', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, 'Set range protection', (model) => {
+      const sheet = requireSheet(model, sheetId)
+      const existing = sheet.rangeProtectionRules?.find(item => item.id === rule.id)
+      if (existing && existing.ownerUserId !== this.currentUserId) throw new Error('只有保护规则创建者可以修改该规则。')
+      if (rule.ownerUserId !== this.currentUserId) throw new Error('保护规则创建者必须是当前用户。')
+      setSheetRangeProtectionRule(sheet, rule)
+    }))
+    this.registerCommand<{ unitId: string; sheetId: string; ruleId: string }, boolean>('sheet.command.remove-range-protection', ({ unitId, sheetId, ruleId }) => this.commitWorkbook(unitId, 'Remove range protection', (model) => {
+      removeSheetRangeProtectionRule(requireSheet(model, sheetId), ruleId, this.currentUserId)
+    }))
     this.registerCommand<{ unitId: string; sheetId: string; chartId: string; chart: ChartConfig }, boolean>('sheet.command.add-chart', ({ unitId, sheetId, chartId, chart }) => this.commitWorkbook(unitId, 'Insert chart', (model) => {
       if (!model.sheets.some((item) => item.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
       if (model.charts?.some((item) => item.id === chartId)) throw new Error(`Chart already exists: ${chartId}`)
@@ -698,6 +737,21 @@ function requireSheet(model: WorkbookModel, sheetId: string) {
   const sheet = model.sheets.find((candidate) => candidate.id === sheetId)
   if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
   return sheet
+}
+
+function rangeEditFromParams(params: unknown): { sheetId: string; range: CellRange } | undefined {
+  if (!params || typeof params !== 'object') return undefined
+  const input = params as Record<string, unknown>
+  if (typeof input.sheetId !== 'string' || !input.range || typeof input.range !== 'object') return undefined
+  const source = input.range as Record<string, unknown>
+  const startCol = source.startCol ?? source.startColumn
+  const endCol = source.endCol ?? source.endColumn
+  const values = [source.startRow, startCol, source.endRow, endCol]
+  if (!values.every(value => typeof value === 'number' && Number.isInteger(value))) return undefined
+  return {
+    sheetId: input.sheetId,
+    range: { startRow: source.startRow as number, startCol: startCol as number, endRow: source.endRow as number, endCol: endCol as number },
+  }
 }
 
 function requireSlicer(model: WorkbookModel, slicerId: string) {

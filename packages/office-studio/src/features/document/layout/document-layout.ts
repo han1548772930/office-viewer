@@ -4,7 +4,7 @@ import { createRun, imageForBlock, runText, sameTarget, tableForBlock, targetKey
 
 export interface LayoutRect { x: number; y: number; width: number; height: number }
 export interface LayoutGlyph extends LayoutRect { text: string; offset: number; end: number; run: DocumentRun; font: string }
-export interface LayoutLine extends LayoutRect { target: TextTarget; start: number; end: number; baseline: number; glyphs: LayoutGlyph[]; page: number; marker?: string }
+export interface LayoutLine extends LayoutRect { target: TextTarget; start: number; end: number; baseline: number; glyphs: LayoutGlyph[]; page: number; marker?: string; checklist?: { blockId: string; checked: boolean } }
 export interface LayoutPage extends LayoutRect { index: number; content: LayoutRect }
 export interface LayoutCell extends LayoutRect { target: TextTarget; fill: string; page: number }
 export interface LayoutImage extends LayoutRect { blockId: string; src: string; alt: string; page: number }
@@ -30,7 +30,8 @@ export const PAGE_GAP = 24
 export const PAGE_INSET = 28
 
 export function runFont(run: DocumentRun, scale = 1): string {
-  return `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${Math.max(8, run.fontSize * 4 / 3) * scale}px ${run.fontFamily || 'Arial'}, "Microsoft YaHei", sans-serif`
+  const verticalScale = run.verticalAlign === 'subscript' || run.verticalAlign === 'superscript' ? 0.65 : 1
+  return `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${Math.max(8, run.fontSize * 4 / 3) * verticalScale * scale}px ${run.fontFamily || 'Arial'}, "Microsoft YaHei", sans-serif`
 }
 
 export function createTextMeasurer(): LayoutMeasurer {
@@ -136,7 +137,17 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
   let orderedIndex = 0
   const ensureRoom = (height: number) => { if (cursor + height > currentPage.content.y + currentPage.content.height && cursor > currentPage.content.y + 0.5) addPage() }
   for (const block of model.blocks) {
-    if (block.type === 'pageBreak') { addPage(); orderedIndex = 0; continue }
+    if (block.type === 'pageBreak' || block.type === 'columnBreak') { addPage(); orderedIndex = 0; continue }
+    if (block.type === 'sectionBreak') {
+      const type = block.sectionBreak?.type ?? 'nextPage'
+      if (type !== 'continuous') {
+        addPage()
+        if (type === 'evenPage' && currentPage!.index % 2 === 0) addPage()
+        if (type === 'oddPage' && currentPage!.index % 2 !== 0) addPage()
+      }
+      orderedIndex = 0
+      continue
+    }
     cursor += block.style.spaceBefore
     if (block.type === 'table') {
       const table = tableForBlock(block)
@@ -150,7 +161,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           const width = widths.slice(column, column + Math.max(1, cell.colSpan)).reduce((sum, value) => sum + value, 0)
           const xOffset = widths.slice(0, column).reduce((sum, value) => sum + value, 0)
           column += Math.max(1, cell.colSpan)
-          const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => ({ paragraph, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16), measurer) }))
+          const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => ({ paragraph, inset: paragraph.type === 'checklist' ? 28 : 0, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16 - (paragraph.type === 'checklist' ? 28 : 0)), measurer) }))
           const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.lines.reduce((lineSum, line) => lineSum + line.fontHeight * item.paragraph.style.lineHeight, 0) + item.paragraph.style.spaceAfter, 0))
           return { cell, colIndex, width, xOffset, paragraphs, height }
         })
@@ -165,7 +176,9 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           for (const item of paragraphs) {
             item.lines.forEach((line, index) => {
               const lineHeight = line.fontHeight * Math.max(1, item.paragraph.style.lineHeight)
-              result.lines.push(positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8, cellY, width - 16, lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1))
+              const layoutLine = positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8 + item.inset, cellY, width - 16 - item.inset, lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1)
+              if (index === 0 && item.paragraph.type === 'checklist') layoutLine.checklist = { blockId: item.paragraph.id, checked: item.paragraph.checklist?.checked === true }
+              result.lines.push(layoutLine)
               cellY += lineHeight
             })
             cellY += item.paragraph.style.spaceAfter
@@ -188,7 +201,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
       cursor += 18
     } else {
       const indent = Math.max(0, block.style.indent) * 24
-      const listInset = ['bullet', 'numbered'].includes(block.type) ? 24 : block.type === 'quote' ? 16 : 0
+      const listInset = ['bullet', 'numbered', 'checklist'].includes(block.type) ? 28 : block.type === 'quote' ? 16 : 0
       if (block.type === 'numbered') orderedIndex += 1
       else if (block.type !== 'bullet') orderedIndex = 0
       const width = Math.max(16, currentPage!.content.width - indent - listInset)
@@ -198,7 +211,9 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
         ensureRoom(height)
         if (index === 0 && block.type === 'heading') result.headings.push({ id: block.id, text: runText(block.runs), level: block.level || 1, y: cursor, page: currentPage!.index })
         const marker = index === 0 ? block.type === 'bullet' ? '•' : block.type === 'numbered' ? `${orderedIndex}.` : block.type === 'quote' ? '│' : undefined : undefined
-        result.lines.push(positionLine(line, { blockId: block.id }, currentPage!.content.x + indent + listInset, cursor, width, height, currentPage!.index, block.style.align, index < lines.length - 1, marker))
+        const layoutLine = positionLine(line, { blockId: block.id }, currentPage!.content.x + indent + listInset, cursor, width, height, currentPage!.index, block.style.align, index < lines.length - 1, marker)
+        if (index === 0 && block.type === 'checklist') layoutLine.checklist = { blockId: block.id, checked: block.checklist?.checked === true }
+        result.lines.push(layoutLine)
         cursor += height
       })
     }
@@ -238,6 +253,11 @@ export function hitTestDocument(layout: DocumentLayout, x: number, y: number): D
   if (!nearest) return undefined
   const glyph = nearest.glyphs.find((candidate) => x < candidate.x + candidate.width / 2)
   return { ...nearest.target, offset: glyph?.offset ?? nearest.end }
+}
+
+export function hitTestChecklist(layout: DocumentLayout, x: number, y: number): string | undefined {
+  const line = layout.lines.find((candidate) => candidate.checklist && y >= candidate.y && y <= candidate.y + candidate.height && x >= candidate.x - 28 && x <= candidate.x - 6)
+  return line?.checklist?.blockId
 }
 
 export function linesByTarget(layout: DocumentLayout): Map<string, LayoutLine[]> {

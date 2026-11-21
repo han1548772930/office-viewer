@@ -1,6 +1,6 @@
 # Univer 顶部工具栏对齐核对
 
-核对日期：2026-11-20。固定参考：`D:\rust_test\univer-reference`，提交 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。
+核对日期：2026-11-20。固定参考：`E:\rust_test\univer`，提交 `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`。
 
 本记录按 [完整功能清单](UNIVER_FEATURE_PARITY.md)、[源码规则](UNIVER_REFERENCE_RULES.md)核对顶部入口与实际行为。它记录部分实现及缺口，**不表示顶部所有功能或 Pro 能力已经对齐**。所有完整功能 ID 保持“未验收”；单个按钮、模型、Facade 或测试通过均不能代替整个功能的编辑、历史、保存、Office 往返、权限和性能验收。
 
@@ -19,7 +19,7 @@
 
 | 功能 ID | 上游依据 / 入口 | 本地入口与真实行为 | 缺口与验收边界 |
 | --- | --- | --- | --- |
-| COMMON-01、COMMON-03 | [Workbench/UIParts][workbench]；[Ribbon][ribbon]；[菜单类型][menu]；[菜单注册与分组][menu-manager] | classic 分类及工具组居中，36px 分类行/40px 工具行，28px 分类和选择器、24px 普通按钮、16px 图标，8px 组内和组边距；溢出算法包含分隔/更多按钮；方向/Home/End、RTL、roving 焦点、空分类/上下文恢复 | classic 细项已有几何与交互验证；grid/simple/collapsed、完整插件生命周期和所有产品上下文仍未验收 |
+| COMMON-01、COMMON-03 | [Workbench/UIParts][workbench]；[Ribbon][ribbon]；[菜单类型][menu]；[菜单注册与分组][menu-manager] | classic 默认分类及工具组居中，36px/40px 两行、选择器/按钮/icon 尺寸、组间距和更多菜单；显式 `variant="grid"` 提供独立 32px/73px 双行布局、网格占位/跨行、密度压缩和整组溢出；方向/Home/End、RTL、roving 焦点、空分类/上下文恢复 | classic 与可选 grid 共享控件及命令派发有契约/浏览器验证；simple/collapsed、完整插件生命周期和所有产品上下文仍未验收 |
 | COMMON-03 | [ToolbarItem → ICommandService][toolbar-item] | 格式选择器由当前选区反推；混合值独立表示；相同 item 在原工具行与更多菜单派发相同 ID/参数；禁用按钮/选项不能派发；下拉 Escape 归还触发器焦点 | 功能命令权限不能由控件禁用代替；所有跨入口语义仍须核验 |
 | COMMON-02、COMMON-04 | 命令/历史服务与各产品 schema | 顶部撤销/重做依赖文档历史状态；模型由当前应用服务保存 | 完整 Facade 兼容、协作 mutation/逆 mutation、跨文档会话和 savepoint 回归未整体验收 |
 | COMMON-05 | 共享主题/locale/方向公开规格 | Ribbon 有方向参数、RTL 键盘支持；中文可访问名称 | 完整主题/暗色/语言切换、所有弹层与编辑器主题同步未验收 |
@@ -40,7 +40,7 @@
 | SHEET-03 | `InsertRowBeforeCommand`、`InsertColBeforeCommand`、`RemoveRowConfirmCommand`、`RemoveColConfirmCommand`、行列尺寸与显隐菜单 | 插入页：`sheet.command.insert-row` / `insert-column` / `delete-row` / `delete-column` 可修改真实模型 | 移动/复制、隐藏/显示、手动尺寸/自适应与所有引用资源变换仍不完整 |
 | SHEET-04 字体 | `sheet.command.set-range-font-family` / `set-range-fontsize` / `set-range-bold` / `set-range-italic` / `set-range-underline` | 字体、字号、字号增减、加粗/斜体/下划线/删除线；选区反推激活态，删除线及下划线按实际文字度量绘制 | 完整继承/主题、富文本范围样式及样式 Office 独立往返未验收 |
 | SHEET-04 颜色 | `sheet.command.set-range-text-color`、`sheet.command.set-background-color` 及重置子项 | `sheet.menu.text-color`、`sheet.menu.fill` → `set-color` / `set-background`，有限颜色列表可执行 | 主题颜色、完整色板/自定义颜色、重置/继承语义与范围主题未完整实现 |
-| SHEET-04 对齐/样式 | `sheet.command.set-horizontal-text-align` / `set-vertical-text-align` / `set-text-wrap` / `set-shrink-to-fit` / `set-text-rotation` / `set-border-basic` | 水平及垂直对齐、换行、8 种边框操作、清除格式；真实 view/model/Canvas 与撤销链路已连通 | 旋转/缩小适应 UI、完整边框样式/颜色、默认样式/范围主题与完整 Office 往返仍缺 |
+| SHEET-04 对齐/样式 | `sheet.command.set-horizontal-text-align` / `set-vertical-text-align` / `set-text-wrap` / `set-shrink-to-fit` / `set-text-rotation` / `set-border-basic` | 文字方向菜单含水平、左右斜 45°、竖排、左右转 90°；wrap 与 shrink-to-fit 互斥；角度、逐字竖排和按度量压缩已接入 view/model、Canvas2D/WebGPU scene 与历史 | SHEET-04 仍未验收；DOM 编辑输入桥不随文字方向旋转，混合范围只通过契约测试，第三方 XLSX 重开及设备级 WebGPU 像素验证未完成；完整边框样式/颜色、默认样式/范围主题仍缺 |
 | SHEET-05 | 富文本/Docs 编辑桥 | 当前工具栏作用于单元格样式 | 单格多运行、部分文字格式、富文本复制/链接及 Office 往返未验收 |
 | SHEET-06 | [数字格式 schema][numfmt-schema]：`sheet.operation.open.numfmt.panel`、百分比/货币/增减小数位命令 | 常规/数字/货币/会计/百分比/日期/时间/日期时间/文本共 9 类，小数位增减；保留 raw 类型和精确格式、1900/1904，数值型文本不擅自转型 | 完整自定义格式面板、全部 locale/会计布局、导入自定义格式重新编辑及 Office 往返未整体验收 |
 | SHEET-07 | 冻结工具菜单、`ToggleGridlinesCommand`、`ZOOM_RATIO_MENU_ID` | `toggle-gridlines`；冻结选区/首行/首列/取消；放大/缩小/100%；各表选区与缩放会话 | 全部冻结分区/编辑/图形/打印组合仍待浏览器与文件样本验收；不由基础命中测试推断全部通过 |
@@ -49,7 +49,7 @@
 | SHEET-10（Pro） | 高级公式公开函数与行为目录；具体商业菜单 ID 未核实 | 有既有公式引擎，顶部目前仍是编辑/重算 | 不能用两个入口或 SUM 等函数样例声称全部高级公式已对齐；目录/数组/引用/错误/性能逐项待验收 |
 | SHEET-11 | [筛选 schema][filter-schema]：`sheet.command.smart-toggle-filter` / `clear-filter-criteria` / `re-calc-filter` | 数据页筛选面板：按值多选、搜索分页、15 种条件、明确比较值类型、多列 AND、清列/清全部/移除；一次命令历史，Canvas/命中/键盘/统计使用独立 filteredRows | 列头下拉、颜色/完整日期规则、结构变换/权限/大样本与完整 XLSX 重开仍未验收 |
 | SHEET-12 | [排序 schema][sort-schema]：`sheet.menu.sheets-sort` → `sheet.command.sort-range-{asc,asc-ext,desc,desc-ext,custom}` | 数据页升降序及自定义多关键字面板，复用 `FWorksheet.sortRange`；标题行/比较语言/取消进度/过期结果，单次历史；降序空白末尾，引用转换失败不部分写回 | 扩展选区交互、全部比较/locale/关联资源变换、统一权限和大样本仍未整体验收 |
-| SHEET-13 | [验证 schema][validation-schema]：`sheet.menu.data-validation` / `quick-dropdown` / `quick-date`、`data-validation.operation.open-validation-panel` | 当前无对应本地顶部 item | 所有规则、快捷复选/日期/下拉、拒绝/提示与键入/粘贴/API 统一验证待实现/验收 |
+| SHEET-13 | [验证 schema][validation-schema]：`sheet.menu.data-validation` / `quick-dropdown` / `quick-date`、`data-validation.operation.open-validation-panel` | 数据页新增“数据验证”实际规则面板；模型/命令/API、键入/TSV 粘贴/Facade 写入校验、错误级别反馈、内联下拉输入提示、XLSX writer 和 parser 规则读回已接入；[进度记录](feature-evidence/SHEET-13-data-validation.md) | 日期快捷选择、复选框控件绘制、列表搜索/彩色标签及完整公式覆盖未接；parser 目前以本地 XLSX fixture 验证，第三方 Office 往返尚未验收；SHEET-13 仍未验收 |
 | SHEET-14 | [条件格式 schema][cf-schema]：`sheet.operation.open.conditional.formatting.panel`、AddDataBarConditionalRule / AddIconSetConditionalRule | 当前无对应本地顶部 item | 规则管理、优先级/公式、色阶/数据条/图标集、动态渲染和保存待实现/验收 |
 | SHEET-15 | 查找替换插件 schema | `sheet.operation.find`：真实匹配/定位 | 当前主要为查找；替换、作用域/完整选项、取消和大样本尚缺 |
 | SHEET-16 | sheets-hyper-link-ui schema 与插入/编辑弹层 | 当前无完整本地超链接顶部工具 | URL/内部范围/富文本链接、编辑/移除、引用变换和安全跳转未验收 |
@@ -75,13 +75,13 @@
 | 功能 ID | 上游菜单 / 命令依据 | 本地 item / 真实行为 | 尚缺行为或验证 |
 | --- | --- | --- | --- |
 | DOC-01 | 文档模型/排版与 [Docs schema][doc-schema] | 传统分页 Canvas、现有段落/文字运行模型；工具栏不以 HTML 作为权威源 | 节、复杂自动排版/跨页对象、所有模式差异与大文档性能未整体验收 |
-| DOC-02 字符 | 上游 `SetInlineFormat*Command`，包括 `doc.command.set-inline-format-subscript` / `superscript` | 样式/字体/字号、bold/italic/underline/strike、颜色/高亮/自定义颜色及清除字符格式；选择值/混合态来自真实范围，已有组件交互与历史测试 | 上下标、完整字符样式/主题/继承及 Office 往返仍未实现或未验收 |
+| DOC-02 字符 | 上游 `SetInlineFormat*Command`，包括 `doc.command.set-inline-format-subscript` / `superscript` | 样式/字体/字号、bold/italic/underline/strike、颜色/高亮/上下标及清除字符格式；上下标有独立 run 属性、命令历史、Canvas 字号/基线、DOM 语义 HTML 和 DOCX `w:vertAlign` 写出 | 上下标实现切片见 [DOC-02](feature-evidence/DOC-02-vertical-align.md)；完整字符样式/主题/继承及生产 WASM/Office 往返仍未验收 |
 | DOC-02 段落 | `SetParagraphNamedStyleCommand`、`AlignOperationCommand`、段落设置面板 | 正文/H1–H6、四对齐、缩进/列表、行距；`doc.command.format-paragraph` | 段前/后间距面板正在补充；Title/Subtitle 独立命名样式、混合/全段落语义及 Office 往返未完整验收 |
 | DOC-03 | `doc.menu.breaks`；`doc.menu.section-break.{next-page,continuous,next-column,even-page,odd-page}`；`docs.operation.insert-column-break` / `insert-section-break` | 当前普通 `doc.command.insert-page-break`；布局纸张 A4/Letter、纵横方向；边距设置正在补充 | 分节各类型、节级分栏、列断点均未接顶部；普通分页符不能代替分节 |
 | DOC-03 页眉页脚 | `doc.command.open-header-footer-panel`；[headerFooter schema][header-footer]：`docs-ui.ribbon.header-footer`、`DocHeaderFooterRibbonControl.{insertion,navigation,options,position}`、`doc.command.close-header-footer` | 当前无已实现本地页眉页脚上下文分类 | segment 切换、节关联、首页/奇偶页、页码/字段、距离、导航和结束编辑全部未验收 |
 | DOC-04 左侧大纲 | DocSideMenu/SideMenu；固定模式默认值 | `doc.operation.toggle-outline`；真实标题/层级/activeId、跳转、停靠/浮动、导航键盘、传统默认关闭/现代默认开启 | 宽表与浮动大纲实际裁剪交集尚未接；正文标题折叠、表格内标题和 Title/Subtitle 保真未验收 |
 | DOC-04 正文 TOC | [TOC schema][toc-schema]：`doc.menu.insert-table-of-contents`；`doc.operation.open-table-of-contents-dialog`；`ribbon.table-of-contents` 上下文 | 当前没有正文 TOC 插入、更新或上下文工具 | 不能以左侧大纲替代正文目录；目录内容/页码更新、删除、保存/Office 输出待实现/验收 |
-| DOC-05（含 Pro） | `doc.command.bullet-list` / `order-list` / `check-list` / `change-list-nesting-level` | 本地 bullet/numbered 及缩进可执行 | 复选列表、编号重启/连续、增强列表样式/嵌套、复制/导出语义未完整验收 |
+| DOC-05（含 Pro） | `doc.command.bullet-list` / `order-list` / `check-list` / `change-list-nesting-level`，`CheckListCommand` 属于 START/LAYOUT | 本地 bullet/numbered 和缩进可执行；本轮将查找映射到 OTHERS 语义组、段落/列表映射到 LAYOUT；复选列表由 `doc.command.set-block-type` 创建、独立 `doc.command.toggle-checklist-item` 勾选，Canvas 点击和 Enter 共享文档历史；DOCX 使用原生编号符号 | 清单切片证据见 [DOC-05](feature-evidence/DOC-05-checklist.md)；嵌套/升降级、编号重启/连续、增强样式、重排、富剪贴板及真实 Office 应用重开尚未验收 |
 | DOC-06（含 Pro） | 表菜单 `doc.menu.table`；上下文 `DocTableInsertRowAbove/Bellow/ColumnLeft/RightCommand`、`doc.table.delete-{rows,columns,table}` | 实际插表；表内显示本项目“表格工具”上下文，前后插行/左右插列/删行列/删表，更新控件锚点及一次文档历史，Tab 末格追加复用命令 | 不冒称上游存在同名同形 tab；合并拆分/移动/尺寸边框/整表对齐/跨页嵌套、公开 Facade 和 Office 往返仍未完整覆盖 |
 | DOC-07 | docs-drawing-ui image schema | `doc.operation.open-image`，本地图片和 URL 输入，插入真实模型 | 环绕/锚点/偏移/裁剪/旋转/层级/替换、分页随对象更新及所有关系重开未验收 |
 | DOC-08 | docs-hyper-link-ui：`ShowDocHyperLinkEditPopupOperation` | `doc.operation.open-link` 可插入链接并保留范围 | 完整编辑/删除、书签/内部目标、位置变换和 Office 往返未验收 |
@@ -110,7 +110,7 @@ node --experimental-strip-types --test packages/office-studio/tests/ribbon-compo
 pnpm --filter @office-studio/office-studio check:types
 ```
 
-核对结果：**13/13 通过**，包括 8 个纯契约和 5 个实际 Edge/Chromium 组件浏览器测试；类型检查通过。浏览器由测试启动临时 Vite 服务，使用安装的 `msedge`，默认 1200×700，窄屏 210×700，中文/LTR/RTL；没有截图或像素比较。
+核对结果：共享 Ribbon 契约和浏览器测试 **24/24 通过**，包括 12 条 schema 契约和 12 条实际 Edge/Chromium 组件浏览器测试；workspace 类型检查通过。覆盖 classic 和显式 grid 变体的定位、密度压缩、整组溢出、选择器参数及 split 主动作/子项派发。浏览器没有截图或像素比较。
 
 - 契约：顺序稳定且不修改输入、隐藏/空分类、禁用项保留展示、方向/Home/End/RTL、上下文恢复、宽度/分组间隔/更多按钮预留、溢出每项仅出现一次、禁用和过期选项不派发、split 主动作与参数边界。
 - 浏览器：36px/40px 实际几何；隐藏分类不出现；roving 焦点；字体选择真实命令参数；加粗激活态与禁用撤销；窄屏“更多功能”里的真实命令、嵌套颜色菜单与字体 Select；Escape 归焦；无文档水平溢出；上下文移除回退；菜单暂空重建后的 ResizeObserver 与宽窄切换弹层状态。无 `pageerror`。

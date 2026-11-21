@@ -1,4 +1,4 @@
-import type { CellScalar, ChartModel, WorkbookModel, SpreadsheetCell } from '../domain/model.ts'
+import type { CellScalar, ChartModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 
@@ -23,6 +23,7 @@ export interface ExcelCellView {
   wrap?: boolean
   border?: Record<string, unknown>
   rotation?: number
+  rotationVertical?: boolean
   indent?: number
   shrinkToFit?: boolean
 }
@@ -45,6 +46,8 @@ export interface ExcelSheetView {
   defaultColumnWidth?: number
   defaultRowHeight?: number
   date1904?: boolean
+  dataValidations?: SheetDataValidationRule[]
+  rangeProtectionRules?: SheetRangeProtectionRule[]
 }
 export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; date1904?: boolean }
 export const cellKey = (row: number, col: number): string => {
@@ -68,7 +71,9 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   numberFormat: classifySheetNumberFormat(cell.style.numberFormat) === 'custom' ? undefined : classifySheetNumberFormat(cell.style.numberFormat) as SheetNumberFormat,
   cachedValue: cell.formula ? cell.display : undefined, rawValue: cell.value, displayValue: cell.display,
   rawNumberFormat: cell.style.numberFormat, wrap: cell.style.wrap, border: cell.style.border,
-  rotation: cell.style.rotation, indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
+  rotation: cell.style.rotation === 255 ? 0 : cell.style.rotation,
+  rotationVertical: cell.style.rotationVertical === true || cell.style.rotation === 255,
+  indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
 })
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
@@ -93,6 +98,8 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         showGridlines: sheet.showGridlines, visible: sheet.visible,
         defaultColumnWidth: sheet.defaultColumnWidth, defaultRowHeight: sheet.defaultRowHeight,
         date1904: workbook.date1904,
+        dataValidations: sheet.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })),
+        rangeProtectionRules: sheet.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })),
       }
     }),
   }
@@ -119,6 +126,8 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         const numberFormat = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : previous?.style.numberFormat) ?? 'General'
         const value = rawValue(cell, previous)
         const display = formatSheetValue(value, numberFormat, view.date1904 ?? workbook.date1904)
+        const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)
+        const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
         cells[id] = {
           ...previous, id, ...position, value, formula: cell.formula ?? null,
           display: display ?? (cell.formula ? cell.cachedValue ?? cell.formula : preserveDisplay ? previous.display : cell.value),
@@ -133,13 +142,15 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
             fill: cell.background ?? previous?.style.fill ?? '#fff',
             horizontal: cell.align ?? previous?.style.horizontal ?? 'left', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
             wrap: cell.wrap ?? previous?.style.wrap ?? false, border: cell.border ?? previous?.style.border,
-            rotation: cell.rotation ?? previous?.style.rotation, indent: cell.indent ?? previous?.style.indent,
+            rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,
             shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,
           },
         }
       }
       const next: WorkbookModel['sheets'][number] = {
         ...original, id: source.id, name: source.name, cells, visible: source.visible ?? original?.visible ?? true,
+        dataValidations: source.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })) ?? original?.dataValidations,
+        rangeProtectionRules: source.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })) ?? original?.rangeProtectionRules,
         rowCount: source.rowCount, columnCount: source.columnCount,
         columnWidths: { ...(source.columnWidths ?? original?.columnWidths) }, rowHeights: { ...(source.rowHeights ?? original?.rowHeights) },
         hiddenRows: [...(source.hiddenRows ?? original?.hiddenRows ?? [])], hiddenColumns: [...(source.hiddenColumns ?? original?.hiddenColumns ?? [])],

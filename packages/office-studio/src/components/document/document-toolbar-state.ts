@@ -6,7 +6,7 @@ import {
   selectionCollapsed, textTargets, type DocumentRun, type DocumentSelection, type RunPatch,
 } from '../../features/document/model/document-model'
 
-const markKeys = ['bold', 'italic', 'underline', 'strike', 'fontFamily', 'fontSize', 'color', 'highlight', 'href'] as const
+const markKeys = ['bold', 'italic', 'underline', 'strike', 'verticalAlign', 'fontFamily', 'fontSize', 'color', 'highlight', 'href'] as const
 const paragraphKeys = ['align', 'indent', 'lineHeight', 'spaceBefore', 'spaceAfter'] as const
 
 export interface DocumentToolbarState {

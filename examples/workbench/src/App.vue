@@ -80,7 +80,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
           v-if="editor.state.activeKind === 'workbook'" :key="'workbook:' + editor.state.workbook.id" ref="workbookRef"
           :model-value="excelView" :studio="studio" :show-header="false" :can-undo="editor.canUndo" :can-redo="editor.canRedo" class="workbench"
           @update:model-value="onExcelChange" @import="files.importFile" @save="(view) => saveWorkbook(view, requestedAction)" @export="(view) => saveWorkbook(view, 'export')"
-          @undo="editor.undo" @redo="editor.redo" @notify="(payload) => showNotice(payload.type === 'warning' ? 'info' : payload.type, payload.message)"
+          @undo="editor.undo" @redo="editor.redo" @notify="(payload) => showNotice(payload.type, payload.message)"
         />
         <DocumentWorkbench
           v-else :key="'document:' + editor.state.document.id" ref="documentRef"

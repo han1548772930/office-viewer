@@ -37,6 +37,8 @@ const TWIPS_PER_PIXEL: f64 = 15.0;
 enum ListKind {
     Bullet,
     Numbered,
+    ChecklistUnchecked,
+    ChecklistChecked,
 }
 
 struct NumberingInstance {
@@ -436,6 +438,23 @@ impl<'a> WriteContext<'a> {
             }
             "divider" => Ok(self.paragraph(block, true)?),
             "pageBreak" => Ok("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>".to_owned()),
+            "columnBreak" => Ok("<w:p><w:r><w:br w:type=\"column\"/></w:r></w:p>".to_owned()),
+            "sectionBreak" => {
+                let value = string(get(get(block, "sectionBreak"), "type"))
+                    .unwrap_or_else(|| "nextPage".to_owned());
+                if !matches!(
+                    value.as_str(),
+                    "nextPage" | "continuous" | "nextColumn" | "evenPage" | "oddPage"
+                ) {
+                    return Err(ExportError::invalid(format!(
+                        "Unsupported section break type {value:?}."
+                    )));
+                }
+                Ok(format!(
+                    "<w:p><w:pPr>{}</w:pPr></w:p>",
+                    section_properties(self.page, Some(&value))
+                ))
+            }
             _ => self.paragraph(block, false),
         }
     }
@@ -1483,6 +1502,13 @@ fn assign_lists(
         let kind = match string(get(block, "type")).as_deref() {
             Some("bullet") => Some(ListKind::Bullet),
             Some("numbered") => Some(ListKind::Numbered),
+            Some("checklist") => Some(
+                if get(get(block, "checklist"), "checked").as_bool() == Some(true) {
+                    ListKind::ChecklistChecked
+                } else {
+                    ListKind::ChecklistUnchecked
+                },
+            ),
             _ => None,
         };
         if let Some(kind) = kind {
@@ -1505,14 +1531,20 @@ fn assign_lists(
 
 fn build_numbering_xml(instances: &[NumberingInstance]) -> String {
     let mut abstract_numbering = String::new();
-    for (abstract_id, kind) in [(0, ListKind::Bullet), (1, ListKind::Numbered)] {
+    for (abstract_id, kind) in [
+        (0, ListKind::Bullet),
+        (1, ListKind::Numbered),
+        (2, ListKind::ChecklistUnchecked),
+        (3, ListKind::ChecklistChecked),
+    ] {
         let mut levels = String::new();
         for level in 0..9 {
-            let (format, text, left) = match kind {
+            let (format, text, left, font) = match kind {
                 ListKind::Bullet => (
                     "bullet",
                     ["&#x2022;", "o", "&#x25AA;"][level % 3],
                     720 + level * 360,
+                    "Arial",
                 ),
                 ListKind::Numbered => (
                     "decimal",
@@ -1523,20 +1555,28 @@ fn build_numbering_xml(instances: &[NumberingInstance]) -> String {
                         _ => "%1.%2.%3.",
                     },
                     720 + level * 360,
+                    "Arial",
                 ),
+                ListKind::ChecklistUnchecked => {
+                    ("bullet", "&#x2610;", 720 + level * 360, "Segoe UI Symbol")
+                }
+                ListKind::ChecklistChecked => {
+                    ("bullet", "&#x2611;", 720 + level * 360, "Segoe UI Symbol")
+                }
             };
             levels.push_str(&format!(
-                "<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{left}\"/></w:tabs><w:ind w:left=\"{left}\" w:hanging=\"360\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\"/></w:rPr></w:lvl>"
+                "<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{left}\"/></w:tabs><w:ind w:left=\"{left}\" w:hanging=\"360\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\"/></w:rPr></w:lvl>"
             ));
         }
         abstract_numbering.push_str(&format!("<w:abstractNum w:abstractNumId=\"{abstract_id}\"><w:multiLevelType w:val=\"multilevel\"/>{levels}</w:abstractNum>"));
     }
     let mut numbers = String::new();
     for instance in instances {
-        let abstract_id = if instance.kind == ListKind::Bullet {
-            0
-        } else {
-            1
+        let abstract_id = match instance.kind {
+            ListKind::Bullet => 0,
+            ListKind::Numbered => 1,
+            ListKind::ChecklistUnchecked => 2,
+            ListKind::ChecklistChecked => 3,
         };
         numbers.push_str(&format!(
             "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>",
@@ -1570,20 +1610,24 @@ fn styles_xml() -> String {
 }
 
 fn document_xml(body: &str, page: PageGeometry) -> String {
+    format!(
+        "{}<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><w:body>{body}{}</w:body></w:document>",
+        xml::DECL,
+        section_properties(page, None)
+    )
+}
+
+fn section_properties(page: PageGeometry, section_type: Option<&str>) -> String {
     let orientation = if page.width > page.height {
         " w:orient=\"landscape\""
     } else {
         ""
     };
+    let section_type =
+        section_type.map_or_else(String::new, |value| format!("<w:type w:val=\"{value}\"/>"));
     format!(
-        "{}<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>",
-        xml::DECL,
-        page.width,
-        page.height,
-        page.top,
-        page.right,
-        page.bottom,
-        page.left
+        "<w:sectPr>{section_type}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr>",
+        page.width, page.height, page.top, page.right, page.bottom, page.left
     )
 }
 
@@ -1638,10 +1682,10 @@ fn run_xml(run: &Value, text: &str) -> String {
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{highlight}\"/>"
         ));
     }
-    match string(get(get(run, "metadata"), "verticalAlign"))
-        .unwrap_or_default()
-        .as_str()
-    {
+    let vertical_align = string(get(run, "verticalAlign"))
+        .or_else(|| string(get(get(run, "metadata"), "verticalAlign")))
+        .unwrap_or_default();
+    match vertical_align.as_str() {
         "superscript" | "sup" => properties.push_str("<w:vertAlign w:val=\"superscript\"/>"),
         "subscript" | "sub" => properties.push_str("<w:vertAlign w:val=\"subscript\"/>"),
         _ => {}
@@ -1847,6 +1891,25 @@ mod tests {
     }
 
     #[test]
+    fn run_writer_exports_vertical_alignment_and_explicit_baseline_clears_legacy_metadata() {
+        let superscript = run_xml(&json!({"text":"2", "verticalAlign":"superscript"}), "2");
+        let subscript = run_xml(&json!({"text":"2", "verticalAlign":"subscript"}), "2");
+        let legacy = run_xml(
+            &json!({"text":"2", "metadata":{"verticalAlign":"sup"}}),
+            "2",
+        );
+        let baseline = run_xml(
+            &json!({"text":"2", "verticalAlign":"baseline", "metadata":{"verticalAlign":"superscript"}}),
+            "2",
+        );
+
+        assert!(superscript.contains("<w:vertAlign w:val=\"superscript\"/>"));
+        assert!(subscript.contains("<w:vertAlign w:val=\"subscript\"/>"));
+        assert!(legacy.contains("<w:vertAlign w:val=\"superscript\"/>"));
+        assert!(!baseline.contains("<w:vertAlign"));
+    }
+
+    #[test]
     fn package_xml_has_page_setup_and_standard_styles() {
         let page = PageGeometry {
             width: 11910,
@@ -1861,6 +1924,101 @@ mod tests {
         assert!(document.contains("<w:pgMar w:top=\"1080\""));
         assert!(styles_xml().contains("w:styleId=\"Heading1\""));
         assert!(build_numbering_xml(&[]).contains("<w:abstractNum"));
+    }
+
+    #[test]
+    fn section_and_column_breaks_write_native_word_boundaries() {
+        let break_types = [
+            "nextPage",
+            "continuous",
+            "nextColumn",
+            "evenPage",
+            "oddPage",
+        ];
+        let mut blocks = break_types
+            .iter()
+            .map(|break_type| {
+                json!({
+                    "type": "sectionBreak",
+                    "sectionBreak": { "type": break_type },
+                    "runs": []
+                })
+            })
+            .collect::<Vec<_>>();
+        blocks.push(json!({ "type": "columnBreak", "runs": [] }));
+        let model = json!({ "kind": "document", "blocks": blocks });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(warnings.is_empty());
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+
+        for break_type in break_types {
+            assert!(document.contains(&format!("<w:type w:val=\"{break_type}\"/>")));
+        }
+        assert!(document.contains("<w:br w:type=\"column\"/>"));
+        assert_eq!(
+            document.matches("<w:sectPr>").count(),
+            break_types.len() + 1
+        );
+    }
+
+    #[test]
+    fn section_break_writer_rejects_unrecognized_types() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [{ "type": "sectionBreak", "sectionBreak": { "type": "invalid" }, "runs": [] }]
+        });
+        let mut package = Package::new();
+        assert!(write(&model.to_string(), &mut package).is_err());
+    }
+
+    #[test]
+    fn checklist_paragraphs_write_checked_state_as_native_word_numbering_symbols() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [
+                {"id": "unchecked", "type": "checklist", "checklist": {"listId": "tasks", "checked": false}, "runs": [{"text": "Open the document"}]},
+                {"id": "checked", "type": "checklist", "checklist": {"listId": "tasks", "checked": true}, "runs": [{"text": "Review the checklist"}]}
+            ]
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+        let mut numbering = String::new();
+        archive
+            .by_name("word/numbering.xml")
+            .unwrap()
+            .read_to_string(&mut numbering)
+            .unwrap();
+
+        assert!(
+            document.contains("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr>")
+        );
+        assert!(
+            document.contains("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"2\"/></w:numPr>")
+        );
+        assert!(numbering.contains("w:abstractNumId=\"2\""));
+        assert!(numbering.contains("w:abstractNumId=\"3\""));
+        assert!(numbering.contains("w:lvlText w:val=\"&#x2610;\""));
+        assert!(numbering.contains("w:lvlText w:val=\"&#x2611;\""));
+        assert!(numbering.contains("w:ascii=\"Segoe UI Symbol\""));
+        assert!(document.contains("Open the document"));
+        assert!(document.contains("Review the checklist"));
     }
 
     #[test]

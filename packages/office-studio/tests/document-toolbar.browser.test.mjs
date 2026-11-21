@@ -9,7 +9,9 @@ const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><
 import { createApp, h, ref } from 'vue'
 import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWorkbench.vue'
 import { createBlankDocument } from '/packages/office-studio/src/domain/model'
-import { createParagraph } from '/packages/office-studio/src/features/document/model/document-model'
+import { blocksFromHtml, createParagraph, documentHtml } from '/packages/office-studio/src/features/document/model/document-model'
+import { createTextMeasurer, hitTestChecklist, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
+import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
 const initial = createBlankDocument()
 initial.id = 'toolbar-doc'; initial.name = '工具栏交互文档'
 initial.blocks = [createParagraph('甲乙丙丁')]
@@ -21,6 +23,27 @@ const update = (value) => { history.value.push(copy(model.value)); redo.value = 
 window.documentToolbarFixture = {
   snapshot: () => copy(model.value),
   heading: () => { const next = copy(model.value); next.blocks[0].type = 'heading'; next.blocks[0].level = 1; model.value = next },
+  checklistPosition: (blockId) => {
+    const scroll = document.querySelector('.document-scroll')
+    const bounds = scroll.getBoundingClientRect()
+    const layout = layoutDocument(model.value, createTextMeasurer())
+    const offset = sceneOffset(layout, { width: scroll.clientWidth, height: scroll.clientHeight, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, zoom: 100 })
+    const line = layout.lines.find((item) => item.checklist?.blockId === blockId)
+    const x = line.x - 15
+    const y = line.y + line.height / 2
+    return { x: bounds.left + offset.x + x, y: bounds.top + offset.y + y, hit: hitTestChecklist(layout, x, y), line, bounds: { left: bounds.left, top: bounds.top }, offset }
+  },
+  checklistHtmlRoundtrip: () => blocksFromHtml(documentHtml(model.value)).map((block) => ({ type: block.type, checked: block.checklist?.checked, listId: block.checklist?.listId, text: block.runs.map((run) => run.text).join('') })),
+  verticalAlignHtmlRoundtrip: () => {
+    const source = createParagraph()
+    source.runs = [
+      { ...source.runs[0], id: 'formula-h', text: 'H', verticalAlign: 'baseline' },
+      { ...source.runs[0], id: 'formula-two', text: '2', verticalAlign: 'subscript' },
+      { ...source.runs[0], id: 'formula-o', text: 'O', verticalAlign: 'superscript' },
+    ]
+    const html = documentHtml({ ...initial, blocks: [source] })
+    return { html, runs: blocksFromHtml(html)[0].runs.map((run) => [run.text, run.verticalAlign]) }
+  },
 }
 createApp({ render: () => h(DocumentWorkbench, {
   modelValue: model.value, canUndo: !!history.value.length, canRedo: !!redo.value.length,
@@ -96,6 +119,121 @@ test('font selection preserves the logical Canvas range and uses the external do
   assert.deepEqual(errors, [])
 })
 
+test('subscript and superscript retain the selection, toggle to baseline, and replay through undo and redo', async () => {
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await bridge.focus()
+  await bridge.press('Control+A')
+
+  const subscript = page.getByRole('button', { name: '下标', exact: true })
+  const superscript = page.getByRole('button', { name: '上标', exact: true })
+  await subscript.click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.every(run => run.verticalAlign === 'subscript'))).toBe(true)
+  await expect(subscript).toHaveAttribute('aria-pressed', 'true')
+
+  await superscript.click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.every(run => run.verticalAlign === 'superscript'))).toBe(true)
+  await expect(superscript).toHaveAttribute('aria-pressed', 'true')
+  await subscript.click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.every(run => run.verticalAlign === 'subscript'))).toBe(true)
+
+  await subscript.click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.every(run => run.verticalAlign === undefined))).toBe(true)
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.every(run => run.verticalAlign === 'subscript'))).toBe(true)
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.every(run => run.verticalAlign === undefined))).toBe(true)
+  assert.deepEqual(errors, [])
+})
+
+test('collapsed caret subscript stays pending until text insertion creates a reversible run', async () => {
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await bridge.focus()
+  await bridge.press('Control+End')
+  const before = await page.evaluate(() => window.documentToolbarFixture.snapshot())
+
+  await page.getByRole('button', { name: '下标', exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => window.documentToolbarFixture.snapshot()), before)
+
+  await bridge.press('2')
+  await expect.poll(() => page.evaluate(() => {
+    const run = window.documentToolbarFixture.snapshot().blocks[0].runs.find((item) => item.text.includes('2'))
+    return run && [run.text, run.verticalAlign]
+  })).toEqual(['2', 'subscript'])
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.map((run) => run.text).join(''))).toBe('甲乙丙丁')
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs.find((run) => run.text.includes('2')).verticalAlign)).toBe('subscript')
+  assert.deepEqual(errors, [])
+})
+
+test('HTML serialization and DOM import preserve superscript and subscript semantics', async () => {
+  const result = await page.evaluate(() => window.documentToolbarFixture.verticalAlignHtmlRoundtrip())
+  assert.match(result.html, /<sub>/)
+  assert.match(result.html, /<sup>/)
+  assert.deepEqual(result.runs, [['H', undefined], ['2', 'subscript'], ['O', 'superscript']])
+  assert.deepEqual(errors, [])
+})
+
+test('quote block style applies through the ribbon and is undoable', async () => {
+  const style = page.getByRole('combobox', { name: '段落样式', exact: true })
+  await style.click()
+  await page.getByRole('option', { name: '引用', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].type)).toBe('quote')
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].type)).toBe('paragraph')
+  assert.deepEqual(errors, [])
+})
+
+test('section break Ribbon menu inserts an odd-page section and replays through undo and redo', async () => {
+  await page.getByRole('tab', { name: '插入', exact: true }).click()
+  await page.getByRole('button', { name: '分页符和分节符', exact: true }).click()
+  await page.getByRole('button', { name: '分节符', exact: true }).click()
+  await page.getByRole('button', { name: '奇数页', exact: true }).click()
+
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks.map(block => block.type))).toEqual(['paragraph', 'sectionBreak', 'paragraph'])
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[1].sectionBreak.type)).toBe('oddPage')
+  await page.locator('.workbench-ribbon-tab[data-tab-id="home"]').click()
+  const undo = page.locator('.ribbon-visible-groups [data-ribbon-item="doc-undo"] button')
+  await expect(undo).toBeVisible()
+  await undo.click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks.map(block => block.type))).toEqual(['paragraph'])
+  await page.locator('.ribbon-visible-groups [data-ribbon-item="doc-redo"] button').click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[1].sectionBreak.type)).toBe('oddPage')
+  assert.deepEqual(errors, [])
+})
+
+test('checklist Ribbon command creates editable task items with Canvas toggles and undoable state', async () => {
+  await expect.poll(() => page.locator('.document-scroll').evaluate(element => element.__vueParentComponent.setupState.viewport.width), { timeout: 15000 }).toBeGreaterThan(100)
+  await page.getByRole('button', { name: '清单', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].type)).toBe('checklist')
+  let model = await page.evaluate(() => window.documentToolbarFixture.snapshot())
+  const taskId = model.blocks[0].id
+  assert.equal(model.blocks[0].checklist.checked, false)
+  let position = await page.evaluate((id) => window.documentToolbarFixture.checklistPosition(id), taskId)
+  assert.equal(position.hit, taskId)
+  await page.mouse.click(position.x, position.y)
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].checklist.checked)).toBe(true)
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].checklist.checked)).toBe(false)
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].checklist.checked)).toBe(true)
+  const roundtrip = await page.evaluate(() => window.documentToolbarFixture.checklistHtmlRoundtrip())
+  assert.deepEqual(roundtrip, [{ type: 'checklist', checked: true, listId: model.blocks[0].checklist.listId, text: '甲乙丙丁' }])
+
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await bridge.focus()
+  await bridge.press('Control+End')
+  await bridge.press('Enter')
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks.length)).toBe(2)
+  model = await page.evaluate(() => window.documentToolbarFixture.snapshot())
+  assert.deepEqual(model.blocks.map((block) => block.type), ['checklist', 'checklist'])
+  assert.equal(model.blocks[1].checklist.checked, false)
+  position = await page.evaluate((id) => window.documentToolbarFixture.checklistPosition(id), model.blocks[1].id)
+  await page.mouse.click(position.x, position.y)
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[1].checklist.checked)).toBe(true)
+  assert.deepEqual(errors, [])
+})
+
 test('outline, zoom and focus view operations keep document content and dirty state unchanged', async () => {
   await page.evaluate(() => window.documentToolbarFixture.heading())
   const before = await page.evaluate(() => window.documentToolbarFixture.snapshot())
@@ -105,6 +243,10 @@ test('outline, zoom and focus view operations keep document content and dirty st
   await page.setViewportSize({ width: 680, height: 900 })
   await expect(page.locator('.document-outline')).toHaveClass(/document-outline--float/)
   await page.locator('.document-statusbar').getByRole('button', { name: '放大', exact: true }).click()
+  await page.getByRole('button', { name: '全屏', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement !== null)).toBe(true)
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement === null)).toBe(true)
   await page.getByRole('button', { name: '专注模式', exact: true }).click()
   await expect(page.locator('.workbench-ribbon')).toHaveCount(0)
   await page.getByRole('button', { name: '退出专注模式', exact: true }).click()
@@ -113,9 +255,9 @@ test('outline, zoom and focus view operations keep document content and dirty st
   assert.deepEqual(errors, [])
 })
 
-test('page settings edits real geometry and margins in one undoable document update', async () => {
+test('view tab page settings edits real geometry and margins in one undoable document update', async () => {
   const before = await page.evaluate(() => window.documentToolbarFixture.snapshot())
-  await page.getByRole('tab', { name: '布局', exact: true }).click()
+  await page.getByRole('tab', { name: '视图', exact: true }).click()
   await page.getByRole('button', { name: '页面设置', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '页面设置', exact: true })
   await dialog.getByRole('spinbutton', { name: '上边距', exact: true }).fill('48')

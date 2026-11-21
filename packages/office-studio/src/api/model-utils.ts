@@ -41,6 +41,7 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
     sheet.frozenCols ||= 0
     sheet.visible ??= true
     sheet.showGridlines ??= true
+    sheet.rangeProtectionRules ??= []
   })
   next.activeSheetId = next.sheets.some((sheet) => sheet.id === next.activeSheetId) ? next.activeSheetId : next.sheets[0]!.id
   next.pivotTables ??= []
@@ -96,6 +97,8 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
   const sheet = createBlankSheet(typeof input.name === 'string' ? input.name : 'Sheet1')
   sheet.id = typeof input.id === 'string' ? input.id : randomId('sheet')
   sheet.name = typeof input.name === 'string' ? input.name : sheet.name
+  if (Array.isArray(input.dataValidations)) sheet.dataValidations = clone(input.dataValidations)
+  if (Array.isArray(input.rangeProtectionRules)) sheet.rangeProtectionRules = clone(input.rangeProtectionRules)
   sheet.rowCount = numberOrUndefined(input.rowCount)
   sheet.columnCount = numberOrUndefined(input.columnCount)
   sheet.visible = input.visible !== false

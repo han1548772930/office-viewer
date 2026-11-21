@@ -344,7 +344,7 @@ function findBlock(model: DocumentModel, id: string): DocumentBlock | undefined 
 
 function validateControl(model: DocumentModel, control: DocumentContentControl): void {
   const block = findBlock(model, control.blockId)
-  if (!block || ['table', 'image', 'divider', 'pageBreak'].includes(block.type)) throw new Error(`Content control target is not a text paragraph: ${control.blockId}`)
+  if (!block || ['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) throw new Error(`Content control target is not a text paragraph: ${control.blockId}`)
   if (!Number.isInteger(control.startOffset) || !Number.isInteger(control.endOffset) || control.startOffset < 0 || control.endOffset < control.startOffset) throw new RangeError('Content control range is invalid')
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control target is not addressable: ${control.blockId}`)

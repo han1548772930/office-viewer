@@ -1,12 +1,19 @@
 use crate::model::{
     AnchorCellPayload, AxisPayload, BorderPayload, CellPayload, ChartCachedPointPayload,
     ChartDrawingPayload, ChartPayload, ChartSeriesCachePayload, ChartSeriesPayload,
-    ChartSeriesStylePayload, DimensionPayload, DocumentModel, FontPayload, FreezePanePayload,
-    HyperlinkPayload, LocalDefinedNamePayload, ParseEnvelope, ParseFailure, ParserDiagnostics,
-    ProtectionPayload, RangePayload, RichTextRunPayload, SCHEMA_VERSION, SheetPayload,
-    StyleLossPayload, StylePayload, WorkbookPayload, WorkbookPropertiesPayload,
+    ChartSeriesStylePayload, DataValidationPayload, DataValidationRangePayload, DimensionPayload,
+    DocumentModel, FontPayload, FreezePanePayload, HyperlinkPayload, LocalDefinedNamePayload,
+    ParseEnvelope, ParseFailure, ParserDiagnostics, ProtectionPayload, RangePayload,
+    RichTextRunPayload, SCHEMA_VERSION, SheetPayload, StyleLossPayload, StylePayload,
+    WorkbookPayload, WorkbookPropertiesPayload,
 };
-use duke_pages::parse_document_blocks;
+use crate::validation_sidecar::ValidationSidecar;
+use duke_pages::{
+    BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, extract_document_blocks,
+    parse_document_model,
+};
+use quick_xml::events::Event;
+use quick_xml::{Reader, XmlVersion};
 use rxls::{Cell, Workbook};
 use serde_json::{Value, json};
 
@@ -49,8 +56,16 @@ fn parse_document_impl(
     file_name: &str,
     format: String,
 ) -> Result<ParseEnvelope, ParseFailure> {
-    let document = parse_document_blocks(bytes).map_err(ParseFailure::office_file)?;
-    let diagnostics = ParserDiagnostics::document(&document);
+    let source_model = parse_document_model(bytes).map_err(ParseFailure::office_file)?;
+    let mut document = extract_document_blocks(&source_model);
+    insert_section_breaks(&mut document, &source_model);
+    insert_paragraph_breaks(&mut document, &source_model);
+    let mut diagnostics = ParserDiagnostics::document(&document);
+    diagnostics.capabilities.extend([
+        "pageBreaks".into(),
+        "columnBreaks".into(),
+        "sectionBreaks".into(),
+    ]);
     Ok(ParseEnvelope {
         schema_version: SCHEMA_VERSION,
         parser_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -63,6 +78,223 @@ fn parse_document_impl(
     })
 }
 
+fn insert_section_breaks(document: &mut StructuredDocument, source_model: &duke_pages::DocModel) {
+    let Some(sections) = source_model.metadata.sections.as_ref() else {
+        return;
+    };
+    let mut insertions = Vec::new();
+    for (section_index, section) in sections.iter().enumerate().skip(1) {
+        let Ok(node_index) = usize::try_from(section.start_node_index) else {
+            continue;
+        };
+        if node_index == 0 || node_index >= source_model.nodes.len() {
+            continue;
+        }
+        let break_type = match section_break_type(
+            sections[section_index - 1]
+                .section_properties_xml
+                .as_deref(),
+        ) {
+            Ok(break_type) => break_type,
+            Err(()) => {
+                document.warnings.push(format!(
+                    "Section starting at body node {node_index} has an unsupported break type and was imported as nextPage."
+                ));
+                "nextPage"
+            }
+        };
+        let replace_empty_boundary = matches!(
+            source_model.nodes.get(node_index - 1),
+            Some(DocNode::Paragraph(_))
+        )
+        .then(|| body_block_position(document, node_index - 1))
+        .flatten()
+        .filter(|position| document.blocks[*position].content.trim().is_empty());
+        let target_position =
+            replace_empty_boundary.or_else(|| body_block_position(document, node_index));
+        let Some(position) = target_position else {
+            document.warnings.push(format!(
+                "Section starting at body node {node_index} could not be attached to an extracted block."
+            ));
+            continue;
+        };
+        let marker = DocumentBlock {
+            object: "block".into(),
+            id: format!("{}-section-break-{node_index}", document.document_id),
+            r#type: BlockType::Text,
+            content: String::new(),
+            details: BlockDetails::Raw(serde_json::json!({
+                "type": "section_break_details",
+                "sectionBreak": { "type": break_type }
+            })),
+            note_id: None,
+            source_refs: Vec::new(),
+            parent_block_id: None,
+            children: Vec::new(),
+            words: None,
+        };
+        insertions.push((position, replace_empty_boundary.is_some(), marker));
+    }
+    insertions.sort_by(|left, right| right.0.cmp(&left.0));
+    for (position, replace, marker) in insertions {
+        if replace {
+            document.blocks[position] = marker;
+        } else {
+            document.blocks.insert(position, marker);
+        }
+    }
+}
+
+fn insert_paragraph_breaks(document: &mut StructuredDocument, source_model: &duke_pages::DocModel) {
+    for (node_index, node) in source_model.nodes.iter().enumerate() {
+        let DocNode::Paragraph(paragraph) = node else {
+            continue;
+        };
+        let Some(xml) = paragraph.source_xml.as_deref() else {
+            continue;
+        };
+        let break_type = match word_break_type(xml) {
+            Ok(Some(break_type)) => break_type,
+            Ok(None) => continue,
+            Err(()) => {
+                document.warnings.push(format!(
+                    "Could not read a manual break in body node {node_index}."
+                ));
+                continue;
+            }
+        };
+        let details = match break_type {
+            "pageBreak" => serde_json::json!({ "pageBreak": true }),
+            _ => serde_json::json!({ "columnBreak": true }),
+        };
+        let marker = DocumentBlock {
+            object: "block".into(),
+            id: format!("{}-{break_type}-{node_index}", document.document_id),
+            r#type: BlockType::Text,
+            content: String::new(),
+            details: BlockDetails::Raw(details),
+            note_id: None,
+            source_refs: Vec::new(),
+            parent_block_id: None,
+            children: Vec::new(),
+            words: None,
+        };
+        if let Some(position) = body_block_position(document, node_index) {
+            if !document.blocks[position].content.trim().is_empty() {
+                document.warnings.push(format!(
+                    "Manual break in body node {node_index} shares a paragraph with text and was retained as a line break."
+                ));
+                continue;
+            }
+            document.blocks[position] = marker;
+        } else if let Some(position) = body_block_position(document, node_index + 1) {
+            document.blocks.insert(position, marker);
+        } else {
+            document.warnings.push(format!(
+                "Manual break in body node {node_index} could not be attached to an extracted block."
+            ));
+        }
+    }
+}
+
+fn body_block_position(document: &StructuredDocument, node_index: usize) -> Option<usize> {
+    let suffix = format!("/body/{node_index}");
+    document.blocks.iter().position(|block| {
+        block.parent_block_id.is_none()
+            && block
+                .source_refs
+                .iter()
+                .any(|source| source.story == "body" && source.node_id.ends_with(&suffix))
+    })
+}
+
+fn section_break_type(xml: Option<&str>) -> Result<&'static str, ()> {
+    let Some(xml) = xml else {
+        return Ok("nextPage");
+    };
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element) | Event::Empty(element))
+                if local_name(element.name().as_ref()) == b"type" =>
+            {
+                let value = element
+                    .attributes()
+                    .with_checks(false)
+                    .filter_map(Result::ok)
+                    .find(|attribute| local_name(attribute.key.as_ref()) == b"val")
+                    .and_then(|attribute| {
+                        attribute
+                            .decoded_and_normalized_value_with(
+                                XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                                1,
+                                quick_xml::escape::resolve_xml_entity,
+                            )
+                            .ok()
+                            .map(|value| value.into_owned())
+                    });
+                return match value.as_deref() {
+                    None | Some("nextPage") => Ok("nextPage"),
+                    Some("continuous") => Ok("continuous"),
+                    Some("nextColumn") => Ok("nextColumn"),
+                    Some("evenPage") => Ok("evenPage"),
+                    Some("oddPage") => Ok("oddPage"),
+                    Some(_) => Err(()),
+                };
+            }
+            Ok(Event::Eof) => return Ok("nextPage"),
+            Err(_) => return Err(()),
+            _ => {}
+        }
+    }
+}
+
+fn word_break_type(xml: &str) -> Result<Option<&'static str>, ()> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element) | Event::Empty(element))
+                if local_name(element.name().as_ref()) == b"br" =>
+            {
+                let value = element
+                    .attributes()
+                    .with_checks(false)
+                    .filter_map(Result::ok)
+                    .find(|attribute| local_name(attribute.key.as_ref()) == b"type")
+                    .and_then(|attribute| {
+                        attribute
+                            .decoded_and_normalized_value_with(
+                                XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                                1,
+                                quick_xml::escape::resolve_xml_entity,
+                            )
+                            .ok()
+                            .map(|value| value.into_owned())
+                    });
+                match value.as_deref() {
+                    Some("page") => return Ok(Some("pageBreak")),
+                    Some("column") => return Ok(Some("columnBreak")),
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => return Ok(None),
+            Err(_) => return Err(()),
+            _ => {}
+        }
+    }
+}
+
+fn local_name(qualified_name: &[u8]) -> &[u8] {
+    qualified_name
+        .rsplit(|byte| *byte == b':')
+        .next()
+        .unwrap_or(qualified_name)
+}
+
 fn parse_workbook(
     bytes: &[u8],
     file_name: &str,
@@ -71,11 +303,17 @@ fn parse_workbook(
     let workbook =
         Workbook::open(bytes).map_err(|error| ParseFailure::office_file(error.to_string()))?;
     let metadata = workbook.metadata();
+    let mut validation_sidecar = if format == "xlsx" {
+        ValidationSidecar::read(bytes)
+    } else {
+        ValidationSidecar::default()
+    };
     let sheets = workbook
         .sheets
         .iter()
-        .map(sheet_payload)
+        .map(|sheet| sheet_payload(sheet, &mut validation_sidecar))
         .collect::<Vec<_>>();
+    validation_sidecar.warn_unmatched_rules();
     let payload = WorkbookPayload {
         sheets,
         date1904: workbook.date1904,
@@ -110,11 +348,10 @@ fn parse_workbook(
         structure_protected: metadata.structure_protected,
         text_truncated: metadata.text_truncated,
     };
-    let warnings = if workbook.text_truncated {
-        vec!["Some text cells were omitted after the parser allocation limit".into()]
-    } else {
-        Vec::new()
-    };
+    let mut warnings = validation_sidecar.warnings;
+    if workbook.text_truncated {
+        warnings.push("Some text cells were omitted after the parser allocation limit".into());
+    }
     let diagnostics = ParserDiagnostics::spreadsheet(&payload, warnings);
     Ok(ParseEnvelope {
         schema_version: SCHEMA_VERSION,
@@ -128,7 +365,7 @@ fn parse_workbook(
     })
 }
 
-fn sheet_payload(sheet: &rxls::Sheet) -> SheetPayload {
+fn sheet_payload(sheet: &rxls::Sheet, validation_sidecar: &mut ValidationSidecar) -> SheetPayload {
     let metadata = sheet.metadata();
     let cells = sheet
         .display_cells()
@@ -226,6 +463,14 @@ fn sheet_payload(sheet: &rxls::Sheet) -> SheetPayload {
                 target: target.clone(),
             })
             .collect(),
+        data_validations: sheet
+            .data_validations()
+            .iter()
+            .enumerate()
+            .map(|(index, validation)| {
+                data_validation_payload(index, validation, sheet.name.as_str(), validation_sidecar)
+            })
+            .collect(),
         style_fidelity: format!("{:?}", sheet.style_fidelity()).to_ascii_lowercase(),
         style_losses: sheet
             .style_losses()
@@ -241,6 +486,67 @@ fn sheet_payload(sheet: &rxls::Sheet) -> SheetPayload {
             .enumerate()
             .map(|(index, chart)| chart_payload(index, chart, sheet.drawing_metadata()))
             .collect(),
+    }
+}
+
+fn data_validation_payload(
+    index: usize,
+    validation: &rxls::DataValidation,
+    sheet_name: &str,
+    validation_sidecar: &mut ValidationSidecar,
+) -> DataValidationPayload {
+    let (start_row, start_col, end_row, end_col) = validation.sqref;
+    let supplement = validation_sidecar.take(sheet_name, (start_row, start_col, end_row, end_col));
+    let (prompt_title, prompt) = validation
+        .prompt
+        .as_ref()
+        .map(|(title, message)| (Some(title.clone()), Some(message.clone())))
+        .unwrap_or((None, None));
+    let (error_title, error) = validation
+        .error
+        .as_ref()
+        .map(|(title, message)| (Some(title.clone()), Some(message.clone())))
+        .unwrap_or((None, None));
+    DataValidationPayload {
+        id: format!("validation-{}", index + 1),
+        validation_type: match validation.kind {
+            rxls::DvKind::List => "list",
+            rxls::DvKind::Whole => "whole",
+            rxls::DvKind::Decimal => "decimal",
+            rxls::DvKind::Date => "date",
+            rxls::DvKind::Time => "time",
+            rxls::DvKind::TextLength => "textLength",
+            rxls::DvKind::Custom => "custom",
+        }
+        .into(),
+        ranges: vec![DataValidationRangePayload {
+            start_row,
+            start_col: u32::from(start_col),
+            end_row,
+            end_col: u32::from(end_col),
+        }],
+        operator: match validation.operator {
+            rxls::DvOp::Between => "between",
+            rxls::DvOp::NotBetween => "notBetween",
+            rxls::DvOp::Equal => "equal",
+            rxls::DvOp::NotEqual => "notEqual",
+            rxls::DvOp::GreaterThan => "greaterThan",
+            rxls::DvOp::LessThan => "lessThan",
+            rxls::DvOp::GreaterThanOrEqual => "greaterThanOrEqual",
+            rxls::DvOp::LessThanOrEqual => "lessThanOrEqual",
+        }
+        .into(),
+        formula1: validation.formula1.clone(),
+        formula2: validation.formula2.clone(),
+        allow_blank: validation.allow_blank,
+        show_drop_down: supplement.as_ref().and_then(|value| value.show_drop_down),
+        show_error_message: validation.show_error_message,
+        error_style: supplement.and_then(|value| value.error_style),
+        error_title,
+        error,
+        show_input_message: validation.show_input_message,
+        prompt_title,
+        prompt,
     }
 }
 
@@ -452,11 +758,19 @@ fn style_payload(style: &rxls::CellStyle) -> StylePayload {
             locked: protection.locked,
             hidden: protection.hidden,
         });
-    let (rotation, indent, shrink_to_fit) = style
+    let (rotation, rotation_vertical, indent, shrink_to_fit) = style
         .align
         .as_ref()
-        .map(|align| (align.rotation, align.indent, align.shrink_to_fit))
-        .unwrap_or((0, 0, false));
+        .map(|align| {
+            let (rotation, rotation_vertical) = normalize_rotation(align.rotation);
+            (
+                rotation,
+                rotation_vertical,
+                align.indent,
+                align.shrink_to_fit,
+            )
+        })
+        .unwrap_or((0, false, 0, false));
     StylePayload {
         font,
         fill,
@@ -477,6 +791,7 @@ fn style_payload(style: &rxls::CellStyle) -> StylePayload {
             .map(|align| align.wrap)
             .unwrap_or(false),
         rotation,
+        rotation_vertical,
         indent,
         shrink_to_fit,
         fill_pattern,
@@ -484,6 +799,14 @@ fn style_payload(style: &rxls::CellStyle) -> StylePayload {
         fill_foreground,
         border,
         protection,
+    }
+}
+
+fn normalize_rotation(rotation: i16) -> (i16, bool) {
+    if rotation == 255 {
+        (0, true)
+    } else {
+        (rotation, false)
     }
 }
 
@@ -559,15 +882,77 @@ fn validate_input(bytes: &[u8], file_name: &str) -> Result<(), ParseFailure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_format, parse_office_bytes};
-    use rxls::{Chart, ChartKind, Series, Workbook};
+    use super::{detect_format, normalize_rotation, parse_office_bytes};
+    use duke_pages::{create_minimal_docx_package, package_to_bytes};
+    use rxls::{Chart, ChartKind, DataValidation, DvKind, DvOp, Series, Workbook};
     use serde_json::Value;
+    use std::io::{Read, Write};
+    use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     #[test]
     fn detects_supported_extensions() {
         assert_eq!(detect_format("report.docx", &[]), "docx");
         assert_eq!(detect_format("sheet.xlsx", &[]), "xlsx");
         assert_eq!(detect_format("unknown", b"PK\x03\x04"), "xlsx");
+    }
+
+    #[test]
+    fn maps_the_ooxml_vertical_text_sentinel_to_a_vertical_style() {
+        assert_eq!(normalize_rotation(255), (0, true));
+        assert_eq!(normalize_rotation(-45), (-45, false));
+    }
+
+    #[test]
+    fn docx_section_break_is_inserted_before_its_body_start_block() {
+        let document_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr><w:r><w:t>First section</w:t></w:r></w:p><w:p><w:r><w:t>Second section</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>"#;
+        let package = create_minimal_docx_package(Some(document_xml));
+        let bytes = package_to_bytes(&package).expect("the DOCX fixture must serialize");
+        let envelope = parse_office_bytes(&bytes, "section-break.docx")
+            .expect("the section break fixture must parse");
+        let payload = serde_json::to_value(envelope).expect("parse envelope must serialize");
+        let blocks = payload["payload"]["data"]["blocks"]
+            .as_array()
+            .expect("the document blocks must reach the payload");
+        let marker_index = blocks
+            .iter()
+            .position(|block| block["details"]["sectionBreak"]["type"] == "continuous");
+        assert!(
+            marker_index.is_some(),
+            "the section marker must be represented as a body block: {payload:#}"
+        );
+        let marker_index = marker_index.unwrap();
+
+        assert_eq!(blocks[marker_index - 1]["content"], "First section");
+        assert_eq!(blocks[marker_index + 1]["content"], "Second section");
+        assert!(
+            payload["diagnostics"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|capability| capability == "sectionBreaks")
+        );
+    }
+
+    #[test]
+    fn docx_standalone_page_and_column_breaks_reach_the_document_payload() {
+        for (word_type, detail_key) in [("page", "pageBreak"), ("column", "columnBreak")] {
+            let document_xml = format!(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p><w:p><w:r><w:br w:type="{word_type}"/></w:r></w:p><w:p><w:r><w:t>After</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#
+            );
+            let package = create_minimal_docx_package(Some(&document_xml));
+            let bytes = package_to_bytes(&package).expect("the DOCX fixture must serialize");
+            let envelope = parse_office_bytes(&bytes, "manual-break.docx")
+                .expect("the manual break fixture must parse");
+            let payload = serde_json::to_value(envelope).expect("parse envelope must serialize");
+            let blocks = payload["payload"]["data"]["blocks"]
+                .as_array()
+                .expect("document blocks must reach the payload");
+
+            assert_eq!(blocks[0]["content"], "Before");
+            assert_eq!(blocks[1]["type"], "text");
+            assert_eq!(blocks[1]["details"][detail_key], true, "{payload:#}");
+            assert_eq!(blocks[2]["content"], "After");
+        }
     }
 
     #[test]
@@ -618,6 +1003,120 @@ mod tests {
                 .iter()
                 .any(|capability| capability == "charts")
         );
+    }
+
+    #[test]
+    fn xlsx_data_validation_rule_reaches_normalizer_contract_shape() {
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_sheet("Data");
+        sheet.add_data_validation(
+            DataValidation::new((1, 0, 3, 0), DvKind::Whole, DvOp::Between, "2")
+                .with_formula2("8")
+                .with_allow_blank(false)
+                .with_prompt("Enter quantity", "Use a whole number")
+                .with_error("Invalid quantity", "Enter a value from 2 to 8"),
+        );
+
+        let bytes = workbook.to_xlsx();
+        let envelope = parse_office_bytes(&bytes, "validation-fixture.xlsx")
+            .expect("the generated xlsx fixture must parse");
+        let payload = serde_json::to_value(envelope).expect("parse envelope must serialize");
+        let validation = &payload["payload"]["data"]["sheets"][0]["dataValidations"][0];
+
+        assert_eq!(validation["id"], "validation-1");
+        assert_eq!(validation["type"], "whole");
+        assert_eq!(validation["operator"], "between");
+        assert_eq!(validation["formula1"], "2");
+        assert_eq!(validation["formula2"], "8");
+        assert_eq!(validation["allowBlank"], false);
+        assert_eq!(validation["showInputMessage"], true);
+        assert_eq!(validation["showErrorMessage"], true);
+        assert_eq!(validation["promptTitle"], "Enter quantity");
+        assert_eq!(validation["prompt"], "Use a whole number");
+        assert_eq!(validation["errorTitle"], "Invalid quantity");
+        assert_eq!(validation["error"], "Enter a value from 2 to 8");
+        assert_eq!(
+            validation["ranges"][0],
+            serde_json::json!({ "startRow": 1, "startCol": 0, "endRow": 3, "endCol": 0 })
+        );
+        assert!(
+            payload["diagnostics"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|capability| capability == "dataValidations")
+        );
+    }
+
+    #[test]
+    fn xlsx_multi_range_list_validation_retains_dropdown_and_error_style() {
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_sheet("Lists");
+        sheet.add_data_validation(
+            DataValidation::list((1, 1, 3, 1), "\"Red,Green\"")
+                .with_prompt("Choose a color", "Select a listed value")
+                .with_error("Invalid color", "Choose Red or Green"),
+        );
+        let bytes = add_xlsx_validation_attributes(&workbook.to_xlsx());
+
+        let envelope = parse_office_bytes(&bytes, "validation-list-fixture.xlsx")
+            .expect("the modified xlsx fixture must parse");
+        let payload = serde_json::to_value(envelope).expect("parse envelope must serialize");
+        let validations = payload["payload"]["data"]["sheets"][0]["dataValidations"]
+            .as_array()
+            .expect("the list validation must reach the payload");
+
+        assert_eq!(validations.len(), 2);
+        for validation in validations {
+            assert_eq!(validation["type"], "list");
+            assert_eq!(validation["formula1"], "\"Red,Green\"");
+            assert_eq!(validation["showDropDown"], false);
+            assert_eq!(validation["errorStyle"], "info");
+            assert_eq!(validation["showInputMessage"], true);
+            assert_eq!(validation["showErrorMessage"], true);
+            assert_eq!(validation["promptTitle"], "Choose a color");
+            assert_eq!(validation["errorTitle"], "Invalid color");
+        }
+        assert_eq!(validations[0]["ranges"][0]["startCol"], 1);
+        assert_eq!(validations[0]["ranges"][0]["endRow"], 3);
+        assert_eq!(validations[1]["ranges"][0]["startCol"], 3);
+        assert_eq!(validations[1]["ranges"][0]["endRow"], 3);
+    }
+
+    fn add_xlsx_validation_attributes(bytes: &[u8]) -> Vec<u8> {
+        let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid XLSX ZIP");
+        let mut output = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).expect("XLSX package entry");
+            let name = entry.name().to_owned();
+            let mut contents = Vec::new();
+            entry
+                .read_to_end(&mut contents)
+                .expect("XLSX package entry contents");
+            if name == "xl/worksheets/sheet1.xml" {
+                let xml = String::from_utf8(contents).expect("worksheet XML is UTF-8");
+                let start = xml
+                    .find("<dataValidation ")
+                    .expect("worksheet contains a validation element");
+                let end = start + xml[start..].find('>').expect("validation element tag") + 1;
+                let mut tag = xml[start..end].to_owned();
+                tag = tag.replace("B2:B4", "B2:B4 D2:D4");
+                tag.insert_str(
+                    tag.len() - 1,
+                    " showDropDown=\"1\" errorStyle=\"information\"",
+                );
+                let mut modified = xml;
+                modified.replace_range(start..end, &tag);
+                contents = modified.into_bytes();
+            }
+            output
+                .start_file(name, SimpleFileOptions::default())
+                .expect("write XLSX package entry");
+            output
+                .write_all(&contents)
+                .expect("write XLSX package contents");
+        }
+        output.finish().expect("finish XLSX ZIP").into_inner()
     }
 
     #[test]

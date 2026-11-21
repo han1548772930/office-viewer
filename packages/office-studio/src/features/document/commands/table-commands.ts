@@ -95,14 +95,14 @@ export function executeDocumentTableCommand(model: DocumentModel, selection: Doc
 
 function emptyCellFrom(source: DocumentCell): DocumentCell {
   const paragraph = createParagraph()
-  const sourceParagraph = source.blocks.find((block) => !['table', 'image', 'divider', 'pageBreak'].includes(block.type))
+  const sourceParagraph = source.blocks.find((block) => !['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type))
   if (sourceParagraph) paragraph.style = { ...sourceParagraph.style }
   return { ...source, id: documentId('cell'), blocks: [paragraph], style: JSON.parse(JSON.stringify(source.style)) as Record<string, unknown>, rowSpan: 1, colSpan: 1 }
 }
 
 function cellSelection(blockId: string, table: DocumentTable, row: number, col: number): DocumentSelection {
   const cell = table.rows[row]!.cells[col]!
-  let paragraph = cell.blocks.find((block) => !['table', 'image', 'divider', 'pageBreak'].includes(block.type))
+  let paragraph = cell.blocks.find((block) => !['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type))
   if (!paragraph) { paragraph = createParagraph(); cell.blocks.push(paragraph) }
   return collapsedSelection({ blockId, row, col, cellBlockId: paragraph.id, offset: 0 })
 }

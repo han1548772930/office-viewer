@@ -4,7 +4,7 @@ import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
-import { caretRect, createTextMeasurer, emptyLayout, hitTestDocument, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
+import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection } from '../../features/document/model/document-model'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
@@ -201,12 +201,17 @@ function publishViewport(reason: NonNullable<DocumentViewportLocation['reason']>
   emit('viewport-change', { ...location, reason })
 }
 
-function pointFromEvent(event: PointerEvent | MouseEvent): DocumentPoint | undefined {
+function coordinatesFromEvent(event: PointerEvent | MouseEvent): { x: number; y: number } | undefined {
   const element = scrollRef.value
   if (!element) return undefined
   const bounds = element.getBoundingClientRect()
   const offset = sceneOffset(layout.value, viewport.value)
-  return hitTestDocument(layout.value, (event.clientX - bounds.left - offset.x) / (props.zoom / 100), (event.clientY - bounds.top - offset.y) / (props.zoom / 100))
+  return { x: (event.clientX - bounds.left - offset.x) / (props.zoom / 100), y: (event.clientY - bounds.top - offset.y) / (props.zoom / 100) }
+}
+
+function pointFromEvent(event: PointerEvent | MouseEvent): DocumentPoint | undefined {
+  const coordinates = coordinatesFromEvent(event)
+  return coordinates ? hitTestDocument(layout.value, coordinates.x, coordinates.y) : undefined
 }
 
 function select(selection: DocumentSelection) {
@@ -219,6 +224,14 @@ function focus() { inputRef.value?.focus({ preventScroll: true }); focused.value
 
 function pointerDown(event: PointerEvent) {
   if (event.button !== 0 || composing.value) return
+  const coordinates = coordinatesFromEvent(event)
+  const checklistBlockId = coordinates && hitTestChecklist(layout.value, coordinates.x, coordinates.y)
+  if (checklistBlockId) {
+    event.preventDefault()
+    emit('command', { id: 'doc.command.toggle-checklist-item', blockId: checklistBlockId })
+    focus()
+    return
+  }
   const point = pointFromEvent(event)
   if (!point) return
   event.preventDefault()
@@ -361,7 +374,11 @@ function keydown(event: KeyboardEvent) {
   if (event.isComposing || composing.value || event.keyCode === 229) return
   const command = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
-  if (command && key === 'a') {
+  const activeBlock = blockAtPoint(props.model, props.selection.focus)
+  if (event.key === ' ' && !command && activeBlock?.type === 'checklist' && props.selection.focus.offset === 0 && selectionCollapsed(props.selection)) {
+    event.preventDefault()
+    emit('command', { id: 'doc.command.toggle-checklist-item', blockId: activeBlock.id })
+  } else if (command && key === 'a') {
     event.preventDefault()
     const targets = textTargets(props.model)
     const first = targets[0]

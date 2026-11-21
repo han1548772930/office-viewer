@@ -4,6 +4,8 @@ import { Button, Input, Modal, Select, Tooltip } from 'antdv-next'
 import { FUniver } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
+import { applyExcelWorkbookView } from '../services/excelViewAdapter'
+import { createBlankWorkbook } from '../domain/model'
 import type { ChartModel } from '../domain/model'
 import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
 import ChartOverlay from './ChartOverlay.vue'
@@ -18,14 +20,16 @@ import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
 import { calculateSelectionStatistics, createUniqueSheetName, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
-import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, nextSheetFontSize, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
+import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, nextSheetFontSize, setSheetTextFit, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
 import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format'
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow, hiddenSheetRows } from '../features/sheet-workbench/sheet-row-visibility'
+import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const SlicerPanel = defineAsyncComponent(() => import('./spreadsheet/SlicerPanel.vue'))
 const SheetDataPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataPanel.vue'))
+const SheetDataValidationPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataValidationPanel.vue'))
 
 export type ExcelCell = ExcelCellView
 export type ExcelSheet = SpreadsheetRenderSheet
@@ -144,11 +148,16 @@ const dataPanelOpen = ref(false)
 const dataPanelMode = ref<'filter' | 'sort'>('filter')
 const dataPanelRange = ref('A1')
 const functionPanelOpen = ref(false)
+const functionCategory = ref<string | null>(null)
 const functionName = ref('SUM')
 const functionArguments = ref('')
 const functionError = ref('')
+const validationPanelOpen = ref(false)
+const validationPanelRange = ref('A1')
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
-const functionOptions = SHEET_FUNCTION_CATALOG.map(entry => ({ label: `${entry.name} · ${entry.label}`, value: entry.name }))
+const functionOptions = computed(() => SHEET_FUNCTION_CATALOG
+  .filter(entry => functionCategory.value === null || entry.category === functionCategory.value)
+  .map(entry => ({ label: `${entry.name} · ${entry.label}`, value: entry.name })))
 const sortBusy = ref(false)
 const sortProgress = ref('')
 let sortController: AbortController | undefined
@@ -188,7 +197,16 @@ const selectionFormat = computed(() => {
     bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
     align: common('align', 'left'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
     color: common('color', '#1f2937'), background: common('background', '#ffffff'),
+    rotation: common('rotation', 0) ?? null, rotationVertical: common('rotationVertical', false),
+    shrinkToFit: common('shrinkToFit', false),
   }
+})
+const validationOptions = computed(() => {
+  const workbookId = workbook.value.id
+  const sheetId = activeSheet.value?.id
+  if (!props.studio || !workbookId || !sheetId) return []
+  const [column, row] = splitKey(editingKey.value ?? selectedKey.value)
+  return FUniver.newAPI(props.studio).getWorkbook(workbookId)?.getSheetBySheetId(sheetId)?.getCellValidationOptions(row - 1, column) ?? []
 })
 const canUnmerge = computed(() => {
   const [column, row] = splitKey(selectedKey.value)
@@ -199,6 +217,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   canMerge: selectedCount.value > 1, canUnmerge: canUnmerge.value,
   canDeleteRow: totalRows.value > 1, canDeleteColumn: (activeSheet.value?.columnCount ?? 0) > 1,
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
+  dataValidationAvailable: Boolean(props.studio && workbook.value.id),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
   frozen: isFrozen.value, zoom: zoom.value,
 }))
@@ -257,6 +276,38 @@ function commitHistory() {
   emit('update:model', snapshot)
   emit('change', snapshot)
   syncApiSelection()
+}
+
+function validateIncomingValues(entries: readonly { key: string; value: string }[]): boolean {
+  const sheet = activeSheet.value
+  if (!sheet || !entries.length) return true
+  const candidateView = cloneWorkbook(workbook.value)
+  const candidateSheet = candidateView.sheets.find(item => item.id === sheet.id)
+  if (!candidateSheet) return false
+  for (const entry of entries) {
+    const current = candidateSheet.cells[entry.key] ?? { value: '' }
+    const formula = entry.value.startsWith('=')
+    candidateSheet.cells[entry.key] = {
+      ...current, value: formula ? '' : entry.value, formula: formula ? entry.value : undefined,
+      cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined,
+    }
+  }
+  const model = applyExcelWorkbookView(props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook(), candidateView)
+  const positions = entries.map(({ key }) => {
+    const [column, row] = splitKey(key)
+    return { row: row - 1, column }
+  })
+  const result = validateSheetDataValidationChanges(model, sheet.id, positions)
+  if (result.blocked) {
+    const issue = result.issues.find(item => item.severity === 'stop')!
+    emit('notify', { type: 'error', message: `${issue.title}：${issue.message}` })
+    return false
+  }
+  if (result.issues.length) {
+    const issue = result.issues[0]!
+    emit('notify', { type: issue.severity === 'warning' ? 'warning' : 'info', message: `${issue.title}：${issue.message}` })
+  }
+  return true
 }
 
 function syncApiSelection() {
@@ -331,6 +382,7 @@ async function removeChart(chartId: string) {
 function setCellValue(key: string, value: string): boolean {
   const sheet = activeSheet.value
   if (!sheet) return false
+  if (!validateIncomingValues([{ key, value }])) return false
   const previous = sheet.cells[key]
   const current = previous ?? { value: '' }
   if ((current.formula ?? current.value) === value) return true
@@ -537,6 +589,8 @@ function cutSelection() {
 
 function clearSelection() {
   if (!activeSheet.value) return
+  const keys = selectedExistingKeys()
+  if (!validateIncomingValues(keys.map(key => ({ key, value: '' })))) return
   selectedExistingKeys().forEach((key) => { const cell = activeSheet.value?.cells[key]; if (cell) activeSheet.value!.cells[key] = { ...cell, value: '', formula: undefined, cachedValue: undefined, rawValue: '', displayValue: '' } })
   recalculateFormulas()
   commitHistory()
@@ -545,16 +599,21 @@ function clearSelection() {
 function applyPasteText(text: string) {
   if (!text || !activeSheet.value) return
   const [startColumn, startRow] = splitKey(selectedKey.value)
+  const entries: Array<{ key: string; value: string }> = []
   text.replace(/\r/g, '').split('\n').forEach((rowText, rowOffset) => {
     rowText.split('\t').forEach((value, columnOffset) => {
       const column = startColumn + columnOffset
       const row = startRow + rowOffset
       if (column >= (activeSheet.value?.columnCount ?? columnCount) || row > totalRows.value) return
       const key = `${columnName(column)}${row}`
-      const current = activeSheet.value?.cells[key] ?? { value: '' }
-      const formula = value.startsWith('=') ? value : undefined
-      activeSheet.value!.cells[key] = { ...current, value: formula ? '' : value, formula, cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined }
+      entries.push({ key, value })
     })
+  })
+  if (!checkDirectSelection(entries.length) || !validateIncomingValues(entries)) return
+  entries.forEach(({ key, value }) => {
+    const current = activeSheet.value?.cells[key] ?? { value: '' }
+    const formula = value.startsWith('=') ? value : undefined
+    activeSheet.value!.cells[key] = { ...current, value: formula ? '' : value, formula, cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined }
   })
   recalculateFormulas()
   commitHistory()
@@ -609,6 +668,11 @@ function setCellFormat<K extends keyof ExcelCell>(property: K, value: ExcelCell[
 function changeSelectedCells(change: (cell: ExcelCell) => ExcelCell): void {
   if (!activeSheet.value || !applyToSelection(key => { activeSheet.value!.cells[key] = change(activeSheet.value!.cells[key] ?? { value: '' }) })) return
   commitHistory()
+}
+function setTextRotation(value: number | 'v'): void {
+  changeSelectedCells(cell => typeof value === 'number'
+    ? { ...cell, rotation: value, rotationVertical: false }
+    : { ...cell, rotation: 0, rotationVertical: true })
 }
 function setNumberFormat(format: SheetNumberFormat): void { changeSelectedCells(cell => applySheetNumberFormat(cell, format)) }
 function changeFontSize(direction: -1 | 1): void { changeSelectedCells(cell => ({ ...cell, fontSize: nextSheetFontSize(cell.fontSize ?? 11, direction) })) }
@@ -939,7 +1003,18 @@ function openDataPanel(mode: 'filter' | 'sort'): void {
   dataPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
   dataPanelOpen.value = true
 }
-function openFunctionPanel(): void {
+function openDataValidationPanel(): void {
+  const bounds = selectionBounds(selectedRanges.value)
+  validationPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
+  validationPanelOpen.value = true
+}
+function openFunctionPanel(category?: string): void {
+  if (category !== undefined && !SHEET_FUNCTION_CATALOG.some(entry => entry.category === category)) return
+  functionCategory.value = category ?? null
+  if (category && !SHEET_FUNCTION_CATALOG.some(entry => entry.category === category && entry.name === functionName.value)) {
+    const firstFunction = SHEET_FUNCTION_CATALOG.find(entry => entry.category === category)
+    if (firstFunction) functionName.value = firstFunction.name
+  }
   functionArguments.value = ''
   functionError.value = ''
   functionPanelOpen.value = true
@@ -994,7 +1069,14 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.set-color': () => { if (typeof params === 'string') setCellFormat('color', params) },
     'sheet.command.set-background': () => { if (typeof params === 'string') setBackground(params) },
     'sheet.command.set-align': () => { if (params === 'left' || params === 'center' || params === 'right') setAlign(params) },
-    'sheet.command.toggle-wrap': () => setCellFormat('wrap', selectionFormat.value.wrap !== true),
+    'sheet.command.toggle-wrap': () => changeSelectedCells(cell => setSheetTextFit(cell, 'wrap', selectionFormat.value.wrap !== true)),
+    'sheet.command.set-shrink-to-fit': () => {
+      if (typeof params === 'boolean') changeSelectedCells(cell => setSheetTextFit(cell, 'shrinkToFit', params))
+    },
+    'sheet.command.set-text-rotation': () => {
+      if (params === 'v') setTextRotation(params)
+      else if (typeof params === 'number' && [-90, -45, 0, 45, 90].includes(params)) setTextRotation(params)
+    },
     'sheet.command.merge': mergeSelection, 'sheet.command.unmerge': unmergeSelection,
     'sheet.command.insert-row': insertRow, 'sheet.command.insert-column': insertColumn,
     'sheet.command.delete-row': deleteRow, 'sheet.command.delete-column': deleteColumn,
@@ -1003,7 +1085,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-slicer': () => openSlicerPanel('slicer'),
     'sheet.operation.open-timeline': () => openSlicerPanel('timeline'),
     'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
-    'sheet.operation.open-function': openFunctionPanel,
+    'sheet.operation.open-data-validation': openDataValidationPanel,
+    'sheet.operation.open-function': () => openFunctionPanel(typeof params === 'string' ? params : undefined),
     'sheet.command.sort-ascending': () => sortSelection(true),
     'sheet.command.sort-descending': () => sortSelection(false),
     'sheet.command.recalculate': () => { recalculateFormulas(); commitHistory() },
@@ -1083,7 +1166,7 @@ onDeactivated(() => sortController?.abort())
     </div>
 
     <div class="sheet-canvas-stack">
-      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" />
+      <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" />
       <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
     </div>
 
@@ -1114,6 +1197,7 @@ onDeactivated(() => sortController?.abort())
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :initial-kind="slicerKind" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
+    <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" />
   </section>
 </template>
 

@@ -3,7 +3,7 @@ import { test, after } from 'node:test'
 import { createServer } from 'vite'
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
-const { layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
+const { hitTestChecklist, layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
 const { sceneFromDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/rendering/document-scene.ts')
 
 after(() => vite.close())
@@ -59,4 +59,72 @@ test('document scene switches page content with scroll without changing the mode
   const text = scene.commands.filter(command => command.kind === 'text').map(command => command.text)
   assert.ok(text.includes('S'))
   assert.equal(JSON.stringify(documentModel), before)
+})
+
+test('section and column break types place following content on the required page', () => {
+  const cases = [
+    ['nextPage', 1],
+    ['continuous', 0],
+    ['nextColumn', 1],
+    ['evenPage', 1],
+    ['oddPage', 2],
+  ]
+  for (const [type, expectedPage] of cases) {
+    const documentModel = model()
+    documentModel.blocks = [
+      paragraph('before', 'Before'),
+      { ...paragraph('section-break', ''), type: 'sectionBreak', runs: [], sectionBreak: { type } },
+      paragraph('after', 'After'),
+    ]
+    const layout = layoutDocument(documentModel, { measure: text => text.length * 8 })
+    assert.equal(layout.lines.find(line => line.target.blockId === 'after').page, expectedPage, type)
+  }
+
+  const documentModel = model()
+  documentModel.blocks = [paragraph('before-column', 'Before'), { ...paragraph('column-break', ''), type: 'columnBreak', runs: [] }, paragraph('after-column', 'After')]
+  const layout = layoutDocument(documentModel, { measure: text => text.length * 8 })
+  assert.equal(layout.lines.find(line => line.target.blockId === 'after-column').page, 1)
+})
+
+test('checklist state is laid out as a hit-testable Canvas control and changes only its scene commands', () => {
+  const documentModel = model()
+  const checklist = paragraph('task', 'Review the changes')
+  checklist.type = 'checklist'
+  checklist.checklist = { listId: 'review', checked: false }
+  documentModel.blocks = [checklist]
+  const selection = { anchor: { blockId: 'task', offset: 0 }, focus: { blockId: 'task', offset: 0 } }
+  const layout = layoutDocument(documentModel, { measure: text => text.length * 8 })
+  const line = layout.lines.find(candidate => candidate.target.blockId === 'task')
+  assert.equal(line.checklist.checked, false)
+  assert.equal(hitTestChecklist(layout, line.x - 15, line.y + line.height / 2), 'task')
+  const scene = sceneFromDocument(documentModel, layout, { width: 900, height: 700, scrollLeft: 0, scrollTop: 0, zoom: 100 }, { selection, focused: false, caretVisible: false, composing: false, images: new Map() })
+  assert.ok(scene.commands.some(command => command.kind === 'rect' && command.stroke === '#718096'))
+  documentModel.blocks[0].checklist.checked = true
+  const checkedScene = sceneFromDocument(documentModel, layoutDocument(documentModel, { measure: text => text.length * 8 }), { width: 900, height: 700, scrollLeft: 0, scrollTop: 0, zoom: 100 }, { selection, focused: false, caretVisible: false, composing: false, images: new Map() })
+  assert.ok(checkedScene.commands.some(command => command.kind === 'rect' && command.stroke === '#28744b'))
+  assert.equal(checkedScene.commands.filter(command => command.kind === 'line' && command.color === '#28744b').length, 2)
+})
+
+test('subscript and superscript use reduced glyph metrics and distinct Canvas baselines without changing line height', () => {
+  const documentModel = model()
+  const formula = paragraph('formula', 'H2O')
+  formula.runs = [
+    { ...formula.runs[0], id: 'h', text: 'H', verticalAlign: 'baseline' },
+    { ...formula.runs[0], id: 'two', text: '2', verticalAlign: 'subscript' },
+    { ...formula.runs[0], id: 'o', text: 'O', verticalAlign: 'superscript' },
+  ]
+  documentModel.blocks = [formula]
+  const measure = (text, font) => text.length * Number(font.match(/([\d.]+)px/)[1])
+  const layout = layoutDocument(documentModel, { measure })
+  const glyphs = layout.lines[0].glyphs
+  const fontSize = glyph => Number(glyph.font.match(/([\d.]+)px/)[1])
+  assert.ok(Math.abs(fontSize(glyphs[0]) - glyphs[0].run.fontSize * 4 / 3) < 0.001)
+  assert.ok(fontSize(glyphs[1]) < fontSize(glyphs[0]))
+  assert.equal(layout.lines[0].height, layoutDocument({ ...documentModel, blocks: [paragraph('plain', 'H2O')] }, { measure }).lines[0].height)
+  const selection = { anchor: { blockId: 'formula', offset: 0 }, focus: { blockId: 'formula', offset: 0 } }
+  const scene = sceneFromDocument(documentModel, layout, { width: 900, height: 700, scrollLeft: 0, scrollTop: 0, zoom: 100 }, { selection, focused: false, caretVisible: false, composing: false, images: new Map() })
+  const textCommands = scene.commands.filter(command => command.kind === 'text' && ['H', '2', 'O'].includes(command.text))
+  assert.equal(textCommands.length, 3)
+  assert.ok(textCommands[1].y > textCommands[0].y)
+  assert.ok(textCommands[2].y < textCommands[0].y)
 })

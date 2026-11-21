@@ -45,7 +45,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-01 | 工作簿、工作表生命周期 | 公开源码 sheets、sheets-ui；[核心][sheet-core]、[API][sheet-api] | 新建/复制/删除/重命名/重排、颜色、隐藏/veryHidden、活动表、校验和可撤销事务 | 未验收 |
 | SHEET-02 | 范围、选区和网格编辑 | 公开源码 selection/editor；[范围规格][sheet-selection] | 单元格/区域/行列/全选/多选、拖选、填充、合并、F2/直接输入、Enter/Tab/Escape；双向视口处理 | 未验收 |
 | SHEET-03 | 行列结构与尺寸 | [行列规格][sheet-row-col]、公开源码 commands | 插删/移动/复制/隐藏/显示/自动适应、行高列宽；更新公式与所有范围资源 | 未验收 |
-| SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收 |
+| SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收；[旋转/竖排/缩小适应切片证据](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md) |
 | SHEET-05 | 富文本 | [富文本规格][sheet-rich-text]、公开源码 docs/editor bridge | 单格多运行样式、部分文本选择和编辑、复制粘贴、链接与导出；不扁平化成一个字符串样式 | 未验收 |
 | SHEET-06 | 数字格式与日期系统 | [数字格式][sheet-numfmt]、公开源码 sheets-numfmt | 数字/货币/会计/百分比/日期/自定义、小数位、locale、1900/1904；原始值与显示值分离 | 未验收；[日期系统续作](feature-evidence/continuation-2026-11-20.md#calendar-input) |
 | SHEET-07 | 冻结、网格线、视口和缩放 | [冻结][sheet-freeze]、[网格线][sheet-gridlines]、公开源码 render | 多分区真实冻结、坐标命中/编辑一致、每表视口保存、组合底栏缩放 | 未验收 |
@@ -54,7 +54,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-10 | 高级公式（Pro 增强目标） | [高级公式规格][sheet-advanced-formula] | 按公开函数/行为清单实现高级求值、依赖和性能；补缓存/数组/引用等公开场景，不能以 SUM 示例代表引擎 | 未验收 |
 | SHEET-11 | 筛选 | [筛选][sheet-filter]、公开源码 filter | 值/文本/数值/日期/颜色等公开条件、筛选结果与可见行、恢复、结构编辑后的范围变换；不删除源数据 | 未验收；[回归证据](feature-evidence/continuation-2026-11-20.md#sort-filter) |
 | SHEET-12 | 排序 | [排序][sheet-sort]、公开源码 sort | 多关键字、类型/locale 比较、范围与整表、关联单元格/样式/引用、撤销；不只排序显示字符串 | 未验收；[回归证据](feature-evidence/continuation-2026-11-20.md#sort-filter) |
-| SHEET-13 | 数据验证 | [验证][sheet-validation]、公开源码 data-validation | 全部公开规则、范围/公式依赖、下拉、提示与无效状态；键入/粘贴/填充/API 均受验证 | 未验收 |
+| SHEET-13 | 数据验证 | [验证][sheet-validation]、公开源码 data-validation | 全部公开规则、范围/公式依赖、下拉、提示与无效状态；键入/粘贴/填充/API 均受验证 | 未验收；[数据验证切片证据](feature-evidence/SHEET-13-data-validation.md) |
 | SHEET-14 | 条件格式 | [条件格式][sheet-conditional]、公开源码 conditional-formatting | 规则/范围/优先级、公式、高亮/色阶/数据条/图标集、动态重算、样式叠加；不直接写死底色 | 未验收 |
 | SHEET-15 | 查找替换 | [查找替换][sheet-find]、公开源码 find-replace | 值/公式/格式化文本等公开作用域与选项、结果定位、全部替换与历史；大文件可取消 | 未验收 |
 | SHEET-16 | 超链接 | [超链接][sheet-links]、公开源码 hyper-link | 普通/富文本链接、URL/内部范围/工作表目标、编辑/删除、引用变换和安全跳转 | 未验收 |
@@ -80,10 +80,10 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
 | DOC-01 | 文档模型、运行与排版 | [核心][doc-core]、[API][doc-api]、公开源码 docs/engine-render | 文本运行/段落/节、样式/主题、页面尺寸边距、换行/自动分页、光标与布局映射；传统/现代 flavor 分开 | 未验收 |
-| DOC-02 | 字符和段落格式 | 核心 API、公开源码 docs-ui/menu | 字体/字号/颜色/高亮/上下标/字符样式、标题级别、对齐/缩进/行距/段前后、混合选区；格式与模型一致 | 未验收 |
-| DOC-03 | 分页、分栏、分节与页眉页脚 | 公开源码 header-footer、insert-break、布局引擎 | 连续/下一页/奇偶页等公开分节语义、节级布局、首页/奇偶页、与前节关联、页码与字段更新 | 未验收 |
+| DOC-02 | 字符和段落格式 | 核心 API、公开源码 docs-ui/menu | 字体/字号/颜色/高亮/上下标/字符样式、标题级别、对齐/缩进/行距/段前后、混合选区；格式与模型一致 | 未验收；[上下标实现切片](feature-evidence/DOC-02-vertical-align.md) |
+| DOC-03 | 分页、分栏、分节与页眉页脚 | 公开源码 header-footer、insert-break、布局引擎 | 连续/下一页/奇偶页等公开分节语义、节级布局、首页/奇偶页、与前节关联、页码与字段更新 | 未验收；[分节符切片证据](feature-evidence/DOC-03-section-breaks.md) |
 | DOC-04 | 左侧大纲、标题折叠和正文目录 | [目录规格][doc-toc]、公开源码 DocSideMenu/docs-toc/doc-heading-collapse | 大纲导航；现代标题折叠保留子状态、隐藏选区迁回可见标题、历史/保存/同步；正文目录支持整体/页码更新与删除 | 未验收 |
-| DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收 |
+| DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收；[清单列表切片证据](feature-evidence/DOC-05-checklist.md) |
 | DOC-06 | 表格与增强表格（含 Pro 目标） | [表格规格][doc-table]、公开基础表格 | 行列/单元格模型、插删移动/尺寸、合并拆分、边框背景、文字对齐与整表对齐分别实现；上游整表对齐限传统模式，跨页/嵌套细项待核实并保留目标 | 未验收 |
 | DOC-07 | 图片和文字环绕 | [图片规格][doc-images]、公开源码 docs-drawing | 行内/环绕、锚点、偏移、尺寸/裁剪/旋转/层级、替换及 Office 关系；输入/分页随对象更新 | 未验收 |
 | DOC-08 | 超链接和书签/锚点 | [超链接规格][doc-links]、公开源码 docs-hyper-link | 范围目标、插入/编辑/删除、位置变换、跳转、序列化与文件映射 | 未验收 |

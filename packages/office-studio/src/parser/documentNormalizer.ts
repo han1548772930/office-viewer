@@ -1,4 +1,4 @@
-import { createBlankDocument, type DocumentBlock, type DocumentModel, type InlineRun } from '../domain/model.ts'
+import { createBlankDocument, type DocumentBlock, type DocumentModel, type DocumentSectionBreakType, type InlineRun } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 
@@ -6,16 +6,30 @@ const pointToPixel = (value: number): number => value * 96 / 72
 function normalizeRun(value: unknown, id: string): InlineRun {
   const raw = record(value)
   const style = record(raw.style)
+  const verticalAlign = normalizeVerticalAlign(style.verticalAlign ?? style.vertAlign ?? raw.verticalAlign)
   return {
     id, text: text(raw.text), bold: style.bold === true, italic: style.italic === true,
     underline: style.underline === true, strike: style.strike === true,
+    ...(verticalAlign ? { verticalAlign } : {}),
     color: text(style.color, '#1f2937'), fontFamily: text(style.fontFamily, 'Aptos'), fontSize: positive(style.fontSizePt, 11),
     metadata: { source: raw, link: raw.link, highlight: style.highlight, noteReference: raw.noteReference },
   }
 }
+function normalizeVerticalAlign(value: unknown): InlineRun['verticalAlign'] {
+  if (value === 'sup' || value === 'super' || value === 'superscript') return 'superscript'
+  if (value === 'sub' || value === 'subscript') return 'subscript'
+  return undefined
+}
 function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   const raw = record(value)
   const details = record(raw.details)
+  const sectionBreakData = record(details.sectionBreak)
+  const sectionBreakType = sectionBreakData.type ?? record(raw.sectionBreak).type
+  const sectionBreak = sectionBreakType === 'nextPage' || sectionBreakType === 'continuous' || sectionBreakType === 'nextColumn' || sectionBreakType === 'evenPage' || sectionBreakType === 'oddPage'
+    ? { type: sectionBreakType as DocumentSectionBreakType }
+    : undefined
+  const pageBreak = details.pageBreak === true || raw.pageBreak === true || raw.type === 'page_break' || raw.type === 'pageBreak'
+  const columnBreak = details.columnBreak === true || raw.columnBreak === true || raw.type === 'column_break' || raw.type === 'columnBreak'
   const style = record(details.style)
   const indent = record(style.indent)
   const spacing = record(style.spacing)
@@ -27,11 +41,14 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   if (!runs.length) runs.push(normalizeRun({ text: text(raw.content) }, id+'-run-0'))
   const level = Math.min(6, Math.max(0, finite(details.headingLevel, finite(style.headingLevel))))
   const numbering = record(details.numbering)
-  const type = raw.type === 'table' ? 'table' : raw.type === 'figure' ? 'image'
+  const listLabel = text(details.listLabel).trimStart()
+  const checklistLabel = listLabel.startsWith('☐') || listLabel.startsWith('☑')
+  const type = sectionBreak ? 'sectionBreak' : columnBreak ? 'columnBreak' : pageBreak ? 'pageBreak' : raw.type === 'table' ? 'table' : raw.type === 'figure' ? 'image'
     : raw.type === 'heading' || raw.type === 'section_heading' || level > 0 ? 'heading'
-      : Object.keys(numbering).length ? (text(details.listLabel).match(/^[\d一二三四五六七八九十]/) ? 'numbered' : 'bullet') : 'paragraph'
+      : checklistLabel ? 'checklist'
+        : Object.keys(numbering).length ? (listLabel.match(/^[\d一二三四五六七八九十]/) ? 'numbered' : 'bullet') : 'paragraph'
   const block: DocumentBlock = {
-    id, type, level, runs,
+    id, type, level, runs: ['sectionBreak', 'columnBreak', 'pageBreak'].includes(type) ? [] : runs,
     style: {
       align: style.align === 'center' || style.align === 'right' || style.align === 'justify' ? style.align : 'left',
       indent: pointToPixel(finite(indent.leftPt, finite(indent.left) / 20)),
@@ -41,6 +58,12 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
     },
     metadata: { source: raw, sourceRefs: raw.sourceRefs, style, listLabel: details.listLabel, numbering },
   }
+  const numberingId = numbering.numId
+  if (type === 'checklist') block.checklist = {
+    listId: typeof numberingId === 'string' || typeof numberingId === 'number' ? String(numberingId) : id,
+    checked: listLabel.startsWith('☑'),
+  }
+  if (sectionBreak) block.sectionBreak = sectionBreak
   if (type === 'image') {
     const image = record(details.image)
     const src = text(details.src, text(details.asset, text(image.src)))

@@ -6,7 +6,7 @@ This is the earlier implementation snapshot. Current paragraph-split/lock fixes,
 
 ## Reference contract
 
-- Fixed source commit: `D:\rust_test\univer-reference` at `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.
+- Fixed source commit: `E:\rust_test\univer` at `6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68`.
 - Source types: `packages/core/src/types/interfaces/i-document-data.ts`: `SdtKind`, `SdtLock`, `SdtPlacement`, `ISdtListItem`, `ISdtRangeProperties`, and `ISdtCustomRange`.
 - Public Docs 1.5.2 guide: <https://docs.univer.ai/zh-CN/guides/docs/features/content-controls>.
 - Public API references: <https://docs.univer.ai/zh-CN/reference/packages/plugins/univerjs-pro/docs-sdt> and <https://docs.univer.ai/zh-CN/reference/packages/plugins/univerjs-pro/docs-sdt-ui>.
