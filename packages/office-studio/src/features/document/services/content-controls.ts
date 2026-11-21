@@ -5,7 +5,9 @@ import type {
 } from '../../../domain/model'
 import {
   compactRuns,
+  createParagraph,
   createRun,
+  documentId,
   runText,
   runsForTarget,
   setTargetRuns,
@@ -15,6 +17,7 @@ import {
   type DocumentRun,
   type TextTarget,
 } from '../model/document-model'
+import type { DocumentImage } from '../model/document-model'
 
 export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: string }
 
@@ -37,6 +40,19 @@ export function getDocumentContentControls(model: DocumentModel): DocumentConten
 export function getDocumentContentControl(model: DocumentModel, id: string): DocumentContentControl | undefined {
   const control = model.contentControls?.find((candidate) => candidate.id === id)
   return control ? cloneControl(control) : undefined
+}
+
+export function selectedDocumentContentControl(model: DocumentModel, blockId: string, startOffset: number, endOffset = startOffset): DocumentContentControl | undefined {
+  const controls = model.contentControls ?? []
+  return controls.filter(control => control.blockId === blockId
+    && startOffset >= control.startOffset && endOffset <= control.endOffset)
+    .sort((left, right) => {
+      const lengthDifference = (left.endOffset - left.startOffset) - (right.endOffset - right.startOffset)
+      if (lengthDifference) return lengthDifference
+      if (hasAncestor(controls, left, right.id)) return -1
+      if (hasAncestor(controls, right, left.id)) return 1
+      return 0
+    })[0]
 }
 
 export function createDocumentContentControl(
@@ -111,6 +127,42 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
   if (control.showingPlaceholder) return
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
+  if (control.type === 'picture') {
+    const pictureId = typeof control.metadata?.pictureBlockId === 'string' ? control.metadata.pictureBlockId : undefined
+    const picture = pictureId ? findBlock(model, pictureId) : undefined
+    const anchorId = typeof control.metadata?.pictureAnchorBlockId === 'string' ? control.metadata.pictureAnchorBlockId : undefined
+    const tailId = typeof control.metadata?.pictureTailBlockId === 'string' ? control.metadata.pictureTailBlockId : undefined
+    const anchor = anchorId ? findBlock(model, anchorId) : undefined
+    const container = pictureId ? blockContainerContaining(model, pictureId) : undefined
+    if (picture && anchor && tailId && container) {
+      const tailIndex = container.findIndex(block => block.id === tailId)
+      const tail = tailIndex >= 0 ? container[tailIndex] : undefined
+      if (tail) {
+        const prefixLength = runText(anchor.runs as DocumentRun[]).length
+        anchor.runs = compactRuns([...(anchor.runs as DocumentRun[]), ...(tail.runs as DocumentRun[])])
+        for (const candidate of model.contentControls ?? []) {
+          if (candidate.blockId !== tail.id) continue
+          candidate.blockId = anchor.id
+          candidate.startOffset += prefixLength
+          candidate.endOffset += prefixLength
+        }
+        const pictureIndex = container.findIndex(block => block.id === picture.id)
+        for (const index of [pictureIndex, tailIndex].filter(index => index >= 0).sort((left, right) => right - left)) container.splice(index, 1)
+      } else {
+        const pictureIndex = container.findIndex(block => block.id === picture.id)
+        if (pictureIndex >= 0) container.splice(pictureIndex, 1)
+      }
+    } else if (picture && container) {
+      const pictureIndex = container.findIndex(block => block.id === picture.id)
+      if (pictureIndex >= 0) container.splice(pictureIndex, 1)
+    }
+    const { pictureBlockId: _pictureBlockId, pictureAnchorBlockId: _anchorBlockId, pictureTailBlockId: _tailBlockId, pictureImage: _pictureImage, ...metadata } = control.metadata ?? {}
+    control.metadata = metadata
+    replaceControlText(model, control, control.placeholder)
+    control.value = control.placeholder
+    control.showingPlaceholder = true
+    return
+  }
   if (!['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
     throw new TypeError(`Content control ${id} does not accept text placeholders`)
   }
@@ -119,12 +171,82 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
   control.showingPlaceholder = true
 }
 
+export function replacePictureContentControlImage(model: DocumentModel, id: string, image: DocumentImage): string {
+  const control = requireControl(model, id)
+  if (control.type !== 'picture') throw new TypeError(`Content control ${id} is not a picture control`)
+  if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
+  assertAncestorContentEditable(model, control)
+  const existingPictureId = typeof control.metadata?.pictureBlockId === 'string' ? control.metadata.pictureBlockId : undefined
+  const existingPicture = existingPictureId ? findBlock(model, existingPictureId) : undefined
+  if (existingPicture?.type === 'image') {
+    existingPicture.metadata = { ...existingPicture.metadata, image: { ...image } }
+    control.metadata = { ...control.metadata, pictureImage: { ...image } }
+    return existingPicture.id
+  }
+  const target = targetForControl(model, control)
+  if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
+  const block = findBlock(model, control.blockId)
+  const container = block && blockContainerForTarget(model, target)
+  const index = container?.findIndex(candidate => candidate.id === block?.id) ?? -1
+  if (!block || !container || index < 0) throw new Error(`Content control paragraph not found: ${control.blockId}`)
+  const runs = runsForTarget(model, target)
+  const { startOffset, endOffset } = control
+  const controls = model.contentControls ?? []
+  const nested = controls.filter(candidate => candidate.id !== control.id
+    && candidate.blockId === control.blockId && hasAncestor(controls, candidate, control.id))
+  if (nested.some(candidate => isControlLocked(candidate) || isContentLocked(candidate))) throw new Error('A nested content control is locked')
+  const removedIds = new Set(nested.map(candidate => candidate.id))
+  for (const candidate of controls) {
+    if (candidate.id === control.id || removedIds.has(candidate.id) || candidate.blockId !== control.blockId) continue
+    if (candidate.startOffset <= startOffset && candidate.endOffset >= endOffset
+      && (candidate.startOffset < startOffset || candidate.endOffset > endOffset)) {
+      throw new RangeError(`Picture replacement cannot split an enclosing content control: ${candidate.id}`)
+    }
+    if (candidate.startOffset < endOffset && startOffset < candidate.endOffset
+      && !hasAncestor(controls, control, candidate.id)) throw new RangeError(`Picture replacement overlaps another content control: ${candidate.id}`)
+  }
+  model.contentControls = controls.filter(candidate => !removedIds.has(candidate.id))
+  setTargetRuns(model, target, sliceRuns(runs, 0, startOffset))
+  const tail = createParagraph()
+  tail.style = { ...block.style }
+  tail.type = block.type
+  tail.level = block.level
+  tail.metadata = { ...block.metadata }
+  tail.runs = sliceRuns(runs, endOffset)
+  const picture = createParagraph()
+  picture.type = 'image'
+  picture.runs = []
+  picture.metadata = { image: { ...image }, contentControlId: control.id, anchorBlockId: block.id, anchorOffset: startOffset, tailBlockId: tail.id }
+  const pictureId = picture.id
+  container.splice(index + 1, 0, picture, tail)
+  for (const candidate of model.contentControls ?? []) {
+    if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
+    if (hasAncestor(model.contentControls ?? [], control, candidate.id)) candidate.endOffset = startOffset
+    else if (candidate.startOffset >= endOffset) {
+      candidate.blockId = tail.id
+      candidate.startOffset -= endOffset
+      candidate.endOffset -= endOffset
+    }
+  }
+  control.endOffset = control.startOffset
+  control.value = undefined
+  control.showingPlaceholder = false
+  control.metadata = {
+    ...control.metadata,
+    pictureBlockId: pictureId,
+    pictureAnchorBlockId: block.id,
+    pictureTailBlockId: tail.id,
+    pictureImage: { ...image },
+  }
+  return pictureId
+}
+
 export function duplicateRepeatingSectionItem(model: DocumentModel, id: string): DocumentContentControl {
   const item = requireControl(model, id)
   if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
   if (['row', 'cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be duplicated')
-  const section = item.parentId ? requireControl(model, item.parentId) : undefined
-  if (section?.type !== 'repeatingSection') throw new Error(`Repeating-section parent is missing: ${id}`)
+  const section = repeatingSectionAncestor(model.contentControls ?? [], item)
+  if (!section) throw new Error(`Repeating-section parent is missing: ${id}`)
   if (section.repeatingSection?.doNotAllowInsertDelete) throw new Error(`Repeating-section items cannot be changed: ${section.id}`)
   if (isControlLocked(item) || isContentLocked(item) || isContentLocked(section)) throw new Error(`Repeating-section item is locked: ${id}`)
   assertAncestorContentEditable(model, item)
@@ -161,7 +283,7 @@ export function duplicateRepeatingSectionItem(model: DocumentModel, id: string):
     id: idMap.get(control.id)!,
     startOffset: insertionOffset + control.startOffset - item.startOffset,
     endOffset: insertionOffset + control.endOffset - item.startOffset,
-    parentId: control.id === item.id ? section.id : idMap.get(control.parentId ?? '') ?? control.parentId,
+    parentId: control.id === item.id ? item.parentId : idMap.get(control.parentId ?? '') ?? control.parentId,
   }))
   controls.push(...copies)
   controls.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
@@ -172,8 +294,8 @@ export function deleteRepeatingSectionItem(model: DocumentModel, id: string): vo
   const item = requireControl(model, id)
   if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
   if (['cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be deleted')
-  const section = item.parentId ? requireControl(model, item.parentId) : undefined
-  if (section?.type !== 'repeatingSection') throw new Error(`Repeating-section parent is missing: ${id}`)
+  const section = repeatingSectionAncestor(model.contentControls ?? [], item)
+  if (!section) throw new Error(`Repeating-section parent is missing: ${id}`)
   if (section.repeatingSection?.doNotAllowInsertDelete) throw new Error(`Repeating-section items cannot be changed: ${section.id}`)
   const removed = (model.contentControls ?? []).filter((control) => control.blockId === item.blockId
     && control.startOffset >= item.startOffset && control.endOffset <= item.endOffset
@@ -183,19 +305,27 @@ export function deleteRepeatingSectionItem(model: DocumentModel, id: string): vo
   const target = targetForControl(model, item)
   if (!target) throw new Error(`Content control paragraph not found: ${item.blockId}`)
   const runs = runsForTarget(model, target)
+  const startOffset = item.startOffset
+  const endOffset = item.endOffset
   const textLength = item.endOffset - item.startOffset
+  for (const control of model.contentControls ?? []) {
+    if (control.id === item.id || control.blockId !== item.blockId || control.endOffset <= startOffset || control.startOffset >= endOffset) continue
+    if (hasAncestor(model.contentControls ?? [], item, control.id)) continue
+    if (control.startOffset >= startOffset && control.endOffset <= endOffset) continue
+    throw new RangeError(`Repeating-section deletion cannot split another content control: ${control.id}`)
+  }
   setTargetRuns(model, target, [
-    ...sliceRuns(runs, 0, item.startOffset),
-    ...sliceRuns(runs, item.endOffset),
+    ...sliceRuns(runs, 0, startOffset),
+    ...sliceRuns(runs, endOffset),
   ])
   const removedIds = new Set(removed.map((control) => control.id))
   model.contentControls = (model.contentControls ?? []).filter((control) => !removedIds.has(control.id))
   for (const control of model.contentControls) {
     if (control.blockId !== item.blockId) continue
-    if (control.startOffset >= item.endOffset) {
+    if (control.startOffset >= endOffset) {
       control.startOffset -= textLength
       control.endOffset -= textLength
-    } else if (control.startOffset <= item.startOffset && control.endOffset >= item.endOffset) {
+    } else if (control.startOffset <= startOffset && control.endOffset >= endOffset) {
       control.endOffset -= textLength
     }
   }
@@ -438,6 +568,40 @@ function findBlock(model: DocumentModel, id: string): DocumentBlock | undefined 
   return visit(model.blocks)
 }
 
+function blockContainerForTarget(model: DocumentModel, target: TextTarget): DocumentBlock[] | undefined {
+  if (!target.cellBlockId) return model.blocks
+  const visit = (blocks: DocumentBlock[]): DocumentBlock[] | undefined => {
+    for (const block of blocks) {
+      const table = tableForBlock(block)
+      for (const row of table?.rows ?? []) {
+        for (const cell of row.cells) {
+          if (cell.blocks.some(candidate => candidate.id === target.cellBlockId)) return cell.blocks
+          const nested = visit(cell.blocks)
+          if (nested) return nested
+        }
+      }
+    }
+    return undefined
+  }
+  return visit(model.blocks)
+}
+
+function blockContainerContaining(model: DocumentModel, blockId: string): DocumentBlock[] | undefined {
+  const visit = (blocks: DocumentBlock[]): DocumentBlock[] | undefined => {
+    if (blocks.some(block => block.id === blockId)) return blocks
+    for (const block of blocks) {
+      for (const row of tableForBlock(block)?.rows ?? []) {
+        for (const cell of row.cells) {
+          const nested = visit(cell.blocks)
+          if (nested) return nested
+        }
+      }
+    }
+    return undefined
+  }
+  return visit(model.blocks)
+}
+
 function validateControl(model: DocumentModel, control: DocumentContentControl): void {
   const block = findBlock(model, control.blockId)
   if (!block || ['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) throw new Error(`Content control target is not a text paragraph: ${control.blockId}`)
@@ -450,9 +614,10 @@ function validateControl(model: DocumentModel, control: DocumentContentControl):
   if (control.lock === undefined) control.lock = 'unlocked'
   if (control.type === 'date' && control.dateValue !== undefined && control.dateValue !== '' && !validIsoDate(control.dateValue)) throw new RangeError('Date content control value must be YYYY-MM-DD')
   if ((control.type === 'dropDownList' || control.type === 'comboBox') && (!control.items?.length || control.items.some((item) => !item.value))) throw new RangeError('List content controls require non-empty values')
-  if (control.type === 'dropDownList' && control.value !== undefined && !control.items?.some((item) => item.value === control.value)) throw new RangeError(`Dropdown value is not present in its item list: ${control.value}`)
+  if (control.type === 'dropDownList' && !control.showingPlaceholder && control.value !== undefined && !control.items?.some((item) => item.value === control.value)) throw new RangeError(`Dropdown value is not present in its item list: ${control.value}`)
   if (control.type === 'checkbox' && control.checked === undefined) control.checked = false
   if (control.parentId) {
+    if (control.parentId === control.id || hasAncestor(model.contentControls ?? [], control, control.id)) throw new RangeError('Content control parent relationships must not contain a cycle')
     const parent = model.contentControls?.find((candidate) => candidate.id === control.parentId)
     if (!parent || !['group', 'repeatingSection', 'repeatingSectionItem'].includes(parent.type)) throw new Error(`Invalid content control parent: ${control.parentId}`)
     if (parent.blockId !== control.blockId || parent.startOffset > control.startOffset || parent.endOffset < control.endOffset) throw new RangeError(`Child content control must be within its parent: ${control.parentId}`)
@@ -467,8 +632,8 @@ function assertNoPartialOverlap(controls: DocumentContentControl[], next: Docume
     const nextContains = next.startOffset <= current.startOffset && next.endOffset >= current.endOffset
     const currentContains = current.startOffset <= next.startOffset && current.endOffset >= next.endOffset
     const parentTypes = ['group', 'repeatingSection', 'repeatingSectionItem']
-    const validParent = (currentContains && next.parentId === current.id && parentTypes.includes(current.type))
-      || (nextContains && current.parentId === next.id && parentTypes.includes(next.type))
+    const validParent = (currentContains && hasAncestor(controls, next, current.id) && parentTypes.includes(current.type))
+      || (nextContains && hasAncestor(controls, current, next.id) && parentTypes.includes(next.type))
     if (!validParent) throw new RangeError(`Content control ranges overlap without a valid parent relationship: ${current.id} and ${next.id}`)
   }
 }
@@ -504,15 +669,30 @@ function cloneControl(control: DocumentContentControl): DocumentContentControl {
 
 function hasAncestor(controls: readonly DocumentContentControl[], control: DocumentContentControl, ancestorId: string): boolean {
   let parentId = control.parentId
-  while (parentId) {
+  const visited = new Set<string>()
+  while (parentId && !visited.has(parentId)) {
     if (parentId === ancestorId) return true
+    visited.add(parentId)
     parentId = controls.find((candidate) => candidate.id === parentId)?.parentId
   }
   return false
 }
 
+function repeatingSectionAncestor(controls: readonly DocumentContentControl[], control: DocumentContentControl): DocumentContentControl | undefined {
+  let parentId = control.parentId
+  const visited = new Set<string>()
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId)
+    const parent = controls.find(candidate => candidate.id === parentId)
+    if (!parent) return undefined
+    if (parent.type === 'repeatingSection') return parent
+    parentId = parent.parentId
+  }
+  return undefined
+}
+
 function newContentControlId(): string {
-  return `content-control-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  return documentId('content-control')
 }
 
 function removeControlTreeFromModel(model: DocumentModel, control: DocumentContentControl): void {

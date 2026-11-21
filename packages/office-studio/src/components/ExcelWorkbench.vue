@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Button, Checkbox, Input, InputNumber, Modal, Select, Tooltip } from 'antdv-next'
+import { Button, Checkbox, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
@@ -140,7 +140,6 @@ const editValue = ref('')
 const selecting = ref(false)
 const formulaInput = ref<InstanceType<typeof SheetFormulaBar> | null>(null)
 const spreadsheetCanvas = ref<InstanceType<typeof SpreadsheetCanvas> | null>(null)
-const fileInput = ref<HTMLInputElement | null>(null)
 const zoom = ref(100)
 const searchText = ref('')
 const replaceText = ref('')
@@ -221,8 +220,17 @@ const slicerControls = computed(() => {
       const control = sheet?.getSlicer(model.id)
       if (!control) return []
       const pivot = workbook.value.pivotTables?.find(candidate => candidate.id === model.pivotTableId)
-      const selectedItems = pivot?.fields.find(field => field.id === model.sourceFieldId && field.area !== 'value')?.selectedItems
-      return [{ model: { ...model, selectedItems: selectedItems ? [...selectedItems] : undefined }, items: control.getItems() }]
+      const table = workbook.value.tables?.find(candidate => candidate.id === model.tableId)
+      const tableColumn = table ? table.range.startCol + table.columns.findIndex(column => column.id === model.sourceFieldId) : -1
+      const selectedItems = model.tableId
+        ? table?.autoFilter?.columns[tableColumn]
+        : pivot?.fields.find(field => field.id === model.sourceFieldId && field.area !== 'value')?.selectedItems
+      const normalizedSelection = Array.isArray(selectedItems)
+        ? selectedItems
+        : selectedItems?.kind === 'values'
+          ? selectedItems.selectedItems.map(value => value == null ? '' : String(value))
+          : undefined
+      return [{ model: { ...model, selectedItems: normalizedSelection ? [...normalizedSelection] : undefined }, items: control.getItems() }]
     } catch { return [] }
   })
 })
@@ -234,6 +242,16 @@ const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ??
 const selectedAddress = computed(() => {
   const range = selectedRanges.value[0]
   return selectedRanges.value.length === 1 && range && (range.startRow !== range.endRow || range.startColumn !== range.endColumn) ? rangeNotation(range) : selectedKey.value
+})
+const slicerSourceRange = computed(() => {
+  if (selectedRanges.value.length !== 1) return undefined
+  const range = selectedRanges.value[0]
+  return range ? {
+    startRow: range.startRow,
+    endRow: range.endRow,
+    startCol: range.startColumn,
+    endCol: range.endColumn,
+  } : undefined
 })
 const selectedCount = computed(() => selectionCount(selectedRanges.value))
 const sheetCells = computed(() => activeSheet.value?.cells ?? {})
@@ -1136,6 +1154,13 @@ function requestCellRangeMove(direction: SheetCellMoveDirection, confirmMerges =
   const sheet = activeSheet.value
   const range = selectedRanges.value.at(-1)
   if (!sheet || !range || !checkDirectSelection()) return
+  if ((direction === 'right' || direction === 'down') && selectedRanges.value.some((first, index) =>
+    selectedRanges.value.slice(index + 1).some(second => first.startRow <= second.endRow && first.endRow >= second.startRow
+      && first.startColumn <= second.endColumn && first.endColumn >= second.startColumn))) {
+    emit('notify', { type: 'warning', message: '选区相互重叠，无法插入并移动单元格。' })
+    return
+  }
+  if (!finishEdit()) return
   const result = moveSheetCellRange(sheet, range, direction, confirmMerges)
   if (result.status === 'invalid') {
     emit('notify', { type: 'warning', message: result.reason })
@@ -1155,7 +1180,7 @@ function confirmCellRangeMove(): void {
   pendingCellMove.value = null
   if (!pending) return
   const sheet = workbook.value.sheets.find(candidate => candidate.id === pending.sheetId)
-  if (!sheet) return
+  if (!sheet || activeSheetId.value !== pending.sheetId || !finishEdit()) return
   const result = moveSheetCellRange(sheet, pending.range, pending.direction, true)
   if (result.status !== 'applied') {
     emit('notify', { type: 'warning', message: result.status === 'invalid' ? result.reason : '当前选区无法移位。' })
@@ -1428,15 +1453,9 @@ function showSheet(id: string) {
   commitHistory()
 }
 
-function openFileDialog() {
-  fileInput.value?.click()
-}
-
-function handleFile(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]
-  if (file) emit('import', file)
-  else emit('notify', { type: 'warning', message: '未选择文件' })
-  if (fileInput.value) fileInput.value.value = ''
+function importWorkbook(file: File): false {
+  emit('import', file)
+  return false
 }
 
 function saveWorkbook() {
@@ -2006,7 +2025,6 @@ onDeactivated(() => {
 
 <template>
   <section ref="workbenchRef" class="excel-workbench" @keydown="handleGridKeydown">
-    <input ref="fileInput" class="hidden-file-input" type="file" accept=".xlsx,.xls,.csv" @change="handleFile" />
     <header v-if="showHeader" class="excel-header">
       <div class="document-brand">
         <div class="excel-logo"><FileSpreadsheet :size="18" /></div>
@@ -2016,7 +2034,7 @@ onDeactivated(() => {
         </div>
       </div>
       <div class="header-actions">
-        <Tooltip title="打开文件"><Button type="text" size="small" aria-label="打开文件" @click="openFileDialog"><FolderOpen :size="16" /></Button></Tooltip>
+        <Upload accept=".xlsx,.xls,.xlsb,.ods,.csv,.tsv" :show-upload-list="false" :before-upload="importWorkbook"><Tooltip title="打开文件"><Button type="text" size="small" aria-label="打开文件"><FolderOpen :size="16" /></Button></Tooltip></Upload>
         <Tooltip title="保存"><Button type="text" size="small" aria-label="保存工作簿" @click="saveWorkbook"><Save :size="16" /></Button></Tooltip>
         <Tooltip title="导出"><Button type="text" size="small" aria-label="导出工作簿" @click="exportWorkbook"><Download :size="16" /></Button></Tooltip>
       </div>
@@ -2048,7 +2066,7 @@ onDeactivated(() => {
 
     <div class="sheet-canvas-layout">
       <div class="sheet-canvas-stack">
-        <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeRibbon" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
+        <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeRibbon" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
         <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
       </div>
       <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" />
@@ -2090,7 +2108,7 @@ onDeactivated(() => {
     <SheetFooter :sheets="workbook.sheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <PivotChartPanel v-if="pivotChartPanelOpen && activeSheet && studio && workbook.id" v-model:open="pivotChartPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" />
-    <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
+    <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
     <ConditionalFormattingPanel v-if="conditionalFormattingOpen && activeSheet" v-model:open="conditionalFormattingOpen" :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" @apply="applyConditionalFormatting" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
@@ -2101,7 +2119,6 @@ onDeactivated(() => {
 
 <style scoped>
 .excel-workbench { --ink: #172033; --muted: #718096; --line: #dfe5ee; --blue: #246bfd; display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; color: var(--ink); background: #fff; font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
-.hidden-file-input { display: none; }
 .sheet-axis-size-field { display: grid; gap: 8px; }
 .excel-header { display: flex; flex: 0 0 53px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 0 18px; background: #fff; }
 .document-brand, .header-actions { display: flex; align-items: center; gap: 10px; }

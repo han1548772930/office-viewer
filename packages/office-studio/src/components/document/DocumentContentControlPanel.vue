@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { Button, Checkbox, ColorPicker, Input, Modal, Select } from 'antdv-next'
+import { Button, Checkbox, ColorPicker, Form, Input, Modal, Select } from 'antdv-next'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import type { DocumentContentControl, DocumentContentControlType } from '../../domain/model'
 import type { FDocument } from '../../api/facade'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 type ContentControlProperties = Partial<DocumentContentControl> & {
-  date?: { format?: string; locale?: string; calendar?: string; storage?: 'text' | 'date' | 'dateTime' }
+  date?: { format?: string; locale?: string; calendar?: string; storage?: string }
 }
 
 const props = defineProps<{
@@ -56,7 +56,7 @@ const dateStorageOptions = computed(() => [
   { label: t('doc.content-control.date-storage.dateTime', '日期和时间'), value: 'dateTime' },
 ])
 const hasPlaceholder = computed(() => selected.value != null && ![
-  'checkbox', 'picture', 'repeatingSection', 'repeatingSectionItem',
+  'checkbox', 'repeatingSection', 'repeatingSectionItem',
 ].includes(selected.value.type))
 const hasDataBinding = computed(() => selected.value?.dataBinding != null)
 const isDate = computed(() => selected.value?.type === 'date')
@@ -149,7 +149,7 @@ function save(): void {
     destroy-on-hidden
     @cancel="close"
   >
-    <form v-if="selected" class="content-control-properties" @submit.prevent="save">
+    <Form v-if="selected" layout="vertical" class="content-control-properties" @submit.prevent="save">
       <section class="properties-grid">
         <label>
           <span>{{ t('doc.content-control.type', '类型') }}</span>
@@ -217,7 +217,7 @@ function save(): void {
         </label>
         <label>
           <span>{{ t('doc.content-control.date-storage', '存储格式') }}</span>
-          <Select :value="properties.date?.storage ?? 'text'" :options="dateStorageOptions" @change="value => patchDate({ storage: String(value) as NonNullable<DocumentContentControl['date']>['storage'] })" />
+          <Select :value="properties.date?.storage ?? 'text'" :options="dateStorageOptions" @change="value => patchDate({ storage: String(value) })" />
         </label>
       </section>
 
@@ -271,7 +271,7 @@ function save(): void {
         <Button html-type="button" @click="close">{{ t('common.cancel', '取消') }}</Button>
         <Button type="primary" html-type="submit">{{ t('common.save', '保存') }}</Button>
       </footer>
-    </form>
+    </Form>
   </Modal>
 </template>
 

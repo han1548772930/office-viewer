@@ -8,12 +8,17 @@ let server
 let useEditorStore
 let toExcelWorkbookView
 let createBlankSheet
+let createCell
+let moveSheetCellRange
+let structureEdit
+let transformWorkbookReferencesForSheetEdit
 
 beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   ;({ useEditorStore } = await server.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
   ;({ toExcelWorkbookView } = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts'))
-  ;({ createBlankSheet } = await server.ssrLoadModule('/packages/office-studio/src/domain/model.ts'))
+  ;({ createBlankSheet, createCell } = await server.ssrLoadModule('/packages/office-studio/src/domain/model.ts'))
+  ;({ moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit } = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-workbench/sheet-cell-range-move.ts'))
 })
 
 afterAll(async () => { await server?.close() })
@@ -113,6 +118,27 @@ test('content undo and redo preserve a later sheet-navigation operation', () => 
   editor.redo()
   assert.equal(editor.state.workbook.activeSheetId, second.id)
   assert.equal(editor.state.workbook.sheets[0].cells['0:0'].value, 'content edit')
+})
+
+test('range-cell shifts enter workbook history as one atomic undoable edit', () => {
+  const editor = freshEditor()
+  const model = snapshot(editor.state.workbook)
+  const sheet = model.sheets[0]
+  sheet.cells = { '0:0': createCell(0, 0, 'before'), '0:1': createCell(0, 1, 'move') }
+  editor.workbook.replace(model)
+  const original = toExcelWorkbookView(model)
+  const moved = moveSheetCellRange(original.sheets[0], { startRow: 0, startColumn: 1, endRow: 0, endColumn: 1 }, 'right')
+  assert.equal(moved.status, 'applied')
+  const edit = structureEdit({ startRow: 0, startColumn: 1, endRow: 0, endColumn: 1 }, 'right')
+  const after = transformWorkbookReferencesForSheetEdit({ ...original, sheets: [moved.sheet] }, sheet.id, edit)
+  assert.equal(editor.replaceWorkbookFromView(after), true)
+  assert.equal(editor.canUndo, true)
+  editor.undo()
+  assert.equal(editor.state.workbook.sheets[0].cells['0:1'].value, 'move')
+  assert.equal(editor.state.workbook.sheets[0].cells['0:2'], undefined)
+  editor.redo()
+  assert.equal(editor.state.workbook.sheets[0].cells['0:2'].value, 'move')
+  assert.equal(editor.state.workbook.sheets[0].cells['0:1'], undefined)
 })
 
 test('adding a sheet applies its initial activation and a canceled save token cannot mark a new unit', () => {

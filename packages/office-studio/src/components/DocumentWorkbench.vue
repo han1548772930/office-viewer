@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, Input, Modal, Tooltip } from 'antdv-next'
+import { Button, Checkbox, Input, Modal, Tooltip, Upload } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
@@ -33,6 +33,7 @@ import { printDocumentModel } from '../features/document/services/document-print
 import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
 import { documentSectionIds, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
+import { selectedDocumentContentControl } from '../features/document/services/content-controls'
 import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
@@ -60,8 +61,6 @@ const firstTarget = textTargets(model.value)[0]!
 const selection = shallowRef<DocumentSelection>(collapsedSelection({ ...firstTarget, offset: 0 }))
 const layout = shallowRef<DocumentLayout>(emptyLayout())
 const canvasRef = ref<InstanceType<typeof DocumentCanvasViewport> | null>(null)
-const fileInputRef = ref<HTMLInputElement | null>(null)
-const imageInputRef = ref<HTMLInputElement | null>(null)
 const activeTab = ref('home')
 const documentTitle = ref(props.fileName || '无标题文档')
 const zoom = ref(100)
@@ -113,10 +112,10 @@ const selectedContentControlId = computed(() => {
   const anchor = selection.value.anchor
   const focus = selection.value.focus
   const blockId = focus.cellBlockId ?? focus.blockId
+  if ((anchor.cellBlockId ?? anchor.blockId) !== blockId) return undefined
   const start = Math.min(anchor.offset, focus.offset)
   const end = Math.max(anchor.offset, focus.offset)
-  return model.value.contentControls?.find(control => control.blockId === blockId
-    && (start === end ? start >= control.startOffset && start <= control.endOffset : start < control.endOffset && end > control.startOffset))?.id
+  return selectedDocumentContentControl(model.value, blockId, start, end)?.id
 })
 const selectedContentControl = computed(() => selectedContentControlId.value
   ? model.value.contentControls?.find(control => control.id === selectedContentControlId.value)
@@ -499,7 +498,7 @@ function insertContentControl(type: DocumentContentControlType) {
       notify('重复节项由重复节控件生成，不能单独插入')
       return
     }
-    props.documentApi.addContentControl({
+    const insertedControl = props.documentApi.addContentControl({
       ...(typeDefaults[type] as Partial<DocumentContentControl>),
       type,
       blockId,
@@ -507,6 +506,12 @@ function insertContentControl(type: DocumentContentControlType) {
       endOffset: Math.max(anchor.offset, focus.offset),
       placement: type === 'repeatingSection' ? 'block' : focus.cellBlockId ? 'cell' : 'inline',
     })
+    activeContentControlId.value = insertedControl.getId()
+    if (type === 'repeatingSection') {
+      const section = insertedControl.getInfo()
+      activeContentControlId.value = model.value.contentControls?.find(control => control.type === 'repeatingSectionItem'
+        && control.parentId === section.id)?.id
+    }
     contentControlPanelOpen.value = false
     activeTab.value = 'content-control'
     void nextTick(() => canvasRef.value?.focus())
@@ -613,8 +618,7 @@ function selectComment(commentId: string) {
   canvasRef.value?.scrollToBlock(firstTarget.blockId)
   canvasRef.value?.focus()
 }
-function openImport() { fileInputRef.value?.click() }
-function onFileChange(event: Event) { const input = event.target as HTMLInputElement; if (input.files?.[0]) emit('import-file', input.files[0]); input.value = '' }
+function importFile(file: File): false { emit('import-file', file); return false }
 function movePage(direction: -1 | 1) { setActivePage(Math.max(0, Math.min(pages.value.length - 1, activePageIndex.value + direction))) }
 function setActivePage(index: number) { activePageIndex.value = index; canvasRef.value?.scrollToPage(index) }
 function jumpToHeading(id: string) { const point = { blockId: id, offset: 0 }; outlineNavigationTarget.value = id; onSelection(collapsedSelection(point)); canvasRef.value?.scrollToBlock(id); canvasRef.value?.focus() }
@@ -716,11 +720,8 @@ function confirmModal() {
   else execute({ id: 'doc.command.insert-image', image: { src: value, width: 320, height: 0, alt: '图片' } })
   modalOpen.value = false
 }
-async function onImageFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
+function beforeImageUpload(file: File): false { void onImageFile(file); return false }
+async function onImageFile(file: File) {
   const request = ++imageRequest
   const base = model.value
   const range: DocumentSelection = { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } }
@@ -745,12 +746,15 @@ function replaceSelectedPicture(image: { src: string; alt: string; width: number
   const controlId = pictureReplacementControlId.value
   const control = controlId && props.documentApi?.getContentControl(controlId)
   if (!control || control.getType() !== 'picture') return
-  const current = control.getInfo()
-  const oldBlockIds = new Set(model.value.blocks.map(block => block.id))
-  selection.value = { anchor: { blockId: current.blockId, offset: current.startOffset }, focus: { blockId: current.blockId, offset: current.endOffset } }
-  execute({ id: 'doc.command.insert-image', image })
-  const imageBlock = model.value.blocks.find(block => !oldBlockIds.has(block.id) && block.type === 'image')
-  if (imageBlock) control.update({ metadata: { ...current.metadata, pictureBlockId: imageBlock.id, pictureImage: image } })
+  try {
+    control.replacePicture(image)
+    const updated = control.getInfo()
+    onSelection({ anchor: { blockId: updated.blockId, offset: updated.startOffset }, focus: { blockId: updated.blockId, offset: updated.endOffset } })
+    const pictureBlockId = updated.metadata?.pictureBlockId
+    if (typeof pictureBlockId === 'string') canvasRef.value?.scrollToBlock(pictureBlockId)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+  }
   activeContentControlId.value = controlId
   pictureReplacementControlId.value = undefined
 }
@@ -918,7 +922,7 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.open-selected-sdt-properties':
       if (selectedContentControlId.value) contentControlPanelOpen.value = true
       break
-    case 'doc.command.select-parent-sdt': {
+    case 'doc.operation.select-parent-sdt': {
       const parentId = selectedContentControl.value?.parentId
       const parent = parentId && model.value.contentControls?.find(control => control.id === parentId)
       if (parent) {
@@ -1042,9 +1046,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Input v-model:value="documentTitle" class="document-name" aria-label="文档名称" variant="borderless" @change="updateTitle" @press-enter="($event.target as HTMLInputElement).blur()" />
       <Tooltip title="打印文档"><Button type="text" aria-label="打印文档" @click="printDocument"><Printer :size="16" /></Button></Tooltip>
       <Button @click="saveDocument"><Save :size="15" />保存</Button>
-      <Button type="primary" @click="openImport"><FileUp :size="15" />打开文档</Button>
+      <Upload accept=".doc,.docx,.odt,.txt" :show-upload-list="false" :before-upload="importFile">
+        <Button type="primary"><FileUp :size="15" />打开文档</Button>
+      </Upload>
     </header>
-    <input ref="fileInputRef" class="hidden-input" type="file" accept=".doc,.docx,.odt,.txt" @change="onFileChange">
     <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant" label="文档功能区" @execute="onRibbonExecute">
       <template #tab-extra>
         <div v-if="showFind" class="find-replace-toolbar">
@@ -1103,7 +1108,12 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       </div>
     </div>
     <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden @ok="confirmModal">
-      <div class="insert-form"><label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label><Button v-if="modalKind === 'image'" type="primary" @click="imageInputRef?.click()"><FileUp :size="15" />选择本地图片</Button><input ref="imageInputRef" class="hidden-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" @change="onImageFile"></div>
+      <div class="insert-form">
+        <label>{{ modalKind === 'image' ? '图片地址' : '链接地址' }}<Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></label>
+        <Upload v-if="modalKind === 'image'" accept="image/png,image/jpeg,image/gif,image/webp" :show-upload-list="false" :before-upload="beforeImageUpload">
+          <Button type="primary"><FileUp :size="15" />选择本地图片</Button>
+        </Upload>
+      </div>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" @error="notify" />
@@ -1132,7 +1142,6 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 .document-mark { flex-shrink: 0; color: #3182ce; }
 .document-name { min-width: 60px; flex: 1; }
 .document-header :deep(.ant-btn) { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; }
-.hidden-input { display: none; }
 .document-ribbon { flex-shrink: 0; }
 .editor-workspace { position: relative; min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .document-comments-dock { z-index: 30; width: 320px; min-width: 280px; flex: 0 0 min(320px, 38vw); border-inline-start: 1px solid #d9dde4; background: #fff; }

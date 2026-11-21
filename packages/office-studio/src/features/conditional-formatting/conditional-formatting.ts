@@ -5,7 +5,7 @@ import type {
   SheetConditionalFormatStyle,
   SpreadsheetSheet,
 } from '../../domain/model.ts'
-import { conditionalIconPresets } from './conditional-icon-presets.ts'
+import { conditionalIconSequence } from './icon-set-config.ts'
 
 export interface ConditionalFormatDraft {
   ranges: CellRange[]
@@ -84,7 +84,7 @@ export function evaluateConditionalFormatRule(rule: SheetConditionalFormatRule, 
     const operator = String(rule.operator ?? 'containsText')
     if (operator === 'containsBlanks') return text.trim().length === 0
     if (operator === 'notContainsBlanks') return text.trim().length > 0
-    const isError = typeof value === 'string' && /^#(?:NULL!|DIV/0!|VALUE!|REF!|NAME?|NUM!|N/A|SPILL!|CALC!)/.test(value) || typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'error'
+    const isError = typeof value === 'string' && ['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#SPILL!', '#CALC!'].includes(value) || typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'error'
     if (operator === 'containsErrors') return isError
     if (operator === 'notContainsErrors') return !isError
     if (operator === 'equal') return text === target
@@ -188,23 +188,14 @@ export function conditionalFormatStyleAt(
       }
       continue
     }
-    if (rule.type === 'iconSet' && typeof value === 'number' && rule.config?.icons?.length) {
+    if (rule.type === 'iconSet' && typeof value === 'number' && Number.isFinite(value) && rule.config?.icons?.length) {
       if (output.icon) continue
-      const icons = rule.config.icons
-      const selectedBoundaries = icons.filter((icon, index) => index === 0 || !compareThreshold(icons[index - 1]!, threshold(icon.value)))
-      let selected = selectedBoundaries.at(-1)
-      if (selectedBoundaries[0] && compareThreshold(selectedBoundaries[0], value)) selected = selectedBoundaries[0]
-      else {
-        for (let index = 1; index < selectedBoundaries.length - 1; index++) {
-          const previous = selectedBoundaries[index - 1]!, current = selectedBoundaries[index]!
-          if (!compareThreshold(previous, value) && compareThreshold(current, value)) { selected = current; break }
-        }
-      }
+      const icons = conditionalIconSequence(rule.config)
+      const boundaries = icons.slice(0, -1).map(icon => ({ icon, value: threshold(icon.value) }))
+      if (boundaries.some(boundary => !Number.isFinite(boundary.value))) continue
+      const selected = boundaries.find(boundary => compareThreshold(boundary.icon.operator, boundary.value, value))?.icon ?? icons.at(-1)
       if (selected?.iconId !== undefined && selected.iconType) {
-        const iconIndex = Number(selected.iconId)
-        const iconCount = conditionalIconPresets[selected.iconType]?.length ?? rule.config.icons.length
-        const iconId = rule.config.reverse && Number.isInteger(iconIndex) ? String(iconCount - iconIndex - 1) : selected.iconId
-        output.icon = { iconType: selected.iconType, iconId, showValue: rule.config.isShowValue !== false }
+        output.icon = { iconType: selected.iconType, iconId: selected.iconId, showValue: rule.config.isShowValue !== false }
       }
       continue
     }
@@ -228,9 +219,8 @@ function valueKey(value: unknown): string | undefined {
   return `${typeof value}:${String(value).toLocaleLowerCase()}`
 }
 
-function compareThreshold(icon: NonNullable<NonNullable<SheetConditionalFormatRule['config']>['icons']>[number], value: number): boolean {
-  const threshold = Number(icon.value.value)
-  switch (icon.operator) {
+function compareThreshold(operator: string | undefined, threshold: number, value: number): boolean {
+  switch (operator) {
     case 'greaterThan': return value > threshold
     case 'greaterThanOrEqual': return value >= threshold
     case 'lessThan': return value < threshold

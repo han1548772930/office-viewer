@@ -12,6 +12,7 @@ const errors = []
 
 const fixture = `
 import { createApp, computed, h, ref } from 'vue'
+import { Button, ConfigProvider, theme } from 'antdv-next'
 import { Bold, Undo2 } from 'lucide-vue-next'
 import WorkbenchRibbon from '/packages/office-studio/src/platform/ribbon/WorkbenchRibbon.vue'
 const active = ref('home')
@@ -23,8 +24,17 @@ const direction = ref('ltr')
 const family = ref('Arial')
 const bold = ref(false)
 const longTabTitles = ref(false)
+const popupTools = ref(false)
+const dark = ref(false)
+const customSlot = ref(false)
+const PopupPicker = {
+  emits: ['insert'],
+  setup(_props, { emit }) {
+    return () => h(Button, { onClick: () => emit('insert', 'chosen-symbol') }, () => '插入测试符号')
+  },
+}
 window.ribbonInvocations = []
-window.ribbonFixture = { active, variant, locked, showContext, menusVisible, direction, family, bold, longTabTitles }
+window.ribbonFixture = { active, variant, locked, showContext, menusVisible, direction, family, bold, longTabTitles, popupTools, dark, customSlot }
 const tabs = computed(() => menusVisible.value ? [
   { id: 'home', title: longTabTitles.value ? '开始与格式编辑' : '开始', order: 0, groups: [
     { id: 'history', title: '历史', items: [
@@ -53,6 +63,18 @@ const tabs = computed(() => menusVisible.value ? [
   { id: 'empty', title: '空分类', groups: [] },
   { id: 'insert', title: longTabTitles.value ? '插入与对象管理' : '插入', order: 1, groups: [{ id: 'insert', items: [{ id: 'insert-table', type: 'button', title: '插入表格', commandId: 'doc.command.insert-table', showLabel: true }] }] },
   { id: 'context', title: longTabTitles.value ? '表格上下文工具' : '表格', order: 2, contextual: true, hidden: !showContext.value, groups: [{ id: 'table', items: [{ id: 'delete-table', type: 'button', title: '删除表格', commandId: 'doc.command.delete-table', showLabel: true }] }] },
+  { id: 'popup-tools', title: '弹层工具', order: 3, hidden: !popupTools.value, groups: [
+    { id: 'popup-first', items: [
+      { id: 'popup-only', type: 'menu', title: '符号选择', icon: Bold, popupComponent: PopupPicker, popupCommandId: 'doc.command.insert-symbol', disabled: locked.value },
+      { id: 'popup-other', type: 'menu', title: '其他选项', icon: Undo2, children: [{ id: 'popup-other-action', type: 'button', title: '执行其他选项', commandId: 'doc.command.other' }] },
+      { id: 'popup-split', type: 'split', title: '分离菜单', icon: Bold, commandId: 'doc.command.split-main', children: [
+        { id: 'popup-split-first', type: 'button', title: '第一选项', commandId: 'doc.command.split-first' },
+        { id: 'popup-split-last', type: 'button', title: '最后选项', commandId: 'doc.command.split-last' },
+      ] },
+      { id: 'popup-select', type: 'select', title: '选择测试', value: 'one', options: [{ label: '一', value: 'one' }], commandId: 'doc.command.select' },
+    ] },
+    { id: 'popup-custom', items: [{ id: 'custom-tool', type: 'button', title: '自定义工具', hidden: !customSlot.value, disabled: locked.value }] },
+  ] },
 ] : [])
 const gridLayoutById = {
   undo: { row: 1, column: 1, rowSpan: 2, showLabel: true },
@@ -64,9 +86,14 @@ const gridLayoutById = {
   'list-toggle': { row: 1, column: 5, rowSpan: 2, width: 84, showLabel: true },
   'insert-table': { row: 1, column: 1, rowSpan: 2, width: 72, showLabel: true },
   'delete-table': { row: 1, column: 1, rowSpan: 2, width: 72, showLabel: true },
+  'popup-only': { row: 1, column: 1 },
+  'popup-other': { row: 2, column: 1 },
+  'popup-split': { row: 1, column: 2, rowSpan: 2 },
+  'popup-select': { row: 1, column: 3, width: 96 },
+  'custom-tool': { row: 1, column: 1, rowSpan: 2, width: 120 },
 }
 const gridTabs = computed(() => tabs.value.map((tab) => ({ ...tab, groups: tab.groups.map((group) => ({ ...group, items: group.items.map((item) => ({ ...item, gridLayout: gridLayoutById[item.id] })) })) })))
-createApp({ render() { return h(WorkbenchRibbon, { tabs: gridTabs.value, variant: variant.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null }) } }).mount('#app')
+createApp({ render() { return h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#315bc2' } }, direction: direction.value }, { default: () => h(WorkbenchRibbon, { tabs: gridTabs.value, variant: variant.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null, 'item-custom-tool': ({ item, execute, overflow }) => h(Button, { disabled: item.disabled, onClick: () => execute('doc.command.custom', { overflow: Boolean(overflow) }) }, () => '自定义动作') }) }) } }).mount('#app')
 `
 
 beforeAll(async () => {
@@ -199,25 +226,29 @@ test('grid variant is opt-in and uses two-row placements with large controls spa
       largeRow: getComputedStyle(largeCell).gridRow,
       largeHeight: document.querySelector('[data-ribbon-item="undo"] .ribbon-button').getBoundingClientRect().height,
       largeWidth: largeCell.getBoundingClientRect().width,
+      largeRowHeight: largeCell.getBoundingClientRect().height,
+      regularButtonHeight: document.querySelector('[data-ribbon-item="bold"] .ribbon-button').getBoundingClientRect().height,
       moreWidth: document.querySelector('.ribbon-grid-more-anchor').getBoundingClientRect().width,
       familyLabelVisible: getComputedStyle(document.querySelector('[data-ribbon-item="family"] label')).clipPath !== 'inset(50%)',
     }
   })
   assert.equal(geometry.tabsHeight, 32)
-  assert.equal(geometry.toolbarHeight, 73)
-  assert.equal(geometry.toolbarInlinePadding, '8px')
-  assert.deepEqual(geometry.rowTracks.split(' ').slice(0, 2), ['28px', '28px'])
-  assert.equal(geometry.rowGap, '8px')
-  assert.equal(geometry.verticalPadding, '4px')
-  assert.equal(geometry.columnGap, '8px')
+  assert.equal(geometry.toolbarHeight, 69)
+  assert.equal(geometry.toolbarInlinePadding, '0px')
+  assert.deepEqual(geometry.rowTracks.split(' ').slice(0, 2), ['24px', '24px'])
+  assert.equal(geometry.rowGap, '4px')
+  assert.equal(geometry.verticalPadding, '8px')
+  assert.equal(geometry.columnGap, '4px')
   assert.equal(geometry.tabBorder, '0px', JSON.stringify(geometry))
   assert.equal(geometry.tabIndicatorHeight, '3px', JSON.stringify(geometry))
   assert.equal(geometry.tabIndicatorColor, 'rgb(49, 91, 194)', JSON.stringify(geometry))
   assert.ok(geometry.groupJustify.endsWith('start'), JSON.stringify(geometry))
   assert.match(geometry.largeRow, /span 2/)
-  assert.equal(geometry.largeHeight, 56)
+  assert.equal(geometry.largeHeight, geometry.largeRowHeight)
+  assert.equal(geometry.largeRowHeight, 52)
   assert.equal(geometry.largeWidth, 56)
-  assert.equal(geometry.moreWidth, 64)
+  assert.equal(geometry.regularButtonHeight, 24)
+  assert.equal(geometry.moreWidth, 72)
   assert.equal(geometry.familyLabelVisible, true)
   assert.equal(await page.locator('.ribbon-visible-groups').count(), 0)
   assert.deepEqual(errors, [])
@@ -241,7 +272,7 @@ test('grid density preserves whole groups and exposes every overflow command exa
     const visibleRight = Math.max(toolbarBounds.left, ...visibleGroups.map(bounds => bounds.right))
     return { toolbarLeft: toolbarBounds.left, toolbarRight: toolbarBounds.right, anchorLeft: anchorBounds.left, anchorRight: anchorBounds.right, triggerWidth: triggerBounds.width, visibleRight }
   })
-  assert.equal(triggerGeometry.anchorRight - triggerGeometry.anchorLeft, 64)
+  assert.equal(triggerGeometry.anchorRight - triggerGeometry.anchorLeft, 72)
   assert.ok(triggerGeometry.anchorLeft >= triggerGeometry.visibleRight - 1, JSON.stringify(triggerGeometry))
   assert.ok(triggerGeometry.anchorRight <= triggerGeometry.toolbarRight, JSON.stringify(triggerGeometry))
   assert.ok(triggerGeometry.triggerWidth <= 56, JSON.stringify(triggerGeometry))
@@ -334,12 +365,12 @@ test('narrow toolbar exposes overflow controls, nested menus and selectors witho
   assert.equal(moreSize.height, 24)
   await popup.getByRole('button', { name: '段落工具4', exact: true }).click()
   await page.waitForFunction(() => window.ribbonInvocations.some(([id, value]) => id === 'doc.command.tool' && value === 4))
-  await more.click()
+  await expect(popup).toBeVisible()
   await popup.getByRole('button', { name: '字体颜色', exact: true }).click()
   const colors = page.getByRole('menu', { name: '字体颜色', exact: true })
   await colors.getByRole('button', { name: '红色', exact: true }).click()
   await page.waitForFunction(() => window.ribbonInvocations.some(([id, value]) => id === 'doc.command.color' && value === '#ef4444'))
-  await more.click()
+  await expect(popup).toBeVisible()
   await popup.getByRole('combobox', { name: '字体', exact: true }).click()
   await page.getByTitle('宋体', { exact: true }).click()
   await page.waitForFunction(() => window.ribbonInvocations.some(([id, value]) => id === 'doc.command.font' && value === '宋体'))
@@ -442,5 +473,91 @@ test('resize tracking survives temporarily empty menus and does not reopen stale
   await more.waitFor()
   assert.equal(await more.getAttribute('aria-expanded'), 'false')
   assert.equal(await page.getByRole('menu', { name: '更多功能', exact: true }).count(), 0)
+  assert.deepEqual(errors, [])
+})
+
+test('popup-component menus remain available and dispatch their payload in both Ribbon layouts', async () => {
+  for (const variant of ['classic', 'grid']) {
+    await page.evaluate(value => { window.ribbonFixture.variant.value = value; window.ribbonFixture.popupTools.value = true }, variant)
+    await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
+    const trigger = page.getByRole('button', { name: '符号选择', exact: true })
+    await trigger.click()
+    const menu = page.getByRole('menu', { name: '符号选择', exact: true })
+    await expect(menu).toBeVisible()
+    await menu.getByRole('button', { name: '插入测试符号', exact: true }).click()
+    await expect(menu).toBeHidden()
+    assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['doc.command.insert-symbol', 'chosen-symbol'])
+    await page.getByRole('tab', { name: '开始', exact: true }).click()
+  }
+  assert.deepEqual(errors, [])
+})
+
+test('sibling menus and selects share one open popup without closing the active sibling on state updates', async () => {
+  await page.evaluate(() => { window.ribbonFixture.popupTools.value = true })
+  await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
+  const first = page.getByRole('button', { name: '符号选择', exact: true })
+  const second = page.getByRole('button', { name: '其他选项', exact: true })
+  await first.click()
+  await expect(page.getByRole('menu', { name: '符号选择', exact: true })).toBeVisible()
+  await second.click()
+  await expect(page.getByRole('menu', { name: '符号选择', exact: true })).toBeHidden()
+  await expect(page.getByRole('menu', { name: '其他选项', exact: true })).toBeVisible()
+  await page.evaluate(() => { window.ribbonFixture.locked.value = true })
+  await expect(page.getByRole('menu', { name: '其他选项', exact: true })).toBeVisible()
+  await page.getByRole('combobox', { name: '选择测试', exact: true }).click()
+  await expect(page.getByRole('menu', { name: '其他选项', exact: true })).toBeHidden()
+  await expect(page.getByRole('listbox')).toBeVisible()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await expect(page.getByRole('listbox')).toBeHidden()
+  assert.deepEqual(errors, [])
+})
+
+test('split dropdown keyboard navigation returns Escape focus to the arrow trigger', async () => {
+  await page.evaluate(() => { window.ribbonFixture.popupTools.value = true })
+  await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
+  const arrow = page.getByRole('button', { name: '分离菜单选项', exact: true })
+  await arrow.focus()
+  await arrow.press('ArrowUp')
+  await expect(page.getByRole('button', { name: '最后选项', exact: true })).toBeFocused()
+  await page.keyboard.press('Home')
+  await expect(page.getByRole('button', { name: '第一选项', exact: true })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(arrow).toBeFocused()
+  await expect(page.getByRole('menu', { name: '分离菜单', exact: true })).toBeHidden()
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [])
+  assert.deepEqual(errors, [])
+})
+
+test('grid item slots retain dispatch guards and overflow placement', async () => {
+  await page.evaluate(() => { window.ribbonFixture.popupTools.value = true; window.ribbonFixture.customSlot.value = true; window.ribbonFixture.variant.value = 'grid' })
+  await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
+  await page.getByRole('button', { name: '自定义动作', exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['doc.command.custom', { overflow: false }])
+  await page.setViewportSize({ width: 210, height: 700 })
+  const more = page.getByRole('button', { name: '更多功能', exact: true })
+  await more.focus()
+  await more.press('ArrowDown')
+  const popup = page.getByRole('menu', { name: '更多功能', exact: true })
+  await popup.getByRole('button', { name: '自定义动作', exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['doc.command.custom', { overflow: true }])
+  await page.evaluate(() => { window.ribbonFixture.locked.value = true })
+  await expect(popup.getByRole('button', { name: '自定义动作', exact: true })).toBeDisabled()
+  assert.deepEqual(errors, [])
+})
+
+test('ConfigProvider theme and direction reach Ribbon controls and portaled command menus', async () => {
+  const root = page.getByTestId('workbench-ribbon')
+  const light = await root.evaluate(element => ({ background: getComputedStyle(element).backgroundColor, text: getComputedStyle(element).color }))
+  await page.evaluate(() => { window.ribbonFixture.dark.value = true; window.ribbonFixture.direction.value = 'rtl' })
+  await expect.poll(() => root.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(light.background)
+  const darkText = await root.evaluate(element => getComputedStyle(element).color)
+  assert.notEqual(darkText, light.text)
+  await page.getByRole('button', { name: '字体颜色', exact: true }).click()
+  const menu = page.getByRole('menu', { name: '字体颜色', exact: true })
+  assert.equal(await menu.getAttribute('dir'), 'rtl')
+  const red = menu.getByRole('button', { name: '红色', exact: true })
+  assert.equal(await red.evaluate(element => getComputedStyle(element).color), darkText)
+  await page.evaluate(() => { window.ribbonFixture.dark.value = false })
+  await expect.poll(() => red.evaluate(element => getComputedStyle(element).color)).toBe(light.text)
   assert.deepEqual(errors, [])
 })

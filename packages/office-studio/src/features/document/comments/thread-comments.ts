@@ -138,7 +138,14 @@ export function editDocumentCommentMessage(
   const message = comment.messages.find(candidate => candidate.id === messageId)
   if (!message) throw new RangeError(`Unknown comment message id: ${messageId}`)
   assertMessageAuthor(message, actor)
-  message.text = commentText(text)
+  const nextText = commentText(text)
+  if (message.text === nextText) return
+  message.text = nextText
+  if (message.mentions) {
+    const mentions = message.mentions.filter(mention => mention.userId && mention.label && nextText.startsWith(mention.label))
+    if (mentions.length) message.mentions = mentions
+    else delete message.mentions
+  }
   message.updatedAt = now
   updateTimestamp(comment, now)
   model.modified = true
@@ -161,8 +168,8 @@ export function setDocumentThreadCommentResolved(
 
 export function deleteDocumentThreadComment(model: DocumentModel, commentId: string, actor: DocumentCommentActor): boolean {
   assertCanComment(model, actor)
-  const comments = commentsFor(model)
-  if (!comments[commentId]) return false
+  const comments = model.comments
+  if (!comments?.[commentId]) return false
   assertMessageAuthor(comments[commentId].messages[0], actor)
   delete comments[commentId]
   model.modified = true
@@ -229,6 +236,12 @@ export function documentThreadCommentAnchorStatus(model: DocumentModel, comment:
     resolved += current.length
   }
   return resolved === comment.referenceText.replaceAll('\n', '').length ? 'current' : 'stale'
+}
+
+export function isDocumentThreadCommentRelevantToUser(comment: DocumentThreadComment, userId: string): boolean {
+  if (!userId) return false
+  return comment.messages.some(message => message.authorId === userId
+    || message.mentions?.some(mention => mention.userId === userId) === true)
 }
 
 export function transformDocumentCommentAnchorsForTextEdit(

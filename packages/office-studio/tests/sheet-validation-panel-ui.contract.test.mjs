@@ -9,7 +9,7 @@ test('data validation uses an in-workbench sidebar with the fixed-version width 
   assert.match(panel, /<aside v-if="open" class="validation-sidebar"/)
   assert.match(panel, /\.validation-sidebar\s*\{[^}]*flex:\s*0 0 312px/)
   assert.match(panel, /\.validation-header\s*\{[^}]*padding:\s*16px 16px 8px/)
-  assert.match(panel, /\.validation-body\s*\{[^}]*padding:\s*8px 16px 16px/)
+  assert.match(panel, /\.validation-body\s*\{[^}]*padding:\s*0 16px 16px/)
   assert.doesNotMatch(panel, /<Drawer\b/)
   assert.match(workbench, /<div class="sheet-canvas-layout">[\s\S]*?<div class="sheet-canvas-stack">[\s\S]*?<SheetDataValidationPanel\b/)
 })

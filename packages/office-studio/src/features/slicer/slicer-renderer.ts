@@ -3,6 +3,7 @@ import type { DrawCommand, RenderRect } from '../../rendering/contracts'
 import { SpreadsheetGeometry, type GridViewport } from '../../rendering/spreadsheet/layout'
 import { parseTimelineDate, timelineDateToInput, type TimelineDate } from './timeline-date'
 import { slicerCanvasIcon, type SlicerIconName } from './slicer-canvas-icons'
+import { resolveSlicerBounds } from './slicer-drawing'
 
 export interface SlicerCanvasControl { model: SlicerModel; items: string[] }
 export interface SlicerCanvasPeriod { key: number; start: number; end: number; label: string; groupLabel: string }
@@ -42,11 +43,9 @@ const TIMELINE_SLOT = 64
 const TIMELINE_LEVELS: TimelineLevel[] = ['year', 'quarter', 'month', 'day']
 
 export function slicerObjectLayouts(geometry: SpreadsheetGeometry, controls: readonly SlicerCanvasControl[], date1904: boolean, locale = 'zh-CN'): SlicerObjectLayout[] {
-  return controls.map(({ model, items }) => {
-    const x = model.layout?.left ?? 44 + geometry.columns.offset(model.position.column)
-    const y = model.layout?.top ?? 26 + geometry.rows.offset(model.position.row)
-    const width = model.layout?.width ?? geometry.columns.offset(model.position.column + model.size.columns) - geometry.columns.offset(model.position.column)
-    const height = model.layout?.height ?? geometry.rows.offset(model.position.row + model.size.rows) - geometry.rows.offset(model.position.row)
+  return controls.map((control, index) => ({ ...control, order: control.model.drawing?.zIndex ?? index }))
+    .sort((first, second) => first.order - second.order).map(({ model, items }) => {
+    const { left: x, top: y, width, height } = resolveSlicerBounds(model, geometry)
     const rect = { x, y, width, height }
     const headerHeight = model.type === 'timeline'
       ? model.showHeader === false ? 0 : Math.min(32, height)

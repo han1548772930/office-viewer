@@ -73,17 +73,18 @@ export const CLASSIC_RIBBON = Object.freeze({
   horizontalPadding: 12, moreWidth: 32,
 })
 
+/** Univer v1.6.0 eaf4cfa, ui/views/components/ribbon/RibbonGrid.tsx. */
 export const GRID_RIBBON = Object.freeze({
   tabHeight: 32,
-  toolbarHeight: 73,
-  rowHeight: 28,
-  rowGap: 8,
-  verticalPadding: 4,
+  toolbarHeight: 69,
+  rowHeight: 24,
+  rowGap: 4,
+  verticalPadding: 8,
   groupPadding: 8,
-  compactGroupPadding: 6,
-  itemGap: 8,
+  compactGroupPadding: 8,
+  itemGap: 4,
   compactItemGap: 4,
-  moreWidth: 64,
+  moreWidth: 72,
   buttonSize: 28,
   largeButtonSize: 56,
   largeIconSize: 24,
@@ -100,7 +101,7 @@ export function visibleRibbonItems(items: readonly RibbonItem[]): RibbonItem[] {
     if (item.hidden) return []
     if (item.type === 'menu' || item.type === 'split') {
       const children = visibleRibbonItems(item.children ?? [])
-      if (!children.length && item.type === 'menu') return []
+      if (!children.length && item.type === 'menu' && !item.popupComponent) return []
       return [{ ...item, children }]
     }
     return [item]

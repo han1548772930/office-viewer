@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Menu } from 'antdv-next'
+import { Button, Menu } from 'antdv-next'
 import type { ItemType } from 'antdv-next/es/menu/interface'
 import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Hash, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
 import type { GridHit } from '../../rendering/spreadsheet/layout.ts'
@@ -19,6 +19,8 @@ const props = defineProps<{
   hasHiddenRows: boolean
   hasHiddenColumns: boolean
   canConvertText?: boolean
+  canShiftHorizontally?: boolean
+  canShiftVertically?: boolean
 }>()
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -72,6 +74,10 @@ const menuIcons = {
   InsertRowBelowDoubleIcon: ArrowDownToLine,
   LeftInsertColumnDoubleIcon: ArrowLeftToLine,
   RightInsertColumnDoubleIcon: ArrowRightToLine,
+  InsertCellShiftRightDoubleIcon: ArrowRightToLine,
+  InsertCellDownDoubleIcon: ArrowDownToLine,
+  DeleteCellShiftLeftDoubleIcon: ArrowLeftToLine,
+  DeleteCellShiftUpDoubleIcon: ArrowUpToLine,
   DeleteRowDoubleIcon: Trash2,
   DeleteColumnDoubleIcon: Trash2,
   AdjustHeightDoubleIcon: Rows3,
@@ -146,10 +152,11 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <div v-if="open && items.length" ref="panel" class="sheet-context-menu" :style="position">
       <div v-if="quickItems.length" class="sheet-context-menu__quick" role="group" aria-label="快捷操作">
-        <button
+        <Button
           v-for="item in quickItems"
           :key="item.id"
-          type="button"
+          type="text"
+          size="small"
           class="sheet-context-menu__quick-item"
           :title="item.label"
           :aria-label="item.label"
@@ -158,7 +165,7 @@ onBeforeUnmount(() => {
         >
           <component :is="iconComponent(item)" v-if="iconComponent(item)" :size="16" />
           <span>{{ item.label }}</span>
-        </button>
+        </Button>
       </div>
       <Menu v-if="menuItems.length" ref="menuRef" mode="vertical" :aria-label="translate('sheet.context-menu.aria-label', '单元格上下文菜单')" :items="menuItems" :selectable="false" @click="({ key }) => execute(itemById.get(String(key)))" />
     </div>
@@ -168,10 +175,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .sheet-context-menu { position: fixed; z-index: 3000; box-sizing: border-box; width: 208px; max-width: calc(100vw - 8px); max-height: min(520px, calc(100vh - 8px)); overflow: auto; border: 1px solid #d8dde5; border-radius: 6px; background: #fff; box-shadow: 0 4px 12px #17203326; color: #263244; padding: 4px 8px; }
 .sheet-context-menu__quick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; gap: 6px; padding: 4px 0; }
-.sheet-context-menu__quick-item { display: flex; min-width: 0; width: 100%; height: 48px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.sheet-context-menu__quick-item:hover:not(:disabled), .sheet-context-menu__quick-item:focus-visible { outline: none; background: #f1f3f5; }
-.sheet-context-menu__quick-item:disabled { color: #9aa3af; cursor: default; }
-.sheet-context-menu__quick-item span { max-width: 100%; overflow: hidden; font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item) { display: flex; min-width: 0; width: 100%; height: 48px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; border-radius: 6px; padding: 4px; color: inherit; line-height: normal; }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item:not(:disabled):hover), .sheet-context-menu :deep(.sheet-context-menu__quick-item:focus-visible) { outline: none; background: #f1f3f5; }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item:disabled) { color: #9aa3af; cursor: default; }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item span) { max-width: 100%; overflow: hidden; font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-context-menu :deep(.ant-menu) { max-height: inherit; overflow: auto; border-inline-end: 0; padding: 4px 0; font-size: 14px; }
 .sheet-context-menu :deep(.ant-menu-item), .sheet-context-menu :deep(.ant-menu-submenu-title) { min-height: 32px; height: auto; line-height: 22px; padding-block: 5px; font-size: 14px; }
 .sheet-context-menu :deep(.ant-menu-item .ant-menu-title-content), .sheet-context-menu :deep(.ant-menu-submenu-title .ant-menu-title-content) { white-space: normal; }

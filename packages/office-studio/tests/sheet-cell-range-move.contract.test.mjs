@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit } from '../src/features/sheet-workbench/sheet-cell-range-move.ts'
+import { transformFormulaReferencesForStructureEdit, translateFormulaReferences } from '../src/features/formula/formula-references.ts'
 
 function sheet(overrides = {}) {
   return {
@@ -83,4 +84,63 @@ test('insert at sheet limits is rejected and formula and defined names follow th
   assert.equal(transformed.metadata.definedNames[0].refersTo, 'Data!$C$1')
   assert.equal(transformed.metadata.localDefinedNames[0].refersTo, 'C1')
   assert.equal(workbook.sheets[0].cells.A2.formula, '=B1+Other!B1')
+})
+
+test('references crossing the perpendicular move band retain the upstream rectangular range semantics', () => {
+  const right = structureEdit(range(1, 2, 2, 3), 'right')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(B1:E4)', right, 'Data', 'Data'), '=SUM(B1:E4)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(B2:E3)', right, 'Data', 'Data'), '=SUM(B2:G3)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(C2:E3)', right, 'Data', 'Data'), '=SUM(E2:G3)')
+  const left = structureEdit(range(1, 2, 2, 3), 'left')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(B1:F4)', left, 'Data', 'Data'), '=SUM(B1:F4)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(D2:F3)', left, 'Data', 'Data'), '=SUM(C2:D3)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(C2:D3)', left, 'Data', 'Data'), '=SUM(#REF!)')
+  const up = structureEdit(range(1, 1, 2, 2), 'up')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(A1:D4)', up, 'Data', 'Data'), '=SUM(A1:D4)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(B1:C4)', up, 'Data', 'Data'), '=SUM(B1:C2)')
+})
+
+test('qualified ranges and cross-sheet local names preserve their sheet context', () => {
+  const edit = structureEdit(range(0, 1, 0, 1), 'right')
+  const source = { sheets: [sheet(), sheet({ id: 'other', name: 'Other' })], metadata: { localDefinedNames: [
+    { sheet: 'Other', name: 'Local', refersTo: 'B1' },
+    { sheet: 'Other', name: 'Source', refersTo: 'Data!B1' },
+  ] } }
+  const transformed = transformWorkbookReferencesForSheetEdit(source, 'data', edit)
+  assert.equal(transformed.metadata.localDefinedNames[0].refersTo, 'B1')
+  assert.equal(transformed.metadata.localDefinedNames[1].refersTo, 'Data!C1')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(Other!A1:B1)', edit, 'Data', 'Data'), '=SUM(Other!A1:B1)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(Data!A1:Data!B1)', edit, 'Other', 'Data'), '=SUM(Data!A1:Data!C1)')
+  assert.equal(transformFormulaReferencesForStructureEdit('=数据!B1+Other!B1+B1', edit, '数据', '数据'), '=数据!C1+Other!B1+C1')
+  assert.equal(translateFormulaReferences('=数据!A1+名称A1+Data!A1', 1, 1), '=数据!B2+名称A1+Data!B2')
+})
+
+test('references moved beyond the worksheet bounds become reference errors', () => {
+  const edit = structureEdit(range(0, 0, 0, 0), 'right')
+  assert.equal(transformFormulaReferencesForStructureEdit('=XFD1', edit, 'Data', 'Data'), '=#REF!')
+  assert.equal(transformFormulaReferencesForStructureEdit('=SUM(XFC1:XFD1)', edit, 'Data', 'Data'), '=SUM(#REF!)')
+})
+
+test('protected ranges anywhere in the trailing move band reject each direction before changing data', () => {
+  const protectedSheet = sheet({ rangeProtectionRules: [{ ranges: [{ startRow: 0, endRow: 0, startCol: 3, endCol: 3 }] }], cells: { B1: { value: 'keep' } } })
+  for (const direction of ['right', 'left']) assert.equal(moveSheetCellRange(protectedSheet, range(0, 1, 0, 1), direction).status, 'invalid')
+  const vertical = sheet({ rangeProtectionRules: [{ ranges: [{ startRow: 3, endRow: 3, startCol: 1, endCol: 1 }] }] })
+  for (const direction of ['down', 'up']) assert.equal(moveSheetCellRange(vertical, range(0, 1, 0, 1), direction).status, 'invalid')
+  const beyondCanvas = sheet({ rangeProtectionRules: [{ ranges: [{ startRow: 0, endRow: 0, startCol: 100, endCol: 100 }] }] })
+  assert.equal(moveSheetCellRange(beyondCanvas, range(0, 1, 0, 1), 'right').status, 'invalid')
+  assert.equal(moveSheetCellRange(protectedSheet, range(1, 1, 1, 1), 'right').status, 'applied')
+  assert.equal(protectedSheet.cells.B1.value, 'keep')
+})
+
+test('inserted blanks retain formatting while moving cell-bound sparklines only with their source data', () => {
+  const source = sheet({ cells: { B1: { value: '12', rawValue: 12, formula: '=A1', cachedValue: '12', displayValue: '12', bold: true, sparkline: { type: 'line' } } } })
+  const result = moveSheetCellRange(source, range(0, 1, 0, 1), 'down')
+  assert.equal(result.status, 'applied')
+  assert.equal(result.sheet.cells.B1.value, '')
+  assert.equal(result.sheet.cells.B1.rawValue, null)
+  assert.equal(result.sheet.cells.B1.formula, undefined)
+  assert.equal(result.sheet.cells.B1.cachedValue, undefined)
+  assert.equal(result.sheet.cells.B1.sparkline, undefined)
+  assert.equal(result.sheet.cells.B1.bold, true)
+  assert.equal(result.sheet.cells.B2, source.cells.B1)
 })

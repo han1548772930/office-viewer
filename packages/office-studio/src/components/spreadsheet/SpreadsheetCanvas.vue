@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Input } from 'antdv-next'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import type { TimelineLevel } from '../../domain/model'
@@ -10,11 +11,15 @@ import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
+import { canEditProtectedRanges } from '../../features/sheet-protection/range-protection.ts'
 import { convertTextToNumber } from '../../features/sheet-workbench/text-to-number.ts'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string } }>()
+const MAX_SHEET_ROWS = 1_048_576
+const MAX_SHEET_COLUMNS = 16_384
+
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; currentUserId?: string; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string } }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -38,7 +43,7 @@ const emit = defineEmits<{
   (event: 'slicer-move', payload: { slicerId: string; left: number; top: number }): void
   (event: 'slicer-resize', payload: { slicerId: string; width: number; height: number }): void
 }>()
-const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<HTMLInputElement | null>(null)
+const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: (options?: { preventScroll?: boolean; cursor?: 'start' | 'end' | 'all' }) => void } | null>(null)
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const fillPreview = ref<GridRange>()
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
@@ -74,6 +79,21 @@ const surfaceError = ref('')
 const contextMenuOpen = ref(false)
 const contextMenuHit = ref<GridHit | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
+const contextMenuSelection = computed(() => props.selectedRanges?.at(-1))
+const canShiftHorizontally = computed(() => {
+  const range = contextMenuSelection.value
+  if (!range) return false
+  return canEditProtectedRanges(props.sheet as SpreadsheetRenderSheet, [{
+    startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: MAX_SHEET_COLUMNS - 1,
+  }], props.currentUserId ?? 'local-user')
+})
+const canShiftVertically = computed(() => {
+  const range = contextMenuSelection.value
+  if (!range) return false
+  return canEditProtectedRanges(props.sheet as SpreadsheetRenderSheet, [{
+    startRow: range.startRow, endRow: MAX_SHEET_ROWS - 1, startCol: range.startColumn, endCol: range.endColumn,
+  }], props.currentUserId ?? 'local-user')
+})
 const canConvertSelectedText = computed(() => contextMenuOpen.value && Object.entries(props.sheet.cells).some(([key, cell]) => {
   const address = parseAddress(key)
   if (!address) return false
@@ -460,7 +480,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
   <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
-    <input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false">
+    <Input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" :bordered="false" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
     <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
     <datalist v-if="validationOptions?.length" :id="validationListId"><option v-for="value in validationOptions" :key="value" :value="value" /></datalist>
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey]) }}</span></div>
@@ -477,6 +497,8 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
       :has-hidden-rows="Boolean(sheet.hiddenRows?.length)"
       :has-hidden-columns="Boolean(sheet.hiddenColumns?.length)"
       :can-convert-text="canConvertSelectedText"
+      :can-shift-horizontally="canShiftHorizontally"
+      :can-shift-vertically="canShiftVertically"
       @command="(commandId, params) => emit('context-command', commandId, params)"
     />
   </div>
@@ -487,7 +509,8 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 .spreadsheet-canvas:focus-visible { box-shadow: inset 0 0 0 1px #246bfd; }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.canvas-cell-input { position: absolute; z-index: 3; box-sizing: border-box; margin: 0; padding: 2px 5px; border-style: solid; border-color: #246bfd; border-radius: 0; outline: none; color: #243247; background: #fff; user-select: text; }
+.canvas-cell-input { position: absolute; z-index: 3; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; user-select: text; }
+.canvas-cell-input :deep(input) { box-sizing: border-box; width: 100%; height: 100%; margin: 0; padding: 2px 5px; border: 1px solid #246bfd; border-radius: 0; outline: 0; color: #243247; background: #fff; font: inherit; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid #fff; background: #246bfd; pointer-events: none; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; left: 12px; max-width: calc(100% - 24px); padding: 8px 12px; border: 1px solid #e3b3b3; color: #922f2f; background: #fff2f2; font-size: 12px; }

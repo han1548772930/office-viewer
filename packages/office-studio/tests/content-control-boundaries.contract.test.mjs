@@ -36,6 +36,15 @@ function add(model, input = {}) {
 }
 const textOf = (block) => block.runs.map((run) => run.text).join('')
 
+test('content control selection resolves the innermost equal-range child', () => {
+  const model = fixture('NAME')
+  add(model, { id: 'group', type: 'group', startOffset: 0, endOffset: 4 })
+  add(model, { id: 'child', type: 'text', startOffset: 0, endOffset: 4, parentId: 'group' })
+  assert.equal(controls.selectedDocumentContentControl(model, 'paragraph-1', 2)?.id, 'child')
+  assert.equal(controls.selectedDocumentContentControl(model, 'paragraph-1', 0, 4)?.id, 'child')
+  assert.equal(controls.selectedDocumentContentControl(model, 'paragraph-1', 0, 5), undefined)
+})
+
 test('a paragraph break before a control moves its anchors to the suffix paragraph', () => {
   const model = fixture()
   add(model)

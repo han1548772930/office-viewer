@@ -5,6 +5,7 @@ import { ArrowDown, ArrowLeft, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
 import type { CellRange, SheetConditionalFormatOperator, SheetConditionalFormatRule, SheetConditionalFormatType, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
 import { validateConditionalFormatDraft } from '../../features/conditional-formatting/conditional-formatting.ts'
 import { conditionalIconPresets } from '../../features/conditional-formatting/conditional-icon-presets.ts'
+import { conditionalIconSequence, createConditionalIconConfig, validateConditionalIconConfig, validateConditionalThreshold } from '../../features/conditional-formatting/icon-set-config.ts'
 import ConditionalIcon from './ConditionalIcon.vue'
 import ConditionalThresholdInput from './ConditionalThresholdInput.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -22,7 +23,7 @@ const rankPercent = ref(false)
 const showValue = ref(true)
 const reverseIcons = ref(false)
 type IconConfig = NonNullable<NonNullable<SheetConditionalFormatRule['config']>['icons']>[number]
-const iconThresholds = ref<IconConfig[]>(createIconThresholds('3Arrows'))
+const iconThresholds = ref<IconConfig[]>(createConditionalIconConfig('3Arrows'))
 const minimum = ref<SheetConditionalFormatValueConfig>({ type: 'min' })
 const midpoint = ref<SheetConditionalFormatValueConfig>({ type: 'percentile', value: 50 })
 const maximum = ref<SheetConditionalFormatValueConfig>({ type: 'max' })
@@ -35,6 +36,8 @@ const formula1 = ref('0')
 const formula2 = ref('1')
 const fill = ref('#fff2cc')
 const fontColor = ref('#9c6500')
+const useFill = ref(true)
+const useFontColor = ref(true)
 const minimumColor = ref('#f8696b')
 const maximumColor = ref('#63be7b')
 const bold = ref(false)
@@ -44,6 +47,7 @@ const strike = ref(false)
 const stopIfTrue = ref(false)
 const error = ref('')
 const localRules = ref<SheetConditionalFormatRule[]>([])
+const previewIcons = computed(() => conditionalIconSequence({ icons: iconThresholds.value, reverse: reverseIcons.value }))
 const needsSecondValue = computed(() => operator.value === 'between' || operator.value === 'notBetween')
 const operatorOptions = computed(() => [
   ['equal', t('conditional.operator.equal', '等于')],
@@ -74,7 +78,7 @@ watch([ruleType, highlightSubtype], ([type]) => {
 
 watch(() => props.open, open => {
   if (!open) return
-  localRules.value = props.rules.map(cloneRule)
+  localRules.value = props.rules.map(cloneRule).sort((left, right) => left.priority - right.priority)
   error.value = ''
   if (localRules.value.length) {
     selectRule(localRules.value[0]!)
@@ -96,6 +100,8 @@ function newRule() {
   formula2.value = '1'
   fill.value = '#fff2cc'
   fontColor.value = '#9c6500'
+  useFill.value = true
+  useFontColor.value = true
   minimumColor.value = '#f8696b'
   maximumColor.value = '#63be7b'
   bold.value = false
@@ -108,7 +114,7 @@ function newRule() {
   showValue.value = true
   reverseIcons.value = false
   iconSet.value = '3Arrows'
-  iconThresholds.value = createIconThresholds(iconSet.value)
+  iconThresholds.value = createConditionalIconConfig(iconSet.value)
   minimum.value = { type: 'min' }
   midpoint.value = { type: 'percentile', value: 50 }
   maximum.value = { type: 'max' }
@@ -132,6 +138,8 @@ function selectRule(rule: SheetConditionalFormatRule) {
   formula2.value = rule.formula2 ?? '1'
   fill.value = rule.style.fill ?? rule.config?.positiveColor ?? (rule.config?.thresholds?.length === 3 ? rule.config.thresholds[1]?.color : undefined) ?? '#ffffff'
   fontColor.value = rule.style.fontColor ?? '#1f2937'
+  useFill.value = rule.style.fill !== undefined
+  useFontColor.value = rule.style.fontColor !== undefined
   minimumColor.value = rule.config?.thresholds?.[0]?.color ?? '#f8696b'
   maximumColor.value = rule.config?.thresholds?.at(-1)?.color ?? '#63be7b'
   bold.value = rule.style.bold ?? false
@@ -152,20 +160,22 @@ function selectRule(rule: SheetConditionalFormatRule) {
   isGradient.value = rule.config?.isGradient ?? false
   negativeColor.value = rule.config?.nativeColor ?? '#f8696b'
   reverseIcons.value = rule.config?.reverse ?? false
-  iconThresholds.value = rule.config?.icons?.map(icon => ({ ...icon, value: { ...icon.value } })) ?? createIconThresholds(iconSet.value)
+  iconThresholds.value = rule.config?.icons?.map(icon => ({ ...icon, value: { ...icon.value } })) ?? createConditionalIconConfig(iconSet.value)
   error.value = ''
 }
 
 function saveDraft() {
   try {
     const ranges = parseRanges(draftRanges.value)
+    const existingIndex = localRules.value.findIndex(rule => rule.id === draftId.value)
+    const previousStyle = existingIndex >= 0 ? localRules.value[existingIndex]!.style : {}
     const style = {
-      fill: fill.value.toLowerCase() === '#ffffff' ? undefined : fill.value,
-      fontColor: fontColor.value.toLowerCase() === '#1f2937' ? undefined : fontColor.value,
-      bold: bold.value || undefined,
-      italic: italic.value || undefined,
-      underline: underline.value || undefined,
-      strike: strike.value || undefined,
+      fill: useFill.value ? fill.value : undefined,
+      fontColor: useFontColor.value ? fontColor.value : undefined,
+      bold: bold.value || previousStyle.bold !== undefined ? bold.value : undefined,
+      italic: italic.value || previousStyle.italic !== undefined ? italic.value : undefined,
+      underline: underline.value || previousStyle.underline !== undefined ? underline.value : undefined,
+      strike: strike.value || previousStyle.strike !== undefined ? strike.value : undefined,
     }
     const draft = { ranges, operator: operator.value as SheetConditionalFormatOperator, formula1: formula1.value, formula2: needsSecondValue.value ? formula2.value : undefined, style, stopIfTrue: stopIfTrue.value }
     const normalizedType = ruleType.value === 'highlightCell'
@@ -174,17 +184,17 @@ function saveDraft() {
     const normalizedSubType = ruleType.value === 'highlightCell' ? highlightSubtype.value : ruleType.value === 'top10' ? normalizedType === 'average' ? 'average' : 'rank' : ruleType.value === 'expression' ? 'formula' : undefined
     if (normalizedType === 'cellIs') validateConditionalFormatDraft(draft)
     if (normalizedType === 'expression' && !formula1.value.trim().replace(/^=/, '')) throw new TypeError('请输入条件公式。')
-    if (ruleType.value === 'top10' && (!Number.isInteger(rank.value) || rank.value < 1 || rank.value > (rankPercent.value ? 100 : 1000))) throw new RangeError('排名项数无效。')
-    if (visualRule.value) {
-      const thresholds = ruleType.value === 'iconSet' ? iconThresholds.value.map(icon => icon.value) : [minimum.value, maximum.value, ...(ruleType.value === 'colorScale' && useMidpoint.value ? [midpoint.value] : [])]
-      for (const threshold of thresholds) validateThreshold(threshold)
+    if (normalizedType === 'top10' && (!Number.isInteger(rank.value) || rank.value < 1 || rank.value > (rankPercent.value ? 100 : 1000))) throw new RangeError('排名项数无效。')
+    if (ruleType.value === 'iconSet') validateConditionalIconConfig({ icons: iconThresholds.value })
+    else if (visualRule.value) {
+      const thresholds = [minimum.value, maximum.value, ...(ruleType.value === 'colorScale' && useMidpoint.value ? [midpoint.value] : [])]
+      for (const threshold of thresholds) validateConditionalThreshold(threshold)
     }
-    const existingIndex = localRules.value.findIndex(rule => rule.id === draftId.value)
     const id = draftId.value ?? crypto.randomUUID()
     const nextRule: SheetConditionalFormatRule = {
       id, type: normalizedType, ranges, operator: ruleType.value === 'top10' ? operator.value === 'lessThanAverage' ? 'lessThan' : operator.value === 'equalAverage' ? 'equal' : 'greaterThan' : operator.value,
       subType: normalizedSubType,
-      formula1: formula1.value.trim().replace(/^=/, ''), formula2: draft.formula2?.trim().replace(/^=/, ''),
+      formula1: normalizedSubType === 'text' ? formula1.value : formula1.value.trim().replace(/^=/, ''), formula2: draft.formula2?.trim().replace(/^=/, ''),
       value: ['top10'].includes(ruleType.value) ? rank.value : ruleType.value === 'highlightCell' && highlightSubtype.value === 'text' ? formula1.value : undefined,
       isBottom: ruleType.value === 'top10' ? operator.value === 'isBottom' : undefined,
       isPercent: ruleType.value === 'top10' ? rankPercent.value : undefined,
@@ -196,9 +206,10 @@ function saveDraft() {
       style, priority: existingIndex < 0 ? localRules.value.length + 1 : localRules.value[existingIndex]!.priority,
       stopIfTrue: stopIfTrue.value,
     }
-    if (existingIndex < 0) localRules.value = [...localRules.value, nextRule]
+    if (existingIndex < 0) localRules.value = reprioritize([nextRule, ...localRules.value])
     else localRules.value = localRules.value.map(rule => rule.id === id ? nextRule : rule)
     selectRule(nextRule)
+    editing.value = false
     error.value = ''
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : t('conditional.error.invalid', '条件格式规则无效。')
@@ -232,7 +243,6 @@ function moveRule(id: string, offset: -1 | 1) {
 }
 
 function apply() {
-  if (error.value) return
   if (editing.value) saveDraft()
   if (error.value) return
   emit('apply', localRules.value.map(cloneRule))
@@ -244,29 +254,15 @@ function returnToRules() {
   error.value = ''
 }
 
-function createIconThresholds(type: string): IconConfig[] {
-  const count = conditionalIconPresets[type]?.length ?? 3
-  return Array.from({ length: count }, (_, index) => ({ value: { type: 'percent', value: Math.round((count - 1 - index) * 100 / count) }, operator: index === count - 1 ? 'lessThanOrEqual' : 'greaterThanOrEqual', iconType: type, iconId: String(index) }))
-}
 function changeIconSet(value: unknown) {
   iconSet.value = String(value)
-  iconThresholds.value = createIconThresholds(iconSet.value)
+  iconThresholds.value = createConditionalIconConfig(iconSet.value)
 }
 function changeIndividualIcon(icon: IconConfig, value: unknown) {
   const [type, id] = String(value).split(':')
   if (!type || id === undefined) return
   icon.iconType = type
   icon.iconId = id
-}
-function validateThreshold(threshold: SheetConditionalFormatValueConfig) {
-  if (threshold.type === 'min' || threshold.type === 'max') return
-  if (threshold.type === 'formula') {
-    if (!String(threshold.value ?? '').trim().replace(/^=/, '')) throw new TypeError('阈值公式不能为空。')
-    return
-  }
-  const value = Number(threshold.value)
-  if (threshold.value === '' || !Number.isFinite(value)) throw new TypeError('请输入有效的阈值。')
-  if (['percent', 'percentile'].includes(threshold.type) && (value < 0 || value > 100)) throw new RangeError('百分比和百分位必须在 0 到 100 之间。')
 }
 
 function reprioritize(rules: SheetConditionalFormatRule[]): SheetConditionalFormatRule[] {
@@ -292,7 +288,7 @@ function parseCell(address: string): { row: number; column: number } | undefined
   let column = 0
   for (const letter of match[1]!.toUpperCase()) column = column * 26 + letter.charCodeAt(0) - 64
   const row = Number(match[2])
-  if (row < 1 || !Number.isSafeInteger(row)) return undefined
+  if (row < 1 || row > 1_048_576 || column > 16_384 || !Number.isSafeInteger(row)) return undefined
   return { row: row - 1, column: column - 1 }
 }
 
@@ -358,17 +354,18 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
         </div>
         <div v-if="ruleType === 'iconSet'" class="conditional-rule-editor">
           <label>图标集<Select :value="iconSet" :options="iconSetOptions" @update:value="changeIconSet" /></label>
-          <div class="conditional-icon-preview" :aria-label="iconSetLabel(iconSet)"><ConditionalIcon v-for="(_icon, index) in (conditionalIconPresets[iconSet] ?? [])" :key="index" :icon-type="iconSet" :icon-id="String(index)" /></div>
+          <div class="conditional-icon-preview" :aria-label="iconSetLabel(iconSet)"><ConditionalIcon v-for="(icon, index) in previewIcons" :key="index" :icon-type="icon.iconType ?? 'EMPTY_ICON_TYPE'" :icon-id="icon.iconId ?? ''" /></div>
           <div v-for="(threshold, index) in iconThresholds" :key="index" class="conditional-icon-threshold">
             <label>图标 {{ index + 1 }}<Select :value="`${threshold.iconType}:${threshold.iconId}`" :options="individualIconOptions" @update:value="changeIndividualIcon(threshold, $event)" /></label>
-            <label>比较<Select v-model:value="threshold.operator" :options="[{value:'greaterThanOrEqual',label:'大于或等于'},{value:'greaterThan',label:'大于'},{value:'lessThanOrEqual',label:'小于或等于'},{value:'lessThan',label:'小于'}]" /></label>
-            <ConditionalThresholdInput v-model:value="threshold.value" :label="`阈值 ${index + 1}`" />
+            <label v-if="index < iconThresholds.length - 1">比较<Select v-model:value="threshold.operator" :options="[{value:'greaterThanOrEqual',label:'大于或等于'},{value:'greaterThan',label:'大于'}]" /></label>
+            <ConditionalThresholdInput v-if="index < iconThresholds.length - 1" v-model:value="threshold.value" :label="`阈值 ${index + 1}`" />
+            <span v-else class="conditional-hint">其余值使用此图标。</span>
           </div>
           <Checkbox v-model:checked="showValue">显示数值</Checkbox><Checkbox v-model:checked="reverseIcons">反转图标顺序</Checkbox>
         </div>
         <div v-if="styleRule" class="conditional-colors">
-          <label>{{ t('conditional.fill', '填充') }}<ColorPicker v-model:value="fill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></label>
-          <label>{{ t('conditional.font-color', '文字颜色') }}<ColorPicker v-model:value="fontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></label>
+          <label><Checkbox v-model:checked="useFill">{{ t('conditional.fill', '填充') }}</Checkbox><ColorPicker v-model:value="fill" :disabled="!useFill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></label>
+          <label><Checkbox v-model:checked="useFontColor">{{ t('conditional.font-color', '文字颜色') }}</Checkbox><ColorPicker v-model:value="fontColor" :disabled="!useFontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></label>
           <Checkbox v-model:checked="bold">{{ t('conditional.bold', '加粗') }}</Checkbox>
           <Checkbox v-model:checked="italic">斜体</Checkbox><Checkbox v-model:checked="underline">下划线</Checkbox><Checkbox v-model:checked="strike">删除线</Checkbox>
         </div>

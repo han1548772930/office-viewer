@@ -11,10 +11,11 @@ const options = computed(() => [
   { value: 'percentile', label: '百分位' }, { value: 'formula', label: '公式' },
 ])
 function changeType(value: unknown) {
-  emit('update:value', { type: String(value), value: props.value.value ?? 0 })
+  const type = String(value)
+  emit('update:value', { type, value: type === 'formula' ? props.value.type === 'formula' ? props.value.value : '=' : props.value.type === 'formula' ? 0 : props.value.value ?? 0 })
 }
 function changeValue(value: string) {
-  emit('update:value', { ...props.value, value: props.value.type === 'formula' ? value : value.trim() === '' ? '' : Number(value) })
+  emit('update:value', { ...props.value, value })
 }
 </script>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Input, Modal, Select } from 'antdv-next'
+import { Button, ColorPicker, Input, InputNumber, Modal, Select } from 'antdv-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { SparklineEmptyCells, SparklineType } from '../../domain/model'
@@ -24,8 +24,8 @@ const highPointColor = ref('')
 const lowPointColor = ref('')
 const emptyCells = ref<SparklineEmptyCells>('gap')
 const axis = ref<'individual' | 'custom'>('individual')
-const minimum = ref('0')
-const maximum = ref('100')
+const minimum = ref<number | null>(0)
+const maximum = ref<number | null>(100)
 const message = ref('')
 const busy = ref(false)
 const existing = ref(false)
@@ -48,8 +48,8 @@ watch(() => [props.open, props.targetRange, props.sheetId] as const, ([open]) =>
     lowPointColor.value = spec.lowPointColor ?? ''
     emptyCells.value = spec.emptyCells
     axis.value = spec.axis
-    minimum.value = String(spec.min ?? 0)
-    maximum.value = String(spec.max ?? 100)
+    minimum.value = spec.min ?? 0
+    maximum.value = spec.max ?? 100
   } catch (error) {
     message.value = error instanceof Error ? error.message : t('sheet.sparkline.error.read', '无法读取迷你图配置。')
   }
@@ -64,16 +64,16 @@ function resetDraft() {
   lowPointColor.value = ''
   emptyCells.value = 'gap'
   axis.value = 'individual'
-  minimum.value = '0'
-  maximum.value = '100'
+  minimum.value = 0
+  maximum.value = 100
 }
 
 function apply() {
   message.value = ''
   const sheet = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
   if (!sheet) { message.value = t('sheet.sparkline.error.sheet-closed', '工作表已关闭，请重新打开迷你图配置。'); return }
-  const min = Number(minimum.value)
-  const max = Number(maximum.value)
+  const min = minimum.value ?? 0
+  const max = maximum.value ?? 100
   busy.value = true
   try {
     sheet.setSparklines({
@@ -118,15 +118,15 @@ function remove() {
       <label>{{ t('sheet.sparkline.type', '类型') }}<Select v-model:value="type" :options="types" :aria-label="t('sheet.sparkline.type', '迷你图类型')" /></label>
       <label>{{ t('sheet.sparkline.source-range', '源数据区域') }}<Input v-model:value="sourceRange" :aria-label="t('sheet.sparkline.source-range', '迷你图源数据区域')" placeholder="B1:E1" /></label>
       <label>{{ t('sheet.sparkline.target-range', '放置区域') }}<Input v-model:value="targetRange" :aria-label="t('sheet.sparkline.target-range', '迷你图放置区域')" placeholder="F1" /></label>
-      <label>{{ t('sheet.sparkline.positive-color', '正值颜色') }}<Input v-model:value="color" type="color" :aria-label="t('sheet.sparkline.positive-color', '迷你图正值颜色')" /></label>
-      <label>{{ t('sheet.sparkline.negative-color', '负值颜色') }}<Input v-model:value="negativeColor" type="color" :aria-label="t('sheet.sparkline.negative-color', '迷你图负值颜色')" /></label>
-      <label>{{ t('sheet.sparkline.high-point-color', '高值点颜色') }}<Input v-model:value="highPointColor" type="color" :aria-label="t('sheet.sparkline.high-point-color', '迷你图高值点颜色')" /></label>
-      <label>{{ t('sheet.sparkline.low-point-color', '低值点颜色') }}<Input v-model:value="lowPointColor" type="color" :aria-label="t('sheet.sparkline.low-point-color', '迷你图低值点颜色')" /></label>
+      <label>{{ t('sheet.sparkline.positive-color', '正值颜色') }}<ColorPicker v-model:value="color" value-format="hex" :aria-label="t('sheet.sparkline.positive-color', '迷你图正值颜色')" /></label>
+      <label>{{ t('sheet.sparkline.negative-color', '负值颜色') }}<ColorPicker v-model:value="negativeColor" value-format="hex" :aria-label="t('sheet.sparkline.negative-color', '迷你图负值颜色')" /></label>
+      <label>{{ t('sheet.sparkline.high-point-color', '高值点颜色') }}<ColorPicker v-model:value="highPointColor" value-format="hex" :aria-label="t('sheet.sparkline.high-point-color', '迷你图高值点颜色')" /></label>
+      <label>{{ t('sheet.sparkline.low-point-color', '低值点颜色') }}<ColorPicker v-model:value="lowPointColor" value-format="hex" :aria-label="t('sheet.sparkline.low-point-color', '迷你图低值点颜色')" /></label>
       <label>{{ t('sheet.sparkline.empty-cells', '空单元格') }}<Select v-model:value="emptyCells" :options="emptyModes" :aria-label="t('sheet.sparkline.empty-cells', '迷你图空单元格处理')" /></label>
       <label>{{ t('sheet.sparkline.axis', '坐标轴') }}<Select v-model:value="axis" :options="[{ label: t('sheet.sparkline.axis-individual', '每个迷你图单独缩放'), value: 'individual' }, { label: t('sheet.sparkline.axis-custom', '自定义范围'), value: 'custom' }]" :aria-label="t('sheet.sparkline.axis', '迷你图坐标轴')" /></label>
       <template v-if="isCustomAxis">
-        <label>{{ t('sheet.sparkline.minimum', '最小值') }}<Input v-model:value="minimum" type="number" :aria-label="t('sheet.sparkline.minimum', '迷你图坐标轴最小值')" /></label>
-        <label>{{ t('sheet.sparkline.maximum', '最大值') }}<Input v-model:value="maximum" type="number" :aria-label="t('sheet.sparkline.maximum', '迷你图坐标轴最大值')" /></label>
+        <label>{{ t('sheet.sparkline.minimum', '最小值') }}<InputNumber v-model:value="minimum" :aria-label="t('sheet.sparkline.minimum', '迷你图坐标轴最小值')" /></label>
+        <label>{{ t('sheet.sparkline.maximum', '最大值') }}<InputNumber v-model:value="maximum" :aria-label="t('sheet.sparkline.maximum', '迷你图坐标轴最大值')" /></label>
       </template>
       <p v-if="message" class="sparkline-error" role="alert">{{ message }}</p>
       <Button v-if="existing" type="text" danger :disabled="busy" @click="remove">{{ t('sheet.sparkline.remove', '清除目标区域迷你图') }}</Button>
@@ -137,7 +137,7 @@ function remove() {
 <style scoped>
 .sparkline-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .sparkline-form > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
-.sparkline-form :deep(input[type="color"]) { width: 100%; min-height: 32px; padding: 2px; }
+.sparkline-form :deep(.ant-color-picker-trigger), .sparkline-form :deep(.ant-input-number) { width: 100%; }
 .sparkline-error { grid-column: 1 / -1; margin: 0; color: #b42318; }
 @media (max-width: 560px) { .sparkline-form { grid-template-columns: minmax(0, 1fr); } }
 </style>

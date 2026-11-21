@@ -22,6 +22,12 @@ export function moveSheetCellRange(
   if (!isValidRange(range, sheet)) return { status: 'invalid', reason: '选区超出工作表范围。' }
 
   const edit = structureEdit(range, direction)
+  const affected = affectedCellMoveRange(sheet, range, direction)
+  if (sheet.rangeProtectionRules?.some(rule => rule.ranges.some(protectedRange =>
+    protectedRange.startRow <= affected.endRow && protectedRange.endRow >= affected.startRow
+    && protectedRange.startCol <= affected.endColumn && protectedRange.endCol >= affected.startColumn))) {
+    return { status: 'invalid', reason: '移位区域包含受保护的单元格，请先调整保护范围。' }
+  }
   const { height, width } = rangeDimensions(range)
   if (direction === 'right' && sheet.columnCount + width > MAX_SHEET_COLUMNS) return { status: 'invalid', reason: '插入后会超出工作表的最大列数。' }
   if (direction === 'down' && sheet.rowCount + height > MAX_SHEET_ROWS) return { status: 'invalid', reason: '插入后会超出工作表的最大行数。' }
@@ -40,22 +46,25 @@ export function moveSheetCellRange(
   }
 
   if (direction === 'right' || direction === 'down') {
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const original = sheet.cells[cellKey(row, column)]
-        if (!original || !hasCellFormatting(original)) continue
-        const blank = blankFormattedCell(original)
-        cells[cellKey(row, column)] = blank
-      }
+    for (const [key, original] of Object.entries(sheet.cells)) {
+      const position = parseCellKey(key)
+      if (!position || position.row < range.startRow || position.row > range.endRow
+        || position.col < range.startColumn || position.col > range.endColumn) continue
+      if (direction === 'right' && !hasCellFormatting(original)) continue
+      cells[key] = blankFormattedCell(original)
     }
   }
 
   const next = { ...sheet, cells, merges: mergeResult.merged }
   if (direction === 'right') next.columnCount += width
   if (direction === 'down') next.rowCount += height
-  if (direction === 'left' || direction === 'up') {
-  }
   return { status: 'applied', sheet: next }
+}
+
+export function affectedCellMoveRange(sheet: ExcelSheetView, range: GridRange, direction: SheetCellMoveDirection): GridRange {
+  return direction === 'right' || direction === 'left'
+    ? { ...range, endColumn: MAX_SHEET_COLUMNS - 1 }
+    : { ...range, endRow: MAX_SHEET_ROWS - 1 }
 }
 
 export function transformWorkbookReferencesForSheetEdit(
@@ -176,9 +185,12 @@ function blankFormattedCell(cell: ExcelSheetView['cells'][string]): ExcelSheetVi
 
 function transformDefinedNames(value: unknown, edit: FormulaStructureEdit, formulaSheetName: string, targetSheetName: string, local = false): unknown {
   if (!Array.isArray(value)) return value
-  return value.map((entry) => {
-    if (!entry || typeof entry !== 'object' || !('refersTo' in entry) || typeof entry.refersTo !== 'string') return entry
-    if (local && (!('sheet' in entry) || typeof entry.sheet !== 'string' || entry.sheet.toLowerCase() !== targetSheetName.toLowerCase())) return entry
-    return { ...entry, refersTo: transformFormulaReferencesForStructureEdit(entry.refersTo, edit, formulaSheetName, targetSheetName) }
+  return (value as unknown[]).map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry
+    const record = entry as Record<string, unknown>
+    if (typeof record.refersTo !== 'string') return entry
+    if (local && typeof record.sheet !== 'string') return entry
+    const ownerSheet = local && typeof record.sheet === 'string' ? record.sheet : formulaSheetName
+    return { ...record, refersTo: transformFormulaReferencesForStructureEdit(record.refersTo, edit, ownerSheet, targetSheetName) }
   })
 }

@@ -112,7 +112,10 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         outline: sheet.outline ? { ...sheet.outline, groups: sheet.outline.groups.map(group => ({ ...group })) } : undefined,
         outlineHiddenRows: sheet.outline ? [...getCollapsedOutlineIndexes({ count: rowCount, groups: sheet.outline.groups.filter(group => group.axis === 'row') })] : [],
         outlineHiddenColumns: sheet.outline ? [...getCollapsedOutlineIndexes({ count: columnCount, groups: sheet.outline.groups.filter(group => group.axis === 'column') })] : [],
-        filteredRows: [...(sheet.autoFilter?.filteredRows ?? [])],
+        filteredRows: [...new Set([...(sheet.autoFilter?.filteredRows ?? []), ...(workbook.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => {
+          if (!table.autoFilter) return []
+          return refreshAutoFilter({ ...sheet, autoFilter: structuredClone(table.autoFilter) })
+        })])],
         autoFilter: sheet.autoFilter ? {
           ...sheet.autoFilter,
           range: { ...sheet.autoFilter.range },
@@ -227,7 +230,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
 }
 
 function cloneSheetTable(table: SheetTableModel): SheetTableModel {
-  return { ...table, range: { ...table.range }, columns: table.columns.map(column => ({ ...column })) }
+  return { ...table, range: { ...table.range }, columns: table.columns.map(column => ({ ...column })), autoFilter: table.autoFilter ? structuredClone(table.autoFilter) : undefined }
 }
 
 function cloneChartModel(chart: ChartModel): ChartModel {

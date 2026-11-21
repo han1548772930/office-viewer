@@ -7,6 +7,7 @@ import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
+import type { DocumentImage } from '../features/document/model/document-model'
 import { useEditorStore } from '../stores/editorStore'
 import { applyCellValue, documentFromInput, workbookFromInput } from './model-utils'
 import { EventHub, type ApiEventMap, type ApiRange, type Disposable } from './events'
@@ -44,6 +45,7 @@ import {
   createDocumentContentControl,
   deleteRepeatingSectionItem,
   duplicateRepeatingSectionItem,
+  replacePictureContentControlImage,
   removeDocumentContentControl,
   resetDocumentContentControlPlaceholder,
   selectDocumentContentControlItem,
@@ -718,7 +720,7 @@ export class OfficeStudio {
       setSlicerTimelineRange(model, requireSlicer(model, slicerId), range)
     }))
     this.registerCommand<{ unitId: string; slicerId: string; patch: SlicerPresentationPatch }, boolean>('sheet.command.update-slicer-presentation', ({ unitId, slicerId, patch }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.update-slicer-presentation', 'Update slicer presentation', (model) => {
-      updateSlicerPresentation(requireSlicer(model, slicerId), patch)
+      updateSlicerPresentation(requireSlicer(model, slicerId), patch, model)
     }))
     this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.clear-slicer-filter', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.clear-slicer-filter', 'Clear slicer filter', (model) => {
       clearSlicerFilter(model, requireSlicer(model, slicerId))
@@ -729,7 +731,17 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; index: number; text: string }, boolean>('doc.command.insert-text', ({ unitId, index, text }) => this.commitDocumentWithRangePermission(unitId, 'Insert text', index, index, (model) => Object.assign(model, insertDocumentText(model, index, text))))
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocumentWithRangePermission(unitId, 'Edit text range', startOffset, endOffset, (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
     this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {
-      createDocumentContentControl(model, control, control.id)
+      const created = createDocumentContentControl(model, control, control.id)
+      if (created.type === 'repeatingSection') {
+        createDocumentContentControl(model, {
+          type: 'repeatingSectionItem',
+          blockId: created.blockId,
+          startOffset: created.startOffset,
+          endOffset: created.endOffset,
+          placement: created.placement,
+          parentId: created.id,
+        })
+      }
     }))
     this.registerCommand<{ unitId: string; controlId: string; patch: ContentControlPatch }, boolean>('doc.command.update-content-control', ({ unitId, controlId, patch }) => this.commitDocument(unitId, 'Update content control', (model) => {
       updateDocumentContentControl(model, controlId, patch)
@@ -742,6 +754,9 @@ export class OfficeStudio {
     }))
     this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.reset-content-control-placeholder', ({ unitId, controlId }) => this.commitDocument(unitId, 'Reset content control placeholder', (model) => {
       resetDocumentContentControlPlaceholder(model, controlId)
+    }))
+    this.registerCommand<{ unitId: string; controlId: string; image: DocumentImage }, boolean>('doc.command.replace-picture-content-control-image', ({ unitId, controlId, image }) => this.commitDocument(unitId, 'Replace picture content control image', (model) => {
+      replacePictureContentControlImage(model, controlId, image)
     }))
     this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.duplicate-repeating-section-item', ({ unitId, controlId }) => this.commitDocument(unitId, 'Duplicate repeating-section item', (model) => {
       duplicateRepeatingSectionItem(model, controlId)

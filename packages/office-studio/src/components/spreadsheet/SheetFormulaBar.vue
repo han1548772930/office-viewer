@@ -15,7 +15,7 @@ const emit = defineEmits<{
 
 const addressDraft = ref(props.address)
 const expanded = ref(false)
-const editor = ref<HTMLTextAreaElement | null>(null)
+const editor = ref<HTMLElement | null>(null)
 watch(() => props.address, address => { addressDraft.value = address })
 
 function onKeydown(event: KeyboardEvent) {
@@ -31,16 +31,16 @@ function onKeydown(event: KeyboardEvent) {
 
 function toggleExpanded() {
   expanded.value = !expanded.value
-  void nextTick(() => { if (props.editing) editor.value?.focus({ preventScroll: true }) })
+  void nextTick(() => { if (props.editing) editor.value?.querySelector('textarea')?.focus({ preventScroll: true }) })
 }
 
 function startFormula() {
   emit('begin')
   if (!props.value) emit('update:value', '=')
-  void nextTick(() => editor.value?.focus({ preventScroll: true }))
+  void nextTick(() => editor.value?.querySelector('textarea')?.focus({ preventScroll: true }))
 }
 
-function focus() { editor.value?.focus({ preventScroll: true }) }
+function focus() { editor.value?.querySelector('textarea')?.focus({ preventScroll: true }) }
 defineExpose({ focus })
 </script>
 
@@ -63,16 +63,16 @@ defineExpose({ focus })
       <Tooltip title="确认编辑（Enter）"><Button type="text" size="small" aria-label="确认编辑" :disabled="!editing" @mousedown.prevent @click="emit('confirm')"><Check :size="15" /></Button></Tooltip>
       <Tooltip title="编辑公式"><Button type="text" size="small" aria-label="编辑公式" @mousedown.prevent @click="startFormula"><span class="formula-symbol">fx</span></Button></Tooltip>
     </div>
-    <textarea
+    <Input.TextArea
       ref="editor"
       class="formula-input"
-      :value="value"
       aria-label="公式编辑"
       :rows="expanded ? 3 : 1"
       spellcheck="false"
       @focus="emit('begin')"
-      @input="emit('update:value', ($event.target as HTMLTextAreaElement).value)"
+      @update:value="emit('update:value', $event)"
       @keydown="onKeydown"
+      :value="value"
     />
     <Tooltip :title="expanded ? '折叠公式栏' : '展开公式栏'">
       <Button class="formula-expand" type="text" size="small" :aria-label="expanded ? '折叠公式栏' : '展开公式栏'" :aria-expanded="expanded" @mousedown.prevent @click="toggleExpanded"><component :is="expanded ? ChevronUp : ChevronDown" :size="14" /></Button>
@@ -88,8 +88,9 @@ defineExpose({ focus })
 .formula-actions { display: flex; flex: 0 0 88px; height: 27px; align-items: center; justify-content: center; border-right: 1px solid var(--line, #dfe5ee); }
 .formula-actions :deep(.ant-btn) { display: inline-flex; width: 27px; height: 24px; align-items: center; justify-content: center; padding: 0; }
 .formula-symbol { color: #627087; font-family: Georgia, serif; font-size: 16px; font-style: italic; }
-.formula-input { display: block; box-sizing: border-box; flex: 1; min-width: 0; height: 100%; resize: none; border: 0; outline: 0; padding: 4px 10px; color: #364257; background: transparent; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 12px; line-height: 19px; white-space: pre-wrap; overflow-y: auto; }
-.formula-input:focus { box-shadow: inset 0 0 0 1px #91b5fe; }
+.formula-input { display: block; box-sizing: border-box; flex: 1; min-width: 0; height: 100%; }
+.formula-input :deep(textarea) { box-sizing: border-box; height: 100%; resize: none; border: 0; outline: 0; padding: 4px 10px; color: #364257; background: transparent; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 12px; line-height: 19px; white-space: pre-wrap; overflow-y: auto; }
+.formula-input :deep(textarea:focus) { box-shadow: inset 0 0 0 1px #91b5fe; }
 .formula-expand { display: flex; flex: 0 0 26px; width: 26px; height: 27px; align-items: center; justify-content: center; padding: 0; }
 .formula-error { position: absolute; z-index: 8; top: 100%; left: 0; max-width: min(360px, 90vw); border: 1px solid #ffd1d1; padding: 5px 9px; color: #a52c2c; background: #fff3f3; font-size: 12px; }
 </style>

@@ -10,6 +10,8 @@ export interface PivotPanelField {
   area: PivotFieldArea | 'unused'
   aggregation: PivotAggregation
   sort?: PivotSortDirection
+  displayName?: string
+  format?: string
 }
 export interface PivotPanelDraft {
   pivotId: string
@@ -26,7 +28,7 @@ export interface ConfigurePivotFromPanelInput {
   mode: 'create' | 'update'
   source: PivotTableSourceInput
   anchor: PivotTableAnchorInput
-  fields: Array<{ fieldId: string; area: PivotFieldArea; aggregation?: PivotAggregation; sort?: PivotSortDirection }>
+  fields: Array<{ fieldId: string; area: PivotFieldArea; aggregation?: PivotAggregation; sort?: PivotSortDirection; displayName?: string; format?: string }>
   options: Partial<PivotTableOptions>
 }
 const maxRows = 1_048_576, maxColumns = 16_384
@@ -78,7 +80,7 @@ export function createPivotPanelDraft(workbook: WorkbookModel, sheetId: string, 
     } else {
       draft.fields = draft.fields.map(field => {
         const existing = pivot.fields.find(candidate => candidate.id === field.fieldId)
-        return existing ? { ...field, area: existing.area, aggregation: existing.aggregation ?? 'sum', sort: existing.sort } : field
+        return existing ? { ...field, area: existing.area, aggregation: existing.aggregation ?? 'sum', sort: existing.sort, displayName: existing.displayName, format: existing.format } : field
       })
       for (const area of areas) {
         const positions = draft.fields.map((field, index) => field.area === area ? index : -1).filter(index => index >= 0)
@@ -110,6 +112,8 @@ export function preparePivotPanelInput(workbook: WorkbookModel, draft: PivotPane
       area,
       ...(area === 'value' ? { aggregation: field.aggregation } : {}),
       ...((area === 'row' || area === 'column') && field.sort ? { sort: field.sort } : {}),
+      ...(field.displayName !== undefined ? { displayName: field.displayName } : {}),
+      ...(area === 'value' && field.format !== undefined ? { format: field.format } : {}),
     }
   })
   const input: ConfigurePivotFromPanelInput = {
@@ -138,6 +142,8 @@ function validateConfiguration(workbook: WorkbookModel, input: ConfigurePivotFro
     seen.add(field.fieldId)
     if (field.area === 'value' && !PIVOT_AGGREGATIONS.includes(field.aggregation ?? 'sum')) throw new Error('请选择有效的汇总方式。')
     if (field.sort !== undefined && (!['row', 'column'].includes(field.area) || !['ascending', 'descending'].includes(field.sort))) throw new Error('排序只能用于行字段或列字段。')
+    if (field.displayName !== undefined && (typeof field.displayName !== 'string' || !field.displayName.trim())) throw new Error('字段名称不能为空。')
+    if (field.format !== undefined && typeof field.format !== 'string') throw new Error('数字格式必须是文本。')
   }
   if (!input.fields.some(field => field.area === 'value')) throw new Error('请至少将一个字段放入“值”区域。')
   for (const key of ['repeatRowLabels', 'showRowGrandTotal', 'showColGrandTotal', 'showRowSubtotals', 'showColSubtotals'] as const) {
@@ -170,6 +176,8 @@ export function configurePivotFromPanel(workbook: WorkbookModel, input: Configur
       sourceColumn, area: field.area, position: positions[field.area]++,
       ...(field.area === 'value' ? { aggregation: field.aggregation ?? 'sum' } : {}),
       ...((field.area === 'row' || field.area === 'column') && field.sort ? { sort: field.sort } : {}),
+      ...(field.displayName !== undefined ? { displayName: field.displayName.trim() } : {}),
+      ...(field.area === 'value' && field.format !== undefined ? { format: field.format } : {}),
     }
     if (field.area !== 'value') delete next.aggregation
     if (field.area !== 'row' && field.area !== 'column' || !field.sort) delete next.sort

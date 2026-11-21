@@ -1,13 +1,14 @@
 import type { OfficeStudio } from '../../api/office-studio'
 import { FOffice, type FSheetSlicer } from '../../api/facade'
-import type { CellScalar, SlicerModel, SlicerTimelineRange, SlicerType, TimelineLevel } from '../../domain/model'
+import type { CellRange, CellScalar, SlicerModel, SlicerTimelineRange, SlicerType, TimelineLevel } from '../../domain/model'
 import { parseTimelineDate, timelineCalendarToSerial, timelineDateToInput } from './timeline-date'
 import { classifySheetNumberFormat } from '../sheet-workbench/sheet-number-format'
 import type { SlicerCreateInput, SlicerPresentationPatch } from './slicer-engine'
+import { slicerBoundsInWorkbook } from './slicer-drawing'
 
 export interface SlicerPanelTarget { workbookId: string; sheetId: string }
-export interface SlicerPanelField { id: string; name: string; available: boolean; controls: SlicerType[]; reason?: string }
-export interface SlicerPanelPivot { id: string; label: string; fields: SlicerPanelField[] }
+export interface SlicerPanelField { id: string; name: string; available: boolean; controls: SlicerType[]; reason?: string; pivotTableId?: string; tableId?: string }
+export interface SlicerPanelPivot { id: string; label: string; fields: SlicerPanelField[]; kind: 'pivot' | 'table'; sheetId: string; range: CellRange }
 export interface SlicerPanelControl { info: SlicerModel; items: string[]; selectedItems?: string[]; error?: string }
 export interface SlicerPanelSnapshot {
   workbookId: string
@@ -46,7 +47,6 @@ function requireControl(studio: OfficeStudio, target: SlicerPanelTarget, slicerI
 export function readSlicerPanelState(studio: OfficeStudio, target: SlicerPanelTarget): SlicerPanelSnapshot {
   const { workbook, sheet } = requireTarget(studio, target)
   const model = studio.getWorkbookModel(target.workbookId)!
-  const allControls = workbook.getSlicers().map((control) => control.getInfo())
   const pivots = workbook.getPivotTables().map((pivot, index) => {
     const id = pivot.getPivotTableId()
     const pivotModel = model.pivotTables!.find((candidate) => candidate.id === id)!
@@ -54,9 +54,7 @@ export function readSlicerPanelState(studio: OfficeStudio, target: SlicerPanelTa
     const sourceRange = pivotModel.source.range
     const labelFields = new Set(['row', 'column', 'filter'].flatMap((area) => pivot.getFieldIdsByArea(area as 'row' | 'column' | 'filter')))
     const fields = pivot.getSourceFieldsInfo().map((field) => {
-      const occupied = allControls.some((control) => control.pivotTableId === id && control.sourceFieldId === field.fieldId)
-      const reason = !labelFields.has(field.fieldId) ? '请先将字段放到透视表的行、列或筛选区域。'
-        : occupied ? '此字段已绑定切片器或时间线。' : undefined
+      const reason = !labelFields.has(field.fieldId) ? '请先将字段放到透视表的行、列或筛选区域。' : undefined
       const controls: SlicerType[] = ['slicer']
       if (source) {
         const heading = String(source.cells[`${sourceRange.startRow}:${field.sourceColumn}`]?.value ?? field.fieldName).trim()
@@ -73,34 +71,52 @@ export function readSlicerPanelState(studio: OfficeStudio, target: SlicerPanelTa
           }
         }
       }
-      return { id: field.fieldId, name: field.fieldName, available: !reason, controls, reason }
+      return { id: field.fieldId, name: field.fieldName, available: !reason, controls, reason, pivotTableId: id }
     })
     const sheetName = workbook.getSheetBySheetId(pivotModel.anchor.subUnitId)?.getSheetName() ?? '工作表'
-    return { id, label: `${sheetName} · 透视表 ${index + 1}`, fields }
+    return { id, label: `${sheetName} · 透视表 ${index + 1}`, fields, kind: 'pivot' as const, sheetId: pivotModel.anchor.subUnitId, range: pivotModel.outputRange ?? { startRow: pivotModel.anchor.row, endRow: pivotModel.anchor.row, startCol: pivotModel.anchor.col, endCol: pivotModel.anchor.col } }
   })
+  const tables = (model.tables ?? []).filter((table) => table.sheetId === target.sheetId).map((table) => ({
+    id: table.id,
+    label: `${workbook.getSheetBySheetId(table.sheetId)?.getSheetName() ?? '工作表'} · ${table.name}`,
+    kind: 'table' as const,
+    sheetId: table.sheetId,
+    range: { ...table.range },
+    fields: table.columns.map((column): SlicerPanelField => {
+      return { id: column.id, name: column.name, available: true, controls: ['slicer'], tableId: table.id }
+    }),
+  }))
   const controls = sheet.getSlicers().map((control): SlicerPanelControl => {
-    const info = control.getInfo()
-    // The pivot's filter is authoritative even if changed outside this panel.
+    const current = control.getInfo()
+    const info = { ...current, layout: slicerBoundsInWorkbook(model, current) }
     const field = model.pivotTables?.find((pivot) => pivot.id === info.pivotTableId)?.fields.find((candidate) => candidate.id === info.sourceFieldId && candidate.area !== 'value')
+    const table = model.tables?.find((candidate) => candidate.id === info.tableId)
+    const tableColumn = table ? table.range.startCol + table.columns.findIndex((column) => column.id === info.sourceFieldId) : -1
+    const tableFilter = tableColumn >= 0 ? table?.autoFilter?.columns[tableColumn] : undefined
+    const selectedItems = field?.selectedItems
+      ? [...field.selectedItems]
+      : tableFilter?.kind === 'values'
+        ? tableFilter.selectedItems.map((value) => value == null ? '' : String(value))
+        : undefined
     try {
-      return { info, items: control.getItems(), selectedItems: field?.selectedItems ? [...field.selectedItems] : undefined }
+      return { info, items: control.getItems(), selectedItems }
     } catch (error) {
       return { info, items: [], error: error instanceof Error ? error.message : String(error) }
     }
   })
-  return { ...target, date1904: model.date1904, pivots, controls }
+  return { ...target, date1904: model.date1904, pivots: [...pivots, ...tables], controls }
 }
 
 export async function insertPanelSlicer(studio: OfficeStudio, target: SlicerPanelTarget, input: SlicerPanelInsert): Promise<string> {
   if (input.type !== 'slicer' && input.type !== 'timeline') throw new SlicerPanelError('INVALID_SLICER_TYPE', '请选择切片器或时间线。')
   const state = readSlicerPanelState(studio, target)
-  const pivot = state.pivots.find((candidate) => candidate.id === input.pivotTableId)
-  if (!pivot) throw new SlicerPanelError('PIVOT_NOT_FOUND', '请选择现有的数据透视表。')
+  const pivot = state.pivots.find((candidate) => candidate.id === input.pivotTableId || candidate.id === input.tableId)
+  if (!pivot) throw new SlicerPanelError('PIVOT_NOT_FOUND', '请选择现有的数据透视表或表格。')
   const field = pivot.fields.find((candidate) => candidate.id === input.sourceFieldId)
   if (!field) throw new SlicerPanelError('SOURCE_FIELD_NOT_FOUND', '请选择有效的源字段。')
   if (!field.available) throw new SlicerPanelError('SOURCE_FIELD_UNAVAILABLE', field.reason ?? '所选字段暂不可用。')
   if (!field.controls.includes(input.type)) throw new SlicerPanelError('UNSUPPORTED_SOURCE_FIELD', '所选字段不支持此控件，请选择包含有效日期的字段。')
-  const control = await requireTarget(studio, target).sheet.insertSlicer({ ...input, caption: input.caption?.trim() || field.name })
+  const control = await requireTarget(studio, target).sheet.insertSlicer({ ...input, pivotTableId: field.pivotTableId, tableId: field.tableId, caption: input.caption?.trim() || field.name })
   return control.getId()
 }
 

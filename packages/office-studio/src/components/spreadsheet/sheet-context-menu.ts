@@ -21,6 +21,8 @@ export interface SheetContextMenuContext {
   hasHiddenRows: boolean
   hasHiddenColumns: boolean
   canConvertText?: boolean
+  canShiftHorizontally?: boolean
+  canShiftVertically?: boolean
 }
 
 function targetParams(hit: GridHit, sheetId: string, axis: 'row' | 'column', offset = 0) {
@@ -109,12 +111,16 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     ...clipboard,
     {
       id: 'insert-cells', label: '插入', commandId: '', icon: 'InsertDoubleIcon', separatorBefore: true, children: [
+        { id: 'insert-range-right', label: '右移单元格', commandId: 'sheet.command.insert-range-move-right', icon: 'InsertCellShiftRightDoubleIcon', disabled: options.canShiftHorizontally === false },
+        { id: 'insert-range-down', label: '下移单元格', commandId: 'sheet.command.insert-range-move-down', icon: 'InsertCellDownDoubleIcon', disabled: options.canShiftVertically === false },
         { id: 'insert-row', label: '在上方插入行', commandId: 'sheet.command.insert-row', icon: 'InsertRowAboveDoubleIcon', params: rowTarget },
         { id: 'insert-column', label: '在左侧插入列', commandId: 'sheet.command.insert-column', icon: 'LeftInsertColumnDoubleIcon', params: columnTarget },
       ],
     },
     {
       id: 'delete-cells', label: '删除', commandId: '', icon: 'ReduceDoubleIcon', children: [
+        { id: 'delete-range-left', label: '左移单元格', commandId: 'sheet.command.delete-range-move-left', icon: 'DeleteCellShiftLeftDoubleIcon', disabled: options.canShiftHorizontally === false },
+        { id: 'delete-range-up', label: '上移单元格', commandId: 'sheet.command.delete-range-move-up', icon: 'DeleteCellShiftUpDoubleIcon', disabled: options.canShiftVertically === false },
         { id: 'delete-column', label: '删除选中列', commandId: 'sheet.command.delete-column', icon: 'DeleteColumnDoubleIcon', params: columnTarget, disabled: !options.canDeleteColumn },
         { id: 'delete-row', label: '删除选中行', commandId: 'sheet.command.delete-row', icon: 'DeleteRowDoubleIcon', params: rowTarget, disabled: !options.canDeleteRow },
       ],

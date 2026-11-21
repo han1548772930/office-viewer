@@ -18,6 +18,8 @@ import {
   type WorkbookModel,
 } from '../../../domain/model'
 import { randomId } from '../../../api/model-utils'
+import { parseTimelineDate } from '../../slicer/timeline-date'
+import { formatSheetValue } from '../../sheet-workbench/sheet-number-format'
 
 export interface PivotSourceFieldInfo {
   fieldId: string
@@ -76,12 +78,14 @@ interface OutputRow {
   group: Group | null
   valueFieldId?: string
   total: boolean
+  subtotalLevel?: number
 }
 
 interface OutputColumn {
   group: Group | null
   valueFieldId?: string
   total: boolean
+  subtotalLevel?: number
 }
 
 const defaultOptions = (): PivotTableOptions => ({
@@ -161,24 +165,33 @@ export function setPivotField(
   area: PivotFieldArea,
   position?: number
 ): void {
+  if (!['row', 'column', 'filter', 'value'].includes(area)) throw new TypeError('Invalid pivot field area')
   const info = resolveField(workbook, pivot, fieldIdOrIndex)
   const existing = pivot.fields.find((field) => field.id === info.fieldId)
+  const siblings = areaFields(pivot, area, existing?.id)
+  const nextPosition = normalizePosition(position, siblings.length)
   if (existing) {
-    const nextPosition = normalizePosition(position, areaFields(pivot, area, existing.id).length)
     if (existing.area === area && existing.position === nextPosition) return
     existing.area = area
-    existing.position = nextPosition
+    if (area === 'value') {
+      existing.aggregation ??= 'sum'
+      delete existing.selectedItems; delete existing.valueFilter; delete existing.sort
+      delete existing.numberGroup; delete existing.dateGroupType; delete existing.manualGroups
+    } else delete existing.aggregation
+    siblings.splice(nextPosition, 0, existing)
   } else {
     const field: PivotFieldModel = {
       id: info.fieldId,
       sourceColumn: info.sourceColumn,
       name: info.fieldName,
       area,
-      position: normalizePosition(position, areaFields(pivot, area).length),
+      position: nextPosition,
       ...(area === 'value' ? { aggregation: 'sum' as const } : {}),
     }
     pivot.fields.push(field)
+    siblings.splice(nextPosition, 0, field)
   }
+  siblings.forEach((field, index) => { field.position = index })
   reindexFields(pivot)
   refreshPivotTable(workbook, pivot)
 }
@@ -192,6 +205,9 @@ export function removePivotFields(workbook: WorkbookModel, pivot: PivotTableMode
 
 export function setPivotOptions(workbook: WorkbookModel, pivot: PivotTableModel, options: Partial<PivotTableOptions>): void {
   if (options.valuePosition && !['row', 'column'].includes(options.valuePosition)) throw new TypeError('Invalid pivot value position')
+  for (const key of ['repeatRowLabels', 'showRowGrandTotal', 'showColGrandTotal', 'showRowSubtotals', 'showColSubtotals'] as const) {
+    if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Invalid pivot option: ${key}`)
+  }
   pivot.options = { ...pivot.options, ...options }
   refreshPivotTable(workbook, pivot)
 }
@@ -214,6 +230,7 @@ export function setPivotFieldSetting(
 export function setPivotSort(workbook: WorkbookModel, pivot: PivotTableModel, fieldId: string, direction: 'ascending' | 'descending'): void {
   const field = requirePivotField(pivot, fieldId)
   if (field.area !== 'row' && field.area !== 'column') throw new Error('Only row and column fields can be label-sorted')
+  if (!['ascending', 'descending'].includes(direction)) throw new TypeError('Invalid pivot sort direction')
   field.sort = direction
   refreshPivotTable(workbook, pivot)
 }
@@ -230,6 +247,11 @@ export function setPivotValueFilter(workbook: WorkbookModel, pivot: PivotTableMo
   if (field.area === 'value') throw new Error('Value filters require a row, column, or filter field')
   if (filter && !pivot.fields.some((candidate) => candidate.id === filter.valueFieldId && candidate.area === 'value')) {
     throw new Error(`Value field not found: ${filter.valueFieldId}`)
+  }
+  if (filter) {
+    const operators = ['valueGreaterThan', 'valueGreaterThanOrEqual', 'valueLessThan', 'valueLessThanOrEqual', 'valueEqual', 'valueNotEqual', 'valueBetween', 'valueNotBetween']
+    if (!operators.includes(filter.operator)) throw new TypeError('Invalid pivot value filter operator')
+    if (!Number.isFinite(filter.expected) || (['valueBetween', 'valueNotBetween'].includes(filter.operator) && !Number.isFinite(filter.expected2))) throw new TypeError('Pivot value filter requires finite operands')
   }
   field.valueFilter = filter ? { ...filter } : undefined
   refreshPivotTable(workbook, pivot)
@@ -310,6 +332,7 @@ export function renderPivotTable(workbook: WorkbookModel, pivot: PivotTableModel
       cell.style = { ...defaultCellStyle(), font: { ...defaultCellStyle().font, bold: row < result.headerRows } }
       const numberFormat = result.numberFormats[`${row}:${col}`]
       if (numberFormat) cell.style.numberFormat = numberFormat
+      cell.display = formatSheetValue(cell.value, cell.style.numberFormat, workbook.date1904) ?? cell.display
       cell.metadata = { pivotTableId: pivot.id, pivotGenerated: true }
       target.cells[key] = cell
       generatedCellKeys.push(key)
@@ -351,7 +374,7 @@ export function pivotDrillDown(
   if (!entry) throw new RangeError('The selected pivot cell does not contain drill-down detail')
   const source = sourceSheet(workbook, pivot)
   const fields = getPivotSourceFields(workbook, pivot)
-  const records = readSourceRecords(source, pivot)
+  const records = filteredSourceRecords(readSourceRecords(source, pivot), pivot, workbook.date1904)
   const filtered = records.filter((record) => matchesFilters(record, fields, entry.fieldFilters, entry.fieldMembers))
   return { headers: fields.map((field) => field.fieldName), rows: filtered.map((record) => record.values) }
 }
@@ -365,27 +388,24 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
   const byId = new Map(pivot.fields.map((field) => [field.id, field]))
   const rows = sortedFields(pivot, 'row')
   const columns = sortedFields(pivot, 'column')
-  const filters = sortedFields(pivot, 'filter')
   const values = sortedFields(pivot, 'value')
   if (!values.length) return { values: [], headerRows: 0, drillDownMap: {}, numberFormats: {} }
   const allRecords = readSourceRecords(sourceSheet(workbook, pivot), pivot)
-  let records = allRecords.filter((record) => filters.every((field) => field.selectedItems == null || field.selectedItems.includes(String(record.values[field.sourceColumn - pivot.source.range.startCol] ?? ''))))
-  records = records.filter((record) => [...rows, ...columns].every((field) => field.selectedItems == null || field.selectedItems.includes(String(record.values[field.sourceColumn - pivot.source.range.startCol] ?? ''))))
-  records = applyValueFilters(records, rows.concat(columns), values, byId, pivot)
+  const records = filteredSourceRecords(allRecords, pivot, workbook.date1904)
 
-  const rowGroups = groupsFor(records, rows, pivot)
-  const colGroups = groupsFor(records, columns, pivot)
+  const rowGroups = groupsFor(records, rows, pivot, workbook.date1904)
+  const colGroups = groupsFor(records, columns, pivot, workbook.date1904)
   const valueRows = pivot.options.valuePosition === 'row'
   const emptyGroup = (): Group => ({ values: [], key: '[]', memberValues: {} })
-  const rowAxis = rows.length ? rowGroups : [emptyGroup()]
-  const colAxis = columns.length ? colGroups : [emptyGroup()]
+  const rowAxis = rows.length ? axisGroups(rowGroups, rows, pivot.options.showRowSubtotals) : [{ group: emptyGroup() }]
+  const colAxis = columns.length ? axisGroups(colGroups, columns, pivot.options.showColSubtotals) : [{ group: emptyGroup() }]
   const outputRows: OutputRow[] = []
-  for (const group of rowAxis) for (const field of valueRows ? values : [undefined]) outputRows.push({ group, valueFieldId: field?.id, total: false })
+  for (const entry of rowAxis) for (const field of valueRows ? values : [undefined]) outputRows.push({ ...entry, valueFieldId: field?.id, total: false })
   if (pivot.options.showRowGrandTotal && rows.length) {
     for (const field of valueRows ? values : [undefined]) outputRows.push({ group: null, valueFieldId: field?.id, total: true })
   }
   const outputColumns: OutputColumn[] = []
-  for (const group of colAxis) for (const field of valueRows ? [undefined] : values) outputColumns.push({ group, valueFieldId: field?.id, total: false })
+  for (const entry of colAxis) for (const field of valueRows ? [undefined] : values) outputColumns.push({ ...entry, valueFieldId: field?.id, total: false })
   if (pivot.options.showColGrandTotal && columns.length) {
     for (const field of valueRows ? [undefined] : values) outputColumns.push({ group: null, valueFieldId: field?.id, total: true })
   }
@@ -403,7 +423,10 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
   for (let colIndex = 0; colIndex < outputColumns.length; colIndex++) {
     const outputColumn = outputColumns[colIndex]!
     const targetColumn = rowHeaderCount + colIndex
-    columns.forEach((_field, level) => { matrix[level]![targetColumn] = outputColumn.total ? 'Grand total' : outputColumn.group?.values[level] ?? null })
+    columns.forEach((_field, level) => {
+      const value = outputColumn.group?.values[level] ?? null
+      matrix[level]![targetColumn] = outputColumn.total ? 'Grand total' : outputColumn.subtotalLevel === level ? `${value ?? ''} Total` : value
+    })
     if (!valueRows) matrix[headerRows - 1]![targetColumn] = outputColumn.total
       ? (outputColumn.valueFieldId ? displayValueField(byId.get(outputColumn.valueFieldId)!, values.length) : 'Grand total')
       : outputColumn.valueFieldId ? displayValueField(byId.get(outputColumn.valueFieldId)!, values.length) : 'Value'
@@ -422,10 +445,16 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
     const rowFieldFilters: Record<string, CellScalar> = {}
     const rowFieldMembers: Record<string, CellScalar[]> = {}
     if (outputRow.group) rows.forEach((field, index) => {
+      if (index >= outputRow.group!.values.length) return
       rowFieldFilters[field.id] = outputRow.group!.values[index] ?? null
       rowFieldMembers[field.id] = outputRow.group!.memberValues[field.id] ?? [outputRow.group!.values[index] ?? null]
     })
-    rows.forEach((_field, index) => { matrix[targetRow]![index] = outputRow.total ? 'Grand total' : outputRow.group?.values[index] ?? null })
+    rows.forEach((_field, index) => {
+      const value = outputRow.group?.values[index] ?? null
+      const previous = outputRows[rowIndex - 1]
+      const repeats = previous?.group && outputRow.group && previous.subtotalLevel === undefined && outputRow.subtotalLevel === undefined && outputRow.group.values.slice(0, index + 1).every((label, level) => Object.is(label, previous.group!.values[level]))
+      matrix[targetRow]![index] = outputRow.total ? 'Grand total' : outputRow.subtotalLevel === index ? `${value ?? ''} Total` : !pivot.options.repeatRowLabels && repeats ? null : value
+    })
     if (outputRow.valueFieldId && valueRows) {
       const valueField = byId.get(outputRow.valueFieldId)!
       matrix[targetRow]![rows.length] = outputRow.total ? 'Grand total' : valueField.displayName ?? valueField.name
@@ -436,6 +465,7 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
       const colFieldFilters: Record<string, CellScalar> = {}
       const colFieldMembers: Record<string, CellScalar[]> = {}
       if (outputColumn.group) columns.forEach((field, index) => {
+        if (index >= outputColumn.group!.values.length) return
         colFieldFilters[field.id] = outputColumn.group!.values[index] ?? null
         colFieldMembers[field.id] = outputColumn.group!.memberValues[field.id] ?? [outputColumn.group!.values[index] ?? null]
       })
@@ -447,21 +477,50 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
       const cellColumn = rowHeaderCount + colIndex
       matrix[targetRow]![cellColumn] = aggregate
       if (valueField.format) numberFormats[`${targetRow}:${cellColumn}`] = valueField.format
-      if (!outputRow.total && !outputColumn.total) drillDownMap[`${targetRow}:${cellColumn}`] = { fieldFilters: groupFilter, fieldMembers: groupMembers, valueFieldId }
+      drillDownMap[`${targetRow}:${cellColumn}`] = { fieldFilters: groupFilter, fieldMembers: groupMembers, valueFieldId }
     }
   }
   return { values: matrix, headerRows, drillDownMap, numberFormats }
 }
 
-function applyValueFilters(records: SourceRecord[], dimensionFields: PivotFieldModel[], _values: PivotFieldModel[], byId: Map<string, PivotFieldModel>, pivot: PivotTableModel): SourceRecord[] {
+function axisGroups(groups: Group[], fields: PivotFieldModel[], showSubtotals: boolean): Array<{ group: Group; subtotalLevel?: number }> {
+  const result: Array<{ group: Group; subtotalLevel?: number }> = []
+  groups.forEach((group, groupIndex) => {
+    result.push({ group })
+    if (!showSubtotals) return
+    const next = groups[groupIndex + 1]
+    for (let level = fields.length - 2; level >= 0; level--) {
+      const prefix = group.values.slice(0, level + 1)
+      if (next && prefix.every((value, index) => Object.is(value, next.values[index]))) continue
+      const members: Record<string, CellScalar[]> = {}
+      for (const candidate of groups) {
+        if (!prefix.every((value, index) => Object.is(value, candidate.values[index]))) continue
+        for (const field of fields.slice(0, level + 1)) {
+          const target = members[field.id] ?? (members[field.id] = [])
+          for (const value of candidate.memberValues[field.id] ?? []) if (!target.some(member => Object.is(member, value))) target.push(value)
+        }
+      }
+      result.push({ group: { values: prefix, key: JSON.stringify(prefix), memberValues: members }, subtotalLevel: level })
+    }
+  })
+  return result
+}
+
+function filteredSourceRecords(records: SourceRecord[], pivot: PivotTableModel, date1904 = false): SourceRecord[] {
+  const dimensions = pivot.fields.filter(field => field.area !== 'value')
+  const selected = records.filter(record => dimensions.every(field => field.selectedItems == null || field.selectedItems.includes(String(record.values[field.sourceColumn - pivot.source.range.startCol] ?? ''))))
+  return applyValueFilters(selected, dimensions, new Map(pivot.fields.map(field => [field.id, field])), pivot, date1904)
+}
+
+function applyValueFilters(records: SourceRecord[], dimensionFields: PivotFieldModel[], byId: Map<string, PivotFieldModel>, pivot: PivotTableModel, date1904: boolean): SourceRecord[] {
   const active = dimensionFields.filter((field) => field.valueFilter)
   if (!active.length) return records
   return records.filter((record) => active.every((field) => {
     const filter = field.valueFilter!
     const valueField = byId.get(filter.valueFieldId)
     if (!valueField) return false
-    const label = String(record.values[field.sourceColumn - pivot.source.range.startCol] ?? '')
-    const matching = records.filter((candidate) => String(candidate.values[field.sourceColumn - pivot.source.range.startCol] ?? '') === label)
+    const label = groupedLabel(field, record.values[field.sourceColumn - pivot.source.range.startCol] ?? null, date1904)
+    const matching = records.filter(candidate => Object.is(groupedLabel(field, candidate.values[field.sourceColumn - pivot.source.range.startCol] ?? null, date1904), label))
     const value = aggregateValue(matching, valueField, pivot)
     return typeof value === 'number' && testFilter(value, filter)
   }))
@@ -480,11 +539,11 @@ function testFilter(value: number, filter: PivotFieldFilter): boolean {
   }
 }
 
-function groupsFor(records: SourceRecord[], fields: PivotFieldModel[], pivot: PivotTableModel): Group[] {
+function groupsFor(records: SourceRecord[], fields: PivotFieldModel[], pivot: PivotTableModel, date1904: boolean): Group[] {
   if (!fields.length) return []
   const result = new Map<string, Group>()
   for (const record of records) {
-    const values = fields.map((field) => groupedLabel(field, record.values[field.sourceColumn - pivot.source.range.startCol] ?? null))
+    const values = fields.map((field) => groupedLabel(field, record.values[field.sourceColumn - pivot.source.range.startCol] ?? null, date1904))
     const key = JSON.stringify(values)
     if (!result.has(key)) {
       const memberValues: Record<string, CellScalar[]> = {}
@@ -499,16 +558,25 @@ function groupsFor(records: SourceRecord[], fields: PivotFieldModel[], pivot: Pi
       })
     }
   }
-  const groups = [...result.values()]
-  for (let index = fields.length - 1; index >= 0; index--) {
-    const field = fields[index]!
-    if (!field.sort) continue
-    groups.sort((a, b) => {
-      const order = compareLabels(a.values[index] ?? null, b.values[index] ?? null)
-      return field.sort === 'ascending' ? order : -order
-    })
+  return orderGroups([...result.values()], fields, 0)
+}
+
+function orderGroups(groups: Group[], fields: PivotFieldModel[], level: number): Group[] {
+  if (level >= fields.length) return groups
+  const siblings = new Map<string, Group[]>()
+  for (const group of groups) {
+    const key = JSON.stringify(group.values[level])
+    const members = siblings.get(key) ?? []
+    members.push(group)
+    siblings.set(key, members)
   }
-  return groups
+  const ordered = [...siblings.values()]
+  const direction = fields[level]!.sort
+  if (direction) ordered.sort((first, second) => {
+    const order = compareLabels(first[0]!.values[level] ?? null, second[0]!.values[level] ?? null)
+    return direction === 'ascending' ? order : -order
+  })
+  return ordered.flatMap(members => orderGroups(members, fields, level + 1))
 }
 
 function aggregateValue(records: SourceRecord[], field: PivotFieldModel, pivot: PivotTableModel): CellScalar {
@@ -634,7 +702,7 @@ function compareLabels(a: CellScalar, b: CellScalar): number {
   return String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' })
 }
 
-function groupedLabel(field: PivotFieldModel, value: CellScalar): CellScalar {
+function groupedLabel(field: PivotFieldModel, value: CellScalar, date1904 = false): CellScalar {
   if (field.manualGroups?.length) {
     const group = field.manualGroups.find((candidate) => candidate.members.some((member) => Object.is(member, value)))
     return group?.name ?? value
@@ -648,34 +716,18 @@ function groupedLabel(field: PivotFieldModel, value: CellScalar): CellScalar {
     const upper = Math.min(end, lower + interval)
     return `${formatGroupNumber(lower)}-${formatGroupNumber(upper)}`
   }
-  if (field.dateGroupType) return dateGroupLabel(value, field.dateGroupType)
+  if (field.dateGroupType) return dateGroupLabel(value, field.dateGroupType, date1904)
   return value
 }
 
-function dateGroupLabel(value: CellScalar, type: PivotDateGroupType): CellScalar {
-  const date = parsePivotDate(value)
+function dateGroupLabel(value: CellScalar, type: PivotDateGroupType, date1904: boolean): CellScalar {
+  const date = parseTimelineDate(value, date1904)
   if (!date) return value
-  const year = date.getUTCFullYear()
-  const month = date.getUTCMonth() + 1
+  const { year, month, day } = date
   if (type === 'year') return String(year)
   if (type === 'quarter') return `${year} Q${Math.floor((month - 1) / 3) + 1}`
   if (type === 'month') return `${year}-${String(month).padStart(2, '0')}`
-  return `${year}-${String(month).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
-}
-
-function parsePivotDate(value: CellScalar): Date | undefined {
-  if (typeof value === 'string') {
-    const timestamp = Date.parse(value)
-    if (!Number.isNaN(timestamp)) return new Date(timestamp)
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    // Numeric spreadsheet dates use the workbook's 1900/1904 date system.
-    const epoch = Date.UTC(1899, 11, 30)
-    const timestamp = epoch + value * 86400000
-    const date = new Date(timestamp)
-    if (!Number.isNaN(date.getTime())) return date
-  }
-  return undefined
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 function formatGroupNumber(value: number): string {
@@ -690,11 +742,17 @@ function validateNumberGroup(settings: PivotNumberGroup): void {
 
 function normalizeManualGroups(groups: PivotManualGroup[]): PivotManualGroup[] {
   if (!Array.isArray(groups)) throw new TypeError('Pivot manual groups must be an array')
+  const names = new Set<string>()
+  const usedMembers: CellScalar[] = []
   return groups.map((group, index) => {
     if (!group || typeof group.name !== 'string' || !group.name.trim()) throw new TypeError(`Pivot manual group ${index} requires a name`)
     if (!Array.isArray(group.members) || group.members.length < 2) throw new RangeError(`Pivot manual group ${index} must contain at least two members`)
     const members = group.members.filter((member, memberIndex, all) => all.findIndex((candidate) => Object.is(candidate, member)) === memberIndex)
     if (members.length < 2) throw new RangeError(`Pivot manual group ${index} must contain at least two distinct members`)
+    if (names.has(group.name.trim())) throw new Error('Pivot manual group names must be unique')
+    if (members.some(member => usedMembers.some(used => Object.is(used, member)))) throw new Error('Pivot manual group members cannot overlap')
+    names.add(group.name.trim())
+    usedMembers.push(...members)
     return { name: group.name.trim(), members: [...members] }
   })
 }

@@ -93,6 +93,7 @@ export interface SheetTableModel {
   showHeaderRow: boolean
   showTotalsRow: boolean
   styleName: string
+  autoFilter?: SheetAutoFilter
 }
 
 export type SheetSortDirection = 'ascending' | 'descending'
@@ -324,12 +325,13 @@ export interface SlicerTimelineRange {
   level: TimelineLevel
 }
 
-/** A persisted filter control bound to one pivot source field. */
+/** A persisted filter control bound to one Pivot source field or stable Table column. */
 export interface SlicerModel {
   id: string
   unitId: string
   hostSheetId: string
-  pivotTableId: string
+  pivotTableId?: string
+  tableId?: string
   sourceFieldId: string
   type: SlicerType
   caption: string
@@ -337,6 +339,13 @@ export interface SlicerModel {
   position: { row: number; column: number }
   size: { rows: number; columns: number }
   layout?: { left: number; top: number; width: number; height: number }
+  drawing?: {
+    anchorType: 'both' | 'position' | 'none'
+    from: { row: number; column: number; offsetX: number; offsetY: number }
+    to: { row: number; column: number; offsetX: number; offsetY: number }
+    keepRatio?: boolean
+    zIndex?: number
+  }
   style?: string
   startItem?: number
   columnCount?: number

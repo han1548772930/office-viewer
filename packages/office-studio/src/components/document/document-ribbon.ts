@@ -3,7 +3,7 @@ import {
   AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, BookMarked, CalendarDays, ChevronDown,
   ClipboardPaste, CodeXml, Columns3, Copy, Expand, FileCog, Grid2X2, Highlighter, ImagePlus,
   IndentDecrease, IndentIncrease, Italic, Layers2, Link, List, ListOrdered, ListTodo, ListTree, LockKeyhole, MessageSquarePlus,
-  Minimize, NotebookPen, Omega, Palette, PanelTop, Printer, Redo2, RefreshCw, RemoveFormatting, Scissors, Search, FileText,
+  Minimize, NotebookPen, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
   SeparatorHorizontal, ShieldCheck, Sigma, Smile, SquareCheckBig, Strikethrough, Subscript, Superscript,
   TextCursorInput, Trash2, Underline, Undo2,
 } from 'lucide-vue-next'
@@ -13,8 +13,9 @@ import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 import DocumentCharacterPicker from './DocumentCharacterPicker.vue'
+import DocumentHeaderFooterRibbonControl, { type HeaderFooterRibbonState, type HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
 
-interface DocumentRibbonContext {
+export interface DocumentRibbonContext {
   state: DocumentToolbarState
   canUndo: boolean
   canRedo: boolean
@@ -25,6 +26,10 @@ interface DocumentRibbonContext {
   orientation: string
   zoom: number
   contentControlsAvailable: boolean
+  mode?: 'traditional' | 'modern'
+  editingHeaderFooter?: boolean
+  editingDisabled?: boolean
+  headerFooter?: HeaderFooterRibbonState
   selectedContentControl?: {
     id: string
     type: string
@@ -63,15 +68,19 @@ const colors = [
   { key: 'light-yellow', value: '#fef3c7' },
 ]
 
-/** Menu ordering follows docs-ui/menu/schema at the fixed Univer baseline. */
+/** Univer 1.6.0 eaf4cfa, docs-ui/menu/schema.ts and docs-ui/services/doc-zoom.ts. */
 export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
   const { state } = context
   const tocLabel = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
-  const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { activated: state.marks[key] === true, tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title })
-  const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title })
+  const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => {
+    const column = ['bold', 'italic', 'underline', 'strike'].indexOf(key) + 1
+    return action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { order: column - 1, disabled: context.editingDisabled, activated: state.marks[key] === true, tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title, gridLayout: { row: 2, column, width: 32, minWidth: 28 } })
+  }
+  const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { order: value === 'subscript' ? 4 : 5, disabled: context.editingDisabled, activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title, gridLayout: { row: 2, column: value === 'subscript' ? 6 : 5, width: 32, minWidth: 28 } })
   const alignments = [{ value: 'left', title: '左对齐', icon: AlignLeft }, { value: 'center', title: '居中', icon: AlignCenter }, { value: 'right', title: '右对齐', icon: AlignRight }, { value: 'justify', title: '两端对齐', icon: AlignJustify }]
   const palette = (id: string, title: string, key: 'color' | 'highlight', icon: Component): RibbonItem => ({
-    id, type: 'menu', title, icon,
+    id, type: 'menu', title, icon, order: key === 'color' ? 8 : 9, disabled: context.editingDisabled,
+    gridLayout: { row: 2, column: key === 'color' ? 8 : 7, width: 40, minWidth: 38 },
     children: [
       ...colors.map((color) => action(`${id}-${color.value}`, translate?.(`colors.${color.key}`, color.key) || color.key, icon, 'doc.command.format-text', { patch: { [key]: color.value } }, { activated: state.marks[key] === color.value, tooltip: color.value, swatch: color.value })),
       action(`${id}-reset`, translate?.(key === 'color' ? 'items.doc-text-color-reset' : 'items.doc-highlight-reset', key === 'color' ? 'Reset Font Color' : 'No Background') || (key === 'color' ? 'Reset Font Color' : 'No Background'), RemoveFormatting, 'doc.command.format-text', { patch: { [key]: key === 'color' ? '#1f2937' : '' } }),
@@ -88,8 +97,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           action('doc-paste-text', '仅粘贴文本', TextCursorInput, 'doc.command.paste-text', undefined, { shortcut: 'Ctrl+Shift+V' }),
         ] },
       ] },
-      { id: 'doc-format', title: '字体与样式', order: 2, items: [
-        { id: 'doc-block-style', type: 'select', title: '段落样式', width: 120, value: state.blockStyle ?? null, placeholder: '混合样式', gridLayout: { row: 1, column: 1, columnSpan: 2, width: 80, minWidth: 72 }, options: [
+      { id: 'doc-format', title: '字体与样式', order: 1, items: [
+        { id: 'doc-block-style', type: 'select', title: '段落样式', order: 5.5, disabled: context.editingDisabled, width: 120, value: state.blockStyle ?? null, placeholder: '混合样式', gridLayout: { row: 1, column: 1, columnSpan: 2, width: 80, minWidth: 72 }, options: [
           ...([
             ['normal', 'normal', 'Normal'], ['title', 'title', 'Title'], ['subtitle', 'subtitle', 'Subtitle'],
             ['H1', 'heading1', 'Heading 1'], ['H2', 'heading2', 'Heading 2'], ['H3', 'heading3', 'Heading 3'],
@@ -98,22 +107,22 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           { label: 'Heading 6', value: 'H6', commandId: 'doc.command.set-block-type', params: { type: 'heading', level: 6 } },
           { label: 'Quote', value: 'quote', commandId: 'doc.command.set-block-type', params: { type: 'quote' } },
         ] },
-        { id: 'doc-font-family', type: 'select', title: '字体', width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 3, columnSpan: 4, width: 140, minWidth: 124 }, options: ['Arial', 'Aptos', 'Calibri', 'Georgia', 'Times New Roman', 'Microsoft YaHei', 'SimSun'].map((value) => ({ label: value === 'Microsoft YaHei' ? '微软雅黑' : value === 'SimSun' ? '宋体' : value, value })), valueParams: (value) => ({ patch: { fontFamily: value } }) },
-        { id: 'doc-font-size', type: 'select', title: '字号', width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((value) => ({ label: String(value), value })), valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
+        { id: 'doc-font-family', type: 'select', title: '字体', order: 7, disabled: context.editingDisabled, width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 3, columnSpan: 4, width: 140, minWidth: 124 }, options: ['Arial', 'Aptos', 'Calibri', 'Georgia', 'Times New Roman', 'Microsoft YaHei', 'SimSun'].map((value) => ({ label: value === 'Microsoft YaHei' ? '微软雅黑' : value === 'SimSun' ? '宋体' : value, value })), valueParams: (value) => ({ patch: { fontFamily: value } }) },
+        { id: 'doc-font-size', type: 'select', title: '字号', order: 6, disabled: context.editingDisabled, width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((value) => ({ label: String(value), value })), valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
         format('doc-bold', '加粗', Bold, 'bold'), format('doc-italic', '斜体', Italic, 'italic'), format('doc-underline', '下划线', Underline, 'underline'), format('doc-strike', '删除线', Strikethrough, 'strike'),
         verticalFormat('doc-superscript', '上标', Superscript, 'superscript'), verticalFormat('doc-subscript', '下标', Subscript, 'subscript'),
         palette('doc-highlight', '文本高亮', 'highlight', Highlighter), palette('doc-text-color', '字体颜色', 'color', Palette),
       ] },
       { id: 'doc-layout', title: '段落与列表', order: 2, items: [
         { id: 'doc-align', type: 'menu', title: '段落对齐', icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, gridLayout: { row: 1, column: 1 }, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value })) },
-        action('doc-bullet', '无序列表', List, 'doc.command.set-block-type', { type: 'bullet' }, { activated: state.blockStyle === 'bullet', gridLayout: { row: 1, column: 2 } }),
         action('doc-numbered', '有序列表', ListOrdered, 'doc.command.set-block-type', { type: 'numbered' }, { activated: state.blockStyle === 'numbered', gridLayout: { row: 2, column: 1 } }),
+        action('doc-bullet', '无序列表', List, 'doc.command.set-block-type', { type: 'bullet' }, { activated: state.blockStyle === 'bullet', gridLayout: { row: 1, column: 2 } }),
         action('doc-checklist', '清单', ListTodo, 'doc.command.set-block-type', { type: 'checklist' }, { activated: state.blockStyle === 'checklist', gridLayout: { row: 2, column: 2 } }),
-        action('doc-header-footer', '页眉和页脚', PanelTop, 'doc.operation.open-header-footer', undefined, { showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+        action('doc-header-footer', '页眉和页脚', PanelTop, 'doc.operation.open-header-footer', undefined, { hidden: context.mode === 'modern', showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
       ] },
       { id: 'doc-others', title: '其他', order: 3, items: [
-        action('doc-find', '查找', Search, 'doc.operation.toggle-find', undefined, { gridLayout: { row: 1, column: 1 } }),
-        action('doc-permissions', '文档权限', ShieldCheck, 'doc.operation.open-permissions', undefined, { gridLayout: { row: 2, column: 1 } }),
+        action('doc-permissions', '文档权限', ShieldCheck, 'doc.operation.open-permissions', undefined, { order: 0, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+        action('doc-find', '查找', Search, 'doc.operation.toggle-find', undefined, { order: 3, gridLayout: { row: 1, column: 2 } }),
       ] },
       { id: 'doc-layout-extensions', title: '段落工具', order: 4, items: [
         action('doc-indent-less', '减少缩进', IndentDecrease, 'doc.command.format-paragraph', { patch: { indent: Math.max(0, (state.paragraph.indent ?? 0) - 1) } }, { disabled: state.paragraph.indent === 0, disabledReason: '当前段落已经位于最左侧', gridLayout: { row: 1, column: 1 } }),
@@ -131,7 +140,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     ] },
     { id: 'insert', title: '插入', order: 1, groups: [
       { id: 'doc-insert-media', title: '媒体', order: 0, items: [
-      { ...action('doc-breaks', '分页符和分节符', Columns3, 'doc.operation.open-breaks', undefined, { showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }), type: 'menu', children: [
+      { ...action('doc-breaks', '分页符和分节符', Columns3, 'doc.operation.open-breaks', undefined, { order: 4, hidden: context.mode === 'modern', disabled: context.editingDisabled, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }), type: 'menu', children: [
         action('doc-page-break', '分页符', undefined, 'doc.command.insert-page-break'),
         action('doc-column-break', '分栏符', undefined, 'doc.command.insert-column-break'),
         { id: 'doc-section-breaks', type: 'menu', title: '分节符', children: [
@@ -144,14 +153,14 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           ] as const).map(([type, title]) => action(`doc-section-break-${type}`, title, undefined, 'doc.command.insert-section-break', { type })),
         ] },
       ] },
-      { ...action('doc-table', '表格', Grid2X2, 'doc.operation.open-table', undefined, { gridLayout: { row: 1, column: 2 } }), type: 'menu', children: [
+      { ...action('doc-table', '表格', Grid2X2, 'doc.operation.open-table', undefined, { order: 2, hidden: context.editingHeaderFooter, disabled: context.editingDisabled, gridLayout: { row: 1, column: 2 } }), type: 'menu', children: [
         action('doc-table-insert', '插入表格', Grid2X2, 'doc.operation.open-table'),
       ] },
-      { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-character' },
-      { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol' }, popupCommandId: 'doc.command.insert-character' },
-      action('doc-image', '图片', ImagePlus, 'doc.operation.open-image', undefined, { gridLayout: { row: 1, column: 4 } }),
-      action('doc-link', '链接', Link, 'doc.operation.open-link', undefined, { gridLayout: { row: 1, column: 5 } }),
-      action('doc-divider', '分隔线', SeparatorHorizontal, 'doc.command.insert-divider', undefined, { gridLayout: { row: 2, column: 5 } }),
+      { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { order: 5, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-character' },
+      { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { order: 6, disabled: context.editingDisabled, gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol' }, popupCommandId: 'doc.command.insert-character' },
+      action('doc-image', '图片', ImagePlus, 'doc.operation.open-image', undefined, { order: 0, gridLayout: { row: 1, column: 4 } }),
+      action('doc-link', '链接', Link, 'doc.operation.open-link', undefined, { order: 3, gridLayout: { row: 1, column: 5 } }),
+      action('doc-divider', '分隔线', SeparatorHorizontal, 'doc.command.insert-divider', undefined, { order: 4, gridLayout: { row: 2, column: 5 } }),
       ] },
       { id: 'doc-insert-cell', title: '目录', order: 1, items: [{
         ...action('doc-insert-table-of-contents', tocLabel('document.toc.insert', 'Table of Contents'), ListTree, 'doc.operation.insert-table-of-contents', undefined, {
@@ -176,11 +185,11 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         ...[
           { type: 'richText', title: '富文本控件', icon: TextCursorInput },
           { type: 'text', title: '纯文本控件', icon: TextCursorInput },
-          { type: 'checkbox', title: '复选框控件', icon: SquareCheckBig },
-          { type: 'date', title: '日期控件', icon: CalendarDays },
-          { type: 'dropDownList', title: '下拉列表控件', icon: ChevronDown },
-          { type: 'comboBox', title: '组合框控件', icon: ChevronDown },
           { type: 'picture', title: '图片控件', icon: ImagePlus },
+          { type: 'checkbox', title: '复选框控件', icon: SquareCheckBig },
+          { type: 'comboBox', title: '组合框控件', icon: ChevronDown },
+          { type: 'dropDownList', title: '下拉列表控件', icon: ChevronDown },
+          { type: 'date', title: '日期控件', icon: CalendarDays },
           { type: 'repeatingSection', title: '重复节控件', icon: Copy },
           { type: 'group', title: '分组控件', icon: Layers2 },
           { type: 'docPartObj', title: '文档部件控件', icon: FileCog },
@@ -197,11 +206,49 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     { id: 'view', title: '视图', order: 2, groups: [
       { id: 'doc-display', title: '显示', order: 0, items: [
       action('doc-page-settings', '页面设置', FileCog, 'doc.operation.open-page-settings', undefined, { showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-      { id: 'doc-zoom', type: 'select', title: '缩放', width: 90, value: context.zoom, commandId: 'doc.operation.set-zoom', gridLayout: { row: 1, column: 2 }, options: [25, 50, 75, 100, 125, 150, 200, 300, 400].map((value) => ({ label: `${value}%`, value })) },
+      { id: 'doc-zoom', type: 'select', title: '缩放', width: 90, value: context.zoom, commandId: 'doc.operation.set-zoom', gridLayout: { row: 1, column: 2 }, options: [50, 80, 100, 130, 150, 170, 200, 400].map((value) => ({ label: `${value}%`, value })) },
       action('doc-fullscreen', context.fullscreen ? '退出全屏' : '全屏', context.fullscreen ? Minimize : Expand, 'doc.operation.toggle-fullscreen', undefined, { activated: context.fullscreen, gridLayout: { row: 2, column: 2 } }),
       ] },
     ] },
   ]
+  if (context.headerFooter?.visible) {
+    const headerFooter = context.headerFooter
+    const headerFooterControl = (kind: HeaderFooterRibbonKind, title: string, icon: Component, order: number): RibbonItem => ({
+      id: `doc-header-footer-${kind}`,
+      type: 'menu',
+      title,
+      icon,
+      order,
+      disabled: headerFooter.disabled,
+      popupComponent: DocumentHeaderFooterRibbonControl,
+      popupProps: { kind, state: headerFooter },
+      popupCommandId: 'doc.operation.header-footer-control',
+      gridLayout: { row: 1, column: order + 1, rowSpan: 2, showLabel: true },
+    })
+    tabs.push({
+      id: 'header-footer',
+      title: '页眉和页脚',
+      order: 90,
+      contextual: true,
+      groups: [{
+        id: 'header-footer-fields',
+        title: '插入',
+        order: 0,
+        items: [
+          headerFooterControl('insertion', '插入', FileText, 0),
+          headerFooterControl('navigation', '导航', PanelTop, 1),
+          headerFooterControl('options', '选项', FileCog, 2),
+          headerFooterControl('position', '位置', IndentIncrease, 3),
+          action('doc-header-footer-close', '关闭页眉和页脚', RemoveFormatting, 'doc.operation.close-header-footer', undefined, {
+            order: 5,
+            disabled: headerFooter.disabled,
+            showLabel: true,
+            gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true },
+          }),
+        ],
+      }],
+    })
+  }
   if (context.tableOfContents?.selectedId) {
     const tocId = context.tableOfContents.selectedId
     tabs.push({
@@ -233,58 +280,65 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     const values: RibbonItem[] = []
     if (control.type === 'checkbox') {
       values.push({
-        ...action('doc-controls-checkbox-style', '复选框样式', SquareCheckBig, 'doc.command.set-selected-sdt-checkbox-style', { value: control.checkboxStyle ?? 'Cross' }),
-        type: 'menu', gridLayout: { row: 1, column: 1, showLabel: true },
-        children: ['Cross', 'Check', 'Minimal', 'Round'].map(value => action(`doc-controls-checkbox-style-${value}`, value, SquareCheckBig, 'doc.command.set-selected-sdt-checkbox-style', { value })),
+        ...action('doc-controls-checkbox-style', '复选框样式', SquareCheckBig, 'doc.command.set-selected-sdt-checkbox-style'),
+        type: 'select', value: control.checkboxStyle ?? 'Cross',
+        hidden: ['contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''), gridLayout: { row: 1, column: 1, showLabel: true },
+        options: [
+          { value: 'Cross', label: '叉号' }, { value: 'Check', label: '勾选' },
+          { value: 'Minimal', label: '简洁' }, { value: 'Round', label: '圆形' },
+        ], valueParams: value => ({ value }),
       })
     }
-    if (control.type === 'date') values.push({
-      ...action('doc-controls-date-format', '日期格式', CalendarDays, 'doc.command.set-selected-sdt-date-format', { value: control.dateFormat ?? 'yyyy-MM-dd' }),
-      type: 'menu', gridLayout: { row: 1, column: 3, showLabel: true },
-      children: ['yyyy-MM-dd', 'yyyy/MM/dd', 'M/d/yyyy', 'dd MMM yyyy', 'MMMM d, yyyy'].map(value => action(`doc-controls-date-format-${value}`, value, CalendarDays, 'doc.command.set-selected-sdt-date-format', { value })),
-    })
-    if (control.type === 'text') values.push(action('doc-controls-multiline', '允许多行', TextCursorInput, 'doc.command.toggle-selected-sdt-multiline', undefined, {
-      activated: control.multiLine, gridLayout: { row: 2, column: 1, showLabel: true },
-    }))
-    if (control.type === 'text' || control.type === 'richText') values.push(action('doc-controls-temporary', '临时控件', Trash2, 'doc.command.toggle-selected-sdt-temporary', undefined, {
-      activated: control.temporary, gridLayout: { row: 2, column: 2, showLabel: true },
-    }))
-    if (control.type === 'picture') values.push(action('doc-controls-change-picture', '更改图片', ImagePlus, 'doc.command.change-selected-sdt-picture', undefined, {
+    if (control.type === 'picture') values.push(action('doc-controls-change-picture', '更换图片', ImagePlus, 'doc.command.change-selected-sdt-picture', undefined, {
       gridLayout: { row: 1, column: 1, showLabel: true },
     }))
-    if (control.placeholder) values.push(action('doc-controls-reset-placeholder', '重置占位符', RefreshCw, 'doc.command.reset-selected-sdt-placeholder', undefined, {
+    if (control.type === 'date') values.push({
+      ...action('doc-controls-date-format', '日期格式', CalendarDays, 'doc.command.set-selected-sdt-date-format'),
+      type: 'select', value: control.dateFormat ?? 'yyyy-MM-dd', gridLayout: { row: 1, column: 1, showLabel: true },
+      options: ['yyyy-MM-dd', 'yyyy/MM/dd', 'M/d/yyyy', 'dd MMM yyyy', 'MMMM d, yyyy'].map(value => ({ value, label: value })),
+      valueParams: value => ({ value }),
+    })
+    if (control.placeholder) values.push(action('doc-controls-reset-placeholder', '恢复占位符', TextCursorInput, 'doc.command.reset-selected-sdt-placeholder', undefined, {
       disabled: !control.canResetPlaceholder, gridLayout: { row: 1, column: 2, showLabel: true },
     }))
+    if (control.type === 'text') values.push(action('doc-controls-multiline', '允许换行', TextCursorInput, 'doc.command.toggle-selected-sdt-multiline', undefined, {
+      activated: control.multiLine, gridLayout: { row: 1, column: 1, showLabel: true },
+    }))
+    if (control.type === 'text' || control.type === 'richText') values.push(action('doc-controls-temporary', '编辑后移除', RemoveFormatting, 'doc.command.toggle-selected-sdt-temporary', undefined, {
+      activated: control.temporary, gridLayout: { row: 2, column: 1, showLabel: true },
+    }))
     const behavior: RibbonItem[] = [
-      { id: 'doc-controls-appearance', type: 'select', title: '控件外观', icon: Layers2,
+      { id: 'doc-controls-appearance', type: 'select', title: '外观', icon: Layers2,
         value: control.appearance ?? 'boundingBox', commandId: 'doc.command.set-selected-sdt-appearance',
         gridLayout: { row: 1, column: 1, showLabel: true }, options: [
-          { label: '边框', value: 'boundingBox' }, { label: '标签', value: 'tags' }, { label: '隐藏', value: 'hidden' },
+          { label: '边界框', value: 'boundingBox' }, { label: '开始/结束标记', value: 'tags' }, { label: '不显示标记', value: 'hidden' },
         ].map(option => ({ ...option, commandId: 'doc.command.set-selected-sdt-appearance', params: { value: option.value } })), valueParams: value => ({ value }) },
-      { id: 'doc-controls-lock', type: 'select', title: '控件锁定', icon: LockKeyhole,
+      { id: 'doc-controls-lock', type: 'select', title: '锁定', icon: LockKeyhole,
         value: control.lock ?? 'unlocked', commandId: 'doc.command.set-selected-sdt-lock',
         gridLayout: { row: 2, column: 1, showLabel: true }, options: [
-          { label: '不锁定', value: 'unlocked' }, { label: '锁定控件', value: 'sdtLocked' },
-          { label: '锁定内容', value: 'contentLocked' }, { label: '内容和控件都锁定', value: 'sdtContentLocked' },
+          { label: '不锁定', value: 'unlocked' }, { label: '禁止删除控件', value: 'sdtLocked' },
+          { label: '禁止编辑内容', value: 'contentLocked' }, { label: '内容和控件均锁定', value: 'sdtContentLocked' },
         ].map(option => ({ ...option, commandId: 'doc.command.set-selected-sdt-lock', params: { value: option.value } })), valueParams: value => ({ value }) },
-      action('doc-controls-properties', '控件属性', FileCog, 'doc.command.open-selected-sdt-properties', undefined, { gridLayout: { row: 1, column: 2, showLabel: true } }),
+      action('doc-controls-properties', '属性', FileCog, 'doc.command.open-selected-sdt-properties', undefined, { gridLayout: { row: 1, column: 2, showLabel: true } }),
+      action('doc-controls-remove', '删除内容控件', Trash2, 'doc.command.remove-selected-sdt', undefined, {
+        disabled: ['sdtLocked', 'sdtContentLocked', 'controlLocked'].includes(control.lock ?? ''),
+        gridLayout: { row: 2, column: 2, showLabel: true },
+      }),
     ]
     const actions: RibbonItem[] = [
-      action('doc-controls-select-parent', '选择父级', ArrowUp, 'doc.command.select-parent-sdt', undefined, {
-        disabled: !control.canSelectParent, gridLayout: { row: 1, column: 1, showLabel: true },
+      action('doc-controls-select-parent', '选择上层控件', ArrowUp, 'doc.operation.select-parent-sdt', undefined, {
+        disabled: !control.canSelectParent, gridLayout: { row: 1, column: 2, showLabel: true },
       }),
-      ...(control.type === 'repeatingSectionItem' ? [
-        action('doc-controls-duplicate-item', '复制重复项', Copy, 'doc.command.duplicate-selected-repeating-sdt-item', undefined, {
-          disabled: !control.canDuplicateItem, gridLayout: { row: 1, column: 2, showLabel: true },
-        }),
-        action('doc-controls-delete-item', '删除重复项', Trash2, 'doc.command.delete-selected-repeating-sdt-item', undefined, {
-          disabled: !control.canDeleteItem, gridLayout: { row: 2, column: 1, showLabel: true },
+      ...(control.type === 'repeatingSectionItem' && control.canDuplicateItem ? [
+        action('doc-controls-duplicate-item', '复制', Copy, 'doc.command.duplicate-selected-repeating-sdt-item', undefined, {
+          gridLayout: { row: 1, column: 1, showLabel: true },
         }),
       ] : []),
-      action('doc-controls-remove', '删除控件', Trash2, 'doc.command.remove-selected-sdt', undefined, {
-        disabled: ['sdtLocked', 'sdtContentLocked', 'controlLocked'].includes(control.lock ?? ''),
-        gridLayout: { row: 2, column: 2 },
-      }),
+      ...(control.type === 'repeatingSectionItem' && control.canDeleteItem ? [
+        action('doc-controls-delete-item', '删除项目', Trash2, 'doc.command.delete-selected-repeating-sdt-item', undefined, {
+          gridLayout: { row: 2, column: 1, showLabel: true },
+        }),
+      ] : []),
     ]
     tabs.push({
       id: 'content-control', title: '内容控件', order: 110, contextual: true,

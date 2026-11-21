@@ -1028,6 +1028,7 @@ export class FDocumentContentControl {
   getText(): string { return contentControlText(this.document.getModel(), this.getInfo()) }
   getRange(): { blockId: string; startOffset: number; endOffset: number } { return contentControlRange(this.getInfo()) }
   setValue(value: string): this { this.document.executeContentControlCommand('doc.command.set-content-control-value', { controlId: this.id, value }); return this }
+  replacePicture(image: { src: string; alt: string; width: number; height: number }): boolean { return this.document.executeContentControlCommand('doc.command.replace-picture-content-control-image', { controlId: this.id, image }) }
   setChecked(checked: boolean): this { this.document.executeContentControlCommand('doc.command.set-content-control-checked', { controlId: this.id, checked }); return this }
   resetPlaceholder(): boolean { return this.document.executeContentControlCommand('doc.command.reset-content-control-placeholder', { controlId: this.id }) }
   duplicateRepeatingItem(): boolean { return this.document.executeContentControlCommand('doc.command.duplicate-repeating-section-item', { controlId: this.id }) }

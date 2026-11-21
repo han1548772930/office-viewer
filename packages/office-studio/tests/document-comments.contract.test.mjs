@@ -9,6 +9,7 @@ import {
   deleteDocumentThreadComment,
   documentThreadCommentAnchorStatus,
   editDocumentCommentMessage,
+  isDocumentThreadCommentRelevantToUser,
   replyToDocumentThreadComment,
   setDocumentThreadCommentResolved,
 } from '../src/features/document/comments/thread-comments.ts'
@@ -70,6 +71,58 @@ test('supports replies, author-only edits, resolve and reopen transitions, and d
   assert.equal(comment.resolved, false)
   assert.equal(deleteDocumentThreadComment(model, comment.id, author), true)
   assert.equal(deleteDocumentThreadComment(model, comment.id, author), false)
+})
+
+test('editing a mention removes identities whose label no longer matches the edited message', () => {
+  const { model, selection, author } = setup()
+  const comment = createDocumentThreadComment(model, selection, 'Initial', author, '2026-11-21T00:00:00.000Z')
+  const other = { documentId: 'doc-1', userId: 'other', displayName: 'Other' }
+  const reply = replyToDocumentThreadComment(model, comment.id, '@Author Please review', other, '2026-11-21T00:01:00.000Z', [
+    { userId: 'author', label: '@Author' },
+  ])
+
+  editDocumentCommentMessage(model, comment.id, reply.id, 'Please review', other, '2026-11-21T00:02:00.000Z')
+
+  assert.equal(reply.text, 'Please review')
+  assert.equal(reply.mentions, undefined)
+  assert.equal(reply.updatedAt, '2026-11-21T00:02:00.000Z')
+  assert.equal(comment.updatedAt, '2026-11-21T00:02:00.000Z')
+})
+
+test('editing a comment to the same trimmed text is a no-op', () => {
+  const { model, selection, author } = setup()
+  const comment = createDocumentThreadComment(model, selection, 'Initial', author, '2026-11-21T00:00:00.000Z')
+  model.modified = false
+
+  editDocumentCommentMessage(model, comment.id, comment.messages[0].id, ' Initial ', author, '2026-11-21T00:10:00.000Z')
+
+  assert.equal(comment.messages[0].text, 'Initial')
+  assert.equal(comment.messages[0].updatedAt, undefined)
+  assert.equal(comment.updatedAt, '2026-11-21T00:00:00.000Z')
+  assert.equal(model.modified, false)
+})
+
+test('deleting an unknown thread does not create an empty comments collection', () => {
+  const { model, author } = setup()
+
+  assert.equal(deleteDocumentThreadComment(model, 'missing', author), false)
+  assert.equal(model.comments, undefined)
+  assert.equal(model.modified, undefined)
+})
+
+test('concern-me filtering includes comment authors and mentioned users', () => {
+  const { model, selection, author } = setup()
+  const comment = createDocumentThreadComment(model, selection, 'Initial', author, '2026-11-21T00:00:00.000Z')
+  const other = { documentId: 'doc-1', userId: 'other', displayName: 'Other' }
+  replyToDocumentThreadComment(model, comment.id, '@Mentioned Please review', other, '2026-11-21T00:01:00.000Z', [
+    { userId: 'mentioned', label: '@Mentioned' },
+  ])
+
+  assert.equal(isDocumentThreadCommentRelevantToUser(comment, 'author'), true)
+  assert.equal(isDocumentThreadCommentRelevantToUser(comment, 'other'), true)
+  assert.equal(isDocumentThreadCommentRelevantToUser(comment, 'mentioned'), true)
+  assert.equal(isDocumentThreadCommentRelevantToUser(comment, 'unrelated'), false)
+  assert.equal(isDocumentThreadCommentRelevantToUser(comment, ''), false)
 })
 
 test('deletes only the selected author message and removes the thread with its root message', () => {

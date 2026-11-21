@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Button, Checkbox, Dropdown, Input, Modal, Select, Switch } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
-import { ArrowDownAZ, ArrowUpAZ, ChevronDown, GripVertical } from 'lucide-vue-next'
+import { ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, Ellipsis, GripVertical } from 'lucide-vue-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, PivotAggregation } from '../../domain/model'
@@ -9,6 +9,9 @@ import {
   CONFIGURE_PIVOT_COMMAND, createPivotPanelDraft, pivotRangeAddress, preparePivotPanelInput,
   readPivotPanelSourceFields, type PivotPanelDraft, type PivotPanelField,
 } from '../../features/pivot/services/pivot-panel-state'
+import PivotFieldToolsDialog from '../../features/pivot/views/PivotFieldToolsDialog.vue'
+import { readPivotFieldMembers, type PivotFieldToolChange } from '../../features/pivot/services/pivot-field-tools'
+import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format'
 
 const props = defineProps<{ open: boolean; studio?: OfficeStudio; workbookId?: string; sheetId: string; sourceRange: string }>()
 interface PivotPanelChange { pivotId: string; sheetId: string; outputRange?: CellRange }
@@ -24,6 +27,11 @@ const draggedFieldId = ref('')
 const filterFieldId = ref(''), filterSelection = ref<string[]>([]), settingsFieldId = ref('')
 const fieldDisplayName = ref(''), fieldAggregation = ref<PivotAggregation>('sum'), fieldFormat = ref('')
 const fieldDialogBusy = ref(false)
+const toolsFieldId = ref(''), toolsKind = ref<'filter' | 'group'>('filter')
+const numberFormatOpen = ref(false), numberFormatDraft = ref('')
+const toolsField = computed(() => selectedPivot.value?.fields.find(field => field.id === toolsFieldId.value))
+const numberFormatOptions = Object.entries(SHEET_NUMBER_FORMATS).map(([value, pattern]) => ({ value: pattern, label: ({ general: '常规', number: '数值', currency: '货币', accounting: '会计', percent: '百分比', date: '日期', time: '时间', datetime: '日期时间', text: '文本' } as Record<string, string>)[value] ?? value }))
+const numberFormatPreview = computed(() => formatSheetValue(1234.56, numberFormatDraft.value, workbook.value?.date1904) ?? '此自定义格式将按原样保存在值字段中')
 const aggregationOptions: Array<{ label: string; value: PivotAggregation }> = [
   { label: '平均值', value: 'average' }, { label: '计数', value: 'count' }, { label: '数值计数', value: 'countNums' },
   { label: '最大值', value: 'max' }, { label: '最小值', value: 'min' }, { label: '乘积', value: 'product' },
@@ -47,16 +55,8 @@ const filterField = computed(() => draft.value?.fields.find(field => field.field
 const settingsField = computed(() => draft.value?.fields.find(field => field.fieldId === settingsFieldId.value))
 const filterItems = computed(() => {
   const field = selectedPivot.value?.fields.find(candidate => candidate.id === filterFieldId.value)
-  const model = workbook.value
-  const source = model?.sheets.find(sheet => sheet.id === selectedPivot.value?.source.subUnitId)
-  if (!field || !source || !selectedPivot.value) return []
-  const { startRow, endRow } = selectedPivot.value.source.range
-  const values = new Set<string>()
-  for (let row = startRow + 1; row <= endRow; row++) {
-    const value = source.cells[`${row}:${field.sourceColumn}`]?.value
-    values.add(value == null ? '' : String(value))
-  }
-  return [...values]
+  if (!field || !workbook.value || !selectedPivot.value) return []
+  return [...new Set(readPivotFieldMembers(workbook.value, selectedPivot.value, field).map(member => member.value == null ? '' : String(member.value)))]
 })
 const allFilterItemsSelected = computed(() => filterItems.value.length > 0 && filterItems.value.every(item => filterSelection.value.includes(item)))
 const canClearFieldFilter = computed(() => Boolean(selectedPivot.value?.fields.find(field => field.id === filterFieldId.value)?.selectedItems))
@@ -65,12 +65,12 @@ const history = computed(() => props.studio?.editor.history.units[workbook.value
 function loadDraft(pivotId = '') {
   const model = workbook.value
   error.value = ''; status.value = ''; selectedId.value = pivotId; fieldSearch.value = ''
-  filterFieldId.value = ''; settingsFieldId.value = ''; fieldDialogBusy.value = false
+  filterFieldId.value = ''; settingsFieldId.value = ''; toolsFieldId.value = ''; numberFormatOpen.value = false; fieldDialogBusy.value = false
   if (!model) { draft.value = null; error.value = '当前工作台尚未连接工作簿命令接口。'; return }
   draft.value = createPivotPanelDraft(model, props.sheetId, props.sourceRange, pivotId)
   loadedSource.value = sourceKey.value
 }
-watch(() => props.open, open => { if (open) loadDraft() }, { immediate: true })
+watch(() => props.open, open => { if (open) loadDraft(); else { filterFieldId.value = ''; settingsFieldId.value = ''; toolsFieldId.value = ''; numberFormatOpen.value = false } }, { immediate: true })
 function loadFields() {
   if (!draft.value || !workbook.value) return
   try {
@@ -103,10 +103,15 @@ function toggleField(fieldId: string, checked: boolean) {
   field.area = foundNumber && !foundOther ? 'value' : 'row'
 }
 function fieldMenu(field: PivotPanelField) {
+  const committed = selectedPivot.value?.fields.find(candidate => candidate.id === field.fieldId)
+  const editableLabel = committed && committed.area !== 'value' && field.area === committed.area && !fieldsStale.value
   const items = [
-    ...(field.area !== 'value' && field.area !== 'unused' && selectedId.value ? [{ key: 'filter', label: '筛选' }] : []),
-    ...(field.area === 'value' && selectedId.value ? [{ key: 'settings', label: '字段设置' }] : []),
     { key: 'remove', label: '移除字段', danger: true },
+    ...(editableLabel ? [{ key: 'filter', label: '筛选字段' }, { key: 'value-filter', label: '值筛选' }, { key: 'group', label: '分组' }] : []),
+    ...(field.area === 'value' ? [{ key: 'settings', label: '字段设置' }] : []),
+    { key: 'up', label: '上移', disabled: draft.value?.fields.filter(candidate => candidate.area === field.area).at(0)?.fieldId === field.fieldId },
+    { key: 'down', label: '下移', disabled: draft.value?.fields.filter(candidate => candidate.area === field.area).at(-1)?.fieldId === field.fieldId },
+    ...(['filter', 'column', 'row', 'value'] as const).filter(area => area !== field.area).map(area => ({ key: `move-${area}`, label: `移动到${{ filter: '筛选', column: '列', row: '行', value: '值' }[area]}` })),
   ]
   return {
     items,
@@ -114,8 +119,42 @@ function fieldMenu(field: PivotPanelField) {
       if (key === 'remove') removeField(field.fieldId)
       else if (key === 'filter') openFieldFilter(field.fieldId)
       else if (key === 'settings') openFieldSettings(field.fieldId)
+      else if (key === 'value-filter' || key === 'group') { toolsFieldId.value = field.fieldId; toolsKind.value = key === 'value-filter' ? 'filter' : 'group'; error.value = '' }
+      else if (key === 'up' || key === 'down') moveField(field.fieldId, key === 'up' ? -1 : 1)
+      else if (String(key).startsWith('move-')) {
+        const area = String(key).slice(5)
+        if (area === 'row' || area === 'column' || area === 'filter' || area === 'value') field.area = area
+      }
     },
   }
+}
+function moveField(fieldId: string, direction: -1 | 1) {
+  const fields = draft.value?.fields
+  if (!fields) return
+  const current = fields.findIndex(field => field.fieldId === fieldId)
+  const field = fields[current]
+  if (!field) return
+  const areaFields = fields.filter(candidate => candidate.area === field.area)
+  const sibling = areaFields[areaFields.indexOf(field) + direction]
+  if (!sibling) return
+  const target = fields.indexOf(sibling)
+  fields[current] = sibling
+  fields[target] = field
+}
+async function applyFieldTool(change: PivotFieldToolChange) {
+  if (!toolsFieldId.value || fieldDialogBusy.value) return
+  fieldDialogBusy.value = true; error.value = ''
+  try {
+    const { book } = requireApi()
+    const pivot = book.getPivotTables().find(candidate => candidate.getPivotTableId() === selectedId.value)
+    if (!pivot) throw new Error('数据透视表已被删除。')
+    if (change.kind === 'valueFilter') await pivot.setValueFilter(toolsFieldId.value, change.filter)
+    else if (change.kind === 'numberGroup') await pivot.setNumberGroup(toolsFieldId.value, change.settings)
+    else if (change.kind === 'dateGroup') await pivot.setDateGroupType(toolsFieldId.value, change.type)
+    else await pivot.setManualGroups(toolsFieldId.value, change.groups)
+    toolsFieldId.value = ''; status.value = change.kind === 'valueFilter' ? '值筛选已应用。' : '字段分组已应用。'; reportChange(selectedId.value)
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { fieldDialogBusy.value = false }
 }
 function sourceFieldMenu(field: PivotPanelField) {
   return {
@@ -208,31 +247,31 @@ async function applyLabelSort(direction: 'ascending' | 'descending') {
 function openFieldSettings(fieldId: string) {
   const field = draft.value?.fields.find(candidate => candidate.fieldId === fieldId)
   const modelField = selectedPivot.value?.fields.find(candidate => candidate.id === fieldId)
-  if (!field || !modelField || field.area !== 'value') return
+  if (!field || field.area !== 'value') return
   error.value = ''
   settingsFieldId.value = fieldId
-  fieldDisplayName.value = modelField.displayName ?? modelField.name
-  fieldAggregation.value = modelField.aggregation ?? field.aggregation
-  fieldFormat.value = modelField.format ?? ''
+  fieldDisplayName.value = field.displayName ?? modelField?.displayName ?? field.fieldName
+  fieldAggregation.value = field.aggregation
+  fieldFormat.value = field.format ?? modelField?.format ?? ''
 }
 async function applyFieldSettings() {
-  if (!selectedId.value || !settingsFieldId.value || fieldDialogBusy.value) return
+  if (!settingsFieldId.value || fieldDialogBusy.value) return
   fieldDialogBusy.value = true
   error.value = ''
   try {
-    const { book } = requireApi()
-    const pivot = book.getPivotTables().find(candidate => candidate.getPivotTableId() === selectedId.value)
-    if (!pivot) throw new Error('数据透视表已被删除。')
-    await pivot.setFieldSetting(settingsFieldId.value, {
-      displayName: fieldDisplayName.value,
-      subtotalType: fieldAggregation.value,
-      format: fieldFormat.value,
-    })
     const field = draft.value?.fields.find(candidate => candidate.fieldId === settingsFieldId.value)
-    if (field) field.aggregation = fieldAggregation.value
+    if (!field) throw new Error('所选字段已被移除。')
+    const committed = selectedPivot.value?.fields.find(candidate => candidate.id === field.fieldId)
+    if (committed?.area === 'value' && !fieldsStale.value) {
+      const { book } = requireApi()
+      const pivot = book.getPivotTables().find(candidate => candidate.getPivotTableId() === selectedId.value)
+      if (!pivot) throw new Error('数据透视表已被删除。')
+      await pivot.setFieldSetting(field.fieldId, { displayName: fieldDisplayName.value.trim(), subtotalType: fieldAggregation.value, format: fieldFormat.value })
+      reportChange(selectedId.value)
+    }
+    field.aggregation = fieldAggregation.value; field.displayName = fieldDisplayName.value.trim(); field.format = fieldFormat.value
     settingsFieldId.value = ''
-    status.value = '值字段设置已应用。'
-    reportChange(selectedId.value)
+    status.value = committed?.area === 'value' ? '值字段设置已应用。' : '值字段设置已保存到当前配置。'
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { fieldDialogBusy.value = false }
 }
@@ -341,8 +380,8 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
               <h3 class="pivot-area-title">{{ area.label }}</h3>
               <div class="pivot-field-list">
               <div v-for="field in area.fields" :key="field.fieldId" class="pivot-field" :class="{ 'is-dragging': draggedFieldId === field.fieldId }" :data-field-id="field.fieldId" draggable="true" @dragover.prevent @drop="dropField(area.area, $event, field.fieldId)" @dragstart="startFieldDrag(field.fieldId, $event)" @dragend="draggedFieldId = ''">
-                <GripVertical class="pivot-field-grip" :size="16" aria-hidden="true" /><span class="pivot-field-name" :title="field.fieldName">{{ field.fieldName }}</span>
-                  <Dropdown :trigger="['click']" placement="bottomRight" :menu="fieldMenu(field)"><Button type="text" size="small" :aria-label="`字段 ${field.fieldName} 操作`"><ChevronDown :size="16" /></Button></Dropdown>
+                <GripVertical class="pivot-field-grip" :size="16" aria-hidden="true" /><span class="pivot-field-name" :title="field.displayName ?? field.fieldName">{{ field.displayName ?? field.fieldName }}</span>
+                  <Dropdown :trigger="['click']" placement="bottomRight" :menu="fieldMenu(field)"><Button type="text" size="small" :aria-label="`字段 ${field.fieldName} 操作`"><Ellipsis :size="16" /></Button></Dropdown>
                 </div>
                 <p v-if="!area.fields.length" class="pivot-empty">拖动字段到此处</p>
               </div>
@@ -376,8 +415,8 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
   <Modal :open="Boolean(filterFieldId)" :title="null" :width="336" :footer="null" :closable="false" :mask="false" :mask-closable="false" :confirm-loading="fieldDialogBusy" destroy-on-hidden @cancel="filterFieldId = ''">
     <div v-if="filterField" class="pivot-filter-dialog" :aria-label="`筛选字段 ${filterField.fieldName}`">
       <div v-if="filterField.area === 'row' || filterField.area === 'column'" class="pivot-sort-segment" role="group" aria-label="透视字段排序">
-        <button type="button" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending'" @click="applyLabelSort('ascending')"><ArrowUpAZ :size="16" />升序</button>
-        <button type="button" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending'" @click="applyLabelSort('descending')"><ArrowDownAZ :size="16" />降序</button>
+        <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending'" @click="applyLabelSort('ascending')"><ArrowUpAZ :size="16" />升序</Button>
+        <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending'" @click="applyLabelSort('descending')"><ArrowDownAZ :size="16" />降序</Button>
       </div>
       <div class="pivot-filter-items">
         <label class="pivot-filter-checkbox pivot-filter-select-all"><Checkbox :checked="allFilterItemsSelected" :indeterminate="filterSelection.length > 0 && !allFilterItemsSelected" @change="toggleAllFilterItems(!allFilterItemsSelected)">全选</Checkbox></label>
@@ -395,12 +434,16 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
   <Modal :open="Boolean(settingsFieldId)" title="字段设置" :width="400" :footer="null" :mask="false" :mask-closable="false" :confirm-loading="fieldDialogBusy" destroy-on-hidden @cancel="settingsFieldId = ''">
     <div v-if="settingsField" class="pivot-settings-dialog">
       <label class="pivot-settings-name"><span>字段名称</span><span class="pivot-settings-source">源字段：{{ settingsField.fieldName }}</span><Input v-model:value="fieldDisplayName" size="small" /></label>
-      <label><span>汇总方式</span><Select v-model:value="fieldAggregation" :options="aggregationOptions" aria-label="汇总方式" /></label>
-      <label><span>数字格式</span><Input v-model:value="fieldFormat" aria-label="数字格式" placeholder="例如 #,##0.00" size="small" /></label>
+      <label><span>汇总方式</span><div class="pivot-aggregation-list" role="listbox" aria-label="汇总方式"><Button v-for="option in aggregationOptions" :key="option.value" type="text" role="option" :aria-selected="fieldAggregation === option.value" :disabled="fieldDialogBusy" :class="{ 'is-selected': fieldAggregation === option.value }" @click="fieldAggregation = option.value"><span>{{ option.label }}</span><Check v-if="fieldAggregation === option.value" :size="16" /></Button></div></label>
+      <Button :disabled="fieldDialogBusy" @click="numberFormatDraft = fieldFormat || 'General'; numberFormatOpen = true">数字格式</Button>
       <p v-if="error" class="pivot-error" role="alert">{{ error }}</p>
       <div class="pivot-settings-footer"><Button :disabled="fieldDialogBusy" @click="settingsFieldId = ''">取消</Button><Button type="primary" :disabled="!fieldDisplayName.trim() || fieldDialogBusy" @click="applyFieldSettings">确定</Button></div>
     </div>
   </Modal>
+  <Modal :open="numberFormatOpen" title="数字格式" :width="400" :footer="null" :mask="false" destroy-on-hidden @cancel="numberFormatOpen = false">
+    <div class="pivot-settings-dialog"><label>格式类型<Select v-model:value="numberFormatDraft" :options="numberFormatOptions" aria-label="数字格式类型" /></label><label>格式代码<Input v-model:value="numberFormatDraft" aria-label="数字格式代码" /></label><output class="pivot-format-preview" aria-label="数字格式预览">{{ numberFormatPreview }}</output><div class="pivot-settings-footer"><Button @click="numberFormatOpen = false">取消</Button><Button type="primary" @click="fieldFormat = numberFormatDraft; numberFormatOpen = false">确定</Button></div></div>
+  </Modal>
+  <PivotFieldToolsDialog v-if="toolsField && workbook && selectedPivot" :open="Boolean(toolsFieldId)" :kind="toolsKind" :workbook="workbook" :pivot="selectedPivot" :field="toolsField" :busy="fieldDialogBusy" :error="error" @close="toolsFieldId = ''" @apply="applyFieldTool" />
 </template>
 
 <style scoped>
@@ -449,6 +492,10 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
 .pivot-settings-name { display: grid !important; grid-template-columns: 1fr auto; align-items: center; }
 .pivot-settings-name :deep(.ant-input-affix-wrapper) { grid-column: 1 / -1; }
 .pivot-settings-source { color: #7b8797; font-size: 12px; }
+.pivot-aggregation-list { display: flex; flex-direction: column; height: 160px; overflow-y: auto; padding: 4px; border: 1px solid #e4e7ec; border-radius: 4px; }
+.pivot-aggregation-list :deep(.ant-btn) { display: flex; flex: 0 0 28px; justify-content: space-between; text-align: left; padding: 2px 8px; }
+.pivot-aggregation-list :deep(.is-selected) { color: #1677ff; background: #e6f4ff; }
+.pivot-format-preview { padding: 12px; border: 1px solid #e4e7ec; border-radius: 4px; text-align: right; }
 .pivot-settings-footer { justify-content: flex-end; padding-top: 12px; }
 @media (max-width: 620px) { .pivot-locations, .pivot-area-layout { grid-template-columns: 1fr; } .pivot-area-grid { grid-template-columns: 1fr; } .pivot-field { gap: 3px; } .pivot-actions-spacer { display: none; } }
 </style>

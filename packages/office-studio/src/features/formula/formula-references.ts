@@ -66,21 +66,34 @@ export function transformFormulaReferencesForStructureEdit(
   const patches: TextPatch[] = []
   for (let index = 0; index < references.length; index += 1) {
     const first = references[index]!
-    const qualifiedSheet = referenceSheetName(first.raw)
-    const applies = qualifiedSheet === undefined
-      ? formulaSheetName === targetSheetName
-      : qualifiedSheet.toLowerCase() === targetSheetName.toLowerCase()
-    if (!applies) continue
-
     const second = references[index + 1]
-    if (second && formula.slice(first.end, second.start).match(/^\s*:\s*$/)) {
+    const isRange = Boolean(second && formula.slice(first.end, second.start).match(/^\s*:\s*$/))
+    const qualifiedSheet = referenceSheetName(first.raw)
+    const rangeSheet = qualifiedSheet ?? (isRange && second ? referenceSheetName(second.raw) : undefined)
+    const applies = rangeSheet === undefined
+      ? formulaSheetName?.toLowerCase() === targetSheetName.toLowerCase()
+      : rangeSheet.toLowerCase() === targetSheetName.toLowerCase()
+    if (!applies) {
+      if (isRange) index += 1
+      continue
+    }
+
+    if (isRange && second) {
+      // Univer's formula ref-range path moves a rectangular reference only when
+      // its entire perpendicular span is contained in the shifted band.
+      const firstBand = edit.axis === 'row' ? first.reference.column : first.reference.row
+      const secondBand = edit.axis === 'row' ? second.reference.column : second.reference.row
+      if (Math.min(firstBand, secondBand) < edit.bandStart || Math.max(firstBand, secondBand) > edit.bandEnd) {
+        index += 1
+        continue
+      }
       const firstResult = transformStructureReference(first.reference, edit)
       const secondResult = transformStructureReference(second.reference, edit)
       const firstAxisIndex = edit.axis === 'row' ? first.reference.row : first.reference.column
       const secondAxisIndex = edit.axis === 'row' ? second.reference.row : second.reference.column
-      const replacement = firstResult.deleted && secondResult.deleted
+      const replacement = (edit.kind === 'insert' && (firstResult.deleted || secondResult.deleted)) || (firstResult.deleted && secondResult.deleted)
         ? '#REF!'
-        : `${firstResult.deleted ? formatReference(editBoundaryReference(first.reference, edit, firstAxisIndex <= secondAxisIndex ? 0 : -1)) : formatReference(firstResult.reference)}:${secondResult.deleted ? formatReference(editBoundaryReference(second.reference, edit, secondAxisIndex <= firstAxisIndex ? 0 : -1)) : formatReference(secondResult.reference)}`
+        : `${firstResult.deleted ? formatReference(editBoundaryReference(first.reference, edit, firstAxisIndex <= secondAxisIndex ? 0 : -1)) : formatReference(firstResult.reference)}:${sheetPrefix(formula, second)}${secondResult.deleted ? formatReference(editBoundaryReference(second.reference, edit, secondAxisIndex <= firstAxisIndex ? 0 : -1)) : formatReference(secondResult.reference)}`
       patches.push({ start: first.replacementStart, end: second.end, replacement: `${sheetPrefix(formula, first)}${replacement}` })
       index += 1
       continue
@@ -106,7 +119,8 @@ function transformStructureReference(reference: FormulaReference, edit: FormulaS
   const axisIndex = edit.axis === 'row' ? reference.row : reference.column
   if (bandIndex < edit.bandStart || bandIndex > edit.bandEnd || axisIndex < edit.start) return { reference, deleted: false }
   if (edit.kind === 'insert') {
-    return { reference: setAxisIndex(reference, edit.axis, axisIndex + edit.count), deleted: false }
+    const moved = setAxisIndex(reference, edit.axis, axisIndex + edit.count)
+    return { reference: moved, deleted: moved.row > MAX_ROW || moved.column > MAX_COLUMN }
   }
   if (axisIndex < edit.start + edit.count) return { reference, deleted: true }
   return { reference: setAxisIndex(reference, edit.axis, axisIndex - edit.count), deleted: false }
@@ -166,7 +180,8 @@ function findReferenceSpans(source: string): ReferenceSpan[] {
       continue
     }
 
-    const unquotedQualifier = /^([A-Za-z_][A-Za-z0-9_.]*)!/.exec(source.slice(index))
+    if (isIdentifierPart(source[index - 1])) { index += 1; continue }
+    const unquotedQualifier = /^([\p{L}_\\][\p{L}\p{N}_.\\]*)!/u.exec(source.slice(index))
     if (unquotedQualifier) {
       const qualifiedAddress = readAddress(source, index + unquotedQualifier[0].length)
       if (qualifiedAddress) {
@@ -182,7 +197,6 @@ function findReferenceSpans(source: string): ReferenceSpan[] {
       }
     }
 
-    if (isIdentifierPart(source[index - 1])) { index += 1; continue }
     const address = readAddress(source, index)
     if (!address) { index += 1; continue }
 
@@ -246,5 +260,5 @@ function sheetPrefix(_source: string, span: ReferenceSpan): string {
   return bang < 0 ? '' : raw.slice(0, bang + 1)
 }
 
-function isIdentifierPart(value: string | undefined): boolean { return value !== undefined && /[A-Za-z0-9_.]/.test(value) }
+function isIdentifierPart(value: string | undefined): boolean { return value !== undefined && /[\p{L}\p{N}_.\\]/u.test(value) }
 

@@ -8,6 +8,8 @@ let api
 let panel
 let renderer
 let layoutApi
+let tableApi
+let viewAdapter
 
 beforeAll(async () => {
   server = await createServer({
@@ -21,6 +23,8 @@ beforeAll(async () => {
   panel = await server.ssrLoadModule('/packages/office-studio/src/features/slicer/slicer-panel-state.ts')
   renderer = await server.ssrLoadModule('/packages/office-studio/src/features/slicer/slicer-renderer.ts')
   layoutApi = await server.ssrLoadModule('/packages/office-studio/src/rendering/spreadsheet/layout.ts')
+  tableApi = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-tables/sheet-tables.ts')
+  viewAdapter = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts')
 })
 
 afterAll(async () => { await server?.close() })
@@ -175,11 +179,53 @@ test('multiple slicers intersect, distinguish no selection from clear and surviv
     assert.equal(reopened.getPivotTables()[0].getData().at(-1).at(-1), 100)
     await panel.removePanelSlicer(studio, target, regionId)
     assert.equal(workbook.getSlicer(regionId), null)
-    assert.equal(boundField(studio, workbook).selectedItems, undefined)
+    assert.deepEqual(boundField(studio, workbook).selectedItems, ['East'])
     workbook.undo()
     assert.deepEqual(workbook.getSlicer(regionId).getInfo().selectedItems, ['East'])
     assert.deepEqual(boundField(studio, workbook).selectedItems, ['East'])
   } finally { restored?.dispose(); studio.dispose() }
+})
+
+test('table slicer filters mixed scalar and blank values without replacing worksheet filters', async () => {
+  const model = api.createBlankWorkbook()
+  const studio = new api.OfficeStudio({ workbook: model })
+  try {
+    const workbook = api.FOffice.newAPI(studio).getActiveWorkbook()
+    const sheet = workbook.getActiveSheet()
+    const other = workbook.insertSheet('Other')
+    sheet.getRange('A1:B5').setValues([
+      ['Category', 'Amount'], ['Alpha', 1], ['', 2], [4, 4], [false, 5],
+    ])
+    sheet.getRange('D1:E3').setValues([
+      ['Status', 'Value'], ['keep', 1], ['hide', 2],
+    ])
+    sheet.setAutoFilter({ startRow: 0, startCol: 3, endRow: 2, endCol: 4 })
+    sheet.setFilterCriteria(3, { kind: 'values', selectedItems: ['keep'] })
+    other.getRange('A1:B2').setValues([['Flag', 'Value'], ['visible', 1]])
+    other.setAutoFilter({ startRow: 0, startCol: 0, endRow: 1, endCol: 1 })
+    other.setFilterCriteria(0, { kind: 'values', selectedItems: [] })
+
+    const current = studio.getWorkbookModel(workbook.getId())
+    const withTable = tableApi.createSheetTable(current, {
+      sheetId: sheet.getSheetId(), range: { startRow: 0, startCol: 0, endRow: 4, endCol: 1 }, name: 'Categories', id: 'table-categories',
+    })
+    studio.mutateWorkbook(workbook.getId(), 'sheet.command.test-create-table', 'Create table fixture', (draft) => {
+      draft.tables = withTable.tables
+    })
+    const slicer = await sheet.insertSlicer({ tableId: 'table-categories', sourceFieldId: withTable.tables[0].columns[0].id, type: 'slicer' })
+
+    assert.deepEqual(slicer.getItems(), ['Alpha', '', '4', 'false'])
+    await panel.applyPanelSlicerItems(studio, { workbookId: workbook.getId(), sheetId: sheet.getSheetId() }, slicer.getId(), ['Alpha', '', '4'])
+    const filteredModel = studio.getWorkbookModel(workbook.getId())
+    const tableFilter = filteredModel.tables.find(({ id }) => id === 'table-categories').autoFilter
+    assert.deepEqual(tableFilter.filteredRows, [4])
+    assert.deepEqual(filteredModel.sheets.find(({ id }) => id === sheet.getSheetId()).autoFilter.filteredRows, [2])
+    assert.deepEqual(filteredModel.sheets.find(({ id }) => id === other.getSheetId()).autoFilter.filteredRows, [1])
+    assert.deepEqual(viewAdapter.toExcelWorkbookView(filteredModel).sheets.find(({ id }) => id === sheet.getSheetId()).filteredRows, [2, 4])
+    assert.deepEqual(panel.readSlicerPanelState(studio, { workbookId: workbook.getId(), sheetId: sheet.getSheetId() }).controls[0].selectedItems, ['Alpha', '', '4'])
+    await panel.removePanelSlicer(studio, { workbookId: workbook.getId(), sheetId: sheet.getSheetId() }, slicer.getId())
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).tables.find(({ id }) => id === 'table-categories').autoFilter.filteredRows, [4])
+  } finally { studio.dispose() }
 })
 
 test('invalid or canceled slicer commands do not mutate model or add history', async () => {

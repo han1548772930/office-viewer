@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Checkbox, Input, Select } from 'antdv-next'
-import { ChevronDown, ChevronUp, Trash2, X } from 'lucide-vue-next'
+import { Button, Checkbox, Form, Input, Select } from 'antdv-next'
+import { ChevronDown, ChevronUp, MousePointer2, Trash2, X } from 'lucide-vue-next'
 import { FOffice, type DataValidationRule } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationRenderMode, SheetDataValidationType } from '../../domain/model'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { createSheetDataValidationRule } from '../../features/sheet-validation/validation-engine.ts'
 
-const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [] }>()
+type ValidationRangeTarget = 'range' | 'list' | 'formula1' | 'formula2'
+const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType; selectedRange?: { target: ValidationRangeTarget; value: string } }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; applied: []; 'request-range-selection': [payload: { target: ValidationRangeTarget; active: boolean }] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
 const types = computed<Array<{ label: string; value: SheetDataValidationType }>>(() =>
@@ -41,9 +42,12 @@ const error = ref('')
 const showInputMessage = ref(false)
 const promptTitle = ref('')
 const prompt = ref('')
+const listMode = ref<'inline' | 'reference'>('inline')
+const checkboxCustomValues = ref(false)
+const rangeSelectionTarget = ref<ValidationRangeTarget | null>(null)
 const busy = ref(false)
 const message = ref('')
-const needsFormula = computed(() => type.value !== 'checkbox')
+const needsFormula = computed(() => type.value === 'list' || type.value === 'listMultiple' || type.value === 'custom' || type.value !== 'checkbox' && operator.value !== '')
 const needsSecondFormula = computed(() => operator.value === 'between' || operator.value === 'notBetween')
 const isList = computed(() => type.value === 'list' || type.value === 'listMultiple')
 const title = computed(() => detailOpen.value
@@ -70,6 +74,23 @@ watch(() => [props.open, props.sourceRange, props.sheetId, props.initialType] as
   else loadRule(null)
 }, { immediate: true })
 
+watch(() => props.selectedRange, selected => {
+  if (!selected || selected.target !== rangeSelectionTarget.value) return
+  if (selected.target === 'range') rangeValue.value = selected.value
+  else if (selected.target === 'list') { listMode.value = 'reference'; listValues.value = selected.value }
+  else if (selected.target === 'formula1') formula1.value = selected.value
+  else formula2.value = selected.value
+  rangeSelectionTarget.value = null
+  emit('request-range-selection', { target: selected.target, active: false })
+})
+
+watch(() => props.open, open => {
+  if (!open && rangeSelectionTarget.value) {
+    emit('request-range-selection', { target: rangeSelectionTarget.value, active: false })
+    rangeSelectionTarget.value = null
+  }
+})
+
 function loadRule(current: DataValidationRule | null, initialType?: SheetDataValidationType) {
   rule.value = current
   rangeValue.value = current ? rangeLabel(current) : props.sourceRange
@@ -78,6 +99,8 @@ function loadRule(current: DataValidationRule | null, initialType?: SheetDataVal
   formula1.value = current?.formula1 ?? '1'
   formula2.value = current?.formula2 ?? '10'
   listValues.value = current?.formula1?.replace(/^"|"$/g, '').replace(/""/g, '"') ?? ''
+  listMode.value = current?.formula1?.trim().startsWith('=') ? 'reference' : 'inline'
+  checkboxCustomValues.value = current?.type === 'checkbox' && (current.formula1 !== undefined || current.formula2 !== undefined)
   allowBlank.value = current?.allowBlank ?? true
   showDropDown.value = current?.showDropDown ?? true
   ruleRenderMode.value = current?.renderMode ?? 'arrow'
@@ -92,6 +115,7 @@ function loadRule(current: DataValidationRule | null, initialType?: SheetDataVal
 }
 
 function openNewRule(initialType?: SheetDataValidationType) {
+  stopRangeSelection()
   selectedRuleId.value = undefined
   detailOpen.value = true
   message.value = ''
@@ -99,6 +123,7 @@ function openNewRule(initialType?: SheetDataValidationType) {
 }
 
 function editRule(current: DataValidationRule) {
+  stopRangeSelection()
   selectedRuleId.value = current.id
   detailOpen.value = true
   message.value = ''
@@ -107,7 +132,10 @@ function editRule(current: DataValidationRule) {
 
 function listFormula(): string {
   const source = listValues.value.trim()
-  if (/^=?\s*(?:(?:'[^']+'|[\w ]+)!\s*)?\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+$/i.test(source)) return source.startsWith('=') ? source : `=${source}`
+  if (listMode.value === 'reference') {
+    if (!source) throw new Error(t('sheet.validation.list-reference-empty', '请选择或输入一个有效的单元格区域。'))
+    return source.startsWith('=') ? source : `=${source}`
+  }
   const values = listValues.value.split(',').map(value => value.trim()).filter(Boolean)
   if (!values.length) throw new Error(t('sheet.validation.list-empty', '请输入至少一个下拉选项。'))
   if (values.some(value => value.includes(','))) throw new Error(t('sheet.validation.list-comma', '下拉选项暂不接受包含逗号的单项。'))
@@ -123,10 +151,10 @@ function apply(): void {
     const nextFormula1 = isList.value ? listFormula() : formula1.value.trim()
     const ranges = parseRanges(rangeValue.value)
     const next = {
-      ...(rule.value ? { id: rule.value.id } : {}), type: type.value,
-      ...(type.value !== 'checkbox' ? { formula1: nextFormula1 } : {}),
+      ...(rule.value ? { id: rule.value.id, metadata: rule.value.metadata ? structuredClone(rule.value.metadata) : undefined } : {}), type: type.value,
+      ...(type.value === 'checkbox' ? checkboxCustomValues.value ? { formula1: formula1.value.trim(), formula2: formula2.value.trim() } : {} : needsFormula.value ? { formula1: nextFormula1 } : {}),
       ...(needsSecondFormula.value ? { formula2: formula2.value.trim() } : {}),
-      ...(type.value !== 'checkbox' && type.value !== 'list' && type.value !== 'listMultiple' && type.value !== 'custom' ? { operator: operator.value } : {}),
+      ...(type.value !== 'checkbox' && type.value !== 'list' && type.value !== 'listMultiple' && type.value !== 'custom' && operator.value ? { operator: operator.value } : {}),
       allowBlank: allowBlank.value, showDropDown: showDropDown.value, showErrorMessage: showErrorMessage.value,
       errorStyle: errorStyle.value, errorTitle: errorTitle.value, error: error.value,
       showInputMessage: showInputMessage.value, promptTitle: promptTitle.value, prompt: prompt.value,
@@ -177,6 +205,21 @@ function clearAll(): void {
   const currentRules = rules.value
   if (!currentRules.length) return
   clearRuleRanges(currentRules)
+}
+
+function requestRangeSelection(target: ValidationRangeTarget): void {
+  if (rangeSelectionTarget.value === target) {
+    stopRangeSelection()
+    return
+  }
+  rangeSelectionTarget.value = target
+  emit('request-range-selection', { target, active: true })
+}
+
+function stopRangeSelection(): void {
+  if (!rangeSelectionTarget.value) return
+  emit('request-range-selection', { target: rangeSelectionTarget.value, active: false })
+  rangeSelectionTarget.value = null
 }
 
 function clearRuleRanges(currentRules: DataValidationRule[]): void {
@@ -260,16 +303,16 @@ function columnLabel(index: number): string {
     <div v-if="!detailOpen" class="validation-body validation-list" aria-label="数据验证规则">
       <p v-if="!rules.length" class="validation-empty">{{ t('sheet.validation.empty', '此工作表尚无数据验证规则。') }}</p>
       <article v-for="item in rules" :key="item.id" class="validation-rule" :class="{ 'is-selected': item.id === selectedRuleId }">
-        <button type="button" class="validation-rule-main" @click="editRule(item)">
+        <Button type="text" class="validation-rule-main" @click="editRule(item)">
           <strong>{{ ruleLabel(item) }}</strong>
           <span>{{ rangeLabel(item) }}</span>
-        </button>
+        </Button>
         <Button class="validation-rule-delete" type="text" danger size="small" :disabled="busy" :aria-label="`${t('sheet.validation.remove-rule', '删除规则')} ${rangeLabel(item)}`" @click.stop="clearRule(item)"><Trash2 :size="14" /></Button>
       </article>
       <Button v-if="rules.length" danger type="text" :disabled="busy" @click="clearAll">{{ t('sheet.validation.remove-all', '清除全部规则') }}</Button>
       <p v-if="message" class="validation-error" role="alert">{{ message }}</p>
     </div>
-    <form v-else class="validation-body validation-form" @submit.prevent="apply">
+    <Form v-else class="validation-body validation-form" layout="vertical" @submit.prevent="apply">
       <div class="validation-heading">
         <Button type="text" size="small" @click="detailOpen = false">{{ t('common.back', '返回规则列表') }}</Button>
       </div>
@@ -282,13 +325,13 @@ function columnLabel(index: number): string {
       <label v-else-if="needsFormula">{{ t('sheet.validation.rule-value', '规则值') }}<Input v-model:value="formula1" :aria-label="t('sheet.validation.rule-value-aria', '数据验证规则值')" :placeholder="t('sheet.validation.rule-placeholder', '数值、日期、时间、长度或公式')" /></label>
       <label v-if="needsSecondFormula">{{ t('sheet.validation.second-rule', '第二个规则值') }}<Input v-model:value="formula2" :aria-label="t('sheet.validation.second-rule', '数据验证第二个规则值')" /></label>
       <Checkbox v-model:checked="allowBlank">{{ t('sheet.validation.allow-blank', '允许空白') }}</Checkbox>
-      <details class="validation-options" :open="advancedOptionsOpen" @toggle="advancedOptionsOpen = ($event.target as HTMLDetailsElement).open">
-        <summary>
+      <div class="validation-options">
+        <Button type="text" class="validation-options-trigger" :aria-expanded="advancedOptionsOpen" @click="advancedOptionsOpen = !advancedOptionsOpen">
           {{ t('sheet.validation.options', '选项') }}
           <ChevronUp v-if="advancedOptionsOpen" :size="14" />
           <ChevronDown v-else :size="14" />
-        </summary>
-        <div class="validation-options-content">
+        </Button>
+        <div v-if="advancedOptionsOpen" class="validation-options-content">
           <template v-if="isList">
             <Checkbox v-model:checked="showDropDown">{{ t('sheet.validation.show-dropdown', '显示下拉选项') }}</Checkbox>
             <label>{{ t('sheet.validation.display-mode', '显示方式') }}
@@ -308,13 +351,13 @@ function columnLabel(index: number): string {
           <label v-if="showErrorMessage">{{ t('sheet.validation.error-title', '错误标题') }}<Input v-model:value="errorTitle" :aria-label="t('sheet.validation.error-title', '数据验证错误标题')" /></label>
           <label v-if="showErrorMessage">{{ t('sheet.validation.error-message', '错误消息') }}<Input v-model:value="error" :aria-label="t('sheet.validation.error-message', '数据验证错误消息')" /></label>
         </div>
-      </details>
+      </div>
       <p v-if="message" class="validation-error" role="alert">{{ message }}</p>
       <div class="validation-actions">
         <Button v-if="rule" danger :disabled="busy" @click="clearRule(rule)">{{ t('sheet.validation.clear', '清除规则') }}</Button>
-        <Button type="primary" :loading="busy" @click="apply">{{ t('common.apply', '应用') }}</Button>
+        <Button type="primary" :loading="busy" html-type="submit">{{ t('common.apply', '应用') }}</Button>
       </div>
-    </form>
+    </Form>
   </aside>
 </template>
 
@@ -322,23 +365,22 @@ function columnLabel(index: number): string {
 .validation-sidebar { display: flex; flex: 0 0 312px; width: 312px; min-width: 280px; min-height: 0; flex-direction: column; border-left: 1px solid #dfe5ee; color: #172033; background: #fff; }
 .validation-header { display: flex; box-sizing: border-box; min-height: 48px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 16px 16px 8px; color: #344054; font-size: 16px; font-weight: 500; }
 .validation-header-actions { display: flex; align-items: center; gap: 4px; }
-.validation-body { box-sizing: border-box; min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 8px 16px 16px; }
+.validation-body { box-sizing: border-box; min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 0 16px 16px; }
 .validation-list { display: flex; flex-direction: column; gap: 8px; }
 .validation-empty { margin: 0; color: #667085; }
 .validation-rule { position: relative; display: flex; align-items: center; gap: 8px; margin: 0 -8px; border-radius: 6px; padding: 8px 36px 8px 8px; }
 .validation-rule:hover, .validation-rule:focus-within { background: #f2f4f7; }
 .validation-rule.is-selected { outline: 1px solid #c7d7fe; outline-offset: -1px; }
-.validation-rule-main { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 3px; border: 0; padding: 4px; background: transparent; color: inherit; text-align: start; cursor: pointer; }
+.validation-rule-main { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 3px; padding: 4px; color: inherit; text-align: start; }
 .validation-rule-main span { overflow: hidden; max-width: 100%; color: #667085; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .validation-rule-delete { position: absolute; top: 50%; right: 8px; display: none; transform: translateY(-50%); }
 .validation-rule:hover .validation-rule-delete, .validation-rule:focus-within .validation-rule-delete { display: inline-flex; }
-.validation-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.validation-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding-top: 8px; padding-bottom: 8px; }
 .validation-form > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
 .validation-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: #667085; font-size: 12px; }
 .validation-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .validation-options { min-width: 0; }
-.validation-options summary { display: flex; align-items: center; gap: 4px; color: #344054; cursor: pointer; font-size: 13px; list-style: none; }
-.validation-options summary::-webkit-details-marker { display: none; }
+.validation-options-trigger { display: inline-flex; align-items: center; gap: 4px; padding-inline: 0; color: #344054; font-size: 13px; }
 .validation-options-content { display: grid; gap: 10px; padding-top: 12px; }
 .validation-options-content > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
 .validation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }

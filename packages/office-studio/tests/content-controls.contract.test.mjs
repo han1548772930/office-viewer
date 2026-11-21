@@ -73,33 +73,69 @@ test('placeholder reset restores placeholder text and remains undoable', () => {
 })
 
 test('repeating-section item duplication copies nested controls and deletion shifts following ranges', () => {
-  const { studio, document } = createDocument('AB')
+  const { studio, document } = createDocument('ABC')
   const section = document.addContentControl({
-    id: 'section', type: 'repeatingSection', blockId: 'paragraph-1', startOffset: 0, endOffset: 2,
+    id: 'section', type: 'repeatingSection', blockId: 'paragraph-1', startOffset: 0, endOffset: 1,
     repeatingSection: { doNotAllowInsertDelete: false },
   })
-  const first = document.addContentControl({
-    id: 'item-1', type: 'repeatingSectionItem', blockId: 'paragraph-1', startOffset: 0, endOffset: 1, parentId: section.id,
-  })
+  const first = document.getContentControls().find(control => control.getType() === 'repeatingSectionItem')
+  assert.ok(first)
   document.addContentControl({
     id: 'child-1', type: 'text', blockId: 'paragraph-1', startOffset: 0, endOffset: 1, parentId: first.id,
   })
-  const second = document.addContentControl({
-    id: 'item-2', type: 'repeatingSectionItem', blockId: 'paragraph-1', startOffset: 1, endOffset: 2, parentId: section.id,
+  const after = document.addContentControl({
+    id: 'after', type: 'text', blockId: 'paragraph-1', startOffset: 2, endOffset: 3,
   })
 
   assert.equal(first.duplicateRepeatingItem(), true)
-  assert.equal(document.getText(), 'AAB')
+  assert.equal(document.getText(), 'AABC')
   const duplicatedItem = document.getContentControls().find(control => control.getType() === 'repeatingSectionItem'
     && control.getRange().startOffset === 1)
   assert.ok(duplicatedItem)
   assert.equal(duplicatedItem.getInfo().parentId, section.id)
   assert.equal(document.getContentControls().some(control => control.getInfo().parentId === duplicatedItem.id), true)
-  assert.deepEqual(second.getRange(), { blockId: 'paragraph-1', startOffset: 2, endOffset: 3 })
+  assert.deepEqual(after.getRange(), { blockId: 'paragraph-1', startOffset: 3, endOffset: 4 })
   assert.equal(duplicatedItem.deleteRepeatingItem(), true)
-  assert.equal(document.getText(), 'AB')
-  assert.deepEqual(section.getRange(), { blockId: 'paragraph-1', startOffset: 0, endOffset: 2 })
-  assert.deepEqual(second.getRange(), { blockId: 'paragraph-1', startOffset: 1, endOffset: 2 })
+  assert.equal(document.getText(), 'ABC')
+  assert.deepEqual(section.getRange(), { blockId: 'paragraph-1', startOffset: 0, endOffset: 1 })
+  assert.deepEqual(after.getRange(), { blockId: 'paragraph-1', startOffset: 2, endOffset: 3 })
+  studio.dispose()
+})
+
+test('picture content control replacement inserts a persistent image block and updates it in place', () => {
+  const { studio, document } = createDocument('Before Choose picture After')
+  const picture = document.addContentControl({
+    id: 'picture', type: 'picture', blockId: 'paragraph-1', startOffset: 7, endOffset: 21, placeholder: 'Choose picture',
+  })
+  const suffix = document.addContentControl({
+    id: 'suffix', type: 'text', blockId: 'paragraph-1', startOffset: 22, endOffset: 27,
+  })
+
+  assert.equal(picture.replacePicture({ src: 'data:image/png;base64,AA==', alt: 'First', width: 40, height: 20 }), true)
+  const pictureBlockId = picture.getInfo().metadata.pictureBlockId
+  let imageBlocks = document.getModel().blocks.filter(block => block.type === 'image')
+  assert.equal(imageBlocks.length, 1)
+  assert.equal(imageBlocks[0].id, pictureBlockId)
+  assert.equal(imageBlocks[0].metadata.image.alt, 'First')
+  assert.deepEqual(document.getModel().blocks.map(block => block.runs?.map(run => run.text).join('')),
+    ['Before ', '', ' After'])
+  assert.equal(suffix.getText(), 'After')
+  assert.equal(suffix.getRange().blockId, document.getModel().blocks[2].id)
+  assert.equal(document.undo(), true)
+  assert.equal(document.getModel().blocks.some(block => block.type === 'image'), false)
+  assert.equal(document.redo(), true)
+
+  assert.equal(picture.replacePicture({ src: 'data:image/png;base64,AQ==', alt: 'Second', width: 80, height: 40 }), true)
+  imageBlocks = document.getModel().blocks.filter(block => block.type === 'image')
+  assert.equal(imageBlocks.length, 1)
+  assert.equal(imageBlocks[0].id, pictureBlockId)
+  assert.equal(imageBlocks[0].metadata.image.alt, 'Second')
+  assert.equal(suffix.getText(), 'After')
+  assert.equal(picture.resetPlaceholder(), true)
+  assert.equal(document.getModel().blocks.some(block => block.type === 'image'), false)
+  assert.equal(document.getText(), 'Before Choose picture After')
+  assert.equal(suffix.getText(), 'After')
+  assert.equal(picture.getInfo().showingPlaceholder, true)
   studio.dispose()
 })
 
@@ -168,5 +204,22 @@ test('group ranges retain explicit parent structure and can be removed as a tree
   assert.equal(child.getInfo().parentId, parent.getId())
   assert.equal(parent.remove(), true)
   assert.deepEqual(document.getContentControls(), [])
+  studio.dispose()
+})
+
+test('adding a repeating section creates its initial item in the same undoable mutation', () => {
+  const { studio, document } = createDocument('Repeat me')
+  const section = document.addContentControl({
+    id: 'repeating-section', type: 'repeatingSection', blockId: 'paragraph-1', startOffset: 0, endOffset: 9,
+    placement: 'block', repeatingSection: { doNotAllowInsertDelete: false },
+  })
+  const items = document.getContentControls().filter(control => control.getType() === 'repeatingSectionItem')
+  assert.equal(items.length, 1)
+  assert.equal(items[0].getInfo().parentId, section.id)
+  assert.deepEqual(items[0].getRange(), section.getRange())
+  assert.equal(document.undo(), true)
+  assert.equal(document.getContentControls().length, 0)
+  assert.equal(document.redo(), true)
+  assert.equal(document.getContentControls().filter(control => control.getType() === 'repeatingSectionItem').length, 1)
   studio.dispose()
 })

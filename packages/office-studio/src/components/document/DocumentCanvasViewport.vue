@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { Input } from 'antdv-next'
 import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
@@ -28,7 +29,11 @@ const emit = defineEmits<{
 }>()
 const scrollRef = ref<HTMLDivElement | null>(null)
 const hostRef = ref<HTMLDivElement | null>(null)
-const inputRef = ref<HTMLTextAreaElement | null>(null)
+const inputRef = ref<{ focus: (options?: { preventScroll?: boolean; cursor?: 'start' | 'end' | 'all' }) => void; blur: () => void; $el: HTMLElement } | null>(null)
+function inputElement(): HTMLTextAreaElement | null {
+  const element = inputRef.value?.$el
+  return element instanceof HTMLTextAreaElement ? element : element?.querySelector('textarea') ?? null
+}
 const layout = shallowRef<DocumentLayout>(emptyLayout())
 const preview = shallowRef<DocumentModel | null>(null)
 const compositionSelection = shallowRef<DocumentSelection | null>(null)
@@ -310,9 +315,10 @@ function beforeInput(event: InputEvent) {
 }
 
 function inputFallback() {
-  if (composing.value || !inputRef.value?.value) return
-  const text = inputRef.value.value
-  inputRef.value.value = ''
+  const input = inputElement()
+  if (composing.value || !input?.value) return
+  const text = input.value
+  input.value = ''
   if (suppressCompositionInput) { suppressCompositionInput = false; return }
   emit('command', { id: 'doc.command.insert-text', text })
 }
@@ -339,7 +345,8 @@ function compositionEnd(event: CompositionEvent) {
   composing.value = false
   compositionSelection.value = null
   preview.value = null
-  if (inputRef.value) inputRef.value.value = ''
+  const input = inputElement()
+  if (input) input.value = ''
   if (text) emit('command', { id: 'doc.command.insert-text', text })
   pendingText = ''
   suppressCompositionInput = true
@@ -472,7 +479,7 @@ defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => lay
     <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
-    <textarea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
+    <Input.TextArea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" :bordered="false" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
     <span v-if="error" class="canvas-error" role="alert">{{ error }}</span>
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
   </div>
@@ -484,6 +491,7 @@ defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => lay
 .document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; cursor: text; outline: none; }
 .document-scroll-spacer { pointer-events: none; }
 .document-input-bridge { position: absolute; z-index: 2; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
+.document-input-bridge :deep(textarea) { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .backend-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .canvas-error { position: absolute; top: 20px; left: 20px; right: 20px; padding: 12px; border: 1px solid #efb3b3; border-radius: 4px; color: #a02f2f; background: #fff3f3; }
 </style>
