@@ -22,6 +22,7 @@ export interface ExcelCellView {
   displayValue?: string
   rawNumberFormat?: string
   wrap?: boolean
+  wrapStrategy?: 'overflow' | 'wrap' | 'clip'
   border?: Record<string, unknown>
   rotation?: number
   rotationVertical?: boolean
@@ -80,7 +81,7 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   fontSize: cell.style.font.size, fontFamily: cell.style.font.family,
   numberFormat: classifySheetNumberFormat(cell.style.numberFormat) === 'custom' ? undefined : classifySheetNumberFormat(cell.style.numberFormat) as SheetNumberFormat,
   cachedValue: cell.formula ? cell.display : undefined, rawValue: cell.value, displayValue: cell.display,
-  rawNumberFormat: cell.style.numberFormat, wrap: cell.style.wrap, border: cell.style.border,
+  rawNumberFormat: cell.style.numberFormat, wrap: cell.style.wrap, wrapStrategy: cell.style.wrapStrategy, border: cell.style.border,
   rotation: cell.style.rotation === 255 ? 0 : cell.style.rotation,
   rotationVertical: cell.style.rotationVertical === true || cell.style.rotation === 255,
   indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
@@ -183,7 +184,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
             },
             fill: cell.background ?? previous?.style.fill ?? '#fff',
             horizontal: cell.align ?? previous?.style.horizontal ?? 'left', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
-            wrap: cell.wrap ?? previous?.style.wrap ?? false, border: cell.border ?? previous?.style.border,
+            wrap: cell.wrap ?? previous?.style.wrap ?? false, wrapStrategy: cell.wrapStrategy ?? previous?.style.wrapStrategy, border: cell.border ?? previous?.style.border,
             rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,
             shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,
           },

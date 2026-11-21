@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Input, Modal, Select } from 'antdv-next'
+import { Button, Form, FormItem, Input, Modal, Select } from 'antdv-next'
 import type { DocumentPermissionRule, DocumentPermissionScope } from '../../domain/model.ts'
 import { validateDocumentPermissionRules } from '../../features/document/permissions/document-permissions.ts'
 import { createDocumentPermissionRule, removeDocumentPermissionRule, upsertDocumentPermissionRule, type DocumentPermissionTargetOption } from '../../features/document/permissions/permission-rules.ts'
@@ -129,36 +129,36 @@ function ruleLabel(rule: DocumentPermissionRule): string {
         </Button>
         <p v-if="!rules.length" class="permission-empty">{{ t('doc.permissions.empty', 'No permission rules') }}</p>
       </aside>
-      <section class="permission-form" :aria-label="t('doc.permissions.rule-settings', 'Rule settings')">
-        <label>{{ t('doc.permissions.scope', 'Scope') }}
+      <Form layout="vertical" class="permission-form" :aria-label="t('doc.permissions.rule-settings', 'Rule settings')">
+        <FormItem :label="t('doc.permissions.scope', 'Scope')">
           <Select :value="scope" :options="[
             { value: 'document', label: scopeName('document') },
             { value: 'section', label: scopeName('section') },
             { value: 'paragraph', label: scopeName('paragraph') },
             { value: 'entity', label: scopeName('entity') },
           ]" :disabled="readOnly" @update:value="changeScope($event as DocumentPermissionScope)" />
-        </label>
-        <label v-if="scope !== 'document'">{{ t('doc.permissions.target', 'Target') }}
+        </FormItem>
+        <FormItem v-if="scope !== 'document'" :label="t('doc.permissions.target', 'Target')">
           <Select v-model:value="targetId" show-search :options="scopedTargets.map(target => ({ value: target.id, label: target.label }))" :disabled="readOnly" :placeholder="t('doc.permissions.choose-target', 'Choose a target')" />
-        </label>
-        <label>{{ t('doc.permissions.action', 'Action') }}
+        </FormItem>
+        <FormItem :label="t('doc.permissions.action', 'Action')">
           <Select v-model:value="action" :options="actionOptions" :disabled="readOnly" />
-        </label>
-        <label>{{ t('doc.permissions.effect', 'Effect') }}
+        </FormItem>
+        <FormItem :label="t('doc.permissions.effect', 'Effect')">
           <Select v-model:value="effect" :options="[
             { value: 'allow', label: t('doc.permissions.allow', 'Allow') },
             { value: 'deny', label: t('doc.permissions.deny', 'Deny') },
           ]" :disabled="readOnly" />
-        </label>
-        <label>{{ t('doc.permissions.users', 'User IDs') }}
+        </FormItem>
+        <FormItem :label="t('doc.permissions.users', 'User IDs')">
           <Input.TextArea v-model:value="userIds" :disabled="readOnly" :placeholder="t('doc.permissions.users-placeholder', 'Leave empty to apply to all users')" :auto-size="{ minRows: 2, maxRows: 4 }" />
-        </label>
+        </FormItem>
         <p v-if="error" class="permission-error" role="alert">{{ error }}</p>
         <div class="permission-actions">
           <Button type="primary" :disabled="readOnly || (scope !== 'document' && !targetId)" @click="saveRule">{{ t('doc.permissions.save-rule', 'Save rule') }}</Button>
           <Button v-if="selectedRule" danger :disabled="readOnly" @click="deleteRule">{{ t('doc.permissions.delete-rule', 'Delete rule') }}</Button>
         </div>
-      </section>
+      </Form>
     </div>
   </Modal>
 </template>
@@ -171,7 +171,7 @@ function ruleLabel(rule: DocumentPermissionRule): string {
 .permission-list :deep(.ant-btn span) { overflow-wrap: anywhere; }
 .permission-empty { margin: 8px 4px; color: #687586; font-size: 12px; }
 .permission-form { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
-.permission-form label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
+.permission-form :deep(.ant-form-item) { margin-bottom: 0; }
 .permission-error { margin: 0; color: #b42318; font-size: 12px; overflow-wrap: anywhere; }
 .permission-actions { display: flex; gap: 8px; }
 @media (max-width: 600px) { .permission-panel { grid-template-columns: minmax(0, 1fr); } .permission-list { max-height: 150px; padding: 0 0 10px; border-inline-end: 0; border-bottom: 1px solid #e5e8ed; } }

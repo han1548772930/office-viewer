@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Input, Modal, Select, Switch } from 'antdv-next'
+import { Button, Form, FormItem, Input, Modal, Select, Switch } from 'antdv-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { ChartModel } from '../../domain/model'
@@ -102,15 +102,15 @@ function close() { if (!busy.value) emit('update:open', false) }
 
 <template>
   <Modal :open="open" :title="t('sheet.pivot-chart.title', '透视图')" :width="560" :footer="null" :mask-closable="!busy" @cancel="close">
-    <div class="pivot-chart-panel" data-testid="pivot-chart-panel">
-      <label>{{ t('sheet.pivot-chart.related-pivot', '关联透视表') }}<Select v-model:value="draft.pivotTableId" :options="pivotOptions" :aria-label="t('sheet.pivot-chart.related-pivot', '关联透视表')" :disabled="busy" /></label>
-      <label v-if="linkedCharts.length">{{ t('sheet.pivot-chart.edit-existing', '编辑已有透视图') }}<Select :value="draft.chartId" :options="[{ label: t('sheet.pivot-chart.create-new', '新建透视图'), value: '' }, ...linkedCharts.map((item: ChartModel, index: number) => ({ label: item.title || `${t('sheet.pivot-chart.title', '透视图')} ${index + 1}`, value: item.id }))]" :aria-label="t('sheet.pivot-chart.edit-existing', '选择透视图')" @change="chooseChart" /></label>
-      <label>{{ t('sheet.pivot-chart.type', '图表类型') }}<Select v-model:value="draft.type" :options="typeOptions" :aria-label="t('sheet.pivot-chart.type', '透视图类型')" :disabled="busy" /></label>
-      <label>{{ t('sheet.pivot-chart.chart-title', '标题') }}<Input v-model:value="draft.title" :aria-label="t('sheet.pivot-chart.chart-title', '透视图标题')" :maxlength="120" :disabled="busy" /></label>
-      <label>{{ t('sheet.pivot-chart.placement', '放置单元格') }}<Input v-model:value="draft.position" :aria-label="t('sheet.pivot-chart.placement', '透视图放置单元格')" placeholder="F2" :disabled="busy" /></label>
+    <Form layout="vertical" class="pivot-chart-panel" data-testid="pivot-chart-panel" @submit.prevent>
+      <FormItem :label="t('sheet.pivot-chart.related-pivot', '关联透视表')"><Select v-model:value="draft.pivotTableId" :options="pivotOptions" :aria-label="t('sheet.pivot-chart.related-pivot', '关联透视表')" :disabled="busy" /></FormItem>
+      <FormItem v-if="linkedCharts.length" :label="t('sheet.pivot-chart.edit-existing', '编辑已有透视图')"><Select :value="draft.chartId" :options="[{ label: t('sheet.pivot-chart.create-new', '新建透视图'), value: '' }, ...linkedCharts.map((item: ChartModel, index: number) => ({ label: item.title || `${t('sheet.pivot-chart.title', '透视图')} ${index + 1}`, value: item.id }))]" :aria-label="t('sheet.pivot-chart.edit-existing', '选择透视图')" @change="chooseChart" /></FormItem>
+      <FormItem :label="t('sheet.pivot-chart.type', '图表类型')"><Select v-model:value="draft.type" :options="typeOptions" :aria-label="t('sheet.pivot-chart.type', '透视图类型')" :disabled="busy" /></FormItem>
+      <FormItem :label="t('sheet.pivot-chart.chart-title', '标题')"><Input v-model:value="draft.title" :aria-label="t('sheet.pivot-chart.chart-title', '透视图标题')" :maxlength="120" :disabled="busy" /></FormItem>
+      <FormItem :label="t('sheet.pivot-chart.placement', '放置单元格')"><Input v-model:value="draft.position" :aria-label="t('sheet.pivot-chart.placement', '透视图放置单元格')" placeholder="F2" :disabled="busy" /></FormItem>
       <div class="pivot-chart-legend">
-        <label><Switch v-model:checked="draft.legendVisible" size="small" :aria-label="t('sheet.pivot-chart.show-legend', '显示图例')" :disabled="busy" />{{ t('sheet.pivot-chart.show-legend', '显示图例') }}</label>
-        <label v-if="draft.legendVisible">{{ t('sheet.pivot-chart.legend-position', '图例位置') }}<Select v-model:value="draft.legendPosition" :options="legendOptions" :aria-label="t('sheet.pivot-chart.legend-position', '图例位置')" :disabled="busy" /></label>
+        <FormItem :label="null"><Switch v-model:checked="draft.legendVisible" size="small" :aria-label="t('sheet.pivot-chart.show-legend', '显示图例')" :disabled="busy" />{{ t('sheet.pivot-chart.show-legend', '显示图例') }}</FormItem>
+        <FormItem v-if="draft.legendVisible" :label="t('sheet.pivot-chart.legend-position', '图例位置')"><Select v-model:value="draft.legendPosition" :options="legendOptions" :aria-label="t('sheet.pivot-chart.legend-position', '图例位置')" :disabled="busy" /></FormItem>
       </div>
       <p v-if="chart" class="pivot-chart-binding">{{ t('sheet.pivot-chart.binding', '当前图表绑定透视表 {id}').replace('{id}', chart.pivotTableId ?? '') }}</p>
       <p v-if="error" class="pivot-chart-error" role="alert">{{ error }}</p>
@@ -121,13 +121,14 @@ function close() { if (!busy.value) emit('update:open', false) }
         <Button :disabled="busy" @click="close">{{ t('sheet.pivot-chart.close', '关闭') }}</Button>
         <Button type="primary" :loading="busy" :disabled="!pivotTables.length" @click="apply">{{ t(draft.chartId ? 'sheet.pivot-chart.update' : 'sheet.pivot-chart.create', draft.chartId ? '更新透视图' : '创建透视图') }}</Button>
       </footer>
-    </div>
+    </Form>
   </Modal>
 </template>
 
 <style scoped>
 .pivot-chart-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px 18px; }
-.pivot-chart-panel > label, .pivot-chart-legend > label { display: grid; min-width: 0; gap: 5px; color: #536174; font-size: 12px; }
+.pivot-chart-panel :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
+.pivot-chart-legend :deep(.ant-form-item) { display: flex; align-items: center; }
 .pivot-chart-legend { display: flex; align-items: center; gap: 16px; }
 .pivot-chart-legend > label:first-child { display: flex; align-items: center; white-space: nowrap; }
 .pivot-chart-binding, .pivot-chart-error, .pivot-chart-status { grid-column: 1 / -1; margin: 0; font-size: 12px; }

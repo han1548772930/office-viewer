@@ -18,6 +18,7 @@ export interface CellStyle {
   horizontal: 'left' | 'center' | 'right' | 'justify'
   vertical: 'top' | 'middle' | 'bottom'
   wrap: boolean
+  wrapStrategy?: 'overflow' | 'wrap' | 'clip'
   numberFormat: string
   border?: Record<string, unknown>
   rotation?: number

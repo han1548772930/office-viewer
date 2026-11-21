@@ -8,8 +8,10 @@ export function createConditionalIconConfig(iconType: string): ConditionalIconCo
   const icons = conditionalIconPresets[iconType]
   if (!icons) throw new TypeError('请选择有效的图标集。')
   return icons.map((_icon, index) => ({
-    operator: index === icons.length - 1 ? 'lessThanOrEqual' : 'greaterThanOrEqual',
-    value: { type: 'percent', value: Math.round((icons.length - 1 - index) * 100 / icons.length) },
+    operator: index === icons.length - 1 ? 'lessThanOrEqual' : 'greaterThan',
+    value: index === icons.length - 1
+      ? { type: 'num', value: Number.MAX_SAFE_INTEGER }
+      : { type: 'num', value: (icons.length - 1 - index) * 10 },
     iconType, iconId: String(index),
   }))
 }

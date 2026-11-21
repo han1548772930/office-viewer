@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { Button, Popover, Tooltip } from 'antdv-next'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, useSlots, watch } from 'vue'
+import { Button, Menu, Popover, Tooltip } from 'antdv-next'
+import type { MenuInfo, MenuItemType } from 'antdv-next'
 import { MoreVertical } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import RibbonGridToolbar from './RibbonGridToolbar.vue'
-import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
+import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, ribbonInvocation, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
+import { createRibbonMenuModel, type RibbonMenuAction } from './ribbon-command-menu'
 
 const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: 'classic' | 'grid' }>(), { modelValue: undefined, direction: 'ltr', label: '功能区', variant: 'classic' })
 const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
 const id = useId()
+const slots = useSlots()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const popupScope = provideRibbonPopupScope(computed(() => props.direction))
 const themeStyle = useRibbonTheme()
@@ -34,7 +37,7 @@ const toolbar = ref<HTMLElement>()
 const measurer = ref<HTMLElement>()
 const tablist = ref<HTMLElement>()
 const moreButton = ref<HTMLElement>()
-const morePanel = ref<HTMLElement>()
+const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const availableWidth = ref(Number.POSITIVE_INFINITY)
 const measuredWidths = ref<Record<string, number>>({})
 const moreOpen = ref(false)
@@ -52,6 +55,28 @@ function groupsFor(ids: readonly string[]): RibbonGroup[] {
 }
 const visibleGroups = computed(() => groupsFor(fitted.value.visibleIds))
 const overflowGroups = computed(() => groupsFor(fitted.value.overflowIds))
+const overflowMenuModel = computed(() => {
+  const items: MenuItemType[] = []
+  const actions = new Map<string, RibbonMenuAction>()
+  overflowGroups.value.forEach((group, index) => {
+    const model = createRibbonMenuModel(group.items, (item) => slots[`item-${item.id}`]?.({
+      item,
+      overflow: true,
+      execute: (commandId: string, params?: unknown) => {
+        closeMore()
+        executeSlot(item, commandId, params)
+      },
+    }))
+    if (index > 0) items.push({ type: 'divider', key: `group-divider:${group.id}` })
+    if (group.title) items.push({ type: 'group', key: `group:${group.id}`, label: group.title, children: model.items })
+    else items.push(...model.items)
+    model.actions.forEach((action, key) => {
+      const rootItemId = key.split('::', 1)[0]
+      if (!slots[`item-${rootItemId}`]) actions.set(key, action)
+    })
+  })
+  return { items, actions }
+})
 
 function selectTab(tabId: string) {
   const tab = tabs.value.find((candidate) => candidate.id === tabId)
@@ -120,24 +145,24 @@ async function openMore() {
   popupScope.close()
   moreOpen.value = true
   await nextTick()
-  morePanel.value?.querySelector<HTMLElement>('button:not(:disabled), [role="combobox"]')?.focus()
+  const firstItem = moreMenuRef.value?.$el?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
+  if (firstItem) firstItem.focus()
+  else moreMenuRef.value?.focus()
 }
 
 function onMoreKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented) return
   if (event.key === 'Escape') { closeMore(event); return }
-  if (event.target instanceof HTMLElement && event.target.closest('[role="combobox"]')) return
-  const controls = Array.from(morePanel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), [role="combobox"]') ?? [])
-  if (!controls.length) return
-  const current = controls.findIndex((control) => control === event.target || control.contains(event.target as Node))
-  let next: number
-  if (event.key === 'ArrowDown') next = (current + 1) % controls.length
-  else if (event.key === 'ArrowUp') next = (current - 1 + controls.length) % controls.length
-  else if (event.key === 'Home') next = 0
-  else if (event.key === 'End') next = controls.length - 1
-  else return
-  event.preventDefault()
-  controls[next]?.focus()
+}
+
+function executeOverflowItem({ key }: MenuInfo) {
+  const action = overflowMenuModel.value.actions.get(String(key))
+  if (!action || action.item.disabled || action.item.hidden) return
+  const invocation = ribbonInvocation(action.item, action.value)
+  if (invocation) {
+    closeMore()
+    execute(invocation.commandId, invocation.params)
+  }
 }
 
 watch(activeId, (value) => {
@@ -187,15 +212,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
           <Popover v-model:open="moreOpen" trigger="click" :placement="direction === 'rtl' ? 'bottomLeft' : 'bottomRight'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
             <Tooltip :title="translate('common.more', '更多功能')"><Button type="text" size="small" class="ribbon-more-button" :aria-label="translate('common.more', '更多功能')" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><MoreVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
             <template #content>
-              <div ref="morePanel" class="ribbon-overflow-menu" role="menu" :dir="direction" :style="themeStyle" :aria-label="translate('common.more', '更多功能')" @keydown="onMoreKeydown">
-                <div v-for="group in overflowGroups" :key="group.id" class="ribbon-overflow-group" role="group" :aria-label="group.title">
-                  <div v-if="group.title" class="ribbon-overflow-title">{{ group.title }}</div>
-                  <template v-for="item in group.items" :key="item.id">
-                    <div v-if="$slots[`item-${item.id}`]" class="ribbon-custom-item"><slot :name="`item-${item.id}`" :item="item" :overflow="true" :execute="(commandId: string, params?: unknown) => executeSlot(item, commandId, params)" /></div>
-                    <RibbonItemControl v-else :item="item" overflow @execute="execute" />
-                  </template>
-                </div>
-              </div>
+              <Menu ref="moreMenuRef" class="ribbon-overflow-menu" :dir="direction" :style="themeStyle" :aria-label="translate('common.more', '更多功能')" :items="overflowMenuModel.items" :selectable="false" :trigger-sub-menu-action="'click'" @click="executeOverflowItem" @keydown.esc.capture="onMoreKeydown" />
             </template>
           </Popover>
         </span>
@@ -238,8 +255,10 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 .ribbon-custom-item { display: inline-flex; align-items: center; min-height: 28px; flex: 0 0 auto; }
 .ribbon-measurer { position: absolute; inset-inline-start: 0; top: 0; display: flex; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; contain: layout; }
 .ribbon-measure-item { display: inline-flex; flex: 0 0 auto; }
-.ribbon-overflow-menu { display: flex; flex-direction: column; width: max-content; min-width: min(210px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(520px, 70vh); overflow: auto; }
-.ribbon-overflow-group { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; }
-.ribbon-overflow-group + .ribbon-overflow-group { border-top: 1px solid var(--ribbon-border, #e2e8f0); }
-.ribbon-overflow-title { padding: 3px 6px; font-size: 11px; color: var(--ribbon-text-secondary, #64748b); }
+.ribbon-overflow-menu { box-sizing: border-box; width: max-content; min-width: min(210px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(520px, 70vh); overflow: auto; }
+.ribbon-overflow-menu :deep(.ant-menu-item-group-title) { padding: 3px 8px; color: var(--ribbon-text-secondary, #64748b); font-size: 11px; }
+.ribbon-overflow-menu :deep(.ant-menu-item), .ribbon-overflow-menu :deep(.ant-menu-submenu-title) { min-height: 30px; height: auto; line-height: 22px; padding-block: 4px; white-space: normal; }
+.ribbon-overflow-menu :deep(.ribbon-menu-item-label) { display: flex; min-width: 0; align-items: center; gap: 12px; }
+.ribbon-overflow-menu :deep(.ribbon-menu-item-text) { min-width: 0; overflow-wrap: anywhere; }
+.ribbon-overflow-menu :deep(.ribbon-menu-item-shortcut) { flex: 0 0 auto; margin-inline-start: auto; color: var(--ribbon-text-secondary, #94a3b8); font-size: 11px; }
 </style>

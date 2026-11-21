@@ -5,9 +5,9 @@ import {
   BadgeDollarSign, Baseline, BetweenHorizontalStart, Bold, Brush, Calculator, CalendarDays,
   ChartColumnIncreasing, ChartLine, ChartNoAxesColumnIncreasing, ChartNoAxesCombined, ChevronDown,
   ClipboardCheck, ClipboardPaste, Clock, Crosshair, DecimalsArrowLeft, DecimalsArrowRight, Expand,
-  Filter, FilterX, FunctionSquare, Grid2X2, Group, Italic, ListFilter, Minimize, PaintBucket, Palette,
+  Database, Filter, FilterX, FunctionSquare, Grid2X2, Group, Info, Italic, ListFilter, Minimize, PaintBucket, Palette,
   PanelBottom, PanelLeft, PanelRight, PanelTop, Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
-  RotateCw, Search, SearchCode, ShieldCheck, Shrink, Sigma, SquareCheck, SquareDashed, Strikethrough,
+  RotateCw, Search, SearchCode, Settings2, ShieldCheck, Shrink, Sigma, SquareCheck, SquareDashed, Strikethrough,
   TableCellsMerge, TableCellsSplit, TableProperties, TextCursor, Underline, Undo2, Ungroup, Workflow,
   WrapText, Percent,
 } from 'lucide-vue-next'
@@ -63,10 +63,14 @@ const colors = [
   { label: '浅蓝色', value: '#dceaff' }, { label: '浅绿色', value: '#dcf4e4' },
   { label: '浅红色', value: '#ffe0e0' }, { label: '黑色', value: '#1f2937' },
 ]
-const functionCategories = [...new Set(SHEET_FUNCTION_CATALOG.map(entry => entry.category))]
+const functionCategoryOrder = [
+  '常用与统计', '财务', '逻辑', '文本', '日期与时间', '查找与引用', '数学', '统计', '工程', '信息', '数据库',
+]
+const supportedFunctionCategories = new Set(SHEET_FUNCTION_CATALOG.map(entry => entry.category))
+const functionCategories = functionCategoryOrder.filter(category => supportedFunctionCategories.has(category))
 const functionCategoryIcons: Record<string, Component> = {
   '常用与统计': FunctionSquare, 数学: Sigma, 逻辑: Workflow, 统计: ChartNoAxesColumnIncreasing,
-  '查找与引用': SearchCode, 财务: BadgeDollarSign,
+  '查找与引用': SearchCode, 财务: BadgeDollarSign, 工程: Settings2, 信息: Info, 数据库: Database,
 }
 const textRotationOptions: Array<[number | 'v', string]> = [
   [0, '水平'], [-45, '左斜 45°'], [45, '右斜 45°'], ['v', '竖排'], [-90, '左转 90°'], [90, '右转 90°'],

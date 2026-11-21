@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Input, InputNumber, Modal, Select } from 'antdv-next'
+import { Button, Form, FormItem, Input, InputNumber, Modal, Select } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
 import { Trash2 } from 'lucide-vue-next'
 import type { PivotDateGroupType, PivotFieldModel, PivotFilterOperator, PivotManualGroup, PivotTableModel, WorkbookModel } from '../../../domain/model'
@@ -81,35 +81,37 @@ function confirm() {
 
 <template>
   <Modal :open="open" :title="`${kind === 'filter' ? '值筛选' : '字段分组'} · ${field.displayName ?? field.name}`" :width="440" :footer="null" :mask="false" :keyboard="!busy" destroy-on-hidden @cancel="!busy && emit('close')">
-    <div class="pivot-field-tools" data-testid="pivot-field-tools">
+    <Form layout="vertical" class="pivot-field-tools" data-testid="pivot-field-tools" @submit.prevent>
       <template v-if="kind === 'filter'">
-        <label>值字段<Select v-model:value="valueFieldId" :options="valueFields" :disabled="busy" aria-label="筛选值字段" /></label>
-        <label>筛选条件<Select v-model:value="operator" :options="PIVOT_VALUE_FILTER_OPTIONS" :disabled="busy" aria-label="值筛选条件" /></label>
-        <div class="pivot-tool-numbers"><label>{{ between ? '开始值' : '数值' }}<InputNumber v-model:value="expected" :disabled="busy" aria-label="筛选数值" /></label><label v-if="between">结束值<InputNumber v-model:value="expected2" :disabled="busy" aria-label="第二个筛选数值" /></label></div>
+        <FormItem label="值字段"><Select v-model:value="valueFieldId" :options="valueFields" :disabled="busy" aria-label="筛选值字段" /></FormItem>
+        <FormItem label="筛选条件"><Select v-model:value="operator" :options="PIVOT_VALUE_FILTER_OPTIONS" :disabled="busy" aria-label="值筛选条件" /></FormItem>
+        <div class="pivot-tool-numbers"><FormItem :label="between ? '开始值' : '数值'"><InputNumber v-model:value="expected" :disabled="busy" aria-label="筛选数值" /></FormItem><FormItem v-if="between" label="结束值"><InputNumber v-model:value="expected2" :disabled="busy" aria-label="第二个筛选数值" /></FormItem></div>
       </template>
       <template v-else>
-        <label>分组方式<Select v-model:value="groupMode" :disabled="busy" :options="[{ label: '数值分组', value: 'number', disabled: !numericDefaults }, { label: '日期分组', value: 'date' }, { label: '组合项目', value: 'manual' }]" aria-label="分组方式" /></label>
-        <div v-if="groupMode === 'number'" class="pivot-tool-numbers"><label>起始值<InputNumber v-model:value="groupStart" :disabled="busy" aria-label="分组起始值" /></label><label>结束值<InputNumber v-model:value="groupEnd" :disabled="busy" aria-label="分组结束值" /></label><label>间隔<InputNumber v-model:value="groupInterval" :disabled="busy" aria-label="分组间隔" /></label></div>
-        <label v-else-if="groupMode === 'date'">分组依据<Select v-model:value="dateGroup" :disabled="busy" :options="[{ label: '年', value: 'year' }, { label: '年-季度', value: 'quarter' }, { label: '年-月', value: 'month' }, { label: '年-月-日', value: 'day' }]" aria-label="日期分组依据" /></label>
+        <FormItem label="分组方式"><Select v-model:value="groupMode" :disabled="busy" :options="[{ label: '数值分组', value: 'number', disabled: !numericDefaults }, { label: '日期分组', value: 'date' }, { label: '组合项目', value: 'manual' }]" aria-label="分组方式" /></FormItem>
+        <div v-if="groupMode === 'number'" class="pivot-tool-numbers"><FormItem label="起始值"><InputNumber v-model:value="groupStart" :disabled="busy" aria-label="分组起始值" /></FormItem><FormItem label="结束值"><InputNumber v-model:value="groupEnd" :disabled="busy" aria-label="分组结束值" /></FormItem><FormItem label="间隔"><InputNumber v-model:value="groupInterval" :disabled="busy" aria-label="分组间隔" /></FormItem></div>
+        <FormItem v-else-if="groupMode === 'date'" label="分组依据"><Select v-model:value="dateGroup" :disabled="busy" :options="[{ label: '年', value: 'year' }, { label: '年-季度', value: 'quarter' }, { label: '年-月', value: 'month' }, { label: '年-月-日', value: 'day' }]" aria-label="日期分组依据" /></FormItem>
         <template v-else>
-          <div v-for="(group, index) in manualGroups" :key="index" class="pivot-manual-group"><Input v-model:value="group.name" :disabled="busy" :aria-label="`分组 ${index + 1} 名称`" /><span>{{ group.members.map(value => value == null || value === '' ? '（空白）' : String(value)).join('、') }}</span><Button type="text" :disabled="busy" :aria-label="`移除组 ${group.name}`" @click="manualGroups.splice(index, 1)"><Trash2 :size="16" /></Button></div>
-          <label>组名<Input v-model:value="groupName" :disabled="busy" aria-label="新分组名称" /></label>
-          <label>源项目<Select v-model:value="selectedMembers" mode="multiple" :options="memberOptions" :disabled="busy" aria-label="分组源项目" /></label>
+          <div v-for="(group, index) in manualGroups" :key="index" class="pivot-manual-group"><FormItem><Input v-model:value="group.name" :disabled="busy" :aria-label="`分组 ${index + 1} 名称`" /></FormItem><span>{{ group.members.map(value => value == null || value === '' ? '（空白）' : String(value)).join('、') }}</span><Button type="text" :disabled="busy" :aria-label="`移除组 ${group.name}`" @click="manualGroups.splice(index, 1)"><Trash2 :size="16" /></Button></div>
+          <FormItem label="组名"><Input v-model:value="groupName" :disabled="busy" aria-label="新分组名称" /></FormItem>
+          <FormItem label="源项目"><Select v-model:value="selectedMembers" mode="multiple" :options="memberOptions" :disabled="busy" aria-label="分组源项目" /></FormItem>
           <Button :disabled="busy || selectedMembers.length < 2" @click="addManualGroup">添加组</Button>
         </template>
       </template>
       <p v-if="localError || error" class="pivot-tool-error" role="alert">{{ localError || error }}</p>
       <div class="pivot-tool-actions"><Button v-if="kind === 'filter'" type="link" :disabled="busy || !field.valueFilter" @click="emit('apply', { kind: 'valueFilter', filter: null })">清除筛选</Button><Button v-else type="link" :disabled="busy || !hasGrouping" @click="clearGrouping">取消分组</Button><span /><Button :disabled="busy" @click="emit('close')">取消</Button><Button type="primary" :loading="busy" @click="confirm">确定</Button></div>
-    </div>
+    </Form>
   </Modal>
 </template>
 
 <style scoped>
 .pivot-field-tools { display: flex; flex-direction: column; gap: 16px; }
-.pivot-field-tools label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: #354152; font-size: 13px; }
+.pivot-field-tools :deep(.ant-form-item) { margin-bottom: 0; }
+.pivot-field-tools :deep(.ant-form-item-label) { padding-bottom: 6px; }
 .pivot-tool-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .pivot-tool-numbers :deep(.ant-input-number) { width: 100%; }
 .pivot-manual-group { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 8px; font-size: 12px; }
+.pivot-manual-group :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .pivot-manual-group span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pivot-tool-actions { display: flex; align-items: center; gap: 8px; padding-top: 12px; }
 .pivot-tool-actions > span { flex: 1; }

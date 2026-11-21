@@ -15,7 +15,6 @@ import { createWorkspaceFileOperations, workspaceFileNameError, type ExportTask,
 
 export function useWorkspaceController() {
   const editor = useEditorStore(studio.pinia)
-  const fileInput = ref<HTMLInputElement | null>(null)
   const notice = ref<{ type: NoticeType; message: string } | null>(null)
   const exportTask = ref<ExportTask | null>(null)
   const diagnosticsOpen = ref(false)
@@ -51,9 +50,6 @@ export function useWorkspaceController() {
     onExportTask: (task) => { exportTask.value = task },
     notify: showNotice,
   })
-
-  function requestImport(): void { fileInput.value?.click() }
-  function setFileInput(element: unknown): void { fileInput.value = element instanceof HTMLInputElement ? element : null }
 
   function cancelImport(): void {
     if (editor.state.parserStatus !== 'loading') return
@@ -104,14 +100,6 @@ export function useWorkspaceController() {
     }
   }
 
-  function onFileChange(event: Event): void {
-    const input = event.target
-    if (!(input instanceof HTMLInputElement)) return
-    const file = input.files?.[0]
-    if (file) void files.importFile(file)
-    input.value = ''
-  }
-
   function onExcelChange(view: ExcelWorkbookView): void { editor.replaceWorkbookFromView(view) }
   function onDocumentChange(model: DocumentModel): void { editor.replaceDocumentFromView(model) }
 
@@ -149,10 +137,10 @@ export function useWorkspaceController() {
   })
 
   return {
-    editor, studio, setFileInput, notice, activeFileName, excelView, documentApi, modified,
+    editor, studio, notice, activeFileName, excelView, documentApi, modified,
     exportTask, diagnosticsOpen, renameOpen, renameValue, renameError, pendingNewKind,
-    files, showNotice, requestImport, cancelImport, switchWorkspace, requestNew, createNew,
-    requestRename, renameFile, onFileChange, onExcelChange, onDocumentChange, saveWorkbook,
+    files, showNotice, cancelImport, switchWorkspace, requestNew, createNew,
+    requestRename, renameFile, onExcelChange, onDocumentChange, saveWorkbook,
     saveDocument, onDragOver, onDrop,
   }
 }

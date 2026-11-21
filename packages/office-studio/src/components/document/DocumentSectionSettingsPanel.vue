@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Drawer, InputNumber, Select } from 'antdv-next'
+import { Drawer, Form, FormItem, InputNumber, Select } from 'antdv-next'
 import { computed, inject, ref, watch } from 'vue'
 import type { DocumentSectionBreakType, DocumentSectionSetup } from '../../domain/model.ts'
 import { validateDocumentSectionSetupPatch } from '../../features/document/services/document-settings.ts'
@@ -47,29 +47,57 @@ watch(draft, value => {
 
 <template>
   <Drawer :open="open" :title="t('doc.section-settings.title', 'Section settings')" :width="300" placement="right" :mask="false" :destroy-on-close="true" @close="emit('update:open', false)">
-    <div class="section-settings">
-      <label v-if="sectionOptions.length">{{ t('doc.section-settings.section', 'Section') }}<Select :value="sectionId" :options="sectionOptions" @change="emit('selectSection', String($event))" /></label>
-      <label>{{ t('doc.section-settings.column-count', 'Column count') }}<InputNumber v-model:value="draft.columnCount" :min="1" :max="12" :step="1" :precision="0" /></label>
-      <label>{{ t('doc.section-settings.column-gap', 'Column gap') }} (px)<InputNumber v-model:value="draft.columnGap" :min="0" :max="1000" :step="1" :precision="1" :disabled="draft.columnCount === 1" /></label>
-      <label>{{ t('doc.section-settings.separator', 'Separator') }}<Select v-model:value="draft.columnSeparator" :options="separators" /></label>
-      <label v-if="sectionId !== 'first'">{{ t('doc.section-settings.section-start', 'Section starts') }}<Select v-model:value="sectionStartValue" :options="sectionStarts" /></label>
+    <Form :model="draft" layout="horizontal" class="section-settings">
+      <FormItem v-if="sectionOptions.length" :label="t('doc.section-settings.section', 'Section')">
+        <Select :value="sectionId" :options="sectionOptions" @change="emit('selectSection', String($event))" />
+      </FormItem>
+      <FormItem name="columnCount" :label="t('doc.section-settings.column-count', 'Column count')">
+        <InputNumber v-model:value="draft.columnCount" :min="1" :max="12" :step="1" :precision="0" />
+      </FormItem>
+      <FormItem name="columnGap" :label="`${t('doc.section-settings.column-gap', 'Column gap')} (px)`">
+        <InputNumber v-model:value="draft.columnGap" :min="0" :max="1000" :step="1" :precision="1" :disabled="draft.columnCount === 1" />
+      </FormItem>
+      <FormItem name="columnSeparator" :label="t('doc.section-settings.separator', 'Separator')">
+        <Select v-model:value="draft.columnSeparator" :options="separators" />
+      </FormItem>
+      <FormItem v-if="sectionId !== 'first'" name="sectionStart" :label="t('doc.section-settings.section-start', 'Section starts')">
+        <Select v-model:value="sectionStartValue" :options="sectionStarts" />
+      </FormItem>
       <div class="settings-heading">{{ t('doc.section-settings.page', 'Page size and margins') }}</div>
-      <label>{{ t('doc.section-settings.width', 'Width') }} (px)<InputNumber v-model:value="draft.width" :min="1" :step="1" :precision="1" /></label>
-      <label>{{ t('doc.section-settings.height', 'Height') }} (px)<InputNumber v-model:value="draft.height" :min="1" :step="1" :precision="1" /></label>
-      <label>{{ t('doc.section-settings.orientation', 'Orientation') }}<Select v-model:value="orientationValue" :options="orientations" /></label>
-      <label>{{ t('doc.section-settings.margin-top', 'Top margin') }} (px)<InputNumber v-model:value="draft.marginTop" :min="0" :step="1" :precision="1" /></label>
-      <label>{{ t('doc.section-settings.margin-bottom', 'Bottom margin') }} (px)<InputNumber v-model:value="draft.marginBottom" :min="0" :step="1" :precision="1" /></label>
-      <label>{{ t('doc.section-settings.margin-left', 'Left margin') }} (px)<InputNumber v-model:value="draft.marginLeft" :min="0" :step="1" :precision="1" /></label>
-      <label>{{ t('doc.section-settings.margin-right', 'Right margin') }} (px)<InputNumber v-model:value="draft.marginRight" :min="0" :step="1" :precision="1" /></label>
-      <label>{{ t('doc.section-settings.page-number-start', 'Page number starts at') }}<InputNumber v-model:value="draft.pageNumberStart" :min="1" :step="1" :precision="0" /></label>
+      <FormItem name="width" :label="`${t('doc.section-settings.width', 'Width')} (px)`">
+        <InputNumber v-model:value="draft.width" :min="1" :step="1" :precision="1" />
+      </FormItem>
+      <FormItem name="height" :label="`${t('doc.section-settings.height', 'Height')} (px)`">
+        <InputNumber v-model:value="draft.height" :min="1" :step="1" :precision="1" />
+      </FormItem>
+      <FormItem name="orientation" :label="t('doc.section-settings.orientation', 'Orientation')">
+        <Select v-model:value="orientationValue" :options="orientations" />
+      </FormItem>
+      <FormItem name="marginTop" :label="`${t('doc.section-settings.margin-top', 'Top margin')} (px)`">
+        <InputNumber v-model:value="draft.marginTop" :min="0" :step="1" :precision="1" />
+      </FormItem>
+      <FormItem name="marginBottom" :label="`${t('doc.section-settings.margin-bottom', 'Bottom margin')} (px)`">
+        <InputNumber v-model:value="draft.marginBottom" :min="0" :step="1" :precision="1" />
+      </FormItem>
+      <FormItem name="marginLeft" :label="`${t('doc.section-settings.margin-left', 'Left margin')} (px)`">
+        <InputNumber v-model:value="draft.marginLeft" :min="0" :step="1" :precision="1" />
+      </FormItem>
+      <FormItem name="marginRight" :label="`${t('doc.section-settings.margin-right', 'Right margin')} (px)`">
+        <InputNumber v-model:value="draft.marginRight" :min="0" :step="1" :precision="1" />
+      </FormItem>
+      <FormItem name="pageNumberStart" :label="t('doc.section-settings.page-number-start', 'Page number starts at')">
+        <InputNumber v-model:value="draft.pageNumberStart" :min="1" :step="1" :precision="0" />
+      </FormItem>
       <p v-if="error" class="settings-error" role="alert">{{ error }}</p>
-    </div>
+    </Form>
   </Drawer>
 </template>
 
 <style scoped>
 .section-settings { display: grid; gap: 10px; max-height: calc(100vh - 120px); overflow-y: auto; padding-inline-end: 2px; }
-.section-settings > label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 130px); align-items: center; gap: 8px; min-width: 0; }
+.section-settings :deep(.ant-form-item) { margin-bottom: 0; }
+.section-settings :deep(.ant-form-item-row) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, 130px); align-items: center; gap: 8px; }
+.section-settings :deep(.ant-form-item-label) { text-align: start; }
 .section-settings :deep(.ant-input-number), .section-settings :deep(.ant-select) { width: 100%; }
 .settings-heading { padding-top: 8px; font-size: 13px; font-weight: 500; }
 .settings-error { margin: 0; color: #b42318; overflow-wrap: anywhere; }

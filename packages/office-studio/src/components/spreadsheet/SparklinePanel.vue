@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, ColorPicker, Input, InputNumber, Modal, Select } from 'antdv-next'
+import { Button, ColorPicker, Form, FormItem, Input, InputNumber, Modal, Select } from 'antdv-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { SparklineEmptyCells, SparklineType } from '../../domain/model'
@@ -114,29 +114,30 @@ function remove() {
 
 <template>
   <Modal :open="open" :title="t(existing ? 'sheet.sparkline.title.edit' : 'sheet.sparkline.title.insert', existing ? '编辑迷你图' : '插入迷你图')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.cancel', '取消')" :confirm-loading="busy" :width="560" @ok="apply" @cancel="emit('update:open', false)">
-    <div class="sparkline-form">
-      <label>{{ t('sheet.sparkline.type', '类型') }}<Select v-model:value="type" :options="types" :aria-label="t('sheet.sparkline.type', '迷你图类型')" /></label>
-      <label>{{ t('sheet.sparkline.source-range', '源数据区域') }}<Input v-model:value="sourceRange" :aria-label="t('sheet.sparkline.source-range', '迷你图源数据区域')" placeholder="B1:E1" /></label>
-      <label>{{ t('sheet.sparkline.target-range', '放置区域') }}<Input v-model:value="targetRange" :aria-label="t('sheet.sparkline.target-range', '迷你图放置区域')" placeholder="F1" /></label>
-      <label>{{ t('sheet.sparkline.positive-color', '正值颜色') }}<ColorPicker v-model:value="color" value-format="hex" :aria-label="t('sheet.sparkline.positive-color', '迷你图正值颜色')" /></label>
-      <label>{{ t('sheet.sparkline.negative-color', '负值颜色') }}<ColorPicker v-model:value="negativeColor" value-format="hex" :aria-label="t('sheet.sparkline.negative-color', '迷你图负值颜色')" /></label>
-      <label>{{ t('sheet.sparkline.high-point-color', '高值点颜色') }}<ColorPicker v-model:value="highPointColor" value-format="hex" :aria-label="t('sheet.sparkline.high-point-color', '迷你图高值点颜色')" /></label>
-      <label>{{ t('sheet.sparkline.low-point-color', '低值点颜色') }}<ColorPicker v-model:value="lowPointColor" value-format="hex" :aria-label="t('sheet.sparkline.low-point-color', '迷你图低值点颜色')" /></label>
-      <label>{{ t('sheet.sparkline.empty-cells', '空单元格') }}<Select v-model:value="emptyCells" :options="emptyModes" :aria-label="t('sheet.sparkline.empty-cells', '迷你图空单元格处理')" /></label>
-      <label>{{ t('sheet.sparkline.axis', '坐标轴') }}<Select v-model:value="axis" :options="[{ label: t('sheet.sparkline.axis-individual', '每个迷你图单独缩放'), value: 'individual' }, { label: t('sheet.sparkline.axis-custom', '自定义范围'), value: 'custom' }]" :aria-label="t('sheet.sparkline.axis', '迷你图坐标轴')" /></label>
+    <Form layout="vertical" class="sparkline-form">
+      <FormItem name="type" :label="t('sheet.sparkline.type', '类型')"><Select v-model:value="type" :options="types" :aria-label="t('sheet.sparkline.type', '迷你图类型')" /></FormItem>
+      <FormItem name="sourceRange" :label="t('sheet.sparkline.source-range', '源数据区域')"><Input v-model:value="sourceRange" :aria-label="t('sheet.sparkline.source-range', '迷你图源数据区域')" placeholder="B1:E1" /></FormItem>
+      <FormItem name="targetRange" :label="t('sheet.sparkline.target-range', '放置区域')"><Input v-model:value="targetRange" :aria-label="t('sheet.sparkline.target-range', '迷你图放置区域')" placeholder="F1" /></FormItem>
+      <FormItem name="color" :label="t('sheet.sparkline.positive-color', '正值颜色')"><ColorPicker v-model:value="color" value-format="hex" :aria-label="t('sheet.sparkline.positive-color', '迷你图正值颜色')" /></FormItem>
+      <FormItem name="negativeColor" :label="t('sheet.sparkline.negative-color', '负值颜色')"><ColorPicker v-model:value="negativeColor" value-format="hex" :aria-label="t('sheet.sparkline.negative-color', '迷你图负值颜色')" /></FormItem>
+      <FormItem name="highPointColor" :label="t('sheet.sparkline.high-point-color', '高值点颜色')"><ColorPicker v-model:value="highPointColor" value-format="hex" :aria-label="t('sheet.sparkline.high-point-color', '迷你图高值点颜色')" /></FormItem>
+      <FormItem name="lowPointColor" :label="t('sheet.sparkline.low-point-color', '低值点颜色')"><ColorPicker v-model:value="lowPointColor" value-format="hex" :aria-label="t('sheet.sparkline.low-point-color', '迷你图低值点颜色')" /></FormItem>
+      <FormItem name="emptyCells" :label="t('sheet.sparkline.empty-cells', '空单元格')"><Select v-model:value="emptyCells" :options="emptyModes" :aria-label="t('sheet.sparkline.empty-cells', '迷你图空单元格处理')" /></FormItem>
+      <FormItem name="axis" :label="t('sheet.sparkline.axis', '坐标轴')"><Select v-model:value="axis" :options="[{ label: t('sheet.sparkline.axis-individual', '每个迷你图单独缩放'), value: 'individual' }, { label: t('sheet.sparkline.axis-custom', '自定义范围'), value: 'custom' }]" :aria-label="t('sheet.sparkline.axis', '迷你图坐标轴')" /></FormItem>
       <template v-if="isCustomAxis">
-        <label>{{ t('sheet.sparkline.minimum', '最小值') }}<InputNumber v-model:value="minimum" :aria-label="t('sheet.sparkline.minimum', '迷你图坐标轴最小值')" /></label>
-        <label>{{ t('sheet.sparkline.maximum', '最大值') }}<InputNumber v-model:value="maximum" :aria-label="t('sheet.sparkline.maximum', '迷你图坐标轴最大值')" /></label>
+        <FormItem name="minimum" :label="t('sheet.sparkline.minimum', '最小值')"><InputNumber v-model:value="minimum" :aria-label="t('sheet.sparkline.minimum', '迷你图坐标轴最小值')" /></FormItem>
+        <FormItem name="maximum" :label="t('sheet.sparkline.maximum', '最大值')"><InputNumber v-model:value="maximum" :aria-label="t('sheet.sparkline.maximum', '迷你图坐标轴最大值')" /></FormItem>
       </template>
       <p v-if="message" class="sparkline-error" role="alert">{{ message }}</p>
       <Button v-if="existing" type="text" danger :disabled="busy" @click="remove">{{ t('sheet.sparkline.remove', '清除目标区域迷你图') }}</Button>
-    </div>
+    </Form>
   </Modal>
 </template>
 
 <style scoped>
 .sparkline-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.sparkline-form > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
+.sparkline-form :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
+.sparkline-form :deep(.ant-form-item-label) { padding: 0 0 4px; text-align: start; }
 .sparkline-form :deep(.ant-color-picker-trigger), .sparkline-form :deep(.ant-input-number) { width: 100%; }
 .sparkline-error { grid-column: 1 / -1; margin: 0; color: #b42318; }
 @media (max-width: 560px) { .sparkline-form { grid-template-columns: minmax(0, 1fr); } }

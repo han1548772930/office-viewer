@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Input, Modal } from 'antdv-next'
+import { Button, ConfigProvider, Input, Modal, Upload } from 'antdv-next'
+import { X } from 'lucide-vue-next'
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { DocumentWorkbench, ExcelWorkbench, OfficeLocaleKey, OfficeTranslatorKey, type OfficeLocale } from '@office-studio/office-studio'
@@ -8,10 +9,10 @@ import { useWorkspaceController } from './useWorkspaceController'
 import type { FileAction } from './workspace-file-operations'
 
 const {
-  editor, studio, setFileInput, notice, activeFileName, excelView, documentApi, modified,
+  editor, studio, notice, activeFileName, excelView, documentApi, modified,
   exportTask, diagnosticsOpen, renameOpen, renameValue, renameError, pendingNewKind,
-  files, showNotice, requestImport, cancelImport, switchWorkspace, requestNew, createNew,
-  requestRename, renameFile, onFileChange, onExcelChange, onDocumentChange, saveWorkbook,
+  files, showNotice, cancelImport, switchWorkspace, requestNew, createNew,
+  requestRename, renameFile, onExcelChange, onDocumentChange, saveWorkbook,
   saveDocument, onDragOver, onDrop,
 } = useWorkspaceController()
 
@@ -19,6 +20,14 @@ interface WorkbenchHandle { save: () => void; focus?: () => void }
 const workbookRef = ref<WorkbenchHandle | null>(null)
 const documentRef = ref<WorkbenchHandle | null>(null)
 const { locale, t, te } = useI18n()
+const importTrigger = ref<{ $el: HTMLElement } | null>(null)
+function requestImport(): void { importTrigger.value?.$el.click() }
+function importSelectedFile(file: File): false { void files.importFile(file); return false }
+function setImportTrigger(element: unknown): void {
+  importTrigger.value = element && typeof element === 'object' && '$el' in element
+    ? element as { $el: HTMLElement }
+    : null
+}
 provide(OfficeLocaleKey, computed(() => locale.value as OfficeLocale))
 provide(OfficeTranslatorKey, (key, fallback) => {
   const normalized = key.replace(/^(sheet|doc|core)\./, '')
@@ -69,6 +78,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 </script>
 
 <template>
+  <ConfigProvider>
   <div class="app-shell" @dragover="onDragOver" @drop="onDrop">
     <WorkspaceHeader
       :active-kind="editor.state.activeKind" :file-name="activeFileName" :modified="modified"
@@ -76,16 +86,16 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale === 'en-US' ? 'en-US' : 'zh-CN'"
       @action="onHeaderAction" @switch="switchWorkspace" @locale="locale = $event"
     />
-    <input :ref="setFileInput" class="file-input" type="file" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :aria-label="t('workspace.choose-file')" @change="onFileChange">
+    <Upload accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="setImportTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
 
     <main :id="editor.state.activeKind === 'workbook' ? 'workbook-workspace' : 'document-workspace'" class="workspace" role="tabpanel" :aria-labelledby="editor.state.activeKind === 'workbook' ? 'workbook-tab' : 'document-tab'" :aria-label="editor.state.activeKind === 'workbook' ? t('workspace.workbook-area') : t('workspace.document-area')">
       <div v-if="editor.state.parserStatus === 'loading'" class="workspace-task-strip" role="status" aria-live="polite">
         <span class="workspace-task-spinner" aria-hidden="true" /><span>{{ editor.state.parserMessage }}</span>
-        <button type="button" @click="cancelImport">{{ t('workspace.cancel-import') }}</button>
+        <Button size="small" @click="cancelImport">{{ t('workspace.cancel-import') }}</Button>
       </div>
       <div v-if="editor.state.parserStatus === 'error'" class="parser-error" role="alert">
         <span>{{ editor.state.parserMessage }}</span>
-        <button type="button" :aria-label="t('workspace.close-error')" @click="editor.state.parserStatus = 'idle'">×</button>
+        <Button type="text" size="small" :aria-label="t('workspace.close-error')" @click="editor.state.parserStatus = 'idle'"><X :size="16" /></Button>
       </div>
       <KeepAlive :max="2">
         <ExcelWorkbench
@@ -123,4 +133,5 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       </ul>
     </Modal>
   </div>
+  </ConfigProvider>
 </template>

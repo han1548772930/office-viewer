@@ -5,7 +5,7 @@ import {
   IndentDecrease, IndentIncrease, Italic, Layers2, Link, List, ListOrdered, ListTodo, ListTree, LockKeyhole, MessageSquarePlus,
   Minimize, NotebookPen, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
   SeparatorHorizontal, ShieldCheck, Sigma, Smile, SquareCheckBig, Strikethrough, Subscript, Superscript,
-  TextCursorInput, Trash2, Underline, Undo2,
+  TextCursorInput, Trash2, Underline, Undo2, X,
 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
@@ -211,7 +211,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       ] },
     ] },
   ]
-  if (context.headerFooter?.visible) {
+  if (context.headerFooter?.visible && context.mode !== 'modern') {
     const headerFooter = context.headerFooter
     const headerFooterControl = (kind: HeaderFooterRibbonKind, title: string, icon: Component, order: number): RibbonItem => ({
       id: `doc-header-footer-${kind}`,
@@ -225,6 +225,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       popupCommandId: 'doc.operation.header-footer-control',
       gridLayout: { row: 1, column: order + 1, rowSpan: 2, showLabel: true },
     })
+    // Univer 1.6.0 docs-ui/src/menu/header-footer-ribbon.ts registers four groups and a close command.
     tabs.push({
       id: 'header-footer',
       title: '页眉和页脚',
@@ -239,7 +240,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           headerFooterControl('navigation', '导航', PanelTop, 1),
           headerFooterControl('options', '选项', FileCog, 2),
           headerFooterControl('position', '位置', IndentIncrease, 3),
-          action('doc-header-footer-close', '关闭页眉和页脚', RemoveFormatting, 'doc.operation.close-header-footer', undefined, {
+          action('doc-header-footer-close', '关闭页眉和页脚', X, 'doc.operation.close-header-footer', undefined, {
             order: 5,
             disabled: headerFooter.disabled,
             showLabel: true,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Checkbox, Drawer, InputNumber, Select, Tooltip } from 'antdv-next'
+import { Button, Checkbox, Drawer, Form, FormItem, InputNumber, Select, Tooltip } from 'antdv-next'
 import { computed, inject, ref, watch } from 'vue'
 import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from 'lucide-vue-next'
 import type { DocumentParagraphStyle } from '../../domain/model.ts'
@@ -55,7 +55,7 @@ watch(draft, value => {
 
 <template>
   <Drawer :open="open" :title="t('doc.paragraph-settings.title', 'Paragraph settings')" :width="300" placement="right" :mask="false" :destroy-on-close="true" @close="emit('update:open', false)">
-    <div class="paragraph-settings">
+    <Form :model="draft" layout="horizontal" class="paragraph-settings">
       <section>
         <div class="settings-heading">{{ t('doc.paragraph-settings.alignment', 'Alignment') }}</div>
         <div class="alignment-buttons" role="group" :aria-label="t('doc.paragraph-settings.alignment', 'Alignment')">
@@ -68,32 +68,53 @@ watch(draft, value => {
       </section>
       <fieldset>
         <legend>{{ t('doc.paragraph-settings.indentation', 'Indentation') }}</legend>
-        <label>{{ t('doc.paragraph-settings.left-indent', 'Left indent') }} (px)<InputNumber v-model:value="draft.indentStart" :min="0" :max="100" :step="0.1" :precision="1" /></label>
-        <label>{{ t('doc.paragraph-settings.right-indent', 'Right indent') }} (px)<InputNumber v-model:value="draft.indentEnd" :min="0" :max="100" :step="0.1" :precision="1" /></label>
-        <label>{{ t('doc.paragraph-settings.first-line-indent', 'First-line indent') }} (px)<InputNumber v-model:value="draft.indentFirstLine" :min="0" :max="100" :step="0.1" :precision="1" /></label>
-        <label>{{ t('doc.paragraph-settings.hanging-indent', 'Hanging indent') }} (px)<InputNumber v-model:value="draft.hanging" :min="0" :max="100" :step="0.1" :precision="1" /></label>
+        <FormItem name="indentStart" :label="`${t('doc.paragraph-settings.left-indent', 'Left indent')} (px)`">
+          <InputNumber v-model:value="draft.indentStart" :min="0" :max="100" :step="0.1" :precision="1" />
+        </FormItem>
+        <FormItem name="indentEnd" :label="`${t('doc.paragraph-settings.right-indent', 'Right indent')} (px)`">
+          <InputNumber v-model:value="draft.indentEnd" :min="0" :max="100" :step="0.1" :precision="1" />
+        </FormItem>
+        <FormItem name="indentFirstLine" :label="`${t('doc.paragraph-settings.first-line-indent', 'First-line indent')} (px)`">
+          <InputNumber v-model:value="draft.indentFirstLine" :min="0" :max="100" :step="0.1" :precision="1" />
+        </FormItem>
+        <FormItem name="hanging" :label="`${t('doc.paragraph-settings.hanging-indent', 'Hanging indent')} (px)`">
+          <InputNumber v-model:value="draft.hanging" :min="0" :max="100" :step="0.1" :precision="1" />
+        </FormItem>
       </fieldset>
       <fieldset>
         <legend>{{ t('doc.paragraph-settings.spacing', 'Spacing') }}</legend>
-        <label>{{ t('doc.paragraph-settings.before', 'Before') }} (px)<InputNumber v-model:value="draft.spaceBefore" :min="0" :max="100" :step="0.1" :precision="1" /></label>
-        <label>{{ t('doc.paragraph-settings.after', 'After') }} (px)<InputNumber v-model:value="draft.spaceAfter" :min="0" :max="100" :step="0.1" :precision="1" /></label>
-        <label>{{ t('doc.paragraph-settings.line-rule', 'Line spacing rule') }}<Select :value="draft.spacingRule ?? 'auto'" :options="spacingRules" @change="setSpacingRule" /></label>
-        <label>{{ t('doc.paragraph-settings.line-spacing', 'Line spacing') }}<InputNumber v-model:value="draft.lineHeight" v-bind="lineSpacingRange" /></label>
+        <FormItem name="spaceBefore" :label="`${t('doc.paragraph-settings.before', 'Before')} (px)`">
+          <InputNumber v-model:value="draft.spaceBefore" :min="0" :max="100" :step="0.1" :precision="1" />
+        </FormItem>
+        <FormItem name="spaceAfter" :label="`${t('doc.paragraph-settings.after', 'After')} (px)`">
+          <InputNumber v-model:value="draft.spaceAfter" :min="0" :max="100" :step="0.1" :precision="1" />
+        </FormItem>
+        <FormItem name="spacingRule" :label="t('doc.paragraph-settings.line-rule', 'Line spacing rule')">
+          <Select :value="draft.spacingRule ?? 'auto'" :options="spacingRules" @change="setSpacingRule" />
+        </FormItem>
+        <FormItem name="lineHeight" :label="t('doc.paragraph-settings.line-spacing', 'Line spacing')">
+          <InputNumber v-model:value="draft.lineHeight" v-bind="lineSpacingRange" />
+        </FormItem>
       </fieldset>
-      <Checkbox v-model:checked="draft.wordWrap">{{ t('doc.paragraph-settings.word-wrap', 'Wrap text') }}</Checkbox>
+      <FormItem name="wordWrap" class="paragraph-wrap-item">
+        <Checkbox v-model:checked="draft.wordWrap">{{ t('doc.paragraph-settings.word-wrap', 'Wrap text') }}</Checkbox>
+      </FormItem>
       <p v-if="error" class="settings-error" role="alert">{{ error }}</p>
-    </div>
+    </Form>
   </Drawer>
 </template>
 
 <style scoped>
 .paragraph-settings { display: grid; gap: 14px; }
+.paragraph-settings :deep(.ant-form-item) { margin-bottom: 0; }
+.paragraph-settings :deep(.ant-form-item-row) { display: grid; grid-template-columns: minmax(0, 1fr) 140px; align-items: center; gap: 10px; }
+.paragraph-settings :deep(.ant-form-item-label) { text-align: start; }
+.paragraph-settings :deep(.paragraph-wrap-item .ant-form-item-row) { display: block; }
 .settings-heading { margin-bottom: 10px; font-size: 13px; font-weight: 500; }
 .alignment-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; border: 1px solid #e5e8ed; padding: 4px; }
 .alignment-buttons :deep(.ant-btn) { width: 100%; aspect-ratio: 1; padding: 0; }
-.paragraph-settings > label, fieldset label { display: grid; grid-template-columns: minmax(0, 1fr) 140px; align-items: center; gap: 10px; min-width: 0; }
 fieldset { display: grid; gap: 9px; min-width: 0; margin: 0; padding: 10px 0 0; border: 0; border-top: 1px solid #e5e8ed; }
 legend { padding-inline-end: 8px; font-size: 13px; }
-fieldset label :deep(.ant-input-number), fieldset label :deep(.ant-select) { width: 100%; }
+.paragraph-settings :deep(.ant-input-number), .paragraph-settings :deep(.ant-select) { width: 100%; }
 .settings-error { margin: 0; color: #b42318; overflow-wrap: anywhere; }
 </style>

@@ -1,6 +1,6 @@
 import type { ExcelSheetView, ExcelWorkbookView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
-import { cellKey, parseCellKey } from './sheet-workbench.ts'
+import { cellKey, parseCellKey } from '../../services/excelViewAdapter.ts'
 import { transformFormulaReferencesForStructureEdit, type FormulaStructureEdit } from '../formula/formula-references.ts'
 
 export type SheetCellMoveDirection = 'right' | 'down' | 'left' | 'up'

@@ -96,6 +96,51 @@ test('manual groups accept typed members, clear with empty groups, and preserve 
   studio.dispose()
 })
 
+test('row subtotals repeat or suppress parent labels and drill into filtered source records', async () => {
+  const { studio, workbook, source, target } = setup([
+    [1, '2026-01-05', 'A', 10],
+    [4, '2026-01-06', 'A', 20],
+    [6, '2026-02-05', 'B', 30],
+    [9, '2026-02-06', 'B', 40],
+  ])
+  const pivot = await createPivot(workbook, source, target)
+  await pivot.addField(2, 'row')
+  await pivot.addField(0, 'row')
+
+  let data = pivot.getData()
+  assert.deepEqual(data.slice(1).map(row => row.slice(0, 3)), [
+    ['A', 1, 10], ['A', 4, 20], ['A Total', null, 30],
+    ['B', 6, 30], ['B', 9, 40], ['B Total', null, 70], ['Grand total', null, 100],
+  ])
+  assert.deepEqual(pivot.drillDown(3, 2).rows, [[1, '2026-01-05', 'A', 10], [4, '2026-01-06', 'A', 20]])
+
+  await pivot.setOptions({ repeatRowLabels: false })
+  data = pivot.getData()
+  assert.deepEqual(data.slice(1, 3).map(row => row.slice(0, 2)), [['A', 1], [null, 4]])
+  await pivot.setLabelManualFilter('2', ['A'])
+  data = pivot.getData()
+  assert.deepEqual(data.slice(1).map(row => row[0]), ['A', null, 'A Total', 'Grand total'])
+  assert.deepEqual(pivot.drillDown(4, 2).rows, [[1, '2026-01-05', 'A', 10], [4, '2026-01-06', 'A', 20]])
+  studio.dispose()
+})
+
+test('column subtotal cells retain drill-down details', async () => {
+  const { studio, workbook, source, target } = setup([
+    [1, '2026-01-05', 'A', 10],
+    [4, '2026-01-06', 'A', 20],
+    [6, '2026-02-05', 'B', 30],
+    [9, '2026-02-06', 'B', 40],
+  ])
+  const pivot = await createPivot(workbook, source, target)
+  await pivot.addField(2, 'column')
+  await pivot.addField(0, 'column')
+  const data = pivot.getData()
+  assert.equal(data[0][0], 'A')
+  assert.equal(data[0][2], 'A Total')
+  assert.deepEqual(pivot.drillDown(3, 2).rows, [[1, '2026-01-05', 'A', 10], [4, '2026-01-06', 'A', 20]])
+  studio.dispose()
+})
+
 test('invalid numeric grouping does not mutate the pivot', async () => {
   const { studio, workbook, source, target } = setup([
     [1, '2026-01-05', 'A', 10],

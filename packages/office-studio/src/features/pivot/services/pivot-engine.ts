@@ -69,6 +69,11 @@ interface Group {
   memberValues: Record<string, CellScalar[]>
 }
 
+interface SubtotalGroup {
+  group: Group
+  membersByField: Map<string, Set<CellScalar>>
+}
+
 export type PivotDateGroup = PivotDateGroupType
 export type PivotDateMode = PivotDateGroupingMode
 export type PivotNumberGroupSettings = PivotNumberGroup
@@ -425,7 +430,9 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
     const targetColumn = rowHeaderCount + colIndex
     columns.forEach((_field, level) => {
       const value = outputColumn.group?.values[level] ?? null
-      matrix[level]![targetColumn] = outputColumn.total ? 'Grand total' : outputColumn.subtotalLevel === level ? `${value ?? ''} Total` : value
+      if (outputColumn.total) matrix[level]![targetColumn] = level === 0 ? 'Grand total' : null
+      else if (outputColumn.subtotalLevel === level) matrix[level]![targetColumn] = `${value ?? ''} Total`
+      else matrix[level]![targetColumn] = value
     })
     if (!valueRows) matrix[headerRows - 1]![targetColumn] = outputColumn.total
       ? (outputColumn.valueFieldId ? displayValueField(byId.get(outputColumn.valueFieldId)!, values.length) : 'Grand total')
@@ -453,7 +460,10 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
       const value = outputRow.group?.values[index] ?? null
       const previous = outputRows[rowIndex - 1]
       const repeats = previous?.group && outputRow.group && previous.subtotalLevel === undefined && outputRow.subtotalLevel === undefined && outputRow.group.values.slice(0, index + 1).every((label, level) => Object.is(label, previous.group!.values[level]))
-      matrix[targetRow]![index] = outputRow.total ? 'Grand total' : outputRow.subtotalLevel === index ? `${value ?? ''} Total` : !pivot.options.repeatRowLabels && repeats ? null : value
+      if (outputRow.total) matrix[targetRow]![index] = index === 0 ? 'Grand total' : null
+      else if (outputRow.subtotalLevel === index) matrix[targetRow]![index] = `${value ?? ''} Total`
+      else if (!pivot.options.repeatRowLabels && repeats) matrix[targetRow]![index] = null
+      else matrix[targetRow]![index] = value
     })
     if (outputRow.valueFieldId && valueRows) {
       const valueField = byId.get(outputRow.valueFieldId)!
@@ -484,6 +494,32 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
 }
 
 function axisGroups(groups: Group[], fields: PivotFieldModel[], showSubtotals: boolean): Array<{ group: Group; subtotalLevel?: number }> {
+  const subtotalGroups = fields.slice(0, -1).map(() => new Map<string, SubtotalGroup>())
+  for (const group of groups) {
+    for (let level = 0; level < fields.length - 1; level++) {
+      const prefix = group.values.slice(0, level + 1)
+      const key = JSON.stringify(prefix)
+      let subtotal = subtotalGroups[level]!.get(key)
+      if (!subtotal) {
+        subtotal = {
+          group: { values: prefix, key, memberValues: {} },
+          membersByField: new Map(),
+        }
+        subtotalGroups[level]!.set(key, subtotal)
+      }
+      for (const field of fields.slice(0, level + 1)) {
+        const members = subtotal.membersByField.get(field.id) ?? new Set<CellScalar>()
+        subtotal.membersByField.set(field.id, members)
+        for (const value of group.memberValues[field.id] ?? []) {
+          members.add(value)
+        }
+      }
+    }
+  }
+  for (const level of subtotalGroups) for (const { group, membersByField } of level.values()) {
+    group.memberValues = Object.fromEntries([...membersByField].map(([fieldId, members]) => [fieldId, [...members]]))
+  }
+
   const result: Array<{ group: Group; subtotalLevel?: number }> = []
   groups.forEach((group, groupIndex) => {
     result.push({ group })
@@ -492,15 +528,8 @@ function axisGroups(groups: Group[], fields: PivotFieldModel[], showSubtotals: b
     for (let level = fields.length - 2; level >= 0; level--) {
       const prefix = group.values.slice(0, level + 1)
       if (next && prefix.every((value, index) => Object.is(value, next.values[index]))) continue
-      const members: Record<string, CellScalar[]> = {}
-      for (const candidate of groups) {
-        if (!prefix.every((value, index) => Object.is(value, candidate.values[index]))) continue
-        for (const field of fields.slice(0, level + 1)) {
-          const target = members[field.id] ?? (members[field.id] = [])
-          for (const value of candidate.memberValues[field.id] ?? []) if (!target.some(member => Object.is(member, value))) target.push(value)
-        }
-      }
-      result.push({ group: { values: prefix, key: JSON.stringify(prefix), memberValues: members }, subtotalLevel: level })
+      const subtotal = subtotalGroups[level]!.get(JSON.stringify(prefix))
+      if (subtotal) result.push({ group: subtotal.group, subtotalLevel: level })
     }
   })
   return result

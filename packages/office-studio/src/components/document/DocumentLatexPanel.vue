@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Modal, Select } from 'antdv-next'
+import { Form, FormItem, Input, Modal, Select } from 'antdv-next'
 import { layoutLatexFormula, type LatexFormula, type LatexFormulaMode } from '../../features/document/latex/latex-formula.ts'
 
 const props = defineProps<{ open: boolean; initial?: LatexFormula }>()
@@ -79,28 +79,29 @@ function apply() {
 
 <template>
   <Modal :open="open" :title="t(initial ? 'document.latex.editTitle' : 'document.latex.title')" :ok-text="t('common.apply')" :cancel-text="t('common.cancel')" :width="600" :ok-button-props="{ disabled: !valid }" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)">
-    <div class="latex-panel">
-      <label class="latex-panel__mode">
-        <span>{{ t('document.latex.mode') }}</span>
+    <Form layout="vertical" class="latex-panel">
+      <FormItem class="latex-panel__mode" :label="t('document.latex.mode')">
         <Select v-model:value="mode" :options="modeOptions" :disabled="!!initial" :aria-label="t('document.latex.mode')" />
-      </label>
-      <label class="latex-panel__source">
-        <span>{{ t('document.latex.source') }}</span>
+      </FormItem>
+      <FormItem class="latex-panel__source" :label="t('document.latex.source')">
         <Input.TextArea v-model:value="source" :aria-label="t('document.latex.source')" :auto-size="{ minRows: 3, maxRows: 8 }" spellcheck="false" />
-      </label>
+      </FormItem>
       <div class="latex-panel__preview">
         <span>{{ t('document.latex.preview') }}</span>
         <canvas ref="previewCanvas" width="560" height="88" role="img" :aria-label="t('document.latex.preview')" />
       </div>
       <p v-if="error" class="latex-panel__error" role="alert">{{ error }}</p>
-    </div>
+    </Form>
   </Modal>
 </template>
 
 <style scoped>
 .latex-panel { display: grid; gap: 14px; }
-.latex-panel__mode, .latex-panel__source, .latex-panel__preview { display: grid; gap: 6px; color: #465365; font-size: 12px; }
-.latex-panel__mode { grid-template-columns: 120px minmax(0, 1fr); align-items: center; }
+.latex-panel :deep(.ant-form-item) { margin-bottom: 0; color: #465365; font-size: 12px; }
+.latex-panel :deep(.ant-form-item-label) { padding-bottom: 6px; }
+.latex-panel__mode :deep(.ant-form-item-row) { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 10px; }
+.latex-panel__mode :deep(.ant-form-item-label) { padding-bottom: 0; }
+.latex-panel__preview { display: grid; gap: 6px; color: #465365; font-size: 12px; }
 .latex-panel__source :deep(textarea) { font: 13px/1.5 "IBM Plex Mono", Consolas, monospace; }
 .latex-panel__preview canvas { display: block; width: 100%; height: 88px; border: 1px solid #d9dfe7; background: #fff; }
 .latex-panel__error { margin: 0; color: #b42318; font-size: 12px; overflow-wrap: anywhere; }

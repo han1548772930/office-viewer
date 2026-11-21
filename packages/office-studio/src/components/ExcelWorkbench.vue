@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Button, Checkbox, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
@@ -12,7 +12,7 @@ import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
 import ChartOverlay from './ChartOverlay.vue'
 import { chartPositionForRange, type ExcelWorkbookChartView } from './chart-overlay-model'
 import type { DrawCommand } from '../rendering/contracts'
-import type { GridHit, GridRange, SpreadsheetRenderSheet } from '../rendering/spreadsheet/layout'
+import { SpreadsheetGeometry, type GridHit, type GridRange, type SpreadsheetRenderSheet } from '../rendering/spreadsheet/layout'
 import { addRange, containsCell, selectionBounds, selectionCount, subtractRange } from '../rendering/spreadsheet/selection'
 import { ArrowDown, ArrowUp, Download, FileSpreadsheet, FolderOpen, ListRestart, Replace, Save, Search, X } from 'lucide-vue-next'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
@@ -36,6 +36,7 @@ import { createOfficeTranslator, createRibbonTranslator, OfficeLocaleKey, type O
 import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type SheetFindBy, type SheetFindDirection, type SheetFindScope } from '../features/sheet-find-replace/sheet-find-replace.ts'
 import { convertTextToNumber } from '../features/sheet-workbench/text-to-number.ts'
 import { moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit, type SheetCellMoveDirection } from '../features/sheet-workbench/sheet-cell-range-move.ts'
+import { resolveSlicerBounds } from '../features/slicer/slicer-drawing.ts'
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const PivotChartPanel = defineAsyncComponent(() => import('./spreadsheet/PivotChartPanel.vue'))
@@ -280,6 +281,7 @@ const selectionFormat = computed(() => {
     })(),
     bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
     align: common('align', 'left'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
+    wrapStrategy: common('wrapStrategy', 'overflow'),
     color: common('color', '#1f2937'), background: common('background', '#ffffff'),
     rotation: common('rotation', 0) ?? null, rotationVertical: common('rotationVertical', false),
     shrinkToFit: common('shrinkToFit', false),
@@ -308,6 +310,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   filterCanToggle: Boolean(props.studio && workbook.value.id && (activeSheet.value?.autoFilter || (!sortBusy.value && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow))),
   frozen: isFrozen.value, zoom: zoom.value, fullscreen: isFullscreen.value,
   calculationMode: workbook.value.calculationMode ?? 'automatic',
+  wrapStrategy: selectionFormat.value.wrapStrategy ?? null,
   outlineSummaryAbove: activeSheet.value?.outline?.summaryAbove ?? false,
   outlineSummaryLeft: activeSheet.value?.outline?.summaryLeft ?? false,
 }, createRibbonTranslator(officeLocale.value, 'sheet')))
@@ -507,13 +510,16 @@ function openSlicerPanel(kind: 'slicer' | 'timeline') { selectedSlicerId.value =
 async function handleSlicerPanelChanged(id: string) { selectedSlicerId.value = id; await refreshSlicerView() }
 function moveSlicer(payload: { slicerId: string; left: number; top: number }) {
   const info = getSlicer(payload.slicerId)?.getInfo()
-  if (info?.lockedPosition) return
-  void updateSlicerPresentation(payload.slicerId, { layout: { ...(info?.layout ?? { left: 200, top: 200, width: 220, height: 280 }), left: payload.left, top: payload.top } })
+  if (!info || info.lockedPosition || !activeSheet.value) return
+  const bounds = resolveSlicerBounds(info, new SpreadsheetGeometry(activeSheet.value))
+  void updateSlicerPresentation(payload.slicerId, { layout: { ...bounds, left: payload.left, top: payload.top } })
 }
 function resizeSlicer(payload: { slicerId: string; width: number; height: number }) {
   const info = getSlicer(payload.slicerId)?.getInfo()
-  if (info?.lockedPosition) return
-  void updateSlicerPresentation(payload.slicerId, { layout: { ...(info?.layout ?? { left: 200, top: 200, width: 220, height: 280 }), width: payload.width, height: payload.height } })
+  if (!info || info.lockedPosition || !activeSheet.value) return
+  const bounds = resolveSlicerBounds(info, new SpreadsheetGeometry(activeSheet.value))
+  const height = info.drawing?.keepRatio ? payload.width * bounds.height / bounds.width : payload.height
+  void updateSlicerPresentation(payload.slicerId, { layout: { ...bounds, width: payload.width, height } })
 }
 function scrollSlicerTo(payload: { slicerId: string; position: number }) {
   const info = getSlicer(payload.slicerId)?.getInfo()
@@ -995,15 +1001,38 @@ function setBackground(color: string) {
   commitHistory()
 }
 
-function mergeSelection() {
-  const bounds = selectionBounds(selectedRanges.value)
-  if (!activeSheet.value || selectedCount.value < 2 || !bounds) return
-  const range = `${columnName(bounds.startColumn)}${bounds.startRow + 1}:${columnName(bounds.endColumn)}${bounds.endRow + 1}`
-  activeSheet.value.merges ??= []
-  activeSheet.value.merges.push(range)
-  const master = `${columnName(bounds.startColumn)}${bounds.startRow + 1}`
-  selectedExistingKeys().filter((key) => key !== master).forEach((key) => delete activeSheet.value?.cells[key])
-  selectCell(master)
+function mergeSelection(mode: 'all' | 'vertical' | 'horizontal' = 'all') {
+  if (!activeSheet.value) return
+  const ranges = selectedRanges.value.flatMap(selection => {
+    if (mode === 'horizontal') return Array.from({ length: selection.endRow - selection.startRow + 1 }, (_, offset) => ({
+      startRow: selection.startRow + offset, endRow: selection.startRow + offset,
+      startColumn: selection.startColumn, endColumn: selection.endColumn,
+    }))
+    if (mode === 'vertical') return Array.from({ length: selection.endColumn - selection.startColumn + 1 }, (_, offset) => ({
+      startRow: selection.startRow, endRow: selection.endRow,
+      startColumn: selection.startColumn + offset, endColumn: selection.startColumn + offset,
+    }))
+    return [selection]
+  }).filter(range => range.startRow !== range.endRow || range.startColumn !== range.endColumn)
+  if (!ranges.length) return
+  const existing = activeSheet.value.merges ?? []
+  const overlaps = ranges.some(range => existing.some(merge => {
+    const parsed = parseChartRange(merge)
+    return parsed && range.startRow <= parsed.endRow && range.endRow >= parsed.startRow
+      && range.startColumn <= parsed.endCol && range.endColumn >= parsed.startCol
+  }))
+  if (overlaps) { emit('notify', { type: 'warning', message: '所选区域与现有合并单元格重叠。' }); return }
+  activeSheet.value.merges = [...existing, ...ranges.map(range => `${columnName(range.startColumn)}${range.startRow + 1}:${columnName(range.endColumn)}${range.endRow + 1}`)]
+  const cells = selectedExistingKeys()
+  for (const range of ranges) {
+    const master = `${columnName(range.startColumn)}${range.startRow + 1}`
+    for (const key of cells) {
+      const [column, row] = splitKey(key)
+      if (key !== master && row - 1 >= range.startRow && row - 1 <= range.endRow && column >= range.startColumn && column <= range.endColumn) delete activeSheet.value.cells[key]
+    }
+  }
+  const first = ranges[0]!
+  selectCell(`${columnName(first.startColumn)}${first.startRow + 1}`)
   commitHistory()
 }
 
@@ -1864,6 +1893,10 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.set-background': () => { if (typeof params === 'string') setBackground(params) },
     'sheet.command.set-align': () => { if (params === 'left' || params === 'center' || params === 'right') setAlign(params) },
     'sheet.command.toggle-wrap': () => changeSelectedCells(cell => setSheetTextFit(cell, 'wrap', selectionFormat.value.wrap !== true)),
+    'sheet.command.set-wrap-strategy': () => {
+      if (params !== 'overflow' && params !== 'wrap' && params !== 'clip') return
+      changeSelectedCells(cell => ({ ...cell, wrap: params === 'wrap', wrapStrategy: params }))
+    },
     'sheet.command.set-shrink-to-fit': () => {
       if (typeof params === 'boolean') changeSelectedCells(cell => setSheetTextFit(cell, 'shrinkToFit', params))
     },
@@ -1871,7 +1904,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
       if (params === 'v') setTextRotation(params)
       else if (typeof params === 'number' && [-90, -45, 0, 45, 90].includes(params)) setTextRotation(params)
     },
-    'sheet.command.merge': mergeSelection, 'sheet.command.unmerge': unmergeSelection,
+    'sheet.command.merge': () => mergeSelection(params === 'vertical' || params === 'horizontal' ? params : 'all'), 'sheet.command.unmerge': unmergeSelection,
     'sheet.command.insert-row': () => insertRow(params), 'sheet.command.insert-column': () => insertColumn(params),
     'sheet.command.delete-row': () => deleteRow(params), 'sheet.command.delete-column': () => deleteColumn(params),
     'sheet.command.insert-range-move-right': () => requestCellRangeMove('right'),
@@ -1949,8 +1982,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
         functionError.value = error instanceof Error ? error.message : '无法插入函数。'
       }
     },
-    'sheet.command.sort-ascending': () => sortSelection(true),
-    'sheet.command.sort-descending': () => sortSelection(false),
+    'sheet.command.sort-ascending': () => sortSelection(true, typeof params === 'object' && params !== null && 'extendSelection' in params && params.extendSelection === true),
+    'sheet.command.sort-descending': () => sortSelection(false, typeof params === 'object' && params !== null && 'extendSelection' in params && params.extendSelection === true),
     'sheet.command.recalculate': () => { recalculateWorkbook(); commitHistory() },
     'sheet.operation.start-formula': () => { beginEdit(selectedKey.value, activeCell.value.formula ?? '=', 'formula') },
     'sheet.command.toggle-gridlines': () => { if (activeSheet.value) { activeSheet.value.showGridlines = activeSheet.value.showGridlines === false; commitHistory() } },
@@ -2024,6 +2057,7 @@ onDeactivated(() => {
 </script>
 
 <template>
+  <ConfigProvider>
   <section ref="workbenchRef" class="excel-workbench" @keydown="handleGridKeydown">
     <header v-if="showHeader" class="excel-header">
       <div class="document-brand">
@@ -2115,6 +2149,7 @@ onDeactivated(() => {
     <SparklinePanel v-if="sparklinePanelOpen && activeSheet && studio && workbook.id" :open="sparklinePanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :target-range="sparklineTargetRange" @update:open="sparklinePanelOpen = $event" />
       <CustomNumberFormatPanel v-model:open="customNumberFormatOpen" :current-pattern="activeCell.rawNumberFormat ?? 'General'" @apply="(pattern) => changeSelectedCells(cell => ({ ...cell, rawNumberFormat: pattern }))" />
   </section>
+  </ConfigProvider>
 </template>
 
 <style scoped>

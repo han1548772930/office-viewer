@@ -9,6 +9,11 @@ import {
   moveConditionalFormatRule,
   updateConditionalFormatRule,
 } from '../src/features/conditional-formatting/conditional-formatting.ts'
+import {
+  createConditionalIconConfig,
+  conditionalIconSequence,
+  validateConditionalIconConfig,
+} from '../src/features/conditional-formatting/icon-set-config.ts'
 
 const sheet = { id: 'sheet-a', name: 'Sheet1', visible: true, cells: {}, mergedRanges: [], columnWidths: {}, rowHeights: {}, frozenRows: 0, frozenCols: 0, showGridlines: true }
 const baseRule = {
@@ -94,6 +99,86 @@ test('visual rules resolve explicit thresholds, formulas, negative data bars and
   assert.equal(conditionalFormatStyleAt([iconRule], 2, 0, 5, [], scope).icon.iconId, '2')
   const reversed = conditionalFormatStyleAt([{ ...iconRule, config: { ...iconRule.config, reverse: true } }], 0, 0, 80, [], scope)
   assert.equal(reversed.icon.iconId, '2')
+})
+
+test('icon set defaults use Univer ordered numeric thresholds and a complementary final bucket', () => {
+  assert.deepEqual(createConditionalIconConfig('3Arrows').map(icon => [icon.operator, icon.value, icon.iconId]), [
+    ['greaterThan', { type: 'num', value: 20 }, '0'],
+    ['greaterThan', { type: 'num', value: 10 }, '1'],
+    ['lessThanOrEqual', { type: 'num', value: Number.MAX_SAFE_INTEGER }, '2'],
+  ])
+  assert.deepEqual(createConditionalIconConfig('5Rating').map(icon => icon.value.value), [40, 30, 20, 10, Number.MAX_SAFE_INTEGER])
+  assert.throws(() => createConditionalIconConfig('unknown'), /有效的图标集/)
+})
+
+test('icon set buckets handle exclusive and inclusive boundaries, mixed threshold types and formulas', () => {
+  const range = [{ startRow: 0, startCol: 0, endRow: 3, endCol: 0 }]
+  const icons = [
+    { operator: 'greaterThanOrEqual', value: { type: 'num', value: 80 }, iconType: '3Arrows', iconId: '0' },
+    { operator: 'greaterThan', value: { type: 'num', value: 40 }, iconType: '3Arrows', iconId: '1' },
+    { operator: 'ignored', value: { type: 'min' }, iconType: '3Arrows', iconId: '2' },
+  ]
+  const rule = { ...baseRule, type: 'iconSet', ranges: range, config: { icons } }
+  const iconAt = (value, values = [], formulaValue) => conditionalFormatStyleAt([rule], 0, 0, value, [], values.map((item, row) => ({ row, column: 0, value: item })), undefined, formulaValue).icon?.iconId
+  assert.equal(iconAt(80), '0')
+  assert.equal(iconAt(79), '1')
+  assert.equal(iconAt(40), '2')
+  assert.equal(iconAt(39), '2')
+
+  const rangedRule = { ...rule, config: { icons: [
+    { operator: 'greaterThanOrEqual', value: { type: 'percent', value: 75 }, iconType: '3Arrows', iconId: '0' },
+    { operator: 'greaterThan', value: { type: 'percentile', value: 50 }, iconType: '3Arrows', iconId: '1' },
+    icons[2],
+  ] } }
+  const rangedAt = value => conditionalFormatStyleAt([rangedRule], 0, 0, value, [], [0, 10, 20, 30].map((item, row) => ({ row, column: 0, value: item }))).icon?.iconId
+  assert.equal(rangedAt(22.5), '0')
+  assert.equal(rangedAt(20), '1')
+  assert.equal(rangedAt(15), '2')
+
+  const formulaRule = { ...rule, config: { icons: [
+    { operator: 'greaterThanOrEqual', value: { type: 'formula', value: '=A1' }, iconType: '3Arrows', iconId: '0' },
+    icons[1], icons[2],
+  ] } }
+  assert.equal(conditionalFormatStyleAt([formulaRule], 0, 0, 50, [], [], undefined, formula => formula === '=A1' ? 60 : undefined).icon?.iconId, '1')
+  assert.equal(conditionalFormatStyleAt([formulaRule], 0, 0, 70, [], [], undefined, formula => formula === '=A1' ? 60 : undefined).icon?.iconId, '0')
+  assert.equal(conditionalFormatStyleAt([formulaRule], 0, 0, 70, [], [], undefined, () => undefined).icon, undefined)
+})
+
+test('icon-set reverse mirrors icon choices while preserving bucket thresholds', () => {
+  const icons = [
+    { operator: 'greaterThanOrEqual', value: { type: 'num', value: 67 }, iconType: '3Arrows', iconId: '0' },
+    { operator: 'greaterThan', value: { type: 'num', value: 33 }, iconType: 'EMPTY_ICON_TYPE', iconId: '' },
+    { operator: 'ignored', value: { type: 'unsupported', value: 'ignored' }, iconType: '3Flags', iconId: '2' },
+  ]
+  const config = { icons, reverse: true }
+  assert.deepEqual(conditionalIconSequence(config).map(icon => [icon.iconType, icon.iconId, icon.value]), [
+    ['3Flags', '2', { type: 'num', value: 67 }],
+    ['EMPTY_ICON_TYPE', '', { type: 'num', value: 33 }],
+    ['3Arrows', '0', { type: 'unsupported', value: 'ignored' }],
+  ])
+  assert.equal(conditionalFormatStyleAt([
+    { ...baseRule, type: 'iconSet', config },
+  ], 0, 0, 80).icon.iconId, '2')
+  assert.equal(conditionalFormatStyleAt([
+    { ...baseRule, type: 'iconSet', config },
+  ], 0, 0, 50).icon.iconId, '')
+  assert.equal(conditionalFormatStyleAt([
+    { ...baseRule, type: 'iconSet', config },
+  ], 0, 0, 10).icon.iconId, '0')
+})
+
+test('icon-set validation checks visible buckets and permits a no-icon entry', () => {
+  const config = { icons: [
+    { operator: 'greaterThanOrEqual', value: { type: 'num', value: 67 }, iconType: '3Arrows', iconId: '0' },
+    { operator: 'greaterThan', value: { type: 'num', value: 33 }, iconType: 'EMPTY_ICON_TYPE', iconId: '' },
+    { operator: 'invalid-final-bucket-operator', value: { type: 'ignored', value: '' }, iconType: '3Flags', iconId: '2' },
+  ] }
+  assert.doesNotThrow(() => validateConditionalIconConfig(config))
+  assert.throws(() => validateConditionalIconConfig({ icons: [
+    { operator: 'greaterThanOrEqual', value: { type: 'num', value: 33 }, iconType: '3Arrows', iconId: '0' },
+    { operator: 'greaterThanOrEqual', value: { type: 'num', value: 67 }, iconType: '3Arrows', iconId: '1' },
+    config.icons[2],
+  ] }), /descending order/)
 })
 
 test('color scales support two or three threshold stops and ignore invalid formula thresholds', () => {

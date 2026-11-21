@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Dropdown, Form, Input, Select, Tooltip, theme } from 'antdv-next'
+import { Button, Dropdown, Form, FormItem, Input, Select, Tooltip, theme } from 'antdv-next'
 import { CircleCheck, MoreHorizontal, Plus, Reply, RotateCcw, Trash2, X } from 'lucide-vue-next'
 import { computed, inject, nextTick, ref, watch } from 'vue'
 import type { DocumentCommentMessage, DocumentThreadComment } from '../../domain/model.ts'
@@ -264,9 +264,9 @@ async function submitEdit(comment: DocumentThreadComment, message: DocumentComme
             </Dropdown>
           </div>
           <Form v-if="editingMessage?.commentId === comment.id && editingMessage.messageId === message.id" class="document-comments__edit" layout="vertical" @click.stop @finish="submitEdit(comment, message)">
-            <Form.Item class="document-comments__field">
+            <FormItem class="document-comments__field">
               <Input.TextArea :id="`document-comment-edit-${message.id}`" v-model:value="editDraft" :aria-label="t('doc.comments.edit', 'Edit comment')" :auto-size="{ minRows: 2, maxRows: 5 }" :disabled="controlsBusy" @keydown.ctrl.enter.prevent="submitEdit(comment, message)" @keydown.meta.enter.prevent="submitEdit(comment, message)" />
-            </Form.Item>
+            </FormItem>
             <div class="document-comments__actions">
               <Button size="small" type="primary" html-type="submit" :disabled="!editDraft.trim() || controlsBusy">{{ t('common.save', 'Save') }}</Button>
               <Button size="small" type="text" :disabled="controlsBusy" @click.stop="editingMessage = null; editDraft = ''">{{ t('common.cancel', 'Cancel') }}</Button>
@@ -276,9 +276,9 @@ async function submitEdit(comment: DocumentThreadComment, message: DocumentComme
         </div>
 
         <Form v-if="canComment && !comment.resolved && !editingMessage && selectedCommentId === comment.id" class="document-comments__reply" layout="vertical" @click.stop @finish="submitReply(comment.id)">
-          <Form.Item class="document-comments__field">
+          <FormItem class="document-comments__field">
             <Input.TextArea :id="`document-comment-reply-${comment.id}`" v-model:value="replyDrafts[comment.id]" :placeholder="t('doc.comments.reply-placeholder', 'Reply')" :aria-label="t('doc.comments.reply-placeholder', 'Reply')" :auto-size="{ minRows: 1, maxRows: 4 }" :disabled="controlsBusy" @focus="replyingTo = comment.id" @keydown.ctrl.enter.prevent="submitReply(comment.id)" @keydown.meta.enter.prevent="submitReply(comment.id)" />
-          </Form.Item>
+          </FormItem>
           <div v-if="replyingTo === comment.id || replyDrafts[comment.id]?.trim()" class="document-comments__actions">
             <Button size="small" type="primary" html-type="submit" :disabled="!replyDrafts[comment.id]?.trim() || controlsBusy">{{ t('doc.comments.reply-submit', 'Comment') }}</Button>
             <Button size="small" type="text" :disabled="controlsBusy" @click.stop="replyingTo = ''; replyDrafts[comment.id] = ''; replyMentions[comment.id] = []">{{ t('common.cancel', 'Cancel') }}</Button>
@@ -294,9 +294,9 @@ async function submitEdit(comment: DocumentThreadComment, message: DocumentComme
     </div>
 
     <Form v-if="canComment && canCreate" class="document-comments__composer" layout="vertical" @finish="submitCreate">
-      <Form.Item class="document-comments__field">
+      <FormItem class="document-comments__field">
       <Input.TextArea v-model:value="newComment" :placeholder="t('doc.comments.new-placeholder', 'Add a comment')" :aria-label="t('doc.comments.new-placeholder', 'Add a comment')" :auto-size="{ minRows: 2, maxRows: 5 }" :disabled="controlsBusy" @keydown.ctrl.enter.prevent="submitCreate" @keydown.meta.enter.prevent="submitCreate" />
-      </Form.Item>
+      </FormItem>
       <div class="document-comments__composer-actions">
         <Button type="primary" :loading="controlsBusy" :disabled="!newComment.trim() || controlsBusy" html-type="submit">{{ t('doc.comments.add', 'Comment') }}</Button>
       </div>

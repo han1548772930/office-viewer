@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { InputNumber, Modal } from 'antdv-next'
+import { Form, FormItem, InputNumber, Modal } from 'antdv-next'
 import { computed, inject, ref, watch } from 'vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
@@ -41,22 +41,20 @@ function insert() {
     @ok="insert"
     @cancel="emit('update:open', false)"
   >
-    <div class="table-insert-form">
-      <label>
-        <span>{{ t('doc.table-insert.rows', 'Rows') }}</span>
+    <Form class="table-insert-form" layout="vertical">
+      <FormItem :label="t('doc.table-insert.rows', 'Rows')">
         <InputNumber v-model:value="rows" :min="1" :max="20" :precision="0" />
-      </label>
-      <label>
-        <span>{{ t('doc.table-insert.columns', 'Columns') }}</span>
+      </FormItem>
+      <FormItem :label="t('doc.table-insert.columns', 'Columns')">
         <InputNumber v-model:value="columns" :min="1" :max="20" :precision="0" />
-      </label>
-    </div>
+      </FormItem>
+    </Form>
   </Modal>
 </template>
 
 <style scoped>
 .table-insert-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding-top: 8px; }
-.table-insert-form label { display: grid; gap: 7px; min-width: 0; }
+.table-insert-form :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .table-insert-form :deep(.ant-input-number) { width: 100%; }
 @media (max-width: 460px) { .table-insert-form { grid-template-columns: minmax(0, 1fr); } }
 </style>

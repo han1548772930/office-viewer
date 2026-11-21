@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Checkbox, ColorPicker, Form, Input, Modal, Select } from 'antdv-next'
+import { Button, Checkbox, ColorPicker, Form, FormItem, Input, Modal, Select } from 'antdv-next'
 import { computed, inject, reactive, ref, watch } from 'vue'
 import type { DocumentContentControl, DocumentContentControlType } from '../../domain/model'
 import type { FDocument } from '../../api/facade'
@@ -151,32 +151,25 @@ function save(): void {
   >
     <Form v-if="selected" layout="vertical" class="content-control-properties" @submit.prevent="save">
       <section class="properties-grid">
-        <label>
-          <span>{{ t('doc.content-control.type', '类型') }}</span>
+        <FormItem :label="t('doc.content-control.type', '类型')">
           <Select :value="selected.type" :options="contentControlTypes" disabled />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.ooxml-id', 'OOXML 标识') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.ooxml-id', 'OOXML 标识')">
           <Input :value="String(selected.metadata?.ooxmlId ?? '')" disabled />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.label-title', '标题') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.label-title', '标题')">
           <Input :value="properties.alias ?? selected.title ?? ''" @update:value="value => patch({ alias: value })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.tag', '标记') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.tag', '标记')">
           <Input :value="properties.tag ?? ''" @update:value="value => patch({ tag: value })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.appearance', '外观') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.appearance', '外观')">
           <Select :value="properties.appearance ?? 'boundingBox'" :options="appearances" @change="value => patch({ appearance: String(value) })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.lock', '锁定') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.lock', '锁定')">
           <Select :value="properties.lock ?? 'unlocked'" :options="locks" @change="value => patch({ lock: String(value) as DocumentContentControl['lock'] })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.color', '颜色') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.color', '颜色')">
           <div class="color-input">
             <ColorPicker
               :value="`#${(properties.color ?? '4472C4').replace(/^#/, '')}`"
@@ -186,11 +179,10 @@ function save(): void {
             />
             <Input :value="properties.color ?? '4472C4'" @update:value="value => patch({ color: value.replace(/^#/, '').toUpperCase() })" />
           </div>
-        </label>
-        <label v-if="hasPlaceholder">
-          <span>{{ t('doc.content-control.placeholder', '占位文本') }}</span>
+        </FormItem>
+        <FormItem v-if="hasPlaceholder" :label="t('doc.content-control.placeholder', '占位文本')">
           <Input :value="properties.placeholder ?? ''" :disabled="selected.lock === 'contentLocked' || selected.lock === 'sdtContentLocked'" @update:value="value => patch({ placeholder: value })" />
-        </label>
+        </FormItem>
       </section>
 
       <section v-if="isText" class="properties-section">
@@ -203,34 +195,28 @@ function save(): void {
       </section>
 
       <section v-if="isDate" class="properties-grid properties-section">
-        <label>
-          <span>{{ t('doc.content-control.date-format', '日期格式') }}</span>
+        <FormItem :label="t('doc.content-control.date-format', '日期格式')">
           <Input :value="properties.date?.format ?? ''" @update:value="value => patchDate({ format: value })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.date-locale', '区域设置') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.date-locale', '区域设置')">
           <Input :value="properties.date?.locale ?? ''" @update:value="value => patchDate({ locale: value })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.date-calendar', '日历') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.date-calendar', '日历')">
           <Input :value="properties.date?.calendar ?? ''" @update:value="value => patchDate({ calendar: value })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.date-storage', '存储格式') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.date-storage', '存储格式')">
           <Select :value="properties.date?.storage ?? 'text'" :options="dateStorageOptions" @change="value => patchDate({ storage: String(value) })" />
-        </label>
+        </FormItem>
       </section>
 
-      <label v-if="isList" class="list-items">
-        <span>{{ t('doc.content-control.list-items', '列表项') }}</span>
+      <FormItem v-if="isList" class="list-items" :label="t('doc.content-control.list-items', '列表项')">
         <Input.TextArea :value="listText" :auto-size="{ minRows: 4, maxRows: 8 }" @update:value="updateListItems" />
-      </label>
+      </FormItem>
 
       <section v-if="isRepeatingSection" class="properties-grid properties-section">
-        <label>
-          <span>{{ t('doc.content-control.section-title', '重复节标题') }}</span>
+        <FormItem :label="t('doc.content-control.section-title', '重复节标题')">
           <Input :value="properties.repeatingSection?.sectionTitle ?? ''" @update:value="value => patch({ repeatingSection: { ...properties.repeatingSection, sectionTitle: value } })" />
-        </label>
+        </FormItem>
         <Checkbox
           :checked="properties.repeatingSection?.doNotAllowInsertDelete ?? false"
           @change="value => patch({ repeatingSection: { ...properties.repeatingSection, doNotAllowInsertDelete: checkboxValue(value) } })"
@@ -240,14 +226,12 @@ function save(): void {
       </section>
 
       <section v-if="isDocPart" class="properties-grid properties-section">
-        <label>
-          <span>{{ t('doc.content-control.gallery', '文档部件库') }}</span>
+        <FormItem :label="t('doc.content-control.gallery', '文档部件库')">
           <Input :value="properties.docPart?.gallery ?? ''" @update:value="value => patch({ docPart: { ...properties.docPart, gallery: value } })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.category', '类别') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.category', '类别')">
           <Input :value="properties.docPart?.category ?? ''" @update:value="value => patch({ docPart: { ...properties.docPart, category: value } })" />
-        </label>
+        </FormItem>
         <Checkbox
           :checked="properties.docPart?.unique ?? false"
           @change="value => patch({ docPart: { ...properties.docPart, unique: checkboxValue(value) } })"
@@ -257,14 +241,12 @@ function save(): void {
       </section>
 
       <section v-if="hasDataBinding" class="properties-grid properties-section">
-        <label>
-          <span>{{ t('doc.content-control.binding-xpath', '绑定 XPath') }}</span>
+        <FormItem :label="t('doc.content-control.binding-xpath', '绑定 XPath')">
           <Input :value="properties.dataBinding?.xpath ?? ''" @update:value="value => patch({ dataBinding: { ...properties.dataBinding, xpath: value, dirty: true } })" />
-        </label>
-        <label>
-          <span>{{ t('doc.content-control.binding-store', '数据存储 ID') }}</span>
+        </FormItem>
+        <FormItem :label="t('doc.content-control.binding-store', '数据存储 ID')">
           <Input :value="properties.dataBinding?.storeItemID ?? ''" @update:value="value => patch({ dataBinding: { ...properties.dataBinding, storeItemID: value, dirty: true } })" />
-        </label>
+        </FormItem>
       </section>
 
       <footer class="properties-footer">
@@ -278,7 +260,8 @@ function save(): void {
 <style scoped>
 .content-control-properties { display: flex; max-height: 72vh; flex-direction: column; gap: 16px; overflow: auto; padding: 4px; }
 .properties-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.properties-grid label, .list-items { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #66717e; font-size: 12px; }
+.properties-grid :deep(.ant-form-item), .list-items { min-width: 0; margin: 0; }
+.properties-grid :deep(.ant-form-item-label), .list-items :deep(.ant-form-item-label) { padding: 0 0 6px; }
 .color-input { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .properties-section { border-top: 1px solid #e5e8ed; padding-top: 14px; }
 .properties-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #e5e8ed; padding-top: 14px; }

@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue'
-import { Button, Checkbox, Form, Input, Select } from 'antdv-next'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
+import { Button, Checkbox, Form, FormItem, Input, Select } from 'antdv-next'
 import { ChevronDown, ChevronUp, MousePointer2, Trash2, X } from 'lucide-vue-next'
 import { FOffice, type DataValidationRule } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationRenderMode, SheetDataValidationType } from '../../domain/model'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { createSheetDataValidationRule } from '../../features/sheet-validation/validation-engine.ts'
+import { parseValidationRanges } from '../../features/sheet-validation/validation-panel-state.ts'
 
 type ValidationRangeTarget = 'range' | 'list' | 'formula1' | 'formula2'
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType; selectedRange?: { target: ValidationRangeTarget; value: string } }>()
@@ -90,14 +91,15 @@ watch(() => props.open, open => {
     rangeSelectionTarget.value = null
   }
 })
+onBeforeUnmount(stopRangeSelection)
 
 function loadRule(current: DataValidationRule | null, initialType?: SheetDataValidationType) {
   rule.value = current
   rangeValue.value = current ? rangeLabel(current) : props.sourceRange
   type.value = current?.type ?? initialType ?? 'whole'
   operator.value = current?.operator ?? 'between'
-  formula1.value = current?.formula1 ?? '1'
-  formula2.value = current?.formula2 ?? '10'
+  formula1.value = current?.formula1 ?? (type.value === 'checkbox' ? 'TRUE' : '1')
+  formula2.value = current?.formula2 ?? (type.value === 'checkbox' ? 'FALSE' : '10')
   listValues.value = current?.formula1?.replace(/^"|"$/g, '').replace(/""/g, '"') ?? ''
   listMode.value = current?.formula1?.trim().startsWith('=') ? 'reference' : 'inline'
   checkboxCustomValues.value = current?.type === 'checkbox' && (current.formula1 !== undefined || current.formula2 !== undefined)
@@ -259,24 +261,11 @@ function needsSecondFormulaFor(value?: SheetDataValidationOperator): boolean {
 }
 
 function parseRanges(value: string): CellRange[] {
-  const ranges = value.split(/[;,]/).map(token => token.trim()).filter(Boolean).map(token => {
-    const match = /^\$?([A-Z]{1,3})\$?([1-9]\d*)(?::\$?([A-Z]{1,3})\$?([1-9]\d*))?$/i.exec(token)
-    if (!match) throw new TypeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1 或 A1:B4。'))
-    const startCol = parseColumn(match[1]!)
-    const startRow = Number(match[2]) - 1
-    const endCol = match[3] ? parseColumn(match[3]) : startCol
-    const endRow = match[4] ? Number(match[4]) - 1 : startRow
-    if (startCol > endCol || startRow > endRow || endCol > 16_383 || endRow > 1_048_575) {
-      throw new RangeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1 或 A1:B4。'))
-    }
-    return { startRow, startCol, endRow, endCol }
-  })
-  if (!ranges.length) throw new TypeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1 或 A1:B4。'))
-  return ranges
-}
-
-function parseColumn(value: string): number {
-  return [...value.toUpperCase()].reduce((index, character) => index * 26 + character.charCodeAt(0) - 64, 0) - 1
+  try {
+    return parseValidationRanges(value, sheet.value?.getName())
+  } catch {
+    throw new TypeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1、A1:B4、A:A 或 1:3。'))
+  }
 }
 
 function columnLabel(index: number): string {
@@ -314,16 +303,46 @@ function columnLabel(index: number): string {
     </div>
     <Form v-else class="validation-body validation-form" layout="vertical" @submit.prevent="apply">
       <div class="validation-heading">
-        <Button type="text" size="small" @click="detailOpen = false">{{ t('common.back', '返回规则列表') }}</Button>
+        <Button type="text" size="small" @click="stopRangeSelection(); detailOpen = false">{{ t('common.back', '返回规则列表') }}</Button>
       </div>
-      <label for="sheet-validation-range">{{ t('sheet.validation.range', '应用区域') }}<Input id="sheet-validation-range" v-model:value="rangeValue" :aria-label="t('sheet.validation.range-aria', '数据验证应用区域')" placeholder="A1:B4" /></label>
-      <label for="sheet-validation-type">{{ t('sheet.validation.type', '验证类型') }}</label>
-      <Select id="sheet-validation-type" v-model:value="type" :options="types" :aria-label="t('sheet.validation.type', '数据验证类型')" />
-      <label v-if="needsFormula && !isList" for="sheet-validation-operator">{{ t('sheet.validation.condition', '条件') }}</label>
-      <Select v-if="needsFormula && !isList" id="sheet-validation-operator" v-model:value="operator" :options="operators" :aria-label="t('sheet.validation.condition', '数据验证条件')" />
-      <label v-if="isList">{{ t('sheet.validation.options', '选项') }}<Input v-model:value="listValues" :aria-label="t('sheet.validation.options-aria', '数据验证列表选项')" :placeholder="t('sheet.validation.prompt-range', '例如：高,中,低')" /></label>
-      <label v-else-if="needsFormula">{{ t('sheet.validation.rule-value', '规则值') }}<Input v-model:value="formula1" :aria-label="t('sheet.validation.rule-value-aria', '数据验证规则值')" :placeholder="t('sheet.validation.rule-placeholder', '数值、日期、时间、长度或公式')" /></label>
-      <label v-if="needsSecondFormula">{{ t('sheet.validation.second-rule', '第二个规则值') }}<Input v-model:value="formula2" :aria-label="t('sheet.validation.second-rule', '数据验证第二个规则值')" /></label>
+      <FormItem :label="t('sheet.validation.range', '应用区域')">
+        <div class="validation-range-input">
+          <Input id="sheet-validation-range" v-model:value="rangeValue" :aria-label="t('sheet.validation.range-aria', '数据验证应用区域')" placeholder="A1:B4" />
+          <Button :type="rangeSelectionTarget === 'range' ? 'primary' : 'text'" size="small" :aria-label="t('sheet.validation.select-range', '从画布选择区域')" :aria-pressed="rangeSelectionTarget === 'range'" @click="requestRangeSelection('range')"><MousePointer2 :size="15" /></Button>
+        </div>
+      </FormItem>
+      <FormItem :label="t('sheet.validation.type', '验证类型')">
+        <Select id="sheet-validation-type" v-model:value="type" :options="types" :aria-label="t('sheet.validation.type', '数据验证类型')" />
+      </FormItem>
+      <FormItem v-if="type !== 'checkbox' && !isList && type !== 'custom'" :label="t('sheet.validation.condition', '条件')">
+        <Select id="sheet-validation-operator" v-model:value="operator" :options="[{ value: '', label: t('sheet.validation.legal', '有效值') }, ...operators]" :aria-label="t('sheet.validation.condition', '数据验证条件')" />
+      </FormItem>
+      <FormItem v-if="isList" :label="t('sheet.validation.options', '选项')">
+        <Select v-model:value="listMode" :options="[{ value: 'inline', label: t('sheet.validation.inline-list', '手动输入') }, { value: 'reference', label: t('sheet.validation.reference-list', '单元格区域') }]" :aria-label="t('sheet.validation.options', '下拉列表来源')" />
+        <div class="validation-range-input">
+          <Input v-model:value="listValues" :aria-label="t('sheet.validation.options-aria', '数据验证列表选项')" :placeholder="listMode === 'reference' ? t('sheet.validation.prompt-range', '例如：A1:A5') : t('sheet.validation.prompt-items', '例如：高,中,低')" />
+          <Button v-if="listMode === 'reference'" :type="rangeSelectionTarget === 'list' ? 'primary' : 'text'" size="small" :aria-label="t('sheet.validation.select-range', '从画布选择区域')" :aria-pressed="rangeSelectionTarget === 'list'" @click="requestRangeSelection('list')"><MousePointer2 :size="15" /></Button>
+        </div>
+      </FormItem>
+      <FormItem v-else-if="needsFormula" :label="t('sheet.validation.rule-value', '规则值')">
+        <div class="validation-range-input">
+          <Input v-model:value="formula1" :aria-label="t('sheet.validation.rule-value-aria', '数据验证规则值')" :placeholder="t('sheet.validation.rule-placeholder', '数值、日期、时间、长度或公式')" />
+          <Button :type="rangeSelectionTarget === 'formula1' ? 'primary' : 'text'" size="small" :aria-label="t('sheet.validation.select-range', '从画布选择区域')" :aria-pressed="rangeSelectionTarget === 'formula1'" @click="requestRangeSelection('formula1')"><MousePointer2 :size="15" /></Button>
+        </div>
+      </FormItem>
+      <template v-if="type === 'checkbox'">
+        <Checkbox v-model:checked="checkboxCustomValues">{{ t('sheet.validation.checkbox-custom-values', '自定义复选框值') }}</Checkbox>
+        <template v-if="checkboxCustomValues">
+          <FormItem :label="t('sheet.validation.checked-value', '选中值')"><Input v-model:value="formula1" /></FormItem>
+          <FormItem :label="t('sheet.validation.unchecked-value', '未选中值')"><Input v-model:value="formula2" /></FormItem>
+        </template>
+      </template>
+      <FormItem v-if="needsSecondFormula" :label="t('sheet.validation.second-rule', '第二个规则值')">
+        <div class="validation-range-input">
+          <Input v-model:value="formula2" :aria-label="t('sheet.validation.second-rule', '数据验证第二个规则值')" />
+          <Button :type="rangeSelectionTarget === 'formula2' ? 'primary' : 'text'" size="small" :aria-label="t('sheet.validation.select-range', '从画布选择区域')" :aria-pressed="rangeSelectionTarget === 'formula2'" @click="requestRangeSelection('formula2')"><MousePointer2 :size="15" /></Button>
+        </div>
+      </FormItem>
       <Checkbox v-model:checked="allowBlank">{{ t('sheet.validation.allow-blank', '允许空白') }}</Checkbox>
       <div class="validation-options">
         <Button type="text" class="validation-options-trigger" :aria-expanded="advancedOptionsOpen" @click="advancedOptionsOpen = !advancedOptionsOpen">
@@ -334,22 +353,21 @@ function columnLabel(index: number): string {
         <div v-if="advancedOptionsOpen" class="validation-options-content">
           <template v-if="isList">
             <Checkbox v-model:checked="showDropDown">{{ t('sheet.validation.show-dropdown', '显示下拉选项') }}</Checkbox>
-            <label>{{ t('sheet.validation.display-mode', '显示方式') }}
+            <FormItem :label="t('sheet.validation.display-mode', '显示方式')">
               <Select v-model:value="ruleRenderMode" :options="[
                 { value: 'custom', label: t('sheet.validation.renderMode.chip', '标签') },
                 { value: 'arrow', label: t('sheet.validation.renderMode.arrow', '箭头') },
                 { value: 'text', label: t('sheet.validation.renderMode.text', '文本') },
               ]" />
-            </label>
+            </FormItem>
           </template>
           <Checkbox v-model:checked="showInputMessage">{{ t('sheet.validation.show-input-prompt', '显示输入提示') }}</Checkbox>
-          <label v-if="showInputMessage">{{ t('sheet.validation.prompt-title', '提示标题') }}<Input v-model:value="promptTitle" :aria-label="t('sheet.validation.prompt-title', '数据验证提示标题')" /></label>
-          <label v-if="showInputMessage">{{ t('sheet.validation.input-prompt', '输入提示') }}<Input v-model:value="prompt" :aria-label="t('sheet.validation.input-prompt', '数据验证输入提示')" /></label>
-          <label for="sheet-validation-error-style">{{ t('sheet.validation.invalid-action', '无效输入处理') }}</label>
-          <Select id="sheet-validation-error-style" v-model:value="errorStyle" :options="errorStyles" :aria-label="t('sheet.validation.invalid-action', '无效输入处理')" />
+          <FormItem v-if="showInputMessage" :label="t('sheet.validation.prompt-title', '提示标题')"><Input v-model:value="promptTitle" :aria-label="t('sheet.validation.prompt-title', '数据验证提示标题')" /></FormItem>
+          <FormItem v-if="showInputMessage" :label="t('sheet.validation.input-prompt', '输入提示')"><Input v-model:value="prompt" :aria-label="t('sheet.validation.input-prompt', '数据验证输入提示')" /></FormItem>
+          <FormItem :label="t('sheet.validation.invalid-action', '无效输入处理')"><Select id="sheet-validation-error-style" v-model:value="errorStyle" :options="errorStyles" :aria-label="t('sheet.validation.invalid-action', '无效输入处理')" /></FormItem>
           <Checkbox v-model:checked="showErrorMessage">{{ t('sheet.validation.show-error', '输入无效时显示消息') }}</Checkbox>
-          <label v-if="showErrorMessage">{{ t('sheet.validation.error-title', '错误标题') }}<Input v-model:value="errorTitle" :aria-label="t('sheet.validation.error-title', '数据验证错误标题')" /></label>
-          <label v-if="showErrorMessage">{{ t('sheet.validation.error-message', '错误消息') }}<Input v-model:value="error" :aria-label="t('sheet.validation.error-message', '数据验证错误消息')" /></label>
+          <FormItem v-if="showErrorMessage" :label="t('sheet.validation.error-title', '错误标题')"><Input v-model:value="errorTitle" :aria-label="t('sheet.validation.error-title', '数据验证错误标题')" /></FormItem>
+          <FormItem v-if="showErrorMessage" :label="t('sheet.validation.error-message', '错误消息')"><Input v-model:value="error" :aria-label="t('sheet.validation.error-message', '数据验证错误消息')" /></FormItem>
         </div>
       </div>
       <p v-if="message" class="validation-error" role="alert">{{ message }}</p>
@@ -376,13 +394,15 @@ function columnLabel(index: number): string {
 .validation-rule-delete { position: absolute; top: 50%; right: 8px; display: none; transform: translateY(-50%); }
 .validation-rule:hover .validation-rule-delete, .validation-rule:focus-within .validation-rule-delete { display: inline-flex; }
 .validation-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding-top: 8px; padding-bottom: 8px; }
-.validation-form > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
+.validation-form .ant-form-item { margin-bottom: 0; }
+.validation-range-input { display: flex; min-width: 0; align-items: center; gap: 4px; }
+.validation-range-input > :first-child { min-width: 0; flex: 1; }
 .validation-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: #667085; font-size: 12px; }
 .validation-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .validation-options { min-width: 0; }
 .validation-options-trigger { display: inline-flex; align-items: center; gap: 4px; padding-inline: 0; color: #344054; font-size: 13px; }
 .validation-options-content { display: grid; gap: 10px; padding-top: 12px; }
-.validation-options-content > label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
+.validation-options-content .ant-form-item { margin-bottom: 0; }
 .validation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .validation-error { margin: 0; color: #b42318; }
 </style>

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
-import { Button, Popover, Select, Tooltip } from 'antdv-next'
+import { Button, Menu, Popover, Select, Tooltip } from 'antdv-next'
+import type { MenuInfo } from 'antdv-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { CLASSIC_RIBBON, GRID_RIBBON, ribbonInvocation, visibleRibbonItems, type RibbonItem } from './ribbon-schema'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope, RibbonPopupScopeKey } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
+import { createRibbonMenuModel } from './ribbon-command-menu'
 
 const props = withDefaults(defineProps<{ item: RibbonItem; overflow?: boolean; measurement?: boolean; grid?: boolean; large?: boolean; alignStart?: boolean; showLabel?: boolean; iconSize?: number; fullWidth?: boolean }>(), { overflow: false, measurement: false, grid: false, large: false, alignStart: false, fullWidth: false })
 const emit = defineEmits<{ execute: [commandId: string, params?: unknown] }>()
@@ -13,6 +15,7 @@ const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) =
 const localOpen = ref(false)
 const root = ref<HTMLElement>()
 const panel = ref<HTMLElement>()
+const menuRef = ref<InstanceType<typeof Menu> | null>(null)
 const popupId = useId()
 const popupScope = inject(RibbonPopupScopeKey, undefined)
 const childPopupScope = provideRibbonPopupScope(popupScope?.direction)
@@ -34,6 +37,7 @@ const open = computed({
 })
 const classicStyle = { '--ribbon-button-height': `${CLASSIC_RIBBON.buttonHeight}px`, '--ribbon-selector-height': `${CLASSIC_RIBBON.selectorHeight}px` }
 const children = computed(() => visibleRibbonItems(props.item.children ?? []))
+const menuModel = computed(() => createRibbonMenuModel(children.value))
 const showLabel = computed(() => {
   if (props.overflow || (props.grid && props.large)) return true
   const requested = props.showLabel ?? props.item.showLabel
@@ -60,14 +64,25 @@ function forward(commandId: string, params?: unknown) {
   emit('execute', commandId, params)
 }
 
+function executeMenuItem({ key }: MenuInfo) {
+  const action = menuModel.value.actions.get(String(key))
+  if (!action || action.item.disabled || action.item.hidden) return
+  const invocation = ribbonInvocation(action.item, action.value)
+  if (!invocation) return
+  open.value = false
+  emit('execute', invocation.commandId, invocation.params)
+}
+
 async function openMenu(event: KeyboardEvent, last = false) {
   if (props.item.disabled || props.measurement || !isDropdown.value) return
   if (event.currentTarget instanceof HTMLElement) trigger.value = event.currentTarget
   open.value = true
   await nextTick()
-  const controls = panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]')
+  const controls = menuRef.value?.$el?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
   const target = last ? controls?.[controls.length - 1] : controls?.[0]
-  target?.focus()
+  if (target) target.focus()
+  else if (menuRef.value) menuRef.value.focus()
+  else panel.value?.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]')?.focus()
 }
 
 function closeMenu() {
@@ -82,18 +97,6 @@ function onPanelKeydown(event: KeyboardEvent) {
   if (event.key === 'Tab') { open.value = false; return }
   if (event.target instanceof HTMLElement && event.target.matches('input, textarea, [contenteditable="true"]')) return
   if (event.target instanceof HTMLElement && event.target.closest('[role="combobox"]')) return
-  const controls = Array.from(panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), [role="combobox"]') ?? [])
-  if (!controls.length) return
-  const index = controls.findIndex((control) => control === event.target || control.contains(event.target as Node))
-  let next: number
-  if (event.key === 'ArrowDown') next = (index + 1) % controls.length
-  else if (event.key === 'ArrowUp') next = (index - 1 + controls.length) % controls.length
-  else if (event.key === 'Home') next = 0
-  else if (event.key === 'End') next = controls.length - 1
-  else return
-  event.preventDefault()
-  event.stopPropagation()
-  controls[next]?.focus()
 }
 
 watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unavailable) => {
@@ -121,14 +124,14 @@ onBeforeUnmount(() => { open.value = false })
           <component :is="item.icon" v-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span>
         </Button>
         <Popover v-model:open="open" trigger="click" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="!item.popupComponent">
-          <Button type="text" size="small" class="ribbon-button" :class="{ 'ribbon-split-arrow': item.type === 'split', 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.type === 'split' ? `${item.title}选项` : item.title" :aria-pressed="item.type === 'menu' ? item.activated : undefined" aria-haspopup="menu" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown.down.prevent.stop="openMenu" @keydown.up.prevent.stop="openMenu($event, true)" @keydown.esc.prevent.stop="closeMenu">
+          <Button type="text" size="small" class="ribbon-button" :class="{ 'ribbon-split-arrow': item.type === 'split', 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.type === 'split' ? `${item.title}选项` : item.title" :aria-pressed="item.type === 'menu' ? item.activated : undefined" :aria-haspopup="item.popupComponent ? 'dialog' : 'menu'" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown.down.prevent.stop="openMenu" @keydown.up.prevent.stop="openMenu($event, true)" @keydown.esc.prevent.stop="closeMenu">
             <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
           </Button>
           <template #content>
-            <div :id="popupId" ref="panel" class="ribbon-command-menu" role="menu" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
-              <component :is="item.popupComponent" v-if="item.popupComponent" v-bind="item.popupProps" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
-              <RibbonItem v-for="child in children" :key="child.id" :item="child" overflow @execute="forward" />
+            <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
+              <component :is="item.popupComponent" v-bind="item.popupProps" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
             </div>
+            <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selectable="false" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
           </template>
         </Popover>
       </span>
@@ -172,7 +175,12 @@ onBeforeUnmount(() => { open.value = false })
 .workbench-ribbon-item.is-grid.is-grid-large .ribbon-split { position: relative; }
 .workbench-ribbon-item.is-grid.is-grid-large .ribbon-split .ribbon-button:not(.ribbon-split-arrow) { padding-bottom: 16px; }
 .workbench-ribbon-item.is-grid.is-grid-large .ribbon-split-arrow { position: absolute; inset-inline: 0; bottom: 0; width: 100%; height: 16px; justify-content: center; padding: 0; }
-.ribbon-command-menu { display: flex; box-sizing: border-box; min-width: min(180px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(460px, 65vh); flex-direction: column; gap: 3px; overflow: auto; color: var(--ribbon-text, #334155); }
+.ribbon-command-menu { box-sizing: border-box; min-width: min(180px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(460px, 65vh); overflow: auto; color: var(--ribbon-text, #334155); }
+.ribbon-command-menu :deep(.ant-menu-item), .ribbon-command-menu :deep(.ant-menu-submenu-title) { min-height: 30px; height: auto; line-height: 22px; padding-block: 4px; white-space: normal; }
+.ribbon-command-menu :deep(.ribbon-menu-item-label) { display: flex; min-width: 0; align-items: center; gap: 12px; }
+.ribbon-command-menu :deep(.ribbon-menu-item-text) { min-width: 0; overflow-wrap: anywhere; }
+.ribbon-command-menu :deep(.ribbon-menu-item-shortcut) { flex: 0 0 auto; margin-inline-start: auto; color: var(--ribbon-text-secondary, #94a3b8); font-size: 11px; }
+.ribbon-component-popup { box-sizing: border-box; max-width: calc(100vw - 24px); max-height: min(520px, 70vh); overflow: auto; }
 .ribbon-button:not(:disabled):hover { background: var(--ribbon-hover-background, #f1f5f9); }
 .ribbon-button:disabled { color: var(--ribbon-disabled, #94a3b8); background: transparent; cursor: not-allowed; }
 .is-overflow { width: 100%; min-width: 0; height: auto; min-height: 30px; }

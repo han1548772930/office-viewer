@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { Button, Checkbox, Drawer, Input, InputNumber, Modal, Popover, Segmented, Select } from 'antdv-next'
+import { Button, Checkbox, Drawer, Form, FormItem, Input, InputNumber, Modal, Popover, Segmented, Select, Tooltip } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
-import { ChevronDown } from 'lucide-vue-next'
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronDown } from 'lucide-vue-next'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SlicerModel, SlicerType, TimelineLevel } from '../../domain/model'
 import { slicerPalette } from '../../features/slicer/slicer-renderer'
@@ -9,6 +9,7 @@ import {
   applyPanelSlicerPresentation, insertPanelSlicer, readSlicerPanelState,
   type SlicerPanelSnapshot,
 } from '../../features/slicer/slicer-panel-state'
+import type { SlicerPresentationPatch } from '../../features/slicer/slicer-engine'
 
 const props = withDefaults(defineProps<{
   open: boolean
@@ -37,6 +38,18 @@ const styleGalleryOpen = ref(false)
 let unsubscribe: (() => void) | undefined
 const target = computed(() => ({ workbookId: props.workbookId, sheetId: props.sheetId }))
 const setting = computed(() => snapshot.value?.controls.find(({ info }) => info.id === settingsId.value))
+const arrangement = computed(() => {
+  const controls = snapshot.value?.controls ?? []
+  const ordered = controls.map(({ info }, index) => ({ id: info.id, zIndex: info.drawing?.zIndex ?? index }))
+    .sort((first, second) => first.zIndex - second.zIndex)
+  const index = ordered.findIndex(({ id }) => id === settingsId.value)
+  return {
+    forward: index >= 0 && index < ordered.length - 1,
+    backward: index > 0,
+    front: index >= 0 && index < ordered.length - 1,
+    back: index > 0,
+  }
+})
 const insertionSource = computed(() => {
   const range = props.sourceRange
   if (!range) return undefined
@@ -68,9 +81,14 @@ const timelineLevels: Array<{ label: string; value: TimelineLevel }> = [
   { label: '年', value: 'year' }, { label: '季度', value: 'quarter' }, { label: '月', value: 'month' }, { label: '日', value: 'day' },
 ]
 
-function presentation(model: SlicerModel): Partial<SlicerModel> {
+function presentation(model: SlicerModel): SlicerPresentationPatch {
   const { caption, style, columnCount, rowHeight, showCaption, lockedPosition, level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, layout } = model
-  return { caption, style, columnCount, rowHeight, showCaption, lockedPosition, level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, layout }
+  return {
+    caption, style, columnCount, rowHeight, showCaption, lockedPosition, level, selectionLevel,
+    showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, layout,
+    anchorType: model.drawing?.anchorType ?? 'position',
+    keepRatio: model.drawing?.keepRatio ?? false,
+  }
 }
 
 function refresh(): void {
@@ -170,16 +188,6 @@ function saveSettings(): void {
   })
 }
 
-function applyPosition(): void {
-  if (!draft.value?.layout || !settingsValid.value || busy.value) return
-  const current = draft.value
-  void perform(async () => {
-    await applyPanelSlicerPresentation(props.studio, target.value, current.id, { layout: { ...current.layout } })
-    originalDraft.value = { ...current, layout: { ...current.layout } }
-    return current.id
-  })
-}
-
 function close(): void { settingsId.value = ''; emit('update:open', false) }
 function stylePreview(style: string): Record<string, string> {
   const palette = slicerPalette(style || (draft.value?.type === 'timeline' ? 'TimelineStyleLight1' : 'SlicerStyleLight1'), draft.value?.type === 'timeline')
@@ -189,39 +197,73 @@ function chooseStyle(style: string): void {
   if (draft.value) draft.value.style = style || undefined
   styleGalleryOpen.value = false
 }
+
+function setAnchorType(anchorType: unknown): void {
+  if (!draft.value || (anchorType !== 'both' && anchorType !== 'position' && anchorType !== 'none')) return
+  draft.value.drawing = {
+    ...(draft.value.drawing ?? { from: { row: 0, column: 0, offsetX: 0, offsetY: 0 }, to: { row: 0, column: 0, offsetX: 0, offsetY: 0 } }),
+    anchorType,
+  }
+}
+
+function setKeepRatio(value: boolean | { target?: { checked?: boolean } }): void {
+  if (!draft.value) return
+  draft.value.drawing = {
+    ...(draft.value.drawing ?? { anchorType: 'position', from: { row: 0, column: 0, offsetX: 0, offsetY: 0 }, to: { row: 0, column: 0, offsetX: 0, offsetY: 0 } }),
+    keepRatio: typeof value === 'boolean' ? value : Boolean(value.target?.checked),
+  }
+}
+
+function updateSizeDimension(dimension: 'width' | 'height', value: unknown): void {
+  const current = draft.value
+  const layout = current?.layout
+  if (!current || !layout || !current.drawing?.keepRatio || typeof value !== 'number' || !Number.isFinite(value)) return
+  const original = originalDraft.value?.layout ?? layout
+  if (original.width <= 0 || original.height <= 0) return
+  if (dimension === 'width') layout.height = Math.min(100000, Math.max(48, Math.round(value * original.height / original.width)))
+  else layout.width = Math.min(100000, Math.max(80, Math.round(value * original.width / original.height)))
+}
+
+function arrange(action: 'forward' | 'backward' | 'front' | 'back'): void {
+  if (!draft.value) return
+  const slicerId = draft.value.id
+  void perform(async () => {
+    await applyPanelSlicerPresentation(props.studio, target.value, slicerId, { arrange: action })
+    return slicerId
+  })
+}
 </script>
 
 <template>
   <Modal :open="open && !settingsId" :title="initialKind === 'timeline' ? '插入时间线' : '插入切片器'" :width="400" :footer="null" :mask-closable="false" destroy-on-hidden @cancel="close">
-    <div class="slicer-insert">
-      <label>字段<Select v-model:value="fieldId" :options="fieldOptions" aria-label="字段" placeholder="选择字段" :disabled="busy || !insertionSource" /></label>
+    <Form class="slicer-insert" layout="vertical" @submit.prevent="insert">
+      <FormItem label="字段"><Select v-model:value="fieldId" :options="fieldOptions" aria-label="字段" placeholder="选择字段" :disabled="busy || !insertionSource" /></FormItem>
       <p v-if="!insertionSource" class="slicer-muted">请选择数据透视表或表格中的单元格</p>
       <p v-else-if="!fieldOptions.length" class="slicer-muted">当前选区没有可用字段</p>
       <p v-if="error" role="alert" class="slicer-error">{{ error }}</p>
       <div class="slicer-actions"><Button @click="close">取消</Button><Button type="primary" :loading="busy" :disabled="!fieldId || busy" @click="insert">确定</Button></div>
-    </div>
+    </Form>
   </Modal>
 
   <Drawer :open="open && !!settingsId" :title="draft?.type === 'timeline' ? '时间线设置' : '切片器设置'" :width="388" placement="right" :mask="false" destroy-on-hidden @close="close">
-    <div v-if="draft" class="slicer-settings">
+    <Form v-if="draft" class="slicer-settings" layout="vertical" @submit.prevent="saveSettings">
       <Segmented v-model:value="settingsPage" :options="[{ value: draft.type, label: draft.type === 'timeline' ? '时间线' : '切片器' }, { value: 'size', label: '大小与属性' }]" block />
       <template v-if="settingsPage !== 'size'">
         <section class="slicer-group">
           <header>切片器</header>
-          <label>标题<Input v-model:value="draft.caption" aria-label="标题" :disabled="busy" /></label>
-          <Checkbox v-if="draft.type === 'slicer'" v-model:checked="draft.showCaption" :disabled="busy">显示标题</Checkbox>
-          <Checkbox v-else v-model:checked="draft.showHeader" :disabled="busy">显示标题</Checkbox>
+          <FormItem label="标题"><Input v-model:value="draft.caption" aria-label="标题" :disabled="busy" /></FormItem>
+          <FormItem :label="null"><Checkbox v-if="draft.type === 'slicer'" v-model:checked="draft.showCaption" :disabled="busy">显示标题</Checkbox><Checkbox v-else v-model:checked="draft.showHeader" :disabled="busy">显示标题</Checkbox></FormItem>
           <template v-if="draft.type === 'slicer'">
-            <label class="slicer-number">列数<InputNumber v-model:value="draft.columnCount" :min="1" :max="20000" :precision="0" aria-label="列数" :disabled="busy" /></label>
-            <label class="slicer-number">按钮高度<InputNumber v-model:value="draft.rowHeight" :min="0.01" :max="450678" :precision="2" aria-label="按钮高度" :disabled="busy" /></label>
-            <Checkbox v-model:checked="draft.lockedPosition" :disabled="busy">锁定位置</Checkbox>
+            <FormItem class="slicer-number" layout="horizontal" label="列数"><InputNumber v-model:value="draft.columnCount" :min="1" :max="20000" :precision="0" aria-label="列数" :disabled="busy" /></FormItem>
+            <FormItem class="slicer-number" layout="horizontal" label="按钮高度"><InputNumber v-model:value="draft.rowHeight" :min="0.01" :max="450678" :precision="2" aria-label="按钮高度" :disabled="busy" /></FormItem>
+            <FormItem :label="null"><Checkbox v-model:checked="draft.lockedPosition" :disabled="busy">锁定位置</Checkbox></FormItem>
           </template>
           <template v-else>
-            <label>时间级别<Select v-model:value="draft.level" :options="timelineLevels" aria-label="时间级别" :disabled="busy" /></label>
-            <label>选择级别<Select v-model:value="draft.selectionLevel" :options="timelineLevels" aria-label="选择级别" :disabled="busy" /></label>
-            <Checkbox v-model:checked="draft.showSelectionLabel" :disabled="busy">显示选择标签</Checkbox>
-            <Checkbox v-model:checked="draft.showTimeLevel" :disabled="busy">显示时间级别</Checkbox>
-            <Checkbox v-model:checked="draft.showHorizontalScrollbar" :disabled="busy">显示滚动条</Checkbox>
+            <FormItem label="时间级别"><Select v-model:value="draft.level" :options="timelineLevels" aria-label="时间级别" :disabled="busy" /></FormItem>
+            <FormItem label="选择级别"><Select v-model:value="draft.selectionLevel" :options="timelineLevels" aria-label="选择级别" :disabled="busy" /></FormItem>
+            <FormItem :label="null"><Checkbox v-model:checked="draft.showSelectionLabel" :disabled="busy">显示选择标签</Checkbox></FormItem>
+            <FormItem :label="null"><Checkbox v-model:checked="draft.showTimeLevel" :disabled="busy">显示时间级别</Checkbox></FormItem>
+            <FormItem :label="null"><Checkbox v-model:checked="draft.showHorizontalScrollbar" :disabled="busy">显示滚动条</Checkbox></FormItem>
           </template>
         </section>
         <section class="slicer-group">
@@ -243,26 +285,43 @@ function chooseStyle(style: string): void {
       <template v-else>
         <section class="slicer-group">
           <header>大小与属性</header>
-          <label class="slicer-number">水平位置<InputNumber v-model:value="draft.layout!.left" :min="0" :max="1000000" :precision="0" aria-label="水平位置" :disabled="busy || draft.lockedPosition" @change="applyPosition" /></label>
-          <label class="slicer-number">垂直位置<InputNumber v-model:value="draft.layout!.top" :min="0" :max="1000000" :precision="0" aria-label="垂直位置" :disabled="busy || draft.lockedPosition" @change="applyPosition" /></label>
-          <label class="slicer-number">宽度<InputNumber v-model:value="draft.layout!.width" :min="80" :max="100000" :precision="0" aria-label="宽度" :disabled="busy || draft.lockedPosition" @change="applyPosition" /></label>
-          <label class="slicer-number">高度<InputNumber v-model:value="draft.layout!.height" :min="48" :max="100000" :precision="0" aria-label="高度" :disabled="busy || draft.lockedPosition" @change="applyPosition" /></label>
+          <FormItem class="slicer-number" layout="horizontal" label="水平位置"><InputNumber v-model:value="draft.layout!.left" :min="0" :max="1000000" :precision="0" aria-label="水平位置" :disabled="busy || draft.lockedPosition" /></FormItem>
+          <FormItem class="slicer-number" layout="horizontal" label="垂直位置"><InputNumber v-model:value="draft.layout!.top" :min="0" :max="1000000" :precision="0" aria-label="垂直位置" :disabled="busy || draft.lockedPosition" /></FormItem>
+          <FormItem class="slicer-number" layout="horizontal" label="宽度"><InputNumber v-model:value="draft.layout!.width" :min="80" :max="100000" :precision="0" aria-label="宽度" :disabled="busy || draft.lockedPosition" @change="updateSizeDimension('width', $event)" /></FormItem>
+          <FormItem class="slicer-number" layout="horizontal" label="高度"><InputNumber v-model:value="draft.layout!.height" :min="48" :max="100000" :precision="0" aria-label="高度" :disabled="busy || draft.lockedPosition" @change="updateSizeDimension('height', $event)" /></FormItem>
+          <FormItem label="锚定方式"><Select :value="draft.drawing?.anchorType ?? 'position'" :options="[
+            { value: 'both', label: '随单元格移动并调整大小' },
+            { value: 'position', label: '随单元格移动，不调整大小' },
+            { value: 'none', label: '不随单元格移动或调整大小' },
+          ]" aria-label="锚定方式" :disabled="busy" @change="setAnchorType" /></FormItem>
+          <FormItem :label="null"><Checkbox :checked="draft.drawing?.keepRatio ?? false" :disabled="busy" @change="setKeepRatio">保持纵横比</Checkbox></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="draft.lockedPosition" :disabled="busy">锁定位置</Checkbox></FormItem>
+          <div class="slicer-arrange" role="group" aria-label="对象排列">
+            <Tooltip title="置于顶层"><Button html-type="button" aria-label="置于顶层" :disabled="busy || !arrangement.front" @click="arrange('front')"><ArrowUpToLine :size="15" /></Button></Tooltip>
+            <Tooltip title="上移一层"><Button html-type="button" aria-label="上移一层" :disabled="busy || !arrangement.forward" @click="arrange('forward')"><ArrowUp :size="15" /></Button></Tooltip>
+            <Tooltip title="下移一层"><Button html-type="button" aria-label="下移一层" :disabled="busy || !arrangement.backward" @click="arrange('backward')"><ArrowDown :size="15" /></Button></Tooltip>
+            <Tooltip title="置于底层"><Button html-type="button" aria-label="置于底层" :disabled="busy || !arrangement.back" @click="arrange('back')"><ArrowDownToLine :size="15" /></Button></Tooltip>
+          </div>
         </section>
       </template>
       <p v-if="error" role="alert" class="slicer-error">{{ error }}</p>
       <div class="slicer-actions"><span /><Button @click="close">取消</Button><Button type="primary" :loading="busy" :disabled="busy || !settingsValid || !settingsDirty" @click="saveSettings">确定</Button></div>
-    </div>
+    </Form>
   </Drawer>
 </template>
 
 <style scoped>
 .slicer-insert, .slicer-settings { display: flex; flex-direction: column; gap: 16px; }
-.slicer-insert label, .slicer-settings label { display: flex; flex-direction: column; gap: 7px; color: #596779; font-size: 13px; }
+.slicer-insert :deep(.ant-form-item), .slicer-settings :deep(.ant-form-item) { margin-bottom: 0; }
+.slicer-settings :deep(.ant-form-item-label) { color: #596779; font-size: 13px; }
+.slicer-settings :deep(.slicer-number .ant-form-item-row) { display: grid; grid-template-columns: minmax(0, 1fr) 128px; align-items: center; gap: 8px; }
+.slicer-settings :deep(.slicer-number .ant-form-item-label) { text-align: start; }
 .slicer-insert :deep(.ant-select), .slicer-settings :deep(.ant-select), .slicer-settings :deep(.ant-input-number) { width: 100%; }
 .slicer-group { display: flex; flex-direction: column; gap: 12px; padding: 0 0 16px; border-bottom: 1px solid #e5e8ec; }
 .slicer-group header { color: #252a31; font-size: 14px; font-weight: 600; }
-.slicer-number { flex-direction: row !important; align-items: center; justify-content: space-between; }
 .slicer-number :deep(.ant-input-number) { width: 128px; }
+.slicer-arrange { display: flex; gap: 4px; }
+.slicer-arrange .ant-btn { flex: 1; }
 .slicer-gallery { width: 320px; max-height: 70vh; overflow: auto; display: grid; grid-template-columns: repeat(3, 72px); justify-content: space-between; gap: 8px; }
 .slicer-style-tile { width: 72px; height: 72px; padding: 9px; border: 1px solid #d9dde3; background: #fff; }
 .slicer-style-tile.is-selected { outline: 2px solid #1677ff; outline-offset: 1px; }

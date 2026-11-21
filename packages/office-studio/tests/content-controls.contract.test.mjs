@@ -72,6 +72,22 @@ test('placeholder reset restores placeholder text and remains undoable', () => {
   studio.dispose()
 })
 
+test('a newly inserted empty text control materializes its placeholder in document content', () => {
+  const { studio, document } = createDocument('')
+  const control = document.addContentControl({
+    id: 'empty-placeholder', type: 'text', blockId: 'paragraph-1', startOffset: 0, endOffset: 0,
+    placeholder: 'Enter name', showingPlaceholder: true,
+  })
+  assert.equal(document.getText(), 'Enter name')
+  assert.equal(control.getText(), 'Enter name')
+  assert.deepEqual(control.getRange(), { blockId: 'paragraph-1', startOffset: 0, endOffset: 10 })
+  assert.equal(control.getInfo().value, 'Enter name')
+  assert.equal(document.undo(), true)
+  assert.equal(document.getText(), '')
+  assert.equal(document.getContentControls().length, 0)
+  studio.dispose()
+})
+
 test('repeating-section item duplication copies nested controls and deletion shifts following ranges', () => {
   const { studio, document } = createDocument('ABC')
   const section = document.addContentControl({
@@ -160,17 +176,29 @@ test('checkboxes and date/list controls enforce type-specific values', () => {
   checkbox.setChecked(true)
   assert.equal(checkbox.getInfo().checked, true)
   assert.equal(checkbox.getInfo().value, 'true')
+  assert.equal(checkbox.getInfo().checkbox.checked, true)
   assert.throws(() => checkbox.setValue('yes'), /does not accept text values/)
 
   const date = document.addContentControl({ id: 'date', type: 'date', blockId: 'paragraph-1', startOffset: 4, endOffset: 14, dateValue: '2026-01-01' })
   assert.throws(() => date.setValue('2026-02-30'), /YYYY-MM-DD/)
   date.setValue('2026-02-28')
   assert.equal(date.getInfo().dateValue, '2026-02-28')
+  date.update({ dateFormat: 'MM/dd/yyyy' })
+  assert.equal(date.getText(), '02/28/2026')
+  assert.equal(date.getInfo().dateValue, '2026-02-28')
+  date.update({ dateFormat: 'dd MMMM yyyy', dateLocale: 'zh-CN' })
+  assert.equal(date.getText(), '28 二月 2026')
+  assert.equal(document.undo(), true)
+  assert.equal(date.getText(), '02/28/2026')
 
   const list = document.addContentControl({ id: 'list', type: 'dropDownList', blockId: 'paragraph-1', startOffset: 15, endOffset: 16, value: 'A', items: [{ displayText: 'Alpha', value: 'A' }, { displayText: 'Beta', value: 'B' }] })
   assert.throws(() => list.selectItem('C'), /not present in dropdown/)
   list.selectItem('B')
-  assert.equal(list.getText(), 'B')
+  assert.equal(list.getText(), 'Beta')
+  assert.equal(list.getInfo().value, 'B')
+  assert.equal(document.undo(), true)
+  assert.equal(list.getText(), 'A')
+  assert.equal(list.getInfo().value, 'A')
   studio.dispose()
 })
 

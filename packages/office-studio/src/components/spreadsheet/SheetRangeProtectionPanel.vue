@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Input, Modal, Select } from 'antdv-next'
+import { Button, Form, FormItem, Input, Modal, Select } from 'antdv-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { SheetProtectionEditState, SheetProtectionViewState, SheetRangeProtectionRule } from '../../domain/model'
@@ -137,16 +137,26 @@ function removeRule() {
         </Button>
         <p v-if="!rules.length" class="protection-empty">{{ t('sheet.protection.none', '当前工作表没有保护规则') }}</p>
       </aside>
-      <section class="protection-form" :aria-label="t('sheet.protection.title', '保护规则设置')">
-        <label>{{ t('sheet.protection.range', '应用区域') }}<Input :value="selectedRule ? selectedRule.ranges.map(formatProtectionRange).join(', ') : sourceRange" readonly :aria-label="t('sheet.protection.range-aria', '保护应用区域')" /></label>
-        <label>{{ t('sheet.protection.description', '说明') }}<Input v-model:value="description" :aria-label="t('sheet.protection.description', '保护说明')" :maxlength="255" :disabled="busy || !isOwner" /></label>
-        <label>{{ t('sheet.protection.edit-permission', '允许编辑') }}<Select v-model:value="editState" :options="editStates" :aria-label="t('sheet.protection.edit-permission', '保护编辑权限')" :disabled="busy || !isOwner" /></label>
-        <label v-if="editState === 'designedUserCanEdit'">{{ t('sheet.protection.allowed-users', '允许编辑的用户 ID') }}<Input v-model:value="allowedUsers" :aria-label="t('sheet.protection.allowed-users', '允许编辑的用户 ID')" :placeholder="t('sheet.protection.users-placeholder', '以逗号或空格分隔')" :disabled="busy || !isOwner" /></label>
-        <label>{{ t('sheet.protection.view-permission', '查看权限') }}<Select v-model:value="viewState" :options="viewStates" :aria-label="t('sheet.protection.view-permission', '保护查看权限')" :disabled="busy || !isOwner" /></label>
+      <Form layout="vertical" class="protection-form" :aria-label="t('sheet.protection.title', '保护规则设置')">
+        <FormItem name="range" :label="t('sheet.protection.range', '应用区域')">
+          <Input :value="selectedRule ? selectedRule.ranges.map(formatProtectionRange).join(', ') : sourceRange" readonly :aria-label="t('sheet.protection.range-aria', '保护应用区域')" />
+        </FormItem>
+        <FormItem name="description" :label="t('sheet.protection.description', '说明')">
+          <Input v-model:value="description" :aria-label="t('sheet.protection.description', '保护说明')" :maxlength="255" :disabled="busy || !isOwner" />
+        </FormItem>
+        <FormItem name="editState" :label="t('sheet.protection.edit-permission', '允许编辑')">
+          <Select v-model:value="editState" :options="editStates" :aria-label="t('sheet.protection.edit-permission', '保护编辑权限')" :disabled="busy || !isOwner" />
+        </FormItem>
+        <FormItem v-if="editState === 'designedUserCanEdit'" name="allowedUsers" :label="t('sheet.protection.allowed-users', '允许编辑的用户 ID')">
+          <Input v-model:value="allowedUsers" :aria-label="t('sheet.protection.allowed-users', '允许编辑的用户 ID')" :placeholder="t('sheet.protection.users-placeholder', '以逗号或空格分隔')" :disabled="busy || !isOwner" />
+        </FormItem>
+        <FormItem name="viewState" :label="t('sheet.protection.view-permission', '查看权限')">
+          <Select v-model:value="viewState" :options="viewStates" :aria-label="t('sheet.protection.view-permission', '保护查看权限')" :disabled="busy || !isOwner" />
+        </FormItem>
         <p v-if="selectedRule && !isOwner" class="protection-readonly">{{ t('sheet.protection.created-by', `此规则由 ${selectedRule.ownerUserId} 创建，你只能查看。`).replace('{id}', selectedRule.ownerUserId) }}</p>
         <p v-if="message" class="protection-error" role="alert">{{ message }}</p>
         <Button v-if="selectedRule" type="text" danger :disabled="busy || !isOwner" @click="removeRule">{{ t('sheet.protection.remove', '移除所选保护规则') }}</Button>
-      </section>
+      </Form>
     </div>
   </Modal>
 </template>
@@ -159,7 +169,7 @@ function removeRule() {
 .protection-list :deep(.ant-btn span) { overflow-wrap: anywhere; }
 .protection-empty { margin: 8px 4px; color: #687586; font-size: 12px; }
 .protection-form { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
-.protection-form label { display: grid; min-width: 0; gap: 5px; color: #435066; font-size: 13px; }
+.protection-form :deep(.ant-form-item) { margin-bottom: 0; }
 .protection-readonly { margin: 0; color: #687586; font-size: 12px; }
 .protection-error { margin: 0; color: #b42318; font-size: 12px; }
 @media (max-width: 560px) { .protection-panel { grid-template-columns: minmax(0, 1fr); } .protection-list { max-height: 130px; overflow: auto; padding: 0 0 10px; border-inline-end: 0; border-bottom: 1px solid #e5e8ed; } }

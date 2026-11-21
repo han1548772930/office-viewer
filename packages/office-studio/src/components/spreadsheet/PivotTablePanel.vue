@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Checkbox, Dropdown, Input, Modal, Select, Switch } from 'antdv-next'
+import { Button, Checkbox, Dropdown, Form, FormItem, Input, Modal, Select, Switch } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
 import { ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, Ellipsis, GripVertical } from 'lucide-vue-next'
 import { FOffice } from '../../api/facade'
@@ -351,13 +351,14 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
 <template>
   <Modal :open="open" title="数据透视表" :width="820" :footer="null" :mask-closable="!busy" @cancel="close">
     <div class="pivot-panel" data-testid="pivot-table-panel">
-      <div class="pivot-panel-selector"><label>选择数据透视表<Select :value="selectedId" :options="pivotOptions" aria-label="选择数据透视表" @change="onPivotSelect" /></label></div>
+      <Form layout="vertical" class="pivot-form" @submit.prevent>
+      <div class="pivot-panel-selector"><FormItem label="选择数据透视表"><Select :value="selectedId" :options="pivotOptions" aria-label="选择数据透视表" @change="onPivotSelect" /></FormItem></div>
       <template v-if="draft">
         <section class="pivot-locations" aria-label="数据透视表数据源和位置">
-          <label>数据源工作表<Select v-model:value="draft.sourceSheetId" :options="sheetOptions" aria-label="透视表数据源工作表" /></label>
-          <label>数据区域<Input v-model:value="draft.sourceRange" aria-label="透视表数据区域" placeholder="例如 A1:C20" /></label>
-          <label>放置工作表<Select v-model:value="draft.targetSheetId" :options="sheetOptions" aria-label="透视表放置工作表" /></label>
-          <label>起始单元格<Input v-model:value="draft.targetAddress" aria-label="透视表起始单元格" placeholder="例如 E1" /></label>
+          <FormItem label="数据源工作表"><Select v-model:value="draft.sourceSheetId" :options="sheetOptions" aria-label="透视表数据源工作表" /></FormItem>
+          <FormItem label="数据区域"><Input v-model:value="draft.sourceRange" aria-label="透视表数据区域" placeholder="例如 A1:C20" /></FormItem>
+          <FormItem label="放置工作表"><Select v-model:value="draft.targetSheetId" :options="sheetOptions" aria-label="透视表放置工作表" /></FormItem>
+          <FormItem label="起始单元格"><Input v-model:value="draft.targetAddress" aria-label="透视表起始单元格" placeholder="例如 E1" /></FormItem>
         </section>
         <div class="pivot-fields-header"><span>字段</span><Button size="small" @click="loadFields">读取字段</Button></div>
         <p v-if="fieldsStale" class="pivot-hint">数据区域已改变，请读取字段后重新配置。</p>
@@ -365,7 +366,7 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
           <div class="pivot-source-area" aria-label="未放置字段">
             <span class="pivot-area-title">源字段</span>
             <p class="pivot-source-description">选择字段并将其添加到透视表区域</p>
-            <Input v-model:value="fieldSearch" aria-label="查找透视字段" placeholder="查找字段" size="small" />
+            <FormItem class="pivot-search-item"><Input v-model:value="fieldSearch" aria-label="查找透视字段" placeholder="查找字段" size="small" /></FormItem>
             <div class="pivot-field-list" @dragover.prevent @drop="dropField('unused', $event)">
               <div v-for="field in visibleFields" :key="field.fieldId" class="pivot-source-field" :class="{ 'is-dragging': draggedFieldId === field.fieldId }" :data-field-id="field.fieldId" draggable="true" @dragstart="startFieldDrag(field.fieldId, $event)" @dragend="draggedFieldId = ''">
                 <Checkbox :checked="field.area !== 'unused'" :aria-label="`添加字段 ${field.fieldName}`" @change="toggleField(field.fieldId, field.area === 'unused')" />
@@ -389,12 +390,12 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
           </div>
         </section>
         <section class="pivot-options" aria-label="透视表汇总选项">
-          <label><Switch v-model:checked="draft.options.showRowGrandTotal" size="small" aria-label="显示行总计" />行总计</label>
-          <label><Switch v-model:checked="draft.options.showColGrandTotal" size="small" aria-label="显示列总计" />列总计</label>
-          <label><Switch v-model:checked="draft.options.showRowSubtotals" size="small" aria-label="显示行小计" />行小计</label>
-          <label><Switch v-model:checked="draft.options.showColSubtotals" size="small" aria-label="显示列小计" />列小计</label>
-          <label><Switch v-model:checked="draft.options.repeatRowLabels" size="small" aria-label="重复行标签" />重复行标签</label>
-          <label>值排列<Select v-model:value="draft.options.valuePosition" :options="[{ label: '按列', value: 'column' }, { label: '按行', value: 'row' }]" aria-label="值字段排列" size="small" /></label>
+          <FormItem class="pivot-option-item"><Switch v-model:checked="draft.options.showRowGrandTotal" size="small" aria-label="显示行总计" />行总计</FormItem>
+          <FormItem class="pivot-option-item"><Switch v-model:checked="draft.options.showColGrandTotal" size="small" aria-label="显示列总计" />列总计</FormItem>
+          <FormItem class="pivot-option-item"><Switch v-model:checked="draft.options.showRowSubtotals" size="small" aria-label="显示行小计" />行小计</FormItem>
+          <FormItem class="pivot-option-item"><Switch v-model:checked="draft.options.showColSubtotals" size="small" aria-label="显示列小计" />列小计</FormItem>
+          <FormItem class="pivot-option-item"><Switch v-model:checked="draft.options.repeatRowLabels" size="small" aria-label="重复行标签" />重复行标签</FormItem>
+          <FormItem label="值排列"><Select v-model:value="draft.options.valuePosition" :options="[{ label: '按列', value: 'column' }, { label: '按行', value: 'row' }]" aria-label="值字段排列" size="small" /></FormItem>
         </section>
         <p v-if="selectedPivot?.outputRange" class="pivot-hint" data-testid="pivot-output-range">结果区域：{{ workbook?.sheets.find(sheet => sheet.id === selectedPivot?.anchor.subUnitId)?.name }}!{{ pivotRangeAddress(selectedPivot.outputRange) }}</p>
       </template>
@@ -410,17 +411,18 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
         <Button @click="close">关闭</Button>
         <Button v-if="draft" type="primary" :loading="busy" @click="applyConfiguration">{{ draft.pivotId ? '应用字段配置' : '创建数据透视表' }}</Button>
       </div>
+      </Form>
     </div>
   </Modal>
   <Modal :open="Boolean(filterFieldId)" :title="null" :width="336" :footer="null" :closable="false" :mask="false" :mask-closable="false" :confirm-loading="fieldDialogBusy" destroy-on-hidden @cancel="filterFieldId = ''">
-    <div v-if="filterField" class="pivot-filter-dialog" :aria-label="`筛选字段 ${filterField.fieldName}`">
+    <Form v-if="filterField" layout="vertical" class="pivot-filter-dialog" :aria-label="`筛选字段 ${filterField.fieldName}`" @submit.prevent>
       <div v-if="filterField.area === 'row' || filterField.area === 'column'" class="pivot-sort-segment" role="group" aria-label="透视字段排序">
         <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending'" @click="applyLabelSort('ascending')"><ArrowUpAZ :size="16" />升序</Button>
         <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending'" @click="applyLabelSort('descending')"><ArrowDownAZ :size="16" />降序</Button>
       </div>
       <div class="pivot-filter-items">
-        <label class="pivot-filter-checkbox pivot-filter-select-all"><Checkbox :checked="allFilterItemsSelected" :indeterminate="filterSelection.length > 0 && !allFilterItemsSelected" @change="toggleAllFilterItems(!allFilterItemsSelected)">全选</Checkbox></label>
-        <label v-for="item in filterItems" :key="item" class="pivot-filter-checkbox"><Checkbox :checked="filterSelection.includes(item)" @change="toggleFilterItem(item)">{{ item || '（空白）' }}</Checkbox></label>
+        <FormItem class="pivot-filter-checkbox pivot-filter-select-all"><Checkbox :checked="allFilterItemsSelected" :indeterminate="filterSelection.length > 0 && !allFilterItemsSelected" @change="toggleAllFilterItems(!allFilterItemsSelected)">全选</Checkbox></FormItem>
+        <FormItem v-for="item in filterItems" :key="item" class="pivot-filter-checkbox"><Checkbox :checked="filterSelection.includes(item)" @change="toggleFilterItem(item)">{{ item || '（空白）' }}</Checkbox></FormItem>
       </div>
       <div class="pivot-filter-footer">
         <Button type="link" size="small" :disabled="!canClearFieldFilter || fieldDialogBusy" @click="applyLabelFilter(null)">清除筛选</Button>
@@ -429,26 +431,29 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
         <Button type="primary" size="small" :disabled="fieldDialogBusy" @click="applyLabelFilter(allFilterItemsSelected ? null : filterSelection)">确定</Button>
       </div>
       <p v-if="error" class="pivot-error" role="alert">{{ error }}</p>
-    </div>
+    </Form>
   </Modal>
   <Modal :open="Boolean(settingsFieldId)" title="字段设置" :width="400" :footer="null" :mask="false" :mask-closable="false" :confirm-loading="fieldDialogBusy" destroy-on-hidden @cancel="settingsFieldId = ''">
-    <div v-if="settingsField" class="pivot-settings-dialog">
-      <label class="pivot-settings-name"><span>字段名称</span><span class="pivot-settings-source">源字段：{{ settingsField.fieldName }}</span><Input v-model:value="fieldDisplayName" size="small" /></label>
-      <label><span>汇总方式</span><div class="pivot-aggregation-list" role="listbox" aria-label="汇总方式"><Button v-for="option in aggregationOptions" :key="option.value" type="text" role="option" :aria-selected="fieldAggregation === option.value" :disabled="fieldDialogBusy" :class="{ 'is-selected': fieldAggregation === option.value }" @click="fieldAggregation = option.value"><span>{{ option.label }}</span><Check v-if="fieldAggregation === option.value" :size="16" /></Button></div></label>
+    <Form v-if="settingsField" layout="vertical" class="pivot-settings-dialog" @submit.prevent>
+      <FormItem class="pivot-settings-name" label="字段名称"><span class="pivot-settings-source">源字段：{{ settingsField.fieldName }}</span><Input v-model:value="fieldDisplayName" size="small" /></FormItem>
+      <FormItem label="汇总方式"><div class="pivot-aggregation-list" role="listbox" aria-label="汇总方式"><Button v-for="option in aggregationOptions" :key="option.value" type="text" role="option" :aria-selected="fieldAggregation === option.value" :disabled="fieldDialogBusy" :class="{ 'is-selected': fieldAggregation === option.value }" @click="fieldAggregation = option.value"><span>{{ option.label }}</span><Check v-if="fieldAggregation === option.value" :size="16" /></Button></div></FormItem>
       <Button :disabled="fieldDialogBusy" @click="numberFormatDraft = fieldFormat || 'General'; numberFormatOpen = true">数字格式</Button>
       <p v-if="error" class="pivot-error" role="alert">{{ error }}</p>
       <div class="pivot-settings-footer"><Button :disabled="fieldDialogBusy" @click="settingsFieldId = ''">取消</Button><Button type="primary" :disabled="!fieldDisplayName.trim() || fieldDialogBusy" @click="applyFieldSettings">确定</Button></div>
-    </div>
+    </Form>
   </Modal>
   <Modal :open="numberFormatOpen" title="数字格式" :width="400" :footer="null" :mask="false" destroy-on-hidden @cancel="numberFormatOpen = false">
-    <div class="pivot-settings-dialog"><label>格式类型<Select v-model:value="numberFormatDraft" :options="numberFormatOptions" aria-label="数字格式类型" /></label><label>格式代码<Input v-model:value="numberFormatDraft" aria-label="数字格式代码" /></label><output class="pivot-format-preview" aria-label="数字格式预览">{{ numberFormatPreview }}</output><div class="pivot-settings-footer"><Button @click="numberFormatOpen = false">取消</Button><Button type="primary" @click="fieldFormat = numberFormatDraft; numberFormatOpen = false">确定</Button></div></div>
+    <Form layout="vertical" class="pivot-settings-dialog" @submit.prevent><FormItem label="格式类型"><Select v-model:value="numberFormatDraft" :options="numberFormatOptions" aria-label="数字格式类型" /></FormItem><FormItem label="格式代码"><Input v-model:value="numberFormatDraft" aria-label="数字格式代码" /></FormItem><output class="pivot-format-preview" aria-label="数字格式预览">{{ numberFormatPreview }}</output><div class="pivot-settings-footer"><Button @click="numberFormatOpen = false">取消</Button><Button type="primary" @click="fieldFormat = numberFormatDraft; numberFormatOpen = false">确定</Button></div></Form>
   </Modal>
   <PivotFieldToolsDialog v-if="toolsField && workbook && selectedPivot" :open="Boolean(toolsFieldId)" :kind="toolsKind" :workbook="workbook" :pivot="selectedPivot" :field="toolsField" :busy="fieldDialogBusy" :error="error" @close="toolsFieldId = ''" @apply="applyFieldTool" />
 </template>
 
 <style scoped>
 .pivot-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.pivot-panel label { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: #5d6979; font-size: 12px; }
+.pivot-form { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pivot-form :deep(.ant-form-item) { margin-bottom: 0; }
+.pivot-form :deep(.ant-form-item-label) { padding-bottom: 5px; }
+.pivot-search-item :deep(.ant-form-item-label) { display: none; }
 .pivot-panel-selector { max-width: 100%; }
 .pivot-locations { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
 .pivot-fields-header { display: flex; align-items: center; justify-content: space-between; padding-top: 4px; color: #354152; font-weight: 600; }
@@ -467,7 +472,8 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
 .pivot-field :deep(.ant-btn) { padding: 0; }
 .pivot-empty { margin: auto; color: #8993a1; font-size: 12px; text-align: center; }
 .pivot-options { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; padding: 4px 0; }
-.pivot-options label { flex-direction: row; align-items: center; }
+.pivot-options :deep(.pivot-option-item) { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; margin: 0; }
+.pivot-options :deep(.pivot-option-item .ant-form-item-control-input-content) { display: flex; align-items: center; gap: 6px; }
 .pivot-options :deep(.ant-select) { min-width: 76px; }
 .pivot-hint, .pivot-status, .pivot-error { margin: 0; font-size: 12px; line-height: 1.6; }
 .pivot-hint { color: #7b8797; }
@@ -482,15 +488,16 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
 .pivot-sort-segment button:last-child { margin-left: -1px; border-radius: 0 4px 4px 0; }
 .pivot-sort-segment button:hover, .pivot-sort-segment button.is-active { background: #f0f2f5; }
 .pivot-filter-items { box-sizing: border-box; display: flex; flex-direction: column; height: 300px; overflow-y: auto; margin: 12px 0 16px; padding: 8px; border: 1px solid #e4e7ec; border-radius: 6px; }
-.pivot-filter-checkbox { box-sizing: border-box; display: flex !important; align-items: center; height: 28px; min-height: 28px; margin: 0; padding: 2px 4px; overflow: hidden; color: #303b4a !important; font-size: 14px !important; white-space: nowrap; }
+.pivot-filter-checkbox { box-sizing: border-box; display: flex !important; flex: 0 0 28px; align-items: center; height: 28px; min-height: 28px; margin: 0; padding: 2px 4px; overflow: hidden; color: #303b4a !important; font-size: 14px !important; white-space: nowrap; }
+.pivot-filter-checkbox :deep(.ant-form-item-control), .pivot-filter-checkbox :deep(.ant-form-item-control-input), .pivot-filter-checkbox :deep(.ant-form-item-control-input-content) { display: flex; align-items: center; min-height: 0; height: 100%; }
 .pivot-filter-checkbox :deep(.ant-checkbox-wrapper) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .pivot-filter-select-all { border-bottom: 1px solid #e9ecf1; margin-bottom: 4px; }
 .pivot-filter-footer, .pivot-settings-footer { display: flex; align-items: center; gap: 8px; }
 .pivot-filter-footer-spacer { flex: 1; }
 .pivot-settings-dialog { display: flex; flex-direction: column; gap: 16px; }
-.pivot-settings-dialog label { display: flex; flex-direction: column; gap: 6px; color: #354152; font-size: 14px; }
-.pivot-settings-name { display: grid !important; grid-template-columns: 1fr auto; align-items: center; }
-.pivot-settings-name :deep(.ant-input-affix-wrapper) { grid-column: 1 / -1; }
+.pivot-settings-dialog :deep(.ant-form-item) { margin-bottom: 0; }
+.pivot-settings-dialog :deep(.ant-form-item-label) { padding-bottom: 6px; }
+.pivot-settings-name :deep(.ant-form-item-control-input-content) { display: flex; flex-direction: column; gap: 6px; }
 .pivot-settings-source { color: #7b8797; font-size: 12px; }
 .pivot-aggregation-list { display: flex; flex-direction: column; height: 160px; overflow-y: auto; padding: 4px; border: 1px solid #e4e7ec; border-radius: 4px; }
 .pivot-aggregation-list :deep(.ant-btn) { display: flex; flex: 0 0 28px; justify-content: space-between; text-align: left; padding: 2px 8px; }

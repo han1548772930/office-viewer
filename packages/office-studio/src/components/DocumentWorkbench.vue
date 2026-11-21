@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, Input, Modal, Tooltip, Upload } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Input, Modal, Tooltip, Upload } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
@@ -557,12 +557,12 @@ function commitCommentMutation(mutate: (next: DocumentModel) => void) {
 }
 function createComment(text: string) {
   const range = commentDraftSelection.value
-  if (!range || !canComment.value) return
+  if (!range || !canComment.value) return false
   if (selectedPlainText(model.value, range) !== commentDraftReference.value) {
     notify(createRibbonTranslator(officeLocale.value, 'doc')('doc.comments.selection-changed', 'The selected text changed. Select it again before commenting'))
     commentDraftSelection.value = undefined
     commentDraftReference.value = ''
-    return
+    return false
   }
   let commentId = ''
   const committed = commitCommentMutation(next => { commentId = createDocumentThreadComment(next, range, text, commentActor()).id })
@@ -573,14 +573,15 @@ function createComment(text: string) {
     selection.value = collapsedSelection(range.focus)
     void nextTick(() => canvasRef.value?.focus())
   }
+  return committed
 }
 function replyToComment(commentId: string, text: string, mentions: readonly { userId: string; label: string }[] = []) {
-  if (!canDocumentPermission('comment')) return
-  commitCommentMutation(next => { replyToDocumentThreadComment(next, commentId, text, commentActor(), new Date().toISOString(), mentions) })
+  if (!canDocumentPermission('comment')) return false
+  return commitCommentMutation(next => { replyToDocumentThreadComment(next, commentId, text, commentActor(), new Date().toISOString(), mentions) })
 }
 function editComment(commentId: string, messageId: string, text: string) {
-  if (!canDocumentPermission('comment')) return
-  commitCommentMutation(next => { editDocumentCommentMessage(next, commentId, messageId, text, commentActor()) })
+  if (!canDocumentPermission('comment')) return false
+  return commitCommentMutation(next => { editDocumentCommentMessage(next, commentId, messageId, text, commentActor()) })
 }
 function removeComment(commentId: string) {
   if (!deletableCommentIds.value.includes(commentId) || !canDocumentPermission('comment')) return
@@ -595,8 +596,10 @@ function removeCommentMessage(commentId: string, messageId: string) {
 function resolveComment(commentId: string, resolved: boolean) {
   if (!canDocumentPermission('comment')) return
   commitCommentMutation(next => { setDocumentThreadCommentResolved(next, commentId, resolved, commentActor()) })
+  if (resolved && activeCommentId.value === commentId) activeCommentId.value = ''
 }
 function selectComment(commentId: string) {
+  if (!commentId) { activeCommentId.value = ''; return }
   const comment = model.value.comments?.[commentId]
   if (!comment) return
   activeCommentId.value = commentId
@@ -1040,6 +1043,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </script>
 
 <template>
+  <ConfigProvider>
   <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
     <header v-if="showHeader && !isFocusMode" class="document-header">
       <FileText class="document-mark" :size="20" />
@@ -1084,9 +1088,9 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
           :can-start-create="canCreateComment"
           :deletable-comment-ids="deletableCommentIds"
           :selected-comment-id="activeCommentId"
-          @create="createComment"
-          @reply="replyToComment"
-          @edit="editComment"
+          :on-create-comment="createComment"
+          :on-reply-comment="replyToComment"
+          :on-edit-comment="editComment"
           @delete="removeComment"
           @delete-message="removeCommentMessage"
           @resolve="resolveComment"
@@ -1134,6 +1138,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       @apply="applyTocDialog"
     />
   </section>
+  </ConfigProvider>
 </template>
 
 <style scoped>

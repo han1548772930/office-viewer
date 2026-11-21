@@ -75,6 +75,10 @@ export function createDocumentContentControl(
   assertNoPartialOverlap(controls, control)
   controls.push(control)
   controls.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
+  if (control.showingPlaceholder && control.placeholder && ['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
+    replaceControlText(model, control, control.placeholder)
+    control.value = control.placeholder
+  }
   return control
 }
 
@@ -92,6 +96,9 @@ export function updateDocumentContentControl(model: DocumentModel, id: string, p
   const controls = model.contentControls!
   assertNoPartialOverlap(controls.filter((candidate) => candidate.id !== id), next)
   Object.assign(control, next)
+  if (control.type === 'date' && !control.showingPlaceholder && control.dateValue) {
+    replaceControlText(model, control, formatContentControlDate(control.dateValue, control.dateFormat, control.dateLocale))
+  }
 }
 
 export function setDocumentContentControlValue(model: DocumentModel, id: string, value: string): void {
@@ -105,7 +112,12 @@ export function setDocumentContentControlValue(model: DocumentModel, id: string,
     throw new RangeError(`Value is not present in dropdown content control: ${value}`)
   }
   if (control.type === 'date' && value !== '' && !validIsoDate(value)) throw new RangeError('Date content control value must be YYYY-MM-DD')
-  replaceControlText(model, control, value)
+  const displayValue = control.type === 'date'
+    ? formatContentControlDate(value, control.dateFormat, control.dateLocale)
+    : ['dropDownList', 'comboBox'].includes(control.type)
+      ? control.items?.find((item) => item.value === value)?.displayText ?? value
+      : value
+  replaceControlText(model, control, displayValue)
   control.value = value
   if (control.type === 'date') control.dateValue = value
   control.showingPlaceholder = false
@@ -118,6 +130,7 @@ export function setDocumentContentControlChecked(model: DocumentModel, id: strin
   assertAncestorContentEditable(model, control)
   control.checked = checked
   control.value = checked ? 'true' : 'false'
+  control.checkbox = { ...control.checkbox, checked }
   control.showingPlaceholder = false
 }
 
@@ -334,6 +347,8 @@ export function deleteRepeatingSectionItem(model: DocumentModel, id: string): vo
 export function selectDocumentContentControlItem(model: DocumentModel, id: string, value: string): void {
   const control = requireControl(model, id)
   if (control.type !== 'dropDownList' && control.type !== 'comboBox') throw new TypeError(`Content control ${id} is not a list control`)
+  const item = control.items?.find((candidate) => candidate.value === value)
+  if (!item && control.type === 'dropDownList') throw new RangeError(`Value is not present in dropdown content control: ${value}`)
   setDocumentContentControlValue(model, id, value)
 }
 
@@ -363,6 +378,35 @@ export function contentControlText(model: DocumentModel, control: DocumentConten
 
 export function contentControlRange(control: DocumentContentControl): { blockId: string; startOffset: number; endOffset: number } {
   return { blockId: control.blockId, startOffset: control.startOffset, endOffset: control.endOffset }
+}
+
+function formatContentControlDate(value: string, format?: string, locale?: string): string {
+  const date = new Date(`${value}T00:00:00.000Z`)
+  if (Number.isNaN(date.valueOf())) return value
+  if (!format || format === 'yyyy-MM-dd') return value
+  const monthNames = (() => {
+    try {
+      const formatter = new Intl.DateTimeFormat(locale || 'en-US', { month: 'long', timeZone: 'UTC' })
+      return Array.from({ length: 12 }, (_, month) => formatter.format(new Date(Date.UTC(2020, month, 1))))
+    } catch {
+      return []
+    }
+  })()
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth()
+  const day = date.getUTCDate()
+  return format.replace(/yyyy|yy|MMMM|MMM|MM|M|dd|d/g, (token) => {
+    switch (token) {
+      case 'yyyy': return String(year).padStart(4, '0')
+      case 'yy': return String(year).slice(-2)
+      case 'MMMM': return monthNames[month] ?? String(month + 1).padStart(2, '0')
+      case 'MMM': return monthNames[month]?.slice(0, 3) ?? String(month + 1).padStart(2, '0')
+      case 'MM': return String(month + 1).padStart(2, '0')
+      case 'M': return String(month + 1)
+      case 'dd': return String(day).padStart(2, '0')
+      default: return String(day)
+    }
+  })
 }
 
 export function assertTextRangeEditable(model: DocumentModel, startOffset: number, endOffset: number): void {

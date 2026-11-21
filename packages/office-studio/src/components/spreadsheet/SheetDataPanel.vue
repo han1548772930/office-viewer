@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Checkbox, Input, Modal, Select, Switch } from 'antdv-next'
+import { Button, Checkbox, Form, FormItem, Input, Modal, Select, Switch } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
@@ -139,52 +139,54 @@ async function applySort(): Promise<void> {
 
 <template>
   <Modal :open="open" title="排序与筛选" :footer="null" :width="700" @cancel="emit('update:open', false)">
-    <section class="sheet-data-panel" :aria-busy="busy">
+    <Form layout="vertical" class="sheet-data-panel" :aria-busy="busy" @submit.prevent>
       <div class="data-mode"><Button :type="mode === 'filter' ? 'primary' : 'default'" :disabled="busy" @click="mode = 'filter'">筛选设置</Button><Button :type="mode === 'sort' ? 'primary' : 'default'" :disabled="busy" @click="mode = 'sort'">排序设置</Button></div>
-      <label>数据区域<Input v-model:value="address" aria-label="排序筛选数据区域" :disabled="busy" placeholder="A1:C20" @press-enter="loadFields" /></label>
+      <FormItem label="数据区域"><Input v-model:value="address" aria-label="排序筛选数据区域" :disabled="busy" placeholder="A1:C20" @press-enter="loadFields" /></FormItem>
       <Button :disabled="busy" @click="loadFields">读取字段</Button>
       <p v-if="error" class="data-error" role="alert">{{ error }}</p><p v-if="status" role="status">{{ status }}</p>
       <template v-if="fields.length && mode === 'filter'">
-        <label>筛选字段<Select v-model:value="column" aria-label="筛选字段" :options="fieldOptions" :disabled="busy" /></label>
-        <label>筛选方式<Select v-model:value="kind" aria-label="筛选方式" :options="[{ label: '按值选择', value: 'values' }, { label: '按条件筛选', value: 'condition' }]" /></label>
+        <FormItem label="筛选字段"><Select v-model:value="column" aria-label="筛选字段" :options="fieldOptions" :disabled="busy" /></FormItem>
+        <FormItem label="筛选方式"><Select v-model:value="kind" aria-label="筛选方式" :options="[{ label: '按值选择', value: 'values' }, { label: '按条件筛选', value: 'condition' }]" /></FormItem>
         <template v-if="kind === 'values'">
-          <Input v-model:value="search" aria-label="搜索筛选值" placeholder="搜索字段值" />
+          <FormItem label="搜索筛选值"><Input v-model:value="search" aria-label="搜索筛选值" placeholder="搜索字段值" /></FormItem>
           <div class="data-actions"><Button size="small" @click="selectedKeys = values.map(item => item.key)">全选</Button><Button size="small" @click="selectedKeys = []">全不选</Button><span>{{ selectedKeys.length }} / {{ values.length }} 个值</span></div>
           <div class="data-values"><Checkbox v-for="item in visibleValues" :key="item.key" :checked="selectedKeys.includes(item.key)" @change="toggle(item.key)">{{ item.label }}</Checkbox></div>
           <div class="data-actions"><Button size="small" :disabled="page === 0" @click="page--">上一页</Button><span>{{ page + 1 }} / {{ pageCount }}</span><Button size="small" :disabled="page + 1 >= pageCount" @click="page++">下一页</Button></div>
         </template>
         <template v-else>
-          <label>条件<Select v-model:value="operator" aria-label="筛选条件" :options="operators" /></label>
-          <label v-if="needsValue">比较值类型<Select v-model:value="valueType" aria-label="比较值类型" :options="[{ label: '文本', value: 'text' }, { label: '数值或日期序号', value: 'number' }, { label: '逻辑值', value: 'boolean' }]" /></label>
-          <Input v-if="needsValue" v-model:value="expected" aria-label="筛选比较值" /><Input v-if="needsSecond" v-model:value="second" aria-label="筛选第二个比较值" />
-          <Checkbox v-model:checked="caseSensitive">区分大小写</Checkbox>
+          <FormItem label="条件"><Select v-model:value="operator" aria-label="筛选条件" :options="operators" /></FormItem>
+          <FormItem v-if="needsValue" label="比较值类型"><Select v-model:value="valueType" aria-label="比较值类型" :options="[{ label: '文本', value: 'text' }, { label: '数值或日期序号', value: 'number' }, { label: '逻辑值', value: 'boolean' }]" /></FormItem>
+          <FormItem v-if="needsValue" label="比较值"><Input v-model:value="expected" aria-label="筛选比较值" /></FormItem><FormItem v-if="needsSecond" label="第二个比较值"><Input v-model:value="second" aria-label="筛选第二个比较值" /></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="caseSensitive">区分大小写</Checkbox></FormItem>
         </template>
         <div class="data-actions"><Button type="primary" @click="runFilter('apply')">应用筛选</Button><Button @click="runFilter('clear-column')">清除此列条件</Button><Button @click="runFilter('clear-all')">清除全部条件</Button><Button danger @click="runFilter('remove')">移除筛选区域</Button></div>
       </template>
       <template v-if="fields.length && mode === 'sort'">
-        <label>数据包含标题行<Switch v-model:checked="hasHeader" aria-label="排序包含标题行" :disabled="busy" /></label>
-        <label>比较语言<Select v-model:value="locale" aria-label="排序比较语言" :disabled="busy" :options="[{ label: '中文', value: 'zh-CN' }, { label: '英语', value: 'en-US' }]" /></label>
+        <FormItem label="数据包含标题行"><Switch v-model:checked="hasHeader" aria-label="排序包含标题行" :disabled="busy" /></FormItem>
+        <FormItem label="比较语言"><Select v-model:value="locale" aria-label="排序比较语言" :disabled="busy" :options="[{ label: '中文', value: 'zh-CN' }, { label: '英语', value: 'en-US' }]" /></FormItem>
         <div v-for="(key, index) in keys" :key="index" class="data-sort-key">
-          <label class="data-sort-label" :for="`${formId}-field-${index}`">排序字段 {{ index + 1 }}</label>
-          <Select :id="`${formId}-field-${index}`" v-model:value="key.column" :disabled="busy" :options="fieldOptions" />
-          <label class="data-sort-label" :for="`${formId}-direction-${index}`">排序方向 {{ index + 1 }}</label>
-          <Select :id="`${formId}-direction-${index}`" v-model:value="key.direction" :disabled="busy" :options="[{ label: '升序', value: 'ascending' }, { label: '降序', value: 'descending' }]" />
+          <FormItem class="data-sort-item" :label="`排序字段 ${index + 1}`"><Select :id="`${formId}-field-${index}`" v-model:value="key.column" :aria-label="`排序字段 ${index + 1}`" :disabled="busy" :options="fieldOptions" /></FormItem>
+          <FormItem class="data-sort-item" :label="`排序方向 ${index + 1}`"><Select :id="`${formId}-direction-${index}`" v-model:value="key.direction" :aria-label="`排序方向 ${index + 1}`" :disabled="busy" :options="[{ label: '升序', value: 'ascending' }, { label: '降序', value: 'descending' }]" /></FormItem>
           <Button :aria-label="`移除排序条件 ${index + 1}`" :disabled="busy || keys.length === 1" @click="keys.splice(index, 1)">移除</Button>
         </div>
         <div class="data-actions"><Button :disabled="busy || keys.length >= fields.length" @click="addSortKey">添加排序条件</Button><Button type="primary" :loading="busy" @click="applySort">应用排序</Button><Button v-if="busy" @click="controller?.abort()">取消排序</Button></div>
       </template>
-    </section>
+    </Form>
   </Modal>
 </template>
 
 <style scoped>
 .sheet-data-panel { display: grid; gap: 12px; min-width: 0; padding-top: 8px; }
-.sheet-data-panel label { display: grid; grid-template-columns: 115px minmax(0, 1fr); align-items: center; gap: 10px; }
+.sheet-data-panel :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
+.sheet-data-panel > :deep(.ant-form-item) { display: grid; grid-template-columns: 115px minmax(0, 1fr); align-items: center; column-gap: 10px; }
+.sheet-data-panel > :deep(.ant-form-item .ant-form-item-row) { display: contents; }
+.sheet-data-panel > :deep(.ant-form-item .ant-form-item-label) { padding: 0; text-align: start; }
+.sheet-data-panel > :deep(.ant-form-item .ant-form-item-control) { min-width: 0; }
 .data-mode, .data-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .data-values { display: grid; gap: 6px; max-height: 220px; padding: 10px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 4px; }
 .data-sort-key { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto; gap: 8px; }
-.sheet-data-panel .data-sort-label { position: absolute; width: 1px; height: 1px; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }
+.data-sort-item :deep(.ant-form-item-label) { position: absolute; width: 1px; height: 1px; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }
 .data-error { margin: 0; color: #b42318; }
 .sheet-data-panel p { margin: 0; font-size: 12px; line-height: 1.6; }
-@media (max-width: 600px) { .sheet-data-panel label { grid-template-columns: 1fr; } .data-sort-key { grid-template-columns: 1fr 100px; } }
+@media (max-width: 600px) { .sheet-data-panel > :deep(.ant-form-item) { grid-template-columns: 1fr; } .data-sort-key { grid-template-columns: 1fr 100px; } }
 </style>

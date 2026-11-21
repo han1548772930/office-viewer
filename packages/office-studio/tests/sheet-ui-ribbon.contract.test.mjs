@@ -95,7 +95,9 @@ test('formula categories expose function dropdowns and insert functions directly
   const items = flatten(createSheetRibbon(state))
   const picker = items.find(item => item.id === 'sheet.operation.open-function')
   const categories = items.filter(item => item.id.startsWith('sheet.operation.open-function.category-'))
-  const supportedCategories = [...new Set(SHEET_FUNCTION_CATALOG.map(entry => entry.category))]
+  const supportedCategories = [
+    '常用与统计', '财务', '逻辑', '文本', '日期与时间', '查找与引用', '数学', '统计', '工程', '信息', '数据库',
+  ].filter(category => SHEET_FUNCTION_CATALOG.some(entry => entry.category === category))
 
   assert.equal(picker.type, 'button')
   assert.deepEqual(ribbonInvocation(picker), { commandId: 'sheet.operation.open-function', params: undefined })

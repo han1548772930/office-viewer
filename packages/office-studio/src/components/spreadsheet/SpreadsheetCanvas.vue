@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Input } from 'antdv-next'
+import { AutoComplete, Input } from 'antdv-next'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import type { TimelineLevel } from '../../domain/model'
@@ -59,7 +59,6 @@ const scene = computed(() => {
 })
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
-const validationListId = computed(() => `sheet-validation-options-${props.sheet.id}`)
 const editStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
   width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`,
@@ -480,9 +479,8 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
   <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
-    <Input v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :list="validationOptions?.length ? validationListId : undefined" :bordered="false" aria-label="单元格编辑" @input="emit('update:editValue', ($event.target as HTMLInputElement).value)" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
+    <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" :bordered="false" aria-label="单元格编辑" @change="value => emit('update:editValue', String(value ?? ''))" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
     <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
-    <datalist v-if="validationOptions?.length" :id="validationListId"><option v-for="value in validationOptions" :key="value" :value="value" /></datalist>
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey]) }}</span></div>
     <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
     <SheetContextMenu
@@ -510,7 +508,9 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .canvas-cell-input { position: absolute; z-index: 3; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; user-select: text; }
-.canvas-cell-input :deep(input) { box-sizing: border-box; width: 100%; height: 100%; margin: 0; padding: 2px 5px; border: 1px solid #246bfd; border-radius: 0; outline: 0; color: #243247; background: #fff; font: inherit; }
+.canvas-cell-input :deep(.ant-select-selector) { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; padding: 0; border: 1px solid #246bfd; border-radius: 0; background: #fff; box-shadow: none; }
+.canvas-cell-input :deep(.ant-select-selection-search-input) { box-sizing: border-box; height: 100%; padding: 2px 5px; color: #243247; font: inherit; }
+.canvas-cell-input :deep(.ant-select-selection-search) { inset: 0; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid #fff; background: #246bfd; pointer-events: none; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; left: 12px; max-width: calc(100% - 24px); padding: 8px 12px; border: 1px solid #e3b3b3; color: #922f2f; background: #fff2f2; font-size: 12px; }

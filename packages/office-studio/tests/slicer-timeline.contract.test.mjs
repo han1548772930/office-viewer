@@ -10,6 +10,7 @@ let renderer
 let layoutApi
 let tableApi
 let viewAdapter
+let drawingApi
 
 beforeAll(async () => {
   server = await createServer({
@@ -25,6 +26,7 @@ beforeAll(async () => {
   layoutApi = await server.ssrLoadModule('/packages/office-studio/src/rendering/spreadsheet/layout.ts')
   tableApi = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-tables/sheet-tables.ts')
   viewAdapter = await server.ssrLoadModule('/packages/office-studio/src/services/excelViewAdapter.ts')
+  drawingApi = await server.ssrLoadModule('/packages/office-studio/src/features/slicer/slicer-drawing.ts')
 })
 
 afterAll(async () => { await server?.close() })
@@ -326,6 +328,57 @@ test('slicer insertion exposes only supported controls and presentation settings
       (({ level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, style }) => ({ level, selectionLevel, showHeader, showSelectionLabel, showTimeLevel, showHorizontalScrollbar, style }))(output.getSlicer(timelineId).getInfo()),
       { level: 'year', selectionLevel: 'quarter', showHeader: false, showSelectionLabel: false, showTimeLevel: true, showHorizontalScrollbar: false, style: 'TimelineStyleDark1' },
     )
+  } finally { studio.dispose() }
+})
+
+test('slicers sharing a source field mirror filter state and workbook drawing anchors', async () => {
+  const { studio, workbook, output, pivot, target } = await setup([
+    ['Region', 'Amount'], ['East', 100], ['West', 80], ['North', 60],
+  ])
+  try {
+    const first = await output.insertSlicer({ pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'slicer' })
+    const second = await output.insertSlicer({ pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'slicer' })
+    await first.setItems(['East'])
+    assert.deepEqual(second.getInfo().selectedItems, ['East'])
+    assert.deepEqual(panel.readSlicerPanelState(studio, target).controls.map(({ selectedItems }) => selectedItems), [['East'], ['East']])
+
+    await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { anchorType: 'both', keepRatio: true })
+    assert.equal(first.getInfo().drawing.anchorType, 'both')
+    assert.equal(first.getInfo().drawing.keepRatio, true)
+    const sheetView = () => viewAdapter.toExcelWorkbookView(studio.getWorkbookModel(workbook.getId())).sheets.find(({ id }) => id === output.getSheetId())
+    const bounds = () => drawingApi.resolveSlicerBounds(first.getInfo(), new layoutApi.SpreadsheetGeometry(sheetView()))
+    const original = bounds()
+    studio.mutateWorkbook(workbook.getId(), 'sheet.command.test-resize-row', 'Resize anchored row', (draft) => {
+      draft.sheets.find(({ id }) => id === output.getSheetId()).rowHeights[0] = 52
+    })
+    const bothAnchored = bounds()
+    assert.equal(bothAnchored.top, original.top + 26)
+    assert.equal(bothAnchored.width, original.width)
+    assert.equal(bothAnchored.height, original.height)
+
+    await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { anchorType: 'position', keepRatio: false })
+    assert.equal(first.getInfo().drawing.anchorType, 'position')
+    assert.equal(first.getInfo().drawing.keepRatio, false)
+    const positionAnchored = bounds()
+    studio.mutateWorkbook(workbook.getId(), 'sheet.command.test-resize-row', 'Resize preceding row', (draft) => {
+      draft.sheets.find(({ id }) => id === output.getSheetId()).rowHeights[0] = 64
+    })
+    const movedPosition = bounds()
+    assert.equal(movedPosition.top, positionAnchored.top + 12)
+    assert.equal(movedPosition.width, positionAnchored.width)
+    assert.equal(movedPosition.height, positionAnchored.height)
+
+    await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { anchorType: 'none' })
+    const absolute = bounds()
+    studio.mutateWorkbook(workbook.getId(), 'sheet.command.test-resize-row', 'Resize absolute row', (draft) => {
+      draft.sheets.find(({ id }) => id === output.getSheetId()).rowHeights[0] = 76
+    })
+    assert.deepEqual(bounds(), absolute)
+
+    await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { arrange: 'front' })
+    assert.ok(first.getInfo().drawing.zIndex > second.getInfo().drawing.zIndex)
+    await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { arrange: 'back' })
+    assert.ok(first.getInfo().drawing.zIndex < second.getInfo().drawing.zIndex)
   } finally { studio.dispose() }
 })
 
