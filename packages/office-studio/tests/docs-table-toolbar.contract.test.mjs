@@ -70,14 +70,15 @@ test('table context follows logical selection and exposes executable structural 
   assert.equal(ribbon.createDocumentRibbon({ ...context, state: plain }).some((candidate) => candidate.id === 'table'), false)
 })
 
-test('table button opens the source-matched size dialog and inserts the confirmed dimensions', () => {
+test('table dropdown opens the source-matched size dialog and inserts the confirmed dimensions', () => {
   const state = { marks: {}, mixedMarks: [], paragraph: { align: 'left', indent: 0 }, hasSelection: false }
   const items = ribbon.createDocumentRibbon({ state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: false })
     .flatMap((tab) => tab.groups.flatMap((group) => group.items))
   const table = items.find((item) => item.id === 'doc-table')
-  assert.equal(table.type, 'button')
+  assert.equal(table.type, 'menu')
   assert.equal(table.commandId, 'doc.operation.open-table')
-  assert.equal(table.children, undefined)
+  assert.equal(table.children[0].id, 'doc-table-insert')
+  assert.equal(table.children[0].commandId, 'doc.operation.open-table')
   assert.equal(ribbon.documentCommandFromRibbon('doc.command.insert-table', { rows: 0, cols: 3 }), undefined)
 
   const workbench = readFileSync(new URL('../src/components/DocumentWorkbench.vue', import.meta.url), 'utf8')
@@ -96,6 +97,27 @@ test('table button opens the source-matched size dialog and inserts the confirme
   assert.equal(inserted.metadata.table.rows[0].cells.length, 7)
   assert.equal(result.focus.row, 0)
   assert.equal(result.focus.col, 0)
+})
+
+test('emoji and symbol selectors render inside toolbar popovers and insert through the document command path', () => {
+  const state = { marks: {}, mixedMarks: [], paragraph: { align: 'left', indent: 0 }, hasSelection: false }
+  const items = ribbon.createDocumentRibbon({ state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: false })
+    .flatMap((tab) => tab.groups.flatMap((group) => group.items))
+  const emoji = items.find((item) => item.id === 'doc-emoji')
+  const symbol = items.find((item) => item.id === 'doc-symbol')
+  assert.equal(emoji.type, 'menu')
+  assert.equal(emoji.popupProps.mode, 'emoji')
+  assert.equal(emoji.popupCommandId, 'doc.command.insert-character')
+  assert.equal(symbol.type, 'menu')
+  assert.equal(symbol.popupProps.mode, 'symbol')
+
+  const picker = readFileSync(new URL('../src/components/document/DocumentCharacterPicker.vue', import.meta.url), 'utf8')
+  const ribbonItem = readFileSync(new URL('../src/platform/ribbon/RibbonItem.vue', import.meta.url), 'utf8')
+  const workbench = readFileSync(new URL('../src/components/DocumentWorkbench.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(picker, /<Modal/)
+  assert.match(ribbonItem, /item\.popupComponent/)
+  assert.match(ribbonItem, /:destroy-on-hidden="!item\.popupComponent"/)
+  assert.match(workbench, /case 'doc\.command\.insert-character':[\s\S]*?insertCharacter\(params\)/)
 })
 
 test('document ribbon groups follow the fixed Home, Insert, and View ordering', () => {
@@ -200,8 +222,11 @@ test('inserted columns update widths and retain existing paragraph identities an
   const { model, table } = fixture()
   controlService.createDocumentContentControl(model, { id: 'anchor', type: 'text', blockId: 'r0c2', startOffset: 0, endOffset: 4 })
   const original = structuredClone(table.rows)
+  const originalTableWidth = table.columnWidths.reduce((sum, width) => sum + width, 0)
   const range = apply(model, selection(model, 1, 1), 'insert-column', { position: 'after' })
-  assert.deepEqual(table.columnWidths, [100, 200, 200, 300])
+  assert.equal(table.columnWidths.length, 4)
+  assert.ok(Math.abs(table.columnWidths.reduce((sum, width) => sum + width, 0) - originalTableWidth) < 1e-9)
+  assert.ok(Math.abs(table.columnWidths[1] - table.columnWidths[2]) < 1e-9)
   assert.equal(range.focus.col, 2)
   for (let r = 0; r < 3; r++) {
     assert.deepEqual(table.rows[r].cells[3], original[r].cells[2])
@@ -285,6 +310,7 @@ test('matching horizontal merge layouts support structural edits and preserve th
   const { model, table } = fixture(3, 3)
   table.rows.forEach((row) => { row.cells[1].colSpan = 2 })
   table.columnWidths = [100, 200, 300, 400]
+  const originalWidth = table.columnWidths.reduce((sum, width) => sum + width, 0)
   const insertedRow = apply(model, selection(model, 1, 0), 'insert-row', { position: 'after' })
   assert.equal(table.rows[2].cells[1].colSpan, 2)
   assert.equal(insertedRow.focus.row, 2)
@@ -292,11 +318,14 @@ test('matching horizontal merge layouts support structural edits and preserve th
 
   const insertedColumn = apply(model, selection(model, 0, 1), 'insert-column', { position: 'after' })
   assert.equal(table.rows[0].cells[2].colSpan, 1)
-  assert.deepEqual(table.columnWidths, [100, 200, 300, 300, 400])
+  assert.equal(table.columnWidths.length, 5)
+  assert.ok(Math.abs(table.columnWidths.reduce((sum, width) => sum + width, 0) - originalWidth) < 1e-9)
+  const scale = originalWidth / (originalWidth + 300)
+  assert.deepEqual(table.columnWidths, [100, 200, 300, 300, 400].map((width) => width * scale))
   assert.equal(insertedColumn.focus.col, 2)
 
   const deletedColumn = apply(model, selection(model, 0, 1), 'delete-columns')
-  assert.deepEqual(table.columnWidths, [100, 300, 400])
+  assert.deepEqual(table.columnWidths, [100, 300, 400].map((width) => width * scale))
   assert.equal(table.rows[0].cells.length, 3)
   assert.equal(deletedColumn.focus.col, 1)
 
@@ -309,14 +338,16 @@ test('matching horizontal merge layouts support structural edits and preserve th
   assert.equal(deletedRow.focus.row, 1)
 })
 
-test('vertical merges, inconsistent merge topology, and irregular widths reject atomically', () => {
-  for (const kind of ['vertical', 'different-horizontal-spans', 'irregular', 'invalid-widths']) {
+test('vertical merges, inconsistent merge topology, and invalid widths reject atomically', () => {
+  for (const kind of ['vertical', 'different-horizontal-spans', 'irregular', 'invalid-widths', 'non-finite-widths', 'non-positive-widths']) {
     for (const id of ['insert-row', 'insert-column', 'delete-rows', 'delete-columns']) {
       const { model, table } = fixture()
       if (kind === 'vertical') table.rows[1].cells[1].rowSpan = 2
       if (kind === 'different-horizontal-spans') table.rows[1].cells[1].colSpan = 2
       if (kind === 'irregular') table.rows[1].cells.pop()
       if (kind === 'invalid-widths') table.columnWidths = [100, 200]
+      if (kind === 'non-finite-widths') table.columnWidths = [100, Number.NaN, 300]
+      if (kind === 'non-positive-widths') table.columnWidths = [100, 0, 300]
       const original = structuredClone(model)
       assert.throws(() => apply(model, selection(model), id, { position: 'after' }), /跨行合并|合并列结构|网格不规则|列宽/)
       assert.deepEqual(model, original)

@@ -69,7 +69,7 @@ export function executeDocumentTableCommand(model: DocumentModel, selection: Doc
         const widthSourceIndex = command.position === 'before'
           ? grid.columnOffsets[templateIndex]!
           : grid.columnOffsets[templateIndex + 1]! - 1
-        table.columnWidths.splice(widthIndex, 0, table.columnWidths[widthSourceIndex]!)
+        table.columnWidths = resizedColumnWidths(table.columnWidths, widthIndex, widthSourceIndex)
       }
       delete block.metadata.html
       return cellSelection(block.id, table, context.startRow, index)
@@ -131,7 +131,19 @@ function validateTableGrid(table: DocumentTable, selectionColumnCount: number): 
   if (table.columnWidths?.length && table.columnWidths.length !== columnCount) {
     throw new RangeError('表格列宽与合并网格不一致，无法安全调整结构，原表格已保留')
   }
+  if (table.columnWidths?.some((width) => !Number.isFinite(width) || width <= 0)) {
+    throw new RangeError('表格包含无效列宽，无法安全调整结构，原表格已保留')
+  }
   return { columnCount, columnOffsets }
+}
+
+function resizedColumnWidths(widths: number[], insertAt: number, sourceIndex: number): number[] {
+  const tableWidth = widths.reduce((sum, width) => sum + width, 0)
+  const insertedSourceWidth = widths[sourceIndex]!
+  const scale = tableWidth / (tableWidth + insertedSourceWidth)
+  const resized = widths.map((width) => width * scale)
+  resized.splice(insertAt, 0, insertedSourceWidth * scale)
+  return resized
 }
 
 function cellSelection(blockId: string, table: DocumentTable, row: number, col: number): DocumentSelection {

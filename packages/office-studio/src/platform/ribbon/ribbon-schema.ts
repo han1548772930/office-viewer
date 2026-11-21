@@ -23,6 +23,9 @@ export interface RibbonItem {
   placeholder?: string
   valueParams?: (value: string | number) => unknown
   children?: RibbonItem[]
+  popupComponent?: Component
+  popupProps?: Record<string, unknown>
+  popupCommandId?: string
   gridLayout?: RibbonGridLayout
 }
 

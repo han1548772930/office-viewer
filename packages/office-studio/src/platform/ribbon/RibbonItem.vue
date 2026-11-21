@@ -21,7 +21,7 @@ const showLabel = computed(() => {
 })
 const iconSize = computed(() => props.iconSize ?? (props.grid && props.large ? GRID_RIBBON.largeIconSize : CLASSIC_RIBBON.iconSize))
 const description = computed(() => props.item.disabledReason && props.item.disabled ? `${props.item.title}：${props.item.disabledReason}` : props.item.tooltip ?? props.item.title)
-const isDropdown = computed(() => (props.item.type === 'menu' || props.item.type === 'split') && children.value.length > 0)
+const isDropdown = computed(() => (props.item.type === 'menu' || props.item.type === 'split') && (children.value.length > 0 || Boolean(props.item.popupComponent)))
 const style = computed(() => props.item.width && !props.overflow && !props.grid ? { width: `${props.item.width}px` } : undefined)
 const itemStyle = computed(() => [classicStyle, style.value, { '--ribbon-icon-size': `${iconSize.value}px`, '--ribbon-grid-button-size': `${GRID_RIBBON.buttonSize}px` }])
 
@@ -85,12 +85,13 @@ watch(() => props.item.disabled || props.item.hidden || !isDropdown.value, (unav
         <Button v-if="item.type === 'split'" type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
           <component :is="item.icon" v-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span>
         </Button>
-        <Popover v-model:open="open" trigger="click" placement="bottomLeft" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
+        <Popover v-model:open="open" trigger="click" placement="bottomLeft" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="!item.popupComponent">
           <Button type="text" size="small" class="ribbon-button" :class="{ 'ribbon-split-arrow': item.type === 'split', 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.type === 'split' ? `${item.title}选项` : item.title" aria-haspopup="menu" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown.down.prevent="openMenu" @keydown.esc.prevent="closeMenu">
             <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
           </Button>
           <template #content>
             <div :id="popupId" ref="panel" class="ribbon-command-menu" :class="{ 'ribbon-table-menu': item.id === 'doc-table' }" role="menu" :aria-label="item.title" @keydown="onPanelKeydown">
+              <component :is="item.popupComponent" v-if="item.popupComponent" v-bind="item.popupProps" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
               <RibbonItem v-for="child in children" :key="child.id" :item="child" overflow @execute="forward" />
             </div>
           </template>

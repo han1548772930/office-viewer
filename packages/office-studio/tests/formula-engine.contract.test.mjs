@@ -225,6 +225,10 @@ test('logical, text, date and lookup additions preserve argument, range and erro
   assert.equal(formula.evaluateFormula('=EOMONTH(DATE(2024,2,1),0)', data, 'sheet-main'), 45351)
   assert.equal(formula.evaluateFormula('=ISOWEEKNUM(DATE(2021,1,1))', data, 'sheet-main'), 53)
   assert.equal(formula.evaluateFormula('=DAYS360(DATE(2024,1,1),DATE(2024,2,1))', data, 'sheet-main'), 30)
+  assert.equal(formula.evaluateFormula('=DAYS360(DATE(2024,2,29),DATE(2024,3,31))', data, 'sheet-main'), 30)
+  assert.equal(formula.evaluateFormula('=DAYS360(DATE(2024,2,29),DATE(2024,3,31),TRUE)', data, 'sheet-main'), 31)
+  assert.equal(formula.evaluateFormula('=DAYS360(DATE(2024,3,31),DATE(2024,2,29))', data, 'sheet-main'), -30)
+  assert.equal(formula.evaluateFormula('=DAYS360(DATE(2024,3,31),DATE(2024,2,29),TRUE)', data, 'sheet-main'), -31)
 
   for (const name of ['IFNA', 'IFS', 'XOR', 'HLOOKUP', 'CHOOSE', 'ROWS', 'COLUMNS', 'TEXTJOIN', 'FIND', 'SEARCH', 'REPLACE', 'SUBSTITUTE', 'REPT', 'EDATE', 'EOMONTH', 'ISOWEEKNUM', 'DAYS360']) {
     assert.ok(functionCatalog.SHEET_FUNCTION_CATALOG.some(entry => entry.name === name), `${name} is in the insert-function catalog`)

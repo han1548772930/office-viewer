@@ -19,7 +19,6 @@ import DocumentParagraphSettingsPanel from './document/DocumentParagraphSettings
 import DocumentSectionSettingsPanel from './document/DocumentSectionSettingsPanel.vue'
 import DocumentCommentsPanel from './document/DocumentCommentsPanel.vue'
 import DocumentTableOfContentsDialog from './document/DocumentTableOfContentsDialog.vue'
-import DocumentCharacterPicker from './document/DocumentCharacterPicker.vue'
 import DocumentTableInsertDialog from './document/DocumentTableInsertDialog.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
@@ -161,8 +160,6 @@ const activeLatexFormula = computed(() => {
   }
   return undefined
 })
-const characterPickerOpen = ref(false)
-const characterPickerMode = ref<'symbol' | 'emoji'>('symbol')
 const pages = computed(() => layout.value.pages)
 const wordCount = computed(() => documentCharacterCount(textTargets(model.value).map((target) => runText(runsForTarget(model.value, target))).join('\n')))
 const selectedCharacters = computed(() => documentSelectionCharacterCount(model.value, selection.value))
@@ -243,7 +240,6 @@ onDeactivated(() => {
   paragraphSettingsPanelOpen.value = false
   sectionSettingsPanelOpen.value = false
   commentsPanelOpen.value = false
-  characterPickerOpen.value = false
   latexPanelOpen.value = false
   showFind.value = false
   if (document.fullscreenElement === workbenchRef.value) {
@@ -783,8 +779,8 @@ function onRibbonExecute(id: string, params?: unknown) {
         contentControlPanelOpen.value = true
       }
       break
-    case 'doc.operation.open-characters':
-      if (params === 'symbol' || params === 'emoji') { characterPickerMode.value = params; characterPickerOpen.value = true }
+    case 'doc.command.insert-character':
+      if (typeof params === 'string') insertCharacter(params)
       break
     case 'doc.operation.toggle-outline': showOutline.value = !showOutline.value; break
     case 'doc.operation.toggle-focus': isFocusMode.value = !isFocusMode.value; void nextTick(() => canvasRef.value?.focus()); break
@@ -871,7 +867,6 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" :initial-type="contentControlInitialType" @error="notify" />
-    <DocumentCharacterPicker v-model:open="characterPickerOpen" :mode="characterPickerMode" @insert="insertCharacter" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="size => execute({ id: 'doc.command.insert-table', rows: size.rows, cols: size.columns })" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" @insert-page-field="insertPageField" />

@@ -551,9 +551,8 @@ function evaluateFunction(
     if (isFormulaError(method)) return method
     const first = serialToDateParts(start, workbook.date1904), last = serialToDateParts(end, workbook.date1904)
     if (!first || !last) return formulaError('#NUM!')
-    const d1 = method ? Math.min(first.day, 30) : first.day === 31 ? 30 : first.day
-    const d2 = method ? Math.min(last.day, 30) : last.day === 31 && d1 === 30 ? 30 : last.day
-    return (last.year - first.year) * 360 + (last.month - first.month) * 30 + d2 - d1
+    const days = days360Fraction(first, last, end >= start, !method)
+    return end >= start ? days : -days
   }
   if (name === 'DAYS') {
     if (evaluated.length !== 2) return formulaError('#VALUE!')

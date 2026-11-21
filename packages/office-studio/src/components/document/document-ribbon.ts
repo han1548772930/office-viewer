@@ -5,6 +5,7 @@ import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } fro
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
+import DocumentCharacterPicker from './DocumentCharacterPicker.vue'
 
 interface DocumentRibbonContext {
   state: DocumentToolbarState
@@ -118,9 +119,11 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           ] as const).map(([type, title]) => action(`doc-section-break-${type}`, title, Plus, 'doc.command.insert-section-break', { type })),
         ] },
       ] },
-      action('doc-table', '表格', Table2, 'doc.operation.open-table', undefined, { gridLayout: { row: 1, column: 2 } }),
-      action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { gridLayout: { row: 1, column: 3 } }),
-      action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { gridLayout: { row: 2, column: 3 } }),
+      { ...action('doc-table', '表格', Table2, 'doc.operation.open-table', undefined, { gridLayout: { row: 1, column: 2 } }), type: 'menu', children: [
+        action('doc-table-insert', '插入表格', Table2, 'doc.operation.open-table'),
+      ] },
+      { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-character' },
+      { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol' }, popupCommandId: 'doc.command.insert-character' },
       action('doc-image', '图片', ImagePlus, 'doc.operation.open-image', undefined, { gridLayout: { row: 1, column: 4 } }),
       action('doc-link', '链接', Link2, 'doc.operation.open-link', undefined, { gridLayout: { row: 1, column: 5 } }),
       action('doc-divider', '分隔线', Minus, 'doc.command.insert-divider', undefined, { gridLayout: { row: 2, column: 5 } }),
