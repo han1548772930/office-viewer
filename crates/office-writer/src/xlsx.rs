@@ -14,6 +14,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 mod auto_filter;
 #[path = "xlsx_validation.rs"]
 mod data_validation;
+#[path = "xlsx_sparkline.rs"]
+mod sparkline;
+#[path = "xlsx_pivot.rs"]
+mod pivot;
+#[path = "xlsx_table.rs"]
+mod table;
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -32,6 +38,9 @@ const REL_APP: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const REL_PIVOT_TABLE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable";
+const REL_PIVOT_CACHE_DEFINITION: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition";
+const REL_PIVOT_CACHE_RECORDS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords";
 const MAX_ROW_INDEX: u32 = 1_048_575;
 const MAX_COLUMN_INDEX: u32 = 16_383;
 
@@ -51,7 +60,9 @@ struct WorkbookInput {
     #[serde(default)]
     metadata: Option<Value>,
     #[serde(default)]
-    pivot_tables: Option<Vec<Value>>,
+    pivot_tables: Option<Vec<pivot::PivotTableInput>>,
+    #[serde(default)]
+    tables: Vec<table::TableInput>,
     #[serde(default)]
     charts: Option<Vec<ChartInput>>,
 }
@@ -86,6 +97,8 @@ struct SheetInput {
     #[serde(default)]
     data_validations: Vec<data_validation::DataValidationInput>,
     #[serde(default)]
+    conditional_formats: Vec<ConditionalFormatInput>,
+    #[serde(default)]
     hidden_columns: Vec<u32>,
     #[serde(default)]
     default_column_width: Option<f64>,
@@ -99,6 +112,37 @@ struct SheetInput {
     zoom: Option<f64>,
     #[serde(default)]
     metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ConditionalFormatInput {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "type", default)]
+    rule_type: String,
+    #[serde(default)]
+    ranges: Vec<RangeInput>,
+    #[serde(default)]
+    operator: String,
+    #[serde(default)]
+    formula1: String,
+    #[serde(default)]
+    formula2: Option<String>,
+    #[serde(default)]
+    style: ConditionalFormatStyleInput,
+    #[serde(default)]
+    priority: u32,
+    #[serde(default)]
+    stop_if_true: bool,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ConditionalFormatStyleInput {
+    fill: Option<String>,
+    font_color: Option<String>,
+    bold: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -121,6 +165,8 @@ struct ChartInput {
     category_field: usize,
     #[serde(default)]
     value_fields: Vec<usize>,
+    #[serde(default)]
+    pivot_table_id: Option<String>,
     #[serde(default)]
     x_axis: Option<ChartAxisInput>,
     #[serde(default)]
@@ -333,6 +379,7 @@ struct StyleRegistry {
     border_ids: HashMap<String, usize>,
     num_fmts: Vec<String>,
     num_fmt_ids: HashMap<String, u32>,
+    conditional_styles: Vec<ConditionalFormatStyleInput>,
 }
 
 impl StyleRegistry {
@@ -406,6 +453,15 @@ impl StyleRegistry {
             num_fmt_id,
         });
         self.by_key.insert(key, index);
+        index
+    }
+
+    fn register_conditional_style(&mut self, style: &ConditionalFormatStyleInput) -> usize {
+        if let Some(index) = self.conditional_styles.iter().position(|candidate| candidate == style) {
+            return index;
+        }
+        let index = self.conditional_styles.len();
+        self.conditional_styles.push(style.clone());
         index
     }
 }
@@ -742,7 +798,32 @@ fn style_xml(registry: &StyleRegistry) -> String {
         }
         xml_out.push_str(&xf);
     }
-    xml_out.push_str("</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles><dxfs count=\"0\"/><tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleMedium9\"/></styleSheet>");
+    xml_out.push_str("</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>");
+    xml_out.push_str(&format!("<dxfs count=\"{}\">", registry.conditional_styles.len()));
+    for style in &registry.conditional_styles {
+        xml_out.push_str("<dxf>");
+        if style.font_color.is_some() || style.bold == Some(true) {
+            xml_out.push_str("<font>");
+            if style.bold == Some(true) {
+                xml_out.push_str("<b/>");
+            }
+            if let Some(color) = style.font_color.as_deref() {
+                let color = normalize_color(color);
+                if color != "none" {
+                    xml_out.push_str(&format!("<color rgb=\"{}\"/>", color));
+                }
+            }
+            xml_out.push_str("</font>");
+        }
+        if let Some(fill) = style.fill.as_deref() {
+            let color = normalize_color(fill);
+            if color != "none" {
+                xml_out.push_str(&format!("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"{}\"/><bgColor indexed=\"64\"/></patternFill></fill>", color));
+            }
+        }
+        xml_out.push_str("</dxf>");
+    }
+    xml_out.push_str("</dxfs><tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleMedium9\"/></styleSheet>");
     xml_out
 }
 
@@ -948,6 +1029,7 @@ fn worksheet_xml(
         }
         out.push_str("</mergeCells>");
     }
+    out.push_str(&write_conditional_formats(sheet, registry, warnings)?);
     out.push_str(&data_validation::write_xml(sheet, warnings)?);
     if !hyperlinks.is_empty() {
         out.push_str("<hyperlinks>");
@@ -971,8 +1053,54 @@ fn worksheet_xml(
     if let Some(rel_id) = drawing_rel_id {
         out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
     }
+    out.push_str(&sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?);
     out.push_str("</worksheet>");
     Ok((out, hyperlinks))
+}
+
+fn write_conditional_formats(
+    sheet: &SheetInput,
+    registry: &mut StyleRegistry,
+    warnings: &mut Vec<ExportWarning>,
+) -> Result<String, ExportError> {
+    if sheet.conditional_formats.is_empty() {
+        return Ok(String::new());
+    }
+    let mut rules = sheet.conditional_formats.iter().collect::<Vec<_>>();
+    rules.sort_by_key(|rule| (rule.priority, rule.id.as_str()));
+    let mut out = String::new();
+    let mut emitted_priority = 0u32;
+    for rule in rules {
+        if rule.rule_type != "cellIs" {
+            warnings.push(ExportWarning::new("UNSUPPORTED_CONDITIONAL_FORMAT", format!("Conditional format {} uses an unsupported rule type", rule.id)));
+            continue;
+        }
+        let operator = match rule.operator.as_str() {
+            "equal" => "equal", "notEqual" => "notEqual", "greaterThan" => "greaterThan",
+            "greaterThanOrEqual" => "greaterThanOrEqual", "lessThan" => "lessThan",
+            "lessThanOrEqual" => "lessThanOrEqual", "between" => "between", "notBetween" => "notBetween",
+            _ => return Err(ExportError::invalid(format!("conditional format {} has an unsupported operator", rule.id))),
+        };
+        if rule.ranges.is_empty() || rule.formula1.trim().parse::<f64>().is_err()
+            || matches!(operator, "between" | "notBetween") && rule.formula2.as_deref().and_then(|value| value.trim().parse::<f64>().ok()).is_none()
+        {
+            return Err(ExportError::invalid(format!("conditional format {} has invalid ranges or numeric operands", rule.id)));
+        }
+        let dxf_id = registry.register_conditional_style(&rule.style);
+        let ranges = rule.ranges.iter().filter_map(range_ref).collect::<Vec<_>>();
+        if ranges.len() != rule.ranges.len() {
+            return Err(ExportError::invalid(format!("conditional format {} contains an invalid range", rule.id)));
+        }
+        emitted_priority += 1;
+        let priority = emitted_priority;
+        out.push_str(&format!("<conditionalFormatting sqref=\"{}\"><cfRule type=\"cellIs\" dxfId=\"{}\" priority=\"{}\" operator=\"{}\"{}>", ranges.join(" "), dxf_id, priority, operator, if rule.stop_if_true { " stopIfTrue=\"1\"" } else { "" }));
+        out.push_str(&format!("<formula>{}</formula>", esc(rule.formula1.trim().trim_start_matches('='))));
+        if matches!(operator, "between" | "notBetween") {
+            out.push_str(&format!("<formula>{}</formula>", esc(rule.formula2.as_deref().unwrap_or_default().trim().trim_start_matches('='))));
+        }
+        out.push_str("</cfRule></conditionalFormatting>");
+    }
+    Ok(out)
 }
 
 fn range_bounds(range: &RangeInput) -> Option<(u32, u32, u32, u32)> {
@@ -1188,6 +1316,21 @@ fn chart_series_xml(
                 .collect::<Vec<_>>(),
         )
     };
+    if matches!(chart.chart_type.as_str(), "pie" | "doughnut") {
+        let numeric_values = values
+            .iter()
+            .filter_map(|value| value.parse::<f64>().ok())
+            .collect::<Vec<_>>();
+        if numeric_values.is_empty()
+            || numeric_values.iter().any(|value| *value < 0.0)
+            || numeric_values.iter().all(|value| *value == 0.0)
+        {
+            return Err(ExportError::invalid(format!(
+                "chart {} requires non-negative pie values with a positive total",
+                chart.id
+            )));
+        }
+    }
     let name = if orientation == "rows" {
         chart_value_text(
             chart_cell_value(
@@ -1237,7 +1380,11 @@ fn chart_xml(
     workbook: &WorkbookInput,
     chart: &ChartInput,
     chart_index: usize,
+    pivot_table_name: Option<&str>,
 ) -> Result<String, ExportError> {
+    if chart.pivot_table_id.is_some() && pivot_table_name.is_none() {
+        return Err(ExportError::unsupported(format!("XLSX pivot chart {} requires pivot chart parts that are not implemented", chart.id)));
+    }
     let sheet = workbook
         .sheets
         .iter()
@@ -1316,9 +1463,30 @@ fn chart_xml(
             chart.id
         )));
     }
+    let is_pie = matches!(chart.chart_type.as_str(), "pie" | "doughnut");
+    if is_pie && fields.len() != 1 {
+        return Err(ExportError::invalid(format!(
+            "chart {} requires exactly one value series",
+            chart.id
+        )));
+    }
+    if chart.chart_type == "stacked-column"
+        && chart
+            .y_axis
+            .as_ref()
+            .is_some_and(|axis| axis.scale_type != "linear")
+    {
+        return Err(ExportError::invalid(format!(
+            "chart {} stacked columns require a linear value axis",
+            chart.id
+        )));
+    }
     let chart_kind = match chart.chart_type.as_str() {
-        "bar" => "barChart",
+        "bar" | "stacked-column" => "barChart",
         "line" => "lineChart",
+        "area" => "areaChart",
+        "pie" => "pieChart",
+        "doughnut" => "doughnutChart",
         other => {
             return Err(ExportError::unsupported(format!(
                 "XLSX chart type {other} is not supported by the writer"
@@ -1333,16 +1501,32 @@ fn chart_xml(
         .ok_or_else(|| ExportError::invalid("too many charts in workbook"))?;
     let axis_ids = axis_base;
     let axis_id_y = axis_ids + 1;
-    let mut out = format!(
-        "{}<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><c:chart>{}",
-        xml::DECL,
-        chart_title_xml(chart.title.as_deref())
-    );
-    out.push_str("<c:autoTitleDeleted val=\"0\"/><c:plotArea><c:layout/>");
-    if chart_kind == "barChart" {
-        out.push_str("<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/><c:varyColors val=\"0\"/>");
+    let mut out = format!("{}<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><!-- chart-space -->", xml::DECL);
+    if let Some(name) = pivot_table_name {
+        out = out.replace("<!-- chart-space -->", &format!("<c:pivotSource><c:name>{}</c:name><c:fmtId val=\"0\"/></c:pivotSource>", xml::escape(name)));
     } else {
-        out.push_str("<c:lineChart><c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>");
+        out = out.replace("<!-- chart-space -->", "");
+    }
+    out.push_str(&format!("<c:chart>{}", chart_title_xml(chart.title.as_deref())));
+    out.push_str("<c:autoTitleDeleted val=\"0\"/><c:plotArea><c:layout/>");
+    match chart_kind {
+        "barChart" => {
+            let grouping = if chart.chart_type == "stacked-column" {
+                "stacked"
+            } else {
+                "clustered"
+            };
+            out.push_str(&format!("<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"{}\"/><c:varyColors val=\"0\"/>", grouping));
+        }
+        "lineChart" => {
+            out.push_str("<c:lineChart><c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>")
+        }
+        "areaChart" => {
+            out.push_str("<c:areaChart><c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>")
+        }
+        "pieChart" => out.push_str("<c:pieChart><c:varyColors val=\"1\"/>"),
+        "doughnutChart" => out.push_str("<c:doughnutChart><c:varyColors val=\"1\"/>"),
+        _ => unreachable!("chart type validated above"),
     }
     for (index, field) in fields.iter().enumerate() {
         out.push_str(&chart_series_xml(
@@ -1354,8 +1538,19 @@ fn chart_xml(
             bounds,
         )?);
     }
-    out.push_str(&format!("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:{}>", axis_ids, axis_id_y, chart_kind));
-    out.push_str(&format!("<c:catAx><c:axId val=\"{}\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/>{}<c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:auto val=\"1\"/><c:lblAlgn val=\"ctr\"/><c:lblOffset val=\"100\"/></c:catAx>", axis_ids, chart_axis_title_xml(chart.x_axis.as_ref().and_then(|axis| axis.title.as_deref())), axis_id_y));
+    if is_pie {
+        out.push_str("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:firstSliceAng val=\"0\"/>");
+        if chart_kind == "doughnutChart" {
+            out.push_str("<c:holeSize val=\"55\"/>");
+        }
+        out.push_str(&format!("</c:{}>", chart_kind));
+    } else {
+        if chart.chart_type == "stacked-column" {
+            out.push_str("<c:gapWidth val=\"150\"/><c:overlap val=\"100\"/>");
+        }
+        out.push_str(&format!("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:{}>", axis_ids, axis_id_y, chart_kind));
+        out.push_str(&format!("<c:catAx><c:axId val=\"{}\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/>{}<c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:auto val=\"1\"/><c:lblAlgn val=\"ctr\"/><c:lblOffset val=\"100\"/></c:catAx>", axis_ids, chart_axis_title_xml(chart.x_axis.as_ref().and_then(|axis| axis.title.as_deref())), axis_id_y));
+    }
     let y_axis = chart.y_axis.as_ref();
     for axis in [chart.x_axis.as_ref(), y_axis].into_iter().flatten() {
         if !matches!(axis.scale_type.as_str(), "linear" | "log") {
@@ -1382,7 +1577,9 @@ fn chart_xml(
     } else {
         "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>".to_owned()
     };
-    out.push_str(&format!("<c:valAx><c:axId val=\"{}\"/>{}<c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/>{}<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:crossBetween val=\"midCat\"/></c:valAx>", axis_id_y, scaling, chart_axis_title_xml(y_axis.and_then(|axis| axis.title.as_deref())), axis_ids));
+    if !is_pie {
+        out.push_str(&format!("<c:valAx><c:axId val=\"{}\"/>{}<c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/>{}<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:crossBetween val=\"midCat\"/></c:valAx>", axis_id_y, scaling, chart_axis_title_xml(y_axis.and_then(|axis| axis.title.as_deref())), axis_ids));
+    }
     out.push_str("</c:plotArea>");
     if chart.legend.as_ref().is_none_or(|legend| legend.visible) {
         let position = chart
@@ -1688,6 +1885,14 @@ fn workbook_xml(workbook: &WorkbookInput) -> String {
         ));
     }
     out.push_str("</sheets>");
+    let pivot_count = workbook.pivot_tables.as_ref().map_or(0, Vec::len);
+    if pivot_count > 0 {
+        out.push_str(&format!("<pivotCaches count=\"{pivot_count}\">"));
+        for index in 0..pivot_count {
+            out.push_str(&format!("<pivotCache cacheId=\"{}\" r:id=\"rIdPivotCache{}\"/>", index + 1, index + 1));
+        }
+        out.push_str("</pivotCaches>");
+    }
     if let Some(Value::Object(metadata)) = workbook.metadata.as_ref() {
         let mut names = Vec::<(String, String, Option<String>)>::new();
         if let Some(items) = metadata.get("definedNames").and_then(Value::as_array) {
@@ -1845,9 +2050,7 @@ fn app_properties_xml(workbook: &WorkbookInput) -> String {
 
 fn add_unsupported_warnings(workbook: &WorkbookInput, warnings: &mut Vec<ExportWarning>) {
     let unsupported = [
-        "pivotTables",
         "slicers",
-        "sparklines",
         "conditionalFormatting",
         "tables",
         "drawings",
@@ -1872,17 +2075,6 @@ fn add_unsupported_warnings(workbook: &WorkbookInput, warnings: &mut Vec<ExportW
                 inspect(map.get("metadata"), &mut seen);
             }
         }
-    }
-    if workbook
-        .pivot_tables
-        .as_ref()
-        .is_some_and(|pivot_tables| !pivot_tables.is_empty())
-        && seen.insert("pivotTables".to_owned())
-    {
-        warnings.push(ExportWarning::new(
-            "UNSUPPORTED_FEATURE",
-            "Workbook feature pivotTables is not represented by the current XLSX writer and was not exported",
-        ));
     }
 }
 
@@ -1983,6 +2175,43 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             .or_default()
             .push((sheet_index, chart_index));
     }
+    let pivot_tables = workbook.pivot_tables.as_deref().unwrap_or(&[]);
+    let sheet_names = safe_sheet_names(workbook.sheets.iter().map(|sheet| sheet.name.as_str()));
+    let workbook_filename = format!("{}.xlsx", safe_sheet_name(&workbook.name, 0));
+    let mut pivot_exports = Vec::<(String, String, usize, usize, pivot::PivotParts)>::new();
+    for (pivot_index, pivot_table) in pivot_tables.iter().enumerate() {
+        let source_index = workbook.sheets.iter().position(|sheet| {
+            sheet.id == pivot_table.source.sub_unit_id || sheet.name == pivot_table.source.sheet_name
+        }).ok_or_else(|| ExportError::invalid(format!("pivot table {} references an unknown source worksheet", pivot_table.id)))?;
+        let target_index = workbook.sheets.iter().position(|sheet| sheet.id == pivot_table.anchor.sub_unit_id).ok_or_else(|| ExportError::invalid(format!("pivot table {} references an unknown target worksheet", pivot_table.id)))?;
+        let source_bounds = pivot_table.source.range.bounds().ok_or_else(|| ExportError::invalid(format!("pivot table {} has no source range", pivot_table.id)))?;
+        let output_bounds = pivot_table.output_range.as_ref().and_then(pivot::RangeInput::bounds).ok_or_else(|| ExportError::invalid(format!("pivot table {} has no persisted output range", pivot_table.id)))?;
+        if (output_bounds.0, output_bounds.1) != (pivot_table.anchor.row, pivot_table.anchor.col) {
+            return Err(ExportError::invalid(format!("pivot table {} output range does not match its anchor", pivot_table.id)));
+        }
+        let table_name = format!("PivotTable{}", pivot_index + 1);
+        let parts = pivot::build_parts(pivot_table, &sheet_names[source_index], output_bounds, &workbook.sheets[source_index].cells, source_bounds, &table_name, pivot_index + 1)?;
+        let cache_path = format!("xl/pivotCache/pivotCacheDefinition{}.xml", pivot_index + 1);
+        let records_path = format!("xl/pivotCache/pivotCacheRecords{}.xml", pivot_index + 1);
+        let table_path = format!("xl/pivotTables/pivotTable{}.xml", pivot_index + 1);
+        package.add_xml(&cache_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml", parts.cache_definition.clone())?;
+        package.add_xml(&records_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml", parts.cache_records.clone())?;
+        package.add_xml(&table_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml", parts.table_definition.clone())?;
+        package.add_relationship(Some(&cache_path), "rIdRecords", REL_PIVOT_CACHE_RECORDS, &format!("pivotCacheRecords{}.xml", pivot_index + 1), false)?;
+        package.add_relationship(Some(&table_path), "rIdCache", REL_PIVOT_CACHE_DEFINITION, &format!("../pivotCache/pivotCacheDefinition{}.xml", pivot_index + 1), false)?;
+        package.add_relationship(Some("xl/workbook.xml"), &format!("rIdPivotCache{}", pivot_index + 1), REL_PIVOT_CACHE_DEFINITION, &format!("pivotCache/pivotCacheDefinition{}.xml", pivot_index + 1), false)?;
+        package.add_relationship(Some(&format!("xl/worksheets/sheet{}.xml", target_index + 1)), &format!("rIdPivotTable{}", pivot_index + 1), REL_PIVOT_TABLE, &format!("../pivotTables/pivotTable{}.xml", pivot_index + 1), false)?;
+        pivot_exports.push((pivot_table.id.clone(), table_name, source_index, target_index, parts));
+    }
+    let mut table_exports = Vec::<(usize, usize, table::TableInput, String)>::new();
+    for (table_index, table) in workbook.tables.iter().enumerate() {
+        let sheet_index = workbook.sheets.iter().position(|sheet| sheet.id == table.sheet_id)
+            .ok_or_else(|| ExportError::invalid(format!("table {} references an unknown worksheet", table.id)))?;
+        table::validate(&workbook.tables, table)?;
+        let path = format!("xl/tables/table{}.xml", table_index + 1);
+        package.add_xml(&path, "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml", table::write(table, table_index + 1)?)?;
+        table_exports.push((sheet_index, table_index, table.clone(), path));
+    }
     for (index, sheet) in workbook.sheets.iter().enumerate() {
         let sheet_charts = chart_index_by_sheet
             .get(&sheet.id)
@@ -1994,8 +2223,26 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             })
             .unwrap_or_default();
         let drawing_rel_id = (!sheet_charts.is_empty()).then_some("rIdDrawing");
-        let (content, hyperlinks) =
+        let (mut content, hyperlinks) =
             worksheet_xml(sheet, index, &mut registry, &mut warnings, drawing_rel_id)?;
+        let sheet_pivots = pivot_exports.iter().enumerate().filter(|(_, item)| item.3 == index).collect::<Vec<_>>();
+        if !sheet_pivots.is_empty() {
+            let mut pivot_parts = format!("<pivotTableParts count=\"{}\">", sheet_pivots.len());
+            for (pivot_index, _) in &sheet_pivots { pivot_parts.push_str(&format!("<pivotTablePart r:id=\"rIdPivotTable{}\"/>", pivot_index + 1)); }
+            pivot_parts.push_str("</pivotTableParts>");
+            let insertion = content.find("<extLst").unwrap_or_else(|| content.find("</worksheet>").unwrap_or(content.len()));
+            content.insert_str(insertion, &pivot_parts);
+        }
+        let sheet_tables = table_exports.iter().filter(|item| item.0 == index).collect::<Vec<_>>();
+        if !sheet_tables.is_empty() {
+            let mut table_parts = format!("<tableParts count=\"{}\">", sheet_tables.len());
+            for (_, table_index, _, _) in &sheet_tables {
+                table_parts.push_str(&format!("<tablePart r:id=\"rIdTable{}\"/>", table_index + 1));
+            }
+            table_parts.push_str("</tableParts>");
+            let insertion = content.find("<extLst").unwrap_or_else(|| content.find("</worksheet>").unwrap_or(content.len()));
+            content.insert_str(insertion, &table_parts);
+        }
         let path = format!("xl/worksheets/sheet{}.xml", index + 1);
         package.add_xml(
             &path,
@@ -2009,6 +2256,10 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             &format!("worksheets/sheet{}.xml", index + 1),
             false,
         )?;
+        for (_, table_index, _, table_path) in &sheet_tables {
+            package.add_relationship(Some(&path), &format!("rIdTable{}", table_index + 1), "http://schemas.openxmlformats.org/officeDocument/2006/relationships/table", &format!("../tables/table{}.xml", table_index + 1), false)?;
+            let _ = table_path;
+        }
         if !sheet_charts.is_empty() {
             let drawing_path = format!("xl/drawings/drawing{}.xml", index + 1);
             package.add_xml(
@@ -2033,7 +2284,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
                 package.add_xml(
                     &format!("xl/charts/chart{}.xml", chart_index + 1),
                     "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
-                    chart_xml(&workbook, chart, *chart_index)?,
+                    chart_xml(&workbook, chart, *chart_index, chart.pivot_table_id.as_deref().and_then(|id| pivot_exports.iter().find(|item| item.0 == id).map(|item| format!("[{}]{}!{}", workbook_filename, sheet_names[item.3], item.1))).as_deref())?,
                 )?;
                 package.add_relationship(
                     Some(&drawing_path),
@@ -2131,6 +2382,41 @@ mod tests {
             registry.register(Some(&style)),
             registry.register(Some(&style))
         );
+    }
+
+    #[test]
+    fn writes_conditional_format_differential_styles_and_rules() {
+        let data = serde_json::json!({
+            "kind": "workbook",
+            "sheets": [{
+                "id": "sheet-1", "name": "Scores", "cells": {},
+                "conditionalFormats": [
+                    { "id": "high", "type": "cellIs", "ranges": [
+                        { "startRow": 0, "startCol": 0, "endRow": 4, "endCol": 0 },
+                        { "startRow": 0, "startCol": 2, "endRow": 4, "endCol": 2 }
+                    ], "operator": "greaterThanOrEqual", "formula1": "90", "priority": 2,
+                      "stopIfTrue": true, "style": { "fill": "#00aa55", "fontColor": "#ffffff", "bold": true } },
+                    { "id": "low", "type": "cellIs", "ranges": [
+                        { "startRow": 0, "startCol": 0, "endRow": 4, "endCol": 0 }
+                    ], "operator": "lessThan", "formula1": "60", "priority": 1,
+                      "style": { "fill": "#ee3344" } }
+                ]
+            }]
+        }).to_string();
+        let mut package = Package::new();
+        let warnings = write(&data, &mut package).expect("conditional formats export");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut worksheet = String::new();
+        let mut styles = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("xl/worksheets/sheet1.xml").unwrap(), &mut worksheet).unwrap();
+        std::io::Read::read_to_string(&mut archive.by_name("xl/styles.xml").unwrap(), &mut styles).unwrap();
+
+        assert!(worksheet.contains("sqref=\"A1:A5\"><cfRule type=\"cellIs\" dxfId=\"0\" priority=\"1\" operator=\"lessThan\"><formula>60</formula>"));
+        assert!(worksheet.contains("sqref=\"A1:A5 C1:C5\"><cfRule type=\"cellIs\" dxfId=\"1\" priority=\"2\" operator=\"greaterThanOrEqual\" stopIfTrue=\"1\"><formula>90</formula>"));
+        assert!(styles.contains("<dxfs count=\"2\"><dxf><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEE3344\"/>"));
+        assert!(styles.contains("<dxf><font><b/><color rgb=\"FFFFFFFF\"/></font><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF00AA55\"/>"));
     }
 
     #[test]
@@ -2266,6 +2552,50 @@ mod tests {
         );
         assert!(worksheet.contains("<row r=\"3\" hidden=\"1\"></row>"));
         assert!(worksheet.contains("<row r=\"4\" ht=\"32\" customHeight=\"1\"></row>"));
+    }
+
+    #[test]
+    fn writes_x14_sparkline_groups_with_sources_and_supported_display_options() {
+        let (worksheet, warnings) = exported_filter_sheet(serde_json::json!({
+            "kind": "workbook",
+            "sheets": [{
+                "id": "sparkline-sheet", "name": "Data", "cells": {
+                    "F1": { "row": 0, "col": 5, "value": null, "sparkline": {
+                        "type": "column", "sourceRange": "B1:E1", "color": "#167a55",
+                        "negativeColor": "#c43b3b", "highPointColor": "#f0a000", "lowPointColor": "#2b579a",
+                        "emptyCells": "zero", "axis": "custom", "min": -5, "max": 20
+                    } }
+                }
+            }]
+        }));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(worksheet.contains("<extLst><ext uri=\"{05C60535-1F16-4fd2-B633-F4F36F0B64E0}\"><x14:sparklineGroups"));
+        assert!(worksheet.contains("type=\"column\" displayEmptyCellsAs=\"zero\" minAxisType=\"custom\" maxAxisType=\"custom\" manualMin=\"-5\" manualMax=\"20\""));
+        assert!(worksheet.contains("<x14:colorSeries rgb=\"FF167A55\"/><x14:colorNegative rgb=\"FFC43B3B\"/><x14:colorHigh rgb=\"FFF0A000\"/><x14:colorLow rgb=\"FF2B579A\"/>"));
+        assert!(worksheet.contains("<xm:f>&apos;Data&apos;!B1:E1</xm:f><xm:sqref>F1</xm:sqref>"), "{worksheet}");
+        assert!(worksheet.ends_with("</x14:sparklineGroups></ext></extLst></worksheet>"));
+    }
+
+    #[test]
+    fn writes_structured_table_parts_and_sheet_relationships() {
+        let mut package = Package::new();
+        let model = serde_json::json!({
+            "kind":"workbook","name":"Tables","sheets":[{"id":"sheet-1","name":"Data","cells":{}}],
+            "tables":[{"id":"table-stable-id","name":"Orders","sheetId":"sheet-1","range":{"startRow":0,"startCol":0,"endRow":4,"endCol":1},"columns":[{"id":"c1","name":"Product"},{"id":"c2","name":"Amount"}],"showHeaderRow":true,"showTotalsRow":true,"styleName":"TableStyleMedium4"}]
+        });
+        let warnings = write(&model.to_string(), &mut package).expect("table writes");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let worksheet = read_part(&mut archive, "xl/worksheets/sheet1.xml");
+        let table = read_part(&mut archive, "xl/tables/table1.xml");
+        let rels = read_part(&mut archive, "xl/worksheets/_rels/sheet1.xml.rels");
+        assert!(worksheet.contains("<tableParts count=\"1\"><tablePart r:id=\"rIdTable1\"/></tableParts>"));
+        assert!(table.contains("displayName=\"Orders\" ref=\"A1:B5\" headerRowCount=\"1\" totalsRowShown=\"1\""));
+        assert!(table.contains("<tableColumn id=\"1\" name=\"Product\"/>"));
+        assert!(table.contains("<tableStyleInfo name=\"TableStyleMedium4\""));
+        assert!(rels.contains("relationships/table"));
+        assert!(rels.contains("../tables/table1.xml"));
     }
 
     fn exported_filter_sheet(model: serde_json::Value) -> (String, Vec<ExportWarning>) {
@@ -2502,13 +2832,36 @@ mod tests {
     }
 
     #[test]
-    fn warns_when_canonical_pivot_tables_are_not_exported() {
-        let data = r#"{"kind":"workbook","name":"Pivot","sheets":[{"id":"sheet-1","name":"Data","cells":{}}],"pivotTables":[{"id":"pivot-1","source":{},"anchor":{},"fields":[],"options":{}}]}"#;
+    fn exports_pivot_cache_table_and_linked_pivot_chart_parts() {
+        let data = r##"{"kind":"workbook","name":"Pivot","sheets":[{"id":"data","name":"Data","cells":{"A1":{"value":"Region"},"B1":{"value":"Sales"},"A2":{"value":"East"},"B2":{"value":10},"A3":{"value":"West"},"B3":{"value":20}}},{"id":"pivot","name":"Pivot View","cells":{"A1":{"value":"Region"},"B1":{"value":"Sales"},"A2":{"value":"East"},"B2":{"value":10},"A3":{"value":"West"},"B3":{"value":20}}}],"pivotTables":[{"id":"pivot-1","source":{"subUnitId":"data","sheetName":"Data","range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1}},"anchor":{"subUnitId":"pivot","row":0,"col":0},"outputRange":{"startRow":0,"startCol":0,"endRow":2,"endCol":1},"fields":[{"sourceColumn":0,"name":"Region","area":"row","position":0},{"sourceColumn":1,"name":"Sales","area":"value","position":0,"aggregation":"sum"}],"options":{}}],"charts":[{"id":"pivot-chart","sheetId":"pivot","type":"bar","source":{"range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1},"orientation":"columns"},"position":{"x":20,"y":20},"size":{"width":400,"height":240},"categoryField":0,"valueFields":[1],"pivotTableId":"pivot-1"}]}"##;
         let mut package = Package::new();
         let warnings = write(data, &mut package).unwrap();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].code, "UNSUPPORTED_FEATURE");
-        assert!(warnings[0].message.contains("pivotTables"));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let read_part = |archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, path: &str| {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut archive.by_name(path).unwrap(), &mut text).unwrap();
+            text
+        };
+        let workbook = read_part(&mut archive, "xl/workbook.xml");
+        let workbook_rels = read_part(&mut archive, "xl/_rels/workbook.xml.rels");
+        let cache = read_part(&mut archive, "xl/pivotCache/pivotCacheDefinition1.xml");
+        let cache_rels = read_part(&mut archive, "xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels");
+        let records = read_part(&mut archive, "xl/pivotCache/pivotCacheRecords1.xml");
+        let pivot_table = read_part(&mut archive, "xl/pivotTables/pivotTable1.xml");
+        let table_rels = read_part(&mut archive, "xl/pivotTables/_rels/pivotTable1.xml.rels");
+        let pivot_sheet = read_part(&mut archive, "xl/worksheets/sheet2.xml");
+        let pivot_chart = read_part(&mut archive, "xl/charts/chart1.xml");
+        assert!(workbook.contains("<pivotCaches count=\"1\">"));
+        assert!(workbook_rels.contains("pivotCache/pivotCacheDefinition1.xml"));
+        assert!(cache.contains("<worksheetSource ref=\"A1:B3\" sheet=\"Data\"/>"));
+        assert!(cache_rels.contains("pivotCacheRecords1.xml"));
+        assert!(records.contains("<r><x v=\"0\"/><x v=\"0\"/></r>"));
+        assert!(pivot_table.contains("<rowFields count=\"1\"><field x=\"0\"/>"));
+        assert!(table_rels.contains("pivotCacheDefinition1.xml"));
+        assert!(pivot_sheet.contains("<pivotTableParts count=\"1\"><pivotTablePart r:id=\"rIdPivotTable1\"/>"));
+        assert!(pivot_chart.contains("<c:pivotSource><c:name>[Pivot.xlsx]Pivot View!PivotTable1</c:name>"));
     }
 
     #[test]
@@ -2558,7 +2911,7 @@ mod tests {
         let mut package = Package::new();
         assert!(write(base, &mut package).is_err());
 
-        let unsupported = base.replace("\"bar\"", "\"pie\"").replace("[4]", "[1]");
+        let unsupported = base.replace("\"bar\"", "\"surface\"").replace("[4]", "[1]");
         let mut package = Package::new();
         let error = write(&unsupported, &mut package).unwrap_err();
         assert_eq!(error.code, "UNSUPPORTED_EXPORT");
@@ -2570,7 +2923,7 @@ mod tests {
             r##"{"sheets":[{"id":"sheet-1","name":"Data","cells":{"A1":{"value":"Metric"},"B1":{"value":"Jan"},"C1":{"value":"Feb"},"A2":{"value":"Net"},"B2":{"value":5},"C2":{"value":8}}}],"charts":[{"id":"line-1","sheetId":"sheet-1","type":"line","source":{"range":{"startRow":0,"startCol":0,"endRow":1,"endCol":2},"orientation":"rows"},"position":{"x":0,"y":0},"size":{"width":320,"height":200},"legend":{"visible":false,"position":"right"},"categoryField":0,"valueFields":[1],"yAxis":{"scaleType":"log","logBase":2}}]}"##,
         )
         .unwrap();
-        let chart = chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0).unwrap();
+        let chart = chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0, None).unwrap();
 
         assert!(chart.contains("<c:lineChart>"));
         assert!(chart.contains("<c:grouping val=\"standard\"/>"));
@@ -2578,6 +2931,52 @@ mod tests {
         assert!(chart.contains("<c:f>&apos;Data&apos;!$B$2:$C$2</c:f>"));
         assert!(chart.contains("<c:logBase val=\"2\"/>"));
         assert!(!chart.contains("<c:legend>"));
+    }
+
+    #[test]
+    fn writes_area_pie_doughnut_and_stacked_column_chart_types() {
+        let base = r##"{"sheets":[{"id":"sheet-1","name":"Data","cells":{"A1":{"value":"Category"},"B1":{"value":"Value"},"A2":{"value":"One"},"B2":{"value":4},"A3":{"value":"Two"},"B3":{"value":7}}}],"charts":[{"id":"chart-1","sheetId":"sheet-1","type":"bar","source":{"range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1}},"position":{"x":0,"y":0},"size":{"width":320,"height":200},"categoryField":0,"valueFields":[1]}]}"##;
+        let cases = [
+            ("area", "<c:areaChart>", "<c:catAx>"),
+            ("pie", "<c:pieChart>", "<c:firstSliceAng val=\"0\"/>"),
+            ("doughnut", "<c:doughnutChart>", "<c:holeSize val=\"55\"/>"),
+            (
+                "stacked-column",
+                "<c:barChart>",
+                "<c:overlap val=\"100\"/>",
+            ),
+        ];
+        for (chart_type, expected_chart, expected_setting) in cases {
+            let data = base.replace("\"bar\"", &format!("\"{chart_type}\""));
+            let workbook: WorkbookInput = serde_json::from_str(&data).unwrap();
+            let chart = chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0, None).unwrap();
+            assert!(
+                chart.contains(expected_chart),
+                "missing {expected_chart} for {chart_type}"
+            );
+            assert!(
+                chart.contains(expected_setting),
+                "missing {expected_setting} for {chart_type}"
+            );
+            if matches!(chart_type, "pie" | "doughnut") {
+                assert!(!chart.contains("<c:valAx>"));
+            }
+        }
+
+        let pivot_data = base.replace(
+            "\"type\":\"bar\"",
+            "\"type\":\"bar\",\"pivotTableId\":\"pivot-1\"",
+        );
+        let workbook: WorkbookInput = serde_json::from_str(&pivot_data).unwrap();
+        let error = chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0, None).unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED_EXPORT");
+        assert!(error.message.contains("pivot chart parts"));
+
+        let negative_data = base
+            .replace("\"type\":\"bar\"", "\"type\":\"pie\"")
+            .replace("\"value\":4", "\"value\":-4");
+        let workbook: WorkbookInput = serde_json::from_str(&negative_data).unwrap();
+        assert!(chart_xml(&workbook, &workbook.charts.as_ref().unwrap()[0], 0, None).is_err());
     }
 
     #[test]

@@ -25,8 +25,8 @@ async function setup(rows, { date1904 = false, labels = [0] } = {}) {
   const model = api.createBlankWorkbook()
   model.date1904 = date1904
   const studio = new api.OfficeStudio({ workbook: model })
-  const univer = api.FUniver.newAPI(studio)
-  const workbook = univer.getActiveWorkbook()
+  const officeApi = api.FOffice.newAPI(studio)
+  const workbook = officeApi.getActiveWorkbook()
   const source = workbook.getActiveSheet()
   const output = workbook.insertSheet('Summary')
   const lastColumn = String.fromCharCode(64 + rows[0].length)
@@ -37,7 +37,7 @@ async function setup(rows, { date1904 = false, labels = [0] } = {}) {
   }, api.PositionTypeEnum.Existing, { unitId: workbook.getId(), subUnitId: output.getSheetId(), row: 0, col: 0 })
   for (const field of labels) await pivot.addField(field, 'row')
   await pivot.addField(rows[0].length - 1, 'value')
-  return { studio, univer, workbook, source, output, pivot, target: { workbookId: workbook.getId(), sheetId: output.getSheetId() } }
+  return { studio, officeApi, workbook, source, output, pivot, target: { workbookId: workbook.getId(), sheetId: output.getSheetId() } }
 }
 
 function boundField(studio, workbook, fieldId = '0') {
@@ -165,7 +165,7 @@ test('multiple slicers intersect, distinguish no selection from clear and surviv
     await panel.applyPanelSlicerItems(studio, target, regionId, ['East'])
     const saved = JSON.parse(JSON.stringify(workbook.save()))
     restored = new api.OfficeStudio({ workbook: saved })
-    const reopened = api.FUniver.newAPI(restored).getActiveWorkbook()
+    const reopened = api.FOffice.newAPI(restored).getActiveWorkbook()
     assert.deepEqual(reopened.getSlicer(regionId).getInfo().selectedItems, ['East'])
     assert.deepEqual(reopened.getSlicer(regionId).getItems(), ['East', 'West', 'North'])
     assert.equal(reopened.getPivotTables()[0].getData().at(-1).at(-1), 100)
@@ -179,7 +179,7 @@ test('multiple slicers intersect, distinguish no selection from clear and surviv
 })
 
 test('invalid or canceled slicer commands do not mutate model or add history', async () => {
-  const { studio, univer, workbook, output, pivot, target } = await setup([
+  const { studio, officeApi, workbook, output, pivot, target } = await setup([
     ['Region', 'Amount'], ['East', 100], ['West', 80],
   ])
   try {
@@ -189,7 +189,7 @@ test('invalid or canceled slicer commands do not mutate model or add history', a
     await assert.rejects(() => panel.applyPanelSlicerItems(studio, target, slicer.getId(), ['Missing']), (error) => error.code === 'UNKNOWN_SLICER_ITEM')
     await assert.rejects(() => slicer.setTimelineRange({ start: 1, level: 'day' }), /require selected items/)
     await assert.rejects(() => panel.insertPanelSlicer(studio, target, { pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'timeline' }), (error) => error.code === 'SOURCE_FIELD_UNAVAILABLE')
-    const subscription = univer.addEvent('BeforeSlicerChange', (event) => { event.cancel = true })
+    const subscription = officeApi.addEvent('BeforeSlicerChange', (event) => { event.cancel = true })
     await assert.rejects(() => slicer.setItems(['East']), /canceled/)
     subscription.dispose()
     assert.equal(JSON.stringify(studio.getWorkbookModel(workbook.getId())), baseline)

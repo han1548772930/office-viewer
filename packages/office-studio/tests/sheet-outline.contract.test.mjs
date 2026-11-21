@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   addSheetOutlineGroup,
+  applySheetOutlineOperation,
   createSheetOutlineState,
   getCollapsedOutlineIndexes,
   getOutlineDepth,
@@ -13,6 +15,8 @@ import {
 import { hiddenSheetRows } from '../src/features/sheet-workbench/sheet-row-visibility.ts'
 import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { createBlankWorkbook } from '../src/domain/model.ts'
+import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
+import { ribbonInvocation } from '../src/platform/ribbon/ribbon-schema.ts'
 
 test('outline groups support nested levels, collapse and immutable updates', () => {
   let state = createSheetOutlineState()
@@ -76,4 +80,36 @@ test('outline group boundaries and crossings reject invalid state', () => {
   assert.throws(() => setSheetOutlineCollapsed(state, 'missing', true), /not found/)
   state = removeSheetOutlineGroup(state, 'outer')
   assert.deepEqual(state.groups, [])
+})
+
+test('Ribbon operations update the selected model range and summary positions', () => {
+  const empty = createSheetOutlineState()
+  const grouped = applySheetOutlineOperation(empty, 'row', 'group', 2, 5, 20, 'ribbon-row')
+  const folded = applySheetOutlineOperation(grouped, 'row', 'toggle', 3, 4, 20, 'unused')
+  const expanded = applySheetOutlineOperation(folded, 'row', 'toggle', 3, 4, 20, 'unused')
+  const ungrouped = applySheetOutlineOperation(expanded, 'row', 'remove', 3, 4, 20, 'unused')
+  assert.equal(folded.groups[0].collapsed, true)
+  assert.equal(expanded.groups[0].collapsed, false)
+  assert.deepEqual(ungrouped.groups, [])
+
+  const columnGroup = applySheetOutlineOperation(empty, 'column', 'group', 1, 3, 8, 'ribbon-column')
+  const summary = setSheetOutlineSummaryPosition(setSheetOutlineSummaryPosition(columnGroup, 'row', true), 'column', true)
+  const ribbonState = { canUndo: false, canRedo: false, hasSheet: true, canMerge: false, canUnmerge: false, canDeleteRow: true, canDeleteColumn: true, chartAvailable: true, dataValidationAvailable: true, canSort: false, fontFamily: null, fontSize: null, numberFormat: null, gridlines: true, frozen: false, zoom: 100, fullscreen: false, outlineSummaryAbove: true, outlineSummaryLeft: true }
+  const ribbon = createSheetRibbon(ribbonState).find(tab => tab.id === 'data')
+  const outline = ribbon.groups.find(group => group.id === 'outline')
+  const rowPosition = outline.items.find(item => item.id === 'sheet.operation.outline-summary-rows')
+  const columnPosition = outline.items.find(item => item.id === 'sheet.operation.outline-summary-columns')
+  assert.deepEqual(ribbonInvocation(rowPosition, 'above'), { commandId: 'sheet.operation.outline-summary-position', params: { axis: 'row', atStart: true } })
+  assert.deepEqual(ribbonInvocation(columnPosition, 'left'), { commandId: 'sheet.operation.outline-summary-position', params: { axis: 'column', atStart: true } })
+  assert.equal(summary.summaryAbove, true)
+  assert.equal(summary.summaryLeft, true)
+})
+
+test('workbench dispatch persists outline commands through the outline model operations', () => {
+  const source = readFileSync(new URL('../src/components/ExcelWorkbench.vue', import.meta.url), 'utf8')
+  assert.match(source, /'sheet\.operation\.outline-group-rows':\s*\(\)\s*=>\s*changeOutline\('row', 'group'\)/)
+  assert.match(source, /'sheet\.operation\.outline-toggle-columns':\s*\(\)\s*=>\s*changeOutline\('column', 'toggle'\)/)
+  assert.match(source, /applySheetOutlineOperation\(state, axis, operation, start, end, count, crypto\.randomUUID\(\)\)/)
+  assert.match(source, /'sheet\.operation\.outline-summary-position':\s*\(\)\s*=>/)
+  assert.match(source, /setSheetOutlineSummaryPosition\(sheet\.outline \?\? createSheetOutlineState\(\), axis, atStart\)/)
 })

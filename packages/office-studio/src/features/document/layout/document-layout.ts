@@ -1,4 +1,4 @@
-import type { DocumentBlock, DocumentModel, DocumentPageSetup } from '../../../domain/model'
+import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentPageSetup } from '../../../domain/model'
 import type { DocumentPoint, DocumentRun, TextTarget } from '../model/document-model'
 import { createRun, imageForBlock, runText, sameTarget, tableForBlock, targetKey } from '../model/document-model'
 import { DEFAULT_DOCUMENT_SECTION_ID, resolveSectionHeaderFooter } from '../services/section-header-footer'
@@ -255,11 +255,25 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
     sectionPageCounts.set(pageSectionId, sectionPageIndex + 1)
     const firstPage = section.differentFirstPage && sectionPageIndex === 0
     const evenPage = section.differentOddEven && page.index % 2 === 1
-    const header = firstPage ? section.firstPageHeader : evenPage ? section.evenPageHeader : section.header
-    const footer = firstPage ? section.firstPageFooter : evenPage ? section.evenPageFooter : section.footer
+    const headerStory = firstPage ? 'firstPageHeader' : evenPage ? 'evenPageHeader' : 'header'
+    const footerStory = firstPage ? 'firstPageFooter' : evenPage ? 'evenPageFooter' : 'footer'
+    const header = `${section[headerStory]}${renderPageFields(section.pageFields, headerStory, page.index + 1, result.pages.length)}`
+    const footer = `${section[footerStory]}${renderPageFields(section.pageFields, footerStory, page.index + 1, result.pages.length)}`
     return { page: page.index, x: page.content.x, y: page.y + 6, width: page.content.width, height: page.content.y - page.y - 12, header, footer }
   })
   return result
+}
+
+function renderPageFields(
+  fields: DocumentPageField[] | undefined,
+  story: DocumentPageField['story'],
+  currentPage: number,
+  pageCount: number,
+): string {
+  return (fields ?? [])
+    .filter(field => field.story === story)
+    .map(field => ` ${field.field === 'PAGE' ? currentPage : pageCount}`)
+    .join('')
 }
 
 export function lineForPoint(layout: DocumentLayout, point: DocumentPoint): LayoutLine | undefined {

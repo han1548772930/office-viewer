@@ -61,6 +61,13 @@
 - 对应 SHEET-07。`SpreadsheetCanvas.vue` 修复 KeepAlive 将原生滚动位置归零后覆盖缓存的问题；停用保存逻辑坐标、忽略停用 scroll、激活和切表先恢复两轴再绘制。
 - 原工作台浏览器用例增强为 T45，检查水平和垂直位置精确恢复，随后仍可编辑该单元格。
 
+## Chart type coverage
+
+- 对应 SHEET-22、SHEET-24。图表模型及透视图面板现在提供簇状柱形、折线、面积、饼、圆环和堆积柱形六类。`chart-engine.ts` 实现面积零线交叉分段、正负堆积值域/基线及饼/圆环扇区；饼/圆环约束为一个非负且总和为正的序列，堆积柱形要求线性值轴。缺失值不会被折线或面积图跨越连接。
+- 普通 XLSX 图表 writer 写出 area、pie、doughnut 及 stacked-column OOXML，并保留既有 bar/line 写出。PivotChart writer 已生成 cache definition/records、pivot table、workbook/worksheet/cache/table relationships、`pivotTableParts` 和 chart `c:pivotSource`。缺失关联 pivot definition 仍会明确返回 `UNSUPPORTED_EXPORT`。
+- `office-writer` 当前全量 47/47、`office-parser` 17/17 通过。同一生成 XLSX 的 Writer→Parser 契约验证 PivotCache/PivotTable/PivotChart 部件、关系、来源/输出范围、字段配置和图表关联能恢复到 canonical pivot model。Studio normalizer 定向契约 2/2、类型检查通过。Excel/LibreOffice 实际重开未验收；复杂筛选、分组等配置的导入保真仍有缺口。
+- 按本轮安排未运行浏览器测试。完整轴/数据标签/主题编辑和真实 Office 重开仍待验收，SHEET-22/24 继续标为未验收。
+
 ## Office IO
 
 - 对应 SHEET-29、DOC-22。本轮独立模块 Worker 复现真实保存的 `RuntimeError: unreachable`，根因是 ZIP 的 `time` feature 在 WASM 写出时读取不可用的宿主 `SystemTime`。
@@ -70,8 +77,12 @@
 ## Toolbar audit and Pro source boundary
 
 - 按固定提交的 OSS 菜单 schema 和当前 Ribbon schema 逐分类清点，Sheets 根入口计数为固定版 START/INSERT/FORMULAS/DATA/VIEW 30/9/12/6/6，本地为 28/8/3/8/4；Docs 固定版 Start/Insert/View 25 项，本地常规 Ribbon 42 项并有 7 个表格上下文项。统计范围是各分类直接注册项，不包括子菜单、动态隐藏入口或运行时上下文，不能把数量差直接等同于能力差。
-- Sheets 已确认的源码入口缺口包括公式分类和计算选项、特殊粘贴、格式刷、范围保护、快速数据验证/条件格式、结构化表格选择器、工作表背景图和十字高亮。Docs 已确认目标格式粘贴、权限面板、页眉页脚模型/编辑流程及上下文 Ribbon 缺失。对应的入口并不自动等于完整功能，仍需接入共享命令、领域状态和持久化。
-- 当前轮新增选择性粘贴菜单与内部复制数据的模式应用，含公式引用平移、值/格式/列宽/保留目标边框；新增工作表范围保护面板入口，使用既有范围保护 API。定向契约测试已覆盖粘贴计划和 Ribbon 入口；范围保护组件已有独立契约。尚未运行浏览器闭环测试，整批完成后再统一运行。
+- Sheets 已确认的源码入口缺口包括公式分类和计算选项、特殊粘贴、格式刷、范围保护、快速数据验证/条件格式、结构化表格选择器、工作表背景图和十字高亮。Docs 已确认目标格式粘贴、权限面板及上下文 Ribbon 缺失。页眉页脚现已具备按节编辑、布局显示和 DOCX story 导入/写出，机器文档验证通过；浏览器和 Word/LibreOffice 重开仍未验收。对应的入口并不自动等于完整功能，仍需接入共享命令、领域状态和持久化。
+- 当前轮新增选择性粘贴菜单与内部复制数据的模式应用，含公式引用平移、值/格式/列宽/保留目标边框；新增工作表范围保护面板入口，使用既有范围保护 API。格式刷现在在 mouseup 后应用最终单元格/行列标题选区，并以单次历史事务提交；新增拖选、撤销和重做浏览器用例，尚未运行。范围保护与验证面板已接入 feature-owned Vue I18n 资源。尚未运行浏览器闭环测试，整批完成后再统一运行。
+- Docs 页眉/页脚现由 parser 保留 DOCX 节引用、首页不同与奇偶页设置，normalizer 映射到各节模型；Writer→Parser 同一 DOCX 契约覆盖 default/first/even story 和继承。Rust parser 17/17、writer 47/47、Studio 类型检查通过。尚未在 Word/LibreOffice 重开，也未浏览器验收。
+- 脚注/尾注已有文档模型、插入引用与编辑/删除/跳转服务、管理面板、Insert Ribbon 入口、单快照历史和 18 locale 资源。DOCX parser 暴露定义及 inline 引用，writer→parser 契约通过。前端服务契约 3/3。真实分页脚注定位、跨页续注版式与浏览器闭环仍未验收。
+- Vue I18n catalogs 接入 core/sheets/docs feature locales，并按固定版 19 locales 做目录覆盖契约；生产 Sheets/Docs Ribbon 与已注册 panel keys 对照通过。生成的翻译初稿标记为待人工审核，当前机器翻译内容尚未全量人工校订。
+- 公式目录差异与固定版 function-map 逐项比对，并补入多批公式。当前差异表显示 date 24/27、text 26/46、logical 11/21、lookup 7/37、financial 17/55。`TEXTSPLIT` 等数组结果函数因公式值模型缺少数组传播仍明确未实现；完整公式兼容仍未验收。
 - 固定源码仓库在 README 中明确区分 Apache-2.0 开源核心与单独发行、授权的商业 Web SDK 插件。已检查本地固定版本仓库，存在通用权限、菜单、工作簿/文档模型等源码，没有 `@univerjs-pro` 商业插件实现源码。本项目不安装商业 SDK。闭源能力按官方公开规格和 API 独立反推，来源包括 [Sheets 切片器与时间线](https://docs.univer.ai/zh-CN/guides/sheets/features/slicer)、[Sheets 透视图](https://docs.univer.ai/zh-CN/guides/sheets/features/pivot-chart)、[Docs LaTeX](https://docs.univer.ai/zh-CN/guides/docs/features/latex) 及官方 Sheets 功能比较页。已实现的切片器/时间线仍缺表格源、多目标连接、完整浮动布局和 Office parts 往返，保持 SHEET-25 未验收。
 - 根项计数和源码差异来自固定版本本地源码检查，非 Pro 菜单清单。Pro 插件的界面细节、持久化编码和未公开边界仍须按官方规格、演示与 Office 样本分别记录证据；本轮没有将此类行为标记为已核实。
 

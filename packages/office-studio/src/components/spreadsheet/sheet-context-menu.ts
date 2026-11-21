@@ -31,13 +31,13 @@ export function createSheetContextMenuItems(hit: GridHit, options: { canDeleteRo
   const protect: SheetContextMenuItem = { id: 'protect-range', label: '保护范围', commandId: 'sheet.operation.open-range-protection', separatorBefore: true }
 
   if (hit.kind === 'row') return [
-    { id: 'insert-row', label: '在上方插入行', commandId: 'sheet.command.insert-row' },
+    { id: 'insert-row-above', label: '在上方插入行', commandId: 'sheet.command.insert-row' },
     { id: 'delete-row', label: '删除行', commandId: 'sheet.command.delete-row', disabled: !options.canDeleteRow },
     ...freeze,
     protect,
   ]
   if (hit.kind === 'column') return [
-    { id: 'insert-column', label: '在左侧插入列', commandId: 'sheet.command.insert-column' },
+    { id: 'insert-column-left', label: '在左侧插入列', commandId: 'sheet.command.insert-column' },
     { id: 'delete-column', label: '删除列', commandId: 'sheet.command.delete-column', disabled: !options.canDeleteColumn },
     ...freeze,
     protect,

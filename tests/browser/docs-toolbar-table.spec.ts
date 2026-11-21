@@ -9,8 +9,8 @@ const bridge = (page: Page) => page.getByLabel('文档文字输入')
 async function state(page: Page): Promise<{ model: DocumentModel; text: string }> {
   return page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').find((entry) => new URL(entry.name).pathname === '/src/runtime.ts')?.name ?? '/src/runtime.ts'
-    const { studio, univerAPI } = await import(path) as RuntimeModule
-    return JSON.parse(JSON.stringify({ model: studio.getDocumentModel(studio.activeDocumentId), text: univerAPI.getActiveDocument()?.getText() ?? '' }))
+    const { studio, officeAPI } = await import(path) as RuntimeModule
+    return JSON.parse(JSON.stringify({ model: studio.getDocumentModel(studio.activeDocumentId), text: officeAPI.getActiveDocument()?.getText() ?? '' }))
   })
 }
 async function table(page: Page): Promise<DocumentTable | undefined> {
@@ -71,8 +71,8 @@ test('a locked cell control prevents deleting its table and the failed command c
   await bridge(page).focus(); await bridge(page).pressSequentially('保护')
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').find((entry) => new URL(entry.name).pathname === '/src/runtime.ts')?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
-    const document = univerAPI.getActiveDocument()!
+    const { officeAPI } = await import(path) as RuntimeModule
+    const document = officeAPI.getActiveDocument()!
     const table = document.getModel().blocks.find((block) => block.type === 'table')!.metadata.table as DocumentTable
     document.addContentControl({ id: 'protected-cell', type: 'text', blockId: table.rows[0]!.cells[0]!.blocks[0]!.id, startOffset: 0, endOffset: 2, lock: 'sdtLocked' })
   })

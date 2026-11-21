@@ -10,7 +10,7 @@ import {
   type ExcelWorkbookView,
   type WorkbookModel,
 } from '@office-studio/office-studio'
-import { studio, univerAPI } from './runtime'
+import { studio, officeAPI } from './runtime'
 import { createWorkspaceFileOperations, workspaceFileNameError, type ExportTask, type FileAction, type NoticeType, type WorkspaceKind } from './workspace-file-operations'
 
 export function useWorkspaceController() {
@@ -29,7 +29,7 @@ export function useWorkspaceController() {
   const activeModel = computed(() => editor.state.activeKind === 'workbook' ? editor.state.workbook : editor.state.document)
   const activeFileName = computed(() => activeModel.value.name)
   const excelView = computed(() => toExcelWorkbookView(editor.state.workbook))
-  const documentApi = computed(() => editor.state.document.id ? univerAPI.getDocument(editor.state.document.id) ?? undefined : undefined)
+  const documentApi = computed(() => editor.state.document.id ? officeAPI.getDocument(editor.state.document.id) ?? undefined : undefined)
   const modified = computed(() => activeModel.value.modified)
 
   function showNotice(type: NoticeType, message: string): void {
@@ -64,13 +64,13 @@ export function useWorkspaceController() {
   function switchWorkspace(kind: WorkspaceKind): void {
     if (kind === editor.state.activeKind) return
     cancelImport()
-    univerAPI.setActiveKind(kind)
+    officeAPI.setActiveKind(kind)
   }
 
   function createNew(kind: WorkspaceKind): void {
     cancelImport()
-    if (kind === 'workbook') univerAPI.createWorkbook({ name: '未命名工作簿' })
-    else univerAPI.createDocument({ name: '未命名文档' })
+    if (kind === 'workbook') officeAPI.createWorkbook({ name: '未命名工作簿' })
+    else officeAPI.createDocument({ name: '未命名文档' })
     pendingNewKind.value = null
   }
 
@@ -94,8 +94,8 @@ export function useWorkspaceController() {
     if (error) { renameError.value = error; return }
     try {
       const unit = renameTarget?.kind === 'workbook'
-        ? univerAPI.getWorkbook(renameTarget.unitId)
-        : renameTarget ? univerAPI.getDocument(renameTarget.unitId) : undefined
+        ? officeAPI.getWorkbook(renameTarget.unitId)
+        : renameTarget ? officeAPI.getDocument(renameTarget.unitId) : undefined
       if (!unit) throw new Error('当前文件已切换，请重新打开重命名窗口')
       unit.setName(name)
       renameOpen.value = false

@@ -12,6 +12,7 @@ export interface SheetRibbonState {
   canDeleteRow: boolean
   canDeleteColumn: boolean
   chartAvailable: boolean
+  pivotChartAvailable?: boolean
   dataValidationAvailable: boolean
   canSort: boolean
   fontFamily: string | null
@@ -34,6 +35,8 @@ export interface SheetRibbonState {
   zoom: number
   fullscreen: boolean
   calculationMode?: 'automatic' | 'manual'
+  outlineSummaryAbove?: boolean
+  outlineSummaryLeft?: boolean
 }
 
 const fonts = ['等线', '微软雅黑', '宋体', 'Aptos', 'Arial', 'Times New Roman']
@@ -123,6 +126,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.operation.find', '查找', { icon: Search, showLabel: true, shortcut: 'Ctrl+F', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           button('sheet.command.clear-content', '清除内容', { icon: Trash2, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-conditional-formatting', '条件格式', { icon: PaintBucket, showLabel: true, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
         ] },
       ],
     },
@@ -158,6 +162,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.operation.open-slicer', '切片器', { icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.open-timeline', '时间线', { icon: CalendarDays, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.open-sparkline', '迷你图', { icon: Sparkles, showLabel: true, disabled: !state.hasSheet, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-pivot-chart', '透视图', { icon: FileChartColumn, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请先创建数据透视表', gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'outline', title: '大纲', order: 30, items: [
           button('sheet.operation.outline-group-rows', '组合行', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
@@ -166,6 +171,12 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.operation.outline-group-columns', '组合列', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: TextCursorInput, showLabel: true, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.outline-remove-columns', '取消列分组', { icon: Eraser, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
+          { id: 'sheet.operation.outline-summary-rows', commandId: 'sheet.operation.outline-summary-position', type: 'select', title: '汇总行位置', width: 112, value: state.outlineSummaryAbove ? 'above' : 'below', valueParams: value => ({ axis: 'row', atStart: value === 'above' }), gridLayout: { row: 1, column: 7, rowSpan: 2, width: 112, showLabel: true }, options: [
+            { label: '汇总行在下方', value: 'below' }, { label: '汇总行在上方', value: 'above' },
+          ] },
+          { id: 'sheet.operation.outline-summary-columns', commandId: 'sheet.operation.outline-summary-position', type: 'select', title: '汇总列位置', width: 112, value: state.outlineSummaryLeft ? 'left' : 'right', valueParams: value => ({ axis: 'column', atStart: value === 'left' }), gridLayout: { row: 1, column: 8, rowSpan: 2, width: 112, showLabel: true }, options: [
+            { label: '汇总列在右侧', value: 'right' }, { label: '汇总列在左侧', value: 'left' },
+          ] },
         ] },
       ],
     },
@@ -173,7 +184,19 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
       id: 'formulas', title: '公式', order: 20, groups: [
         { id: 'formula-edit', title: '公式编辑', items: [
           button('sheet.operation.open-function', '插入函数', { icon: Type, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          ...functionCategories.map((category, index) => button(`sheet.operation.open-function.category-${index}`, category, { commandId: 'sheet.operation.open-function', params: category, icon: Type, showLabel: true, gridLayout: { row: index % 2 + 1, column: Math.floor(index / 2) + 2, showLabel: true } })),
+          ...functionCategories.map((category, index) => ({
+            id: `sheet.operation.open-function.category-${index}`,
+            type: 'menu' as const,
+            title: category,
+            icon: Type,
+            disabled: !state.hasSheet,
+            gridLayout: { row: index % 2 + 1, column: Math.floor(index / 2) + 2, showLabel: true },
+            children: SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category).map(entry => button(
+              `sheet.function.${entry.name}`,
+              entry.name,
+              { commandId: 'sheet.operation.insert-function', params: entry.name },
+            )),
+          })),
           button('sheet.operation.start-formula', '编辑公式', { icon: Type, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
           button('sheet.command.recalculate', '重新计算', { icon: RefreshCw, showLabel: true, gridLayout: { row: 1, column: 7, rowSpan: 2, showLabel: true } }),
         ] },

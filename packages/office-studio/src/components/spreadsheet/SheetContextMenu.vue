@@ -21,7 +21,10 @@ const emit = defineEmits<{
 const panel = ref<HTMLElement>()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const activeIndex = ref(0)
-const items = computed(() => props.hit ? createSheetContextMenuItems(props.hit, props) : [])
+const items = computed(() => props.hit ? createSheetContextMenuItems(props.hit, props).map(item => ({
+  ...item,
+  label: translate(`sheet.context-menu.${item.id}`, item.label),
+})) : [])
 const enabledItems = computed(() => items.value.filter(item => !item.disabled))
 const position = computed(() => ({ left: `${Math.max(4, props.x)}px`, top: `${Math.max(4, props.y)}px` }))
 
@@ -91,7 +94,7 @@ onBeforeUnmount(() => {
           :disabled="item.disabled"
           tabindex="-1"
           @click="execute(item)"
-        >{{ translate(`sheet.context-menu.${item.id}`, item.label) }}</button>
+        >{{ item.label }}</button>
       </template>
     </div>
   </Teleport>

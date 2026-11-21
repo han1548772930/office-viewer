@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import {
-  assertDocumentPermission,
-  DocumentPermissionError,
-  resolveDocumentPermission,
-  validateDocumentPermissionRules,
-} from '../src/features/document/permissions/document-permissions.ts'
+import { after, before } from 'node:test'
+import { resolve } from 'node:path'
+import { createServer } from 'vite'
+
+let server
+let apiModule
+let permissionModule
+
+before(async () => {
+  server = await createServer({ configFile: resolve(process.cwd(), 'vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
+  apiModule = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
+  permissionModule = await server.ssrLoadModule('/packages/office-studio/src/features/document/permissions/document-permissions.ts')
+})
+
+after(async () => { await server?.close() })
 
 const context = { documentId: 'doc-1', userId: 'writer' }
 const rule = (id, scope, action, effect, userIds = [], targetId) => ({ id, scope, action, effect, userIds, ...(targetId ? { targetId } : {}) })
@@ -18,11 +27,11 @@ test('document-level actions independently gate edit, copy, comment, print and e
     rule('print', 'document', 'print', 'deny', ['guest']),
   ]
 
-  assert.equal(resolveDocumentPermission(rules, context, 'edit').allowed, false)
-  assert.equal(resolveDocumentPermission(rules, context, 'copy').allowed, false)
-  assert.equal(resolveDocumentPermission(rules, context, 'comment').allowed, true)
-  assert.equal(resolveDocumentPermission(rules, context, 'print').allowed, true)
-  assert.equal(resolveDocumentPermission(rules, context, 'export').allowed, true)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'edit').allowed, false)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'copy').allowed, false)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'comment').allowed, true)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'print').allowed, true)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'export').allowed, true)
 })
 
 test('paragraph editing checks document and every scoped target, with deny taking precedence', () => {
@@ -35,25 +44,45 @@ test('paragraph editing checks document and every scoped target, with deny takin
     rule('p2-allow', 'paragraph', 'edit', 'allow', ['writer'], 'p2'),
     rule('p2-deny', 'paragraph', 'edit', 'deny', ['writer'], 'p2'),
   ]
-  const denied = resolveDocumentPermission(rules, context, 'edit', targets)
+  const denied = permissionModule.resolveDocumentPermission(rules, context, 'edit', targets)
   assert.equal(denied.allowed, false)
   assert.equal(denied.deniedBy.id, 'p2-deny')
 
-  const documentDenied = resolveDocumentPermission([...rules, rule('doc-deny', 'document', 'edit', 'deny')], context, 'edit', targets)
+  const documentDenied = permissionModule.resolveDocumentPermission([...rules, rule('doc-deny', 'document', 'edit', 'deny')], context, 'edit', targets)
   assert.equal(documentDenied.deniedBy.id, 'doc-deny')
 })
 
 test('scoped grants and default-deny contexts require a matching user grant', () => {
   const rules = [rule('p1-allow', 'paragraph', 'edit', 'allow', ['writer'], 'p1')]
   const target = [{ scope: 'paragraph', id: 'p1' }]
-  assert.equal(resolveDocumentPermission(rules, { ...context, defaultAllow: false }, 'edit', target).allowed, true)
-  assert.equal(resolveDocumentPermission(rules, { ...context, userId: 'guest', defaultAllow: false }, 'edit', target).allowed, false)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, { ...context, defaultAllow: false }, 'edit', target).allowed, true)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, { ...context, userId: 'guest', defaultAllow: false }, 'edit', target).allowed, false)
+  assert.equal(permissionModule.resolveDocumentPermission([rule('document-allow', 'document', 'edit', 'allow')], { ...context, defaultAllow: false }, 'edit', target).allowed, true)
 })
 
 test('assertion exposes a typed denial and rules reject ambiguous definitions', () => {
   const denied = [rule('edit-deny', 'document', 'edit', 'deny')]
-  assert.throws(() => assertDocumentPermission(denied, context, 'edit'), DocumentPermissionError)
-  assert.throws(() => validateDocumentPermissionRules([rule('bad', 'paragraph', 'copy', 'deny', [], 'p1')]), /only supports edit/)
-  assert.throws(() => validateDocumentPermissionRules([rule('bad', 'paragraph', 'edit', 'deny')]), /requires a target ID/)
-  assert.throws(() => validateDocumentPermissionRules([rule('same', 'document', 'edit', 'allow'), rule('same', 'document', 'copy', 'deny')]), /unique/)
+  assert.throws(() => permissionModule.assertDocumentPermission(denied, context, 'edit'), permissionModule.DocumentPermissionError)
+  assert.throws(() => permissionModule.validateDocumentPermissionRules([rule('bad', 'paragraph', 'copy', 'deny', [], 'p1')]), /only supports edit/)
+  assert.throws(() => permissionModule.validateDocumentPermissionRules([rule('bad', 'paragraph', 'edit', 'deny')]), /requires a target ID/)
+  assert.throws(() => permissionModule.validateDocumentPermissionRules([rule('same', 'document', 'edit', 'allow'), rule('same', 'document', 'copy', 'deny')]), /unique/)
+})
+
+test('Office API persists permission rules and blocks scoped edits through its command bus', () => {
+  const studio = new apiModule.OfficeStudio({ currentUserId: 'writer' })
+  const office = apiModule.FOffice.newAPI(studio)
+  const document = office.createDocument({
+    kind: 'document',
+    blocks: [
+      { id: 'p1', type: 'paragraph', level: 0, runs: [{ id: 'r1', text: 'Alpha', bold: false, italic: false, underline: false, strike: false, color: '#000000', fontFamily: 'Arial', fontSize: 11 }], style: { align: 'left', indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 }, metadata: {} },
+      { id: 'p2', type: 'paragraph', level: 0, runs: [{ id: 'r2', text: 'Omega', bold: false, italic: false, underline: false, strike: false, color: '#000000', fontFamily: 'Arial', fontSize: 11 }], style: { align: 'left', indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 }, metadata: {} },
+    ],
+  })
+  document.setPermissionRules([rule('deny-p1', 'paragraph', 'edit', 'deny', ['writer'], 'p1')])
+  assert.equal(document.getPermissionRules()[0].targetId, 'p1')
+  assert.throws(() => document.insertText(1, '!'), permissionModule.DocumentPermissionError)
+  assert.equal(document.getText(), 'Alpha\nOmega')
+  assert.equal(document.insertText(7, '!'), true)
+  assert.equal(document.getText(), 'Alpha\nO!mega')
+  studio.dispose()
 })

@@ -53,6 +53,24 @@ test('section header/footer commands are persisted by document snapshots and lay
   assert.equal(sectionBreak.type, 'sectionBreak')
 })
 
+test('page and total-page fields recalculate from the paginated document after command execution', () => {
+  const { model } = modelWithSection()
+  const target = { blockId: model.blocks[0].id, offset: 0 }
+  const selection = { anchor: target, focus: target }
+  executeDocumentCommand(model, selection, { id: 'doc.command.insert-page-field', sectionId: 'first', story: 'footer', field: 'PAGE' })
+  executeDocumentCommand(model, selection, { id: 'doc.command.insert-page-field', sectionId: 'first', story: 'footer', field: 'NUMPAGES' })
+
+  const snapshot = JSON.parse(JSON.stringify(model))
+  const firstLayout = layoutDocument(snapshot, { measure: text => text.length * 7 })
+  assert.equal(firstLayout.pageHeaderFooters[0].footer, ' 1 4')
+  assert.equal(firstLayout.pageHeaderFooters.at(-1).footer, ' 4 4')
+
+  snapshot.blocks.splice(1, 0, { ...createParagraph(), type: 'pageBreak', runs: [] })
+  const expandedLayout = layoutDocument(snapshot, { measure: text => text.length * 7 })
+  assert.equal(expandedLayout.pageHeaderFooters[0].footer, ' 1 5')
+  assert.equal(expandedLayout.pageHeaderFooters.at(-1).footer, ' 5 5')
+})
+
 test('invalid section ids and malformed patch values fail before mutating the model', () => {
   const { model } = modelWithSection()
   const before = JSON.stringify(model)

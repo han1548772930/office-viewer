@@ -21,17 +21,17 @@ after(async () => {
   await server?.close()
 })
 
-test('public FUniver API creates units, edits ranges, and tracks selection', () => {
+test('public FOffice API creates units, edits ranges, and tracks selection', () => {
   const studio = new apiModule.OfficeStudio()
-  const univer = apiModule.FUniver.newAPI(studio)
+  const officeApi = apiModule.FOffice.newAPI(studio)
   const created = []
-  const subscription = univer.addEvent(univer.Event.WorkbookCreated, (event) => created.push(event.workbookId))
+  const subscription = officeApi.addEvent(officeApi.Event.WorkbookCreated, (event) => created.push(event.workbookId))
 
-  const workbook = univer.createWorkbook({ name: 'Contract workbook' })
+  const workbook = officeApi.createWorkbook({ name: 'Contract workbook' })
   const worksheet = workbook.getActiveSheet()
   assert.ok(worksheet)
   assert.equal(workbook.getName(), 'Contract workbook')
-  assert.equal(univer.getActiveWorkbook()?.getId(), workbook.getId())
+  assert.equal(officeApi.getActiveWorkbook()?.getId(), workbook.getId())
   assert.deepEqual(created, [workbook.getId()])
 
   const range = worksheet.getRange('A1:B2')
@@ -54,8 +54,8 @@ test('public FUniver API creates units, edits ranges, and tracks selection', () 
 
 test('public API exposes cancellation and per-unit undo/redo', () => {
   const studio = new apiModule.OfficeStudio()
-  const univer = apiModule.FUniver.newAPI(studio)
-  const workbook = univer.getActiveWorkbook()
+  const officeApi = apiModule.FOffice.newAPI(studio)
+  const workbook = officeApi.getActiveWorkbook()
   assert.ok(workbook)
   const worksheet = workbook.getActiveSheet()
   assert.ok(worksheet)
@@ -67,7 +67,7 @@ test('public API exposes cancellation and per-unit undo/redo', () => {
   workbook.redo()
   assert.equal(range.getValue(), 'before history')
 
-  const cancellation = univer.addEvent(univer.Event.BeforeCommandExecute, (event) => {
+  const cancellation = officeApi.addEvent(officeApi.Event.BeforeCommandExecute, (event) => {
     if (event.id === 'sheet.command.set-workbook-name') event.cancel = true
   })
   assert.throws(() => workbook.setName('blocked'), /canceled/)
@@ -80,12 +80,12 @@ test('public API exposes cancellation and per-unit undo/redo', () => {
 
 test('public API creates and edits documents through the same facade', () => {
   const studio = new apiModule.OfficeStudio()
-  const univer = apiModule.FUniver.newAPI(studio)
+  const officeApi = apiModule.FOffice.newAPI(studio)
   const created = []
-  const subscription = univer.addEvent(univer.Event.DocCreated, (event) => created.push(event.documentId))
+  const subscription = officeApi.addEvent(officeApi.Event.DocCreated, (event) => created.push(event.documentId))
 
-  const document = univer.createDocument({ name: 'Contract document' })
-  assert.equal(univer.getActiveDocument()?.getId(), document.getId())
+  const document = officeApi.createDocument({ name: 'Contract document' })
+  assert.equal(officeApi.getActiveDocument()?.getId(), document.getId())
   assert.equal(document.getName(), 'Contract document')
   assert.deepEqual(created, [document.getId()])
 
@@ -103,7 +103,7 @@ test('public API creates and edits documents through the same facade', () => {
 
 test('partial workbook inputs retain their date system through formulas, history and reopening', () => {
   const studio = new apiModule.OfficeStudio({ workbook: { id: 'calendar-1904', date1904: true } })
-  const api = apiModule.FUniver.newAPI(studio)
+  const api = apiModule.FOffice.newAPI(studio)
   try {
     const workbook = api.getActiveWorkbook()
     assert.equal(workbook.getId(), 'calendar-1904')
@@ -127,7 +127,7 @@ test('partial workbook inputs retain their date system through formulas, history
 
 test('new workbook facades keep calendar settings isolated and default to the 1900 system', () => {
   const studio = new apiModule.OfficeStudio()
-  const api = apiModule.FUniver.newAPI(studio)
+  const api = apiModule.FOffice.newAPI(studio)
   try {
     const original = api.getActiveWorkbook()
     const alternate = api.createWorkbook({ name: '1904 calendar', date1904: true })
@@ -143,9 +143,9 @@ test('new workbook facades keep calendar settings isolated and default to the 19
 
 test('worksheet data validation rejects API writes atomically and persists through history and snapshots', () => {
   const studio = new apiModule.OfficeStudio()
-  const univer = apiModule.FUniver.newAPI(studio)
+  const officeApi = apiModule.FOffice.newAPI(studio)
   try {
-    const workbook = univer.getActiveWorkbook()
+    const workbook = officeApi.getActiveWorkbook()
     const sheet = workbook.getActiveSheet()
     const range = sheet.getRange('A1:A3')
     sheet.setDataValidation('A1:A3', {
@@ -171,7 +171,7 @@ test('worksheet data validation rejects API writes atomically and persists throu
     assert.equal(sheet.getDataValidationErrors('B1')[0].type, 'whole')
     const snapshot = JSON.parse(JSON.stringify(workbook.save()))
     assert.equal(snapshot.sheets[0].dataValidations.find(item => item.id === rule.id).formula1, '1')
-    const reopened = univer.createWorkbook({ ...snapshot, id: 'validated-reopened' })
+    const reopened = officeApi.createWorkbook({ ...snapshot, id: 'validated-reopened' })
     const reopenedSheet = reopened.getActiveSheet()
     assert.equal(reopenedSheet.getDataValidation('A1').id, rule.id)
     assert.throws(() => reopenedSheet.getRange('A1').setValue(100), /Enter an integer from 1 to 10/)

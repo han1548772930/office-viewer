@@ -80,13 +80,18 @@ function columnCommands(spec: SparklineSpec, values: readonly (number | null)[],
   const zero = min <= 0 && max >= 0 ? yFor(0) : min >= 0 ? rect.y + rect.height : rect.y
   const step = rect.width / values.length
   const width = Math.max(1, step * 0.66)
+  const finite = values.filter((value): value is number => value !== null && Number.isFinite(value))
+  const high = Math.max(...finite)
+  const low = Math.min(...finite)
   const commands: DrawCommand[] = []
   values.forEach((value, index) => {
     if (value === null || !Number.isFinite(value) || value === 0) return
     const y = yFor(value)
     const top = Math.min(zero, y)
     const height = Math.max(1, Math.abs(zero - y))
-    const color = value < 0 ? spec.negativeColor ?? spec.color : spec.color
+    const color = value === high && spec.highPointColor ? spec.highPointColor
+      : value === low && spec.lowPointColor ? spec.lowPointColor
+        : value < 0 ? spec.negativeColor ?? spec.color : spec.color
     commands.push({ kind: 'rect', x: rect.x + index * step + (step - width) / 2, y: top, width, height, fill: color, clip: rect })
   })
   return commands
@@ -109,7 +114,10 @@ function parseAddress(address: string): { row: number; column: number } | undefi
   if (!match) return undefined
   let column = 0
   for (const character of match[1]!.toUpperCase()) column = column * 26 + character.charCodeAt(0) - 64
-  return { row: Number(match[2]) - 1, column: column - 1 }
+  const row = Number(match[2]) - 1
+  column -= 1
+  if (row > 1_048_575 || column > 16_383) return undefined
+  return { row, column }
 }
 
 function cellAddress(row: number, column: number): string {

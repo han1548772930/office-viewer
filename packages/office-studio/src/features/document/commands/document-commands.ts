@@ -1,7 +1,8 @@
-import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, DocumentSectionBreakType } from '../../../domain/model'
+import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
-import { applySectionHeaderFooter, type SectionHeaderFooterPatch } from '../services/section-header-footer'
+import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
+import { assertDocumentPermission, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import {
   applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
@@ -26,6 +27,8 @@ export type DocumentCommand =
   | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[] }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch }
+  | { id: 'doc.command.insert-page-field'; sectionId: string; story: 'header' | 'footer'; field: 'PAGE' | 'NUMPAGES' }
+  | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
 
 export function blockAtPoint(model: DocumentModel, point: TextTarget): DocumentBlock | undefined {
   const block = model.blocks.find((candidate) => candidate.id === point.blockId)
@@ -69,7 +72,13 @@ function pointForBlock(template: DocumentPoint, block: DocumentBlock, offset: nu
 }
 
 /** Model mutation only. The application command bus owns the resulting history snapshot. */
-export function executeDocumentCommand(model: DocumentModel, selection: DocumentSelection, command: DocumentCommand): DocumentSelection {
+export function executeDocumentCommand(
+  model: DocumentModel,
+  selection: DocumentSelection,
+  command: DocumentCommand,
+  permissionContext?: DocumentPermissionContext,
+): DocumentSelection {
+  assertDocumentPermission(model.permissionRules ?? [], permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }, 'edit', permissionTargetsForSelection(model, selection))
   switch (command.id) {
     case 'doc.command.table-insert-row':
     case 'doc.command.table-insert-column':
@@ -145,6 +154,13 @@ export function executeDocumentCommand(model: DocumentModel, selection: Document
     case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction)
     case 'doc.command.set-section-header-footer':
       applySectionHeaderFooter(model, command.sectionId, command.patch)
+      return selection
+    case 'doc.command.insert-page-field':
+      insertSectionPageField(model, command.sectionId, command.story, command.field)
+      return selection
+    case 'doc.command.set-document-permission-rules':
+      validateDocumentPermissionRules(command.rules)
+      model.permissionRules = command.rules.map(rule => ({ ...rule, userIds: [...rule.userIds] }))
       return selection
   }
 }

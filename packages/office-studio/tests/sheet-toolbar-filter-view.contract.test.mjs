@@ -73,7 +73,7 @@ test('filter → toolbar format → undo/redo → clear preserves visibility and
   model.sheets[0].autoFilter = undefined
   const studio = new api.OfficeStudio({ workbook: model })
   try {
-    const workbook = api.FUniver.newAPI(studio).getActiveWorkbook(), sheet = workbook.getActiveSheet()
+    const workbook = api.FOffice.newAPI(studio).getActiveWorkbook(), sheet = workbook.getActiveSheet()
     sheet.setAutoFilter('A1:B5').setFilterCriteria(0, { kind: 'values', selectedItems: ['East'] })
     const view = adapter.toExcelWorkbookView(studio.getWorkbookModel(workbook.getId()))
     view.sheets[0].cells.B2 = { ...view.sheets[0].cells.B2, strike: true, numberFormat: 'currency', rawNumberFormat: '¥#,##0.00;[Red]-¥#,##0.00' }

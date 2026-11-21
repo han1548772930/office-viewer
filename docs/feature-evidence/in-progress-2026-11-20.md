@@ -46,9 +46,10 @@
 
 ## DOC-12 Footnotes and Endnotes
 
-- **规格依据**：`[脚注尾注规格][doc-footnotes]` 和固定提交 `packages/engine-render/src/components/docs/layout/footnote-layout.ts` 与对应测试。该规格说明需区分分页模式支持范围；目前本项目还没有此布局能力。
-- **模型与实现**：`crates/office-writer/src/docx.rs` 已识别段落 run 上的 footnote/endnote 引用和顶层、metadata 或 notes collection 中的注释正文；构造 DOCX notes XML、relationships、content types，并为缺少正文的引用给出警告。当前 parser/DocumentModel 没有对应的规范化脚注/尾注模型或导入适配，DOCX writer 的 metadata 输入约定不等同于编辑器 API。
-- **行为与回归证据**：`docx.rs` 有 Rust 单元测试检查 DOCX ZIP 中引用标记、脚注/尾注 parts 和 relationships，以及缺失正文时仍写入有效空 note 并报告 warning。检查时 `cargo test` 未通过编译，因为并行修改的 `xlsx.rs` 存在 format 参数数目与 `usize/u32` 类型错误；所以 DOCX 测试本轮未执行成功。
+- **规格依据**：`[脚注尾注规格][doc-footnotes]` 和固定提交 `packages/engine-render/src/components/docs/layout/footnote-layout.ts`、`endnote-layout.ts` 及对应测试。规格要求区分传统分页和现代连续布局的支持范围。
+- **模型与实现**：`DocumentModel.footnotes/endnotes` 保存定义文本和稳定引用 block/run id。Docs Insert Ribbon 提供插入脚注、插入尾注与管理入口；管理面板按类型分区，可编辑、删除定义并跳转到引用。插入引用与定义写入同一模型快照，应用、删除通过 Workbench 的现有文档历史快照流持久化。删除会移除对应引用并重排同类型可定位引用编号。Parser normalizer 接受 notes collection 与 inline `noteReference`。Rust `parse_document_impl` 从 duke-pages metadata 输出脚注/尾注定义；DOCX writer 使用 run `metadata.note={type,noteId}` 和顶层 notes collection 写回 OPC parts。
+- **行为与回归证据**：`document-notes.contract.test.mjs` 覆盖两类注释插入、正文编辑、跳转定位、删除、引用删除、跨段落拒绝和 parser DTO 归一化。`parser::tests::docx_notes_are_exposed_with_inline_reference_metadata` 通过 writer 生成含两类注释的 DOCX，再经 parser 验证定义正文与 inline kind/id。Docs locale contract 覆盖所有 18 种支持语言。前端 `vue-tsc` 曾针对本任务通过；并行 pivot importer 后续改动在 `workbookNormalizer.ts` 引入 TS 错误，最新整包检查被该错误阻断。浏览器验证按用户要求留待整批进行。
+- **未验收项**：Canvas 正文引用显示上标编号，定义可在管理面板查看和编辑；尚未实现脚注在页面底部的分页分配、跨页续注、脚注区尺寸约束和分页布局联动，也没有现代模式行为边界提示或真实 Office 文档样本验收。当前编号为编辑器内按可定位引用顺序的阿拉伯数字，尚未实现每节/每页重启、符号序列和 Word 文档设置中的编号格式选项。故 DOC-12 总体仍为未验收。
 - **闭环、界面与性能**：没有文档模型命令、引用编号/重排、导航/跳转、分页注释区布局、撤销闭环、DOCX 导入解析或独立 Office 重开验证。没有性能基准。
 - **待核实**：DOCX 新建与重开兼容、note body 的富文本/表格语义、删除/重排引用 ID 稳定性、同一事务的正文/注释内容历史、分页模式边界、DOCX importer 对 notes parts 的保留。
 

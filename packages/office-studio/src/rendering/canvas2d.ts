@@ -30,6 +30,11 @@ export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
             break
           case 'line':
             context.strokeStyle = command.color; context.lineWidth = command.width ?? 1; context.beginPath(); context.moveTo(command.x1, command.y1); context.lineTo(command.x2, command.y2); context.stroke(); break
+          case 'polygon':
+            if (command.points.length < 3) break
+            context.fillStyle = command.fill; context.beginPath(); context.moveTo(command.points[0]!.x, command.points[0]!.y)
+            for (const point of command.points.slice(1)) context.lineTo(point.x, point.y)
+            context.closePath(); context.fill(); break
           case 'text': {
             context.font = command.font; context.fillStyle = command.color; context.textAlign = command.align ?? 'left'; context.textBaseline = command.baseline ?? 'alphabetic'
             if (command.maxWidth !== undefined && !command.rotation) {

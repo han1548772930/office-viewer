@@ -12,6 +12,8 @@ import DocumentFooter from './document/DocumentFooter.vue'
 import DocumentPageSettings from './document/DocumentPageSettings.vue'
 import DocumentHeaderFooterPanel from './document/DocumentHeaderFooterPanel.vue'
 import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
+import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
+import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
 import DocumentCharacterPicker from './document/DocumentCharacterPicker.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
@@ -26,9 +28,12 @@ import { printDocumentModel } from '../features/document/services/document-print
 import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
 import { sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
+import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
+import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
+import { permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
 import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n'
 
-const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean }>(), { showHeader: false, showOutline: undefined })
+const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionDefaultAllow?: boolean }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true })
 const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
@@ -82,8 +87,24 @@ const pageSettingsOpen = ref(false)
 const headerFooterPanelOpen = ref(false)
 const headerFooterSectionId = computed(() => sectionIdForBlock(model.value, selection.value.focus.blockId))
 const codeBlockPanelOpen = ref(false)
+const latexPanelOpen = ref(false)
+const notesPanelOpen = ref(false)
 const activeCodeBlock = computed(() => model.value.blocks.find((block) => block.id === selection.value.focus.blockId))
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
+const activeLatexFormula = computed(() => {
+  const block = activeCodeBlock.value
+  if (!block || selection.value.focus.row != null || selection.value.anchor.blockId !== selection.value.focus.blockId) return undefined
+  const start = Math.min(selection.value.anchor.offset, selection.value.focus.offset)
+  const end = Math.max(selection.value.anchor.offset, selection.value.focus.offset)
+  let offset = 0
+  for (const run of block.runs) {
+    const formula = getLatexFormula(run)
+    const runEnd = offset + run.text.length
+    if (formula && (start === end ? start >= offset && start <= runEnd : start <= offset && end >= runEnd)) return { runId: run.id, formula }
+    offset = runEnd
+  }
+  return undefined
+})
 const characterPickerOpen = ref(false)
 const characterPickerMode = ref<'symbol' | 'emoji'>('symbol')
 const pages = computed(() => layout.value.pages)
@@ -110,6 +131,7 @@ onDeactivated(() => {
   contentControlPanelOpen.value = false
   pageSettingsOpen.value = false
   characterPickerOpen.value = false
+  latexPanelOpen.value = false
   showFind.value = false
   if (document.fullscreenElement === workbenchRef.value) {
     void document.exitFullscreen().catch((error: unknown) => notify(error instanceof Error ? error.message : '无法退出全屏'))
@@ -146,6 +168,7 @@ function publish(next: DocumentModel) {
   emit('document-change', next)
 }
 function execute(command: DocumentCommand) {
+  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
   if (command.id === 'doc.command.insert-text') {
     const next = cloneDocument(model.value)
     const codeSelection = editCodeBlockText(next, selection.value, { text: command.text })
@@ -175,6 +198,7 @@ function execute(command: DocumentCommand) {
 }
 function openCodeBlockPanel() { codeBlockPanelOpen.value = true }
 function applyCodeBlock(data: DocumentCodeBlockData) {
+  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
   const next = cloneDocument(model.value)
   const existing = next.blocks.find((block) => block.id === selection.value.focus.blockId)
   if (existing && codeBlockData(existing)) {
@@ -187,7 +211,54 @@ function applyCodeBlock(data: DocumentCodeBlockData) {
   publish(next)
   void nextTick(() => canvasRef.value?.focus())
 }
+function applyLatexFormula(data: { latex: string; mode: LatexFormulaMode }) {
+  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
+  const next = cloneDocument(model.value)
+  try {
+    if (activeLatexFormula.value) {
+      if (!updateLatexFormula(next, activeLatexFormula.value.runId, data.latex)) return
+    } else {
+      const point = insertLatexFormula(next, selection.value, data.latex, data.mode)
+      selection.value = collapsedSelection(point)
+    }
+    publish(next)
+    void nextTick(() => canvasRef.value?.focus())
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+  }
+}
+function insertNote(kind: DocumentNoteKind) {
+  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
+  const next = cloneDocument(model.value)
+  try {
+    selection.value = insertDocumentNote(next, selection.value, kind).selection
+    publish(next)
+    void nextTick(() => canvasRef.value?.focus())
+  } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+}
+function applyNotes(kind: DocumentNoteKind, values: Record<string, string>) {
+  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
+  const next = cloneDocument(model.value)
+  const notes = kind === 'footnote' ? next.footnotes ?? {} : next.endnotes ?? {}
+  let changed = false
+  for (const [id, text] of Object.entries(values)) if (notes[id] && notes[id].text !== text) { updateDocumentNote(next, kind, id, text); changed = true }
+  if (changed) publish(next)
+}
+function removeNote(kind: DocumentNoteKind, id: string) {
+  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
+  const next = cloneDocument(model.value)
+  if (!deleteDocumentNote(next, kind, id)) return
+  publish(next)
+}
+function navigateToNote(kind: DocumentNoteKind, id: string) {
+  const note = (kind === 'footnote' ? model.value.footnotes : model.value.endnotes)?.[id]
+  const point = note && noteReferencePoint(model.value, note)
+  if (!point) return
+  selection.value = collapsedSelection(point)
+  void nextTick(() => canvasRef.value?.focus())
+}
 function leaveCodeBlock(blockId: string) {
+  if (!canDocumentPermission('edit', [{ scope: 'paragraph', id: blockId }])) return
   const next = cloneDocument(model.value)
   const paragraph = exitCodeBlock(next, blockId)
   if (!paragraph) return
@@ -202,6 +273,7 @@ function changePageSetup() {
   applyPageSetup(documentOrientedPage(model.value.page, orientation.value, paperSize.value))
 }
 function applyPageSetup(page: DocumentPageSetup) {
+  if (!canDocumentPermission('edit')) return
   const error = documentPageSettingsError(page)
   if (error) { notify(error); return }
   const next = cloneDocument(model.value)
@@ -213,6 +285,9 @@ function applyPageSetup(page: DocumentPageSetup) {
 }
 function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
   execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch })
+}
+function insertPageField(story: 'header' | 'footer', field: 'PAGE' | 'NUMPAGES') {
+  execute({ id: 'doc.command.insert-page-field', sectionId: headerFooterSectionId.value, story, field })
 }
 function updateTitle() { emit('update:fileName', documentTitle.value); publish(cloneDocument(model.value)) }
 function saveDocument() { emit('save', { fileName: documentTitle.value, html: documentHtml(model.value), model: model.value }) }
@@ -289,6 +364,8 @@ function findNext() {
   notify('未找到匹配内容')
 }
 async function copySelection(cut = false) {
+  const targets = permissionTargetsForSelection(model.value, selection.value)
+  if (!canDocumentPermission('copy') || (cut && !canDocumentPermission('edit', targets))) return
   const text = selectedPlainText(model.value, selection.value)
   if (!text) return
   const base = model.value
@@ -318,7 +395,17 @@ async function pasteSelection(plainText = false) {
 }
 function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
 function setZoom(value: number) { zoom.value = clampDocumentZoom(value) }
-function printDocument() { void printDocumentModel(model.value).catch((error: unknown) => notify(error instanceof Error ? error.message : String(error))) }
+function printDocument() {
+  if (!canDocumentPermission('print')) return
+  void printDocumentModel(model.value).catch((error: unknown) => notify(error instanceof Error ? error.message : String(error)))
+}
+function canDocumentPermission(action: 'edit' | 'copy' | 'comment' | 'print' | 'export', targets: Array<{ scope: 'section' | 'paragraph' | 'entity'; id: string }> = []): boolean {
+  const decision = resolveDocumentPermission(model.value.permissionRules ?? [], {
+    documentId: model.value.id ?? '', userId: props.documentApi?.getCurrentUserId() ?? props.permissionUserId, defaultAllow: props.permissionDefaultAllow,
+  }, action, targets)
+  if (!decision.allowed) notify(`当前用户没有${({ edit: '编辑', copy: '复制', comment: '评论', print: '打印', export: '导出' })[action]}权限。`)
+  return decision.allowed
+}
 function syncFullscreen() { isFullscreen.value = document.fullscreenElement === workbenchRef.value }
 async function toggleFullscreen() {
   const workbench = workbenchRef.value
@@ -337,7 +424,11 @@ function onRibbonExecute(id: string, params?: unknown) {
   const command = documentCommandFromRibbon(id, params)
   if (command) { execute(command); return }
   switch (id) {
+    case 'doc.operation.insert-footnote': insertNote('footnote'); break
+    case 'doc.operation.insert-endnote': insertNote('endnote'); break
+    case 'doc.operation.open-notes': notesPanelOpen.value = true; break
     case 'doc.operation.insert-code-block': openCodeBlockPanel(); break
+    case 'doc.operation.open-latex': latexPanelOpen.value = true; break
     case 'doc.command.copy': void copySelection(); break
     case 'doc.command.cut': void copySelection(true); break
     case 'doc.command.paste': void pasteSelection(); break
@@ -407,8 +498,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :controls="model.contentControls ?? []" :selection="selection" :model="model" :document-api="documentApi" :initial-type="contentControlInitialType" @error="notify" />
     <DocumentCharacterPicker v-model:open="characterPickerOpen" :mode="characterPickerMode" @insert="insertCharacter" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" @apply="applyPageSetup" />
-    <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" />
+    <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" @insert-page-field="insertPageField" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
+    <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
+    <DocumentNotesPanel v-model:open="notesPanelOpen" :footnotes="model.footnotes ?? {}" :endnotes="model.endnotes ?? {}" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" />
   </section>
 </template>
 

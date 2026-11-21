@@ -83,7 +83,7 @@ test('nested fill, merge and freeze controls share the same command contract as 
   assert.equal(items.find(item => item.title === '网格线').activated, true)
 })
 
-test('formula categories expose separate entries routed to the supported-function picker', () => {
+test('formula categories expose function dropdowns and insert functions directly', () => {
   const items = flatten(createSheetRibbon(state))
   const picker = items.find(item => item.id === 'sheet.operation.open-function')
   const categories = items.filter(item => item.id.startsWith('sheet.operation.open-function.category-'))
@@ -92,8 +92,12 @@ test('formula categories expose separate entries routed to the supported-functio
   assert.equal(picker.type, 'button')
   assert.deepEqual(ribbonInvocation(picker), { commandId: 'sheet.operation.open-function', params: undefined })
   assert.deepEqual(categories.map(item => item.title), supportedCategories)
-  assert.ok(categories.every(item => item.showLabel && item.children === undefined))
-  assert.deepEqual(ribbonInvocation(categories[0]), { commandId: 'sheet.operation.open-function', params: supportedCategories[0] })
+  assert.ok(categories.every(item => item.type === 'menu' && item.children.length > 0))
+  for (const category of categories) {
+    const functions = SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category.title)
+    assert.deepEqual(category.children.map(item => item.title), functions.map(entry => entry.name))
+    assert.ok(category.children.every(item => item.commandId === 'sheet.operation.insert-function'))
+  }
 })
 
 test('data validation ribbon entry opens the worksheet rule panel operation', () => {
@@ -101,4 +105,11 @@ test('data validation ribbon entry opens the worksheet rule panel operation', ()
   const validation = items.find(item => item.id === 'sheet.operation.open-data-validation')
   assert.equal(validation.disabled, false)
   assert.deepEqual(ribbonInvocation(validation), { commandId: 'sheet.operation.open-data-validation', params: undefined })
+})
+
+test('pivot chart is reachable from data analysis only when pivot tables are available', () => {
+  const items = flatten(createSheetRibbon({ ...state, pivotChartAvailable: true }))
+  const pivotChart = items.find(item => item.id === 'sheet.operation.open-pivot-chart')
+  assert.equal(pivotChart.disabled, false)
+  assert.deepEqual(ribbonInvocation(pivotChart), { commandId: 'sheet.operation.open-pivot-chart', params: undefined })
 })

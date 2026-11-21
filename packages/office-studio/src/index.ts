@@ -11,7 +11,7 @@ export {
   FPivotTable,
   FRange,
   FSelection,
-  FUniver,
+  FOffice,
   FWorkbook,
   FWorksheet,
   PositionTypeEnum,
@@ -98,7 +98,7 @@ export { useDocumentStore } from './stores/documentStore'
 export { useHistoryStore, type HistoryEntry, type HistorySavepoint, type UnitHistory } from './stores/historyStore'
 export { useParserStore } from './stores/parserStore'
 export { default as WorkbenchRibbon } from './platform/ribbon/WorkbenchRibbon.vue'
-export { createOfficeI18n, OfficeLocaleKey, createOfficeMessages, createRibbonTranslator, localizeRibbon } from './i18n/office-i18n.ts'
+export { createOfficeI18n, OfficeLocaleKey, OfficeTranslatorKey, supportedOfficeLocales, createOfficeMessages, createOfficeTranslator, createRibbonTranslator, localizeRibbon } from './i18n/office-i18n.ts'
 export type { OfficeLocale, OfficeTranslator } from './i18n/office-i18n.ts'
 export type { RibbonTab, RibbonGroup, RibbonItem } from './platform/ribbon/ribbon-schema'
 
@@ -120,4 +120,7 @@ export {
 } from './services/exportService'
 export { ParserError } from './parser/errors'
 export { type ExportOutcome, type ExportProgress } from './parser/export-contracts'
+export { createSparklineGroupPatches, createSparklineSpec, translateSparklineForMove, type SparklineGroupRequest } from './features/sparkline/sparkline-model.ts'
+export { createSparklineCommands, parseSparklineRange, readSparklineValues, sparklineCommandsForCell } from './features/sparkline/sparkline-render.ts'
+export { default as SparklinePanel } from './components/spreadsheet/SparklinePanel.vue'
 

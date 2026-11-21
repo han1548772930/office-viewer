@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { Button, Input, Modal, Select } from 'antdv-next'
-import { FUniver } from '../../api/facade'
+import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { SheetProtectionEditState, SheetProtectionViewState, SheetRangeProtectionRule } from '../../domain/model'
 import { formatProtectionRange, formatProtectionUserIds } from '../../features/sheet-protection/range-protection'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [] }>()
+const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
-const editStates: Array<{ label: string; value: SheetProtectionEditState }> = [
-  { label: '仅我可以编辑', value: 'onlyMe' },
-  { label: '指定用户可以编辑', value: 'designedUserCanEdit' },
-]
-const viewStates: Array<{ label: string; value: SheetProtectionViewState }> = [
-  { label: '其他用户可以查看', value: 'othersCanView' },
-  { label: '仅我可以查看', value: 'noOneElseCanView' },
-]
+const editStates = computed<Array<{ label: string; value: SheetProtectionEditState }>>(() => [
+  { label: t('sheet.protection.edit.onlyMe', '仅我可以编辑'), value: 'onlyMe' },
+  { label: t('sheet.protection.edit.designedUserCanEdit', '指定用户可以编辑'), value: 'designedUserCanEdit' },
+])
+const viewStates = computed<Array<{ label: string; value: SheetProtectionViewState }>>(() => [
+  { label: t('sheet.protection.view.othersCanView', '其他用户可以查看'), value: 'othersCanView' },
+  { label: t('sheet.protection.view.noOneElseCanView', '仅我可以查看'), value: 'noOneElseCanView' },
+])
 const rules = ref<SheetRangeProtectionRule[]>([])
 const selectedId = ref<string>()
 const description = ref('')
@@ -33,7 +35,7 @@ watch(() => [props.open, props.workbookId, props.sheetId] as const, ([open]) => 
 }, { immediate: true })
 
 function sheet() {
-  return FUniver.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
+  return FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
 }
 
 function loadRules() {
@@ -60,12 +62,12 @@ function beginNewRule() {
 function apply() {
   message.value = ''
   const activeSheet = sheet()
-  if (!activeSheet) { message.value = '工作表已关闭，请重新打开范围保护。'; return }
-  if (!isOwner.value) { message.value = '只有保护规则创建者可以修改该规则。'; return }
+  if (!activeSheet) { message.value = t('sheet.protection.sheet-closed', '工作表已关闭，请重新打开范围保护。'); return }
+  if (!isOwner.value) { message.value = t('sheet.protection.owner-only', '只有保护规则创建者可以修改该规则。'); return }
   busy.value = true
   try {
     const userIds = formatProtectionUserIds(allowedUsers.value)
-    if (editState.value === 'designedUserCanEdit' && userIds.length === 0) throw new Error('请至少填写一个允许编辑的用户 ID。')
+    if (editState.value === 'designedUserCanEdit' && userIds.length === 0) throw new Error(t('sheet.protection.user-required', '请至少填写一个允许编辑的用户 ID。'))
     if (selectedRule.value) {
       const rule: SheetRangeProtectionRule = {
         ...selectedRule.value,
@@ -93,7 +95,7 @@ function apply() {
     loadDraft(updated)
     emit('applied')
   } catch (reason) {
-    message.value = reason instanceof Error ? reason.message : '范围保护规则未能保存。'
+    message.value = reason instanceof Error ? reason.message : t('sheet.protection.save-failed', '范围保护规则未能保存。')
   } finally { busy.value = false }
 }
 
@@ -109,16 +111,16 @@ function removeRule() {
     loadDraft(rules.value[0])
     emit('applied')
   } catch (reason) {
-    message.value = reason instanceof Error ? reason.message : '无法移除范围保护规则。'
+    message.value = reason instanceof Error ? reason.message : t('sheet.protection.remove-failed', '无法移除范围保护规则。')
   } finally { busy.value = false }
 }
 </script>
 
 <template>
-  <Modal :open="open" title="范围保护" ok-text="保存规则" cancel-text="关闭" :confirm-loading="busy" :width="620" @ok="apply" @cancel="emit('update:open', false)">
+  <Modal :open="open" :title="t('sheet.protection.title', '范围保护')" :ok-text="t('sheet.protection.save-rule', '保存规则')" :cancel-text="t('common.close', '关闭')" :confirm-loading="busy" :width="620" @ok="apply" @cancel="emit('update:open', false)">
     <div class="protection-panel">
-      <aside class="protection-list" aria-label="现有保护规则">
-        <Button type="text" block :class="{ 'is-selected': !selectedRule }" @click="beginNewRule">保护当前选区</Button>
+      <aside class="protection-list" :aria-label="t('sheet.protection.existing-rules', '现有保护规则')">
+        <Button type="text" block :class="{ 'is-selected': !selectedRule }" @click="beginNewRule">{{ t('sheet.protection.current-selection', '保护当前选区') }}</Button>
         <Button
           v-for="rule in rules"
           :key="rule.id"
@@ -130,17 +132,17 @@ function removeRule() {
         >
           <span>{{ rule.description || rule.ranges.map(formatProtectionRange).join(', ') }}</span>
         </Button>
-        <p v-if="!rules.length" class="protection-empty">当前工作表没有保护规则</p>
+        <p v-if="!rules.length" class="protection-empty">{{ t('sheet.protection.none', '当前工作表没有保护规则') }}</p>
       </aside>
-      <section class="protection-form" aria-label="保护规则设置">
-        <label>应用区域<Input :value="selectedRule ? selectedRule.ranges.map(formatProtectionRange).join(', ') : sourceRange" readonly aria-label="保护应用区域" /></label>
-        <label>说明<Input v-model:value="description" aria-label="保护说明" :maxlength="255" :disabled="busy || !isOwner" /></label>
-        <label>允许编辑<Select v-model:value="editState" :options="editStates" aria-label="保护编辑权限" :disabled="busy || !isOwner" /></label>
-        <label v-if="editState === 'designedUserCanEdit'">允许编辑的用户 ID<Input v-model:value="allowedUsers" aria-label="允许编辑的用户 ID" placeholder="以逗号或空格分隔" :disabled="busy || !isOwner" /></label>
-        <label>查看权限<Select v-model:value="viewState" :options="viewStates" aria-label="保护查看权限" :disabled="busy || !isOwner" /></label>
-        <p v-if="selectedRule && !isOwner" class="protection-readonly">此规则由 {{ selectedRule.ownerUserId }} 创建，你只能查看。</p>
+      <section class="protection-form" :aria-label="t('sheet.protection.title', '保护规则设置')">
+        <label>{{ t('sheet.protection.range', '应用区域') }}<Input :value="selectedRule ? selectedRule.ranges.map(formatProtectionRange).join(', ') : sourceRange" readonly :aria-label="t('sheet.protection.range-aria', '保护应用区域')" /></label>
+        <label>{{ t('sheet.protection.description', '说明') }}<Input v-model:value="description" :aria-label="t('sheet.protection.description', '保护说明')" :maxlength="255" :disabled="busy || !isOwner" /></label>
+        <label>{{ t('sheet.protection.edit-permission', '允许编辑') }}<Select v-model:value="editState" :options="editStates" :aria-label="t('sheet.protection.edit-permission', '保护编辑权限')" :disabled="busy || !isOwner" /></label>
+        <label v-if="editState === 'designedUserCanEdit'">{{ t('sheet.protection.allowed-users', '允许编辑的用户 ID') }}<Input v-model:value="allowedUsers" :aria-label="t('sheet.protection.allowed-users', '允许编辑的用户 ID')" :placeholder="t('sheet.protection.users-placeholder', '以逗号或空格分隔')" :disabled="busy || !isOwner" /></label>
+        <label>{{ t('sheet.protection.view-permission', '查看权限') }}<Select v-model:value="viewState" :options="viewStates" :aria-label="t('sheet.protection.view-permission', '保护查看权限')" :disabled="busy || !isOwner" /></label>
+        <p v-if="selectedRule && !isOwner" class="protection-readonly">{{ t('sheet.protection.created-by', `此规则由 ${selectedRule.ownerUserId} 创建，你只能查看。`).replace('{id}', selectedRule.ownerUserId) }}</p>
         <p v-if="message" class="protection-error" role="alert">{{ message }}</p>
-        <Button v-if="selectedRule" type="text" danger :disabled="busy || !isOwner" @click="removeRule">移除所选保护规则</Button>
+        <Button v-if="selectedRule" type="text" danger :disabled="busy || !isOwner" @click="removeRule">{{ t('sheet.protection.remove', '移除所选保护规则') }}</Button>
       </section>
     </div>
   </Modal>

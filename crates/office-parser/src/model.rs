@@ -21,7 +21,45 @@ pub struct ParseEnvelope {
 #[serde(rename_all = "camelCase", tag = "modelType", content = "data")]
 pub enum DocumentModel {
     Spreadsheet(WorkbookPayload),
-    Document(StructuredDocument),
+    Document(DocumentPayload),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentPayload {
+    #[serde(flatten)]
+    pub document: StructuredDocument,
+    pub section_layout: Vec<DocumentSectionLayoutPayload>,
+    pub even_and_odd_headers: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footnotes: Option<Vec<DocumentNotePayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endnotes: Option<Vec<DocumentNotePayload>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentNotePayload {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSectionLayoutPayload {
+    pub start_node_index: i64,
+    pub section_properties_xml: Option<String>,
+    pub header_sections: Vec<DocumentStoryReferencePayload>,
+    pub footer_sections: Vec<DocumentStoryReferencePayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentStoryReferencePayload {
+    pub part_name: String,
+    pub reference_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_fields: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,7 +85,7 @@ impl ParserDiagnostics {
             .iter()
             .map(|sheet| sheet.merged_ranges.len())
             .sum();
-        Self {
+        let mut diagnostics = Self {
             warnings,
             errors: Vec::new(),
             stats: ParseStats {
@@ -68,7 +106,23 @@ impl ParserDiagnostics {
                 "charts".into(),
                 "dataValidations".into(),
             ],
+        };
+        if workbook.sheets.iter().flat_map(|sheet| &sheet.cells).any(|cell| cell.sparkline.is_some()) {
+            diagnostics.capabilities.push("sparklines".into());
         }
+        if !workbook.pivot_tables.is_empty() {
+            diagnostics.capabilities.push("pivotTables".into());
+        }
+        if !workbook.tables.is_empty() {
+            diagnostics.capabilities.push("structuredTables".into());
+        }
+        if workbook.sheets.iter().any(|sheet| !sheet.conditional_formats.is_empty()) {
+            diagnostics.capabilities.push("conditionalFormatting".into());
+        }
+        if workbook.sheets.iter().flat_map(|sheet| &sheet.charts).any(|chart| chart.pivot_table_id.is_some()) {
+            diagnostics.capabilities.push("pivotCharts".into());
+        }
+        diagnostics
     }
 
     pub fn document(document: &StructuredDocument) -> Self {
@@ -173,6 +227,8 @@ impl ParseFailure {
 #[serde(rename_all = "camelCase")]
 pub struct WorkbookPayload {
     pub sheets: Vec<SheetPayload>,
+    pub pivot_tables: Vec<Value>,
+    pub tables: Vec<Value>,
     pub date1904: bool,
     pub active_sheet: Option<usize>,
     pub defined_names: Vec<DefinedNamePayload>,
@@ -232,6 +288,7 @@ pub struct SheetPayload {
     pub hidden_columns: Vec<u16>,
     pub hyperlinks: Vec<HyperlinkPayload>,
     pub data_validations: Vec<DataValidationPayload>,
+    pub conditional_formats: Vec<Value>,
     pub style_fidelity: String,
     pub style_losses: Vec<StyleLossPayload>,
     /// Charts read from the worksheet drawing part. Unsupported chart
@@ -283,6 +340,7 @@ pub struct ChartPayload {
     pub from: AnchorCellPayload,
     pub to: AnchorCellPayload,
     pub drawing: Option<ChartDrawingPayload>,
+    pub pivot_table_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -374,6 +432,26 @@ pub struct CellPayload {
     pub style: Option<StylePayload>,
     pub rich_text: Vec<RichTextRunPayload>,
     pub hyperlink: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sparkline: Option<SparklinePayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SparklinePayload {
+    #[serde(rename = "type")]
+    pub sparkline_type: String,
+    pub source_range: String,
+    pub color: String,
+    pub negative_color: Option<String>,
+    pub high_point_color: Option<String>,
+    pub low_point_color: Option<String>,
+    pub empty_cells: String,
+    pub axis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -492,6 +570,8 @@ mod tests {
     fn spreadsheet_payload_uses_tagged_model_type_and_data() {
         let payload = DocumentModel::Spreadsheet(WorkbookPayload {
             sheets: Vec::new(),
+            pivot_tables: Vec::new(),
+            tables: Vec::new(),
             date1904: false,
             active_sheet: None,
             defined_names: Vec::new(),

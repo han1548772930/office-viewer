@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Button, Input, Modal, Select, Switch } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
-import { FUniver } from '../../api/facade'
+import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange } from '../../domain/model'
 import {
@@ -61,7 +61,7 @@ function moveField(fieldId: string, direction: -1 | 1) {
 }
 function requireApi() {
   if (!props.studio || !workbook.value?.id) throw new Error('当前工作台尚未连接工作簿命令接口。')
-  const api = FUniver.newAPI(props.studio), book = api.getWorkbook(workbook.value.id)
+  const api = FOffice.newAPI(props.studio), book = api.getWorkbook(workbook.value.id)
   if (!book) throw new Error('当前工作簿已关闭，请重新打开面板。')
   return { api, book, model: workbook.value }
 }

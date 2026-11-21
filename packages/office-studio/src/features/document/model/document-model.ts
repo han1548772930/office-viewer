@@ -200,6 +200,27 @@ export function blocksFromHtml(html: string): DocumentBlock[] {
   const blocks: DocumentBlock[] = []
   const append = (element: HTMLElement) => {
     const tag = element.tagName
+    if (tag === 'PRE' && element.dataset.officeCodeBlock === 'v1') {
+      const source = element.querySelector('code')?.textContent ?? element.textContent ?? ''
+      const languageValue = element.dataset.officeLanguage ?? 'plain'
+      const language = ['plain', 'javascript', 'typescript', 'json', 'css', 'html', 'python', 'sql', 'rust'].includes(languageValue) ? languageValue : 'plain'
+      const block = createParagraph(source, { fontFamily: 'Consolas', fontSize: 10 })
+      block.metadata.codeBlock = { source, language, lineNumbers: element.dataset.officeLineNumbers === 'true' }
+      block.style = { ...block.style, align: 'left', indent: 0, lineHeight: 1.35, spaceBefore: 8, spaceAfter: 8 }
+      blocks.push(block)
+      return
+    }
+    if (tag === 'DIV' && element.dataset.officeLatex === 'v1' && element.dataset.officeLatexMode === 'block') {
+      const latex = element.dataset.officeLatexSource ?? element.textContent ?? ''
+      const run = createRun('\uFFFC', { fontFamily: 'Cambria Math' })
+      run.metadata = { ...run.metadata, latexFormula: { latex, mode: 'block', version: 1 } }
+      const block = createParagraph()
+      block.runs = [run]
+      block.style = { ...block.style, align: 'center', spaceBefore: 8, spaceAfter: 8 }
+      block.metadata.latexFormulaBlock = true
+      blocks.push(block)
+      return
+    }
     if (tag === 'UL' || tag === 'OL') {
       const checklist = tag === 'UL' && element.dataset.officeListType === 'checklist'
       const listId = checklist ? element.dataset.officeListId || documentId('checklist') : undefined
@@ -268,6 +289,13 @@ function inlineRunsFromElement(root: HTMLElement, defaults: RunPatch = {}): Docu
     if (node.nodeType === Node.TEXT_NODE) { if (node.textContent) runs.push(createRun(node.textContent, patch)); return }
     if (!(node instanceof HTMLElement)) return
     if (node.tagName === 'BR') { runs.push(createRun('\n', patch)); return }
+    if (node.dataset.officeLatex === 'v1' && node.dataset.officeLatexMode !== 'block') {
+      const latex = node.dataset.officeLatexSource ?? node.textContent ?? ''
+      const run = createRun('\uFFFC', { ...patch, fontFamily: 'Cambria Math' })
+      run.metadata = { ...run.metadata, latexFormula: { latex, mode: 'inline', version: 1 } }
+      runs.push(run)
+      return
+    }
     const style = node.style
     const fontSize = Number.parseFloat(style.fontSize)
     const next: RunPatch = {
@@ -298,9 +326,17 @@ function normalizeVerticalAlign(value: string): DocumentRun['verticalAlign'] | u
 }
 
 const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 function runsHtml(runs: readonly InlineRun[]): string {
   return runs.map((source) => {
     const run = source as DocumentRun
+    const formula = run.metadata?.latexFormula
+    if (isRecord(formula) && typeof formula.latex === 'string' && (formula.mode === 'inline' || formula.mode === 'block')) {
+      const latex = escapeHtml(formula.latex)
+      return `<span data-office-latex="v1" data-office-latex-mode="${formula.mode}" data-office-latex-source="${latex}">${latex}</span>`
+    }
     let value = escapeHtml(run.text).replace(/\n/g, '<br>')
     if (run.bold) value = `<strong>${value}</strong>`
     if (run.italic) value = `<em>${value}</em>`
@@ -315,6 +351,17 @@ function runsHtml(runs: readonly InlineRun[]): string {
 
 export function documentHtml(model: DocumentModel): string {
   return model.blocks.map((block, index) => {
+    const codeBlock = block.metadata.codeBlock
+    if (isRecord(codeBlock) && typeof codeBlock.source === 'string') {
+      const language = typeof codeBlock.language === 'string' ? codeBlock.language : 'plain'
+      const source = escapeHtml(codeBlock.source)
+      return `<pre data-office-code-block="v1" data-office-language="${escapeHtml(language)}" data-office-line-numbers="${codeBlock.lineNumbers === true}" style="white-space:pre-wrap;font-family:Consolas,monospace"><code>${source}</code></pre>`
+    }
+    const latexBlock = block.metadata.latexFormulaBlock === true ? (block.runs[0] as DocumentRun | undefined)?.metadata?.latexFormula : undefined
+    if (isRecord(latexBlock) && typeof latexBlock.latex === 'string') {
+      const source = escapeHtml(latexBlock.latex)
+      return `<div data-office-latex="v1" data-office-latex-mode="block" data-office-latex-source="${source}" style="text-align:center">${source}</div>`
+    }
     const table = tableForBlock(block)
     if (table) return `<table style="border-collapse:collapse;width:100%"><tbody>${table.rows.map((row) => `<tr>${row.cells.map((cell) => `<td rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="border:1px solid #aab3bf;background:${escapeHtml(String(cell.style.fill ?? '#ffffff'))};padding:8px">${cell.blocks.map((paragraph) => `<p style="text-align:${paragraph.style.align}">${runsHtml(paragraph.runs)}</p>`).join('')}</td>`).join('')}</tr>`).join('')}</tbody></table>`
     const image = imageForBlock(block)

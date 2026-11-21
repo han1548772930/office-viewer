@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Button, Checkbox, Input, Modal, Select, Switch } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
-import { FUniver } from '../../api/facade'
+import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SheetFilterConditionOperator, SheetFilterCriteria } from '../../domain/model'
 import {
@@ -127,7 +127,7 @@ async function applySort(): Promise<void> {
     const selectedRange = requireRange()
     if (revision.value !== props.studio.getWorkbookRevision(props.workbookId)) throw new Error('数据已更改，请重新读取数据区域后再排序。')
     const criteria = prepareDataPanelSort(selectedRange, keys.value)
-    const worksheet = FUniver.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
+    const worksheet = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)
     if (!worksheet) throw new Error('目标工作表已关闭。')
     await worksheet.sortRange(address.value, criteria, { hasHeader: hasHeader.value, locale: locale.value, signal: controller.signal, onProgress: progress => { if (version === generation) status.value = `正在排序：${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}` } })
     if (version !== generation) return

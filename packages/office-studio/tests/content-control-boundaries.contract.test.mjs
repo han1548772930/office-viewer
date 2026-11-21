@@ -104,7 +104,7 @@ test('inserting a block moves suffix controls, and inserting one inside a contro
 
 test('the public facade preserves moved anchors through undo, redo, save and reopen', () => {
   const studio = new api.OfficeStudio({ document: fixture('😀NAME') })
-  const document = api.FUniver.newAPI(studio).getActiveDocument()
+  const document = api.FOffice.newAPI(studio).getActiveDocument()
   const control = document.addContentControl({ id: 'name', type: 'text', blockId: 'paragraph-1', startOffset: 2, endOffset: 6 })
   document.insertText(2, 'a\r\nb')
   const moved = control.getRange()
@@ -117,7 +117,7 @@ test('the public facade preserves moved anchors through undo, redo, save and reo
   assert.deepEqual(control.getRange(), moved)
   const snapshot = document.save()
   const reopened = new api.OfficeStudio({ document: snapshot })
-  assert.equal(api.FUniver.newAPI(reopened).getActiveDocument().getContentControl('name').getText(), 'NAME')
+  assert.equal(api.FOffice.newAPI(reopened).getActiveDocument().getContentControl('name').getText(), 'NAME')
   const before = structuredClone(document.getModel())
   assert.throws(() => document.insertText(6, '\n'), /cannot split a content control/)
   assert.deepEqual(document.getModel(), before)

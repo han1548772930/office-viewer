@@ -11,10 +11,10 @@ before(async () => {
 })
 after(async () => { await server?.close() })
 function setup() {
-  const studio = new api.OfficeStudio(), univer = api.FUniver.newAPI(studio), workbook = univer.getActiveWorkbook(), sheet = workbook.getActiveSheet()
+  const studio = new api.OfficeStudio(), officeApi = api.FOffice.newAPI(studio), workbook = officeApi.getActiveWorkbook(), sheet = workbook.getActiveSheet()
   sheet.getRange('A1:C5').setValues([['地区', '销售', '序号'], ['东', 10, 'a'], ['西', 20, 'b'], ['东', 30, 'c'], ['西', 40, 'd']])
   const range = { startRow: 0, startCol: 0, endRow: 4, endCol: 2 }
-  return { studio, univer, workbook, sheet, range, target: { unitId: workbook.getId(), sheetId: sheet.getSheetId() } }
+  return { studio, officeApi, workbook, sheet, range, target: { unitId: workbook.getId(), sheetId: sheet.getSheetId() } }
 }
 
 test('panel ranges validate explicit worksheet bounds and preserve real header labels', () => {
@@ -65,7 +65,7 @@ test('configuring multiple filter columns is one undoable command and retains so
     assert.deepEqual(sheet.getFilteredRows(), [1, 2, 4])
     const saved = JSON.parse(JSON.stringify(workbook.save()))
     const reopened = new api.OfficeStudio({ workbook: saved })
-    assert.deepEqual(api.FUniver.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [1, 2, 4])
+    assert.deepEqual(api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [1, 2, 4])
     reopened.dispose()
   } finally { studio.dispose() }
 })

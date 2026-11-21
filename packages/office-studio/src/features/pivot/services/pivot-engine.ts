@@ -418,11 +418,10 @@ function buildPivotOutput(workbook: WorkbookModel, pivot: PivotTableModel): { va
       rowFieldFilters[field.id] = outputRow.group!.values[index] ?? null
       rowFieldMembers[field.id] = outputRow.group!.memberValues[field.id] ?? [outputRow.group!.values[index] ?? null]
     })
+    rows.forEach((_field, index) => { matrix[targetRow]![index] = outputRow.total ? 'Grand total' : outputRow.group?.values[index] ?? null })
     if (outputRow.valueFieldId && valueRows) {
       const valueField = byId.get(outputRow.valueFieldId)!
       matrix[targetRow]![rows.length] = outputRow.total ? 'Grand total' : valueField.displayName ?? valueField.name
-    } else {
-      rows.forEach((_field, index) => { matrix[targetRow]![index] = outputRow.total ? 'Grand total' : outputRow.group?.values[index] ?? null })
     }
     for (let colIndex = 0; colIndex < outputColumns.length; colIndex++) {
       const outputColumn = outputColumns[colIndex]!

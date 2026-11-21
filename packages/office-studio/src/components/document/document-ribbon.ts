@@ -1,5 +1,5 @@
 import type { Component } from 'vue'
-import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTodo, ListTree, Maximize, Minimize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Sigma, Smile, Strikethrough, Subscript, Superscript, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bold, Clipboard, ClipboardPaste, Eraser, FileText, Highlighter, ImagePlus, IndentDecrease, IndentIncrease, Italic, Link2, List, ListOrdered, ListTodo, ListTree, Maximize, Minimize, Minus, Omega, Plus, Printer, Redo2, Scissors, Search, Settings2, Sigma, Smile, StickyNote, Strikethrough, Subscript, Superscript, Table2, Trash2, Underline, Undo2 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
@@ -69,6 +69,11 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       action('doc-table', '表格', Table2, 'doc.operation.open-table', undefined, { showLabel: true }),
       action('doc-image', '图片', ImagePlus, 'doc.operation.open-image', undefined, { showLabel: true }),
       action('doc-link', '链接', Link2, 'doc.operation.open-link', undefined, { showLabel: true }),
+      { ...action('doc-footnote', '脚注', StickyNote, 'doc.operation.insert-footnote', undefined, { showLabel: true }), type: 'split', children: [
+        action('doc-footnote-insert', '插入脚注', StickyNote, 'doc.operation.insert-footnote'),
+        action('doc-endnote-insert', '插入尾注', StickyNote, 'doc.operation.insert-endnote'),
+        action('doc-notes-manage', '管理脚注和尾注', StickyNote, 'doc.operation.open-notes'),
+      ] },
       { id: 'doc-breaks', type: 'menu', title: '分页符和分节符', icon: Plus, children: [
         action('doc-page-break', '分页符', Plus, 'doc.command.insert-page-break'),
         action('doc-column-break', '分栏符', Plus, 'doc.command.insert-column-break'),

@@ -23,8 +23,8 @@ after(async () => {
 
 function setup(rows) {
   const studio = new apiModule.OfficeStudio()
-  const univer = apiModule.FUniver.newAPI(studio)
-  const workbook = univer.getActiveWorkbook()
+  const officeApi = apiModule.FOffice.newAPI(studio)
+  const workbook = officeApi.getActiveWorkbook()
   const source = workbook.getActiveSheet()
   const target = workbook.insertSheet('Grouped')
   source.getRange(`A1:D${rows.length + 1}`).setValues([['Amount', 'Date', 'Team', 'Sales'], ...rows])

@@ -5,6 +5,7 @@ import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseA
 import type { GridRange, GridViewport } from './layout'
 import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
 import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
+import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
 
 let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
 function measureTextWidth(text: string, font: string): number | undefined {
@@ -56,6 +57,8 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     const visible = intersectRect(rect, clip)
     if (visible.width <= 0 || visible.height <= 0) return
     commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? '#ffffff', clip })
+    const conditionalStyle = conditionalFormatStyleAt(geometry.sheet.conditionalFormats ?? [], row, column, cell?.rawValue)
+    if (conditionalStyle.fill) commands.push({ kind: 'rect', ...rect, fill: conditionalStyle.fill, clip })
     if (geometry.sheet.showGridlines !== false) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
     if (isSelected(row, column)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
     if (cell?.border) for (const side of ['top', 'bottom', 'left', 'right'] as const) {
@@ -77,7 +80,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const align = cell?.align ?? (column === 0 ? 'left' : Number.isFinite(Number(text)) ? 'right' : 'left')
       const baseFontSize = (cell?.fontSize ?? 11) * 4 / 3 * z
       const fontFamily = cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'
-      const fontPrefix = `${cell?.italic ? 'italic ' : ''}${cell?.bold ? '600 ' : ''}`
+      const fontPrefix = `${cell?.italic ? 'italic ' : ''}${conditionalStyle.bold ?? cell?.bold ? '600 ' : ''}`
       const font = `${fontPrefix}${baseFontSize}px ${fontFamily}`
       const availableTextWidth = Math.max(0, rect.width - 12 * z)
       const measuredWidth = cell?.shrinkToFit && cell.wrap !== true ? measureTextWidth(text, font) : undefined
@@ -89,7 +92,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const rotation = cell?.rotation ?? 0
       const textClip = intersectRect(clip, { x: rect.x + 3 * z, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z), height: Math.max(0, rect.height - 2) })
       const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
-      const color = cell?.color ?? '#243247'
+      const color = conditionalStyle.fontColor ?? cell?.color ?? '#243247'
       if (cell?.rotationVertical) {
         const glyphs = graphemes(text)
         const lineHeight = fontSize
@@ -157,16 +160,37 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     for (const column of pane.columns) {
       const rect = geometry.cellRect(0, column, viewport, false), clip = { x: pane.clip.x, y: 0, width: pane.clip.width, height: GRID_HEADER_HEIGHT }
       commands.push({ kind: 'rect', x: rect.x, y: 0, width: rect.width, height: GRID_HEADER_HEIGHT, fill: active?.column === column ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
-      commands.push({ kind: 'text', x: rect.x + rect.width / 2, y: GRID_HEADER_HEIGHT / 2, text: columnLabel(column), font: '12px "Segoe UI", sans-serif', color: active?.column === column ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
+      commands.push({ kind: 'text', x: rect.x + rect.width / 2, y: 7, text: columnLabel(column), font: '12px "Segoe UI", sans-serif', color: active?.column === column ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
     }
     for (const row of pane.rows) {
       const rect = geometry.cellRect(row, 0, viewport, false), clip = { x: 0, y: pane.clip.y, width: GRID_HEADER_WIDTH, height: pane.clip.height }
       commands.push({ kind: 'rect', x: 0, y: rect.y, width: GRID_HEADER_WIDTH, height: rect.height, fill: active?.row === row ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
-      commands.push({ kind: 'text', x: GRID_HEADER_WIDTH / 2, y: rect.y + rect.height / 2, text: String(row + 1), font: '12px "Segoe UI", sans-serif', color: active?.row === row ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
+      commands.push({ kind: 'text', x: GRID_HEADER_WIDTH - 7, y: rect.y + rect.height / 2, text: String(row + 1), font: '12px "Segoe UI", sans-serif', color: active?.row === row ? '#246bfd' : '#69778c', align: 'right', baseline: 'middle', clip })
     }
   }
   commands.push({ kind: 'rect', x: 0, y: 0, width: GRID_HEADER_WIDTH, height: GRID_HEADER_HEIGHT, fill: '#eef2f7', stroke: '#dfe5ee' })
   commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH - 13, y1: GRID_HEADER_HEIGHT - 5, x2: GRID_HEADER_WIDTH - 5, y2: GRID_HEADER_HEIGHT - 13, color: '#9aa8b9', width: 3 })
+  for (const line of geometry.outlineBracketLines(viewport)) commands.push({ kind: 'line', x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2, color: '#8593a5', width: 1 })
+  for (const control of geometry.outlineToggleRects(viewport)) {
+    commands.push({ kind: 'rect', x: control.x, y: control.y, width: control.width, height: control.height, fill: '#ffffff', stroke: '#7c899a', strokeWidth: 1 })
+    const centerX = control.x + control.width / 2, centerY = control.y + control.height / 2
+    commands.push({ kind: 'line', x1: centerX - 3, y1: centerY, x2: centerX + 3, y2: centerY, color: '#465568', width: 1 })
+    if (control.collapsed) commands.push({ kind: 'line', x1: centerX, y1: centerY - 3, x2: centerX, y2: centerY + 3, color: '#465568', width: 1 })
+  }
+  const outline = geometry.sheet.outline
+  if (outline) {
+    for (const axis of ['row', 'column'] as const) {
+      const groups = outline.groups.filter(group => group.axis === axis)
+      if (!groups.length) continue
+      const maxLevel = Math.max(...groups.map(group => groups.filter(parent => parent.start <= group.start && parent.end >= group.end && (parent.start < group.start || parent.end > group.end)).length)) + 2
+      for (let level = 1; level <= maxLevel; level += 1) {
+        const x = 1 + (level - 1) * 12
+        const y = axis === 'row' ? 1 : 13
+        commands.push({ kind: 'rect', x, y, width: 11, height: 11, fill: '#ffffff', stroke: '#9aa6b4', strokeWidth: 1 })
+        commands.push({ kind: 'text', x: x + 5.5, y: y + 5.5, text: String(level), font: '8px "Segoe UI", sans-serif', color: '#536174', align: 'center', baseline: 'middle' })
+      }
+    }
+  }
   if (geometry.frozenRows) { const y = GRID_HEADER_HEIGHT + geometry.rows.offset(geometry.frozenRows) * z; commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH, y1: y, x2: viewport.width, y2: y, color: '#9eacbf', width: 2 }) }
   if (geometry.frozenColumns) { const x = GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: GRID_HEADER_HEIGHT, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
   return { width: viewport.width, height: viewport.height, background: '#ffffff', commands }
@@ -188,6 +212,11 @@ function transformOverlayCommand(command: DrawCommand, viewport: GridViewport): 
     x2: command.x2 * viewport.zoom - viewport.scrollLeft,
     y2: command.y2 * viewport.zoom - viewport.scrollTop,
     width: command.width === undefined ? undefined : command.width * viewport.zoom,
+    ...(clip ? { clip } : {}),
+  }
+  if (command.kind === 'polygon') return {
+    ...command,
+    points: command.points.map((point) => ({ x: point.x * viewport.zoom - viewport.scrollLeft, y: point.y * viewport.zoom - viewport.scrollTop })),
     ...(clip ? { clip } : {}),
   }
   if (command.kind === 'text') return {

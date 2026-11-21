@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { Button, Input, Modal } from 'antdv-next'
 import { previewCustomNumberFormat, validateCustomNumberFormat } from '../../features/sheet-workbench/custom-number-format.ts'
 import type { CellScalar } from '../../domain/model.ts'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ open: boolean; currentPattern: string }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [pattern: string] }>()
+const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
 const pattern = ref('')
 const sample = ref('1234.567')
@@ -18,7 +20,7 @@ const example = computed(() => {
     error.value = ''
     return previewCustomNumberFormat(result.pattern, value)
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '格式代码无效。'
+    error.value = reason instanceof Error ? reason.message : t('sheet.number-format.invalid', '格式代码无效。')
     return undefined
   }
 })
@@ -37,26 +39,26 @@ function apply() {
     emit('apply', value)
     emit('update:open', false)
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '格式代码无效。'
+    error.value = reason instanceof Error ? reason.message : t('sheet.number-format.invalid', '格式代码无效。')
   }
 }
 </script>
 
 <template>
-  <Modal :open="open" title="自定义数字格式" ok-text="应用" cancel-text="取消" :width="480" @ok="apply" @cancel="emit('update:open', false)">
+  <Modal :open="open" :title="t('sheet.number-format.title', '自定义数字格式')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.cancel', '取消')" :width="480" @ok="apply" @cancel="emit('update:open', false)">
     <div class="number-format-panel">
-      <label>格式代码<Input v-model:value="pattern" aria-label="自定义数字格式代码" :maxlength="255" /></label>
-      <label>示例值<Input v-model:value="sample" aria-label="自定义格式示例值" /></label>
+      <label>{{ t('sheet.number-format.pattern', '格式代码') }}<Input v-model:value="pattern" :aria-label="t('sheet.number-format.pattern-aria', '自定义数字格式代码')" :maxlength="255" /></label>
+      <label>{{ t('sheet.number-format.sample', '示例值') }}<Input v-model:value="sample" :aria-label="t('sheet.number-format.sample-aria', '自定义格式示例值')" /></label>
       <div class="number-format-preview" aria-live="polite">
-        <span>预览</span><strong>{{ example ?? '无法预览' }}</strong>
+        <span>{{ t('sheet.number-format.preview', '预览') }}</span><strong>{{ example ?? t('sheet.number-format.unavailable', '无法预览') }}</strong>
       </div>
       <p v-if="error" class="number-format-error" role="alert">{{ error }}</p>
-      <div class="number-format-presets" aria-label="常用格式">
-        <Button size="small" @click="pattern = '#,##0.00'">数字</Button>
-        <Button size="small" @click="pattern = 'yyyy-mm-dd'">日期</Button>
-        <Button size="small" @click="pattern = 'hh:mm:ss'">时间</Button>
-        <Button size="small" @click="pattern = '0.00%'">百分比</Button>
-        <Button size="small" @click="pattern = '@'">文本</Button>
+      <div class="number-format-presets" :aria-label="t('sheet.number-format.presets', '常用格式')">
+        <Button size="small" @click="pattern = '#,##0.00'">{{ t('sheet.number-format.number', '数字') }}</Button>
+        <Button size="small" @click="pattern = 'yyyy-mm-dd'">{{ t('sheet.number-format.date', '日期') }}</Button>
+        <Button size="small" @click="pattern = 'hh:mm:ss'">{{ t('sheet.number-format.time', '时间') }}</Button>
+        <Button size="small" @click="pattern = '0.00%'">{{ t('sheet.number-format.percent', '百分比') }}</Button>
+        <Button size="small" @click="pattern = '@'">{{ t('sheet.number-format.text', '文本') }}</Button>
       </div>
     </div>
   </Modal>

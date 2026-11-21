@@ -1,5 +1,5 @@
 import type { OfficeStudio } from '../../api/office-studio'
-import { FUniver, type FSheetSlicer } from '../../api/facade'
+import { FOffice, type FSheetSlicer } from '../../api/facade'
 import type { CellScalar, SlicerModel, SlicerTimelineRange, SlicerType, TimelineLevel } from '../../domain/model'
 import { timelineCalendarToSerial, timelineDateToInput } from './timeline-date'
 
@@ -32,7 +32,7 @@ export class SlicerPanelError extends Error {
 }
 
 function requireTarget(studio: OfficeStudio, target: SlicerPanelTarget) {
-  const workbook = FUniver.newAPI(studio).getWorkbook(target.workbookId)
+  const workbook = FOffice.newAPI(studio).getWorkbook(target.workbookId)
   if (!workbook) throw new SlicerPanelError('WORKBOOK_NOT_FOUND', '当前工作簿已关闭，请重新打开工作簿。')
   const sheet = workbook.getSheetBySheetId(target.sheetId)
   if (!sheet) throw new SlicerPanelError('WORKSHEET_NOT_FOUND', '当前工作表已删除，请切换工作表后重试。')

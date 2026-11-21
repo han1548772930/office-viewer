@@ -15,7 +15,7 @@ after(async () => { await server?.close() })
 
 test('calculation mode persists and manual mode recalculates only on request', () => {
   const studio = new apiModule.OfficeStudio()
-  const workbook = apiModule.FUniver.newAPI(studio).createWorkbook({
+  const workbook = apiModule.FOffice.newAPI(studio).createWorkbook({
     sheets: [{ id: 'sheet-1', name: 'Sheet1', cellData: { 0: { 0: { v: 2 }, 1: { f: '=A1*2', v: 4 } } } }],
   })
   const sheet = workbook.getActiveSheet()
@@ -34,7 +34,7 @@ test('calculation mode persists and manual mode recalculates only on request', (
   assert.equal(sheet.getRange('B1').getValue(), 10)
 
   const reopened = new apiModule.OfficeStudio({ workbook: workbook.save() })
-  assert.equal(apiModule.FUniver.newAPI(reopened).getActiveWorkbook().getCalculationMode(), 'automatic')
+  assert.equal(apiModule.FOffice.newAPI(reopened).getActiveWorkbook().getCalculationMode(), 'automatic')
   studio.dispose()
   reopened.dispose()
 })

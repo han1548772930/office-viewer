@@ -3,11 +3,11 @@
 Vue components and a typed workbook/document facade for embedding the Office Studio editor.
 
 ```ts
-import { FUniver, OfficeStudio } from '@office-studio/office-studio'
+import { FOffice, OfficeStudio } from '@office-studio/office-studio'
 
 const studio = new OfficeStudio()
-const univerAPI = FUniver.newAPI(studio)
-const worksheet = univerAPI.getActiveWorkbook()?.getActiveSheet()
+const officeAPI = FOffice.newAPI(studio)
+const worksheet = officeAPI.getActiveWorkbook()?.getActiveSheet()
 worksheet?.getRange('A1:B2').setValues([
   ['Name', 'Amount'],
   ['Apples', 12],

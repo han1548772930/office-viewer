@@ -1,8 +1,8 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::{ExportError, ExportWarning, opc::Package, xml};
+use crate::{opc::Package, xml, ExportError, ExportWarning};
 
 const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
@@ -12,6 +12,12 @@ const REL_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
 const REL_NUMBERING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
+const REL_HEADER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
+const REL_FOOTER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
+const REL_SETTINGS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
@@ -29,6 +35,12 @@ const FOOTNOTES_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 const ENDNOTES_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
+const HEADER_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
+const FOOTER_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
+const SETTINGS_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml";
 const MAX_TABLE_SPAN: usize = 512;
 const EMU_PER_PIXEL: f64 = 9_525.0;
 const TWIPS_PER_PIXEL: f64 = 15.0;
@@ -122,6 +134,12 @@ struct PageGeometry {
     left: u32,
 }
 
+#[derive(Default)]
+struct SectionHeaderFooterRefs {
+    references: Vec<(String, String)>,
+    different_first_page: bool,
+}
+
 struct WriteContext<'a> {
     package: &'a mut Package,
     warnings: Vec<ExportWarning>,
@@ -133,6 +151,8 @@ struct WriteContext<'a> {
     next_relationship: u32,
     next_image: u32,
     page: PageGeometry,
+    section_header_footer_refs: HashMap<String, SectionHeaderFooterRefs>,
+    current_section: String,
 }
 
 impl<'a> WriteContext<'a> {
@@ -204,6 +224,23 @@ impl<'a> WriteContext<'a> {
         let mut result = String::new();
         for run in runs {
             let text = string(get(run, "text")).unwrap_or_default();
+            let formula = get(get(run, "metadata"), "latexFormula");
+            let formula_source = string(get(formula, "latex"));
+            let formula_mode = string(get(formula, "mode"));
+            if let (Some(source), Some(mode)) = (
+                formula_source,
+                formula_mode.filter(|mode| mode == "inline" || mode == "block"),
+            ) {
+                let source_run = run_with_text(run, &source);
+                let fragments = run_xml(&source_run, &source);
+                let tag = xml_attribute(&format!("office-latex:v1:{mode}"));
+                result.push_str(&format!("<w:sdt><w:sdtPr><w:tag w:val=\"{tag}\"/><w:text/></w:sdtPr><w:sdtContent>{fragments}</w:sdtContent></w:sdt>"));
+                self.warn(
+                    "DOCX_LATEX_SOURCE_FALLBACK",
+                    "LaTeX source and mode were preserved in a tagged content control. Word will display the source because this writer does not convert LaTeX to native OfficeMath.",
+                );
+                continue;
+            }
             let (fragments, has_note_reference) = if let Some((kind, source_id)) =
                 note_reference(run)
             {
@@ -450,10 +487,11 @@ impl<'a> WriteContext<'a> {
                         "Unsupported section break type {value:?}."
                     )));
                 }
-                Ok(format!(
-                    "<w:p><w:pPr>{}</w:pPr></w:p>",
-                    section_properties(self.page, Some(&value))
-                ))
+                let section = self.current_section.clone();
+                let refs = self.section_header_footer_refs.get(&section);
+                let properties = section_properties_with_headers(self.page, Some(&value), refs);
+                self.current_section = string(get(block, "id")).unwrap_or_default();
+                Ok(format!("<w:p><w:pPr>{properties}</w:pPr></w:p>"))
             }
             _ => self.paragraph(block, false),
         }
@@ -463,7 +501,11 @@ impl<'a> WriteContext<'a> {
         let id = block as *const Value as usize;
         let mut properties = String::new();
         let block_type = string(get(block, "type")).unwrap_or_default();
-        if block_type == "heading" {
+        let code_block = get(get(block, "metadata"), "codeBlock");
+        let is_code_block = string(get(code_block, "source")).is_some();
+        if is_code_block {
+            properties.push_str("<w:pStyle w:val=\"OfficeCodeBlock\"/><w:keepLines/>");
+        } else if block_type == "heading" {
             let level = integer(get(block, "level")).unwrap_or(1).clamp(1, 6);
             properties.push_str(&format!(
                 "<w:pStyle w:val=\"Heading{level}\"/><w:keepNext/>"
@@ -504,13 +546,48 @@ impl<'a> WriteContext<'a> {
         } else {
             format!("<w:pPr>{properties}</w:pPr>")
         };
-        let runs = field(block, "runs")
+        let source_runs = field(block, "runs")
             .and_then(Value::as_array)
             .map_or(&[][..], Vec::as_slice);
-        Ok(format!(
+        let code_runs = is_code_block.then(|| {
+            source_runs
+                .iter()
+                .map(|run| {
+                    let mut run = run.clone();
+                    if let Some(properties) = run.as_object_mut() {
+                        properties.insert(
+                            "fontFamily".to_owned(),
+                            Value::String("Consolas".to_owned()),
+                        );
+                    }
+                    run
+                })
+                .collect::<Vec<_>>()
+        });
+        let runs = code_runs.as_deref().unwrap_or(source_runs);
+        let paragraph = format!(
             "<w:p>{paragraph_properties}{}</w:p>",
             self.runs_with_controls(block, runs)?
-        ))
+        );
+        if !is_code_block {
+            return Ok(paragraph);
+        }
+        let language = string(get(code_block, "language")).unwrap_or_else(|| "plain".to_owned());
+        let line_numbers = get(code_block, "lineNumbers").as_bool() == Some(true);
+        let bookmark_name = xml_attribute(&format!(
+            "office_code_v1_{language}_{}",
+            u8::from(line_numbers)
+        ));
+        let bookmark_id = u32::try_from(id & 0x7fff_ffff).unwrap_or_default();
+        let bookmark_start =
+            format!("<w:bookmarkStart w:id=\"{bookmark_id}\" w:name=\"{bookmark_name}\"/>");
+        let bookmark_end = format!("<w:bookmarkEnd w:id=\"{bookmark_id}\"/>");
+        let paragraph = if paragraph.contains("</w:pPr>") {
+            paragraph.replacen("</w:pPr>", &format!("</w:pPr>{bookmark_start}"), 1)
+        } else {
+            paragraph.replacen("<w:p>", &format!("<w:p>{bookmark_start}"), 1)
+        };
+        Ok(paragraph.replacen("</w:p>", &format!("{bookmark_end}</w:p>"), 1))
     }
 
     fn table(&mut self, block: &Value) -> Result<String, ExportError> {
@@ -1359,6 +1436,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let page = page_geometry(get(&model, "page"))?;
+    let section_header_footers = field(&model, "sectionHeaderFooters")
+        .cloned()
+        .unwrap_or(Value::Null);
     let title = string(get(&model, "name")).unwrap_or_else(|| "Document".to_owned());
     let core = core_properties(&model, &title);
     package.add_relationship(
@@ -1407,7 +1487,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         next_relationship: 3,
         next_image: 1,
         page,
+        section_header_footer_refs: HashMap::new(),
+        current_section: "first".to_owned(),
     };
+    let has_different_odd_even =
+        prepare_section_header_footers(&mut context, &section_header_footers, blocks)?;
     let mut next_num_id = 1;
     assign_lists(
         blocks,
@@ -1483,10 +1567,18 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     if blocks.is_empty() {
         body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>");
     }
-    let document_xml = document_xml(&body, page);
+    let final_section = context.current_section.clone();
+    let final_refs = context.section_header_footer_refs.get(&final_section);
+    let document_xml = document_xml_with_headers(&body, page, final_refs);
     context
         .package
         .add_xml("word/document.xml", DOCUMENT_CONTENT_TYPE, document_xml)?;
+    if has_different_odd_even {
+        context
+            .package
+            .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml())?;
+        context.relationship(REL_SETTINGS, "settings.xml", false)?;
+    }
     Ok(context.warnings)
 }
 
@@ -1604,20 +1696,32 @@ fn styles_xml() -> String {
         ));
     }
     format!(
-        "{}<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Aptos\" w:hAnsi=\"Aptos\" w:eastAsia=\"Aptos\"/><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/><w:lang w:val=\"zh-CN\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"120\" w:line=\"360\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style><w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"360\"/><w:pBdr><w:left w:val=\"single\" w:sz=\"12\" w:space=\"8\" w:color=\"94A3B8\"/></w:pBdr></w:pPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"FootnoteText\"><w:name w:val=\"footnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"EndnoteText\"><w:name w:val=\"endnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"FootnoteReference\"><w:name w:val=\"footnote reference\"/><w:basedOn w:val=\"DefaultParagraphFont\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"EndnoteReference\"><w:name w:val=\"endnote reference\"/><w:basedOn w:val=\"DefaultParagraphFont\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style>{headings}</w:styles>",
+        "{}<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Aptos\" w:hAnsi=\"Aptos\" w:eastAsia=\"Aptos\"/><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/><w:lang w:val=\"zh-CN\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"120\" w:line=\"360\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style><w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"360\"/><w:pBdr><w:left w:val=\"single\" w:sz=\"12\" w:space=\"8\" w:color=\"94A3B8\"/></w:pBdr></w:pPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"OfficeCodeBlock\"><w:name w:val=\"Office Code Block\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F1F4F8\"/><w:spacing w:before=\"120\" w:after=\"120\" w:line=\"288\" w:lineRule=\"auto\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"FootnoteText\"><w:name w:val=\"footnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"EndnoteText\"><w:name w:val=\"endnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"FootnoteReference\"><w:name w:val=\"FootnoteReference\"/><w:basedOn w:val=\"DefaultParagraphFont\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"EndnoteReference\"><w:name w:val=\"EndnoteReference\"/><w:basedOn w:val=\"DefaultParagraphFont\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style>{headings}</w:styles>",
         xml::DECL
     )
 }
 
 fn document_xml(body: &str, page: PageGeometry) -> String {
+    document_xml_with_headers(body, page, None)
+}
+
+fn document_xml_with_headers(
+    body: &str,
+    page: PageGeometry,
+    header_footer_refs: Option<&SectionHeaderFooterRefs>,
+) -> String {
     format!(
         "{}<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><w:body>{body}{}</w:body></w:document>",
         xml::DECL,
-        section_properties(page, None)
+        section_properties_with_headers(page, None, header_footer_refs)
     )
 }
 
-fn section_properties(page: PageGeometry, section_type: Option<&str>) -> String {
+fn section_properties_with_headers(
+    page: PageGeometry,
+    section_type: Option<&str>,
+    header_footer_refs: Option<&SectionHeaderFooterRefs>,
+) -> String {
     let orientation = if page.width > page.height {
         " w:orient=\"landscape\""
     } else {
@@ -1625,9 +1729,185 @@ fn section_properties(page: PageGeometry, section_type: Option<&str>) -> String 
     };
     let section_type =
         section_type.map_or_else(String::new, |value| format!("<w:type w:val=\"{value}\"/>"));
+    let mut header_footer = String::new();
+    if let Some(section_refs) = header_footer_refs {
+        for (kind, relationship) in &section_refs.references {
+            header_footer.push_str(&format!(
+                "<w:{}Reference w:type=\"{}\" r:id=\"{}\"/>",
+                if kind.starts_with("header:") {
+                    "header"
+                } else {
+                    "footer"
+                },
+                kind.split_once(':')
+                    .map_or("default", |(_, page_type)| page_type),
+                xml_attribute(relationship),
+            ));
+        }
+        if section_refs.different_first_page {
+            header_footer.push_str("<w:titlePg/>");
+        }
+    }
     format!(
-        "<w:sectPr>{section_type}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr>",
+        "<w:sectPr>{section_type}{header_footer}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr>",
         page.width, page.height, page.top, page.right, page.bottom, page.left
+    )
+}
+
+fn prepare_section_header_footers(
+    context: &mut WriteContext<'_>,
+    sections: &Value,
+    blocks: &[Value],
+) -> Result<bool, ExportError> {
+    let mut section_ids = vec!["first".to_owned()];
+    section_ids.extend(
+        blocks
+            .iter()
+            .filter(|block| string(get(block, "type")).as_deref() == Some("sectionBreak"))
+            .filter_map(|block| string(get(block, "id"))),
+    );
+    let mut has_different_odd_even = false;
+    let mut next_part = 1usize;
+    for (section_index, section_id) in section_ids.iter().enumerate() {
+        let value = get(sections, section_id);
+        let linked = section_index > 0
+            && (value.is_null() || get(value, "linkToPrevious").as_bool() == Some(true));
+        let different_first_page = get(value, "differentFirstPage").as_bool() == Some(true);
+        let different_odd_even = get(value, "differentOddEven").as_bool() == Some(true);
+        has_different_odd_even |= different_odd_even;
+        let mut refs = SectionHeaderFooterRefs {
+            references: Vec::new(),
+            different_first_page,
+        };
+        if !linked {
+            for (story, page_type, field_name, relationship_type, content_type) in [
+                (
+                    "header",
+                    "default",
+                    "header",
+                    REL_HEADER,
+                    HEADER_CONTENT_TYPE,
+                ),
+                (
+                    "footer",
+                    "default",
+                    "footer",
+                    REL_FOOTER,
+                    FOOTER_CONTENT_TYPE,
+                ),
+            ] {
+                let name = string(get(value, field_name)).unwrap_or_default();
+                let page_fields = page_fields_for_story(value, field_name);
+                add_header_footer_part(
+                    context,
+                    &mut refs,
+                    &mut next_part,
+                    story,
+                    page_type,
+                    &name,
+                    &page_fields,
+                    relationship_type,
+                    content_type,
+                )?;
+            }
+            if different_first_page {
+                for (story, field_name, relationship_type, content_type) in [
+                    ("header", "firstPageHeader", REL_HEADER, HEADER_CONTENT_TYPE),
+                    ("footer", "firstPageFooter", REL_FOOTER, FOOTER_CONTENT_TYPE),
+                ] {
+                    let text = string(get(value, field_name)).unwrap_or_default();
+                    let page_fields = page_fields_for_story(value, field_name);
+                    add_header_footer_part(
+                        context,
+                        &mut refs,
+                        &mut next_part,
+                        story,
+                        "first",
+                        &text,
+                        &page_fields,
+                        relationship_type,
+                        content_type,
+                    )?;
+                }
+            }
+            if different_odd_even {
+                for (story, field_name, relationship_type, content_type) in [
+                    ("header", "evenPageHeader", REL_HEADER, HEADER_CONTENT_TYPE),
+                    ("footer", "evenPageFooter", REL_FOOTER, FOOTER_CONTENT_TYPE),
+                ] {
+                    let text = string(get(value, field_name)).unwrap_or_default();
+                    let page_fields = page_fields_for_story(value, field_name);
+                    add_header_footer_part(
+                        context,
+                        &mut refs,
+                        &mut next_part,
+                        story,
+                        "even",
+                        &text,
+                        &page_fields,
+                        relationship_type,
+                        content_type,
+                    )?;
+                }
+            }
+        }
+        context
+            .section_header_footer_refs
+            .insert(section_id.clone(), refs);
+    }
+    Ok(has_different_odd_even)
+}
+
+fn add_header_footer_part(
+    context: &mut WriteContext<'_>,
+    refs: &mut SectionHeaderFooterRefs,
+    next_part: &mut usize,
+    story: &str,
+    page_type: &str,
+    text: &str,
+    page_fields: &[String],
+    relationship_type: &str,
+    content_type: &str,
+) -> Result<(), ExportError> {
+    let path = format!("word/{story}{}.xml", *next_part);
+    *next_part += 1;
+    context
+        .package
+        .add_xml(&path, content_type, header_footer_xml(story, text, page_fields))?;
+    let target = path.strip_prefix("word/").unwrap_or(&path);
+    let relationship = context.relationship(relationship_type, target, false)?;
+    refs.references
+        .push((format!("{story}:{page_type}"), relationship));
+    Ok(())
+}
+
+fn header_footer_xml(story: &str, text: &str, page_fields: &[String]) -> String {
+    let root = if story == "header" { "hdr" } else { "ftr" };
+    let fields = page_fields.iter().map(|field| {
+        format!("<w:fldSimple w:instr=\" {field} \"><w:r><w:t></w:t></w:r></w:fldSimple>")
+    }).collect::<String>();
+    format!(
+        "{}<w:{root} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>{}{fields}</w:p></w:{root}>",
+        xml::DECL,
+        run_xml(&serde_json::json!({}), text)
+    )
+}
+
+fn page_fields_for_story(section: &Value, story: &str) -> Vec<String> {
+    field(section, "pageFields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| string(get(entry, "story")).as_deref() == Some(story))
+        .filter_map(|entry| string(get(entry, "field")))
+        .filter(|field| matches!(field.as_str(), "PAGE" | "NUMPAGES"))
+        .collect()
+}
+
+fn settings_xml() -> String {
+    format!(
+        "{}<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:evenAndOddHeaders/><w:updateFields w:val=\"true\"/></w:settings>",
+        xml::DECL
     )
 }
 
@@ -1703,6 +1983,14 @@ fn run_xml(run: &Value, text: &str) -> String {
             )
         })
         .collect()
+}
+
+fn run_with_text(run: &Value, text: &str) -> Value {
+    let mut value = run.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("text".to_owned(), Value::String(text.to_owned()));
+    }
+    value
 }
 
 fn run_link(run: &Value) -> Option<String> {
@@ -1857,8 +2145,8 @@ mod tests {
     use crate::opc::Package;
 
     use super::{
-        PageGeometry, build_numbering_xml, decode_data_image, document_xml, page_geometry, run_xml,
-        styles_xml, write,
+        build_numbering_xml, decode_data_image, document_xml, page_geometry, run_xml, styles_xml,
+        write, PageGeometry,
     };
     use serde_json::json;
 
@@ -1888,6 +2176,103 @@ mod tests {
         assert!(output.contains("<w:color w:val=\"FF0088\"/>"));
         assert!(output.contains("xml:space=\"preserve\">  A&amp;B</w:t>"));
         assert!(output.contains("<w:br/>"));
+    }
+
+    #[test]
+    fn code_blocks_and_latex_runs_write_versioned_roundtrip_tags() {
+        let model = json!({
+            "kind": "document",
+            "blocks": [
+                { "id": "code", "type": "paragraph", "runs": [{ "text": "const x = 1\\nreturn x" }], "metadata": { "codeBlock": { "source": "const x = 1\\nreturn x", "language": "typescript", "lineNumbers": true } } },
+                { "id": "math", "type": "paragraph", "runs": [{ "text": "\u{FFFC}", "metadata": { "latexFormula": { "latex": "x^2", "mode": "inline", "version": 1 } } }], "metadata": {} }
+            ]
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "DOCX_LATEX_SOURCE_FALLBACK");
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .unwrap()
+            .read_to_string(&mut styles)
+            .unwrap();
+        assert!(document.contains("office_code_v1_typescript_1"));
+        assert!(document.contains("<w:pStyle w:val=\"OfficeCodeBlock\"/>"));
+        assert!(document.contains("<w:rFonts w:ascii=\"Consolas\""));
+        assert!(document.contains("office-latex:v1:inline"));
+        assert!(document.contains("<w:t xml:space=\"preserve\">x^2</w:t>"));
+        assert!(styles.contains("w:styleId=\"OfficeCodeBlock\""));
+    }
+
+    #[test]
+    fn section_headers_and_footers_write_parts_links_and_page_variants() {
+        let model = json!({
+            "kind": "document",
+            "page": { "width": 794, "height": 1123 },
+            "blocks": [
+                { "id": "body-1", "type": "paragraph", "runs": [{ "text": "First" }] },
+                { "id": "section-2", "type": "sectionBreak", "sectionBreak": { "type": "nextPage" }, "runs": [] },
+                { "id": "body-2", "type": "paragraph", "runs": [{ "text": "Second" }] },
+                { "id": "section-3", "type": "sectionBreak", "sectionBreak": { "type": "continuous" }, "runs": [] },
+                { "id": "body-3", "type": "paragraph", "runs": [{ "text": "Third" }] }
+            ],
+            "sectionHeaderFooters": {
+                "first": { "header": "A&B", "footer": "First footer" },
+                "section-2": {
+                    "header": "Second header",
+                    "footer": "Second footer",
+                    "firstPageHeader": "Cover header",
+                    "firstPageFooter": "Cover footer",
+                    "evenPageHeader": "Even header",
+                    "evenPageFooter": "Even footer",
+                    "differentFirstPage": true,
+                    "differentOddEven": true,
+                    "linkToPrevious": false
+                },
+                "section-3": { "linkToPrevious": true }
+            }
+        });
+        let mut package = Package::new();
+        let warnings = write(&model.to_string(), &mut package).unwrap();
+        assert!(warnings.is_empty());
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let read_part = |archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, path: &str| {
+            let mut content = String::new();
+            archive
+                .by_name(path)
+                .unwrap()
+                .read_to_string(&mut content)
+                .unwrap();
+            content
+        };
+        let document = read_part(&mut archive, "word/document.xml");
+        let first_header = read_part(&mut archive, "word/header1.xml");
+        let section_two_first_header = read_part(&mut archive, "word/header5.xml");
+        let even_header = read_part(&mut archive, "word/header7.xml");
+        let relationships = read_part(&mut archive, "word/_rels/document.xml.rels");
+        let settings = read_part(&mut archive, "word/settings.xml");
+
+        assert!(first_header.contains("A&amp;B"));
+        assert!(first_header.starts_with("<?xml"));
+        assert!(section_two_first_header.contains("Cover header"));
+        assert!(even_header.contains("Even header"));
+        assert!(settings.contains("<w:evenAndOddHeaders/>"));
+        assert!(relationships.contains("Target=\"header1.xml\""));
+        assert_eq!(document.matches("<w:titlePg/>").count(), 1);
+        assert!(document.contains("<w:headerReference w:type=\"default\""));
+        assert!(document.contains("<w:headerReference w:type=\"first\""));
+        assert!(document.contains("<w:headerReference w:type=\"even\""));
+        assert_eq!(document.matches("<w:sectPr>").count(), 3);
     }
 
     #[test]
@@ -2006,12 +2391,8 @@ mod tests {
             .read_to_string(&mut numbering)
             .unwrap();
 
-        assert!(
-            document.contains("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr>")
-        );
-        assert!(
-            document.contains("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"2\"/></w:numPr>")
-        );
+        assert!(document.contains("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr>"));
+        assert!(document.contains("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"2\"/></w:numPr>"));
         assert!(numbering.contains("w:abstractNumId=\"2\""));
         assert!(numbering.contains("w:abstractNumId=\"3\""));
         assert!(numbering.contains("w:lvlText w:val=\"&#x2610;\""));
@@ -2180,11 +2561,9 @@ mod tests {
         });
         let mut package = Package::new();
         let warnings = write(&model.to_string(), &mut package).unwrap();
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.code == "DOCX_NOTE_MISSING")
-        );
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.code == "DOCX_NOTE_MISSING"));
         let bytes = package.finish().unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let mut document = String::new();

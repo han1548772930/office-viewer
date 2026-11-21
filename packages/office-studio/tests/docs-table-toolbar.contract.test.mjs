@@ -197,7 +197,7 @@ test('a structural action is one document-history item and survives save snapsho
   assert.deepEqual(JSON.parse(JSON.stringify(editor.document.model)), original)
   editor.redo()
   const studio = new api.OfficeStudio({ document: JSON.parse(JSON.stringify(editor.document.model)) })
-  const snapshot = api.FUniver.newAPI(studio).getActiveDocument().save()
+  const snapshot = api.FOffice.newAPI(studio).getActiveDocument().save()
   assert.equal(models.tableForBlock(snapshot.blocks[1]).rows[0].cells.length, 4)
   studio.dispose()
 })

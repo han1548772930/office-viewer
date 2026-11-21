@@ -97,7 +97,11 @@ function onPointerDown(event: PointerEvent) {
   if (!hit) return
   if (event.button !== 0 && event.button !== 2) return
   event.preventDefault(); root.value?.focus({ preventScroll: true })
-  if (hit.kind === 'resize-column' || hit.kind === 'resize-row') {
+  if (hit.kind === 'outline-toggle') {
+    emit('context-command', 'sheet.operation.outline-toggle-group', { axis: hit.axis, groupId: hit.groupId })
+  } else if (hit.kind === 'outline-level') {
+    emit('context-command', 'sheet.operation.outline-set-level', { axis: hit.axis, level: hit.level })
+  } else if (hit.kind === 'resize-column' || hit.kind === 'resize-row') {
     resizeDrag = { axis: hit.kind === 'resize-column' ? 'column' : 'row', index: hit.kind === 'resize-column' ? hit.column : hit.row, size: hit.size, origin: hit.kind === 'resize-column' ? position.x : position.y }
   } else if (hit.kind === 'cell') {
     dragging = event.button === 0; lastPointer = position
@@ -111,7 +115,7 @@ function onPointerMove(event: PointerEvent) {
   if (dragging && hit?.kind === 'cell') { emit('extend-selection', hit.key); queueRender() }
   if (root.value && !dragging) {
     const hover = geometry.value.hitTest(position.x, position.y, viewport.value)
-    root.value.style.cursor = resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
+    root.value.style.cursor = hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
   }
 }
 function onPointerUp(event: PointerEvent) {

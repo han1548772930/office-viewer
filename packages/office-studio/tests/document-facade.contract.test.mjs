@@ -172,7 +172,7 @@ test('reads and writes text styles through the public range facade with undo and
   ]
   const source = modelWith([first, paragraph('second', 'EF')])
   const studio = new apiModule.OfficeStudio({ document: source })
-  const document = apiModule.FUniver.newAPI(studio).getActiveDocument()
+  const document = apiModule.FOffice.newAPI(studio).getActiveDocument()
   assert.ok(document)
 
   const range = document.getTextRange(1, 6)
@@ -227,7 +227,7 @@ test('reads and writes text styles through the public range facade with undo and
 test('public text-style facade supports subscript, superscript, and compact baseline restoration', () => {
   const source = modelWith([paragraph('formula', 'H2O')])
   const studio = new apiModule.OfficeStudio({ document: source })
-  const document = apiModule.FUniver.newAPI(studio).getActiveDocument()
+  const document = apiModule.FOffice.newAPI(studio).getActiveDocument()
   const range = document.getTextRange(1, 2)
 
   assert.equal(range.setTextStyle({ verticalAlign: 'subscript' }), true)
@@ -257,7 +257,7 @@ test('paragraph style facade updates paragraphs inside table cells', () => {
     }],
   }
   const studio = new apiModule.OfficeStudio({ document: modelWith([table]) })
-  const document = apiModule.FUniver.newAPI(studio).getActiveDocument()
+  const document = apiModule.FOffice.newAPI(studio).getActiveDocument()
   assert.ok(document)
 
   const paragraphFacade = document.findParagraphs({ paragraphId: 'cell-paragraph' })[0]

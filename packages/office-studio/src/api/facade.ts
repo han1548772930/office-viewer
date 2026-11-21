@@ -24,6 +24,7 @@ import type {
   SlicerTimelineRange,
   SpreadsheetCell,
   SpreadsheetSheet,
+  SparklineSpec,
   SheetDataValidationRule,
   SheetRangeProtectionDraft,
   SheetRangeProtectionRule,
@@ -60,6 +61,7 @@ import {
 import type { OfficeStudio } from './office-studio'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
+import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
 
 export type {
   DocumentBodySegment,
@@ -109,11 +111,9 @@ export type DocumentContentControlCreateInfo = Omit<ContentControlInput, 'id'> &
 export type DocumentContentControlPatch = ContentControlPatch
 
 /**
- * Public root facade modelled after Univer's `FUniver.newAPI(...)` entrypoint.
- * The wrapped value is intentionally the headless OfficeStudio runtime so the
- * same API can be used by Vue, tests, workers, or an embedding application.
+ * Public root facade for the headless OfficeStudio runtime.
  */
-export class FUniver {
+export class FOffice {
   readonly Event = new FEventName()
   readonly studio: OfficeStudio
 
@@ -121,8 +121,8 @@ export class FUniver {
     this.studio = studio
   }
 
-  static newAPI(studio: OfficeStudio): FUniver {
-    return new FUniver(studio)
+  static newAPI(studio: OfficeStudio): FOffice {
+    return new FOffice(studio)
   }
 
   createWorkbook(data: Partial<WorkbookModel> & Record<string, unknown> = {}, options: CreateUnitOptions = {}): FWorkbook {
@@ -343,6 +343,25 @@ export class FWorksheet {
       Array.from({ length: bounds.endCol - bounds.startCol + 1 }, (_, columnOffset) => ({ row: bounds.startRow + rowOffset, column: bounds.startCol + columnOffset })),
     ).flat()
     return validateSheetDataValidationChanges(this.workbook(), this.id, positions).issues
+  }
+  getSparkline(address: string): SparklineSpec | null {
+    const cell = parseA1Cell(address)
+    const value = this.sheet().cells[`${cell.row}:${cell.column}`]?.sparkline
+    return cloneModel(value ?? null)
+  }
+  setSparklines(request: SparklineGroupRequest): this {
+    const patches = createSparklineGroupPatches(request)
+    this.api.executeCommandSync('sheet.command.set-sparklines', { unitId: this.unitId, sheetId: this.id, patches })
+    return this
+  }
+  clearSparklines(range: FRange | FRangeCoordinates | string): this {
+    const bounds = normalizeValidationRange(range)
+    const patches: Record<string, null> = {}
+    for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
+      for (let column = bounds.startCol; column <= bounds.endCol; column += 1) patches[cellAddress(row, column)] = null
+    }
+    this.api.executeCommandSync('sheet.command.set-sparklines', { unitId: this.unitId, sheetId: this.id, patches })
+    return this
   }
   getRangeProtectionRules(): SheetRangeProtectionRule[] { return cloneModel(this.sheet().rangeProtectionRules ?? []) }
   getRangeProtectionRulesForRange(range: FRange | FRangeCoordinates | string): SheetRangeProtectionRule[] {
@@ -925,6 +944,7 @@ export class FDocument {
   }
 
   getId(): string { return this.id }
+  getCurrentUserId(): string { return this.api.currentUserId }
   getName(): string { return this.model().name }
   setName(name: string): this { this.api.executeCommandSync('doc.command.set-name', { unitId: this.id, name }); return this }
   save(): DocumentModel {
@@ -952,6 +972,11 @@ export class FDocument {
     return this.getParagraphs().at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  getPermissionRules(): DocumentModel['permissionRules'] { return cloneModel(this.model().permissionRules ?? []) }
+  setPermissionRules(rules: NonNullable<DocumentModel['permissionRules']>): this {
+    this.api.executeCommandSync('doc.command.set-document-permission-rules', { unitId: this.id, rules })
+    return this
+  }
   getContentControls(): FDocumentContentControl[] {
     return getDocumentContentControls(this.model()).map((control) => new FDocumentContentControl(this, control.id))
   }

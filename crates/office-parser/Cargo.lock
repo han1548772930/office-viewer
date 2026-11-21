@@ -572,8 +572,20 @@ name = "office-parser"
 version = "0.1.0"
 dependencies = [
  "duke-pages",
+ "office-writer",
  "quick-xml 0.41.0",
  "rxls",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "zip",
+]
+
+[[package]]
+name = "office-writer"
+version = "0.1.0"
+dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "wasm-bindgen",

@@ -38,7 +38,7 @@ export interface ChartData {
   series: ChartSeriesData[]
 }
 
-export interface ChartPoint { x: number; y: number; value: number; category: string; categoryIndex: number }
+export interface ChartPoint { x: number; y: number; value: number; category: string; categoryIndex: number; baseY?: number }
 export interface ChartSeriesLayout {
   name: string
   color: string
@@ -62,7 +62,7 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
   const source = normalizeSource(config.source)
   if (!config.pivotTableId) validateSourceInSheet(source.range, sheet)
   const type = config.type
-  if (type !== 'bar' && type !== 'line') throw new TypeError(`Unsupported chart type: ${type}`)
+  validateChartType(type)
   const position = normalizeSize(config.position, 'chart position', true)
   const size = normalizeSize(config.size, 'chart size', false)
   const categoryField = normalizeField(config.categoryField ?? 0, 'categoryField')
@@ -86,6 +86,7 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
   }
   validateAxis(model.xAxis, 'xAxis')
   validateAxis(model.yAxis, 'yAxis')
+  validateChartData(model.type, readChartData(workbook, model), model.yAxis)
   if (model.pivotTableId && !workbook.pivotTables?.some((pivot) => pivot.id === model.pivotTableId)) throw new Error(`Pivot table not found: ${model.pivotTableId}`)
   // Resolve once during creation so invalid field indexes fail atomically.
   readChartData(workbook, model)
@@ -107,13 +108,13 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
   }
   const sheet = requireSheet(workbook, chart.sheetId)
   if (!next.pivotTableId) validateSourceInSheet(next.source.range, sheet)
-  if (next.type !== 'bar' && next.type !== 'line') throw new TypeError(`Unsupported chart type: ${next.type}`)
+  validateChartType(next.type)
   next.categoryField = normalizeField(next.categoryField, 'categoryField')
   next.valueFields = next.valueFields.map((field) => normalizeField(field, 'valueField'))
   if (new Set(next.valueFields).size !== next.valueFields.length) throw new RangeError('Chart value fields must be unique')
   validateAxis(next.xAxis, 'xAxis')
   validateAxis(next.yAxis, 'yAxis')
-  readChartData(workbook, next)
+  validateChartData(next.type, readChartData(workbook, next), next.yAxis)
   Object.assign(chart, next)
 }
 
@@ -121,7 +122,7 @@ export function readChartData(workbook: WorkbookModel, chart: ChartModel): Chart
   if (chart.pivotTableId) {
     const pivot = workbook.pivotTables?.find((candidate) => candidate.id === chart.pivotTableId)
     if (!pivot) throw new Error(`Pivot table not found: ${chart.pivotTableId}`)
-    return readPivotChartData(pivotOutputValues(workbook, pivot), chart)
+    return readPivotChartData(pivotOutputValues(workbook, pivot), pivot, chart)
   }
   const sheet = requireSheet(workbook, chart.sheetId)
   const range = chart.source.range
@@ -141,36 +142,61 @@ export function readChartData(workbook: WorkbookModel, chart: ChartModel): Chart
   return { categories, series }
 }
 
-function readPivotChartData(matrix: CellScalar[][], chart: ChartModel): ChartData {
+function readPivotChartData(matrix: CellScalar[][], pivot: NonNullable<WorkbookModel['pivotTables']>[number], chart: ChartModel): ChartData {
   if (matrix.length < 2 || matrix[0]!.length < 2) throw new RangeError('Pivot chart requires a pivot table with row and value fields')
-  const rows = matrix.slice(2).filter((row) => row.some((value) => typeof value === 'number') && !isPivotTotalRow(row))
+  const rowFields = pivot.fields.filter((field) => field.area === 'row').sort((a, b) => a.position - b.position)
+  const columnFields = pivot.fields.filter((field) => field.area === 'column').sort((a, b) => a.position - b.position)
+  if (!rowFields.length) throw new RangeError('Pivot chart requires at least one row field to define categories')
+  const valueRows = pivot.options.valuePosition === 'row'
+  const headerRows = Math.max(1, columnFields.length + (valueRows ? 0 : 1))
+  const rowHeaderCount = rowFields.length + (valueRows ? 1 : 0)
+  const rows = matrix.slice(headerRows).filter((row) => row.some((value) => typeof value === 'number') && !isPivotTotalRow(row, rowFields.length))
   if (!rows.length) throw new RangeError('Pivot chart has no numeric categories to display')
-  const firstValueField = matrix[0]!.findIndex((_value, index) => index > 0 && rows.some((row) => typeof row[index] === 'number'))
-  const valueFields = chart.valueFields.length
-    ? chart.valueFields
-    : matrix[0]!.map((_value, index) => index).filter((index) => index >= firstValueField && rows.some((row) => typeof row[index] === 'number') && !isPivotTotalColumn(matrix, index))
-  for (const field of valueFields) if (field <= 0 || field >= matrix[0]!.length || isPivotTotalColumn(matrix, field)) throw new RangeError('Pivot chart value field is outside pivot output')
-  const previousLabels = Array.from({ length: firstValueField }, () => '')
-  const categories = rows.map((row) => row.slice(0, firstValueField).map((value, index) => {
+  const previousLabels = Array.from({ length: rowFields.length }, () => '')
+  const categories = rows.map((row) => row.slice(0, rowFields.length).map((value, index) => {
     if (value != null && value !== '') previousLabels[index] = scalarLabel(value)
     return previousLabels[index]!
   }).filter(Boolean).join(' / '))
-  return {
-    categories,
-    series: valueFields.map((field) => ({
-      field,
-      name: [matrix[0]![field], matrix[1]![field]].filter((value) => value != null && value !== '').map(scalarLabel).join(' · ') || `Series ${field}`,
-      values: rows.map((row) => numericValue(row[field])),
-    })),
+  if (!valueRows) {
+    const valueColumns = matrix[0]!.map((_value, index) => index)
+      .filter((index) => index >= rowHeaderCount && rows.some((row) => typeof row[index] === 'number') && !isPivotTotalColumn(matrix, index, headerRows))
+    const valueFields = chart.valueFields.length ? chart.valueFields : valueColumns
+    for (const field of valueFields) if (!valueColumns.includes(field)) throw new RangeError('Pivot chart value field is outside pivot output')
+    return {
+      categories,
+      series: valueFields.map((field) => ({
+        field,
+        name: matrix.slice(0, headerRows).map((row) => row[field]).filter((value) => value != null && value !== '').map(scalarLabel).join(' · ') || `Series ${field}`,
+        values: rows.map((row) => numericValue(row[field])),
+      })),
+    }
   }
+
+  const seriesByName = new Map<string, { name: string; values: Map<string, number> }>()
+  for (const row of rows) {
+    const category = row.slice(0, rowFields.length).map(scalarLabel).filter(Boolean).join(' / ')
+    const valueName = scalarLabel(row[rowFields.length])
+    for (let column = rowHeaderCount; column < matrix[0]!.length; column += 1) {
+      if (isPivotTotalColumn(matrix, column, headerRows) || (columnFields.length > 0 && pivot.options.showColGrandTotal && column === matrix[0]!.length - 1)) continue
+      const value = numericValue(row[column])
+      if (value === null) continue
+      const columnName = matrix.slice(0, headerRows).map((header) => header[column]).filter((label) => label != null && label !== '').map(scalarLabel).join(' · ')
+      const name = [columnName, valueName].filter(Boolean).join(' · ')
+      const series = seriesByName.get(name) ?? { name, values: new Map<string, number>() }
+      series.values.set(category, value)
+      seriesByName.set(name, series)
+    }
+  }
+  const uniqueCategories = [...new Set(rows.map((row) => row.slice(0, rowFields.length).map(scalarLabel).filter(Boolean).join(' / ')))]
+  return { categories: uniqueCategories, series: [...seriesByName.values()].map((series, field) => ({ field, name: series.name, values: uniqueCategories.map((category) => series.values.get(category) ?? null) })) }
 }
 
-function isPivotTotalColumn(matrix: CellScalar[][], column: number): boolean {
-  return matrix.slice(0, 2).some((row) => typeof row[column] === 'string' && /(?:^|\s)(?:grand\s+)?total$/i.test(row[column]!.trim()))
+function isPivotTotalColumn(matrix: CellScalar[][], column: number, headerRows: number): boolean {
+  return matrix.slice(0, headerRows).some((row) => typeof row[column] === 'string' && /^grand\s+total(?:\s+.+)?$/i.test(row[column]!.trim()))
 }
 
-function isPivotTotalRow(row: CellScalar[]): boolean {
-  return row.some((value) => typeof value === 'string' && /(?:^|\s)(?:grand\s+)?total$/i.test(value.trim()))
+function isPivotTotalRow(row: CellScalar[], rowFieldCount: number): boolean {
+  return row.slice(0, rowFieldCount).some((value) => typeof value === 'string' && /^grand\s+total$/i.test(value.trim()))
 }
 
 export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLayout {
@@ -186,8 +212,10 @@ export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLa
     height: Math.max(1, frame.height - top - bottom),
   }
   const values = data.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value) && (chart.yAxis.scaleType !== 'log' || value > 0)))
-  if (!values.length) return { frame, plot, min: 0, max: 1, categories: data.categories, series: data.series.map((series, index) => ({ name: series.name, color: CHART_COLORS[index % CHART_COLORS.length]!, points: [] })) }
-  const rawMin = Math.min(...values), rawMax = Math.max(...values)
+  const stackTotals = chart.type === 'stacked-column' ? stackedExtents(data) : undefined
+  const rangeValues = stackTotals ? [...stackTotals] : values
+  if (!rangeValues.length) return { frame, plot, min: 0, max: 1, categories: data.categories, series: data.series.map((series, index) => ({ name: series.name, color: CHART_COLORS[index % CHART_COLORS.length]!, points: [] })) }
+  const rawMin = Math.min(...rangeValues), rawMax = Math.max(...rangeValues)
   const min = chart.yAxis.scaleType === 'log' ? Math.max(Number.MIN_VALUE, rawMin) : Math.min(0, rawMin)
   const max = chart.yAxis.scaleType === 'log' ? rawMax : rawMax === min ? min + 1 : rawMax
   const toY = (value: number): number => {
@@ -197,10 +225,24 @@ export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLa
     }
     return plot.y + plot.height - ((value - min) / (max - min)) * plot.height
   }
+  const positiveStacks = Array.from({ length: data.categories.length }, () => 0)
+  const negativeStacks = Array.from({ length: data.categories.length }, () => 0)
   const series = data.series.map((sourceSeries, seriesIndex) => {
-    const points = sourceSeries.values.map((value, index) => value == null || !Number.isFinite(value) || (chart.yAxis.scaleType === 'log' && value <= 0)
-      ? undefined
-      : { x: plot.x + (data.categories.length <= 1 ? plot.width / 2 : index * plot.width / (data.categories.length - 1)), y: toY(value), value, category: data.categories[index] ?? '', categoryIndex: index }).filter((point): point is ChartPoint => point !== undefined)
+    const points = sourceSeries.values.map((value, index) => {
+      if (value == null || !Number.isFinite(value) || (chart.yAxis.scaleType === 'log' && value <= 0)) return undefined
+      const baseValue = chart.type === 'stacked-column'
+        ? value >= 0 ? positiveStacks[index]! : negativeStacks[index]!
+        : 0
+      if (chart.type === 'stacked-column') {
+        if (value >= 0) positiveStacks[index] = baseValue + value
+        else negativeStacks[index] = baseValue + value
+      }
+      return {
+        x: plot.x + (data.categories.length <= 1 ? plot.width / 2 : index * plot.width / (data.categories.length - 1)),
+        y: toY(baseValue + value), value, category: data.categories[index] ?? '', categoryIndex: index,
+        ...(chart.type === 'stacked-column' ? { baseY: toY(baseValue) } : {}),
+      }
+    }).filter((point): point is ChartPoint => point !== undefined)
     return { name: sourceSeries.name, color: CHART_COLORS[seriesIndex % CHART_COLORS.length]!, points }
   })
   return { frame, plot, min, max, categories: data.categories, series }
@@ -210,28 +252,52 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
   const layout = chartLayout(workbook, chart)
   const commands: DrawCommand[] = [
     { kind: 'rect', ...layout.frame, fill: '#ffffff', stroke: '#cbd5e1', strokeWidth: 1 },
-    { kind: 'rect', ...layout.plot, fill: '#ffffff', stroke: '#e2e8f0', strokeWidth: 1 },
   ]
   if (chart.title) commands.push({ kind: 'text', x: layout.frame.x + layout.frame.width / 2, y: layout.frame.y + 20, text: chart.title, font: '600 14px Aptos, Arial, sans-serif', color: '#172033', align: 'center', baseline: 'middle' })
+  if (chart.type === 'pie' || chart.type === 'doughnut') {
+    renderPieChart(commands, layout, readChartData(workbook, chart), chart)
+    return commands
+  }
+  commands.push({ kind: 'rect', ...layout.plot, fill: '#ffffff', stroke: '#e2e8f0', strokeWidth: 1 })
   const zero = chart.yAxis.scaleType === 'linear' && layout.min < 0 && layout.max > 0
     ? layout.plot.y + layout.plot.height - ((0 - layout.min) / (layout.max - layout.min)) * layout.plot.height
     : layout.plot.y + layout.plot.height
   commands.push({ kind: 'line', x1: layout.plot.x, y1: zero, x2: layout.plot.x + layout.plot.width, y2: zero, color: '#64748b', width: 1 })
   commands.push({ kind: 'line', x1: layout.plot.x, y1: layout.plot.y, x2: layout.plot.x, y2: layout.plot.y + layout.plot.height, color: '#64748b', width: 1 })
   const categoryStep = layout.categories.length ? layout.plot.width / Math.max(1, layout.categories.length) : layout.plot.width
-  if (chart.type === 'bar') {
+  if (chart.type === 'bar' || chart.type === 'stacked-column') {
     const groupWidth = categoryStep * 0.72
-    const barWidth = groupWidth / Math.max(1, layout.series.length)
-    layout.series.forEach((series, seriesIndex) => series.points.forEach((point) => {
-      const categoryIndex = point.categoryIndex
-      const x = layout.plot.x + categoryIndex * categoryStep + (categoryStep - groupWidth) / 2 + seriesIndex * barWidth
-      const y = Math.min(point.y, zero), height = Math.max(1, Math.abs(zero - point.y))
-      commands.push({ kind: 'rect', x, y, width: Math.max(1, barWidth - 1), height, fill: series.color, stroke: '#ffffff', strokeWidth: 0.5 })
-    }))
+    if (chart.type === 'stacked-column') {
+      const barWidth = groupWidth * 0.8
+      layout.series.forEach((series) => series.points.forEach((point) => {
+        const x = layout.plot.x + point.categoryIndex * categoryStep + (categoryStep - barWidth) / 2
+        const y = Math.min(point.y, point.baseY ?? zero), height = Math.max(1, Math.abs((point.baseY ?? zero) - point.y))
+        commands.push({ kind: 'rect', x, y, width: barWidth, height, fill: series.color, stroke: '#ffffff', strokeWidth: 0.5 })
+      }))
+    } else {
+      const barWidth = groupWidth / Math.max(1, layout.series.length)
+      layout.series.forEach((series, seriesIndex) => series.points.forEach((point) => {
+        const categoryIndex = point.categoryIndex
+        const x = layout.plot.x + categoryIndex * categoryStep + (categoryStep - groupWidth) / 2 + seriesIndex * barWidth
+        const y = Math.min(point.y, zero), height = Math.max(1, Math.abs(zero - point.y))
+        commands.push({ kind: 'rect', x, y, width: Math.max(1, barWidth - 1), height, fill: series.color, stroke: '#ffffff', strokeWidth: 0.5 })
+      }))
+    }
+  } else if (chart.type === 'area') {
+    layout.series.forEach((series) => {
+      for (let index = 1; index < series.points.length; index += 1) {
+        const previous = series.points[index - 1]!, point = series.points[index]!
+        if (point.categoryIndex !== previous.categoryIndex + 1) continue
+        for (const segment of areaSegments(previous, point, zero)) commands.push({ kind: 'polygon', points: segment, fill: `rgba(${hexRgb(series.color)}, 0.22)` })
+        commands.push({ kind: 'line', x1: previous.x, y1: previous.y, x2: point.x, y2: point.y, color: series.color, width: 2 })
+      }
+      series.points.forEach((point) => commands.push({ kind: 'rect', x: point.x - 2, y: point.y - 2, width: 4, height: 4, fill: series.color }))
+    })
   } else {
     layout.series.forEach((series) => {
       for (let index = 1; index < series.points.length; index++) {
         const previous = series.points[index - 1]!, point = series.points[index]!
+        if (point.categoryIndex !== previous.categoryIndex + 1) continue
         commands.push({ kind: 'line', x1: previous.x, y1: previous.y, x2: point.x, y2: point.y, color: series.color, width: 2 })
       }
       series.points.forEach((point) => commands.push({ kind: 'rect', x: point.x - 3, y: point.y - 3, width: 6, height: 6, fill: series.color }))
@@ -253,6 +319,99 @@ export function normalizeSource(source: ChartSource): ChartSource {
   const range = normalizeRange(source.range)
   if (source.orientation !== 'columns' && source.orientation !== 'rows') throw new TypeError(`Invalid chart source orientation: ${source.orientation}`)
   return { range, orientation: source.orientation }
+}
+
+function validateChartType(type: ChartType): void {
+  if (!['bar', 'line', 'area', 'pie', 'doughnut', 'stacked-column'].includes(type)) throw new TypeError(`Unsupported chart type: ${type}`)
+}
+
+function validateChartData(type: ChartType, data: ChartData, axis: ChartAxisOptions): void {
+  if (!data.categories.length || !data.series.length) throw new RangeError('Chart source must contain at least one category and value series')
+  if (data.series.some((series) => !series.values.length || series.values.length !== data.categories.length)) throw new RangeError('Chart series must have one value per category')
+  if (type === 'stacked-column' && axis.scaleType !== 'linear') throw new TypeError('Stacked column charts require a linear value axis')
+  if (type === 'pie' || type === 'doughnut') {
+    if (data.series.length !== 1) throw new RangeError(`${type} charts require exactly one value series`)
+    const values = data.series[0]!.values.filter((value): value is number => value !== null && Number.isFinite(value))
+    if (!values.length || values.some((value) => value < 0) || values.every((value) => value === 0)) throw new RangeError(`${type} charts require non-negative values with a positive total`)
+  }
+}
+
+function stackedExtents(data: ChartData): number[] {
+  const positive = Array.from({ length: data.categories.length }, () => 0)
+  const negative = Array.from({ length: data.categories.length }, () => 0)
+  for (const series of data.series) {
+    series.values.forEach((value, index) => {
+      if (value === null || !Number.isFinite(value)) return
+      if (value >= 0) positive[index] += value
+      else negative[index] += value
+    })
+  }
+  return [...positive, ...negative]
+}
+
+function renderPieChart(commands: DrawCommand[], layout: ChartLayout, data: ChartData, chart: ChartModel): void {
+  const series = data.series[0]
+  if (!series) return
+  const values = series.values.map((value) => Math.max(0, value ?? 0))
+  const total = values.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) return
+  const centerX = layout.plot.x + layout.plot.width / 2
+  const centerY = layout.plot.y + layout.plot.height / 2
+  const radius = Math.max(1, Math.min(layout.plot.width, layout.plot.height) * 0.43)
+  const colors = data.categories.map((_category, index) => CHART_COLORS[index % CHART_COLORS.length]!)
+  let start = -Math.PI / 2
+  values.forEach((value, index) => {
+    if (value <= 0) return
+    const end = start + Math.PI * 2 * value / total
+    const steps = Math.max(2, Math.ceil((end - start) / (Math.PI / 24)))
+    let previous = { x: centerX + Math.cos(start) * radius, y: centerY + Math.sin(start) * radius }
+    for (let step = 1; step <= steps; step += 1) {
+      const angle = start + (end - start) * step / steps
+      const point = { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius }
+      commands.push({ kind: 'polygon', points: [{ x: centerX, y: centerY }, previous, point], fill: colors[index]! })
+      previous = point
+    }
+    start = end
+  })
+  if (chart.type === 'doughnut') {
+    const innerRadius = radius * 0.55
+    for (let step = 0; step < 96; step += 1) {
+      const startAngle = step * Math.PI * 2 / 96
+      const endAngle = (step + 1) * Math.PI * 2 / 96
+      commands.push({ kind: 'polygon', points: [
+        { x: centerX, y: centerY },
+        { x: centerX + Math.cos(startAngle) * innerRadius, y: centerY + Math.sin(startAngle) * innerRadius },
+        { x: centerX + Math.cos(endAngle) * innerRadius, y: centerY + Math.sin(endAngle) * innerRadius },
+      ], fill: '#ffffff' })
+    }
+  }
+  if (chart.legend.visible) {
+    const y = chart.legend.position === 'top' ? layout.frame.y + 12 : layout.frame.y + layout.frame.height - 12
+    data.categories.forEach((category, index) => {
+      const x = layout.frame.x + 12 + index * Math.max(72, layout.frame.width / Math.max(1, data.categories.length + 1))
+      commands.push({ kind: 'rect', x, y: y - 5, width: 10, height: 10, fill: colors[index]! })
+      commands.push({ kind: 'text', x: x + 15, y, text: category, font: '11px Aptos, Arial, sans-serif', color: '#475569', baseline: 'middle' })
+    })
+  }
+}
+
+function areaSegments(previous: ChartPoint, point: ChartPoint, zero: number): Array<Array<{ x: number; y: number }>> {
+  if ((previous.y - zero) * (point.y - zero) >= 0) return [[
+    { x: previous.x, y: zero }, { x: previous.x, y: previous.y }, { x: point.x, y: point.y }, { x: point.x, y: zero },
+  ]]
+  const ratio = (zero - previous.y) / (point.y - previous.y)
+  const crossing = { x: previous.x + (point.x - previous.x) * ratio, y: zero }
+  return [
+    [{ x: previous.x, y: zero }, { x: previous.x, y: previous.y }, crossing],
+    [crossing, { x: point.x, y: point.y }, { x: point.x, y: zero }],
+  ]
+}
+
+function hexRgb(hex: string): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!match) return '37, 99, 235'
+  const value = match[1]!
+  return `${Number.parseInt(value.slice(0, 2), 16)}, ${Number.parseInt(value.slice(2, 4), 16)}, ${Number.parseInt(value.slice(4, 6), 16)}`
 }
 
 function readRowsChartData(matrix: CellScalar[][], chart: ChartModel): ChartData {

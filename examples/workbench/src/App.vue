@@ -2,7 +2,7 @@
 import { Input, Modal } from 'antdv-next'
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { DocumentWorkbench, ExcelWorkbench, OfficeLocaleKey, type OfficeLocale } from '@office-studio/office-studio'
+import { DocumentWorkbench, ExcelWorkbench, OfficeLocaleKey, OfficeTranslatorKey, type OfficeLocale } from '@office-studio/office-studio'
 import WorkspaceHeader, { type WorkspaceHeaderAction } from './WorkspaceHeader.vue'
 import { useWorkspaceController } from './useWorkspaceController'
 import type { FileAction } from './workspace-file-operations'
@@ -18,9 +18,17 @@ const {
 interface WorkbenchHandle { save: () => void; focus?: () => void }
 const workbookRef = ref<WorkbenchHandle | null>(null)
 const documentRef = ref<WorkbenchHandle | null>(null)
-const { locale } = useI18n()
-provide(OfficeLocaleKey, computed(() => locale.value === 'en-US' ? 'en-US' : 'zh-CN'))
-watch(locale, value => localStorage.setItem('office-studio.locale', value), { flush: 'sync' })
+const { locale, t, te } = useI18n()
+provide(OfficeLocaleKey, computed(() => locale.value as OfficeLocale))
+provide(OfficeTranslatorKey, (key, fallback) => {
+  const normalized = key.replace(/^(sheet|doc|core)\./, '')
+  return te(key) ? t(key) : te(normalized) ? t(normalized) : fallback
+})
+watch(locale, value => {
+  localStorage.setItem('office-studio.locale', value)
+  document.documentElement.lang = value
+  document.documentElement.dir = value === 'ar-SA' || value === 'fa-IR' ? 'rtl' : 'ltr'
+}, { flush: 'sync', immediate: true })
 let requestedAction: FileAction = 'save'
 
 function requestExport(action: FileAction = 'save'): void {
@@ -68,16 +76,16 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale === 'en-US' ? 'en-US' : 'zh-CN'"
       @action="onHeaderAction" @switch="switchWorkspace" @locale="locale = $event"
     />
-    <input :ref="setFileInput" class="file-input" type="file" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" aria-label="选择 Office 文件" @change="onFileChange">
+    <input :ref="setFileInput" class="file-input" type="file" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :aria-label="t('workspace.choose-file')" @change="onFileChange">
 
-    <main :id="editor.state.activeKind === 'workbook' ? 'workbook-workspace' : 'document-workspace'" class="workspace" role="tabpanel" :aria-labelledby="editor.state.activeKind === 'workbook' ? 'workbook-tab' : 'document-tab'" :aria-label="editor.state.activeKind === 'workbook' ? '表格编辑工作区' : '文档编辑工作区'">
+    <main :id="editor.state.activeKind === 'workbook' ? 'workbook-workspace' : 'document-workspace'" class="workspace" role="tabpanel" :aria-labelledby="editor.state.activeKind === 'workbook' ? 'workbook-tab' : 'document-tab'" :aria-label="editor.state.activeKind === 'workbook' ? t('workspace.workbook-area') : t('workspace.document-area')">
       <div v-if="editor.state.parserStatus === 'loading'" class="workspace-task-strip" role="status" aria-live="polite">
         <span class="workspace-task-spinner" aria-hidden="true" /><span>{{ editor.state.parserMessage }}</span>
-        <button type="button" @click="cancelImport">取消导入</button>
+        <button type="button" @click="cancelImport">{{ t('workspace.cancel-import') }}</button>
       </div>
       <div v-if="editor.state.parserStatus === 'error'" class="parser-error" role="alert">
         <span>{{ editor.state.parserMessage }}</span>
-        <button type="button" aria-label="关闭错误提示" @click="editor.state.parserStatus = 'idle'">×</button>
+        <button type="button" :aria-label="t('workspace.close-error')" @click="editor.state.parserStatus = 'idle'">×</button>
       </div>
       <KeepAlive :max="2">
         <ExcelWorkbench
@@ -98,19 +106,19 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 
     <div v-if="notice" :class="['notice', notice.type]" :role="notice.type === 'error' ? 'alert' : 'status'">{{ notice.message }}</div>
 
-    <Modal v-model:open="renameOpen" title="重命名文件" ok-text="确定" cancel-text="取消" @ok="renameFile">
-      <Input v-model:value="renameValue" aria-label="文件名称" :maxlength="255" :status="renameError ? 'error' : undefined" @press-enter="renameFile" />
+    <Modal v-model:open="renameOpen" :title="t('workspace.rename-title')" :ok-text="t('workspace.confirm')" :cancel-text="t('workspace.cancel')" @ok="renameFile">
+      <Input v-model:value="renameValue" :aria-label="t('workspace.file-name')" :maxlength="255" :status="renameError ? 'error' : undefined" @press-enter="renameFile" />
       <p v-if="renameError" class="workspace-dialog-error" role="alert">{{ renameError }}</p>
     </Modal>
-    <Modal :open="pendingNewKind !== null" :title="pendingNewKind === 'workbook' ? '新建工作簿' : '新建文档'" ok-text="继续新建" cancel-text="返回编辑" @ok="pendingNewKind && createNew(pendingNewKind)" @cancel="pendingNewKind = null">
-      <p>当前{{ pendingNewKind === 'workbook' ? '工作簿' : '文档' }}还有未保存的更改。请先取消并保存需要保留的内容，再新建文件。</p>
+    <Modal :open="pendingNewKind !== null" :title="pendingNewKind === 'workbook' ? t('workspace.new-workbook') : t('workspace.new-document')" :ok-text="t('workspace.continue-create')" :cancel-text="t('workspace.return-editing')" @ok="pendingNewKind && createNew(pendingNewKind)" @cancel="pendingNewKind = null">
+      <p>{{ t('workspace.pending-new', { kind: t(pendingNewKind === 'workbook' ? 'workspace.pending-workbook' : 'workspace.pending-document') }) }}</p>
     </Modal>
-    <Modal v-model:open="diagnosticsOpen" title="解析诊断" :footer="null">
-      <p v-if="!editor.state.diagnostics.length" class="workspace-diagnostics-empty">当前没有解析诊断。</p>
+    <Modal v-model:open="diagnosticsOpen" :title="t('workspace.diagnostics-title')" :footer="null">
+      <p v-if="!editor.state.diagnostics.length" class="workspace-diagnostics-empty">{{ t('workspace.no-diagnostics') }}</p>
       <ul v-else class="workspace-diagnostics">
         <li v-for="(diagnostic, index) in editor.state.diagnostics" :key="diagnostic.code + ':' + index" :data-severity="diagnostic.severity">
-          <strong>{{ diagnostic.severity === 'error' ? '错误' : diagnostic.severity === 'warning' ? '提示' : '信息' }} · {{ diagnostic.code }}</strong>
-          <p>{{ diagnostic.message }}</p><details v-if="diagnostic.details"><summary>查看详情</summary><pre>{{ diagnostic.details }}</pre></details>
+          <strong>{{ t(`workspace.severity-${diagnostic.severity}`) }} · {{ diagnostic.code }}</strong>
+          <p>{{ diagnostic.message }}</p><details v-if="diagnostic.details"><summary>{{ t('workspace.details') }}</summary><pre>{{ diagnostic.details }}</pre></details>
         </li>
       </ul>
     </Modal>

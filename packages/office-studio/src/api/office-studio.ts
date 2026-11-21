@@ -1,8 +1,10 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetFilterCriteria, SheetRangeProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { createCell } from '../domain/model'
+import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
 import { useEditorStore } from '../stores/editorStore'
@@ -37,6 +39,7 @@ import { NumericIndexService } from '../features/sheet-compute/numeric-index-ser
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { canEditProtectedRanges, removeSheetRangeProtectionRule, setSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
+import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import {
   createDocumentContentControl,
   removeDocumentContentControl,
@@ -324,11 +327,25 @@ export class OfficeStudio {
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
+    assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', permissionTargetsForChangedBlocks(before, after))
     after.id = id
     if (JSON.stringify(before) === JSON.stringify(after)) return false
     after.modified = true
     this.editor.history.execute(id, label, () => this.replaceDocumentModel(id, after), () => this.replaceDocumentModel(id, before))
     return true
+  }
+
+  private commitDocumentWithRangePermission(
+    id: string,
+    label: string,
+    startOffset: number,
+    endOffset: number,
+    update: (draft: DocumentModel) => void,
+  ): boolean {
+    const current = this.getDocumentModel(id)
+    if (!current) throw new Error(`Document not found: ${id}`)
+    assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', permissionTargetsForRange(current, startOffset, endOffset))
+    return this.commitDocument(id, label, update)
   }
 
   executeCommandSync<P, R>(id: string, params: P): R {
@@ -548,6 +565,28 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; sheetId: string; ruleId: string }, boolean>('sheet.command.remove-range-protection', ({ unitId, sheetId, ruleId }) => this.commitWorkbook(unitId, 'Remove range protection', (model) => {
       removeSheetRangeProtectionRule(requireSheet(model, sheetId), ruleId, this.currentUserId)
     }))
+    this.registerCommand<{ unitId: string; sheetId: string; patches: Record<string, SparklineSpec | null> }, boolean>('sheet.command.set-sparklines', ({ unitId, sheetId, patches }) => {
+      const normalizedPatches = Object.fromEntries(Object.entries(patches).map(([address, sparkline]) => [
+        address,
+        sparkline === null ? null : createSparklineSpec({ targetRange: address, ...sparkline }),
+      ])) as Record<string, SparklineSpec | null>
+      const positions = Object.keys(normalizedPatches).map(parseSparklineAddress)
+      for (const position of positions) this.assertCanEditRange(unitId, sheetId, {
+        startRow: position.row, endRow: position.row, startCol: position.column, endCol: position.column,
+      })
+      return this.commitWorkbook(unitId, 'Set sparklines', (model) => {
+        const sheet = requireSheet(model, sheetId)
+        for (const [address, sparkline] of Object.entries(normalizedPatches)) {
+          const position = parseSparklineAddress(address)
+          const key = `${position.row}:${position.column}`
+          const cell = sheet.cells[key] ?? (sparkline ? createCell(position.row, position.column) : undefined)
+          if (!cell) continue
+          if (sparkline) cell.sparkline = cloneModel(sparkline)
+          else delete cell.sparkline
+          if (sparkline) sheet.cells[key] = cell
+        }
+      })
+    })
     this.registerCommand<{ unitId: string; sheetId: string; chartId: string; chart: ChartConfig }, boolean>('sheet.command.add-chart', ({ unitId, sheetId, chartId, chart }) => this.commitWorkbook(unitId, 'Insert chart', (model) => {
       if (!model.sheets.some((item) => item.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
       if (model.charts?.some((item) => item.id === chartId)) throw new Error(`Chart already exists: ${chartId}`)
@@ -638,8 +677,14 @@ export class OfficeStudio {
     }))
     this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId)))
     this.registerCommand<{ unitId: string; name: string }, boolean>('doc.command.set-name', ({ unitId, name }) => this.commitDocument(unitId, 'Rename document', (model) => { model.name = name }))
-    this.registerCommand<{ unitId: string; index: number; text: string }, boolean>('doc.command.insert-text', ({ unitId, index, text }) => this.commitDocument(unitId, 'Insert text', (model) => Object.assign(model, insertDocumentText(model, index, text))))
-    this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocument(unitId, 'Edit text range', (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
+    this.registerCommand<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>('doc.command.set-document-permission-rules', ({ unitId, rules }) => this.commitDocument(unitId, 'Set document permission rules', (model) => {
+      assertDocumentPermission(model.permissionRules ?? [], { documentId: unitId, userId: this.currentUserId }, 'edit')
+      const next = rules ?? []
+      validateDocumentPermissionRules(next)
+      model.permissionRules = next.map(rule => ({ ...rule, userIds: [...rule.userIds] }))
+    }))
+    this.registerCommand<{ unitId: string; index: number; text: string }, boolean>('doc.command.insert-text', ({ unitId, index, text }) => this.commitDocumentWithRangePermission(unitId, 'Insert text', index, index, (model) => Object.assign(model, insertDocumentText(model, index, text))))
+    this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocumentWithRangePermission(unitId, 'Edit text range', startOffset, endOffset, (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
     this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {
       createDocumentContentControl(model, control, control.id)
     }))
@@ -746,6 +791,14 @@ function requireSheet(model: WorkbookModel, sheetId: string) {
   const sheet = model.sheets.find((candidate) => candidate.id === sheetId)
   if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
   return sheet
+}
+
+function parseSparklineAddress(address: string): { row: number; column: number } {
+  const match = /^([A-Z]+)([1-9]\d*)$/i.exec(address)
+  if (!match) throw new TypeError(`Invalid sparkline target address: ${address}`)
+  let column = 0
+  for (const letter of match[1]!.toUpperCase()) column = column * 26 + letter.charCodeAt(0) - 64
+  return { row: Number(match[2]) - 1, column: column - 1 }
 }
 
 function rangeEditFromParams(params: unknown): { sheetId: string; range: CellRange } | undefined {

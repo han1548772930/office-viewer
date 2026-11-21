@@ -120,6 +120,15 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
         if (previous && previous.texture === texture && previous.clip.x === clip.x && previous.clip.y === clip.y && previous.clip.width === clip.width && previous.clip.height === clip.height) previous.count += 6
         else batches.push({ texture, clip, start, count: 6 })
       }
+      const triangle = (points: number[], color: string, clip: RenderRect) => {
+        if (clip.width <= 0 || clip.height <= 0) return
+        const rgba = parseColor(color)
+        const start = vertices.length / 8
+        for (const index of [0, 1, 2]) vertices.push(points[index * 2]! / width * 2 - 1, 1 - points[index * 2 + 1]! / height * 2, 0, 0, ...rgba)
+        const previous = batches[batches.length - 1]
+        if (previous && previous.texture === white && previous.clip.x === clip.x && previous.clip.y === clip.y && previous.clip.width === clip.width && previous.clip.height === clip.height) previous.count += 3
+        else batches.push({ texture: white, clip, start, count: 3 })
+      }
       const rect = (r: RenderRect, fill: string, clip: RenderRect, texture = white, opacity = 1) => quad([r.x, r.y, r.x + r.width, r.y, r.x + r.width, r.y + r.height, r.x, r.y + r.height], fill, texture, clip, opacity)
       for (const command of scene.commands) {
         let clip = intersectRect(viewport, command.clip ?? viewport)
@@ -137,6 +146,15 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             const dx = command.x2 - command.x1, dy = command.y2 - command.y1, length = Math.hypot(dx, dy) || 1
             const ox = -dy / length * (command.width ?? 1) / 2, oy = dx / length * (command.width ?? 1) / 2
             quad([command.x1 + ox, command.y1 + oy, command.x2 + ox, command.y2 + oy, command.x2 - ox, command.y2 - oy, command.x1 - ox, command.y1 - oy], command.color, white, clip)
+            break
+          }
+          case 'polygon': {
+            if (command.points.length < 3) break
+            const origin = command.points[0]!
+            for (let index = 1; index < command.points.length - 1; index += 1) {
+              const second = command.points[index]!, third = command.points[index + 1]!
+              triangle([origin.x, origin.y, second.x, second.y, third.x, third.y], command.fill, clip)
+            }
             break
           }
           case 'text': {

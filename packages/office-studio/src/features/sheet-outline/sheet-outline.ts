@@ -6,6 +6,8 @@ export interface OutlineAxisState {
   groups: readonly SheetOutlineGroup[]
 }
 
+export type SheetOutlineOperation = 'group' | 'toggle' | 'remove'
+
 export function createSheetOutlineState(): SheetOutlineState {
   return { summaryAbove: false, summaryLeft: false, groups: [] }
 }
@@ -47,6 +49,37 @@ export function setSheetOutlineCollapsed(state: SheetOutlineState, id: string, c
 
 export function setSheetOutlineSummaryPosition(state: SheetOutlineState, axis: OutlineAxis, atStart: boolean): SheetOutlineState {
   return axis === 'row' ? { ...state, summaryAbove: atStart } : { ...state, summaryLeft: atStart }
+}
+
+export function setSheetOutlineLevel(state: SheetOutlineState, axis: OutlineAxis, level: number): SheetOutlineState {
+  if (!Number.isSafeInteger(level) || level < 1) throw new RangeError('Outline level must be a positive integer')
+  const groups = state.groups.filter(group => group.axis === axis).sort((left, right) => left.start - right.start || right.end - left.end)
+  const updated = groups.map(group => {
+    const depth = groups.filter(parent => parent.start <= group.start && parent.end >= group.end && (parent.start < group.start || parent.end > group.end)).length
+    return { ...group, collapsed: depth >= level - 1 }
+  })
+  const otherAxis = state.groups.filter(group => group.axis !== axis)
+  return { ...state, groups: [...otherAxis, ...updated] }
+}
+
+export function applySheetOutlineOperation(
+  state: SheetOutlineState,
+  axis: OutlineAxis,
+  operation: SheetOutlineOperation,
+  start: number,
+  end: number,
+  count: number,
+  id: string,
+): SheetOutlineState {
+  if (operation === 'group') return addSheetOutlineGroup(state, axis, start, end, count, id)
+  const matching = state.groups
+    .filter(group => group.axis === axis && group.start <= start && group.end >= end)
+    .sort((left, right) => (left.end - left.start) - (right.end - right.start))
+  const target = matching[0]
+  if (!target) throw new Error(`No outline group contains the selected ${axis} range`)
+  return operation === 'remove'
+    ? removeSheetOutlineGroup(state, target.id)
+    : setSheetOutlineCollapsed(state, target.id, !target.collapsed)
 }
 
 export function getOutlineDepth(state: OutlineAxisState, index: number): number {

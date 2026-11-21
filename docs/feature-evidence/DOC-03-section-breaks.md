@@ -15,6 +15,7 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 - Layout starts following content on the next page for `nextPage` and `nextColumn`. It skips a page when required by `evenPage` and `oddPage`. `continuous` retains the current page. This editor has no multi-column section layout model, so `nextColumn` currently advances to the next page.
 - DOCX export writes `w:br` page and column break markers. Section markers write paragraph-level `w:sectPr/w:type` for each supported break type.
 - DOCX import maps section start metadata and standalone page/column break paragraphs back to marker payloads. A manual break inside a paragraph with visible text remains a line break and emits a diagnostic warning.
+- Header/footer models now support structured `PAGE` and `NUMPAGES` fields. The editor recalculates their displayed values from the current page layout. DOCX export writes `w:fldSimple` instructions and import preserves the field names on the matching header/footer reference.
 
 ## Verification
 
@@ -23,11 +24,12 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 - The Docs browser test inserted an odd-page section break from the Ribbon and verified undo and redo, 1/1 focused test passed.
 - `cargo test --manifest-path crates/office-parser/Cargo.toml` passed, 11/11.
 - `cargo test --manifest-path crates/office-writer/Cargo.toml` passed, 42/42.
+- The page-field extension adds a layout contract proving current page and total pages update after a page break is inserted. Writer/parser DOCX contract verifies both field instructions survive export and parse.
 
 ## Unverified and remaining scope
 
-- Continuous sections do not yet carry section-specific page geometry, columns, headers, footers, page numbering, or link-to-previous behavior.
+- Continuous sections do not yet carry section-specific page geometry or columns. Header/footer content, page fields, and link-to-previous are modeled per section, but numbering formats, section-specific restart/continue settings, and page-field switches are not implemented.
 - Multi-column layout is not implemented. Consequently `nextColumn` cannot move to a remaining column.
 - Breaks embedded among visible text in one paragraph are not split into separate editable blocks on import.
 - Browser coverage verifies the odd-page Ribbon path. It does not exercise all break types or DOCX browser import/export round trips.
-- A generated DOCX has not been reopened in desktop Office software. DOC-03 remains unaccepted.
+- A generated DOCX has not been reopened in desktop Office software. The page-field export leaves the cached result empty and requests Word field refresh on open; the editor independently renders values from its current pagination. DOC-03 remains unaccepted.

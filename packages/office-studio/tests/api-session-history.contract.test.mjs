@@ -14,32 +14,32 @@ after(async () => { await server?.close() })
 function runtime(t, options) {
   const studio = new api.OfficeStudio(options)
   t.after(() => studio.dispose())
-  return { studio, univer: api.FUniver.newAPI(studio), editor: studio.editor }
+  return { studio, officeApi: api.FOffice.newAPI(studio), editor: studio.editor }
 }
 
 test('editor new-workbook and new-document actions synchronously register new API units and retain old facades', (t) => {
-  const { studio, univer, editor } = runtime(t)
-  const oldBook = univer.getActiveWorkbook()
-  const oldDocument = univer.getActiveDocument()
+  const { studio, officeApi, editor } = runtime(t)
+  const oldBook = officeApi.getActiveWorkbook()
+  const oldDocument = officeApi.getActiveDocument()
   oldBook.getActiveSheet().getRange('A1').setValue('old workbook content')
   oldDocument.insertText(0, 'old document content')
   const oldBookId = oldBook.getId()
   const oldDocumentId = oldDocument.getId()
   const created = []
-  univer.addEvent(univer.Event.WorkbookCreated, (event) => created.push(event.workbookId))
-  univer.addEvent(univer.Event.DocCreated, (event) => created.push(event.documentId))
+  officeApi.addEvent(officeApi.Event.WorkbookCreated, (event) => created.push(event.workbookId))
+  officeApi.addEvent(officeApi.Event.DocCreated, (event) => created.push(event.documentId))
   editor.newWorkbook()
   const newBookId = editor.state.workbook.id
   assert.notEqual(newBookId, oldBookId)
   assert.equal(studio.activeWorkbookId, newBookId)
-  assert.equal(univer.getActiveWorkbook().getId(), newBookId)
+  assert.equal(officeApi.getActiveWorkbook().getId(), newBookId)
   assert.equal(oldBook.getActiveSheet().getRange('A1').getValue(), 'old workbook content')
-  assert.equal(univer.getActiveWorkbook().getActiveSheet().getRange('A1').getValue(), null)
+  assert.equal(officeApi.getActiveWorkbook().getActiveSheet().getRange('A1').getValue(), null)
   editor.newDocument()
   const newDocumentId = editor.state.document.id
   assert.notEqual(newDocumentId, oldDocumentId)
   assert.equal(studio.activeDocumentId, newDocumentId)
-  assert.equal(univer.getDocument(newDocumentId).getText(), '')
+  assert.equal(officeApi.getDocument(newDocumentId).getText(), '')
   assert.equal(oldDocument.getText(), 'old document content')
   assert.deepEqual(created, [newBookId, newDocumentId])
   studio.activateWorkbook(oldBookId)
@@ -55,8 +55,8 @@ test('editor new-workbook and new-document actions synchronously register new AP
 })
 
 test('an imported normalized model becomes the matching active facade without replacing the former unit', async (t) => {
-  const { studio, univer, editor } = runtime(t)
-  const oldDocument = univer.getActiveDocument()
+  const { studio, officeApi, editor } = runtime(t)
+  const oldDocument = officeApi.getActiveDocument()
   oldDocument.insertText(0, 'keep old content')
   const imported = api.createBlankDocument()
   imported.id = 'synthetic-normalized-import'
@@ -66,23 +66,23 @@ test('an imported normalized model becomes the matching active facade without re
   editor.parser.parse = async () => ({ kind: 'document', model: imported, format: 'docx', fileName: imported.name, size: 128, parserVersion: 'fixture', diagnostics: [], capabilities: [], stats: {} })
   assert.equal(await editor.importFile({ name: imported.name }), true)
   assert.equal(studio.activeDocumentId, imported.id)
-  assert.equal(univer.getActiveDocument().getId(), imported.id)
-  assert.equal(univer.getDocument(imported.id).getText(), 'imported content')
+  assert.equal(officeApi.getActiveDocument().getId(), imported.id)
+  assert.equal(officeApi.getDocument(imported.id).getText(), 'imported content')
   assert.equal(oldDocument.getText(), 'keep old content')
   assert.equal(editor.canUndo, false)
   studio.activateDocument(oldDocument.getId())
   assert.equal(editor.canUndo, true)
   assert.equal(oldDocument.undo(), true)
   assert.equal(oldDocument.getText(), '')
-  assert.equal(univer.getDocument(imported.id).getText(), 'imported content')
+  assert.equal(officeApi.getDocument(imported.id).getText(), 'imported content')
 })
 
 test('sheet navigation has no content-history entry and undo/redo preserves the later active sheet', (t) => {
   const model = api.createBlankWorkbook()
   model.id = 'navigation-book'
   model.sheets.push(api.createBlankSheet('Second'))
-  const { univer, editor } = runtime(t, { workbook: model })
-  const book = univer.getActiveWorkbook()
+  const { officeApi, editor } = runtime(t, { workbook: model })
+  const book = officeApi.getActiveWorkbook()
   const [first, second] = book.getSheets()
   const originalRevision = editor.captureSavepoint('workbook').revision
   book.setActiveSheet(second)
@@ -106,11 +106,11 @@ test('sheet navigation has no content-history entry and undo/redo preserves the 
 })
 
 test('a savepoint completed for an inactive unit is reflected on activation without saving its neighbor', (t) => {
-  const { studio, univer, editor } = runtime(t)
-  const first = univer.getActiveWorkbook()
+  const { studio, officeApi, editor } = runtime(t)
+  const first = officeApi.getActiveWorkbook()
   first.getActiveSheet().getRange('A1').setValue('exported')
   const exported = editor.captureSavepoint('workbook')
-  const second = univer.createWorkbook({ name: 'Second' })
+  const second = officeApi.createWorkbook({ name: 'Second' })
   second.getActiveSheet().getRange('A1').setValue('unsaved')
   assert.equal(editor.markSaved(exported), true)
   assert.equal(studio.activeWorkbookId, second.getId())
@@ -125,51 +125,51 @@ test('a savepoint completed for an inactive unit is reflected on activation with
 })
 
 test('disposing the active workbook or document cannot resurrect it while creating the replacement unit', (t) => {
-  const { studio, univer } = runtime(t)
-  const book = univer.getActiveWorkbook()
-  const document = univer.getActiveDocument()
+  const { studio, officeApi } = runtime(t)
+  const book = officeApi.getActiveWorkbook()
+  const document = officeApi.getActiveDocument()
   const oldBookId = book.getId()
   const oldDocumentId = document.getId()
-  assert.equal(univer.disposeUnit(oldBookId), true)
+  assert.equal(officeApi.disposeUnit(oldBookId), true)
   assert.notEqual(studio.activeWorkbookId, oldBookId)
-  assert.equal(univer.getWorkbook(oldBookId), null)
+  assert.equal(officeApi.getWorkbook(oldBookId), null)
   assert.throws(() => book.getName(), /not found/)
-  assert.equal(univer.disposeUnit(oldDocumentId), true)
+  assert.equal(officeApi.disposeUnit(oldDocumentId), true)
   assert.notEqual(studio.activeDocumentId, oldDocumentId)
-  assert.equal(univer.getDocument(oldDocumentId), null)
+  assert.equal(officeApi.getDocument(oldDocumentId), null)
   assert.throws(() => document.getName(), /not found/)
 })
 
 test('runtime disposal stops model synchronization, clears event listeners and rejects further commands', (t) => {
-  const { studio, univer, editor } = runtime(t)
+  const { studio, officeApi, editor } = runtime(t)
   const created = []
   const lifecycle = []
-  univer.addEvent(univer.Event.WorkbookCreated, (event) => created.push(event.workbookId))
-  univer.addEvent(univer.Event.LifeCycleChanged, (event) => lifecycle.push(event.stage))
+  officeApi.addEvent(officeApi.Event.WorkbookCreated, (event) => created.push(event.workbookId))
+  officeApi.addEvent(officeApi.Event.LifeCycleChanged, (event) => lifecycle.push(event.stage))
   const activeId = studio.activeWorkbookId
   studio.dispose()
   studio.dispose()
   assert.deepEqual(lifecycle, ['disposed'])
-  assert.equal(univer.getActiveWorkbook(), null)
-  assert.equal(univer.getActiveDocument(), null)
+  assert.equal(officeApi.getActiveWorkbook(), null)
+  assert.equal(officeApi.getActiveDocument(), null)
   assert.equal(studio.getWorkbookModel(activeId), undefined)
-  assert.throws(() => univer.createWorkbook(), /disposed/i)
-  assert.throws(() => univer.executeCommandSync('sheet.command.set-workbook-name', { unitId: activeId, name: 'blocked' }), /disposed/i)
+  assert.throws(() => officeApi.createWorkbook(), /disposed/i)
+  assert.throws(() => officeApi.executeCommandSync('sheet.command.set-workbook-name', { unitId: activeId, name: 'blocked' }), /disposed/i)
   editor.newWorkbook()
   assert.equal(studio.activeWorkbookId, activeId, 'the disposed model watcher must not re-register new units')
-  assert.equal(univer.getWorkbook(editor.state.workbook.id), null)
+  assert.equal(officeApi.getWorkbook(editor.state.workbook.id), null)
   studio.events.emit('WorkbookCreated', { workbookId: 'after-dispose' })
   assert.deepEqual(created, [])
 })
 
 test('disposing a command registration removes the same command path used by API calls', (t) => {
-  const { univer } = runtime(t)
+  const { officeApi } = runtime(t)
   let executions = 0
-  const registration = univer.registerCommand('test.operation.count', ({ amount }) => { executions += amount; return executions })
-  assert.equal(univer.executeCommandSync('test.operation.count', { amount: 2 }), 2)
+  const registration = officeApi.registerCommand('test.operation.count', ({ amount }) => { executions += amount; return executions })
+  assert.equal(officeApi.executeCommandSync('test.operation.count', { amount: 2 }), 2)
   registration.dispose()
   registration.dispose()
-  assert.throws(() => univer.executeCommandSync('test.operation.count', { amount: 3 }), /Unknown command/)
+  assert.throws(() => officeApi.executeCommandSync('test.operation.count', { amount: 3 }), /Unknown command/)
   assert.equal(executions, 2)
 })
 
@@ -177,8 +177,8 @@ test('calculation revisions follow content edits rather than selection, active-s
   const model = api.createBlankWorkbook()
   model.id = 'compute-revision-book'
   model.sheets.push(api.createBlankSheet('Second'))
-  const { studio, univer } = runtime(t, { workbook: model })
-  const book = univer.getActiveWorkbook()
+  const { studio, officeApi } = runtime(t, { workbook: model })
+  const book = officeApi.getActiveWorkbook()
   const [first, second] = book.getSheets()
   const initial = studio.getWorkbookRevision(book.getId())
   book.setActiveSheet(second)

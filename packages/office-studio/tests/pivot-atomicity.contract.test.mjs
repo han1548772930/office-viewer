@@ -23,8 +23,8 @@ after(async () => {
 
 function setup() {
   const studio = new apiModule.OfficeStudio()
-  const univer = apiModule.FUniver.newAPI(studio)
-  const workbook = univer.getActiveWorkbook()
+  const officeApi = apiModule.FOffice.newAPI(studio)
+  const workbook = officeApi.getActiveWorkbook()
   const source = workbook.getActiveSheet()
   const target = workbook.insertSheet('Pivot')
   source.getRange('A1:C3').setValues([

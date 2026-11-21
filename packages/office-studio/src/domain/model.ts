@@ -79,6 +79,22 @@ export interface CellRange {
   endCol: number
 }
 
+export interface SheetTableColumn {
+  id: string
+  name: string
+}
+
+export interface SheetTableModel {
+  id: string
+  name: string
+  sheetId: string
+  range: CellRange
+  columns: SheetTableColumn[]
+  showHeaderRow: boolean
+  showTotalsRow: boolean
+  styleName: string
+}
+
 export type SheetSortDirection = 'ascending' | 'descending'
 export interface SheetSortCriterion { column: number; direction: SheetSortDirection }
 export type SheetFilterConditionOperator = 'equals' | 'doesNotEqual' | 'greaterThan' | 'greaterThanOrEqual' |
@@ -137,6 +153,25 @@ export interface SheetRangeProtectionRule {
   editState: SheetProtectionEditState
   viewState: SheetProtectionViewState
   metadata?: Record<string, unknown>
+}
+
+export type SheetConditionalFormatOperator = 'equal' | 'notEqual' | 'greaterThan' | 'greaterThanOrEqual' |
+  'lessThan' | 'lessThanOrEqual' | 'between' | 'notBetween'
+export interface SheetConditionalFormatStyle {
+  fill?: string
+  fontColor?: string
+  bold?: boolean
+}
+export interface SheetConditionalFormatRule {
+  id: string
+  type: 'cellIs'
+  ranges: CellRange[]
+  operator: SheetConditionalFormatOperator
+  formula1: string
+  formula2?: string
+  style: SheetConditionalFormatStyle
+  priority: number
+  stopIfTrue: boolean
 }
 export type SheetRangeProtectionDraft = Omit<SheetRangeProtectionRule, 'id' | 'permissionId' | 'ownerUserId'> & {
   id?: string
@@ -218,7 +253,7 @@ export interface PivotTableModel {
   revision: number
 }
 
-export type ChartType = 'bar' | 'line'
+export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-column'
 export type ChartSourceOrientation = 'columns' | 'rows'
 export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
 export type ChartAxisScaleType = 'linear' | 'log'
@@ -296,6 +331,7 @@ export interface SpreadsheetSheet {
   outline?: SheetOutlineState
   autoFilter?: SheetAutoFilter
   dataValidations?: SheetDataValidationRule[]
+  conditionalFormats?: SheetConditionalFormatRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
   hiddenColumns?: number[]
   defaultColumnWidth?: number
@@ -317,6 +353,7 @@ export interface WorkbookModel {
   id?: string
   metadata?: Record<string, unknown>
   pivotTables?: PivotTableModel[]
+  tables?: SheetTableModel[]
   charts?: ChartModel[]
   slicers?: SlicerModel[]
 }
@@ -433,9 +470,34 @@ export interface DocumentSectionHeaderFooter {
   firstPageFooter: string
   evenPageHeader: string
   evenPageFooter: string
+  pageFields?: DocumentPageField[]
   differentFirstPage: boolean
   differentOddEven: boolean
   linkToPrevious: boolean
+}
+
+export interface DocumentPageField {
+  story: 'header' | 'footer' | 'firstPageHeader' | 'firstPageFooter' | 'evenPageHeader' | 'evenPageFooter'
+  field: 'PAGE' | 'NUMPAGES'
+}
+
+export interface DocumentNote {
+  id: string
+  text: string
+  referenceBlockId: string
+  referenceRunId: string
+}
+
+export type DocumentPermissionAction = 'edit' | 'copy' | 'comment' | 'print' | 'export'
+export type DocumentPermissionScope = 'document' | 'section' | 'paragraph' | 'entity'
+
+export interface DocumentPermissionRule {
+  id: string
+  scope: DocumentPermissionScope
+  targetId?: string
+  action: DocumentPermissionAction
+  effect: 'allow' | 'deny'
+  userIds: string[]
 }
 
 export interface DocumentModel {
@@ -447,6 +509,9 @@ export interface DocumentModel {
   wordCount: number
   contentControls?: DocumentContentControl[]
   sectionHeaderFooters?: Record<string, DocumentSectionHeaderFooter>
+  permissionRules?: DocumentPermissionRule[]
+  footnotes?: Record<string, DocumentNote>
+  endnotes?: Record<string, DocumentNote>
   id?: string
   metadata?: Record<string, unknown>
 }

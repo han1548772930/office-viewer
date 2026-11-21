@@ -1,4 +1,4 @@
-import type { DocumentModel, DocumentSectionHeaderFooter } from '../../../domain/model'
+import type { DocumentModel, DocumentPageField, DocumentSectionHeaderFooter } from '../../../domain/model'
 
 export const DEFAULT_DOCUMENT_SECTION_ID = 'first'
 
@@ -37,12 +37,28 @@ export function applySectionHeaderFooter(
   for (const key of ['differentFirstPage', 'differentOddEven', 'linkToPrevious'] as const) {
     if (typeof next[key] !== 'boolean') throw new TypeError(`Invalid section ${key}`)
   }
+  if (next.pageFields !== undefined && (!Array.isArray(next.pageFields) || next.pageFields.some(field =>
+    !['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'].includes(field.story)
+      || !['PAGE', 'NUMPAGES'].includes(field.field)))) {
+    throw new TypeError('Invalid section page fields')
+  }
+  next.pageFields = next.pageFields?.map(field => ({ ...field }))
   if (sectionIndex > 0 && next.linkToPrevious) {
     const previous = resolveSectionHeaderFooter(model, sectionIds[sectionIndex - 1]!)
     model.sectionHeaderFooters = { ...model.sectionHeaderFooters, [sectionId]: { ...previous, linkToPrevious: true } }
   } else {
     model.sectionHeaderFooters = { ...model.sectionHeaderFooters, [sectionId]: next }
   }
+}
+
+export function insertSectionPageField(
+  model: DocumentModel,
+  sectionId: string,
+  story: DocumentPageField['story'],
+  field: DocumentPageField['field'],
+): void {
+  const current = resolveSectionHeaderFooter(model, sectionId)
+  applySectionHeaderFooter(model, sectionId, { pageFields: [...(current.pageFields ?? []), { story, field }] })
 }
 
 export function resolveSectionHeaderFooter(model: DocumentModel, sectionId: string): DocumentSectionHeaderFooter {

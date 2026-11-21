@@ -236,10 +236,10 @@ test('Docs keeps its logical text range while formatting through classic Ribbon'
 test('Docs traditional outline is configurable and navigates stable paragraph identities', async ({ page }) => {
   await page.evaluate(async () => {
     const runtimePath = performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(runtimePath) as RuntimeModule
+    const { officeAPI } = await import(runtimePath) as RuntimeModule
     const paragraphStyle = { align: 'left' as const, indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 }
     const run = (text: string) => ({ id: `run-${text}`, text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
-    univerAPI.createDocument({
+    officeAPI.createDocument({
       id: 'outline-browser-fixture', name: '大纲导航测试', kind: 'document', modified: false, wordCount: 0,
       page: { width: 794, height: 1123, marginTop: 72, marginRight: 72, marginBottom: 72, marginLeft: 72 },
       blocks: [

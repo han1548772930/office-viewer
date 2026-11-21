@@ -2,16 +2,17 @@ use crate::model::{
     AnchorCellPayload, AxisPayload, BorderPayload, CellPayload, ChartCachedPointPayload,
     ChartDrawingPayload, ChartPayload, ChartSeriesCachePayload, ChartSeriesPayload,
     ChartSeriesStylePayload, DataValidationPayload, DataValidationRangePayload, DimensionPayload,
-    DocumentModel, FontPayload, FreezePanePayload, HyperlinkPayload, LocalDefinedNamePayload,
+    DocumentModel, DocumentNotePayload, DocumentPayload, DocumentSectionLayoutPayload, DocumentStoryReferencePayload,
+    FontPayload, FreezePanePayload, HyperlinkPayload, LocalDefinedNamePayload,
     ParseEnvelope, ParseFailure, ParserDiagnostics, ProtectionPayload, RangePayload,
     RichTextRunPayload, SCHEMA_VERSION, SheetPayload, StyleLossPayload, StylePayload,
     WorkbookPayload, WorkbookPropertiesPayload,
 };
 use crate::validation_sidecar::ValidationSidecar;
-use duke_pages::{
-    BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, extract_document_blocks,
-    parse_document_model,
-};
+use crate::sparkline_sidecar::SparklineSidecar;
+use crate::pivot_sidecar::PivotSidecar;
+use crate::conditional_format_sidecar::ConditionalFormatSidecar;
+use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, extract_document_blocks, parse_document_model};
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use rxls::{Cell, Workbook};
@@ -66,6 +67,43 @@ fn parse_document_impl(
         "columnBreaks".into(),
         "sectionBreaks".into(),
     ]);
+    let section_layout = source_model
+        .metadata
+        .sections
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|section| DocumentSectionLayoutPayload {
+            start_node_index: section.start_node_index,
+            section_properties_xml: section.section_properties_xml.clone(),
+            header_sections: section
+                .header_sections
+                .iter()
+                .map(|reference| DocumentStoryReferencePayload {
+                    part_name: reference.part_name.clone(),
+                    reference_type: reference.reference_type.clone(),
+                    page_fields: page_fields_for_story_nodes(&source_model, &reference.part_name, true),
+                })
+                .collect(),
+            footer_sections: section
+                .footer_sections
+                .iter()
+                .map(|reference| DocumentStoryReferencePayload {
+                    part_name: reference.part_name.clone(),
+                    reference_type: reference.reference_type.clone(),
+                    page_fields: page_fields_for_story_nodes(&source_model, &reference.part_name, false),
+                })
+                .collect(),
+        })
+        .collect();
+    let even_and_odd_headers = source_model
+        .metadata
+        .compatibility
+        .as_ref()
+        .and_then(|settings| settings.even_and_odd_headers)
+        .unwrap_or(false);
+    let footnotes = source_model.metadata.footnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
+    let endnotes = source_model.metadata.endnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
     Ok(ParseEnvelope {
         schema_version: SCHEMA_VERSION,
         parser_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -73,9 +111,91 @@ fn parse_document_impl(
         file_name: file_name.to_owned(),
         size: bytes.len(),
         model: "document".into(),
-        payload: DocumentModel::Document(document),
+        payload: DocumentModel::Document(DocumentPayload {
+            document,
+            section_layout,
+            even_and_odd_headers,
+            footnotes,
+            endnotes,
+        }),
         diagnostics,
     })
+}
+
+fn page_fields_for_story_nodes(
+    source_model: &duke_pages::DocModel,
+    part_name: &str,
+    header: bool,
+) -> Vec<String> {
+    let metadata = serde_json::to_value(&source_model.metadata).unwrap_or(Value::Null);
+    let story_key = if header { "headerSections" } else { "footerSections" };
+    let mut fields = Vec::new();
+    let mut references = Vec::new();
+    references.extend(metadata[story_key].as_array().into_iter().flatten());
+    references.extend(
+        metadata["sections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|section| section[story_key].as_array().into_iter().flatten()),
+    );
+    for reference in references {
+        if reference["partName"].as_str() != Some(part_name) {
+            continue;
+        }
+        collect_page_fields(&reference["nodes"], &mut fields);
+    }
+    fields
+}
+
+fn collect_page_fields(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(xml) if xml.contains("instrText") || xml.contains("fldSimple") => {
+            for instruction in page_field_instructions(xml) {
+                if !output.contains(&instruction) {
+                    output.push(instruction);
+                }
+            }
+        }
+        Value::Array(values) => values.iter().for_each(|value| collect_page_fields(value, output)),
+        Value::Object(values) => values.values().for_each(|value| collect_page_fields(value, output)),
+        _ => {}
+    }
+}
+
+fn page_field_instructions(xml: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut remaining = xml;
+    while let Some(index) = remaining.find("w:fldSimple") {
+        remaining = &remaining[index..];
+        let Some(tag_end) = remaining.find('>') else { break };
+        let tag = &remaining[..tag_end];
+        if let Some(attribute) = tag.find("w:instr=") {
+            let value = remaining[attribute + "w:instr=".len()..].trim_start();
+            if let Some(quote) = value.chars().next() {
+                if let Some(end) = value[1..].find(quote) {
+                    push_page_field(&value[1..1 + end], &mut result);
+                }
+            }
+        }
+        remaining = &remaining[tag_end + 1..];
+    }
+    remaining = xml;
+    while let Some(index) = remaining.find("<w:instrText") {
+        remaining = &remaining[index..];
+        let Some(start) = remaining.find('>').map(|offset| offset + 1) else { break };
+        let Some(end) = remaining[start..].find("</w:instrText>") else { break };
+        push_page_field(&remaining[start..start + end], &mut result);
+        remaining = &remaining[start + end + "</w:instrText>".len()..];
+    }
+    result
+}
+
+fn push_page_field(instruction: &str, output: &mut Vec<String>) {
+    let name = instruction.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
+    if matches!(name.as_str(), "PAGE" | "NUMPAGES") && !output.contains(&name) {
+        output.push(name);
+    }
 }
 
 fn insert_section_breaks(document: &mut StructuredDocument, source_model: &duke_pages::DocModel) {
@@ -308,14 +428,45 @@ fn parse_workbook(
     } else {
         ValidationSidecar::default()
     };
-    let sheets = workbook
+    let mut sparkline_sidecar = if format == "xlsx" {
+        SparklineSidecar::read(bytes)
+    } else {
+        SparklineSidecar::default()
+    };
+    let pivot_sidecar = if format == "xlsx" {
+        PivotSidecar::read(bytes)
+    } else {
+        PivotSidecar::default()
+    };
+    let table_sidecar = if format == "xlsx" {
+        crate::table_sidecar::TableSidecar::read(bytes)
+    } else {
+        crate::table_sidecar::TableSidecar::default()
+    };
+    let mut conditional_format_sidecar = if format == "xlsx" {
+        ConditionalFormatSidecar::read(bytes)
+    } else {
+        ConditionalFormatSidecar::default()
+    };
+    let mut sheets = workbook
         .sheets
         .iter()
-        .map(|sheet| sheet_payload(sheet, &mut validation_sidecar))
+        .enumerate()
+        .map(|(index, sheet)| sheet_payload(sheet, index, &mut validation_sidecar, &mut sparkline_sidecar, &mut conditional_format_sidecar))
         .collect::<Vec<_>>();
+    for sheet in &mut sheets {
+        for chart in &mut sheet.charts {
+            chart.pivot_table_id = pivot_sidecar
+                .chart_pivot_ids
+                .get(&(sheet.name.clone(), chart.index))
+                .cloned();
+        }
+    }
     validation_sidecar.warn_unmatched_rules();
     let payload = WorkbookPayload {
         sheets,
+        pivot_tables: pivot_sidecar.pivot_tables,
+        tables: table_sidecar.tables,
         date1904: workbook.date1904,
         active_sheet: metadata.active_sheet,
         defined_names: workbook
@@ -349,6 +500,10 @@ fn parse_workbook(
         text_truncated: metadata.text_truncated,
     };
     let mut warnings = validation_sidecar.warnings;
+    warnings.extend(sparkline_sidecar.warnings);
+    warnings.extend(pivot_sidecar.warnings);
+    warnings.extend(conditional_format_sidecar.warnings);
+    warnings.extend(table_sidecar.warnings);
     if workbook.text_truncated {
         warnings.push("Some text cells were omitted after the parser allocation limit".into());
     }
@@ -365,9 +520,9 @@ fn parse_workbook(
     })
 }
 
-fn sheet_payload(sheet: &rxls::Sheet, validation_sidecar: &mut ValidationSidecar) -> SheetPayload {
+fn sheet_payload(sheet: &rxls::Sheet, index: usize, validation_sidecar: &mut ValidationSidecar, sparkline_sidecar: &mut SparklineSidecar, conditional_format_sidecar: &mut ConditionalFormatSidecar) -> SheetPayload {
     let metadata = sheet.metadata();
-    let cells = sheet
+    let mut cells: Vec<CellPayload> = sheet
         .display_cells()
         .map(|cell| {
             let (value, formula) = cell_value(cell.value);
@@ -398,9 +553,21 @@ fn sheet_payload(sheet: &rxls::Sheet, validation_sidecar: &mut ValidationSidecar
                     })
                     .unwrap_or_default(),
                 hyperlink: cell.hyperlink.map(str::to_owned),
+                sparkline: sparkline_sidecar.take(sheet.name.as_str(), &format!("{}{}", column_label(cell.col), cell.row + 1)),
             }
         })
         .collect();
+    let mut known = cells.iter().map(|cell: &CellPayload| (cell.row, cell.col)).collect::<std::collections::HashSet<_>>();
+    for (target, sparkline) in sparkline_sidecar.take_sheet(sheet.name.as_str()) {
+        let Some((row, col)) = parse_sparkline_target(&target) else { continue };
+        if known.insert((row, col)) {
+            cells.push(CellPayload {
+                row, col, value: Value::Null, data_type: "blank".into(), cached_data_type: None,
+                display: String::new(), formula: None, style: None, rich_text: Vec::new(),
+                hyperlink: None, sparkline: Some(sparkline),
+            });
+        }
+    }
     let dimensions =
         metadata.dimensions.map(
             |(first_row, first_col, last_row, last_col)| DimensionPayload {
@@ -463,6 +630,7 @@ fn sheet_payload(sheet: &rxls::Sheet, validation_sidecar: &mut ValidationSidecar
                 target: target.clone(),
             })
             .collect(),
+        conditional_formats: conditional_format_sidecar.take(index),
         data_validations: sheet
             .data_validations()
             .iter()
@@ -487,6 +655,29 @@ fn sheet_payload(sheet: &rxls::Sheet, validation_sidecar: &mut ValidationSidecar
             .map(|(index, chart)| chart_payload(index, chart, sheet.drawing_metadata()))
             .collect(),
     }
+}
+
+fn parse_sparkline_target(value: &str) -> Option<(u32, u16)> {
+    let split = value.find(|character: char| character.is_ascii_digit())?;
+    let (letters, digits) = value.split_at(split);
+    let mut column = 0u32;
+    for character in letters.bytes() {
+        if !character.is_ascii_alphabetic() { return None }
+        column = column.checked_mul(26)?.checked_add(u32::from(character.to_ascii_uppercase() - b'A' + 1))?;
+    }
+    let row = digits.parse::<u32>().ok()?.checked_sub(1)?;
+    Some((row, u16::try_from(column.checked_sub(1)?).ok()?))
+}
+
+fn column_label(index: u16) -> String {
+    let mut current = u32::from(index);
+    let mut label = String::new();
+    loop {
+        label.insert(0, char::from_u32(current % 26 + 65).unwrap());
+        if current < 26 { break }
+        current = current / 26 - 1;
+    }
+    label
 }
 
 fn data_validation_payload(
@@ -586,6 +777,7 @@ fn chart_payload(
             col: chart.to.1,
         },
         drawing,
+        pivot_table_id: None,
     }
 }
 
@@ -885,7 +1077,7 @@ mod tests {
     use super::{detect_format, normalize_rotation, parse_office_bytes};
     use duke_pages::{create_minimal_docx_package, package_to_bytes};
     use rxls::{Chart, ChartKind, DataValidation, DvKind, DvOp, Series, Workbook};
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::io::{Read, Write};
     use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -953,6 +1145,124 @@ mod tests {
             assert_eq!(blocks[1]["details"][detail_key], true, "{payload:#}");
             assert_eq!(blocks[2]["content"], "After");
         }
+    }
+
+    #[test]
+    fn docx_roundtrip_tags_for_code_blocks_and_latex_reach_structured_payload() {
+        let document_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+            <w:p><w:pPr><w:pStyle w:val="OfficeCodeBlock"/></w:pPr><w:bookmarkStart w:id="1" w:name="office_code_v1_typescript_1"/><w:r><w:t>const x = 1</w:t><w:br/><w:t>return x</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>
+            <w:p><w:sdt><w:sdtPr><w:tag w:val="office-latex:v1:inline"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>x^2</w:t></w:r></w:sdtContent></w:sdt></w:p>
+            <w:sectPr/></w:body></w:document>"#;
+        let package = create_minimal_docx_package(Some(document_xml));
+        let bytes = package_to_bytes(&package).expect("DOCX fixture should serialize");
+        let envelope =
+            parse_office_bytes(&bytes, "special-content.docx").expect("DOCX should parse");
+        let payload = serde_json::to_value(envelope).expect("parse envelope should serialize");
+        let blocks = payload["payload"]["data"]["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "{payload:#}");
+        assert_eq!(
+            blocks[0]["details"]["bookmarks"][0]["name"], "office_code_v1_typescript_1",
+            "{payload:#}"
+        );
+        assert_eq!(blocks[0]["content"], "const x = 1\nreturn x");
+        assert_eq!(
+            blocks[1]["children"][0]["details"]["field"]["tag"], "office-latex:v1:inline",
+            "{payload:#}"
+        );
+        assert_eq!(blocks[1]["content"], "x^2");
+    }
+
+    #[test]
+    fn writer_docx_section_headers_and_footers_reopen_with_references_and_settings() {
+        let model = serde_json::json!({
+            "kind": "document",
+            "name": "section headers",
+            "page": { "width": 794, "height": 1123, "marginTop": 72, "marginBottom": 72, "marginLeft": 72, "marginRight": 72 },
+            "blocks": [
+                { "id": "body-1", "type": "paragraph", "runs": [{ "text": "First section" }] },
+                { "id": "section-2", "type": "sectionBreak", "sectionBreak": { "type": "nextPage" }, "runs": [] },
+                { "id": "body-2", "type": "paragraph", "runs": [{ "text": "Second section" }] },
+                { "id": "section-3", "type": "sectionBreak", "sectionBreak": { "type": "continuous" }, "runs": [] },
+                { "id": "body-3", "type": "paragraph", "runs": [{ "text": "Third section" }] }
+            ],
+            "sectionHeaderFooters": {
+                "first": {
+                    "header": "Main & header",
+                    "footer": "Main footer",
+                    "pageFields": [
+                        { "story": "footer", "field": "PAGE" },
+                        { "story": "footer", "field": "NUMPAGES" }
+                    ]
+                },
+                "section-2": {
+                    "header": "Section header",
+                    "footer": "Section footer",
+                    "firstPageHeader": "Cover header",
+                    "firstPageFooter": "Cover footer",
+                    "evenPageHeader": "Even header",
+                    "evenPageFooter": "Even footer",
+                    "differentFirstPage": true,
+                    "differentOddEven": true,
+                    "linkToPrevious": false
+                },
+                "section-3": { "linkToPrevious": true }
+            }
+        });
+        let (bytes, warnings) = office_writer::export_docx_bytes(&model.to_string())
+            .expect("writer should create a DOCX with section stories");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let envelope = parse_office_bytes(&bytes, "section-headers.docx")
+            .expect("writer output should parse through the DOCX parser");
+        let value = serde_json::to_value(envelope).expect("parser envelope serializes");
+        let data = &value["payload"]["data"];
+        let sections = data["sectionLayout"].as_array().expect("section layout is exposed");
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0]["headerSections"][0]["referenceType"], "default");
+        assert_eq!(sections[0]["footerSections"][0]["pageFields"], serde_json::json!(["PAGE", "NUMPAGES"]));
+        assert_eq!(sections[1]["headerSections"][1]["referenceType"], "first");
+        assert_eq!(sections[1]["headerSections"][2]["referenceType"], "even");
+        assert!(sections[1]["sectionPropertiesXml"].as_str().unwrap().contains("titlePg"));
+        assert!(sections[2]["headerSections"].as_array().unwrap().is_empty());
+        assert!(sections[2]["footerSections"].as_array().unwrap().is_empty());
+        assert_eq!(data["evenAndOddHeaders"], true);
+
+        let stories = data["blocks"].as_array().unwrap();
+        assert!(stories.iter().any(|block| {
+            block["type"] == "header" && block["content"] == "Main & header"
+        }));
+        assert!(stories.iter().any(|block| {
+            block["type"] == "footer" && block["content"] == "Even footer"
+        }));
+    }
+
+    #[test]
+    fn docx_notes_are_exposed_with_inline_reference_metadata() {
+        let model = json!({
+            "kind": "document",
+            "name": "notes.docx",
+            "page": { "width": 794, "height": 1123, "marginTop": 72, "marginBottom": 72, "marginLeft": 72, "marginRight": 72 },
+            "blocks": [{ "id": "p1", "type": "paragraph", "runs": [
+                { "text": "Claim" },
+                { "text": "1", "metadata": { "note": { "type": "footnote", "noteId": "12" } } },
+                { "text": " and " },
+                { "text": "1", "metadata": { "note": { "type": "endnote", "noteId": "14" } } }
+            ] }],
+            "footnotes": { "12": { "id": "12", "text": "Footnote body" } },
+            "endnotes": { "14": { "id": "14", "text": "Endnote body" } }
+        });
+        let (bytes, warnings) = office_writer::export_docx_bytes(&model.to_string()).expect("writer emits note parts");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let envelope = parse_office_bytes(&bytes, "notes.docx").expect("DOCX with notes parses");
+        let value = serde_json::to_value(envelope).expect("parser envelope serializes");
+        let data = &value["payload"]["data"];
+        assert_eq!(data["footnotes"][0]["id"], "1");
+        assert_eq!(data["footnotes"][0]["text"], "Footnote body");
+        assert_eq!(data["endnotes"][0]["id"], "1");
+        let inlines = data["blocks"][0]["details"]["inlines"].as_array().expect("inline runs");
+        assert!(inlines.iter().any(|inline| inline["noteReference"]["kind"] == "footnote" && inline["noteReference"]["id"] == 1));
+        assert!(inlines.iter().any(|inline| inline["noteReference"]["kind"] == "endnote" && inline["noteReference"]["id"] == 1));
     }
 
     #[test]
@@ -1083,6 +1393,151 @@ mod tests {
         assert_eq!(validations[1]["ranges"][0]["endRow"], 3);
     }
 
+    #[test]
+    fn xlsx_sparkline_extension_reaches_the_canonical_cell_payload() {
+        let mut workbook = Workbook::new();
+        workbook.add_sheet("Data");
+        let bytes = add_xlsx_sparkline_extension(&workbook.to_xlsx());
+        let envelope = parse_office_bytes(&bytes, "sparkline-fixture.xlsx").expect("sparkline workbook parses");
+        let payload = serde_json::to_value(envelope).expect("payload serializes");
+        let cell = &payload["payload"]["data"]["sheets"][0]["cells"];
+        let sparkline = cell.as_array().unwrap().iter().find(|value| value["row"] == 0 && value["col"] == 5).expect("blank sparkline target is included as a cell");
+        assert_eq!(sparkline["sparkline"]["type"], "column");
+        assert_eq!(sparkline["sparkline"]["sourceRange"], "B1:E1");
+        assert_eq!(sparkline["sparkline"]["color"], "#167A55");
+        assert_eq!(sparkline["sparkline"]["negativeColor"], "#C43B3B");
+        assert_eq!(sparkline["sparkline"]["highPointColor"], "#F0A000");
+        assert_eq!(sparkline["sparkline"]["lowPointColor"], "#2B579A");
+        assert_eq!(sparkline["sparkline"]["emptyCells"], "zero");
+        assert_eq!(sparkline["sparkline"]["axis"], "custom");
+        assert_eq!(sparkline["sparkline"]["min"], -5.0);
+        assert_eq!(sparkline["sparkline"]["max"], 20.0);
+        assert!(payload["diagnostics"]["capabilities"].as_array().unwrap().iter().any(|value| value == "sparklines"));
+    }
+
+    #[test]
+    fn writer_conditional_format_xlsx_reopens_with_canonical_rules_and_styles() {
+        let model = json!({
+            "kind": "workbook", "name": "Conditional", "sheets": [{
+                "id": "sheet-1", "name": "Scores", "cells": {},
+                "conditionalFormats": [{
+                    "id": "high-score", "type": "cellIs",
+                    "ranges": [
+                        { "startRow": 0, "startCol": 0, "endRow": 4, "endCol": 0 },
+                        { "startRow": 0, "startCol": 2, "endRow": 4, "endCol": 2 }
+                    ],
+                    "operator": "between", "formula1": "80", "formula2": "100",
+                    "style": { "fill": "#00AA55", "fontColor": "#FFFFFF", "bold": true },
+                    "priority": 1, "stopIfTrue": true
+                }]
+            }]
+        });
+        let (bytes, warnings) = office_writer::export_xlsx_bytes(&model.to_string())
+            .expect("writer exports conditional formatting");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let envelope = parse_office_bytes(&bytes, "conditional-format.xlsx")
+            .expect("writer output with conditional formatting parses");
+        let payload = serde_json::to_value(envelope).expect("parse envelope serializes");
+        let sheet = &payload["payload"]["data"]["sheets"][0];
+        let rule = &sheet["conditionalFormats"][0];
+        assert_eq!(rule["id"], "conditional-1-1");
+        assert_eq!(rule["type"], "cellIs");
+        assert_eq!(rule["operator"], "between");
+        assert_eq!(rule["formula1"], "80");
+        assert_eq!(rule["formula2"], "100");
+        assert_eq!(rule["priority"], 1);
+        assert_eq!(rule["stopIfTrue"], true);
+        assert_eq!(rule["style"], json!({ "fill": "#00AA55", "fontColor": "#FFFFFF", "bold": true }));
+        assert_eq!(rule["ranges"].as_array().unwrap().len(), 2);
+        assert!(payload["diagnostics"]["capabilities"].as_array().unwrap().iter().any(|value| value == "conditionalFormatting"));
+    }
+
+    #[test]
+    fn writer_sparkline_xlsx_reopens_with_canonical_options() {
+        let model = serde_json::json!({
+            "kind": "workbook", "name": "Sparklines", "sheets": [{ "id": "sheet-1", "name": "Data", "cells": {
+                "F1": { "id": "0:5", "row": 0, "col": 5, "value": null, "formula": null, "display": "", "sparkline": {
+                    "type": "line", "sourceRange": "B1:E1", "color": "#167A55", "negativeColor": "#C43B3B",
+                    "highPointColor": "#F0A000", "lowPointColor": "#2B579A", "emptyCells": "connect", "axis": "custom", "min": -5.0, "max": 20.0
+                } }
+            } }]
+        });
+        let (bytes, warnings) = office_writer::export_xlsx_bytes(&model.to_string()).expect("writer produces XLSX");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let envelope = parse_office_bytes(&bytes, "writer-sparkline.xlsx").expect("writer XLSX reopens in parser");
+        let payload = serde_json::to_value(envelope).expect("payload serializes");
+        let cells = payload["payload"]["data"]["sheets"][0]["cells"].as_array().unwrap();
+        let target = cells.iter().find(|cell| cell["row"] == 0 && cell["col"] == 5).expect("target sparkline cell is retained");
+        assert_eq!(target["sparkline"]["type"], "line");
+        assert_eq!(target["sparkline"]["sourceRange"], "B1:E1");
+        assert_eq!(target["sparkline"]["emptyCells"], "connect");
+        assert_eq!(target["sparkline"]["axis"], "custom");
+        assert_eq!(target["sparkline"]["min"], -5.0);
+        assert_eq!(target["sparkline"]["max"], 20.0);
+        assert!(payload["diagnostics"]["capabilities"].as_array().unwrap().iter().any(|value| value == "sparklines"));
+    }
+
+    #[test]
+    fn writer_xlsx_tables_reopen_with_stable_names_ranges_columns_and_options() {
+        let model = serde_json::json!({
+            "kind":"workbook","name":"Tables","sheets":[{"id":"sheet-1","name":"Data","cells":{}}],
+            "tables":[{"id":"table-stable-id","name":"Orders","sheetId":"sheet-1","range":{"startRow":0,"startCol":0,"endRow":4,"endCol":1},"columns":[{"id":"c1","name":"Product"},{"id":"c2","name":"Amount"}],"showHeaderRow":true,"showTotalsRow":true,"styleName":"TableStyleMedium4"}]
+        });
+        let (bytes, warnings) = office_writer::export_xlsx_bytes(&model.to_string()).expect("writer emits table XLSX");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let envelope = parse_office_bytes(&bytes, "tables.xlsx").expect("table XLSX parses");
+        let payload = serde_json::to_value(envelope).expect("payload serializes");
+        let tables = payload["payload"]["data"]["tables"].as_array().expect("table definitions are present");
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0]["name"], "Orders");
+        assert_eq!(tables[0]["sheetName"], "Data");
+        assert_eq!(tables[0]["range"], json!({"startRow":0,"startCol":0,"endRow":4,"endCol":1}));
+        assert_eq!(tables[0]["columns"][1]["name"], "Amount");
+        assert_eq!(tables[0]["showTotalsRow"], true);
+        assert_eq!(tables[0]["styleName"], "TableStyleMedium4");
+    }
+
+    #[test]
+    fn writer_pivot_chart_xlsx_reopens_with_canonical_pivot_model_and_link() {
+        let model = serde_json::json!({
+            "kind":"workbook", "name":"Pivot", "sheets":[
+                {"id":"data","name":"Data","cells":{
+                    "A1":{"value":"Region"},"B1":{"value":"Sales"},
+                    "A2":{"value":"East"},"B2":{"value":10},
+                    "A3":{"value":"West"},"B3":{"value":20}
+                }},
+                {"id":"pivot","name":"Pivot View","cells":{
+                    "A1":{"value":"Region"},"B1":{"value":"Sales"},
+                    "A2":{"value":"East"},"B2":{"value":10},
+                    "A3":{"value":"West"},"B3":{"value":20}
+                }}
+            ],
+            "pivotTables":[{"id":"pivot-source-id",
+                "source":{"unitId":"workbook","subUnitId":"data","sheetName":"Data","range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1}},
+                "anchor":{"unitId":"workbook","subUnitId":"pivot","row":0,"col":0},
+                "outputRange":{"startRow":0,"startCol":0,"endRow":2,"endCol":1},
+                "fields":[{"id":"0","sourceColumn":0,"name":"Region","area":"row","position":0},{"id":"1","sourceColumn":1,"name":"Sales","area":"value","position":0,"aggregation":"sum","displayName":"Revenue"}],
+                "options":{"repeatRowLabels":true,"showRowGrandTotal":true,"showColGrandTotal":true,"showRowSubtotals":true,"showColSubtotals":true,"valuePosition":"column"},"revision":1
+            }],
+            "charts":[{"id":"chart-1","sheetId":"pivot","type":"bar","source":{"range":{"startRow":0,"startCol":0,"endRow":2,"endCol":1},"orientation":"columns"},"position":{"x":20,"y":20},"size":{"width":400,"height":240},"categoryField":0,"valueFields":[1],"pivotTableId":"pivot-source-id","legend":{"visible":true,"position":"bottom"},"xAxis":{"scaleType":"linear"},"yAxis":{"scaleType":"linear"}}]
+        });
+        let (bytes, warnings) = office_writer::export_xlsx_bytes(&model.to_string()).expect("writer exports pivot parts");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let envelope = parse_office_bytes(&bytes, "pivot.xlsx").expect("writer pivot XLSX reopens");
+        let payload = serde_json::to_value(envelope).expect("parse payload serializes");
+        let pivots = payload["payload"]["data"]["pivotTables"].as_array().expect("pivot models are restored");
+        assert_eq!(pivots.len(), 1, "pivot warnings: {}", payload["diagnostics"]["warnings"]);
+        let pivot = &pivots[0];
+        assert_eq!(pivot["source"]["sheetName"], "Data");
+        assert_eq!(pivot["source"]["range"], serde_json::json!({"startRow":0,"startCol":0,"endRow":2,"endCol":1}));
+        assert_eq!(pivot["anchor"]["subUnitId"], "Pivot View");
+        assert_eq!(pivot["outputRange"]["endCol"], 1);
+        assert_eq!(pivot["fields"][0]["area"], "row");
+        assert_eq!(pivot["fields"][1]["aggregation"], "sum");
+        let chart = &payload["payload"]["data"]["sheets"][1]["charts"][0];
+        assert_eq!(chart["pivotTableId"], pivot["id"], "chart payload: {chart}");
+    }
+
     fn add_xlsx_validation_attributes(bytes: &[u8]) -> Vec<u8> {
         let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid XLSX ZIP");
         let mut output = ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -1115,6 +1570,26 @@ mod tests {
             output
                 .write_all(&contents)
                 .expect("write XLSX package contents");
+        }
+        output.finish().expect("finish XLSX ZIP").into_inner()
+    }
+
+    fn add_xlsx_sparkline_extension(bytes: &[u8]) -> Vec<u8> {
+        let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid XLSX ZIP");
+        let mut output = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).expect("XLSX package entry");
+            let name = entry.name().to_owned();
+            let mut contents = Vec::new();
+            entry.read_to_end(&mut contents).expect("XLSX package entry contents");
+            if name == "xl/worksheets/sheet1.xml" {
+                let mut xml = String::from_utf8(contents).expect("worksheet XML is UTF-8");
+                let ext = "<extLst><ext uri=\"{05C60535-1F16-4fd2-B633-F4F36F0B64E0}\"><x14:sparklineGroups xmlns:x14=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main\" xmlns:xm=\"http://schemas.microsoft.com/office/excel/2006/main\"><x14:sparklineGroup type=\"column\" displayEmptyCellsAs=\"zero\" minAxisType=\"custom\" maxAxisType=\"custom\" manualMin=\"-5\" manualMax=\"20\" negative=\"1\" high=\"1\" low=\"1\"><x14:colorSeries rgb=\"FF167A55\"/><x14:colorNegative rgb=\"FFC43B3B\"/><x14:colorHigh rgb=\"FFF0A000\"/><x14:colorLow rgb=\"FF2B579A\"/><x14:sparklines><x14:sparkline><xm:f>'Data'!B1:E1</xm:f><xm:sqref>F1</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext></extLst>";
+                xml.insert_str(xml.rfind("</worksheet>").expect("worksheet close"), ext);
+                contents = xml.into_bytes();
+            }
+            output.start_file(name, SimpleFileOptions::default()).expect("write XLSX package entry");
+            output.write_all(&contents).expect("write XLSX package contents");
         }
         output.finish().expect("finish XLSX ZIP").into_inner()
     }

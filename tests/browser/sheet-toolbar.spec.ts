@@ -39,8 +39,8 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('grid', { name: '工作表画布', exact: true })).toBeVisible()
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
-    const workbook = univerAPI.createWorkbook({ id: 'sheet-toolbar-workbook', name: '格式与顶部交互' })
+    const { officeAPI } = await import(path) as RuntimeModule
+    const workbook = officeAPI.createWorkbook({ id: 'sheet-toolbar-workbook', name: '格式与顶部交互' })
     const sheet = workbook.getActiveSheet()!
     sheet.getRange('A1:B4').setValues([[1234.5, 10], [.25, 20], [61.5, 30], ['1234.5', 40]])
   })
@@ -85,6 +85,31 @@ test('toolbar applies strike, font stepping, vertical alignment and range border
   expect(errors).toEqual([])
 })
 
+test('format painter applies once to the completed drag range and participates in history', async ({ page }) => {
+  await click(page, '鍔犵矖')
+  await address(page, 'A1')
+  await click(page, '鏍煎紡鍒?')
+
+  const grid = page.getByRole('grid', { name: '宸ヤ綔琛ㄧ敾甯?, exact: true })
+  const bounds = await grid.boundingBox()
+  expect(bounds).not.toBeNull()
+  if (!bounds) return
+  const start = { x: bounds.x + 44 + 152 + 56, y: bounds.y + 26 + 26 + 13 }
+  const end = { x: bounds.x + 44 + 152 + 112 + 56, y: bounds.y + 26 + 26 + 26 + 13 }
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await page.mouse.move(end.x, end.y, { steps: 4 })
+  await page.mouse.up()
+
+  for (const key of ['1:1', '2:1', '1:2', '2:2']) {
+    await expect.poll(async () => (await cell(page, key))?.style.font.bold).toBe(true)
+  }
+  await click(page, '鎾ら攢')
+  await expect.poll(async () => (await cell(page, '1:1'))?.style.font.bold).not.toBe(true)
+  await click(page, '閲嶅仛')
+  await expect.poll(async () => (await cell(page, '2:2'))?.style.font.bold).toBe(true)
+})
+
 test('number-format controls change rendered domain display, decimal places and persisted raw values', async ({ page }) => {
   await format(page, '货币')
   await expect.poll(async () => (await cell(page))?.display).toBe('¥1,234.50')
@@ -106,10 +131,10 @@ test('number-format controls change rendered domain display, decimal places and 
   await expect.poll(async () => (await cell(page, '3:0'))?.display).toBe('1234.5')
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
-    const saved = JSON.parse(JSON.stringify(univerAPI.getActiveWorkbook()!.save())) as WorkbookModel
-    univerAPI.disposeUnit(saved.id!)
-    univerAPI.createWorkbook(saved)
+    const { officeAPI } = await import(path) as RuntimeModule
+    const saved = JSON.parse(JSON.stringify(officeAPI.getActiveWorkbook()!.save())) as WorkbookModel
+    officeAPI.disposeUnit(saved.id!)
+    officeAPI.createWorkbook(saved)
   })
   await expect.poll(async () => (await cell(page))?.style.numberFormat).toContain('¥')
   expect((await cell(page))?.value).toBe(1234.5)
@@ -214,10 +239,10 @@ test('data-validation list options render on the cell input bridge and persist a
 
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
-    const saved = JSON.parse(JSON.stringify(univerAPI.getActiveWorkbook()!.save())) as WorkbookModel
-    univerAPI.disposeUnit(saved.id!)
-    univerAPI.createWorkbook(saved)
+    const { officeAPI } = await import(path) as RuntimeModule
+    const saved = JSON.parse(JSON.stringify(officeAPI.getActiveWorkbook()!.save())) as WorkbookModel
+    officeAPI.disposeUnit(saved.id!)
+    officeAPI.createWorkbook(saved)
   })
   await address(page, 'B1')
   await grid.press('A')
@@ -227,8 +252,8 @@ test('data-validation list options render on the cell input bridge and persist a
 test('text rotation, vertical text and shrink-to-fit redraw and participate in undo/redo', async ({ page }) => {
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
-    univerAPI.getActiveWorkbook()!.getActiveSheet()!.getRange('A1').setValues([['A long heading that should be compressed to fit this worksheet column']])
+    const { officeAPI } = await import(path) as RuntimeModule
+    officeAPI.getActiveWorkbook()!.getActiveSheet()!.getRange('A1').setValues([['A long heading that should be compressed to fit this worksheet column']])
   })
   await address(page, 'A1')
   const canvas = page.locator('.canvas-surface canvas')

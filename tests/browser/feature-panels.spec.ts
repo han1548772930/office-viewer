@@ -16,12 +16,12 @@ async function selectOption(page: Page, combobox: Locator, label: string): Promi
 async function state(page: Page): Promise<{ workbook: WorkbookModel; document: DocumentModel; pivotData: CellScalar[][]; documentText: string }> {
   return page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { studio, univerAPI } = await import(path) as RuntimeModule
+    const { studio, officeAPI } = await import(path) as RuntimeModule
     return JSON.parse(JSON.stringify({
       workbook: studio.getWorkbookModel(studio.activeWorkbookId),
       document: studio.getDocumentModel(studio.activeDocumentId),
-      pivotData: univerAPI.getActiveWorkbook()?.getPivotTables()[0]?.getData() ?? [],
-      documentText: univerAPI.getActiveDocument()?.getText() ?? '',
+      pivotData: officeAPI.getActiveWorkbook()?.getPivotTables()[0]?.getData() ?? [],
+      documentText: officeAPI.getActiveDocument()?.getText() ?? '',
     }))
   })
 }
@@ -29,8 +29,8 @@ async function state(page: Page): Promise<{ workbook: WorkbookModel; document: D
 async function seedPivot(page: Page, mode: 'region' | 'date'): Promise<void> {
   await page.evaluate(async (dataMode) => {
     const path = performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
-    const workbook = univerAPI.createWorkbook({ id: 'feature-panels-workbook', name: '面板交互验收', date1904: false })
+    const { officeAPI } = await import(path) as RuntimeModule
+    const workbook = officeAPI.createWorkbook({ id: 'feature-panels-workbook', name: '面板交互验收', date1904: false })
     const source = workbook.getActiveSheet()!
     const values: CellScalar[][] = dataMode === 'region'
       ? [['地区', '销售额'], ['华东', 100], ['华南', 200], ['华北', 300], ['华东', 50]]
@@ -78,17 +78,17 @@ async function history(page: Page, action: '撤销' | '重做'): Promise<void> {
 async function reopenSnapshot(page: Page, kind: 'workbook' | 'document'): Promise<void> {
   await page.evaluate(async (unitKind) => {
     const path = performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as RuntimeModule
+    const { officeAPI } = await import(path) as RuntimeModule
     if (unitKind === 'workbook') {
-      const original = univerAPI.getActiveWorkbook()!
+      const original = officeAPI.getActiveWorkbook()!
       const snapshot = JSON.parse(JSON.stringify(original.save())) as WorkbookModel
-      univerAPI.disposeUnit(original.getId())
-      univerAPI.createWorkbook(snapshot)
+      officeAPI.disposeUnit(original.getId())
+      officeAPI.createWorkbook(snapshot)
     } else {
-      const original = univerAPI.getActiveDocument()!
+      const original = officeAPI.getActiveDocument()!
       const snapshot = JSON.parse(JSON.stringify(original.save())) as DocumentModel
-      univerAPI.disposeUnit(original.getId())
-      univerAPI.createDocument(snapshot)
+      officeAPI.disposeUnit(original.getId())
+      officeAPI.createDocument(snapshot)
     }
   }, kind)
 }

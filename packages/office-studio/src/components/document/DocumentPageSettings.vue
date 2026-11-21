@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { InputNumber, Modal } from 'antdv-next'
-import { ref, watch } from 'vue'
+import { inject, ref, watch } from 'vue'
 import type { DocumentPageSetup } from '../../domain/model'
 import { documentPageSettingsError } from './document-page-settings'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ open: boolean; page: DocumentPageSetup }>()
 const emit = defineEmits<{ 'update:open': [open: boolean]; apply: [page: DocumentPageSetup] }>()
+const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const draft = ref({ ...props.page })
 const error = ref('')
 watch(() => props.open, (open) => { if (open) { draft.value = { ...props.page }; error.value = '' } })
@@ -18,11 +20,11 @@ function apply() {
 </script>
 
 <template>
-  <Modal :open="open" title="页面设置" ok-text="应用" cancel-text="取消" :width="460" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)">
+  <Modal :open="open" :title="t('doc.page-settings.title', '页面设置')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.cancel', '取消')" :width="460" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)">
     <div class="page-settings-form">
-      <p>尺寸和页边距的单位为像素（96 DPI）。</p>
-      <fieldset><legend>纸张尺寸</legend><label>宽度<InputNumber v-model:value="draft.width" aria-label="纸张宽度" :min="200" :precision="1" /></label><label>高度<InputNumber v-model:value="draft.height" aria-label="纸张高度" :min="240" :precision="1" /></label></fieldset>
-      <fieldset><legend>页边距</legend><label>上<InputNumber v-model:value="draft.marginTop" aria-label="上边距" :min="0" :precision="1" /></label><label>下<InputNumber v-model:value="draft.marginBottom" aria-label="下边距" :min="0" :precision="1" /></label><label>左<InputNumber v-model:value="draft.marginLeft" aria-label="左边距" :min="0" :precision="1" /></label><label>右<InputNumber v-model:value="draft.marginRight" aria-label="右边距" :min="0" :precision="1" /></label></fieldset>
+      <p>{{ t('doc.page-settings.units', '尺寸和页边距的单位为像素（96 DPI）。') }}</p>
+      <fieldset><legend>{{ t('doc.page-settings.paper', '纸张尺寸') }}</legend><label>{{ t('doc.page-settings.width', '宽度') }}<InputNumber v-model:value="draft.width" :aria-label="t('doc.page-settings.width-aria', '纸张宽度')" :min="200" :precision="1" /></label><label>{{ t('doc.page-settings.height', '高度') }}<InputNumber v-model:value="draft.height" :aria-label="t('doc.page-settings.height-aria', '纸张高度')" :min="240" :precision="1" /></label></fieldset>
+      <fieldset><legend>{{ t('doc.page-settings.margins', '页边距') }}</legend><label>{{ t('doc.page-settings.margin-top', '上') }}<InputNumber v-model:value="draft.marginTop" :aria-label="t('doc.page-settings.margin-top-aria', '上边距')" :min="0" :precision="1" /></label><label>{{ t('doc.page-settings.margin-bottom', '下') }}<InputNumber v-model:value="draft.marginBottom" :aria-label="t('doc.page-settings.margin-bottom-aria', '下边距')" :min="0" :precision="1" /></label><label>{{ t('doc.page-settings.margin-left', '左') }}<InputNumber v-model:value="draft.marginLeft" :aria-label="t('doc.page-settings.margin-left-aria', '左边距')" :min="0" :precision="1" /></label><label>{{ t('doc.page-settings.margin-right', '右') }}<InputNumber v-model:value="draft.marginRight" :aria-label="t('doc.page-settings.margin-right-aria', '右边距')" :min="0" :precision="1" /></label></fieldset>
       <p v-if="error" class="page-settings-error" role="alert">{{ error }}</p>
     </div>
   </Modal>

@@ -1,4 +1,4 @@
-import { defaultCellStyle, type CellScalar, type SheetRangeProtectionRule, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel, type SheetDataValidationRule } from '../domain/model.ts'
+import { defaultCellStyle, type CellScalar, type ChartModel, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel, type SheetDataValidationRule } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 
@@ -21,6 +21,7 @@ function normalizeCell(value: unknown): SpreadsheetCell {
     cachedDataType: typeof raw.cachedDataType === 'string' ? raw.cachedDataType : null,
     richText: array(raw.richText).map(record),
     hyperlink: typeof raw.hyperlink === 'string' ? raw.hyperlink : null,
+    sparkline: normalizeSparkline(raw.sparkline),
     style: {
       ...base,
       font: {
@@ -37,6 +38,26 @@ function normalizeCell(value: unknown): SpreadsheetCell {
       shrinkToFit: !wrap && style.shrinkToFit === true, border: record(style.border), metadata: style,
     },
     metadata: { source: raw },
+  }
+}
+
+function normalizeSparkline(value: unknown): SparklineSpec | undefined {
+  const raw = record(value)
+  const type = raw.type
+  if (type !== 'line' && type !== 'column' && type !== 'winloss') return undefined
+  const color = text(raw.color)
+  const sourceRange = text(raw.sourceRange)
+  if (!/^#[0-9a-f]{6}$/i.test(color) || !/^[A-Z]{1,3}[1-9]\d*(?::[A-Z]{1,3}[1-9]\d*)?$/i.test(sourceRange)) return undefined
+  const optionalColor = (candidate: unknown) => typeof candidate === 'string' && /^#[0-9a-f]{6}$/i.test(candidate) ? candidate : undefined
+  const emptyCells = raw.emptyCells === 'zero' || raw.emptyCells === 'connect' ? raw.emptyCells : 'gap'
+  const axis = raw.axis === 'custom' ? 'custom' : 'individual'
+  const minimum = finite(raw.min, Number.NaN)
+  const maximum = finite(raw.max, Number.NaN)
+  return {
+    type, sourceRange: sourceRange.toUpperCase(), color,
+    negativeColor: optionalColor(raw.negativeColor), highPointColor: optionalColor(raw.highPointColor), lowPointColor: optionalColor(raw.lowPointColor),
+    emptyCells, axis,
+    ...(axis === 'custom' && Number.isFinite(minimum) && Number.isFinite(maximum) && minimum < maximum ? { min: minimum, max: maximum } : {}),
   }
 }
 
@@ -106,6 +127,36 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
         ? item.renderMode.toLowerCase() as SheetDataValidationRule['renderMode'] : undefined,
     }]
   })
+  const conditionalFormats = array(raw.conditionalFormats).flatMap((value): SheetConditionalFormatRule[] => {
+    const item = record(value)
+    if (item.type !== 'cellIs' || typeof item.id !== 'string') return []
+    const operators: Record<string, SheetConditionalFormatRule['operator']> = {
+      equal: 'equal', notequal: 'notEqual', greaterthan: 'greaterThan', greaterthanorequal: 'greaterThanOrEqual',
+      lessthan: 'lessThan', lessthanorequal: 'lessThanOrEqual', between: 'between', notbetween: 'notBetween',
+    }
+    const operator = typeof item.operator === 'string' ? operators[item.operator.toLowerCase()] : undefined
+    const ranges = array(item.ranges).flatMap(rangeValue => {
+      const range = record(rangeValue)
+      const startRow = finite(range.startRow, -1), startCol = finite(range.startCol, -1)
+      const endRow = finite(range.endRow, -1), endCol = finite(range.endCol, -1)
+      return Number.isInteger(startRow) && Number.isInteger(startCol) && Number.isInteger(endRow) && Number.isInteger(endCol) &&
+        startRow >= 0 && startCol >= 0 && endRow >= startRow && endCol >= startCol
+        ? [{ startRow, startCol, endRow, endCol }]
+        : []
+    })
+    if (!operator || !ranges.length || typeof item.formula1 !== 'string') return []
+    const style = record(item.style)
+    return [{
+      id: item.id, type: 'cellIs', ranges, operator, formula1: item.formula1,
+      ...(typeof item.formula2 === 'string' ? { formula2: item.formula2 } : {}),
+      style: {
+        ...(typeof style.fill === 'string' ? { fill: style.fill } : {}),
+        ...(typeof style.fontColor === 'string' ? { fontColor: style.fontColor } : {}),
+        ...(typeof style.bold === 'boolean' ? { bold: style.bold } : {}),
+      },
+      priority: Math.max(1, Math.floor(finite(item.priority, 1))), stopIfTrue: item.stopIfTrue === true,
+    }]
+  })
   const rangeProtectionRules = array(raw.rangeProtectionRules).flatMap((value): SheetRangeProtectionRule[] => {
     const item = record(value)
     const id = typeof item.id === 'string' ? item.id : ''
@@ -145,6 +196,7 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
     hiddenRows: array(raw.hiddenRows).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
     hiddenColumns: array(raw.hiddenColumns).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
     dataValidations,
+    conditionalFormats,
     rangeProtectionRules,
     defaultColumnWidth: positive(raw.defaultColumnWidth, 96), defaultRowHeight: positive(raw.defaultRowHeight, 24),
     rowCount: Math.max(rowCount, finite(dimensions.lastRow, -1) + 1),
@@ -154,15 +206,125 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
   }
 }
 
+function normalizePivotCharts(rawSheets: unknown, sheets: SpreadsheetSheet[], pivots: PivotTableModel[]): ChartModel[] {
+  return array(rawSheets).flatMap((sheetValue, sheetIndex) => {
+    const rawSheet = record(sheetValue)
+    const sheetId = sheets[sheetIndex]?.id
+    if (!sheetId) return []
+    return array(rawSheet.charts).flatMap((chartValue, chartIndex): ChartModel[] => {
+      const raw = record(chartValue)
+      const pivotTableId = typeof raw.pivotTableId === 'string' ? raw.pivotTableId : ''
+      const pivot = pivots.find(candidate => candidate.id === pivotTableId)
+      if (!pivot || !pivot.outputRange) return []
+      const type = raw.kind
+      if (type !== 'bar' && type !== 'line' && type !== 'area' && type !== 'pie' && type !== 'doughnut' && type !== 'stacked-column') return []
+      const drawing = record(raw.drawing)
+      const fromOffset = Array.isArray(drawing.fromOffsetEmu) ? drawing.fromOffsetEmu : []
+      const sizeEmu = Array.isArray(drawing.absoluteSizeEmu) ? drawing.absoluteSizeEmu : []
+      return [{
+        id: `pivot-chart-${sheetIndex + 1}-${chartIndex + 1}`, sheetId, type,
+        source: { range: { ...pivot.outputRange }, orientation: 'columns' },
+        position: { x: Math.max(0, finite(fromOffset[0]) / 9525), y: Math.max(0, finite(fromOffset[1]) / 9525) },
+        size: { width: Math.max(1, finite(sizeEmu[0], 480 * 9525) / 9525), height: Math.max(1, finite(sizeEmu[1], 320 * 9525) / 9525) },
+        ...(typeof raw.title === 'string' ? { title: raw.title } : {}),
+        legend: { visible: raw.legend !== false, position: 'bottom' }, categoryField: 0, valueFields: [], pivotTableId,
+        xAxis: { title: typeof raw.xAxisTitle === 'string' ? raw.xAxisTitle : undefined, scaleType: 'linear' },
+        yAxis: { title: typeof raw.yAxisTitle === 'string' ? raw.yAxisTitle : undefined, scaleType: 'linear' }, revision: 0,
+      }]
+    })
+  })
+}
+
+function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId: string): PivotTableModel[] {
+  const sheetIdByName = new Map(sheets.map(sheet => [sheet.name, sheet.id]))
+  return array(value).flatMap((value, index): PivotTableModel[] => {
+    const raw = record(value)
+    const source = record(raw.source)
+    const anchor = record(raw.anchor)
+    const sourceSheetId = sheetIdByName.get(text(source.sheetName))
+    const targetSheetId = sheetIdByName.get(text(anchor.subUnitId))
+    if (!sourceSheetId || !targetSheetId) return []
+
+    const sourceRange = record(source.range)
+    const outputRange = record(raw.outputRange)
+    const startRow = finite(sourceRange.startRow, -1)
+    const startCol = finite(sourceRange.startCol, -1)
+    const endRow = finite(sourceRange.endRow, -1)
+    const endCol = finite(sourceRange.endCol, -1)
+    const outputStartRow = finite(outputRange.startRow, -1)
+    const outputStartCol = finite(outputRange.startCol, -1)
+    const outputEndRow = finite(outputRange.endRow, -1)
+    const outputEndCol = finite(outputRange.endCol, -1)
+    if (startRow < 0 || startCol < 0 || endRow < startRow || endCol < startCol || outputStartRow < 0 || outputStartCol < 0 || outputEndRow < outputStartRow || outputEndCol < outputStartCol) return []
+
+    const fields = array(raw.fields).flatMap((fieldValue): PivotTableModel['fields'] => {
+      const field = record(fieldValue)
+      const area = field.area
+      if (area !== 'row' && area !== 'column' && area !== 'filter' && area !== 'value') return []
+      const aggregation = field.aggregation
+      return [{
+        id: text(field.id), sourceColumn: finite(field.sourceColumn), name: text(field.name), area, position: finite(field.position),
+        ...(typeof field.displayName === 'string' ? { displayName: field.displayName } : {}),
+        ...(aggregation === 'sum' || aggregation === 'count' || aggregation === 'average' || aggregation === 'min' || aggregation === 'max' ? { aggregation } : {}),
+      }]
+    })
+    if (!fields.length) return []
+    const options = record(raw.options)
+    return [{
+      id: text(raw.id, `pivot-${index + 1}`),
+      source: { unitId, subUnitId: sourceSheetId, sheetName: text(source.sheetName), range: { startRow, startCol, endRow, endCol } },
+      anchor: { unitId, subUnitId: targetSheetId, row: outputStartRow, col: outputStartCol },
+      outputRange: { startRow: outputStartRow, startCol: outputStartCol, endRow: outputEndRow, endCol: outputEndCol },
+      fields,
+      options: {
+        repeatRowLabels: options.repeatRowLabels === true,
+        showRowGrandTotal: options.showRowGrandTotal !== false,
+        showColGrandTotal: options.showColGrandTotal !== false,
+        showRowSubtotals: options.showRowSubtotals !== false,
+        showColSubtotals: options.showColSubtotals !== false,
+        valuePosition: options.valuePosition === 'row' ? 'row' : 'column',
+      },
+      revision: finite(raw.revision),
+    }]
+  })
+}
+
+function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTableModel[] {
+  return array(value).flatMap((entry): SheetTableModel[] => {
+    const raw = record(entry)
+    const sheet = sheets[finite(raw.sheetIndex)] ?? sheets.find(candidate => candidate.name === text(raw.sheetName))
+    const rangeValue = record(raw.range)
+    const range = {
+      startRow: finite(rangeValue.startRow), startCol: finite(rangeValue.startCol),
+      endRow: finite(rangeValue.endRow), endCol: finite(rangeValue.endCol),
+    }
+    const columns = array(raw.columns).flatMap((column, index) => {
+      const item = record(column)
+      const name = text(item.name)
+      return name ? [{ id: text(item.id) || `${text(raw.id)}-column-${index + 1}`, name }] : []
+    })
+    if (!sheet || range.endCol < range.startCol || range.endRow < range.startRow || !text(raw.name) || !columns.length) return []
+    return [{
+      id: text(raw.id) || text(raw.name), name: text(raw.name), sheetId: sheet.id, range, columns,
+      showHeaderRow: raw.showHeaderRow !== false, showTotalsRow: raw.showTotalsRow === true,
+      styleName: text(raw.styleName) || 'TableStyleMedium2',
+    }]
+  })
+}
+
 export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   const data = envelope.payload.data
   const id = crypto.randomUUID()
   const sheets = array(data.sheets).map((sheet, index) => normalizeSheet(sheet, index, id))
+  const pivotTables = normalizePivotTables(data.pivotTables, sheets, id)
   if (!sheets.length) throw new Error('解析结果不包含工作表，未用空白工作簿替代原文件')
   return {
     id, kind: 'workbook', name: envelope.fileName, sheets,
     activeSheetId: sheets[finite(data.activeSheet)]?.id ?? sheets[0]!.id,
     date1904: data.date1904 === true, modified: false,
+    pivotTables,
+    tables: normalizeTables(data.tables, sheets),
+    charts: normalizePivotCharts(data.sheets, sheets, pivotTables),
     metadata: {
       format: envelope.format, parserVersion: envelope.parserVersion,
       definedNames: array(data.definedNames), localDefinedNames: array(data.localDefinedNames),

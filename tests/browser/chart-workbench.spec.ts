@@ -17,8 +17,8 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
   await page.evaluate(async () => {
     const resource = performance.getEntriesByType('resource').find((entry) => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))
     if (!resource) throw new Error('Workbench runtime module was not loaded')
-    const { univerAPI } = await import(resource.name)
-    univerAPI.getActiveWorkbook().getActiveSheet().getRange('A1:C4').setValues([
+    const { officeAPI } = await import(resource.name)
+    officeAPI.getActiveWorkbook().getActiveSheet().getRange('A1:C4').setValues([
       ['项目', '一月', '二月'], ['甲', 100, 150], ['乙', 200, 250], ['丙', 300, 350],
     ])
   })
@@ -56,8 +56,8 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
   await expect.poll(() => page.evaluate(async () => {
     const resource = performance.getEntriesByType('resource').find((entry) => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))
     if (!resource) throw new Error('Workbench runtime module was not loaded')
-    const { univerAPI } = await import(resource.name)
-    return univerAPI.getActiveWorkbook().getActiveSheet().getCharts()[0].getData().series[0].values[1]
+    const { officeAPI } = await import(resource.name)
+    return officeAPI.getActiveWorkbook().getActiveSheet().getCharts()[0].getData().series[0].values[1]
   })).toBe(1000)
   await expect(page.locator('canvas[data-render-surface="true"]')).toHaveCount(1)
   expect(pageErrors).toEqual([])

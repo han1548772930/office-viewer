@@ -30,7 +30,7 @@ function documentWithText(text = 'Hello World') {
 
 function createDocument(text = 'Hello World') {
   const studio = new api.OfficeStudio({ document: documentWithText(text) })
-  const document = api.FUniver.newAPI(studio).getActiveDocument()
+  const document = api.FOffice.newAPI(studio).getActiveDocument()
   assert.ok(document)
   return { studio, document }
 }

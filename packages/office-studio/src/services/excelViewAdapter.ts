@@ -1,4 +1,4 @@
-import type { CellScalar, ChartModel, PivotTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SparklineSpec } from '../domain/model.ts'
+import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetOutlineState, SparklineSpec, SheetConditionalFormatRule } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
@@ -55,8 +55,9 @@ export interface ExcelSheetView {
   date1904?: boolean
   dataValidations?: SheetDataValidationRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
+  conditionalFormats?: SheetConditionalFormatRule[]
 }
-export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual' }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual' }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -87,7 +88,8 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
   return {
     id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId, date1904: workbook.date1904, calculationMode: workbook.calculationMode ?? 'automatic',
     charts: workbook.charts?.map(cloneChartModel),
-    pivotTables: workbook.pivotTables?.map((pivot) => ({ ...pivot, source: { ...pivot.source, range: { ...pivot.source.range } }, anchor: { ...pivot.anchor }, fields: pivot.fields.map((field) => ({ ...field })), options: { ...pivot.options } })),
+    pivotTables: workbook.pivotTables?.map(clonePivotTableModel),
+    tables: workbook.tables?.map(cloneSheetTable),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
       let rowCount = Math.max(100, sheet.rowCount ?? 0)
@@ -112,6 +114,7 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         date1904: workbook.date1904,
         dataValidations: sheet.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })),
         rangeProtectionRules: sheet.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })),
+        conditionalFormats: sheet.conditionalFormats?.map(cloneConditionalFormatRule),
       }
     }),
   }
@@ -126,6 +129,8 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
   return {
     ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904: view.date1904 ?? workbook.date1904,
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
+    pivotTables: view.pivotTables?.map(clonePivotTableModel) ?? workbook.pivotTables,
+    tables: view.tables?.map(cloneSheetTable) ?? workbook.tables,
     calculationMode: view.calculationMode === 'manual' ? 'manual' : 'automatic',
     sheets: view.sheets.map((source) => {
       const original = workbook.sheets.find((sheet) => sheet.id === source.id)
@@ -164,6 +169,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
       const next: WorkbookModel['sheets'][number] = {
         ...original, id: source.id, name: source.name, cells, visible: source.visible ?? original?.visible ?? true,
         dataValidations: source.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })) ?? original?.dataValidations,
+        conditionalFormats: source.conditionalFormats?.map(cloneConditionalFormatRule) ?? original?.conditionalFormats,
         rangeProtectionRules: source.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })) ?? original?.rangeProtectionRules,
         rowCount: source.rowCount, columnCount: source.columnCount,
         columnWidths: { ...(source.columnWidths ?? original?.columnWidths) }, rowHeights: { ...(source.rowHeights ?? original?.rowHeights) },
@@ -189,6 +195,10 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
   }
 }
 
+function cloneSheetTable(table: SheetTableModel): SheetTableModel {
+  return { ...table, range: { ...table.range }, columns: table.columns.map(column => ({ ...column })) }
+}
+
 function cloneChartModel(chart: ChartModel): ChartModel {
   return {
     ...chart,
@@ -200,4 +210,31 @@ function cloneChartModel(chart: ChartModel): ChartModel {
     yAxis: { ...chart.yAxis },
     valueFields: [...chart.valueFields],
   }
+}
+
+function clonePivotTableModel(pivot: PivotTableModel): PivotTableModel {
+  return {
+    ...pivot,
+    source: { ...pivot.source, range: { ...pivot.source.range } },
+    anchor: { ...pivot.anchor },
+    fields: pivot.fields.map((field) => ({
+      ...field,
+      selectedItems: field.selectedItems ? [...field.selectedItems] : undefined,
+      valueFilter: field.valueFilter ? { ...field.valueFilter } : undefined,
+      numberGroup: field.numberGroup ? { ...field.numberGroup } : undefined,
+      manualGroups: field.manualGroups?.map((group) => ({ ...group, members: [...group.members] })),
+    })),
+    options: { ...pivot.options },
+    outputRange: pivot.outputRange ? { ...pivot.outputRange } : undefined,
+    generatedCellKeys: pivot.generatedCellKeys ? [...pivot.generatedCellKeys] : undefined,
+    drillDownMap: pivot.drillDownMap ? Object.fromEntries(Object.entries(pivot.drillDownMap).map(([key, entry]) => [key, {
+      ...entry,
+      fieldFilters: { ...entry.fieldFilters },
+      fieldMembers: entry.fieldMembers ? Object.fromEntries(Object.entries(entry.fieldMembers).map(([fieldId, members]) => [fieldId, [...members]])) : undefined,
+    }])) : undefined,
+  }
+}
+
+function cloneConditionalFormatRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule {
+  return { ...rule, ranges: rule.ranges.map(range => ({ ...range })), style: { ...rule.style } }
 }

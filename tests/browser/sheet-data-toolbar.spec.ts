@@ -46,8 +46,8 @@ async function seed(page: Page): Promise<void> {
   await expect(page.getByRole('grid', { name: '工作表画布', exact: true })).toBeVisible()
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as Runtime
-    const book = univerAPI.createWorkbook({ id: 'toolbar-data', name: '筛选与排序' })
+    const { officeAPI } = await import(path) as Runtime
+    const book = officeAPI.createWorkbook({ id: 'toolbar-data', name: '筛选与排序' })
     book.getActiveSheet()!.getRange('A1:C5').setValues([['地区', '销售', '货号'], ['东', 10, 'a'], ['西', 20, 'b'], ['东', 30, 'c'], ['西', 40, 'd']])
   })
   const name = page.getByRole('textbox', { name: '名称框', exact: true })
@@ -100,9 +100,9 @@ test('toolbar value filtering, clearing, undo and snapshot reopening use the liv
   await expect.poll(async () => (await snapshot(page)).sheets[0]!.autoFilter?.filteredRows).toEqual([1, 2, 3, 4])
   await page.evaluate(async () => {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
-    const { univerAPI } = await import(path) as Runtime
-    const original = univerAPI.getActiveWorkbook()!, data = JSON.parse(JSON.stringify(original.save())) as WorkbookModel
-    univerAPI.disposeUnit(original.getId()); univerAPI.createWorkbook(data)
+    const { officeAPI } = await import(path) as Runtime
+    const original = officeAPI.getActiveWorkbook()!, data = JSON.parse(JSON.stringify(original.save())) as WorkbookModel
+    officeAPI.disposeUnit(original.getId()); officeAPI.createWorkbook(data)
   })
   await expect.poll(async () => (await snapshot(page)).sheets[0]!.autoFilter?.filteredRows).toEqual([1, 2, 3, 4])
   expect(errors).toEqual([])

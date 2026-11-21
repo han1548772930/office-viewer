@@ -1,6 +1,10 @@
 mod model;
 mod parser;
 mod validation_sidecar;
+mod sparkline_sidecar;
+mod pivot_sidecar;
+mod conditional_format_sidecar;
+mod table_sidecar;
 mod wasm_api;
 
 pub use model::{

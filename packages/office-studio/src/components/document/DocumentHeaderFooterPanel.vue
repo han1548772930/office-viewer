@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import { Button, Input, Modal, Switch } from 'antdv-next'
 import type { DocumentModel } from '../../domain/model'
 import { documentSectionIds, resolveSectionHeaderFooter, type SectionHeaderFooterPatch } from '../../features/document/services/section-header-footer'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ open: boolean; model: DocumentModel; sectionId: string }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [patch: SectionHeaderFooterPatch] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [patch: SectionHeaderFooterPatch]; 'insert-page-field': [story: 'header' | 'footer', field: 'PAGE' | 'NUMPAGES'] }>()
+const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const section = computed(() => resolveSectionHeaderFooter(props.model, props.sectionId))
 const sections = computed(() => documentSectionIds(props.model))
 
@@ -15,23 +17,32 @@ function update(key: keyof typeof section.value, value: string | boolean) {
 </script>
 
 <template>
-  <Modal :open="open" title="页眉和页脚" ok-text="应用" cancel-text="关闭" :width="520" @ok="emit('update:open', false)" @cancel="emit('update:open', false)">
+  <Modal :open="open" :title="t('doc.header-footer.title', '页眉和页脚')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.close', '关闭')" :width="520" @ok="emit('update:open', false)" @cancel="emit('update:open', false)">
     <div class="header-footer-panel">
-      <label class="header-footer-panel__row"><span>当前节</span><Input :value="`${sections.indexOf(sectionId) + 1}`" readonly /></label>
-      <label class="header-footer-panel__toggle"><span>链接到前一节</span><Switch :checked="section.linkToPrevious" :disabled="sections.indexOf(sectionId) === 0" @change="update('linkToPrevious', $event)" /></label>
-      <label class="header-footer-panel__row"><span>页眉</span><textarea :value="section.header" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('header', ($event.target as HTMLTextAreaElement).value)" /></label>
-      <label class="header-footer-panel__row"><span>页脚</span><textarea :value="section.footer" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('footer', ($event.target as HTMLTextAreaElement).value)" /></label>
-      <label class="header-footer-panel__toggle"><span>首页不同</span><Switch :checked="section.differentFirstPage" :disabled="section.linkToPrevious" @change="update('differentFirstPage', $event)" /></label>
+      <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.current-section', '当前节') }}</span><Input :value="`${sections.indexOf(sectionId) + 1}`" readonly /></label>
+      <label class="header-footer-panel__toggle"><span>{{ t('doc.header-footer.link-previous', '链接到前一节') }}</span><Switch :checked="section.linkToPrevious" :disabled="sections.indexOf(sectionId) === 0" @change="update('linkToPrevious', $event)" /></label>
+      <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.header', '页眉') }}</span><textarea :value="section.header" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('header', ($event.target as HTMLTextAreaElement).value)" /></label>
+      <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.footer', '页脚') }}</span><textarea :value="section.footer" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('footer', ($event.target as HTMLTextAreaElement).value)" /></label>
+      <div class="header-footer-panel__fields">
+        <span>{{ t('doc.header-footer.fields', '页码字段') }}</span>
+        <div class="header-footer-panel__actions">
+          <Button size="small" :disabled="section.linkToPrevious" @click="emit('insert-page-field', 'header', 'PAGE')">{{ t('doc.header-footer.insert-page-header', '在页眉插入当前页码') }}</Button>
+          <Button size="small" :disabled="section.linkToPrevious" @click="emit('insert-page-field', 'footer', 'PAGE')">{{ t('doc.header-footer.insert-page-footer', '在页脚插入当前页码') }}</Button>
+          <Button size="small" :disabled="section.linkToPrevious" @click="emit('insert-page-field', 'footer', 'NUMPAGES')">{{ t('doc.header-footer.insert-total-pages', '在页脚插入总页数') }}</Button>
+        </div>
+        <span class="header-footer-panel__field-list">{{ (section.pageFields ?? []).map(item => `${item.story}: ${item.field}`).join(' · ') }}</span>
+      </div>
+      <label class="header-footer-panel__toggle"><span>{{ t('doc.header-footer.different-first', '首页不同') }}</span><Switch :checked="section.differentFirstPage" :disabled="section.linkToPrevious" @change="update('differentFirstPage', $event)" /></label>
       <template v-if="section.differentFirstPage">
-        <label class="header-footer-panel__row"><span>首页页眉</span><textarea :value="section.firstPageHeader" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('firstPageHeader', ($event.target as HTMLTextAreaElement).value)" /></label>
-        <label class="header-footer-panel__row"><span>首页页脚</span><textarea :value="section.firstPageFooter" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('firstPageFooter', ($event.target as HTMLTextAreaElement).value)" /></label>
+        <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.first-header', '首页页眉') }}</span><textarea :value="section.firstPageHeader" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('firstPageHeader', ($event.target as HTMLTextAreaElement).value)" /></label>
+        <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.first-footer', '首页页脚') }}</span><textarea :value="section.firstPageFooter" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('firstPageFooter', ($event.target as HTMLTextAreaElement).value)" /></label>
       </template>
-      <label class="header-footer-panel__toggle"><span>奇偶页不同</span><Switch :checked="section.differentOddEven" :disabled="section.linkToPrevious" @change="update('differentOddEven', $event)" /></label>
+      <label class="header-footer-panel__toggle"><span>{{ t('doc.header-footer.different-odd-even', '奇偶页不同') }}</span><Switch :checked="section.differentOddEven" :disabled="section.linkToPrevious" @change="update('differentOddEven', $event)" /></label>
       <template v-if="section.differentOddEven">
-        <label class="header-footer-panel__row"><span>偶数页页眉</span><textarea :value="section.evenPageHeader" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('evenPageHeader', ($event.target as HTMLTextAreaElement).value)" /></label>
-        <label class="header-footer-panel__row"><span>偶数页页脚</span><textarea :value="section.evenPageFooter" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('evenPageFooter', ($event.target as HTMLTextAreaElement).value)" /></label>
+        <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.even-header', '偶数页页眉') }}</span><textarea :value="section.evenPageHeader" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('evenPageHeader', ($event.target as HTMLTextAreaElement).value)" /></label>
+        <label class="header-footer-panel__row"><span>{{ t('doc.header-footer.even-footer', '偶数页页脚') }}</span><textarea :value="section.evenPageFooter" :disabled="section.linkToPrevious" maxlength="500" rows="1" @input="update('evenPageFooter', ($event.target as HTMLTextAreaElement).value)" /></label>
       </template>
-      <Button type="text" @click="emit('apply', { header: '', footer: '', firstPageHeader: '', firstPageFooter: '', evenPageHeader: '', evenPageFooter: '' })">清除本节页眉页脚内容</Button>
+      <Button type="text" @click="emit('apply', { header: '', footer: '', firstPageHeader: '', firstPageFooter: '', evenPageHeader: '', evenPageFooter: '' })">{{ t('doc.header-footer.clear-section', '清除本节页眉页脚内容') }}</Button>
     </div>
   </Modal>
 </template>

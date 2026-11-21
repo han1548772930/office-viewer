@@ -52,15 +52,16 @@ export function createSparklineGroupPatches(request: SparklineGroupRequest): Rec
   const sourceRows = source.endRow - source.startRow + 1
   const sourceColumns = source.endColumn - source.startColumn + 1
   if (rowCount !== 1 && columnCount !== 1) throw new Error('迷你图目标区域必须为单行或单列。')
-  if (rowCount === 1 && columnCount !== sourceColumns || columnCount === 1 && rowCount !== sourceRows) {
+  const targetCount = Math.max(rowCount, columnCount)
+  if (targetCount > 1 && (rowCount === 1 && columnCount !== sourceColumns || columnCount === 1 && rowCount !== sourceRows)) {
     throw new Error('迷你图目标数必须与源数据系列数一致。')
   }
   const spec = createSparklineSpec(request)
   const patches: Record<string, SparklineSpec> = {}
-  for (let offset = 0; offset < Math.max(rowCount, columnCount); offset += 1) {
+  for (let offset = 0; offset < targetCount; offset += 1) {
     const row = target.startRow + (rowCount === 1 ? 0 : offset)
     const column = target.startColumn + (columnCount === 1 ? 0 : offset)
-    const seriesRange = rowCount === 1
+    const seriesRange = targetCount === 1 ? normalizeRange(request.sourceRange) : rowCount === 1
       ? `${cellAddress(source.startRow, source.startColumn + offset)}:${cellAddress(source.endRow, source.startColumn + offset)}`
       : `${cellAddress(source.startRow + offset, source.startColumn)}:${cellAddress(source.startRow + offset, source.endColumn)}`
     patches[cellAddress(row, column)] = { ...spec, sourceRange: seriesRange }

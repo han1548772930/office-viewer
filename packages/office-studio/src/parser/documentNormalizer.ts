@@ -1,6 +1,7 @@
-import { createBlankDocument, type DocumentBlock, type DocumentModel, type DocumentSectionBreakType, type InlineRun } from '../domain/model.ts'
+import { createBlankDocument, type DocumentBlock, type DocumentModel, type DocumentPageField, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type InlineRun } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
+import { normalizeDocumentNotes } from '../features/document/notes/document-notes.ts'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 function normalizeRun(value: unknown, id: string): InlineRun {
@@ -58,6 +59,38 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
     },
     metadata: { source: raw, sourceRefs: raw.sourceRefs, style, listLabel: details.listLabel, numbering },
   }
+  const taggedFields = array(raw.children).map((child) => record(record(child).details).field).map(record)
+  const codeBookmark = array(details.bookmarks).map((bookmark) => text(record(bookmark).name)).find((name) => name.startsWith('office_code_v1_'))
+  const codeTag = codeBookmark?.replace(/^office_code_v1_/, 'office-code:v1:').replaceAll('_', ':')
+    ?? taggedFields.map((field) => text(field.tag)).find((tag) => tag.startsWith('office-code:v1:'))
+  if (codeTag) {
+    const [, , languageValue, lineNumberValue] = codeTag.split(':')
+    const languages = ['plain', 'javascript', 'typescript', 'json', 'css', 'html', 'python', 'sql', 'rust']
+    const language = languages.includes(languageValue ?? '') ? languageValue! : 'plain'
+    const source = text(raw.content)
+    block.metadata.codeBlock = { source, language, lineNumbers: lineNumberValue === '1' }
+    block.runs = [{ ...block.runs[0]!, text: source, fontFamily: 'Consolas', fontSize: 10 }]
+    block.style = { ...block.style, align: 'left', indent: 0, lineHeight: 1.35, spaceBefore: 8, spaceAfter: 8 }
+  } else {
+    for (const [inlineIndex, inline] of array(details.inlines).entries()) {
+      if (record(inline).type !== 'form_field') continue
+      const field = taggedFields.find((candidate) => text(candidate.tag).startsWith('office-latex:v1:'))
+      if (!field) continue
+      const source = text(record(inline).text)
+      const mode = text(field.tag).endsWith(':block') ? 'block' : 'inline'
+      const run = block.runs[inlineIndex]
+      if (run) {
+        run.text = '\uFFFC'
+        run.fontFamily = 'Cambria Math'
+        run.metadata = { ...run.metadata, latexFormula: { latex: source, mode, version: 1 } }
+        if (mode === 'block') {
+          block.metadata.latexFormulaBlock = true
+          block.style = { ...block.style, align: 'center', spaceBefore: 8, spaceAfter: 8 }
+        }
+      }
+      break
+    }
+  }
   const numberingId = numbering.numId
   if (type === 'checklist') block.checklist = {
     listId: typeof numberingId === 'string' || typeof numberingId === 'number' ? String(numberingId) : id,
@@ -108,6 +141,77 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   }
   return block
 }
+
+function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: DocumentBlock[]): Record<string, DocumentSectionHeaderFooter> {
+  const layout = array(data.sectionLayout)
+  if (!layout.length) return {}
+  const parsedBlocks = array(data.blocks).map(record)
+  const documentId = text(data.documentId)
+  const result: Record<string, DocumentSectionHeaderFooter> = {}
+  const sectionBreaks = blocks.filter((block) => block.type === 'sectionBreak')
+  const storyText = (partName: string, kind: 'header' | 'footer'): string => {
+    const story = parsedBlocks.find((block) => block.type === kind && array(block.sourceRefs).some((source) => text(record(source).partName) === partName))
+    return text(story?.content)
+  }
+  for (const [index, rawSection] of layout.entries()) {
+    const section = record(rawSection)
+    const sectionId = index === 0
+      ? 'first'
+      : text(sectionBreaks[index - 1]?.id, `${documentId}-section-break-${finite(section.startNodeIndex)}`)
+    const headerFields: Record<string, 'header' | 'firstPageHeader' | 'evenPageHeader'> = {
+      default: 'header', first: 'firstPageHeader', even: 'evenPageHeader',
+    }
+    const footerFields: Record<string, 'footer' | 'firstPageFooter' | 'evenPageFooter'> = {
+      default: 'footer', first: 'firstPageFooter', even: 'evenPageFooter',
+    }
+    const value: DocumentSectionHeaderFooter = {
+      header: '', footer: '', firstPageHeader: '', firstPageFooter: '', evenPageHeader: '', evenPageFooter: '',
+      pageFields: [],
+      differentFirstPage: text(section.sectionPropertiesXml).includes('titlePg'),
+      differentOddEven: data.evenAndOddHeaders === true,
+      linkToPrevious: index > 0 && !array(section.headerSections).length && !array(section.footerSections).length,
+    }
+    for (const entry of array(section.headerSections)) {
+      const reference = record(entry)
+      const field = headerFields[text(reference.referenceType, 'default')]
+      if (field) {
+        value[field] = storyText(text(reference.partName), 'header')
+        appendPageFields(value, array(reference.pageFields), field)
+      }
+    }
+    for (const entry of array(section.footerSections)) {
+      const reference = record(entry)
+      const field = footerFields[text(reference.referenceType, 'default')]
+      if (field) {
+        value[field] = storyText(text(reference.partName), 'footer')
+        appendPageFields(value, array(reference.pageFields), field)
+      }
+    }
+    if (index > 0 && !value.linkToPrevious) {
+      const previous = result[index === 1 ? 'first' : sectionBreaks[index - 2]?.id ?? '']
+      if (previous) {
+        for (const key of ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const) {
+          if (!value[key]) value[key] = previous[key]
+        }
+        value.pageFields = [...(previous.pageFields ?? []), ...(value.pageFields ?? [])]
+      }
+    }
+    result[sectionId] = value
+  }
+  return result
+}
+
+function appendPageFields(
+  section: DocumentSectionHeaderFooter,
+  fields: unknown[],
+  story: DocumentPageField['story'],
+) {
+  for (const raw of fields) {
+    const field = text(raw)
+    if (field === 'PAGE' || field === 'NUMPAGES') section.pageFields?.push({ story, field })
+  }
+}
+
 export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   const data = envelope.payload.data
   const result = createBlankDocument()
@@ -131,6 +235,8 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
     }
   }
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks
+  Object.assign(result, normalizeDocumentNotes(data, result.blocks))
+  result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks)
   result.modified = false
   result.wordCount = result.blocks.reduce((count, block) => count+block.runs.reduce((sum, run) => sum+run.text.length, 0), 0)
   result.metadata = {
