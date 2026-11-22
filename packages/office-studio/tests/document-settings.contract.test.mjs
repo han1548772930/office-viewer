@@ -47,6 +47,27 @@ test('paragraph settings flow through the normal document command mutation', () 
   assert.equal(block.style.wordWrap, false)
 })
 
+test('paragraph patches reject unknown fields, wrong flags and out-of-range geometry without mutating the block', () => {
+  const block = createParagraph('Keep model fidelity')
+  const before = JSON.parse(JSON.stringify(block))
+  for (const field of ['indent', 'indentStart', 'indentEnd', 'indentFirstLine', 'hanging', 'spaceBefore', 'spaceAfter']) {
+    assert.doesNotThrow(() => validateDocumentParagraphStylePatch({ [field]: 0 }))
+    assert.doesNotThrow(() => validateDocumentParagraphStylePatch({ [field]: 100 }))
+    assert.throws(() => applyDocumentParagraphStylePatch(block, { [field]: 100.1 }), /between 0 and 100/)
+    assert.throws(() => applyDocumentParagraphStylePatch(block, { [field]: NaN }), /finite/)
+  }
+  for (const patch of [{ unknown: 1 }, { metadata: 1 }, { wordWrap: 'true' }, { snapToGrid: 0 }, { align: undefined }, { indentStart: undefined }]) assert.throws(() => applyDocumentParagraphStylePatch(block, patch))
+  assert.deepEqual(block, before)
+  assert.throws(() => validateDocumentParagraphStylePatch(null), /must be an object/)
+  assert.throws(() => validateDocumentParagraphStylePatch([]), /must be an object/)
+  const fixed = { ...block, style: { ...block.style, spacingRule: 'exact', lineHeight: 24 } }
+  assert.throws(() => applyDocumentParagraphStylePatch(fixed, { spacingRule: 'auto' }), /between 1 and 5/)
+  assert.equal(fixed.style.spacingRule, 'exact')
+  applyDocumentParagraphStylePatch(fixed, { spacingRule: 'auto', lineHeight: 1.5 })
+  assert.equal(fixed.style.spacingRule, 'auto')
+  assert.equal(fixed.style.lineHeight, 1.5)
+})
+
 test('section setup updates are validated, section scoped and preserved by snapshots', () => {
   const model = createBlankDocument()
   const first = createParagraph('Before')
@@ -94,7 +115,7 @@ test('section settings preserve unused single-column gaps and enforce upstream n
   assert.equal(sectionIdForBlock(model, section.id), section.id)
 })
 
-test('page setup presets match the fixed Univer dimensions and modern widths', () => {
+test('page setup presets preserve paper dimensions and modern content widths', () => {
   assert.deepEqual(DOCUMENT_PAPER_SIZES, {
     A3: { width: 1123, height: 1587 }, A4: { width: 794, height: 1124 }, A5: { width: 559, height: 794 },
     B4: { width: 944, height: 1344 }, B5: { width: 665, height: 944 }, Executive: { width: 696, height: 1008 },

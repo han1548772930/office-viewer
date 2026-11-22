@@ -5,7 +5,7 @@ function presets(shape: ConditionalIconPreset['shape'], symbols: string[], color
   return symbols.map((symbol, index) => ({ symbol, color: colors[index] ?? gray, shape }))
 }
 
-// Names and order follow fixed Univer models/icon-map.ts. Canvas uses text glyphs.
+// Canvas renders these icon presets with text glyphs.
 export const conditionalIconPresets: Record<string, ConditionalIconPreset[]> = {
   '3Arrows': presets('arrow', ['↑', '→', '↓'], [green, gold, red]),
   '3ArrowsGray': presets('arrow', ['↑', '→', '↓'], [gray, gray, gray]),

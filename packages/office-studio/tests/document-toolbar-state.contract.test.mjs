@@ -82,6 +82,36 @@ test('a range ending at the next paragraph offset zero excludes its toolbar styl
   assert.equal(state.blockStyle, 'H2')
 })
 
+test('paragraph state includes mixed indentation, spacing units and wrap flags across the real selection', () => {
+  const model = createBlankDocument()
+  const first = createParagraph('first'), second = createParagraph('second')
+  first.style = { ...first.style, indentStart: 24, indentEnd: 8, indentFirstLine: 20, hanging: 4, spaceBefore: 6, lineHeight: 2, spacingRule: 'auto', wordWrap: false }
+  second.style = { ...second.style, indentStart: 48, indentEnd: 8, indentFirstLine: 40, hanging: 4, spaceBefore: 12, lineHeight: 2, spacingRule: 'exact', wordWrap: true }
+  model.blocks = [first, second]
+  const selection = { anchor: { blockId: first.id, offset: 0 }, focus: { blockId: second.id, offset: 6 } }
+  const state = documentToolbarState(model, selection)
+  assert.equal(state.paragraph.indentEnd, 8)
+  assert.equal(state.paragraph.hanging, 4)
+  assert.equal(state.paragraph.indentStart, undefined)
+  assert.equal(state.paragraph.indentFirstLine, undefined)
+  assert.equal(state.paragraph.lineHeight, undefined)
+  assert.deepEqual([...state.mixedParagraph].sort(), ['indentStart', 'indentFirstLine', 'spaceBefore', 'lineHeight', 'spacingRule', 'wordWrap'].sort())
+  assert.deepEqual(documentToolbarState(model, { anchor: selection.focus, focus: selection.anchor }), state)
+})
+
+test('missing optional paragraph values and explicit display defaults are uniform, including legacy indentation', () => {
+  const model = createBlankDocument()
+  const first = createParagraph('first'), second = createParagraph('second')
+  first.style.indent = 1
+  second.style = { ...second.style, indent: 1, indentStart: 24, indentEnd: 0, indentFirstLine: 0, hanging: 0, spacingRule: 'auto', wordWrap: false, snapToGrid: false }
+  model.blocks = [first, second]
+  const state = documentToolbarState(model, { anchor: { blockId: first.id, offset: 0 }, focus: { blockId: second.id, offset: 6 } })
+  assert.deepEqual(state.mixedParagraph, [])
+  assert.equal(state.paragraph.indentStart, 24)
+  assert.equal(state.paragraph.spacingRule, 'auto')
+  assert.equal(state.paragraph.wordWrap, false)
+})
+
 test('character statistics count selected graphemes and ignore whitespace', () => {
   assert.equal(documentCharacterCount('中文 e\u0301 👨‍👩‍👧‍👦\n'), 4)
   const model = createBlankDocument()
@@ -145,6 +175,30 @@ test('ribbon schemas derive current values, mixed toggle behavior and dispatch v
   const checklist = items.find((item) => item.id === 'doc-checklist')
   assert.equal(checklist.commandId, 'doc.command.set-block-type')
   assert.deepEqual(documentCommandFromRibbon(checklist.commandId, checklist.params), { id: 'doc.command.set-block-type', type: 'checklist', level: undefined })
+})
+
+test('paragraph Ribbon actions dispatch relative indentation and change fixed spacing to a multiplier explicitly', () => {
+  const context = {
+    state: { marks: {}, mixedMarks: [], paragraph: { spacingRule: 'exact', lineHeight: 24 }, mixedParagraph: ['indentFirstLine'], hasSelection: true },
+    indentation: { canDecrease: true, canIncrease: false },
+    canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: false,
+  }
+  const items = createDocumentRibbon(context).find(tab => tab.id === 'home').groups.flatMap(group => group.items)
+  const decrease = items.find(item => item.id === 'doc-indent-less'), increase = items.find(item => item.id === 'doc-indent-more')
+  assert.equal(decrease.disabled, false)
+  assert.equal(increase.disabled, true)
+  assert.deepEqual(documentCommandFromRibbon(decrease.commandId, decrease.params), { id: 'doc.command.change-paragraph-indent', direction: -1 })
+  assert.deepEqual(documentCommandFromRibbon(increase.commandId, increase.params), { id: 'doc.command.change-paragraph-indent', direction: 1 })
+  const lineSpacing = items.find(item => item.id === 'doc-line-height')
+  assert.equal(lineSpacing.value, null)
+  assert.match(lineSpacing.placeholder, /24 px/)
+  assert.deepEqual(documentCommandFromRibbon(lineSpacing.commandId, lineSpacing.valueParams(1.5)), { id: 'doc.command.format-paragraph', patch: { spacingRule: 'auto', lineHeight: 1.5 } })
+  const denied = createDocumentRibbon({ ...context, editingDisabled: true }).find(tab => tab.id === 'home').groups.flatMap(group => group.items)
+  for (const id of ['doc-indent-less', 'doc-indent-more', 'doc-line-height', 'doc-paragraph-spacing']) assert.equal(denied.find(item => item.id === id).disabled, true)
+  assert.equal(documentCommandFromRibbon('doc.command.change-paragraph-indent', { direction: 0 }), undefined)
+  assert.equal(documentCommandFromRibbon('doc.command.change-paragraph-indent', { direction: '1' }), undefined)
+  assert.deepEqual(documentCommandFromRibbon('doc.command.format-paragraph', { patch: { indentStart: 12, indentEnd: 5, indentFirstLine: 20, hanging: 4, spacingRule: 'exact', lineHeight: 18, wordWrap: true } }), { id: 'doc.command.format-paragraph', patch: { indentStart: 12, indentEnd: 5, indentFirstLine: 20, hanging: 4, spacingRule: 'exact', lineHeight: 18, wordWrap: true } })
+  for (const patch of [{ custom: 1 }, { indentStart: 101 }, { hanging: NaN }, { wordWrap: 1 }, { spacingRule: 'auto', lineHeight: 6 }]) assert.equal(documentCommandFromRibbon('doc.command.format-paragraph', { patch }), undefined)
 })
 
 test('custom imported page geometry is preserved by orientation and identified accurately', () => {

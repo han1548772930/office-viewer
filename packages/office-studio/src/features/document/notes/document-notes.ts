@@ -40,7 +40,7 @@ export function normalizeDocumentNotes(data: Record<string, unknown>, blocks: Do
     const property = kind === 'footnote' ? 'footnotes' : 'endnotes'
     const notes: Record<string, DocumentNote> = {}
     const entries = new Map(noteEntries(data[property]).map(([sourceId, value]) => [rawNoteId(value, sourceId), value]))
-    // Univer v1.6.0 IDocumentData.notes stores both kinds in one IDocumentNote map.
+    // Imported snapshots may store both note kinds in a shared map.
     for (const [sourceId, value] of noteEntries(data.notes)) {
       const id = rawNoteId(value, sourceId)
       if (rawRecord(value).type === kind && !entries.has(id)) entries.set(id, value)

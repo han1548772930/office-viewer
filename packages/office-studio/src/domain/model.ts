@@ -15,7 +15,7 @@ export interface FontStyle {
 export interface CellStyle {
   font: FontStyle
   fill: string | null
-  horizontal: 'left' | 'center' | 'right' | 'justify'
+  horizontal: 'general' | 'left' | 'center' | 'right' | 'justify'
   vertical: 'top' | 'middle' | 'bottom'
   wrap: boolean
   wrapStrategy?: 'overflow' | 'wrap' | 'clip'
@@ -667,7 +667,7 @@ export const defaultCellStyle = (): CellStyle => ({
     color: null,
   },
   fill: null,
-  horizontal: 'left',
+  horizontal: 'general',
   vertical: 'middle',
   wrap: false,
   rotation: 0,

@@ -100,7 +100,7 @@ function toDomainCell(row: number, col: number, cell: ExcelCellView): Spreadshee
       color: cell.color ?? '#1f2937',
     },
     fill: cell.background ?? '#ffffff',
-    horizontal: cell.align ?? 'left',
+    horizontal: cell.align ?? 'general',
     vertical: cell.vertical ?? 'middle',
     wrap: cell.wrap ?? false,
     numberFormat: cell.rawNumberFormat ?? cell.numberFormat ?? 'General',

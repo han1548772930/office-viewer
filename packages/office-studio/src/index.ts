@@ -39,6 +39,9 @@ export {
 } from './api/facade'
 export { FEventName, EventHub, type ApiEventMap, type ApiRange, type Disposable } from './api/events'
 export { type ApiCellData, type ApiCellValue } from './api/model-utils'
+export type { DocumentEditorCommandRequest, DocumentEditorCommandResult } from './api/document-editor-commands.ts'
+export type { DocumentCommand } from './features/document/commands/document-commands.ts'
+export type { DocumentPoint, DocumentSelection } from './features/document/model/document-model.ts'
 
 export { default as DocumentWorkbench } from './components/DocumentWorkbench.vue'
 export { default as DocumentTableOfContentsDialog } from './components/document/DocumentTableOfContentsDialog.vue'

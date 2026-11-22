@@ -1,66 +1,133 @@
 <script setup lang="ts">
-import { Button, Checkbox, Drawer, Form, FormItem, InputNumber, Select, Tooltip } from 'antdv-next'
+import { Alert, Button, Card, Checkbox, Form, FormItem, InputNumber, Select, Tooltip, theme } from 'antdv-next'
 import { computed, inject, ref, watch } from 'vue'
-import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from 'lucide-vue-next'
-import type { DocumentParagraphStyle } from '../../domain/model.ts'
-import { validateDocumentParagraphStylePatch } from '../../features/document/services/document-settings.ts'
-import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, X } from 'lucide-vue-next'
+import type { DocumentParagraphStyle } from '../../domain/model'
+import { validateDocumentParagraphStylePatch } from '../../features/document/services/document-settings'
+import { OfficeTranslatorKey } from '../../i18n/office-i18n'
+import {
+  changeDocumentParagraphSpacingRule, documentParagraphLineSpacingInput, documentParagraphSettingsStyle,
+  isDocumentParagraphSpacingRule, type DocumentParagraphLineMetrics, type DocumentParagraphNumericField,
+  type DocumentParagraphSettingField,
+} from './document-paragraph-settings-state'
 
-const props = withDefaults(defineProps<{ open: boolean; style: DocumentParagraphStyle; fontSize?: number }>(), { fontSize: 11 })
+const props = withDefaults(defineProps<{
+  open: boolean
+  style: Partial<DocumentParagraphStyle>
+  mixed?: readonly DocumentParagraphSettingField[]
+  fontSize?: number
+  lineMetrics?: DocumentParagraphLineMetrics
+  selectionKey?: string
+  readOnly?: boolean
+}>(), { fontSize: 11, selectionKey: '', readOnly: false })
 const emit = defineEmits<{ 'update:open': [open: boolean]; apply: [patch: Partial<DocumentParagraphStyle>] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
-function paragraphDraft(style: DocumentParagraphStyle): DocumentParagraphStyle {
-  return { indentStart: 0, indentEnd: 0, indentFirstLine: 0, hanging: 0, spacingRule: 'auto', wordWrap: false, ...style }
-}
-const draft = ref(paragraphDraft(props.style))
+const { token } = theme.useToken()
+const draft = ref(documentParagraphSettingsStyle(props.style))
+const mixedFields = ref<readonly DocumentParagraphSettingField[]>(props.mixed ?? [])
 const error = ref('')
+const composing = ref(false)
+const spacingMenuOpen = ref(false)
+let compositionPatch: Partial<DocumentParagraphStyle> | undefined
+
+const panelStyle = computed(() => ({
+  '--paragraph-border': token.value.colorBorderSecondary,
+  '--paragraph-background': token.value.colorBgContainer,
+}))
+const mixedLabel = computed(() => t('doc.paragraph-settings.mixed', 'Mixed'))
 const alignments = computed(() => ([
   { value: 'left', label: t('doc.paragraph-settings.align.left', 'Left'), icon: AlignLeft },
   { value: 'center', label: t('doc.paragraph-settings.align.center', 'Center'), icon: AlignCenter },
   { value: 'right', label: t('doc.paragraph-settings.align.right', 'Right'), icon: AlignRight },
   { value: 'justify', label: t('doc.paragraph-settings.align.justify', 'Justify'), icon: AlignJustify },
 ] as const))
-const spacingRules = computed(() => (['auto', 'atLeast', 'exact'] as const).map(value => ({ value, label: t(`doc.paragraph-settings.spacing-rule.${value}`, value) })))
-const lineSpacingRange = computed(() => (draft.value.spacingRule ?? 'auto') === 'auto' ? { min: 1, max: 5, step: 0.1, precision: 1 } : { min: 1, max: 100, step: 0.1, precision: 1 })
-function setSpacingRule(rule: 'auto' | 'atLeast' | 'exact') {
-  const currentRule = draft.value.spacingRule ?? 'auto'
-  if (currentRule === rule) return
-  draft.value.lineHeight = rule === 'auto'
-    ? Math.max(1, Math.min(5, Number((draft.value.lineHeight / props.fontSize).toFixed(2))))
-    : Number((currentRule === 'auto' ? draft.value.lineHeight * props.fontSize : draft.value.lineHeight).toFixed(2))
-  draft.value.spacingRule = rule
-}
+const indentationFields = [
+  { field: 'indentStart', key: 'left-indent', label: 'Left indent' },
+  { field: 'indentEnd', key: 'right-indent', label: 'Right indent' },
+  { field: 'indentFirstLine', key: 'first-line-indent', label: 'First-line indent' },
+  { field: 'hanging', key: 'hanging-indent', label: 'Hanging indent' },
+] as const
+const spacingFields = [
+  { field: 'spaceBefore', key: 'before', label: 'Before' },
+  { field: 'spaceAfter', key: 'after', label: 'After' },
+] as const
+const spacingRules = computed(() => (['auto', 'atLeast', 'exact'] as const).map(value => ({ value, label: t('doc.paragraph-settings.spacing-rule.' + value, value) })))
+const lineSpacingRange = computed(() => documentParagraphLineSpacingInput(draft.value.spacingRule))
+const lineSpacingLabel = computed(() => t('doc.paragraph-settings.line-spacing', 'Line spacing') + (isMixed('spacingRule') ? '' : draft.value.spacingRule === 'auto' ? ' (×)' : ' (px)'))
 
-watch(() => props.open, open => { if (open) { draft.value = paragraphDraft(props.style); error.value = '' } })
-watch(() => props.style, style => { if (props.open) draft.value = paragraphDraft(style) }, { deep: true })
-watch(draft, value => {
-  if (!props.open) return
-  const source = paragraphDraft(props.style)
-  const defaults: Partial<DocumentParagraphStyle> = { indentStart: 0, indentEnd: 0, indentFirstLine: 0, hanging: 0, spacingRule: 'auto', wordWrap: false }
-  const patch = Object.fromEntries(Object.entries(value).filter(([key, field]) => {
-    const styleKey = key as keyof DocumentParagraphStyle
-    return field !== source[styleKey] && !(props.style[styleKey] === undefined && field === defaults[styleKey])
-  })) as Partial<DocumentParagraphStyle>
-  if (!Object.keys(patch).length) return
+function isMixed(field: DocumentParagraphSettingField) { return mixedFields.value.includes(field) }
+function numericValue(field: DocumentParagraphNumericField) { return isMixed(field) ? null : draft.value[field] }
+function numberLabel(item: { key: string; label: string }) { return t('doc.paragraph-settings.' + item.key, item.label) + ' (px)' }
+
+watch([() => props.open, () => props.style, () => props.mixed, () => props.selectionKey, () => props.readOnly], () => {
+  draft.value = documentParagraphSettingsStyle(props.style)
+  mixedFields.value = props.mixed ?? []
+  error.value = ''
+  compositionPatch = undefined
+  composing.value = false
+}, { deep: true })
+
+/** Each control submits only its own changed fields; receiving state never dispatches an edit. */
+function applyPatch(patch: Partial<DocumentParagraphStyle>) {
+  if (!props.open || props.readOnly) return
+  if (composing.value) { compositionPatch = { ...compositionPatch, ...patch }; return }
   try {
-    validateDocumentParagraphStylePatch(value)
+    validateDocumentParagraphStylePatch(patch, draft.value.spacingRule)
+    const changed: Partial<DocumentParagraphStyle> = {}
+    for (const [key, value] of Object.entries(patch)) {
+      const field = key as DocumentParagraphSettingField
+      if (isMixed(field) || value !== draft.value[field]) Object.assign(changed, { [field]: value })
+    }
     error.value = ''
-    emit('apply', patch)
+    if (!Object.keys(changed).length) return
+    Object.assign(draft.value, changed)
+    mixedFields.value = mixedFields.value.filter(field => !Object.hasOwn(changed, field))
+    emit('apply', changed)
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : t('doc.paragraph-settings.invalid', 'Invalid paragraph settings')
   }
-}, { deep: true })
+}
 
+function setNumber(field: DocumentParagraphNumericField, value: unknown) {
+  if (value === null || value === undefined || value === '') return
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
+  applyPatch({ [field]: number })
+}
+function setSpacingRule(value: unknown) {
+  if (!isDocumentParagraphSpacingRule(value) || (!isMixed('spacingRule') && value === draft.value.spacingRule)) return
+  const lineHeight = changeDocumentParagraphSpacingRule(draft.value.lineHeight, draft.value.spacingRule, value, props.lineMetrics, props.fontSize)
+  applyPatch({ spacingRule: value, lineHeight })
+}
+function finishComposition() {
+  composing.value = false
+  const patch = compositionPatch
+  compositionPatch = undefined
+  if (patch) applyPatch(patch)
+}
+function closePanel() { compositionPatch = undefined; emit('update:open', false) }
+function onPanelKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229 || composing.value || spacingMenuOpen.value || event.defaultPrevented) return
+  event.preventDefault()
+  event.stopPropagation()
+  closePanel()
+}
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('doc.paragraph-settings.title', 'Paragraph settings')" :size="300" placement="right" :mask="false" :destroy-on-hidden="true" @close="emit('update:open', false)">
-    <Form :model="draft" layout="horizontal" class="paragraph-settings">
+  <Card v-if="open" class="paragraph-settings-panel" data-document-paragraph-settings :title="t('doc.paragraph-settings.title', 'Paragraph settings')" size="small" variant="borderless" :style="panelStyle"
+    @compositionstart="composing = true" @compositionend="finishComposition" @keydown="onPanelKeydown">
+    <template #extra>
+      <Tooltip :title="t('doc.paragraph-settings.close', 'Close paragraph settings')">
+        <Button type="text" size="small" :aria-label="t('doc.paragraph-settings.close', 'Close paragraph settings')" @click="closePanel"><X :size="16" /></Button>
+      </Tooltip>
+    </template>
+    <Form :model="draft" :disabled="readOnly" layout="horizontal" class="paragraph-settings" @submit.prevent>
+      <Alert v-if="readOnly" type="info" show-icon :message="t('doc.paragraph-settings.read-only', 'The selection is read-only')" />
       <section>
-        <div class="settings-heading">{{ t('doc.paragraph-settings.alignment', 'Alignment') }}</div>
+        <div class="settings-heading">{{ t('doc.paragraph-settings.alignment', 'Alignment') }}<span v-if="isMixed('align')"> · {{ mixedLabel }}</span></div>
         <div class="alignment-buttons" role="group" :aria-label="t('doc.paragraph-settings.alignment', 'Alignment')">
           <Tooltip v-for="item in alignments" :key="item.value" :title="item.label" placement="bottom">
-            <Button :aria-label="item.label" :aria-pressed="draft.align === item.value" :type="draft.align === item.value ? 'primary' : 'text'" @click="draft.align = item.value">
+            <Button :disabled="readOnly" :aria-label="item.label" :aria-pressed="!isMixed('align') && draft.align === item.value" :type="!isMixed('align') && draft.align === item.value ? 'primary' : 'text'" @click="applyPatch({ align: item.value })">
               <component :is="item.icon" :size="18" aria-hidden="true" />
             </Button>
           </Tooltip>
@@ -68,53 +135,43 @@ watch(draft, value => {
       </section>
       <fieldset>
         <legend>{{ t('doc.paragraph-settings.indentation', 'Indentation') }}</legend>
-        <FormItem name="indentStart" :label="`${t('doc.paragraph-settings.left-indent', 'Left indent')} (px)`">
-          <InputNumber v-model:value="draft.indentStart" :min="0" :max="100" :step="0.1" :precision="1" />
-        </FormItem>
-        <FormItem name="indentEnd" :label="`${t('doc.paragraph-settings.right-indent', 'Right indent')} (px)`">
-          <InputNumber v-model:value="draft.indentEnd" :min="0" :max="100" :step="0.1" :precision="1" />
-        </FormItem>
-        <FormItem name="indentFirstLine" :label="`${t('doc.paragraph-settings.first-line-indent', 'First-line indent')} (px)`">
-          <InputNumber v-model:value="draft.indentFirstLine" :min="0" :max="100" :step="0.1" :precision="1" />
-        </FormItem>
-        <FormItem name="hanging" :label="`${t('doc.paragraph-settings.hanging-indent', 'Hanging indent')} (px)`">
-          <InputNumber v-model:value="draft.hanging" :min="0" :max="100" :step="0.1" :precision="1" />
+        <FormItem v-for="item in indentationFields" :key="item.field" :name="item.field" :label="numberLabel(item)">
+          <InputNumber :value="numericValue(item.field)" :aria-label="numberLabel(item)" :placeholder="isMixed(item.field) ? mixedLabel : undefined" :min="0" :max="100" :step="0.1" :precision="1" @change="value => setNumber(item.field, value)" />
         </FormItem>
       </fieldset>
       <fieldset>
         <legend>{{ t('doc.paragraph-settings.spacing', 'Spacing') }}</legend>
-        <FormItem name="spaceBefore" :label="`${t('doc.paragraph-settings.before', 'Before')} (px)`">
-          <InputNumber v-model:value="draft.spaceBefore" :min="0" :max="100" :step="0.1" :precision="1" />
-        </FormItem>
-        <FormItem name="spaceAfter" :label="`${t('doc.paragraph-settings.after', 'After')} (px)`">
-          <InputNumber v-model:value="draft.spaceAfter" :min="0" :max="100" :step="0.1" :precision="1" />
+        <FormItem v-for="item in spacingFields" :key="item.field" :name="item.field" :label="numberLabel(item)">
+          <InputNumber :value="numericValue(item.field)" :aria-label="numberLabel(item)" :placeholder="isMixed(item.field) ? mixedLabel : undefined" :min="0" :max="100" :step="0.1" :precision="1" @change="value => setNumber(item.field, value)" />
         </FormItem>
         <FormItem name="spacingRule" :label="t('doc.paragraph-settings.line-rule', 'Line spacing rule')">
-          <Select :value="draft.spacingRule ?? 'auto'" :options="spacingRules" @change="setSpacingRule" />
+          <Select :value="isMixed('spacingRule') ? undefined : draft.spacingRule" :aria-label="t('doc.paragraph-settings.line-rule', 'Line spacing rule')" :placeholder="mixedLabel" :options="spacingRules" @change="setSpacingRule" @open-change="spacingMenuOpen = $event" />
         </FormItem>
-        <FormItem name="lineHeight" :label="t('doc.paragraph-settings.line-spacing', 'Line spacing')">
-          <InputNumber v-model:value="draft.lineHeight" v-bind="lineSpacingRange" />
+        <FormItem name="lineHeight" :label="lineSpacingLabel" :extra="isMixed('spacingRule') ? t('doc.paragraph-settings.choose-line-rule', 'Choose a line spacing rule first') : undefined">
+          <InputNumber :value="numericValue('lineHeight')" :disabled="readOnly || isMixed('spacingRule')" :aria-label="lineSpacingLabel" :placeholder="isMixed('lineHeight') ? mixedLabel : undefined" v-bind="lineSpacingRange" @change="value => setNumber('lineHeight', value)" />
         </FormItem>
       </fieldset>
       <FormItem name="wordWrap" class="paragraph-wrap-item">
-        <Checkbox v-model:checked="draft.wordWrap">{{ t('doc.paragraph-settings.word-wrap', 'Wrap text') }}</Checkbox>
+        <Checkbox :checked="draft.wordWrap" :indeterminate="isMixed('wordWrap')" :aria-checked="isMixed('wordWrap') ? 'mixed' : draft.wordWrap" @update:checked="checked => applyPatch({ wordWrap: checked })">{{ t('doc.paragraph-settings.word-wrap', 'Allow Latin text to wrap inside words') }}</Checkbox>
       </FormItem>
-      <p v-if="error" class="settings-error" role="alert">{{ error }}</p>
+      <Alert v-if="error" type="error" show-icon :message="error" role="alert" />
     </Form>
-  </Drawer>
+  </Card>
 </template>
 
 <style scoped>
+.paragraph-settings-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; border-radius: 0; background: var(--paragraph-background); }
+.paragraph-settings-panel :deep(.ant-card-head) { flex: 0 0 auto; }
+.paragraph-settings-panel :deep(.ant-card-body) { flex: 1; min-height: 0; overflow: auto; }
 .paragraph-settings { display: grid; gap: 14px; }
 .paragraph-settings :deep(.ant-form-item) { margin-bottom: 0; }
-.paragraph-settings :deep(.ant-form-item-row) { display: grid; grid-template-columns: minmax(0, 1fr) 140px; align-items: center; gap: 10px; }
-.paragraph-settings :deep(.ant-form-item-label) { text-align: start; }
+.paragraph-settings :deep(.ant-form-item-row) { display: grid; grid-template-columns: minmax(0, 1fr) 116px; align-items: center; gap: 10px; }
+.paragraph-settings :deep(.ant-form-item-label) { text-align: start; white-space: normal; }
 .paragraph-settings :deep(.paragraph-wrap-item .ant-form-item-row) { display: block; }
 .settings-heading { margin-bottom: 10px; font-size: 13px; font-weight: 500; }
-.alignment-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; border: 1px solid #e5e8ed; padding: 4px; }
-.alignment-buttons :deep(.ant-btn) { width: 100%; aspect-ratio: 1; padding: 0; }
-fieldset { display: grid; gap: 9px; min-width: 0; margin: 0; padding: 10px 0 0; border: 0; border-top: 1px solid #e5e8ed; }
+.alignment-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; border: 1px solid var(--paragraph-border); padding: 4px; }
+.alignment-buttons :deep(.ant-btn) { width: 100%; height: 32px; padding: 0; }
+fieldset { display: grid; gap: 9px; min-width: 0; margin: 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--paragraph-border); }
 legend { padding-inline-end: 8px; font-size: 13px; }
 .paragraph-settings :deep(.ant-input-number), .paragraph-settings :deep(.ant-select) { width: 100%; }
-.settings-error { margin: 0; color: #b42318; overflow-wrap: anywhere; }
 </style>

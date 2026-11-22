@@ -7,7 +7,7 @@ export type DocumentColorInputFormat = 'hex' | 'rgb' | 'hsb'
 export interface DocumentColorParams { patch: RunPatch; clearFields?: DocumentRunClearField[] }
 
 export const DOCUMENT_DEFAULT_TEXT_COLOR = '#1f2937'
-/** DreamNum (Apache-2.0), Univer eaf4cfa design/color-picker/presets.ts: five rows of nine. */
+/** Copyright DreamNum Co., Ltd. (Apache-2.0): five rows of nine preset colors. */
 export const DOCUMENT_COLOR_PRESETS = [
   ['#ffffff', '#e1effe', '#fde8e8', '#feecdc', '#fff4b9', '#def7ec', '#d5f5f6', '#edebfe', '#fce8f3'],
   ['#cdd0d8', '#a4cafe', '#f8b4b4', '#fdba8c', '#fac815', '#84e1bc', '#7edce2', '#cabffd', '#f8b4d9'],

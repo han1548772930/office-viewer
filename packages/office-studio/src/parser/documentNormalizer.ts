@@ -1,10 +1,43 @@
-import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, type DocumentModel, type DocumentPageField, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type DocumentThreadComment, type InlineRun } from '../domain/model.ts'
+import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, type DocumentModel, type DocumentPageField, type DocumentParagraphStyle, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type DocumentThreadComment, type InlineRun } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 import { normalizeDocumentNotes } from '../features/document/notes/document-notes.ts'
 import { documentNumberingIndex } from './documentNumbering.ts'
 
 const pointToPixel = (value: number): number => value * 96 / 72
+const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
+
+function normalizeParagraphStyle(style: Record<string, unknown>): DocumentParagraphStyle {
+  const indent = record(style.indent), spacing = record(style.spacing)
+  const indentPixels = (twips: string, points: string, legacy: string): number | undefined => {
+    const raw = optionalNumber(indent[twips])
+    if (raw !== undefined) return raw / 15
+    const pt = optionalNumber(indent[points])
+    if (pt !== undefined) return pointToPixel(pt)
+    const old = optionalNumber(indent[legacy])
+    return old === undefined ? undefined : old / 15
+  }
+  const left = indentPixels('leftTwips', 'leftPt', 'left')
+  const right = indentPixels('rightTwips', 'rightPt', 'right')
+  const firstLine = indentPixels('firstLineTwips', 'firstLinePt', 'firstLine')
+  const hanging = indentPixels('hangingTwips', 'hangingPt', 'hanging')
+  const spacingRule = spacing.lineRule === 'exact' || spacing.lineRule === 'atLeast' ? spacing.lineRule : 'auto'
+  const lineTwips = optionalNumber(spacing.lineTwips)
+  return {
+    align: style.align === 'center' || style.align === 'right' || style.align === 'justify' ? style.align : 'left',
+    indent: 0,
+    ...(left === undefined ? {} : { indentStart: left }),
+    ...(right === undefined ? {} : { indentEnd: right }),
+    ...(firstLine === undefined ? {} : { indentFirstLine: firstLine }),
+    ...(hanging === undefined ? {} : { hanging }),
+    spacingRule,
+    lineHeight: lineTwips === undefined ? positive(spacing.lineMultiplier, spacingRule === 'auto' ? 1.5 : 20) : Math.max(spacingRule === 'auto' ? 0.01 : 1, lineTwips / (spacingRule === 'auto' ? 240 : 15)),
+    spaceBefore: Math.max(0, optionalNumber(spacing.beforeTwips) !== undefined ? finite(spacing.beforeTwips) / 15 : pointToPixel(finite(spacing.beforePt, finite(spacing.before) / 20))),
+    spaceAfter: Math.max(0, optionalNumber(spacing.afterTwips) !== undefined ? finite(spacing.afterTwips) / 15 : pointToPixel(finite(spacing.afterPt, finite(spacing.after, 120) / 20))),
+    ...(typeof style.wordWrap === 'boolean' ? { wordWrap: style.wordWrap } : {}),
+    ...(typeof style.snapToGrid === 'boolean' ? { snapToGrid: style.snapToGrid } : {}),
+  }
+}
 function normalizeRun(value: unknown, id: string): InlineRun {
   const raw = record(value)
   const style = record(raw.style)
@@ -37,8 +70,6 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   const style = record(details.style)
   const styleId = (text(details.styleId) || text(style.styleId)).toLowerCase()
   const titleStyle = styleId === 'title' || styleId === 'subtitle' ? styleId : undefined
-  const indent = record(style.indent)
-  const spacing = record(style.spacing)
   const id = text(raw.id, fallbackId)
   const runs = array(details.inlines).filter((inline) => {
     const type = record(inline).type
@@ -47,7 +78,7 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   if (!runs.length) runs.push(normalizeRun({ text: text(raw.content) }, id+'-run-0'))
   const level = Math.min(6, Math.max(0, finite(details.headingLevel, finite(style.headingLevel))))
   const numbering = record(details.numbering)
-  const listLevel = Math.min(8, Math.max(0, Math.trunc(finite(numbering.ilvl))))
+  const listLevel = Math.min(8, Math.max(0, Math.trunc(finite(numbering.ilvl, finite(numbering.level)))))
   const definition = typeof numbering.numId === 'number' ? lists.get(numbering.numId) : undefined
   const format = definition?.levels.get(listLevel)?.format
   const listLabel = text(details.listLabel).trimStart()
@@ -55,18 +86,12 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   const type = sectionBreak ? 'sectionBreak' : columnBreak ? 'columnBreak' : pageBreak ? 'pageBreak' : raw.type === 'table' ? 'table' : raw.type === 'figure' ? 'image'
     : titleStyle ? 'paragraph' : raw.type === 'heading' || raw.type === 'section_heading' || level > 0 ? 'heading'
       : checklistLabel ? 'checklist'
-        : Object.keys(numbering).length && numbering.numId !== 0 && format !== 'none'
+        : Object.keys(numbering).length && numbering.numId !== 0
           ? (format ? format !== 'bullet' : /^[\d一二三四五六七八九十]|^[a-z]+[.)]/i.test(listLabel)) ? 'numbered' : 'bullet'
           : 'paragraph'
   const block: DocumentBlock = {
     id, type, level, runs: ['sectionBreak', 'columnBreak', 'pageBreak'].includes(type) ? [] : runs,
-    style: {
-      align: style.align === 'center' || style.align === 'right' || style.align === 'justify' ? style.align : 'left',
-      indent: pointToPixel(finite(indent.leftPt, finite(indent.left) / 20)),
-      lineHeight: positive(spacing.lineMultiplier, 1.5),
-      spaceBefore: pointToPixel(finite(spacing.beforePt, finite(spacing.before) / 20)),
-      spaceAfter: pointToPixel(finite(spacing.afterPt, finite(spacing.after, 120) / 20)),
-    },
+    style: normalizeParagraphStyle(style),
     metadata: { source: raw, sourceRefs: raw.sourceRefs, style, listLabel: details.listLabel, numbering, ...(titleStyle ? { namedStyleType: titleStyle } : {}) },
   }
   const taggedFields = array(raw.children).map((child) => record(record(child).details).field).map(record)
@@ -102,11 +127,13 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     }
   }
   const numberingId = numbering.numId
+  const hasNumbering = Object.keys(numbering).length > 0 && numberingId !== 0 && ['paragraph', 'heading', 'numbered', 'bullet', 'checklist'].includes(type)
   if (type === 'numbered' || type === 'bullet' || type === 'checklist') block.level = listLevel
-  if ((type === 'numbered' || type === 'bullet') && definition?.preset && definition.levels.has(listLevel)) {
+  else if (hasNumbering) block.metadata.numberingLevel = listLevel
+  if (hasNumbering && type !== 'checklist' && definition?.preset && definition.levels.has(listLevel)) {
     block.list = { id: `num-${numberingId}`, preset: definition.preset }
   }
-  if (definition && (type === 'numbered' || type === 'bullet' || type === 'checklist')) {
+  if (definition && hasNumbering) {
     block.metadata.numberingDefinition = definition.definition
     block.metadata.numberingListId = `num-${numberingId}`
   }

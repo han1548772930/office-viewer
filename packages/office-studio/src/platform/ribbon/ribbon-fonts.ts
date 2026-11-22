@@ -1,7 +1,6 @@
 import type { InjectionKey, Ref } from 'vue'
 import type { RibbonItem, RibbonOption } from './ribbon-schema'
 
-// Values and source order: Univer v1.6.0, packages/ui/src/services/font.service.ts.
 const defaultFamilies = [
   '宋体', 'Arial', 'Baskerville', 'Comic Sans MS', 'Courier New', 'Helvetica',
   'Times New Roman', 'Verdana', 'Apple LiGothic', 'Apple LiSung', 'Hei', 'Kai',

@@ -58,8 +58,10 @@ export function recalculateSheetViewFormulas(view: ExcelWorkbookView, original?:
       const preserved = preservedCaches.has(`${sheet.id}!${key}`)
       const unchangedValue = cell.rawValue !== undefined && cell.rawValue === calculated.value
       const cachedValue = (preserved || unchangedValue) && cell.cachedValue !== undefined ? cell.cachedValue : calculated.display
-      if (cell.cachedValue === cachedValue && cell.rawValue === calculated.value && cell.displayValue === cachedValue) continue
-      cells[address] = { ...cell, cachedValue, rawValue: calculated.value, displayValue: cachedValue }
+      if (cell.cachedValue === cachedValue && cell.rawValue === calculated.value && cell.displayValue === cachedValue
+        && cell.dataType === calculated.dataType && cell.cachedDataType === calculated.cachedDataType) continue
+      cells[address] = { ...cell, cachedValue, rawValue: calculated.value, displayValue: cachedValue,
+        dataType: calculated.dataType, cachedDataType: calculated.cachedDataType }
       changed = true
     }
     if (!changed) return sheet

@@ -28,6 +28,7 @@ import { applySheetBorders, clearSheetCellFormat, isSheetBorderPreset, nextSheet
 import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS } from '../features/sheet-workbench/sheet-number-format'
 import { applySheetViewNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { sheetCellNumberPattern, sheetCellNumberValue } from '../features/sheet-workbench/sheet-number-presentation.ts'
+import { editSheetCellText } from '../features/sheet-workbench/sheet-cell-edit.ts'
 import type { SheetNumberFormatPreview } from '../rendering/spreadsheet/scene.ts'
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow } from '../features/sheet-workbench/sheet-row-visibility'
@@ -309,6 +310,8 @@ const slicerControls = computed(() => {
 })
 
 const activeSheet = computed(() => availableSheets.value.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? availableSheets.value.find(sheet => sheet.visible !== false))
+const activeRenderSheet = computed(() => activeSheet.value
+  ? { ...activeSheet.value, date1904: activeSheet.value.date1904 ?? workbook.value.date1904 } : undefined)
 const translate = computed(() => createOfficeTranslator(officeLocale.value))
 function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
 const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
@@ -361,7 +364,7 @@ const selectionFormat = computed(() => {
     numberFormat: numberFormatKind === 'custom' ? null : numberFormatKind,
     numberFormatPattern,
     bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
-    align: common('align', 'left'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
+    align: common('align', 'general'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
     wrapStrategy: common('wrapStrategy', 'overflow'),
     color: common('color', null), background: common('background', null),
     rotation: common('rotation', 0) ?? null, rotationVertical: common('rotationVertical', false),
@@ -476,12 +479,7 @@ function validateIncomingValues(entries: readonly { key: string; value: string }
   const candidateSheet = candidateView.sheets.find(item => item.id === sheet.id)
   if (!candidateSheet) return false
   for (const entry of entries) {
-    const current = candidateSheet.cells[entry.key] ?? { value: '' }
-    const formula = entry.value.startsWith('=')
-    candidateSheet.cells[entry.key] = {
-      ...current, value: formula ? '' : entry.value, formula: formula ? entry.value : undefined,
-      cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined,
-    }
+    candidateSheet.cells[entry.key] = editSheetCellText(candidateSheet.cells[entry.key], entry.value, candidateSheet.date1904, officeRegion.value)
   }
   const model = applyExcelWorkbookView(props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook(), candidateView)
   const positions = entries.map(({ key }) => {
@@ -801,8 +799,7 @@ function setCellValue(key: string, value: string): boolean {
   const previous = sheet.cells[key]
   const current = previous ?? { value: '' }
   if ((current.formula ?? current.value) === value) return true
-  const formula = value.startsWith('=') ? value : undefined
-  sheet.cells[key] = { ...current, value: formula ? '' : value, formula, cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined }
+  sheet.cells[key] = editSheetCellText(current, value, sheet.date1904, officeRegion.value)
   try {
     recalculateFormulas()
   } catch (error) {
@@ -1086,7 +1083,7 @@ function clearSelection() {
   if (!activeSheet.value) return
   const keys = selectedExistingKeys()
   if (!validateIncomingValues(keys.map(key => ({ key, value: '' })))) return
-  selectedExistingKeys().forEach((key) => { const cell = activeSheet.value?.cells[key]; if (cell) activeSheet.value!.cells[key] = { ...cell, value: '', formula: undefined, cachedValue: undefined, rawValue: '', displayValue: '' } })
+  selectedExistingKeys().forEach((key) => { const cell = activeSheet.value?.cells[key]; if (cell) activeSheet.value!.cells[key] = editSheetCellText(cell, '', activeSheet.value?.date1904, officeRegion.value) })
   recalculateFormulas()
   commitHistory()
 }
@@ -1106,9 +1103,7 @@ function applyPasteText(text: string) {
   })
   if (!checkDirectSelection(entries.length) || !validateIncomingValues(entries)) return
   entries.forEach(({ key, value }) => {
-    const current = activeSheet.value?.cells[key] ?? { value: '' }
-    const formula = value.startsWith('=') ? value : undefined
-    activeSheet.value!.cells[key] = { ...current, value: formula ? '' : value, formula, cachedValue: formula ? '' : undefined, rawValue: undefined, displayValue: undefined }
+    activeSheet.value!.cells[key] = editSheetCellText(activeSheet.value?.cells[key], value, activeSheet.value?.date1904, officeRegion.value)
   })
   recalculateFormulas()
   commitHistory()
@@ -2532,7 +2527,7 @@ onActivated(() => { workbenchActive.value = true })
 
     <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" orientation="horizontal" @resize="resizeSheetSidebar">
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
-    <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :search-text="searchText" :number-format-preview="numberFormatPreview" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
+    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeRenderSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :search-text="searchText" :number-format-preview="numberFormatPreview" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
         <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @pointerdown.capture="rememberChartPointer" @click.capture="focusChartFromOverlay" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
       </SplitterPanel>
       <SplitterPanel class="sheet-context-panel" :size="sheetSidebarOpen ? sheetSidebarWidth : 0" :min="sheetSidebarOpen ? 280 : 0" :max="800" :resizable="sheetSidebarOpen">

@@ -59,6 +59,9 @@ import {
   type ContentControlPatch,
 } from '../features/document/services/content-controls'
 import type { OfficeStudio } from './office-studio'
+import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
+import type { DocumentSelection } from '../features/document/model/document-model.ts'
+import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
 import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
@@ -776,7 +779,7 @@ export class FRange {
     this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)] })
     return this
   }
-  setHorizontalAlignment(alignment: 'left' | 'center' | 'right' | 'justify'): this { return this.mutateStyle('sheet.command.set-horizontal-alignment', 'Set horizontal alignment', (cell) => { cell.style.horizontal = alignment }) }
+  setHorizontalAlignment(alignment: 'general' | 'left' | 'center' | 'right' | 'justify'): this { return this.mutateStyle('sheet.command.set-horizontal-alignment', 'Set horizontal alignment', (cell) => { cell.style.horizontal = alignment }) }
   setVerticalAlignment(alignment: 'top' | 'middle' | 'bottom'): this { return this.mutateStyle('sheet.command.set-vertical-alignment', 'Set vertical alignment', (cell) => { cell.style.vertical = alignment }) }
   setWrap(enabled: boolean): this { return this.mutateStyle('sheet.command.set-wrap', 'Set text wrapping', (cell) => { cell.style.wrap = enabled }) }
   getBackground(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.fill ?? '#ffffff' }
@@ -1039,6 +1042,9 @@ export class FDocument {
     return this.getParagraphs().at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  executeCommand(command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
+    return this.api.executeDocumentEditorCommand(this.id, command, selection)
+  }
   getPermissionRules(): DocumentModel['permissionRules'] { return cloneModel(this.model().permissionRules ?? []) }
   setPermissionRules(rules: NonNullable<DocumentModel['permissionRules']>): this {
     this.api.executeCommandSync('doc.command.set-document-permission-rules', { unitId: this.id, rules })

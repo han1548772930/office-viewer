@@ -3,18 +3,19 @@ import { caretUsesEastAsianFont, hasEastAsianLetters } from '../../features/docu
 import { blockListPreset, type ListPreset } from '../../features/document/model/document-lists'
 import { blockAtPoint } from '../../features/document/commands/document-commands'
 import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
+import { DOCUMENT_PARAGRAPH_SETTING_FIELDS, documentParagraphSettingsStyle, type DocumentParagraphSettingField } from './document-paragraph-settings-state'
 import {
   DOCUMENT_NAMED_PARAGRAPH_STYLES, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
   selectionCollapsed, textTargets, type DocumentRun, type DocumentSelection, type RunPatch,
 } from '../../features/document/model/document-model'
 
 const markKeys = ['bold', 'italic', 'underline', 'strike', 'verticalAlign', 'fontFamily', 'fontSize', 'color', 'highlight', 'href'] as const
-const paragraphKeys = ['align', 'indent', 'lineHeight', 'spaceBefore', 'spaceAfter'] as const
 
 export interface DocumentToolbarState {
   marks: RunPatch
   mixedMarks: readonly (keyof RunPatch)[]
   paragraph: Partial<DocumentParagraphStyle>
+  mixedParagraph?: readonly DocumentParagraphSettingField[]
   blockStyle?: string
   listPreset?: ListPreset
   hasSelection: boolean
@@ -52,7 +53,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     const block = blockAtPoint(model, target)
     if (block) {
       presets.push(blockListPreset(block))
-      paragraphs.push(block.style)
+      paragraphs.push(documentParagraphSettingsStyle(block.style))
       const namedStyle = block.metadata.namedStyleType
       if (typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)) styles.push(namedStyle.startsWith('heading') ? `H${namedStyle.slice(-1)}` : namedStyle)
       else if (block.type === 'heading' && block.level >= 1 && block.level <= 5) styles.push(`H${block.level}`)
@@ -73,11 +74,17 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     else mixedMarks.push(key)
   }
   const paragraph: Partial<DocumentParagraphStyle> = {}
-  for (const key of paragraphKeys) {
+  const mixedParagraph: DocumentParagraphSettingField[] = []
+  for (const key of DOCUMENT_PARAGRAPH_SETTING_FIELDS) {
     const firstValue = paragraphs[0]?.[key]
     if (paragraphs.every((style) => style[key] === firstValue)) Object.assign(paragraph, { [key]: firstValue })
+    else mixedParagraph.push(key)
   }
-  return { marks: uniform, mixedMarks, paragraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
+  if (mixedParagraph.includes('spacingRule') && !mixedParagraph.includes('lineHeight')) {
+    mixedParagraph.push('lineHeight')
+    delete paragraph.lineHeight
+  }
+  return { marks: uniform, mixedMarks, paragraph, mixedParagraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
 }
 
 /** Count displayed characters as grapheme clusters, including composed emoji only once. */

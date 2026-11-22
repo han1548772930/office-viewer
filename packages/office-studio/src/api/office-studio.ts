@@ -11,6 +11,10 @@ import { applySheetNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMB
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
+import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
+import type { DocumentSelection } from '../features/document/model/document-model.ts'
+import { applyDocumentEditorCommand, assertDocumentEditorCommandRequest, DOCUMENT_EDITOR_COMMAND_LABELS,
+  type DocumentEditorCommandRequest, type DocumentEditorCommandResult } from './document-editor-commands.ts'
 import type { DocumentImage } from '../features/document/model/document-model'
 import { useEditorStore } from '../stores/editorStore'
 import { applyCellValue, documentFromInput, workbookFromInput } from './model-utils'
@@ -408,7 +412,7 @@ export class OfficeStudio {
       id,
       params,
       unitId: commandUnitId(params),
-      kind: commandKind(params),
+      kind: this.commandKind(id, params),
     }
     this.events.emit('BeforeCommandExecute', event)
     if (event.cancel) throw new Error(`Command was canceled: ${id}`)
@@ -419,6 +423,16 @@ export class OfficeStudio {
 
   executeCommand<P = Record<string, unknown>, R = boolean>(id: string, params?: P): Promise<R> {
     return Promise.resolve().then(() => this.executeCommandSync<P | undefined, R>(id, params))
+  }
+
+  executeDocumentEditorCommand(unitId: string, command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
+    this.assertAlive()
+    if (command.id === 'doc.command.set-document-permission-rules') {
+      const changed = this.executeCommandSync<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>(command.id, { unitId, rules: command.rules })
+      return { changed, selection: { anchor: { ...selection.anchor }, focus: { ...selection.focus } } }
+    }
+    if (!Object.hasOwn(DOCUMENT_EDITOR_COMMAND_LABELS, command.id)) throw new Error(`Unknown document editor command: ${command.id}`)
+    return this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>(command.id, { unitId, command, selection })
   }
 
   registerCommand<P, R>(id: string, handler: OfficeCommandHandler<P, R>): Disposable {
@@ -547,6 +561,16 @@ export class OfficeStudio {
   private replaceDocumentModel(id: string, model: DocumentModel): void {
     this.documents.set(id, model)
     if (id === this._activeDocumentId) this.editor.document.replace(model)
+  }
+
+  private commitDocumentEditorCommand(commandId: string, request: DocumentEditorCommandRequest): DocumentEditorCommandResult {
+    assertDocumentEditorCommandRequest(request, commandId)
+    if (request.command.id === 'doc.command.set-document-permission-rules') throw new Error('Permission rules use their administrator command')
+    let selection = { anchor: { ...request.selection.anchor }, focus: { ...request.selection.focus } }
+    const changed = this.commitDocument(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
+      selection = applyDocumentEditorCommand(model, request, { documentId: request.unitId, userId: this.currentUserId, permissionAdminUserId: this.permissionAdminUserId })
+    })
+    return { changed, selection }
   }
 
   private registerBuiltinCommands(): void {
@@ -828,7 +852,15 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId)))
     this.registerCommand<{ unitId: string; name: string }, boolean>('doc.command.set-name', ({ unitId, name }) => this.commitDocument(unitId, 'Rename document', (model) => { model.name = name }))
     this.registerCommand<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>('doc.command.set-document-permission-rules', ({ unitId, rules }) => this.commitDocumentPermissionRules(unitId, rules))
-    this.registerCommand<{ unitId: string; index: number; text: string }, boolean>('doc.command.insert-text', ({ unitId, index, text }) => this.commitDocumentWithRangePermission(unitId, 'Insert text', index, index, (model) => Object.assign(model, insertDocumentText(model, index, text))))
+    this.registerCommand<{ unitId: string; index: number; text: string } | DocumentEditorCommandRequest, boolean | DocumentEditorCommandResult>('doc.command.insert-text', input => {
+      if ('command' in input) return this.commitDocumentEditorCommand('doc.command.insert-text', input)
+      const { unitId, index, text } = input
+      return this.commitDocumentWithRangePermission(unitId, 'Insert text', index, index, model => Object.assign(model, insertDocumentText(model, index, text)))
+    })
+    for (const commandId of Object.keys(DOCUMENT_EDITOR_COMMAND_LABELS)) {
+      if (commandId === 'doc.command.insert-text') continue
+      this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
+    }
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocumentWithRangePermission(unitId, 'Edit text range', startOffset, endOffset, (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
     this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {
       const created = createDocumentContentControl(model, control, control.id)
@@ -934,6 +966,15 @@ export class OfficeStudio {
     return true
   }
 
+  private commandKind(commandId: string, params: unknown): OfficeKind | undefined {
+    const unitId = commandUnitId(params)
+    if (unitId && this.documents.has(unitId)) return 'document'
+    if (unitId && this.workbooks.has(unitId)) return 'workbook'
+    if (commandId.startsWith('doc.')) return 'document'
+    if (commandId.startsWith('sheet.') || commandId.startsWith('workbook.')) return 'workbook'
+    return undefined
+  }
+
   private assertAlive(): void {
     if (this.disposed) throw new Error('OfficeStudio has been disposed')
   }
@@ -941,11 +982,6 @@ export class OfficeStudio {
 
 function commandUnitId(params: unknown): string | undefined {
   return params && typeof params === 'object' && 'unitId' in params && typeof params.unitId === 'string' ? params.unitId : undefined
-}
-
-function commandKind(params: unknown): OfficeKind | undefined {
-  const unitId = commandUnitId(params)
-  return unitId?.startsWith('document-') ? 'document' : unitId ? 'workbook' : undefined
 }
 
 function requirePivot(model: WorkbookModel, pivotTableId: string) {

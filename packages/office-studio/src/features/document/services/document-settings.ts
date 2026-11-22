@@ -4,26 +4,44 @@ import { DEFAULT_DOCUMENT_SECTION_ID, documentSectionIds } from './section-heade
 export type DocumentParagraphStylePatch = Partial<DocumentParagraphStyle>
 export type DocumentSectionSetupPatch = Partial<DocumentSectionSetup>
 
+export const DOCUMENT_PARAGRAPH_STYLE_FIELDS = [
+  'align', 'indent', 'lineHeight', 'spaceBefore', 'spaceAfter', 'indentStart', 'indentEnd',
+  'indentFirstLine', 'hanging', 'spacingRule', 'wordWrap', 'snapToGrid',
+] as const
+const paragraphStyleFields = new Set<string>(DOCUMENT_PARAGRAPH_STYLE_FIELDS)
+
 export function validateDocumentParagraphStylePatch(patch: DocumentParagraphStylePatch, currentSpacingRule: NonNullable<DocumentParagraphStyle['spacingRule']> = 'auto'): void {
-  if (patch.align !== undefined && !['left', 'center', 'right', 'justify'].includes(patch.align)) throw new TypeError('Unsupported paragraph alignment')
-  if (patch.spacingRule !== undefined && !['auto', 'atLeast', 'exact'].includes(patch.spacingRule)) throw new TypeError('Unsupported line spacing rule')
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) throw new TypeError('Paragraph style patch must be an object')
   for (const [key, value] of Object.entries(patch)) {
-    if (key === 'align' || key === 'spacingRule' || key === 'wordWrap' || key === 'snapToGrid') continue
+    if (!paragraphStyleFields.has(key)) throw new TypeError(`Unsupported paragraph setting: ${key}`)
+    if (key === 'align') {
+      if (!['left', 'center', 'right', 'justify'].includes(value)) throw new TypeError('Unsupported paragraph alignment')
+      continue
+    }
+    if (key === 'spacingRule') {
+      if (!['auto', 'atLeast', 'exact'].includes(value)) throw new TypeError('Unsupported line spacing rule')
+      continue
+    }
+    if (key === 'wordWrap' || key === 'snapToGrid') {
+      if (typeof value !== 'boolean') throw new TypeError(`Paragraph ${key === 'wordWrap' ? 'word wrap' : 'snap to grid'} must be boolean`)
+      continue
+    }
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new RangeError(`Paragraph ${key} must be a non-negative finite number`)
+    if (key === 'lineHeight') {
+      if (value === 0) throw new RangeError('Paragraph line height must be positive')
+      const maximum = (patch.spacingRule ?? currentSpacingRule) === 'auto' ? 5 : 100
+      if (value < 1 || value > maximum) throw new RangeError(`Paragraph line spacing must be between 1 and ${maximum}`)
+    } else if (value > 100) throw new RangeError(`Paragraph ${key} must be between 0 and 100`)
   }
-  if (patch.lineHeight !== undefined && patch.lineHeight === 0) throw new RangeError('Paragraph line height must be positive')
-  if (patch.lineHeight !== undefined) {
-    const maximum = (patch.spacingRule ?? currentSpacingRule) === 'auto' ? 5 : 100
-    if (patch.lineHeight < 1 || patch.lineHeight > maximum) throw new RangeError(`Paragraph line spacing must be between 1 and ${maximum}`)
-  }
-  if (patch.wordWrap !== undefined && typeof patch.wordWrap !== 'boolean') throw new TypeError('Paragraph word wrap must be boolean')
-  if (patch.snapToGrid !== undefined && typeof patch.snapToGrid !== 'boolean') throw new TypeError('Paragraph snap to grid must be boolean')
 }
 
 export function applyDocumentParagraphStylePatch(block: DocumentBlock, patch: DocumentParagraphStylePatch): void {
   validateDocumentParagraphStylePatch(patch, block.style.spacingRule ?? 'auto')
   if (!['paragraph', 'heading', 'bullet', 'numbered', 'checklist', 'quote'].includes(block.type)) {
     throw new TypeError('Paragraph settings can only be applied to text paragraphs')
+  }
+  if (patch.spacingRule !== undefined && patch.lineHeight === undefined) {
+    validateDocumentParagraphStylePatch({ lineHeight: block.style.lineHeight }, patch.spacingRule)
   }
   block.style = { ...block.style, ...patch }
 }

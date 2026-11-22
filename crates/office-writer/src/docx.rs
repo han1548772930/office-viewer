@@ -4,6 +4,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{opc::Package, xml, ExportError, ExportWarning};
 
+#[path = "docx_numbering.rs"]
+mod numbering;
+use numbering::{assign_lists, numbering_left, numbering_level, write_numbering_xml, NumberingInstance};
+#[cfg(test)]
+use numbering::build_numbering_xml;
+
 const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
 const REL_CORE_PROPERTIES: &str =
@@ -52,32 +58,6 @@ const SETTINGS_CONTENT_TYPE: &str =
 const MAX_TABLE_SPAN: usize = 512;
 const EMU_PER_PIXEL: f64 = 9_525.0;
 const TWIPS_PER_PIXEL: f64 = 15.0;
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum ListKind {
-    Preset(&'static str),
-    ChecklistUnchecked,
-    ChecklistChecked,
-}
-
-struct NumberingInstance {
-    id: u32,
-    kind: ListKind,
-}
-
-#[derive(serde::Deserialize)]
-struct ListDefinition {
-    symbols: Option<Vec<String>>,
-    formats: Option<Vec<String>>,
-    suffix: Option<String>,
-    compound: Option<bool>,
-    levels: Option<usize>,
-}
-
-fn list_definitions() -> &'static std::collections::BTreeMap<String, ListDefinition> {
-    static DEFINITIONS: std::sync::OnceLock<std::collections::BTreeMap<String, ListDefinition>> = std::sync::OnceLock::new();
-    DEFINITIONS.get_or_init(|| serde_json::from_str(include_str!("../../../packages/office-studio/src/domain/document-list-presets.json")).expect("bundled list presets"))
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum NoteKind {
@@ -617,22 +597,52 @@ impl<'a> WriteContext<'a> {
             }
         }
         if let Some(num_id) = self.list_ids.get(&id) {
-            let level = integer(get(block, "level")).unwrap_or(0).clamp(0, 8);
+            let level = numbering_level(block);
             properties.push_str(&format!(
                 "<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{num_id}\"/></w:numPr>"
             ));
         }
 
         let style = get(block, "style");
-        let spacing_before = twips(positive(get(style, "spaceBefore"), 0.0));
-        let spacing_after = twips(positive(get(style, "spaceAfter"), 8.0));
-        let line = (positive(get(style, "lineHeight"), 1.5) * 240.0)
+        let spacing_before = twips(nonnegative(get(style, "spaceBefore"), 0.0));
+        let spacing_after = twips(nonnegative(get(style, "spaceAfter"), 8.0));
+        let line_rule = match get(style, "spacingRule").as_str() {
+            Some("exact") => "exact",
+            Some("atLeast") => "atLeast",
+            _ => "auto",
+        };
+        let line = (positive(get(style, "lineHeight"), if line_rule == "auto" { 1.5 } else { 20.0 })
+            * if line_rule == "auto" { 240.0 } else { TWIPS_PER_PIXEL })
             .round()
-            .clamp(1.0, 2_400.0) as u32;
-        properties.push_str(&format!("<w:spacing w:before=\"{spacing_before}\" w:after=\"{spacing_after}\" w:line=\"{line}\" w:lineRule=\"auto\"/>"));
-        let indent = twips(positive(get(style, "indent"), 0.0));
-        if indent > 0 {
-            properties.push_str(&format!("<w:ind w:left=\"{indent}\"/>"));
+            .clamp(1.0, 31_680.0) as u32;
+        properties.push_str(&format!("<w:spacing w:before=\"{spacing_before}\" w:after=\"{spacing_after}\" w:line=\"{line}\" w:lineRule=\"{line_rule}\"/>"));
+        let left = get(style, "indentStart").as_f64()
+            .or_else(|| get(style, "indent").as_f64().filter(|value| *value != 0.0).map(|value| {
+                let inherited = self.list_ids.get(&id).map(|num_id| numbering_left(&self.numbering, *num_id, numbering_level(block))).unwrap_or(0.0);
+                inherited + value * 24.0
+            }));
+        let right = get(style, "indentEnd").as_f64();
+        let first_line = get(style, "indentFirstLine").as_f64();
+        let hanging = get(style, "hanging").as_f64();
+        if left.is_some() || right.is_some() || first_line.is_some() || hanging.is_some() {
+            let mut indent = String::new();
+            if let Some(left) = left {
+                indent.push_str(&format!(" w:left=\"{}\"", signed_twips(left)));
+            }
+            if let Some(right) = right {
+                indent.push_str(&format!(" w:right=\"{}\"", signed_twips(right)));
+            }
+            if first_line.is_some() || hanging.is_some() {
+                let first = signed_twips(first_line.unwrap_or(0.0) - hanging.unwrap_or(0.0));
+                let (property, value) = if first < 0 { ("hanging", -first) } else { ("firstLine", first) };
+                indent.push_str(&format!(" w:{property}=\"{value}\""));
+            }
+            properties.push_str(&format!("<w:ind{indent}/>"));
+        }
+        for (field, tag) in [("wordWrap", "wordWrap"), ("snapToGrid", "snapToGrid")] {
+            if let Some(value) = get(style, field).as_bool() {
+                properties.push_str(&format!("<w:{tag} w:val=\"{}\"/>", u8::from(value)));
+            }
         }
         let align = match string(get(style, "align")).unwrap_or_default().as_str() {
             "center" => "center",
@@ -1689,36 +1699,10 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     };
     let has_different_odd_even =
         prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
-    let mut next_num_id = 1;
-    assign_lists(
-        blocks,
-        &mut context.list_ids,
-        &mut context.numbering,
-        &mut next_num_id,
-    );
-    for block in blocks {
-        if string(get(block, "type")).as_deref() == Some("table") {
-            let rows =
-                field(get(get(block, "metadata"), "table"), "rows").and_then(Value::as_array);
-            if let Some(rows) = rows {
-                for cell in rows.iter().flat_map(|row| {
-                    field(row, "cells")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                }) {
-                    assign_lists(
-                        cell_blocks(cell),
-                        &mut context.list_ids,
-                        &mut context.numbering,
-                        &mut next_num_id,
-                    );
-                }
-            }
-        }
-    }
-
-    let numbering_xml = build_numbering_xml(&context.numbering);
+    let (list_ids, numbering) = assign_lists(blocks);
+    context.list_ids = list_ids;
+    context.numbering = numbering;
+    let numbering_xml = write_numbering_xml(&context.numbering, context.package, &mut context.warnings)?;
     context
         .package
         .add_xml("word/numbering.xml", NUMBERING_CONTENT_TYPE, numbering_xml)?;
@@ -1794,110 +1778,6 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         context.relationship(REL_SETTINGS, "settings.xml", false)?;
     }
     Ok(context.warnings)
-}
-
-fn assign_lists(
-    blocks: &[Value],
-    lookup: &mut HashMap<usize, u32>,
-    numbering: &mut Vec<NumberingInstance>,
-    next_num_id: &mut u32,
-) {
-    let mut active_kind = None;
-    let mut active_id = None;
-    let mut named = HashMap::new();
-    for block in blocks {
-        let list = get(block, "list");
-        let preset = get(list, "preset").as_str().and_then(|key| list_definitions().get_key_value(key)).map(|(key, _)| key.as_str());
-        let kind = match string(get(block, "type")).as_deref() {
-            Some("bullet") => Some(ListKind::Preset(preset.filter(|k| k.starts_with("BULLET_LIST")).unwrap_or("BULLET_LIST"))),
-            Some("numbered") => Some(ListKind::Preset(preset.filter(|k| k.starts_with("ORDER_LIST")).unwrap_or("ORDER_LIST"))),
-            Some("checklist") => Some(
-                if get(get(block, "checklist"), "checked").as_bool() == Some(true) {
-                    ListKind::ChecklistChecked
-                } else {
-                    ListKind::ChecklistUnchecked
-                },
-            ),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            if let Some(key) = get(list, "id").as_str().filter(|id| !id.is_empty()) {
-                let id = *named.entry((kind, key)).or_insert_with(|| {
-                    let id = *next_num_id;
-                    *next_num_id += 1;
-                    numbering.push(NumberingInstance { id, kind });
-                    id
-                });
-                lookup.insert(block as *const Value as usize, id);
-                active_kind = None;
-                active_id = None;
-                continue;
-            }
-            if active_kind != Some(kind) {
-                let id = *next_num_id;
-                *next_num_id += 1;
-                numbering.push(NumberingInstance { id, kind });
-                active_id = Some(id);
-                active_kind = Some(kind);
-            }
-            if let Some(id) = active_id {
-                lookup.insert(block as *const Value as usize, id);
-            }
-        } else {
-            active_kind = None;
-            active_id = None;
-        }
-    }
-}
-
-fn build_numbering_xml(instances: &[NumberingInstance]) -> String {
-    let mut abstract_numbering = String::new();
-    let mut abstract_ids = HashMap::new();
-    for instance in instances {
-        let kind = instance.kind;
-        if abstract_ids.contains_key(&kind) { continue; }
-        let abstract_id = match kind {
-            ListKind::ChecklistUnchecked => 2, ListKind::ChecklistChecked => 3,
-            ListKind::Preset("BULLET_LIST") => 0, ListKind::Preset("ORDER_LIST") => 1,
-            ListKind::Preset(_) => abstract_ids.len() + 4,
-        };
-        abstract_ids.insert(kind, abstract_id);
-        let definition = match kind { ListKind::Preset(key) => list_definitions().get(key), _ => None };
-        let mut levels = String::new();
-        for level in 0..definition.and_then(|d| d.levels).unwrap_or(9) {
-            let (format, text, left, hanging, font) = if let Some(def) = definition {
-                let (format, text) = if let Some(symbols) = &def.symbols {
-                    ("bullet", xml_attribute(&symbols[level % symbols.len()]))
-                } else {
-                    let formats = def.formats.as_ref().expect("ordered preset formats");
-                    let suffix = def.suffix.as_deref().unwrap_or(".");
-                    let slots = if def.compound == Some(true) { 1..=level + 1 } else { level + 1..=level + 1 };
-                    let pattern = slots.map(|slot| format!("%{slot}{suffix}")).collect::<Vec<_>>().concat();
-                    (formats[level % formats.len()].as_str(), pattern)
-                };
-                (format, text, 420 * (level + 1), 420, "Arial")
-            } else {
-                let mark = if kind == ListKind::ChecklistChecked { "&#x2611;" } else { "&#x2610;" };
-                ("bullet", mark.to_owned(), 720 + level * 360, 360, "Segoe UI Symbol")
-            };
-            levels.push_str(&format!(
-                "<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{left}\"/></w:tabs><w:ind w:left=\"{left}\" w:hanging=\"{hanging}\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\"/></w:rPr></w:lvl>"
-            ));
-        }
-        abstract_numbering.push_str(&format!("<w:abstractNum w:abstractNumId=\"{abstract_id}\"><w:multiLevelType w:val=\"multilevel\"/>{levels}</w:abstractNum>"));
-    }
-    let mut numbers = String::new();
-    for instance in instances {
-        let abstract_id = abstract_ids[&instance.kind];
-        numbers.push_str(&format!(
-            "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>",
-            instance.id
-        ));
-    }
-    format!(
-        "{}<w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{abstract_numbering}{numbers}</w:numbering>",
-        xml::DECL
-    )
 }
 
 fn styles_xml() -> String {
@@ -2193,7 +2073,7 @@ fn run_xml(run: &Value, text: &str) -> String {
     if get(run, "strike").as_bool() == Some(true) {
         properties.push_str("<w:strike/>");
     }
-    if let Some(color) = string(get(run, "color")).and_then(color) {
+    if let Some(color) = string(get(run, "color")).and_then(text_color) {
         properties.push_str(&format!("<w:color w:val=\"{color}\"/>"));
     }
     let size = (positive(get(run, "fontSize"), 11.0) * 2.0)
@@ -2361,6 +2241,18 @@ fn positive(value: &Value, fallback: f64) -> f64 {
 
 fn twips(pixels: f64) -> u32 {
     (pixels * TWIPS_PER_PIXEL).round().clamp(0.0, 31_680.0) as u32
+}
+
+fn signed_twips(pixels: f64) -> i32 {
+    (pixels * TWIPS_PER_PIXEL).round().clamp(-31_680.0, 31_680.0) as i32
+}
+
+fn nonnegative(value: &Value, fallback: f64) -> f64 {
+    value.as_f64().filter(|value| value.is_finite() && *value >= 0.0).unwrap_or(fallback)
+}
+
+fn text_color(value: String) -> Option<String> {
+    if value.eq_ignore_ascii_case("auto") { Some("auto".to_owned()) } else { color(value) }
 }
 
 fn color(value: String) -> Option<String> {

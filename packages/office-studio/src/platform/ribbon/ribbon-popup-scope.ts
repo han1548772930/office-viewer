@@ -8,7 +8,7 @@ interface RibbonPopupScope {
 
 export const RibbonPopupScopeKey: InjectionKey<RibbonPopupScope> = Symbol('RibbonPopupScope')
 
-/** Matches Univer ToolbarDropdownProvider while allowing nested menus their own scope. */
+/** Keep one ribbon popup open per scope, with independent nested menu scopes. */
 export function provideRibbonPopupScope(direction: Readonly<Ref<'ltr' | 'rtl'>> = ref('ltr')): RibbonPopupScope {
   const activeId = ref<string>()
   const scope = { activeId, direction, close: () => { activeId.value = undefined } }

@@ -6,6 +6,7 @@ import { validateCustomNumberFormat } from './custom-number-format.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, sheetNumberFormatPattern, type SheetNumberFormat } from './sheet-number-format.ts'
 import { MAX_SHEET_DECIMALS, numberFormatDecimalPlaces, rawNumberDecimalPlaces, scientificPatternForValue, setNumberFormatDecimalPlaces } from './number-format-pattern.ts'
 import { sheetCurrencyPattern } from './sheet-currency.ts'
+import { sheetCellNumberValue } from './sheet-number-presentation.ts'
 
 export const SHEET_NUMBER_FORMAT_COMMANDS = Object.freeze({
   set: 'sheet.command.set-number-format', currency: 'sheet.command.set-currency-format', percent: 'sheet.command.set-percent-format',
@@ -129,27 +130,21 @@ const address = (row: number, col: number) => {
   for (let index = col; index >= 0; index = Math.floor(index / 26) - 1) letters = String.fromCharCode(index % 26 + 65) + letters
   return `${letters}${row + 1}`
 }
-function viewScalar(cell: ExcelCellView | undefined): CellScalar {
-  if (!cell) return null
-  if (cell.rawValue !== undefined) return cell.rawValue
-  const source = cell.formula ? cell.cachedValue ?? '' : cell.value
-  return source !== '' && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(source) ? Number(source) : source
-}
-
 export function applySheetViewNumberFormatCommand(sheet: ExcelSheetView, ranges: readonly CellRange[], action: SheetNumberFormatAction, region = 'zh-CN', userId = 'local-user'): boolean {
   const scope = actionRanges(ranges, action)
   if (!scope.length) return false
   assertEditable(sheet, scope, userId)
   const targets = [...positions(scope)].map(({ row, col }) => {
     const cell = sheet.cells[address(row, col)]
-    return { row, col, value: viewScalar(cell), pattern: cell?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[cell?.numberFormat ?? 'general'] }
+    return { row, col, value: sheetCellNumberValue(cell) ?? null, pattern: cell?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[cell?.numberFormat ?? 'general'] }
   })
   const patches = createSheetNumberFormatPlan(targets, action, region)
   for (const { row, col, pattern } of patches) {
     const key = address(row, col), cell = sheet.cells[key] ?? { value: '' }
     const kind = classifySheetNumberFormat(pattern)
+    const value = sheetCellNumberValue(cell)
     sheet.cells[key] = { ...cell, rawNumberFormat: pattern, numberFormat: kind === 'custom' ? undefined : kind,
-      displayValue: cell.formula && cell.rawValue === null ? cell.displayValue : formatSheetValue(viewScalar(cell), pattern, sheet.date1904, region) ?? cell.displayValue }
+      displayValue: value === undefined ? cell.displayValue : formatSheetValue(value, pattern, sheet.date1904, region) ?? cell.displayValue }
   }
   return patches.length > 0
 }

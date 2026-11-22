@@ -72,7 +72,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const codeTokens = new Map([...codeBlocks].map(([blockId, data]) => [blockId, tokenizeCode(data.source, data.language)]))
   for (const line of visibleLines) {
     if (!visible(line)) continue
-    const clip = rect(layout.pages[line.page]!.content)
+    const clip = rect(layout.pages[line.page]!)
     const hasSelection = !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))
     const lineMatches = matchesByTarget.get(targetKey(line.target)) ?? []
     const start = sameTarget(line.target, ordered.start) ? ordered.start.offset : 0
@@ -83,7 +83,11 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       if (line.codeBlock.lineNumber === 1) commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: Math.max(2, scale), fill: '#dce3ec', clip })
       commands.push({ kind: 'text', x: x(line.x - 3), y: y(line.baseline), text: String(line.codeBlock.lineNumber), font: `${10 * scale}px Consolas, monospace`, color: '#8a96a5', align: 'right', baseline: 'alphabetic', clip })
     }
-    if (line.marker) commands.push({ kind: 'text', x: x(line.x - 6), y: y(line.baseline), text: line.marker, font: `${14 * scale}px Arial`, color: '#445166', align: 'right', clip })
+    if (line.marker) {
+      const font = line.markerStyle?.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`) ?? `${14 * scale}px Arial`
+      commands.push({ kind: 'text', x: x(line.markerStyle?.x ?? line.x - 6), y: y(line.baseline), text: line.marker, font,
+        color: line.markerStyle ? documentTextColor(line.markerStyle.color) : '#445166', align: line.markerStyle ? 'left' : 'right', baseline: 'alphabetic', clip })
+    }
     if (line.checklist) {
       const size = 14 * scale
       const left = x(line.x - 23)

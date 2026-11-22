@@ -56,8 +56,8 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * An explicit workbench setting wins over the document flavor. Univer's
- * DocSideMenu defaults to enabled for modern documents and disabled for
+ * An explicit workbench setting wins over the document flavor. The outline
+ * defaults to enabled for modern documents and disabled for
  * traditional documents. A model without a declared flavor is traditional.
  */
 export function documentOutlineEnabled(model: DocumentModel, configured?: boolean): boolean {

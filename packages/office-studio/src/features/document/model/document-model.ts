@@ -1,4 +1,5 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, InlineRun } from '../../../domain/model'
+import { blockHasNumbering, blockNumberingLevelIndex } from './document-numbering'
 
 export interface DocumentRun extends InlineRun { highlight?: string; href?: string }
 export interface TextTarget { blockId: string; row?: number; col?: number; cellBlockId?: string }
@@ -50,13 +51,16 @@ export const DOCUMENT_NAMED_PARAGRAPH_STYLES: Record<DocumentNamedParagraphStyle
 
 export function applyNamedParagraphStyle(block: DocumentBlock, namedStyle: DocumentNamedParagraphStyle): void {
   const style = DOCUMENT_NAMED_PARAGRAPH_STYLES[namedStyle]
+  const numberingLevel = blockHasNumbering(block) ? blockNumberingLevelIndex(block) : undefined
   block.metadata = { ...block.metadata, namedStyleType: namedStyle }
+  if (numberingLevel !== undefined && block.type !== 'checklist') block.metadata.numberingLevel = numberingLevel
   block.type = style.level > 0 ? 'heading' : 'paragraph'
   block.level = style.level
   block.style = {
     ...block.style,
     indent: 0,
     lineHeight: 1.5,
+    spacingRule: 'auto',
     spaceBefore: style.spaceBefore,
     spaceAfter: style.spaceAfter,
   }
@@ -171,7 +175,7 @@ export function compactRuns(runs: DocumentRun[]): DocumentRun[] {
       const { id: _lastId, text: _lastText, ...lastMarks } = last
       if (JSON.stringify(marks) === JSON.stringify(lastMarks)) { last.text += normalized.text; continue }
     }
-    result.push({ ...normalized, id: documentId('run') })
+    result.push({ ...normalized })
   }
   return result.length ? result : [createRun()]
 }
@@ -182,7 +186,7 @@ export function sliceRuns(runs: readonly DocumentRun[], start: number, end = Num
   for (const run of runs) {
     const from = Math.max(0, start - offset)
     const to = Math.min(run.text.length, end - offset)
-    if (to > from) result.push({ ...run, id: documentId('run'), text: run.text.slice(from, to) })
+    if (to > from) result.push({ ...run, id: from === 0 && to === run.text.length ? run.id : documentId('run'), text: run.text.slice(from, to) })
     offset += run.text.length
     if (offset >= end) break
   }

@@ -1,7 +1,8 @@
-import type { CellScalar, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
+import type { CellScalar, CellStyle, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
+import { inferSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText } from '../domain/sheet-cell-value.ts'
 
 export interface ExcelCellView {
   value: string
@@ -10,7 +11,9 @@ export interface ExcelCellView {
   italic?: boolean
   underline?: boolean
   strike?: boolean
-  align?: 'left' | 'center' | 'right'
+  align?: CellStyle['horizontal']
+  dataType?: string
+  cachedDataType?: string | null
   vertical?: 'top' | 'middle' | 'bottom'
   background?: string | null
   color?: string | null
@@ -78,7 +81,8 @@ export const parseCellKey = (key: string): { row: number; col: number } | undefi
 const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   value: cell.formula ? '' : cell.value === null ? '' : String(cell.value), formula: cell.formula ?? undefined,
   bold: cell.style.font.bold, italic: cell.style.font.italic, underline: cell.style.font.underline, strike: cell.style.font.strike,
-  align: cell.style.horizontal === 'justify' ? 'left' : cell.style.horizontal,
+  align: cell.style.horizontal,
+  dataType: cell.dataType, cachedDataType: cell.cachedDataType,
   vertical: cell.style.vertical, background: cell.style.fill, color: cell.style.font.color,
   fontSize: cell.style.font.size, fontFamily: cell.style.font.family,
   numberFormat: classifySheetNumberFormat(cell.style.numberFormat) === 'custom' ? undefined : classifySheetNumberFormat(cell.style.numberFormat) as SheetNumberFormat,
@@ -138,18 +142,20 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
   }
 }
 function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
-  if (cell.formula) return original?.formula === cell.formula ? original.value : cell.rawValue ?? cell.cachedValue ?? null
+  if (cell.formula) {
+    if (cell.rawValue !== undefined) return cell.rawValue
+    if (original?.formula === cell.formula) return original.value
+    if (cell.cachedValue === undefined || cell.cachedValue === '') return null
+    const type = cell.cachedDataType ?? (normalizeSheetCellValueType(cell.dataType) === 'formula' ? undefined : cell.dataType)
+    return parseSheetCellText(cell.cachedValue, type)
+  }
   if (original && cell.rawValue !== undefined && Object.is(cell.rawValue, original.value)
     && cell.value !== String(original.value ?? '') && cell.value !== original.display) {
-    return parseEditedCellValue(cell.value)
+    return parseSheetCellText(cell.value, cell.dataType)
   }
   if (cell.rawValue !== undefined) return cell.rawValue
   if (original && String(original.value ?? '') === cell.value) return original.value
-  return parseEditedCellValue(cell.value)
-}
-function parseEditedCellValue(value: string): CellScalar {
-  if (value.trim() && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(value)) return Number(value)
-  return value
+  return parseSheetCellText(cell.value, cell.dataType ?? (cell.rawNumberFormat === '@' || cell.numberFormat === 'text' ? 'text' : undefined))
 }
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView): WorkbookModel {
   return {
@@ -168,17 +174,27 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         if (!position) continue
         const id = position.row+':'+position.col
         const previous = original?.cells[id]
-        const preserveDisplay = previous && previous.formula === (cell.formula ?? null) && String(previous.value ?? '') === cell.value
         const numberFormat = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : previous?.style.numberFormat) ?? 'General'
         const value = rawValue(cell, previous)
-        const display = formatSheetValue(value, numberFormat, view.date1904 ?? workbook.date1904)
+        const formula = cell.formula ?? null
+        const sameContent = previous?.formula === formula && Object.is(previous.value, value)
+        const dataType = formula ? 'formula' : normalizeSheetCellValueType(cell.dataType) === 'formula'
+          ? inferSheetCellValueType(value) : cell.dataType ?? (sameContent ? previous?.dataType : undefined) ?? inferSheetCellValueType(value)
+        const cachedDataType = formula ? cell.cachedDataType === undefined
+          ? sameContent ? previous?.cachedDataType ?? (value === null ? null : inferSheetCellValueType(value)) : value === null ? null : inferSheetCellValueType(value)
+          : cell.cachedDataType : null
+        const display = formula && value === null ? cell.displayValue ?? cell.cachedValue ?? (sameContent ? previous?.display : undefined) ?? formula
+          : formatSheetValue(value, numberFormat, view.date1904 ?? workbook.date1904)
+            ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value)
+        const metadata = previous?.metadata ? { ...previous.metadata } : undefined
+        if (metadata && !sameContent) delete metadata.formulaError
         const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)
         const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
         cells[id] = {
-          ...previous, id, ...position, value, formula: cell.formula ?? null,
+          ...previous, id, ...position, value, formula, dataType, cachedDataType, metadata,
           hyperlink: cell.hyperlink === undefined ? previous?.hyperlink ?? null : cell.hyperlink,
           sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
-          display: display ?? (cell.formula ? cell.cachedValue ?? cell.formula : preserveDisplay ? previous.display : cell.value),
+          display,
           style: {
             ...previous?.style,
             font: {
@@ -188,7 +204,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
               color: cell.color === undefined ? previous?.style.font.color ?? null : cell.color,
             },
             fill: cell.background === undefined ? previous?.style.fill ?? null : cell.background,
-            horizontal: cell.align ?? previous?.style.horizontal ?? 'left', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
+            horizontal: cell.align ?? previous?.style.horizontal ?? 'general', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
             wrap: cell.wrap ?? previous?.style.wrap ?? false, wrapStrategy: cell.wrapStrategy ?? previous?.style.wrapStrategy, border: cell.border ?? previous?.style.border,
             rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,
             shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,

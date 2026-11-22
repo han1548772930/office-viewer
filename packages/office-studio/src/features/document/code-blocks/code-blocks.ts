@@ -1,5 +1,7 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
-import { createParagraph, createRun, orderedSelection, runText, selectionCollapsed, type DocumentSelection } from '../model/document-model.ts'
+import { collapsedSelection, createParagraph, createRun, orderedSelection, runText, selectionCollapsed, type DocumentSelection } from '../model/document-model.ts'
+import { transformContentControlsForBlockEdit } from '../services/content-controls.ts'
+import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments.ts'
 
 export type DocumentCodeLanguage = 'plain' | 'javascript' | 'typescript' | 'json' | 'css' | 'html' | 'python' | 'sql' | 'rust'
 export type CodeTokenKind = 'keyword' | 'string' | 'number' | 'comment' | 'operator' | 'punctuation' | 'plain'
@@ -26,7 +28,7 @@ const rustKeywords = new Set('as async await break const continue crate dyn else
 export function createCodeBlock(source = '', language: DocumentCodeLanguage = 'plain', lineNumbers = false): DocumentBlock {
   const normalizedLanguage = normalizeCodeLanguage(language)
   const normalizedSource = normalizeCodeSource(source)
-  const block = createParagraph(normalizedSource)
+  const block = createParagraph(normalizedSource, { fontFamily: 'Consolas', fontSize: 10 })
   block.metadata.codeBlock = { language: normalizedLanguage, source: normalizedSource, lineNumbers } satisfies DocumentCodeBlockData
   block.style = { ...block.style, align: 'left', indent: 0, lineHeight: 1.35, spaceBefore: 8, spaceAfter: 8 }
   return block
@@ -56,8 +58,29 @@ export function updateCodeBlock(model: DocumentModel, blockId: string, patch: Pa
     language: patch.language === undefined ? current.language : normalizeCodeLanguage(patch.language),
     lineNumbers: patch.lineNumbers === undefined ? current.lineNumbers : patch.lineNumbers === true,
   }
+  return applyCodeBlockUpdate(model, block, current, next)
+}
+
+interface CodeSourceEdit { startOffset: number; endOffset: number; text: string }
+
+function codeSourceEdit(before: string, after: string): CodeSourceEdit {
+  let startOffset = 0
+  while (startOffset < before.length && startOffset < after.length && before[startOffset] === after[startOffset]) startOffset++
+  let suffix = 0
+  while (suffix < before.length - startOffset && suffix < after.length - startOffset
+    && before[before.length - suffix - 1] === after[after.length - suffix - 1]) suffix++
+  return { startOffset, endOffset: before.length - suffix, text: after.slice(startOffset, after.length - suffix) }
+}
+
+function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit): boolean {
+  if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers) return false
+  if (current.source !== next.source) {
+    const change = edit ?? codeSourceEdit(current.source, next.source)
+    transformContentControlsForBlockEdit(model, block.id, change.startOffset, change.endOffset, change.text.length)
+    block.runs = [createRun(next.source, { fontFamily: 'Consolas', fontSize: 10 })]
+    transformDocumentCommentAnchorsForTextEdit(model, block.id, change.startOffset, change.endOffset, change.text)
+  }
   block.metadata = { ...block.metadata, codeBlock: next }
-  block.runs = [createRun(next.source, { fontFamily: 'Consolas', fontSize: 10 })]
   return true
 }
 
@@ -81,9 +104,9 @@ export function editCodeBlockText(model: DocumentModel, selection: DocumentSelec
     else endOffset = adjacent
   }
   const source = `${data.source.slice(0, startOffset)}${insertion}${data.source.slice(endOffset)}`
-  updateCodeBlock(model, block.id, { source })
+  applyCodeBlockUpdate(model, block, data, { ...data, source }, { startOffset, endOffset, text: insertion })
   const caret = startOffset + insertion.length
-  return { anchor: { blockId: block.id, offset: caret }, focus: { blockId: block.id, offset: caret } }
+  return collapsedSelection({ blockId: block.id, offset: caret })
 }
 
 export function insertCodeBlock(model: DocumentModel, afterBlockId: string | undefined, source = '', language: DocumentCodeLanguage = 'plain'): DocumentBlock {

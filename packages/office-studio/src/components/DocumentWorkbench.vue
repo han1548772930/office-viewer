@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Tooltip, Upload, theme } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
@@ -29,11 +29,12 @@ import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
+import { documentParagraphSettingsStyle, type DocumentParagraphLineMetrics } from './document/document-paragraph-settings-state'
 import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
-import { blockAtPoint, canContinueDocumentNumbering, canRestartDocumentNumbering, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
+import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumbering, canRestartDocumentNumbering, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
-import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
+import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { DOCUMENT_DEFAULT_TEXT_COLOR, rememberDocumentColors, type DocumentColorMemory } from '../features/document/services/document-colors'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { DOCUMENT_PASTE_OPTIONS, documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
@@ -50,11 +51,11 @@ import { canManageDocumentPermissions, permissionTargetsForSelection, resolveDoc
 import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
 import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
-import { createRibbonTranslator, provideWorkbenchLocales } from '../i18n/office-i18n'
+import { createRibbonTranslator, provideWorkbenchRegionalSettings } from '../i18n/office-i18n'
 import { captureDocumentFormat, clearDocumentFormat, documentPainterTarget, type DocumentPainterFormat } from '../features/document/services/document-format-painter'
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
-const officeLocale = provideWorkbenchLocales(() => props.documentApi?.regionalSettings)
+const { locale: officeLocale, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.documentApi?.regionalSettings)
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
   'update:fileName': [value: string]
@@ -72,6 +73,20 @@ const layout = shallowRef<DocumentLayout>(emptyLayout())
 const canvasRef = ref<InstanceType<typeof DocumentCanvasViewport> | null>(null)
 const activeTab = ref('home')
 const { token: themeToken } = theme.useToken()
+const workbenchStyle = computed(() => ({
+  '--document-text': themeToken.value.colorText,
+  '--document-secondary-text': themeToken.value.colorTextSecondary,
+  '--document-background': themeToken.value.colorBgLayout,
+  '--document-surface': themeToken.value.colorBgContainer,
+  '--document-border': themeToken.value.colorBorder,
+  '--document-secondary-border': themeToken.value.colorBorderSecondary,
+  '--document-primary': themeToken.value.colorPrimary,
+  '--document-error': themeToken.value.colorError,
+  '--document-info-text': themeToken.value.colorInfoText,
+  '--document-info-background': themeToken.value.colorInfoBg,
+  '--document-info-border': themeToken.value.colorInfoBorder,
+  '--document-shadow': themeToken.value.boxShadowSecondary,
+}))
 const colorMemory = shallowRef<DocumentColorMemory>({})
 const documentTitle = ref(props.fileName || '无标题文档')
 const displayPreference = useWorkbenchDisplay()
@@ -146,15 +161,15 @@ const storyValue = computed(() => storyKey.value && storyBuffer(storySection.val
 const paragraphSettingsPanelOpen = ref(false)
 const sectionSettingsPanelOpen = ref(false)
 const activeParagraphBlock = computed(() => blockAtPoint(model.value, selection.value.focus))
-const paragraphSettingsStyle = computed<DocumentParagraphStyle>(() => ({
-  align: activeParagraphBlock.value?.style.align ?? 'left',
-  indent: activeParagraphBlock.value?.style.indent ?? 0,
-  lineHeight: activeParagraphBlock.value?.style.lineHeight ?? 1.5,
-  spaceBefore: activeParagraphBlock.value?.style.spaceBefore ?? 0,
-  spaceAfter: activeParagraphBlock.value?.style.spaceAfter ?? 8,
-  ...activeParagraphBlock.value?.style,
-}))
+const paragraphSettingsStyle = computed(() => documentParagraphSettingsStyle(activeParagraphBlock.value?.style ?? {}))
 const paragraphSettingsFontSize = computed(() => activeParagraphBlock.value?.runs[0]?.fontSize ?? 11)
+const paragraphSettingsSelectionKey = computed(() => `${model.value.id}:${JSON.stringify(selection.value)}`)
+const paragraphSettingsLineMetrics = computed<DocumentParagraphLineMetrics | undefined>(() => {
+  const focus = selection.value.focus
+  const lines = layout.value.lines.filter(line => sameTarget(line.target, focus))
+  const line = lines.find(candidate => focus.offset >= candidate.start && focus.offset < candidate.end) ?? lines.at(-1)
+  return line?.glyphLineHeight === undefined ? undefined : { glyphLineHeight: line.glyphLineHeight, renderedLineHeight: line.height }
+})
 const activeSectionSetup = computed(() => documentSectionSetup(model.value, headerFooterSectionId.value))
 const sectionOptions = computed(() => documentSectionIds(model.value).map((value, index) => ({ value, label: `#${index + 1}` })))
 const pageMode = computed<DocumentPageMode>(() => documentOutlineEnabled(model.value) ? 'modern' : 'traditional')
@@ -163,6 +178,8 @@ const latexPanelOpen = ref(false)
 const notesPanelOpen = ref(false)
 const permissionPanelOpen = ref(false)
 const commentsPanelOpen = ref(false)
+const documentDockWidth = ref(384)
+const documentDockOpen = computed(() => paragraphSettingsPanelOpen.value || commentsPanelOpen.value)
 const activeCommentId = ref('')
 const commentDraftSelection = shallowRef<DocumentSelection>()
 const commentDraftReference = ref('')
@@ -301,6 +318,7 @@ const ribbonTabs = computed(() => {
     lastTextColor: colorMemory.value.color, lastHighlightColor: colorMemory.value.highlight,
     defaultTextColor: DOCUMENT_DEFAULT_TEXT_COLOR, defaultHighlightColor: themeToken.value.colorPrimary,
     numbering: { canRestart: canRestartDocumentNumbering(model.value, selection.value, permissionContext.value), canContinue: canContinueDocumentNumbering(model.value, selection.value, permissionContext.value) },
+    indentation: { canDecrease: canChangeDocumentParagraphIndent(model.value, selection.value, -1, permissionContext.value), canIncrease: canChangeDocumentParagraphIndent(model.value, selection.value, 1, permissionContext.value) },
     painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || !!storyLocation.value,
     mode: pageMode.value,
     editingDisabled: !canEditContextSelection.value || !!storyLocation.value,
@@ -405,13 +423,15 @@ function publish(next: DocumentModel) {
   emit('document-change', next)
 }
 function execute(command: DocumentCommand, restoreFocus = true) {
+  const documentApi = props.documentApi
+  if (documentApi && documentApi.id !== model.value.id) { notify('文档切换尚未完成，请稍后重试。'); return }
   const targets = 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(model.value, selection.value)
   if (command.id !== 'doc.command.set-document-permission-rules' && !canDocumentPermission('edit', targets)) return
-  if (command.id === 'doc.command.insert-text') {
+  if (!documentApi && command.id === 'doc.command.insert-text') {
     const next = cloneDocument(model.value)
     const codeSelection = editCodeBlockText(next, selection.value, { text: command.text })
     if (codeSelection) { selection.value = codeSelection; publish(next); return }
-  } else if (command.id === 'doc.command.delete') {
+  } else if (!documentApi && command.id === 'doc.command.delete') {
     const next = cloneDocument(model.value)
     const codeSelection = editCodeBlockText(next, selection.value, { deleteDirection: command.direction })
     if (codeSelection) { selection.value = codeSelection; if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next); return }
@@ -423,11 +443,23 @@ function execute(command: DocumentCommand, restoreFocus = true) {
     return true
   }
   try {
-    const next = cloneDocument(model.value)
     const nextCommand = command.id === 'doc.command.insert-text' ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
-    selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
+    if (documentApi) {
+      const result = documentApi.executeCommand(nextCommand, selection.value)
+      selection.value = result.selection
+      if (result.changed) {
+        const next = documentApi.getModel()
+        model.value = next
+        documentTitle.value = next.name
+        emit('update:modelValue', next)
+        emit('document-change', next)
+      }
+    } else {
+      const next = cloneDocument(model.value)
+      selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
+      if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next)
+    }
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
-    if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next)
     colorMemory.value = rememberDocumentColors(colorMemory.value, command)
     if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
     return true
@@ -531,6 +563,14 @@ function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
 function applyParagraphSettings(patch: Partial<DocumentParagraphStyle>) {
   execute({ id: 'doc.command.format-paragraph', patch }, false)
 }
+function setParagraphSettingsPanelOpen(open: boolean) {
+  paragraphSettingsPanelOpen.value = open
+  if (open) commentsPanelOpen.value = false
+  else void nextTick(() => canvasRef.value?.focus())
+}
+function resizeDocumentDock(sizes: number[]) {
+  if (documentDockOpen.value && sizes[1] !== undefined && Number.isFinite(sizes[1])) documentDockWidth.value = Math.max(280, Math.min(800, sizes[1]))
+}
 function applySectionSettings(sectionId: string, patch: Partial<ReturnType<typeof documentSectionSetup>>) {
   execute({ id: 'doc.command.set-section-setup', sectionId, patch }, false)
 }
@@ -605,7 +645,8 @@ function updateTitle() { emit('update:fileName', documentTitle.value); publish(c
 function saveDocument() { emit('save', { fileName: documentTitle.value, html: documentHtml(model.value), model: model.value }) }
 function toggleCommentsPanel() {
   commentsPanelOpen.value = !commentsPanelOpen.value
-  if (!commentsPanelOpen.value) { activeCommentId.value = ''; commentDraftSelection.value = undefined; commentDraftReference.value = '' }
+  if (commentsPanelOpen.value) paragraphSettingsPanelOpen.value = false
+  else { activeCommentId.value = ''; commentDraftSelection.value = undefined; commentDraftReference.value = ''; void nextTick(() => canvasRef.value?.focus()) }
 }
 function startAddComment() {
   if (!canCreateComment.value) {
@@ -617,6 +658,7 @@ function startAddComment() {
   commentDraftSelection.value = { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } }
   commentDraftReference.value = selectedPlainText(model.value, selection.value)
   activeCommentId.value = ''
+  paragraphSettingsPanelOpen.value = false
   commentsPanelOpen.value = true
 }
 function commentActor() {
@@ -1218,7 +1260,7 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
     case 'doc.operation.open-page-settings': pageSettingsOpen.value = true; break
     case 'doc.operation.open-header-footer': openStory({ page: layout.value.lines.find(line => line.target.blockId === selection.value.focus.blockId && line.start <= selection.value.focus.offset && line.end >= selection.value.focus.offset)?.page ?? activePageIndex.value, area: 'header' }); break
-    case 'sidebar.operation.doc-paragraph-setting-panel': paragraphSettingsPanelOpen.value = true; break
+    case 'sidebar.operation.doc-paragraph-setting-panel': paragraphSettingsPanelOpen.value = true; commentsPanelOpen.value = false; break
     case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
     case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
     case 'doc.command.set-orientation': if (params === 'portrait' || params === 'landscape') { orientation.value = params; changePageSetup() }; break
@@ -1228,8 +1270,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </script>
 
 <template>
-  <ConfigProvider>
-  <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
+  <ConfigProvider :direction="officeDirection">
+  <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" :style="workbenchStyle" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
     <header v-if="showHeader && chrome.header && !isFocusMode" class="document-header">
       <FileText class="document-mark" :size="20" />
       <Input v-model:value="documentTitle" class="document-name" aria-label="文档名称" variant="borderless" @change="updateTitle" @press-enter="($event.target as HTMLInputElement).blur()" />
@@ -1263,30 +1305,40 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
-        @selection-committed="applyPainter(painter?.format)"
-        :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-readonly="!canEditStory || storySection.linkToPrevious"
-        @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
-      <aside v-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">
-        <DocumentCommentsPanel
-          :comments="model.comments ?? {}"
-          :current-user-id="permissionContext.userId"
-          :can-comment="canComment"
-          :can-create="!!commentDraftSelection && canComment"
-          :can-start-create="canCreateComment"
-          :deletable-comment-ids="deletableCommentIds"
-          :selected-comment-id="activeCommentId"
-          :on-create-comment="createComment"
-          :on-reply-comment="replyToComment"
-          :on-edit-comment="editComment"
-          @delete="removeComment"
-          @delete-message="removeCommentMessage"
-          @resolve="resolveComment"
-          @select="selectComment"
-          @add="startAddComment"
-          @close="toggleCommentsPanel"
-        />
-      </aside>
+      <Splitter class="document-editor-splitter" :destroy-on-hidden="false" @resize="resizeDocumentDock">
+        <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
+          <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
+            @selection-committed="applyPainter(painter?.format)"
+            :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-readonly="!canEditStory || storySection.linkToPrevious"
+            @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+        </SplitterPanel>
+        <SplitterPanel :size="documentDockOpen ? documentDockWidth : 0" :min="documentDockOpen ? 280 : 0" :max="800" :resizable="documentDockOpen" :destroy-on-hidden="false">
+          <aside v-if="paragraphSettingsPanelOpen" class="document-settings-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.paragraph-settings.title', 'Paragraph settings')">
+            <DocumentParagraphSettingsPanel :open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" :mixed="toolbarState.mixedParagraph" :font-size="paragraphSettingsFontSize"
+              :line-metrics="paragraphSettingsLineMetrics" :selection-key="paragraphSettingsSelectionKey" :read-only="!canEditContextSelection || !!storyLocation" @apply="applyParagraphSettings" @update:open="setParagraphSettingsPanelOpen" />
+          </aside>
+          <aside v-else-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">
+            <DocumentCommentsPanel
+              :comments="model.comments ?? {}"
+              :current-user-id="permissionContext.userId"
+              :can-comment="canComment"
+              :can-create="!!commentDraftSelection && canComment"
+              :can-start-create="canCreateComment"
+              :deletable-comment-ids="deletableCommentIds"
+              :selected-comment-id="activeCommentId"
+              :on-create-comment="createComment"
+              :on-reply-comment="replyToComment"
+              :on-edit-comment="editComment"
+              @delete="removeComment"
+              @delete-message="removeCommentMessage"
+              @resolve="resolveComment"
+              @select="selectComment"
+              @add="startAddComment"
+              @close="toggleCommentsPanel"
+            />
+          </aside>
+        </SplitterPanel>
+      </Splitter>
     </main>
     <DocumentFooter v-if="chrome.footer" :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
@@ -1306,7 +1358,6 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="size => execute({ id: 'doc.command.insert-table', rows: size.rows, cols: size.columns })" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
-    <DocumentParagraphSettingsPanel v-model:open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" :font-size="paragraphSettingsFontSize" @apply="applyParagraphSettings" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
@@ -1324,30 +1375,33 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </template>
 
 <style scoped>
-.document-workbench { position: relative; min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; color: #30343b; background: #f3f5f7; font: 13px/1.45 "Microsoft YaHei", "Segoe UI", sans-serif; }
-.document-header { flex: 0 0 44px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 12px; border-bottom: 1px solid #e4e7eb; background: #fff; }
-.document-mark { flex-shrink: 0; color: #3182ce; }
+.document-workbench { position: relative; min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; color: var(--document-text); background: var(--document-background); font: 13px/1.45 "Microsoft YaHei", "Segoe UI", sans-serif; }
+.document-header { flex: 0 0 44px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 12px; border-bottom: 1px solid var(--document-secondary-border); background: var(--document-surface); }
+.document-mark { flex-shrink: 0; color: var(--document-primary); }
 .document-name { min-width: 60px; flex: 1; }
 .document-header :deep(.ant-btn) { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; }
 .document-ribbon { flex-shrink: 0; }
 .editor-workspace { position: relative; min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; }
-.document-comments-dock { z-index: 30; width: 320px; min-width: 280px; flex: 0 0 min(320px, 38vw); border-inline-start: 1px solid #d9dde4; background: #fff; }
-.find-replace-toolbar { position: absolute; z-index: 30; top: calc(100% - 1px); right: 8px; width: min(620px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #d8dde5; border-radius: 4px; background: #fff; box-shadow: 0 3px 10px #18283b20; }
+.document-editor-splitter { flex: 1; min-width: 0; min-height: 0; height: 100%; }
+.document-editor-splitter :deep(.document-canvas-panel) { display: flex; min-height: 0; }
+.document-editor-splitter :deep(.document-canvas-viewport) { background: var(--document-background); }
+.document-settings-dock, .document-comments-dock { z-index: 30; width: 100%; height: 100%; min-height: 0; border-inline-start: 1px solid var(--document-secondary-border); background: var(--document-surface); }
+.find-replace-toolbar { position: absolute; z-index: 30; top: calc(100% - 1px); inset-inline-end: 8px; width: min(620px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--document-border); border-radius: 4px; background: var(--document-surface); box-shadow: var(--document-shadow); }
 .find-row, .replace-row { min-width: 0; display: flex; align-items: center; gap: 4px; }
-.find-row { color: #77818d; }
-.find-row :deep(.ant-input), .replace-row :deep(.ant-input) { min-width: 0; padding: 0 4px; color: #424a54; background: transparent; font: inherit; }
+.find-row { color: var(--document-secondary-text); }
+.find-row :deep(.ant-input), .replace-row :deep(.ant-input) { min-width: 0; padding: 0 4px; color: var(--document-text); background: transparent; font: inherit; }
 .find-row :deep(.ant-input) { flex: 1; }
 .replace-row :deep(.ant-input) { width: 145px; }
-.find-row :deep(.ant-btn) { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; color: #5b6672; }
-.match-count { flex: 0 0 auto; min-width: 42px; color: #6e7783; font-variant-numeric: tabular-nums; text-align: center; }
+.find-row :deep(.ant-btn) { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; color: var(--document-secondary-text); }
+.match-count { flex: 0 0 auto; min-width: 42px; color: var(--document-secondary-text); font-variant-numeric: tabular-nums; text-align: center; }
 .replace-row :deep(.ant-checkbox-wrapper) { flex: 0 0 auto; white-space: nowrap; font-size: 12px; }
-.document-notice { position: absolute; z-index: 40; bottom: 44px; inset-inline: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #c9dcf4; border-radius: 4px; color: #4b6482; background: #eef5ff; font-size: 12px; box-shadow: 0 2px 8px #18375912; }
+.document-notice { position: absolute; z-index: 40; bottom: 44px; inset-inline: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid var(--document-info-border); border-radius: 4px; color: var(--document-info-text); background: var(--document-info-background); font-size: 12px; box-shadow: var(--document-shadow); }
 .document-notice :deep(.ant-btn) { display: grid; place-items: center; padding: 0; color: inherit; }
 .document-context-menu { position: absolute; z-index: 60; width: 230px; overflow: auto; border-radius: 4px; }
-.document-context-menu :deep(.ant-menu) { border-inline-end: 0; box-shadow: 0 4px 14px #18283b24; }
+.document-context-menu :deep(.ant-menu) { border-inline-end: 0; box-shadow: var(--document-shadow); }
 .insert-form { display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
 .insert-form :deep(.ant-form-item) { margin-bottom: 0; }
-.insert-error { color: #c14444; }
-@media (max-width: 650px) { .find-replace-toolbar { right: 4px; width: calc(100vw - 16px); } .replace-row { flex-wrap: wrap; } .replace-row :deep(.ant-input) { flex: 1 1 100px; } .document-header { padding: 0 6px; } }
+.insert-error { color: var(--document-error); }
+@media (max-width: 650px) { .find-replace-toolbar { inset-inline-end: 4px; width: calc(100vw - 16px); } .replace-row { flex-wrap: wrap; } .replace-row :deep(.ant-input) { flex: 1 1 100px; } .document-header { padding: 0 6px; } }
 @media print { .document-header, .document-ribbon, .document-notice, :deep(.document-outline), :deep(.document-statusbar) { display: none !important; } .document-workbench, .editor-workspace { height: auto; overflow: visible; background: #fff; } }
 </style>

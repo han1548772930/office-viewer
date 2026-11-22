@@ -8,6 +8,7 @@ export interface CustomNumberFormatResult {
 }
 
 export function validateCustomNumberFormat(input: string): CustomNumberFormatResult {
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(input)) throw new Error('格式代码不能包含控制字符。')
   const pattern = input.trim()
   if (!pattern) throw new Error('格式代码不能为空。')
   if (pattern.length > 255) throw new Error('格式代码不能超过 255 个字符。')
@@ -28,7 +29,6 @@ export function validateCustomNumberFormat(input: string): CustomNumberFormatRes
       bracketDepth -= 1
       if (bracketDepth < 0) throw new Error('格式代码中的方括号不匹配。')
     } else if (character === ';' && bracketDepth === 0) sectionCount += 1
-    else if (character.charCodeAt(0) < 0x20) throw new Error('格式代码不能包含控制字符。')
   }
   if (quoted) throw new Error('格式代码中的引号不匹配。')
   if (escaped) throw new Error('格式代码不能以转义符结尾。')

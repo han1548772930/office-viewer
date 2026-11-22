@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentPageSetup } from '../../../domain/model'
 import type { DocumentPoint, DocumentRun, TextTarget } from '../model/document-model'
 import { hasEastAsianLetters } from '../model/document-font'
-import { paragraphListMarkers } from '../model/document-lists'
+import { paragraphListMarkers, type ParagraphListMarker } from '../model/document-lists'
 import { createRun, imageForBlock, runText, sameTarget, tableForBlock, targetKey } from '../model/document-model'
 import { DEFAULT_DOCUMENT_SECTION_ID, renderSectionStory, resolveSectionHeaderFooter } from '../services/section-header-footer'
 import { documentSectionSetup } from '../services/document-settings'
@@ -10,7 +10,7 @@ import { getLatexFormula, layoutLatexFormula, type LatexLayout } from '../latex/
 
 export interface LayoutRect { x: number; y: number; width: number; height: number }
 export interface LayoutGlyph extends LayoutRect { text: string; offset: number; end: number; run: DocumentRun; font: string; latex?: LatexLayout }
-export interface LayoutLine extends LayoutRect { target: TextTarget; start: number; end: number; baseline: number; glyphs: LayoutGlyph[]; page: number; marker?: string; checklist?: { blockId: string; checked: boolean }; codeBlock?: { language: string; lineNumber: number } }
+export interface LayoutLine extends LayoutRect { target: TextTarget; start: number; end: number; baseline: number; glyphLineHeight?: number; glyphs: LayoutGlyph[]; page: number; marker?: string; markerStyle?: { x: number; font: string; color: string }; checklist?: { blockId: string; checked: boolean }; codeBlock?: { language: string; lineNumber: number } }
 export interface LayoutPage extends LayoutRect { index: number; content: LayoutRect }
 export interface LayoutCell extends LayoutRect { target: TextTarget; fill: string; page: number }
 export interface LayoutImage extends LayoutRect { blockId: string; src: string; alt: string; page: number }
@@ -41,7 +41,7 @@ export const PAGE_INSET = 28
 function paragraphLineHeight(fontHeight: number, style: DocumentBlock['style']): number {
   if (style.spacingRule === 'exact') return Math.max(1, style.lineHeight)
   if (style.spacingRule === 'atLeast') return Math.max(fontHeight, style.lineHeight)
-  return fontHeight * Math.max(1, style.lineHeight)
+  return Math.max(1, fontHeight * Math.max(0.01, style.lineHeight))
 }
 
 export function runFont(run: DocumentRun, scale = 1, family = run.fontFamily): string {
@@ -80,7 +80,7 @@ function pageSetup(source: DocumentPageSetup): DocumentPageSetup {
 type RawGlyph = Omit<LayoutGlyph, 'x' | 'y' | 'height'>
 type RawLine = { glyphs: RawGlyph[]; start: number; end: number; width: number; fontHeight: number }
 
-function wrapRuns(runs: readonly DocumentRun[], width: number, measurer: LayoutMeasurer): RawLine[] {
+function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: number) => number), measurer: LayoutMeasurer, wordWrap = false): RawLine[] {
   const tokens: RawGlyph[] = []
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
   let offset = 0
@@ -104,26 +104,28 @@ function wrapRuns(runs: readonly DocumentRun[], width: number, measurer: LayoutM
   let lineStart = 0
   let lineWidth = 0
   const commit = (end: number) => {
-    lines.push({ glyphs, start: lineStart, end, width: lineWidth, fontHeight: Math.max(14.67, ...glyphs.map((glyph) => glyph.latex?.height ?? glyph.run.fontSize * 4 / 3)) })
+    lines.push({ glyphs, start: lineStart, end, width: lineWidth, fontHeight: Math.max(14.67, ...(glyphs.length ? glyphs.map((glyph) => glyph.latex?.height ?? glyph.run.fontSize * 4 / 3) : [runs[0]?.fontSize ? runs[0].fontSize * 4 / 3 : 14.67])) })
     glyphs = []
     lineWidth = 0
     lineStart = end
   }
-  for (const token of tokens) {
-    if (token.text === '\n') { commit(token.offset); lineStart = token.end; continue }
-    if (glyphs.length && lineWidth + token.width > Math.max(1, width)) {
-      const breakIndex = glyphs.map((glyph, index) => /[\s\-，。！？；、,.!?;:]$/.test(glyph.text) ? index : -1).filter((index) => index >= 0).at(-1)
-      if (breakIndex != null && breakIndex < glyphs.length - 1 && glyphs.length - breakIndex < 24) {
-        const tail = glyphs.splice(breakIndex + 1)
-        lineWidth = glyphs.reduce((sum, glyph) => sum + glyph.width, 0)
-        commit(glyphs.at(-1)?.end ?? token.offset)
-        glyphs = tail
-        lineStart = tail[0]?.offset ?? token.offset
-        lineWidth = tail.reduce((sum, glyph) => sum + glyph.width, 0)
-      } else commit(token.offset)
+  const availableWidth = () => Math.max(1, typeof width === 'number' ? width : width(lines.length))
+  const joinsWord = (token: RawGlyph) => /^[\p{L}\p{M}\p{N}_]+$/u.test(token.text) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Bopomofo}]/u.test(token.text)
+  for (let index = 0; index < tokens.length;) {
+    const token = tokens[index]!
+    if (token.text === '\n') { commit(token.offset); lineStart = token.end; index++; continue }
+    let end = index + 1
+    if (!wordWrap && joinsWord(token)) while (end < tokens.length && joinsWord(tokens[end]!)) end++
+    const word = tokens.slice(index, end)
+    const wordWidth = word.reduce((sum, glyph) => sum + glyph.width, 0)
+    if (glyphs.length && lineWidth + wordWidth > availableWidth()) commit(token.offset)
+    for (const glyph of word) {
+      // A word wider than the whole line still needs an emergency break.
+      if (glyphs.length && lineWidth + glyph.width > availableWidth()) commit(glyph.offset)
+      glyphs.push(glyph)
+      lineWidth += glyph.width
     }
-    glyphs.push(token)
-    lineWidth += token.width
+    index = end
   }
   commit(offset)
   return lines
@@ -140,7 +142,52 @@ function positionLine(raw: RawLine, target: TextTarget, x: number, y: number, wi
     cursor += value.width
     return value
   })
-  return { x: x + shift, y, width: Math.max(2, cursor - x - shift), height: lineHeight, target, start: raw.start, end: raw.end, baseline: y + (lineHeight - raw.fontHeight) / 2 + raw.fontHeight * 0.82, glyphs, page, marker }
+  return { x: x + shift, y, width: Math.max(2, cursor - x - shift), height: lineHeight, glyphLineHeight: raw.fontHeight, target, start: raw.start, end: raw.end, baseline: y + (lineHeight - raw.fontHeight) / 2 + raw.fontHeight * 0.82, glyphs, page, marker }
+}
+
+interface ParagraphGeometry {
+  indent: number
+  firstIndent: number
+  rightIndent: number
+  markerIndent?: number
+  markerFont?: string
+  markerHeight: number
+  markerWidth: number
+  width: (index: number) => number
+}
+
+function paragraphGeometry(block: DocumentBlock, list: ParagraphListMarker | undefined, available: number, measurer: LayoutMeasurer): ParagraphGeometry {
+  const legacyIndent = block.style.indent * 24
+  const left = block.style.indentStart ?? legacyIndent
+  let indent = left, firstIndent = left + (block.style.indentFirstLine ?? 0) - (block.style.hanging ?? 0)
+  let rightIndent = block.style.indentEnd ?? 0
+  let markerIndent: number | undefined, markerFont: string | undefined, markerHeight = 0, markerWidth = 0
+  if (list) {
+    const extra = block.style.indentStart === undefined ? legacyIndent : 0
+    indent = list.inset + extra
+    rightIndent = list.rightIndent
+    markerIndent = list.markerIndent + extra
+    markerFont = runFont(createRun('', { fontFamily: list.fontFamily, fontSize: list.fontSize, bold: list.bold, italic: list.italic }))
+    markerHeight = list.picture ? list.picture.heightPx ?? list.fontSize * 4 / 3 : list.fontSize * 4 / 3
+    markerWidth = list.picture ? list.picture.widthPx ?? markerHeight : measurer.measure(list.marker, markerFont)
+    firstIndent = Math.max(indent, markerIndent + markerWidth + (markerWidth ? list.gap : 0))
+  } else if (block.type === 'checklist') {
+    indent += 28 * (block.level + 1)
+    firstIndent = indent
+  } else if (block.type === 'quote') {
+    indent += 16
+    firstIndent += 16
+  }
+  return { indent, firstIndent, rightIndent, markerIndent, markerFont, markerHeight, markerWidth,
+    width: index => Math.max(1, available - (index === 0 ? firstIndent : indent) - rightIndent) }
+}
+
+function appendListMarker(line: LayoutLine, block: DocumentBlock, list: ParagraphListMarker | undefined, geometry: ParagraphGeometry, left: number, images: LayoutImage[]): void {
+  if (!list || geometry.markerIndent === undefined) return
+  if (list.picture?.src) {
+    images.push({ blockId: block.id, src: list.picture.src, alt: '项目符号', x: left + geometry.markerIndent,
+      y: line.y + (line.height - geometry.markerHeight) / 2, width: geometry.markerWidth, height: geometry.markerHeight, page: line.page })
+  } else if (geometry.markerFont) line.markerStyle = { x: left + geometry.markerIndent, font: geometry.markerFont, color: list.color }
 }
 
 export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): DocumentLayout {
@@ -186,12 +233,12 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           const width = widths.slice(column, column + Math.max(1, cell.colSpan)).reduce((sum, value) => sum + value, 0)
           const xOffset = widths.slice(0, column).reduce((sum, value) => sum + value, 0)
           column += Math.max(1, cell.colSpan)
-          const markers = paragraphListMarkers(cell.blocks)
           const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => {
-            const list = markers.get(paragraph.id), inset = list?.inset ?? (paragraph.type === 'checklist' ? 28 * (paragraph.level + 1) : 0)
-            return { paragraph, inset, marker: list?.marker, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16 - inset), measurer) }
+            const list = bodyMarkers.get(paragraph.id)
+            const geometry = paragraphGeometry(paragraph, list, width - 16, measurer)
+            return { paragraph, list, geometry, lines: wrapRuns(paragraph.runs as DocumentRun[], geometry.width, measurer, paragraph.style.wordWrap === true) }
           })
-          const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.lines.reduce((lineSum, line) => lineSum + paragraphLineHeight(line.fontHeight, item.paragraph.style), 0) + item.paragraph.style.spaceAfter, 0))
+          const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.paragraph.style.spaceBefore + item.lines.reduce((lineSum, line, index) => lineSum + paragraphLineHeight(Math.max(line.fontHeight, index === 0 ? item.geometry.markerHeight : 0), item.paragraph.style), 0) + item.paragraph.style.spaceAfter, 0))
           return { cell, colIndex, width, xOffset, paragraphs, height }
         })
         const rowHeight = Math.max(34, ...prepared.map((cell) => cell.height))
@@ -203,9 +250,12 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           result.cells.push({ x, y: cursor, width, height: rowHeight, page: currentPage!.index, target, fill: typeof cell.style.fill === 'string' ? cell.style.fill : typeof cell.style.background === 'string' ? cell.style.background : '#ffffff' })
           let cellY = cursor + 8
           for (const item of paragraphs) {
+            cellY += item.paragraph.style.spaceBefore
             item.lines.forEach((line, index) => {
-              const lineHeight = paragraphLineHeight(line.fontHeight, item.paragraph.style)
-              const layoutLine = positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8 + item.inset, cellY, width - 16 - item.inset, lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1, index === 0 ? item.marker : undefined)
+              const lineHeight = paragraphLineHeight(Math.max(line.fontHeight, index === 0 ? item.geometry.markerHeight : 0), item.paragraph.style)
+              const indent = index === 0 ? item.geometry.firstIndent : item.geometry.indent
+              const layoutLine = positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8 + indent, cellY, item.geometry.width(index), lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1, index === 0 ? item.list?.marker : undefined)
+              if (index === 0) appendListMarker(layoutLine, item.paragraph, item.list, item.geometry, x + 8, result.images)
               if (index === 0 && item.paragraph.type === 'checklist') layoutLine.checklist = { blockId: item.paragraph.id, checked: item.paragraph.checklist?.checked === true }
               result.lines.push(layoutLine)
               cellY += lineHeight
@@ -229,19 +279,19 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
       result.dividers.push({ x: currentPage!.content.x, y: cursor + 9, width: currentPage!.content.width, height: 1, page: currentPage!.index })
       cursor += 18
     } else {
-      const indent = Math.max(0, block.style.indent) * 24
       const list = bodyMarkers.get(block.id)
-      const listInset = list?.inset ?? (block.type === 'checklist' ? 28 * (block.level + 1) : block.type === 'quote' ? 16 : 0)
-      const width = Math.max(16, currentPage!.content.width - indent - listInset)
+      const geometry = paragraphGeometry(block, list, currentPage!.content.width, measurer)
       const codeData = codeBlockData(block)
       const codeFont = codeData ? 'Consolas, "Cascadia Code", monospace' : undefined
-      const lines = wrapRuns(block.runs as DocumentRun[], width, measurer)
+      const lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true)
       lines.forEach((line, index) => {
-        const height = paragraphLineHeight(line.fontHeight, block.style)
+        const height = paragraphLineHeight(Math.max(line.fontHeight, index === 0 ? geometry.markerHeight : 0), block.style)
         ensureRoom(height)
         if (index === 0 && block.type === 'heading') result.headings.push({ id: block.id, text: runText(block.runs), level: block.level || 1, y: cursor, page: currentPage!.index })
         const marker = index === 0 ? list?.marker ?? (block.type === 'quote' ? '│' : undefined) : undefined
-        const layoutLine = positionLine(line, { blockId: block.id }, currentPage!.content.x + indent + listInset, cursor, width, height, currentPage!.index, block.style.align, index < lines.length - 1, marker)
+        const indent = index === 0 ? geometry.firstIndent : geometry.indent
+        const layoutLine = positionLine(line, { blockId: block.id }, currentPage!.content.x + indent, cursor, geometry.width(index), height, currentPage!.index, block.style.align, index < lines.length - 1, marker)
+        if (index === 0) appendListMarker(layoutLine, block, list, geometry, currentPage!.content.x, result.images)
         if (codeData) {
           layoutLine.codeBlock = { language: codeData.language, lineNumber: index + 1 }
           layoutLine.x += 8

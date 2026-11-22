@@ -84,7 +84,7 @@ export const CLASSIC_RIBBON = Object.freeze({
   horizontalPadding: 12, moreWidth: 32,
 })
 
-/** Univer v1.6.0 eaf4cfa, ui/views/components/ribbon/RibbonGrid.tsx. */
+/** Dimensions for the two-row ribbon layout. */
 export const GRID_RIBBON = Object.freeze({
   tabHeight: 32,
   toolbarHeight: 69,

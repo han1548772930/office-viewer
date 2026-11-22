@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { Input } from 'antdv-next'
+import { Alert, Input } from 'antdv-next'
 import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, documentTabCommand, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
 import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, STORY_LINE_HEIGHT, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../../features/document/model/document-model'
+import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
@@ -306,7 +307,8 @@ function contextMenu(event: MouseEvent) {
   const point = pointFromEvent(event)
   if (!point) return
   event.preventDefault()
-  emit('update:selection', { anchor: { ...point }, focus: { ...point } })
+  const selection = documentSelectionForContextMenu(props.model, props.selection, point)
+  if (selection !== props.selection) select(selection)
   emit('context-menu', { x: event.clientX, y: event.clientY, point })
   caretVisible.value = true
   requestDraw()
@@ -538,13 +540,13 @@ defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollT
     </div>
     <Input.TextArea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
     <Input.TextArea v-if="story" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyValue" :readonly="storyReadonly" :auto-size="{ minRows: 1 }" @keydown="storyKeys" @update:value="emit('edit-story', String($event ?? ''), storyRange().start)" />
-    <span v-if="error" class="canvas-error" role="alert">{{ error }}</span>
+    <Alert v-if="error" class="canvas-error" type="error" show-icon :message="error" role="alert" />
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
   </div>
 </template>
 
 <style scoped>
-.document-canvas-viewport { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; background: #eef1f5; }
+.document-canvas-viewport { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; background: var(--document-background, #eef1f5); }
 .document-surface { position: absolute; inset: 0; pointer-events: none; }
 .document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; cursor: text; outline: none; }
 .document-scroll-spacer { pointer-events: none; }
@@ -552,5 +554,5 @@ defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollT
 .document-input-bridge { position: absolute; z-index: 2; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .document-input-bridge :deep(textarea) { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .backend-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.canvas-error { position: absolute; top: 20px; left: 20px; right: 20px; padding: 12px; border: 1px solid #efb3b3; border-radius: 4px; color: #a02f2f; background: #fff3f3; }
+.canvas-error { position: absolute; top: 20px; left: 20px; right: 20px; }
 </style>

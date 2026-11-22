@@ -58,8 +58,26 @@ fn parse_document_impl(
     file_name: &str,
     format: String,
 ) -> Result<ParseEnvelope, ParseFailure> {
-    let source_model = parse_document_model(bytes).map_err(ParseFailure::office_file)?;
+    let mut source_model = parse_document_model(bytes).map_err(ParseFailure::office_file)?;
+    let mut archive = if format == "docx" {
+        Some(zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ParseFailure::office_file)?)
+    } else { None };
+    let mut format_warnings = Vec::new();
+    let paragraph_wrap = if let Some(zip) = archive.as_mut() {
+        format_warnings.extend(crate::document_format_sidecar::restore_numbering(&mut source_model, zip));
+        match crate::document_format_sidecar::read_word_wrap(zip) {
+            Ok(wrap) => wrap,
+            Err(error) => {
+                format_warnings.push(format!("DOCX paragraph style properties could not be restored: {error}"));
+                crate::document_format_sidecar::ParagraphWordWrap::default()
+            }
+        }
+    } else { crate::document_format_sidecar::ParagraphWordWrap::default() };
     let mut document = extract_document_blocks(&source_model);
+    if archive.is_some() {
+        crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
+    }
+    document.warnings.extend(format_warnings);
     insert_section_breaks(&mut document, &source_model);
     insert_paragraph_breaks(&mut document, &source_model);
     let mut diagnostics = ParserDiagnostics::document(&document);
@@ -68,7 +86,6 @@ fn parse_document_impl(
         "columnBreaks".into(),
         "sectionBreaks".into(),
     ]);
-    let mut archive = (format == "docx").then(|| zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()).flatten();
     let mut stories = std::collections::HashMap::new();
     let mut story_reference = |part: &str, kind: &Option<String>, header| {
         let story = stories.entry(part.to_owned()).or_insert_with(|| archive.as_mut().and_then(|zip| crate::story_fields::read_story(zip, part)));

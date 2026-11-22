@@ -3,14 +3,14 @@ import { getDocumentContentControls, transformContentControlsForBlockEdit } from
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
-import { applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
+import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
 import { deleteDocumentToc, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
 import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { documentTocIdAtBlock } from '../toc/document-toc'
 import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
 import { selectionFontPatch } from '../model/document-font'
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
-import { blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
+import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
@@ -26,6 +26,7 @@ export type DocumentCommand =
   | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'> }
   | { id: 'doc.command.apply-format-painter'; format: DocumentPainterFormat }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
+  | { id: 'doc.command.change-paragraph-indent'; direction: -1 | 1 }
   | { id: 'doc.command.set-paragraph-named-style'; namedStyle: DocumentNamedParagraphStyle }
   | { id: 'doc.command.set-block-type'; type: DocumentBlock['type']; level?: number }
   | { id: 'doc.command.change-list-type'; listType: ListPreset }
@@ -163,6 +164,54 @@ export function canContinueDocumentNumbering(model: DocumentModel, selection: Do
   return numberingPermissionsAllowed(model, targets, permissionContext)
 }
 
+export const DOCUMENT_PARAGRAPH_INDENT_STEP = 20
+export const DOCUMENT_PARAGRAPH_INDENT_MAXIMUM = 100
+
+type ParagraphIndentChange = { target: TextTarget; block: DocumentBlock; level?: number; firstLine?: number }
+function paragraphIndentPlan(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1): ParagraphIndentChange[] {
+  if (direction !== -1 && direction !== 1) throw new RangeError('Paragraph indentation direction must be -1 or 1')
+  return selectedTargets(model, selection).flatMap<ParagraphIndentChange>(target => {
+    const block = blockAtPoint(model, target)
+    if (!block || !['paragraph', 'heading', 'quote', 'bullet', 'numbered', 'checklist'].includes(block.type)) return []
+    if (blockHasNumbering(block)) {
+      const { index, maximum } = blockListLevel(block)
+      const level = Math.max(0, Math.min(maximum, index + direction))
+      return level === index ? [] : [{ target, block, level }]
+    }
+    const current = block.style.indentFirstLine ?? 0
+    if (!Number.isFinite(current)) throw new RangeError('Paragraph first-line indentation must be finite')
+    if (direction === -1 && current <= 0) return []
+    if (direction === 1 && current >= DOCUMENT_PARAGRAPH_INDENT_MAXIMUM) return []
+    const firstLine = Math.max(0, Math.min(DOCUMENT_PARAGRAPH_INDENT_MAXIMUM, current + direction * DOCUMENT_PARAGRAPH_INDENT_STEP))
+    return firstLine === current ? [] : [{ target, block, firstLine }]
+  })
+}
+
+export function canChangeDocumentParagraphIndent(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1, permissionContext?: DocumentPermissionContext): boolean {
+  try {
+    const changes = paragraphIndentPlan(model, selection, direction)
+    return changes.length > 0 && numberingPermissionsAllowed(model, changes.map(change => change.target), permissionContext)
+  } catch { return false }
+}
+
+function applyListNestingLevel(block: DocumentBlock, level: number): void {
+  if (blockListLevel(block).index === level) return
+  const previous = blockListLevel(block).level?.indent ?? {}
+  const nextBlock = ['bullet', 'numbered', 'checklist'].includes(block.type) ? { ...block, level }
+    : { ...block, metadata: { ...block.metadata, numberingLevel: level } }
+  const next = blockListLevel(nextBlock).level?.indent ?? {}
+  const style = { ...block.style }
+  for (const [property, field] of [['indentStart', 'leftTwips'], ['indentEnd', 'rightTwips'], ['indentFirstLine', 'firstLineTwips'], ['hanging', 'hangingTwips']] as const) {
+    const oldValue = typeof previous[field] === 'number' && Number.isFinite(previous[field]) ? previous[field] / 15 : 0
+    const newValue = typeof next[field] === 'number' && Number.isFinite(next[field]) ? next[field] / 15 : 0
+    const current = style[property] ?? (property === 'indentStart' ? oldValue + style.indent * 24 : oldValue)
+    if (style[property] !== undefined || oldValue !== newValue) style[property] = newValue + current - oldValue
+  }
+  if (['bullet', 'numbered', 'checklist'].includes(block.type)) block.level = level
+  else block.metadata.numberingLevel = level
+  block.style = style
+}
+
 /** Model mutation only. The application command bus owns the resulting history snapshot. */
 export function executeDocumentCommand(
   model: DocumentModel,
@@ -173,7 +222,7 @@ export function executeDocumentCommand(
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
-  } else {
+  } else if (command.id !== 'doc.command.change-paragraph-indent') {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   switch (command.id) {
@@ -198,10 +247,23 @@ export function executeDocumentCommand(
       return range
     }
     case 'doc.command.format-paragraph': {
-      selectedTargets(model, selection).forEach((target) => {
+      const updates = selectedTargets(model, selection).flatMap((target) => {
         const block = blockAtPoint(model, target)
-        if (block) block.style = { ...block.style, ...command.patch }
+        if (!block) return []
+        const prepared = { ...block, style: { ...block.style } }
+        applyDocumentParagraphStylePatch(prepared, command.patch)
+        return [{ block, style: prepared.style }]
       })
+      for (const update of updates) update.block.style = update.style
+      return selection
+    }
+    case 'doc.command.change-paragraph-indent': {
+      const changes = paragraphIndentPlan(model, selection, command.direction)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', changes.flatMap(change => permissionTargetsForSelection(model, collapsedSelection({ ...change.target, offset: 0 }))))
+      for (const change of changes) {
+        if (change.level !== undefined) applyListNestingLevel(change.block, change.level)
+        else if (change.firstLine !== undefined) applyDocumentParagraphStylePatch(change.block, { indentFirstLine: change.firstLine })
+      }
       return selection
     }
     case 'doc.command.set-paragraph-named-style': {
@@ -221,9 +283,9 @@ export function executeDocumentCommand(
       if (command.direction !== -1 && command.direction !== 1) throw new RangeError('List nesting direction must be -1 or 1')
       for (const target of selectedTargets(model, selection)) {
         const block = blockAtPoint(model, target)
-        if (!block || !['bullet', 'numbered', 'checklist'].includes(block.type)) continue
+        if (!block || !blockHasNumbering(block)) continue
         const { index, maximum } = blockListLevel(block)
-        block.level = Math.max(0, Math.min(maximum, index + command.direction))
+        applyListNestingLevel(block, Math.max(0, Math.min(maximum, index + command.direction)))
       }
       return selection
     }
@@ -389,6 +451,7 @@ function targetsForSelection(model: DocumentModel, selection: DocumentSelection,
 
 export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch): DocumentSelection {
   const { start, end } = orderedSelection(model, selection)
+  if (!text && sameTarget(start, end) && start.offset === end.offset) return selection
   const startTargetId = start.cellBlockId ?? start.blockId
   const endTargetId = end.cellBlockId ?? end.blockId
   if (startTargetId !== endTargetId) {

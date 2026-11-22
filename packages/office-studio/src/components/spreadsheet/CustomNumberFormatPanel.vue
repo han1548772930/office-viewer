@@ -17,7 +17,7 @@ const props = withDefaults(defineProps<{
   open: boolean; currentPattern: string; selectionKey?: string; sampleValue?: CellScalar; date1904?: boolean; disabled?: boolean
 }>(), { disabled: false, date1904: false })
 const emit = defineEmits<{
-  'update:open': [value: boolean]; apply: [pattern: string]; preview: [pattern: string | undefined]; 'preference-error': [message: string]
+  'update:open': [value: boolean]; apply: [pattern: string, complete: (applied: boolean) => void]; preview: [pattern: string | undefined]; 'preference-error': [message: string]
 }>()
 const region = useOfficeRegion()
 const locale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
@@ -30,6 +30,7 @@ const draft = ref(createSheetNumberFormatDraft('', locale.value, SHEET_NUMBER_FO
 const pristine = ref(true), composing = ref(false)
 const closeButton = ref<{ focus: (options?: FocusOptions) => void }>()
 const storageFailed = ref(false)
+const applicationFailed = ref(false)
 const currencies = computed(() => orderNumberFormatPreferences(
   [...SHEET_NUMBER_FORMAT_PANEL_CURRENCIES, draft.value.currency], preferences.value.currencies).map(value => ({ label: value, value })))
 const categoryOptions = computed(() => SHEET_NUMBER_FORMAT_CATEGORIES.map(value => ({
@@ -63,6 +64,8 @@ const description = computed(() => t('sheet.number-format.description.' + draft.
 }[draft.value.category]))
 
 function publishPreview(): void {
+  if (composing.value) return
+  applicationFailed.value = false
   if (!props.open || props.disabled) { emit('preview', undefined); return }
   emit('preview', validation.value.pattern)
 }
@@ -104,6 +107,7 @@ function choosePattern({ key }: MenuInfo): void {
 }
 function changeCustomPattern(value: string): void {
   if (props.disabled || draft.value.category !== 'custom') return
+  applicationFailed.value = false
   draft.value.pattern = value
   pristine.value = false
 }
@@ -118,23 +122,30 @@ function onKeydown(event: KeyboardEvent): void {
 function apply(): void {
   if (props.disabled || composing.value || !validation.value.pattern) return
   const selected = validation.value.pattern
-  emit('apply', selected)
+  let applied = false
+  emit('apply', selected, result => { applied = result })
+  if (!applied) { applicationFailed.value = true; return }
   preferences.value = rememberSheetNumberFormat(preferences.value, selected, draft.value.category === 'custom')
   try { if (typeof window !== 'undefined') writeSheetNumberFormatPreferences(window.localStorage, preferences.value) }
   catch { emit('preference-error', t('sheet.number-format.preference-error', '格式已应用，但此浏览器未能保存格式偏好。')) }
   close()
 }
-watch(() => [props.open, props.currentPattern, props.selectionKey] as const, async ([open]) => {
+watch(() => [props.open, props.currentPattern, props.selectionKey] as const, async ([open], previous, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
   emit('preview', undefined)
+  composing.value = false
   if (!open) return
   storageFailed.value = false
+  applicationFailed.value = false
   try { preferences.value = readSheetNumberFormatPreferences(typeof window === 'undefined' ? undefined : window.localStorage) }
   catch { preferences.value = { history: [], currencies: [] }; storageFailed.value = true }
   const ordered = orderNumberFormatPreferences(SHEET_NUMBER_FORMAT_PANEL_CURRENCIES, preferences.value.currencies)
   draft.value = createSheetNumberFormatDraft(props.currentPattern, locale.value, ordered)
   pristine.value = true
+  if (previous?.[0]) return
   await nextTick()
-  closeButton.value?.focus({ preventScroll: true })
+  if (active && props.open) closeButton.value?.focus({ preventScroll: true })
 }, { immediate: true })
 watch(() => props.disabled, disabled => { if (disabled) emit('preview', undefined) })
 </script>
@@ -172,6 +183,7 @@ watch(() => props.disabled, disabled => { if (disabled) emit('preview', undefine
         <p class="number-format-description">{{ description }}</p>
         <div class="number-format-preview" aria-live="polite"><span>{{ t('sheet.number-format.preview', '预览') }}</span><strong>{{ example ?? t('sheet.number-format.unavailable', '无法预览') }}</strong></div>
         <Alert v-if="validation.error && draft.category !== 'custom'" type="error" :message="validation.error" show-icon />
+        <Alert v-if="applicationFailed" type="error" :message="t('sheet.number-format.apply-error', '数字格式未应用，请检查选区后重试。')" show-icon />
         <Alert v-if="storageFailed" type="warning" :message="t('sheet.number-format.preference-read-error', '此浏览器未能读取格式偏好，可继续设置数字格式。')" show-icon />
       </Form>
     </div>

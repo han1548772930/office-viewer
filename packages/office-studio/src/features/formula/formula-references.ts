@@ -79,8 +79,8 @@ export function transformFormulaReferencesForStructureEdit(
     }
 
     if (isRange && second) {
-      // Univer's formula ref-range path moves a rectangular reference only when
-      // its entire perpendicular span is contained in the shifted band.
+      // Move a rectangular reference only when its entire perpendicular span
+      // is contained in the shifted band.
       const firstBand = edit.axis === 'row' ? first.reference.column : first.reference.row
       const secondBand = edit.axis === 'row' ? second.reference.column : second.reference.row
       if (Math.min(firstBand, secondBand) < edit.bandStart || Math.max(firstBand, secondBand) > edit.bandEnd) {

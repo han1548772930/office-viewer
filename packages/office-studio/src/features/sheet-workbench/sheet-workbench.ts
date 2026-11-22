@@ -2,6 +2,7 @@ import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdap
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { addRange, containsCell } from '../../rendering/spreadsheet/selection.ts'
 import { findVisibleSheetRow, hiddenSheetRows } from './sheet-row-visibility.ts'
+import { sheetCellNumberValue } from './sheet-number-presentation.ts'
 
 export interface SheetAddressBounds { rowCount: number; columnCount: number; hiddenRows?: readonly number[]; filteredRows?: readonly number[]; rowHeights?: Readonly<Record<number, number>> }
 export interface ParsedSheetAddress { range: GridRange; address: string; anchor: string }
@@ -86,19 +87,10 @@ export interface SelectionStatistics {
 }
 export interface SelectionStatisticsOptions { filteredRows?: readonly number[] }
 
-const NUMERIC_TEXT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i
-
 function statisticCellValue(cell: ExcelCellView): { defined: boolean; number?: number } {
-  // Explicit raw values preserve imported types: text "123" must not become a number.
-  if (cell.rawValue !== undefined) {
-    if (cell.rawValue === null) return { defined: false }
-    return { defined: true, number: typeof cell.rawValue === 'number' && Number.isFinite(cell.rawValue) ? cell.rawValue : undefined }
-  }
-  // Legacy view cells carry editable text; never parse formatted displayValue or formula source.
-  const value = cell.formula ? cell.cachedValue : cell.value
-  if (value === undefined || (!cell.formula && value === '')) return { defined: false }
-  const number = NUMERIC_TEXT.test(value.trim()) ? Number(value) : NaN
-  return { defined: true, number: Number.isFinite(number) ? number : undefined }
+  const value = sheetCellNumberValue(cell)
+  if (value === null || value === undefined || (cell.rawValue === undefined && !cell.formula && value === '')) return { defined: false }
+  return { defined: true, number: typeof value === 'number' && Number.isFinite(value) ? value : undefined }
 }
 
 function normalizeSelection(range: GridRange, bounds: SheetAddressBounds): GridRange | undefined {
@@ -149,7 +141,7 @@ export function normalizeSheetViewState(sheet: SheetAddressBounds, state: Partia
   }
 }
 
-/** Match Univer's visible-row and countA/count display rules, visiting populated cells once. */
+/** Calculate statistics over visible populated cells, applying countA/count display rules. */
 export function calculateSelectionStatistics(
   sheet: ExcelSheetView, ranges: readonly GridRange[], options: SelectionStatisticsOptions = {},
 ): SelectionStatistics {

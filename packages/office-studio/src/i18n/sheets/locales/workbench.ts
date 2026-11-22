@@ -1,7 +1,7 @@
 /*
  * Copyright 2023-present DreamNum Co., Ltd.
  * Licensed under the Apache License, Version 2.0.
- * Derived from Univer commit 6a0969cc3f1c4ad078a0f80eda0c5e61ec7b2c68.
+ * Adapted and extended for Office Studio.
  */
 export const sheetLocalearSA: Record<string, string> = {
   "tabs.home": "ابدأ",

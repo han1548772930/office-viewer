@@ -31,7 +31,7 @@ function normalizeCell(value: unknown): SpreadsheetCell {
       },
       fill: text(style.fill) || null,
       numberFormat: text(style.numberFormat, 'General'),
-      horizontal: style.horizontal === 'center' || style.horizontal === 'right' || style.horizontal === 'justify' ? style.horizontal : 'left',
+      horizontal: style.horizontal === 'left' || style.horizontal === 'center' || style.horizontal === 'right' || style.horizontal === 'justify' ? style.horizontal : 'general',
       vertical: style.vertical === 'top' || style.vertical === 'bottom' ? style.vertical : 'middle',
       wrap, rotation: sourceRotation === 255 ? 0 : sourceRotation,
       rotationVertical: style.rotationVertical === true || sourceRotation === 255, indent: finite(style.indent),

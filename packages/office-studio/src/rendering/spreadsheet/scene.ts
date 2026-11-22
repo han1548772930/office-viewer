@@ -3,7 +3,9 @@ import type { DrawCommand, RenderRect, RenderScene } from '../contracts'
 import { intersectRect } from '../geometry.ts'
 import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout.ts'
 import type { GridRange, GridViewport } from './layout'
-import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format.ts'
+import { presentSheetCellNumber } from '../../features/sheet-workbench/sheet-number-presentation.ts'
+import { sheetCellTextAlignment } from '../../features/sheet-workbench/sheet-cell-alignment.ts'
+import { positionSheetNumberFormatRuns } from '../../features/sheet-workbench/number-format-render.ts'
 import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
 import { conditionalIconPreset } from '../../features/conditional-formatting/conditional-icon-presets.ts'
@@ -42,6 +44,13 @@ function graphemes(text: string): string[] {
   return Array.from(text)
 }
 
+export interface SheetNumberFormatPreview { pattern: string; ranges: readonly GridRange[] }
+
+export function sheetNumberFormatPreviewPatternAt(preview: SheetNumberFormatPreview | undefined, row: number, column: number): string | undefined {
+  return preview?.ranges.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)
+    ? preview.pattern : undefined
+}
+
 export interface SpreadsheetSceneOptions {
   region?: string
   activeCell: string
@@ -51,16 +60,14 @@ export interface SpreadsheetSceneOptions {
   /** Helper outline shown while the fill handle is being dragged. */
   fillPreviewRange?: GridRange
   searchText?: string
+  /** Temporary presentation for selected numeric cells; it is excluded from document history. */
+  numberFormatPreview?: SheetNumberFormatPreview
   /** Drawing-object commands are expressed in unscaled worksheet CSS pixels. */
   overlayCommands?: readonly DrawCommand[]
   crosshairHighlight?: { enabled: boolean; color: string }
 }
-export function displayCell(cell: ExcelCellView | undefined, date1904 = false, region?: string): string {
-  if (!cell) return ''
-  const value = cell.formula ? cell.cachedValue ?? cell.formula : cell.value
-  const scalar = cell.rawValue !== undefined ? cell.rawValue : value !== '' && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ? Number(value) : value
-  const pattern = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : 'General')
-  return formatSheetValue(scalar, pattern, date1904, region) ?? cell.displayValue ?? value
+export function displayCell(cell: ExcelCellView | undefined, date1904 = false, region?: string, previewPattern?: string): string {
+  return presentSheetCellNumber(cell, date1904, region, previewPattern).text
 }
 
 /** Layout and hit-testing share the same sparse axes and frozen-pane transforms. */
@@ -151,10 +158,13 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
           rect.x + x2 * rect.width, rect.y + y2 * rect.height, edge.style, edge.color, z, clip))
       }
     }
-    const text = conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue ? '' : displayCell(cell, geometry.sheet.date1904, options.region)
+    const presentation = presentSheetCellNumber(cell, geometry.sheet.date1904, options.region,
+      sheetNumberFormatPreviewPatternAt(options.numberFormatPreview, row, column))
+    const hideValue = Boolean(conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue)
+    const text = hideValue ? '' : presentation.text
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
-    if (text) {
-      const align = cell?.align ?? (column === 0 ? 'left' : Number.isFinite(Number(text)) ? 'right' : 'left')
+    if (text || !hideValue && presentation.runs?.some(run => run.kind === 'fill' && run.character.trim())) {
+      const align = sheetCellTextAlignment(cell)
       const baseFontSize = (cell?.fontSize ?? 11) * 4 / 3 * z
       const fontFamily = cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'
       const fontPrefix = `${conditionalStyle.italic ?? cell?.italic ? 'italic ' : ''}${conditionalStyle.bold ?? cell?.bold ? '600 ' : ''}`
@@ -170,7 +180,10 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const rotation = cell?.rotation ?? 0
       const textClip = intersectRect(clip, { x: rect.x + 3 * z + iconPadding, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z - iconPadding), height: Math.max(0, rect.height - 2) })
       const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
-      const color = conditionalStyle.fontColor ?? (cell?.hyperlink ? '#0563c1' : cell?.color) ?? '#243247'
+      const color = conditionalStyle.fontColor ?? presentation.color ?? (cell?.hyperlink ? '#0563c1' : cell?.color) ?? '#243247'
+      const measureRun = (value: string) => measureTextWidth(value, font) ?? Array.from(value).length * fontSize * 0.55
+      const runLayout = !cell?.rotationVertical && presentation.runs
+        ? positionSheetNumberFormatRuns(presentation.runs, availableTextWidth, measureRun) : undefined
       if (cell?.rotationVertical) {
         const glyphs = graphemes(text)
         const lineHeight = fontSize
@@ -189,13 +202,30 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
             if (conditionalStyle.strike ?? cell.strike) commands.push({ kind: 'line', x1: left, y1: glyphY, x2: left + width, y2: glyphY, color, clip: textClip })
           }
         }
+      } else if (runLayout) {
+        const scale = cell?.shrinkToFit && cell.wrap !== true && runLayout.width > availableTextWidth && runLayout.width > 0
+          ? availableTextWidth / runLayout.width : 1
+        const width = runLayout.width * scale
+        const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
+        for (const run of runLayout.runs) {
+          if (!run.text) continue
+          const offsetX = left + run.offset * scale
+          const [runX, runY] = rotatePoint(offsetX, y, x, y, rotation)
+          const runWidth = measureRun(run.text) * scale
+          commands.push({ kind: 'text', x: runX, y: runY, text: run.text, font, color, align: 'left', baseline: 'middle', rotation,
+            ...(scale < 1 ? { maxWidth: runWidth } : {}), clip: textClip })
+          const decoration = (offsetY: number) => {
+            const [x1, y1] = rotatePoint(offsetX, y + offsetY, x, y, rotation)
+            const [x2, y2] = rotatePoint(offsetX + runWidth, y + offsetY, x, y, rotation)
+            commands.push({ kind: 'line', x1, y1, x2, y2, color, clip: textClip })
+          }
+          if (conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) decoration(fontSize * 0.55)
+          if (conditionalStyle.strike ?? cell?.strike) decoration(0)
+        }
       } else {
-        if (cell?.numberFormat === 'accounting' && /^[$¥￥€£] /.test(text)) {
-          commands.push({ kind: 'text', x: rect.x + 6 * z, y, text: text[0]!, font, color, align: 'left', baseline: 'middle', rotation, maxWidth, clip: textClip })
-          commands.push({ kind: 'text', x: rect.x + rect.width - 6 * z, y, text: text.slice(2), font, color, align: 'right', baseline: 'middle', rotation, maxWidth, clip: textClip })
-        } else commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', rotation, maxWidth, clip: textClip })
+        commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', rotation, maxWidth, clip: textClip })
       }
-      if (!cell?.rotationVertical && ((conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) || (conditionalStyle.strike ?? cell?.strike))) {
+      if (!cell?.rotationVertical && !runLayout && ((conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) || (conditionalStyle.strike ?? cell?.strike))) {
         const width = decorationWidth(text, font, Math.max(0, rect.width - 12 * z))
         const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
         const decoration = (offsetY: number) => {

@@ -6,38 +6,74 @@ import { createServer } from 'vite'
 
 const fixturePath = '/__document-home-colors-test__'
 const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Docs Home command fixture</title><style>body{margin:0}#app{height:100vh;min-width:0}</style></head><body><div id="app"></div><script type="module">
-import { computed, createApp, h, ref } from 'vue'
+import { computed, createApp, h, ref, shallowRef, watch } from 'vue'
 import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FDocument } from '/packages/office-studio/src/api/facade'
 import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWorkbench.vue'
 import { createBlankDocument } from '/packages/office-studio/src/domain/model'
-import { blocksFromHtml, createParagraph, documentHtml } from '/packages/office-studio/src/features/document/model/document-model'
+import { blocksFromHtml, createParagraph, documentHtml, normalizeDocument } from '/packages/office-studio/src/features/document/model/document-model'
 import { paragraphListMarkers } from '/packages/office-studio/src/features/document/model/document-lists'
 import { createTextMeasurer, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
 import { createOfficeMessages, OfficeDirectionKey, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
 const copy = value => JSON.parse(JSON.stringify(value))
-const initial = createBlankDocument(); initial.id = 'home-colors'; initial.name = 'Docs 开始命令'
-initial.blocks = [createParagraph('甲乙丙丁', { color: '#414657' })]
-const model = ref(initial), history = ref([]), redo = ref([]), locale = ref('zh-CN'), dark = ref(false), variant = ref('classic')
+const initial = normalizeDocument({ ...createBlankDocument(), id: 'home-colors', name: 'Docs 开始命令', blocks: [createParagraph('甲乙丙丁', { color: '#414657' })] })
+const apiMode = new URLSearchParams(location.search).has('api')
+const studio = apiMode ? new OfficeStudio({ document: initial, currentUserId: 'local-user' }) : undefined
+if (studio) studio.activateDocument(initial.id)
+const documentApi = shallowRef(studio ? new FDocument(studio, initial.id) : undefined)
+const model = ref(documentApi.value?.getModel() ?? initial), history = ref([]), redo = ref([]), locale = ref('zh-CN'), dark = ref(false), variant = ref('classic')
+const apiCommands = []
+if (studio) {
+  watch(() => studio.editor.document.model, value => { model.value = value }, { flush: 'sync' })
+  studio.events.addEvent('CommandExecuted', event => { apiCommands.push(copy(event)) })
+  window.addEventListener('pagehide', () => studio.dispose(), { once: true })
+}
 const direction = computed(() => locale.value === 'ar-SA' ? 'rtl' : 'ltr')
 const messages = createOfficeMessages()
 const translate = (key, fallback) => messages[locale.value][key] ?? fallback
-const update = value => { history.value.push(copy(model.value)); redo.value = []; model.value = value }
+const update = value => {
+  if (studio) { studio.editor.replaceDocumentFromView(value); model.value = documentApi.value.getModel() }
+  else { history.value.push(copy(model.value)); redo.value = []; model.value = value }
+}
+function replaceFixtureModel(next, clearHistory = false) {
+  next = normalizeDocument(next)
+  if (studio) {
+    if (!studio.getDocumentModel(next.id)) studio.createDocument(next)
+    else { studio.activateDocument(next.id); studio.editor.document.replace(next) }
+    documentApi.value = new FDocument(studio, next.id)
+    if (clearHistory) studio.editor.history.clear(next.id)
+    model.value = documentApi.value.getModel()
+  } else {
+    model.value = next
+    if (clearHistory) { history.value = []; redo.value = [] }
+  }
+}
 window.documentHomeFixture = {
   snapshot: () => copy(model.value),
-  history: () => ({ undo: history.value.length, redo: redo.value.length }),
+  history: () => {
+    const unit = studio?.editor.history.units[documentApi.value?.id]
+    return unit ? { undo: unit.undo.length, redo: unit.redo.length } : { undo: history.value.length, redo: redo.value.length }
+  },
+  apiCommands: () => copy(apiCommands),
   appearance: (isDark, language) => { dark.value = isDark; locale.value = language },
   variant: value => { variant.value = value },
-  setColor: color => { const next = copy(model.value); next.blocks[0].runs.forEach(run => { run.color = color }); model.value = next },
-  denyEdit: () => { const next = copy(model.value); next.permissionRules = [{ id: 'edit-denied', scope: 'document', action: 'edit', effect: 'deny', userIds: [] }]; model.value = next },
-  reopen: snapshot => { model.value = JSON.parse(snapshot) },
-  newDocument: () => { const next = createBlankDocument(); next.id = 'new-home-doc'; next.blocks = [createParagraph('新文档', { color: '#414657' })]; model.value = next; history.value = []; redo.value = [] },
+  setColor: color => { const next = copy(model.value); next.blocks[0].runs.forEach(run => { run.color = color }); replaceFixtureModel(next) },
+  denyEdit: () => { const next = copy(model.value); next.permissionRules = [{ id: 'edit-denied', scope: 'document', action: 'edit', effect: 'deny', userIds: [] }]; replaceFixtureModel(next) },
+  reopen: snapshot => { replaceFixtureModel(JSON.parse(snapshot)) },
+  newDocument: () => { const next = createBlankDocument(); next.id = 'new-home-doc'; next.blocks = [createParagraph('新文档', { color: '#414657' })]; replaceFixtureModel(next, true) },
+  paragraphs: styles => {
+    const next = copy(initial)
+    next.blocks = styles.map((style, index) => { const paragraph = createParagraph('段落' + (index + 1)); paragraph.style = { ...paragraph.style, ...style }; return paragraph })
+    replaceFixtureModel(next, true)
+  },
   htmlColors: () => copy(blocksFromHtml(documentHtml(model.value)).flatMap(block => block.runs.map(run => ({ color: run.color, highlight: run.highlight })))),
   numbering: () => {
     const next = createBlankDocument(); next.id = 'numbering-home-doc'
     next.blocks = ['前一项', '前二项', '间隔段落', '后一项', '后二项'].map(text => createParagraph(text))
     for (const index of [0, 1, 3, 4]) { next.blocks[index].type = 'numbered'; next.blocks[index].list = { id: index < 2 ? 'previous-list' : 'current-list', preset: 'ORDER_LIST' } }
-    model.value = next; history.value = []; redo.value = []
+    replaceFixtureModel(next, true)
   },
   markers: () => [...paragraphListMarkers(model.value.blocks).values()].map(value => value.marker),
   paragraphPoint: index => {
@@ -51,10 +87,10 @@ window.documentHomeFixture = {
 const app = createApp({ render: () => h(ConfigProvider, {
   direction: direction.value, theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' } },
 }, { default: () => h(DocumentWorkbench, {
-  modelValue: model.value, canUndo: !!history.value.length, canRedo: !!redo.value.length, ribbonVariant: variant.value,
+  modelValue: model.value, documentApi: documentApi.value, canUndo: studio ? studio.editor.canUndo : !!history.value.length, canRedo: studio ? studio.editor.canRedo : !!redo.value.length, ribbonVariant: variant.value,
   'onUpdate:modelValue': update,
-  onUndo: () => { if (history.value.length) { redo.value.push(copy(model.value)); model.value = history.value.pop() } },
-  onRedo: () => { if (redo.value.length) { history.value.push(copy(model.value)); model.value = redo.value.pop() } },
+  onUndo: () => { if (documentApi.value) documentApi.value.undo(); else if (history.value.length) { redo.value.push(copy(model.value)); model.value = history.value.pop() } },
+  onRedo: () => { if (documentApi.value) documentApi.value.redo(); else if (redo.value.length) { history.value.push(copy(model.value)); model.value = redo.value.pop() } },
 }) }) })
 app.provide(OfficeLocaleKey, locale); app.provide(OfficeDirectionKey, direction); app.provide(OfficeTranslatorKey, translate)
 app.mount('#app')
@@ -109,8 +145,30 @@ async function clickParagraph(index) {
   const point = await page.evaluate(value => window.documentHomeFixture.paragraphPoint(value), index)
   await page.mouse.click(point.x, point.y)
 }
+async function openParagraphSettings(index = 0) {
+  const point = await page.evaluate(value => window.documentHomeFixture.paragraphPoint(value), index)
+  await page.mouse.click(point.x, point.y, { button: 'right' })
+  await page.getByRole('menuitem', { name: '段落设置', exact: true }).click()
+  const panel = page.locator('.paragraph-settings-panel')
+  await expect(panel).toBeVisible()
+  return panel
+}
+async function homeItem(id) {
+  const item = ribbonItem(id)
+  if (await item.count()) return item
+  let overflow = page.locator('.ribbon-overflow-panel:visible')
+  if (!await overflow.isVisible()) await page.locator('.ribbon-more-button').click()
+  overflow = page.locator('.ribbon-overflow-panel:visible')
+  const result = overflow.locator('[data-ribbon-item="' + id + '"]')
+  await expect(result).toBeVisible()
+  return result
+}
+async function chooseOption(select, label) {
+  await select.click()
+  await page.locator('.ant-select-dropdown:visible').getByText(label, { exact: true }).click()
+}
 
-test('45 upstream preset colors apply to the Canvas selection, undo, redo and reopen', async () => {
+test('45 preset colors apply to the Canvas selection, undo, redo and reopen', async () => {
   const before = await snapshot()
   await selectAll()
   const panel = await openColor('color', true)
@@ -242,7 +300,7 @@ test('the main button remembers an applied color while the panel reads the curre
   await expect.poll(() => colors('color')).toEqual(['#3f83f8'])
   panel = await openColor()
   await panel.getByRole('button', { name: '自动文字颜色', exact: true }).click()
-  await expect.poll(() => colors('color')).toEqual([undefined])
+  await expect.poll(() => colors('color')).toEqual(['auto'])
   assert.equal(await main.locator('.document-color-bar').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(63, 131, 248)')
   panel = await openColor()
   await expect(panel.locator('.document-color-state')).toHaveText('自动文字颜色')
@@ -360,4 +418,54 @@ test('restart at zero and continue numbering share the popup command path with e
   const saved = JSON.stringify(await snapshot())
   await page.evaluate(value => window.documentHomeFixture.reopen(value), saved)
   await expect.poll(markers).toEqual(['1.', '2.', '3.', '4.'])
+})
+
+for (const reverse of [false, true]) test(`paragraph settings preserve a ${reverse ? 'reverse' : 'forward'} mixed selection on right-click and share public history`, async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.paragraphs([
+    { indentStart: 10, indentEnd: 3, wordWrap: true },
+    { indentStart: 20, indentEnd: 7, wordWrap: false },
+  ]))
+  await bridge().focus()
+  if (reverse) { await bridge().press('Control+End'); await bridge().press('Control+Shift+Home') }
+  else await bridge().press('Control+A')
+  const before = await snapshot()
+  const panel = await openParagraphSettings(1)
+  const left = panel.getByRole('spinbutton', { name: /左.*\(px\)/ })
+  await expect(left).toHaveValue('')
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await left.fill('25'); await left.press('Tab')
+  await expect.poll(async () => (await snapshot()).blocks.map(block => block.style.indentStart)).toEqual([25, 25])
+  assert.deepEqual((await snapshot()).blocks.map(block => [block.style.indentEnd, block.style.wordWrap]), [[3, true], [7, false]])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  const commands = await page.evaluate(() => window.documentHomeFixture.apiCommands())
+  assert.deepEqual(commands.map(event => [event.id, event.kind]), [['doc.command.format-paragraph', 'document']])
+  await ribbonItem('doc-undo').getByRole('button').click()
+  assert.deepEqual(await snapshot(), before)
+  await ribbonItem('doc-redo').getByRole('button').click()
+  await expect.poll(async () => (await snapshot()).blocks.map(block => block.style.indentStart)).toEqual([25, 25])
+  const background = await panel.evaluate(element => getComputedStyle(element).backgroundColor)
+  await page.evaluate(() => window.documentHomeFixture.appearance(true, 'ar-SA'))
+  await expect.poll(() => panel.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(background)
+  await page.evaluate(() => window.documentHomeFixture.appearance(false, 'zh-CN'))
+  const saved = JSON.stringify(await snapshot())
+  await page.evaluate(value => window.documentHomeFixture.reopen(value), saved)
+  await expect.poll(async () => (await snapshot()).blocks.map(block => block.style.indentStart)).toEqual([25, 25])
+  await panel.getByRole('button', { name: /关闭/ }).click()
+  await expect(panel).toBeHidden()
+  await expect(bridge()).toBeFocused()
+  await expect(page.locator('.document-surface canvas')).toHaveCount(1)
+})
+
+test('right-clicking outside the selected paragraph retargets settings to the clicked paragraph', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.paragraphs([{ indentStart: 10 }, { indentStart: 20 }, { indentStart: 30 }]))
+  await clickParagraph(0)
+  await bridge().press('Home'); await bridge().press('Shift+End')
+  const panel = await openParagraphSettings(2)
+  const left = panel.getByRole('spinbutton', { name: /左.*\(px\)/ })
+  await expect(left).toHaveValue('30')
+  await left.fill('44'); await left.press('Tab')
+  await expect.poll(async () => (await snapshot()).blocks.map(block => block.style.indentStart)).toEqual([10, 20, 44])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
 })

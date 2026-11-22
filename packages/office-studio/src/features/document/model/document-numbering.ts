@@ -96,8 +96,22 @@ export function cloneNumberingDefinition(value: DocumentNumberingDefinition): Do
 }
 
 export function blockNumberingDefinition(block: DocumentBlock): DocumentNumberingDefinition | undefined {
-  if (!['numbered', 'bullet', 'checklist'].includes(block.type)) return
+  if (!['paragraph', 'heading', 'quote', 'numbered', 'bullet', 'checklist'].includes(block.type)) return
   return normalizeNumberingDefinition(block.metadata.numberingDefinition)
+}
+
+export function blockHasNumbering(block: DocumentBlock): boolean {
+  if (['numbered', 'bullet', 'checklist'].includes(block.type)) return true
+  if (!['paragraph', 'heading', 'quote'].includes(block.type)) return false
+  const numId = integer(numberingRecord(block.metadata.numbering).numId)
+  return !!block.list || !!blockNumberingDefinition(block) || numId !== undefined && numId > 0
+}
+
+/** Heading depth and list depth are independent paragraph properties. */
+export function blockNumberingLevelIndex(block: DocumentBlock): number {
+  const value = ['numbered', 'bullet', 'checklist'].includes(block.type) ? block.level
+    : block.metadata.numberingLevel ?? numberingRecord(block.metadata.numbering).ilvl
+  return Math.max(0, Math.min(8, integer(value) ?? 0))
 }
 
 export function blockNumberingId(block: DocumentBlock): string | undefined {
@@ -112,6 +126,7 @@ export function clearBlockNumbering(block: DocumentBlock): void {
   delete block.metadata.numberingDefinition
   delete block.metadata.numberingListId
   delete block.metadata.numbering
+  delete block.metadata.numberingLevel
   delete block.metadata.listLabel
 }
 
@@ -122,4 +137,5 @@ export function copyBlockNumbering(source: DocumentBlock, target: DocumentBlock)
   if (definition) target.metadata.numberingDefinition = cloneNumberingDefinition(definition)
   const id = blockNumberingId(source)
   if (id) target.metadata.numberingListId = id
+  if (!['numbered', 'bullet', 'checklist'].includes(target.type) && blockHasNumbering(source)) target.metadata.numberingLevel = blockNumberingLevelIndex(source)
 }

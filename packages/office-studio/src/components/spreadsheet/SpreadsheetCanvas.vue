@@ -7,12 +7,14 @@ import type { TimelineLevel } from '../../domain/model'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
-import { createSpreadsheetScene, displayCell } from '../../rendering/spreadsheet/scene'
+import { createSpreadsheetScene, displayCell, sheetNumberFormatPreviewPatternAt } from '../../rendering/spreadsheet/scene'
+import type { SheetNumberFormatPreview } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
 import { canEditProtectedRanges } from '../../features/sheet-protection/range-protection.ts'
 import { convertTextToNumber } from '../../features/sheet-workbench/text-to-number.ts'
+import { sheetCellTextAlignment } from '../../features/sheet-workbench/sheet-cell-alignment.ts'
 import { Minus, Plus } from 'lucide-vue-next'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
@@ -21,7 +23,7 @@ import { useOfficeRegion } from '../../i18n/office-i18n'
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; currentUserId?: string; searchText?: string; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string } }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; currentUserId?: string; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string } }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -59,7 +61,12 @@ const scene = computed(() => {
   const selectionCommands: DrawCommand[] = []
   const selected = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
   if (selected) selectionCommands.push({ kind: 'rect', ...selected.rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2 })
-  return createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
+  return createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
+})
+const selectedCellText = computed(() => {
+  const position = parseAddress(props.selectedKey)
+  const preview = position ? sheetNumberFormatPreviewPatternAt(props.numberFormatPreview, position.row, position.column) : undefined
+  return displayCell(props.sheet.cells[props.selectedKey], props.sheet.date1904, region.value, preview)
 })
 const outlineToggleRects = computed(() => geometry.value.outlineToggleRects(viewport.value))
 const outlineLevelButtons = computed(() => {
@@ -90,7 +97,7 @@ const editInputStyles = computed(() => ({
     background: props.sheet.cells[props.editingKey ?? '']?.background ?? token.value.colorBgContainer,
     boxShadow: 'none',
   },
-  input: { boxSizing: 'border-box' as const, height: '100%', padding: 0, color: 'inherit', font: 'inherit' },
+  input: { boxSizing: 'border-box' as const, height: '100%', padding: 0, color: 'inherit', font: 'inherit', textAlign: sheetCellTextAlignment(props.sheet.cells[props.editingKey ?? '']) },
 }))
 const editStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
@@ -98,6 +105,7 @@ const editStyle = computed(() => editLayout.value ? {
   clipPath: editLayout.value.clipPath,
   borderWidth: `${SHEET_SELECTION_STROKE_WIDTH}px`,
   paddingLeft: `${Math.max(0, 6 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
+  paddingRight: `${Math.max(0, 6 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
   fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif',
   fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px`,
 } : { clipPath: 'inset(50%)' })
@@ -546,7 +554,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
     >{{ control.level }}</Button>
     <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="value => emit('update:editValue', String(value ?? ''))" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
     <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
-    <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey], sheet.date1904, region) }}</span></div>
+    <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ selectedCellText }}</span></div>
     <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
     <SheetContextMenu
       v-model:open="contextMenuOpen"

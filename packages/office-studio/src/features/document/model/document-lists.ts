@@ -1,7 +1,7 @@
 import type { DocumentBlock } from '../../../domain/model'
 import definitions from '../../../domain/document-list-presets.json'
 import { tableForBlock } from './document-model'
-import { blockNumberingDefinition, blockNumberingId, normalizeNumberingLevel, numberingRecord, type DocumentNumberingDefinition, type DocumentNumberingLevel, type DocumentNumberingPicture } from './document-numbering'
+import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, normalizeNumberingLevel, numberingRecord, type DocumentNumberingDefinition, type DocumentNumberingLevel, type DocumentNumberingPicture } from './document-numbering'
 
 export type ListPreset = keyof typeof definitions
 export type ListKind = 'bullet' | 'numbered'
@@ -10,10 +10,11 @@ export const listPresets = Object.keys(definitions) as ListPreset[]
 export const isListPreset = (value: unknown): value is ListPreset => typeof value === 'string' && Object.hasOwn(definitions, value)
 export const listKind = (preset: ListPreset): ListKind => preset.startsWith('BULLET_') ? 'bullet' : 'numbered'
 export function blockListPreset(block: DocumentBlock): ListPreset | undefined {
-  if (block.type !== 'bullet' && block.type !== 'numbered') return
+  if (!blockHasNumbering(block) || block.type === 'checklist') return
   const preset = block.list?.preset
-  if (isListPreset(preset) && listKind(preset) === block.type) return preset
+  if (isListPreset(preset) && (!['bullet', 'numbered'].includes(block.type) || listKind(preset) === block.type)) return preset
   if (blockNumberingDefinition(block)) return
+  if (block.type !== 'bullet' && block.type !== 'numbered') return
   return block.type === 'bullet' ? 'BULLET_LIST' : 'ORDER_LIST'
 }
 export function listLevelSpec(preset: ListPreset, level: number) {
@@ -60,7 +61,7 @@ export function presetNumberingDefinition(preset: ListPreset): DocumentNumbering
 export function blockListLevel(block: DocumentBlock): { index: number; maximum: number; level?: DocumentNumberingLevel } {
   const definition = blockNumberingDefinition(block), preset = blockListPreset(block)
   const maximum = definition ? Math.max(0, ...definition.levels.map(level => level.ilvl)) : preset ? listLevelSpec(preset, 8).index : 8
-  const index = Math.max(0, Math.min(maximum, Math.trunc(block.level) || 0))
+  const index = Math.min(maximum, blockNumberingLevelIndex(block))
   return { index, maximum, level: definition?.levels.find(level => level.ilvl === index) ?? (preset ? presetNumberingDefinition(preset).levels[index] : undefined) }
 }
 
@@ -96,7 +97,7 @@ function markerAppearance(block: DocumentBlock, level: DocumentNumberingLevel | 
   const hanging = finite(block.style.hanging, finite(indent.hangingTwips, 420) / 15)
   const firstLine = finite(block.style.indentFirstLine, finite(indent.firstLineTwips) / 15)
   return {
-    inset: Math.max(0, left), markerIndent: Math.max(0, left - hanging + firstLine), rightIndent: Math.max(0, finite(block.style.indentEnd, finite(indent.rightTwips) / 15)),
+    inset: left, markerIndent: left - hanging + firstLine, rightIndent: finite(block.style.indentEnd, finite(indent.rightTwips) / 15),
     gap: level?.suffix === 'nothing' ? 0 : level?.suffix === 'space' ? 4 : 6,
     fontFamily: text(level?.bulletFontFamily, text(style.fontFamilyAscii, text(style.resolvedFontFamilyAscii, text(style.fontFamily, run?.fontFamily || 'Arial')))),
     fontSize: Math.max(1, finite(style.fontSizePt, run?.fontSize ?? 11)), color: text(level?.bulletColor, text(style.color, run?.color ?? '#1f2937')),
@@ -120,7 +121,7 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
         for (const row of table.rows) for (const cell of row.cells) visit(cell.blocks)
         continue
       }
-      if (!['bullet', 'numbered'].includes(block.type)) { previous = undefined; continue }
+      if (!blockHasNumbering(block) || block.type === 'checklist') { previous = undefined; continue }
       const imported = blockNumberingDefinition(block), preset = blockListPreset(block)
       const definition = imported ?? (preset ? presetNumberingDefinition(preset) : undefined)
       const { index, level } = blockListLevel(block)

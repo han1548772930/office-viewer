@@ -9,6 +9,7 @@ import {
 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import { DOCUMENT_PASTE_OPTIONS } from '../../features/document/services/document-clipboard'
+import { validateDocumentParagraphStylePatch } from '../../features/document/services/document-settings'
 import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts'
@@ -31,6 +32,7 @@ export interface DocumentRibbonContext {
   defaultTextColor?: string
   defaultHighlightColor?: string
   numbering?: { canRestart: boolean; canContinue: boolean }
+  indentation?: { canDecrease: boolean; canIncrease: boolean }
   state: DocumentToolbarState
   canUndo: boolean
   canRedo: boolean
@@ -75,7 +77,6 @@ export interface DocumentRibbonContext {
 
 const action = (id: string, title: string, icon: Component | undefined, commandId = id, params?: unknown, more: Partial<RibbonItem> = {}): RibbonItem => ({ id, type: 'button', title, icon, commandId, params, ...more })
 
-/** Univer 1.6.0 eaf4cfa, docs-ui/menu/schema.ts and docs-ui/services/doc-zoom.ts. */
 export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
   const { state } = context
   const tocLabel = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
@@ -153,10 +154,14 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           action('doc-heading-six', tocLabel('options.doc.doc-block-style.H6', '标题 6'), undefined, 'doc.command.set-block-type', { type: 'heading', level: 6 }, { activated: state.blockStyle === 'H6' }),
           action('doc-quote', tocLabel('options.doc.doc-block-style.quote', '引用'), undefined, 'doc.command.set-block-type', { type: 'quote' }, { activated: state.blockStyle === 'quote' }),
         ] },
-        action('doc-indent-less', '减少缩进', IndentDecrease, 'doc.command.format-paragraph', { patch: { indent: Math.max(0, (state.paragraph.indent ?? 0) - 1) } }, { disabled: state.paragraph.indent === 0, disabledReason: '当前段落已经位于最左侧', gridLayout: { row: 1, column: 1 } }),
-        action('doc-indent-more', '增加缩进', IndentIncrease, 'doc.command.format-paragraph', { patch: { indent: Math.min(20, (state.paragraph.indent ?? 0) + 1) } }, { gridLayout: { row: 2, column: 1 } }),
-        { id: 'doc-line-height', type: 'select', title: '行距', width: 76, value: state.paragraph.lineHeight ?? null, placeholder: '混合', commandId: 'doc.command.format-paragraph', gridLayout: { row: 1, column: 2 }, options: [1, 1.15, 1.5, 2, 2.5, 3].map((value) => ({ label: `${value} 倍`, value })), valueParams: (value) => ({ patch: { lineHeight: Number(value) } }) },
-        { id: 'doc-paragraph-spacing', type: 'menu', title: '段落间距', icon: IndentIncrease, gridLayout: { row: 2, column: 2 }, children: (['spaceBefore', 'spaceAfter'] as const).map((key) => ({ id: `doc-${key}`, type: 'menu', title: key === 'spaceBefore' ? '段前间距' : '段后间距', children: [0, 6, 8, 12, 18, 24, 36].map((value) => action(`doc-${key}-${value}`, `${value} 像素`, IndentIncrease, 'doc.command.format-paragraph', { patch: { [key]: value } }, { activated: state.paragraph[key] === value })) })) },
+        action('doc-indent-less', '减少缩进', IndentDecrease, 'doc.command.change-paragraph-indent', { direction: -1 }, { disabled: context.editingDisabled || !(context.indentation?.canDecrease ?? ((state.paragraph.indentFirstLine ?? 0) > 0)), disabledReason: '选中段落已达到缩进下限', gridLayout: { row: 1, column: 1 } }),
+        action('doc-indent-more', '增加缩进', IndentIncrease, 'doc.command.change-paragraph-indent', { direction: 1 }, { disabled: context.editingDisabled || !(context.indentation?.canIncrease ?? ((state.paragraph.indentFirstLine ?? 0) < 100)), disabledReason: '选中段落已达到缩进上限', gridLayout: { row: 2, column: 1 } }),
+        { id: 'doc-line-height', type: 'select', title: '行距', disabled: context.editingDisabled, width: 76,
+          value: !state.paragraph.spacingRule || state.paragraph.spacingRule === 'auto' ? state.paragraph.lineHeight ?? null : null,
+          placeholder: state.paragraph.spacingRule && state.paragraph.spacingRule !== 'auto'
+            ? `${tocLabel(`doc.paragraph-settings.spacing-rule.${state.paragraph.spacingRule}`, state.paragraph.spacingRule === 'exact' ? '固定值' : '最小值')} ${state.paragraph.lineHeight ?? ''} px` : '混合',
+          commandId: 'doc.command.format-paragraph', gridLayout: { row: 1, column: 2 }, options: [1, 1.15, 1.5, 2, 2.5, 3].map((value) => ({ label: `${value} 倍`, value })), valueParams: (value) => ({ patch: { spacingRule: 'auto', lineHeight: Number(value) } }) },
+        { id: 'doc-paragraph-spacing', type: 'menu', title: '段落间距', disabled: context.editingDisabled, icon: IndentIncrease, gridLayout: { row: 2, column: 2 }, children: (['spaceBefore', 'spaceAfter'] as const).map((key) => ({ id: `doc-${key}`, type: 'menu', title: key === 'spaceBefore' ? '段前间距' : '段后间距', children: [0, 6, 8, 12, 18, 24, 36].map((value) => action(`doc-${key}-${value}`, `${value} 像素`, IndentIncrease, 'doc.command.format-paragraph', { patch: { [key]: value } }, { activated: state.paragraph[key] === value })) })) },
       ] },
       { id: 'doc-home-extensions', title: '其他工具', order: 5, items: [
         action('doc-copy', '复制', Copy, 'doc.command.copy', undefined, { disabled: !state.hasSelection, disabledReason: '请先选择要复制的文字', gridLayout: { row: 1, column: 1 } }),
@@ -254,7 +259,6 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       popupCommandId: 'doc.operation.header-footer-control',
       gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
     })
-    // Univer 1.6.0 docs-ui/src/menu/header-footer-ribbon.ts registers four groups and a close command.
     tabs.push({
       id: 'header-footer',
       title: '页眉和页脚',
@@ -403,6 +407,9 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
+  if (id === 'doc.command.change-paragraph-indent') {
+    return record(params) && (params.direction === -1 || params.direction === 1) ? { id, direction: params.direction } : undefined
+  }
   if (id === 'doc.command.restart-list-numbering') {
     if (params === undefined) return { id }
     if (!record(params)) return undefined
@@ -457,8 +464,10 @@ export function documentCommandFromRibbon(id: string, params: unknown): Document
   }
   if (id === 'doc.command.format-paragraph') {
     if (!Object.keys(patch).length) return undefined
-    if (!Object.entries(patch).every(([key, value]) => key === 'align' ? ['left', 'center', 'right', 'justify'].includes(String(value)) : ['indent', 'lineHeight', 'spaceBefore', 'spaceAfter'].includes(key) && typeof value === 'number' && Number.isFinite(value) && value >= 0)) return undefined
-    return { id, patch }
+    try {
+      validateDocumentParagraphStylePatch(patch)
+      return { id, patch }
+    } catch { return undefined }
   }
   return undefined
 }

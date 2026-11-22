@@ -2813,7 +2813,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_univer_internal_link_payload_as_an_xlsx_location() {
+    fn writes_internal_link_payload_as_an_xlsx_location() {
         let data = r##"{"kind":"workbook","sheets":[{"id":"source","name":"Source","cells":{"A1":{"value":"internal","hyperlink":"#gid=target&range=B2%3AC4"}}},{"id":"target","name":"Quarter's Report","cells":{}}]}"##;
         let mut package = Package::new();
         write(data, &mut package).unwrap();

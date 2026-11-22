@@ -52,7 +52,7 @@ const resetLabels: Record<string, { fontColor: string; noBackground: string }> =
   'zh-TW': { fontColor: '重設字體顏色', noBackground: '無背景色' },
 }
 
-/** More/cancel/confirm/reset follow Univer eaf4cfa design and docs-ui locale sources. */
+/** Labels for the color palette and its custom-color stage. */
 const pickerLabels: Record<string, { more: string; cancel: string; confirm: string; reset: string; automatic: string; standard: string; value: string; format: string; invalid: string }> = {
   'ar-SA': { more: 'المزيد من الألوان', cancel: 'إلغاء', confirm: 'موافق', reset: 'إعادة تعيين', automatic: 'لون نص تلقائي', standard: 'ألوان قياسية', value: 'قيمة اللون', format: 'تنسيق اللون', invalid: 'أدخل قيمة لون صالحة' },
   'ca-ES': { more: 'Més colors', cancel: 'cancel·la', confirm: "D'acord", reset: 'Restableix', automatic: 'Color de text automàtic', standard: 'Colors estàndard', value: 'Valor del color', format: 'Format del color', invalid: 'Introduïu un valor de color vàlid' },

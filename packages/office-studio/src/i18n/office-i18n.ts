@@ -29,8 +29,8 @@ import { sheetTabContextLocales } from './sheets/locales/sheet-tab-context.ts'
 import { sheetFilterMenuLocales } from './sheets/locales/filter-menu.ts'
 import { conditionalFormattingLocaleMessages } from './sheets/locales/conditional-formatting.ts'
 import { sheetCrosshairHighlightLocales } from './sheets/locales/crosshair-highlight.ts'
-import { sheetLocalearSA, sheetLocaleesES, sheetLocalecaES, sheetLocaledeDE, sheetLocalefaIR, sheetLocalefrFR, sheetLocaleidID, sheetLocaleitIT, sheetLocalejaJP, sheetLocalekoKR, sheetLocaleplPL, sheetLocaleptBR, sheetLocaleruRU, sheetLocaleskSK, sheetLocaleviVN, sheetLocalezhHK, sheetLocalezhTW } from './sheets/locales/univer-parity.ts'
-import { docLocalearSA, docLocaleesES, docLocalecaES, docLocaledeDE, docLocalefaIR, docLocalefrFR, docLocaleidID, docLocaleitIT, docLocalejaJP, docLocalekoKR, docLocaleplPL, docLocaleptBR, docLocaleruRU, docLocaleskSK, docLocaleviVN, docLocalezhHK, docLocalezhTW } from './docs/locales/univer-parity.ts'
+import { sheetLocalearSA, sheetLocaleesES, sheetLocalecaES, sheetLocaledeDE, sheetLocalefaIR, sheetLocalefrFR, sheetLocaleidID, sheetLocaleitIT, sheetLocalejaJP, sheetLocalekoKR, sheetLocaleplPL, sheetLocaleptBR, sheetLocaleruRU, sheetLocaleskSK, sheetLocaleviVN, sheetLocalezhHK, sheetLocalezhTW } from './sheets/locales/workbench.ts'
+import { docLocalearSA, docLocaleesES, docLocalecaES, docLocaledeDE, docLocalefaIR, docLocalefrFR, docLocaleidID, docLocaleitIT, docLocalejaJP, docLocalekoKR, docLocaleplPL, docLocaleptBR, docLocaleruRU, docLocaleskSK, docLocaleviVN, docLocalezhHK, docLocalezhTW } from './docs/locales/workbench.ts'
 
 export type OfficeTranslator = (key: string, fallback: string) => string
 

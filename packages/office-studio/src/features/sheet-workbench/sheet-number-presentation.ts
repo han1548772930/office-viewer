@@ -1,4 +1,5 @@
 import type { CellScalar } from '../../domain/model.ts'
+import { normalizeSheetCellValueType, parseSheetCellText, type SheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
 import { renderSheetNumberFormat, type SheetNumberPresentation } from './number-format-render.ts'
 import { SHEET_NUMBER_FORMATS } from './sheet-number-format.ts'
@@ -9,11 +10,13 @@ export function sheetCellNumberValue(cell: ExcelCellView | undefined): CellScala
   if (cell.rawValue !== undefined) return cell.formula && cell.rawValue === null ? undefined : cell.rawValue
   const value = cell.formula ? cell.cachedValue : cell.value
   if (value === undefined) return undefined
-  if (value !== '' && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) {
-    const number = Number(value)
-    if (Number.isFinite(number)) return number
-  }
-  return value
+  return parseSheetCellText(value, sheetCellStoredValueType(cell))
+}
+
+export function sheetCellStoredValueType(cell: ExcelCellView | undefined): SheetCellValueType | undefined {
+  if (!cell) return undefined
+  const type = normalizeSheetCellValueType(cell.formula ? cell.cachedDataType ?? cell.dataType : cell.dataType)
+  return type === 'formula' ? undefined : type
 }
 
 export function sheetCellNumberPattern(cell: ExcelCellView | undefined): string {
