@@ -12,6 +12,7 @@ import {
   WrapText, Percent,
 } from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
+import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts.ts'
 import { SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
 import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
@@ -20,6 +21,8 @@ import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, typ
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 
 export interface SheetRibbonState {
+  fontList?: OfficeFontList
+  fontEditable?: boolean
   painterActive?: boolean
   canUndo: boolean
   canRedo: boolean
@@ -67,8 +70,6 @@ export interface SheetRibbonState {
   crosshairColor?: string
 }
 
-const fonts = ['等线', '微软雅黑', '宋体', 'Aptos', 'Arial', 'Times New Roman']
-const fontSizes = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48, 72]
 const colors = [
   { label: '白色', value: '#ffffff' }, { label: '浅黄色', value: '#fff4cc' },
   { label: '浅蓝色', value: '#dceaff' }, { label: '浅绿色', value: '#dcf4e4' },
@@ -117,10 +118,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           ] },
         ] },
         { id: 'font', title: '字体', order: 10, items: [
-          { id: 'sheet.command.set-font-family', commandId: 'sheet.command.set-font-family', type: 'select', title: '字体', width: 180, disabled: !state.hasSheet, value: state.fontFamily, placeholder: '混合', gridLayout: { row: 1, column: 1, columnSpan: 4, width: 180, minWidth: 120 }, options: [...new Set([...fonts, ...(state.fontFamily ? [state.fontFamily] : [])])].map(value => ({ label: value, value })) },
-          { id: 'sheet.command.set-font-size', commandId: 'sheet.command.set-font-size', type: 'select', title: '字号', width: 72, disabled: !state.hasSheet, value: state.fontSize, placeholder: '混合', gridLayout: { row: 1, column: 5, width: 72 }, options: [...new Set([...fontSizes, ...(state.fontSize ? [state.fontSize] : [])])].sort((a, b) => a - b).map(value => ({ label: String(value), value })) },
-          button('sheet.command.increase-font-size', '增大字号', { icon: AArrowUp, gridLayout: { row: 1, column: 6 } }),
-          button('sheet.command.decrease-font-size', '减小字号', { icon: AArrowDown, gridLayout: { row: 1, column: 7 } }),
+          { id: 'sheet.command.set-font-family', commandId: 'sheet.command.set-font-family', type: 'select', edit: { kind: 'font' }, title: '字体', width: 180, disabled: !state.hasSheet || state.fontEditable === false, value: state.fontFamily, placeholder: '混合', gridLayout: { row: 1, column: 1, columnSpan: 4, width: 180, minWidth: 120 }, options: ribbonFontOptions(state.fontFamily, state.fontList) },
+          { id: 'sheet.command.set-font-size', commandId: 'sheet.command.set-font-size', type: 'select', edit: { kind: 'number', min: 6, max: 400 }, title: '字号', width: 72, disabled: !state.hasSheet || state.fontEditable === false, value: state.fontSize, placeholder: '混合', gridLayout: { row: 1, column: 5, width: 72 }, options: fontSizeOptions },
+          button('sheet.command.increase-font-size', '增大字号', { icon: AArrowUp, disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 6 } }),
+          button('sheet.command.decrease-font-size', '减小字号', { icon: AArrowDown, disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 7 } }),
           button('sheet.command.toggle-bold', '加粗', { icon: Bold, activated: state.bold === true, gridLayout: { row: 2, column: 1 } }),
           button('sheet.command.toggle-italic', '斜体', { icon: Italic, activated: state.italic === true, gridLayout: { row: 2, column: 2 } }),
           button('sheet.command.toggle-underline', '下划线', { icon: Underline, activated: state.underline === true, gridLayout: { row: 2, column: 3 } }),
@@ -197,12 +198,8 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
       id: 'insert', title: '插入', order: 10, groups: [
         { id: 'media', title: '媒体', order: 10, items: [
           button('sheet.operation.insert-hyperlink', '超链接', { icon: Link, showLabel: true, disabled: !state.hyperlinkAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-        ] },
-        { id: 'objects', title: '对象', order: 30, items: [
-          button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button('sheet.insert.slicer', '切片器', { commandId: 'sheet.operation.open-slicer', icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          button('sheet.insert.timeline', '时间线', { commandId: 'sheet.operation.open-timeline', icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, order: 4, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿' }),
+          button('sheet.operation.open-sparkline', '迷你图', { icon: ChartLine, order: 5 }),
         ] },
         { id: 'cells', title: '单元格', order: 20, items: [
           { ...quick('sheet.operation.quick-data-validation.checkbox', '复选框', 'checkbox', SquareCheck), type: 'split', children: [
@@ -249,11 +246,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.operation.open-conditional-formatting', '条件格式', { icon: ChartColumnIncreasing, showLabel: true, gridLayout: { row: 2, column: 1, showLabel: true } }),
         ] },
         { id: 'pivot', title: '分析', order: 30, items: [
-          button('sheet.operation.open-pivot', '数据透视表', { icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-slicer', '切片器', { icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-timeline', '时间线', { icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-sparkline', '迷你图', { icon: ChartLine, showLabel: true, disabled: !state.hasSheet, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-pivot-chart', '透视图', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请先创建数据透视表', gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-pivot', '数据透视表', { icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 1, showLabel: true } }),
+          button('sheet.operation.open-pivot-chart', '透视图', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请先创建数据透视表', gridLayout: { row: 2, column: 1, showLabel: true } }),
+          button('sheet.operation.open-slicer', '切片器', { icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 2, showLabel: true } }),
+          button('sheet.operation.open-timeline', '时间线', { icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 2, column: 2, showLabel: true } }),
         ] },
         { id: 'outline', title: '分组显示', order: 40, items: [
           button('sheet.operation.outline-group-rows', '组合行', { icon: Group, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),

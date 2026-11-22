@@ -8,11 +8,13 @@ function normalizeRun(value: unknown, id: string): InlineRun {
   const raw = record(value)
   const style = record(raw.style)
   const verticalAlign = normalizeVerticalAlign(style.verticalAlign ?? style.vertAlign ?? raw.verticalAlign)
+  const eastAsiaFontFamily = text(style.fontFamilyEastAsia) || text(style.resolvedFontFamilyEastAsia)
   return {
     id, text: text(raw.text), bold: style.bold === true, italic: style.italic === true,
     underline: style.underline === true, strike: style.strike === true,
     ...(verticalAlign ? { verticalAlign } : {}),
-    color: text(style.color, '#1f2937'), fontFamily: text(style.fontFamily, 'Aptos'), fontSize: positive(style.fontSizePt, 11),
+    ...(eastAsiaFontFamily ? { eastAsiaFontFamily } : {}),
+    color: text(style.color, '#1f2937'), fontFamily: text(style.fontFamilyAscii) || text(style.resolvedFontFamilyAscii) || text(style.fontFamily, 'Aptos'), fontSize: positive(style.fontSizePt, 11),
     metadata: { source: raw, link: raw.link, highlight: style.highlight, noteReference: raw.noteReference },
   }
 }
@@ -32,6 +34,8 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   const pageBreak = details.pageBreak === true || raw.pageBreak === true || raw.type === 'page_break' || raw.type === 'pageBreak'
   const columnBreak = details.columnBreak === true || raw.columnBreak === true || raw.type === 'column_break' || raw.type === 'columnBreak'
   const style = record(details.style)
+  const styleId = (text(details.styleId) || text(style.styleId)).toLowerCase()
+  const titleStyle = styleId === 'title' || styleId === 'subtitle' ? styleId : undefined
   const indent = record(style.indent)
   const spacing = record(style.spacing)
   const id = text(raw.id, fallbackId)
@@ -45,7 +49,7 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   const listLabel = text(details.listLabel).trimStart()
   const checklistLabel = listLabel.startsWith('☐') || listLabel.startsWith('☑')
   const type = sectionBreak ? 'sectionBreak' : columnBreak ? 'columnBreak' : pageBreak ? 'pageBreak' : raw.type === 'table' ? 'table' : raw.type === 'figure' ? 'image'
-    : raw.type === 'heading' || raw.type === 'section_heading' || level > 0 ? 'heading'
+    : titleStyle ? 'paragraph' : raw.type === 'heading' || raw.type === 'section_heading' || level > 0 ? 'heading'
       : checklistLabel ? 'checklist'
         : Object.keys(numbering).length ? (listLabel.match(/^[\d一二三四五六七八九十]/) ? 'numbered' : 'bullet') : 'paragraph'
   const block: DocumentBlock = {
@@ -57,7 +61,7 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
       spaceBefore: pointToPixel(finite(spacing.beforePt, finite(spacing.before) / 20)),
       spaceAfter: pointToPixel(finite(spacing.afterPt, finite(spacing.after, 120) / 20)),
     },
-    metadata: { source: raw, sourceRefs: raw.sourceRefs, style, listLabel: details.listLabel, numbering },
+    metadata: { source: raw, sourceRefs: raw.sourceRefs, style, listLabel: details.listLabel, numbering, ...(titleStyle ? { namedStyleType: titleStyle } : {}) },
   }
   const taggedFields = array(raw.children).map((child) => record(record(child).details).field).map(record)
   const codeBookmark = array(details.bookmarks).map((bookmark) => text(record(bookmark).name)).find((name) => name.startsWith('office_code_v1_'))

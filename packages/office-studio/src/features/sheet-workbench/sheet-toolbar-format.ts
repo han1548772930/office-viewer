@@ -22,10 +22,8 @@ export function isSheetBorderPreset(value: unknown): value is SheetBorderPreset 
 }
 
 const DEFAULT_BORDER_OPTIONS: SheetBorderOptions = { style: 'thin', color: '#1f2937' }
-const FONT_STEPS = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
 export function nextSheetFontSize(size: number, direction: -1 | 1): number {
-  return direction === 1 ? FONT_STEPS.find(step => step > size) ?? Math.min(400, size + 1)
-    : [...FONT_STEPS].reverse().find(step => step < size) ?? Math.max(1, size - 1)
+  return Math.max(6, Math.min(400, size + direction))
 }
 export function applySheetNumberFormat(cell: ExcelCellView, format: SheetNumberFormat): ExcelCellView {
   return { ...cell, numberFormat: format, rawNumberFormat: SHEET_NUMBER_FORMATS[format] }

@@ -9,6 +9,7 @@ export interface RibbonMenuAction {
 
 export interface RibbonMenuModel {
   items: MenuItemType[]
+  selectedKeys: string[]
   actions: Map<string, RibbonMenuAction>
 }
 
@@ -29,6 +30,7 @@ function makeLabel(item: RibbonItem, title = item.title, renderItem?: (item: Rib
 
 export function createRibbonMenuModel(items: readonly RibbonItem[], renderItem?: (item: RibbonItem) => VNodeChild): RibbonMenuModel {
   const actions = new Map<string, RibbonMenuAction>()
+  const selectedKeys: string[] = []
 
   function createItems(source: readonly RibbonItem[]): MenuItemType[] {
     return source.map((item) => {
@@ -43,6 +45,7 @@ export function createRibbonMenuModel(items: readonly RibbonItem[], renderItem?:
       if (item.type === 'select') {
         const options = (item.options ?? []).map((option, index) => {
           const key = `${item.id}::option:${index}`
+          if (item.value === option.value) selectedKeys.push(key)
           actions.set(key, { item, value: option.value })
           return {
             key,
@@ -60,6 +63,7 @@ export function createRibbonMenuModel(items: readonly RibbonItem[], renderItem?:
         const submenuItems: MenuItemType[] = []
         if (item.type === 'split' && item.commandId) {
           const key = `${item.id}::main`
+          if (item.activated) selectedKeys.push(key)
           actions.set(key, { item })
           submenuItems.push({ key, ribbonItemId: item.id, label: makeLabel(item), disabled: item.disabled, icon: base.icon, title: item.title })
           submenuItems.push({ type: 'divider', key: `${item.id}::divider` })
@@ -69,9 +73,11 @@ export function createRibbonMenuModel(items: readonly RibbonItem[], renderItem?:
       }
 
       actions.set(item.id, { item })
+      if (item.activated) selectedKeys.push(item.id)
       return { key: item.id, ribbonItemId: item.id, ...base, label: makeLabel(item, item.title, renderItem), disabled: item.disabled }
     })
   }
 
-  return { items: createItems(items), actions }
+  const menuItems = createItems(items)
+  return { items: menuItems, actions, selectedKeys }
 }

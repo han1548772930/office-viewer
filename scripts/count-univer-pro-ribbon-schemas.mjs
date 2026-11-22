@@ -132,6 +132,8 @@ function valueOf(node, context, depth = 0) {
   if (node.kind === ts.SyntaxKind.FalseKeyword) return false
   if (node.kind === ts.SyntaxKind.NullKeyword) return null
   if (ts.isParenthesizedExpression(node)) return valueOf(node.expression, context, depth + 1)
+  // Minifiers encode contextual and showLabel booleans as !0 and !1.
+  if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken && ts.isNumericLiteral(node.operand)) return !Number(node.operand.text)
   if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.MinusToken) {
     const operand = valueOf(node.operand, context, depth + 1)
     return typeof operand === 'number' ? -operand : unknown(node, context)

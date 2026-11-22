@@ -27,6 +27,7 @@ export interface RibbonItem {
   swatch?: string
   value?: string | number | null
   options?: RibbonOption[]
+  edit?: { kind: 'font' } | { kind: 'number'; min: number; max: number }
   placeholder?: string
   valueParams?: (value: string | number) => unknown
   children?: RibbonItem[]
@@ -49,6 +50,7 @@ export interface RibbonGridLayout {
 }
 
 export interface RibbonOption {
+  preview?: { fontSize?: string; fontWeight?: number; fontFamily?: string; color?: string }
   label: string
   value: string | number
   disabled?: boolean
@@ -247,8 +249,8 @@ export function placeRibbonGridItems(items: readonly RibbonItem[]): RibbonGridPl
       column,
       rowSpan,
       columnSpan,
-      showLabel: layout?.showLabel ?? item.showLabel ?? false,
-      width: layout?.width ?? item.width,
+      showLabel: layout?.showLabel ?? false,
+      width: layout?.width,
       minWidth: layout?.minWidth,
       iconSize: layout?.iconSize,
     })
@@ -322,10 +324,11 @@ export function ribbonInvocation(item: RibbonItem, value?: string | number): Rib
   if (item.type === 'select') {
     if (value === undefined) return undefined
     const option = item.options?.find((candidate) => candidate.value === value)
-    if (!option || option.disabled) return undefined
-    const commandId = option.commandId ?? item.commandId
+    const customNumber = item.edit?.kind === 'number' && typeof value === 'number' && Number.isFinite(value) && value >= item.edit.min && value <= item.edit.max
+    if ((!option && !customNumber) || option?.disabled) return undefined
+    const commandId = option?.commandId ?? item.commandId
     if (!commandId) return undefined
-    return { commandId, params: option.params !== undefined ? option.params : item.valueParams ? item.valueParams(value) : value }
+    return { commandId, params: option?.params !== undefined ? option.params : item.valueParams ? item.valueParams(value) : value }
   }
   return item.commandId ? { commandId: item.commandId, params: item.params } : undefined
 }

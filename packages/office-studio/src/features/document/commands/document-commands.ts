@@ -7,8 +7,12 @@ import { applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '
 import { deleteDocumentToc, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
 import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { documentTocIdAtBlock } from '../toc/document-toc'
+import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
+import { selectionFontPatch } from '../model/document-font'
+import { isListPreset, listKind, listLevelSpec, type ListPreset } from '../model/document-lists'
+export { blockAtPoint } from '../model/document-model'
 import {
-  applyNamedParagraphStyle, applyRunPatch, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
+  applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets,
   type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
@@ -19,9 +23,11 @@ export type DocumentCommand =
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch }
+  | { id: 'doc.command.apply-format-painter'; format: DocumentPainterFormat }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
   | { id: 'doc.command.set-paragraph-named-style'; namedStyle: DocumentNamedParagraphStyle }
   | { id: 'doc.command.set-block-type'; type: DocumentBlock['type']; level?: number }
+  | { id: 'doc.command.change-list-type'; listType: ListPreset }
   | { id: 'doc.command.toggle-checklist-item'; blockId: string }
   | { id: 'doc.command.insert-page-break' }
   | { id: 'doc.command.insert-column-break' }
@@ -37,13 +43,6 @@ export type DocumentCommand =
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
   | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers }
   | { id: 'doc.command.delete-table-of-contents'; tocId: string }
-
-export function blockAtPoint(model: DocumentModel, point: TextTarget): DocumentBlock | undefined {
-  const block = model.blocks.find((candidate) => candidate.id === point.blockId)
-  if (point.row == null || !block) return block
-  const cell = tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]
-  return cell?.blocks.find((candidate) => candidate.id === point.cellBlockId) ?? cell?.blocks[0]
-}
 
 function blockContainer(model: DocumentModel, point: TextTarget): DocumentBlock[] {
   if (point.row == null) return model.blocks
@@ -100,7 +99,19 @@ export function executeDocumentCommand(
     case 'doc.command.table-delete': return executeDocumentTableCommand(model, selection, command)
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
     case 'doc.command.delete': return deleteContent(model, selection, command.direction)
-    case 'doc.command.format-text': formatText(model, selection, command.patch); return selection
+    case 'doc.command.format-text': formatText(model, selection, selectionFontPatch(model, selection, command.patch)); return selection
+    case 'doc.command.apply-format-painter': {
+      const range = documentPainterTarget(model, selection)
+      if (!range) return selection
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(model, range))
+      formatText(model, range, command.format.text)
+      const paragraph = command.format.paragraph
+      if (paragraph) for (const target of selectedTargets(model, range)) {
+        const block = blockAtPoint(model, target)
+        if (block) applyPainterParagraph(block, paragraph)
+      }
+      return range
+    }
     case 'doc.command.format-paragraph': {
       selectedTargets(model, selection).forEach((target) => {
         const block = blockAtPoint(model, target)
@@ -121,24 +132,43 @@ export function executeDocumentCommand(
       block.checklist = { listId: block.checklist?.listId || documentId('checklist'), checked: block.checklist?.checked !== true }
       return selection
     }
+    case 'doc.command.change-list-type':
     case 'doc.command.set-block-type': {
       const targets = selectedTargets(model, selection)
-      const isList = command.type === 'bullet' || command.type === 'numbered' || command.type === 'checklist'
-      const toggleOff = isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === command.type)
+      if (command.id === 'doc.command.change-list-type' && !isListPreset(command.listType)) throw new RangeError('Unknown list preset')
+      const explicit = command.id === 'doc.command.change-list-type' ? command.listType : undefined
+      const type = command.id === 'doc.command.set-block-type' ? command.type : listKind(command.listType)
+      const level = command.id === 'doc.command.set-block-type' ? command.level : undefined
+      const isList = type === 'bullet' || type === 'numbered' || type === 'checklist'
+      const toggleOff = !explicit && isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === type)
+      let list: DocumentBlock['list']
+      if (!toggleOff && (type === 'bullet' || type === 'numbered')) {
+        const first = targets[0], last = targets.at(-1)
+        let adjacent: DocumentBlock | undefined
+        if (!explicit && targets.length === 1 && first && last) {
+          const before = blockContainer(model, first), after = blockContainer(model, last)
+          const left = before.indexOf(blockAtPoint(model, first)!), right = after.indexOf(blockAtPoint(model, last)!)
+          adjacent = [before[left - 1], after[right + 1]].find(b => b?.type === type && b.list)
+        }
+        list = adjacent?.list ?? { id: documentId('list'), preset: explicit ?? (type === 'bullet' ? 'BULLET_LIST' : 'ORDER_LIST') }
+      }
       const selectedChecklist = targets.map((target) => blockAtPoint(model, target)).find((block) => block?.type === 'checklist')
-      const checklistListId = command.type === 'checklist' && !toggleOff
+      const checklistListId = type === 'checklist' && !toggleOff
         ? selectedChecklist?.checklist?.listId ?? adjacentChecklistId(model, targets[0]) ?? documentId('checklist')
         : undefined
       targets.forEach((target) => {
         const block = blockAtPoint(model, target)
         if (!block) return
         const wasList = block.type === 'bullet' || block.type === 'numbered' || block.type === 'checklist'
-        block.type = toggleOff ? 'paragraph' : command.type
-        block.level = block.type === 'paragraph' ? 0 : command.level ?? (isList && wasList ? block.level : 0)
+        block.type = toggleOff ? 'paragraph' : type
+        delete block.metadata.namedStyleType
+        block.level = block.type === 'paragraph' ? 0 : level ?? (isList && wasList ? block.level : 0)
+        if (list) { block.list = { ...list }; block.level = listLevelSpec(list.preset, block.level).index }
+        else delete block.list
         if (block.type === 'checklist') block.checklist = { listId: checklistListId ?? block.checklist?.listId ?? documentId('checklist'), checked: block.checklist?.checked === true }
         else delete block.checklist
-        if (command.type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: command.level === 1 ? 24 : command.level === 2 ? 18 : 14 }))
-        if (command.type === 'paragraph') block.runs = block.runs.map((run) => ({ ...run, bold: false, fontSize: 11 }))
+        if (type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: level === 1 ? 24 : level === 2 ? 18 : 14 }))
+        if (type === 'paragraph') block.runs = block.runs.map((run) => ({ ...run, bold: false, fontSize: 11 }))
       })
       return selection
     }
@@ -235,10 +265,11 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const startBlock = blockAtPoint(model, start)
   if (!startBlock) return selection
   const normalizedText = text.replace(/\r\n?/g, '\n')
-  if (normalizedText === '\n' && selectionCollapsed(selection) && startBlock.type === 'checklist' && !runText(runsForTarget(model, start)).length) {
+  if (normalizedText === '\n' && selectionCollapsed(selection) && ['bullet', 'numbered', 'checklist'].includes(startBlock.type) && !runText(runsForTarget(model, start)).length) {
     startBlock.type = 'paragraph'
     startBlock.level = 0
     delete startBlock.checklist
+    delete startBlock.list
     return collapsedSelection(start)
   }
   const paragraphs = normalizedText.split('\n')
@@ -248,6 +279,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
     if (['bullet', 'numbered', 'checklist', 'quote'].includes(startBlock.type)) {
       paragraph.type = startBlock.type
       paragraph.level = startBlock.level
+      if (startBlock.list) paragraph.list = { ...startBlock.list }
       if (startBlock.type === 'checklist') paragraph.checklist = { listId: startBlock.checklist?.listId ?? documentId('checklist'), checked: false }
     }
     if (index === paragraphs.length - 2) paragraph.runs = compactRuns([...paragraph.runs as DocumentRun[], ...after])

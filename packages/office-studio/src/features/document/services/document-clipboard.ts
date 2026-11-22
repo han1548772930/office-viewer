@@ -1,9 +1,12 @@
 import type { DocumentBlock, DocumentParagraphStyle } from '../../../domain/model'
 import type { DocumentCommand } from '../commands/document-commands'
-import { blocksFromHtml, createParagraph, createRun, runText, tableForBlock, type RunPatch } from '../model/document-model'
+import { blocksFromHtml, createParagraph, createRun, runText, tableForBlock, type DocumentRun, type RunPatch } from '../model/document-model'
 
 export interface DocumentClipboardData { text: string; html?: string }
-export type DocumentPasteMode = 'source' | 'destination' | 'text'
+export const DOCUMENT_PASTE_OPTIONS = [
+  { value: 'source', label: '保留源格式' }, { value: 'destination', label: '匹配目标格式' }, { value: 'text', label: '仅保留文本' },
+] as const
+export type DocumentPasteMode = typeof DOCUMENT_PASTE_OPTIONS[number]['value']
 export interface DocumentPasteDestinationStyle {
   paragraphStyle: DocumentParagraphStyle
   textStyle: RunPatch
@@ -85,6 +88,7 @@ function paragraphsFromPlainText(text: string): DocumentBlock[] {
 }
 
 function applyDestinationStyle(blocks: DocumentBlock[], destination: DocumentPasteDestinationStyle, preserveSourceEmphasis = true): void {
+  const { href: _destinationLink, metadata: _destinationMetadata, ...appearance } = destination.textStyle
   for (const block of blocks) {
     const table = tableForBlock(block)
     if (table) {
@@ -100,7 +104,7 @@ function applyDestinationStyle(blocks: DocumentBlock[], destination: DocumentPas
     if (sourceType === 'heading') block.level = 0
     block.style = { ...destination.paragraphStyle }
     delete block.metadata.namedStyleType
-    block.runs = block.runs.map((sourceRun) => {
+    block.runs = block.runs.map((sourceRun: DocumentRun) => {
       const overrides: RunPatch = preserveSourceEmphasis ? {
         bold: sourceRun.bold,
         italic: sourceRun.italic,
@@ -108,7 +112,10 @@ function applyDestinationStyle(blocks: DocumentBlock[], destination: DocumentPas
         strike: sourceRun.strike,
         ...(sourceRun.verticalAlign === undefined ? {} : { verticalAlign: sourceRun.verticalAlign }),
       } : {}
-      return createRun(sourceRun.text, { ...destination.textStyle, ...overrides })
+      return createRun(sourceRun.text, { ...appearance, ...overrides,
+        ...(preserveSourceEmphasis && sourceRun.href ? { href: sourceRun.href } : {}),
+        ...(preserveSourceEmphasis && sourceRun.metadata ? { metadata: sourceRun.metadata } : {}),
+      })
     })
   }
 }

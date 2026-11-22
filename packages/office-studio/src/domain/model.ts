@@ -432,6 +432,7 @@ export interface InlineRun {
   strike: boolean
   color: string
   fontFamily: string
+  eastAsiaFontFamily?: string
   fontSize: number
   verticalAlign?: 'baseline' | 'subscript' | 'superscript'
   metadata?: Record<string, unknown>
@@ -477,6 +478,7 @@ export interface DocumentBlock {
   style: DocumentParagraphStyle
   metadata: Record<string, unknown>
   checklist?: { listId: string; checked: boolean }
+  list?: { id: string; preset: keyof typeof import('./document-list-presets.json') }
   sectionBreak?: { type: DocumentSectionBreakType; setup?: DocumentSectionSetup }
 }
 

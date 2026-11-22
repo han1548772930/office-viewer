@@ -8,6 +8,7 @@ import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope, RibbonPopupScopeKey } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
 import { createRibbonMenuModel } from './ribbon-command-menu'
+import RibbonEditableSelect from './RibbonEditableSelect.vue'
 
 const props = withDefaults(defineProps<{ item: RibbonItem; overflow?: boolean; measurement?: boolean; grid?: boolean; large?: boolean; alignStart?: boolean; showLabel?: boolean; iconSize?: number; fullWidth?: boolean }>(), { overflow: false, measurement: false, grid: false, large: false, alignStart: false, fullWidth: false })
 const emit = defineEmits<{ execute: [commandId: string, params?: unknown] }>()
@@ -47,7 +48,7 @@ const iconSize = computed(() => props.iconSize ?? (props.grid && props.large ? G
 const description = computed(() => props.item.disabledReason && props.item.disabled ? `${props.item.title}：${props.item.disabledReason}` : props.item.tooltip ?? props.item.title)
 const isDropdown = computed(() => (props.item.type === 'menu' || props.item.type === 'split') && (children.value.length > 0 || Boolean(props.item.popupComponent)))
 const style = computed(() => props.item.width && !props.overflow && !props.grid ? { width: `${props.item.width}px` } : undefined)
-const itemStyle = computed(() => [classicStyle, style.value, themeStyle.value, { '--ribbon-icon-size': `${iconSize.value}px`, '--ribbon-grid-button-size': `${GRID_RIBBON.buttonSize}px` }])
+const itemStyle = computed(() => [classicStyle, style.value, themeStyle.value, { '--ribbon-icon-size': `${iconSize.value}px`, '--ribbon-grid-button-size': `${GRID_RIBBON.buttonSize}px`, '--ribbon-grid-row-height': `${GRID_RIBBON.rowHeight}px` }])
 
 function execute(value?: unknown) {
   if (props.measurement) return
@@ -66,7 +67,7 @@ function forward(commandId: string, params?: unknown) {
 
 function executeMenuItem({ key }: MenuInfo) {
   const action = menuModel.value.actions.get(String(key))
-  if (!action || action.item.disabled || action.item.hidden) return
+  if (!action || props.item.disabled || props.item.hidden || props.measurement || action.item.disabled || action.item.hidden) return
   const invocation = ribbonInvocation(action.item, action.value)
   if (!invocation) return
   open.value = false
@@ -113,12 +114,16 @@ onBeforeUnmount(() => { open.value = false })
     <Tooltip v-else :title="measurement ? undefined : description" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
       <span v-if="item.type === 'select'" class="ribbon-select-wrap">
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
-        <Select
+        <RibbonEditableSelect v-if="item.edit" v-model:open="open" :input-id="`${popupId}-select`" :item="item" :measurement="measurement" class="ribbon-select"
+          :style="{ width: grid && fullWidth ? '100%' : `${item.width ?? 96}px`, minWidth: grid && fullWidth ? '0' : undefined }" @execute="execute" />
+        <Select v-else
           :id="`${popupId}-select`" :value="item.value == null ? undefined : item.value" :options="item.options ?? []" :disabled="item.disabled || measurement"
           :placeholder="item.placeholder ?? (item.value === null ? translate('common.mixed', '混合') : item.title)" :aria-label="item.title" size="small" variant="borderless"
           class="ribbon-select" :style="{ width: overflow ? '150px' : grid && fullWidth ? '100%' : `${item.width ?? 96}px`, height: `${grid && !overflow ? GRID_RIBBON.rowHeight : CLASSIC_RIBBON.selectorHeight}px`, alignItems: 'center', flex: overflow ? '1 1 0' : undefined, minWidth: overflow || (grid && fullWidth) ? '0' : undefined, maxWidth: overflow ? '150px' : undefined }" :popup-match-select-width="false"
           :open="open" @open-change="value => { open = value }" @change="execute"
-        />
+        >
+          <template #optionRender="{ option }"><span :style="option.data.preview">{{ option.data.label }}</span></template>
+        </Select>
       </span>
       <span v-else-if="isDropdown" class="ribbon-dropdown" :class="{ 'ribbon-split': item.type === 'split' }">
         <Button v-if="item.type === 'split'" type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
@@ -132,7 +137,7 @@ onBeforeUnmount(() => { open.value = false })
             <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
               <component :is="item.popupComponent" v-bind="item.popupProps" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
             </div>
-            <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selectable="false" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
+            <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selected-keys="menuModel.selectedKeys" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
           </template>
         </Popover>
       </span>
@@ -166,6 +171,8 @@ onBeforeUnmount(() => { open.value = false })
 .workbench-ribbon-item .ribbon-select { min-width: 52px; height: var(--ribbon-selector-height); border-radius: 4px; font-size: 14px; }
 .workbench-ribbon-item .ribbon-select:not(.ant-select-disabled):hover { background: var(--ribbon-hover-background); }
 .workbench-ribbon-item.is-grid .ribbon-select, .workbench-ribbon-item.is-grid .ribbon-select :deep(input) { font-size: 12px; }
+.workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-select { box-sizing: border-box; height: var(--ribbon-grid-row-height); border: 1px solid var(--ribbon-border); background: var(--ribbon-background); }
+.workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-select:focus-within { border-color: var(--ribbon-primary); }
 .workbench-ribbon-item.is-grid-align-start .ribbon-button { justify-content: flex-start; }
 .ribbon-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .ribbon-dropdown { display: flex; align-items: center; }

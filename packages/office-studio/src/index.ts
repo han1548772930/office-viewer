@@ -1,4 +1,5 @@
 import './style.css'
+export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon-fonts'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler } from './api/office-studio'
 export {

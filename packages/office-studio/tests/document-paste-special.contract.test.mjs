@@ -84,6 +84,17 @@ test('plain-text mode flattens table cells to tabs and rows to paragraphs', () =
   assert.ok(flattened.every(block => block.type === 'paragraph'))
 })
 
+test('destination hyperlink and field metadata are not character formatting', () => {
+  const style = { ...destinationStyle, textStyle: { ...destinationStyle.textStyle, href: 'https://example.org/target', metadata: { field: 'target' } } }
+  const source = [paragraph('source', 'label', { href: 'https://example.org/source' })]
+  const [matched] = clipboard.applyDocumentPasteMode(source, 'destination', style)
+  const [plain] = clipboard.applyDocumentPasteMode(source, 'text', style)
+  assert.equal(matched.runs[0].href, source[0].runs[0].href)
+  assert.equal(matched.runs[0].metadata, undefined)
+  assert.equal(plain.runs[0].href, undefined)
+  assert.equal(plain.runs[0].metadata, undefined)
+})
+
 test('text paste applies target marks and paragraph spacing while retaining Unicode and empty paragraphs', () => {
   const command = clipboard.documentPasteSpecialCommand({ text: '中文🙂\r\n\r\nLast\r\n' }, 'text', destinationStyle)
   assert.equal(command.id, 'doc.command.paste-blocks')

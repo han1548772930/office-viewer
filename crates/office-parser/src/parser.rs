@@ -131,6 +131,7 @@ fn parse_document_impl(
         model: "document".into(),
         payload: DocumentModel::Document(DocumentPayload {
             document,
+            numbering_definitions: source_model.metadata.numbering_definitions,
             section_layout,
             even_and_odd_headers,
             footnotes,
@@ -1308,6 +1309,23 @@ mod tests {
         assert!(stories.iter().any(|block| {
             block["type"] == "footer" && block["content"] == "Even footer"
         }));
+    }
+
+    #[test]
+    fn writer_title_subtitle_and_east_asian_font_reopen_as_independent_properties() {
+        let model = json!({ "kind": "document", "name": "font-slots.docx", "blocks": [
+            { "id": "p1", "type": "paragraph", "metadata": {"namedStyleType": "title"}, "runs": [{"text": "A中", "fontFamily": "Arial", "eastAsiaFontFamily": "SimSun"}] },
+            { "id": "p2", "type": "paragraph", "metadata": {"namedStyleType": "subtitle"}, "runs": [{"text": "Subtitle"}] }
+        ] });
+        let (bytes, _) = office_writer::export_docx_bytes(&model.to_string()).expect("write DOCX");
+        let parsed = parse_office_bytes(&bytes, "font-slots.docx").expect("parse DOCX");
+        let payload = serde_json::to_value(parsed).unwrap();
+        let blocks = &payload["payload"]["data"]["blocks"];
+        assert_eq!(blocks[0]["details"]["styleId"], "Title");
+        assert_eq!(blocks[1]["details"]["styleId"], "Subtitle");
+        let style = &blocks[0]["details"]["inlines"][0]["style"];
+        assert_eq!(style["fontFamilyAscii"], "Arial");
+        assert_eq!(style["fontFamilyEastAsia"], "SimSun");
     }
 
     #[test]

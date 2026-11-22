@@ -2,7 +2,9 @@
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Tooltip, Upload } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
-import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
+import { selectionFontPatch } from '../features/document/model/document-font'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'
@@ -33,7 +35,7 @@ import { emptyLayout, type DocumentLayout } from '../features/document/layout/do
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
-import { documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
+import { DOCUMENT_PASTE_OPTIONS, documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField, type StoryLocation } from '../features/document/services/story-editor'
 import type { HeaderFooterAction } from './document/DocumentHeaderFooterRibbonControl.vue'
@@ -48,6 +50,7 @@ import { documentPermissionTargetOptions } from '../features/document/permission
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
 import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
 import { createRibbonTranslator, provideWorkbenchLocales } from '../i18n/office-i18n'
+import { captureDocumentFormat, clearDocumentFormat, documentPainterTarget, type DocumentPainterFormat } from '../features/document/services/document-format-painter'
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
 const officeLocale = provideWorkbenchLocales(() => props.documentApi?.regionalSettings)
@@ -229,11 +232,11 @@ const tocDialog = ref<{ open: boolean; mode: 'insert' | 'update'; insertMode: 'a
 const tocDialogOptions = ref<DocumentTocOptions>({ ...DEFAULT_DOCUMENT_TOC_OPTIONS })
 const contextMenuActions = computed(() => {
   const translate = createRibbonTranslator(officeLocale.value, 'doc')
-  const pasteSpecialActions = (['source', 'destination', 'text'] as const).map((mode) => ({
+  const pasteSpecialActions = DOCUMENT_PASTE_OPTIONS.map(({ value: mode, label }) => ({
     id: `doc-context-paste-special-${mode}`,
-    title: translate(`doc.context.paste-special.${mode}`, { source: '保留源格式', destination: '匹配目标格式', text: '仅保留文本' }[mode]),
+    title: translate(`doc.context.paste-special.${mode}`, label),
     commandId: 'doc.command.paste-special',
-    params: { mode },
+    params: { value: mode },
     disabled: !canEditContextSelection.value || typeof navigator === 'undefined' || !navigator.clipboard
       || (mode === 'destination' && !blockAtPoint(model.value, selection.value.focus)),
     group: 'paste-special' as const,
@@ -285,11 +288,17 @@ const documentContextMenuItems = computed<MenuItemType[]>(() => {
   ]
 })
 const currentMarks = computed(() => toolbarState.value.marks)
+const officeFonts = inject(OfficeFontListKey, undefined)
+const painter = shallowRef<{ format: DocumentPainterFormat; continuous: boolean }>()
 const modalTitle = computed(() => ({ image: '插入图片', link: '插入链接' })[modalKind.value])
 const ribbonTabs = computed(() => {
   const control = selectedContentControl.value
   return createDocumentRibbon({
+    fontList: officeFonts?.value,
+    painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || !!storyLocation.value,
     mode: pageMode.value,
+    editingDisabled: !canEditContextSelection.value || !!storyLocation.value,
+    editingHeaderFooter: !!storyLocation.value,
     headerFooter: storyLocation.value && {
       visible: true, area: storyLocation.value.area, disabled: !canEditStory.value,
       contentDisabled: storySection.value.linkToPrevious, canLinkToPrevious: headerFooterSectionId.value !== 'first',
@@ -343,6 +352,7 @@ onMounted(() => {
 })
 onUnmounted(() => { document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); imageRequest++; clipboardRequest++ })
 onDeactivated(() => {
+  painter.value = undefined
   closeStory(false)
   imageRequest++
   clipboardRequest++
@@ -373,6 +383,7 @@ watch(() => props.modelValue, (value) => {
   // the undo state and make redo appear to do nothing.
   if (typeof value !== 'string' && JSON.stringify(value) === JSON.stringify(model.value)) return
   const next = typeof value === 'string' ? { ...createBlankDocument(), blocks: blocksFromHtml(value) } : value
+  if (typeof value === 'string' || next.id !== model.value.id) painter.value = undefined
   model.value = normalizeDocument(next)
   documentTitle.value = next.name
   selection.value = { anchor: clampPoint(model.value, selection.value.anchor), focus: clampPoint(model.value, selection.value.focus) }
@@ -400,7 +411,7 @@ function execute(command: DocumentCommand, restoreFocus = true) {
     if (codeSelection) { selection.value = codeSelection; if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next); return }
   }
   if (command.id === 'doc.command.format-text' && selectionCollapsed(selection.value)) {
-    pendingMarks.value = { ...pendingMarks.value, ...command.patch }
+    pendingMarks.value = { ...pendingMarks.value, ...selectionFontPatch(model.value, selection.value, command.patch) }
     canvasRef.value?.focus()
     return
   }
@@ -411,6 +422,7 @@ function execute(command: DocumentCommand, restoreFocus = true) {
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     publish(next)
     if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
+    return true
   } catch (error) {
     pendingMarks.value = {}
     notify(error instanceof Error ? error.message : String(error))
@@ -774,6 +786,7 @@ function dismissTableContextMenu(event?: Event) {
   documentContextMenu.value = undefined
 }
 function onWorkbenchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && painter.value && !event.isComposing) { event.preventDefault(); painter.value = undefined; canvasRef.value?.focus(); return }
   if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus() }
 }
 function insertImage() { pictureReplacementControlId.value = undefined; modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
@@ -895,6 +908,7 @@ function replaceAll() {
   }
 }
 async function copySelection(cut = false) {
+  if (storyLocation.value) return
   const targets = permissionTargetsForSelection(model.value, selection.value)
   if (!canDocumentPermission('copy') || (cut && !canDocumentPermission('edit', targets))) return
   const text = selectedPlainText(model.value, selection.value)
@@ -912,6 +926,7 @@ async function copySelection(cut = false) {
   canvasRef.value?.focus()
 }
 async function pasteSelection(plainText = false) {
+  if (storyLocation.value || !canEditContextSelection.value) return
   const base = model.value
   const range = JSON.stringify(selection.value)
   const request = ++clipboardRequest
@@ -925,6 +940,7 @@ async function pasteSelection(plainText = false) {
   canvasRef.value?.focus()
 }
 async function pasteSpecialSelection(mode: DocumentPasteMode) {
+  if (storyLocation.value || !canEditContextSelection.value) return
   const base = model.value
   const range = JSON.stringify(selection.value)
   const request = ++clipboardRequest
@@ -973,7 +989,9 @@ async function toggleFullscreen() {
 function notify(message: string) { notice.value = message; emit('notify', message) }
 const canEditStory = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'edit', [{ scope: 'section', id: headerFooterSectionId.value }]).allowed)
 function openStory(location: StoryLocation) {
+  painter.value = undefined
   if (pageMode.value !== 'traditional' || !layout.value.pageHeaderFooters[location.page]) return
+  clipboardRequest++
   if (!storyLocation.value) previousStoryTab.value = activeTab.value
   storyLocation.value = location
   activeTab.value = 'header-footer'
@@ -1027,7 +1045,22 @@ function handleStoryAction(raw: unknown) {
   }
   canvasRef.value?.focusStory()
 }
+function activatePainter(continuous: boolean) {
+  if (painter.value) {
+    painter.value = continuous ? { ...painter.value, continuous } : undefined
+  } else if (!storyLocation.value && canEditContextSelection.value) {
+    const format = captureDocumentFormat(model.value, selection.value)
+    if (format) painter.value = { format, continuous }
+  }
+  canvasRef.value?.focus()
+}
+function applyPainter(format?: DocumentPainterFormat) {
+  if (!format || storyLocation.value || !documentPainterTarget(model.value, selection.value)) return
+  if (execute({ id: 'doc.command.apply-format-painter', format }) && !painter.value?.continuous) painter.value = undefined
+}
 function onRibbonExecute(id: string, params?: unknown) {
+  if (id === 'ui.operation.activate-format-painter' || id === 'ui.operation.continuous-format-painter') { activatePainter(id === 'ui.operation.continuous-format-painter'); return }
+  if (id === 'ui.command.clear-formatting') { painter.value = undefined; applyPainter(clearDocumentFormat()); return }
   if (id === 'doc.operation.header-footer-control') { handleStoryAction(params); return }
   if (id === 'doc.operation.close-header-footer') { closeStory(); return }
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
@@ -1053,12 +1086,11 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.cut': void copySelection(true); break
     case 'doc.command.paste': void pasteSelection(); break
     case 'doc.command.paste-text': void pasteSelection(true); break
-    case 'doc.command.paste-special':
-      if (params && typeof params === 'object' && 'mode' in params
-        && (params.mode === 'source' || params.mode === 'destination' || params.mode === 'text')) {
-        void pasteSpecialSelection(params.mode)
-      }
+    case 'doc.command.paste-special': {
+      const value = params && typeof params === 'object' ? ('value' in params ? params.value : 'mode' in params ? params.mode : undefined) : undefined
+      if (value === 'source' || value === 'destination' || value === 'text') void pasteSpecialSelection(value)
       break
+    }
     case 'doc.command.print': printDocument(); break
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image': insertImage(); break
@@ -1224,6 +1256,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <main class="editor-workspace">
       <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
       <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
+        @selection-committed="applyPainter(painter?.format)"
         :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-readonly="!canEditStory || storySection.linkToPrevious"
         @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
       <aside v-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">

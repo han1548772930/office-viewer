@@ -22,6 +22,14 @@ const copy = (value) => JSON.parse(JSON.stringify(value))
 const update = (value) => { history.value.push(copy(model.value)); redo.value = []; model.value = value }
 window.documentToolbarFixture = {
   snapshot: () => copy(model.value),
+  painterFixture: () => { const next = copy(model.value); next.blocks = [createParagraph('source', { bold: true }), createParagraph('target word')]; model.value = next },
+  paragraphPoint: (index) => {
+    const scroll = document.querySelector('.document-scroll'), bounds = scroll.getBoundingClientRect()
+    const layout = layoutDocument(model.value, createTextMeasurer())
+    const offset = sceneOffset(layout, { width: scroll.clientWidth, height: scroll.clientHeight, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, zoom: 100 })
+    const line = layout.lines.find(line => line.target.blockId === model.value.blocks[index].id)
+    return { x: bounds.left + offset.x + line.x + 3, y: bounds.top + offset.y + line.y + line.height / 2 }
+  },
   heading: () => { const next = copy(model.value); next.blocks[0].type = 'heading'; next.blocks[0].level = 1; model.value = next },
   checklistPosition: (blockId) => {
     const scroll = document.querySelector('.document-scroll')
@@ -103,13 +111,25 @@ test('Docs composes a classic Ribbon and a single footer without duplicating the
   assert.deepEqual(errors, [])
 })
 
+test('Docs once painter applies on pointer release, retains target text and undoes as one edit', async () => {
+  await page.evaluate(() => window.documentToolbarFixture.painterFixture())
+  const clickParagraph = async index => { const p = await page.evaluate(i => window.documentToolbarFixture.paragraphPoint(i), index); await page.mouse.click(p.x, p.y) }
+  await clickParagraph(0)
+  const brush = page.getByRole('button', { name: '格式刷', exact: true })
+  await brush.click(); await expect(brush).toHaveAttribute('aria-pressed', 'true')
+  await clickParagraph(1); await expect(brush).toHaveAttribute('aria-pressed', 'false')
+  const target = () => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[1].runs.map(run => [run.text, run.bold]))
+  await expect.poll(target).toEqual([['target', true], [' word', false]])
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(target).toEqual([['target word', false]])
+})
+
 test('font selection preserves the logical Canvas range and uses the external document history', async () => {
   const bridge = page.getByLabel('文档文字输入', { exact: true })
   await bridge.focus()
   await bridge.press('Control+A')
   const font = page.getByRole('combobox', { name: '字体', exact: true })
-  await font.click()
-  await page.getByTitle('Georgia', { exact: true }).click()
+  await font.fill('georg'); await font.press('Enter')
   await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs[0].fontFamily)).toBe('Georgia')
   await expect(page.locator('.document-statusbar')).toContainText('未保存更改')
   await page.getByRole('button', { name: '撤销', exact: true }).click()
@@ -117,6 +137,19 @@ test('font selection preserves the logical Canvas range and uses the external do
   await page.getByRole('button', { name: '重做', exact: true }).click()
   await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs[0].fontFamily)).toBe('Georgia')
   assert.deepEqual(errors, [])
+})
+
+test('typing a size keeps the Canvas range, cancels on blur or Escape, and commits one undo step on Enter', async () => {
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await bridge.focus(); await bridge.press('Control+A')
+  const size = page.getByRole('combobox', { name: '字号', exact: true })
+  const current = () => page.evaluate(() => window.documentToolbarFixture.snapshot().blocks[0].runs[0].fontSize)
+  const undo = page.getByRole('button', { name: '撤销', exact: true })
+  await size.fill('24'); await expect(undo).toBeDisabled()
+  await size.press('Escape'); await expect(size).toHaveValue('11')
+  await size.fill('37'); await size.blur(); await expect(size).toHaveValue('11'); await expect(undo).toBeDisabled()
+  await size.fill('13.5'); await size.press('Enter'); await expect.poll(current).toBe(13.5)
+  await undo.click(); await expect.poll(current).toBe(11); await expect(undo).toBeDisabled()
 })
 
 test('subscript and superscript retain the selection, toggle to baseline, and replay through undo and redo', async () => {

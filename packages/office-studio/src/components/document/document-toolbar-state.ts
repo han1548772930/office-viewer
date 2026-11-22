@@ -1,4 +1,6 @@
 import type { DocumentModel, DocumentParagraphStyle } from '../../domain/model'
+import { caretUsesEastAsianFont, hasEastAsianLetters } from '../../features/document/model/document-font'
+import { blockListPreset, type ListPreset } from '../../features/document/model/document-lists'
 import { blockAtPoint } from '../../features/document/commands/document-commands'
 import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
 import {
@@ -14,6 +16,7 @@ export interface DocumentToolbarState {
   mixedMarks: readonly (keyof RunPatch)[]
   paragraph: Partial<DocumentParagraphStyle>
   blockStyle?: string
+  listPreset?: ListPreset
   hasSelection: boolean
   table?: DocumentTableSelection
 }
@@ -29,6 +32,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
   const marks: RunPatch[] = []
   const paragraphs: DocumentParagraphStyle[] = []
   const styles: string[] = []
+  const presets: (ListPreset | undefined)[] = []
   for (const [index, target] of selected.entries()) {
     const runs = runsForTarget(model, target)
     const from = index === 0 ? start.offset : 0
@@ -36,7 +40,10 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     const included: DocumentRun[] = []
     let offset = 0
     for (const run of runs) {
-      if (!collapsed && offset < to && offset + run.text.length > from) included.push(run)
+      if (!collapsed && offset < to && offset + run.text.length > from) {
+        const eastAsian = run.eastAsiaFontFamily && hasEastAsianLetters(run.text.slice(Math.max(0, from - offset), to - offset))
+        included.push(eastAsian ? { ...run, fontFamily: run.eastAsiaFontFamily! } : run)
+      }
       offset += run.text.length
     }
     // A range ending at the next paragraph's offset zero does not select that paragraph.
@@ -44,6 +51,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     marks.push(...included)
     const block = blockAtPoint(model, target)
     if (block) {
+      presets.push(blockListPreset(block))
       paragraphs.push(block.style)
       const namedStyle = block.metadata.namedStyleType
       if (typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)) styles.push(namedStyle.startsWith('heading') ? `H${namedStyle.slice(-1)}` : namedStyle)
@@ -52,7 +60,11 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
       else styles.push(block.type === 'paragraph' ? 'normal' : block.type)
     }
   }
-  if (collapsed || !marks.length) marks.push({ ...marksAtPoint(model, selection.focus), ...pending })
+  if (collapsed || !marks.length) {
+    const mark = { ...marksAtPoint(model, selection.focus), ...pending }
+    if (mark.eastAsiaFontFamily && caretUsesEastAsianFont(model, selection)) mark.fontFamily = mark.eastAsiaFontFamily
+    marks.push(mark)
+  }
   const uniform: RunPatch = {}
   const mixedMarks: (keyof RunPatch)[] = []
   for (const key of markKeys) {
@@ -65,7 +77,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     const firstValue = paragraphs[0]?.[key]
     if (paragraphs.every((style) => style[key] === firstValue)) Object.assign(paragraph, { [key]: firstValue })
   }
-  return { marks: uniform, mixedMarks, paragraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
+  return { marks: uniform, mixedMarks, paragraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
 }
 
 /** Count displayed characters as grapheme clusters, including composed emoji only once. */

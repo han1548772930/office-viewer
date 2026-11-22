@@ -131,17 +131,13 @@ test('document ribbon groups follow the fixed Home, Insert, and View ordering', 
   assert.deepEqual(view.groups.map((group) => group.id), ['doc-display'])
   assert.ok(home.groups.find((group) => group.id === 'doc-others').items.some((item) => item.id === 'doc-find'))
   assert.equal(home.groups[1].items.some((item) => item.id === 'doc-find'), false)
-  assert.equal(insert.groups.at(-1).items.find((item) => item.id === 'doc-code-block').commandId, 'doc.operation.insert-code-block')
-  const rootCount = (ids) => ids.map((id) => tabs.find((tab) => tab.id === id).groups
-    .filter((group) => !group.id.endsWith('-extensions'))
-    .reduce((count, group) => count + group.items.filter((item) => !item.hidden).length, 0))
-  assert.deepEqual(rootCount(['home', 'insert', 'view']), [22, 8, 3])
-  assert.equal(tabs.find((tab) => tab.id === 'home').groups.some((group) => group.items.some((item) => item.id === 'doc-format-painter')), false)
+  assert.equal(insert.groups[0].items.find((item) => item.id === 'doc-code-block').commandId, 'doc.operation.insert-code-block')
+  assert.equal(home.groups[0].items.find((item) => item.id === 'doc-format-painter').subId, 'ui.operation.continuous-format-painter')
   const paragraphExtensions = home.groups.find((group) => group.id === 'doc-layout-extensions')
-  assert.deepEqual(paragraphExtensions.items.map((item) => item.id), ['doc-indent-less', 'doc-indent-more', 'doc-line-height', 'doc-paragraph-spacing'])
+  assert.deepEqual(ribbonSchema.visibleRibbonItems(paragraphExtensions.items).map((item) => item.id), ['doc-indent-less', 'doc-indent-more', 'doc-line-height', 'doc-paragraph-spacing', 'doc-extra-styles'])
 })
 
-test('document Insert media controls use the fixed two-row grid and keep control extensions out of the cell group', () => {
+test('document Insert places code and math in Media, content controls below TOC, and comments together in Tools', () => {
   const state = { marks: {}, mixedMarks: [], paragraph: { align: 'left', indent: 0 }, hasSelection: false }
   const tabs = ribbon.createDocumentRibbon({ state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true })
   const insert = tabs.find((tab) => tab.id === 'insert')
@@ -158,17 +154,13 @@ test('document Insert media controls use the fixed two-row grid and keep control
   assert.deepEqual(placements.get('doc-image'), { row: 1, column: 4, rowSpan: 1 })
   assert.deepEqual(placements.get('doc-link'), { row: 1, column: 5, rowSpan: 1 })
   assert.deepEqual(placements.get('doc-divider'), { row: 2, column: 5, rowSpan: 1 })
-  assert.equal(cell.items.some((item) => item.id === 'doc-controls'), false)
-  assert.equal(extensions.items.some((item) => item.id === 'doc-controls'), true)
-  assert.deepEqual([...extensionPlacements], [
-    ['doc-comment-toggle', { row: 1, column: 1, rowSpan: 2 }],
-    ['doc-comment-add', { row: 1, column: 2, rowSpan: 2 }],
-    ['doc-code-block', { row: 1, column: 3, rowSpan: 2 }],
-    ['doc-controls', { row: 1, column: 4, rowSpan: 2 }],
-    ['doc-footnote', { row: 1, column: 5, rowSpan: 2 }],
-    ['doc-latex', { row: 1, column: 6, rowSpan: 2 }],
-  ])
-  assert.deepEqual(placements.get('doc-table'), { row: 1, column: 2, rowSpan: 1 })
+  assert.deepEqual(placements.get('doc-code-block'), { row: 1, column: 7, rowSpan: 1 })
+  assert.deepEqual(placements.get('doc-latex'), { row: 2, column: 7, rowSpan: 1 })
+  const control = cell.items.find(item => item.id === 'doc-controls')
+  assert.deepEqual(control.gridLayout, { row: 2, column: 1, showLabel: true })
+  assert.deepEqual(ribbonSchema.ribbonInvocation(control), { commandId: 'doc.operation.insert-content-control', params: 'richText' })
+  assert.deepEqual(extensionPlacements.get('doc-comment-toggle'), { row: 1, column: 1, rowSpan: 1 })
+  assert.deepEqual(extensionPlacements.get('doc-comment-add'), { row: 2, column: 1, rowSpan: 1 })
 })
 
 test('document fixed roots preserve source two-row grid coordinates and baseline root counts', () => {
@@ -182,6 +174,7 @@ test('document fixed roots preserve source two-row grid coordinates and baseline
   const view = placementMap('view', 'doc-display')
 
   assert.deepEqual(history.get('doc-undo'), { row: 1, column: 1, rowSpan: 1, columnSpan: 1 })
+  assert.deepEqual(history.get('doc-format-painter'), { row: 1, column: 2, rowSpan: 1, columnSpan: 1 })
   assert.deepEqual(history.get('doc-redo'), { row: 2, column: 1, rowSpan: 1, columnSpan: 1 })
   assert.deepEqual(history.get('doc-clear-format'), { row: 2, column: 2, rowSpan: 1, columnSpan: 1 })
   assert.deepEqual(history.get('doc-paste'), { row: 1, column: 3, rowSpan: 2, columnSpan: 1 })
@@ -393,8 +386,9 @@ test('the ribbon exposes clipboard modes, real character pickers, and only suppo
   const state = toolbar.documentToolbarState(model, models.collapsedSelection({ blockId: model.blocks[0].id, offset: 0 }))
   const items = ribbon.createDocumentRibbon({ state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true }).flatMap((tab) => tab.groups.flatMap((group) => group.items))
   assert.equal(items.find((item) => item.id === 'doc-cut').disabled, true)
-  assert.equal(items.find((item) => item.id === 'doc-paste').commandId, 'doc.command.paste')
-  assert.ok(items.find((item) => item.id === 'doc-paste').children.some((item) => item.commandId === 'doc.command.paste-text'))
+  const paste = items.find(item => item.id === 'doc-paste')
+  assert.equal(paste.type, 'menu')
+  assert.deepEqual(paste.children.map(item => [item.commandId, item.params]), ['source', 'destination', 'text'].map(value => ['doc.command.paste-special', { value }]))
   assert.equal(items.find((item) => item.id === 'doc-symbol').params, 'symbol')
   assert.equal(items.find((item) => item.id === 'doc-emoji').params, 'emoji')
   assert.deepEqual(items.find((item) => item.id === 'doc-controls').children.map((item) => item.params), ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox'])

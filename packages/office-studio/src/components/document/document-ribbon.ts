@@ -1,6 +1,6 @@
 import type { Component } from 'vue'
 import {
-  AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, BookMarked, CalendarDays, ChevronDown,
+  AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, BookMarked, Brush, CalendarDays, ChevronDown,
   ClipboardPaste, CodeXml, Columns3, Copy, Expand, FileCog, Grid2X2, Highlighter, ImagePlus,
   IndentDecrease, IndentIncrease, Italic, Layers2, Link, List, ListOrdered, ListTodo, ListTree, LockKeyhole, MessageSquarePlus,
   Minimize, NotebookPen, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
@@ -8,15 +8,22 @@ import {
   TextCursorInput, Trash2, Underline, Undo2, X,
 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
+import { DOCUMENT_PASTE_OPTIONS } from '../../features/document/services/document-clipboard'
 import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
+import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts'
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 import DocumentCharacterPicker from './DocumentCharacterPicker.vue'
+import DocumentListPicker from './DocumentListPicker.vue'
+import { isListPreset, type ListKind } from '../../features/document/model/document-lists'
 import type { HeaderFooterRibbonState, HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
 import DocumentHeaderFooterRibbonGroup from './DocumentHeaderFooterRibbonGroup.vue'
 
 export interface DocumentRibbonContext {
+  fontList?: OfficeFontList
+  painterActive?: boolean
+  painterUnavailable?: boolean
   state: DocumentToolbarState
   canUndo: boolean
   canRedo: boolean
@@ -73,6 +80,12 @@ const colors = [
 export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
   const { state } = context
   const tocLabel = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
+  const listControl = (kind: ListKind, icon: Component, title: string, row: number, column: number): RibbonItem => ({
+    ...action(`doc-${kind}`, title, icon, 'doc.command.set-block-type', { type: kind }), type: 'split',
+    disabled: context.editingDisabled, activated: state.blockStyle === kind, gridLayout: { row, column },
+    popupComponent: DocumentListPicker, popupCommandId: 'doc.command.change-list-type',
+    popupProps: { kind, title: tocLabel(`items.doc-${kind}`, title), active: state.listPreset },
+  })
   const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => {
     const column = ['bold', 'italic', 'underline', 'strike'].indexOf(key) + 1
     return action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { order: column - 1, disabled: context.editingDisabled, activated: state.marks[key] === true, tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title, gridLayout: { row: 2, column, width: 32, minWidth: 28 } })
@@ -92,11 +105,10 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       { id: 'doc-history', title: '历史与剪贴板', order: 0, items: [
         action('doc-undo', '撤销', Undo2, 'core.command.undo', undefined, { disabled: !context.canUndo, disabledReason: '没有可撤销的文档更改', shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1, iconSize: 18 } }),
         action('doc-redo', '重做', Redo2, 'core.command.redo', undefined, { disabled: !context.canRedo, disabledReason: '没有可重做的文档更改', shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
-        action('doc-clear-format', '清除字符格式', RemoveFormatting, 'doc.command.format-text', { patch: { bold: false, italic: false, underline: false, strike: false, verticalAlign: 'baseline', fontFamily: 'Arial', fontSize: 11, color: '#1f2937', highlight: '' } }, { gridLayout: { row: 2, column: 2 } }),
-        { ...action('doc-paste', '粘贴', ClipboardPaste, 'doc.command.paste', undefined, { shortcut: 'Ctrl+V', gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'split', children: [
-          action('doc-paste-source', '保留源格式粘贴', ClipboardPaste, 'doc.command.paste'),
-          action('doc-paste-text', '仅粘贴文本', TextCursorInput, 'doc.command.paste-text', undefined, { shortcut: 'Ctrl+Shift+V' }),
-        ] },
+        action('doc-format-painter', tocLabel('items.sheet.operation.format-painter', '格式刷'), Brush, 'ui.operation.activate-format-painter', undefined, { subId: 'ui.operation.continuous-format-painter', activated: !!context.painterActive, disabled: !context.painterActive && context.painterUnavailable, gridLayout: { row: 1, column: 2, showLabel: false } }),
+        action('doc-clear-format', '清除格式', RemoveFormatting, 'ui.command.clear-formatting', undefined, { disabled: context.painterUnavailable, gridLayout: { row: 2, column: 2, showLabel: false } }),
+        { ...action('doc-paste', '粘贴', ClipboardPaste, 'doc.command.paste-special', undefined, { disabled: context.editingDisabled, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'menu', children:
+          DOCUMENT_PASTE_OPTIONS.map(({ value, label }) => action(`doc-paste-mode-${value}`, tocLabel(`doc.context.paste-special.${value}`, label), undefined, 'doc.command.paste-special', { value })) },
       ] },
       { id: 'doc-format', title: '字体与样式', order: 1, items: [
         { id: 'doc-block-style', type: 'select', title: '段落样式', order: 5.5, disabled: context.editingDisabled, width: 120, value: state.blockStyle ?? null, placeholder: '混合样式', gridLayout: { row: 1, column: 1, columnSpan: 2, width: 80, minWidth: 72 }, options: [
@@ -104,21 +116,22 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
             ['normal', 'normal', 'Normal'], ['title', 'title', 'Title'], ['subtitle', 'subtitle', 'Subtitle'],
             ['H1', 'heading1', 'Heading 1'], ['H2', 'heading2', 'Heading 2'], ['H3', 'heading3', 'Heading 3'],
             ['H4', 'heading4', 'Heading 4'], ['H5', 'heading5', 'Heading 5'],
-          ] as const).map(([value, namedStyle, label]) => ({ label, value, commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle } })),
-          { label: 'Heading 6', value: 'H6', commandId: 'doc.command.set-block-type', params: { type: 'heading', level: 6 } },
-          { label: 'Quote', value: 'quote', commandId: 'doc.command.set-block-type', params: { type: 'quote' } },
+          ] as const).map(([value, namedStyle, label]) => {
+            const style = DOCUMENT_NAMED_PARAGRAPH_STYLES[namedStyle]
+            return { label, value, preview: { fontSize: `${style.fontSize}px`, fontWeight: style.bold ? 700 : 400, color: style.color ? 'var(--ant-color-text-secondary, currentColor)' : undefined }, commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle } }
+          }),
         ] },
-        { id: 'doc-font-family', type: 'select', title: '字体', order: 7, disabled: context.editingDisabled, width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 3, columnSpan: 4, width: 140, minWidth: 124 }, options: ['Arial', 'Aptos', 'Calibri', 'Georgia', 'Times New Roman', 'Microsoft YaHei', 'SimSun'].map((value) => ({ label: value === 'Microsoft YaHei' ? '微软雅黑' : value === 'SimSun' ? '宋体' : value, value })), valueParams: (value) => ({ patch: { fontFamily: value } }) },
-        { id: 'doc-font-size', type: 'select', title: '字号', order: 6, disabled: context.editingDisabled, width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((value) => ({ label: String(value), value })), valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
+        { id: 'doc-font-family', type: 'select', edit: { kind: 'font' }, title: '字体', order: 7, disabled: context.editingDisabled, width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 3, columnSpan: 4, width: 140, minWidth: 124 }, options: ribbonFontOptions(state.marks.fontFamily, context.fontList), valueParams: (value) => ({ patch: { fontFamily: value } }) },
+        { id: 'doc-font-size', type: 'select', edit: { kind: 'number', min: 1, max: 400 }, title: '字号', order: 6, disabled: context.editingDisabled, width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: fontSizeOptions, valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
         format('doc-bold', '加粗', Bold, 'bold'), format('doc-italic', '斜体', Italic, 'italic'), format('doc-underline', '下划线', Underline, 'underline'), format('doc-strike', '删除线', Strikethrough, 'strike'),
         verticalFormat('doc-superscript', '上标', Superscript, 'superscript'), verticalFormat('doc-subscript', '下标', Subscript, 'subscript'),
         palette('doc-highlight', '文本高亮', 'highlight', Highlighter), palette('doc-text-color', '字体颜色', 'color', Palette),
       ] },
       { id: 'doc-layout', title: '段落与列表', order: 2, items: [
-        { id: 'doc-align', type: 'menu', title: '段落对齐', icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, gridLayout: { row: 1, column: 1 }, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value })) },
-        action('doc-numbered', '有序列表', ListOrdered, 'doc.command.set-block-type', { type: 'numbered' }, { activated: state.blockStyle === 'numbered', gridLayout: { row: 2, column: 1 } }),
-        action('doc-bullet', '无序列表', List, 'doc.command.set-block-type', { type: 'bullet' }, { activated: state.blockStyle === 'bullet', gridLayout: { row: 1, column: 2 } }),
-        action('doc-checklist', '清单', ListTodo, 'doc.command.set-block-type', { type: 'checklist' }, { activated: state.blockStyle === 'checklist', gridLayout: { row: 2, column: 2 } }),
+        { id: 'doc-align', type: 'menu', title: '段落对齐', disabled: context.editingDisabled, icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, gridLayout: { row: 1, column: 1 }, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value })) },
+        listControl('numbered', ListOrdered, '有序列表', 2, 1),
+        listControl('bullet', List, '无序列表', 1, 2),
+        action('doc-checklist', '清单', ListTodo, 'doc.command.set-block-type', { type: 'checklist' }, { disabled: context.editingDisabled, activated: state.blockStyle === 'checklist', gridLayout: { row: 2, column: 2 } }),
         action('doc-header-footer', '页眉和页脚', PanelTop, 'doc.operation.open-header-footer', undefined, { hidden: context.mode === 'modern', showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
       ] },
       { id: 'doc-others', title: '其他', order: 3, items: [
@@ -126,6 +139,10 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         action('doc-find', '查找', Search, 'doc.operation.toggle-find', undefined, { order: 3, gridLayout: { row: 1, column: 2 } }),
       ] },
       { id: 'doc-layout-extensions', title: '段落工具', order: 4, items: [
+        { id: 'doc-extra-styles', type: 'menu', title: '更多段落样式', icon: FileText, order: 10, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 }, children: [
+          action('doc-heading-six', tocLabel('options.doc.doc-block-style.H6', '标题 6'), undefined, 'doc.command.set-block-type', { type: 'heading', level: 6 }, { activated: state.blockStyle === 'H6' }),
+          action('doc-quote', tocLabel('options.doc.doc-block-style.quote', '引用'), undefined, 'doc.command.set-block-type', { type: 'quote' }, { activated: state.blockStyle === 'quote' }),
+        ] },
         action('doc-indent-less', '减少缩进', IndentDecrease, 'doc.command.format-paragraph', { patch: { indent: Math.max(0, (state.paragraph.indent ?? 0) - 1) } }, { disabled: state.paragraph.indent === 0, disabledReason: '当前段落已经位于最左侧', gridLayout: { row: 1, column: 1 } }),
         action('doc-indent-more', '增加缩进', IndentIncrease, 'doc.command.format-paragraph', { patch: { indent: Math.min(20, (state.paragraph.indent ?? 0) + 1) } }, { gridLayout: { row: 2, column: 1 } }),
         { id: 'doc-line-height', type: 'select', title: '行距', width: 76, value: state.paragraph.lineHeight ?? null, placeholder: '混合', commandId: 'doc.command.format-paragraph', gridLayout: { row: 1, column: 2 }, options: [1, 1.15, 1.5, 2, 2.5, 3].map((value) => ({ label: `${value} 倍`, value })), valueParams: (value) => ({ patch: { lineHeight: Number(value) } }) },
@@ -160,8 +177,10 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { order: 5, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-character' },
       { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { order: 6, disabled: context.editingDisabled, gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol' }, popupCommandId: 'doc.command.insert-character' },
       action('doc-image', '图片', ImagePlus, 'doc.operation.open-image', undefined, { order: 0, gridLayout: { row: 1, column: 4 } }),
-      action('doc-link', '链接', Link, 'doc.operation.open-link', undefined, { order: 3, gridLayout: { row: 1, column: 5 } }),
+      action('doc-link', '链接', Link, 'doc.operation.open-link', undefined, { order: 1, gridLayout: { row: 1, column: 5 } }),
       action('doc-divider', '分隔线', SeparatorHorizontal, 'doc.command.insert-divider', undefined, { order: 4, gridLayout: { row: 2, column: 5 } }),
+      action('doc-code-block', '代码块', CodeXml, 'doc.operation.insert-code-block', undefined, { order: 7, disabled: context.editingDisabled, gridLayout: { row: 1, column: 7 } }),
+      action('doc-latex', 'LaTeX 公式', Sigma, 'doc.operation.open-latex', undefined, { order: 8, disabled: context.editingDisabled, gridLayout: { row: 2, column: 7 } }),
       ] },
       { id: 'doc-insert-cell', title: '目录', order: 1, items: [{
         ...action('doc-insert-table-of-contents', tocLabel('document.toc.insert', 'Table of Contents'), ListTree, 'doc.operation.insert-table-of-contents', undefined, {
@@ -177,12 +196,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           action('doc-insert-table-of-contents-automatic', tocLabel('document.toc.automatic', 'Automatic table'), ListTree, 'doc.operation.insert-table-of-contents', { mode: 'automatic' }),
           action('doc-insert-table-of-contents-custom', tocLabel('document.toc.custom', 'Custom table of contents'), FileCog, 'doc.operation.insert-table-of-contents', { mode: 'custom' }),
         ],
-      }] },
-      { id: 'doc-insert-extensions', title: '更多', order: 3, items: [
-      action('doc-comment-toggle', '评论', MessageSquarePlus, 'docs.operation.toggle-comment-panel', undefined, { activated: context.commentsPanelOpen, gridLayout: { row: 1, column: 1, showLabel: true } }),
-      action('doc-comment-add', '添加评论', MessageSquarePlus, 'docs.operation.start-add-comment', undefined, { disabled: !context.canCreateComment, disabledReason: '选择文本后可添加评论', gridLayout: { row: 2, column: 1, showLabel: true } }),
-      action('doc-code-block', '代码块', CodeXml, 'doc.operation.insert-code-block', undefined, { showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-      { ...action('doc-controls', '内容控件', SquareCheckBig, 'doc.operation.insert-content-control', 'richText', { showLabel: true, disabled: !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务', gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }), type: 'split', children: [
+      },
+      { ...action('doc-controls', '内容控件', SquareCheckBig, 'doc.operation.insert-content-control', 'richText', { order: 7.1, showLabel: true, disabled: context.editingDisabled || !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务', gridLayout: { row: 2, column: 1, showLabel: true } }), type: 'split', children: [
         ...[
           { type: 'richText', title: '富文本控件', icon: TextCursorInput },
           { type: 'text', title: '纯文本控件', icon: TextCursorInput },
@@ -196,12 +211,15 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           { type: 'docPartObj', title: '文档部件控件', icon: FileCog },
         ].map((item) => action(`doc-controls-${item.type}`, item.title, item.icon, 'doc.operation.insert-content-control', item.type)),
       ] },
+      ] },
+      { id: 'doc-insert-extensions', title: '更多', order: 3, items: [
+      action('doc-comment-toggle', '评论', MessageSquarePlus, 'docs.operation.toggle-comment-panel', undefined, { activated: context.commentsPanelOpen, gridLayout: { row: 1, column: 1, showLabel: true } }),
+      action('doc-comment-add', '添加评论', MessageSquarePlus, 'docs.operation.start-add-comment', undefined, { disabled: !context.canCreateComment, disabledReason: '选择文本后可添加评论', gridLayout: { row: 2, column: 1, showLabel: true } }),
       { ...action('doc-footnote', '脚注', Superscript, 'doc.operation.insert-footnote', undefined, { showLabel: true, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }), type: 'split', children: [
         action('doc-footnote-insert', '插入脚注', Superscript, 'doc.operation.insert-footnote'),
         action('doc-endnote-insert', '插入尾注', BookMarked, 'doc.operation.insert-endnote'),
         action('doc-notes-manage', '管理脚注和尾注', NotebookPen, 'doc.operation.open-notes'),
       ] },
-      action('doc-latex', 'LaTeX 公式', Sigma, 'doc.operation.open-latex', undefined, { showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
       ] },
     ] },
     { id: 'view', title: '视图', order: 2, groups: [
@@ -375,6 +393,10 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
+  if (id === 'doc.command.change-list-type') {
+    const listType = record(params) ? params.listType : params
+    return isListPreset(listType) ? { id, listType } : undefined
+  }
   if (id === 'doc.command.insert-page-break' || id === 'doc.command.insert-column-break' || id === 'doc.command.insert-divider') return { id }
   if (id === 'doc.command.delete' && record(params) && (params.direction === -1 || params.direction === 1)) return { id, direction: params.direction }
   if (id === 'doc.command.insert-table' && record(params)) {

@@ -164,7 +164,15 @@ test('data tools follow the source group order and row or column structure stays
 })
 
 test('pivot chart is reachable from data analysis only when pivot tables are available', () => {
-  const items = flatten(createSheetRibbon({ ...state, pivotChartAvailable: true }))
+  const tabs = visibleRibbonTabs(createSheetRibbon({ ...state, pivotChartAvailable: true }))
+  const items = flatten(tabs)
+  const analysis = tabs.find(tab => tab.id === 'data').groups.find(group => group.id === 'pivot')
+  assert.deepEqual(placeRibbonGridItems(analysis.items).map(p => [p.item.commandId, p.row, p.column, p.rowSpan]), [
+    ['sheet.operation.open-pivot', 1, 1, 1], ['sheet.operation.open-slicer', 1, 2, 1],
+    ['sheet.operation.open-pivot-chart', 2, 1, 1], ['sheet.operation.open-timeline', 2, 2, 1],
+  ])
+  const media = tabs.find(tab => tab.id === 'insert').groups.find(group => group.id === 'media')
+  assert.ok(media.items.some(item => item.commandId === 'sheet.operation.open-sparkline'))
   const pivotChart = items.find(item => item.id === 'sheet.operation.open-pivot-chart')
   assert.equal(pivotChart.disabled, false)
   assert.deepEqual(ribbonInvocation(pivotChart), { commandId: 'sheet.operation.open-pivot-chart', params: undefined })

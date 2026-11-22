@@ -158,6 +158,21 @@ pnpm --filter @office-studio/office-studio check:types
 - 共享“更多”：固定版 `packages/ui/src/views/components/ribbon/RibbonOverflow.tsx` 渲染同一 `ToolbarItem`，不是把入口展开成菜单命令。对应本地 `platform/ribbon/RibbonOverflowPanel.vue`，classic/grid 复用实际按钮、选择器、拆分按钮与弹层，分组折行；simple 的测宽键区分同一命令在不同标签的位置。弹层嵌套、键盘焦点、窄屏尺寸仍待浏览器核验。
 - Sheets Home 第一组：`packages/ui/src/menu/schema.ts` 给出撤销/重做的 18px 图标与无文字的格式刷/清除格式；粘贴跨行来自 `packages/sheets-ui/src/menu/schema.ts`。对照 `ToolbarItem.tsx`、`format-painter.menu.ts` 和 `format-painter-session.service.ts`，本地支持单击启用或取消、双击升级连续模式、成功后单次退出及 Escape；修改目标前检查大小、工作表与选区权限。`tests/browser/sheet-toolbar.spec.ts` 补连续应用及撤销用例，尚未执行。Docs 及图形的格式刷适配器不在这一条完成记录内。
 
+- Docs Home 第一组按网格读：首行撤销 → 格式刷 → 跨行粘贴，下行重做 → 清除格式。固定版 `packages/docs-ui/src/controllers/format-painter.controller.ts`、`commands/commands/format-painter.command.ts`、`services/selection/word-boundary.ts` 对应本地 `features/document/services/document-format-painter.ts` 与 `executeDocumentCommand`。正文/表格文字按首字符或光标前字符取样；包含段落标记才携带段落/列表格式；点词与拖选均在指针释放时应用，保留目标文字与链接。清除格式走同一目标范围及权限检查。`packages/docs-ui/src/menu/context-menu.ts:PasteRibbonMenuFactory`、`services/clipboard/paste-options.ts` 对应本地 Ribbon 与右键菜单共用的三种 `{ value }` 命令参数。形状编辑、富文本页眉页脚、导入文档默认样式和复杂编号定义没有完成验证；新增契约和浏览器用例未运行。
+
+### Home 字体组第一行：实现和待验收项
+
+| 网格位置（从左到右） | v1.6.0 证据（相对 `packages/`） | 产品实现及边界 |
+| --- | --- | --- |
+| Docs r1c1–2 段落样式 | `docs-ui/src/menu/schema.ts`、`ui/src/views/font-size/interface.ts`、`ui/src/views/HeadingItem.tsx` | 正文、标题、副标题、H1–H5 的 8 项菜单按命名样式预览；本地 H6、引用移到段落工具的扩展菜单，命令保留。 |
+| Docs r1c3–6 / Sheets r1c1–4 字体 | `ui/src/services/font.service.ts`、`ui/src/views/font-family/FontFamily.tsx`、`docs-ui/src/menu/menu.ts` | 共享有序字体目录，支持按实例追加或覆盖，保留当前导入字体。输入按显示名不区分大小写匹配，Enter 确认。字体探测提示、不同文字脚本的独立字体字段和 DOCX 往返仍未验收。 |
+| Docs r1c7–8 / Sheets r1c5 字号 | `ui/src/views/font-size/{interface.ts,FontSize.tsx}`、`sheets-ui/src/menu/font.menu.ts` | 共用 15 个预设，输入草稿与选区分离。Docs 确认范围 1–400，Sheets 为 6–400；Escape、失焦放弃。 |
+| Sheets r1c6、c7 增大、减小字号 | `sheets-ui/src/commands/commands/inline-format.command.ts` | 以活动单元格字号 ±1 后应用于范围，不再逐格跳预设档位；工作表与选区保护在修改前检查。单元格内部富文本选择与继承样式仍待闭环。 |
+
+上述入口在产品包，示例无覆盖。`docs-ui/src/utils/east-asian-text.ts` 与 `commands/commands/inline-format.command.ts` 是中西文分槽的行为依据：文档归一化读取 `fontFamilyAscii/fontFamilyEastAsia`，Canvas 按字形选字体，光标前为 CJK 字母时显示东亚字体；包含 CJK 的选区指定字体会同时更新两个槽。写出层独立写 `w:rFonts/@w:eastAsia`，标题和副标题写入 Word 命名样式。复杂脚本、主题字体、标点分类与 Office 独立样本仍待核查。`ribbon-fonts.contract.test.mjs`、`document-toolbar.browser.test.mjs`、Rust 写出再解析用例等已补，按统一测试安排未运行。各布局的视觉、IME、主题与保存重开均不据此标为通过。
+
+Docs 同行向右，段落组 r1c1 对照 `docs-ui/src/menu/menu.ts:AlignMenuItemFactory`：左、中、右、两端对齐的顺序、按钮图标、受保护选区禁用与选中态走真实段落状态，不由菜单记忆上次点击。r1c2 无序列表及 r2c1 有序列表的主按钮可切换，但源码的拆分箭头、各六种四行预览、九级标记与编号往返未完成，不能按两个按钮计作对齐。
+
 ## 6. 更新方法
 
 后续每项接入须同时更新本表中的本地入口、真实命令/模型行为和测试证据。仅添加菜单、API 名称、弹层或禁用入口时，继续记“接入中/未验收”。接口存在与真实可操作、撤销/重做、保存重开、Office 往返分别核验。商业菜单 ID/模式限制待核实时保留“未核实”，功能目标不删除。

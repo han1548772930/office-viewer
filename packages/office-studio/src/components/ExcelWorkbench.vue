@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
@@ -367,7 +368,11 @@ const canEditValidationSelection = computed(() => Boolean(props.studio && workbo
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)))
 const borderOptions = ref<SheetBorderOptions>({ style: 'thin', color: '#1f2937' })
 const borderPreset = ref<SheetBorderPreset>('all')
+const officeFonts = inject(OfficeFontListKey, undefined)
+const canFormatSelection = computed(() => !!activeSheet.value && !!selectedRanges.value.length
+  && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value))
 const ribbonTabs = computed(() => createSheetRibbon({
+  fontList: officeFonts?.value, fontEditable: canFormatSelection.value,
   painterActive: Boolean(formatPainterSource.value),
   borderOptions: borderOptions.value, borderPreset: borderPreset.value, onBorderOptions: changeBorderOptions,
   ...selectionFormat.value, canUndo: canUndo.value, canRedo: canRedo.value, hasSheet: Boolean(activeSheet.value),
@@ -1022,6 +1027,7 @@ function applyToSelection(action: (key: string) => void): boolean {
     return false
   }
   if (!checkDirectSelection()) return false
+  if (!sheet || !selectedRanges.value.length || !canEditProtectedRanges(sheet, selectedModelRanges(), userId.value)) return false
   for (const range of selectedRanges.value) for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) action(`${columnName(column)}${row + 1}`)
   return true
 }
@@ -1237,7 +1243,7 @@ function setTextRotation(value: number | 'v'): void {
     : { ...cell, rotation: 0, rotationVertical: true })
 }
 function setNumberFormat(format: SheetNumberFormat): void { changeSelectedCells(cell => applySheetNumberFormat(cell, format)) }
-function changeFontSize(direction: -1 | 1): void { changeSelectedCells(cell => ({ ...cell, fontSize: nextSheetFontSize(cell.fontSize ?? 11, direction) })) }
+function changeFontSize(direction: -1 | 1): void { setCellFormat('fontSize', nextSheetFontSize(getCell(selectedKey.value).fontSize ?? 11, direction)) }
 function setBorders(preset: SheetBorderPreset): void {
   if (!activeSheet.value || !checkDirectSelection()) return
   if (!canEditWorksheetProtection(activeSheet.value, userId.value) || !canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)) {

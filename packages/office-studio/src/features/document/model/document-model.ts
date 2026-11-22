@@ -107,6 +107,13 @@ export function textTargets(model: DocumentModel): TextTarget[] {
   return targets
 }
 
+export function blockAtPoint(model: DocumentModel, point: TextTarget): DocumentBlock | undefined {
+  const block = model.blocks.find(candidate => candidate.id === point.blockId)
+  if (point.row == null || !block) return block
+  const cell = tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]
+  return cell?.blocks.find(candidate => candidate.id === point.cellBlockId) ?? cell?.blocks[0]
+}
+
 export function runsForTarget(model: DocumentModel, target: TextTarget): DocumentRun[] {
   const block = model.blocks.find((candidate) => candidate.id === target.blockId)
   if (!block) return []

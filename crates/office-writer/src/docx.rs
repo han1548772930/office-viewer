@@ -53,10 +53,9 @@ const MAX_TABLE_SPAN: usize = 512;
 const EMU_PER_PIXEL: f64 = 9_525.0;
 const TWIPS_PER_PIXEL: f64 = 15.0;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ListKind {
-    Bullet,
-    Numbered,
+    Preset(&'static str),
     ChecklistUnchecked,
     ChecklistChecked,
 }
@@ -64,6 +63,20 @@ enum ListKind {
 struct NumberingInstance {
     id: u32,
     kind: ListKind,
+}
+
+#[derive(serde::Deserialize)]
+struct ListDefinition {
+    symbols: Option<Vec<String>>,
+    formats: Option<Vec<String>>,
+    suffix: Option<String>,
+    compound: Option<bool>,
+    levels: Option<usize>,
+}
+
+fn list_definitions() -> &'static std::collections::BTreeMap<String, ListDefinition> {
+    static DEFINITIONS: std::sync::OnceLock<std::collections::BTreeMap<String, ListDefinition>> = std::sync::OnceLock::new();
+    DEFINITIONS.get_or_init(|| serde_json::from_str(include_str!("../../../packages/office-studio/src/domain/document-list-presets.json")).expect("bundled list presets"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -596,6 +609,12 @@ impl<'a> WriteContext<'a> {
             ));
         } else if block_type == "quote" {
             properties.push_str("<w:pStyle w:val=\"Quote\"/>");
+        } else if block_type == "paragraph" {
+            match get(get(block, "metadata"), "namedStyleType").as_str() {
+                Some("title") => properties.push_str("<w:pStyle w:val=\"Title\"/>"),
+                Some("subtitle") => properties.push_str("<w:pStyle w:val=\"Subtitle\"/>"),
+                _ => {}
+            }
         }
         if let Some(num_id) = self.list_ids.get(&id) {
             let level = integer(get(block, "level")).unwrap_or(0).clamp(0, 8);
@@ -1785,10 +1804,13 @@ fn assign_lists(
 ) {
     let mut active_kind = None;
     let mut active_id = None;
+    let mut named = HashMap::new();
     for block in blocks {
+        let list = get(block, "list");
+        let preset = get(list, "preset").as_str().and_then(|key| list_definitions().get_key_value(key)).map(|(key, _)| key.as_str());
         let kind = match string(get(block, "type")).as_deref() {
-            Some("bullet") => Some(ListKind::Bullet),
-            Some("numbered") => Some(ListKind::Numbered),
+            Some("bullet") => Some(ListKind::Preset(preset.filter(|k| k.starts_with("BULLET_LIST")).unwrap_or("BULLET_LIST"))),
+            Some("numbered") => Some(ListKind::Preset(preset.filter(|k| k.starts_with("ORDER_LIST")).unwrap_or("ORDER_LIST"))),
             Some("checklist") => Some(
                 if get(get(block, "checklist"), "checked").as_bool() == Some(true) {
                     ListKind::ChecklistChecked
@@ -1799,6 +1821,18 @@ fn assign_lists(
             _ => None,
         };
         if let Some(kind) = kind {
+            if let Some(key) = get(list, "id").as_str().filter(|id| !id.is_empty()) {
+                let id = *named.entry((kind, key)).or_insert_with(|| {
+                    let id = *next_num_id;
+                    *next_num_id += 1;
+                    numbering.push(NumberingInstance { id, kind });
+                    id
+                });
+                lookup.insert(block as *const Value as usize, id);
+                active_kind = None;
+                active_id = None;
+                continue;
+            }
             if active_kind != Some(kind) {
                 let id = *next_num_id;
                 *next_num_id += 1;
@@ -1818,53 +1852,43 @@ fn assign_lists(
 
 fn build_numbering_xml(instances: &[NumberingInstance]) -> String {
     let mut abstract_numbering = String::new();
-    for (abstract_id, kind) in [
-        (0, ListKind::Bullet),
-        (1, ListKind::Numbered),
-        (2, ListKind::ChecklistUnchecked),
-        (3, ListKind::ChecklistChecked),
-    ] {
+    let mut abstract_ids = HashMap::new();
+    for instance in instances {
+        let kind = instance.kind;
+        if abstract_ids.contains_key(&kind) { continue; }
+        let abstract_id = match kind {
+            ListKind::ChecklistUnchecked => 2, ListKind::ChecklistChecked => 3,
+            ListKind::Preset("BULLET_LIST") => 0, ListKind::Preset("ORDER_LIST") => 1,
+            ListKind::Preset(_) => abstract_ids.len() + 4,
+        };
+        abstract_ids.insert(kind, abstract_id);
+        let definition = match kind { ListKind::Preset(key) => list_definitions().get(key), _ => None };
         let mut levels = String::new();
-        for level in 0..9 {
-            let (format, text, left, font) = match kind {
-                ListKind::Bullet => (
-                    "bullet",
-                    ["&#x2022;", "o", "&#x25AA;"][level % 3],
-                    720 + level * 360,
-                    "Arial",
-                ),
-                ListKind::Numbered => (
-                    "decimal",
-                    match level {
-                        0 => "%1.",
-                        1 => "%2.",
-                        2 => "%3.",
-                        _ => "%1.%2.%3.",
-                    },
-                    720 + level * 360,
-                    "Arial",
-                ),
-                ListKind::ChecklistUnchecked => {
-                    ("bullet", "&#x2610;", 720 + level * 360, "Segoe UI Symbol")
-                }
-                ListKind::ChecklistChecked => {
-                    ("bullet", "&#x2611;", 720 + level * 360, "Segoe UI Symbol")
-                }
+        for level in 0..definition.and_then(|d| d.levels).unwrap_or(9) {
+            let (format, text, left, hanging, font) = if let Some(def) = definition {
+                let (format, text) = if let Some(symbols) = &def.symbols {
+                    ("bullet", xml_attribute(&symbols[level % symbols.len()]))
+                } else {
+                    let formats = def.formats.as_ref().expect("ordered preset formats");
+                    let suffix = def.suffix.as_deref().unwrap_or(".");
+                    let slots = if def.compound == Some(true) { 1..=level + 1 } else { level + 1..=level + 1 };
+                    let pattern = slots.map(|slot| format!("%{slot}{suffix}")).collect::<Vec<_>>().concat();
+                    (formats[level % formats.len()].as_str(), pattern)
+                };
+                (format, text, 420 * (level + 1), 420, "Arial")
+            } else {
+                let mark = if kind == ListKind::ChecklistChecked { "&#x2611;" } else { "&#x2610;" };
+                ("bullet", mark.to_owned(), 720 + level * 360, 360, "Segoe UI Symbol")
             };
             levels.push_str(&format!(
-                "<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{left}\"/></w:tabs><w:ind w:left=\"{left}\" w:hanging=\"360\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\"/></w:rPr></w:lvl>"
+                "<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{left}\"/></w:tabs><w:ind w:left=\"{left}\" w:hanging=\"{hanging}\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\"/></w:rPr></w:lvl>"
             ));
         }
         abstract_numbering.push_str(&format!("<w:abstractNum w:abstractNumId=\"{abstract_id}\"><w:multiLevelType w:val=\"multilevel\"/>{levels}</w:abstractNum>"));
     }
     let mut numbers = String::new();
     for instance in instances {
-        let abstract_id = match instance.kind {
-            ListKind::Bullet => 0,
-            ListKind::Numbered => 1,
-            ListKind::ChecklistUnchecked => 2,
-            ListKind::ChecklistChecked => 3,
-        };
+        let abstract_id = abstract_ids[&instance.kind];
         numbers.push_str(&format!(
             "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>",
             instance.id
@@ -1878,6 +1902,9 @@ fn build_numbering_xml(instances: &[NumberingInstance]) -> String {
 
 fn styles_xml() -> String {
     let mut headings = String::new();
+    for (id, size, extra) in [("Title", 52, "<w:b/>"), ("Subtitle", 30, "<w:color w:val=\"999999\"/>")] {
+        headings.push_str(&format!("<w:style w:type=\"paragraph\" w:styleId=\"{id}\"><w:name w:val=\"{id}\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:qFormat/><w:rPr>{extra}<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/></w:rPr></w:style>"));
+    }
     for level in 1..=6 {
         let size = match level {
             1 => 32,
@@ -2150,8 +2177,12 @@ fn run_xml(run: &Value, text: &str) -> String {
         .trim()
         .trim_matches(['\'', '"']);
     let family = xml_attribute(font);
+    let east_asia = string(get(run, "eastAsiaFontFamily"))
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| xml_attribute(&name))
+        .unwrap_or_else(|| family.clone());
     properties.push_str(&format!(
-        "<w:rFonts w:ascii=\"{family}\" w:hAnsi=\"{family}\" w:eastAsia=\"{family}\"/>"
+        "<w:rFonts w:ascii=\"{family}\" w:hAnsi=\"{family}\" w:eastAsia=\"{east_asia}\"/>"
     ));
     if get(run, "bold").as_bool() == Some(true) {
         properties.push_str("<w:b/><w:bCs/>");

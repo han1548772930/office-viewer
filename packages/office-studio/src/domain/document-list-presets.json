@@ -1,0 +1,14 @@
+{
+  "BULLET_LIST":   { "symbols": ["●", "○", "■"] },
+  "BULLET_LIST_1": { "symbols": ["❖", "➢", "■"] },
+  "BULLET_LIST_2": { "symbols": ["✔", "●", "◆"] },
+  "BULLET_LIST_3": { "symbols": ["■", "◆", "○"] },
+  "BULLET_LIST_4": { "symbols": ["✦", "○", "■"] },
+  "BULLET_LIST_5": { "symbols": ["➢", "○", "◆"] },
+  "ORDER_LIST":   { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": "." },
+  "ORDER_LIST_1": { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": ")" },
+  "ORDER_LIST_2": { "formats": ["decimal"], "suffix": ".", "compound": true, "levels": 7 },
+  "ORDER_LIST_3": { "formats": ["upperLetter", "lowerLetter", "lowerRoman"], "suffix": "." },
+  "ORDER_LIST_4": { "formats": ["upperLetter", "decimal", "lowerRoman"], "suffix": "." },
+  "ORDER_LIST_5": { "formats": ["decimalZero", "lowerLetter", "lowerRoman"], "suffix": "." }
+}

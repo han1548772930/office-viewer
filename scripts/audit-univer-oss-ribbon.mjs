@@ -21,6 +21,7 @@ const products = {
     'packages/sheets-sort-ui/src/menu/schema.ts',
     'packages/sheets-table-ui/src/menu/schema.ts',
     'packages/sheets-thread-comment-ui/src/menu/schema.ts',
+    'packages/sheets-crosshair-highlight/src/menu/schema.ts',
   ],
   docs: [
     'packages/ui/src/menu/schema.ts',
@@ -29,6 +30,8 @@ const products = {
     'packages/docs-drawing-ui/src/menu/schema.ts',
     'packages/docs-hyper-link-ui/src/menu/schema.ts',
     'packages/docs-thread-comment-ui/src/menu/schema.ts',
+    'packages/docs-find-replace/src/menu/schema.ts',
+    'packages/docs-toc-ui/src/menu/schema.ts',
   ],
 }
 

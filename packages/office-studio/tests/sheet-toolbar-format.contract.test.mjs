@@ -70,7 +70,9 @@ test('clear format and font stepping preserve values, formulas and typed caches'
   assert.equal(displayCell(reset), '0.25')
   assert.equal(nextSheetFontSize(11, 1), 12)
   assert.equal(nextSheetFontSize(13, -1), 12)
-  assert.equal(nextSheetFontSize(1, -1), 1)
+  assert.equal(nextSheetFontSize(1, -1), 6)
+  assert.equal(nextSheetFontSize(24, 1), 25)
+  assert.equal(nextSheetFontSize(400, 1), 400)
 })
 
 test('view roundtrip persists exact number format/style and raw formula values without stale display', () => {

@@ -23,6 +23,7 @@ const emit = defineEmits<{
   'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
+  'selection-committed': []
   'navigate-to-heading': [headingId: string]
   'context-menu': [payload: { x: number; y: number; point: DocumentPoint }]
   layout: [layout: DocumentLayout]
@@ -325,6 +326,10 @@ function pointerMove(event: PointerEvent) {
 
 function pointerUp(event: PointerEvent) {
   if (pointerId !== event.pointerId) return
+  if (event.type === 'pointerup' && dragAnchor) {
+    const point = pointFromEvent(event)
+    if (point) { select({ anchor: dragAnchor, focus: point }); emit('selection-committed') }
+  }
   if (scrollRef.value?.hasPointerCapture(event.pointerId)) scrollRef.value.releasePointerCapture(event.pointerId)
   pointerId = undefined
   dragAnchor = undefined

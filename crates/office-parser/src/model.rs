@@ -29,6 +29,8 @@ pub enum DocumentModel {
 pub struct DocumentPayload {
     #[serde(flatten)]
     pub document: StructuredDocument,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numbering_definitions: Option<duke_pages::NumberingDefinitionSet>,
     pub section_layout: Vec<DocumentSectionLayoutPayload>,
     pub even_and_odd_headers: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

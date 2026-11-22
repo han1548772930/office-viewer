@@ -1,5 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentPageSetup } from '../../../domain/model'
 import type { DocumentPoint, DocumentRun, TextTarget } from '../model/document-model'
+import { hasEastAsianLetters } from '../model/document-font'
+import { paragraphListMarkers } from '../model/document-lists'
 import { createRun, imageForBlock, runText, sameTarget, tableForBlock, targetKey } from '../model/document-model'
 import { DEFAULT_DOCUMENT_SECTION_ID, renderSectionStory, resolveSectionHeaderFooter } from '../services/section-header-footer'
 import { documentSectionSetup } from '../services/document-settings'
@@ -42,9 +44,9 @@ function paragraphLineHeight(fontHeight: number, style: DocumentBlock['style']):
   return fontHeight * Math.max(1, style.lineHeight)
 }
 
-export function runFont(run: DocumentRun, scale = 1): string {
+export function runFont(run: DocumentRun, scale = 1, family = run.fontFamily): string {
   const verticalScale = run.verticalAlign === 'subscript' || run.verticalAlign === 'superscript' ? 0.65 : 1
-  return `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${Math.max(8, run.fontSize * 4 / 3) * verticalScale * scale}px ${run.fontFamily || 'Arial'}, "Microsoft YaHei", sans-serif`
+  return `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${Math.max(1, run.fontSize) * 4 / 3 * verticalScale * scale}px ${family || 'Arial'}, "Microsoft YaHei", sans-serif`
 }
 
 export function createTextMeasurer(): LayoutMeasurer {
@@ -83,9 +85,11 @@ function wrapRuns(runs: readonly DocumentRun[], width: number, measurer: LayoutM
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
   let offset = 0
   for (const run of runs) {
-    const font = runFont(run)
+    const latinFont = runFont(run)
+    const eastAsianFont = run.eastAsiaFontFamily && runFont(run, 1, run.eastAsiaFontFamily)
     for (const part of segmenter.segment(run.text)) {
       const text = part.segment
+      const font = eastAsianFont && hasEastAsianLetters(text) ? eastAsianFont : latinFont
       let latex: LatexLayout | undefined
       const formula = text === '\uFFFC' ? getLatexFormula(run) : undefined
       if (formula) {
@@ -155,10 +159,10 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
     cursor = currentPage.content.y
   }
   addPage()
-  let orderedIndex = 0
+  const bodyMarkers = paragraphListMarkers(model.blocks)
   const ensureRoom = (height: number) => { if (cursor + height > currentPage.content.y + currentPage.content.height && cursor > currentPage.content.y + 0.5) addPage() }
   for (const block of model.blocks) {
-    if (block.type === 'pageBreak' || block.type === 'columnBreak') { addPage(); orderedIndex = 0; continue }
+    if (block.type === 'pageBreak' || block.type === 'columnBreak') { addPage(); continue }
     if (block.type === 'sectionBreak') {
       const type = block.sectionBreak?.type === 'unspecified' ? 'nextPage' : block.sectionBreak?.type ?? 'nextPage'
       sectionId = block.id
@@ -167,7 +171,6 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
         if (type === 'evenPage' && currentPage!.index % 2 === 0) addPage()
         if (type === 'oddPage' && currentPage!.index % 2 !== 0) addPage()
       } else pageSections[currentPage!.index] = sectionId
-      orderedIndex = 0
       continue
     }
     cursor += block.style.spaceBefore
@@ -183,7 +186,11 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           const width = widths.slice(column, column + Math.max(1, cell.colSpan)).reduce((sum, value) => sum + value, 0)
           const xOffset = widths.slice(0, column).reduce((sum, value) => sum + value, 0)
           column += Math.max(1, cell.colSpan)
-          const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => ({ paragraph, inset: paragraph.type === 'checklist' ? 28 : 0, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16 - (paragraph.type === 'checklist' ? 28 : 0)), measurer) }))
+          const markers = paragraphListMarkers(cell.blocks)
+          const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => {
+            const list = markers.get(paragraph.id), inset = list?.inset ?? (paragraph.type === 'checklist' ? 28 : 0)
+            return { paragraph, inset, marker: list?.marker, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16 - inset), measurer) }
+          })
           const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.lines.reduce((lineSum, line) => lineSum + paragraphLineHeight(line.fontHeight, item.paragraph.style), 0) + item.paragraph.style.spaceAfter, 0))
           return { cell, colIndex, width, xOffset, paragraphs, height }
         })
@@ -198,7 +205,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           for (const item of paragraphs) {
             item.lines.forEach((line, index) => {
               const lineHeight = paragraphLineHeight(line.fontHeight, item.paragraph.style)
-              const layoutLine = positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8 + item.inset, cellY, width - 16 - item.inset, lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1)
+              const layoutLine = positionLine(line, { ...target, cellBlockId: item.paragraph.id }, x + 8 + item.inset, cellY, width - 16 - item.inset, lineHeight, currentPage!.index, item.paragraph.style.align, index < item.lines.length - 1, index === 0 ? item.marker : undefined)
               if (index === 0 && item.paragraph.type === 'checklist') layoutLine.checklist = { blockId: item.paragraph.id, checked: item.paragraph.checklist?.checked === true }
               result.lines.push(layoutLine)
               cellY += lineHeight
@@ -223,9 +230,8 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
       cursor += 18
     } else {
       const indent = Math.max(0, block.style.indent) * 24
-      const listInset = ['bullet', 'numbered', 'checklist'].includes(block.type) ? 28 : block.type === 'quote' ? 16 : 0
-      if (block.type === 'numbered') orderedIndex += 1
-      else if (block.type !== 'bullet') orderedIndex = 0
+      const list = bodyMarkers.get(block.id)
+      const listInset = list?.inset ?? (block.type === 'checklist' ? 28 : block.type === 'quote' ? 16 : 0)
       const width = Math.max(16, currentPage!.content.width - indent - listInset)
       const codeData = codeBlockData(block)
       const codeFont = codeData ? 'Consolas, "Cascadia Code", monospace' : undefined
@@ -234,7 +240,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
         const height = paragraphLineHeight(line.fontHeight, block.style)
         ensureRoom(height)
         if (index === 0 && block.type === 'heading') result.headings.push({ id: block.id, text: runText(block.runs), level: block.level || 1, y: cursor, page: currentPage!.index })
-        const marker = index === 0 ? block.type === 'bullet' ? '•' : block.type === 'numbered' ? `${orderedIndex}.` : block.type === 'quote' ? '│' : undefined : undefined
+        const marker = index === 0 ? list?.marker ?? (block.type === 'quote' ? '│' : undefined) : undefined
         const layoutLine = positionLine(line, { blockId: block.id }, currentPage!.content.x + indent + listInset, cursor, width, height, currentPage!.index, block.style.align, index < lines.length - 1, marker)
         if (codeData) {
           layoutLine.codeBlock = { language: codeData.language, lineNumber: index + 1 }
