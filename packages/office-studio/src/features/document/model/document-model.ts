@@ -1,4 +1,4 @@
-import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, InlineRun } from '../../../domain/model'
+import { createDocumentDefaultStyle, type DocumentBlock, type DocumentModel, type DocumentParagraphStyle, type InlineRun } from '../../../domain/model'
 import { blockHasNumbering, blockNumberingLevelIndex } from './document-numbering'
 
 export interface DocumentRun extends InlineRun { highlight?: string; href?: string }
@@ -101,7 +101,7 @@ let sequence = 0
 export const documentId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${(++sequence).toString(36)}`
 export const cloneDocument = (value: DocumentModel): DocumentModel => JSON.parse(JSON.stringify(value)) as DocumentModel
 export const defaultParagraphStyle = (): DocumentParagraphStyle => ({ align: 'left', indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 })
-export const createRun = (text = '', patch: RunPatch = {}): DocumentRun => applyRunPatch({ id: documentId('run'), text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 }, patch)
+export const createRun = (text = '', patch: RunPatch = {}): DocumentRun => applyRunPatch({ id: documentId('run'), text, ...createDocumentDefaultStyle().text }, patch)
 export const createParagraph = (text = '', patch: RunPatch = {}): DocumentBlock => ({ id: documentId('paragraph'), type: 'paragraph', level: 0, runs: [createRun(text, patch)], style: defaultParagraphStyle(), metadata: {} })
 export const createChecklistParagraph = (text = '', checked = false, listId = documentId('checklist')): DocumentBlock => ({ ...createParagraph(text), type: 'checklist', checklist: { listId, checked } })
 export const targetKey = (target: TextTarget): string => target.row == null ? target.blockId : `${target.blockId}/r${target.row}/c${target.col ?? 0}/${target.cellBlockId ?? ''}`

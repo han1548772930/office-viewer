@@ -5,7 +5,7 @@
 //! and ZIP implementation are supplied by the parent writer crate.
 
 use crate::{ExportError, ExportWarning, opc::Package, xml};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -20,6 +20,12 @@ mod sparkline;
 mod pivot;
 #[path = "xlsx_table.rs"]
 mod table;
+#[path = "xlsx_dimensions.rs"]
+mod dimensions;
+#[path = "xlsx_conditional_formula.rs"]
+mod conditional_formula;
+#[path = "xlsx_conditional_source.rs"]
+mod conditional_source;
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -85,6 +91,18 @@ struct SheetInput {
     #[serde(default)]
     row_heights: BTreeMap<String, f64>,
     #[serde(default)]
+    axis_unit: Option<String>,
+    #[serde(default)]
+    row_height_spans: Vec<dimensions::AxisSpanInput<f64>>,
+    #[serde(default)]
+    column_width_spans: Vec<dimensions::AxisSpanInput<f64>>,
+    #[serde(default)]
+    row_auto_height_spans: Vec<dimensions::AxisSpanInput<bool>>,
+    #[serde(default)]
+    row_auto_heights: BTreeMap<String, f64>,
+    #[serde(default)]
+    default_row_auto_height: Option<bool>,
+    #[serde(default)]
     frozen_rows: u32,
     #[serde(default)]
     frozen_cols: u32,
@@ -92,6 +110,10 @@ struct SheetInput {
     show_gridlines: bool,
     #[serde(default)]
     hidden_rows: Vec<u32>,
+    #[serde(default)]
+    row_hidden_spans: Vec<dimensions::AxisSpanInput<bool>>,
+    #[serde(default)]
+    column_hidden_spans: Vec<dimensions::AxisSpanInput<bool>>,
     #[serde(default)]
     auto_filter: Option<auto_filter::AutoFilterInput>,
     #[serde(default)]
@@ -114,7 +136,7 @@ struct SheetInput {
     metadata: Option<Value>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ConditionalFormatInput {
     #[serde(default)]
@@ -123,6 +145,8 @@ struct ConditionalFormatInput {
     rule_type: String,
     #[serde(default)]
     ranges: Vec<RangeInput>,
+    #[serde(default)]
+    formula_anchor: Option<conditional_formula::FormulaAnchor>,
     #[serde(default)]
     operator: String,
     #[serde(default)]
@@ -145,9 +169,13 @@ struct ConditionalFormatInput {
     is_percent: bool,
     #[serde(default)]
     config: Option<Value>,
+    #[serde(default)]
+    office_source: Option<office_io_common::conditional_format_source::OfficeSource>,
+    #[serde(flatten)]
+    extensions: Map<String, Value>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ConditionalFormatStyleInput {
     fill: Option<String>,
@@ -156,6 +184,8 @@ struct ConditionalFormatStyleInput {
     italic: Option<bool>,
     underline: Option<bool>,
     strike: Option<bool>,
+    #[serde(flatten)]
+    extensions: Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -240,7 +270,7 @@ fn default_chart_scale_type() -> String {
     "linear".to_owned()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RangeInput {
     #[serde(default)]
@@ -394,7 +424,8 @@ struct StyleRegistry {
     border_ids: HashMap<String, usize>,
     num_fmts: Vec<String>,
     num_fmt_ids: HashMap<String, u32>,
-    conditional_styles: Vec<ConditionalFormatStyleInput>,
+    conditional_styles: Vec<String>,
+    conditional_style_ids: HashMap<String, usize>,
 }
 
 impl StyleRegistry {
@@ -471,12 +502,12 @@ impl StyleRegistry {
         index
     }
 
-    fn register_conditional_style(&mut self, style: &ConditionalFormatStyleInput) -> usize {
-        if let Some(index) = self.conditional_styles.iter().position(|candidate| candidate == style) {
-            return index;
-        }
+    fn register_conditional_style_xml(&mut self, style: &office_io_common::conditional_format_xml::Element) -> usize {
+        let key = style.fingerprint();
+        if let Some(index) = self.conditional_style_ids.get(&key) { return *index }
         let index = self.conditional_styles.len();
-        self.conditional_styles.push(style.clone());
+        self.conditional_styles.push(style.render());
+        self.conditional_style_ids.insert(key, index);
         index
     }
 }
@@ -817,30 +848,7 @@ fn style_xml(registry: &StyleRegistry) -> String {
     }
     xml_out.push_str("</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>");
     xml_out.push_str(&format!("<dxfs count=\"{}\">", registry.conditional_styles.len()));
-    for style in &registry.conditional_styles {
-        xml_out.push_str("<dxf>");
-        if style.font_color.is_some() || style.bold.is_some() || style.italic.is_some() || style.underline.is_some() || style.strike.is_some() {
-            xml_out.push_str("<font>");
-            if let Some(bold) = style.bold { xml_out.push_str(if bold { "<b/>" } else { "<b val=\"0\"/>" }); }
-            if let Some(italic) = style.italic { xml_out.push_str(if italic { "<i/>" } else { "<i val=\"0\"/>" }); }
-            if let Some(underline) = style.underline { xml_out.push_str(if underline { "<u/>" } else { "<u val=\"0\"/>" }); }
-            if let Some(strike) = style.strike { xml_out.push_str(if strike { "<strike/>" } else { "<strike val=\"0\"/>" }); }
-            if let Some(color) = style.font_color.as_deref() {
-                let color = normalize_color(color);
-                if color != "none" {
-                    xml_out.push_str(&format!("<color rgb=\"{}\"/>", color));
-                }
-            }
-            xml_out.push_str("</font>");
-        }
-        if let Some(fill) = style.fill.as_deref() {
-            let color = normalize_color(fill);
-            if color != "none" {
-                xml_out.push_str(&format!("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"{}\"/><bgColor indexed=\"64\"/></patternFill></fill>", color));
-            }
-        }
-        xml_out.push_str("</dxf>");
-    }
+    for style in &registry.conditional_styles { xml_out.push_str(style); }
     xml_out.push_str("</dxfs><tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleMedium9\"/></styleSheet>");
     xml_out
 }
@@ -863,7 +871,7 @@ fn border_xml(value: &str) -> String {
         let style = match pieces.next().unwrap_or("thin") {
             "dash-dot" => "dashDot", "dash-dot-dot" => "dashDotDot",
             "medium-dashed" => "mediumDashed", "medium-dash-dot" => "mediumDashDot",
-            "medium-dash-dot-dot" => "mediumDashDotDot", other => other,
+            "medium-dash-dot-dot" => "mediumDashDotDot", "slant-dash-dot" => "slantDashDot", other => other,
         };
         let color = pieces.next().unwrap_or("");
         if color.is_empty() {
@@ -983,42 +991,9 @@ fn worksheet_xml(
         out.push_str("<selection activeCell=\"A1\" sqref=\"A1\"/>");
     }
     out.push_str("</sheetView></sheetViews>");
-    out.push_str("<sheetFormatPr");
-    if let Some(width) = sheet.default_column_width {
-        out.push_str(&format!(
-            " defaultColWidth=\"{}\"",
-            format_number(width_to_excel(width))
-        ));
-    }
-    if let Some(height) = sheet.default_row_height {
-        out.push_str(&format!(" defaultRowHeight=\"{}\"", format_number(height)));
-    }
-    out.push_str("/>");
-    let mut cols = BTreeMap::<u32, (f64, bool)>::new();
-    for (key, width) in &sheet.column_widths {
-        if let Some(index) = parse_index(key) {
-            cols.insert(index, (*width, false));
-        }
-    }
-    for index in &sheet.hidden_columns {
-        let entry = cols
-            .entry(*index)
-            .or_insert((sheet.default_column_width.unwrap_or(8.43), false));
-        entry.1 = true;
-    }
-    if !cols.is_empty() {
-        out.push_str("<cols>");
-        for (index, (width, hidden)) in cols {
-            out.push_str(&format!(
-                "<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"{} />",
-                index + 1,
-                index + 1,
-                format_number(width_to_excel(width)),
-                if hidden { " hidden=\"1\"" } else { "" }
-            ));
-        }
-        out.push_str("</cols>");
-    }
+    let axis = dimensions::prepare(sheet)?;
+    out.push_str(&axis.format_xml());
+    out.push_str(&axis.columns_xml());
     out.push_str("<sheetData>");
     let mut by_row = BTreeMap::<u32, Vec<CellInput>>::new();
     for cell in cells {
@@ -1028,21 +1003,24 @@ fn worksheet_xml(
     for row in &hidden_rows {
         by_row.entry(*row).or_default();
     }
-    for row in sheet.row_heights.keys().filter_map(|key| parse_index(key)) {
-        by_row.entry(row).or_default();
-    }
-    for (row, mut row_cells) in by_row {
+    let mut cell_rows = by_row.into_iter().peekable();
+    let mut dimension_rows = axis.extra_row_indices().peekable();
+    // Standard SpreadsheetML needs a row element for each manually hidden row;
+    // stream spans into the XML without constructing a million-row lookup map.
+    let mut manual_hidden_rows = axis.manual_hidden_row_indices().peekable();
+    while let Some(row) = [cell_rows.peek().map(|(row, _)| *row), dimension_rows.peek().copied(), manual_hidden_rows.peek().copied()]
+        .into_iter().flatten().min() {
+        let mut row_cells = if cell_rows.peek().is_some_and(|(index, _)| *index == row) { cell_rows.next().unwrap().1 } else { Vec::new() };
+        if dimension_rows.peek() == Some(&row) { dimension_rows.next(); }
+        if manual_hidden_rows.peek() == Some(&row) { manual_hidden_rows.next(); }
         row_cells.sort_by_key(|cell| cell.col.unwrap_or(0));
-        let hidden = hidden_rows.contains(&row);
+        let hidden = hidden_rows.contains(&row) || axis.manual_row_hidden(row) || axis.row_size(row).height == 0.0;
         let mut attrs = format!(" r=\"{}\"", row + 1);
-        if let Some(height) = sheet.row_heights.get(&row.to_string()) {
-            attrs.push_str(&format!(
-                " ht=\"{}\" customHeight=\"1\"",
-                format_number(*height)
-            ));
-        }
+        attrs.push_str(&axis.row_attributes(row));
         if hidden {
             attrs.push_str(" hidden=\"1\"");
+        } else if axis.default_row_height == 0.0 {
+            attrs.push_str(" hidden=\"0\"");
         }
         out.push_str(&format!("<row{attrs}>"));
         for cell in row_cells {
@@ -1090,7 +1068,11 @@ fn worksheet_xml(
     if let Some(rel_id) = drawing_rel_id {
         out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
     }
-    out.push_str(&sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?);
+    let axis_extension = axis.extension_xml(sheet, &out)?;
+    let mut extensions = sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?;
+    if extensions.is_empty() { extensions = format!("<extLst>{axis_extension}</extLst>"); }
+    else if let Some(position) = extensions.find("</extLst>") { extensions.insert_str(position, &axis_extension); }
+    out.push_str(&extensions);
     out.push_str("</worksheet>");
     Ok((out, hyperlinks))
 }
@@ -1141,95 +1123,89 @@ fn decode_query_component(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-fn write_conditional_formats(
-    sheet: &SheetInput,
-    registry: &mut StyleRegistry,
-    _warnings: &mut Vec<ExportWarning>,
-) -> Result<String, ExportError> {
-    if sheet.conditional_formats.is_empty() {
-        return Ok(String::new());
-    }
-    let mut rules = sheet.conditional_formats.iter().collect::<Vec<_>>();
-    rules.sort_by_key(|rule| (rule.priority, rule.id.as_str()));
-    let mut out = String::new();
-    let mut emitted_priority = 0u32;
-    for rule in rules {
-        let operator = match rule.operator.as_str() {
-            "equal" => "equal", "notEqual" => "notEqual", "greaterThan" => "greaterThan",
-            "greaterThanOrEqual" => "greaterThanOrEqual", "lessThan" => "lessThan",
-            "lessThanOrEqual" => "lessThanOrEqual", "between" => "between", "notBetween" => "notBetween",
-            _ => rule.operator.as_str(),
-        };
-        if rule.ranges.is_empty() { return Err(ExportError::invalid(format!("conditional format {} has no ranges", rule.id))); }
-        let ranges = rule.ranges.iter().filter_map(range_ref).collect::<Vec<_>>();
-        if ranges.len() != rule.ranges.len() {
-            return Err(ExportError::invalid(format!("conditional format {} contains an invalid range", rule.id)));
-        }
-        emitted_priority += 1;
-        let priority = emitted_priority;
-        out.push_str(&format!("<conditionalFormatting sqref=\"{}\">", ranges.join(" ")));
-        write_conditional_rule(&mut out, rule, registry, priority, operator)?;
-        out.push_str("</conditionalFormatting>");
-    }
-    Ok(out)
+fn write_conditional_formats(sheet: &SheetInput, registry: &mut StyleRegistry, warnings: &mut Vec<ExportWarning>) -> Result<conditional_source::ConditionalOutput, ExportError> {
+    conditional_source::write(sheet, registry, warnings)
 }
 
-fn write_conditional_rule(out: &mut String, rule: &ConditionalFormatInput, registry: &mut StyleRegistry, priority: u32, operator: &str) -> Result<(), ExportError> {
-    let xml_type = match rule.rule_type.as_str() {
-        "cellIs" => "cellIs",
-        "highlightCell" if rule.sub_type.as_deref().unwrap_or("number") == "number" => "cellIs",
-        "highlightCell" if rule.sub_type.as_deref() == Some("text") => "containsText",
-        "highlightCell" if rule.sub_type.as_deref() == Some("timePeriod") => "timePeriod",
-        "highlightCell" if rule.sub_type.as_deref() == Some("duplicateValues") => "duplicateValues",
-        "highlightCell" if rule.sub_type.as_deref() == Some("uniqueValues") => "uniqueValues",
-        "highlightCell" if rule.sub_type.as_deref() == Some("rank") => "top10",
-        "highlightCell" if rule.sub_type.as_deref() == Some("average") => "aboveAverage",
-        "highlightCell" if rule.sub_type.as_deref() == Some("formula") => "expression",
-        "containsText" | "notContainsText" | "beginsWith" | "endsWith" => "containsText",
-        "duplicateValues" => "duplicateValues", "uniqueValues" => "uniqueValues",
-        "timePeriod" => "timePeriod", "top10" | "rank" => "top10", "average" => "aboveAverage",
-        "expression" => "expression", "dataBar" => "dataBar", "colorScale" => "colorScale", "iconSet" => "iconSet",
-        _ => return Err(ExportError::invalid(format!("conditional format {} has an unsupported rule type", rule.id))),
+fn write_conditional_rule(out: &mut String, rule: &ConditionalFormatInput, dxf_id: Option<usize>, priority: u32, operator: &str) -> Result<(), ExportError> {
+    let text_rule = matches!(rule.rule_type.as_str(), "containsText" | "notContainsText" | "beginsWith" | "endsWith") || rule.sub_type.as_deref() == Some("text");
+    let text_operator = match rule.rule_type.as_str() {
+        "notContainsText" => "notContainsText", "beginsWith" => "beginsWith", "endsWith" => "endsWith", _ => operator,
+    };
+    let average = rule.rule_type == "average" || rule.sub_type.as_deref() == Some("average");
+    let xml_type = if text_rule {
+        match text_operator {
+            "equal" | "notEqual" => "expression",
+            "notContains" | "notContainsText" => "notContainsText", "beginsWith" => "beginsWith", "endsWith" => "endsWith",
+            "containsBlanks" => "containsBlanks", "notContainsBlanks" => "notContainsBlanks", "containsErrors" => "containsErrors",
+            "notContainsErrors" => "notContainsErrors", _ => "containsText",
+        }
+    } else if average && matches!(operator, "equal" | "notEqual") { "expression" }
+    else {
+        match rule.rule_type.as_str() {
+            "cellIs" => "cellIs",
+            "highlightCell" => match rule.sub_type.as_deref().unwrap_or("number") {
+                "number" => "cellIs", "formula" => "expression", "timePeriod" => "timePeriod", "duplicateValues" => "duplicateValues",
+                "uniqueValues" => "uniqueValues", "rank" => "top10", "average" => "aboveAverage",
+                _ => return Err(ExportError::invalid("unsupported conditional format subtype")),
+            },
+            "duplicateValues" => "duplicateValues", "uniqueValues" => "uniqueValues", "timePeriod" => "timePeriod",
+            "top10" | "rank" => "top10", "average" => "aboveAverage", "expression" => "expression", "dataBar" => "dataBar",
+            "colorScale" => "colorScale", "iconSet" => "iconSet",
+            _ => return Err(ExportError::invalid(format!("conditional format {} has an unsupported rule type", rule.id))),
+        }
     };
     let visual = matches!(xml_type, "dataBar" | "colorScale" | "iconSet");
-    let dxf_id = if visual { None } else { Some(registry.register_conditional_style(&rule.style)) };
     let mut attrs = format!("type=\"{}\" priority=\"{}\"", xml_type, priority);
     if let Some(id) = dxf_id { attrs.push_str(&format!(" dxfId=\"{id}\"")); }
-    if xml_type == "cellIs" { attrs.push_str(&format!(" operator=\"{}\"", esc(operator))); }
+    if xml_type == "cellIs" {
+        if !matches!(operator, "equal" | "notEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween") {
+            return Err(ExportError::invalid("conditional format has an invalid number operator"));
+        }
+        attrs.push_str(&format!(" operator=\"{}\"", esc(operator)));
+    }
     if xml_type == "top10" {
         if rule.is_bottom { attrs.push_str(" bottom=\"1\""); }
         if rule.is_percent { attrs.push_str(" percent=\"1\""); }
-        attrs.push_str(&format!(" rank=\"{}\"", rule.value.as_ref().and_then(Value::as_u64).unwrap_or(10)));
+        let rank = rule.value.as_ref().and_then(json_scalar_string).and_then(|value| value.parse::<u32>().ok()).unwrap_or(10);
+        if rank == 0 || rank > if rule.is_percent { 100 } else { 1000 } { return Err(ExportError::invalid("conditional format rank is invalid")); }
+        attrs.push_str(&format!(" rank=\"{rank}\""));
     }
     if xml_type == "aboveAverage" {
-        if operator == "lessThan" || operator == "lessThanOrEqual" { attrs.push_str(" aboveAverage=\"0\""); }
-        if operator == "equal" || operator == "notEqual" { attrs.push_str(&format!(" equalAverage=\"{}\"", if operator == "equal" { "1" } else { "0" })); }
+        if matches!(operator, "lessThan" | "lessThanOrEqual") { attrs.push_str(" aboveAverage=\"0\""); }
+        if matches!(operator, "greaterThanOrEqual" | "lessThanOrEqual") { attrs.push_str(" equalAverage=\"1\""); }
     }
     if xml_type == "timePeriod" { attrs.push_str(&format!(" timePeriod=\"{}\"", esc(operator))); }
-    if xml_type == "containsText" {
-        let text = rule.value.as_ref().and_then(Value::as_str).unwrap_or(&rule.formula1);
-        let text_operator = match rule.rule_type.as_str() {
-            "notContainsText" => "notContains",
-            "beginsWith" => "beginsWith",
-            "endsWith" => "endsWith",
-            "highlightCell" => match rule.operator.as_str() { "notContainsText" => "notContains", "beginsWith" => "beginsWith", "endsWith" => "endsWith", _ => "containsText" },
-            _ => "containsText",
-        };
-        attrs.push_str(&format!(" operator=\"{}\" text=\"{}\"", text_operator, esc(text)));
+    let text = rule.value.as_ref().and_then(json_scalar_string).unwrap_or_else(|| rule.formula1.clone());
+    if matches!(xml_type, "containsText" | "notContainsText" | "beginsWith" | "endsWith") {
+        let text_operator = if xml_type == "notContainsText" { "notContains" } else { xml_type };
+        attrs.push_str(&format!(" operator=\"{}\" text=\"{}\"", text_operator, esc(&text)));
     }
     if rule.stop_if_true && !visual { attrs.push_str(" stopIfTrue=\"1\""); }
     out.push_str(&format!("<cfRule {attrs}>"));
     match xml_type {
-        "cellIs" | "expression" | "containsText" => {
-            let formula = if xml_type == "containsText" {
-                let (row, column) = rule.ranges.first().and_then(range_bounds).map(|(row, column, _, _)| (row, column)).unwrap_or((0, 0));
-                let address = format!("{}{}", column_name(column), row + 1);
-                let text = rule.value.as_ref().and_then(Value::as_str).unwrap_or(&rule.formula1).replace('"', "\"\"");
-                format!("NOT(ISERROR(SEARCH(\"{}\",{})))", text, address)
-            } else { rule.formula1.trim().trim_start_matches('=').to_owned() };
-            if !formula.is_empty() { out.push_str(&format!("<formula>{}</formula>", esc(&formula))); }
+        "cellIs" | "expression" | "containsText" | "notContainsText" | "beginsWith" | "endsWith" | "containsBlanks" | "notContainsBlanks" | "containsErrors" | "notContainsErrors" => {
+            let (row, column) = rule.ranges.first().and_then(range_bounds).map(|(row, column, _, _)| (row, column)).unwrap_or((0, 0));
+            let address = cell_ref(row, column);
+            let literal = text.replace('"', "\"\"");
+            let search = text.replace('~', "~~").replace('*', "~*").replace('?', "~?").replace('"', "\"\"");
+            let formula = if text_rule {
+                match text_operator {
+                    "notContains" | "notContainsText" => format!("ISERROR(SEARCH(\"{search}\",{address}))"),
+                    "beginsWith" => format!("LEFT({address},LEN(\"{literal}\"))=\"{literal}\""),
+                    "endsWith" => format!("RIGHT({address},LEN(\"{literal}\"))=\"{literal}\""),
+                    "equal" => format!("{address}&\"\"=\"{literal}\""), "notEqual" => format!("{address}&\"\"<>\"{literal}\""),
+                    "containsBlanks" => format!("LEN(TRIM({address}))=0"), "notContainsBlanks" => format!("LEN(TRIM({address}))>0"),
+                    "containsErrors" => format!("ISERROR({address})"), "notContainsErrors" => format!("NOT(ISERROR({address}))"),
+                    _ => format!("NOT(ISERROR(SEARCH(\"{search}\",{address})))"),
+                }
+            } else if average { conditional_source::average_predicate(rule, &address)? }
+            else { if rule.formula1.trim().is_empty() { rule.value.as_ref().and_then(json_scalar_string).unwrap_or_default() } else { rule.formula1.clone() }.trim().trim_start_matches('=').to_owned() };
+            if formula.is_empty() { return Err(ExportError::invalid("conditional format is missing its formula")); }
+            out.push_str(&format!("<formula>{}</formula>", esc(&formula)));
             if xml_type == "cellIs" && matches!(operator, "between" | "notBetween") {
                 let second = rule.formula2.as_deref().ok_or_else(|| ExportError::invalid("conditional format is missing its second operand"))?;
+                if second.trim().trim_start_matches('=').is_empty() { return Err(ExportError::invalid("conditional format has an empty second operand")); }
                 out.push_str(&format!("<formula>{}</formula>", esc(second.trim().trim_start_matches('='))));
             }
         }
@@ -1244,20 +1220,20 @@ fn write_conditional_rule(out: &mut String, rule: &ConditionalFormatInput, regis
 
 fn write_data_bar(out: &mut String, rule: &ConditionalFormatInput) {
     let config = rule.config.as_ref().and_then(Value::as_object);
-    let color = config.and_then(|item| item.get("positiveColor")).and_then(Value::as_str).unwrap_or("FF638EC6").trim_start_matches('#');
+    let color = normalize_color(config.and_then(|item| item.get("positiveColor")).and_then(Value::as_str).unwrap_or("#638EC6"));
     let min = config.and_then(|item| item.get("min")).and_then(Value::as_object);
     let max = config.and_then(|item| item.get("max")).and_then(Value::as_object);
     let minimum = min.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("min");
     let maximum = max.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("max");
+    let minimum = if minimum == "autoMin" { "min" } else { minimum };
+    let maximum = if maximum == "autoMax" { "max" } else { maximum };
     let show_value = config.and_then(|item| item.get("isShowValue")).and_then(Value::as_bool).unwrap_or(true);
-    let gradient = config.and_then(|item| item.get("isGradient")).and_then(Value::as_bool).unwrap_or(true);
-    let native_color = config.and_then(|item| item.get("nativeColor")).and_then(Value::as_str).unwrap_or("#FFFFFF").trim_start_matches('#');
     let min_value = min.and_then(|item| item.get("value")).and_then(json_scalar_string);
     let max_value = max.and_then(|item| item.get("value")).and_then(json_scalar_string);
     let min_attr = min_value.map(|value| format!(" val=\"{}\"", esc(&value))).unwrap_or_default();
     let max_attr = max_value.map(|value| format!(" val=\"{}\"", esc(&value))).unwrap_or_default();
-    out.push_str(&format!("<dataBar showValue=\"{}\" gradient=\"{}\"><cfvo type=\"{}\"{} /><cfvo type=\"{}\"{} />", if show_value { 1 } else { 0 }, if gradient { 1 } else { 0 }, esc(minimum), min_attr, esc(maximum), max_attr));
-    out.push_str(&format!("<color rgb=\"FF{}\"/><negativeFillColor rgb=\"FF{}\"/></dataBar>", color, native_color));
+    out.push_str(&format!("<dataBar showValue=\"{}\"><cfvo type=\"{}\"{} /><cfvo type=\"{}\"{} />", if show_value { 1 } else { 0 }, esc(minimum), min_attr, esc(maximum), max_attr));
+    out.push_str(&format!("<color rgb=\"{}\"/></dataBar>", color));
 }
 
 fn write_color_scale(out: &mut String, rule: &ConditionalFormatInput) {
@@ -1271,8 +1247,8 @@ fn write_color_scale(out: &mut String, rule: &ConditionalFormatInput) {
         out.push_str(&format!("<cfvo type=\"{}\"{} />", esc(kind), if amount.is_empty() { String::new() } else { format!(" val=\"{}\"", esc(&amount)) }));
     }
     for threshold in thresholds {
-        let color = threshold.get("color").and_then(Value::as_str).unwrap_or("#FFFFFF").trim_start_matches('#');
-        out.push_str(&format!("<color rgb=\"FF{}\"/>", color));
+        let color = normalize_color(threshold.get("color").and_then(Value::as_str).unwrap_or("#FFFFFF"));
+        out.push_str(&format!("<color rgb=\"{}\"/>", color));
     }
     out.push_str("</colorScale>");
 }
@@ -1285,11 +1261,13 @@ fn write_icon_set(out: &mut String, rule: &ConditionalFormatInput) {
     let show_value = config.and_then(|item| item.get("isShowValue")).and_then(Value::as_bool).unwrap_or(true);
     let reverse = config.and_then(|item| item.get("reverse")).and_then(Value::as_bool).unwrap_or(false);
     out.push_str(&format!("<iconSet iconSet=\"{}\" showValue=\"{}\" reverse=\"{}\">", esc(icon_set), if show_value { 1 } else { 0 }, if reverse { 1 } else { 0 }));
-    for icon in icons.iter().rev() {
+    for (position, icon) in icons.iter().rev().enumerate() {
+        if position == 0 { out.push_str("<cfvo type=\"percent\" val=\"0\"/>"); continue }
         let value = icon.get("value");
         let kind = value.and_then(|item| item.get("type")).and_then(Value::as_str).unwrap_or("percent");
         let amount = value.and_then(|item| item.get("value")).and_then(json_scalar_string).unwrap_or_default();
-        out.push_str(&format!("<cfvo type=\"{}\"{} />", esc(kind), if amount.is_empty() { String::new() } else { format!(" val=\"{}\"", esc(&amount)) }));
+        out.push_str(&format!("<cfvo type=\"{}\"{}{} />", esc(kind), if amount.is_empty() { String::new() } else { format!(" val=\"{}\"", esc(&amount)) },
+            if icon.get("operator").and_then(Value::as_str) == Some("greaterThan") { " gte=\"0\"" } else { "" }));
     }
     out.push_str("</iconSet>");
 }
@@ -1887,10 +1865,6 @@ fn drawing_xml(charts: &[(&ChartInput, usize)]) -> Result<String, ExportError> {
     }
     out.push_str("</xdr:wsDr>");
     Ok(out)
-}
-
-fn width_to_excel(width: f64) -> f64 {
-    if width > 30.0 { width / 7.0 } else { width }
 }
 
 fn cell_xml(
@@ -2625,6 +2599,20 @@ mod tests {
     }
 
     #[test]
+    fn writes_slanted_dash_dot_and_cleared_side_segments() {
+        let value = serde_json::json!({
+            "diagonalDown": { "style": "slant-dash-dot", "color": "#123456" },
+            "left": null,
+            "right": { "style": "thin", "color": "#abcdef" }
+        });
+        let xml = border_xml(&border_key(Some(&value)));
+        assert!(xml.contains("<diagonal style=\"slantDashDot\"><color rgb=\"FF123456\"/></diagonal>"));
+        assert!(xml.contains("<left/>"));
+        assert!(xml.contains("<right style=\"thin\"><color rgb=\"FFABCDEF\"/></right>"));
+        assert!(!xml.contains("style=\"none\""));
+    }
+
+    #[test]
     fn styles_are_deduplicated() {
         let mut registry = StyleRegistry::new();
         let style = StyleInput {
@@ -2844,14 +2832,14 @@ mod tests {
 
         assert!(
             worksheet.contains(
-                "<col min=\"5\" max=\"5\" width=\"8.43\" customWidth=\"1\" hidden=\"1\" />"
+                "<col min=\"5\" max=\"5\" width=\"16\" customWidth=\"1\" hidden=\"1\" />"
             )
         );
         assert!(
-            worksheet.contains("<col min=\"6\" max=\"6\" width=\"17.1429\" customWidth=\"1\" />")
+            worksheet.contains("<col min=\"6\" max=\"6\" width=\"17.1445\" customWidth=\"1\" />")
         );
         assert!(worksheet.contains("<row r=\"3\" hidden=\"1\"></row>"));
-        assert!(worksheet.contains("<row r=\"4\" ht=\"32\" customHeight=\"1\"></row>"));
+        assert!(worksheet.contains("<row r=\"4\" ht=\"24\" customHeight=\"1\"></row>"));
     }
 
     #[test]
@@ -2873,7 +2861,8 @@ mod tests {
         assert!(worksheet.contains("type=\"column\" displayEmptyCellsAs=\"zero\" minAxisType=\"custom\" maxAxisType=\"custom\" manualMin=\"-5\" manualMax=\"20\""));
         assert!(worksheet.contains("<x14:colorSeries rgb=\"FF167A55\"/><x14:colorNegative rgb=\"FFC43B3B\"/><x14:colorHigh rgb=\"FFF0A000\"/><x14:colorLow rgb=\"FF2B579A\"/>"));
         assert!(worksheet.contains("<xm:f>&apos;Data&apos;!B1:E1</xm:f><xm:sqref>F1</xm:sqref>"), "{worksheet}");
-        assert!(worksheet.ends_with("</x14:sparklineGroups></ext></extLst></worksheet>"));
+        assert!(worksheet.contains("</x14:sparklineGroups></ext><ext uri=\"{F41EED10-CA42-42C0-A66C-9152ABCB9AE1}\""));
+        assert!(worksheet.ends_with("</ov:axisDimensions></ext></extLst></worksheet>"));
     }
 
     #[test]

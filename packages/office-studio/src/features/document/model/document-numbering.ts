@@ -136,6 +136,7 @@ export function clearBlockNumbering(block: DocumentBlock): void {
   delete block.metadata.numbering
   delete block.metadata.numberingLevel
   delete block.metadata.listLabel
+  delete block.metadata.officeNumberingMarker
 }
 
 export function copyBlockNumbering(source: DocumentBlock, target: DocumentBlock): void {

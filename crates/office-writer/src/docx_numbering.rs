@@ -187,6 +187,9 @@ pub(super) fn write_numbering_xml(instances: &[NumberingInstance], package: &mut
             if !custom_format.is_null() && custom_format.as_str().is_none_or(|pattern| pattern.len() > 4096) {
                 return Err(ExportError::invalid("自定义编号格式必须是至多 4096 字节的字符串。"));
             }
+            if format == "custom" && custom_format.as_str().is_none_or(str::is_empty) {
+                return Err(ExportError::invalid("自定义编号必须提供非空的编号格式，不能生成缺少格式的 OOXML 定义。"));
+            }
             let digits = get(level, "minimumDigits");
             if !digits.is_null() {
                 let Some(digits) = digits.as_f64().filter(|digits| digits.is_finite() && digits.fract() == 0.0 && (0.0..=f64::from(u8::MAX)).contains(digits)) else {

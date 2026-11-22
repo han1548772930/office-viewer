@@ -22,7 +22,10 @@ import { DateSystem } from './date-system';
 import { defaultLocale, getLocale } from './locale';
 import { excelDateTimePartsToSerial, getDateSystemMaxSerial } from './serial-date';
 import { normalizeInputDigits, parseNumber } from './number-input';
+import { parseTime } from './time-input';
 export { parseNumber } from './number-input';
+export { parseDuration, parseTime } from './time-input';
+export type { DurationParseOptions } from './time-input';
 
 // eslint-disable-next-line ts/naming-convention
 export interface ParseOptions {
@@ -193,7 +196,7 @@ okDateFormats.forEach((format) => {
 
 // eslint-disable-next-line complexity
 export function isValidDate(year: number, month: number, day: number): boolean {
-    if (day < 1) {
+    if (!Number.isInteger(year) || year < 1 || year > 9999 || !Number.isInteger(month) || !Number.isInteger(day) || day < 1) {
         return false;
     }
     if (month < 1 || month > 12) {
@@ -302,10 +305,9 @@ const nextToken = (
             if (token === '-') {
                 const match = /^(\s*([./-]|,\s)\s*|\s+)/.exec(string);
                 if (match) {
-                    const separator = (
-                        match[1] === '-' || match[1] === '/' || match[1] === '.'
-                    )
-                        ? match[1]
+                    const separatorToken = match[2]?.trim();
+                    const separator = separatorToken === '-' || separatorToken === '/' || separatorToken === '.'
+                        ? separatorToken
                         : ' ';
                     if (!data.sep || data.sep === separator) {
                         const normalizedSeparator = match[0].replace(/\s+/g, ' ');
@@ -469,8 +471,13 @@ export function parseDate(value: string, options: ParseOptions = {}): ParseData<
         locale: options.locale,
         dateSystem: options.dateSystem ?? DateSystem.Date1900,
     };
+    const source = normalizeInputDigits(value).trim()
+        .replace(/^(\d{4})[年년]\s*(\d{1,2})[月월]\s*(\d{1,2})[日号일]/, '$1/$2/$3')
+        .replace(/^(\d{1,2})月\s*(\d{1,2})[日号]/, '$1/$2')
+        .replace(/／/g, '/')
+        .replace(/^(\d{4}[-/]\d{1,2}[-/]\d{1,2})[Tt](?=\d)/, '$1 ');
     const date = nextToken(
-        normDateStr(value),
+        normDateStr(source),
         l10n.preferMDY ? dateTrieMD : dateTrieDM,
         { path: '' },
         localeData
@@ -481,11 +488,15 @@ export function parseDate(value: string, options: ParseOptions = {}): ParseData<
     if (date.sep === '.' && date.path.length === 3) {
         return null;
     }
+    // Space-separated small integers are ordinary text/grouping, not an implicit month/day.
+    if (date.sep === ' ' && /^[\d\s]+$/.test(source) && !date.year) {
+        return null;
+    }
     if (date.month == null || date._mon == null) {
         return null;
     }
 
-    const year = +(date.year ?? new Date().getUTCFullYear());
+    const year = +(date.year ?? options.currentYear ?? new Date().getFullYear());
     const day = date.day ?? '1';
     const dateSystem = options.dateSystem ?? DateSystem.Date1900;
     const dateSerial = excelDateTimePartsToSerial({
@@ -501,15 +512,7 @@ export function parseDate(value: string, options: ParseOptions = {}): ParseData<
         return null;
     }
     const dateValue = dateSerial + (date.time || 0);
-    const maxDateSerial = excelDateTimePartsToSerial({
-        year: 9999,
-        month: 12,
-        day: 31,
-        hours: 0,
-        minutes: 0,
-        seconds: 0,
-        fractionalSecond: 0,
-    }, { dateSystem })!;
+    const maxDateSerial = getDateSystemMaxSerial(dateSystem);
     if (dateValue >= maxDateSerial + 1) {
         return null;
     }
@@ -526,70 +529,6 @@ export function parseDate(value: string, options: ParseOptions = {}): ParseData<
         return (lead0 ? tx00[token] : tx0[token]) || token;
     });
     return { v: dateValue, z: format };
-}
-
-const normAMPMStr = (string: string): string =>
-    string.replace(/\s+/g, '').trim().replace(/\./g, '').toLowerCase();
-
-/** Parse a time string and return its day fraction and inferred format. */
-// eslint-disable-next-line complexity
-export function parseTime(value: string, options: ParseOptions = {}): ParseData<number> | null {
-    const l10n = getLocale(options.locale || '') || defaultLocale;
-    const parts = /^\s*([10]?\d|2[0-4])(?::([0-5]\d|\d))?(?::([0-5]\d|\d))?(\.\d{1,10})?(?=\s*[^\s\d]|$)/.exec(value);
-    let ampm = '';
-    if (parts) {
-        const tail = normAMPMStr(value.slice(parts[0].length));
-        if (tail === normAMPMStr(l10n.ampm[0]) || tail === 'a' || tail === 'am') {
-            ampm = 'a';
-        } else if (tail === normAMPMStr(l10n.ampm[1]) || tail === 'p' || tail === 'pm') {
-            ampm = 'p';
-        } else if (tail === ':') {
-            if (!parts[3]) {
-                parts[3] = '0';
-            }
-            if (!parts[2]) {
-                parts[2] = '0';
-            }
-        } else if (tail) {
-            return null;
-        }
-    }
-    if (!parts) {
-        return null;
-    }
-
-    const [, hoursPart, minutesPart, secondsPart, fractionPart] = parts;
-    if (fractionPart && !secondsPart) {
-        return null;
-    }
-    if (!ampm && !minutesPart && !secondsPart) {
-        return null;
-    }
-
-    let hours = +(hoursPart || 0);
-    if (ampm) {
-        if (hours >= 13) {
-            return null;
-        }
-        if (ampm === 'a') {
-            if (hours === 12) {
-                hours = 0;
-            }
-        } else if (ampm === 'p' && hours !== 12) {
-            hours += 12;
-        }
-    }
-    const minutes = +(minutesPart || 0);
-    const seconds = +(secondsPart || 0);
-    const milliseconds = +(fractionPart || 0);
-
-    const hourFormat = hoursPart.length === 2 ? 'hh' : 'h';
-    const secondsFormat = secondsPart ? ':ss' : '';
-    const ampmFormat = ampm ? ' AM/PM' : '';
-    return {
-        v: ((hours * 60 * 60) + (minutes * 60) + seconds + milliseconds) / (60 * 60 * 24),
-        z: `${hourFormat}:mm${secondsFormat}${ampmFormat}`,
-    };
 }
 
 /** Parse a localized or English boolean string. */

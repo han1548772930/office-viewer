@@ -1,8 +1,13 @@
-import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, type DocumentModel, type DocumentPageField, type DocumentParagraphStyle, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type DocumentThreadComment, type InlineRun } from '../domain/model.ts'
+import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, type DocumentDefaultStyle, type DocumentModel, type DocumentPageField, type DocumentParagraphStyle, type DocumentSectionBreakType, type DocumentSectionHeaderFooter, type DocumentStoryContent, type DocumentStoryLock, type DocumentThreadComment, type InlineRun } from '../domain/model.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
+import { normalizeDocumentHighlight } from '../features/document/model/document-highlight.ts'
 import { normalizeDocumentNotes } from '../features/document/notes/document-notes.ts'
 import { documentNumberingIndex } from './documentNumbering.ts'
+import { officeNumberingMarkerBaseline } from '../features/document/model/document-office-numbering-marker.ts'
+import { runText, sliceRuns, tableForBlock } from '../features/document/model/document-model.ts'
+import { documentStoryDefaultStyle, documentStoryFieldCache, documentStoryTextStyle, isDocumentTextBoundary, validateDocumentStoryContent, validateDocumentStoryLocks } from '../features/document/model/document-story.ts'
+import { storyBuffer } from '../features/document/services/story-editor.ts'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -42,20 +47,48 @@ function normalizeRun(value: unknown, id: string): InlineRun {
   const raw = record(value)
   const style = record(raw.style)
   const verticalAlign = normalizeVerticalAlign(style.verticalAlign ?? style.vertAlign ?? raw.verticalAlign)
+  const highlight = normalizeDocumentHighlight(style.highlight, style.backgroundColor)
   const eastAsiaFontFamily = text(style.fontFamilyEastAsia) || text(style.resolvedFontFamilyEastAsia)
   return {
     id, text: text(raw.text), bold: style.bold === true, italic: style.italic === true,
     underline: style.underline === true, strike: style.strike === true,
     ...(verticalAlign ? { verticalAlign } : {}),
+    ...(highlight ? { highlight } : {}),
     ...(eastAsiaFontFamily ? { eastAsiaFontFamily } : {}),
     color: text(style.color, '#1f2937'), fontFamily: text(style.fontFamilyAscii) || text(style.resolvedFontFamilyAscii) || text(style.fontFamily, 'Aptos'), fontSize: positive(style.fontSizePt, 11),
-    metadata: { source: raw, link: raw.link, highlight: style.highlight, noteReference: raw.noteReference },
+    metadata: { source: raw, link: raw.link, ...(highlight ? { highlight } : {}), noteReference: raw.noteReference },
   }
 }
 function normalizeVerticalAlign(value: unknown): InlineRun['verticalAlign'] {
   if (value === 'sup' || value === 'super' || value === 'superscript') return 'superscript'
   if (value === 'sub' || value === 'subscript') return 'subscript'
   return undefined
+}
+
+function normalizeDefaultStyle(value: unknown): DocumentDefaultStyle | undefined {
+  const raw = record(value)
+  if (raw.version !== 1) return undefined
+  const source = record(raw.text)
+  const fontFamily = text(source.fontFamilyAscii) || text(source.resolvedFontFamilyAscii) || text(source.fontFamily, 'Aptos')
+  const eastAsiaFontFamily = text(source.fontFamilyEastAsia) || text(source.resolvedFontFamilyEastAsia) || fontFamily
+  const verticalAlign = normalizeVerticalAlign(source.verticalAlign)
+  const highlight = normalizeDocumentHighlight(source.highlight, source.backgroundColor)
+  const paragraph = record(raw.paragraph)
+  return {
+    version: 1,
+    text: {
+      fontFamily, eastAsiaFontFamily, fontSize: positive(source.fontSizePt, 12), color: text(source.color, 'auto'),
+      bold: source.bold === true, italic: source.italic === true, underline: source.underline === true, strike: source.strike === true,
+      ...(verticalAlign ? { verticalAlign } : {}), ...(highlight ? { highlight } : {}),
+    },
+    // Declared empty pPrDefault means single spacing and no paragraph spacing.
+    // Absent defaults are already supplied by the Rust reader as Word's 1.15 / 8 pt.
+    paragraph: normalizeParagraphStyle({
+      ...paragraph,
+      spacing: { beforePt: 0, afterPt: 0, lineMultiplier: 1, ...record(paragraph.spacing) },
+      ...(typeof raw.wordWrap === 'boolean' ? { wordWrap: raw.wordWrap } : {}),
+    }),
+  }
 }
 function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<typeof documentNumberingIndex>): DocumentBlock {
   const raw = record(value)
@@ -102,10 +135,19 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     const [, , languageValue, lineNumberValue] = codeTag.split(':')
     const languages = ['plain', 'javascript', 'typescript', 'json', 'css', 'html', 'python', 'sql', 'rust']
     const language = languages.includes(languageValue ?? '') ? languageValue! : 'plain'
-    const source = text(raw.content)
+    const source = runText(block.runs)
     block.metadata.codeBlock = { source, language, lineNumbers: lineNumberValue === '1' }
-    block.runs = [{ ...block.runs[0]!, text: source, fontFamily: 'Consolas', fontSize: 10 }]
-    block.style = { ...block.style, align: 'left', indent: 0, lineHeight: 1.35, spaceBefore: 8, spaceAfter: 8 }
+    const plainRanges = array(details.bookmarks).map(bookmark => text(record(bookmark).name))
+      .map(name => /^office_code_plain_v1_(\d+)_(\d+)$/.exec(name)).filter(match => match !== null)
+      .map(match => ({ start: Number(match[1]), end: Number(match[2]) }))
+    for (const range of plainRanges) if (!isDocumentTextBoundary(source, range.start) || !isDocumentTextBoundary(source, range.end) || range.start >= range.end) throw new RangeError('代码块清除格式的 DOCX 范围无效。')
+    if (plainRanges.length) {
+      const boundaries = [...new Set([0, source.length, ...plainRanges.flatMap(range => [range.start, range.end])])].sort((a, b) => a - b)
+      block.runs = boundaries.slice(0, -1).flatMap((start, index) => {
+        const end = boundaries[index + 1]!, plain = plainRanges.some(range => range.start <= start && end <= range.end)
+        return sliceRuns(block.runs, start, end).map(run => plain ? { ...run, metadata: { ...run.metadata, codeSyntaxHighlight: false } } : run)
+      })
+    }
   } else {
     for (const [inlineIndex, inline] of array(details.inlines).entries()) {
       if (record(inline).type !== 'form_field') continue
@@ -138,13 +180,13 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     block.metadata.numberingDefinition = definition.definition
     block.metadata.numberingListId = numberingListId
   }
-  const officeNumberingMarker = record(details.officeNumberingMarker)
-  if (officeNumberingMarker.version === 1 && typeof officeNumberingMarker.xml === 'string' && typeof officeNumberingMarker.text === 'string' && typeof officeNumberingMarker.bookmark === 'string' && typeof officeNumberingMarker.bookmarkId === 'number' && Number.isSafeInteger(officeNumberingMarker.bookmarkId)) {
-    block.metadata.officeNumberingMarker = { ...officeNumberingMarker }
-  }
   if (type === 'checklist') block.checklist = {
     listId: typeof numberingId === 'string' || typeof numberingId === 'number' ? String(numberingId) : id,
     checked: listLabel.startsWith('☑'),
+  }
+  const officeNumberingMarker = record(details.officeNumberingMarker)
+  if (officeNumberingMarker.version === 1 && typeof officeNumberingMarker.xml === 'string' && typeof officeNumberingMarker.text === 'string' && typeof officeNumberingMarker.bookmark === 'string' && typeof officeNumberingMarker.bookmarkId === 'number' && Number.isSafeInteger(officeNumberingMarker.bookmarkId)) {
+    block.metadata.officeNumberingMarker = { ...officeNumberingMarker, baseline: officeNumberingMarkerBaseline(block, officeNumberingMarker.text) }
   }
   if (sectionBreak) block.sectionBreak = sectionBreak
   if (type === 'image') {
@@ -192,7 +234,7 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   return block
 }
 
-function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: DocumentBlock[]): Record<string, DocumentSectionHeaderFooter> {
+function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: DocumentBlock[], model: DocumentModel): Record<string, DocumentSectionHeaderFooter> {
   const layout = array(data.sectionLayout)
   if (!layout.length) return {}
   const parsedBlocks = array(data.blocks).map(record)
@@ -227,7 +269,7 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
       const field = headerFields[text(reference.referenceType, 'default')]
       if (field) {
         defined.add(field)
-        readStory(value, field, reference, storyText(text(reference.partName), 'header'))
+        readStory(value, field, reference, storyText(text(reference.partName), 'header'), model)
       }
     }
     for (const entry of array(section.footerSections)) {
@@ -235,7 +277,7 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
       const field = footerFields[text(reference.referenceType, 'default')]
       if (field) {
         defined.add(field)
-        readStory(value, field, reference, storyText(text(reference.partName), 'footer'))
+        readStory(value, field, reference, storyText(text(reference.partName), 'footer'), model)
       }
     }
     if (index > 0 && !value.linkToPrevious) {
@@ -247,7 +289,10 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
       }
       if (previous) {
         for (const key of ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const) {
-          if (!defined.has(key)) value[key] = previous[key]
+          if (!defined.has(key)) {
+            value[key] = previous[key]
+            if (previous.storyContent?.[key]) value.storyContent = { ...value.storyContent, [key]: structuredClone(previous.storyContent[key]) }
+          }
         }
         value.pageFields = [...(previous.pageFields ?? []).filter(f => !defined.has(f.story)), ...(value.pageFields ?? [])]
       }
@@ -257,22 +302,110 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
   return result
 }
 
-function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageField['story'], reference: Record<string, unknown>, fallbackText: string) {
+function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageField['story'], reference: Record<string, unknown>, fallbackText: string, model: DocumentModel) {
   const content = record(reference.storyText)
   const positioned = typeof content.text === 'string'
   section[story] = positioned ? text(content.text) : fallbackText
   const fields = array(positioned ? content.fields : reference.pageFields)
-  for (const raw of fields) {
+  for (const [fieldIndex, raw] of fields.entries()) {
     const detail = record(raw)
     const field = text(positioned ? detail.field : raw)
     if (field !== 'PAGE' && field !== 'NUMPAGES' && field !== 'DATE' && field !== 'TIME') continue
-    section.pageFields?.push(positioned ? { story, field, offset: finite(detail.offset), instruction: text(detail.instruction), cachedResult: text(detail.cachedResult) } : { story, field })
+    if (positioned && typeof detail.offset !== 'number') throw new RangeError('页眉页脚字段偏移无效。')
+    validateStorySourceFormat(detail.sourceFormat)
+    const textStyle = detail.textStyle && typeof detail.textStyle === 'object'
+      ? documentStoryTextStyle(normalizeRun({ text: '', style: detail.textStyle }, story+'-field'), documentStoryDefaultStyle(model).text) : undefined
+    const cachedRuns = detail.cachedRuns === undefined ? undefined : normalizeStoryFieldCachedRuns(detail.cachedRuns, story+'-field-'+fieldIndex+'-cache', model)
+    const normalizedField: DocumentPageField = positioned ? { story, field, offset: finite(detail.offset), instruction: text(detail.instruction), cachedResult: text(detail.cachedResult),
+      ...(textStyle ? { textStyle } : {}),
+      ...(detail.sourceFormat !== undefined || cachedRuns !== undefined ? { metadata: { source: detail,
+        ...(textStyle ? { officeStoryStyleBaseline: { ...textStyle } } : {}), ...(cachedRuns ? { officeStoryFieldCache: { version: 1, runs: cachedRuns } } : {}) } } : {}) } : { story, field }
+    documentStoryFieldCache(normalizedField)
+    section.pageFields?.push(normalizedField)
   }
+  if (Array.isArray(content.runs) && Array.isArray(content.paragraphs)) {
+    const rich: DocumentStoryContent = {
+      runs: content.runs.map((raw, index) => {
+        const source = record(raw), run = normalizeRun(raw, story+'-run-'+index)
+        validateStorySourceFormat(source.sourceFormat)
+        if (source.sourceFormat !== undefined) run.metadata = { ...run.metadata, officeStoryStyleBaseline: documentStoryTextStyle(run, documentStoryDefaultStyle(model).text) }
+        return run
+      }),
+      paragraphs: content.paragraphs.map(raw => {
+        const paragraph = record(raw)
+        if (typeof paragraph.startOffset !== 'number' || typeof paragraph.endOffset !== 'number') throw new RangeError('页眉页脚段落偏移无效。')
+        validateStorySourceFormat(paragraph.sourceFormat)
+        const style = normalizeParagraphStyle({ ...record(paragraph.style), ...(typeof paragraph.wordWrap === 'boolean' ? { wordWrap: paragraph.wordWrap } : {}) })
+        return { startOffset: paragraph.startOffset, endOffset: paragraph.endOffset,
+          style,
+          metadata: { source: paragraph, ...(paragraph.sourceFormat !== undefined ? { officeStoryParagraphStyleBaseline: { ...style } } : {}) } }
+      }),
+    }
+    if (content.locks !== undefined) {
+      if (!Array.isArray(content.locks)) throw new RangeError('页眉页脚内容锁无效。')
+      rich.locks = array(content.locks).map(raw => {
+        const lock = record(raw)
+        if (typeof lock.id !== 'string' || typeof lock.startOffset !== 'number' || typeof lock.endOffset !== 'number'
+          || lock.lock !== 'contentLocked' && lock.lock !== 'sdtLocked' && lock.lock !== 'sdtContentLocked') throw new RangeError('页眉页脚内容锁无效。')
+        return { id: lock.id, startOffset: lock.startOffset, endOffset: lock.endOffset, lock: lock.lock } satisfies DocumentStoryLock
+      })
+    }
+    validateDocumentStoryContent(rich, section[story])
+    validateDocumentStoryLocks(rich.locks, storyBuffer(section, story).value)
+    const baseline = {
+      text: section[story],
+      runs: rich.runs.map(({ id: _id, metadata, ...run }) => ({ ...run, ...(typeof metadata?.link === 'string' ? { href: metadata.link } : {}) })),
+      paragraphs: rich.paragraphs.map(({ metadata: _metadata, ...paragraph }) => paragraph),
+      fields: (section.pageFields ?? []).filter(field => field.story === story).map(({ story: _story, metadata, ...field }) => ({ ...field,
+        ...(metadata?.officeStoryFieldCache !== undefined ? { cachedRuns: metadata.officeStoryFieldCache } : {}) })),
+      locks: rich.locks ?? [],
+    }
+    if (typeof content.sourceXml === 'string') rich.metadata = { officeSource: { version: 1, xml: content.sourceXml,
+      ...(typeof content.relationshipsXml === 'string' ? { relationshipsXml: content.relationshipsXml } : {}),
+      unsupportedFeatures: array(content.unsupportedFeatures).filter(feature => typeof feature === 'string'), baseline } }
+    section.storyContent = { ...section.storyContent, [story]: rich }
+  }
+}
+
+function normalizeStoryFieldCachedRuns(value: unknown, id: string, model: DocumentModel): InlineRun[] {
+  if (!Array.isArray(value)) throw new TypeError('页眉页脚字段缓存运行必须为数组。')
+  return value.map((raw, index) => {
+    const source = record(raw)
+    if (typeof source.text !== 'string') throw new TypeError('页眉页脚字段缓存文本无效。')
+    validateStorySourceFormat(source.sourceFormat)
+    const run = normalizeRun(raw, id+'-'+index)
+    if (source.sourceFormat !== undefined) run.metadata = { ...run.metadata, officeStoryStyleBaseline: documentStoryTextStyle(run, documentStoryDefaultStyle(model).text) }
+    return run
+  })
+}
+
+function validateStorySourceFormat(value: unknown): void {
+  if (value === undefined) return
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('页眉页脚源格式片段无效。')
+  const format = record(value)
+  if (format.version !== 1
+    || format.propertiesXml !== undefined && typeof format.propertiesXml !== 'string'
+    || format.paragraphStyleId !== undefined && (typeof format.paragraphStyleId !== 'string' || !format.paragraphStyleId)
+    || !format.namespaces || typeof format.namespaces !== 'object' || Array.isArray(format.namespaces)
+    || Object.values(record(format.namespaces)).some(namespace => typeof namespace !== 'string')) throw new TypeError('页眉页脚源格式片段版本或命名空间无效。')
 }
 
 function normalizeDocumentComments(value: unknown, blocks: DocumentBlock[]): Record<string, DocumentThreadComment> | undefined {
   const rawComments = array(value).map(record)
   if (!rawComments.length) return undefined
+  const paragraphs: DocumentBlock[] = []
+  const visit = (items: DocumentBlock[]): void => {
+    for (const block of items) {
+      const table = tableForBlock(block)
+      if (table) { for (const row of table.rows) for (const cell of row.cells) visit(cell.blocks) }
+      else paragraphs.push(block)
+    }
+  }
+  visit(blocks)
+  const validBoundary = (text: string, offset: number): boolean => {
+    const previous = text.charCodeAt(offset - 1), next = text.charCodeAt(offset)
+    return !(previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF)
+  }
   const comments: Record<string, DocumentThreadComment> = {}
   for (const raw of rawComments) {
     if (raw.parentId !== undefined && raw.parentId !== null) continue
@@ -282,15 +415,16 @@ function normalizeDocumentComments(value: unknown, blocks: DocumentBlock[]): Rec
       const target = record(targetValue)
       if (text(target.story, 'body') !== 'body') return []
       const nodeId = text(target.nodeId)
-      const block = blocks.find(candidate => candidate.id === nodeId)
-        ?? blocks.find(candidate => array(record(candidate.metadata.source).sourceRefs).some(ref => text(record(ref).nodeId) === nodeId))
+      const block = paragraphs.find(candidate => candidate.id === nodeId)
+        ?? paragraphs.find(candidate => array(record(candidate.metadata.source).sourceRefs).some(ref => text(record(ref).nodeId) === nodeId))
       if (!block) return []
-      const startOffset = Math.max(0, finite(target.start))
-      const endOffset = Math.max(startOffset, finite(target.end, startOffset))
-      if (endOffset === startOffset) return []
+      const startOffset = optionalNumber(target.start), end = optionalNumber(target.end)
+      if (startOffset === undefined || end === undefined || !Number.isSafeInteger(startOffset) || !Number.isSafeInteger(end) || startOffset < 0 || end < startOffset) return []
       const sourceText = block.runs.map(run => run.text).join('')
+      const endOffset = Math.min(end, sourceText.length)
+      if (startOffset > sourceText.length || !validBoundary(sourceText, startOffset) || !validBoundary(sourceText, endOffset)) return []
       const anchorText = sourceText.slice(startOffset, endOffset)
-      if (!anchorText) return []
+      if (!anchorText && end !== startOffset) return []
       return [{ blockId: block.id, startOffset, endOffset: startOffset + anchorText.length, text: anchorText }]
     })
     const rootMessage = importedCommentMessage(raw, id)
@@ -349,7 +483,10 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks
   Object.assign(result, normalizeDocumentNotes(data, result.blocks))
   result.comments = normalizeDocumentComments(data.comments, result.blocks)
-  result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks)
+  const defaultStyle = normalizeDefaultStyle(data.defaultStyle)
+  if (defaultStyle) result.defaultStyle = defaultStyle
+  else delete result.defaultStyle
+  result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks, result)
   const breaks = result.blocks.filter(block => block.type === 'sectionBreak')
   array(data.sectionLayout).forEach((raw, index) => {
     const section = record(raw)

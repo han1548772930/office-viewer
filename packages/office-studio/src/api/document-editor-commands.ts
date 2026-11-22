@@ -16,6 +16,7 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.delete': '删除内容',
   'doc.command.format-text': '设置字符格式',
   'doc.command.apply-format-painter': '应用格式刷',
+  'doc.command.clear-formatting': '清除格式',
   'doc.command.format-paragraph': '设置段落格式',
   'doc.command.change-paragraph-indent': '调整段落缩进',
   'doc.command.set-paragraph-named-style': '设置段落样式',
@@ -76,7 +77,7 @@ export function applyDocumentEditorCommand(model: DocumentModel, request: Docume
   if (request.command.id === 'doc.command.insert-text' || request.command.id === 'doc.command.delete') {
     assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForSelection(model, selection))
     codeSelection = request.command.id === 'doc.command.insert-text'
-      ? editCodeBlockText(model, selection, { text: request.command.text })
+      ? editCodeBlockText(model, selection, { text: request.command.text, marks: request.command.marks })
       : editCodeBlockText(model, selection, { deleteDirection: request.command.direction })
   }
   const nextSelection = codeSelection ?? executeDocumentCommand(model, selection, request.command, permissionContext)

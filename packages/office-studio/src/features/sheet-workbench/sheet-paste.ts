@@ -3,6 +3,7 @@ import { translateFormulaReferences } from '../formula/formula-references.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
 import { inferSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { sheetCellNumberValue, sheetCellStoredValueType } from './sheet-number-presentation.ts'
+import { sheetCellWrapStrategy } from './sheet-cell-layout.ts'
 
 export type SheetPasteMode = 'all' | 'values' | 'formulas' | 'formats' | 'columnWidths' | 'exceptBorders'
 
@@ -36,7 +37,7 @@ export interface SheetPastePlan {
 
 const FORMAT_KEYS = [
   'bold', 'italic', 'underline', 'strike', 'align', 'vertical', 'background', 'color',
-  'fontSize', 'fontFamily', 'numberFormat', 'rawNumberFormat', 'wrap', 'border', 'rotation',
+  'fontSize', 'fontFamily', 'numberFormat', 'rawNumberFormat', 'wrap', 'wrapStrategy', 'border', 'rotation',
   'rotationVertical', 'indent', 'shrinkToFit',
 ] as const satisfies readonly (keyof ExcelCellView)[]
 
@@ -137,6 +138,9 @@ function pasteFormat(source: ExcelCellView | undefined, target: ExcelCellView): 
       if (value !== undefined) Object.assign(formatted, { [key]: value })
     }
   }
+  formatted.wrapStrategy = sheetCellWrapStrategy(sourceStyle)
+  formatted.wrap = formatted.wrapStrategy === 'wrap'
+  if (formatted.wrap) formatted.shrinkToFit = false
   return {
     ...formatted,
     value: target.value,

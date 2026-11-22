@@ -1,5 +1,6 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
-import { blockAtPoint, defaultParagraphStyle, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed, type DocumentSelection, type RunPatch } from '../model/document-model'
+import { blockAtPoint, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed, type DocumentSelection, type RunPatch } from '../model/document-model'
+import { documentDefaultStyle } from '../model/document-default-style'
 import { blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, type DocumentNumberingDefinition } from '../model/document-numbering'
 
 type CharacterFormat = Required<Pick<RunPatch, 'fontFamily' | 'eastAsiaFontFamily' | 'fontSize' | 'color' | 'bold' | 'italic' | 'underline' | 'strike' | 'verticalAlign' | 'highlight'>>
@@ -10,13 +11,14 @@ export interface DocumentPainterFormat { text: CharacterFormat; paragraph?: Para
 
 function characterFormat(marks: RunPatch): CharacterFormat {
   // Copy only appearance. Hyperlinks, field codes and annotation metadata belong to the target.
-  return { fontFamily: marks.fontFamily ?? 'Arial', eastAsiaFontFamily: marks.eastAsiaFontFamily ?? marks.fontFamily ?? 'Arial', fontSize: marks.fontSize ?? 11, color: marks.color ?? '#1f2937',
+  return { fontFamily: marks.fontFamily ?? 'Aptos', eastAsiaFontFamily: marks.eastAsiaFontFamily ?? marks.fontFamily ?? 'Aptos', fontSize: marks.fontSize ?? 11, color: marks.color ?? '#1f2937',
     bold: marks.bold ?? false, italic: marks.italic ?? false, underline: marks.underline ?? false, strike: marks.strike ?? false,
     highlight: marks.highlight ?? '', verticalAlign: marks.verticalAlign ?? 'baseline' }
 }
 
-export function clearDocumentFormat(): DocumentPainterFormat {
-  return { text: characterFormat({}), paragraph: { type: 'paragraph', level: 0, style: defaultParagraphStyle() } }
+export function clearDocumentFormat(model?: DocumentModel): DocumentPainterFormat {
+  const defaults = documentDefaultStyle(model)
+  return { text: characterFormat(defaults.text), paragraph: { type: 'paragraph', level: 0, style: { ...defaults.paragraph } } }
 }
 
 export function captureDocumentFormat(model: DocumentModel, selection: DocumentSelection): DocumentPainterFormat | undefined {
@@ -37,13 +39,18 @@ export function captureDocumentFormat(model: DocumentModel, selection: DocumentS
 export function documentPainterTarget(model: DocumentModel, selection: DocumentSelection): DocumentSelection | undefined {
   if (!selectionCollapsed(selection)) return selection
   const point = selection.focus, text = runText(runsForTarget(model, point))
+  const word = documentFormattingWordRange(text, point.offset)
+  if (word) return { anchor: { ...point, offset: word.start }, focus: { ...point, offset: word.end } }
+}
+
+export function documentFormattingWordRange(text: string, offset: number): { start: number; end: number } | undefined {
   const segments = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'word' }).segment(text) : undefined
-  for (const at of [point.offset, point.offset - 1]) {
+  for (const at of [offset, offset - 1]) {
     if (at < 0 || at >= text.length) continue
     const segment = segments?.containing(at)
     const word = segments ? (segment?.isWordLike ? { start: segment.index, length: segment.segment.length } : undefined)
       : Array.from(text.matchAll(/[\p{L}\p{N}\p{M}_]+/gu), match => ({ start: match.index!, length: match[0].length })).find(word => at >= word.start && at < word.start + word.length)
-    if (word) return { anchor: { ...point, offset: word.start }, focus: { ...point, offset: word.start + word.length } }
+    if (word) return { start: word.start, end: word.start + word.length }
   }
 }
 

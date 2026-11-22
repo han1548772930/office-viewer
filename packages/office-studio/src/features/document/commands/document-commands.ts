@@ -8,9 +8,12 @@ import { deleteDocumentToc, updateDocumentToc, type DocumentTocPageNumbers, type
 import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { documentTocIdAtBlock } from '../toc/document-toc'
 import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
+import { applyDocumentClearFormatting, applyDocumentStoryClearFormatting, prepareDocumentClearFormatting } from '../services/document-clear-formatting'
+import type { DocumentStoryRange } from '../model/document-story'
 import { selectionFontPatch } from '../model/document-font'
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
-import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
+import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
+import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
@@ -25,6 +28,7 @@ export type DocumentCommand =
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'> }
   | { id: 'doc.command.apply-format-painter'; format: DocumentPainterFormat }
+  | { id: 'doc.command.clear-formatting'; story?: DocumentStoryRange }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
   | { id: 'doc.command.change-paragraph-indent'; direction: -1 | 1 }
   | { id: 'doc.command.set-paragraph-named-style'; namedStyle: DocumentNamedParagraphStyle }
@@ -86,7 +90,7 @@ function pointForBlock(template: DocumentPoint, block: DocumentBlock, offset: nu
 export function documentTabCommand(model: DocumentModel, selection: DocumentSelection, shift: boolean): DocumentCommand | undefined {
   const targets = selectedTargets(model, selection), direction = shift ? -1 : 1
   const blocks = targets.map(target => blockAtPoint(model, target))
-  const isList = (b?: DocumentBlock) => !!b && ['numbered', 'bullet', 'checklist'].includes(b.type)
+  const isList = (b?: DocumentBlock) => !!b && blockHasNumbering(b)
   if (blocks.length > 1 && blocks.some(isList)) return { id: 'doc.command.change-list-nesting-level', direction }
   const block = blocks[0], target = targets[0]
   if (block && target && isList(block) && orderedSelection(model, selection).start.offset === 0) {
@@ -106,6 +110,48 @@ function targetForBlock(model: DocumentModel, block: DocumentBlock): TextTarget 
   return textTargets(model).find(target => blockAtPoint(model, target) === block)
 }
 
+function replaceImportedNumberingMarkers(model: DocumentModel, targets: readonly TextTarget[], selection: DocumentSelection, context: DocumentPermissionContext): DocumentSelection {
+  const plans = targets.flatMap(target => {
+    const block = blockAtPoint(model, target)
+    return block?.metadata.officeNumberingMarker ? [{ target, block, length: officeNumberingPrefixLength(block) ?? 0 }] : []
+  })
+  if (!plans.length) return selection
+  assertDocumentPermission(model.permissionRules ?? [], context, 'edit', plans.flatMap(({ target, length }) => permissionTargetsForSelection(model, {
+    anchor: { ...target, offset: 0 }, focus: { ...target, offset: length },
+  })))
+  const controlPlan: DocumentModel = { ...model, contentControls: model.contentControls && getDocumentContentControls(model) }
+  for (const { target, length } of plans) {
+    if (length) transformContentControlsForBlockEdit(controlPlan, target.cellBlockId ?? target.blockId, 0, length, 0)
+  }
+  model.contentControls = controlPlan.contentControls
+  for (const { target, block, length } of plans) {
+    if (length) {
+      let remaining = length
+      const bodyRuns: DocumentRun[] = []
+      for (const run of runsForTarget(model, target)) {
+        if (!run.text.length || remaining === 0) bodyRuns.push({ ...run })
+        else if (remaining >= run.text.length) remaining -= run.text.length
+        else { bodyRuns.push(...sliceRuns([run], remaining)); remaining = 0 }
+      }
+      // Cached labels may precede zero-length footnote/field objects. Keep
+      // those identities when the label is explicitly replaced or cleared.
+      block.runs = bodyRuns.length ? bodyRuns : [createRun()]
+      delete block.metadata.html
+      if (target.row !== undefined) {
+        const container = model.blocks.find(candidate => candidate.id === target.blockId)
+        if (container) delete container.metadata.html
+      }
+      transformDocumentCommentAnchorsForTextEdit(model, target.cellBlockId ?? target.blockId, 0, length, '')
+    }
+    delete block.metadata.officeNumberingMarker
+  }
+  const point = (current: DocumentPoint): DocumentPoint => {
+    const plan = plans.find(plan => sameTarget(plan.target, current))
+    return plan?.length ? { ...current, offset: Math.max(0, current.offset - plan.length) } : current
+  }
+  return { anchor: point(selection.anchor), focus: point(selection.focus) }
+}
+
 function legacyNumberingTargets(model: DocumentModel, block: DocumentBlock): TextTarget[] {
   const target = targetForBlock(model, block)
   if (!target) return []
@@ -118,13 +164,21 @@ function legacyNumberingTargets(model: DocumentModel, block: DocumentBlock): Tex
   return textTargets(model).filter(candidate => ids.has(candidate.cellBlockId ?? candidate.blockId))
 }
 
+function orderedNumberingParagraph(block: DocumentBlock | undefined): block is DocumentBlock {
+  if (!block || block.type === 'checklist' || !blockHasNumbering(block)) return false
+  const { level } = blockListLevel(block)
+  if (level) return level.format !== 'bullet' && !level.pictureBullet && level.pictureBulletId === undefined
+  const preset = blockListPreset(block)
+  return block.type === 'numbered' || !!preset && listKind(preset) === 'numbered'
+}
+
 function numberingCommandPlan(model: DocumentModel, selection: DocumentSelection): { block: DocumentBlock; targets: TextTarget[] } | undefined {
   const first = selectedTargets(model, selection)[0], block = first && blockAtPoint(model, first)
-  if (!first || block?.type !== 'numbered') return
+  if (!first || !orderedNumberingParagraph(block)) return
   const targets = textTargets(model), index = targets.findIndex(target => sameTarget(target, first)), id = blockNumberingId(block)
   const affected = id ? targets.slice(index).filter(target => {
     const candidate = blockAtPoint(model, target)
-    return candidate && ['numbered', 'bullet'].includes(candidate.type) && blockNumberingId(candidate) === id
+    return candidate && candidate.type !== 'checklist' && blockHasNumbering(candidate) && blockNumberingId(candidate) === id
   }) : legacyNumberingTargets(model, block).filter(target => targets.findIndex(candidate => sameTarget(candidate, target)) >= index)
   return { block, targets: affected }
 }
@@ -133,12 +187,17 @@ function precedingCompatibleNumbering(model: DocumentModel, block: DocumentBlock
   const targets = textTargets(model), current = targets.findIndex(target => blockAtPoint(model, target) === block), key = numberingStyleKey(block)
   for (let index = current - 1; index >= 0; index--) {
     const candidate = blockAtPoint(model, targets[index]!)
-    if (candidate?.type === 'numbered' && numberingStyleKey(candidate) === key) return candidate
+    if (orderedNumberingParagraph(candidate) && numberingStyleKey(candidate) === key) return candidate
   }
 }
 
 function sameNumberingSequence(model: DocumentModel, previous: DocumentBlock, block: DocumentBlock): boolean {
   const id = blockNumberingId(block), previousId = blockNumberingId(previous)
+  const definition = blockNumberingDefinition(block), previousDefinition = blockNumberingDefinition(previous)
+  if (id && previousId && definition?.abstract.consecutiveNumbering === true && previousDefinition?.abstract.consecutiveNumbering === true) {
+    return numberingStyleKey(previous) === numberingStyleKey(block)
+      && consecutiveNumberingGroup(definition, id).id === consecutiveNumberingGroup(previousDefinition, previousId).id
+  }
   if (id || previousId) return !!id && id === previousId
   return legacyNumberingTargets(model, previous).some(target => blockAtPoint(model, target) === block)
 }
@@ -154,7 +213,7 @@ export function canRestartDocumentNumbering(model: DocumentModel, selection: Doc
   const plan = numberingCommandPlan(model, selection)
   if (!plan) return false
   const preset = blockListPreset(plan.block), source = blockNumberingDefinition(plan.block) ?? (preset ? presetNumberingDefinition(preset) : undefined)
-  return !!source?.levels.some(level => level.ilvl === plan.block.level) && numberingPermissionsAllowed(model, plan.targets, permissionContext)
+  return !!source?.levels.some(level => level.ilvl === blockNumberingLevelIndex(plan.block)) && numberingPermissionsAllowed(model, plan.targets, permissionContext)
 }
 
 export function canContinueDocumentNumbering(model: DocumentModel, selection: DocumentSelection, permissionContext?: DocumentPermissionContext): boolean {
@@ -222,7 +281,7 @@ export function executeDocumentCommand(
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
-  } else if (command.id !== 'doc.command.change-paragraph-indent') {
+  } else if (command.id !== 'doc.command.change-paragraph-indent' && !(command.id === 'doc.command.clear-formatting' && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   switch (command.id) {
@@ -234,10 +293,19 @@ export function executeDocumentCommand(
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
     case 'doc.command.delete': return deleteContent(model, selection, command.direction)
     case 'doc.command.format-text': formatText(model, selection, selectionFontPatch(model, selection, documentRunFormatPatch(command.patch, command.clearFields))); return selection
+    case 'doc.command.clear-formatting': {
+      if (command.story) { applyDocumentStoryClearFormatting(model, command.story, context); return selection }
+      const plan = prepareDocumentClearFormatting(model, selection, context)
+      if (!plan) return selection
+      const range = replaceImportedNumberingMarkers(model, plan.targets, plan.range, context)
+      applyDocumentClearFormatting(model, range, plan.targets, plan.defaults)
+      return range
+    }
     case 'doc.command.apply-format-painter': {
-      const range = documentPainterTarget(model, selection)
+      let range = documentPainterTarget(model, selection)
       if (!range) return selection
       assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(model, range))
+      if (command.format.paragraph) range = replaceImportedNumberingMarkers(model, selectedTargets(model, range), range, context)
       formatText(model, range, command.format.text)
       const paragraph = command.format.paragraph
       if (paragraph) for (const target of selectedTargets(model, range)) {
@@ -260,6 +328,7 @@ export function executeDocumentCommand(
     case 'doc.command.change-paragraph-indent': {
       const changes = paragraphIndentPlan(model, selection, command.direction)
       assertDocumentPermission(model.permissionRules ?? [], context, 'edit', changes.flatMap(change => permissionTargetsForSelection(model, collapsedSelection({ ...change.target, offset: 0 }))))
+      selection = replaceImportedNumberingMarkers(model, changes.filter(change => change.level !== undefined).map(change => change.target), selection, context)
       for (const change of changes) {
         if (change.level !== undefined) applyListNestingLevel(change.block, change.level)
         else if (change.firstLine !== undefined) applyDocumentParagraphStylePatch(change.block, { indentFirstLine: change.firstLine })
@@ -276,17 +345,25 @@ export function executeDocumentCommand(
     case 'doc.command.toggle-checklist-item': {
       const block = findBlockById(model.blocks, command.blockId)
       if (!block || block.type !== 'checklist') throw new RangeError('The selected block is not a checklist item.')
+      const target = targetForBlock(model, block)
+      if (target) {
+        assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(model, collapsedSelection({ ...target, offset: 0 })))
+        selection = replaceImportedNumberingMarkers(model, [target], selection, context)
+      }
       block.checklist = { listId: block.checklist?.listId || documentId('checklist'), checked: block.checklist?.checked !== true }
       return selection
     }
     case 'doc.command.change-list-nesting-level': {
       if (command.direction !== -1 && command.direction !== 1) throw new RangeError('List nesting direction must be -1 or 1')
-      for (const target of selectedTargets(model, selection)) {
+      const changes = selectedTargets(model, selection).flatMap(target => {
         const block = blockAtPoint(model, target)
-        if (!block || !blockHasNumbering(block)) continue
+        if (!block || !blockHasNumbering(block)) return []
         const { index, maximum } = blockListLevel(block)
-        applyListNestingLevel(block, Math.max(0, Math.min(maximum, index + command.direction)))
-      }
+        const level = Math.max(0, Math.min(maximum, index + command.direction))
+        return level === index ? [] : [{ target, block, level }]
+      })
+      selection = replaceImportedNumberingMarkers(model, changes.map(change => change.target), selection, context)
+      for (const change of changes) applyListNestingLevel(change.block, change.level)
       return selection
     }
     case 'doc.command.restart-list-numbering':
@@ -299,6 +376,7 @@ export function executeDocumentCommand(
         if (sameNumberingSequence(model, previous, plan.block)) return selection
         const previousTargets = blockNumberingId(previous) ? [] : legacyNumberingTargets(model, previous)
         assertDocumentPermission(model.permissionRules ?? [], context, 'edit', [...previousTargets, ...plan.targets].flatMap(target => permissionTargetsForSelection(model, collapsedSelection({ ...target, offset: 0 }))))
+        selection = replaceImportedNumberingMarkers(model, [...previousTargets, ...plan.targets], selection, context)
         if (!blockNumberingId(previous)) {
           const preset = blockListPreset(previous)
           const id = documentId('list')
@@ -311,23 +389,33 @@ export function executeDocumentCommand(
         }
         for (const target of plan.targets) {
           const block = blockAtPoint(model, target)
-          if (block) copyBlockNumbering(previous, block)
+          if (block) {
+            const level = blockNumberingLevelIndex(block)
+            copyBlockNumbering(previous, block)
+            if (!['numbered', 'bullet', 'checklist'].includes(block.type)) block.metadata.numberingLevel = level
+          }
         }
       } else {
         const start = command.start ?? 1
         if (!Number.isSafeInteger(start) || start < 0 || start > 2_147_483_647) throw new RangeError('The numbering start must be an integer between 0 and 2147483647')
         const preset = blockListPreset(plan.block)
         const source = blockNumberingDefinition(plan.block) ?? (preset ? presetNumberingDefinition(preset) : undefined)
-        if (!source?.levels.some(level => level.ilvl === plan.block.level)) throw new RangeError('The imported numbering definition has no editable level for this paragraph')
+        const level = blockNumberingLevelIndex(plan.block)
+        if (!source?.levels.some(candidate => candidate.ilvl === level)) throw new RangeError('The imported numbering definition has no editable level for this paragraph')
         assertDocumentPermission(model.permissionRules ?? [], context, 'edit', plan.targets.flatMap(target => permissionTargetsForSelection(model, collapsedSelection({ ...target, offset: 0 }))))
-        const instance = { ...source.instance, levelStartOverrides: { ...numberingRecord(source.instance.levelStartOverrides), [String(plan.block.level)]: start } }
-        const definition = numberingDefinitionFromParts(source.abstract, instance), id = documentId('list')
+        selection = replaceImportedNumberingMarkers(model, plan.targets, selection, context)
+        const id = documentId('list')
+        const instance: Record<string, unknown> = { ...source.instance, levelStartOverrides: { ...numberingRecord(source.instance.levelStartOverrides), [String(level)]: start } }
+        if (source.abstract.consecutiveNumbering === true) instance.consecutiveListId = id
+        const definition = numberingDefinitionFromParts(source.abstract, instance)
         for (const target of plan.targets) {
           const block = blockAtPoint(model, target)
           if (!block) continue
+          const targetLevel = blockNumberingLevelIndex(block)
           clearBlockNumbering(block)
           block.metadata.numberingDefinition = cloneNumberingDefinition(definition)
           block.metadata.numberingListId = id
+          if (!['numbered', 'bullet', 'checklist'].includes(block.type)) block.metadata.numberingLevel = targetLevel
           if (preset) block.list = { id, preset }
         }
       }
@@ -357,6 +445,7 @@ export function executeDocumentCommand(
       const checklistListId = type === 'checklist' && !toggleOff
         ? selectedChecklist?.checklist?.listId ?? adjacentChecklistId(model, targets[0]) ?? documentId('checklist')
         : undefined
+      selection = replaceImportedNumberingMarkers(model, targets, selection, context)
       targets.forEach((target) => {
         const block = blockAtPoint(model, target)
         if (!block) return
@@ -468,7 +557,10 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const after = sliceRuns(runsForTarget(model, end), end.offset)
   const startContainer = blockContainer(model, start)
   const endContainer = blockContainer(model, end)
-  const inherited = { ...marksAtPoint(model, start), ...marks }
+  // Replacing a range inherits its first selected character. A caret still
+  // inherits its left neighbor; otherwise typing after clear could revive the
+  // unselected prefix's appearance at a run boundary.
+  const inherited = { ...marksAtPoint(model, { ...start, offset: start.offset + (selectionCollapsed(selection) ? 0 : 1) }), ...marks }
   const startBlock = blockAtPoint(model, start)
   if (!startBlock) return selection
   const normalizedText = text.replace(/\r\n?/g, '\n')

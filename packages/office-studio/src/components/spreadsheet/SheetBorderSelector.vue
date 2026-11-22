@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { Button, ColorPicker, Form, FormItem, Select, Tooltip, theme } from 'antdv-next'
+import { computed } from 'vue'
+import { Button, Form, FormItem, Select, Tooltip, theme } from 'antdv-next'
+import SheetColorControl from './SheetColorControl.vue'
+import { sheetColorHex } from '../../features/sheet-workbench/sheet-colors.ts'
 import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset, type SheetBorderStyle } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 import type { OfficeTranslator } from '../../i18n/office-i18n.ts'
 
@@ -14,6 +16,9 @@ const props = defineProps<{
   value: SheetBorderOptions
   translate: OfficeTranslator
   preset: SheetBorderPreset
+  selectedColor?: string | null
+  mixed?: boolean
+  disabled?: boolean
 }>()
 const emit = defineEmits<{
   'update:value': [value: SheetBorderOptions]
@@ -21,33 +26,33 @@ const emit = defineEmits<{
 }>()
 
 const { token } = theme.useToken()
-const selectedColor = ref(props.value.color)
-const selectedStyle = ref<SheetBorderStyle>(props.value.style)
-watch(() => props.value, value => {
-  selectedColor.value = value.color
-  selectedStyle.value = value.style
-}, { deep: true })
+// Accepted command state owns the pen; rejected commands cannot leave local color/style behind.
+const selectedColor = computed(() => props.value.color)
+const selectedStyle = computed(() => props.value.style)
 
 const styleOptions = computed(() => styleOrder.map(value => ({ label: props.translate(`sheet.border.style.${value}`, sheetBorderStyleLabels[value]), value })))
+function renderStyleLabel(): string {
+  const style = styleOrder.find(value => value === selectedStyle.value)
+  return style ? props.translate(`sheet.border.style.${style}`, sheetBorderStyleLabels[style])
+    : selectedStyle.value === 'none' ? props.translate('sheet.border.style.none', '无边框线')
+      : props.translate('sheet.border.style.slant-dash-dot', '倾斜点划线')
+}
 const label = (preset: SheetBorderPreset) => props.translate(`sheet.items.sheet.menu.border.${preset}`, sheetBorderLabels[preset])
 
-function updateColor(value: unknown): void {
-  const color = typeof value === 'string'
-    ? value
-    : value && typeof value === 'object' && 'toHexString' in value && typeof value.toHexString === 'function'
-      ? value.toHexString()
-      : undefined
-  if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return
-  selectedColor.value = color
+function updateColor(_commandId: string, value?: string): void {
+  const color = sheetColorHex(value)
+  if (props.disabled || !color) return
   emit('update:value', { style: selectedStyle.value, color })
 }
 
 function updateStyle(value: unknown): void {
+  if (props.disabled) return
   const style = styleOrder.find(item => item === value)
-  if (style) { selectedStyle.value = style; emit('update:value', { style, color: selectedColor.value }) }
+  if (style) emit('update:value', { style, color: selectedColor.value })
 }
 
 function apply(preset: SheetBorderPreset): void {
+  if (props.disabled) return
   emit('insert', preset)
 }
 </script>
@@ -56,17 +61,17 @@ function apply(preset: SheetBorderPreset): void {
       <section class="border-selector" :style="{ '--edge-ink': token.colorText, '--edge-guide': token.colorBorder, '--edge-active': token.colorPrimaryBg }">
         <div class="border-selector-options">
           <Tooltip v-for="preset in presetOrder" :key="preset" :title="label(preset)">
-            <Button type="text" class="border-preset" :aria-label="label(preset)" :aria-pressed="props.preset === preset" @mousedown.prevent @click="apply(preset)">
+            <Button type="text" class="border-preset" :disabled="disabled" :aria-label="label(preset)" :aria-pressed="props.preset === preset" @mousedown.prevent @click="apply(preset)">
               <span class="border-preview" :class="`is-${preset}`"><svg v-if="preset.includes('pair') || preset.includes('triple')" viewBox="0 0 20 20" aria-hidden="true"><path :d="preset === 'diagonal-up-pair' ? 'M0 10 L20 0 L10 20' : preset === 'diagonal-down-triple' ? 'M20 10 L0 0 L10 20 M0 0 L20 20' : 'M20 10 L0 0 L10 20'" fill="none" stroke="currentColor" /></svg></span>
             </Button>
           </Tooltip>
         </div>
-        <Form class="border-selector-fields" layout="vertical" @submit.prevent>
+        <Form class="border-selector-fields" layout="vertical" :disabled="disabled" @submit.prevent>
           <FormItem class="border-color-field" :label="translate('sheet.border.color', '边框颜色')">
-            <ColorPicker :value="selectedColor" :disabled-alpha="true" :aria-label="translate('sheet.border.color', '边框颜色')" @update:value="updateColor" />
+            <SheetColorControl field="border" command-id="sheet.command.set-border-color" :title="translate('sheet.border.color', '边框颜色')" :last-color="selectedColor" :selected-color="props.selectedColor" :mixed="mixed" :disabled="disabled" :split="false" @execute="updateColor" />
           </FormItem>
           <FormItem class="border-style-field" :label="translate('sheet.border.line-style', '边框样式')">
-            <Select :value="selectedStyle" :options="styleOptions" :aria-label="translate('sheet.border.line-style', '边框样式')" size="small" @change="updateStyle" />
+            <Select :value="selectedStyle" :label-render="renderStyleLabel" :options="styleOptions" :disabled="disabled" :aria-label="translate('sheet.border.line-style', '边框样式')" size="small" @change="updateStyle" />
           </FormItem>
         </Form>
       </section>
@@ -94,6 +99,6 @@ function apply(preset: SheetBorderPreset): void {
 .border-selector-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
 .border-selector-fields :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .border-selector-fields :deep(.ant-form-item-label) { padding-bottom: 4px; font-size: 12px; }
-.border-color-field :deep(.ant-color-picker-trigger) { width: 100%; height: 28px; justify-content: flex-start; }
+.border-color-field :deep(.sheet-color-control) { width: 100%; height: 28px; }
 .border-style-field :deep(.ant-select) { width: 100%; }
 </style>

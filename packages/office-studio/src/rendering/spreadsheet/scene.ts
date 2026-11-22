@@ -5,43 +5,24 @@ import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseA
 import type { GridRange, GridViewport } from './layout'
 import { presentSheetCellNumber } from '../../features/sheet-workbench/sheet-number-presentation.ts'
 import { sheetCellTextAlignment } from '../../features/sheet-workbench/sheet-cell-alignment.ts'
-import { positionSheetNumberFormatRuns } from '../../features/sheet-workbench/number-format-render.ts'
+import { canSheetCellTextOverflow } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
+import { createSheetCellTextCommands } from './cell-text.ts'
+import { createSheetBorderLines as createBorderLines } from './borders.ts'
 import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
 import { conditionalIconPreset } from '../../features/conditional-formatting/conditional-icon-presets.ts'
 import { evaluateFormula } from '../../features/formula/formula-engine.ts'
-import { translateFormulaReferences } from '../../features/formula/formula-references.ts'
+import { conditionalFormatFormulaAt } from '../../features/conditional-formatting/conditional-format-formulas.ts'
 import { createBlankSheet, defaultCellStyle, type SpreadsheetCell, type WorkbookModel } from '../../domain/model.ts'
-import { SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
+import { sheetRangeDashedOutlineCommands, SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
 import { crosshairHighlightRanges } from '../../features/sheet-crosshair/crosshair-highlight.ts'
+import { sheetMergedBorderSegments } from '../../features/sheet-workbench/sheet-cell-border.ts'
+import type { CellRange } from '../../domain/model.ts'
 
-let textMeasureContext: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined
 function gradientDataBarColor(color: string, strength: number): string {
   const channels = color.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
   if (!channels) return color
   return `#${channels.slice(1).map(channel => Math.round(255 + (parseInt(channel, 16) - 255) * (0.2 + 0.8 * strength)).toString(16).padStart(2, '0')).join('')}`
-}
-function measureTextWidth(text: string, font: string): number | undefined {
-  if (textMeasureContext === undefined) textMeasureContext = typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(1, 1).getContext('2d') : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
-  if (!textMeasureContext) return undefined
-  textMeasureContext.font = font
-  return textMeasureContext.measureText(text).width
-}
-function decorationWidth(text: string, font: string, available: number): number {
-  return Math.min(available, measureTextWidth(text, font) ?? available)
-}
-function rotatePoint(x: number, y: number, originX: number, originY: number, degrees: number): [number, number] {
-  const radians = degrees * Math.PI / 180
-  const cosine = Math.cos(radians), sine = Math.sin(radians)
-  return [originX + (x - originX) * cosine - (y - originY) * sine,
-    originY + (x - originX) * sine + (y - originY) * cosine]
-}
-function graphemes(text: string): string[] {
-  if (typeof Intl.Segmenter === 'function') {
-    return [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map(item => item.segment)
-  }
-  return Array.from(text)
 }
 
 export interface SheetNumberFormatPreview { pattern: string; ranges: readonly GridRange[] }
@@ -59,6 +40,10 @@ export interface SpreadsheetSceneOptions {
   selectedRanges?: readonly GridRange[]
   /** Helper outline shown while the fill handle is being dragged. */
   fillPreviewRange?: GridRange
+  /** Format-painter source is a transient view mark, rendered only by its owning worksheet. */
+  formatPainterSource?: GridRange
+  formatPainterColor?: string
+  suppressFillHandle?: boolean
   searchText?: string
   /** Temporary presentation for selected numeric cells; it is excluded from document history. */
   numberFormatPreview?: SheetNumberFormatPreview
@@ -104,23 +89,23 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     ? options.selectedRanges
     : active ? [{ startRow: active.row, endRow: active.row, startColumn: active.column, endColumn: active.column }] : []
   const isSelected = (row: number, column: number) => selected.has(cellAddress(row, column)) || options.selectedRanges?.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)
-  const paintCell = (row: number, column: number, clip: RenderRect) => {
+  const paintCell = (row: number, column: number, clip: RenderRect, foreground: DrawCommand[], borders: DrawCommand[], visibleRange: CellRange, foregroundOnly = false) => {
     const key = cellAddress(row, column), cell = geometry.sheet.cells[key], rect = geometry.cellRect(row, column, viewport)
+    const merge = geometry.mergeAt(row, column)
     const visible = intersectRect(rect, clip)
-    if (visible.width <= 0 || visible.height <= 0) return
-    commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? '#ffffff', clip })
+    if (rect.width <= 0 || rect.height <= 0 || !foregroundOnly && (visible.width <= 0 || visible.height <= 0)) return
+    if (!foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? '#ffffff', clip })
     const conditionalFormulaValue = (formula: string, rule: NonNullable<typeof geometry.sheet.conditionalFormats>[number]) => {
-        const firstRange = [...rule.ranges].sort((left, right) => left.startRow - right.startRow || left.startCol - right.startCol)[0]
-        if (!firstRange) return undefined
         try {
-          const translated = translateFormulaReferences(formula, row - firstRange.startRow, column - firstRange.startCol)
-          return evaluateFormula(translated.startsWith('=') ? translated : `=${translated}`, formulaWorkbook, formulaSheet.id)
+          const translated = conditionalFormatFormulaAt(formula, rule, row, column)
+          if (translated === undefined) return undefined
+          return evaluateFormula(translated.startsWith('=') ? translated : `=${translated}`, formulaWorkbook, formulaSheet.id, { formulaCell: { row, column } })
         } catch { return undefined }
       }
     const conditionalStyle = conditionalFormatStyleAt(geometry.sheet.conditionalFormats ?? [], row, column, cell?.rawValue, [], conditionalScopeValues,
       (formula, rule) => { const result = conditionalFormulaValue(formula, rule); return result === true || typeof result === 'number' && result !== 0 }, conditionalFormulaValue)
-    if (conditionalStyle.fill) commands.push({ kind: 'rect', ...rect, fill: conditionalStyle.fill, clip })
-    if (conditionalStyle.dataBar) {
+    if (conditionalStyle.fill && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: conditionalStyle.fill, clip })
+    if (conditionalStyle.dataBar && !foregroundOnly) {
       const bar = conditionalStyle.dataBar
       const width = rect.width * bar.fraction
       const x = rect.x + rect.width * bar.start - (bar.negative ? width : 0)
@@ -134,27 +119,30 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       } else commands.push({ kind: 'rect', x, y: rect.y + rect.height * 0.18, width, height: rect.height * 0.64, fill: bar.color, clip })
     }
     const conditionalIcon = conditionalStyle.icon ? conditionalIconPreset(conditionalStyle.icon.iconType, conditionalStyle.icon.iconId) : undefined
-    if (conditionalIcon) commands.push({ kind: 'text', x: rect.x + 10 * z, y: rect.y + rect.height / 2, text: conditionalIcon.symbol, font: `${16 * z}px "Segoe UI Symbol", sans-serif`, color: conditionalIcon.color, align: 'center', baseline: 'middle', clip })
-    if (geometry.sheet.showGridlines !== false) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
-    if (isSelected(row, column)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
-    if (cell?.border) {
-      for (const side of ['top', 'bottom', 'left', 'right'] as const) {
-        const raw = cell.border[side]
-        const edge = borderEdge(raw)
+    if (conditionalIcon && !foregroundOnly) foreground.push({ kind: 'text', x: rect.x + 10 * z, y: rect.y + rect.height / 2, text: conditionalIcon.symbol, font: `${16 * z}px "Segoe UI Symbol", sans-serif`, color: conditionalIcon.color, align: 'center', baseline: 'middle', clip: intersectRect(rect, clip) })
+    if (geometry.sheet.showGridlines !== false && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
+    if (isSelected(row, column) && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
+    if ((cell?.border || merge) && !foregroundOnly) {
+      const segments = merge ? sheetMergedBorderSegments({ startRow: merge.startRow, endRow: merge.endRow, startCol: merge.startColumn, endCol: merge.endColumn },
+        (segmentRow, segmentCol) => geometry.sheet.cells[cellAddress(segmentRow, segmentCol)]?.border, visibleRange)
+        : (['top', 'bottom', 'left', 'right'] as const).map(side => ({ side, row, col: column, edge: cell?.border?.[side] }))
+      for (const segment of segments) {
+        const { side } = segment, edge = borderEdge(segment.edge)
         if (!edge) continue
+        const edgeRect = merge ? geometry.cellRect(segment.row, segment.col, viewport, false) : rect
         const horizontal = side === 'top' || side === 'bottom'
-        const borderX = side === 'right' ? rect.x + rect.width : rect.x
-        const borderY = side === 'bottom' ? rect.y + rect.height : rect.y
-        commands.push(...createBorderLines(borderX, borderY, horizontal ? rect.x + rect.width : borderX,
-          horizontal ? borderY : rect.y + rect.height, edge.style, edge.color, z, clip))
+        const borderX = side === 'right' ? edgeRect.x + edgeRect.width : edgeRect.x
+        const borderY = side === 'bottom' ? edgeRect.y + edgeRect.height : edgeRect.y
+        borders.push(...createBorderLines(borderX, borderY, horizontal ? edgeRect.x + edgeRect.width : borderX,
+          horizontal ? borderY : edgeRect.y + edgeRect.height, edge.style, edge.color, z, clip))
       }
-      const diagonalDown = borderEdge(cell.border.diagonalDown)
-      if (diagonalDown) commands.push(...createBorderLines(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, diagonalDown.style, diagonalDown.color, z, clip))
-      const diagonalUp = borderEdge(cell.border.diagonalUp)
-      if (diagonalUp) commands.push(...createBorderLines(rect.x, rect.y + rect.height, rect.x + rect.width, rect.y, diagonalUp.style, diagonalUp.color, z, clip))
+      const diagonalDown = borderEdge(cell?.border?.diagonalDown ?? cell?.border?.diagonal)
+      if (diagonalDown) borders.push(...createBorderLines(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, diagonalDown.style, diagonalDown.color, z, clip))
+      const diagonalUp = borderEdge(cell?.border?.diagonalUp)
+      if (diagonalUp) borders.push(...createBorderLines(rect.x, rect.y + rect.height, rect.x + rect.width, rect.y, diagonalUp.style, diagonalUp.color, z, clip))
       for (const [key, x1, y1, x2, y2] of compoundDiagonalSegments) {
-        const edge = borderEdge(cell.border[key])
-        if (edge) commands.push(...createBorderLines(rect.x + x1 * rect.width, rect.y + y1 * rect.height,
+        const edge = borderEdge(cell?.border?.[key])
+        if (edge) borders.push(...createBorderLines(rect.x + x1 * rect.width, rect.y + y1 * rect.height,
           rect.x + x2 * rect.width, rect.y + y2 * rect.height, edge.style, edge.color, z, clip))
       }
     }
@@ -162,92 +150,48 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       sheetNumberFormatPreviewPatternAt(options.numberFormatPreview, row, column))
     const hideValue = Boolean(conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue)
     const text = hideValue ? '' : presentation.text
-    if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
+    if (search && text.toLocaleLowerCase().includes(search) && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
     if (text || !hideValue && presentation.runs?.some(run => run.kind === 'fill' && run.character.trim())) {
       const align = sheetCellTextAlignment(cell)
-      const baseFontSize = (cell?.fontSize ?? 11) * 4 / 3 * z
-      const fontFamily = cell?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif'
-      const fontPrefix = `${conditionalStyle.italic ?? cell?.italic ? 'italic ' : ''}${conditionalStyle.bold ?? cell?.bold ? '600 ' : ''}`
-      const font = `${fontPrefix}${baseFontSize}px ${fontFamily}`
       const iconPadding = conditionalIcon ? 18 * z : 0
-      const availableTextWidth = Math.max(0, rect.width - 12 * z - iconPadding)
-      const measuredWidth = cell?.shrinkToFit && cell.wrap !== true ? measureTextWidth(text, font) : undefined
-      const maxWidth = measuredWidth !== undefined && measuredWidth > availableTextWidth && availableTextWidth > 0
-        ? availableTextWidth
-        : undefined
-      const fontSize = baseFontSize
-      const x = align === 'center' ? rect.x + (rect.width + iconPadding) / 2 : align === 'right' ? rect.x + rect.width - 6 * z : rect.x + 6 * z + iconPadding
-      const rotation = cell?.rotation ?? 0
-      const textClip = intersectRect(clip, { x: rect.x + 3 * z + iconPadding, y: rect.y + 1, width: Math.max(0, rect.width - 6 * z - iconPadding), height: Math.max(0, rect.height - 2) })
-      const y = cell?.vertical === 'top' ? rect.y + 3 * z + fontSize / 2 : cell?.vertical === 'bottom' ? rect.y + rect.height - 3 * z - fontSize / 2 : rect.y + rect.height / 2
-      const color = conditionalStyle.fontColor ?? presentation.color ?? (cell?.hyperlink ? '#0563c1' : cell?.color) ?? '#243247'
-      const measureRun = (value: string) => measureTextWidth(value, font) ?? Array.from(value).length * fontSize * 0.55
-      const runLayout = !cell?.rotationVertical && presentation.runs
-        ? positionSheetNumberFormatRuns(presentation.runs, availableTextWidth, measureRun) : undefined
-      if (cell?.rotationVertical) {
-        const glyphs = graphemes(text)
-        const lineHeight = fontSize
-        const blockHeight = glyphs.length * lineHeight
-        const top = cell.vertical === 'top' ? rect.y + 3 * z
-          : cell.vertical === 'bottom' ? rect.y + rect.height - 3 * z - blockHeight
-            : rect.y + (rect.height - blockHeight) / 2
-        const centerX = rect.x + rect.width / 2
-        for (const [index, glyph] of glyphs.entries()) {
-          const glyphY = top + index * lineHeight + lineHeight / 2
-          commands.push({ kind: 'text', x: centerX, y: glyphY, text: glyph, font, color, align: 'center', baseline: 'middle', clip: textClip })
-          if ((conditionalStyle.underline ?? (cell.hyperlink ? true : cell.underline)) || (conditionalStyle.strike ?? cell.strike)) {
-            const width = decorationWidth(glyph, font, availableTextWidth)
-            const left = centerX - width / 2
-            if (conditionalStyle.underline ?? (cell.hyperlink ? true : cell.underline)) commands.push({ kind: 'line', x1: left, y1: glyphY + lineHeight * 0.55, x2: left + width, y2: glyphY + lineHeight * 0.55, color, clip: textClip })
-            if (conditionalStyle.strike ?? cell.strike) commands.push({ kind: 'line', x1: left, y1: glyphY, x2: left + width, y2: glyphY, color, clip: textClip })
-          }
+      let start = rect.x + 3 * z + iconPadding, end = rect.x + rect.width - 3 * z
+      if (canSheetCellTextOverflow(cell) && !merge) {
+        const bounds = geometry.overflowColumnBounds(row, column)
+        if (align !== 'left') start = geometry.cellRect(row, bounds.startColumn, viewport, false).x + 3 * z + iconPadding
+        if (align !== 'right') {
+          const last = geometry.cellRect(row, bounds.endColumn, viewport, false)
+          end = last.x + last.width - 3 * z
         }
-      } else if (runLayout) {
-        const scale = cell?.shrinkToFit && cell.wrap !== true && runLayout.width > availableTextWidth && runLayout.width > 0
-          ? availableTextWidth / runLayout.width : 1
-        const width = runLayout.width * scale
-        const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
-        for (const run of runLayout.runs) {
-          if (!run.text) continue
-          const offsetX = left + run.offset * scale
-          const [runX, runY] = rotatePoint(offsetX, y, x, y, rotation)
-          const runWidth = measureRun(run.text) * scale
-          commands.push({ kind: 'text', x: runX, y: runY, text: run.text, font, color, align: 'left', baseline: 'middle', rotation,
-            ...(scale < 1 ? { maxWidth: runWidth } : {}), clip: textClip })
-          const decoration = (offsetY: number) => {
-            const [x1, y1] = rotatePoint(offsetX, y + offsetY, x, y, rotation)
-            const [x2, y2] = rotatePoint(offsetX + runWidth, y + offsetY, x, y, rotation)
-            commands.push({ kind: 'line', x1, y1, x2, y2, color, clip: textClip })
-          }
-          if (conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) decoration(fontSize * 0.55)
-          if (conditionalStyle.strike ?? cell?.strike) decoration(0)
-        }
-      } else {
-        commands.push({ kind: 'text', x, y, text, font, color, align, baseline: 'middle', rotation, maxWidth, clip: textClip })
       }
-      if (!cell?.rotationVertical && !runLayout && ((conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) || (conditionalStyle.strike ?? cell?.strike))) {
-        const width = decorationWidth(text, font, Math.max(0, rect.width - 12 * z))
-        const left = align === 'center' ? x - width / 2 : align === 'right' ? x - width : x
-        const decoration = (offsetY: number) => {
-          const [x1, y1] = rotatePoint(left, y + offsetY, x, y, rotation)
-          const [x2, y2] = rotatePoint(left + width, y + offsetY, x, y, rotation)
-          commands.push({ kind: 'line', x1, y1, x2, y2, color, clip: textClip })
-        }
-        if (conditionalStyle.underline ?? (cell?.hyperlink ? true : cell?.underline)) decoration(fontSize * 0.55)
-        if (conditionalStyle.strike ?? cell?.strike) decoration(0)
-      }
+      const textClip = intersectRect(clip, { x: start, y: rect.y + z, width: Math.max(0, end - start), height: Math.max(0, rect.height - 2 * z) })
+      foreground.push(...createSheetCellTextCommands({ cell, presentation: { ...presentation, text }, rect, clip: textClip, zoom: z, iconPadding,
+        color: conditionalStyle.fontColor, underline: conditionalStyle.underline, strike: conditionalStyle.strike,
+        fontOverrides: { bold: conditionalStyle.bold, italic: conditionalStyle.italic } }))
     }
-    commands.push(...sparklineCommandsForCell(geometry.sheet, cell, rect))
+    if (!foregroundOnly) foreground.push(...sparklineCommandsForCell(geometry.sheet, cell, rect).map(command => ({ ...command, clip: intersectRect(command.clip ?? rect, clip) })))
   }
   for (const pane of panes) {
     if (pane.clip.width <= 0 || pane.clip.height <= 0) continue
     const anchors = new Set<string>()
+    const foreground: DrawCommand[] = [], borders: DrawCommand[] = []
+    const visibleRange = { startRow: pane.rows[0] ?? 0, endRow: pane.rows.at(-1) ?? -1,
+      startCol: pane.columns[0] ?? 0, endCol: pane.columns.at(-1) ?? -1 }
     for (const row of pane.rows) for (const column of pane.columns) {
       const merge = geometry.mergeAt(row, column)
       if (merge) anchors.add(cellAddress(merge.startRow, merge.startColumn))
-      else paintCell(row, column, pane.clip)
+      else paintCell(row, column, pane.clip, foreground, borders, visibleRange)
     }
-    for (const address of anchors) { const cell = parseAddress(address)!; paintCell(cell.row, cell.column, pane.clip) }
+    for (const address of anchors) { const cell = parseAddress(address)!; paintCell(cell.row, cell.column, pane.clip, foreground, borders, visibleRange) }
+    const firstColumn = pane.columns[0], lastColumn = pane.columns.at(-1)
+    if (firstColumn !== undefined && lastColumn !== undefined) {
+      for (const row of pane.rows) {
+        for (const column of [geometry.contentColumnBefore(row, firstColumn), geometry.contentColumnAfter(row, lastColumn)]) {
+          if (column === undefined || (column < geometry.frozenColumns) !== (firstColumn < geometry.frozenColumns)
+            || geometry.mergeAt(row, column) || !canSheetCellTextOverflow(geometry.sheet.cells[cellAddress(row, column)])) continue
+          paintCell(row, column, pane.clip, foreground, borders, visibleRange, true)
+        }
+      }
+    }
     if (options.crosshairHighlight?.enabled) {
       const ranges = crosshairHighlightRanges(selectionRanges, geometry.sheet.rowCount, geometry.sheet.columnCount)
       for (const range of ranges) {
@@ -259,6 +203,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         commands.push({ kind: 'rect', x: start.x, y: start.y, width: end.x + end.width - start.x, height: end.y + end.height - start.y, fill: options.crosshairHighlight.color, clip: pane.clip })
       }
     }
+    commands.push(...borders, ...foreground)
     for (let rangeIndex = 0; rangeIndex < selectionRanges.length; rangeIndex += 1) {
       const range = selectionRanges[rangeIndex]!
       const rows = pane.rows.filter(row => row >= range.startRow && row <= range.endRow)
@@ -280,7 +225,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       const endpointIsFrozenColumn = range.endColumn < geometry.frozenColumns
       const paneHasEndpoint = pane.rows.some(row => (row < geometry.frozenRows) === endpointIsFrozenRow)
         && pane.columns.some(column => (column < geometry.frozenColumns) === endpointIsFrozenColumn)
-      if (rangeIndex === selectionRanges.length - 1 && !editingCellRange && paneHasEndpoint) {
+      if (rangeIndex === selectionRanges.length - 1 && !editingCellRange && !options.suppressFillHandle && paneHasEndpoint) {
         const handleSize = SHEET_SELECTION_HANDLE_SIZE
         commands.push({ kind: 'rect', x: right - handleSize / 2, y: bottom - handleSize / 2, width: handleSize - SHEET_SELECTION_STROKE_WIDTH, height: handleSize - SHEET_SELECTION_STROKE_WIDTH, fill: '#246bfd', stroke: '#ffffff', strokeWidth: SHEET_SELECTION_STROKE_WIDTH, clip: pane.clip })
       }
@@ -304,6 +249,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       }
     }
   }
+  if (options.formatPainterSource) commands.push(...sheetRangeDashedOutlineCommands(geometry, options.formatPainterSource, viewport, options.formatPainterColor))
   // Overlay drawing objects share the same scroll/zoom transform as the sheet;
   // headers are painted afterwards and therefore stay above floating objects.
   for (const command of options.overlayCommands ?? []) commands.push(transformOverlayCommand(command, viewport))
@@ -341,47 +287,6 @@ function borderEdge(raw: unknown): { style: string; color: string } | undefined 
   if (typeof style !== 'string' || style === 'none' || style === '') return undefined
   const color = typeof edge?.color === 'string' ? edge.color : typeof raw === 'string' ? raw.split(':')[1] ?? '#1f2937' : '#1f2937'
   return { style, color }
-}
-
-function createBorderLines(
-  x1: number, y1: number, x2: number, y2: number, style: string, color: string, zoom: number, clip: RenderRect,
-): DrawCommand[] {
-  const width = style.startsWith('medium') ? 2 : style === 'thick' ? 3 : style === 'hair' ? 0.5 : 1
-  const pattern = borderDashPattern(style).map(value => value * zoom)
-  const double = style === 'double'
-  const dx = x2 - x1, dy = y2 - y1
-  const length = Math.hypot(dx, dy)
-  if (!length) return []
-  const perpendicularX = -dy / length, perpendicularY = dx / length
-  const offsets = double ? [-0.8 * zoom, 0.8 * zoom] : [0]
-  const lines: DrawCommand[] = []
-  for (const offset of offsets) {
-    const startX = x1 + perpendicularX * offset, startY = y1 + perpendicularY * offset
-    if (!pattern.length) {
-      lines.push({ kind: 'line', x1: startX, y1: startY, x2: x2 + perpendicularX * offset, y2: y2 + perpendicularY * offset, color, width: width * zoom, clip })
-      continue
-    }
-    const cycle = pattern.reduce((sum, value) => sum + value, 0)
-    for (let position = 0, index = 0; position < length; index += 1) {
-      const segment = Math.min(pattern[index % pattern.length]!, length - position)
-      if (index % 2 === 0 && segment > 0) {
-        lines.push({ kind: 'line', x1: startX + dx / length * position, y1: startY + dy / length * position,
-          x2: startX + dx / length * (position + segment), y2: startY + dy / length * (position + segment), color, width: width * zoom, clip })
-      }
-      position += Math.max(segment, Number.EPSILON)
-      if (position >= length) break
-      if (index > length / cycle * pattern.length + pattern.length) break
-    }
-  }
-  return lines
-}
-
-function borderDashPattern(style: string): number[] {
-  if (style.includes('dash-dot-dot')) return [4, 2, 1, 2, 1, 2]
-  if (style.includes('dash-dot')) return [4, 2, 1, 2]
-  if (style.includes('dotted')) return [1, 2]
-  if (style.includes('dashed')) return [4, 2]
-  return []
 }
 
 function transformOverlayCommand(command: DrawCommand, viewport: GridViewport): DrawCommand {

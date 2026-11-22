@@ -11,6 +11,29 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) fn snapshot_value(sheet: &SheetInput) -> Result<Value, ExportError> {
+    let Some(filter) = &sheet.auto_filter else { return Ok(Value::Null); };
+    let (start_row, start_col, end_row, end_col) = range_bounds(&filter.range).ok_or_else(|| ExportError::invalid("invalid typed AutoFilter snapshot range"))?;
+    let mut columns = serde_json::Map::new();
+    for (column, criterion) in &filter.columns {
+        let value = match criterion {
+            Criterion::Values { selected_items } => serde_json::json!({ "kind": "values", "selectedItems": selected_items }),
+            Criterion::Condition { operator, value, second_value, case_sensitive } => {
+                let mut criterion = serde_json::Map::new();
+                criterion.insert("kind".into(), Value::String("condition".into()));
+                criterion.insert("operator".into(), Value::String(operator.clone()));
+                if let Some(value) = value { criterion.insert("value".into(), value.clone()); }
+                if let Some(value) = second_value { criterion.insert("secondValue".into(), value.clone()); }
+                criterion.insert("caseSensitive".into(), Value::Bool(*case_sensitive));
+                Value::Object(criterion)
+            }
+        };
+        columns.insert(column.to_string(), value);
+    }
+    let filtered_rows = filter.filtered_rows.iter().copied().collect::<BTreeSet<_>>();
+    Ok(serde_json::json!({ "range": { "startRow": start_row, "startCol": start_col, "endRow": end_row, "endCol": end_col }, "columns": columns, "filteredRows": filtered_rows }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AutoFilterInput {

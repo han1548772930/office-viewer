@@ -4,9 +4,22 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{opc::Package, xml, ExportError, ExportWarning};
 
+#[path = "docx_source_xml.rs"]
+mod source_xml;
+#[path = "docx_source_styles.rs"]
+mod source_styles;
+#[path = "docx_default_style.rs"]
+mod default_style;
+use default_style::RunDefaultEffects;
+#[path = "docx_story.rs"]
+mod story_writer;
+
 #[path = "docx_numbering.rs"]
 mod numbering;
 use numbering::{assign_lists, numbering_left, numbering_level, prepare_sequences, write_numbering_xml, NumberingInstance, SequencePlan};
+#[path = "docx_numbering_marker.rs"]
+mod numbering_marker;
+use numbering_marker::{prepare_preserved_markers, PreservedMarkerPlan, PreservedParagraph};
 #[cfg(test)]
 use numbering::build_numbering_xml;
 
@@ -16,6 +29,8 @@ const REL_CORE_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
 const REL_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+const REL_THEME: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme";
 const REL_NUMBERING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 const REL_HEADER: &str =
@@ -128,6 +143,12 @@ struct CommentAnchor {
     ends_here: bool,
 }
 
+#[derive(Default)]
+struct CommentEventCursor {
+    events: Vec<(usize, String)>,
+    next: usize,
+}
+
 struct NoteBundle {
     footnotes: Vec<NoteEntry>,
     endnotes: Vec<NoteEntry>,
@@ -169,6 +190,7 @@ struct WriteContext<'a> {
     list_ids: HashMap<usize, u32>,
     numbering: Vec<NumberingInstance>,
     sequences: SequencePlan,
+    preserved_markers: PreservedMarkerPlan,
     note_ids: HashMap<(NoteKind, String), i64>,
     comment_entries: Vec<CommentEntry>,
     comment_anchors: HashMap<String, Vec<CommentAnchor>>,
@@ -179,6 +201,10 @@ struct WriteContext<'a> {
     page: PageGeometry,
     section_header_footer_refs: HashMap<String, SectionHeaderFooterRefs>,
     current_section: String,
+    run_defaults: RunDefaultEffects,
+    story_defaults: Value,
+    next_story_control: u32,
+    source_styles: source_styles::SourceStyles,
 }
 
 impl<'a> WriteContext<'a> {
@@ -258,7 +284,7 @@ impl<'a> WriteContext<'a> {
                 formula_mode.filter(|mode| mode == "inline" || mode == "block"),
             ) {
                 let source_run = run_with_text(run, &source);
-                let fragments = run_xml(&source_run, &source);
+                let fragments = run_xml_with_defaults(&source_run, &source, self.run_defaults);
                 let tag = xml_attribute(&format!("office-latex:v1:{mode}"));
                 result.push_str(&format!("<w:sdt><w:sdtPr><w:tag w:val=\"{tag}\"/><w:text/></w:sdtPr><w:sdtContent>{fragments}</w:sdtContent></w:sdt>"));
                 self.warn(
@@ -287,15 +313,15 @@ impl<'a> WriteContext<'a> {
                         "DOCX_NOTE_MISSING",
                         format!("A {0} reference to note {source_id:?} has no matching note body; its marker text was preserved.", kind.collection().trim_end_matches('s')),
                     );
-                    (run_xml(run, &text), false)
+                    (run_xml_with_defaults(run, &text, self.run_defaults), false)
                 }
             } else {
-                (run_xml(run, &text), false)
+                (run_xml_with_defaults(run, &text, self.run_defaults), false)
             };
             if has_note_reference {
                 result.push_str(&fragments);
                 if !text.is_empty() {
-                    result.push_str(&run_xml(run, &text));
+                    result.push_str(&run_xml_with_defaults(run, &text, self.run_defaults));
                 }
                 continue;
             }
@@ -331,48 +357,17 @@ impl<'a> WriteContext<'a> {
         Ok(result)
     }
 
-    fn runs_with_controls(&mut self, block: &Value, runs: &[Value]) -> Result<String, ExportError> {
-        let Some(block_id) = string(get(block, "id")) else {
-            return self.runs(runs);
-        };
-        let Some(controls) = self.controls_by_block.get(&block_id).cloned() else {
-            return self.runs(runs);
-        };
-        if controls.is_empty() {
-            return self.runs(runs);
-        }
-        let total = runs
-            .iter()
-            .map(|run| {
-                string(get(run, "text"))
-                    .unwrap_or_default()
-                    .encode_utf16()
-                    .count()
-            })
-            .sum::<usize>();
-        let mut result = self.render_control_range(runs, &controls, 0, total, None, 0)?;
-        if result.is_empty() {
-            result.push_str("<w:r><w:t></w:t></w:r>");
-        }
-        Ok(result)
-    }
-
-    fn runs_with_comments(&mut self, block: &Value, runs: &[Value]) -> Result<String, ExportError> {
-        let Some(block_id) = string(get(block, "id")) else {
-            return self.runs_with_controls(block, runs);
-        };
+    fn runs_with_comments(&mut self, block: &Value, runs: &[Value], preserved: Option<&PreservedParagraph>) -> Result<String, ExportError> {
+        let prefix_length = preserved.map_or(0, |paragraph| paragraph.prefix_length);
+        let block_id = string(get(block, "id")).unwrap_or_default();
         let marks = self.comment_anchors.get(&block_id).cloned().unwrap_or_default();
-        if marks.is_empty() {
-            return self.runs_with_controls(block, runs);
+        let mut controls = self.controls_by_block.get(&block_id).cloned().unwrap_or_default();
+        for control in &mut controls {
+            control.start = control.start.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("内容控件与重放编号域重叠。"))?;
+            control.end = control.end.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("内容控件与重放编号域重叠。"))?;
         }
-        if self.controls_by_block.get(&block_id).is_some_and(|controls| !controls.is_empty()) {
-            self.warn(
-                "DOCX_COMMENT_CONTENT_CONTROL_OVERLAP",
-                format!("Comment ranges in paragraph {block_id:?} could not be combined with inline content controls."),
-            );
-            return self.runs_with_controls(block, runs);
-        }
-        let total = runs.iter().map(|run| string(get(run, "text")).unwrap_or_default().encode_utf16().count()).sum::<usize>();
+        let body_length = runs.iter().map(|run| string(get(run, "text")).unwrap_or_default().encode_utf16().count()).sum::<usize>();
+        let total = prefix_length + body_length;
         let mut events = Vec::<(usize, u8, u32, String)>::new();
         for mark in marks {
             if mark.start > mark.end || mark.end > total {
@@ -383,26 +378,40 @@ impl<'a> WriteContext<'a> {
                 events.push((mark.start, 2, mark.id, format!("<w:commentRangeStart w:id=\"{}\"/>", mark.id)));
             }
             if mark.ends_here {
-                events.push((mark.end, 0, mark.id, format!("<w:commentRangeEnd w:id=\"{}\"/>", mark.id)));
-                events.push((mark.end, 1, mark.id, format!("<w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id)));
+                let collapsed = mark.starts_here && mark.start == mark.end;
+                events.push((mark.end, if collapsed { 3 } else { 0 }, mark.id, format!("<w:commentRangeEnd w:id=\"{}\"/>", mark.id)));
+                events.push((mark.end, if collapsed { 4 } else { 1 }, mark.id, format!("<w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id)));
+            }
+        }
+        if get(get(block, "metadata"), "codeBlock").get("source").is_some() {
+            let source = get(get(block, "metadata"), "codeBlock")["source"].as_str().ok_or_else(|| ExportError::invalid("代码块源文本无效。"))?;
+            let actual = runs.iter().map(|run| get(run, "text").as_str().unwrap_or_default()).collect::<String>();
+            if actual != source { return Err(ExportError::invalid("代码块源文本与格式范围不一致。")); }
+            let mut offset = prefix_length;
+            for run in runs {
+                let length = get(run, "text").as_str().unwrap_or_default().encode_utf16().count();
+                if length > 0 && get(get(run, "metadata"), "codeSyntaxHighlight").as_bool() == Some(false) {
+                    let id = self.sequences.next_bookmark;
+                    self.sequences.next_bookmark = id.checked_add(1).ok_or_else(|| ExportError::invalid("Too many paragraph bookmarks."))?;
+                    let name = format!("office_code_plain_v1_{}_{}", offset - prefix_length, offset - prefix_length + length);
+                    events.push((offset, 2, id, format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}\"/>")));
+                    events.push((offset + length, 0, id, format!("<w:bookmarkEnd w:id=\"{id}\"/>")));
+                }
+                offset += length;
             }
         }
         events.sort_by_key(|event| (event.0, event.1, event.2));
-        if events.is_empty() {
-            return self.runs_with_controls(block, runs);
-        }
         let mut rendered = String::new();
-        let mut offset = 0;
-        for (event_offset, _, _, marker) in events {
-            if event_offset > offset {
-                rendered.push_str(&self.render_run_range(runs, offset, event_offset)?);
-            }
-            rendered.push_str(&marker);
-            offset = event_offset;
+        let prefix_events = if preserved.is_some() { events.partition_point(|event| event.0 <= prefix_length) } else { 0 };
+        if let Some(paragraph) = preserved {
+            let events = events[..prefix_events].iter().map(|event| (event.0, event.3.clone())).collect::<Vec<_>>();
+            rendered.push_str(&paragraph.render(&events)?);
         }
-        if offset < total {
-            rendered.push_str(&self.render_run_range(runs, offset, total)?);
-        }
+        let mut comments = CommentEventCursor {
+            events: events.into_iter().skip(prefix_events).map(|(offset, _, _, marker)| (offset - prefix_length, marker)).collect(),
+            next: 0,
+        };
+        rendered.push_str(&self.render_control_range(runs, &controls, 0, body_length, None, 0, true, &mut comments)?);
         if rendered.is_empty() {
             rendered.push_str("<w:r><w:t></w:t></w:r>");
         }
@@ -417,6 +426,8 @@ impl<'a> WriteContext<'a> {
         end: usize,
         parent_id: Option<&str>,
         depth: usize,
+        include_end_objects: bool,
+        comments: &mut CommentEventCursor,
     ) -> Result<String, ExportError> {
         if depth > 64 {
             return Err(ExportError::invalid(
@@ -452,7 +463,7 @@ impl<'a> WriteContext<'a> {
                 );
                 continue;
             }
-            result.push_str(&self.render_run_range(runs, cursor, control.start)?);
+            result.push_str(&self.render_annotated_run_range(runs, cursor, control.start, false, comments)?);
             let content = self.render_control_range(
                 runs,
                 controls,
@@ -460,6 +471,8 @@ impl<'a> WriteContext<'a> {
                 control.end,
                 Some(&control.id),
                 depth + 1,
+                false,
+                comments,
             )?;
             if let Some(wrapped) = content_control_xml(&control, &content) {
                 if get(&control.value, "rawSdtPr")
@@ -491,7 +504,33 @@ impl<'a> WriteContext<'a> {
             }
             cursor = control.end;
         }
-        result.push_str(&self.render_run_range(runs, cursor, end)?);
+        result.push_str(&self.render_annotated_run_range(runs, cursor, end, include_end_objects, comments)?);
+        Ok(result)
+    }
+
+    fn render_annotated_run_range(
+        &mut self,
+        runs: &[Value],
+        start: usize,
+        end: usize,
+        include_end_objects: bool,
+        comments: &mut CommentEventCursor,
+    ) -> Result<String, ExportError> {
+        let mut cursor = start;
+        let mut result = String::new();
+        while let Some((offset, marker)) = comments.events.get(comments.next) {
+            // Each boundary belongs to its following interval. The paragraph's
+            // final interval also owns ending comments and zero-length objects.
+            if *offset > end || *offset == end && !include_end_objects { break; }
+            if *offset < cursor {
+                return Err(ExportError::invalid("Comment events are not ordered within the content control ranges."));
+            }
+            result.push_str(&self.render_run_range(runs, cursor, *offset, false)?);
+            result.push_str(marker);
+            cursor = *offset;
+            comments.next += 1;
+        }
+        result.push_str(&self.render_run_range(runs, cursor, end, include_end_objects)?);
         Ok(result)
     }
 
@@ -500,8 +539,9 @@ impl<'a> WriteContext<'a> {
         runs: &[Value],
         start: usize,
         end: usize,
+        include_end_objects: bool,
     ) -> Result<String, ExportError> {
-        if start == end {
+        if start == end && !include_end_objects {
             return Ok(String::new());
         }
         let mut result = Vec::new();
@@ -512,7 +552,11 @@ impl<'a> WriteContext<'a> {
             let run_end = offset.saturating_add(length);
             let overlap_start = start.max(offset);
             let overlap_end = end.min(run_end);
-            if overlap_start < overlap_end {
+            // Zero-length objects belong to the following text interval. Only the
+            // paragraph's final interval owns objects at its ending boundary.
+            if length == 0 && offset >= start && (offset < end || include_end_objects && offset == end) {
+                result.push(run.clone());
+            } else if overlap_start < overlap_end {
                 let Some(part) = slice_utf16(&text, overlap_start - offset, overlap_end - offset)
                 else {
                     return Err(ExportError::invalid(
@@ -522,15 +566,26 @@ impl<'a> WriteContext<'a> {
                 let mut clipped = run.clone();
                 if let Some(object) = clipped.as_object_mut() {
                     object.insert("text".to_owned(), Value::String(part.to_owned()));
+                    if overlap_start > offset {
+                        // A reference attached to text is emitted at its original
+                        // run boundary, once, even when comments split the run.
+                        object.remove("footnoteId");
+                        object.remove("endnoteId");
+                        if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+                            metadata.remove("note");
+                            metadata.remove("footnoteId");
+                            metadata.remove("endnoteId");
+                        }
+                    }
                 }
                 result.push(clipped);
             }
             offset = run_end;
-            if offset >= end {
+            if offset > end || offset == end && !include_end_objects {
                 break;
             }
         }
-        self.runs(&result)
+        if result.is_empty() { Ok(String::new()) } else { self.runs(&result) }
     }
 
     fn block(&mut self, block: &Value) -> Result<String, ExportError> {
@@ -577,6 +632,7 @@ impl<'a> WriteContext<'a> {
 
     fn paragraph(&mut self, block: &Value, divider: bool) -> Result<String, ExportError> {
         let id = block as *const Value as usize;
+        let preserved = self.preserved_markers.paragraphs.remove(&id);
         let sequence = self.sequences.paragraphs.get(&id).cloned();
         let mut properties = String::new();
         let block_type = string(get(block, "type")).unwrap_or_default();
@@ -668,26 +724,13 @@ impl<'a> WriteContext<'a> {
         let source_runs = field(block, "runs")
             .and_then(Value::as_array)
             .map_or(&[][..], Vec::as_slice);
-        let code_runs = is_code_block.then(|| {
-            source_runs
-                .iter()
-                .map(|run| {
-                    let mut run = run.clone();
-                    if let Some(properties) = run.as_object_mut() {
-                        properties.insert(
-                            "fontFamily".to_owned(),
-                            Value::String("Consolas".to_owned()),
-                        );
-                    }
-                    run
-                })
-                .collect::<Vec<_>>()
-        });
-        let runs = code_runs.as_deref().unwrap_or(source_runs);
+        let runs = source_runs;
+        let body_runs = preserved.as_ref().map(|paragraph| paragraph.body_runs(runs)).transpose()?;
+        let runs = body_runs.as_deref().unwrap_or(runs);
         let paragraph = format!(
             "<w:p>{paragraph_properties}{}{}</w:p>",
             sequence.as_ref().map(|sequence| sequence.prefix.as_str()).unwrap_or_default(),
-            self.runs_with_comments(block, runs)?
+            self.runs_with_comments(block, runs, preserved.as_ref())?
         );
         if !is_code_block {
             return Ok(paragraph);
@@ -1479,7 +1522,7 @@ fn note_runs(value: &Value) -> &[Value] {
     &[]
 }
 
-fn note_body_xml(value: &Value, kind: NoteKind, id: i64) -> String {
+fn note_body_xml(value: &Value, kind: NoteKind, id: i64, defaults: RunDefaultEffects) -> String {
     let style = kind.style();
     let reference = kind.body_reference_tag();
     let mut paragraphs = String::new();
@@ -1489,7 +1532,7 @@ fn note_body_xml(value: &Value, kind: NoteKind, id: i64) -> String {
             .iter()
             .map(|run| {
                 let text = string(get(run, "text")).unwrap_or_default();
-                run_xml(run, &text)
+                run_xml_with_defaults(run, &text, defaults)
             })
             .collect::<String>();
         paragraphs.push_str(&format!(
@@ -1524,13 +1567,13 @@ fn note_body_xml(value: &Value, kind: NoteKind, id: i64) -> String {
     )
 }
 
-fn notes_xml(kind: NoteKind, notes: &[NoteEntry]) -> String {
+fn notes_xml(kind: NoteKind, notes: &[NoteEntry], defaults: RunDefaultEffects) -> String {
     let element = kind.collection().trim_end_matches('s');
     let mut body = format!(
         "<w:{element} w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:{element}><w:{element} w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{element}>"
     );
     for note in notes {
-        body.push_str(&note_body_xml(&note.value, kind, note.id));
+        body.push_str(&note_body_xml(&note.value, kind, note.id, defaults));
     }
     format!(
         "{}<w:{} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{body}</w:{}>",
@@ -1589,8 +1632,8 @@ fn collect_comments(
                         warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range with an invalid end offset was omitted."));
                         continue;
                     };
-                    if block_id.is_empty() || start >= end {
-                        warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range without a block ID or text was omitted."));
+                    if block_id.is_empty() || start > end {
+                        warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range without a block ID or with reversed offsets was omitted."));
                         continue;
                     }
                     anchors.entry(block_id).or_default().push(CommentAnchor {
@@ -1642,6 +1685,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     let blocks = field(&model, "blocks")
         .and_then(Value::as_array)
         .ok_or_else(|| ExportError::invalid("The document model is missing its blocks array."))?;
+    let generated_styles = default_style::styles_xml(&model, styles_xml())?;
+    let run_defaults = RunDefaultEffects::for_model(&model);
     let notes = collect_notes(&model, blocks);
     let (comment_entries, comment_anchors, comment_warnings) = collect_comments(&model)?;
     let controls_by_block = collect_content_controls(&model, blocks);
@@ -1673,7 +1718,6 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         "application/vnd.openxmlformats-package.core-properties+xml",
         core,
     )?;
-    package.add_xml("word/styles.xml", STYLES_CONTENT_TYPE, styles_xml())?;
     package.add_relationship(
         Some("word/document.xml"),
         "rId1",
@@ -1695,6 +1739,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         list_ids: HashMap::new(),
         numbering: Vec::new(),
         sequences: SequencePlan { next_bookmark: 1, ..Default::default() },
+        preserved_markers: PreservedMarkerPlan::default(),
         note_ids: notes.ids.clone(),
         comment_entries,
         comment_anchors,
@@ -1705,6 +1750,10 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         page,
         section_header_footer_refs: HashMap::new(),
         current_section: "first".to_owned(),
+        run_defaults,
+        story_defaults: story_writer::default_style(&model),
+        next_story_control: 1_073_741_824,
+        source_styles: source_styles::SourceStyles::new(&model, generated_styles)?,
     };
     let has_different_odd_even =
         prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
@@ -1712,7 +1761,14 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     context.list_ids = list_ids;
     context.numbering = numbering;
     let numbering_xml = write_numbering_xml(&context.numbering, context.package, &mut context.warnings)?;
-    context.sequences = prepare_sequences(blocks, &context.list_ids, &context.numbering, &numbering_xml)?;
+    context.preserved_markers = prepare_preserved_markers(blocks, &context.controls_by_block, &mut context.source_styles)?;
+    context.package.add_xml("word/styles.xml", STYLES_CONTENT_TYPE, context.source_styles.styles_xml())?;
+    if let Some(theme) = context.source_styles.theme_xml().map(str::to_owned) {
+        context.package.add_xml("word/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
+        context.relationship(REL_THEME, "theme/theme1.xml", false)?;
+    }
+    context.warnings.append(&mut context.preserved_markers.warnings);
+    context.sequences = prepare_sequences(blocks, &context.list_ids, &context.numbering, &numbering_xml, &context.preserved_markers)?;
     context.warnings.append(&mut context.sequences.warnings);
     context
         .package
@@ -1759,7 +1815,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         context.package.add_xml(
             "word/footnotes.xml",
             FOOTNOTES_CONTENT_TYPE,
-            notes_xml(NoteKind::Footnote, &notes.footnotes),
+            notes_xml(NoteKind::Footnote, &notes.footnotes, run_defaults),
         )?;
         context.relationship(REL_FOOTNOTES, "footnotes.xml", false)?;
     }
@@ -1767,7 +1823,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         context.package.add_xml(
             "word/endnotes.xml",
             ENDNOTES_CONTENT_TYPE,
-            notes_xml(NoteKind::Endnote, &notes.endnotes),
+            notes_xml(NoteKind::Endnote, &notes.endnotes, run_defaults),
         )?;
         context.relationship(REL_ENDNOTES, "endnotes.xml", false)?;
     }
@@ -1935,6 +1991,7 @@ fn prepare_section_header_footers(
                     page_type,
                     &name,
                     &page_fields,
+                    get(get(value, "storyContent"), field_name),
                     relationship_type,
                     content_type,
                 )?;
@@ -1954,6 +2011,7 @@ fn prepare_section_header_footers(
                         "first",
                         &text,
                         &page_fields,
+                        get(get(value, "storyContent"), field_name),
                         relationship_type,
                         content_type,
                     )?;
@@ -1974,6 +2032,7 @@ fn prepare_section_header_footers(
                         "even",
                         &text,
                         &page_fields,
+                        get(get(value, "storyContent"), field_name),
                         relationship_type,
                         content_type,
                     )?;
@@ -1995,49 +2054,18 @@ fn add_header_footer_part(
     page_type: &str,
     text: &str,
     page_fields: &[&Value],
+    content: &Value,
     relationship_type: &str,
     content_type: &str,
 ) -> Result<(), ExportError> {
     let path = format!("word/{story}{}.xml", *next_part);
     *next_part += 1;
-    context
-        .package
-        .add_xml(&path, content_type, header_footer_xml(story, text, page_fields))?;
+    story_writer::write_story(context, &path, content_type, story, text, page_fields, content)?;
     let target = path.strip_prefix("word/").unwrap_or(&path);
     let relationship = context.relationship(relationship_type, target, false)?;
     refs.references
         .push((format!("{story}:{page_type}"), relationship));
     Ok(())
-}
-
-fn header_footer_xml(story: &str, text: &str, page_fields: &[&Value]) -> String {
-    let root = if story == "header" { "hdr" } else { "ftr" };
-    let style = Value::Null;
-    let mut runs = String::new();
-    let mut chars = text.char_indices().peekable();
-    let (mut cursor, mut units) = (0, 0);
-    for entry in page_fields {
-        let position = entry["offset"].as_u64();
-        let offset = position.unwrap_or(u64::MAX);
-        while let Some(&(_, ch)) = chars.peek() {
-            let next = units + ch.len_utf16() as u64;
-            if next > offset { break; }
-            units = next;
-            chars.next();
-        }
-        let end = chars.peek().map_or(text.len(), |(i, _)| *i);
-        if cursor < end { runs.push_str(&run_xml(&style, &text[cursor..end])); }
-        if position.is_none() { runs.push_str(&run_xml(&style, " ")); }
-        cursor = end;
-        let name = entry["field"].as_str().unwrap_or_default();
-        let instr = entry["instruction"].as_str().filter(|s| s.split_whitespace().next().is_some_and(|key| key.eq_ignore_ascii_case(name))).unwrap_or(name);
-        let cached = run_xml(&style, entry["cachedResult"].as_str().unwrap_or_default());
-        runs.push_str(&format!("<w:fldSimple w:instr=\" {} \">{cached}</w:fldSimple>", xml_attribute(instr)));
-    }
-    if cursor < text.len() { runs.push_str(&run_xml(&style, &text[cursor..])); }
-    format!(
-        "{}<w:{root} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>{runs}</w:p></w:{root}>", xml::DECL
-    )
 }
 
 fn page_fields_for_story<'a>(section: &'a Value, story: &str) -> Vec<&'a Value> {
@@ -2072,7 +2100,7 @@ fn core_properties(model: &Value, title: &str) -> String {
     )
 }
 
-fn run_xml(run: &Value, text: &str) -> String {
+fn run_properties_xml(run: &Value) -> String {
     let mut properties = String::new();
     let font = string(get(run, "fontFamily")).unwrap_or_else(|| "Aptos".to_owned());
     let font = font
@@ -2089,14 +2117,13 @@ fn run_xml(run: &Value, text: &str) -> String {
     properties.push_str(&format!(
         "<w:rFonts w:ascii=\"{family}\" w:hAnsi=\"{family}\" w:eastAsia=\"{east_asia}\"/>"
     ));
-    if get(run, "bold").as_bool() == Some(true) {
-        properties.push_str("<w:b/><w:bCs/>");
-    }
-    if get(run, "italic").as_bool() == Some(true) {
-        properties.push_str("<w:i/><w:iCs/>");
-    }
-    if get(run, "strike").as_bool() == Some(true) {
-        properties.push_str("<w:strike/>");
+    for (field, tags) in [("bold", &["b", "bCs"][..]), ("italic", &["i", "iCs"][..]), ("strike", &["strike"][..])] {
+        if let Some(enabled) = get(run, field).as_bool() {
+            for tag in tags {
+                if enabled { properties.push_str(&format!("<w:{tag}/>")); }
+                else { properties.push_str(&format!("<w:{tag} w:val=\"0\"/>")); }
+            }
+        }
     }
     if let Some(color) = string(get(run, "color")).and_then(text_color) {
         properties.push_str(&format!("<w:color w:val=\"{color}\"/>"));
@@ -2107,13 +2134,14 @@ fn run_xml(run: &Value, text: &str) -> String {
     properties.push_str(&format!(
         "<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/>"
     ));
-    if get(run, "underline").as_bool() == Some(true) {
-        properties.push_str("<w:u w:val=\"single\"/>");
+    if let Some(enabled) = get(run, "underline").as_bool() {
+        properties.push_str(if enabled { "<w:u w:val=\"single\"/>" } else { "<w:u w:val=\"none\"/>" });
     }
-    if let Some(highlight) = string(get(get(run, "metadata"), "highlight")).and_then(color) {
-        properties.push_str(&format!(
-            "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{highlight}\"/>"
-        ));
+    if let Some(highlight) = string(get(run, "highlight"))
+        .or_else(|| string(get(get(run, "metadata"), "highlight")))
+        .and_then(default_style::highlight_properties)
+    {
+        properties.push_str(&highlight);
     }
     let vertical_align = string(get(run, "verticalAlign"))
         .or_else(|| string(get(get(run, "metadata"), "verticalAlign")))
@@ -2123,7 +2151,15 @@ fn run_xml(run: &Value, text: &str) -> String {
         "subscript" | "sub" => properties.push_str("<w:vertAlign w:val=\"subscript\"/>"),
         _ => {}
     }
-    let properties = format!("<w:rPr>{properties}</w:rPr>");
+    properties
+}
+
+fn run_xml(run: &Value, text: &str) -> String {
+    run_xml_with_defaults(run, text, RunDefaultEffects::default())
+}
+
+fn run_xml_with_defaults(run: &Value, text: &str, defaults: RunDefaultEffects) -> String {
+    let properties = format!("<w:rPr>{}</w:rPr>", run_properties_xml_with_defaults(run, defaults));
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
         .split('\n')
@@ -2136,6 +2172,25 @@ fn run_xml(run: &Value, text: &str) -> String {
             )
         })
         .collect()
+}
+
+fn run_properties_xml_with_defaults(run: &Value, defaults: RunDefaultEffects) -> String {
+    let mut properties = run_properties_xml(run);
+    let vertical_align = string(get(run, "verticalAlign"))
+        .or_else(|| string(get(get(run, "metadata"), "verticalAlign")))
+        .unwrap_or_default();
+    if defaults.vertical_alignment && !matches!(vertical_align.as_str(), "superscript" | "sup" | "subscript" | "sub") {
+        // A missing alignment in the normalized model means baseline. Omitting
+        // rPr here would inherit a superscript/subscript document default.
+        properties.push_str("<w:vertAlign w:val=\"baseline\"/>");
+    }
+    let highlight = string(get(run, "highlight"))
+        .or_else(|| string(get(get(run, "metadata"), "highlight")))
+        .and_then(default_style::highlight_properties);
+    if defaults.highlight && highlight.is_none() {
+        properties.push_str("<w:highlight w:val=\"none\"/><w:shd w:val=\"nil\"/>");
+    }
+    properties
 }
 
 fn run_with_text(run: &Value, text: &str) -> Value {
@@ -2348,7 +2403,7 @@ mod tests {
         let model = json!({
             "kind": "document",
             "blocks": [
-                { "id": "code", "type": "paragraph", "runs": [{ "text": "const x = 1\\nreturn x" }], "metadata": { "codeBlock": { "source": "const x = 1\\nreturn x", "language": "typescript", "lineNumbers": true } } },
+                { "id": "code", "type": "paragraph", "runs": [{ "text": "const x = 1\\nreturn x", "fontFamily": "Consolas", "fontSize": 10 }], "metadata": { "codeBlock": { "source": "const x = 1\\nreturn x", "language": "typescript", "lineNumbers": true } } },
                 { "id": "math", "type": "paragraph", "runs": [{ "text": "\u{FFFC}", "metadata": { "latexFormula": { "latex": "x^2", "mode": "inline", "version": 1 } } }], "metadata": {} }
             ]
         });

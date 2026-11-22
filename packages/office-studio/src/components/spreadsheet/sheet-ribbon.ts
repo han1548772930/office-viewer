@@ -18,6 +18,8 @@ import { quickDropdownPresets } from '../../features/sheet-validation/quick-vali
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
 import SheetBorderSelector from './SheetBorderSelector.vue'
 import SheetNumberFormatControl from './SheetNumberFormatControl.vue'
+import SheetColorControl from './SheetColorControl.vue'
+import { SHEET_STANDARD_COLORS, sheetColorHex } from '../../features/sheet-workbench/sheet-colors.ts'
 import { SHEET_NUMBER_FORMATS, sheetNumberFormatMenu } from '../../features/sheet-workbench/sheet-number-format.ts'
 import { numberFormatCurrency, sheetCurrencySymbol } from '../../features/sheet-workbench/sheet-currency.ts'
 import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
@@ -27,6 +29,7 @@ export interface SheetRibbonState {
   fontList?: OfficeFontList
   fontEditable?: boolean
   painterActive?: boolean
+  painterUnavailable?: boolean
   canUndo: boolean
   canRedo: boolean
   hasSheet: boolean
@@ -56,6 +59,11 @@ export interface SheetRibbonState {
   wrapStrategy?: 'overflow' | 'wrap' | 'clip' | null
   color?: string | null
   background?: string | null
+  lastTextColor?: string
+  lastBackgroundColor?: string
+  defaultTextColor?: string
+  defaultBackgroundColor?: string
+  borderColor?: string | null
   borderOptions?: SheetBorderOptions
   borderPreset?: SheetBorderPreset
   onBorderOptions?: (value: SheetBorderOptions) => void
@@ -75,11 +83,6 @@ export interface SheetRibbonState {
   crosshairColor?: string
 }
 
-const colors = [
-  { label: '白色', value: '#ffffff' }, { label: '浅黄色', value: '#fff4cc' },
-  { label: '浅蓝色', value: '#dceaff' }, { label: '浅绿色', value: '#dcf4e4' },
-  { label: '浅红色', value: '#ffe0e0' }, { label: '黑色', value: '#1f2937' },
-]
 const functionCategoryOrder = [
   '常用与统计', '财务', '逻辑', '文本', '日期与时间', '查找与引用', '数学', '统计', '工程', '信息', '数据库',
 ]
@@ -102,6 +105,29 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const quick = (id: string, title: string, params: string, icon?: Component) => button(id, title, { commandId: 'sheet.operation.quick-data-validation', params, icon, disabled: quickDisabled })
   const tr: OfficeTranslator = translate ?? ((_key, fallback) => fallback)
   const numberFormatDisabled = !state.hasSheet || state.fontEditable === false
+  const fontDisabled = !state.hasSheet || state.fontEditable === false
+  const layoutDisabled = fontDisabled
+  const selectedWrapStrategy = state.wrapStrategy !== undefined ? state.wrapStrategy : state.wrap === undefined ? null : state.wrap ? 'wrap' : 'overflow'
+  const mixedLabel = tr('common.mixed', '混合')
+  const mark = (id: string, title: string, icon: Component, value: boolean | undefined, column: number, shortcut: string) => button(id, title, {
+    icon, activated: value === true, disabled: fontDisabled, shortcut,
+    tooltip: value === undefined ? `${tr(`sheet.items.${id}`, title)} (${tr('sheet.color.mixed', '混合')})` : tr(`sheet.items.${id}`, title), gridLayout: { row: 2, column },
+  })
+  const palette = (id: string, title: string, field: 'color' | 'background', icon: Component, column: number): RibbonItem => {
+    const commandId = field === 'color' ? 'sheet.command.set-color' : 'sheet.command.set-background'
+    const resetCommandId = field === 'color' ? 'sheet.command.reset-text-color' : 'sheet.command.reset-background-color'
+    const resetTitle = field === 'color' ? tr('sheet.color.reset-text', '重置文字颜色') : tr('sheet.color.no-fill', '无填充')
+    const defaultColor = field === 'color' ? state.defaultTextColor : state.defaultBackgroundColor
+    const lastColor = (field === 'color' ? state.lastTextColor : state.lastBackgroundColor) ?? sheetColorHex(defaultColor) ?? (field === 'color' ? '#000000' : '#3f83f8')
+    const selectedColor = state[field]
+    return {
+      id, title, type: 'split', commandId, params: lastColor, value: lastColor, swatch: lastColor, icon, disabled: fontDisabled,
+      gridLayout: { row: 2, column }, inlineComponent: SheetColorControl, popupCommandId: commandId,
+      popupProps: { title: tr(`sheet.items.${id}`, title), field, icon, commandId, resetCommandId, resetTitle, defaultColor, lastColor, selectedColor, mixed: selectedColor === undefined },
+      children: [button(resetCommandId, resetTitle, { icon: RemoveFormatting, activated: selectedColor === null, disabled: fontDisabled }),
+        ...SHEET_STANDARD_COLORS.map(color => button(`${id}.${color}`, color.toUpperCase(), { commandId, params: color, swatch: color, activated: sheetColorHex(selectedColor) === color, disabled: fontDisabled }))],
+    }
+  }
   const currencySymbol = sheetCurrencySymbol(state.region)
   const currentPattern = state.numberFormatPattern !== undefined ? state.numberFormatPattern
     : state.numberFormat && Object.hasOwn(SHEET_NUMBER_FORMATS, state.numberFormat) ? SHEET_NUMBER_FORMATS[state.numberFormat as keyof typeof SHEET_NUMBER_FORMATS] : null
@@ -116,7 +142,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         { id: 'clipboard', title: '剪贴板', order: 0, items: [
           button('sheet.command.undo', '撤销', { icon: Undo2, disabled: !state.canUndo, shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1, iconSize: 18 } }),
           button('sheet.command.redo', '重做', { icon: Redo2, disabled: !state.canRedo, shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
-          button('sheet.operation.format-painter', '格式刷', { icon: Brush, activated: Boolean(state.painterActive), subId: 'sheet.operation.continuous-format-painter', gridLayout: { row: 1, column: 2, showLabel: false } }),
+          button('sheet.operation.format-painter', '格式刷', { icon: Brush, activated: Boolean(state.painterActive), disabled: !state.painterActive && (!state.hasSheet || state.painterUnavailable === true), subId: 'sheet.operation.continuous-format-painter', gridLayout: { row: 1, column: 2, showLabel: false } }),
           button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, gridLayout: { row: 2, column: 2, showLabel: false } }),
           { ...button('sheet.command.paste', '粘贴', { icon: ClipboardPaste, shortcut: 'Ctrl+V', gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'split', children: [
             button('sheet.menu.paste-all', '保留源格式粘贴', { commandId: 'sheet.command.paste' }),
@@ -132,59 +158,55 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           { id: 'sheet.command.set-font-size', commandId: 'sheet.command.set-font-size', type: 'select', edit: { kind: 'number', min: 6, max: 400 }, title: '字号', width: 72, disabled: !state.hasSheet || state.fontEditable === false, value: state.fontSize, placeholder: '混合', gridLayout: { row: 1, column: 5, width: 72 }, options: fontSizeOptions },
           button('sheet.command.increase-font-size', '增大字号', { icon: AArrowUp, disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 6 } }),
           button('sheet.command.decrease-font-size', '减小字号', { icon: AArrowDown, disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 7 } }),
-          button('sheet.command.toggle-bold', '加粗', { icon: Bold, activated: state.bold === true, gridLayout: { row: 2, column: 1 } }),
-          button('sheet.command.toggle-italic', '斜体', { icon: Italic, activated: state.italic === true, gridLayout: { row: 2, column: 2 } }),
-          button('sheet.command.toggle-underline', '下划线', { icon: Underline, activated: state.underline === true, gridLayout: { row: 2, column: 3 } }),
-          button('sheet.command.toggle-strike', '删除线', { icon: Strikethrough, activated: state.strike === true, gridLayout: { row: 2, column: 4 } }),
-          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Palette, disabled: !state.hasSheet, gridLayout: { row: 2, column: 7 }, children: [
-            button('sheet.command.reset-text-color', '重置文字颜色', { icon: RemoveFormatting, activated: state.color === null }),
-            ...colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, swatch: color.value, activated: state.color === color.value })),
-          ] },
-          { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, gridLayout: { row: 2, column: 6 }, children: [
-            button('sheet.command.reset-background-color', '无填充', { icon: RemoveFormatting, activated: state.background === null }),
-            ...colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value, swatch: color.value, activated: state.background === color.value })),
-          ] },
-          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: Grid2X2, params: state.borderPreset ?? 'all', disabled: !state.hasSheet, gridLayout: { row: 2, column: 5 },
+          mark('sheet.command.toggle-bold', '加粗', Bold, state.bold, 1, 'Ctrl+B'),
+          mark('sheet.command.toggle-italic', '斜体', Italic, state.italic, 2, 'Ctrl+I'),
+          mark('sheet.command.toggle-underline', '下划线', Underline, state.underline, 3, 'Ctrl+U'),
+          mark('sheet.command.toggle-strike', '删除线', Strikethrough, state.strike, 4, 'Ctrl+Shift+X'),
+          palette('sheet.menu.text-color', '文字颜色', 'color', Palette, 7),
+          palette('sheet.menu.fill', '填充颜色', 'background', PaintBucket, 6),
+          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: Grid2X2, params: state.borderPreset ?? 'all', disabled: fontDisabled, gridLayout: { row: 2, column: 5 },
             popupComponent: SheetBorderSelector, popupCommandId: 'sheet.command.set-borders', popupProps: {
-              value: state.borderOptions ?? { style: 'thin', color: '#1f2937' }, preset: state.borderPreset ?? 'all', translate: tr, 'onUpdate:value': state.onBorderOptions,
+              value: state.borderOptions ?? { style: 'thin', color: '#1f2937' }, preset: state.borderPreset ?? 'all', selectedColor: state.borderColor, mixed: state.borderColor === undefined, translate: tr, 'onUpdate:value': state.onBorderOptions,
             }, children: [
-              ...Object.entries(sheetBorderLabels).map(([value, label]) => button(`sheet.menu.border.${value}`, label, { commandId: 'sheet.command.set-borders', params: value })),
-              { id: 'sheet.menu.border-style', type: 'menu', title: '边框样式', children: Object.entries(sheetBorderStyleLabels).map(([value, label]) => button(`sheet.menu.border-style.${value}`, tr(`sheet.border.style.${value}`, label), { commandId: 'sheet.command.set-border-style', params: value })) },
-              { id: 'sheet.menu.border-color', type: 'menu', title: '边框颜色', children: colors.map(({ value, label }) => button(`sheet.menu.border-color.${value}`, label, { commandId: 'sheet.command.set-border-color', params: value, swatch: value })) },
+              ...Object.entries(sheetBorderLabels).map(([value, label]) => button(`sheet.menu.border.${value}`, label, { commandId: 'sheet.command.set-borders', params: value, disabled: fontDisabled })),
+              { id: 'sheet.menu.border-style', type: 'menu', title: '边框样式', disabled: fontDisabled, children: Object.entries(sheetBorderStyleLabels).map(([value, label]) => button(`sheet.menu.border-style.${value}`, tr(`sheet.border.style.${value}`, label), { commandId: 'sheet.command.set-border-style', params: value, disabled: fontDisabled })) },
+              { id: 'sheet.menu.border-color', type: 'menu', title: '边框颜色', disabled: fontDisabled, children: SHEET_STANDARD_COLORS.map(value => button(`sheet.menu.border-color.${value}`, value.toUpperCase(), { commandId: 'sheet.command.set-border-color', params: value, swatch: value, disabled: fontDisabled })) },
             ] },
         ] },
         { id: 'layout', title: '布局', order: 20, items: [
-          { id: 'sheet.menu.horizontal-align', type: 'menu', title: '水平对齐', icon: state.align === 'center' ? AlignCenter : state.align === 'right' ? AlignRight : AlignLeft, disabled: !state.hasSheet, gridLayout: { row: 1, column: 1 }, children: [
-            button('sheet.command.align-left', '左对齐', { commandId: 'sheet.command.set-align', params: 'left', icon: AlignLeft, activated: state.align === 'left' }),
-            button('sheet.command.align-center', '居中', { commandId: 'sheet.command.set-align', params: 'center', icon: AlignCenter, activated: state.align === 'center' }),
-            button('sheet.command.align-right', '右对齐', { commandId: 'sheet.command.set-align', params: 'right', icon: AlignRight, activated: state.align === 'right' }),
+          { id: 'sheet.menu.horizontal-align', type: 'menu', title: '水平对齐', tooltip: state.align === undefined ? `水平对齐（${mixedLabel}）` : '水平对齐', icon: state.align === 'center' ? AlignCenter : state.align === 'right' ? AlignRight : AlignLeft, disabled: layoutDisabled, gridLayout: { row: 1, column: 1 }, children: [
+            button('sheet.command.align-left', '左对齐', { commandId: 'sheet.command.set-align', params: 'left', icon: AlignLeft, activated: state.align === 'left', disabled: layoutDisabled }),
+            button('sheet.command.align-center', '居中', { commandId: 'sheet.command.set-align', params: 'center', icon: AlignCenter, activated: state.align === 'center', disabled: layoutDisabled }),
+            button('sheet.command.align-right', '右对齐', { commandId: 'sheet.command.set-align', params: 'right', icon: AlignRight, activated: state.align === 'right', disabled: layoutDisabled }),
           ] },
-          { id: 'sheet.menu.vertical-align', type: 'menu', title: '垂直对齐', icon: state.vertical === 'top' ? AlignVerticalJustifyStart : state.vertical === 'bottom' ? AlignVerticalJustifyEnd : AlignVerticalJustifyCenter, disabled: !state.hasSheet, gridLayout: { row: 2, column: 1 }, children: [
-            button('sheet.menu.vertical.top', '顶端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'top', icon: AlignVerticalJustifyStart, activated: state.vertical === 'top' }),
-            button('sheet.menu.vertical.middle', '垂直居中', { commandId: 'sheet.command.set-vertical-align', params: 'middle', icon: AlignVerticalJustifyCenter, activated: state.vertical === 'middle' }),
-            button('sheet.menu.vertical.bottom', '底端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'bottom', icon: AlignVerticalJustifyEnd, activated: state.vertical === 'bottom' }),
+          { id: 'sheet.menu.vertical-align', type: 'menu', title: '垂直对齐', tooltip: state.vertical === undefined ? `垂直对齐（${mixedLabel}）` : '垂直对齐', icon: state.vertical === 'top' ? AlignVerticalJustifyStart : state.vertical === 'bottom' ? AlignVerticalJustifyEnd : AlignVerticalJustifyCenter, disabled: layoutDisabled, gridLayout: { row: 2, column: 1 }, children: [
+            button('sheet.menu.vertical.top', '顶端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'top', icon: AlignVerticalJustifyStart, activated: state.vertical === 'top', disabled: layoutDisabled }),
+            button('sheet.menu.vertical.middle', '垂直居中', { commandId: 'sheet.command.set-vertical-align', params: 'middle', icon: AlignVerticalJustifyCenter, activated: state.vertical === 'middle', disabled: layoutDisabled }),
+            button('sheet.menu.vertical.bottom', '底端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'bottom', icon: AlignVerticalJustifyEnd, activated: state.vertical === 'bottom', disabled: layoutDisabled }),
           ] },
-          { id: 'sheet.menu.text-wrap', type: 'menu', title: '文本换行', icon: WrapText, disabled: !state.hasSheet, gridLayout: { row: 1, column: 2 }, children: [
-            button('sheet.menu.text-wrap.overflow', '溢出', { commandId: 'sheet.command.set-wrap-strategy', params: 'overflow', activated: state.wrapStrategy === 'overflow' || state.wrapStrategy == null && state.wrap !== true }),
-            button('sheet.menu.text-wrap.wrap', '自动换行', { commandId: 'sheet.command.set-wrap-strategy', params: 'wrap', icon: WrapText, activated: state.wrapStrategy === 'wrap' || state.wrapStrategy == null && state.wrap === true }),
-            button('sheet.menu.text-wrap.clip', '截断', { commandId: 'sheet.command.set-wrap-strategy', params: 'clip', activated: state.wrapStrategy === 'clip' }),
+          { id: 'sheet.menu.text-wrap', type: 'menu', title: '文本换行', tooltip: selectedWrapStrategy === null ? `文本换行（${mixedLabel}）` : '文本换行', icon: WrapText, disabled: layoutDisabled, gridLayout: { row: 1, column: 2 }, children: [
+            button('sheet.menu.text-wrap.overflow', '溢出', { commandId: 'sheet.command.set-wrap-strategy', params: 'overflow', activated: selectedWrapStrategy === 'overflow', disabled: layoutDisabled }),
+            button('sheet.menu.text-wrap.wrap', '自动换行', { commandId: 'sheet.command.set-wrap-strategy', params: 'wrap', icon: WrapText, activated: selectedWrapStrategy === 'wrap', disabled: layoutDisabled }),
+            button('sheet.menu.text-wrap.clip', '截断', { commandId: 'sheet.command.set-wrap-strategy', params: 'clip', activated: selectedWrapStrategy === 'clip', disabled: layoutDisabled }),
           ] },
           button('sheet.command.set-shrink-to-fit', '缩小字体填充', {
             icon: Shrink, params: !(state.shrinkToFit === true && state.wrap !== true),
-            activated: state.shrinkToFit === true && state.wrap !== true, disabled: !state.hasSheet || state.wrap === true,
+            activated: state.shrinkToFit === true && state.wrap !== true, disabled: layoutDisabled || state.wrap === true,
+            tooltip: state.shrinkToFit === undefined ? `缩小字体填充（${mixedLabel}）` : '缩小字体填充',
             disabledReason: state.wrap === true ? '关闭自动换行后可使用缩小字体填充' : undefined,
             gridLayout: { row: 2, column: 2 },
           }),
-          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, disabled: !state.hasSheet, gridLayout: { row: 1, column: 3 }, children: textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
+          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', tooltip: state.rotation === null ? `文字方向（${mixedLabel}）` : '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, disabled: layoutDisabled, gridLayout: { row: 1, column: 3 }, children: textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
             commandId: 'sheet.command.set-text-rotation', params: angle,
+            disabled: layoutDisabled,
             activated: angle === 'v' ? state.rotationVertical === true : state.rotationVertical !== true && state.rotation === angle,
             icon: angle === 'v' ? TextCursor : angle === 0 ? Baseline : angle === -45 ? RotateCcw : angle === 45 ? RotateCw : angle === -90 ? RotateCcw : RotateCw,
           })) },
-          { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, disabled: !state.hasSheet || !state.canMerge && !state.canUnmerge, activated: state.canUnmerge, gridLayout: { row: 2, column: 3 }, children: [
-            button('sheet.command.merge-all', '全部合并', { commandId: 'sheet.command.merge', params: 'all', icon: TableCellsMerge, disabled: !state.canMerge }),
-            button('sheet.command.merge-vertical', '垂直合并', { commandId: 'sheet.command.merge', params: 'vertical', icon: TableCellsMerge, disabled: !state.canMerge }),
-            button('sheet.command.merge-horizontal', '水平合并', { commandId: 'sheet.command.merge', params: 'horizontal', icon: TableCellsMerge, disabled: !state.canMerge }),
-            button('sheet.command.unmerge', '取消合并', { icon: TableCellsSplit, disabled: !state.canUnmerge }),
+          { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge && !state.canUnmerge, activated: state.canUnmerge, gridLayout: { row: 2, column: 3 }, children: [
+            button('sheet.command.merge-all', '全部合并', { commandId: 'sheet.command.merge', params: 'all', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
+            button('sheet.command.merge-vertical', '垂直合并', { commandId: 'sheet.command.merge', params: 'vertical', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
+            button('sheet.command.merge-horizontal', '水平合并', { commandId: 'sheet.command.merge', params: 'horizontal', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
+            button('sheet.command.unmerge', '取消合并', { icon: TableCellsSplit, disabled: layoutDisabled || !state.canUnmerge }),
           ] },
         ] },
         { id: 'number', title: '数字', order: 30, items: [

@@ -298,18 +298,16 @@ export function parseFormatSection(inputTokens: FormatToken[]): ParsedFormatSect
             let decimals = 1;
             index++;
             let raw = '0';
-            if (inputTokens[index + 1]?.type === TOKEN_ZERO) {
+            while (inputTokens[index + 1]?.type === TOKEN_ZERO) {
+                if (decimals === 10) {
+                    throw new SyntaxError('Too many fractional second digits');
+                }
                 raw += '0';
-                decimals = 2;
-                index++;
-            }
-            if (inputTokens[index + 1]?.type === TOKEN_ZERO) {
-                raw += '0';
-                decimals = 3;
+                decimals++;
                 index++;
             }
             patternSource += raw;
-            const size = [u_SEC, u_DSEC, u_CSEC, u_MSEC][decimals];
+            const size = decimals === 1 ? u_DSEC : decimals === 2 ? u_CSEC : u_MSEC;
             part.date = part.date | size;
             part.date_eval = true;
             part.sec_decimals = Math.max(part.sec_decimals, decimals);

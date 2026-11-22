@@ -25,10 +25,16 @@ sheet.cells['0:3'] = { ...createCell(0, 3, null), formula: '=UNSUPPORTED()', dat
 sheet.cells['1:0'] = createCell(1, 0, .25)
 const studio = new OfficeStudio({ workbook: initial, currentUserId: 'local-user' })
 const api = FOffice.newAPI(studio)
-const view = ref(toExcelWorkbookView(studio.editor.workbook.model))
+// Hosts may set the date system only on the workbook; Canvas and both editors must inherit it.
+const viewFor = model => {
+  const result = toExcelWorkbookView(model)
+  for (const sheet of result.sheets) delete sheet.date1904
+  return result
+}
+const view = ref(viewFor(studio.editor.workbook.model))
 const dark = ref(false), variant = ref('classic'), canceled = ref(false), commands = [], notifications = []
 const direction = computed(() => ['ar-SA', 'fa-IR'].includes(studio.regionalSettings.locale.value) ? 'rtl' : 'ltr')
-watch(() => studio.editor.workbook.model, model => { view.value = toExcelWorkbookView(model) }, { flush: 'sync' })
+watch(() => studio.editor.workbook.model, model => { view.value = viewFor(model) }, { flush: 'sync' })
 studio.events.addEvent('CommandExecuted', event => { commands.push(copy(event)) })
 studio.events.addEvent('BeforeCommandExecute', event => { if (canceled.value && event.id === 'sheet.command.set-number-format') event.cancel = true })
 window.sheetFormatFixture = {
@@ -42,7 +48,29 @@ window.sheetFormatFixture = {
   cancelFormats: value => { canceled.value = value },
   appearance: (isDark, language = 'zh-CN') => { dark.value = isDark; studio.regionalSettings.setLocale(language) },
   region: value => { studio.regionalSettings.setRegion(value) },
+  seedCells: (entries, date1904 = false) => {
+    const next = copy(studio.editor.workbook.model)
+    next.date1904 = date1904
+    next.sheets[0].cells = {}
+    for (const { row = 0, column = 0, value, pattern = 'General' } of entries) {
+      const cell = createCell(row, column, value)
+      cell.style.numberFormat = pattern
+      next.sheets[0].cells[row + ':' + column] = cell
+    }
+    studio.editor.workbook.replace(next)
+    studio.editor.history.clear(studio.activeWorkbookId)
+  },
   variant: value => { variant.value = value },
+  externalUpdate: ({ cells = [], date1904 }) => {
+    const next = copy(studio.editor.workbook.model)
+    if (date1904 !== undefined) next.date1904 = date1904
+    for (const { row = 0, column = 0, changes } of cells) {
+      const key = row + ':' + column
+      const previous = next.sheets[0].cells[key] ?? createCell(row, column, null)
+      next.sheets[0].cells[key] = { ...previous, ...changes, style: { ...previous.style, ...changes.style } }
+    }
+    studio.editor.workbook.replace(next)
+  },
   reopen: snapshot => { api.createWorkbook({ ...JSON.parse(snapshot), id: 'sheet-number-format-reopened' }) },
   restrictFirstCell: () => {
     const workbook = api.getActiveWorkbook(), sheet = workbook.getActiveSheet()
@@ -104,7 +132,7 @@ const history = () => page.evaluate(() => window.sheetFormatFixture.history())
 const grid = () => page.getByRole('grid', { name: '工作表画布', exact: true })
 const canvas = () => page.locator('.canvas-surface canvas')
 const cellText = () => grid().getByRole('gridcell')
-const cellEditor = () => page.locator('.canvas-cell-input input')
+const cellEditor = () => page.locator('.canvas-cell-input input, .canvas-cell-input textarea')
 const formula = () => page.getByRole('textbox', { name: '公式编辑', exact: true })
 const ribbonItem = id => page.locator('.ribbon-visible-groups [data-ribbon-item="' + id + '"]')
 const content = model => Object.entries(model.sheets[0].cells).map(([key, { value, formula, dataType, cachedDataType }]) => [key, { value, formula, dataType, cachedDataType }])
@@ -140,6 +168,272 @@ async function editCell(address) { await selectRange(address); await grid().pres
 async function dispatchKey(input, options) {
   return input.evaluate((element, info) => { const event = new KeyboardEvent('keydown', { ...info, bubbles: true, cancelable: true }); element.dispatchEvent(event); return event.defaultPrevented }, options)
 }
+
+test('full percent editor text, retained suffix and F2 caret preserve precision through real history and reopen', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: 1.001234567, pattern: '0.00%' }]))
+  let input = await editCell('A1')
+  await expect(input).toHaveValue('100.1234567%')
+  assert.deepEqual(await input.evaluate(element => [element.selectionStart, element.selectionEnd]), [11, 11])
+  await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 1.001234567)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  input = await editCell('A1')
+  await input.fill('50.125%'); await input.press('Enter')
+  const edited = await snapshot()
+  assert.equal(edited.sheets[0].cells['0:0'].value, .50125)
+  assert.equal(edited.sheets[0].cells['0:0'].style.numberFormat, '0.00%')
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await clickCommand('sheet.command.undo')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 1.001234567)
+  await selectRange('A1'); await grid().press('5')
+  await expect(cellEditor()).toHaveValue('5%')
+  assert.deepEqual(await cellEditor().evaluate(element => [element.selectionStart, element.selectionEnd]), [1, 1])
+  await cellEditor().press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .05)
+  await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), edited)
+  input = await editCell('A1')
+  await expect(input).toHaveValue('50.125%')
+  await input.press('Escape')
+  await expect(canvas()).toHaveCount(1)
+})
+
+test('regional inputs are parsed once with the editor region and long decimal text survives reopen', async () => {
+  await page.evaluate(() => {
+    window.sheetFormatFixture.seedCells([{ value: 1.25 }])
+    window.sheetFormatFixture.region('de-DE')
+  })
+  let input = await editCell('A1')
+  await expect(input).toHaveValue('1,25')
+  await input.fill('1.234,5'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 1234.5)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, '#,##0.00')
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  input = await editCell('A1')
+  await expect(input).toHaveValue('1234,5')
+  await input.fill('2,5')
+  await page.evaluate(() => window.sheetFormatFixture.region('en-US'))
+  await expect(input).toHaveValue('2,5')
+  await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 2.5)
+  input = await editCell('A1')
+  await expect(input).toHaveValue('2.5')
+  await input.fill('123456789123456789'); await input.press('Enter')
+  const saved = await snapshot()
+  assert.equal(saved.sheets[0].cells['0:0'].value, '123456789123456789')
+  assert.equal(saved.sheets[0].cells['0:0'].dataType, 'text')
+  await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), saved)
+  input = await editCell('A1')
+  await expect(input).toHaveValue('123456789123456789')
+  await input.press('Escape')
+})
+
+test('formula bar shares the full regional edit text, retains its caret and waits for composition before confirm', async () => {
+  await page.evaluate(() => {
+    window.sheetFormatFixture.seedCells([{ value: .125, pattern: '0.00%' }])
+    window.sheetFormatFixture.region('de-DE')
+  })
+  await selectRange('A1')
+  const input = formula()
+  const confirm = page.getByRole('button', { name: '确认编辑', exact: true })
+  await expect(input).toHaveValue('12,5%')
+  await input.evaluate(element => { element.focus(); element.setSelectionRange(2, 2) })
+  await expect(input).toBeFocused()
+  await expect(cellEditor()).toHaveValue('12,5%')
+  assert.deepEqual(await input.evaluate(element => [element.selectionStart, element.selectionEnd]), [2, 2])
+  await input.fill('15,5%')
+  await input.dispatchEvent('compositionstart', { data: '15,5%' })
+  await expect(confirm).toBeDisabled()
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  await expect(grid()).toBeFocused()
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .125)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await input.focus()
+  await expect(input).toHaveValue('12,5%')
+  await expect(confirm).toBeEnabled()
+  await input.fill('25,12345%')
+  await expect(cellEditor()).toHaveValue('25,12345%')
+  await input.dispatchEvent('compositionstart', { data: '25,12345%' })
+  await expect(confirm).toBeDisabled()
+  assert.equal(await dispatchKey(input, { key: 'Enter' }), false)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .125)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await input.dispatchEvent('compositionend', { data: '25,12345%' })
+  await expect(confirm).toBeEnabled()
+  await page.evaluate(() => window.sheetFormatFixture.region('en-US'))
+  await expect(input).toHaveValue('25,12345%')
+  await confirm.click()
+  const saved = await snapshot()
+  assert.equal(saved.sheets[0].cells['0:0'].value, .2512345)
+  assert.equal(saved.sheets[0].cells['0:0'].style.numberFormat, '0.00%')
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await expect(grid()).toBeFocused()
+  await expect(input).toHaveValue('25.12345%')
+  await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), saved)
+  await selectRange('A1')
+  await expect(input).toHaveValue('25.12345%')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .2512345)
+  await expect(canvas()).toHaveCount(1)
+})
+
+test('date, clock and duration edits retain hidden fields, elapsed units and a single edit history', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([
+    { value: 60.5, pattern: 'yyyy-mm-dd' }, { column: 1, value: 61.5, pattern: 'h:mm' },
+    { column: 2, value: 2, pattern: '[m]:ss' }, { column: 3, value: 2, pattern: '[s]' },
+  ]))
+  let input = await editCell('A1')
+  await expect(input).toHaveValue('1900-02-29')
+  await input.fill('1900-03-01'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 61.5)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  input = await editCell('B1')
+  await expect(input).toHaveValue('12:00:00')
+  await input.fill('24:00:00'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:1'].value, 62)
+  input = await editCell('C1')
+  await expect(input).toHaveValue('2880:00')
+  await input.fill('2940:00'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:2'].value, 49 / 24)
+  assert.equal((await snapshot()).sheets[0].cells['0:2'].style.numberFormat, '[m]:ss')
+  input = await editCell('D1')
+  await expect(input).toHaveValue('172800')
+  await input.fill('90000'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:3'].value, 90000 / 86400)
+  assert.deepEqual(await history(), { undo: 4, redo: 0 })
+  const saved = await snapshot()
+  await clickCommand('sheet.command.undo')
+  assert.equal((await snapshot()).sheets[0].cells['0:3'].value, 2)
+  await clickCommand('sheet.command.redo')
+  assert.equal((await snapshot()).sheets[0].cells['0:3'].value, 90000 / 86400)
+  await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), saved)
+  input = await editCell('A1')
+  await expect(input).toHaveValue('1900-03-01')
+  await input.press('Escape')
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: .5, pattern: 'yyyy-mm-dd' }], true))
+  input = await editCell('A1')
+  await expect(input).toHaveValue('1904-01-01')
+  await input.fill('1904-01-02'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 1.5)
+  assert.equal((await snapshot()).date1904, true)
+})
+
+test('range protection applied during a numeric edit rejects submission and preserves selection and history', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: .125, pattern: '0.00%' }]))
+  const input = await editCell('A1')
+  await input.fill('50%')
+  await page.evaluate(() => window.sheetFormatFixture.denyEdit())
+  await input.press('Enter')
+  await expect(input).toHaveValue('50%')
+  await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('A1')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .125)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await input.press('Tab')
+  await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('A1')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .125)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  const notices = await page.evaluate(() => window.sheetFormatFixture.notifications())
+  assert.ok(notices.some(item => item.message.includes('目标单元格受保护')))
+  await input.press('Escape')
+  await expect(canvas()).toHaveCount(1)
+})
+
+test('workbook-only 1904 settings reach formula input, cell input, history and reopened snapshots', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: .5, pattern: 'yyyy-mm-dd' }], true))
+  await selectRange('A1')
+  await expect(formula()).toHaveValue('1904-01-01')
+  await expect(cellText()).toHaveText('A1 1904-01-01')
+  await formula().focus(); await formula().fill('1904-01-02')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  const saved = await snapshot()
+  assert.equal(saved.sheets[0].cells['0:0'].value, 1.5)
+  assert.equal(saved.date1904, true)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await clickCommand('sheet.command.undo')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .5)
+  await clickCommand('sheet.command.redo')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 1.5)
+  await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), saved)
+  const input = await editCell('A1')
+  await expect(input).toHaveValue('1904-01-02')
+  await input.press('Escape')
+  await expect(canvas()).toHaveCount(1)
+})
+
+test('a date-system change during editing keeps the draft and rejects Enter and Tab until cancel', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: 61.5, pattern: 'yyyy-mm-dd' }]))
+  let input = await editCell('A1')
+  await input.fill('1900-03-02')
+  await page.evaluate(() => window.sheetFormatFixture.externalUpdate({ date1904: true }))
+  for (const key of ['Enter', 'Tab']) {
+    await input.press(key)
+    await expect(input).toHaveValue('1900-03-02')
+    await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('A1')
+    assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 61.5)
+    assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  }
+  assert.ok((await page.evaluate(() => window.sheetFormatFixture.notifications())).some(item => item.message.includes('日期系统已更改')))
+  await input.press('Escape')
+  input = await editCell('A1')
+  await expect(input).toHaveValue('1904-03-02')
+  await input.fill('1904-03-03'); await input.press('Enter')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 62.5)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+})
+
+test('external content and format edits cannot be overwritten by an older numeric draft', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: .125, pattern: '0.00%' }]))
+  let input = await editCell('A1')
+  await input.fill('50%')
+  await page.evaluate(() => window.sheetFormatFixture.externalUpdate({ cells: [{ changes: { value: .3 } }] }))
+  await input.press('Enter')
+  await expect(input).toHaveValue('50%')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .3)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await input.press('Escape')
+  await expect(formula()).toHaveValue('30%')
+  input = await editCell('A1'); await input.fill('60%')
+  await page.evaluate(() => window.sheetFormatFixture.externalUpdate({ cells: [{ changes: { style: { numberFormat: '0.000%' } } }] }))
+  await input.press('Tab')
+  await expect(input).toHaveValue('60%')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .3)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, '0.000%')
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  const notices = await page.evaluate(() => window.sheetFormatFixture.notifications())
+  assert.ok(notices.some(item => item.message.includes('内容已更改')))
+  assert.ok(notices.some(item => item.message.includes('数字格式已更改')))
+  await input.press('Escape')
+  await expect(grid()).toBeFocused()
+})
+
+test('unrelated external cells and visual styles are preserved by an accepted edit transaction', async () => {
+  await page.evaluate(() => window.sheetFormatFixture.seedCells([{ value: .125, pattern: '0.00%' }, { column: 1, value: 12 }]))
+  const input = await editCell('A1')
+  await input.fill('50%')
+  await page.evaluate(() => window.sheetFormatFixture.externalUpdate({ cells: [
+    { changes: { style: { foreground: '#ff0000', background: '#fff2cc' } } }, { column: 1, changes: { value: 99 } },
+  ] }))
+  await input.press('Enter')
+  const saved = await snapshot()
+  assert.equal(saved.sheets[0].cells['0:0'].value, .5)
+  assert.equal(saved.sheets[0].cells['0:0'].style.foreground, '#ff0000')
+  assert.equal(saved.sheets[0].cells['0:0'].style.background, '#fff2cc')
+  assert.equal(saved.sheets[0].cells['0:1'].value, 99)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await clickCommand('sheet.command.undo')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, .125)
+  assert.equal((await snapshot()).sheets[0].cells['0:1'].value, 99)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.foreground, '#ff0000')
+})
+
+test('a recalculated formula cache does not invalidate its source draft', async () => {
+  const input = await editCell('C1')
+  await input.fill('=A1/50')
+  await page.evaluate(() => window.sheetFormatFixture.externalUpdate({ cells: [{ column: 2, changes: { value: .245, cachedDataType: 'number', display: '0.245' } }] }))
+  await input.press('Enter')
+  const saved = await snapshot()
+  assert.equal(saved.sheets[0].cells['0:2'].formula, '=A1/50')
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await expect(grid()).toBeFocused()
+})
 
 test('the ordered format menu and percent button apply their distinct defaults through public history', async () => {
   await selectRange('A1')
@@ -285,6 +579,8 @@ test('cell composition and keyCode 229 keep Enter and Escape out of document his
   const input = await editCell('A1')
   await input.fill('12.5')
   await input.dispatchEvent('compositionstart', { data: '12.5' })
+  const confirm = page.getByRole('button', { name: '确认编辑', exact: true })
+  await expect(confirm).toBeDisabled()
   for (const options of [
     { key: 'Enter', isComposing: true }, { key: 'Escape', isComposing: true },
     { key: 'Enter', keyCode: 229 }, { key: 'Escape', keyCode: 229 }, { key: 'Enter' },
@@ -294,7 +590,9 @@ test('cell composition and keyCode 229 keep Enter and Escape out of document his
     assert.deepEqual(await snapshot(), before)
     assert.deepEqual(await history(), { undo: 0, redo: 0 })
   }
-  await input.dispatchEvent('compositionend', { data: '12.5' }); await input.press('Enter')
+  await input.dispatchEvent('compositionend', { data: '12.5' })
+  await expect(confirm).toBeEnabled()
+  await input.press('Enter')
   await expect(input).toBeHidden()
   assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 12.5)
   assert.deepEqual(await history(), { undo: 1, redo: 0 })

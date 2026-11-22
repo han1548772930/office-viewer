@@ -80,6 +80,79 @@ test('empty edits, edge deletion and current formatting remain no-ops without ge
   }
 })
 
+test('public clear uses the document defaults, one history transaction, stable repeat no-ops and persisted defaults', () => {
+  const block = paragraph('formatted', 'Hello world')
+  block.type = 'heading'; block.level = 3; block.list = { id: 'ordered', preset: 'ORDER_LIST' }; block.style.align = 'center'
+  block.runs[0] = { ...block.runs[0], bold: true, italic: true, fontSize: 26, color: '#FF0000', href: 'https://example.org', metadata: { source: { preserved: 'run' } } }
+  const defaults = domain.createDocumentDefaultStyle()
+  defaults.text.fontFamily = 'Georgia'; defaults.text.eastAsiaFontFamily = '宋体'; defaults.text.fontSize = 15
+  defaults.paragraph.align = 'right'; defaults.paragraph.spaceAfter = 12
+  const { studio, document } = openDocument([block], { defaultStyle: defaults })
+  const original = copy(document.getModel()), commands = []
+  studio.events.addEvent('CommandExecuted', event => commands.push([event.id, event.unitId, event.kind]))
+  const result = document.executeCommand({ id: 'doc.command.clear-formatting' }, selection(point('formatted', 9)))
+  assert.equal(result.changed, true)
+  assert.deepEqual(result.selection, selection(point('formatted', 6), point('formatted', 11)))
+  const current = copy(document.getModel())
+  assert.deepEqual(current.blocks[0].runs.map(run => [run.text, run.bold, run.fontFamily, run.fontSize, run.href]), [
+    ['Hello ', true, 'Aptos', 26, 'https://example.org'], ['world', false, 'Georgia', 15, 'https://example.org'],
+  ])
+  assert.deepEqual(current.blocks[0].style, defaults.paragraph)
+  assert.equal(current.blocks[0].list, undefined); assert.equal(current.blocks[0].type, 'paragraph')
+  assert.deepEqual(commands, [['doc.command.clear-formatting', document.id, 'document']])
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  assert.equal(document.executeCommand({ id: 'doc.command.clear-formatting' }, result.selection).changed, false)
+  assert.deepEqual(document.getModel(), current)
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  document.undo(); assert.deepEqual(document.getModel(), original)
+  document.redo(); assert.deepEqual(document.getModel(), current)
+  const saved = document.save(), reopened = new OfficeStudio({ document: copy(saved) })
+  studios.add(reopened)
+  const reopenedDocument = new FDocument(reopened, saved.id)
+  assert.deepEqual(reopenedDocument.getModel().defaultStyle, defaults)
+  assert.equal(reopenedDocument.executeCommand({ id: 'doc.command.clear-formatting' }, result.selection).changed, false)
+  assert.deepEqual(history(reopened, saved.id), { undo: 0, redo: 0, dirty: false })
+  const insertion = document.executeCommand({ id: 'doc.command.insert-text', text: 'new' }, result.selection)
+  assert.equal(insertion.changed, true); assert.equal(document.getText(), 'Hello new')
+  const run = document.getModel().blocks[0].runs.find(run => run.text === 'new')
+  assert.deepEqual([run.bold, run.italic, run.fontFamily, run.fontSize], [false, false, 'Georgia', 15])
+})
+
+test('public clear cancellation, permission rejection and outside-word content locks leave model and history intact', () => {
+  const block = paragraph('formatted', 'word locked'); block.runs[0].bold = true; block.style.align = 'center'
+  const { studio, document } = openDocument([block])
+  const range = selection(point('formatted', 0), point('formatted', 4)), original = copy(document.getModel())
+  const cancel = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === 'doc.command.clear-formatting') event.cancel = true })
+  assert.throws(() => document.executeCommand({ id: 'doc.command.clear-formatting' }, range), /canceled/)
+  cancel.dispose()
+  assert.deepEqual(document.getModel(), original); assert.deepEqual(history(studio, document.id), { undo: 0, redo: 0, dirty: false })
+  for (const denied of ['paragraph', 'content-control']) {
+    const protectedModel = copy(original)
+    if (denied === 'paragraph') protectedModel.permissionRules = [{ id: 'deny-clear', scope: 'paragraph', targetId: 'formatted', action: 'edit', effect: 'deny', userIds: [] }]
+    else controls.createDocumentContentControl(protectedModel, { type: 'text', blockId: 'formatted', startOffset: 5, endOffset: 11, lock: 'contentLocked' })
+    const blocked = openDocument(protectedModel.blocks, protectedModel)
+    const before = copy(blocked.document.getModel())
+    assert.throws(() => blocked.document.executeCommand({ id: 'doc.command.clear-formatting' }, range))
+    assert.deepEqual(blocked.document.getModel(), before)
+    assert.deepEqual(history(blocked.studio, blocked.document.id), { undo: 0, redo: 0, dirty: false })
+  }
+})
+
+test('public clear across body and table rejects a later content lock without publishing earlier changes', () => {
+  const first = paragraph('body', 'Body'), table = paragraph('table', '')
+  first.type = 'heading'; first.level = 2; first.runs[0].bold = true
+  table.type = 'table'; table.runs = []; table.metadata.table = documentModel.createTable(1, 2)
+  const earlier = table.metadata.table.rows[0].cells[0].blocks[0], last = table.metadata.table.rows[0].cells[1].blocks[0]
+  earlier.runs = [documentModel.createRun('Earlier', { italic: true })]; last.runs = [documentModel.createRun('Later', { underline: true })]
+  const { studio, document } = openDocument([first, table], { contentControls: [{ id: 'last-lock', type: 'text', blockId: last.id, startOffset: 3, endOffset: 5, lock: 'contentLocked' }] })
+  const before = copy(document.getModel()), commands = []
+  studio.events.addEvent('CommandExecuted', event => commands.push(event.id))
+  const range = selection(point('body', 0), point('table', 3, { row: 0, col: 1, cellBlockId: last.id }))
+  assert.throws(() => document.executeCommand({ id: 'doc.command.clear-formatting' }, range), /locked/)
+  assert.deepEqual(document.getModel(), before); assert.deepEqual(commands, [])
+  assert.deepEqual(history(studio, document.id), { undo: 0, redo: 0, dirty: false })
+})
+
 test('cancellation and malformed or stale selections do not publish a partial document transaction', () => {
   const { studio, document } = openDocument([paragraph('first', 'ABC')])
   const original = copy(document.getModel())

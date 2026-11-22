@@ -14,6 +14,8 @@ import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWo
 import { createBlankDocument } from '/packages/office-studio/src/domain/model'
 import { blocksFromHtml, createParagraph, documentHtml, normalizeDocument } from '/packages/office-studio/src/features/document/model/document-model'
 import { paragraphListMarkers } from '/packages/office-studio/src/features/document/model/document-lists'
+import { numberingDefinitionFromParts } from '/packages/office-studio/src/features/document/model/document-numbering'
+import { officeNumberingMarkerBaseline } from '/packages/office-studio/src/features/document/model/document-office-numbering-marker'
 import { createTextMeasurer, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
 import { createOfficeMessages, OfficeDirectionKey, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
@@ -25,9 +27,11 @@ if (studio) studio.activateDocument(initial.id)
 const documentApi = shallowRef(studio ? new FDocument(studio, initial.id) : undefined)
 const model = ref(documentApi.value?.getModel() ?? initial), history = ref([]), redo = ref([]), locale = ref('zh-CN'), dark = ref(false), variant = ref('classic')
 const apiCommands = []
+let cancelClear = false
 if (studio) {
   watch(() => studio.editor.document.model, value => { model.value = value }, { flush: 'sync' })
   studio.events.addEvent('CommandExecuted', event => { apiCommands.push(copy(event)) })
+  studio.events.addEvent('BeforeCommandExecute', event => { if (cancelClear && event.id === 'doc.command.clear-formatting') event.cancel = true })
   window.addEventListener('pagehide', () => studio.dispose(), { once: true })
 }
 const direction = computed(() => locale.value === 'ar-SA' ? 'rtl' : 'ltr')
@@ -57,6 +61,7 @@ window.documentHomeFixture = {
     return unit ? { undo: unit.undo.length, redo: unit.redo.length } : { undo: history.value.length, redo: redo.value.length }
   },
   apiCommands: () => copy(apiCommands),
+  cancelClear: value => { cancelClear = value },
   appearance: (isDark, language) => { dark.value = isDark; locale.value = language },
   variant: value => { variant.value = value },
   setColor: color => { const next = copy(model.value); next.blocks[0].runs.forEach(run => { run.color = color }); replaceFixtureModel(next) },
@@ -68,11 +73,56 @@ window.documentHomeFixture = {
     next.blocks = styles.map((style, index) => { const paragraph = createParagraph('段落' + (index + 1)); paragraph.style = { ...paragraph.style, ...style }; return paragraph })
     replaceFixtureModel(next, true)
   },
+  clearFormatting: () => {
+    const next = createBlankDocument(); next.id = 'clear-formatting-home-doc'
+    next.defaultStyle.text = { ...next.defaultStyle.text, fontFamily: 'Georgia', eastAsiaFontFamily: '宋体', fontSize: 15, color: 'auto' }
+    next.defaultStyle.paragraph = { ...next.defaultStyle.paragraph, align: 'right', spaceAfter: 12 }
+    const block = createParagraph('Hello world', { bold: false, italic: true, underline: true, strike: true, fontSize: 26, color: '#FF0000', highlight: '#FFFF00', verticalAlign: 'superscript', href: 'https://example.org' })
+    block.type = 'heading'; block.level = 3; block.style.align = 'center'; block.list = { id: 'clear-test-list', preset: 'ORDER_LIST' }
+    next.blocks = [block]; replaceFixtureModel(next, true)
+  },
   htmlColors: () => copy(blocksFromHtml(documentHtml(model.value)).flatMap(block => block.runs.map(run => ({ color: run.color, highlight: run.highlight })))),
   numbering: () => {
     const next = createBlankDocument(); next.id = 'numbering-home-doc'
     next.blocks = ['前一项', '前二项', '间隔段落', '后一项', '后二项'].map(text => createParagraph(text))
     for (const index of [0, 1, 3, 4]) { next.blocks[index].type = 'numbered'; next.blocks[index].list = { id: index < 2 ? 'previous-list' : 'current-list', preset: 'ORDER_LIST' } }
+    replaceFixtureModel(next, true)
+  },
+  consecutiveNumbering: options => {
+    const next = createBlankDocument(); next.id = 'consecutive-home-doc'
+    const definition = numberingDefinitionFromParts({ abstractNumId: 7, consecutiveNumbering: true, levels: [
+      { ilvl: 0, start: 1, format: 'decimal', text: '%1.' },
+      { ilvl: 1, start: 1, format: 'decimal', text: '%1.%2.' },
+    ] }, { numId: 9, abstractNumId: 7, consecutiveListId: 9, levelStartOverrides: { 0: 0 } })
+    next.blocks = ['第一项', '第二项', '第三项', '第四项'].map((text, index) => {
+      const block = createParagraph(text); block.type = 'numbered'; block.level = index % 2
+      block.metadata = { numberingListId: 'shared', numberingDefinition: copy(definition) }
+      if (options?.headings && index < 2) {
+        block.type = 'heading'; block.metadata.numberingLevel = index; block.level = index + 2
+      }
+      if (options?.linked && index === 1) {
+        block.metadata.numberingListId = 'secondary-instance'; block.metadata.numberingDefinition.instance.numId = 10
+        block.metadata.numberingDefinition.instance.levelStartOverrides = {}
+      }
+      return block
+    })
+    replaceFixtureModel(next, true)
+  },
+  cachedNumberingMarker: options => {
+    const next = createBlankDocument(); next.id = 'cached-office-numbering-doc'
+    const block = createParagraph('[0] 原始正文'); block.id = 'cached-office-paragraph'
+    const run = block.runs[0]
+    block.runs = [{ ...run, id: 'cached-label', text: '[0] ', color: '#123456' }, { ...run, id: 'editable-body', text: '原始正文' }]
+    block.metadata.officeNumberingMarker = { version: 1, bookmark: 'office_list_v1_fixture', bookmarkId: 99, text: '[0] ', sourceNumbering: null,
+      xml: '<w:bookmarkStart w:id="99" w:name="office_list_v1_fixture"/><w:r><w:t>[0] </w:t></w:r><w:bookmarkEnd w:id="99"/>', baseline: officeNumberingMarkerBaseline(block, '[0] ') }
+    next.blocks = [block]
+    const startOffset = options?.labelOnly ? 1 : 2, endOffset = options?.labelOnly ? 3 : 8
+    const anchorText = block.runs.map(run => run.text).join('').slice(startOffset, endOffset)
+    next.comments = { review: { id: 'review', unitId: next.id, referenceText: anchorText, resolved: false,
+      anchor: [{ blockId: block.id, startOffset, endOffset, text: anchorText }],
+      messages: [{ id: 'review-message', text: '保留批注', authorId: 'local-user', authorName: '作者', createdAt: '2026-11-23T00:00:00Z' }],
+      createdAt: '2026-11-23T00:00:00Z', updatedAt: '2026-11-23T00:00:00Z' } }
+    next.contentControls = [{ id: 'body-control', type: 'richText', blockId: block.id, startOffset: 4, endOffset: 8, lock: 'unlocked' }]
     replaceFixtureModel(next, true)
   },
   markers: () => [...paragraphListMarkers(model.value.blocks).values()].map(value => value.marker),
@@ -420,6 +470,130 @@ test('restart at zero and continue numbering share the popup command path with e
   await expect.poll(markers).toEqual(['1.', '2.', '3.', '4.'])
 })
 
+test('replacing an imported cached label keeps comment and control anchors through public undo, redo and reopen', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.cachedNumberingMarker())
+  await clickParagraph(0)
+  const before = await snapshot()
+  await ribbonItem('doc-numbered').locator('.ribbon-split-arrow').click()
+  await page.locator('.doc-list-picker:visible [data-list-preset="ORDER_LIST"]').click()
+  await expect.poll(async () => (await snapshot()).blocks[0].runs.map(run => run.text).join('')).toBe('原始正文')
+  await expect(bridge()).toBeFocused()
+  const after = await snapshot(), id = after.blocks[0].id
+  assert.equal(after.blocks[0].metadata.officeNumberingMarker, undefined)
+  assert.deepEqual(after.comments.review.anchor, [{ blockId: id, startOffset: 0, endOffset: 4, text: '原始正文' }])
+  assert.equal(after.comments.review.messages[0].text, '保留批注')
+  assert.deepEqual(after.contentControls.map(control => [control.startOffset, control.endOffset]), [[0, 4]])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  assert.deepEqual((await page.evaluate(() => window.documentHomeFixture.apiCommands())).map(event => event.id), ['doc.command.change-list-type'])
+  await ribbonItem('doc-undo').getByRole('button').click()
+  assert.deepEqual(await snapshot(), before)
+  await ribbonItem('doc-redo').getByRole('button').click()
+  assert.deepEqual(await snapshot(), after)
+  await page.evaluate(value => window.documentHomeFixture.reopen(value), JSON.stringify(after))
+  const reopened = await snapshot()
+  assert.deepEqual(reopened.comments.review.anchor, after.comments.review.anchor)
+  assert.deepEqual(reopened.contentControls, after.contentControls)
+  assert.equal(reopened.blocks[0].runs.map(run => run.text).join(''), '原始正文')
+  await expect(page.locator('.document-surface canvas')).toHaveCount(1)
+})
+
+test('deleting an annotated cached label retains its collapsed comment through the Ribbon, public history and reopen', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.cachedNumberingMarker({ labelOnly: true }))
+  await clickParagraph(0)
+  const before = await snapshot()
+  assert.deepEqual(before.comments.review.anchor.map(anchor => [anchor.startOffset, anchor.endOffset, anchor.text]), [[1, 3, '0]']])
+  await ribbonItem('doc-numbered').locator('.ribbon-split-arrow').click()
+  await page.locator('.doc-list-picker:visible [data-list-preset="ORDER_LIST"]').click()
+  await expect.poll(async () => (await snapshot()).blocks[0].runs.map(run => run.text).join('')).toBe('原始正文')
+  const after = await snapshot()
+  assert.deepEqual(after.comments.review.anchor, [{ blockId: after.blocks[0].id, startOffset: 0, endOffset: 0, text: '' }])
+  assert.equal(after.comments.review.referenceText, '')
+  assert.equal(after.comments.review.messages[0].text, '保留批注')
+  assert.deepEqual(after.contentControls.map(control => [control.startOffset, control.endOffset]), [[0, 4]])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await expect(bridge()).toBeFocused()
+  await ribbonItem('doc-undo').getByRole('button').click()
+  assert.deepEqual(await snapshot(), before)
+  await ribbonItem('doc-redo').getByRole('button').click()
+  assert.deepEqual(await snapshot(), after)
+  await page.evaluate(value => window.documentHomeFixture.reopen(value), JSON.stringify(after))
+  assert.deepEqual((await snapshot()).comments.review, after.comments.review)
+  await clickParagraph(0)
+  await expect(bridge()).toBeFocused()
+})
+
+for (const headings of [false, true]) test(`consecutive ${headings ? 'numbered headings' : 'paragraphs'} restart through the public history and retain their own levels after reopen`, async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(value => window.documentHomeFixture.consecutiveNumbering({ headings: value }), headings)
+  const before = await snapshot()
+  const markers = () => page.evaluate(() => window.documentHomeFixture.markers())
+  await expect.poll(markers).toEqual(['0.', '0.1.', '2.', '2.3.'])
+  await clickParagraph(1)
+  await ribbonItem('doc-numbered').locator('.ribbon-split-arrow').click()
+  const picker = page.locator('.doc-list-picker:visible')
+  const start = picker.getByRole('spinbutton', { name: '起始编号', exact: true })
+  await expect(start).toBeEnabled()
+  await start.fill('7')
+  await picker.getByRole('button', { name: '重新编号', exact: true }).click()
+  await expect.poll(markers).toEqual(['0.', '0.7.', '8.', '8.9.'])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await expect(bridge()).toBeFocused()
+  assert.deepEqual((await snapshot()).blocks.map(block => [block.type, block.level, block.metadata.numberingLevel, block.runs]), before.blocks.map(block => [block.type, block.level, block.metadata.numberingLevel, block.runs]))
+  const commands = await page.evaluate(() => window.documentHomeFixture.apiCommands())
+  assert.deepEqual(commands.map(event => [event.id, event.kind]), [['doc.command.restart-list-numbering', 'document']])
+  await ribbonItem('doc-undo').getByRole('button').click()
+  assert.deepEqual(await snapshot(), before)
+  await ribbonItem('doc-redo').getByRole('button').click()
+  await expect.poll(markers).toEqual(['0.', '0.7.', '8.', '8.9.'])
+  const saved = JSON.stringify(await snapshot())
+  await page.evaluate(value => window.documentHomeFixture.reopen(value), saved)
+  await expect.poll(markers).toEqual(['0.', '0.7.', '8.', '8.9.'])
+  await expect(page.locator('.document-surface canvas')).toHaveCount(1)
+})
+
+test('shared consecutive groups disable redundant continuation across imported instance IDs', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.consecutiveNumbering({ linked: true }))
+  await clickParagraph(1)
+  const before = await snapshot()
+  await ribbonItem('doc-numbered').locator('.ribbon-split-arrow').click()
+  const picker = page.locator('.doc-list-picker:visible')
+  await expect(picker.getByRole('button', { name: '继续前一编号', exact: true })).toBeDisabled()
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+})
+
+test('numbering InputNumber guards IME confirmation and follows ConfigProvider theme changes', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.consecutiveNumbering())
+  await clickParagraph(1)
+  await ribbonItem('doc-numbered').locator('.ribbon-split-arrow').click()
+  const picker = page.locator('.doc-list-picker:visible')
+  const start = picker.getByRole('spinbutton', { name: '起始编号', exact: true })
+  const submit = picker.getByRole('button', { name: '重新编号', exact: true })
+  await start.fill('7')
+  await start.dispatchEvent('compositionstart')
+  await expect(submit).toBeDisabled()
+  const cancelled = await start.evaluate(element => !element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, isComposing: true, bubbles: true, cancelable: true })))
+  assert.equal(cancelled, true)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await start.dispatchEvent('compositionend')
+  await expect(submit).toBeEnabled()
+  const cancelledWithoutStart = await start.evaluate(element => !element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true })))
+  assert.equal(cancelledWithoutStart, true)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  const background = await start.evaluate(element => getComputedStyle(element.closest('.ant-input-number')).backgroundColor)
+  await page.evaluate(() => window.documentHomeFixture.appearance(true, 'ar-SA'))
+  await expect.poll(() => start.evaluate(element => getComputedStyle(element.closest('.ant-input-number')).backgroundColor)).not.toBe(background)
+  await page.evaluate(() => window.documentHomeFixture.appearance(false, 'zh-CN'))
+  await start.press('Enter')
+  await expect.poll(() => page.evaluate(() => window.documentHomeFixture.markers())).toEqual(['0.', '0.7.', '8.', '8.9.'])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await expect(bridge()).toBeFocused()
+})
+
 for (const reverse of [false, true]) test(`paragraph settings preserve a ${reverse ? 'reverse' : 'forward'} mixed selection on right-click and share public history`, async () => {
   await page.goto(baseURL + '?api=1')
   await page.evaluate(() => window.documentHomeFixture.paragraphs([
@@ -468,4 +642,77 @@ test('right-clicking outside the selected paragraph retargets settings to the cl
   await left.fill('44'); await left.press('Tab')
   await expect.poll(async () => (await snapshot()).blocks.map(block => block.style.indentStart)).toEqual([10, 20, 44])
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
+})
+
+for (const variant of ['classic', 'grid']) test(`${variant} clear formatting uses document defaults, public undo/redo and cleared typing marks`, async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(value => { window.documentHomeFixture.clearFormatting(); window.documentHomeFixture.variant(value) }, variant)
+  await bridge().focus(); await bridge().press('Control+End')
+  const before = await snapshot()
+  await (await homeItem('doc-bold')).getByRole('button').click()
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  const clear = (await homeItem('doc-clear-format')).getByRole('button')
+  await expect(clear).toBeEnabled(); await expect(clear).toHaveClass(/ant-btn/)
+  const foreground = await clear.evaluate(element => getComputedStyle(element).color)
+  await page.evaluate(() => window.documentHomeFixture.appearance(true, 'zh-CN'))
+  await expect.poll(() => clear.evaluate(element => getComputedStyle(element).color)).not.toBe(foreground)
+  await page.evaluate(() => window.documentHomeFixture.appearance(false, 'zh-CN'))
+  await clear.click()
+  await expect(bridge()).toBeFocused()
+  await expect.poll(async () => (await snapshot()).blocks[0].type).toBe('paragraph')
+  const after = await snapshot(), runs = after.blocks[0].runs
+  assert.deepEqual(runs.map(run => [run.text, run.bold, run.italic, run.fontFamily, run.fontSize, run.highlight, run.verticalAlign]), [
+    ['Hello ', false, true, 'Arial', 26, '#FFFF00', 'superscript'],
+    ['world', false, false, 'Georgia', 15, undefined, undefined],
+  ])
+  assert.deepEqual(after.blocks[0].style, after.defaultStyle.paragraph)
+  assert.equal(after.blocks[0].list, undefined); assert.equal(runs[1].href, 'https://example.org')
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  assert.deepEqual((await page.evaluate(() => window.documentHomeFixture.apiCommands())).map(event => event.id), ['doc.command.clear-formatting'])
+  await bridge().press('x')
+  await expect.poll(async () => (await snapshot()).blocks[0].runs.map(run => run.text).join('')).toBe('Hello x')
+  const typedAfterClear = (await snapshot()).blocks[0].runs.find(run => run.text === 'x')
+  assert.deepEqual([typedAfterClear.bold, typedAfterClear.italic, typedAfterClear.fontFamily, typedAfterClear.fontSize, typedAfterClear.highlight], [false, false, 'Georgia', 15, undefined])
+  await (await homeItem('doc-undo')).getByRole('button').click(); assert.deepEqual(await snapshot(), after)
+  await (await homeItem('doc-undo')).getByRole('button').click(); assert.deepEqual(await snapshot(), before)
+  await (await homeItem('doc-redo')).getByRole('button').click(); assert.deepEqual(await snapshot(), after)
+  await page.evaluate(value => window.documentHomeFixture.reopen(value), JSON.stringify(after))
+  assert.deepEqual((await snapshot()).defaultStyle, after.defaultStyle)
+  // Reopening resets UI selection, so select the cleared word again by keyboard.
+  await bridge().focus(); await bridge().press('Control+End'); await bridge().press('Control+Shift+ArrowLeft')
+  await bridge().press('x')
+  await expect.poll(async () => (await snapshot()).blocks[0].runs.map(run => run.text).join('')).toBe('Hello x')
+  const inserted = (await snapshot()).blocks[0].runs.find(run => run.text === 'x')
+  assert.deepEqual([inserted.bold, inserted.italic, inserted.fontFamily, inserted.fontSize, inserted.highlight], [false, false, 'Georgia', 15, undefined])
+  await expect(page.locator('.document-surface canvas')).toHaveCount(1)
+})
+
+test('a cancelled clear preserves pending typing format and restores the Canvas input focus', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.clearFormatting())
+  await bridge().focus(); await bridge().press('Control+End')
+  const before = await snapshot()
+  await (await homeItem('doc-bold')).getByRole('button').click()
+  await page.evaluate(() => window.documentHomeFixture.cancelClear(true))
+  await (await homeItem('doc-clear-format')).getByRole('button').click()
+  await expect(bridge()).toBeFocused()
+  assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual(await page.evaluate(() => window.documentHomeFixture.apiCommands()), [])
+  await page.evaluate(() => window.documentHomeFixture.cancelClear(false))
+  await bridge().press('x')
+  await expect.poll(async () => (await snapshot()).blocks[0].runs.map(run => run.text).join('')).toBe('Hello worldx')
+  const inserted = (await snapshot()).blocks[0].runs.find(run => run.text === 'x')
+  assert.equal(inserted.bold, true)
+})
+
+test('clear formatting disabled state follows actual edit permission without publishing a history entry', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.clearFormatting())
+  await selectAll()
+  const clear = (await homeItem('doc-clear-format')).getByRole('button')
+  await expect(clear).toBeEnabled()
+  await page.evaluate(() => window.documentHomeFixture.denyEdit())
+  await expect(clear).toBeDisabled()
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual(await page.evaluate(() => window.documentHomeFixture.apiCommands()), [])
 })

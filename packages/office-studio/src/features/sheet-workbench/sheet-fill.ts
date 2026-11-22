@@ -157,7 +157,7 @@ function translateFormula(cell: ExcelCellView, rowOffset: number, columnOffset: 
 
 const CELL_FORMAT_KEYS = [
   'bold', 'italic', 'underline', 'strike', 'align', 'vertical', 'background', 'color', 'fontSize',
-  'numberFormat', 'rawNumberFormat', 'fontFamily', 'wrap', 'border', 'rotation', 'rotationVertical', 'indent', 'shrinkToFit',
+  'numberFormat', 'rawNumberFormat', 'fontFamily', 'wrap', 'wrapStrategy', 'border', 'rotation', 'rotationVertical', 'indent', 'shrinkToFit',
 ] as const
 
 function mergeCellFormat(target: ExcelCellView | undefined, source: ExcelCellView): ExcelCellView {

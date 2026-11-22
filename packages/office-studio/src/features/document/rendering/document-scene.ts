@@ -2,11 +2,11 @@ import type { DocumentModel } from '../../../domain/model'
 import type { DrawCommand, RenderRect, RenderScene } from '../../../rendering/contracts'
 import type { DocumentSelection } from '../model/document-model'
 import { documentTextColor, orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets, type TextTarget } from '../model/document-model'
-import { caretRect, STORY_LINE_HEIGHT, type DocumentLayout } from '../layout/document-layout'
+import { caretRect, documentStoryCaretRect, type DocumentLayout, type LayoutStoryLine } from '../layout/document-layout'
 import { codeBlockData, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
 
 export interface DocumentViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
-export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }
+export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; searchMatches?: Array<{ target: TextTarget; start: number; end: number }>; story?: { location: { page: number; area: 'header' | 'footer' }; selection: { start: number; end: number } } }
 
 export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, viewport: DocumentViewport, options: DocumentSceneOptions): RenderScene {
   const commands: DrawCommand[] = []
@@ -28,11 +28,35 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     commands.push({ kind: 'rect', ...rect(page), fill: '#ffffff', stroke: '#d9dfe7', strokeWidth: 1 })
     const headerFooter = layout.pageHeaderFooters?.[page.index]
     if (headerFooter) {
-      const append = (text: string, top: number) => {
-        if (text && y(top + STORY_LINE_HEIGHT) >= 0 && y(top) <= viewport.height) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(top), text, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'top', clip: rect(page) })
+      const append = (lines: readonly LayoutStoryLine[], area: 'header' | 'footer') => {
+        const active = options.story?.location.page === page.index && options.story.location.area === area
+        const selectedStart = active ? Math.min(options.story!.selection.start, options.story!.selection.end) : 0
+        const selectedEnd = active ? Math.max(options.story!.selection.start, options.story!.selection.end) : 0
+        for (const line of lines) {
+          if (!visible(line)) continue
+          let group: { text: string; x: number; y: number; font: string; color: string; runId: string } | undefined
+          const flush = () => { if (group) { const { runId: _runId, ...text } = group; commands.push({ kind: 'text', ...text, clip: rect(page) }); group = undefined } }
+          for (const glyph of line.glyphs) {
+            const color = documentTextColor(glyph.run.color)
+            const baseline = line.baseline + (glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0)
+            if (glyph.run.highlight) commands.push({ kind: 'rect', ...rect(glyph), fill: glyph.run.highlight, clip: rect(page) })
+            if (active && glyph.end > selectedStart && glyph.offset < selectedEnd) commands.push({ kind: 'rect', ...rect(glyph), fill: options.focused ? '#bdd8ff' : '#dde6f2', clip: rect(page) })
+            const font = glyph.font.replace(/([\d.]+)px/, (_whole, size: string) => `${Number(size) * scale}px`)
+            if (group && (group.runId !== glyph.run.id || group.font !== font || group.color !== color || group.y !== y(baseline))) flush()
+            if (group) group.text += glyph.text === '\t' ? '    ' : glyph.text
+            else group = { text: glyph.text === '\t' ? '    ' : glyph.text, x: x(glyph.x), y: y(baseline), font, color, runId: glyph.run.id }
+            if (glyph.run.underline) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color, width: Math.max(0.7, scale), clip: rect(page) })
+            if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color, width: Math.max(0.7, scale), clip: rect(page) })
+          }
+          flush()
+        }
+        if (active && options.focused && options.caretVisible && selectedStart === selectedEnd) {
+          const caret = documentStoryCaretRect(lines, selectedStart)
+          if (caret && visible(caret)) commands.push({ kind: 'rect', ...rect(caret), width: Math.max(1, scale), fill: '#24569c', clip: rect(page) })
+        }
       }
-      headerFooter.headerLines.forEach((text, i) => append(text, headerFooter.headerTop + i * STORY_LINE_HEIGHT))
-      headerFooter.footerLines.forEach((text, i, lines) => append(text, headerFooter.footerBottom - (lines.length - i) * STORY_LINE_HEIGHT))
+      append(headerFooter.headerLayoutLines ?? [], 'header')
+      append(headerFooter.footerLayoutLines ?? [], 'footer')
     }
   }
   for (const pageIndex of visiblePages) {
@@ -73,7 +97,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   for (const line of visibleLines) {
     if (!visible(line)) continue
     const clip = rect(layout.pages[line.page]!)
-    const hasSelection = !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))
+    const hasSelection = !options.story && !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))
     const lineMatches = matchesByTarget.get(targetKey(line.target)) ?? []
     const start = sameTarget(line.target, ordered.start) ? ordered.start.offset : 0
     const end = sameTarget(line.target, ordered.end) ? ordered.end.offset : Number.POSITIVE_INFINITY
@@ -81,7 +105,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     if (line.codeBlock) {
       commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: line.height * scale, fill: '#f1f4f8', clip })
       if (line.codeBlock.lineNumber === 1) commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: Math.max(2, scale), fill: '#dce3ec', clip })
-      commands.push({ kind: 'text', x: x(line.x - 3), y: y(line.baseline), text: String(line.codeBlock.lineNumber), font: `${10 * scale}px Consolas, monospace`, color: '#8a96a5', align: 'right', baseline: 'alphabetic', clip })
+      if (codeData?.lineNumbers) commands.push({ kind: 'text', x: x(line.x - 3), y: y(line.baseline), text: String(line.codeBlock.lineNumber), font: `${10 * scale}px Consolas, monospace`, color: '#8a96a5', align: 'right', baseline: 'alphabetic', clip })
     }
     if (line.marker) {
       const font = line.markerStyle?.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`) ?? `${14 * scale}px Arial`
@@ -118,14 +142,14 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       }
       const font = glyph.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`)
       const token = codeData && codeTokens.get(line.target.blockId)?.find((candidate) => glyph.offset >= candidate.start && glyph.offset < candidate.end)
-      commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: token ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor, clip })
+      commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: token && glyph.run.metadata?.codeSyntaxHighlight !== false ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor, clip })
       if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: textColor, width: Math.max(0.7, scale), clip })
       if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: textColor, width: Math.max(0.7, scale), clip })
       if (options.composing && sameTarget(line.target, options.selection.focus) && glyph.end <= options.selection.focus.offset) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline + 3), x2: x(glyph.x + glyph.width), y2: y(line.baseline + 3), color: '#3478df', width: 1, clip })
     }
     if (hasSelection && !line.glyphs.length && start <= line.start && end >= line.end) commands.push({ kind: 'rect', x: x(line.x), y: y(line.y), width: 5 * scale, height: line.height * scale, fill: '#bdd8ff', clip })
   }
-  if (options.focused && options.caretVisible && selectionCollapsed(options.selection)) {
+  if (!options.story && options.focused && options.caretVisible && selectionCollapsed(options.selection)) {
     const caret = caretRect(layout, options.selection.focus)
     if (caret && visible(caret)) commands.push({ kind: 'rect', ...rect(caret), width: Math.max(1, scale), fill: '#24569c' })
   }

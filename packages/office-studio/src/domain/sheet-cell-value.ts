@@ -1,4 +1,5 @@
 import type { CellScalar } from './model.ts'
+import { parseExactDecimalInput } from '../shared/decimal-input.ts'
 
 export type SheetCellValueType = 'text' | 'number' | 'boolean' | 'error' | 'blank' | 'formula'
 export type SheetCellTypeInput = string | 1 | 2 | 3 | 4 | null | undefined
@@ -36,9 +37,5 @@ export function parseSheetCellText(value: string, type?: SheetCellTypeInput): Ce
     if (/^(?:false|0)$/i.test(source)) return false
     return value
   }
-  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(source)) {
-    const number = Number(source)
-    if (Number.isFinite(number)) return number
-  }
-  return value
+  return parseExactDecimalInput(source) ?? value
 }

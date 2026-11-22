@@ -33,12 +33,9 @@ import {
     MAX_L_DATE,
     MIN_L_DATE,
     MIN_S_DATE,
-    u_CSEC,
-    u_DSEC,
-    u_MSEC,
 } from './constants';
 import { dec2frac } from './dec-to-frac';
-import { decimalFromNumber, roundDecimal, roundScientificDecimal, shiftDecimal } from './decimal';
+import { decimalFromNumber, decimalPartsToNumber, roundDecimal, roundScientificDecimal, shiftDecimal } from './decimal';
 import { general } from './general';
 import { defaultLocale } from './locale';
 import { getExponent, getSignificand } from './number-props';
@@ -237,41 +234,29 @@ export function runPart(
 
     // using date/time
     if (section.date) {
-        date = Math.trunc(numericValue);
-        const rawTime = DAYSIZE * (numericValue - date);
-        time = Math.floor(rawTime); // in seconds
-        // "epsilon" correction
-        subsec = rawTime - time;
-        if (Math.abs(subsec) < 1e-6) { // 0.000001
-            subsec = 0;
-        } else if (subsec > 0.9999) {
-            subsec = 0;
-            time += 1;
-            if (time === DAYSIZE) {
-                time = 0;
-                date += 1;
-            }
+        const elapsedOnly = section.tokens.some((token) => token.type.endsWith('-elap')) &&
+            !section.tokens.some((token) => /^(?:b-year|year|month|day|weekday)/.test(token.type));
+        const clockValue = elapsedOnly ? Math.abs(numericValue) : numericValue;
+        date = Math.floor(clockValue);
+        let rawTime = DAYSIZE * (clockValue - date);
+        const nearestSecond = Math.round(rawTime);
+        if (date + nearestSecond / DAYSIZE === clockValue) {
+            rawTime = nearestSecond;
         }
-        if (subsec) {
-            // round time based on smallest used unit
-            const minimumUnit = section.date & u_MSEC || section.date & u_CSEC || section.date & u_DSEC;
-            if (
-                (minimumUnit === u_MSEC && subsec > 0.9995) ||
-                (minimumUnit === u_CSEC && subsec > 0.995) ||
-                (minimumUnit === u_DSEC && subsec > 0.95) ||
-                (!minimumUnit && subsec >= 0.5)
-            ) {
-                time++;
-                subsec = 0;
-            }
+        const roundedTime = decimalPartsToNumber(roundDecimal(decimalFromNumber(rawTime), section.sec_decimals));
+        time = Math.floor(roundedTime);
+        subsec = roundedTime - time;
+        if (time >= DAYSIZE) {
+            time -= DAYSIZE;
+            date++;
         }
         // serial date/time to gregorian calendar
         // Explicit non-Gregorian calendar tokens keep their own epoch; ordinary date tokens follow the workbook's system.
         const dateSystem = section.date_system === EPOCH_1317
             ? EPOCH_1317
             : options.dateSystem === DateSystem.Date1904 ? EPOCH_1904 : section.date_system;
-        if (date || section.date_system) {
-            const dateOutput = toYMD(numericValue, dateSystem, options.leap1900);
+        if (!elapsedOnly) {
+            const dateOutput = toYMD(date, dateSystem, options.leap1900);
             year = dateOutput[0];
             month = dateOutput[1];
             day = dateOutput[2];
@@ -282,9 +267,9 @@ export function runPart(
             minute = Math.floor(normalizedTime / 60) % 60;
             hour = Math.floor((normalizedTime / 60) / 60) % 60;
         }
-        weekday = ((dateSystem === EPOCH_1904 ? 5 : 6) + date) % 7;
+        weekday = (((dateSystem === EPOCH_1904 ? 5 : 6) + date) % 7 + 7) % 7;
         if (
-            section.date_eval &&
+            section.date_eval && !elapsedOnly &&
             dateOverflows(numericValue, date + (time / DAYSIZE), options.dateSpanLarge, options.dateSystem)
         ) {
             // if value is out of bounds and formatting is date Excel emits a

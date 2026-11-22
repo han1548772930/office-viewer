@@ -128,7 +128,9 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
       if (consecutive) {
         const overrides = numberingRecord(definition?.instance.levelStartOverrides)
         const restart = !initialized.size && !group.primary ? Array.from({ length: 9 }, (_, slot) => overrides[String(slot)]).find(value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) : undefined
-        state.total = typeof restart === 'number' ? restart : state.total === undefined ? starts(0, true) : state.total + 1
+        const initial = overrides[String(index)]
+        const initialValue = typeof initial === 'number' && Number.isSafeInteger(initial) && initial >= 0 ? initial : starts(0, true)
+        state.total = typeof restart === 'number' ? restart : state.total === undefined ? initialValue : state.total + 1
         state.counters[index] = state.total
       } else state.counters[index] = state.counters[index] === undefined ? starts(index, !initialized.has(index)) : state.counters[index]! + 1
       initialized.add(index)

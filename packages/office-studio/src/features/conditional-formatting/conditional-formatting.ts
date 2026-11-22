@@ -1,14 +1,19 @@
 import type {
   CellRange,
+  SheetConditionalFormatFormulaAnchor,
   SheetConditionalFormatOperator,
   SheetConditionalFormatRule,
   SheetConditionalFormatStyle,
   SpreadsheetSheet,
 } from '../../domain/model.ts'
+import { cloneModel } from '../../domain/serialization.ts'
 import { conditionalIconSequence } from './icon-set-config.ts'
+import { conditionalFormatFormulaAnchor, reanchorConditionalFormatRule } from './conditional-format-formulas.ts'
+import { parseFormula } from '../formula/formula-parser.ts'
 
 export interface ConditionalFormatDraft {
   ranges: CellRange[]
+  formulaAnchor?: SheetConditionalFormatFormulaAnchor
   operator: SheetConditionalFormatOperator
   formula1: string
   formula2?: string
@@ -27,6 +32,7 @@ export function addConditionalFormatRule(
     id,
     type: 'cellIs',
     ranges: draft.ranges.map(range => ({ ...range })),
+    ...(draft.formulaAnchor ? { formulaAnchor: { ...draft.formulaAnchor } } : {}),
     operator: draft.operator,
     formula1: normalizeNumberFormula(draft.formula1),
     formula2: draft.formula2 === undefined ? undefined : normalizeNumberFormula(draft.formula2),
@@ -47,15 +53,16 @@ export function updateConditionalFormatRule(
   if (!rules.some(rule => rule.id === id)) throw new RangeError(`Unknown conditional format rule: ${id}`)
   return {
     ...sheet,
-    conditionalFormats: rules.map(rule => rule.id === id ? {
+    conditionalFormats: rules.map(rule => rule.id === id ? reanchorConditionalFormatRule({
       ...rule,
       ranges: draft.ranges.map(range => ({ ...range })),
+      formulaAnchor: draft.formulaAnchor ?? conditionalFormatFormulaAnchor(rule),
       operator: draft.operator,
       formula1: normalizeNumberFormula(draft.formula1),
       formula2: draft.formula2 === undefined ? undefined : normalizeNumberFormula(draft.formula2),
       style: { ...draft.style },
       stopIfTrue: draft.stopIfTrue ?? false,
-    } : cloneRule(rule)),
+    }, draft.ranges) : cloneRule(rule)),
   }
 }
 
@@ -77,7 +84,8 @@ export function moveConditionalFormatRule(sheet: SpreadsheetSheet, id: string, t
   return { ...sheet, conditionalFormats: withPriorities(rules) }
 }
 
-export function evaluateConditionalFormatRule(rule: SheetConditionalFormatRule, value: unknown, scopeValues: readonly unknown[] = [], expressionMatches?: (formula: string) => boolean): boolean {
+export function evaluateConditionalFormatRule(rule: SheetConditionalFormatRule, value: unknown, scopeValues: readonly unknown[] = [], expressionMatches?: (formula: string) => boolean, formulaValue?: (formula: string) => unknown): boolean {
+  if (rule.type === 'office') return false
   if (rule.type === 'containsText' || rule.type === 'notContainsText' || rule.type === 'beginsWith' || rule.type === 'endsWith' || rule.subType === 'text') {
     const text = String(value ?? '').toLocaleLowerCase()
     const target = String(rule.value ?? rule.formula1).toLocaleLowerCase()
@@ -116,8 +124,15 @@ export function evaluateConditionalFormatRule(rule: SheetConditionalFormatRule, 
   if (rule.type === 'expression' || rule.subType === 'formula') return expressionMatches?.(rule.formula1 || String(rule.value ?? '')) ?? false
   if (rule.type === 'timePeriod' || rule.subType === 'timePeriod') return evaluateTimePeriod(rule.operator, value)
   if (typeof value !== 'number' || !Number.isFinite(value)) return false
-  const first = Number(rule.formula1)
-  const second = rule.formula2 === undefined ? undefined : Number(rule.formula2)
+  const operand = (formula: string): number => {
+    const normalized = formula.trim().replace(/^=/, '')
+    const literal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?$/.test(normalized) ? Number(normalized) : Number.NaN
+    if (Number.isFinite(literal)) return literal
+    const calculated = formulaValue?.(formula)
+    return typeof calculated === 'number' && Number.isFinite(calculated) ? calculated : Number.NaN
+  }
+  const first = operand(rule.formula1)
+  const second = rule.formula2 === undefined ? undefined : operand(rule.formula2)
   if (!Number.isFinite(first) || (rule.operator === 'between' || rule.operator === 'notBetween') && !Number.isFinite(second)) return false
   switch (rule.operator) {
     case 'equal': return value === first
@@ -150,6 +165,7 @@ export function conditionalFormatStyleAt(
   const output: ConditionalFormatVisualStyle = {}
   const assigned = new Set<keyof SheetConditionalFormatStyle>()
   for (const rule of [...rules].sort((a, b) => a.priority - b.priority)) {
+    if (rule.type === 'office') continue
     if (!rule.ranges.some(range => contains(range, row, column))) continue
     const scopedValues = scopeValues.filter(item => rule.ranges.some(range => contains(range, item.row, item.column))).map(item => item.value)
     const numericValues = scopeValues.length ? scopedValues.filter((item): item is number => typeof item === 'number' && Number.isFinite(item)) : values
@@ -200,7 +216,7 @@ export function conditionalFormatStyleAt(
       }
       continue
     }
-    if (!evaluateConditionalFormatRule(rule, value, scopedValues, formula => expressionMatches?.(formula, rule) ?? false)) continue
+    if (!evaluateConditionalFormatRule(rule, value, scopedValues, formula => expressionMatches?.(formula, rule) ?? false, formula => formulaValue?.(formula, rule))) continue
     applyConditionalStyle(output, assigned, rule.style)
     if (rule.stopIfTrue) break
   }
@@ -314,9 +330,11 @@ function validateDraft(draft: ConditionalFormatDraft): void {
   if (!['equal', 'notEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual', 'between', 'notBetween'].includes(draft.operator)) {
     throw new TypeError('Unsupported conditional format operator')
   }
-  if (!isFiniteFormula(draft.formula1)) throw new TypeError('Conditional format value must be a finite number')
-  if ((draft.operator === 'between' || draft.operator === 'notBetween') && (draft.formula2 === undefined || !isFiniteFormula(draft.formula2))) {
-    throw new TypeError('Between conditions require a second finite number')
+  if (draft.formulaAnchor && (!Number.isSafeInteger(draft.formulaAnchor.row) || !Number.isSafeInteger(draft.formulaAnchor.col)
+    || draft.formulaAnchor.row < 0 || draft.formulaAnchor.row > 1_048_575 || draft.formulaAnchor.col < 0 || draft.formulaAnchor.col > 16_383)) throw new RangeError('Conditional format formula origin is out of range')
+  if (!isFormulaOperand(draft.formula1)) throw new TypeError('Conditional format value requires a finite number or valid formula')
+  if ((draft.operator === 'between' || draft.operator === 'notBetween') && (draft.formula2 === undefined || !isFormulaOperand(draft.formula2))) {
+    throw new TypeError('Between conditions require a second number or formula')
   }
   for (const color of [draft.style.fill, draft.style.fontColor]) {
     if (color !== undefined && !/^#[0-9a-f]{6}$/i.test(color)) throw new TypeError('Conditional format colors must use #RRGGBB')
@@ -327,12 +345,14 @@ function validateDraft(draft: ConditionalFormatDraft): void {
 
 function validRange(range: CellRange): boolean {
   return Number.isInteger(range.startRow) && Number.isInteger(range.startCol) && Number.isInteger(range.endRow) && Number.isInteger(range.endCol) &&
-    range.startRow >= 0 && range.startCol >= 0 && range.endRow >= range.startRow && range.endCol >= range.startCol
+    range.startRow >= 0 && range.startCol >= 0 && range.endRow >= range.startRow && range.endCol >= range.startCol && range.endRow <= 1_048_575 && range.endCol <= 16_383
 }
 
-function isFiniteFormula(value: string): boolean {
+function isFormulaOperand(value: string): boolean {
+  if (typeof value !== 'string') return false
   const normalized = value.trim().replace(/^=/, '')
-  return normalized !== '' && Number.isFinite(Number(normalized))
+  if (!normalized) return false
+  try { parseFormula(normalized); return true } catch { return false }
 }
 
 function normalizeNumberFormula(value: string): string {
@@ -348,5 +368,5 @@ function withPriorities(rules: SheetConditionalFormatRule[]): SheetConditionalFo
 }
 
 function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule {
-  return { ...rule, ranges: rule.ranges.map(range => ({ ...range })), style: { ...rule.style }, config: rule.config ? { ...rule.config, min: rule.config.min ? { ...rule.config.min } : undefined, max: rule.config.max ? { ...rule.config.max } : undefined, thresholds: rule.config.thresholds?.map(item => ({ ...item, value: { ...item.value } })), icons: rule.config.icons?.map(item => ({ ...item, value: { ...item.value } })) } : undefined, metadata: rule.metadata ? { ...rule.metadata } : undefined }
+  return cloneModel(rule)
 }

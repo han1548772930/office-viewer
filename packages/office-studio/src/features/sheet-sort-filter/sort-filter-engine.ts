@@ -1,4 +1,5 @@
 import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet } from '../../domain/model'
+import { sheetRowHeight, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
 
 export type SheetSortDirection = 'ascending' | 'descending'
 export interface SheetSortCriterion { column: number; direction: SheetSortDirection }
@@ -185,9 +186,8 @@ export function getSortableRowOffsets(sheet: FilteredSpreadsheetSheet, range: Ce
   const first = range.startRow + (options.hasHeader ? 1 : 0)
   const filtered = new Set(sheet.autoFilter ? refreshAutoFilter(sheet) : [])
   const manuallyHidden = new Set(sheet.hiddenRows ?? [])
-  const zeroHeight = new Set(Object.entries(sheet.rowHeights ?? {}).filter(([, height]) => height <= 0).map(([row]) => Number(row)))
   const result: number[] = []
-  for (let row = first; row <= range.endRow; row += 1) if (!filtered.has(row) && !manuallyHidden.has(row) && !zeroHeight.has(row)) result.push(row - first)
+  for (let row = first; row <= range.endRow; row += 1) if (!filtered.has(row) && !manuallyHidden.has(row) && !sheetAxisSpanAt(sheet.rowHiddenSpans, row)?.value && sheetRowHeight(sheet, row) > 0) result.push(row - first)
   return result
 }
 

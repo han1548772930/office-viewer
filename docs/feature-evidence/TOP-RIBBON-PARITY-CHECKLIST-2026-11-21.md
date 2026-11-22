@@ -1,6 +1,7 @@
 # Docs 与 Sheets 顶部功能区对齐清单
 
 审阅日期：2026-11-21  
+静态入口复算：2026-11-22；未执行产品、factory 或商业 SDK。
 固定 Univer 版本：`eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公开说明为准。
 
@@ -10,7 +11,7 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 - 一个 Ribbon 根入口是合并菜单 schema 后位于某个标签和分组中的顶层项。split、menu、select 的子项不增加根入口计数，动态菜单按其根菜单计一次。Docs 的 10×10 表格尺寸格是 Table 的子菜单，不另算 100 个按钮。
 - 插件 schema 注入的常驻 Ribbon 项计入固定版 tab 根入口。依选择状态才出现的 contextual tab、右键菜单、浮动对象工具栏、工作表标签菜单和页脚菜单分开统计。
-- 本地数值统计当前生产工作台实际使用的 Grid Ribbon schema。额外入口仍计入本地数量，但不因此认为它们与上游功能等价。整组进入 More 仍然属于该标签入口。
+- 本地数值统计 `createSheetRibbon` / `createDocumentRibbon` 的常规根声明，包含条件隐藏项；Sheets 动态函数分类按当前 catalog 的 8 类静态展开。嵌入组件缺省 classic，示例缺省 grid，两种变体共享 schema。额外入口仍计入本地数量，但不因此认为与上游功能等价；整组进入 More 不增加入口数。
 - Univer 商业 Pro 插件实现源码不在固定检出中。Pro 清单依据项目的公开功能规格和已有 feature ID，不把推测的闭源按钮登记为上游源码事实。
 
 ## Univer 固定入口统计
@@ -30,37 +31,37 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Docs
 
-历史 OSS 常规 Ribbon 计数为 **38 项**，分组如下。该数是在前一参考提交按 OSS 插件扩展注册到默认 Ribbon 统计，不含子菜单，尚未在 v1.6.0 上复算。Univer 1.5.2 Pro 发布包另有 9 个 Docs Ribbon 根项，该数仅代表 1.5.2 发布包，其模块清点见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-univer-oss-ribbon.mjs` 读取共享、Docs 和插件 schema；未执行 factory 的动态条件。本地常规根声明为 **50 项**，上下文分开。Pro v1.6.0 缓存注册及未解析入口见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)，不再用 1.5.2 的 9 项作为当前总数。
 
 | 标签 | 固定版分组和入口数 | 本地当前根项 | 对齐状态 |
 | --- | --- | ---: | --- |
-| Home / 开始 | HISTORY 5、FORMAT 11、LAYOUT 5、OTHERS 4，共 25 | 28 | 有额外复制/剪切/普通粘贴等入口；缺固定格式刷、专用粘贴特殊项和其他固定入口；部分 FORMAT/LAYOUT 网格坐标未齐。 |
-| Insert / 插入 | EDIT 0、MEDIA 7、CELL 1、OTHERS 2，共 10 | 11 | MEDIA 分组和坐标刚按源码修正；CELL 的目录插入入口尚未接线；本地代码块、内容控件、脚注和 LaTeX 是额外扩展入口。 |
-| View / 视图 | DISPLAY 3，共 3 | 8 | 本地加入纸张/方向、文档大纲、专注模式和打印等入口，超出固定版三个根项；需逐项定组并核验功能路径。 |
-| 合计 | **38** | **47** | 数量差异包括本地增强项和错放项，不能据此判定能力完整度。 |
+| Home / 开始 | HISTORY 5、FORMAT 11、LAYOUT 5、OTHERS 4，共 25 | 33 | 本地 history 5、format 11、layout 5、others 2，另有段落工具 5、其他工具 5。列表、颜色、格式刷与粘贴已有实现切片；快捷键/功能搜索和全部分组状态仍须核对。 |
+| Insert / 插入 | MEDIA 7、CELL 1、OTHERS 2，共 10 | 14 | 本地 media 9、cell 2、extensions 3；目录入口已接线，代码、LaTeX、内容控件、脚注等按 Pro 对应注册与行为另核对。 |
+| View / 视图 | DISPLAY 3，共 3 | 3 | 页面设置、缩放、全屏三个根项；大纲、专注和打印现在位于 Home 扩展组。数量相同不代表行为已验收。 |
+| 合计 | **38** | **50** | 这是静态常规声明数量，条件隐藏、Pro 替换与浮动入口仍需追踪。 |
 
 固定版 Insert 的 MEDIA 网格由多个插件共同注册。Breaks 在 `r1c1` 跨两行，Table 在 `r1c2`，Emoji 在 `r1c3`，Symbol 在 `r2c3`，Image 在 `r1c4`，Hyperlink 在 `r1c5`，Horizontal Line 在 `r2c5`。本地之前没有显式 `gridLayout`，列优先 fallback 导致 Image 掉到第二行；并且 Breaks、Horizontal Line、Symbol、Emoji 被放入 OTHERS。现已按上述位置修正，定向 Ribbon 契约测试 20/20 通过。页面布局统一浏览器验收尚未执行。
 
-固定版另有目录上下文 Ribbon 两项，仅选中目录时显示；Docs 插件清点还发现页眉页脚上下文工具栏的 5 个控件。右键、浮动工具栏和插件注入入口不合并进常规 38 项。目录是独立 opt-in 插件，固定版插入位置为 Insert > CELL，更新和删除位于目录 contextual tab 与主区域 Layout 右键菜单。本地目录模型/命令与配置组件已有定向契约，但工作台入口和上下文控制器尚未接通。
+固定版另有目录上下文 Ribbon 两项，仅选中目录时显示；页眉页脚上下文为 5 个控件，合计 7 个 OSS 上下文根声明。右键与浮动工具不合并进常规 38 项。目录是独立 opt-in 插件，插入位置为 Insert > CELL，更新和删除位于目录 contextual tab 与主区域 Layout 右键菜单。本地目录入口、模型/命令、配置和上下文控制器已接入；仍按 [DOC-04 证据](DOC-04-table-of-contents.md) 保留未验收。Pro 内容控件、形状、增强表格等上下文另列，不受 OSS 七项数量限制。
 
-代码块在固定源码中有模型和剪贴板支持，但未发现默认 Insert Ribbon 注册；脚注、内容控件和 LaTeX 的商业 UI 注册也未在固定检出中确认。它们在本地按扩展功能记录，不能伪称固定版入口。段落设置和节设置是段落右键 Layout 组入口，不属于 Ribbon 项。
+代码块在 OSS 固定源码中有模型和剪贴板支持；v1.6.0 Pro 发布包已静态识别 `docs-code-ui`、`docs-latex-ui`、`docs-sdt-ui` 与 `docs-reference-ui` 的根声明。它们的模式、状态与命令闭环须按对应包及公开规格继续核对，不能把静态注册当成最终效果。段落设置和节设置是段落右键 Layout 组入口，不属于 Ribbon 项。
 
 ### Sheets
 
-历史 OSS 常规 Ribbon 根入口为 **62 项**，本地当前 schema 共 **75 项**。该数是在前一参考提交按插件 schema 统计，尚未在 v1.6.0 上复算。Univer 1.5.2 Pro 发布包另有 15 个 Sheets Ribbon 根项，该数仅代表 1.5.2 发布包。按标签统计见下表。完整逐组、上下文、处理器和 Pro 边界记录在[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，本地当前常规 schema 为 **68 项**。此处替换此前 62/75/78 等混用计数；同一脚本口径区分父菜单与子项，More 不增加数量。Pro 注册中的重复挂载、替换与上下文条件仍待继续追踪，不将历史 1.5.2 的 15 项加到当前 OSS 数字。完整逐组、上下文、处理器和 Pro 边界见[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版根项 | 本地当前根项 | 主要差异 |
 | --- | ---: | ---: | --- |
-| START / 开始 | 30 | 32 | 查找和条件格式错放到 Start；格式刷、清除格式/粘贴特殊类型、单独清除文本色/底色等仍需核对。 |
-| INSERT / 插入 | 9 | 12 | 图片、超链接、线程评论和快捷条件格式入口缺失；行列插删及透视类入口错放或重复。 |
-| FORMULAS / 公式 | 12 | 12 | 固定版为 11 个函数分类加计算选项；本地是插入函数、8 个 catalog 分类及自定义计算项，分类语义不同。 |
-| DATA / 数据 | 6 | 18 | 分组和顺序差异大；缺表格选择器、独立规则入口和固定版筛选命令组合。 |
-| VIEW / 视图 | 5 | 4 | 缺工作表背景图入口及添加/删除处理器。 |
-| 合计 | **62** | **78** | 本地包含额外能力和重复入口，计数不代表完整对齐。 |
+| START / 开始 | 30 | 29 | 本地 clipboard 5、font 11、layout 6、number 5、tools 2。查找已移 Data；颜色主按钮、完整色板与共享命令正在补齐。快捷键/功能搜索和全部语义仍须核对。 |
+| INSERT / 插入 | 9 | 6 | 本地 media 3、cells 3；超链接、图表、迷你图及快速验证有入口。图片、线程评论和快捷数据条/图标集仍缺完整入口闭环。 |
+| FORMULAS / 公式 | 12 | 11 | 固定版是常用加十类函数菜单与计算选项；本地 8 个 catalog 根分类、计算模式/编辑公式/重算 3 项，完整函数目录与语义未齐。 |
+| DATA / 数据 | 6 | 17 | 本地 organization 2、rules 2、pivot 4、outline 8、data-tools 1。筛选切换/清除/重应用已接入；表格选择器及完整 Pro 分组/分析仍须核对。 |
+| VIEW / 视图 | 6 | 5 | 十字高亮属于固定 OSS 入口；仍缺工作表背景图及添加/删除完整闭环。 |
+| 合计 | **63** | **68** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
 
-Sheets 固定源码的根组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；INSERT EDIT/MEDIA/CELL/OTHERS；FORMULAS BASIC/OTHERS；DATA FORMULAS/RULES/ORGANIZATION/ANALYSIS/OTHERS；VIEW DISPLAY/VISIBILITY。固定版上游根数按 MenuManager、desktop preset 和 OSS 插件注册合并计算。本地公式动态分类按当前 117 项 catalog 生成的 8 个分类计数。
+Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；INSERT EDIT/MEDIA/CELL/OTHERS；FORMULAS BASIC/OTHERS；DATA FORMULAS/RULES/ORGANIZATION/ANALYSIS/OTHERS；VIEW DISPLAY/VISIBILITY。零根项的组不进入数量；根声明按菜单 schema 的产品归属静态投影。固定 desktop 装配与 factory 决定最终显隐，尚未执行。本地公式按当前 117 项 catalog 的 8 类静态展开；没有执行求值引擎。
 
-固定版还有 MAIN_AREA、COL_HEADER、ROW_HEADER、FOOTER_TABS、绘图对象上下文菜单。当前本地行列右键菜单未先把命中行/列映射为操作目标，表格标签右键也缺复制、标签颜色和工作表保护等入口。具体差异、涉及的 SOURCES、handler 状态和 SHEET-01 至 SHEET-30 Pro 目标见 Sheets 清点文档。
+固定版还有 MAIN_AREA、COL_HEADER、ROW_HEADER、FOOTER_TABS、绘图对象上下文菜单。脚本记录 Sheets 130 个右键/浮动层级节点，包含父子层级，不当作根数。本地行列右键已经显式传入命中 sheetId/index；标签复制、颜色与保护亦有实现切片，关联资源、veryHidden 和全部权限/保存闭环仍未验收。具体来源和差异见 Sheets 清点文档。
 
 填充柄外观现已统一到 1 CSS px 选区/预览边框，测试覆盖 0.75、1 和 1.5 缩放。当前已接入双击自动推断向下填充范围，并在计划层支持 COPY/SERIES/ONLY_FORMAT/NO_FORMAT；定向契约记录见 [SHEET-02 自动填充证据](SHEET-02-auto-fill.md)。填充选项尚无画布菜单，画布当前只触发 SERIES；序列规则仅覆盖规则数值和数值日期序列，缺工作日/月份/中文及文本数字扩展、Refill 重应用和拖出视口后的自动滚动。浏览器交互与 Office 文件往返尚未验证，SHEET-02 仍未验收。
 

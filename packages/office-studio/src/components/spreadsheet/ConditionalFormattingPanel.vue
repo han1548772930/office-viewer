@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Checkbox, ColorPicker, Drawer, Form, FormItem, Input, InputNumber, Select, Tooltip } from 'antdv-next'
+import { Alert, Button, Checkbox, ColorPicker, Drawer, Form, FormItem, Input, InputNumber, Select, Tooltip } from 'antdv-next'
 import { ArrowDown, ArrowLeft, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
-import type { CellRange, SheetConditionalFormatOperator, SheetConditionalFormatRule, SheetConditionalFormatType, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
-import { validateConditionalFormatDraft } from '../../features/conditional-formatting/conditional-formatting.ts'
+import type { CellRange, SheetConditionalFormatFormulaAnchor, SheetConditionalFormatRule, SheetConditionalFormatType, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
+import { cloneModel } from '../../domain/serialization.ts'
+import { conditionalFormatFormulaAnchor, reanchorConditionalFormatRule } from '../../features/conditional-formatting/conditional-format-formulas.ts'
+import { conditionalFormatEditorFormula, conditionalFormatEditorText, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
+  prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../../features/conditional-formatting/conditional-format-rule-editor.ts'
+import { assertSheetConditionalFormatRuleSnapshot, type SheetConditionalFormatSubmitResult } from '../../features/conditional-formatting/conditional-format-command.ts'
 import { conditionalIconPresets } from '../../features/conditional-formatting/conditional-icon-presets.ts'
 import { conditionalIconSequence, createConditionalIconConfig, validateConditionalIconConfig, validateConditionalThreshold } from '../../features/conditional-formatting/icon-set-config.ts'
 import ConditionalIcon from './ConditionalIcon.vue'
 import ConditionalThresholdInput from './ConditionalThresholdInput.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme.ts'
 
-const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [rules: SheetConditionalFormatRule[]] }>()
+const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; submit: (rules: readonly SheetConditionalFormatRule[]) => SheetConditionalFormatSubmitResult }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
+const themeStyle = useRibbonTheme()
 const draftId = ref<string | null>(null)
 const editing = ref(false)
 const ruleType = ref<SheetConditionalFormatType>('highlightCell')
@@ -31,6 +37,7 @@ const useMidpoint = ref(true)
 const isGradient = ref(false)
 const negativeColor = ref('#f8696b')
 const draftRanges = ref('A1')
+const draftOrigin = ref<SheetConditionalFormatFormulaAnchor>()
 const operator = ref<string>('greaterThan')
 const formula1 = ref('0')
 const formula2 = ref('1')
@@ -66,8 +73,19 @@ const typeOptions = [
 const iconSetOptions = Object.keys(conditionalIconPresets).map(value => ({ value, label: iconSetLabel(value) }))
 const individualIconOptions = [{ value: 'EMPTY_ICON_TYPE:', label: '无图标' }, ...Object.entries(conditionalIconPresets).flatMap(([type, icons]) => icons.map((icon, index) => ({ value: `${type}:${index}`, label: `${iconSetLabel(type)} ${index + 1} ${icon.symbol}` })))]
 const visualRule = computed(() => ['dataBar', 'colorScale', 'iconSet'].includes(ruleType.value))
-const styleRule = computed(() => ruleType.value === 'highlightCell' || ruleType.value === 'top10' || ruleType.value === 'expression')
+const styleRule = computed(() => ruleType.value === 'highlightCell' || ruleType.value === 'top10' || ruleType.value === 'expression' || ruleType.value === 'office')
 const typeNeedsValue = computed(() => ruleType.value === 'expression' || ruleType.value === 'highlightCell' && (highlightSubtype.value === 'number' || highlightSubtype.value === 'text' && !['containsBlanks', 'notContainsBlanks', 'containsErrors', 'notContainsErrors'].includes(operator.value)))
+const formulaLabel = computed(() => ruleType.value === 'expression' ? '公式' : highlightSubtype.value === 'number' ? t('conditional.value-formula', '数值或公式') : highlightSubtype.value === 'timePeriod' ? '日期期间' : '匹配内容')
+const formulaBasis = computed(() => {
+  const hasFormula = ruleType.value === 'expression' || ruleType.value === 'highlightCell' && highlightSubtype.value === 'number'
+    && [formula1.value, ...(needsSecondValue.value ? [formula2.value] : [])].some(value => !Number.isFinite(Number(value.trim().replace(/^=/, ''))))
+    || visualRule.value && [minimum.value, maximum.value, ...(useMidpoint.value ? [midpoint.value] : []), ...iconThresholds.value.map(icon => icon.value)].some(value => value.type === 'formula')
+  if (!hasFormula) return undefined
+  try {
+    const origin = draftOrigin.value ?? conditionalFormatFormulaAnchor({ ranges: parseRanges(draftRanges.value) })
+    return origin ? `公式以 ${formatCell(origin.row, origin.col)} 为基准，其他单元格按相对引用计算。` : undefined
+  } catch { return undefined }
+})
 
 watch([ruleType, highlightSubtype], ([type]) => {
   if (type === 'highlightCell' && highlightSubtype.value === 'timePeriod') operator.value = 'today'
@@ -92,6 +110,7 @@ watch(() => props.open, open => {
 function newRule() {
   editing.value = true
   draftId.value = null
+  draftOrigin.value = undefined
   ruleType.value = 'highlightCell'
   highlightSubtype.value = 'number'
   draftRanges.value = props.defaultRange || 'A1'
@@ -127,14 +146,17 @@ function newRule() {
 function selectRule(rule: SheetConditionalFormatRule) {
   editing.value = true
   draftId.value = rule.id
-  ruleType.value = ['cellIs', 'highlightCell', 'containsText', 'notContainsText', 'beginsWith', 'endsWith', 'duplicateValues', 'uniqueValues', 'timePeriod'].includes(rule.type) ? 'highlightCell' : rule.type === 'average' ? 'top10' : rule.type === 'expression' ? 'expression' : rule.type
+  draftOrigin.value = conditionalFormatFormulaAnchor(rule)
+  ruleType.value = rule.type === 'office' ? 'office' : rule.type === 'expression' || rule.subType === 'formula' ? 'expression'
+    : ['cellIs', 'highlightCell', 'containsText', 'notContainsText', 'beginsWith', 'endsWith', 'duplicateValues', 'uniqueValues', 'timePeriod'].includes(rule.type) ? 'highlightCell' : rule.type === 'average' ? 'top10' : rule.type
   highlightSubtype.value = rule.subType === 'text' || ['containsText', 'notContainsText', 'beginsWith', 'endsWith'].includes(rule.type) ? 'text'
     : rule.subType === 'timePeriod' || rule.type === 'timePeriod' ? 'timePeriod'
       : rule.subType === 'duplicateValues' || rule.type === 'duplicateValues' ? 'duplicateValues'
         : rule.subType === 'uniqueValues' || rule.type === 'uniqueValues' ? 'uniqueValues' : 'number'
   draftRanges.value = rule.ranges.map(formatRange).join(';')
   operator.value = ['notContainsText', 'beginsWith', 'endsWith'].includes(rule.type) ? rule.type : rule.operator || (highlightSubtype.value === 'text' ? 'containsText' : 'greaterThan')
-  formula1.value = rule.formula1
+  formula1.value = highlightSubtype.value === 'text' ? String(rule.value ?? rule.formula1)
+    : rule.formula1 || (ruleType.value === 'expression' && typeof rule.value === 'string' ? rule.value : '')
   formula2.value = rule.formula2 ?? '1'
   fill.value = rule.style.fill ?? rule.config?.positiveColor ?? (rule.config?.thresholds?.length === 3 ? rule.config.thresholds[1]?.color : undefined) ?? '#ffffff'
   fontColor.value = rule.style.fontColor ?? '#1f2937'
@@ -150,7 +172,8 @@ function selectRule(rule: SheetConditionalFormatRule) {
   rank.value = Number(rule.value) || 10
   rankPercent.value = rule.isPercent ?? false
   if (rule.type === 'top10') operator.value = rule.isBottom ? 'isBottom' : 'isNotBottom'
-  if (rule.type === 'average') operator.value = rule.operator === 'lessThan' || rule.operator === 'lessThanOrEqual' ? 'lessThanAverage' : rule.operator === 'equal' ? 'equalAverage' : 'greaterThanAverage'
+  if (rule.type === 'average') operator.value = ({ lessThan: 'lessThanAverage', lessThanOrEqual: 'lessThanOrEqualAverage',
+    greaterThanOrEqual: 'greaterThanOrEqualAverage', equal: 'equalAverage' } as Record<string, string>)[rule.operator] ?? 'greaterThanAverage'
   showValue.value = rule.config?.isShowValue ?? true
   iconSet.value = rule.config?.iconSet ?? rule.config?.icons?.[0]?.iconType ?? '3Arrows'
   minimum.value = { ...(rule.type === 'colorScale' ? rule.config?.thresholds?.[0]?.value : rule.config?.min) ?? { type: 'min' } }
@@ -168,7 +191,8 @@ function saveDraft() {
   try {
     const ranges = parseRanges(draftRanges.value)
     const existingIndex = localRules.value.findIndex(rule => rule.id === draftId.value)
-    const previousStyle = existingIndex >= 0 ? localRules.value[existingIndex]!.style : {}
+    const previous = existingIndex >= 0 ? localRules.value[existingIndex] : undefined
+    const previousStyle = previous?.style ?? {}
     const style = {
       fill: useFill.value ? fill.value : undefined,
       fontColor: useFontColor.value ? fontColor.value : undefined,
@@ -177,12 +201,11 @@ function saveDraft() {
       underline: underline.value || previousStyle.underline !== undefined ? underline.value : undefined,
       strike: strike.value || previousStyle.strike !== undefined ? strike.value : undefined,
     }
-    const draft = { ranges, operator: operator.value as SheetConditionalFormatOperator, formula1: formula1.value, formula2: needsSecondValue.value ? formula2.value : undefined, style, stopIfTrue: stopIfTrue.value }
+    const secondFormula = needsSecondValue.value ? formula2.value : undefined
     const normalizedType = ruleType.value === 'highlightCell'
       ? highlightSubtype.value === 'number' ? 'cellIs' : highlightSubtype.value === 'text' ? operator.value === 'notContainsText' ? 'notContainsText' : operator.value === 'beginsWith' ? 'beginsWith' : operator.value === 'endsWith' ? 'endsWith' : 'containsText' : highlightSubtype.value
-      : ruleType.value === 'top10' && ['greaterThanAverage', 'lessThanAverage', 'equalAverage'].includes(operator.value) ? 'average' : ruleType.value === 'expression' ? 'expression' : ruleType.value
+      : ruleType.value === 'top10' && ['greaterThanAverage', 'lessThanAverage', 'greaterThanOrEqualAverage', 'lessThanOrEqualAverage', 'equalAverage'].includes(operator.value) ? 'average' : ruleType.value === 'expression' ? 'expression' : ruleType.value
     const normalizedSubType = ruleType.value === 'highlightCell' ? highlightSubtype.value : ruleType.value === 'top10' ? normalizedType === 'average' ? 'average' : 'rank' : ruleType.value === 'expression' ? 'formula' : undefined
-    if (normalizedType === 'cellIs') validateConditionalFormatDraft(draft)
     if (normalizedType === 'expression' && !formula1.value.trim().replace(/^=/, '')) throw new TypeError('请输入条件公式。')
     if (normalizedType === 'top10' && (!Number.isInteger(rank.value) || rank.value < 1 || rank.value > (rankPercent.value ? 100 : 1000))) throw new RangeError('排名项数无效。')
     if (ruleType.value === 'iconSet') validateConditionalIconConfig({ icons: iconThresholds.value })
@@ -191,24 +214,30 @@ function saveDraft() {
       for (const threshold of thresholds) validateConditionalThreshold(threshold)
     }
     const id = draftId.value ?? crypto.randomUUID()
-    const nextRule: SheetConditionalFormatRule = {
-      id, type: normalizedType, ranges, operator: ruleType.value === 'top10' ? operator.value === 'lessThanAverage' ? 'lessThan' : operator.value === 'equalAverage' ? 'equal' : 'greaterThan' : operator.value,
+    const text = conditionalFormatEditorText(formula1.value, previous)
+    const nextRule = reanchorConditionalFormatRule(mergeConditionalFormatRuleDraft(previous, {
+      id, type: normalizedType, ranges, operator: ruleType.value === 'office' ? previous?.operator ?? '' : ruleType.value === 'top10'
+        ? ({ lessThanAverage: 'lessThan', lessThanOrEqualAverage: 'lessThanOrEqual', greaterThanOrEqualAverage: 'greaterThanOrEqual', equalAverage: 'equal' } as Record<string, string>)[operator.value] ?? 'greaterThan' : operator.value,
+      ...(draftOrigin.value ? { formulaAnchor: { ...draftOrigin.value } } : {}),
       subType: normalizedSubType,
-      formula1: normalizedSubType === 'text' ? formula1.value : formula1.value.trim().replace(/^=/, ''), formula2: draft.formula2?.trim().replace(/^=/, ''),
-      value: ['top10'].includes(ruleType.value) ? rank.value : ruleType.value === 'highlightCell' && highlightSubtype.value === 'text' ? formula1.value : undefined,
-      isBottom: ruleType.value === 'top10' ? operator.value === 'isBottom' : undefined,
-      isPercent: ruleType.value === 'top10' ? rankPercent.value : undefined,
+      formula1: ruleType.value === 'office' ? previous?.formula1 ?? '' : normalizedSubType === 'text' ? text.formula1
+        : normalizedType === 'expression' && previous?.formula1 === '' && typeof previous.value === 'string' ? '' : conditionalFormatEditorFormula(formula1.value, previous?.formula1),
+      formula2: ruleType.value === 'office' ? previous?.formula2 : secondFormula === undefined ? undefined : conditionalFormatEditorFormula(secondFormula, previous?.formula2),
+      value: ruleType.value === 'office' ? previous?.value : ruleType.value === 'top10' ? rank.value : normalizedSubType === 'text' ? text.value
+        : normalizedType === 'expression' && typeof previous?.value === 'string' ? conditionalFormatEditorFormula(formula1.value, previous.formula1 || previous.value) : previous?.value,
+      isBottom: ruleType.value === 'top10' ? operator.value === 'isBottom' : previous?.isBottom,
+      isPercent: ruleType.value === 'top10' ? rankPercent.value : previous?.isPercent,
       config: ruleType.value === 'dataBar' ? { min: { ...minimum.value }, max: { ...maximum.value }, isGradient: isGradient.value, positiveColor: fill.value, nativeColor: negativeColor.value, isShowValue: showValue.value }
         : ruleType.value === 'colorScale' ? { thresholds: [{ value: { ...minimum.value }, color: minimumColor.value }, ...(useMidpoint.value ? [{ value: { ...midpoint.value }, color: fill.value }] : []), { value: { ...maximum.value }, color: maximumColor.value }] }
           : ruleType.value === 'iconSet' ? { iconSet: iconSet.value, isShowValue: showValue.value, reverse: reverseIcons.value, icons: iconThresholds.value.map(icon => ({ ...icon, value: { ...icon.value } })) }
-            : undefined,
-      ...(existingIndex >= 0 && localRules.value[existingIndex]?.metadata ? { metadata: { ...localRules.value[existingIndex]!.metadata } } : {}),
-      style, priority: existingIndex < 0 ? localRules.value.length + 1 : localRules.value[existingIndex]!.priority,
+            : ruleType.value === 'office' ? previous?.config : undefined,
+      style, priority: existingIndex < 0 ? localRules.value[0]?.priority ?? 1 : localRules.value[existingIndex]!.priority,
       stopIfTrue: stopIfTrue.value,
-    }
-    if (existingIndex < 0) localRules.value = reprioritize([nextRule, ...localRules.value])
+    }), ranges)
+    assertSheetConditionalFormatRuleSnapshot(nextRule, previous)
+    if (existingIndex < 0) localRules.value = prependConditionalFormatRuleDraft(localRules.value, nextRule)
     else localRules.value = localRules.value.map(rule => rule.id === id ? nextRule : rule)
-    selectRule(nextRule)
+    selectRule(localRules.value.find(rule => rule.id === id)!)
     editing.value = false
     error.value = ''
   } catch (reason) {
@@ -218,7 +247,7 @@ function saveDraft() {
 
 function removeRule(id: string) {
   const wasEditing = editing.value
-  localRules.value = reprioritize(localRules.value.filter(rule => rule.id !== id))
+  localRules.value = removeConditionalFormatRuleDraft(localRules.value, id)
   if (draftId.value === id) {
     if (localRules.value.length) {
       selectRule(localRules.value[0]!)
@@ -233,20 +262,24 @@ function removeRule(id: string) {
 }
 
 function moveRule(id: string, offset: -1 | 1) {
-  const index = localRules.value.findIndex(rule => rule.id === id)
-  const target = index + offset
-  if (index < 0 || target < 0 || target >= localRules.value.length) return
-  const rules = [...localRules.value]
-  const [item] = rules.splice(index, 1)
-  rules.splice(target, 0, item!)
-  localRules.value = reprioritize(rules)
+  localRules.value = moveConditionalFormatRuleDraft(localRules.value, id, offset)
 }
 
 function apply() {
+  error.value = ''
   if (editing.value) saveDraft()
   if (error.value) return
-  emit('apply', localRules.value.map(cloneRule))
-  emit('update:open', false)
+  try {
+    const result = props.submit(localRules.value.map(cloneRule))
+    if (!result.accepted) { error.value = result.error; return }
+    emit('update:open', false)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : t('conditional.error.apply', '无法应用条件格式，草稿已保留。')
+  }
+}
+
+function afterDrawerOpenChange(open: boolean) {
+  if (!open) emit('closed')
 }
 
 function returnToRules() {
@@ -263,10 +296,6 @@ function changeIndividualIcon(icon: IconConfig, value: unknown) {
   if (!type || id === undefined) return
   icon.iconType = type
   icon.iconId = id
-}
-
-function reprioritize(rules: SheetConditionalFormatRule[]): SheetConditionalFormatRule[] {
-  return rules.map((rule, index) => ({ ...rule, priority: index + 1 }))
 }
 
 function parseRanges(value: string): CellRange[] {
@@ -309,13 +338,13 @@ function iconSetLabel(value: string): string {
 }
 
 function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule {
-  return { ...rule, ranges: rule.ranges.map(range => ({ ...range })), style: { ...rule.style }, config: rule.config ? { ...rule.config, min: rule.config.min ? { ...rule.config.min } : undefined, max: rule.config.max ? { ...rule.config.max } : undefined, thresholds: rule.config.thresholds?.map(item => ({ ...item, value: { ...item.value } })), icons: rule.config.icons?.map(item => ({ ...item, value: { ...item.value } })) } : undefined, metadata: rule.metadata ? { ...rule.metadata } : undefined }
+  return cloneModel(rule)
 }
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :size="384" :mask="false" :closable="true" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px' } }" :footer-style="{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }" @close="emit('update:open', false)">
-    <div class="conditional-panel">
+  <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :size="384" :mask="false" :closable="true" :focusable="{ focusTriggerAfterClose: false }" :after-open-change="afterDrawerOpenChange" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' } }" @close="emit('update:open', false)">
+    <div class="conditional-panel" :style="themeStyle">
       <aside v-if="!editing" class="conditional-rule-list" :aria-label="t('conditional.rules', '规则')">
         <Button size="small" type="primary" @click="newRule"><Plus :size="14" />{{ t('conditional.add', '新建规则') }}</Button>
         <p v-if="!localRules.length" class="conditional-empty">{{ t('conditional.empty', '此工作表还没有条件格式规则。') }}</p>
@@ -330,15 +359,16 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
       </aside>
       <Form v-else layout="vertical" class="conditional-rule-editor" @submit.prevent>
         <Button type="text" class="conditional-back" @click="returnToRules"><ArrowLeft :size="14" />{{ t('conditional.rules', '规则') }}</Button>
-        <FormItem :label="t('conditional.range', '应用范围')"><Input v-model:value="draftRanges" :aria-label="t('conditional.range', '应用范围')" /></FormItem>
-        <FormItem label="规则类型"><Select v-model:value="ruleType" :options="typeOptions" /></FormItem>
+        <FormItem :label="t('conditional.range', '应用范围')" :extra="formulaBasis"><Input v-model:value="draftRanges" :aria-label="t('conditional.range', '应用范围')" /></FormItem>
+        <FormItem v-if="ruleType !== 'office'" label="规则类型"><Select v-model:value="ruleType" :options="typeOptions" /></FormItem>
+        <Alert v-else type="info" title="原有条件规则" description="保留原有条件，可调整应用范围、格式和顺序。该条件的计算尚未验收。" show-icon />
         <FormItem v-if="ruleType === 'highlightCell'" label="条件类型"><Select v-model:value="highlightSubtype" :options="[{value:'text',label:'文本'},{value:'number',label:'数值'},{value:'timePeriod',label:'日期期间'},{value:'duplicateValues',label:'重复值'},{value:'uniqueValues',label:'唯一值'}]" /></FormItem>
         <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number'" :label="t('conditional.operator', '条件')"><Select v-model:value="operator" :options="operatorOptions" /></FormItem>
         <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'text'" label="文本条件"><Select v-model:value="operator" :options="[{value:'containsText',label:'包含'},{value:'notContainsText',label:'不包含'},{value:'beginsWith',label:'开头为'},{value:'endsWith',label:'结尾为'},{value:'equal',label:'等于'},{value:'notEqual',label:'不等于'},{value:'containsBlanks',label:'包含空白'},{value:'notContainsBlanks',label:'不包含空白'},{value:'containsErrors',label:'包含错误'},{value:'notContainsErrors',label:'不包含错误'}]" /></FormItem>
-        <FormItem v-if="ruleType === 'top10'" label="排名类型"><Select v-model:value="operator" :options="[{value:'isNotBottom',label:'前几项'},{value:'isBottom',label:'后几项'},{value:'greaterThanAverage',label:'高于平均值'},{value:'lessThanAverage',label:'低于平均值'},{value:'equalAverage',label:'等于平均值'}]" /></FormItem>
+        <FormItem v-if="ruleType === 'top10'" label="排名类型"><Select v-model:value="operator" :options="[{value:'isNotBottom',label:'前几项'},{value:'isBottom',label:'后几项'},{value:'greaterThanAverage',label:'高于平均值'},{value:'greaterThanOrEqualAverage',label:'高于或等于平均值'},{value:'lessThanAverage',label:'低于平均值'},{value:'lessThanOrEqualAverage',label:'低于或等于平均值'},{value:'equalAverage',label:'等于平均值'}]" /></FormItem>
         <div v-if="typeNeedsValue || ruleType === 'highlightCell' && highlightSubtype === 'timePeriod'" class="conditional-values">
-          <FormItem :label="ruleType === 'expression' ? '公式' : highlightSubtype === 'number' ? t('conditional.value', '数值') : highlightSubtype === 'timePeriod' ? '日期期间' : '匹配内容'"><Select v-if="ruleType === 'highlightCell' && highlightSubtype === 'timePeriod'" v-model:value="operator" :options="[{value:'today',label:'今天'},{value:'yesterday',label:'昨天'},{value:'tomorrow',label:'明天'},{value:'last7Days',label:'最近 7 天'},{value:'thisWeek',label:'本周'},{value:'lastWeek',label:'上周'},{value:'nextWeek',label:'下周'},{value:'thisMonth',label:'本月'},{value:'lastMonth',label:'上月'},{value:'nextMonth',label:'下月'}]" /><Input v-else v-model:value="formula1" :inputmode="ruleType === 'highlightCell' && highlightSubtype === 'number' ? 'decimal' : undefined" /></FormItem>
-          <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number' && needsSecondValue" :label="t('conditional.second-value', '第二个数值')"><Input v-model:value="formula2" inputmode="decimal" /></FormItem>
+          <FormItem :label="formulaLabel"><Select v-if="ruleType === 'highlightCell' && highlightSubtype === 'timePeriod'" v-model:value="operator" :aria-label="formulaLabel" :options="[{value:'today',label:'今天'},{value:'yesterday',label:'昨天'},{value:'tomorrow',label:'明天'},{value:'last7Days',label:'最近 7 天'},{value:'thisWeek',label:'本周'},{value:'lastWeek',label:'上周'},{value:'nextWeek',label:'下周'},{value:'thisMonth',label:'本月'},{value:'lastMonth',label:'上月'},{value:'nextMonth',label:'下月'}]" /><Input v-else v-model:value="formula1" :aria-label="formulaLabel" /></FormItem>
+          <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number' && needsSecondValue" :label="t('conditional.second-value-formula', '第二个数值或公式')"><Input v-model:value="formula2" :aria-label="t('conditional.second-value-formula', '第二个数值或公式')" /></FormItem>
         </div>
         <div v-if="ruleType === 'top10' && (operator === 'isNotBottom' || operator === 'isBottom')" class="conditional-values"><FormItem label="项数"><InputNumber v-model:value="rank" :min="1" :max="1000" /></FormItem><FormItem :label="null"><Checkbox v-model:checked="rankPercent">百分比</Checkbox></FormItem></div>
         <div v-if="ruleType === 'dataBar' || ruleType === 'colorScale'" class="conditional-rule-editor">
@@ -370,9 +400,9 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
           <FormItem :label="null"><Checkbox v-model:checked="italic">斜体</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="underline">下划线</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="strike">删除线</Checkbox></FormItem>
         </div>
         <FormItem v-if="!visualRule" :label="null"><Checkbox v-model:checked="stopIfTrue">{{ t('conditional.stop-if-true', '匹配后停止') }}</Checkbox></FormItem>
-        <p v-if="error" class="conditional-error" role="alert">{{ error }}</p>
         <Button type="primary" @click="saveDraft">{{ draftId ? t('conditional.update', '更新规则') : t('conditional.save-rule', '保存规则') }}</Button>
       </Form>
+      <Alert v-if="error" type="error" :title="error" show-icon role="alert" />
     </div>
     <template #footer>
       <Button @click="emit('update:open', false)">{{ t('common.cancel', '取消') }}</Button>
@@ -384,10 +414,12 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 <style scoped>
 .conditional-panel { display: grid; min-height: 0; }
 .conditional-rule-list, .conditional-rule-editor { display: grid; align-content: start; gap: 10px; min-width: 0; }
-.conditional-empty { margin: 0; padding: 12px 0; color: #667085; font-size: 12px; }
+.conditional-empty { margin: 0; padding: 12px 0; color: var(--ribbon-text-secondary); font-size: 12px; }
 .conditional-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center; }
-.conditional-rule-select.ant-btn { min-width: 0; height: auto; justify-content: flex-start; overflow: hidden; padding: 6px 8px; border: 1px solid #d0d5dd; background: #fff; color: #344054; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-.conditional-rule-select.ant-btn[aria-pressed="true"] { border-color: #246bfd; background: #eff4ff; color: #244c91; }
+.conditional-rule-select.ant-btn { min-width: 0; height: auto; justify-content: flex-start; overflow: hidden; padding: 6px 8px; border: 1px solid var(--ribbon-border); background: var(--ribbon-background); color: var(--ribbon-text); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.conditional-rule-select.ant-btn:hover { background: var(--ribbon-hover-background); }
+.conditional-rule-select.ant-btn[aria-pressed="true"] { border-color: var(--ribbon-primary); background: var(--ribbon-active-background); color: var(--ribbon-primary); }
+.conditional-rule-select.ant-btn:focus-visible { outline: 2px solid var(--ribbon-primary); outline-offset: 2px; }
 .conditional-rule-editor :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .conditional-back { justify-self: start; padding-inline: 0; }
 .conditional-values, .conditional-colors { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
@@ -395,9 +427,8 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 .conditional-colors > :deep(.ant-form-item) { flex: 1; min-width: 0; }
 .conditional-colors :deep(.ant-color-picker-trigger) { width: 100%; }
 .conditional-icon-preview { display: flex; align-items: center; gap: 4px; min-height: 28px; }
-.conditional-icon-swatch { font-size: 11px; color: #667085; }
-.conditional-icon-threshold { display: grid; gap: 8px; padding-block: 10px; border-top: 1px solid #e5e7eb; }
-.conditional-hint { color: #667085; font-size: 12px; }
-.conditional-error { margin: 0; color: #b42318; font-size: 12px; }
+.conditional-icon-swatch { font-size: 11px; color: var(--ribbon-text-secondary); }
+.conditional-icon-threshold { display: grid; gap: 8px; padding-block: 10px; border-top: 1px solid var(--ribbon-border); }
+.conditional-hint { color: var(--ribbon-text-secondary); font-size: 12px; }
 @media (max-width: 620px) { .conditional-panel { grid-template-columns: minmax(0, 1fr); } }
 </style>

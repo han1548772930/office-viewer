@@ -11,8 +11,10 @@ export interface CellEditorLayout {
   fillHandleClipPath: string
 }
 
+export interface CellEditorLayoutOptions { contentHeight?: number }
+
 /** Keep the input bridge at the cell's coordinates, clipped to its frozen pane. */
-export function createCellEditorLayout(geometry: SpreadsheetGeometry, address: string, viewport: GridViewport): CellEditorLayout | undefined {
+export function createCellEditorLayout(geometry: SpreadsheetGeometry, address: string, viewport: GridViewport, options: CellEditorLayoutOptions = {}): CellEditorLayout | undefined {
   const point = parseAddress(address)
   if (!point || point.row >= geometry.rows.count || point.column >= geometry.columns.count) return undefined
   const merge = geometry.mergeAt(point.row, point.column)
@@ -26,11 +28,14 @@ export function createCellEditorLayout(geometry: SpreadsheetGeometry, address: s
   const bottom = row < geometry.frozenRows ? frozenBottom : viewport.height
   const pane = { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) }
   const halfStroke = SHEET_SELECTION_STROKE_WIDTH / 2
+  const contentHeight = Number.isFinite(options.contentHeight) ? Math.max(cellRect.height, options.contentHeight!) : cellRect.height
+  const height = Math.max(cellRect.height + SHEET_SELECTION_STROKE_WIDTH,
+    Math.min(contentHeight + SHEET_SELECTION_STROKE_WIDTH, bottom - cellRect.y + halfStroke))
   const rect = {
     x: cellRect.x - halfStroke,
     y: cellRect.y - halfStroke,
     width: cellRect.width + SHEET_SELECTION_STROKE_WIDTH,
-    height: cellRect.height + SHEET_SELECTION_STROKE_WIDTH,
+    height,
   }
   const clip = intersectRect(rect, pane)
   const handleSize = SHEET_SELECTION_HANDLE_SIZE

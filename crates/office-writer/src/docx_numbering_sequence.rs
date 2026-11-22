@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::{NumberingInstance, abstract_definition, abstract_key, array, cell_blocks, get, integer, numbering_level, text_color};
 use crate::{ExportError, ExportWarning, xml};
+use crate::docx::numbering_marker::PreservedMarkerPlan;
 
 const MAPPING_NAMESPACE: &str = "urn:office-studio:numbering:1";
 const BOOKMARK_PREFIX: &str = "office_list_v1_";
@@ -25,6 +26,8 @@ pub(crate) struct SequencePlan {
     pub paragraphs: HashMap<usize, SequenceParagraph>,
     pub mapping_xml: Option<String>,
     pub next_bookmark: u32,
+    pub sequence_prefix: String,
+    pub bookmark_names: HashSet<String>,
     pub warnings: Vec<ExportWarning>,
 }
 
@@ -328,8 +331,8 @@ fn native_xml_contract(numbering_xml: &str, id: u32) -> Option<String> {
     Some(format!("<nativeContract>{}{number}</nativeContract>", &numbering_xml[start..end]))
 }
 
-pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &[NumberingInstance], numbering_xml: &str) -> Result<SequencePlan, ExportError> {
-    let mut plan = SequencePlan { next_bookmark: 1, ..Default::default() };
+pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &[NumberingInstance], numbering_xml: &str, preserved: &PreservedMarkerPlan) -> Result<SequencePlan, ExportError> {
+    let mut plan = SequencePlan { next_bookmark: preserved.next_bookmark, sequence_prefix: preserved.sequence_prefix.clone(), bookmark_names: preserved.bookmark_names.clone(), ..Default::default() };
     let by_id = instances.iter().map(|instance| (instance.id, instance)).collect::<HashMap<_, _>>();
     let mut groups = HashMap::<(String, String), u32>::new();
     let mut next_group = instances.len() as u32 + 1;
@@ -352,13 +355,14 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
     let mut mappings = Vec::new();
     let mut counters = HashMap::<u32, CounterState>::new();
     let mut warnings = HashSet::new();
-    fn visit(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &HashMap<u32, &NumberingInstance>, groups: &HashMap<(String, String), u32>, counters: &mut HashMap<u32, CounterState>, mappings: &mut Vec<Value>, warnings: &mut HashSet<String>, plan: &mut SequencePlan) -> Result<(), ExportError> {
+    fn visit(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &HashMap<u32, &NumberingInstance>, groups: &HashMap<(String, String), u32>, counters: &mut HashMap<u32, CounterState>, mappings: &mut Vec<Value>, warnings: &mut HashSet<String>, plan: &mut SequencePlan, preserved: &PreservedMarkerPlan) -> Result<(), ExportError> {
         for block in blocks {
             if get(block, "type").as_str() == Some("table") {
-                for row in array(get(get(get(block, "metadata"), "table"), "rows")) { for cell in array(get(row, "cells")) { visit(cell_blocks(cell), lookup, instances, groups, counters, mappings, warnings, plan)?; } }
+                for row in array(get(get(get(block, "metadata"), "table"), "rows")) { for cell in array(get(row, "cells")) { visit(cell_blocks(cell), lookup, instances, groups, counters, mappings, warnings, plan, preserved)?; } }
                 continue;
             }
             let pointer = block as *const Value as usize;
+            if preserved.paragraphs.get(&pointer).is_some_and(|paragraph| paragraph.replays()) { continue; }
             let Some(id) = lookup.get(&pointer).copied() else { continue; };
             let Some(instance) = instances.get(&id).copied() else { continue; };
             let Some(definition) = &instance.definition else { continue; };
@@ -371,7 +375,11 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
             plan.next_bookmark = plan.next_bookmark.checked_add(1).ok_or_else(|| ExportError::invalid("Too many numbered paragraphs."))?;
             let mut hash = 2_166_136_261u32;
             for byte in get(block, "id").as_str().unwrap_or_default().bytes().chain(bookmark_id.to_le_bytes()) { hash = (hash ^ u32::from(byte)).wrapping_mul(16_777_619); }
-            let bookmark = format!("{BOOKMARK_PREFIX}{id:08X}{index:X}{hash:08X}");
+            let mut bookmark = format!("{BOOKMARK_PREFIX}{id:08X}{index:X}{hash:08X}");
+            if !plan.bookmark_names.insert(bookmark.to_ascii_lowercase()) {
+                bookmark = format!("{BOOKMARK_PREFIX}new_{id:08X}_{bookmark_id:08X}");
+                if !plan.bookmark_names.insert(bookmark.to_ascii_lowercase()) { return Err(ExportError::invalid("编号域书签名称重复。")); }
+            }
             let mut prefix = format!("<w:bookmarkStart w:id=\"{bookmark_id}\" w:name=\"{bookmark}\"/>");
             let mut contract = Vec::new();
             let (properties, style) = marker_style(block, &level);
@@ -382,8 +390,9 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
                 let first = initialized.is_empty();
                 let original_group = get(get(definition, "instance"), "consecutiveListId");
                 let restart = (first && !primary(instance, original_group)).then(|| (0..9).find_map(|slot| integer(get(get(get(definition, "instance"), "levelStartOverrides"), &slot.to_string())).filter(|start| *start >= 0))).flatten().map(|start| start as u64);
-                let value = restart.or_else(|| state.total.map(|value| value.saturating_add(1))).unwrap_or_else(|| start(definition, 0, true));
-                let name = format!("office_seq_{counter_id}");
+                let initial = integer(get(get(get(definition, "instance"), "levelStartOverrides"), &index.to_string())).filter(|start| *start >= 0).map(|start| start as u64);
+                let value = restart.or_else(|| state.total.map(|value| value.saturating_add(1))).unwrap_or_else(|| initial.unwrap_or_else(|| start(definition, 0, true)));
+                let name = format!("{}{counter_id}", plan.sequence_prefix);
                 let reset = if restart.is_some() || state.total.is_none() { format!(" \\r {value}") } else { String::new() };
                 let total = Field::plain(format!(" SEQ {name}{reset} \\h "), "");
                 prefix.push_str(&total.render(&properties));
@@ -448,7 +457,7 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
         }
         Ok(())
     }
-    visit(blocks, lookup, &by_id, &groups, &mut counters, &mut mappings, &mut warnings, &mut plan)?;
+    visit(blocks, lookup, &by_id, &groups, &mut counters, &mut mappings, &mut warnings, &mut plan, preserved)?;
     if !mappings.is_empty() {
         let mapping = json!({ "version": 1, "instances": mapped_instances, "paragraphs": mappings });
         plan.mapping_xml = Some(format!("{}<officeNumbering xmlns=\"{MAPPING_NAMESPACE}\" version=\"1\"><mapping>{}</mapping></officeNumbering>", xml::DECL, xml::escape(&mapping.to_string())));

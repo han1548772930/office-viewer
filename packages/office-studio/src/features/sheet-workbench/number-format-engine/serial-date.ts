@@ -114,7 +114,13 @@ export function excelSerialToDateTimeParts(
         return null;
     }
 
-    const totalSeconds = (serial - wholeDays) * DAYSIZE;
+    let totalSeconds = (serial - wholeDays) * DAYSIZE;
+    const nearestSecond = Math.round(totalSeconds);
+    // Snap only when the original serial is exactly the canonical encoding of that whole second.
+    // A fixed epsilon would erase actual subsecond values on small serials or near calendar boundaries.
+    if (wholeDays + nearestSecond / DAYSIZE === serial) {
+        totalSeconds = nearestSecond;
+    }
     const wholeSeconds = Math.floor(totalSeconds);
 
     return {

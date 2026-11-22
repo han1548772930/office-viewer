@@ -1,5 +1,8 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
-import { collapsedSelection, createParagraph, createRun, orderedSelection, runText, selectionCollapsed, type DocumentSelection } from '../model/document-model.ts'
+import { collapsedSelection, createParagraph, createRun, orderedSelection, runText, selectionCollapsed, type DocumentSelection, type RunPatch } from '../model/document-model.ts'
+import { replaceDocumentRunRange } from '../model/document-run-range'
+import { documentDefaultStyle } from '../model/document-default-style'
+import { isDocumentTextBoundary } from '../model/document-story'
 import { transformContentControlsForBlockEdit } from '../services/content-controls.ts'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments.ts'
 
@@ -66,30 +69,36 @@ interface CodeSourceEdit { startOffset: number; endOffset: number; text: string 
 function codeSourceEdit(before: string, after: string): CodeSourceEdit {
   let startOffset = 0
   while (startOffset < before.length && startOffset < after.length && before[startOffset] === after[startOffset]) startOffset++
+  while (startOffset > 0 && (!isDocumentTextBoundary(before, startOffset) || !isDocumentTextBoundary(after, startOffset))) startOffset--
   let suffix = 0
   while (suffix < before.length - startOffset && suffix < after.length - startOffset
     && before[before.length - suffix - 1] === after[after.length - suffix - 1]) suffix++
+  while (suffix > 0 && (!isDocumentTextBoundary(before, before.length - suffix) || !isDocumentTextBoundary(after, after.length - suffix))) suffix--
   return { startOffset, endOffset: before.length - suffix, text: after.slice(startOffset, after.length - suffix) }
 }
 
-function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit): boolean {
+function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}): boolean {
   if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers) return false
   if (current.source !== next.source) {
     const change = edit ?? codeSourceEdit(current.source, next.source)
+    if (runText(block.runs) !== current.source) throw new Error('代码源文本与格式范围不一致。')
+    if (!isDocumentTextBoundary(current.source, change.startOffset) || !isDocumentTextBoundary(current.source, change.endOffset)
+      || change.endOffset < change.startOffset || current.source.slice(0, change.startOffset) + change.text + current.source.slice(change.endOffset) !== next.source) throw new RangeError('代码编辑范围无效。')
+    const nextRuns = replaceDocumentRunRange(block.runs, change.startOffset, change.endOffset, change.text, documentDefaultStyle(model).text, marks)
     transformContentControlsForBlockEdit(model, block.id, change.startOffset, change.endOffset, change.text.length)
-    block.runs = [createRun(next.source, { fontFamily: 'Consolas', fontSize: 10 })]
+    block.runs = nextRuns
     transformDocumentCommentAnchorsForTextEdit(model, block.id, change.startOffset, change.endOffset, change.text)
   }
   block.metadata = { ...block.metadata, codeBlock: next }
   return true
 }
 
-export function editCodeBlockText(model: DocumentModel, selection: DocumentSelection, edit: { text: string } | { deleteDirection: -1 | 1 }): DocumentSelection | undefined {
+export function editCodeBlockText(model: DocumentModel, selection: DocumentSelection, edit: { text: string; marks?: RunPatch } | { deleteDirection: -1 | 1 }): DocumentSelection | undefined {
   const { start, end } = orderedSelection(model, selection)
   if (start.blockId !== end.blockId || start.row != null || end.row != null) return undefined
   const block = model.blocks.find((candidate) => candidate.id === start.blockId)
   const data = block && codeBlockData(block)
-  if (!block || !data || start.offset < 0 || end.offset > data.source.length) return undefined
+  if (!block || !data || !isDocumentTextBoundary(data.source, start.offset) || !isDocumentTextBoundary(data.source, end.offset)) return undefined
   let startOffset = start.offset
   let endOffset = end.offset
   let insertion = ''
@@ -104,7 +113,7 @@ export function editCodeBlockText(model: DocumentModel, selection: DocumentSelec
     else endOffset = adjacent
   }
   const source = `${data.source.slice(0, startOffset)}${insertion}${data.source.slice(endOffset)}`
-  applyCodeBlockUpdate(model, block, data, { ...data, source }, { startOffset, endOffset, text: insertion })
+  applyCodeBlockUpdate(model, block, data, { ...data, source }, { startOffset, endOffset, text: insertion }, 'text' in edit ? edit.marks : undefined)
   const caret = startOffset + insertion.length
   return collapsedSelection({ blockId: block.id, offset: caret })
 }

@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::ops::Range;
 
-use duke_pages::{DocModel, DocNode, NumberingDefinitionSet, ParagraphChildNode, ParagraphNode, ParagraphNumbering, StructuredDocument, TableCellContentNode, TableNode, TextRunNode, TextRunNodeType};
+use duke_pages::{DocModel, DocNode, NumberingDefinitionSet, ParagraphChildNode, ParagraphNode, ParagraphNumbering, StructuredDocument, TableCellContentNode, TableNode};
+use quick_xml::{Reader, XmlVersion, events::Event};
 use serde_json::{Value, json};
 use zip::ZipArchive;
 
@@ -86,6 +88,32 @@ fn read_mapping(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Option<Value>
     Ok(found)
 }
 
+fn document_namespaces(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<HashMap<String, String>, String> {
+    let owner = part_for_type(archive, ".document.main+xml", "word/document.xml")?;
+    let Some(xml) = read_xml(archive, &owner)? else { return Ok(HashMap::new()); };
+    let mut reader = Reader::from_str(&xml);
+    loop {
+        match reader.read_event().map_err(|error| error.to_string())? {
+            Event::Start(tag) | Event::Empty(tag) => {
+                let mut namespaces = HashMap::new();
+                for attribute in tag.attributes() {
+                    let attribute = attribute.map_err(|error| error.to_string())?;
+                    let name = String::from_utf8_lossy(attribute.key.as_ref());
+                    let prefix = if name == "xmlns" { Some("") } else { name.strip_prefix("xmlns:") };
+                    if let Some(prefix) = prefix {
+                        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
+                        namespaces.insert(prefix.to_owned(), value.into_owned());
+                    }
+                }
+                return Ok(namespaces);
+            }
+            Event::Eof => return Ok(HashMap::new()),
+            Event::DocType(_) => return Err("Office XML must not declare a document type.".into()),
+            _ => {},
+        }
+    }
+}
+
 fn patch_raw_level(level: &mut Value, xml: &Element) {
     if let Some(format) = xml.child("numFmt") {
         if let Some(value) = format.attribute("val") { level["format"] = json!(value); }
@@ -140,6 +168,9 @@ struct Marker {
     raw_text: String,
     display_text: String,
     styles: Vec<Value>,
+    visible_ranges: Vec<Range<usize>>,
+    visible_nodes: HashSet<usize>,
+    commented: bool,
 }
 
 fn style_signature(properties: &Element) -> Value {
@@ -155,16 +186,38 @@ fn style_signature(properties: &Element) -> Value {
     })
 }
 
-fn append_text(marker: &mut Marker, text: &str, fields: &[FieldState]) {
+fn append_text(marker: &mut Marker, text: &str, node: &Element, fields: &[FieldState], comments: &HashSet<i64>) {
+    let start = marker.raw_text.len();
     marker.raw_text.push_str(text);
-    if fields.iter().all(|field| field.separated) { marker.display_text.push_str(text); }
+    if fields.iter().all(|field| field.separated) {
+        marker.display_text.push_str(text);
+        marker.visible_ranges.push(start..marker.raw_text.len());
+        marker.visible_nodes.insert(node.start);
+        marker.commented |= !text.is_empty() && !comments.is_empty();
+    }
     if fields.is_empty() && !text.is_empty() {
         if let Some(last) = marker.contract.last_mut().filter(|last| last["text"].is_string()) { last["text"] = json!(format!("{}{text}", last["text"].as_str().unwrap_or_default())); }
         else { marker.contract.push(json!({ "text": text })); }
     }
 }
 
-fn marker_from_paragraph(root: &Element) -> Result<Option<Marker>, String> {
+fn comment_boundary(node: &Element, comments: &mut HashSet<i64>) -> Result<(), String> {
+    let id = node.integer("id").filter(|id| *id >= 0).ok_or("A numbering marker comment has an invalid ID.")?;
+    match node.name.as_str() {
+        "commentRangeStart" => { comments.insert(id); },
+        "commentRangeEnd" => { comments.remove(&id); },
+        _ => {},
+    }
+    Ok(())
+}
+
+fn track_comment_boundaries(node: &Element, comments: &mut HashSet<i64>) -> Result<(), String> {
+    if matches!(node.name.as_str(), "commentRangeStart" | "commentRangeEnd") { comment_boundary(node, comments)?; }
+    else if node.name != "pPr" { for child in &node.children { track_comment_boundaries(child, comments)?; } }
+    Ok(())
+}
+
+fn marker_from_paragraph(root: &Element, inherited_comments: &HashSet<i64>) -> Result<Option<Marker>, String> {
     let starts = root.children.iter().enumerate().filter(|(_, child)| child.name == "bookmarkStart" && child.attribute("name").is_some_and(|name| name.starts_with(BOOKMARK_PREFIX))).collect::<Vec<_>>();
     if starts.is_empty() { return Ok(None); }
     if starts.len() != 1 { return Err("The paragraph has ambiguous numbering markers.".into()); }
@@ -173,9 +226,16 @@ fn marker_from_paragraph(root: &Element) -> Result<Option<Marker>, String> {
     let (end_index, end) = root.children.iter().enumerate().skip(start_index + 1).find(|(_, child)| child.name == "bookmarkEnd" && child.integer("id") == Some(bookmark_id)).ok_or("The numbering marker has no matching bookmark end.")?;
     let mut marker = Marker { name: bookmark.attribute("name").unwrap_or_default().to_owned(), bookmark_id, start: bookmark.start, end: end.end, ..Default::default() };
     let mut fields = Vec::<FieldState>::new();
-    fn visit(node: &Element, marker: &mut Marker, fields: &mut Vec<FieldState>) -> Result<(), String> {
+    let mut comments = inherited_comments.clone();
+    for node in &root.children[..start_index] { track_comment_boundaries(node, &mut comments)?; }
+    fn visit(node: &Element, marker: &mut Marker, fields: &mut Vec<FieldState>, comments: &mut HashSet<i64>) -> Result<(), String> {
         match node.name.as_str() {
             "rPr" => {},
+            "commentRangeStart" | "commentRangeEnd" => comment_boundary(node, comments)?,
+            "commentReference" => {
+                comment_boundary(node, comments)?;
+                marker.commented = true;
+            },
             "fldChar" => match node.attribute("fldCharType") {
                 Some("begin") => fields.push(FieldState::default()),
                 Some("separate") => { let field = fields.last_mut().ok_or("A marker field has no beginning.")?; if field.separated { return Err("A marker field has more than one separator.".into()); } field.separated = true; },
@@ -192,21 +252,23 @@ fn marker_from_paragraph(root: &Element) -> Result<Option<Marker>, String> {
                 let field = fields.last_mut().filter(|field| !field.separated).ok_or("A marker instruction is outside its field.")?;
                 field.code.push_str(&node.text);
             },
-            "t" => append_text(marker, &node.text, fields),
-            "tab" => append_text(marker, "\t", fields),
-            "br" | "cr" => append_text(marker, "\n", fields),
-            "noBreakHyphen" => append_text(marker, "\u{2011}", fields),
-            "softHyphen" => append_text(marker, "\u{ad}", fields),
+            "t" => append_text(marker, &node.text.replace("\r\n", " ").replace(['\r', '\n'], " "), node, fields, comments),
+            "tab" => append_text(marker, "\t", node, fields, comments),
+            "br" | "cr" => append_text(marker, "\n", node, fields, comments),
+            "noBreakHyphen" => append_text(marker, "\u{2011}", node, fields, comments),
+            "softHyphen" => append_text(marker, "\u{ad}", node, fields, comments),
             "r" => {
-                if let Some(properties) = node.child("rPr") { marker.styles.push(style_signature(properties)); }
-                else { marker.styles.push(json!({})); }
-                for child in &node.children { visit(child, marker, fields)?; }
+                if node.children.iter().any(|child| !matches!(child.name.as_str(), "rPr" | "commentReference")) {
+                    if let Some(properties) = node.child("rPr") { marker.styles.push(style_signature(properties)); }
+                    else { marker.styles.push(json!({})); }
+                }
+                for child in &node.children { visit(child, marker, fields, comments)?; }
             },
             _ => return Err(format!("The marker contains unsupported Office content: {}.", node.name)),
         }
         Ok(())
     }
-    for node in &root.children[start_index + 1..end_index] { visit(node, &mut marker, &mut fields)?; }
+    for node in &root.children[start_index + 1..end_index] { visit(node, &mut marker, &mut fields, &mut comments)?; }
     if !fields.is_empty() { return Err("A marker field is not closed.".into()); }
     Ok(Some(marker))
 }
@@ -236,11 +298,64 @@ fn trim_marker_children(paragraph: &ParagraphNode, marker: &Marker) -> Option<(V
     Some((children, removed))
 }
 
+fn visible_marker_children(paragraph: &ParagraphNode, marker: &Marker) -> Option<Vec<ParagraphChildNode>> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    for child in &paragraph.children {
+        if offset >= marker.raw_text.len() { break; }
+        let ParagraphChildNode::Text(run) = child else { return None; };
+        let end = (offset + run.text.len()).min(marker.raw_text.len());
+        for visible in &marker.visible_ranges {
+            let start = offset.max(visible.start);
+            let finish = end.min(visible.end);
+            if start >= finish { continue; }
+            let mut visible_run = run.clone();
+            visible_run.text = run.text.get(start - offset..finish - offset)?.to_owned();
+            visible_run.note_reference = None;
+            visible_run.field_instruction = None;
+            result.push(ParagraphChildNode::Text(visible_run));
+        }
+        offset = end;
+    }
+    let text = result.iter().filter_map(|child| match child { ParagraphChildNode::Text(run) => Some(run.text.as_str()), _ => None }).collect::<String>();
+    (offset == marker.raw_text.len() && text == marker.display_text).then_some(result)
+}
+
+fn opening_tag<'a>(xml: &'a str, node: &Element) -> &'a str {
+    let mut quote = None;
+    for (offset, byte) in xml.as_bytes()[node.start..node.end].iter().copied().enumerate() {
+        match (quote, byte) {
+            (Some(current), byte) if current == byte => quote = None,
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'>') => return &xml[node.start..node.start + offset + 1],
+            _ => {},
+        }
+    }
+    ""
+}
+
+/** Review extraction uses source XML to enumerate runs; keep it aligned with the visible children. */
+fn projected_marker_xml(xml: &str, root: &Element, marker: &Marker, keep_text: bool) -> String {
+    fn project(xml: &str, node: &Element, marker: &Marker, keep_text: bool) -> String {
+        if matches!(node.name.as_str(), "commentRangeStart" | "commentRangeEnd" | "commentReference") {
+            return xml[node.start..node.end].to_owned();
+        }
+        if keep_text && marker.visible_nodes.contains(&node.start) { return xml[node.start..node.end].to_owned(); }
+        if node.name != "r" { return String::new(); }
+        let content = node.children.iter().filter(|node| node.name != "rPr").map(|child| project(xml, child, marker, keep_text)).collect::<String>();
+        if content.is_empty() { return String::new(); }
+        let properties = node.child("rPr").map(|properties| &xml[properties.start..properties.end]).unwrap_or_default();
+        format!("{}{properties}{content}</{}>", opening_tag(xml, node), node.qualified_name)
+    }
+    root.children.iter().filter(|node| node.start > marker.start && node.end < marker.end).map(|node| project(xml, node, marker, keep_text)).collect()
+}
+
 fn update_source_positions(paragraph: &mut ParagraphNode, removed: usize, inserted: usize, bookmark: &str) {
     paragraph.bookmarks.retain(|value| value.name != bookmark);
-    for bookmark in &mut paragraph.bookmarks { bookmark.child_index = bookmark.child_index.saturating_sub(removed) + inserted; }
+    let shift = |index: usize| if index >= removed { index - removed + inserted } else { 0 };
+    for bookmark in &mut paragraph.bookmarks { bookmark.child_index = shift(bookmark.child_index); }
     if let Some(comments) = &mut paragraph.comment_ranges {
-        for comment in comments { comment.child_start = comment.child_start.saturating_sub(removed) + inserted; comment.child_end = comment.child_end.saturating_sub(removed) + inserted; }
+        for comment in comments { comment.child_start = shift(comment.child_start); comment.child_end = shift(comment.child_end); }
     }
     paragraph.source_text_patch = None;
     paragraph.source_run_provenance = None;
@@ -315,14 +430,18 @@ fn prepare_definitions(current: &Value, mapping: &Value) -> Result<(Value, HashM
     Ok((definitions, instance_ids))
 }
 
-fn preserve_office_marker(paragraph: &mut ParagraphNode, xml: &str, marker: &Marker, extras: &mut ParagraphExtras) -> bool {
+fn preserve_office_marker(paragraph: &mut ParagraphNode, xml: &str, root: &Element, marker: &Marker, namespaces: &HashMap<String, String>, extras: &mut ParagraphExtras) -> bool {
     let Some((mut children, removed)) = trim_marker_children(paragraph, marker) else { return false; };
-    let style = paragraph.children.iter().find_map(|child| match child { ParagraphChildNode::Text(run) => run.style.clone(), _ => None });
-    let inserted = usize::from(!marker.display_text.is_empty());
-    if inserted != 0 { children.insert(0, ParagraphChildNode::Text(TextRunNode { r#type: TextRunNodeType::Text, text: marker.display_text.clone(), style, link: None, note_reference: None, field_instruction: None })); }
+    let Some(mut visible) = visible_marker_children(paragraph, marker) else { return false; };
+    let inserted = visible.len();
+    visible.append(&mut children);
+    let children = visible;
     paragraph.children = children;
     update_source_positions(paragraph, removed, inserted, &marker.name);
-    extras.preserved = Some(json!({ "version": 1, "bookmark": marker.name, "bookmarkId": marker.bookmark_id, "xml": &xml[marker.start..marker.end], "text": marker.display_text }));
+    paragraph.source_xml = Some(format!("{}{}{}", &xml[..marker.start], projected_marker_xml(xml, root, marker, true), &xml[marker.end..]));
+    let mut namespaces = namespaces.clone();
+    namespaces.extend(root.namespaces.clone());
+    extras.preserved = Some(json!({ "version": 1, "bookmark": marker.name, "bookmarkId": marker.bookmark_id, "xml": &xml[marker.start..marker.end], "text": marker.display_text, "namespaces": namespaces, "sourceNumbering": paragraph_numbering(root).map(|(num_id, ilvl)| json!({ "numId": num_id, "ilvl": ilvl })) }));
     true
 }
 
@@ -348,15 +467,28 @@ pub(crate) fn restore_numbering_with_extensions(source: &mut DocModel, archive: 
     }
     let instances = mapping.as_ref().map(|mapping| array(&mapping["instances"]).iter().filter_map(|entry| Some((entry["numId"].as_i64()?, entry))).collect::<HashMap<_, _>>()).unwrap_or_default();
     let mut actual_names = HashMap::<String, usize>::new();
+    let mut has_markers = false;
     visit_paragraphs(&mut source.nodes, &mut |paragraph, _| {
+        has_markers |= paragraph.source_xml.as_ref().is_some_and(|xml| xml.contains(BOOKMARK_PREFIX));
         for bookmark in &paragraph.bookmarks { if bookmark.name.starts_with(BOOKMARK_PREFIX) { *actual_names.entry(bookmark.name.clone()).or_default() += 1; } }
     });
+    let namespaces = if has_markers { document_namespaces(archive).unwrap_or_else(|error| { result.warnings.push(format!("DOCX numbering marker namespaces could not be read: {error}")); HashMap::new() }) } else { HashMap::new() };
+    let mut active_comments = HashSet::<i64>::new();
     visit_paragraphs(&mut source.nodes, &mut |paragraph, id| {
-        let Some(xml) = paragraph.source_xml.clone().filter(|xml| xml.contains(BOOKMARK_PREFIX)) else { return; };
+        if !has_markers { return; }
+        let Some(original) = paragraph.source_xml.as_ref() else { return; };
+        let has_marker = original.contains(BOOKMARK_PREFIX);
+        if !has_marker && !original.contains("commentRangeStart") && !original.contains("commentRangeEnd") { return; }
+        let xml = original.clone();
         let root = match parse_xml(&xml) { Ok(root) => root, Err(error) => { result.warnings.push(format!("DOCX numbering marker in {id} could not be read: {error}")); return; } };
-        let marker = match marker_from_paragraph(&root) { Ok(Some(marker)) => marker, Ok(None) => return, Err(error) => { result.warnings.push(format!("DOCX numbering marker in {id} was retained: {error}")); return; } };
+        let inherited_comments = active_comments.clone();
+        if let Err(error) = track_comment_boundaries(&root, &mut active_comments) { result.warnings.push(format!("DOCX numbering comment context in {id} could not be fully read: {error}")); }
+        if !has_marker { return; }
+        let marker = match marker_from_paragraph(&root, &inherited_comments) { Ok(Some(marker)) => marker, Ok(None) => return, Err(error) => { result.warnings.push(format!("DOCX numbering marker in {id} was retained: {error}")); return; } };
         let mut extras = ParagraphExtras::default();
         let restore = (|| {
+            // A semantic list label has no text anchor. Retain annotated Office labels as fields.
+            if marker.commented && !marker.display_text.is_empty() { return None; }
             let (definitions, ids) = prepared.as_ref()?;
             let entry = *entries.get(&marker.name)?;
             if ambiguous.get(&marker.name).copied().unwrap_or(0) != 1 || actual_names.get(&marker.name).copied().unwrap_or(0) != 1 { return None; }
@@ -380,15 +512,18 @@ pub(crate) fn restore_numbering_with_extensions(source: &mut DocModel, archive: 
             paragraph.children = children;
             paragraph.style.get_or_insert_with(Default::default).numbering = Some(ParagraphNumbering { num_id, ilvl: index });
             update_source_positions(paragraph, removed, 0, &marker.name);
-            paragraph.source_xml = Some(format!("{}{}", &xml[..marker.start], &xml[marker.end..]));
+            paragraph.source_xml = Some(format!("{}{}{}", &xml[..marker.start], projected_marker_xml(&xml, &root, &marker, false), &xml[marker.end..]));
             extras.list_id = instance["listId"].as_str().filter(|name| !name.is_empty()).map(str::to_owned);
             if mode == "sequence" {
                 let suffix = instance["definition"]["levels"].as_array().and_then(|levels| levels.iter().find(|level| level["ilvl"].as_i64() == Some(index))).and_then(|level| level["suffix"].as_str()).unwrap_or("tab");
                 extras.label = Some(match suffix { "nothing" => marker.display_text.clone(), "space" => marker.display_text.strip_suffix(' ').unwrap_or(&marker.display_text).to_owned(), _ => marker.display_text.strip_suffix('\t').unwrap_or(&marker.display_text).to_owned() });
             }
         } else {
-            let preserved = preserve_office_marker(paragraph, &xml, &marker, &mut extras);
-            result.warnings.push(format!("DOCX numbering mapping for {id} is missing or differs from the current fields; {}. The original list extension was not applied.", if preserved { "current Office fields and their visible result were retained" } else { "current paragraph content was retained" }));
+            let preserved = preserve_office_marker(paragraph, &xml, &root, &marker, &namespaces, &mut extras);
+            let reason = if marker.commented && !marker.display_text.is_empty() {
+                "the visible Office label intersects a comment and semantic labels have no editable text anchor"
+            } else { "the numbering mapping is missing or differs from the current fields" };
+            result.warnings.push(format!("DOCX numbering extension for {id} was not applied because {reason}; {}.", if preserved { "current Office fields and their visible result were retained" } else { "current paragraph content was retained" }));
         }
         result.details.insert(id, extras);
     });

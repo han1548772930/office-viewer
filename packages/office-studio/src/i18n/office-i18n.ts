@@ -20,6 +20,7 @@ import { documentTableInsertLocales } from './docs/locales/document-table-insert
 import { sheetsEnUS } from './sheets/locales/en-US.ts'
 import { sheetsZhCN } from './sheets/locales/zh-CN.ts'
 import { sheetNumberFormatLocales } from './sheets/locales/number-format.ts'
+import { sheetToolbarBorderApiStyleLocales, sheetToolbarColorLocales } from './sheets/locales/toolbar-colors.ts'
 import { sheetsTranslations } from './sheets/locales/generated.ts'
 import { reviewedSheetsTranslations } from './sheets/locales/reviewed.ts'
 import { sheetFindReplaceLocales } from './sheets/locales/find-replace.ts'
@@ -200,6 +201,8 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       ...conditionalFormattingLocaleMessages[locale],
       ...sheetCrosshairHighlightLocales[locale],
       ...sheetNumberFormatLocales[locale],
+      ...sheetToolbarColorLocales[locale],
+      ...sheetToolbarBorderApiStyleLocales[locale],
       ...docsTranslations[locale],
       ...documentTocLocales[locale as keyof typeof documentTocLocales],
       'items.doc-insert-table-of-contents': documentTocLocales[locale]['document.toc.insert'],

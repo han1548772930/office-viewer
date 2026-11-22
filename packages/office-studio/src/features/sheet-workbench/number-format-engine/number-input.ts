@@ -2,41 +2,8 @@ import type { ParseData } from './types'
 import type { ParseOptions } from './parse-value'
 import { currencySymbols } from './constants'
 import { defaultLocale, getLocale } from './locale'
-
-interface DecimalParts { negative: boolean; digits: string; exponent: number }
-
-function decimalParts(source: string, shift = 0): DecimalParts | null {
-  const match = /^([+-])?(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(source)
-  if (!match || !match[2] && !match[3]) return null
-  let digits = (match[2]! + (match[3] ?? '')).replace(/^0+/, '')
-  let exponent = Number(match[4] ?? 0) - (match[3]?.length ?? 0) + shift
-  if (!Number.isSafeInteger(exponent)) return null
-  if (!digits) return { negative: false, digits: '0', exponent: 0 }
-  const end = digits.replace(/0+$/, '').length
-  exponent += digits.length - end
-  digits = digits.slice(0, end)
-  return { negative: match[1] === '-', digits, exponent }
-}
-
-/** Compare decimal intent with the shortest stored number without counting punctuation as precision. */
-export function decimalInputKey(source: string, shift = 0): string | null {
-  const parts = decimalParts(source, shift)
-  return parts ? `${parts.negative ? '-' : ''}${parts.digits}e${parts.exponent}` : null
-}
-
-/** Decimal shifts use text arithmetic so percent editing never gains binary multiplication noise. */
-export function shiftDecimalInput(source: string, shift: number): string | null {
-  const parts = decimalParts(source, shift)
-  if (!parts) return null
-  const { digits, exponent, negative } = parts
-  const sign = negative ? '-' : ''
-  if (digits === '0') return '0'
-  const point = digits.length + exponent
-  if (point > 256 || point < -256) return `${sign}${digits}e${exponent}`
-  if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`
-  if (point >= digits.length) return sign + digits + '0'.repeat(point - digits.length)
-  return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`
-}
+import { parseExactDecimalInput } from '../../../shared/decimal-input.ts'
+export { decimalInputKey, shiftDecimalInput } from '../../../shared/decimal-input.ts'
 
 export function normalizeInputDigits(source: string): string {
   return source.replace(/[\u0660-\u0669\u06f0-\u06f9\uff10-\uff19]/g, digit => {
@@ -121,10 +88,8 @@ export function parseNumber(value: string, options: ParseOptions = {}): ParsedNu
   }
   if (!/^\d*$/.test(digits) || !digits && !fraction) return null
   const normalized = `${negative ? '-' : ''}${digits || '0'}${fraction === undefined ? '' : '.' + fraction}${scientific ? 'e' + scientific[2] : ''}`
-  const shifted = shiftDecimalInput(normalized, percent ? -2 : 0)
-  if (shifted === null) return null
-  const number = Number(shifted)
-  if (!Number.isFinite(number) || decimalInputKey(shifted) !== decimalInputKey(String(number))) return null
+  const number = parseExactDecimalInput(normalized, percent ? -2 : 0)
+  if (number === null) return null
   const baseFormat = fraction ? '#,##0.00' : '#,##0'
   // Keep multi-character currency names literal while single symbols use the normal format token.
   const symbolFormat = currency.length > 1 ? `"${currency}"` : currency

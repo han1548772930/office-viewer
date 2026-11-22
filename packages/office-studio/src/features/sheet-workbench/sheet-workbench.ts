@@ -1,10 +1,11 @@
 import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
-import { addRange, containsCell } from '../../rendering/spreadsheet/selection.ts'
-import { findVisibleSheetRow, hiddenSheetRows } from './sheet-row-visibility.ts'
+import { containsCell } from '../../rendering/spreadsheet/selection.ts'
+import { hiddenSheetRows, isSheetRowVisible, isSheetColumnVisible } from './sheet-row-visibility.ts'
+import { normalizeSheetSelection, resolveVisibleSheetSelection, type SheetSelectionSheet } from './sheet-selection.ts'
 import { sheetCellNumberValue } from './sheet-number-presentation.ts'
 
-export interface SheetAddressBounds { rowCount: number; columnCount: number; hiddenRows?: readonly number[]; filteredRows?: readonly number[]; rowHeights?: Readonly<Record<number, number>> }
+export interface SheetAddressBounds extends SheetSelectionSheet {}
 export interface ParsedSheetAddress { range: GridRange; address: string; anchor: string }
 
 export function frozenPaneCountsForSelection(range: GridRange): { rows: number; columns: number } {
@@ -96,14 +97,15 @@ function statisticCellValue(cell: ExcelCellView): { defined: boolean; number?: n
 function normalizeSelection(range: GridRange, bounds: SheetAddressBounds): GridRange | undefined {
   const values = [range.startRow, range.endRow, range.startColumn, range.endColumn]
   if (!values.every(Number.isSafeInteger)) return undefined
-  const startRow = Math.max(0, Math.min(range.startRow, range.endRow))
-  const endRow = Math.min(bounds.rowCount - 1, Math.max(range.startRow, range.endRow))
-  const startColumn = Math.max(0, Math.min(range.startColumn, range.endColumn))
-  const endColumn = Math.min(bounds.columnCount - 1, Math.max(range.startColumn, range.endColumn))
-  return startRow <= endRow && startColumn <= endColumn ? { startRow, endRow, startColumn, endColumn } : undefined
+  const startRow = range.rangeType === 2 || range.rangeType === 3 ? 0 : Math.max(0, Math.min(range.startRow, range.endRow))
+  const endRow = range.rangeType === 2 || range.rangeType === 3 ? bounds.rowCount - 1 : Math.min(bounds.rowCount - 1, Math.max(range.startRow, range.endRow))
+  const startColumn = range.rangeType === 1 || range.rangeType === 3 ? 0 : Math.max(0, Math.min(range.startColumn, range.endColumn))
+  const endColumn = range.rangeType === 1 || range.rangeType === 3 ? bounds.columnCount - 1 : Math.min(bounds.columnCount - 1, Math.max(range.startColumn, range.endColumn))
+  return startRow <= endRow && startColumn <= endColumn ? { startRow, endRow, startColumn, endColumn,
+    ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) } : undefined
 }
 
-export interface SheetViewState { key: string; anchor: string; ranges: GridRange[]; zoom: number }
+export interface SheetViewState { key: string; anchor: string; ranges: GridRange[]; zoom: number; activeRangeIndex?: number }
 
 /** Restore a view after model/axis changes without putting view operations into content history. */
 export function normalizeSheetViewState(sheet: SheetAddressBounds, state: Partial<SheetViewState> = {}): SheetViewState {
@@ -122,22 +124,29 @@ export function normalizeSheetViewState(sheet: SheetAddressBounds, state: Partia
   let ranges: GridRange[] = []
   for (const range of state.ranges ?? []) {
     const normalized = normalizeSelection(range, sheet)
-    if (normalized) ranges = addRange(ranges, normalized)
+    if (normalized) ranges.push(normalized)
   }
+  if (state.ranges?.length === 0) return { key: 'A1', anchor: 'A1', ranges: [], zoom, ...(state.activeRangeIndex === undefined ? {} : { activeRangeIndex: -1 }) }
   if (!ranges.length) ranges = [{ startRow: point.row, endRow: point.row, startColumn: point.column, endColumn: point.column }]
   if (!containsCell(ranges, point.row, point.column)) point = { row: ranges[0]!.startRow, column: ranges[0]!.startColumn }
-  const visibleRow = findVisibleSheetRow(sheet, point.row, 1)
-  if (visibleRow === undefined) return { key: 'A1', anchor: 'A1', ranges: [], zoom }
-  if (visibleRow !== point.row) {
-    point.row = visibleRow
-    if (!containsCell(ranges, point.row, point.column)) ranges = [{ startRow: point.row, endRow: point.row, startColumn: point.column, endColumn: point.column }]
-  }
+  const requestedActive = state.activeRangeIndex === undefined ? undefined : ranges[state.activeRangeIndex]
+  const activeRangeIndex = requestedActive && containsCell([requestedActive], point.row, point.column) ? state.activeRangeIndex : undefined
+  const selection = resolveVisibleSheetSelection(normalizeSheetSelection(ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+    startCol: range.startColumn, endCol: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })), sheet,
+    { primary: point, activeRangeIndex }), sheet)
+  if (!selection.primary) return { key: 'A1', anchor: 'A1', ranges: [], zoom, ...(state.activeRangeIndex === undefined ? {} : { activeRangeIndex: -1 }) }
+  point = selection.primary
+  ranges = selection.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol,
+    ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) }))
   const candidate = clampPoint(state.anchor, point)
-  const anchor = containsCell(ranges, candidate.row, candidate.column) && !hiddenSheetRows(sheet).has(candidate.row) ? candidate : point
+  const anchorHiddenByOutline = sheet.outline?.groups.some(group => group.collapsed && (group.axis === 'row'
+    ? candidate.row >= group.start && candidate.row <= group.end : candidate.column >= group.start && candidate.column <= group.end))
+  const anchor = !anchorHiddenByOutline && containsCell(ranges, candidate.row, candidate.column)
+    && isSheetRowVisible(sheet, candidate.row) && isSheetColumnVisible(sheet, candidate.column) ? candidate : point
   return {
     key: `${columnLabel(point.column)}${point.row + 1}`,
     anchor: `${columnLabel(anchor.column)}${anchor.row + 1}`,
-    ranges, zoom,
+    ranges, zoom, ...(state.activeRangeIndex === undefined ? {} : { activeRangeIndex: selection.activeRangeIndex }),
   }
 }
 
@@ -157,7 +166,7 @@ export function calculateSelectionStatistics(
     if (!parsed) continue
     const { startRow: row, startColumn: column, endRow, endColumn } = parsed.range
     // The sparse cell record is addressed by a single coordinate, never a range key.
-    if (row !== endRow || column !== endColumn || excludedRows.has(row) || visited.has(parsed.anchor)
+    if (row !== endRow || column !== endColumn || !isSheetRowVisible(sheet, row, excludedRows) || visited.has(parsed.anchor)
       || !selections.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)) continue
     visited.add(parsed.anchor)
     const value = statisticCellValue(cell)

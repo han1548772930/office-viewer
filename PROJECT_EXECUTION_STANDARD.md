@@ -20,9 +20,9 @@
 
 ### Ribbon 清点基线
 
-2026-11-20 针对先前参考提交整理的 desktop 开源菜单计数为 Sheets 62 项、Docs 38 项，合计 100 个 Ribbon 根入口。Sheets 分类是 START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 5；Docs 是 Home 25、Insert 10、View 3。根入口按顶层 schema 节点统计，子菜单项不重复计数。该历史计数尚未在 v1.6.0 上重新完整合并插件 schema 复算，不作为 v1.6.0 入口总数结论。
+2026-11-22 使用 `scripts/audit-univer-oss-ribbon.mjs` 重新读取 v1.6.0 desktop OSS 注册 schema：Sheets 常规根声明 63 项（START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 6），Docs 常规根声明 38 项（START 25、INSERT 10、VIEW 3），合计 101 项。Docs 另有页眉页脚 5 项与目录 2 项上下文根声明。根项按 Tab/Group 下的顶层节点统计，子菜单、右键层级节点与浮动菜单分开；factory 的动态显隐、菜单子项和运行态装配尚未执行，不能把静态声明计数当作可见入口总数或完成证明。此前 Sheets 62 项、Docs 38 项是历史计数。
 
-历史 Pro 清点基于 Univer 1.5.2 已发布 Docs / Sheets UI 包：当时识别 20 个导出菜单 schema 声明的包和 24 个 Pro Ribbon 根节点，其中 Sheets 15 项、Docs 9 项，至少 6 个包另声明上下文 Ribbon schema。该统计仍是 1.5.2 的历史证据，不能作为 1.6.0 计数。当前 1.6.0 OSS 固定基线和 Pro 包版本复核状态见 [工具栏清点](docs/UNIVER_TOOLBAR_PARITY.md) 与 [Docs / Sheets 入口表](docs/feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。Pro 根入口计数来自已发布编译包，不等于动态运行态或功能完成验收。
+历史 Pro 清点基于 Univer 1.5.2 已发布 Docs / Sheets UI 包：当时识别 20 个导出菜单 schema 声明的包和 24 个 Pro Ribbon 根节点，其中 Sheets 15 项、Docs 9 项，至少 6 个包另声明上下文 Ribbon schema。这些数字只属于 1.5.2。2026-11-22 已静态读取项目缓存中 60 个 v1.6.0 ES 包的注册及 schema 表达式；存在重复挂载分支、替换入口、浮动组件和未解析表达式，尚不能推导完整 Pro 可见根入口总数。当前分类、具体来源和未核实项见 [工具栏清点](docs/UNIVER_TOOLBAR_PARITY.md) 与 [Docs / Sheets 入口表](docs/feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。未发现 `mergeMenu` 根声明不表示该包没有入口或能力。
 
 每个根入口同时记录 classic 单行工具区顺序及 grid 两行布局的 `row`、`column`、跨行列、尺寸和标签配置；上下文标签、菜单、footer 与 More 溢出分开统计。classic 与 grid 是同一入口集合的呈现变体，布局变更不得丢失入口或命令语义。
 

@@ -6,8 +6,10 @@ import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
-import { RESET_BACKGROUND_COLOR, RESET_TEXT_COLOR, resetSheetColors } from '../features/sheet-workbench/sheet-color-reset.ts'
+import { applySheetFontFormatCommand, assertSheetFontFormatRanges, fontFormatActionForCommand, SHEET_FONT_FORMAT_COMMAND_IDS, sheetFontFormatCommandInput, sheetFontFormatInputRanges, type SheetFontFormatCommandParams } from '../features/sheet-workbench/sheet-font-format-command.ts'
 import { applySheetNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_ALIASES, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
+import { applySheetLayoutFormatCommand, assertSheetLayoutFormatRanges, layoutFormatActionForCommand, SHEET_LAYOUT_FORMAT_COMMAND_IDS, sheetLayoutFormatInputRanges, type SheetLayoutFormatCommandInput } from '../features/sheet-workbench/sheet-layout-format-command.ts'
+import { applySheetBorderFormatCommand, borderFormatActionForCommand, createSheetBorderFormatState, SHEET_BORDER_FORMAT_COMMAND_IDS, sheetBorderFormatCommandInput, sheetBorderFormatInputRanges, type SheetBorderFormatCommandInput, type SheetBorderFormatState } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
@@ -18,7 +20,19 @@ import { applyDocumentEditorCommand, assertDocumentEditorCommandRequest, DOCUMEN
 import type { DocumentImage } from '../features/document/model/document-model'
 import { useEditorStore } from '../stores/editorStore'
 import { applyCellValue, documentFromInput, workbookFromInput } from './model-utils'
-import { EventHub, type ApiEventMap, type ApiRange, type Disposable } from './events'
+import { EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type Disposable } from './events'
+import { registerSheetRangeEditorCommands } from './sheet-range-editor-commands.ts'
+import { registerSheetAxisDimensionCommands } from './sheet-axis-dimension-commands.ts'
+import { registerSheetAxisVisibilityCommands } from './sheet-axis-visibility-commands.ts'
+import { registerSheetAxisStructureCommands } from './sheet-axis-structure-commands.ts'
+import { registerSheetConditionalFormattingCommands } from './sheet-conditional-formatting-commands.ts'
+import { refreshWorkbookAutoRowHeights } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
+import type { SheetTextMeasure } from '../features/sheet-workbench/sheet-cell-text-layout.ts'
+import { measureSpreadsheetText } from '../rendering/spreadsheet/text-metrics.ts'
+import { registerSheetFormatPainterCommands } from './sheet-format-painter-commands.ts'
+import { useSheetFormatPainterStore } from '../features/sheet-workbench/sheet-format-painter-store.ts'
+import { useSheetSelectionStore } from '../features/sheet-workbench/sheet-selection-store.ts'
+import { normalizeSheetSelection, resolveVisibleSheetSelection, type SheetSelectionOptions, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
 import {
   createPivotTable,
   refreshPivotTable,
@@ -75,40 +89,56 @@ export interface OfficeStudioOptions {
   currentUserId?: string
   /** Local permission-rule manager. Defaults to currentUserId and is not server authorization. */
   permissionAdminUserId?: string
+  /** Inject font measurement for deterministic/headless axis layout. Browser defaults to shared Canvas metrics. */
+  sheetTextMeasure?: SheetTextMeasure
 }
 
 export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
+
+export interface WorkbookCommitOptions {
+  recalculate?: boolean
+  selection?: { sheetId: string; before: ApiRange | null; after: ApiRange }
+  selections?: { sheetId: string; before: ApiSheetSelection; after: ApiSheetSelection }
+}
 
 export class OfficeStudio {
   readonly regionalSettings: OfficeRegionalSettings
   readonly pinia: Pinia
   readonly editor: ReturnType<typeof useEditorStore>
+  readonly sheetFormatPainter: ReturnType<typeof useSheetFormatPainterStore>
+  readonly sheetSelections: ReturnType<typeof useSheetSelectionStore>
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
   readonly currentUserId: string
   readonly permissionAdminUserId: string
+  readonly sheetTextMeasure: SheetTextMeasure
   private readonly workbooks = new Map<string, WorkbookModel>()
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
   private _activeWorkbookId: string
   private _activeDocumentId: string
-  private selection: ApiRange | null = null
   private disposed = false
   private readonly workbookRevisions = new Map<string, number>()
+  private readonly borderFormatStates = new Map<string, Map<string, SheetBorderFormatState>>()
   private readonly computeClient: OfficeComputeClient
   private readonly ownsComputeClient: boolean
   private readonly stopModelSync: Array<() => void> = []
+  private workbookSelectionPublicationDepth = 0
+  private selectionPublication = 0
 
   constructor(options: OfficeStudioOptions = {}) {
     this.regionalSettings = new OfficeRegionalSettings(options.locale, options.region)
     this.pinia = createPinia()
     this.editor = useEditorStore(this.pinia)
+    this.sheetFormatPainter = useSheetFormatPainterStore(this.pinia)
+    this.sheetSelections = useSheetSelectionStore(this.pinia)
     const workbook = workbookFromInput(options.workbook ?? this.editor.workbook.model)
     const document = documentFromInput(options.document ?? this.editor.document.model)
     this._activeWorkbookId = workbook.id!
     this._activeDocumentId = document.id!
     this.currentUserId = options.currentUserId?.trim() || 'local-user'
     this.permissionAdminUserId = options.permissionAdminUserId?.trim() || this.currentUserId
+    this.sheetTextMeasure = options.sheetTextMeasure ?? measureSpreadsheetText
     this.workbooks.set(workbook.id!, workbook)
     this.workbookRevisions.set(workbook.id!, 0)
     this.ownsComputeClient = options.computeClient === undefined
@@ -120,14 +150,9 @@ export class OfficeStudio {
     this.editor.document.replace(document)
     this.editor.setActiveKind('workbook')
     this.editor.history.activate(workbook.id!)
-    this.selection = {
-      startRow: 0,
-      startColumn: 0,
-      endRow: 0,
-      endColumn: 0,
-      sheetId: workbook.activeSheetId,
-      unitId: workbook.id!,
-    }
+    this.sheetSelections.set(workbook.id!, workbook.activeSheetId,
+      this.selectionStateForSheet(workbook, workbook.activeSheetId,
+        normalizeSheetSelection([{ startRow: 0, startCol: 0, endRow: 0, endCol: 0 }], requireSheet(workbook, workbook.activeSheetId))))
     this.registerBuiltinCommands()
     this.stopModelSync.push(
       watch(() => this.editor.workbook.model, (next, previous) => {
@@ -139,12 +164,13 @@ export class OfficeStudio {
           this._activeWorkbookId = id
           this.workbooks.set(id, next)
           this.advanceWorkbookRevision(id)
-          this.selection = { startRow: 0, startColumn: 0, endRow: 0, endColumn: 0, sheetId: next.activeSheetId, unitId: id }
           if (created) this.events.emit('WorkbookCreated', { workbookId: id })
         } else {
           this.workbooks.set(id, next)
-          if (!equivalentModelData(next, previous, ['modified', 'activeSheetId'])) this.advanceWorkbookRevision(id)
+          if (previous.id === id && !equivalentModelData(next, previous, ['modified', 'activeSheetId'])) this.advanceWorkbookRevision(id)
         }
+        this.reconcileWorkbookSelections(id, next)
+        if (!this.workbookSelectionPublicationDepth) this.publishSheetSelection(id, next.activeSheetId)
       }, { flush: 'sync' }),
       watch(() => this.editor.document.model, (next, previous) => {
         const id = next.id
@@ -234,9 +260,13 @@ export class OfficeStudio {
     if (this._activeWorkbookId !== id && this.workbooks.has(this._activeWorkbookId)) this.workbooks.set(this._activeWorkbookId, this.editor.workbook.model)
     this._activeWorkbookId = id
     this.workbooks.set(id, model)
-    this.editor.workbook.replace({ ...model, modified: this.editor.history.isDirty(id) })
+    const modified = this.editor.history.isDirty(id)
+    if (this.editor.workbook.model !== model || model.modified !== modified) {
+      this.replaceWorkbookModel(id, { ...model, modified }, false)
+    }
     this.editor.setActiveKind('workbook')
     this.editor.history.activate(id)
+    this.publishSheetSelection(id, model.activeSheetId)
   }
 
   activateDocument(id: string): void {
@@ -255,6 +285,7 @@ export class OfficeStudio {
     this.assertAlive()
     this.editor.setActiveKind(kind)
     this.editor.history.activate(kind === 'workbook' ? this._activeWorkbookId : this._activeDocumentId)
+    if (kind === 'workbook') this.publishSheetSelection(this._activeWorkbookId, this.editor.workbook.model.activeSheetId)
   }
 
   getWorkbook(id: string): WorkbookModel | undefined {
@@ -266,32 +297,98 @@ export class OfficeStudio {
   }
 
   getSelection(): ApiRange | null {
-    return this.selection ? { ...this.selection } : null
+    const selection = this.getSelectionState()
+    return selection?.ranges[selection.activeRangeIndex] ?? null
+  }
+
+  getSelectionState(unitId = this._activeWorkbookId, sheetId?: string): ApiSheetSelection | null {
+    const workbook = this.getWorkbookModel(unitId), sheet = workbook?.sheets.find(item => item.id === (sheetId ?? workbook.activeSheetId))
+    if (!sheet || !canViewWorksheetProtection(sheet, this.currentUserId)) return null
+    const saved = this.sheetSelections.get(unitId, sheet.id)
+    const state = this.selectionStateForSheet(workbook!, sheet.id,
+      saved ?? normalizeSheetSelection([{ startRow: 0, startCol: 0, endRow: 0, endCol: 0 }], sheet))
+    return this.apiSheetSelection(unitId, sheet.id, state)
+  }
+
+  getSelections(unitId = this._activeWorkbookId, sheetId?: string): ApiRange[] {
+    return this.getSelectionState(unitId, sheetId)?.ranges ?? []
+  }
+
+  private commandSelectionRanges(unitId: string, sheetId: string): CellRange[] {
+    const active = this.getSelection()
+    return active?.unitId === unitId && active.sheetId === sheetId ? this.getSelections().map(range => ({
+      startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn,
+    })) : []
+  }
+
+  getSheetBorderFormatState(unitId: string, sheetId: string): SheetBorderFormatState {
+    this.assertCanViewWorksheet(unitId, sheetId)
+    return { ...(this.borderFormatStates.get(unitId)?.get(sheetId) ?? createSheetBorderFormatState()) }
   }
 
   setSelection(unitId: string, sheetId: string, range: ApiRange): void {
+    this.setSelections(unitId, sheetId, [range])
+  }
+
+  setSelections(unitId: string, sheetId: string, ranges: readonly ApiRange[], options: SheetSelectionOptions = {}): void {
     this.assertAlive()
     const workbook = this.getWorkbookModel(unitId)
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
     if (!workbook.sheets.some((sheet) => sheet.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
     this.assertCanViewWorksheet(unitId, sheetId)
-    const next: ApiRange = {
-      startRow: range.startRow,
-      startColumn: range.startColumn,
-      endRow: range.endRow,
-      endColumn: range.endColumn,
-      sheetId,
-      unitId,
+    if (!Array.isArray(ranges)) throw new TypeError('选区必须是范围数组。')
+    for (const range of ranges) if (!range || range.unitId !== undefined && range.unitId !== unitId || range.sheetId !== undefined && range.sheetId !== sheetId) {
+      throw new Error('选区必须属于指定的工作簿和工作表。')
     }
-    this.selection = next
-    this.activateWorkbook(unitId)
+    const requested = normalizeSheetSelection(ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+      startCol: range.startColumn, endCol: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })), requireSheet(workbook, sheetId), options)
+    const next = this.selectionStateForSheet(workbook, sheetId, requested)
+    const switched = unitId !== this._activeWorkbookId || workbook.activeSheetId !== sheetId || this.editor.state.activeKind !== 'workbook'
+    // Complete the model operation's validation before publishing any selection state.
+    if (workbook.activeSheetId !== sheetId) {
+      this.workbookSelectionPublicationDepth++
+      try { this.applyWorkbookOperation(unitId, draft => { draft.activeSheetId = sheetId }) }
+      finally { this.workbookSelectionPublicationDepth-- }
+    }
+    const changed = this.sheetSelections.set(unitId, sheetId, next)
+    if (switched) this.activateWorkbook(unitId)
+    else if (changed) this.publishSheetSelection(unitId, sheetId)
+  }
+
+  private selectionStateForSheet(workbook: WorkbookModel, sheetId: string, state: SheetSelectionState): SheetSelectionState {
+    const sheet = requireSheet(workbook, sheetId)
+    const filtered = (workbook.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])
+    return resolveVisibleSheetSelection(state, { ...sheet, rowCount: sheet.rowCount ?? 1_048_576, columnCount: sheet.columnCount ?? 16_384,
+      filteredRows: sheet.autoFilter?.filteredRows }, filtered)
+  }
+
+  private reconcileWorkbookSelections(unitId: string, workbook: WorkbookModel): void {
+    this.sheetSelections.retainSheets(unitId, workbook.sheets.map(sheet => sheet.id))
+    for (const sheet of workbook.sheets) {
+      const saved = this.sheetSelections.get(unitId, sheet.id)
+      if (saved) this.sheetSelections.set(unitId, sheet.id, this.selectionStateForSheet(workbook, sheet.id, saved))
+    }
+  }
+
+  private apiSheetSelection(unitId: string, sheetId: string, state: SheetSelectionState): ApiSheetSelection {
+    return { ranges: state.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol,
+      unitId, sheetId, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })), activeRangeIndex: state.activeRangeIndex,
+      ...(state.primary ? { primary: { ...state.primary } } : {}) }
+  }
+
+  private publishSheetSelection(unitId: string, sheetId: string): void {
+    const selection = this.getSelectionState(unitId, sheetId)
+    const range = selection?.ranges[selection.activeRangeIndex]
     this.editor.setSelection({
-      startRow: next.startRow,
-      startCol: next.startColumn,
-      endRow: next.endRow,
-      endCol: next.endColumn,
+      startRow: range?.startRow ?? 0,
+      startCol: range?.startColumn ?? 0,
+      endRow: range?.endRow ?? 0,
+      endCol: range?.endColumn ?? 0,
     })
-    this.events.emit('SelectionChanged', { workbookId: unitId, sheetId, range: { ...next } })
+    if (!selection) return
+    const publication = ++this.selectionPublication, legacyRange = range ? { ...range } : undefined
+    this.events.emit('SelectionsChanged', { workbookId: unitId, sheetId, selection })
+    if (legacyRange && publication === this.selectionPublication) this.events.emit('SelectionChanged', { workbookId: unitId, sheetId, range: legacyRange })
   }
 
   mutateWorkbook(
@@ -338,7 +435,7 @@ export class OfficeStudio {
     return changed
   }
 
-  commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, options: boolean | { recalculate?: boolean } = false): boolean {
+  commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, options: boolean | WorkbookCommitOptions = false): boolean {
     this.assertAlive()
     const current = this.getWorkbookModel(id)
     if (!current) throw new Error(`Workbook not found: ${id}`)
@@ -346,20 +443,51 @@ export class OfficeStudio {
     const after = cloneModel(current)
     update(after)
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
+    const explicitRecalculate = typeof options === 'boolean' ? options : options.recalculate === true
+    if (!explicitRecalculate && JSON.stringify(before) === JSON.stringify(after)) return false
     const automatic = before.calculationMode !== 'manual' || after.calculationMode !== 'manual'
     const shouldRecalculate = typeof options === 'boolean' ? options || automatic : options.recalculate ?? automatic
     const recalculated = shouldRecalculate
       ? recalculateWorkbookFormulas(after, before, { numberFormatLocale: this.regionalSettings.region.value }).workbook
       : after
     for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
+    refreshWorkbookAutoRowHeights(recalculated, before, { measure: this.sheetTextMeasure, region: this.regionalSettings.region.value })
     recalculated.id = id
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
     recalculated.modified = true
+    const single = typeof options === 'boolean' ? undefined : options.selection
+    const historySelection = typeof options === 'boolean' ? undefined : options.selections ?? (single ? { sheetId: single.sheetId,
+      before: { ranges: single.before ? [{ ...single.before }] : [], activeRangeIndex: single.before ? 0 : -1 },
+      after: { ranges: [{ ...single.after }], activeRangeIndex: 0 } } : undefined)
+    const selectionSnapshot = historySelection ? cloneModel(historySelection) : undefined
+    if (selectionSnapshot) {
+      for (const [model, state] of [[before, selectionSnapshot.before], [recalculated, selectionSnapshot.after]] as const) {
+        for (const range of state.ranges) if (range.unitId !== undefined && range.unitId !== id || range.sheetId !== undefined && range.sheetId !== selectionSnapshot.sheetId) {
+          throw new Error('历史选区必须属于目标工作簿和工作表。')
+        }
+        normalizeSheetSelection(state.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn,
+          ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })), requireSheet(model, selectionSnapshot.sheetId), state)
+      }
+    }
+    const restoreSelection = (state: ApiSheetSelection): void => {
+      const model = this.getWorkbookModel(id)
+      if (selectionSnapshot && model?.sheets.some(sheet => sheet.id === selectionSnapshot.sheetId)) {
+        const normalized = normalizeSheetSelection(state.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+          startCol: range.startColumn, endCol: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })),
+          requireSheet(model, selectionSnapshot.sheetId), state)
+        this.sheetSelections.set(id, selectionSnapshot.sheetId, this.selectionStateForSheet(model, selectionSnapshot.sheetId, normalized))
+      }
+      if (id === this._activeWorkbookId && model) this.publishSheetSelection(id, model.activeSheetId)
+    }
     let initial = true
     this.editor.history.execute(id, label, () => {
-      if (initial) { this.replaceWorkbookModel(id, recalculated); initial = false }
-      else this.replaceWorkbookHistorySnapshot(id, recalculated)
-    }, () => this.replaceWorkbookHistorySnapshot(id, before))
+      if (initial) { this.replaceWorkbookModel(id, recalculated, !selectionSnapshot); initial = false }
+      else this.replaceWorkbookHistorySnapshot(id, recalculated, !selectionSnapshot)
+      if (selectionSnapshot) restoreSelection(selectionSnapshot.after)
+    }, () => {
+      this.replaceWorkbookHistorySnapshot(id, before, !selectionSnapshot)
+      if (selectionSnapshot) restoreSelection(selectionSnapshot.before)
+    })
     return true
   }
 
@@ -489,8 +617,10 @@ export class OfficeStudio {
   disposeUnit(id: string): boolean {
     this.assertAlive()
     if (this.workbooks.has(id)) {
+      this.sheetSelections.removeUnit(id)
       this.computeClient.forgetDocument(id)
       this.workbookRevisions.delete(id)
+      this.borderFormatStates.delete(id)
       this.workbooks.delete(id)
       this.editor.history.clear(id)
       this.events.emit('WorkbookDisposed', { workbookId: id })
@@ -523,13 +653,23 @@ export class OfficeStudio {
     this.events.clear()
     this.commands.clear()
     this.workbooks.clear()
+    this.borderFormatStates.clear()
+    this.sheetSelections.clear()
+    this.sheetSelections.$dispose()
     this.documents.clear()
   }
 
-  private replaceWorkbookModel(id: string, model: WorkbookModel): void {
+  private replaceWorkbookModel(id: string, model: WorkbookModel, publishSelection = true): void {
     this.workbooks.set(id, model)
-    if (id === this._activeWorkbookId) this.editor.workbook.replace(model)
-    else this.advanceWorkbookRevision(id)
+    if (id === this._activeWorkbookId) {
+      this.workbookSelectionPublicationDepth++
+      try { this.editor.workbook.replace(model) }
+      finally { this.workbookSelectionPublicationDepth-- }
+      if (publishSelection && !this.workbookSelectionPublicationDepth) this.publishSheetSelection(id, model.activeSheetId)
+    } else {
+      this.advanceWorkbookRevision(id)
+      this.reconcileWorkbookSelections(id, model)
+    }
   }
 
   private applyWorkbookOperation(id: string, update: (draft: WorkbookModel) => void): boolean {
@@ -547,11 +687,11 @@ export class OfficeStudio {
     return true
   }
 
-  private replaceWorkbookHistorySnapshot(id: string, snapshot: WorkbookModel): void {
+  private replaceWorkbookHistorySnapshot(id: string, snapshot: WorkbookModel, publishSelection = true): void {
     const current = this.getWorkbookModel(id)
     const next = cloneModel(snapshot)
     if (current && next.sheets.some((sheet) => sheet.id === current.activeSheetId)) next.activeSheetId = current.activeSheetId
-    this.replaceWorkbookModel(id, next)
+    this.replaceWorkbookModel(id, next, publishSelection)
   }
 
   private advanceWorkbookRevision(id: string): void {
@@ -576,6 +716,63 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    registerSheetRangeEditorCommands(this)
+    registerSheetAxisDimensionCommands(this)
+    this.stopModelSync.push(registerSheetAxisVisibilityCommands(this).dispose)
+    this.stopModelSync.push(registerSheetAxisStructureCommands(this).dispose)
+    this.stopModelSync.push(registerSheetConditionalFormattingCommands(this).dispose)
+    this.stopModelSync.push(registerSheetFormatPainterCommands(this).dispose)
+    for (const id of SHEET_BORDER_FORMAT_COMMAND_IDS) {
+      this.registerCommand<SheetBorderFormatCommandInput | string | number | undefined, boolean>(id, params => {
+        const input = sheetBorderFormatCommandInput(params)
+        const unitId = input.unitId ?? this.activeWorkbookId
+        const workbook = this.getWorkbookModel(unitId)
+        if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+        const selected = this.getSelection()
+        const sheetId = input.sheetId ?? input.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
+        const ranges = sheetBorderFormatInputRanges(input) ?? this.commandSelectionRanges(unitId, sheetId)
+        if (!ranges.length) return false
+        this.assertCanEditWorksheet(unitId, sheetId)
+        for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
+        const previousState = this.getSheetBorderFormatState(unitId, sheetId)
+        const action = borderFormatActionForCommand(id, input, previousState)
+        if (!action) return false
+        if (action.apply) this.commitWorkbook(unitId, action.state.type === 'none' ? '清除边框' : '设置边框', model => {
+          applySheetBorderFormatCommand(requireSheet(model, sheetId), ranges, action, this.currentUserId)
+        }, { recalculate: false })
+        let states = this.borderFormatStates.get(unitId)
+        if (!states) { states = new Map(); this.borderFormatStates.set(unitId, states) }
+        states.set(sheetId, { ...action.state })
+        if (action.state.type !== previousState.type || action.state.style !== previousState.style || action.state.color !== previousState.color || action.state.active !== previousState.active) {
+          this.events.emit('SheetBorderFormatStateChanged', { workbookId: unitId, sheetId, state: { ...action.state } })
+        }
+        // The fixed border command reports accepted redundant mutations; history remains unchanged.
+        return action.apply
+      })
+    }
+    for (const id of SHEET_LAYOUT_FORMAT_COMMAND_IDS) {
+      this.registerCommand<SheetLayoutFormatCommandInput | undefined, boolean>(id, input => {
+        const action = layoutFormatActionForCommand(id, input)
+        if (!action) return false
+        const unitId = input?.unitId ?? this.activeWorkbookId
+        const workbook = this.getWorkbookModel(unitId)
+        if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+        const selected = this.getSelection()
+        const sheetId = input?.sheetId ?? input?.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
+        const ranges = sheetLayoutFormatInputRanges(input) ?? this.commandSelectionRanges(unitId, sheetId)
+        if (!ranges.length) return false
+        assertSheetLayoutFormatRanges(ranges)
+        this.assertCanEditWorksheet(unitId, sheetId)
+        for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
+        const label = action.kind === 'horizontal' ? '设置水平对齐' : action.kind === 'vertical' ? '设置垂直对齐'
+          : action.kind === 'rotation' ? '设置文字方向' : action.kind === 'shrink' ? '设置缩小字体填充' : '设置文本换行'
+        return this.commitWorkbook(unitId, label, model => {
+          const sheet = requireSheet(model, sheetId)
+          const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])]
+          applySheetLayoutFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows)
+        }, { recalculate: false })
+      })
+    }
     for (const id of [...Object.values(SHEET_NUMBER_FORMAT_COMMANDS), ...Object.values(SHEET_NUMBER_FORMAT_ALIASES)]) {
       this.registerCommand<SheetNumberFormatCommandInput | undefined, boolean>(id, input => {
         const action = numberFormatActionForCommand(id, input, this.regionalSettings.region.value)
@@ -585,9 +782,7 @@ export class OfficeStudio {
         if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
         const selected = this.getSelection()
         const sheetId = input?.sheetId ?? input?.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
-        const ranges = input?.ranges ?? (selected?.unitId === unitId && selected.sheetId === sheetId ? [{
-          startRow: selected.startRow, endRow: selected.endRow, startCol: selected.startColumn, endCol: selected.endColumn,
-        }] : [])
+        const ranges = input?.ranges ?? this.commandSelectionRanges(unitId, sheetId)
         const label = action.kind === 'decimals' ? action.delta === 1 ? '增加小数位' : '减少小数位' : '设置数字格式'
         return this.commitWorkbook(unitId, label, model => {
           applySheetNumberFormatCommand(requireSheet(model, sheetId), ranges, action, this.regionalSettings.region.value, model.date1904, this.currentUserId)
@@ -607,15 +802,31 @@ export class OfficeStudio {
         if (outline) sheet.outline = outline
       }),
     )
-    for (const id of [RESET_TEXT_COLOR, RESET_BACKGROUND_COLOR] as const) {
-      this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[] }, boolean>(id, ({ unitId, sheetId, ranges }) => {
+    for (const id of SHEET_FONT_FORMAT_COMMAND_IDS) {
+      this.registerCommand<SheetFontFormatCommandParams, boolean>(id, params => {
+        const input = sheetFontFormatCommandInput(params)
+        const action = fontFormatActionForCommand(id, input)
+        if (!action) return false
+        const unitId = input?.unitId ?? this.activeWorkbookId
+        const workbook = this.getWorkbookModel(unitId)
+        if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+        const selected = this.getSelection()
+        const sheetId = input?.sheetId ?? input?.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
+        const ranges = sheetFontFormatInputRanges(input) ?? this.commandSelectionRanges(unitId, sheetId)
         if (!ranges.length) return false
+        assertSheetFontFormatRanges(ranges)
         this.assertCanEditWorksheet(unitId, sheetId)
-        for (const r of ranges) {
-          if (![r.startRow, r.startCol, r.endRow, r.endCol].every(Number.isSafeInteger) || r.startRow < 0 || r.startCol < 0 || r.endRow < r.startRow || r.endCol < r.startCol || r.endRow >= 1_048_576 || r.endCol >= 16_384) throw new RangeError('Invalid cell color range')
-          this.assertCanEditRange(unitId, sheetId, r)
-        }
-        return this.commitWorkbook(unitId, id === RESET_TEXT_COLOR ? '重置文字颜色' : '清除填充颜色', model => resetSheetColors(requireSheet(model, sheetId), ranges, id), { recalculate: false })
+        for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
+        const label = action.kind === 'mark' ? `设置${{ bold: '粗体', italic: '斜体', underline: '下划线', strike: '删除线' }[action.field]}`
+          : action.kind === 'family' ? action.value === null ? '重置字体' : '设置字体'
+            : action.kind === 'size' ? action.value === null ? '重置字号' : '设置字号'
+              : action.kind === 'size-step' ? action.direction === 1 ? '增大字号' : '减小字号'
+                : action.field === 'color' ? action.value === null ? '重置文字颜色' : '设置文字颜色' : action.value === null ? '清除填充颜色' : '设置填充颜色'
+        return this.commitWorkbook(unitId, label, model => {
+          const sheet = requireSheet(model, sheetId)
+          const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])]
+          applySheetFontFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, input.primary)
+        }, { recalculate: false })
       })
     }
     this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number; draft: SheetHyperlinkDraft }, boolean>(SET_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col, draft }) => this.commitWorkbook(unitId, '设置单元格超链接', (model) => {

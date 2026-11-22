@@ -12,27 +12,33 @@ const XML_ELEMENT_LIMIT: usize = 262_144;
 #[path = "document_numbering_extension.rs"]
 mod numbering_extension;
 pub(crate) use numbering_extension::{NumberingRestoration, restore_numbering_with_extensions, restore_numbering_details};
+#[path = "document_comment_sidecar.rs"]
+mod comments;
+pub(crate) use comments::restore_sdt_comment_targets;
+#[path = "document_default_style.rs"]
+mod default_style;
+pub(crate) use default_style::{canonical_resource, read_document_default_style, read_document_style_sheet};
 
 #[derive(Default)]
-struct Element {
-    name: String,
-    qualified_name: String,
-    attributes: HashMap<String, String>,
-    namespaces: HashMap<String, String>,
-    text: String,
-    children: Vec<Element>,
-    start: usize,
-    end: usize,
+pub(crate) struct Element {
+    pub(crate) name: String,
+    pub(crate) qualified_name: String,
+    pub(crate) attributes: HashMap<String, String>,
+    pub(crate) namespaces: HashMap<String, String>,
+    pub(crate) text: String,
+    pub(crate) children: Vec<Element>,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 impl Element {
-    fn child(&self, name: &str) -> Option<&Self> { self.children.iter().find(|child| child.name == name) }
-    fn attribute(&self, name: &str) -> Option<&str> { self.attributes.get(name).map(String::as_str) }
+    pub(crate) fn child(&self, name: &str) -> Option<&Self> { self.children.iter().find(|child| child.name == name) }
+    pub(crate) fn attribute(&self, name: &str) -> Option<&str> { self.attributes.get(name).map(String::as_str) }
     fn integer(&self, name: &str) -> Option<i64> { self.attribute(name)?.parse().ok() }
     fn on_off(&self) -> bool { !matches!(self.attribute("val"), Some("0" | "false" | "off")) }
 }
 
-fn parse_xml(xml: &str) -> Result<Element, String> {
+pub(crate) fn parse_xml(xml: &str) -> Result<Element, String> {
     if xml.len() as u64 > XML_LIMIT { return Err("Office XML exceeds the 16 MiB limit.".into()); }
     let mut reader = Reader::from_str(xml);
     let mut stack: Vec<Element> = Vec::new();
@@ -87,7 +93,7 @@ fn parse_xml(xml: &str) -> Result<Element, String> {
     }
 }
 
-fn read_xml(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str) -> Result<Option<String>, String> {
+pub(crate) fn read_xml(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str) -> Result<Option<String>, String> {
     let entry = match archive.by_name(part.trim_start_matches('/')) {
         Ok(entry) => entry,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
@@ -106,6 +112,61 @@ fn part_for_type(archive: &mut ZipArchive<Cursor<&[u8]>>, suffix: &str, fallback
     Ok(root.children.iter().find(|node| node.name == "Override" && node.attribute("ContentType").is_some_and(|kind| kind.ends_with(suffix)))
         .and_then(|node| node.attribute("PartName")).map(|part| part.trim_start_matches('/').to_owned())
         .unwrap_or_else(|| fallback.to_owned()))
+}
+
+fn related_part(archive: &mut ZipArchive<Cursor<&[u8]>>, owner: &str, kind: &str) -> Result<Option<String>, String> {
+    let (directory, file) = owner.rsplit_once('/').unwrap_or(("", owner));
+    let relationships = if directory.is_empty() { format!("_rels/{file}.rels") } else { format!("{directory}/_rels/{file}.rels") };
+    let Some(text) = read_xml(archive, &relationships)? else { return Ok(None); };
+    let root = parse_xml(&text)?;
+    let Some(relationship) = root.children.iter().find(|node| node.name == "Relationship" && node.attribute("Type").is_some_and(|value| value.rsplit('/').next() == Some(kind)) && node.attribute("TargetMode") != Some("External")) else { return Ok(None); };
+    let target = relationship.attribute("Target").ok_or("Office source relationship has no target.")?;
+    if target.contains(['\\', '\0', '?', '#']) || target.split('/').any(|component| component.contains(':')) { return Err("Office source relationship has an invalid package path.".into()); }
+    let path = if target.starts_with('/') || directory.is_empty() { target.trim_start_matches('/').to_owned() } else { format!("{directory}/{target}") };
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {},
+            ".." => { if components.pop().is_none() { return Err("Office source relationship escapes the package root.".into()); } },
+            component => components.push(component),
+        }
+    }
+    Ok(Some(components.join("/")))
+}
+
+pub(crate) fn read_office_source(archive: &mut ZipArchive<Cursor<&[u8]>>) -> (Option<crate::model::DocumentOfficeSourcePayload>, Vec<String>) {
+    use crate::model::{DocumentOfficeSourcePayload, DocumentOfficeXmlPartPayload};
+    let mut warnings = Vec::new();
+    let main = match part_for_type(archive, ".document.main+xml", "word/document.xml") {
+        Ok(part) => part,
+        Err(error) => {
+            warnings.push(format!("DOCX source style resources could not be located: {error}"));
+            return (Some(DocumentOfficeSourcePayload { version: 1, styles: None, theme: None, resource_errors: warnings.clone() }), warnings);
+        },
+    };
+    let mut read = |kind: &str, suffix: &str, fallback: &str| {
+        let read_part = (|| {
+            let related = related_part(archive, &main, kind)?;
+            let declared = if related.is_none() {
+                read_xml(archive, "[Content_Types].xml")?.map(|xml| parse_xml(&xml)).transpose()?
+                    .and_then(|root| root.children.into_iter().find(|node| node.name == "Override" && node.attribute("ContentType").is_some_and(|value| value.ends_with(suffix)))
+                        .and_then(|node| node.attribute("PartName").map(|part| part.trim_start_matches('/').to_owned())))
+            } else { None };
+            let required = related.is_some() || declared.is_some();
+            let part_name = related.or(declared).unwrap_or_else(|| fallback.to_owned());
+            let xml = read_xml(archive, &part_name)?;
+            if required && xml.is_none() { return Err(format!("Declared Office resource {part_name:?} is missing.")); }
+            Ok(xml.map(|xml| DocumentOfficeXmlPartPayload { part_name, xml }))
+        })();
+        match read_part {
+            Ok(part) => part,
+            Err(error) => { warnings.push(format!("DOCX source {kind} resource could not be retained: {error}")); None },
+        }
+    };
+    let styles = read("styles", ".styles+xml", "word/styles.xml");
+    let theme = read("theme", ".theme+xml", "word/theme/theme1.xml");
+    let source = Some(DocumentOfficeSourcePayload { version: 1, styles, theme, resource_errors: warnings.clone() });
+    (source, warnings)
 }
 
 fn picture_dimension(style: &str, property: &str) -> Option<f64> {
@@ -234,6 +295,7 @@ struct ParagraphPatch {
     word_wrap: Option<bool>,
     text: String,
     automatic_ranges: Vec<(usize, usize)>,
+    no_shading_ranges: Vec<(usize, usize)>,
 }
 
 fn paragraph_patch(root: &Element) -> ParagraphPatch {
@@ -257,6 +319,9 @@ fn paragraph_patch(root: &Element) -> ParagraphPatch {
             if node.child("rPr").and_then(|run| run.child("color")).and_then(|color| color.attribute("val")) == Some("auto") && patch.text.len() > start {
                 patch.automatic_ranges.push((start, patch.text.len()));
             }
+            if node.child("rPr").and_then(|run| run.child("shd")).and_then(|shading| shading.attribute("val")) == Some("nil") && patch.text.len() > start {
+                patch.no_shading_ranges.push((start, patch.text.len()));
+            }
         } else { for child in &node.children { visit(child, patch); } }
     }
     visit(root, &mut result);
@@ -271,11 +336,11 @@ fn object_field<'a>(value: &'a mut Value, name: &str) -> &'a mut Value {
 }
 
 fn patch_paragraph(block: &mut DocumentBlock, patch: &ParagraphPatch, inherited_wrap: Option<bool>) -> bool {
-    if patch.word_wrap.is_none() && inherited_wrap.is_none() && patch.automatic_ranges.is_empty() { return true; }
+    if patch.word_wrap.is_none() && inherited_wrap.is_none() && patch.automatic_ranges.is_empty() && patch.no_shading_ranges.is_empty() { return true; }
     let mut details = block.details.to_json_value();
     if let Some(wrap) = patch.word_wrap.or(inherited_wrap) { object_field(&mut details, "style")["wordWrap"] = json!(wrap); }
     let mut restored = true;
-    if !patch.automatic_ranges.is_empty() {
+    if !patch.automatic_ranges.is_empty() || !patch.no_shading_ranges.is_empty() {
         if let Some(inlines) = details["inlines"].as_array_mut() {
             let visible = inlines.iter().filter_map(|inline| inline["text"].as_str()).collect::<String>();
             if visible == patch.text {
@@ -285,7 +350,7 @@ fn patch_paragraph(block: &mut DocumentBlock, patch: &ParagraphPatch, inherited_
                     let Some(text) = inline["text"].as_str() else { updated.push(inline.clone()); continue };
                     let end = byte_offset + text.len();
                     let mut boundaries = vec![byte_offset, end];
-                    for (start, finish) in &patch.automatic_ranges {
+                    for (start, finish) in patch.automatic_ranges.iter().chain(&patch.no_shading_ranges) {
                         if *start > byte_offset && *start < end { boundaries.push(*start); }
                         if *finish > byte_offset && *finish < end { boundaries.push(*finish); }
                     }
@@ -300,6 +365,11 @@ fn patch_paragraph(block: &mut DocumentBlock, patch: &ParagraphPatch, inherited_
                         value["start"] = json!(initial + text[..start].encode_utf16().count() as u64);
                         value["end"] = json!(initial + text[..finish].encode_utf16().count() as u64);
                         if patch.automatic_ranges.iter().any(|(start, finish)| pair[0] >= *start && pair[1] <= *finish) { object_field(&mut value, "style")["color"] = json!("auto"); }
+                        if patch.no_shading_ranges.iter().any(|(start, finish)| pair[0] >= *start && pair[1] <= *finish) {
+                            // Duke's inherited background cannot represent an
+                            // explicit w:shd nil. Remove it only on this range.
+                            object_field(&mut value, "style").as_object_mut().expect("style was initialized").remove("backgroundColor");
+                        }
                         updated.push(value);
                     }
                     if text.is_empty() { updated.push(inline.clone()); }
@@ -348,7 +418,7 @@ pub(crate) fn restore_paragraphs(document: &mut StructuredDocument, source: &Doc
                     match parse_xml(xml) {
                         Ok(root) => {
                             let style = source.style.as_ref().and_then(|style| style.style_id.as_deref()).unwrap_or("");
-                            if !patch_paragraph(block, &paragraph_patch(&root), wrap.resolve(style)) { warnings.push(format!("DOCX automatic text color could not be mapped safely for paragraph {}.", block.id)); }
+                            if !patch_paragraph(block, &paragraph_patch(&root), wrap.resolve(style)) { warnings.push(format!("DOCX automatic text color or explicit shading could not be mapped safely for paragraph {}.", block.id)); }
                         }
                         Err(error) => warnings.push(format!("DOCX paragraph properties could not be restored for {}: {error}", block.id)),
                     }
@@ -485,6 +555,27 @@ mod tests {
         }
         assert_eq!(details["retainedProperty"], "keep");
         assert_eq!(block.content, "A&😀B");
+    }
+
+    #[test]
+    fn explicit_nil_shading_splits_unicode_and_preserves_unselected_background_and_empty_entities() {
+        let root = parse_xml(r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>A</w:t></w:r><w:r><w:rPr><w:highlight w:val="none"/><w:shd w:val="nil"/></w:rPr><w:t>😀</w:t></w:r><w:r><w:t>B</w:t></w:r></w:p>"#).unwrap();
+        let mut block = paragraph("A😀B", json!([
+            { "type": "text", "text": "A😀B", "start": 0, "end": 4, "style": { "backgroundColor": "#ABCDEF", "highlight": "none", "bold": true }, "link": "https://example.test" },
+            { "type": "noteReference", "text": "", "start": 2, "end": 2, "noteReference": { "id": "note-1" } },
+        ]));
+        assert!(patch_paragraph(&mut block, &paragraph_patch(&root), None));
+        let details = block.details.to_json_value();
+        let inlines = details["inlines"].as_array().unwrap();
+        assert_eq!(inlines.len(), 4);
+        assert_eq!(inlines[0]["style"]["backgroundColor"], "#ABCDEF");
+        assert_eq!(inlines[1]["text"], "😀");
+        assert_eq!((inlines[1]["start"].as_u64(), inlines[1]["end"].as_u64()), (Some(1), Some(3)));
+        assert!(inlines[1]["style"].get("backgroundColor").is_none());
+        assert_eq!(inlines[2]["style"]["backgroundColor"], "#ABCDEF");
+        for inline in &inlines[..3] { assert_eq!(inline["style"]["bold"], true); assert_eq!(inline["link"], "https://example.test"); }
+        assert_eq!(inlines[3]["noteReference"]["id"], "note-1");
+        assert_eq!(details["retainedProperty"], "keep");
     }
 
     #[test]

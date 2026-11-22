@@ -27,6 +27,7 @@ export interface DocumentRibbonContext {
   fontList?: OfficeFontList
   painterActive?: boolean
   painterUnavailable?: boolean
+  clearFormatting?: { available: boolean; reason?: string }
   lastTextColor?: string
   lastHighlightColor?: string
   defaultTextColor?: string
@@ -117,7 +118,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         action('doc-undo', '撤销', Undo2, 'core.command.undo', undefined, { disabled: !context.canUndo, disabledReason: '没有可撤销的文档更改', shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1, iconSize: 18 } }),
         action('doc-redo', '重做', Redo2, 'core.command.redo', undefined, { disabled: !context.canRedo, disabledReason: '没有可重做的文档更改', shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
         action('doc-format-painter', tocLabel('items.sheet.operation.format-painter', '格式刷'), Brush, 'ui.operation.activate-format-painter', undefined, { subId: 'ui.operation.continuous-format-painter', activated: !!context.painterActive, disabled: !context.painterActive && context.painterUnavailable, gridLayout: { row: 1, column: 2, showLabel: false } }),
-        action('doc-clear-format', '清除格式', RemoveFormatting, 'ui.command.clear-formatting', undefined, { disabled: context.painterUnavailable, gridLayout: { row: 2, column: 2, showLabel: false } }),
+        action('doc-clear-format', '清除格式', RemoveFormatting, 'ui.command.clear-formatting', undefined, { disabled: context.clearFormatting ? !context.clearFormatting.available : context.painterUnavailable, disabledReason: context.clearFormatting?.reason, gridLayout: { row: 2, column: 2, showLabel: false } }),
         { ...action('doc-paste', '粘贴', ClipboardPaste, 'doc.command.paste-special', undefined, { disabled: context.editingDisabled, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'menu', children:
           DOCUMENT_PASTE_OPTIONS.map(({ value, label }) => action(`doc-paste-mode-${value}`, tocLabel(`doc.context.paste-special.${value}`, label), undefined, 'doc.command.paste-special', { value })) },
       ] },
@@ -407,6 +408,7 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
+  if (id === 'ui.command.clear-formatting' || id === 'doc.command.clear-formatting') return { id: 'doc.command.clear-formatting' }
   if (id === 'doc.command.change-paragraph-indent') {
     return record(params) && (params.direction === -1 || params.direction === 1) ? { id, direction: params.direction } : undefined
   }

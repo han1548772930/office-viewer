@@ -52,3 +52,24 @@ test('input geometry retains small zoomed cell sizes and rejects addresses outsi
   assert.equal(createCellEditorLayout(grid, 'U101', viewport), undefined)
   assert.equal(createCellEditorLayout(grid, 'not-a-cell', viewport), undefined)
 })
+
+test('multiline input grows below its cell and stays inside its scrollable pane', () => {
+  const grid = geometry({ freeze: { rows: 0, columns: 0 } })
+  const view = { ...viewport, scrollLeft: 0, scrollTop: 0, zoom: 1 }
+  const original = createCellEditorLayout(grid, 'B2', view)
+  const grown = createCellEditorLayout(grid, 'B2', view, { contentHeight: 85 })
+  assert.equal(grown.rect.height, 86)
+  assert.deepEqual(grown.fillHandle, original.fillHandle)
+  assert.equal(grown.rect.y, original.rect.y)
+  const limited = createCellEditorLayout(grid, 'B2', view, { contentHeight: 800 })
+  assert.equal(limited.rect.y + limited.rect.height, view.height)
+  assert.equal(createCellEditorLayout(grid, 'B2', view, { contentHeight: NaN }).rect.height, original.rect.height)
+})
+
+test('a frozen row multiline bridge remains clipped above the frozen boundary', () => {
+  const grid = geometry()
+  const grown = createCellEditorLayout(grid, 'A1', viewport, { contentHeight: 180 })
+  assert.equal(grown.rect.height, 37)
+  assert.equal(grown.clip.y + grown.clip.height, 62)
+  assert.equal(grown.clipPath, 'inset(0.5px 0.5px 0.5px 0.5px)')
+})

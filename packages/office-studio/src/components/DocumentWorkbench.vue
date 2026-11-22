@@ -52,7 +52,9 @@ import { documentPermissionTargetOptions } from '../features/document/permission
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
 import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
 import { createRibbonTranslator, provideWorkbenchRegionalSettings } from '../i18n/office-i18n'
-import { captureDocumentFormat, clearDocumentFormat, documentPainterTarget, type DocumentPainterFormat } from '../features/document/services/document-format-painter'
+import { captureDocumentFormat, documentPainterTarget, type DocumentPainterFormat } from '../features/document/services/document-format-painter'
+import { documentClearFormattingState, prepareDocumentStoryClearFormatting } from '../features/document/services/document-clear-formatting'
+import type { DocumentStoryRange } from '../features/document/model/document-story'
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
 const { locale: officeLocale, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.documentApi?.regionalSettings)
@@ -152,6 +154,8 @@ const selectedContentControl = computed(() => selectedContentControlId.value
 const pageSettingsOpen = ref(false)
 const headerFooterPanelOpen = ref(false)
 const storyLocation = ref<StoryLocation>()
+const storySelection = shallowRef({ start: 0, end: 0 })
+const storyComposing = ref(false)
 const previousStoryTab = ref('home')
 const storyPage = computed(() => storyLocation.value && layout.value.pageHeaderFooters[storyLocation.value.page])
 const headerFooterSectionId = computed(() => storyPage.value?.sectionId ?? sectionIdForBlock(model.value, selection.value.focus.blockId))
@@ -226,6 +230,10 @@ const previousTabBeforeToc = ref<string>()
 const canEditContextSelection = computed(() => resolveDocumentPermission(
   model.value.permissionRules ?? [], permissionContext.value, 'edit', permissionTargetsForSelection(model.value, selection.value),
 ).allowed)
+const currentStoryRange = computed<DocumentStoryRange | undefined>(() => storyLocation.value && storyKey.value
+  ? { sectionId: headerFooterSectionId.value, story: storyKey.value, ...storySelection.value } : undefined)
+const clearFormattingState = computed(() => storyComposing.value ? { available: false, reason: '请先完成当前输入法输入。' }
+  : documentClearFormattingState(model.value, selection.value, permissionContext.value, currentStoryRange.value))
 const canEditSelectedToc = computed(() => selectedTocId.value != null && resolveDocumentPermission(
   model.value.permissionRules ?? [], permissionContext.value, 'edit', permissionTargetsForSelection(model.value, selection.value),
 ).allowed)
@@ -320,6 +328,7 @@ const ribbonTabs = computed(() => {
     numbering: { canRestart: canRestartDocumentNumbering(model.value, selection.value, permissionContext.value), canContinue: canContinueDocumentNumbering(model.value, selection.value, permissionContext.value) },
     indentation: { canDecrease: canChangeDocumentParagraphIndent(model.value, selection.value, -1, permissionContext.value), canIncrease: canChangeDocumentParagraphIndent(model.value, selection.value, 1, permissionContext.value) },
     painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || !!storyLocation.value,
+    clearFormatting: clearFormattingState.value,
     mode: pageMode.value,
     editingDisabled: !canEditContextSelection.value || !!storyLocation.value,
     editingHeaderFooter: !!storyLocation.value,
@@ -423,13 +432,16 @@ function publish(next: DocumentModel) {
   emit('document-change', next)
 }
 function execute(command: DocumentCommand, restoreFocus = true) {
+  if (command.id === 'doc.command.clear-formatting' && !clearFormattingState.value.available) return false
   const documentApi = props.documentApi
   if (documentApi && documentApi.id !== model.value.id) { notify('文档切换尚未完成，请稍后重试。'); return }
-  const targets = 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(model.value, selection.value)
+  if (command.id === 'doc.command.clear-formatting' && !command.story && currentStoryRange.value) command = { ...command, story: currentStoryRange.value }
+  const targets = command.id === 'doc.command.clear-formatting' && command.story ? [{ scope: 'section' as const, id: command.story.sectionId }]
+    : 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(model.value, selection.value)
   if (command.id !== 'doc.command.set-document-permission-rules' && !canDocumentPermission('edit', targets)) return
   if (!documentApi && command.id === 'doc.command.insert-text') {
     const next = cloneDocument(model.value)
-    const codeSelection = editCodeBlockText(next, selection.value, { text: command.text })
+    const codeSelection = editCodeBlockText(next, selection.value, { text: command.text, marks: { ...pendingMarks.value, ...command.marks } })
     if (codeSelection) { selection.value = codeSelection; publish(next); return }
   } else if (!documentApi && command.id === 'doc.command.delete') {
     const next = cloneDocument(model.value)
@@ -443,6 +455,8 @@ function execute(command: DocumentCommand, restoreFocus = true) {
     return true
   }
   try {
+    const clearedStory = command.id === 'doc.command.clear-formatting' && command.story
+      ? prepareDocumentStoryClearFormatting(model.value, command.story, permissionContext.value)?.range : undefined
     const nextCommand = command.id === 'doc.command.insert-text' ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
     if (documentApi) {
       const result = documentApi.executeCommand(nextCommand, selection.value)
@@ -459,12 +473,19 @@ function execute(command: DocumentCommand, restoreFocus = true) {
       selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
       if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next)
     }
+    if (command.id === 'doc.command.clear-formatting') {
+      pendingMarks.value = {}; painter.value = undefined
+      if (clearedStory && clearedStory.sectionId === headerFooterSectionId.value && clearedStory.story === storyKey.value) {
+        storySelection.value = { start: clearedStory.start, end: clearedStory.end }
+        if (restoreFocus) canvasRef.value?.focusStory(clearedStory.start, clearedStory.end)
+      }
+    }
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     colorMemory.value = rememberDocumentColors(colorMemory.value, command)
-    if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
+    if (restoreFocus && !clearedStory) void nextTick(() => canvasRef.value?.focus())
     return true
   } catch (error) {
-    pendingMarks.value = {}
+    if (command.id !== 'doc.command.clear-formatting') pendingMarks.value = {}
     notify(error instanceof Error ? error.message : String(error))
     if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
   }
@@ -558,7 +579,7 @@ function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMo
   void nextTick(() => canvasRef.value?.focus())
 }
 function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
-  execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch }, false)
+  return execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch }, false)
 }
 function applyParagraphSettings(patch: Partial<DocumentParagraphStyle>) {
   execute({ id: 'doc.command.format-paragraph', patch }, false)
@@ -1037,12 +1058,18 @@ async function toggleFullscreen() {
   }
 }
 function notify(message: string) { notice.value = message; emit('notify', message) }
-const canEditStory = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'edit', [{ scope: 'section', id: headerFooterSectionId.value }]).allowed)
+const canEditStory = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'edit', [
+  { scope: 'section', id: headerFooterSectionId.value },
+  ...(storyKey.value ? [{ scope: 'entity' as const, id: `${headerFooterSectionId.value}:${storyKey.value}` }] : []),
+  ...(storyLocation.value ? [{ scope: 'entity' as const, id: `${headerFooterSectionId.value}:${storyLocation.value.area}` }] : []),
+]).allowed)
 function openStory(location: StoryLocation) {
   painter.value = undefined
   if (pageMode.value !== 'traditional' || !layout.value.pageHeaderFooters[location.page]) return
   clipboardRequest++
   if (!storyLocation.value) previousStoryTab.value = activeTab.value
+  if (storyLocation.value?.page !== location.page || storyLocation.value?.area !== location.area) storySelection.value = { start: 0, end: 0 }
+  pendingMarks.value = {}
   storyLocation.value = location
   activeTab.value = 'header-footer'
   void nextTick(() => canvasRef.value?.revealStory(location))
@@ -1053,13 +1080,15 @@ function closeStory(refocus = true) {
   if (activeTab.value === 'header-footer') activeTab.value = previousStoryTab.value
   if (refocus) void nextTick(() => canvasRef.value?.focus())
 }
-watch(activeTab, tab => { if (storyLocation.value && tab !== 'header-footer') closeStory(false) })
 watch([pageMode, () => model.value.id, storyPage], ([mode, id, page], [, oldId]) => {
   if (storyLocation.value && (mode !== 'traditional' || id !== oldId || !page)) closeStory(false)
 })
 function editStory(value: string, caret: number) {
-  if (!storyKey.value || storySection.value.linkToPrevious || !canEditStory.value || value === storyValue.value) return
-  applyHeaderFooter(editStoryBuffer(storySection.value, storyKey.value, value, caret))
+  if (!storyKey.value || value === storyValue.value) return
+  if (storySection.value.linkToPrevious || !canEditStory.value) { canvasRef.value?.focusStory(); return }
+  try { if (applyHeaderFooter(editStoryBuffer(storySection.value, storyKey.value, value, caret, model.value))) return }
+  catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+  canvasRef.value?.focusStory()
 }
 function handleStoryAction(raw: unknown) {
   const location = storyLocation.value, key = storyKey.value
@@ -1088,8 +1117,13 @@ function handleStoryAction(raw: unknown) {
       const date = action.action === 'insert-date-time' ? storyDateField(action.format, locale, now) : undefined
       const insert = action.action === 'insert-field' ? { field: action.field } : action.automatic ? date! : date!.cachedResult
       const { start, end } = canvasRef.value?.storyRange() ?? { start: 0, end: 0 }
-      applyHeaderFooter(replaceStoryRange(section, key, start, end, insert))
-      canvasRef.value?.focusStory(start + (typeof insert === 'string' ? insert.length : 1))
+      try {
+        if (applyHeaderFooter(replaceStoryRange(section, key, start, end, insert, model.value))) {
+          canvasRef.value?.focusStory(start + (typeof insert === 'string' ? insert.length : 1))
+          return
+        }
+      } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+      canvasRef.value?.focusStory(start, end)
       return
     }
   }
@@ -1110,7 +1144,6 @@ function applyPainter(format?: DocumentPainterFormat) {
 }
 function onRibbonExecute(id: string, params?: unknown) {
   if (id === 'ui.operation.activate-format-painter' || id === 'ui.operation.continuous-format-painter') { activatePainter(id === 'ui.operation.continuous-format-painter'); return }
-  if (id === 'ui.command.clear-formatting') { painter.value = undefined; applyPainter(clearDocumentFormat()); return }
   if (id === 'doc.operation.header-footer-control') { handleStoryAction(params); return }
   if (id === 'doc.operation.close-header-footer') { closeStory(); return }
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
@@ -1309,8 +1342,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
             @selection-committed="applyPainter(painter?.format)"
-            :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-readonly="!canEditStory || storySection.linkToPrevious"
-            @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+            :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="storySelection" :story-readonly="!canEditStory || storySection.linkToPrevious"
+            @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @update:story-selection="storySelection = $event" @story-composing="storyComposing = $event" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
         </SplitterPanel>
         <SplitterPanel :size="documentDockOpen ? documentDockWidth : 0" :min="documentDockOpen ? 280 : 0" :max="800" :resizable="documentDockOpen" :destroy-on-hidden="false">
           <aside v-if="paragraphSettingsPanelOpen" class="document-settings-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.paragraph-settings.title', 'Paragraph settings')">

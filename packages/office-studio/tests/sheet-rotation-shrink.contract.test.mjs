@@ -67,7 +67,7 @@ test('wrap and shrink-to-fit clear each other when enabled', () => {
   assert.equal(fitted.shrinkToFit, true)
 })
 
-test('sheet scene carries rotation and measured horizontal fit while preserving selected-cell paint', () => {
+test('sheet scene carries rotation and uniformly scaled fit while preserving selected-cell paint', () => {
   const geometry = new SpreadsheetGeometry({
     id: 's', name: 'Fit', cells: {
       A1: { value: 'Long worksheet heading', rotation: 45, shrinkToFit: true, underline: true },
@@ -83,8 +83,13 @@ test('sheet scene carries rotation and measured horizontal fit while preserving 
   const shortText = scene.commands.find(command => command.kind === 'text' && command.text === 'Short')
 
   assert.equal(longText.rotation, 45)
-  assert.equal(longText.maxWidth, 52)
-  assert.match(longText.font, /14\.666[\d]*px/)
+  assert.equal(longText.maxWidth, undefined)
+  const fittedSize = Number(/([\d.]+)px/.exec(longText.font)?.[1])
+  assert.ok(fittedSize > 0 && fittedSize < 11 * 4 / 3)
+  const radians = Math.PI / 4
+  const width = 'Long worksheet heading'.length * fittedSize * .75, height = fittedSize * 1.2
+  assert.ok(width * Math.cos(radians) + height * Math.sin(radians) <= 52 + 1e-8)
+  assert.ok(width * Math.sin(radians) + height * Math.cos(radians) <= 20 + 1e-8)
   assert.equal(shortText.maxWidth, undefined)
   assert.deepEqual(scene.commands.filter(command => command.kind === 'text' && command.clip?.y > 26 && ['中', '🙂', 'A'].includes(command.text)).map(command => command.text), ['中', '🙂', 'A'])
   assert.ok(scene.commands.some(command => command.kind === 'rect' && command.fill === 'rgba(36,107,253,0.09)'))

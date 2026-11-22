@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { normalizeWorkbook } from '../src/parser/workbookNormalizer.ts'
+import { createBlankWorkbook, createCell } from '../src/domain/model.ts'
+import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
+import { evaluateFormula } from '../src/features/formula/formula-engine.ts'
+import { conditionalFormatFormulaAt } from '../src/features/conditional-formatting/conditional-format-formulas.ts'
+import { conditionalFormatEditorFormula, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
+  prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../src/features/conditional-formatting/conditional-format-rule-editor.ts'
 import {
   addConditionalFormatRule,
   conditionalFormatStyleAt,
@@ -8,6 +14,7 @@ import {
   evaluateConditionalFormatRule,
   moveConditionalFormatRule,
   updateConditionalFormatRule,
+  validateConditionalFormatDraft,
 } from '../src/features/conditional-formatting/conditional-formatting.ts'
 import {
   createConditionalIconConfig,
@@ -210,4 +217,206 @@ test('formula rules return false when no formula evaluator is connected', () => 
   const formulaRule = { ...baseRule, type: 'expression', operator: undefined, formula1: '=A1>0' }
   assert.equal(evaluateConditionalFormatRule(formulaRule, 1), false)
   assert.equal(evaluateConditionalFormatRule(formulaRule, 1, [], formula => formula === '=A1>0'), true)
+})
+
+test('numeric operands evaluate actual formulas from their preserved origin and reject nonnumeric results', () => {
+  const workbook = createBlankWorkbook(), target = workbook.sheets[0]
+  target.cells['0:0'] = createCell(0, 0, 5)
+  target.cells['0:1'] = createCell(0, 1, 8)
+  target.cells['1:0'] = createCell(1, 0, 9)
+  const rule = { ...baseRule, ranges: [{ startRow: 0, startCol: 0, endRow: 3, endCol: 0 }], formulaAnchor: { row: 1, col: 0 }, formula1: '=A1', formula2: '=$B$1+1' }
+  const at = (formula, row) => evaluateFormula(conditionalFormatFormulaAt(formula, rule, row, 0), workbook, target.id, { formulaCell: { row, column: 0 } })
+  assert.equal(evaluateConditionalFormatRule(rule, 7, [], undefined, formula => at(formula, 0)), false)
+  assert.equal(evaluateConditionalFormatRule(rule, 7, [], undefined, formula => at(formula, 1)), true)
+  assert.equal(evaluateConditionalFormatRule(rule, 7, [], undefined, formula => at(formula, 2)), false)
+  for (const formula1 of ['=NA()', '="4"', '=TRUE', '=0x10']) {
+    assert.equal(evaluateConditionalFormatRule({ ...rule, operator: 'notEqual', formula1, formula2: undefined }, 7, [], undefined, formula => at(formula, 1)), false, formula1)
+  }
+})
+
+test('numeric drafts accept Office formula syntax and reject malformed or JavaScript-only number literals', () => {
+  const draft = { ranges: [{ startRow: 1, startCol: 0, endRow: 3, endCol: 0 }], operator: 'between', formula1: '=A1+$B$1', formula2: '=ROW()+10', style: { fill: '#123456' }, formulaAnchor: { row: 1, col: 0 } }
+  assert.doesNotThrow(() => validateConditionalFormatDraft(draft))
+  const created = addConditionalFormatRule(sheet, draft, 'formula-operands').conditionalFormats[0]
+  assert.equal(created.formula1, 'A1+$B$1')
+  assert.equal(created.formula2, 'ROW()+10')
+  assert.deepEqual(created.formulaAnchor, { row: 1, col: 0 })
+  for (const formula1 of ['', '=', 'SUM(', '0x10', '0b11', 'Infinity', '1e999']) assert.throws(() => validateConditionalFormatDraft({ ...draft, formula1 }), /finite number or valid formula/, formula1)
+  assert.throws(() => validateConditionalFormatDraft({ ...draft, formula2: '=SUM(' }), /second number or formula/)
+  assert.doesNotThrow(() => validateConditionalFormatDraft({ ...draft, formula1: '-1.2e3', formula2: '=25%' }))
+})
+
+test('editing numeric ranges preserves recoverable reference underflow and safely rebases later ranges', () => {
+  const original = { ...sheet, conditionalFormats: [{ ...baseRule, operator: 'greaterThan', formula1: 'A1', formula2: undefined, ranges: [{ startRow: 1, startCol: 0, endRow: 4, endCol: 0 }], metadata: { vendor: { keep: ['original'] } } }] }
+  const draft = { ranges: [{ startRow: 0, startCol: 0, endRow: 3, endCol: 0 }], operator: 'greaterThan', formula1: 'A1', style: { fill: '#334455' } }
+  const earlier = updateConditionalFormatRule(original, 'rule-a', draft).conditionalFormats[0]
+  assert.equal(earlier.formula1, 'A1')
+  assert.deepEqual(earlier.formulaAnchor, { row: 1, col: 0 })
+  assert.equal(conditionalFormatFormulaAt(earlier.formula1, earlier, 0, 0), '#REF!')
+  assert.equal(conditionalFormatFormulaAt(earlier.formula1, earlier, 1, 0), 'A1')
+  const later = updateConditionalFormatRule({ ...sheet, conditionalFormats: [earlier] }, 'rule-a', { ...draft, ranges: [{ startRow: 3, startCol: 0, endRow: 6, endCol: 0 }] }).conditionalFormats[0]
+  assert.equal(later.formula1, 'A3')
+  assert.equal(later.formulaAnchor, undefined)
+  later.metadata.vendor.keep.push('edited')
+  assert.deepEqual(original.conditionalFormats[0].metadata, { vendor: { keep: ['original'] } })
+})
+
+test('rule editor retains exact unedited formula text and normalizes only a changed expression', () => {
+  const imported = '=UNSUPPORTED([VendorColumn])'
+  assert.equal(conditionalFormatEditorFormula('UNSUPPORTED([VendorColumn])', imported), imported)
+  assert.equal(conditionalFormatEditorFormula('  =a1+$B$2  ', '=a1+$B$2'), '=a1+$B$2')
+  assert.equal(conditionalFormatEditorFormula('  =A1>8  ', '=A1>5'), 'A1>8')
+  assert.equal(conditionalFormatEditorFormula('  =ROW()+1  '), 'ROW()+1')
+})
+
+test('rule editor preserves compatible imported discriminators and changes incompatible text kinds', () => {
+  const original = { ...baseRule, type: 'highlightCell', subType: 'formula', formula1: '=A1>5' }
+  const edited = mergeConditionalFormatRuleDraft(original, { ...original, type: 'expression', style: { bold: true } })
+  assert.equal(edited.type, 'highlightCell'); assert.equal(edited.subType, 'formula')
+  const number = mergeConditionalFormatRuleDraft(baseRule, { ...baseRule, subType: 'number' })
+  assert.equal(number.subType, undefined)
+  const changedSubtype = mergeConditionalFormatRuleDraft({ ...baseRule, type: 'highlightCell', subType: 'number' }, { ...baseRule, type: 'highlightCell', subType: 'text' })
+  assert.equal(changedSubtype.subType, 'text')
+  const text = mergeConditionalFormatRuleDraft({ ...baseRule, type: 'beginsWith', formula1: 'A1' }, { ...baseRule, type: 'containsText', subType: 'text', operator: 'containsText', formula1: 'A1' })
+  assert.equal(text.type, 'containsText'); assert.equal(text.subType, 'text')
+})
+
+test('rule-list drafts retain untouched priority slots and deeply isolate prepend, removal, moves and no-ops', () => {
+  const first = { ...baseRule, priority: 4, formulaAnchor: { row: 1, col: 0 }, metadata: { keep: ['first'] }, config: { custom: { keep: ['first'] } } }
+  const second = { ...baseRule, id: 'second', priority: 9, metadata: { keep: ['second'] } }
+  const untouched = { ...baseRule, id: 'untouched', priority: 17, metadata: { keep: ['untouched'] } }
+  const original = [first, second, untouched], draft = { ...baseRule, id: 'new', priority: 99, metadata: { keep: ['new'] } }
+  const order = rules => rules.map(rule => [rule.id, rule.priority])
+  const added = prependConditionalFormatRuleDraft(original, draft)
+  assert.deepEqual(order(added), [['new', 4], ['rule-a', 4], ['second', 9], ['untouched', 17]])
+  assert.deepEqual(added.slice(1), original); assert.equal(draft.priority, 99)
+  assert.equal(prependConditionalFormatRuleDraft([], draft)[0].priority, 1)
+  const removed = removeConditionalFormatRuleDraft(original, 'rule-a')
+  assert.deepEqual(removed, [second, untouched])
+  const moved = moveConditionalFormatRuleDraft(original, 'rule-a', 1)
+  assert.deepEqual(order(moved), [['second', 4], ['rule-a', 9], ['untouched', 17]])
+  assert.deepEqual(moveConditionalFormatRuleDraft(moved, 'rule-a', -1), original)
+  const tied = moveConditionalFormatRuleDraft([first, { ...second, priority: 4 }, untouched], 'rule-a', 1)
+  assert.deepEqual(order(tied), [['second', 4], ['rule-a', 4], ['untouched', 17]])
+  const noOp = moveConditionalFormatRuleDraft(original, 'missing', 1)
+  assert.deepEqual(noOp, original)
+  assert.deepEqual(moveConditionalFormatRuleDraft(original, 'rule-a', -1), original)
+  assert.deepEqual(moveConditionalFormatRuleDraft(original, 'untouched', 1), original)
+  assert.deepEqual(removeConditionalFormatRuleDraft(original, 'missing'), original)
+  added[0].metadata.keep.push('added draft'); added[1].metadata.keep.push('added existing')
+  removed[0].metadata.keep.push('removed snapshot'); moved[1].formulaAnchor.row = 2
+  tied[2].metadata.keep.push('tied snapshot'); noOp[0].config.custom.keep.push('no-op snapshot')
+  assert.deepEqual(draft.metadata.keep, ['new']); assert.deepEqual(first.metadata.keep, ['first'])
+  assert.deepEqual(second.metadata.keep, ['second']); assert.deepEqual(untouched.metadata.keep, ['untouched'])
+  assert.deepEqual(first.formulaAnchor, { row: 1, col: 0 }); assert.deepEqual(first.config.custom.keep, ['first'])
+  assert.deepEqual(order(original), [['rule-a', 4], ['second', 9], ['untouched', 17]])
+})
+
+test('rule editor preserves unknown configuration, threshold and metadata fields while resetting known style fields', () => {
+  const previous = { ...baseRule, type: 'dataBar', formulaAnchor: { row: 1, col: 0 }, metadata: { vendor: { keep: ['source'] } }, config: {
+    custom: { formulaLikeData: 'A1', nested: ['source'] }, min: { type: 'num', value: 0, vendor: { keep: true } }, max: { type: 'num', value: 100 }, positiveColor: '#123456',
+  }, style: { fill: '#ff0000', bold: true, vendor: { retained: true } } }
+  const draft = { ...baseRule, type: 'dataBar', formulaAnchor: { row: 1, col: 0 }, formula2: undefined, style: { fill: undefined, bold: false }, config: { min: { type: 'formula', value: '=A1' }, max: { type: 'num', value: 80 }, positiveColor: '#334455' } }
+  const edited = mergeConditionalFormatRuleDraft(previous, draft)
+  assert.deepEqual(edited.style, { bold: false, vendor: { retained: true } })
+  assert.deepEqual(edited.config.min, { type: 'formula', value: '=A1', vendor: { keep: true } })
+  assert.equal(edited.formula2, undefined)
+  assert.deepEqual(edited.formulaAnchor, { row: 1, col: 0 })
+  assert.deepEqual(edited.config.custom, previous.config.custom)
+  edited.config.custom.nested.push('edit'); edited.metadata.vendor.keep.push('edit'); edited.config.min.vendor.keep = false
+  assert.deepEqual(previous.config.custom.nested, ['source'])
+  assert.deepEqual(previous.metadata.vendor.keep, ['source'])
+  assert.equal(previous.config.min.vendor.keep, true)
+})
+
+test('color-scale edits preserve each endpoint extension when toggling the middle stop and clear stale operand values', () => {
+  const previous = { ...baseRule, type: 'colorScale', config: { thresholds: [
+    { color: '#000000', value: { type: 'num', value: 0, vendor: 'minimum' }, vendor: { endpoint: 'minimum' } },
+    { color: '#888888', value: { type: 'num', value: 50, vendor: 'middle' }, vendor: { endpoint: 'middle' } },
+    { color: '#ffffff', value: { type: 'num', value: 100, vendor: 'maximum' }, vendor: { endpoint: 'maximum' } },
+  ] } }
+  const edited = mergeConditionalFormatRuleDraft(previous, { ...baseRule, type: 'colorScale', config: { thresholds: [
+    { color: '#112233', value: { type: 'min' } }, { color: '#aabbcc', value: { type: 'max' } },
+  ] } })
+  assert.deepEqual(edited.config.thresholds.map(stop => [stop.vendor.endpoint, stop.value.vendor, stop.value.type, stop.value.value]), [
+    ['minimum', 'minimum', 'min', undefined], ['maximum', 'maximum', 'max', undefined],
+  ])
+  assert.equal(previous.config.thresholds.length, 3)
+})
+
+test('rule priority and deletion snapshots isolate nested opaque configuration and formula origins', () => {
+  const first = { ...baseRule, formulaAnchor: { row: 1, col: 0 }, metadata: { source: ['kept'] }, config: { custom: { retained: true } } }
+  const second = { ...baseRule, id: 'second', priority: 2 }
+  const original = { ...sheet, conditionalFormats: [first, second] }
+  const moved = moveConditionalFormatRule(original, 'rule-a', 1)
+  moved.conditionalFormats[1].formulaAnchor.row = 2
+  moved.conditionalFormats[1].config.custom.retained = false
+  moved.conditionalFormats[1].metadata.source.push('changed')
+  assert.deepEqual(first.formulaAnchor, { row: 1, col: 0 })
+  assert.equal(first.config.custom.retained, true)
+  assert.deepEqual(first.metadata.source, ['kept'])
+  const deleted = deleteConditionalFormatRule(original, 'second')
+  deleted.conditionalFormats[0].metadata.source.push('deleted snapshot')
+  assert.deepEqual(first.metadata.source, ['kept'])
+})
+
+test('numeric rule validation rejects worksheet and origin overflow while accepting their exact upper limits', () => {
+  const draft = { ranges: [{ startRow: 1_048_575, startCol: 16_383, endRow: 1_048_575, endCol: 16_383 }], operator: 'equal', formula1: '=ROW()+COLUMN()', style: { bold: true }, formulaAnchor: { row: 1_048_575, col: 16_383 } }
+  assert.doesNotThrow(() => validateConditionalFormatDraft(draft))
+  assert.throws(() => validateConditionalFormatDraft({ ...draft, formulaAnchor: { row: 1_048_576, col: 0 } }), /origin is out of range/)
+  assert.throws(() => validateConditionalFormatDraft({ ...draft, formulaAnchor: { row: 0, col: -1 } }), /origin is out of range/)
+  assert.throws(() => validateConditionalFormatDraft({ ...draft, ranges: [{ ...draft.ranges[0], endCol: 16_384 }] }), /valid cell ranges/)
+})
+
+function conditionalEnvelope(rules) {
+  return { schemaVersion: 1, parserVersion: 'cf-extension-test', format: 'xlsx', fileName: 'extensions.xlsx', size: 10, model: 'spreadsheet',
+    payload: { modelType: 'spreadsheet', data: { sheets: [{ name: 'Data', cells: [], conditionalFormats: rules }] } },
+    diagnostics: { warnings: [], errors: [], stats: {}, capabilities: ['conditionalFormatting'] } }
+}
+
+test('conditional normalization deep-clones unknown root, style, visual stop and icon fields without changing the formula origin', () => {
+  const raw = { ...baseRule, type: 'colorScale', formulaAnchor: { row: 1, col: 0 }, value: [10, 20], vendor: { root: ['source'] },
+    style: { fill: '#112233', vendor: { style: ['source'] } }, metadata: { vendor: ['source'] }, config: {
+      custom: { config: ['source'] }, min: { type: 'formula', value: '=A1', vendor: { min: ['source'] } }, max: { type: 'max', vendor: { max: ['source'] } },
+      thresholds: [{ color: '#112233', value: { type: 'min', vendor: { value: ['source'] } }, vendor: { stop: ['source'] } },
+        { color: '#aabbcc', value: { type: 'max' } }], icons: [{ iconType: '3Arrows', iconId: '0', operator: 'greaterThan',
+        value: { type: 'formula', value: '=A1', vendor: { value: ['source'] } }, vendor: { icon: ['source'] } }],
+    } }
+  const normalized = normalizeWorkbook(conditionalEnvelope([raw])).sheets[0].conditionalFormats[0]
+  assert.deepEqual(normalized.formulaAnchor, raw.formulaAnchor); assert.deepEqual(normalized.vendor, raw.vendor)
+  assert.deepEqual(normalized.config.custom, raw.config.custom); assert.deepEqual(normalized.config.min.vendor, raw.config.min.vendor)
+  assert.deepEqual(normalized.config.thresholds[0].vendor, raw.config.thresholds[0].vendor)
+  assert.deepEqual(normalized.config.icons[0].vendor, raw.config.icons[0].vendor)
+  normalized.vendor.root.push('changed'); normalized.style.vendor.style.push('changed'); normalized.metadata.vendor.push('changed')
+  normalized.config.min.vendor.min.push('changed'); normalized.config.max.vendor.max.push('changed'); normalized.config.custom.config.push('changed')
+  normalized.config.thresholds[0].value.vendor.value.push('changed'); normalized.config.thresholds[0].vendor.stop.push('changed')
+  normalized.config.icons[0].value.vendor.value.push('changed'); normalized.config.icons[0].vendor.icon.push('changed'); normalized.value[0] = 99
+  assert.deepEqual(raw.vendor.root, ['source']); assert.deepEqual(raw.style.vendor.style, ['source']); assert.deepEqual(raw.metadata.vendor, ['source'])
+  assert.deepEqual(raw.config.min.vendor.min, ['source']); assert.deepEqual(raw.config.max.vendor.max, ['source'])
+  assert.deepEqual(raw.config.custom.config, ['source']); assert.deepEqual(raw.config.thresholds[0].vendor.stop, ['source'])
+  assert.deepEqual(raw.config.thresholds[0].value.vendor.value, ['source']); assert.deepEqual(raw.config.icons[0].vendor.icon, ['source'])
+  assert.deepEqual(raw.config.icons[0].value.vendor.value, ['source']); assert.deepEqual(raw.value, [10, 20])
+})
+
+test('conditional normalization rejects malformed or partly invalid ranges instead of changing the origin by filtering', () => {
+  const valid = { startRow: 0, startCol: 0, endRow: 4, endCol: 0 }, invalid = { ...valid, endRow: 1_048_576 }
+  for (const ranges of [null, [], [invalid], [invalid, valid], [valid, invalid], [{ ...valid, startCol: -1 }]]) {
+    assert.throws(() => normalizeWorkbook(conditionalEnvelope([{ ...baseRule, ranges }])), /范围无效/)
+  }
+  const upper = { startRow: 1_048_575, endRow: 1_048_575, startCol: 16_383, endCol: 16_383 }
+  assert.deepEqual(normalizeWorkbook(conditionalEnvelope([{ ...baseRule, ranges: [upper] }])).sheets[0].conditionalFormats[0].ranges, [upper])
+})
+
+test('conditional model/view adapters isolate opaque configuration even when a view omits the rule field', () => {
+  const workbook = createBlankWorkbook(), source = { ...baseRule, formulaAnchor: { row: 1, col: 0 }, vendor: { root: ['source'] },
+    style: { fill: '#112233', vendor: { style: ['source'] } }, config: { custom: { values: ['source'] } }, metadata: { vendor: ['source'] } }
+  workbook.sheets[0].conditionalFormats = [source]
+  const view = toExcelWorkbookView(workbook), restored = applyExcelWorkbookView(workbook, view)
+  view.sheets[0].conditionalFormats[0].config.custom.values.push('view')
+  restored.sheets[0].conditionalFormats[0].vendor.root.push('restored')
+  assert.deepEqual(source.config.custom.values, ['source']); assert.deepEqual(source.vendor.root, ['source'])
+  delete view.sheets[0].conditionalFormats
+  const retained = applyExcelWorkbookView(workbook, view).sheets[0].conditionalFormats[0]
+  retained.formulaAnchor.row = 99; retained.style.vendor.style.push('fallback'); retained.metadata.vendor.push('fallback')
+  assert.deepEqual(source.formulaAnchor, { row: 1, col: 0 }); assert.deepEqual(source.style.vendor.style, ['source']); assert.deepEqual(source.metadata.vendor, ['source'])
 })

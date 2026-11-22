@@ -3,6 +3,8 @@ import { classifySheetNumberFormat, formatSheetValue, isSheetTextNumberFormat, S
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
 import { inferSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText } from '../domain/sheet-cell-value.ts'
+import type { SheetAxisSpan } from '../domain/sheet-axis.ts'
+import { cloneModel } from '../domain/serialization.ts'
 
 export interface ExcelCellView {
   value: string
@@ -33,6 +35,11 @@ export interface ExcelCellView {
   shrinkToFit?: boolean
   hyperlink?: string | null
   sparkline?: SparklineSpec
+  richText?: ReadonlyArray<Record<string, unknown>> | null
+  /** Null explicitly clears preserved style metadata when formatting is reset. */
+  styleMetadata?: Record<string, unknown> | null
+  /** Preserved cell extensions also follow content when a merge moves its first non-empty cell. */
+  metadata?: Record<string, unknown> | null
 }
 export interface ExcelSheetView {
   id: string
@@ -45,7 +52,14 @@ export interface ExcelSheetView {
   freeze?: { rows: number; columns: number }
   columnWidths?: Record<number, number>
   rowHeights?: Record<number, number>
+  axisUnit?: 'cssPixel'
+  rowHeightSpans?: SheetAxisSpan<number>[]
+  columnWidthSpans?: SheetAxisSpan<number>[]
+  rowAutoHeightSpans?: SheetAxisSpan<boolean>[]
+  rowAutoHeights?: Record<number, number>
   hiddenRows?: number[]
+  rowHiddenSpans?: SheetAxisSpan<boolean>[]
+  columnHiddenSpans?: SheetAxisSpan<boolean>[]
   outline?: SheetOutlineState
   /** Derived collapsed rows. The domain outline is the persisted source of truth. */
   outlineHiddenRows?: number[]
@@ -59,6 +73,7 @@ export interface ExcelSheetView {
   visible?: boolean
   defaultColumnWidth?: number
   defaultRowHeight?: number
+  defaultRowAutoHeight?: boolean
   date1904?: boolean
   dataValidations?: SheetDataValidationRule[]
   rangeProtectionRules?: SheetRangeProtectionRule[]
@@ -78,7 +93,7 @@ export const parseCellKey = (key: string): { row: number; col: number } | undefi
   for (const char of match[1]!) col = col*26+char.charCodeAt(0)-64
   return { row: Number(match[2])-1, col: col-1 }
 }
-const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
+export const toExcelCellView = (cell: SpreadsheetCell): ExcelCellView => ({
   value: cell.formula ? '' : cell.value === null ? '' : String(cell.value), formula: cell.formula ?? undefined,
   bold: cell.style.font.bold, italic: cell.style.font.italic, underline: cell.style.font.underline, strike: cell.style.font.strike,
   align: cell.style.horizontal,
@@ -93,6 +108,9 @@ const toViewCell = (cell: SpreadsheetCell): ExcelCellView => ({
   indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
   hyperlink: cell.hyperlink ?? undefined,
   sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
+  richText: cell.richText ? structuredClone(cell.richText) : undefined,
+  styleMetadata: cell.style.metadata ? structuredClone(cell.style.metadata) : undefined,
+  metadata: cell.metadata ? structuredClone(cell.metadata) : undefined,
 })
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
@@ -104,10 +122,10 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
     tables: workbook.tables?.map(cloneSheetTable),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
-      let rowCount = Math.max(100, sheet.rowCount ?? 0)
-      let columnCount = Math.max(26, sheet.columnCount ?? 0)
+      let rowCount = Math.max(1, sheet.rowCount ?? 100)
+      let columnCount = Math.max(1, sheet.columnCount ?? 26)
       for (const cell of Object.values(sheet.cells)) {
-        cells[cellKey(cell.row, cell.col)] = toViewCell(cell)
+        cells[cellKey(cell.row, cell.col)] = toExcelCellView(cell)
         rowCount = Math.max(rowCount, cell.row+1)
         columnCount = Math.max(columnCount, cell.col+1)
       }
@@ -116,7 +134,11 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         merges: sheet.mergedRanges.map((r) => cellKey(r.startRow,r.startCol)+':'+cellKey(r.endRow,r.endCol)),
         freeze: { rows: sheet.frozenRows, columns: sheet.frozenCols },
         columnWidths: { ...sheet.columnWidths }, rowHeights: { ...sheet.rowHeights },
+        axisUnit: sheet.axisUnit ?? 'cssPixel',
+        rowHeightSpans: sheet.rowHeightSpans?.map(span => ({ ...span })), columnWidthSpans: sheet.columnWidthSpans?.map(span => ({ ...span })),
+        rowAutoHeightSpans: sheet.rowAutoHeightSpans?.map(span => ({ ...span })), rowAutoHeights: sheet.rowAutoHeights ? { ...sheet.rowAutoHeights } : undefined,
         hiddenRows: [...(sheet.hiddenRows ?? [])], hiddenColumns: [...(sheet.hiddenColumns ?? [])],
+        rowHiddenSpans: sheet.rowHiddenSpans?.map(span => ({ ...span })), columnHiddenSpans: sheet.columnHiddenSpans?.map(span => ({ ...span })),
         outline: sheet.outline ? { ...sheet.outline, groups: sheet.outline.groups.map(group => ({ ...group })) } : undefined,
         outlineHiddenRows: sheet.outline ? [...getCollapsedOutlineIndexes({ count: rowCount, groups: sheet.outline.groups.filter(group => group.axis === 'row') })] : [],
         outlineHiddenColumns: sheet.outline ? [...getCollapsedOutlineIndexes({ count: columnCount, groups: sheet.outline.groups.filter(group => group.axis === 'column') })] : [],
@@ -124,14 +146,10 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
           if (!table.autoFilter) return []
           return refreshAutoFilter({ ...sheet, autoFilter: structuredClone(table.autoFilter) })
         })])],
-        autoFilter: sheet.autoFilter ? {
-          ...sheet.autoFilter,
-          range: { ...sheet.autoFilter.range },
-          columns: { ...sheet.autoFilter.columns },
-          filteredRows: [...sheet.autoFilter.filteredRows],
-        } : undefined,
+        autoFilter: sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined,
         showGridlines: sheet.showGridlines, visible: sheet.visible,
         defaultColumnWidth: sheet.defaultColumnWidth, defaultRowHeight: sheet.defaultRowHeight,
+        defaultRowAutoHeight: sheet.defaultRowAutoHeight,
         date1904: workbook.date1904,
         dataValidations: sheet.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })),
         rangeProtectionRules: sheet.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })),
@@ -188,14 +206,15 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         const display = preservedDisplay ?? (formula && value === null ? cell.displayValue ?? cell.cachedValue ?? (sameContent ? previous?.display : undefined) ?? formula
           : formatSheetValue(value, numberFormat, date1904, numberFormatLocale)
             ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value))
-        const metadata = previous?.metadata ? { ...previous.metadata } : undefined
-        if (metadata && !sameContent) delete metadata.formulaError
+        const metadata = cell.metadata === null ? undefined : cell.metadata ? structuredClone(cell.metadata) : previous?.metadata ? { ...previous.metadata } : undefined
+        if (metadata && (!sameContent || cell.richText === null)) delete metadata.formulaError
         const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)
         const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
         cells[id] = {
           ...previous, id, ...position, value, formula, dataType, cachedDataType, metadata,
           hyperlink: cell.hyperlink === undefined ? previous?.hyperlink ?? null : cell.hyperlink,
           sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
+          richText: cell.richText === null ? undefined : cell.richText ? structuredClone(cell.richText) : sameContent ? previous?.richText : undefined,
           display,
           style: {
             ...previous?.style,
@@ -210,22 +229,31 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
             wrap: cell.wrap ?? previous?.style.wrap ?? false, wrapStrategy: cell.wrapStrategy ?? previous?.style.wrapStrategy, border: cell.border ?? previous?.style.border,
             rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,
             shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,
+            metadata: cell.styleMetadata === null ? undefined : cell.styleMetadata ?? previous?.style.metadata,
           },
         }
       }
       const next: WorkbookModel['sheets'][number] = {
         ...original, id: source.id, name: source.name, tabColor: source.tabColor ?? original?.tabColor, cells, visible: source.visible ?? original?.visible ?? true,
         dataValidations: source.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })) ?? original?.dataValidations,
-        conditionalFormats: source.conditionalFormats?.map(cloneConditionalFormatRule) ?? original?.conditionalFormats,
+        conditionalFormats: (source.conditionalFormats ?? original?.conditionalFormats)?.map(cloneConditionalFormatRule),
         rangeProtectionRules: source.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })) ?? original?.rangeProtectionRules,
         worksheetProtection: source.worksheetProtection ? { ...source.worksheetProtection, allowedUserIds: [...source.worksheetProtection.allowedUserIds] } : original?.worksheetProtection,
         rowCount: source.rowCount, columnCount: source.columnCount,
         columnWidths: { ...(source.columnWidths ?? original?.columnWidths) }, rowHeights: { ...(source.rowHeights ?? original?.rowHeights) },
+        axisUnit: 'cssPixel',
+        rowHeightSpans: (source.rowHeightSpans ?? original?.rowHeightSpans)?.map(span => ({ ...span })),
+        columnWidthSpans: (source.columnWidthSpans ?? original?.columnWidthSpans)?.map(span => ({ ...span })),
+        rowAutoHeightSpans: (source.rowAutoHeightSpans ?? original?.rowAutoHeightSpans)?.map(span => ({ ...span })),
+        rowAutoHeights: source.rowAutoHeights ? { ...source.rowAutoHeights } : original?.rowAutoHeights ? { ...original.rowAutoHeights } : undefined,
         hiddenRows: [...(source.hiddenRows ?? original?.hiddenRows ?? [])], hiddenColumns: [...(source.hiddenColumns ?? original?.hiddenColumns ?? [])],
+        rowHiddenSpans: (source.rowHiddenSpans ?? original?.rowHiddenSpans)?.map(span => ({ ...span })),
+        columnHiddenSpans: (source.columnHiddenSpans ?? original?.columnHiddenSpans)?.map(span => ({ ...span })),
         outline: source.outline ? { ...source.outline, groups: source.outline.groups.map(group => ({ ...group })) } : original?.outline ? { ...original.outline, groups: original.outline.groups.map(group => ({ ...group })) } : undefined,
         showGridlines: source.showGridlines ?? original?.showGridlines ?? true,
         defaultColumnWidth: source.defaultColumnWidth ?? original?.defaultColumnWidth,
         defaultRowHeight: source.defaultRowHeight ?? original?.defaultRowHeight,
+        defaultRowAutoHeight: source.defaultRowAutoHeight ?? original?.defaultRowAutoHeight,
         frozenRows: source.freeze?.rows ?? original?.frozenRows ?? 0, frozenCols: source.freeze?.columns ?? original?.frozenCols ?? 0,
         mergedRanges: source.merges?.map((merge) => {
           const [start,end] = merge.split(':')
@@ -233,17 +261,9 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
           const last = parseCellKey(end ?? start ?? '') ?? first
           return { startRow:first.row,startCol:first.col,endRow:last.row,endCol:last.col }
         }) ?? [],
-        autoFilter: source.autoFilter ? {
-          ...source.autoFilter,
-          range: { ...source.autoFilter.range },
-          columns: { ...source.autoFilter.columns },
-          filteredRows: [...source.autoFilter.filteredRows],
-        } : original?.autoFilter ? {
-          ...original.autoFilter,
-          range: { ...original.autoFilter.range },
-          columns: { ...original.autoFilter.columns },
-          filteredRows: [...original.autoFilter.filteredRows],
-        } : undefined,
+        autoFilter: source.autoFilter ? structuredClone(source.autoFilter)
+          : Object.hasOwn(source, 'autoFilter') ? undefined
+            : original?.autoFilter ? structuredClone(original.autoFilter) : undefined,
       }
       if (next.autoFilter) {
         next.autoFilter = { ...next.autoFilter, columns: { ...next.autoFilter.columns }, filteredRows: [...next.autoFilter.filteredRows] }
@@ -296,17 +316,5 @@ function clonePivotTableModel(pivot: PivotTableModel): PivotTableModel {
 }
 
 function cloneConditionalFormatRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule {
-  return {
-    ...rule,
-    ranges: rule.ranges.map(range => ({ ...range })),
-    style: { ...rule.style },
-    config: rule.config ? {
-      ...rule.config,
-      min: rule.config.min ? { ...rule.config.min } : undefined,
-      max: rule.config.max ? { ...rule.config.max } : undefined,
-      thresholds: rule.config.thresholds?.map(item => ({ ...item, value: { ...item.value } })),
-      icons: rule.config.icons?.map(item => ({ ...item, value: { ...item.value } })),
-    } : undefined,
-    metadata: rule.metadata ? { ...rule.metadata } : undefined,
-  }
+  return cloneModel(rule)
 }

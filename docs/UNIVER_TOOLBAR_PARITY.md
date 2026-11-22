@@ -4,6 +4,8 @@
 
 本记录按 [完整功能清单](UNIVER_FEATURE_PARITY.md)、[源码规则](UNIVER_REFERENCE_RULES.md)核对顶部入口与实际行为。它记录部分实现及缺口，**不表示顶部所有功能或 Pro 能力已经对齐**。所有完整功能 ID 保持“未验收”；单个按钮、模型、Facade 或测试通过均不能代替整个功能的编辑、历史、保存、Office 往返、权限和性能验收。
 
+2026-11-22 续作仅做实现、静态调用链审阅和编写用例，按用户安排尚未运行统一验证。第 5 节保留既有共享 Ribbon 检查的历史结果，不代表当前未提交改动已通过。
+
 源码核对覆盖 Tab → Group → Item → 命令/服务，而非仅比较分类名称。上游 ID 与本项目独立实现的 ID 可不同；表中记录可观察行为的对应关系。Pro 在固定开源检出中没有菜单实现时，明确记为“公开菜单 ID 未核实”，不编造闭源 ID，也不把未知行为排除出最终范围。
 
 ## 1. 当前装配与证据边界
@@ -42,9 +44,21 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 
 ## 根入口统计与布局
 
-历史 desktop OSS preset 计数基于前一参考提交：Sheets 62 个、Docs 38 个，合计 100 个。入口数量按顶层 schema 节点统计，split/menu/select 的子项不重复计数；宽度引起的 More 溢出不另计入口。Sheets 分别为 START 30、INSERT 9、FORMULAS 12、DATA 6、VIEW 5；Docs 分别为 Home 25、Insert 10、View 3。v1.6.0 已确认这些清单引用的 OSS 源码路径存在，但尚未重新合并全部插件 schema 并复算根入口总数，因此这些数字不应当作 v1.6.0 的最终统计。
+2026-11-22 通过 `scripts/audit-univer-oss-ribbon.mjs` 静态复算固定 v1.6.0 OSS schema：Sheets 常规根声明 63 项，按 START/INSERT/FORMULAS/DATA/VIEW 为 30/9/12/6/6；Docs 为 38 项，按 START/INSERT/VIEW 为 25/10/3，合计 101 项。Sheets VIEW 的第六项来自 `packages/sheets-crosshair-highlight/src/menu/schema.ts:ToggleCrosshairHighlightOperation.id`，不能继续列为本地独有扩展。Docs 另有页眉页脚 5 项、目录 2 项上下文根声明，Sheets 本次 OSS schema 未发现 contextual tab 根声明。此前 62/38 是历史计数。两产品常规路径未发现重复，但 factory 状态与动态菜单没有执行，静态声明不等于当前可见入口。
 
-历史 Pro 统计来自 Univer 1.5.2 官方发布包：当时识别 20 个 Docs/Sheets 菜单 schema 包和 24 个 Pro Ribbon 根节点，其中 Sheets 15 个、Docs 9 个，至少 6 个包另导出 contextual Ribbon schema。此计数只属于 1.5.2，不代表 1.6.0。1.6.0 registry 元信息及 `sheets-chart-ui`、`sheets-pivot-ui`、`sheets-slicer-ui` 三个发布 bundle 已静态审阅。通过同一 AST 计数脚本只对这三个 bundle 得到 5 个常驻 Ribbon 根项：图表 Insert > Media 1 项、透视表 Data > Analysis / Organization 各 1 项、切片器 Data > Analysis 2 项。统计脚本没有把 contextual groups 计入这 5 项。其余 1.6.0 Docs/Sheets Pro 包及上下文 schema 未完成清点，因此不推导全量 1.6.0 Pro 总数。已审阅的 1.5.2 包记录见 [research manifest](../.research.local/univer/resources.json)，1.6.0 只读缓存位于 `.research.local/univer-1.6.0`。
+脚本另外记录 Sheets 130、Docs 143 个右键/浮动菜单层级节点；该数包含父菜单和子项，不是根入口数或功能数量。Docs 还有 3 个颜色菜单展开表达式，须继续追踪 factory。More 仅改变同一入口的展示位置，不增加计数。本地 schema 静态读取结果为 Sheets 68 项（29/6/11/17/5），Docs 50 项（33/14/3），包含 `hidden` 条件项；不作为实际可见数量。完整差异见[顶部入口表](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。
+
+历史 Pro 统计来自 Univer 1.5.2 官方发布包：20 个菜单 schema 包、24 个根节点（Sheets 15、Docs 9）只属于 1.5.2。2026-11-22 使用 `scripts/count-univer-pro-ribbon-schemas.mjs .research.local/univer-1.6.0/packages --bundle-only --inventory`，已静态读取缓存中的 60 个 v1.6.0 ES 包，未导入执行商业 SDK。当前已识别根声明的包包括 Docs callout/chart/code/history/latex/print/quote/reference/sdt/shape/table，以及 Sheets chart/history/outline/pivot-chart/pivot/print/shape/slicer/sparkline；共享 shape-editor 还声明形状文本的粘贴入口。
+
+同一功能在组级 schema、完整 Ribbon schema 或替代挂载分支中重复注册，不能将声明次数相加为可见根入口总数。`docs-list-ui`、`docs-formula-ui` 等未识别 `mergeMenu` 根项，仍须追踪组件、标记菜单、浮动编辑器和替换注册；不是无入口结论。embed、pivot、latex、code、shape-editor 仍有未解析表达式。既有 [research manifest](../.research.local/univer/resources.json) 的历史记录与早期三个 1.6.0 包复核不代表本次全部缓存清点；目前不推导完整 Pro 运行态总数。
+
+| v1.6.0 Pro 上下文来源（各包 `lib/es/index.js`） | 静态根路径数 | 统计边界 |
+| --- | ---: | --- |
+| `docs-sdt-ui` | 13 | 内容控件类型与属性条件须逐项核对 |
+| `docs-shape-ui` | 12 | 形状对象与文字上下文分支须逐项核对 |
+| `docs-table-ui` | 17 | 排除子菜单；重复路径合并，模式与选区状态未执行 |
+| `sheets-shape-ui` | 13 | 不与常规 Insert 根项相加 |
+| `sheets-slicer-ui` | 4 | 切片器/时间线对象条件仍待运行核实 |
 
 经典布局和网格布局共享同一套入口。Classic 依序呈现分类标签、单行工具区；`order` 决定同组顺序。Grid 使用每组两行网格，`gridLayout.row` / `column` 从 1 开始，支持 `rowSpan`、`columnSpan`、`width`、`minWidth`、`iconSize` 和 `showLabel`。上下文标签按对象/选区条件显隐，宽度不足时按上游逻辑整组进入 More；入口总数不因当前布局、溢出或重复呈现增加。各项位置和交互仍须由对应 schema、命令状态及动态演示逐项核实。
 
@@ -56,8 +70,8 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | --- | --- | --- | --- |
 | COMMON-01、COMMON-03 | [Workbench/UIParts][workbench]；[Ribbon][ribbon]；[菜单类型][menu]；[菜单注册与分组][menu-manager] | classic 分类及工具组居中，36px/40px；工作台示例的 grid 使用 32px/69px 双行布局，支持网格占位/跨行、密度压缩和整组溢出 | 两种布局共享命令；simple/collapsed、完整插件生命周期和所有产品上下文仍未验收 |
 | COMMON-03 | [ToolbarItem → ICommandService][toolbar-item] | 格式选择器由当前选区反推；混合值独立表示；相同 item 在原工具行与更多菜单派发相同 ID/参数；禁用按钮/选项不能派发；下拉 Escape 归还触发器焦点 | 功能命令权限不能由控件禁用代替；所有跨入口语义仍须核验 |
-| COMMON-02、COMMON-04 | 命令/历史服务与各产品 schema | 顶部撤销/重做依赖文档历史状态；模型由当前应用服务保存 | 完整 Facade 兼容、协作 mutation/逆 mutation、跨文档会话和 savepoint 回归未整体验收 |
-| COMMON-05 | 共享主题/locale/方向公开规格 | Ribbon 有方向参数、RTL 键盘支持；中文可访问名称 | 完整主题/暗色/语言切换、所有弹层与编辑器主题同步未验收 |
+| COMMON-02、COMMON-05 | 命令/历史服务与各产品 schema | 顶部撤销/重做依赖文档历史状态；模型由当前应用服务保存 | 完整 Facade 兼容、协作 mutation/逆 mutation、跨文档会话和 savepoint 回归未整体验收 |
+| COMMON-04 | 共享主题/locale/方向公开规格 | Ribbon 有方向参数、RTL 键盘支持；中文可访问名称 | 完整主题/暗色/语言切换、所有弹层与编辑器主题同步未验收 |
 | COMMON-06、COMMON-07 | 权限、协作公开规格；产品权限菜单 | 目前未发现满足服务端持久权限/多人协作验收的顶部工作流 | 不能把隐藏按钮、只读 UI 或本地通信记为完整能力 |
 | COMMON-08、COMMON-09 | 持久历史、版本对比/恢复公开规格 | 撤销/重做与持久历史分开，当前顶部尚无完整版本服务面板 | 版本列表、语义对比、恢复后广播、服务重启后可查仍待实现/验证 |
 | COMMON-10 | 跨文档嵌入公开规格 | 无已验收顶部嵌入流程 | 父子模型、引用/快照语义、权限/焦点/保存未验收 |
@@ -71,13 +85,14 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | 功能 ID | 上游菜单 / 命令依据 | 本地 item / 真实行为 | 尚缺行为或验证 |
 | --- | --- | --- | --- |
 | SHEET-01 | [Sheets schema][sheet-schema] 的 `CopySheetCommand`、`RenameSheetOperation`、`SetWorksheetHideCommand`、`SetTabColorCommand` 及 SheetBar | 工作表新增、激活、重命名、删除、隐藏/恢复主要位于组合底栏；不另在顶部重复一套 | 复制/重排/标签颜色、veryHidden 与所有关联引用事务仍未整体验收 |
-| SHEET-02 | [Sheets schema][sheet-schema] 的合并/取消合并与编辑/选区控制器 | `sheet.command.merge` / `unmerge`；Canvas 范围选择、名称框与公式栏 | 合并横向/纵向变体、多选、填充及完整编辑边界未全部覆盖 |
+| SHEET-02 | [Sheets schema][sheet-schema] 的合并/取消合并与编辑/选区控制器 | 全部/水平/垂直合并、跨多个选区取消合并、分类清除已接共享命令和 Facade；保留首项非空内容，确认捕获原目标/范围/版本，检查完整受影响合并的权限和数据验证；Canvas 范围选择、名称框与公式栏继续保留 | [合并/清除证据](feature-evidence/SHEET-02-merge-clear.md)含源码差异与未运行用例；完整输入/填充、旧模型诊断、XLSX 独立重开和大范围内存未验收 |
 | SHEET-03 | `InsertRowBeforeCommand`、`InsertColBeforeCommand`、`RemoveRowConfirmCommand`、`RemoveColConfirmCommand`、行列尺寸与显隐菜单 | 插入页：`sheet.command.insert-row` / `insert-column` / `delete-row` / `delete-column` 可修改真实模型 | 移动/复制、隐藏/显示、手动尺寸/自适应与所有引用资源变换仍不完整 |
-| SHEET-04 字体 | `sheet.command.set-range-font-family` / `set-range-fontsize` / `set-range-bold` / `set-range-italic` / `set-range-underline` | 字体、字号、字号增减、加粗/斜体/下划线/删除线；选区反推激活态，删除线及下划线按实际文字度量绘制 | 完整继承/主题、富文本范围样式及样式 Office 独立往返未验收 |
-| SHEET-04 颜色 | `sheet.command.set-range-text-color`、`sheet.command.set-background-color` 及重置子项 | `sheet.menu.text-color`、`sheet.menu.fill` → `set-color` / `set-background`，有限颜色列表可执行 | 主题颜色、完整色板/自定义颜色、重置/继承语义与范围主题未完整实现 |
-| SHEET-04 对齐/样式 | `sheet.command.set-horizontal-text-align` / `set-vertical-text-align` / `set-text-wrap` / `set-shrink-to-fit` / `set-text-rotation` / `set-border-basic` | 文字方向菜单含水平、左右斜 45°、竖排、左右转 90°；wrap 与 shrink-to-fit 互斥；角度、逐字竖排和按度量压缩已接入 view/model、Canvas2D/WebGPU scene 与历史 | SHEET-04 仍未验收；DOM 编辑输入桥不随文字方向旋转，混合范围只通过契约测试，第三方 XLSX 重开及设备级 WebGPU 像素验证未完成；完整边框样式/颜色、默认样式/范围主题仍缺 |
+| SHEET-04 字体 | `sheet.command.set-range-font-family` / `set-range-fontsize` / `set-range-bold` / `set-range-italic` / `set-range-underline` | 字体、字号、字号增减和字符属性进入共享 feature 命令、Facade、选区权限及内容历史；字号增减按活动格 ±1，控件读混合态；删除线及下划线按实际文字度量绘制 | [字体证据](feature-evidence/SHEET-04-font-family-size.md)中的契约/浏览器用例尚未运行；完整默认/主题继承、富文本范围格式及 Office 独立往返仍未验收 |
+| SHEET-04 颜色 | `sheet.command.set-range-text-color`、`sheet.command.set-background-color` 及重置子项 | `SheetColorControl` 使用 antdv-next 色板、自定义、最近颜色和独立文字/填充重置，共享命令与 Facade 保存显式颜色/清除标记 | [颜色证据](feature-evidence/SHEET-04-color-reset.md)记录默认/重置差异；主题继承、范围主题、系统 IME/焦点和全部 Office 色彩字段仍未验收 |
+| SHEET-04 对齐/样式 | `sheet.command.set-horizontal-text-align` / `set-vertical-text-align` / `set-text-wrap` / `set-shrink-to-fit` / `set-text-rotation` | 方向菜单含水平、左右斜 45°、竖排、左右转 90°；wrap 与 shrink-to-fit 互斥；统一减小字号和整块文字旋转进入共享布局命令、view/model、Canvas2D/WebGPU scene 与历史 | [旋转/缩小适应证据](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md)保留未验收；编辑输入桥不随文字方向旋转，复杂 shaping/富文本、主题、IME、真实 XLSX 重开和大样本均待统一验证 |
+| SHEET-04 边框 | `sheet.command.set-border-basic` 与 `border.menu.ts` | 15 个位置项、12 个线型、颜色/最近颜色、主按钮重用上次样式，模型、Facade、权限、历史和 Canvas 共用边框 feature | [边框证据](feature-evidence/SHEET-04-borders.md)记录用例与文件边界；隐藏轴空洞、完整导入样本及大范围 Worker/内存仍未验收 |
 | SHEET-05 | 富文本/Docs 编辑桥 | 当前工具栏作用于单元格样式 | 单格多运行、部分文字格式、富文本复制/链接及 Office 往返未验收 |
-| SHEET-06 | [数字格式 schema][numfmt-schema]：`sheet.operation.open.numfmt.panel`、百分比/货币/增减小数位命令 | 常规/数字/货币/会计/百分比/日期/时间/日期时间/文本共 9 类，小数位增减；保留 raw 类型和精确格式、1900/1904，数值型文本不擅自转型 | 完整自定义格式面板、全部 locale/会计布局、导入自定义格式重新编辑及 Office 往返未整体验收 |
+| SHEET-06 | [数字格式 schema][numfmt-schema]、`number-format-options.ts:MENU_OPTIONS`：格式菜单与百分比/货币/增减小数位共 5 个根项 | 格式菜单为 13 个格式项、4 个分隔、1 个“更多格式”；面板另有 6 类。当前已接精确格式码、地区货币、负值/小数位预览、自定义历史及完整编辑文本；地区和 1900/1904 进入解析及渲染，值与格式一次历史事务 | 入口与编辑来源、实现差异和待验证用例见[数字格式输入](#sheet-number-input)；全部地区、真实系统 IME、权限/焦点/主题、稀疏大范围格式与 Office 往返仍未整体验收 |
 | SHEET-07 | 冻结工具菜单、`ToggleGridlinesCommand`、`ZOOM_RATIO_MENU_ID` | `toggle-gridlines`；冻结选区/首行/首列/取消；放大/缩小/100%；各表选区与缩放会话 | 全部冻结分区/编辑/图形/打印组合仍待浏览器与文件样本验收；不由基础命中测试推断全部通过 |
 | SHEET-08 | [Sheets schema][sheet-schema]：`PASTE_RIBBON_MENU_ID` 与 PasteValue/Format/ColWidth/BesidesBorder；[公式 schema][formula-schema] 的公式粘贴 | `sheet.command.copy` / `cut` / `paste` 有真实模型操作 | 仅值/仅公式/仅格式/列宽/排除边框等选择性粘贴、HTML/TSV/引用与权限闭环未全部连通 |
 | SHEET-09 | [公式 schema][formula-schema]：`formula-ui.operation.insert-function.{common,financial,logical,text,date,lookup,math,statistical,engineering,information,database}`、`formula-ui.operation.more-functions` | 公式页新增真实函数选择/参数对话框，当前 30 个函数逐项通过引擎求值测试；同时保留编辑公式/重新计算，提交进统一内容历史 | 全部函数分类/目录、定义名称管理、计算选项及完整依赖/结构引用仍未验收；30 个函数不等于完整公式引擎 |
@@ -138,7 +153,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 
 公开基础插入项的符号/emoji 选择器现已接入，支持保留选区插入、分类/最近使用与自定义 Unicode。剪贴板新增剪切、源格式/纯文本粘贴，顶部与原生 paste 共用归一化，并拒绝过期异步结果；copy/cut 当前写出纯文本。完整富文本/媒体剪贴板、目标格式及最近粘贴模式切换仍未完成，目标继续保留。
 
-## 5. 本次已经执行的共享 Ribbon 检查
+## 5. 既有共享 Ribbon 检查（历史结果）
 
 ```powershell
 node --experimental-strip-types --test packages/office-studio/tests/ribbon-component.browser.test.mjs packages/office-studio/tests/ribbon-schema.contract.test.mjs
@@ -171,7 +186,21 @@ pnpm --filter @office-studio/office-studio check:types
 
 上述入口在产品包，示例无覆盖。`docs-ui/src/utils/east-asian-text.ts` 与 `commands/commands/inline-format.command.ts` 是中西文分槽的行为依据：文档归一化读取 `fontFamilyAscii/fontFamilyEastAsia`，Canvas 按字形选字体，光标前为 CJK 字母时显示东亚字体；包含 CJK 的选区指定字体会同时更新两个槽。写出层独立写 `w:rFonts/@w:eastAsia`，标题和副标题写入 Word 命名样式。复杂脚本、主题字体、标点分类与 Office 独立样本仍待核查。`ribbon-fonts.contract.test.mjs`、`document-toolbar.browser.test.mjs`、Rust 写出再解析用例等已补，按统一测试安排未运行。各布局的视觉、IME、主题与保存重开均不据此标为通过。
 
-Docs 同行向右，段落组 r1c1 对照 `docs-ui/src/menu/menu.ts:AlignMenuItemFactory`：左、中、右、两端对齐的顺序、按钮图标、受保护选区禁用与选中态走真实段落状态，不由菜单记忆上次点击。r1c2 无序列表及 r2c1 有序列表的主按钮可切换，但源码的拆分箭头、各六种四行预览、九级标记与编号往返未完成，不能按两个按钮计作对齐。
+Docs 同行向右，段落组 r1c1 对照 `docs-ui/src/menu/menu.ts:AlignMenuItemFactory`：左、中、右、两端对齐的顺序、按钮图标、受保护选区禁用与选中态走真实段落状态，不由菜单记忆上次点击。r1c2 无序列表及 r2c1 有序列表已使用拆分按钮、各六种四行预览与九级列表定义；连续/重启命令与 DOCX 编号往返继续按[列表证据](feature-evidence/DOC-05-checklist.md)补齐。增强列表的全部模式、混合上下文、富剪贴板与真实 Office 应用重开仍未验收。
+
+<a id="sheet-number-input"></a>
+
+### Sheets 数字格式入口与编辑（待统一验证）
+
+固定版 `packages/sheets-numfmt-ui/src/menu/schema.ts` 的 NUMBER 组顺序为格式菜单（order 9、r1c1 跨 4 列、160px），再百分比/货币/增小数位/减小数位（order 9.1–9.4，r2c1–4）。`menu/number-format-options.ts:MENU_OPTIONS` 的顺序是常规、文本；数字、百分比、科学计数；会计专用、财务数值、货币、整数货币；日期、时间、日期时间、持续时间；更多格式。分号在这里表示 4 个分隔区：13 个格式项和 1 个 More 不另计 Ribbon 根项。`views/SheetNumfmtPanel.tsx` 的 6 个面板分类与此菜单数量分开；classic 与 grid 复用相同入口，混合值与保护选区来自当前模型和命令状态。
+
+`packages/sheets-numfmt-ui/src/utils/temporal-editor-value.ts`、`controllers/numfmt.editor.controller.ts`、`packages/core/src/shared/numfmt/{parse-value,serial-date,date-time-edit-pattern,run-part}.ts` 及对应 `__tests__` 是编辑与日期来源。本地 `sheet-number-format-edit.ts` 提供 `sheetNumberEditText` / `parseSheetNumberEdit`，`sheet-cell-edit.ts` 负责类型归一化与一次内容/格式提交，`sheet-cell-edit-session.ts` 捕获会话基线；公式栏与 Canvas 的 `antdv-next` 输入复用该会话。百分比展开完整十进制意图，F2 光标在百分号前；地区与当前年在开始时捕获，校验和提交使用相同设置。`shared/decimal-input.ts` 同时保护新输入和无 rawValue 的旧数值文本，无法保持完整十进制意图时保留文本。
+
+有效日期系统统一按工作表显式值、工作簿继承值、1900 缺省解析，Canvas、公式栏、F2、粘贴与验证候选采用相同值。编辑会话记录 documentId/sheetId/key、源值、公式、类型和数字格式；目标内容、类型、数字格式或日期系统外部改变时拒绝提交，保留草稿与选区。无关单元格、字体/颜色及公式缓存重算不使会话失效；提交保留这些最新字段。切换文档/工作表或目标越界时清理会话和 composition 状态；行列头选择、表切换/删除/隐藏、查找定位、Enter/Tab 和保存先检查提交结果。这是本地避免旧草稿覆盖新内容的策略；固定 `sheets-ui/src/controllers/editor/editing.render-controller.ts` 可核实目标存在、原始值比较、无改动不写入及拒绝提交不移动，不能据此推断其实现相同冲突协议。没有 documentId 的旧宿主仍按既有 sheet 身份判断文档，稳定身份与跨用户并发协议另按 COMMON-05/07 验收。
+
+日期格式显示完整可编辑日期，时间补齐秒及所需秒小数；日期编辑保留原隐藏时间，时间编辑保留原隐藏日期。上游 date 分支对显式 datetime 输入同样保留原隐藏时间，datetime 分支使用新时间；本地维持此已知契约，Microsoft Office 在同类输入下的效果尚未独立核实。持续时间本地按实际 `[h]` / `[m]` / `[s]` 单位解释，秒小数最多 10 位；这比上游固定小时序列和毫秒编辑文本更精细，但尚无真实 Office 样本验收。普通数字不通过裸小时持续时间推断。规范整秒只在原 serial 等于其规范编码时修正浮点误差，真实小秒小数保留；显示舍入可以跨日，零日历值按选定日期系统解码。
+
+所有可替换编辑控件仍由 `antdv-next` 承载。其 AutoComplete 的公开 `focus()` 没有文本选区参数或 `nativeElement`，因此 F2 在既有 Canvas 宿主内查找库内 input 后调用 `setSelectionRange`；没有另建原生输入控件。主题、输入法、焦点归还和保护拒绝需最后统一浏览器验证。`number-format-input.contract.test.mjs`、`sheet-cell-input.contract.test.mjs`、`sheet-cell-edit-session.contract.test.mjs` 与 `sheet-number-format.browser.test.mjs` 已补地区、百分比、两日期系统、elapsed 单位、精度/舍入、外部更新冲突、缓存刷新、历史及重开用例，**本轮均未运行**；Rust/WASM、Office 独立重开和全部地区样本也未运行。格式仍有枚举坐标和 100,000 格上限，稀疏范围样式、Worker 及真实大样本性能未验收，没有优化达标结论。
 
 ## 6. 更新方法
 

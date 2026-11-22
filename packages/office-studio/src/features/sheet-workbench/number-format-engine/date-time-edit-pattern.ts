@@ -100,7 +100,7 @@ function getDatePattern(section: ParsedFormatSection): string | null {
         .map((token, tokenIndex) => getDateComponent(token, tokenIndex))
         .filter((component): component is IDateComponent => component !== null);
     if (!components.length) {
-        return null;
+        return section.tokens.some(isComplexDateToken) ? 'yyyy/mm/dd' : null;
     }
     // Only numeric dates with one consistent '-' or '/' separator are safe to extend without changing their meaning.
     if (
@@ -123,7 +123,7 @@ function getDatePattern(section: ParsedFormatSection): string | null {
     return completeNumericDatePattern(components, separator) ?? 'yyyy/mm/dd';
 }
 
-function getTimePattern(section: ParsedFormatSection): string | null {
+function getTimePattern(section: ParsedFormatSection, fractionalDigits: number): string | null {
     const hourIndex = section.tokens.findIndex((token) => token.type === 'hour');
     const minuteToken = section.tokens.find((token) => token.type === 'min');
     const ampmIndex = section.tokens.findIndex((token) => token.type === 'ampm');
@@ -136,7 +136,10 @@ function getTimePattern(section: ParsedFormatSection): string | null {
     const hourToken = hourIndex < 0 ? undefined : section.tokens[hourIndex];
     const hour = hourToken?.pad ? 'hh' : 'h';
     const minute = minuteToken?.pad === false ? 'm' : 'mm';
-    const clock = `${hour}:${minute}:ss`;
+    const requestedDigits = Number.isFinite(fractionalDigits) ? Math.floor(fractionalDigits) : 0;
+    const decimals = Math.min(10, Math.max(0, requestedDigits, section.sec_decimals));
+    const fraction = decimals ? `.${'0'.repeat(decimals)}` : '';
+    const clock = `${hour}:${minute}:ss${fraction}`;
     if (!ampmToken || typeof ampmToken.value !== 'string') {
         return clock;
     }
@@ -145,7 +148,8 @@ function getTimePattern(section: ParsedFormatSection): string | null {
 
 export function createDateTimeEditPattern(
     partitions: Array<FormatSection | undefined>,
-    value: number
+    value: number,
+    fractionalDigits = 0
 ): string | null {
     const section = getValueFormatSection(value, partitions);
     if (!isParsedSection(section) || section.tokens.some((token) => token.type.endsWith('-elap'))) {
@@ -153,7 +157,7 @@ export function createDateTimeEditPattern(
     }
 
     const datePattern = getDatePattern(section);
-    const timePattern = getTimePattern(section);
+    const timePattern = getTimePattern(section, fractionalDigits);
     if (datePattern && timePattern) {
         return `${datePattern} ${timePattern}`;
     }

@@ -174,7 +174,7 @@ function hasCellFormatting(cell: ExcelSheetView['cells'][string]): boolean {
   return cell.bold !== undefined || cell.italic !== undefined || cell.underline !== undefined || cell.strike !== undefined
     || cell.align !== undefined || cell.vertical !== undefined || cell.background !== undefined || cell.color !== undefined
     || cell.fontSize !== undefined || cell.fontFamily !== undefined || cell.numberFormat !== undefined || cell.rawNumberFormat !== undefined
-    || cell.wrap !== undefined || cell.border !== undefined || cell.rotation !== undefined || cell.rotationVertical !== undefined
+    || cell.wrap !== undefined || cell.wrapStrategy !== undefined || cell.border !== undefined || cell.rotation !== undefined || cell.rotationVertical !== undefined
     || cell.indent !== undefined || cell.shrinkToFit !== undefined
 }
 

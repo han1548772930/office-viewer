@@ -1,5 +1,5 @@
 use crate::model::{
-    AnchorCellPayload, AxisPayload, BorderPayload, CellPayload, ChartCachedPointPayload,
+    AnchorCellPayload, BorderPayload, CellPayload, ChartCachedPointPayload,
     ChartDrawingPayload, ChartPayload, ChartSeriesCachePayload, ChartSeriesPayload,
     ChartSeriesStylePayload, DataValidationPayload, DataValidationRangePayload, DimensionPayload,
     DocumentCommentPayload, DocumentCommentTargetPayload, DocumentModel, DocumentNotePayload,
@@ -80,6 +80,21 @@ fn parse_document_impl(
             }
         }
     } else { crate::document_format_sidecar::ParagraphWordWrap::default() };
+    let office_source = archive.as_mut().and_then(|zip| {
+        let (resources, warnings) = crate::document_format_sidecar::read_office_source(zip);
+        format_warnings.extend(warnings);
+        resources
+    });
+    let default_style = if archive.is_some() {
+        match crate::document_format_sidecar::read_document_default_style(office_source.as_ref(), &paragraph_wrap) {
+            Ok(style) => Some(style),
+            Err(error) => { format_warnings.push(format!("DOCX document defaults could not be resolved: {error}")); None },
+        }
+    } else { None };
+    let story_style_sheet = match crate::document_format_sidecar::read_document_style_sheet(office_source.as_ref()) {
+        Ok(sheet) => sheet,
+        Err(error) => { format_warnings.push(format!("DOCX story styles could not be resolved: {error}")); duke_pages::parse::ParsedStyleSheet::empty() },
+    };
     let mut document = extract_document_blocks(&source_model);
     if archive.is_some() {
         crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
@@ -88,15 +103,21 @@ fn parse_document_impl(
     document.warnings.extend(format_warnings);
     insert_section_breaks(&mut document, &source_model);
     insert_paragraph_breaks(&mut document, &source_model);
+    let mut review = extract_document_review(&source_model);
+    document.warnings.extend(crate::document_format_sidecar::restore_sdt_comment_targets(&source_model, &mut review.comments));
     let mut diagnostics = ParserDiagnostics::document(&document);
     diagnostics.capabilities.extend([
         "pageBreaks".into(),
         "columnBreaks".into(),
         "sectionBreaks".into(),
     ]);
+    if default_style.is_some() { diagnostics.capabilities.push("documentDefaultStyle".into()); }
     let mut stories = std::collections::HashMap::new();
     let mut story_reference = |part: &str, kind: &Option<String>, header| {
-        let story = stories.entry(part.to_owned()).or_insert_with(|| archive.as_mut().and_then(|zip| crate::story_fields::read_story(zip, part)));
+        let story = stories.entry(part.to_owned()).or_insert_with(|| archive.as_mut().and_then(|zip| match crate::story_fields::read_story(zip, part, &story_style_sheet) {
+            Ok(story) => story,
+            Err(error) => { diagnostics.warnings.push(format!("DOCX story {part} could not be restored: {error}")); None },
+        }));
         DocumentStoryReferencePayload {
             part_name: part.into(), reference_type: kind.clone(),
             page_fields: story.as_ref().map(|s| s.fields.iter().map(|f| f.field.clone()).collect()).unwrap_or_else(|| page_fields_for_story_nodes(&source_model, part, header)),
@@ -130,21 +151,25 @@ fn parse_document_impl(
         .unwrap_or(false);
     let footnotes = source_model.metadata.footnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
     let endnotes = source_model.metadata.endnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
-    let comments = extract_document_review(&source_model).comments.into_iter().map(|comment| DocumentCommentPayload {
-        id: comment.id.to_string(),
-        author: comment.author,
-        date: comment.date,
-        text: comment.text,
-        parent_id: comment.parent_id.map(|id| id.to_string()),
-        resolved: comment.resolved,
-        targets: comment.targets.into_iter().filter(|target| target.source.story == "body").map(|target| DocumentCommentTargetPayload {
+    let comments = review.comments.into_iter().map(|comment| {
+        let mut targets = comment.targets.into_iter().filter(|target| target.source.story == "body").map(|target| DocumentCommentTargetPayload {
             node_id: target.source.node_id,
             part_name: target.source.part_name,
             story: target.source.story,
             start: target.source.start,
             end: target.source.end,
             offset_encoding: target.source.offset_encoding,
-        }).collect(),
+        }).collect::<Vec<_>>();
+        // A point comment has no text children for Duke to collect, but its
+        // reference still identifies the paragraph and exact UTF-16 position.
+        if targets.is_empty() {
+            if let Some(reference) = comment.reference.filter(|reference| reference.story == "body" && reference.start.is_some() && reference.start == reference.end) {
+                targets.push(DocumentCommentTargetPayload { node_id: reference.node_id, part_name: reference.part_name, story: reference.story,
+                    start: reference.start, end: reference.end, offset_encoding: reference.offset_encoding });
+            }
+        }
+        DocumentCommentPayload { id: comment.id.to_string(), author: comment.author, date: comment.date, text: comment.text,
+            parent_id: comment.parent_id.map(|id| id.to_string()), resolved: comment.resolved, targets }
     }).collect::<Vec<_>>();
     let comments = (!comments.is_empty()).then_some(comments);
     Ok(ParseEnvelope {
@@ -162,6 +187,8 @@ fn parse_document_impl(
             footnotes,
             endnotes,
             comments,
+            office_source,
+            default_style,
         }),
         diagnostics,
     })
@@ -518,6 +545,11 @@ fn parse_workbook(
     } else {
         ConditionalFormatSidecar::default()
     };
+    let mut dimension_sidecar = if format == "xlsx" {
+        crate::sheet_dimension_sidecar::SheetDimensionSidecar::read(bytes)
+    } else {
+        crate::sheet_dimension_sidecar::SheetDimensionSidecar::default()
+    };
     let mut sheets = workbook
         .sheets
         .iter()
@@ -525,6 +557,7 @@ fn parse_workbook(
         .map(|(index, sheet)| sheet_payload(sheet, index, &mut validation_sidecar, &mut sparkline_sidecar, &mut conditional_format_sidecar))
         .collect::<Vec<_>>();
     for sheet in &mut sheets {
+        dimension_sidecar.restore(sheet);
         for chart in &mut sheet.charts {
             let chart_key = (sheet.name.clone(), chart.index);
             if let Some(settings) = pivot_sidecar.chart_settings.get(&chart_key) {
@@ -580,6 +613,7 @@ fn parse_workbook(
     warnings.extend(pivot_sidecar.warnings);
     warnings.extend(conditional_format_sidecar.warnings);
     warnings.extend(table_sidecar.warnings);
+    warnings.extend(dimension_sidecar.warnings);
     if workbook.text_truncated {
         warnings.push("Some text cells were omitted after the parser allocation limit".into());
     }
@@ -663,19 +697,7 @@ fn sheet_payload(sheet: &rxls::Sheet, index: usize, validation_sidecar: &mut Val
             last_col,
         })
         .collect();
-    let column_widths = sheet
-        .column_widths()
-        .iter()
-        .map(|(&index, &size)| AxisPayload {
-            index: index as u32,
-            size,
-        })
-        .collect();
-    let row_heights = sheet
-        .row_heights()
-        .iter()
-        .map(|(&index, &size)| AxisPayload { index, size })
-        .collect();
+    let axis = crate::sheet_dimensions::sheet_dimensions(sheet);
     let view = metadata.sheet_view;
     SheetPayload {
         name: sheet.name.clone(),
@@ -684,10 +706,19 @@ fn sheet_payload(sheet: &rxls::Sheet, index: usize, validation_sidecar: &mut Val
         cells,
         dimensions,
         merged_ranges,
-        column_widths,
-        row_heights,
-        default_column_width: sheet.default_column_width(),
-        default_row_height: sheet.default_row_height(),
+        column_widths: axis.columns,
+        row_heights: axis.rows,
+        axis_unit: "cssPixel".into(),
+        column_width_spans: axis.column_spans,
+        row_height_spans: axis.row_spans,
+        row_auto_height_spans: axis.row_modes,
+        row_auto_heights: axis.automatic_rows,
+        default_row_auto_height: Some(axis.default_row_automatic),
+        row_count: None,
+        column_count: None,
+        source_axis_dimensions: axis.source,
+        default_column_width: axis.default_column,
+        default_row_height: axis.default_row,
         gridlines: Some(!view.hide_gridlines),
         freeze_panes: view
             .freeze
@@ -697,6 +728,10 @@ fn sheet_payload(sheet: &rxls::Sheet, index: usize, validation_sidecar: &mut Val
         right_to_left: view.right_to_left,
         hidden_rows: sheet.hidden_rows().iter().copied().collect(),
         hidden_columns: sheet.hidden_columns().iter().copied().collect(),
+        row_hidden_spans: Vec::new(),
+        column_hidden_spans: Vec::new(),
+        auto_filter: None,
+        source_auto_filter: None,
         hyperlinks: metadata
             .hyperlinks
             .iter()
@@ -1316,7 +1351,10 @@ mod tests {
         assert_eq!(sections[0]["headerSections"][0]["referenceType"], "default");
         let header = &sections[0]["headerSections"][0]["storyText"];
         assert_eq!(header["text"], "Main & header");
-        assert_eq!(header["fields"][0], json!({ "field": "DATE", "offset": 4, "instruction": "DATE \\@ \"yyyy\"", "cachedResult": "2026" }));
+        let date = &header["fields"][0];
+        assert_eq!(date["field"], "DATE"); assert_eq!(date["offset"], 4);
+        assert_eq!(date["instruction"], "DATE \\@ \"yyyy\""); assert_eq!(date["cachedResult"], "2026");
+        assert_eq!(date["textStyle"]["fontSizePt"].as_f64(), Some(9.0));
         assert_eq!(header["fields"][1]["offset"], 4);
         assert_eq!(header["fields"][2]["field"], "PAGE");
         assert_eq!(sections[0]["footerSections"][0]["pageFields"], serde_json::json!(["PAGE", "NUMPAGES"]));

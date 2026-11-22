@@ -1,3 +1,9 @@
+import type { SheetBorderFormatState } from '../features/sheet-workbench/sheet-border-format-command.ts'
+import type { SheetMergeConfirmationRequest } from '../features/sheet-workbench/sheet-merge-command.ts'
+import type { SheetFormatPainterConfirmationRequest, SheetFormatPainterState } from '../features/sheet-workbench/sheet-format-painter-session.ts'
+import type { SheetAxisEdit } from '../domain/sheet-axis-structure.ts'
+import type { SheetSelectionCell } from '../features/sheet-workbench/sheet-selection.ts'
+
 export interface Disposable {
   dispose(): void
 }
@@ -17,7 +23,15 @@ export interface ApiEventMap {
   BeforeSheetNameChange: { workbookId: string; sheetId: string; oldName: string; newName: string; cancel?: boolean }
   SheetNameChanged: { workbookId: string; sheetId: string; oldName: string; newName: string }
   SheetValueChanged: { workbookId: string; sheetId: string; ranges: ApiRange[] }
+  SheetDimensionsChanged: { workbookId: string; sheetId: string; axis: 'row' | 'column'; automatic: boolean; ranges: ApiRange[] }
+  SheetStructureChanged: { workbookId: string; sheetId: string; edits: SheetAxisEdit[] }
+  SheetVisibilityChanged: { workbookId: string; sheetId: string; axis: 'row' | 'column'; visible: boolean; ranges: ApiRange[] }
+  SheetBorderFormatStateChanged: { workbookId: string; sheetId: string; state: SheetBorderFormatState }
+  SheetMergeConfirmationRequested: SheetMergeConfirmationRequest
+  SheetFormatPainterStateChanged: { state: SheetFormatPainterState }
+  SheetFormatPainterConfirmationRequested: SheetFormatPainterConfirmationRequest
   SelectionChanged: { workbookId: string; sheetId: string; range: ApiRange }
+  SelectionsChanged: { workbookId: string; sheetId: string; selection: ApiSheetSelection }
   BeforePivotTableChange: { unitId: string; subUnitId: string; pivotTableId: string; commandId: string; cancel?: boolean }
   PivotTableChanged: { unitId: string; subUnitId: string; pivotTableId: string; revision: number }
   PivotTableRendered: { unitId: string; subUnitId: string; pivotTableId: string; revision: number; outputRange?: { startRow: number; startCol: number; endRow: number; endCol: number } }
@@ -42,7 +56,15 @@ export class FEventName {
   readonly BeforeSheetNameChange = 'BeforeSheetNameChange'
   readonly SheetNameChanged = 'SheetNameChanged'
   readonly SheetValueChanged = 'SheetValueChanged'
+  readonly SheetDimensionsChanged = 'SheetDimensionsChanged'
+  readonly SheetStructureChanged = 'SheetStructureChanged'
+  readonly SheetVisibilityChanged = 'SheetVisibilityChanged'
+  readonly SheetBorderFormatStateChanged = 'SheetBorderFormatStateChanged'
+  readonly SheetMergeConfirmationRequested = 'SheetMergeConfirmationRequested'
+  readonly SheetFormatPainterStateChanged = 'SheetFormatPainterStateChanged'
+  readonly SheetFormatPainterConfirmationRequested = 'SheetFormatPainterConfirmationRequested'
   readonly SelectionChanged = 'SelectionChanged'
+  readonly SelectionsChanged = 'SelectionsChanged'
   readonly BeforePivotTableChange = 'BeforePivotTableChange'
   readonly PivotTableChanged = 'PivotTableChanged'
   readonly PivotTableRendered = 'PivotTableRendered'
@@ -59,6 +81,13 @@ export interface ApiRange {
   endColumn: number
   sheetId?: string
   unitId?: string
+  rangeType?: 0 | 1 | 2 | 3
+}
+
+export interface ApiSheetSelection {
+  ranges: ApiRange[]
+  activeRangeIndex: number
+  primary?: SheetSelectionCell
 }
 
 type Listener<T> = (event: T) => void

@@ -2,6 +2,8 @@
 
 This record covers the numeric `cellIs` slice of SHEET-14. It does not change the overall parity status in `UNIVER_FEATURE_PARITY.md`, which remains unaccepted.
 
+The 2026-11-23 continuation is recorded in [format painter and conditional-format editing](SHEET-04-format-painter.md). It adds formula origins, standard XLSX projection, rule-list commands and browser test drafts. Those changes have not been tested, type-checked or built. The verification results below are historical results for the 2026-11-21 slice and do not establish that the current working tree passes.
+
 ## Implemented
 
 - The sheet model stores conditional rules with ranges, operator, numeric operands, style, priority, and `stopIfTrue`.

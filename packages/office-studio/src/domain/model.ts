@@ -1,3 +1,5 @@
+import type { SheetAxisSpan } from './sheet-axis.ts'
+
 export type OfficeKind = 'workbook' | 'document'
 
 export type CellScalar = string | number | boolean | null
@@ -177,7 +179,7 @@ export interface SheetConditionalFormatStyle {
   underline?: boolean
   strike?: boolean
 }
-export type SheetConditionalFormatType = 'cellIs' | 'highlightCell' | 'top10' | 'average' | 'duplicateValues' | 'uniqueValues' | 'timePeriod' | 'containsText' | 'notContainsText' | 'beginsWith' | 'endsWith' | 'expression' | 'dataBar' | 'colorScale' | 'iconSet'
+export type SheetConditionalFormatType = 'cellIs' | 'highlightCell' | 'top10' | 'average' | 'duplicateValues' | 'uniqueValues' | 'timePeriod' | 'containsText' | 'notContainsText' | 'beginsWith' | 'endsWith' | 'expression' | 'dataBar' | 'colorScale' | 'iconSet' | 'office'
 export type SheetConditionalFormatSubType = 'number' | 'text' | 'timePeriod' | 'formula' | 'rank' | 'average' | 'duplicateValues' | 'uniqueValues'
 export interface SheetConditionalFormatValueConfig { type: string; value?: number | string }
 export interface SheetConditionalFormatVisualConfig {
@@ -191,12 +193,39 @@ export interface SheetConditionalFormatVisualConfig {
   isShowValue?: boolean
   iconSet?: string
   reverse?: boolean
+  minLength?: number
+  maxLength?: number
+  border?: boolean
+  borderColor?: string
+  negativeBorderColor?: string
+  axisColor?: string
+  negativeBarColorSameAsPositive?: boolean
+  negativeBarBorderColorSameAsPositive?: boolean
+  direction?: 'context' | 'leftToRight' | 'rightToLeft'
+  axisPosition?: 'automatic' | 'middle' | 'none'
 }
+export interface SheetConditionalFormatFormulaAnchor { row: number; col: number }
+export interface SheetConditionalFormatOfficeSource {
+  version: 1
+  format: 'xlsx'
+  originalId: string
+  storage: 'base' | 'x14'
+  ruleXml: string
+  groupXml?: string
+  differentialFormatXml?: string
+  x14Xml?: string
+  themeXml?: string
+  /** Only inspectable model fields; provenance and unknown JSON are excluded. */
+  baseline: SheetConditionalFormatOfficeBaseline
+}
+export type SheetConditionalFormatOfficeBaseline = Omit<SheetConditionalFormatRule, 'id' | 'metadata' | 'officeSource'>
 export interface SheetConditionalFormatRule {
   id: string
   type: SheetConditionalFormatType
   subType?: SheetConditionalFormatSubType
   ranges: CellRange[]
+  /** Formula origin retained when rebasing to the first range would erase partially valid references. */
+  formulaAnchor?: SheetConditionalFormatFormulaAnchor
   operator: SheetConditionalFormatOperator | string
   formula1: string
   formula2?: string
@@ -208,6 +237,8 @@ export interface SheetConditionalFormatRule {
   priority: number
   stopIfTrue: boolean
   metadata?: Record<string, unknown>
+  /** Original Office rule/style/extension identity retained independently of priority and dxf indexes. */
+  officeSource?: SheetConditionalFormatOfficeSource
 }
 export type SheetRangeProtectionDraft = Omit<SheetRangeProtectionRule, 'id' | 'permissionId' | 'ownerUserId'> & {
   id?: string
@@ -385,10 +416,21 @@ export interface SpreadsheetSheet {
   mergedRanges: CellRange[]
   columnWidths: Record<number, number>
   rowHeights: Record<number, number>
+  /** All editable axis geometry is measured in CSS pixels. Older snapshots may omit this marker. */
+  axisUnit?: 'cssPixel'
+  rowHeightSpans?: SheetAxisSpan<number>[]
+  columnWidthSpans?: SheetAxisSpan<number>[]
+  /** Undefined rows with no custom height use automatic height. */
+  rowAutoHeightSpans?: SheetAxisSpan<boolean>[]
+  /** Measured heights of content-bearing automatic rows, separate from manual heights. */
+  rowAutoHeights?: Record<number, number>
   frozenRows: number
   frozenCols: number
   showGridlines: boolean
   hiddenRows?: number[]
+  /** Compact manual hides; legacy point arrays remain readable and are combined with these ranges. */
+  rowHiddenSpans?: SheetAxisSpan<boolean>[]
+  columnHiddenSpans?: SheetAxisSpan<boolean>[]
   outline?: SheetOutlineState
   autoFilter?: SheetAutoFilter
   dataValidations?: SheetDataValidationRule[]
@@ -398,6 +440,7 @@ export interface SpreadsheetSheet {
   hiddenColumns?: number[]
   defaultColumnWidth?: number
   defaultRowHeight?: number
+  defaultRowAutoHeight?: boolean
   rowCount?: number
   columnCount?: number
   zoom?: number
@@ -435,6 +478,7 @@ export interface InlineRun {
   eastAsiaFontFamily?: string
   fontSize: number
   verticalAlign?: 'baseline' | 'subscript' | 'superscript'
+  highlight?: string
   metadata?: Record<string, unknown>
 }
 
@@ -451,6 +495,13 @@ export interface DocumentParagraphStyle {
   spacingRule?: 'auto' | 'atLeast' | 'exact'
   wordWrap?: boolean
   snapToGrid?: boolean
+}
+
+/** Resolved document defaults, independent of paragraph and direct run formatting. */
+export interface DocumentDefaultStyle {
+  version: 1
+  text: Pick<InlineRun, 'bold' | 'italic' | 'underline' | 'strike' | 'color' | 'fontFamily' | 'eastAsiaFontFamily' | 'fontSize' | 'verticalAlign'> & { highlight?: string }
+  paragraph: DocumentParagraphStyle
 }
 
 export interface DocumentSectionSetup {
@@ -559,9 +610,35 @@ export interface DocumentSectionHeaderFooter {
   evenPageHeader: string
   evenPageFooter: string
   pageFields?: DocumentPageField[]
+  /** Rich formatting over the corresponding literal text; fields remain separate objects. */
+  storyContent?: Partial<Record<DocumentPageField['story'], DocumentStoryContent>>
   differentFirstPage: boolean
   differentOddEven: boolean
   linkToPrevious: boolean
+}
+
+export interface DocumentStoryParagraph {
+  /** Half-open UTF-16 offsets in literal text, excluding the following paragraph separator. */
+  startOffset: number
+  endOffset: number
+  style: DocumentParagraphStyle
+  metadata?: Record<string, unknown>
+}
+
+export interface DocumentStoryContent {
+  /** Concatenated run text must equal the section's corresponding literal story string. */
+  runs: InlineRun[]
+  paragraphs: DocumentStoryParagraph[]
+  locks?: DocumentStoryLock[]
+  metadata?: Record<string, unknown>
+}
+
+export interface DocumentStoryLock {
+  id: string
+  /** Input-buffer UTF-16 offsets; page fields each occupy one U+FFFC. */
+  startOffset: number
+  endOffset: number
+  lock: 'contentLocked' | 'sdtLocked' | 'sdtContentLocked'
 }
 
 export interface DocumentPageField {
@@ -571,6 +648,9 @@ export interface DocumentPageField {
   offset?: number
   instruction?: string
   cachedResult?: string
+  textStyle?: DocumentDefaultStyle['text']
+  /** Parser provenance and source-format replay policy for this field result. */
+  metadata?: Record<string, unknown>
 }
 
 export interface DocumentNote {
@@ -628,6 +708,7 @@ export interface DocumentModel {
   sectionSetup?: DocumentSectionSetup
   modified: boolean
   wordCount: number
+  defaultStyle?: DocumentDefaultStyle
   contentControls?: DocumentContentControl[]
   sectionHeaderFooters?: Record<string, DocumentSectionHeaderFooter>
   permissionRules?: DocumentPermissionRule[]
@@ -695,6 +776,7 @@ export const createBlankSheet = (name = 'Sheet1'): SpreadsheetSheet => ({
   mergedRanges: [],
   columnWidths: {},
   rowHeights: {},
+  axisUnit: 'cssPixel',
   frozenRows: 0,
   frozenCols: 0,
   showGridlines: true,
@@ -713,9 +795,16 @@ export const createBlankWorkbook = (): WorkbookModel => {
   }
 }
 
+export const createDocumentDefaultStyle = (): DocumentDefaultStyle => ({
+  version: 1,
+  text: { fontFamily: 'Aptos', eastAsiaFontFamily: 'Aptos', fontSize: 11, color: '#1f2937', bold: false, italic: false, underline: false, strike: false },
+  paragraph: { align: 'left', indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 },
+})
+
 export const createBlankDocument = (): DocumentModel => ({
   kind: 'document',
   name: '未命名文档',
+  defaultStyle: createDocumentDefaultStyle(),
   blocks: [{
     id: `block-${Date.now()}`,
     type: 'paragraph',

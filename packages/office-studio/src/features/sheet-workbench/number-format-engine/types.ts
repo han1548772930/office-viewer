@@ -209,6 +209,7 @@ export interface FormatDateInfo {
     minutes: boolean;
     seconds: boolean;
     isDuration: boolean;
+    elapsedUnit?: 'hours' | 'minutes' | 'seconds';
     clockType: 12 | 24;
 }
 

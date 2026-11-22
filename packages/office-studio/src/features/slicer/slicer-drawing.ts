@@ -1,6 +1,7 @@
 import type { SlicerModel, SpreadsheetSheet, WorkbookModel } from '../../domain/model'
 import { AxisIndex, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { getCollapsedOutlineIndexes } from '../sheet-outline/sheet-outline'
+import { effectiveSheetRowSizes, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
 
 export type SlicerDrawing = NonNullable<SlicerModel['drawing']>
 export type SlicerAnchorType = SlicerDrawing['anchorType']
@@ -91,8 +92,10 @@ function workbookAxes(workbook: WorkbookModel, sheet: SpreadsheetSheet): SlicerA
   const outlineRows = sheet.outline ? [...getCollapsedOutlineIndexes({ count: rowCount, groups: sheet.outline.groups.filter((group) => group.axis === 'row') })] : []
   const outlineColumns = sheet.outline ? [...getCollapsedOutlineIndexes({ count: columnCount, groups: sheet.outline.groups.filter((group) => group.axis === 'column') })] : []
   const tableRows = (workbook.tables ?? []).filter((table) => table.sheetId === sheet.id).flatMap((table) => table.autoFilter?.filteredRows ?? [])
+  const rows = effectiveSheetRowSizes(sheet)
+  const columns = sheet.defaultColumnWidth === undefined && !sheetAxisSpanAt(sheet.columnWidthSpans, 0) ? { 0: 152, ...sheet.columnWidths } : sheet.columnWidths
   return {
-    rows: new AxisIndex(rowCount, sheet.defaultRowHeight ?? 26, sheet.rowHeights, [...(sheet.hiddenRows ?? []), ...(sheet.autoFilter?.filteredRows ?? []), ...tableRows, ...outlineRows]),
-    columns: new AxisIndex(columnCount, sheet.defaultColumnWidth ?? 112, sheet.defaultColumnWidth === undefined ? { 0: 152, ...sheet.columnWidths } : sheet.columnWidths, [...(sheet.hiddenColumns ?? []), ...outlineColumns]),
+    rows: new AxisIndex(rowCount, sheet.defaultRowHeight ?? 26, rows.sizes, [...(sheet.hiddenRows ?? []), ...(sheet.autoFilter?.filteredRows ?? []), ...tableRows, ...outlineRows], rows.spans, sheet.rowHiddenSpans),
+    columns: new AxisIndex(columnCount, sheet.defaultColumnWidth ?? 112, columns, [...(sheet.hiddenColumns ?? []), ...outlineColumns], sheet.columnWidthSpans, sheet.columnHiddenSpans),
   }
 }

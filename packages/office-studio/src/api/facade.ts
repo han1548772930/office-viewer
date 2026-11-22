@@ -26,6 +26,7 @@ import type {
   SpreadsheetSheet,
   SparklineSpec,
   SheetDataValidationRule,
+  SheetConditionalFormatRule,
   SheetRangeProtectionDraft,
   SheetRangeProtectionRule,
   SheetFilterCriteria,
@@ -59,14 +60,29 @@ import {
   type ContentControlPatch,
 } from '../features/document/services/content-controls'
 import type { OfficeStudio } from './office-studio'
+import { SHEET_AXIS_DIMENSION_COMMANDS } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
+import type { SheetAxisStructureCommandInput } from '../features/sheet-workbench/sheet-axis-structure-command.ts'
+import { SHEET_AXIS_VISIBILITY_COMMANDS } from '../features/sheet-workbench/sheet-axis-visibility.ts'
+import { SET_SHEET_CONDITIONAL_FORMATS_COMMAND } from '../features/conditional-formatting/conditional-format-command.ts'
+import { sheetRowHeight, sheetColumnWidth, sheetRowIsAutoHeight } from '../domain/sheet-axis.ts'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
 import type { DocumentSelection } from '../features/document/model/document-model.ts'
+import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
+import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
 import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
 import { parseSheetHyperlinkTarget } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCellInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
+import { SHEET_FONT_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-font-format-command.ts'
+import { SHEET_BORDER_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-border-format-command.ts'
+import { SheetBorderTypes, SheetBorderStyleTypes, type SheetBorderType, type SheetBorderPreset, type SheetBorderStyleType, type SheetBorderLineStyle } from '../features/sheet-workbench/sheet-cell-border.ts'
+import { SHEET_LAYOUT_FORMAT_COMMANDS, sheetCellTextRotation, sheetCellWrapStrategy, type SheetTextRotation, type SheetWrapStrategy } from '../features/sheet-workbench/sheet-layout-format-command.ts'
+import { SHEET_MERGE_COMMANDS, type SheetMergeMode, type SheetMergeOptions } from '../features/sheet-workbench/sheet-merge-command.ts'
+import { SHEET_CLEAR_COMMANDS, type SheetClearOptions } from '../features/sheet-workbench/sheet-clear-command.ts'
+import { sheetRangesEqual, sheetRangesIntersect } from '../features/sheet-workbench/sheet-range-command.ts'
+import type { SheetSelectionOptions } from '../features/sheet-workbench/sheet-selection.ts'
 import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
 
 export type {
@@ -101,7 +117,8 @@ import { createSheetDataValidationRule, sheetDataValidationOptions, validateShee
 import { createSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 
 export interface CreateUnitOptions { makeCurrent?: boolean }
-export interface FRangeCoordinates { startRow: number; startColumn: number; endRow: number; endColumn: number }
+export interface FRangeCoordinates { startRow: number; startColumn: number; endRow: number; endColumn: number; rangeType?: 0 | 1 | 2 | 3 }
+export interface FSelectionCell extends FRangeCoordinates { actualRow: number; actualColumn: number; isMerged: boolean; isMergedMainCell: boolean }
 export type PivotTableSourceInfo = PivotTableSourceInput
 export type PivotTableAnchorInfo = PivotTableAnchorInput
 export type ChartInfo = ChartConfig
@@ -121,6 +138,7 @@ export type DocumentContentControlPatch = ContentControlPatch
  */
 export class FOffice {
   readonly Event = new FEventName()
+  readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes })
   readonly studio: OfficeStudio
 
   private constructor(studio: OfficeStudio) {
@@ -228,6 +246,9 @@ export class FWorkbook {
     const sheet = this.model().sheets.find((item) => item.id === this.model().activeSheetId)
     return sheet ? new FWorksheet(this.api, this.id, sheet.id) : null
   }
+  getActiveRange(): FRange | null { return this.getActiveSheet()?.getActiveRange() ?? null }
+  getActiveRangeList(): FRange[] { return this.getActiveSheet()?.getActiveRangeList() ?? [] }
+  getActiveCell(): FRange | null { return this.getActiveSheet()?.getActiveCell() ?? null }
   getSheets(): FWorksheet[] { return this.model().sheets.map((sheet) => new FWorksheet(this.api, this.id, sheet.id)) }
   getSheetBySheetId(sheetId: string): FWorksheet | null {
     return this.model().sheets.some((sheet) => sheet.id === sheetId) ? new FWorksheet(this.api, this.id, sheetId) : null
@@ -352,11 +373,11 @@ export class FWorksheet {
   getSheetName(): string { return this.sheet().name }
   getDataValidations(): DataValidationRule[] { return cloneModel(this.sheet().dataValidations ?? []) }
   getDataValidation(range: FRange | FRangeCoordinates | string): DataValidationRule | null {
-    const bounds = normalizeValidationRange(range)
+    const bounds = this.ownedRange(range)
     return cloneModel(this.sheet().dataValidations?.find(rule => rule.ranges.some(item => rangesIntersect(item, bounds))) ?? null)
   }
   setDataValidation(range: FRange | FRangeCoordinates | string, input: DataValidationRuleInput | null): this {
-    const bounds = normalizeValidationRange(range)
+    const bounds = this.ownedRange(range)
     if (input === null) this.api.executeCommandSync('sheet.command.clear-data-validation', { unitId: this.unitId, sheetId: this.id, ranges: [bounds] })
     else {
       const rule = createSheetDataValidationRule(input, [bounds])
@@ -365,7 +386,7 @@ export class FWorksheet {
     return this
   }
   getDataValidationErrors(range: FRange | FRangeCoordinates | string): DataValidationError[] {
-    const bounds = normalizeValidationRange(range)
+    const bounds = this.ownedRange(range)
     const positions = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
       Array.from({ length: bounds.endCol - bounds.startCol + 1 }, (_, columnOffset) => ({ row: bounds.startRow + rowOffset, column: bounds.startCol + columnOffset })),
     ).flat()
@@ -382,21 +403,20 @@ export class FWorksheet {
     return this
   }
   clearSparklines(range: FRange | FRangeCoordinates | string): this {
-    const bounds = normalizeValidationRange(range)
+    const bounds = this.ownedRange(range)
     const patches: Record<string, null> = {}
-    for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
-      for (let column = bounds.startCol; column <= bounds.endCol; column += 1) patches[cellAddress(row, column)] = null
-    }
+    for (const cell of Object.values(this.sheet().cells)) if (cell.sparkline && cell.row >= bounds.startRow && cell.row <= bounds.endRow
+      && cell.col >= bounds.startCol && cell.col <= bounds.endCol) patches[cellAddress(cell.row, cell.col)] = null
     this.api.executeCommandSync('sheet.command.set-sparklines', { unitId: this.unitId, sheetId: this.id, patches })
     return this
   }
   getRangeProtectionRules(): SheetRangeProtectionRule[] { return cloneModel(this.sheet().rangeProtectionRules ?? []) }
   getRangeProtectionRulesForRange(range: FRange | FRangeCoordinates | string): SheetRangeProtectionRule[] {
-    const bounds = normalizeValidationRange(range)
+    const bounds = this.ownedRange(range)
     return cloneModel((this.sheet().rangeProtectionRules ?? []).filter(rule => rule.ranges.some(item => rangesIntersect(item, bounds))))
   }
   setRangeProtection(range: FRange | FRangeCoordinates | string, draft: SheetRangeProtectionDraft): SheetRangeProtectionRule {
-    const rule = createSheetRangeProtectionRule(draft, [normalizeValidationRange(range)], this.api.currentUserId)
+    const rule = createSheetRangeProtectionRule(draft, [this.ownedRange(range)], this.api.currentUserId)
     this.api.executeCommandSync('sheet.command.set-range-protection', { unitId: this.unitId, sheetId: this.id, rule })
     return cloneModel(rule)
   }
@@ -408,11 +428,8 @@ export class FWorksheet {
     return rules.flatMap(rule => sheetDataValidationOptions(rule, this.workbook(), this.id))
   }
   setAutoFilter(range: CellRange | FRangeCoordinates | FRange | string | null): this {
-    const normalized = range === null ? null : typeof range === 'string'
-      ? toCellRange(parseA1Range(range))
-      : range instanceof FRange ? toCellRange(range.getRange())
-      : 'startCol' in range ? normalizeToCellRange({ startRow: range.startRow, startColumn: range.startCol, endRow: range.endRow, endColumn: range.endCol })
-      : normalizeToCellRange(range)
+    const normalized = range === null ? null : this.ownedRange(typeof range === 'object' && !(range instanceof FRange) && 'startCol' in range
+      ? { startRow: range.startRow, startColumn: range.startCol, endRow: range.endRow, endColumn: range.endCol } : range)
     this.api.executeCommandSync('sheet.command.set-auto-filter', { unitId: this.unitId, sheetId: this.id, range: normalized })
     return this
   }
@@ -430,7 +447,7 @@ export class FWorksheet {
   }
   getFilteredRows(): number[] { return getFilteredRows(this.sheet()) }
   async sortRange(range: FRange | FRangeCoordinates | string, criteria: readonly SheetSortCriterion[], options: SortRangeApiOptions = {}): Promise<this> {
-    const normalized = typeof range === 'string' ? toCellRange(parseA1Range(range)) : range instanceof FRange ? toCellRange(range.getRange()) : normalizeToCellRange(range)
+    const normalized = this.ownedRange(range)
     const sheet = this.sheet()
     const expectedRevision = this.api.getWorkbookRevision(this.unitId)
     const numeric = getNumericSortColumns(sheet, normalized, criteria, options)
@@ -493,13 +510,140 @@ export class FWorksheet {
   getIndex(): number { return this.workbook().sheets.findIndex((sheet) => sheet.id === this.id) }
   getMaxRows(): number { return this.sheet().rowCount ?? 1_048_576 }
   getMaxColumns(): number { return this.sheet().columnCount ?? 16_384 }
+  insertRowBefore(beforePosition: number): this { return this.insertRowsBefore(beforePosition, 1) }
+  insertRowAfter(afterPosition: number): this { return this.insertRowsAfter(afterPosition, 1) }
+  insertRows(rowIndex: number, numRows = 1): this { return this.insertRowsBefore(rowIndex, numRows) }
+  insertRowsBefore(beforePosition: number, howMany: number): this { return this.insertAxes('row', beforePosition, howMany, false) }
+  insertRowsAfter(afterPosition: number, howMany: number): this { return this.insertAxes('row', afterPosition, howMany, true) }
+  insertColumnBefore(beforePosition: number): this { return this.insertColumnsBefore(beforePosition, 1) }
+  insertColumnAfter(afterPosition: number): this { return this.insertColumnsAfter(afterPosition, 1) }
+  insertColumns(columnIndex: number, numColumns = 1): this { return this.insertColumnsBefore(columnIndex, numColumns) }
+  insertColumnsBefore(beforePosition: number, howMany: number): this { return this.insertAxes('column', beforePosition, howMany, false) }
+  insertColumnsAfter(afterPosition: number, howMany: number): this { return this.insertAxes('column', afterPosition, howMany, true) }
+  deleteRow(rowPosition: number): this { return this.deleteRows(rowPosition, 1) }
+  deleteRows(rowPosition: number, howMany: number): this {
+    return this.executeAxisStructure('sheet.command.remove-row-by-range', { range: this.axisDimensionRange('row', rowPosition, howMany) })
+  }
+  deleteColumn(columnPosition: number): this { return this.deleteColumns(columnPosition, 1) }
+  deleteColumns(columnPosition: number, howMany: number): this {
+    return this.executeAxisStructure('sheet.command.remove-col-by-range', { range: this.axisDimensionRange('column', columnPosition, howMany) })
+  }
+  deleteRowsByPoints(points: readonly (number | readonly [number, number])[]): this { return this.deleteAxesByPoints('row', points) }
+  deleteColumnsByPoints(points: readonly (number | readonly [number, number])[]): this { return this.deleteAxesByPoints('column', points) }
+  moveRows(rowSpec: FRange, destinationIndex: number): this { return this.transferAxes('row', rowSpec, destinationIndex, false) }
+  moveColumns(columnSpec: FRange, destinationIndex: number): this { return this.transferAxes('column', columnSpec, destinationIndex, false) }
+  copyRows(rowSpec: FRange, destinationIndex: number): this { return this.transferAxes('row', rowSpec, destinationIndex, true) }
+  copyColumns(columnSpec: FRange, destinationIndex: number): this { return this.transferAxes('column', columnSpec, destinationIndex, true) }
+  hideRow(row: FRange): this { return this.setAxesVisibleRange('row', row, false) }
+  unhideRow(row: FRange): this { return this.setAxesVisibleRange('row', row, true) }
+  hideRows(rowIndex: number, numRows = 1): this { return this.setAxesVisible('row', rowIndex, numRows, false) }
+  showRows(rowIndex: number, numRows = 1): this { return this.setAxesVisible('row', rowIndex, numRows, true) }
+  hideColumn(column: FRange): this { return this.setAxesVisibleRange('column', column, false) }
+  unhideColumn(column: FRange): this { return this.setAxesVisibleRange('column', column, true) }
+  hideColumns(columnIndex: number, numColumns = 1): this { return this.setAxesVisible('column', columnIndex, numColumns, false) }
+  showColumns(columnIndex: number, numColumns = 1): this { return this.setAxesVisible('column', columnIndex, numColumns, true) }
+  getConditionalFormats(): SheetConditionalFormatRule[] { return cloneModel(this.sheet().conditionalFormats ?? []) }
+  setConditionalFormats(rules: readonly SheetConditionalFormatRule[], expectedRevision?: number): this {
+    this.api.executeCommandSync(SET_SHEET_CONDITIONAL_FORMATS_COMMAND, { unitId: this.unitId, sheetId: this.id, rules, expectedRevision })
+    return this
+  }
+  private executeAxisStructure(commandId: string, input: SheetAxisStructureCommandInput): this {
+    this.api.executeCommandSync(commandId, { ...input, unitId: this.unitId, sheetId: this.id })
+    return this
+  }
+  private setAxesVisible(axis: 'row' | 'column', index: number, count: number, visible: boolean): this {
+    const range = this.axisDimensionRange(axis, index, count)
+    const command = axis === 'row' ? visible ? SHEET_AXIS_VISIBILITY_COMMANDS.showRows : SHEET_AXIS_VISIBILITY_COMMANDS.hideRows
+      : visible ? SHEET_AXIS_VISIBILITY_COMMANDS.showColumns : SHEET_AXIS_VISIBILITY_COMMANDS.hideColumns
+    this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.id, ranges: [range] })
+    return this
+  }
+  private setAxesVisibleRange(axis: 'row' | 'column', source: FRange, visible: boolean): this {
+    if (!(source instanceof FRange) || source.getUnitId() !== this.unitId || source.getSheetId() !== this.id) throw new Error('目标选区必须属于当前工作表。')
+    const range = source.getRange(), index = axis === 'row' ? range.startRow : range.startColumn, end = axis === 'row' ? range.endRow : range.endColumn
+    return this.setAxesVisible(axis, index, end - index + 1, visible)
+  }
+  private insertAxes(axis: 'row' | 'column', position: number, count: number, after: boolean): this {
+    const anchor = this.axisDimensionRange(axis, position, 1)
+    validateSize(count, 'count')
+    const start = position + (after ? 1 : 0)
+    const range: CellRange = axis === 'row' ? { ...anchor, startRow: start, endRow: start + count - 1 }
+      : { ...anchor, startCol: start, endCol: start + count - 1 }
+    return this.executeAxisStructure(axis === 'row' ? 'sheet.command.insert-row-by-range' : 'sheet.command.insert-col-by-range', {
+      range, direction: axis === 'row' ? after ? 2 : 0 : after ? 1 : 3,
+    })
+  }
+  private deleteAxesByPoints(axis: 'row' | 'column', points: readonly (number | readonly [number, number])[]): this {
+    if (!Array.isArray(points)) throw new TypeError('行列删除位置必须是数组。')
+    const ranges = points.map(point => {
+      if (typeof point === 'number') return this.axisDimensionRange(axis, point, 1)
+      if (!Array.isArray(point) || point.length !== 2) throw new TypeError('行列删除区间必须包含开始和结束位置。')
+      return this.axisDimensionRange(axis, point[0], point[1] - point[0] + 1)
+    })
+    if (!ranges.length) return this
+    // Overlapping points are merged and removed in reverse order by one transaction.
+    return this.executeAxisStructure(axis === 'row' ? 'sheet.command.remove-row' : 'sheet.command.remove-col', { ranges })
+  }
+  private transferAxes(axis: 'row' | 'column', source: FRange, destinationIndex: number, copy: boolean): this {
+    if (!(source instanceof FRange) || source.getUnitId() !== this.unitId || source.getSheetId() !== this.id) throw new Error('源选区必须属于当前工作表。')
+    const range = source.getRange(), start = axis === 'row' ? range.startRow : range.startColumn
+    const end = axis === 'row' ? range.endRow : range.endColumn
+    const fromRange = this.axisDimensionRange(axis, start, end - start + 1)
+    return this.executeAxisStructure(`sheet.command.${copy ? 'copy' : 'move'}-${axis === 'row' ? 'rows' : 'cols'}`, { fromRange, destinationIndex })
+  }
+  getRowHeight(row: number): number { this.axisDimensionRange('row', row, 1); return sheetRowHeight(this.sheet(), row) }
+  getColumnWidth(column: number): number { this.axisDimensionRange('column', column, 1); return sheetColumnWidth(this.sheet(), column) }
+  getRowIsAutoHeight(row: number): boolean { this.axisDimensionRange('row', row, 1); return sheetRowIsAutoHeight(this.sheet(), row) }
+  setRowHeight(row: number, height: number): this { return this.setRowHeights(row, 1, height) }
+  setRowHeights(startRow: number, numRows: number, height: number): this {
+    this.api.executeCommandSync(SHEET_AXIS_DIMENSION_COMMANDS.growingRowHeight, { unitId: this.unitId, sheetId: this.id,
+      ranges: [this.axisDimensionRange('row', startRow, numRows)], value: height })
+    return this
+  }
+  setRowHeightsForced(startRow: number, numRows: number, height: number): this {
+    this.api.executeCommandSync(SHEET_AXIS_DIMENSION_COMMANDS.rowHeight, { unitId: this.unitId, sheetId: this.id,
+      ranges: [this.axisDimensionRange('row', startRow, numRows)], value: height })
+    return this
+  }
+  setRowAutoHeight(startRow: number, numRows = 1): this {
+    this.api.executeCommandSync(SHEET_AXIS_DIMENSION_COMMANDS.rowAutoHeight, { unitId: this.unitId, sheetId: this.id,
+      ranges: [this.axisDimensionRange('row', startRow, numRows)] })
+    return this
+  }
+  setRangesAutoHeight(ranges: readonly (CellRange | FRangeCoordinates)[]): this {
+    this.api.executeCommandSync(SHEET_AXIS_DIMENSION_COMMANDS.rowAutoHeight, { unitId: this.unitId, sheetId: this.id, ranges })
+    return this
+  }
+  setColumnWidth(column: number, width: number): this { return this.setColumnWidths(column, 1, width) }
+  setColumnWidths(startColumn: number, numColumns: number, width: number): this {
+    this.api.executeCommandSync(SHEET_AXIS_DIMENSION_COMMANDS.columnWidth, { unitId: this.unitId, sheetId: this.id,
+      ranges: [this.axisDimensionRange('column', startColumn, numColumns)], value: width })
+    return this
+  }
+  setColumnAutoWidth(startColumn: number, numColumns = 1): this {
+    this.api.executeCommandSync(SHEET_AXIS_DIMENSION_COMMANDS.columnAutoWidth, { unitId: this.unitId, sheetId: this.id,
+      ranges: [this.axisDimensionRange('column', startColumn, numColumns)] })
+    return this
+  }
+  private axisDimensionRange(axis: 'row' | 'column', start: number, count: number): CellRange {
+    const sheet = this.sheet(), rows = sheet.rowCount ?? 1_048_576, columns = sheet.columnCount ?? 16_384
+    if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(count) || count <= 0 || start + count > (axis === 'row' ? rows : columns)) throw new RangeError('行列尺寸目标超出工作表。')
+    return axis === 'row' ? { startRow: start, endRow: start + count - 1, startCol: 0, endCol: columns - 1 }
+      : { startRow: 0, endRow: rows - 1, startCol: start, endCol: start + count - 1 }
+  }
   getRange(row: number, column: number): FRange
   getRange(row: number, column: number, numRows: number): FRange
   getRange(row: number, column: number, numRows: number, numColumns: number): FRange
   getRange(a1Notation: string): FRange
   getRange(range: FRangeCoordinates): FRange
   getRange(rowOrRange: number | string | FRangeCoordinates, column?: number, numRows = 1, numColumns = 1): FRange {
-    if (typeof rowOrRange === 'string') return new FRange(this.api, this.unitId, this.id, parseA1Range(rowOrRange))
+    if (typeof rowOrRange === 'string') {
+      const { sheetName } = splitSheetA1Reference(rowOrRange)
+      const sheet = sheetName === undefined ? this.sheet() : this.workbook().sheets.find(candidate => candidate.name.toLocaleLowerCase() === sheetName.toLocaleLowerCase())
+      if (!sheet) throw new Error(`找不到范围所在的工作表：${sheetName}`)
+      this.api.assertCanViewWorksheet(this.unitId, sheet.id)
+      return new FRange(this.api, this.unitId, sheet.id, parseSheetA1Range(rowOrRange, sheet))
+    }
     if (typeof rowOrRange === 'object') return new FRange(this.api, this.unitId, this.id, normalizeRange(rowOrRange))
     if (column == null) throw new TypeError('A column index is required')
     validateIndex(rowOrRange, 'row')
@@ -521,10 +665,37 @@ export class FWorksheet {
       startColumn: selection.startColumn,
       endRow: selection.endRow,
       endColumn: selection.endColumn,
+      ...(selection.rangeType === undefined ? {} : { rangeType: selection.rangeType }),
     })
   }
+  getActiveRangeList(): FRange[] {
+    const active = this.api.getSelection()
+    if (active?.unitId !== this.unitId || active.sheetId !== this.id) return []
+    return this.api.getSelections().map(range => new FRange(this.api, this.unitId, this.id, range))
+  }
+  getPrimaryCell(): FSelectionCell | null {
+    const active = this.api.getSelection(), primary = this.api.getSelectionState()?.primary
+    if (active?.unitId !== this.unitId || active.sheetId !== this.id || !primary) return null
+    const merge = this.sheet().mergedRanges.find(range => primary.row >= range.startRow && primary.row <= range.endRow
+      && primary.column >= range.startCol && primary.column <= range.endCol)
+    const main = Boolean(merge && primary.row === merge.startRow && primary.column === merge.startCol)
+    return { startRow: merge?.startRow ?? primary.row, endRow: merge?.endRow ?? primary.row,
+      startColumn: merge?.startCol ?? primary.column, endColumn: merge?.endCol ?? primary.column,
+      actualRow: primary.row, actualColumn: primary.column, isMerged: Boolean(merge) && !main, isMergedMainCell: main }
+  }
+  getActiveCell(): FRange | null {
+    const primary = this.getPrimaryCell()
+    return primary ? this.getRange(primary.actualRow, primary.actualColumn) : null
+  }
   setActiveRange(range: FRange): this {
+    this.ownedRange(range)
     this.api.setSelection(this.unitId, this.id, range.getRange())
+    return this
+  }
+  setActiveRangeList(ranges: readonly FRange[], options: SheetSelectionOptions = {}): this {
+    if (!Array.isArray(ranges)) throw new TypeError('选区必须是范围数组。')
+    for (const range of ranges) this.ownedRange(range)
+    this.api.setSelections(this.unitId, this.id, ranges.map(range => range.getRange()), options)
     return this
   }
   getSelection(): FSelection { return new FSelection(this) }
@@ -559,6 +730,13 @@ export class FWorksheet {
   getHiddenGridlines(): boolean { return !this.sheet().showGridlines }
   activate(): this { this.api.activateWorkbook(this.unitId); return this }
 
+  /** Sheet-scoped commands must keep the identity resolved by the A1/FRange boundary. */
+  private ownedRange(value: FRange | FRangeCoordinates | string): CellRange {
+    const range = value instanceof FRange ? value : typeof value === 'string' ? this.getRange(value) : this.getRange(value)
+    if (range.getUnitId() !== this.unitId || range.getSheetId() !== this.id) throw new Error('目标选区必须属于当前工作表。')
+    return toCellRange(range.getRange())
+  }
+
   private workbook(): WorkbookModel {
     const model = this.api.getWorkbookModel(this.unitId)
     if (!model) throw new Error(`Workbook not found: ${this.unitId}`)
@@ -579,11 +757,10 @@ export class FSelection {
     this.worksheet = worksheet
   }
   getActiveRange(): FRange | null { return this.worksheet.getActiveRange() }
-  getCurrentCell(): FRange | null {
-    const range = this.getActiveRange()
-    return range ? this.worksheet.getRange(range.getRow(), range.getColumn()) : null
-  }
-  getActiveRangeList(): FRange[] { const range = this.getActiveRange(); return range ? [range] : [] }
+  getCurrentCell(): FSelectionCell | null { return this.worksheet.getPrimaryCell() }
+  getCurrentCellRange(): FRange | null { return this.worksheet.getActiveCell() }
+  getActiveRangeList(): FRange[] { return this.worksheet.getActiveRangeList() }
+  getActiveSheet(): FWorksheet { return this.worksheet }
 }
 
 export class ChartConfigBuilder {
@@ -663,7 +840,7 @@ export class FRange {
     this.api = api
     this.unitId = unitId
     this.sheetId = sheetId
-    this.range = range
+    this.range = normalizeRange(range)
   }
 
   getUnitId(): string { return this.unitId }
@@ -678,7 +855,9 @@ export class FRange {
   getA1Notation(withSheet = false): string {
     const first = cellAddress(this.range.startRow, this.range.startColumn)
     const last = cellAddress(this.range.endRow, this.range.endColumn)
-    const ref = first === last ? first : `${first}:${last}`
+    const ref = this.range.rangeType === 1 ? `${this.range.startRow + 1}:${this.range.endRow + 1}`
+      : this.range.rangeType === 2 ? `${first.replace(/\d+$/, '')}:${last.replace(/\d+$/, '')}`
+        : first === last ? first : `${first}:${last}`
     const sheetName = this.sheet().name.replaceAll("'", "''")
     return withSheet ? `'${sheetName}'!${ref}` : ref
   }
@@ -766,53 +945,64 @@ export class FRange {
     return !pattern || /^general$/i.test(pattern) ? '' : pattern
   }
   getNumberFormats(): string[][] { return this.mapCells(cell => !cell?.style.numberFormat || /^general$/i.test(cell.style.numberFormat) ? '' : cell.style.numberFormat) }
-  setFontWeight(weight: 'normal' | 'bold' | null): this { return this.mutateStyle('sheet.command.set-font-weight', 'Set font weight', (cell) => { cell.style.font.bold = weight === 'bold' }) }
-  setFontStyle(style: 'normal' | 'italic' | null): this { return this.mutateStyle('sheet.command.set-font-style', 'Set font style', (cell) => { cell.style.font.italic = style === 'italic' }) }
-  setFontFamily(family: string | null): this { return this.mutateStyle('sheet.command.set-font-family', 'Set font family', (cell) => { if (family) cell.style.font.family = family }) }
-  setFontSize(size: number | null): this {
-    if (size !== null && (!Number.isFinite(size) || size <= 0)) throw new RangeError('Font size must be a positive number')
-    return this.mutateStyle('sheet.command.set-font-size', 'Set font size', (cell) => { if (size !== null) cell.style.font.size = size })
-  }
-  setFontColor(color: string | null): this { return color === null ? this.resetColor('sheet.command.reset-text-color') : this.mutateStyle('sheet.command.set-font-color', 'Set font color', (cell) => { if (color) cell.style.font.color = color }) }
-  setBackground(color: string | null): this { return color === null ? this.resetColor('sheet.command.reset-background-color') : this.mutateStyle('sheet.command.set-background', 'Set background', (cell) => { cell.style.fill = color }) }
-  private resetColor(command: 'sheet.command.reset-text-color' | 'sheet.command.reset-background-color'): this {
-    this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)] })
+  setFontWeight(weight: 'normal' | 'bold' | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontWeight, weight) }
+  setFontStyle(style: 'normal' | 'italic' | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontStyle, style) }
+  setFontFamily(family: string | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontFamily, family) }
+  setFontSize(size: number | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontSize, size) }
+  setFontColor(color: string | null): this { return this.formatFont(color === null ? SHEET_FONT_FORMAT_COMMANDS.resetTextColor : SHEET_FONT_FORMAT_COMMANDS.fontColor, color) }
+  setBackground(color: string | null): this { return this.formatFont(color === null ? SHEET_FONT_FORMAT_COMMANDS.resetBackground : SHEET_FONT_FORMAT_COMMANDS.background, color) }
+  /** Border topology is relative to this complete range, including merged cells and shared edges. */
+  setBorder(type: SheetBorderType | SheetBorderPreset, style: SheetBorderStyleType | SheetBorderLineStyle, color?: string): this {
+    this.api.executeCommandSync(SHEET_BORDER_FORMAT_COMMANDS.basic, {
+      unitId: this.unitId, subUnitId: this.sheetId, ranges: [toCellRange(this.range)], value: { type, style, ...(color !== undefined ? { color } : {}) },
+    })
     return this
   }
-  setHorizontalAlignment(alignment: 'general' | 'left' | 'center' | 'right' | 'justify'): this { return this.mutateStyle('sheet.command.set-horizontal-alignment', 'Set horizontal alignment', (cell) => { cell.style.horizontal = alignment }) }
-  setVerticalAlignment(alignment: 'top' | 'middle' | 'bottom'): this { return this.mutateStyle('sheet.command.set-vertical-alignment', 'Set vertical alignment', (cell) => { cell.style.vertical = alignment }) }
-  setWrap(enabled: boolean): this { return this.mutateStyle('sheet.command.set-wrap', 'Set text wrapping', (cell) => { cell.style.wrap = enabled }) }
+  private formatFont(command: string, value: unknown): this {
+    this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)], value })
+    return this
+  }
+  setHorizontalAlignment(alignment: 'general' | 'left' | 'center' | 'right' | 'justify'): this { return this.formatLayout('sheet.command.set-horizontal-alignment', alignment) }
+  setVerticalAlignment(alignment: 'top' | 'middle' | 'bottom'): this { return this.formatLayout('sheet.command.set-vertical-alignment', alignment) }
+  setWrap(enabled: boolean): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.wrap, enabled) }
+  setWrapStrategy(strategy: SheetWrapStrategy): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.wrapStrategy, strategy) }
+  setShrinkToFit(enabled: boolean): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.shrink, enabled) }
+  setTextRotation(rotation: SheetTextRotation): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.rotation, rotation) }
+  getHorizontalAlignment(): 'general' | 'left' | 'center' | 'right' | 'justify' { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.horizontal ?? 'general' }
+  getVerticalAlignment(): 'top' | 'middle' | 'bottom' { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.vertical ?? createCell(0, 0).style.vertical }
+  getWrap(): boolean { return this.getWrapStrategy() === 'wrap' }
+  getWrapStrategy(): SheetWrapStrategy { return sheetCellWrapStrategy(this.cellAt(this.range.startRow, this.range.startColumn)?.style) }
+  getTextRotation(): SheetTextRotation { return sheetCellTextRotation(this.cellAt(this.range.startRow, this.range.startColumn)?.style) }
+  private formatLayout(command: string, value: unknown): this {
+    this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)], value })
+    return this
+  }
   getBackground(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.fill ?? '#ffffff' }
   getFontWeight(): 'normal' | 'bold' { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.font.bold ? 'bold' : 'normal' }
-  merge(): this {
-    if (this.getWidth() === 1 && this.getHeight() === 1) return this
-    this.mutate('sheet.command.merge-cells', 'Merge cells', (model) => {
-      const sheet = this.sheet(model)
-      const range = { startRow: this.range.startRow, startCol: this.range.startColumn, endRow: this.range.endRow, endCol: this.range.endColumn }
-      const overlaps = sheet.mergedRanges.some((merged) => !(range.endRow < merged.startRow || range.startRow > merged.endRow || range.endCol < merged.startCol || range.startCol > merged.endCol))
-      if (overlaps) throw new Error('Merged ranges cannot overlap')
-      sheet.mergedRanges.push(range)
-      for (let row = range.startRow; row <= range.endRow; row++) for (let column = range.startCol; column <= range.endCol; column++) {
-        if (row !== range.startRow || column !== range.startCol) delete sheet.cells[`${row}:${column}`]
-      }
-    })
+  merge(options: SheetMergeOptions = {}): this { return this.mergeWithMode('all', options) }
+  mergeAcross(options: SheetMergeOptions = {}): this { return this.mergeWithMode('horizontal', options) }
+  mergeVertically(options: SheetMergeOptions = {}): this { return this.mergeWithMode('vertical', options) }
+  private mergeWithMode(mode: SheetMergeMode, options: SheetMergeOptions): this {
+    this.api.executeCommandSync(SHEET_MERGE_COMMANDS.merge, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)],
+      mode, defaultMerge: options.defaultMerge ?? true, isForceMerge: options.isForceMerge ?? false })
     return this
   }
-  clear(options: { contents?: boolean; format?: boolean } = {}): this {
-    const clearContents = options.contents ?? true
-    const clearFormat = options.format ?? false
-    this.mutate('sheet.command.clear-range', 'Clear range', (model) => {
-      const sheet = this.sheet(model)
-      for (let row = this.range.startRow; row <= this.range.endRow; row++) for (let column = this.range.startColumn; column <= this.range.endColumn; column++) {
-        const key = `${row}:${column}`
-        const current = sheet.cells[key]
-        if (!current) continue
-        if (clearContents && clearFormat) delete sheet.cells[key]
-        else if (clearContents) { current.value = null; current.formula = null; current.display = '' }
-        else if (clearFormat) current.style = createCell(row, column).style
-      }
-      if (clearContents && clearFormat) sheet.mergedRanges = sheet.mergedRanges.filter((merged) => !rangeContains(this.range, merged))
-    })
+  breakApart(): this {
+    this.api.executeCommandSync(SHEET_MERGE_COMMANDS.unmerge, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)] })
+    return this
+  }
+  isMerged(): boolean { return this.sheet().mergedRanges.some(range => sheetRangesEqual(range, toCellRange(this.range))) }
+  isPartOfMerge(): boolean { return this.sheet().mergedRanges.some(range => sheetRangesIntersect(range, toCellRange(this.range))) }
+  clear(options: SheetClearOptions = {}): this {
+    this.api.executeCommandSync(SHEET_CLEAR_COMMANDS.range, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)], options })
+    return this
+  }
+  clearContent(): this {
+    this.api.executeCommandSync(SHEET_CLEAR_COMMANDS.content, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)] })
+    return this
+  }
+  clearFormat(): this {
+    this.api.executeCommandSync(SHEET_CLEAR_COMMANDS.format, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)] })
     return this
   }
   activate(): this { this.api.setSelection(this.unitId, this.sheetId, this.range); return this }
@@ -1045,6 +1235,9 @@ export class FDocument {
   executeCommand(command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
     return this.api.executeDocumentEditorCommand(this.id, command, selection)
   }
+  clearFormatting(selection: DocumentSelection, story?: DocumentStoryRange): DocumentEditorCommandResult {
+    return this.executeCommand({ id: 'doc.command.clear-formatting', ...(story ? { story } : {}) }, selection)
+  }
   getPermissionRules(): DocumentModel['permissionRules'] { return cloneModel(this.model().permissionRules ?? []) }
   setPermissionRules(rules: NonNullable<DocumentModel['permissionRules']>): this {
     this.api.executeCommandSync('doc.command.set-document-permission-rules', { unitId: this.id, rules })
@@ -1198,12 +1391,16 @@ export class FBlob {
 }
 
 function normalizeRange(range: FRangeCoordinates): FRangeCoordinates {
-  const next = { startRow: range.startRow, startColumn: range.startColumn, endRow: range.endRow, endColumn: range.endColumn }
+  if (!range || typeof range !== 'object' || Array.isArray(range)) throw new TypeError('Range specification is invalid')
+  if (range.rangeType !== undefined && ![0, 1, 2, 3].includes(range.rangeType)) throw new TypeError('Range type is invalid')
+  const next = { startRow: range.startRow, startColumn: range.startColumn, endRow: range.endRow, endColumn: range.endColumn,
+    ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) }
   validateIndex(next.startRow, 'startRow')
   validateIndex(next.startColumn, 'startColumn')
   validateIndex(next.endRow, 'endRow')
   validateIndex(next.endColumn, 'endColumn')
   if (next.endRow < next.startRow || next.endColumn < next.startColumn) throw new RangeError('Range end must not precede its start')
+  if (next.endRow >= 1_048_576 || next.endColumn >= 16_384) throw new RangeError('Range exceeds the Office row or column limit')
   return next
 }
 
@@ -1234,12 +1431,6 @@ function toCellRange(range: FRangeCoordinates): CellRange {
   return normalized
 }
 
-function normalizeValidationRange(range: FRange | FRangeCoordinates | string): CellRange {
-  if (typeof range === 'string') return toCellRange(parseA1Range(range))
-  if (range instanceof FRange) return toCellRange(range.getRange())
-  return toCellRange(range)
-}
-
 function rangesIntersect(left: CellRange, right: CellRange): boolean {
   return left.startRow <= right.endRow && left.endRow >= right.startRow
     && left.startCol <= right.endCol && left.endCol >= right.startCol
@@ -1251,11 +1442,7 @@ function normalizeToCellRange(range: FRangeCoordinates): CellRange {
 }
 
 function parseA1Range(value: string): FRangeCoordinates {
-  const refs = value.split('!').at(-1)?.split(':') ?? []
-  if (refs.length < 1 || refs.length > 2) throw new TypeError(`Invalid A1 range: ${value}`)
-  const first = parseA1Cell(refs[0]!)
-  const last = parseA1Cell(refs[1] ?? refs[0]!)
-  return normalizeRange({ startRow: first.row, startColumn: first.column, endRow: last.row, endColumn: last.column })
+  return parseSheetA1Range(value)
 }
 
 function parseChartA1Range(value: string): ChartSource['range'] {
@@ -1280,19 +1467,15 @@ function cellAddress(row: number, column: number): string {
 }
 
 function validateIndex(value: number, name: string, allowZero = false): void {
-  if (!Number.isInteger(value) || value < (allowZero ? 0 : 0)) throw new RangeError(`${name} must be a non-negative integer`)
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 0)) throw new RangeError(`${name} must be a non-negative safe integer`)
 }
 
 function validateSize(value: number, name: string): void {
-  if (!Number.isInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`)
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive safe integer`)
 }
 
 function assertMatrixSize(values: unknown[][], rows: number, columns: number): void {
   if (values.length !== rows || values.some((row) => row.length !== columns)) throw new RangeError(`Expected a ${rows}x${columns} value matrix`)
-}
-
-function rangeContains(range: FRangeCoordinates, merged: { startRow: number; startCol: number; endRow: number; endCol: number }): boolean {
-  return range.startRow <= merged.startRow && range.startColumn <= merged.startCol && range.endRow >= merged.endRow && range.endColumn >= merged.endCol
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -50,6 +50,8 @@ export interface FormulaEvaluationOptions {
   numberFormatLocale?: string
   /** A fixed clock value for deterministic evaluation and consistent recalculation. */
   now?: Date
+  /** Cell whose formula is evaluated, including conditional formulas outside the stored cell map. */
+  formulaCell?: Pick<FormulaCellAddress, 'row' | 'column'>
 }
 
 export interface FormulaErrorValue { kind: 'error'; code: string }

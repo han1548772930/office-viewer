@@ -5,7 +5,7 @@ import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, documentTabCommand, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
-import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, STORY_LINE_HEIGHT, type DocumentLayout } from '../../features/document/layout/document-layout'
+import { caretRect, createTextMeasurer, documentStoryCaretRect, documentStoryLayoutLines, emptyLayout, hitTestChecklist, hitTestDocument, hitTestDocumentStory, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../../features/document/model/document-model'
 import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
@@ -14,13 +14,17 @@ import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrol
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
 import type { StoryLocation } from '../../features/document/services/story-editor'
+import { documentFormattingWordRange } from '../../features/document/services/document-format-painter'
+import { useDocumentStoryInput } from './use-document-story-input'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storyReadonly?: boolean; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
   'open-story': [location: StoryLocation]
   'close-story': []
   'edit-story': [value: string, caret: number]
+  'update:story-selection': [range: { start: number; end: number }]
+  'story-composing': [value: boolean]
   'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
@@ -48,11 +52,13 @@ function storyElement() {
   const el = storyRef.value?.$el
   return el instanceof HTMLTextAreaElement ? el : el?.querySelector('textarea')
 }
-function storyRange() { const el = storyElement(); return { start: el?.selectionStart ?? 0, end: el?.selectionEnd ?? 0 } }
-function focusStory(offset?: number) {
-  void nextTick(() => { storyRef.value?.focus({ preventScroll: true }); if (offset !== undefined) storyElement()?.setSelectionRange(offset, offset) })
+function storyBeforeInput(event: InputEvent) {
+  if (!storyEventIsCurrent(event) || props.storyReadonly) { event.preventDefault(); return }
+  captureStoryInput(event)
+  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { event.preventDefault(); emit(event.inputType === 'historyUndo' ? 'undo' : 'redo') }
 }
 function storyKeys(event: KeyboardEvent) {
+  if (!storyEventIsCurrent(event)) return
   if (event.isComposing || event.keyCode === 229) return
   const key = event.key.toLowerCase(), mod = event.ctrlKey || event.metaKey
   if (key === 'escape') emit('close-story')
@@ -64,6 +70,7 @@ function storyKeys(event: KeyboardEvent) {
 const preview = shallowRef<DocumentModel | null>(null)
 const compositionSelection = shallowRef<DocumentSelection | null>(null)
 const composing = ref(false)
+const bodyBridgeVersion = ref(0)
 const focused = ref(false)
 const caretVisible = ref(true)
 const viewport = ref<DocumentViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom })
@@ -77,19 +84,32 @@ let lastSurfaceSize: { width: number; height: number; dpr: number } | undefined
 let frame = 0
 let blink: ReturnType<typeof setInterval> | undefined
 let dragAnchor: DocumentPoint | undefined
+let storyDragAnchor: { location: StoryLocation; offset: number } | undefined
 let pointerId: number | undefined
 let suppressCompositionInput = false
 let pendingText = ''
+let compositionModel: DocumentModel | undefined
+let compositionRange: DocumentSelection | undefined
+let compositionInput: HTMLTextAreaElement | null | undefined
+let blockedBodyInput: HTMLTextAreaElement | null | undefined
 let disposed = false
 let active = true
 const measurer = createTextMeasurer()
+const { inputValue: storyInputValue, composing: storyComposing, bridgeVersion: storyBridgeVersion, storyRange, storyEventIsCurrent, syncStorySelection, focusStory, storyInputChanged,
+  captureStoryInput, storyCompositionStart, storyCompositionEnd, storyFocused, cancelStoryInput } = useDocumentStoryInput(props, {
+  element: storyElement, layout: () => layout.value, active: () => active && !disposed,
+  edit: (value, caret) => emit('edit-story', value, caret), select: range => emit('update:story-selection', range),
+  composing: value => emit('story-composing', value), preview: model => { preview.value = model; relayout() },
+  draw: () => { caretVisible.value = true; requestDraw() }, notify: message => emit('notify', message),
+})
 const displayModel = computed(() => preview.value ?? props.model)
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
 const storyStyle = computed(() => {
   const target = props.story, entry = target && layout.value.pageHeaderFooters[target.page]
   if (!entry || !target) return { display: 'none' }
   const k = props.zoom / 100, off = sceneOffset(layout.value, viewport.value)
-  return { left: `${off.x + entry.x * k}px`, width: `${entry.width * k}px`, top: `${off.y + (target.area === 'header' ? entry.headerTop : entry.footerBottom) * k}px`, fontSize: `${11 * k}px`, transform: target.area === 'footer' ? 'translateY(-100%)' : undefined }
+  const caret = documentStoryCaretRect(documentStoryLayoutLines(layout.value, target), props.storySelection?.end ?? 0)
+  return { left: `${off.x + (caret?.x ?? entry.x) * k}px`, top: `${off.y + (caret?.y ?? (target.area === 'header' ? entry.headerTop : entry.footerBottom)) * k}px`, fontSize: `${Math.max(12, (caret?.height ?? 12) * k)}px` }
 })
 const spacerStyle = computed(() => ({ width: `${Math.max(viewport.value.width, layout.value.width * props.zoom / 100)}px`, height: `${layout.value.height * props.zoom / 100}px` }))
 const inputStyle = computed(() => {
@@ -102,8 +122,9 @@ const inputStyle = computed(() => {
   }
 })
 
-watch(() => props.model, () => { if (!composing.value) preview.value = null; relayout() }, { deep: false })
-watch(() => props.selection, () => { caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible) }, { deep: true })
+watch(() => props.model, () => { if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(); if (!composing.value && !storyComposing.value) preview.value = null; relayout() }, { deep: false })
+watch(() => props.story, story => { if (story && composing.value) cancelBodyComposition(); requestDraw() })
+watch(() => props.selection, () => { if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(); caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible) }, { deep: true })
 watch(() => props.searchMatches, requestDraw, { deep: true })
 watch(() => props.zoom, (zoom) => {
   const offset = zoomedDocumentScrollOffset(layout.value, viewport.value, zoom)
@@ -120,11 +141,15 @@ watch(() => props.zoom, (zoom) => {
 onActivated(() => { active = true; void nextTick(resize) })
 onDeactivated(() => {
   active = false
+  cancelBodyComposition()
+  cancelStoryInput()
   focused.value = false
   inputRef.value?.blur()
+  storyElement()?.blur()
   if (pointerId != null && scrollRef.value?.hasPointerCapture(pointerId)) scrollRef.value.releasePointerCapture(pointerId)
   pointerId = undefined
   dragAnchor = undefined
+  storyDragAnchor = undefined
   cancelAnimationFrame(frame)
   frame = 0
   surface?.resize(0, 0, window.devicePixelRatio || 1)
@@ -152,6 +177,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true
+  cancelBodyComposition()
+  cancelStoryInput()
   resizeObserver?.disconnect()
   dprQuery?.removeEventListener('change', onDevicePixelRatioChange)
   window.removeEventListener('resize', onViewportResize)
@@ -193,6 +220,7 @@ function onViewportResize() {
 }
 
 function relayout() {
+  if (disposed) return
   layout.value = layoutDocument(displayModel.value, measurer)
   const sources = new Set(layout.value.images.map((image) => image.src))
   for (const [src, image] of images) {
@@ -220,7 +248,8 @@ function requestDraw() {
   if (frame || disposed || !active) return
   frame = requestAnimationFrame(() => {
     frame = 0
-    surface?.render(sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value, images, searchMatches: props.searchMatches }))
+    surface?.render(sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value || storyComposing.value, images, searchMatches: props.searchMatches,
+      ...(props.story ? { story: { location: props.story, selection: props.storySelection ?? storyRange() } } : {}) }))
   })
 }
 
@@ -268,14 +297,25 @@ function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | und
   const page = layout.value.pages.find(p => pos.x >= p.x && pos.x <= p.x + p.width && pos.y >= p.y && pos.y <= p.y + p.height)
   const entry = page && layout.value.pageHeaderFooters[page.index]
   if (!page || !entry) return
-  if (pos.y < page.content.y || (pos.y >= entry.headerTop && pos.y < entry.headerTop + Math.max(1, entry.headerLines.length) * STORY_LINE_HEIGHT)) return { page: page.index, area: 'header' }
-  if (pos.y >= page.content.y + page.content.height || (pos.y <= entry.footerBottom && pos.y > entry.footerBottom - Math.max(1, entry.footerLines.length) * STORY_LINE_HEIGHT)) return { page: page.index, area: 'footer' }
+  if (pos.y < page.content.y || entry.headerLayoutLines.some(line => pos.y >= line.y && pos.y < line.y + line.height)) return { page: page.index, area: 'header' }
+  if (pos.y >= page.content.y + page.content.height || entry.footerLayoutLines.some(line => pos.y >= line.y && pos.y < line.y + line.height)) return { page: page.index, area: 'footer' }
 }
 
 function pointerDown(event: PointerEvent) {
-  if (event.button !== 0 || composing.value) return
+  if (event.button !== 0 || composing.value || storyComposing.value) return
   const coordinates = coordinatesFromEvent(event)
-  if (storyAt(coordinates)) { event.preventDefault(); return }
+  const story = storyAt(coordinates)
+  if (story) {
+    event.preventDefault()
+    if (props.story?.page === story.page && props.story.area === story.area && coordinates) {
+      const offset = hitTestDocumentStory(documentStoryLayoutLines(layout.value, story), coordinates.x, coordinates.y)
+      storyDragAnchor = { location: story, offset: event.shiftKey ? props.storySelection?.start ?? offset : offset }
+      pointerId = event.pointerId
+      scrollRef.value?.setPointerCapture(event.pointerId)
+      focusStory(Math.min(storyDragAnchor.offset, offset), Math.max(storyDragAnchor.offset, offset))
+    }
+    return
+  }
   if (props.story) emit('close-story')
   const checklistBlockId = coordinates && hitTestChecklist(layout.value, coordinates.x, coordinates.y)
   if (checklistBlockId) {
@@ -304,6 +344,7 @@ function pointerDown(event: PointerEvent) {
 }
 
 function contextMenu(event: MouseEvent) {
+  if (props.story && storyAt(coordinatesFromEvent(event))) { event.preventDefault(); return }
   const point = pointFromEvent(event)
   if (!point) return
   event.preventDefault()
@@ -315,6 +356,14 @@ function contextMenu(event: MouseEvent) {
 }
 
 function pointerMove(event: PointerEvent) {
+  if (pointerId === event.pointerId && storyDragAnchor) {
+    const point = coordinatesFromEvent(event)
+    if (point) {
+      const offset = hitTestDocumentStory(documentStoryLayoutLines(layout.value, storyDragAnchor.location), point.x, point.y)
+      focusStory(Math.min(storyDragAnchor.offset, offset), Math.max(storyDragAnchor.offset, offset))
+    }
+    return
+  }
   if (pointerId !== event.pointerId || !dragAnchor) return
   const point = pointFromEvent(event)
   if (point) select({ anchor: dragAnchor, focus: point })
@@ -335,12 +384,20 @@ function pointerUp(event: PointerEvent) {
   if (scrollRef.value?.hasPointerCapture(event.pointerId)) scrollRef.value.releasePointerCapture(event.pointerId)
   pointerId = undefined
   dragAnchor = undefined
+  storyDragAnchor = undefined
   focus()
 }
 
 function doubleClick(event: MouseEvent) {
-  const location = storyAt(coordinatesFromEvent(event))
-  if (location) { event.preventDefault(); emit('open-story', location); return }
+  const coordinates = coordinatesFromEvent(event), location = storyAt(coordinates)
+  if (location && coordinates) {
+    event.preventDefault()
+    const offset = hitTestDocumentStory(documentStoryLayoutLines(layout.value, location), coordinates.x, coordinates.y)
+    const word = props.story?.page === location.page && props.story.area === location.area ? documentFormattingWordRange(props.storyValue ?? '', offset) : undefined
+    emit('open-story', location)
+    focusStory(word?.start ?? offset, word?.end ?? offset, location)
+    return
+  }
   const point = pointFromEvent(event)
   if (!point) return
   const text = runText(runsForTarget(props.model, point))
@@ -359,7 +416,13 @@ function ensureCaretVisible() {
   syncViewport('selection')
 }
 
+function bodyEventIsCurrent(event: Event): boolean {
+  const input = inputElement()
+  return active && !disposed && !props.story && !!input && input !== blockedBodyInput && event.target === input
+}
+
 function beforeInput(event: InputEvent) {
+  if (!bodyEventIsCurrent(event)) { event.preventDefault(); return }
   if (composing.value || event.isComposing || event.inputType === 'insertCompositionText') return
   if (suppressCompositionInput && ['insertText', 'insertFromComposition'].includes(event.inputType)) { event.preventDefault(); suppressCompositionInput = false; return }
   if (event.inputType === 'insertText' && event.data != null) { event.preventDefault(); emit('command', { id: 'doc.command.insert-text', text: event.data }) }
@@ -369,35 +432,72 @@ function beforeInput(event: InputEvent) {
   else if (event.inputType === 'historyRedo') { event.preventDefault(); emit('redo') }
 }
 
-function inputFallback() {
+function inputFallback(event: Event) {
   const input = inputElement()
-  if (composing.value || !input?.value) return
+  if (!bodyEventIsCurrent(event) || composing.value || !input?.value) return
   const text = input.value
   input.value = ''
   if (suppressCompositionInput) { suppressCompositionInput = false; return }
   emit('command', { id: 'doc.command.insert-text', text })
 }
 
-function compositionStart() {
+function compositionStart(event: CompositionEvent) {
+  if (!bodyEventIsCurrent(event)) return
   composing.value = true
   suppressCompositionInput = false
   pendingText = ''
   compositionSelection.value = { anchor: { ...props.selection.anchor }, focus: { ...props.selection.focus } }
+  compositionRange = compositionSelection.value
+  compositionModel = props.model
+  compositionInput = inputElement()
+}
+
+function bodyCompositionCurrent() {
+  return active && !disposed && !props.story && compositionModel === props.model && !!compositionRange
+    && compositionInput === inputElement()
+    && sameTarget(compositionRange.anchor, props.selection.anchor) && compositionRange.anchor.offset === props.selection.anchor.offset
+    && sameTarget(compositionRange.focus, props.selection.focus) && compositionRange.focus.offset === props.selection.focus.offset
+}
+
+function cancelBodyComposition() {
+  const hadComposition = composing.value
+  composing.value = false
+  compositionSelection.value = null
+  compositionRange = undefined
+  compositionModel = undefined
+  compositionInput = undefined
+  pendingText = ''
+  suppressCompositionInput = false
+  if (hadComposition) { preview.value = null; if (active && !disposed) relayout() }
+  const input = inputElement()
+  if (input) input.value = ''
+  if (hadComposition) {
+    blockedBodyInput = input
+    bodyBridgeVersion.value++
+    void nextTick(() => { if (active && !disposed && !props.story) inputRef.value?.focus({ preventScroll: true }) })
+  }
 }
 
 function compositionUpdate(event: CompositionEvent) {
+  if (!bodyEventIsCurrent(event)) return
   if (!composing.value) return
+  if (!bodyCompositionCurrent() || !compositionRange) { cancelBodyComposition(); return }
   pendingText = event.data
   const model = cloneDocument(props.model)
-  const selection = executeDocumentCommand(model, props.selection, { id: 'doc.command.insert-text', text: pendingText })
+  const selection = executeDocumentCommand(model, compositionRange, { id: 'doc.command.insert-text', text: pendingText })
   preview.value = model
   compositionSelection.value = selection
   relayout()
 }
 
 function compositionEnd(event: CompositionEvent) {
+  if (!bodyEventIsCurrent(event)) return
+  if (!composing.value || !bodyCompositionCurrent()) { cancelBodyComposition(); return }
   const text = event.data || pendingText
   composing.value = false
+  compositionRange = undefined
+  compositionModel = undefined
+  compositionInput = undefined
   compositionSelection.value = null
   preview.value = null
   const input = inputElement()
@@ -447,6 +547,7 @@ function move(direction: 'left' | 'right' | 'up' | 'down' | 'home' | 'end', exte
 }
 
 function keydown(event: KeyboardEvent) {
+  if (!bodyEventIsCurrent(event)) return
   if (event.isComposing || composing.value || event.keyCode === 229) return
   const command = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
@@ -497,13 +598,15 @@ function keydown(event: KeyboardEvent) {
 }
 
 function copy(event: ClipboardEvent) {
+  if (!bodyEventIsCurrent(event)) return
   if (selectionCollapsed(props.selection)) return
   event.preventDefault()
   event.clipboardData?.setData('text/plain', selectedPlainText(props.model, props.selection))
 }
 
-function cut(event: ClipboardEvent) { copy(event); if (!selectionCollapsed(props.selection)) emit('command', { id: 'doc.command.insert-text', text: '' }) }
+function cut(event: ClipboardEvent) { if (!bodyEventIsCurrent(event)) return; copy(event); if (!selectionCollapsed(props.selection)) emit('command', { id: 'doc.command.insert-text', text: '' }) }
 function paste(event: ClipboardEvent) {
+  if (!bodyEventIsCurrent(event)) return
   event.preventDefault()
   const activeBlock = blockAtPoint(props.model, props.selection.focus)
   if (activeBlock && codeBlockData(activeBlock)) {
@@ -538,8 +641,8 @@ defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollT
     <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
-    <Input.TextArea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
-    <Input.TextArea v-if="story" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyValue" :readonly="storyReadonly" :auto-size="{ minRows: 1 }" @keydown="storyKeys" @update:value="emit('edit-story', String($event ?? ''), storyRange().start)" />
+    <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
+    <Input.TextArea v-if="story" :key="`${model.id}:${story.page}:${story.area}:${storyBridgeVersion}`" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyInputValue" :readonly="storyReadonly" :rows="1" :change-on-composing="true" variant="borderless" @keydown="storyKeys" @keyup="syncStorySelection" @select="syncStorySelection" @beforeinput="storyBeforeInput" @compositionstart="storyCompositionStart" @compositionend="storyCompositionEnd" @change="storyInputChanged" @focus="focused = true; storyFocused()" @blur="focused = false; requestDraw()" />
     <Alert v-if="error" class="canvas-error" type="error" show-icon :message="error" role="alert" />
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
   </div>
@@ -550,7 +653,8 @@ defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollT
 .document-surface { position: absolute; inset: 0; pointer-events: none; }
 .document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; cursor: text; outline: none; }
 .document-scroll-spacer { pointer-events: none; }
-.document-story-bridge { position: absolute; z-index: 3; padding: 1px 3px; text-align: center; resize: none; line-height: 1.25; }
+.document-story-bridge { position: absolute; z-index: 3; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; pointer-events: none; }
+.document-story-bridge :deep(textarea) { width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; pointer-events: none; }
 .document-input-bridge { position: absolute; z-index: 2; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .document-input-bridge :deep(textarea) { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .backend-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

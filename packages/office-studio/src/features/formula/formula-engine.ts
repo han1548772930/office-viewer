@@ -140,6 +140,8 @@ export function evaluateFormula(formula: string, workbook: WorkbookModel, curren
   const evaluationTime = validEvaluationTime(options.now) ?? new Date()
   const sheet = workbook.sheets.find((candidate) => candidate.id === currentSheetId)
   if (!sheet) return formulaError('#REF!')
+  if (options.formulaCell && (!Number.isSafeInteger(options.formulaCell.row) || !Number.isSafeInteger(options.formulaCell.column)
+    || options.formulaCell.row < 0 || options.formulaCell.row >= 1_048_576 || options.formulaCell.column < 0 || options.formulaCell.column >= 16_384)) return formulaError('#REF!')
   const byName = new Map(workbook.sheets.map((item) => [item.name.toLocaleLowerCase(), item]))
   const memo = new Map<string, FormulaValue>(), active: string[] = []
   const resolve = (targetSheet: SpreadsheetSheet, row: number, column: number): FormulaValue => {
@@ -157,7 +159,7 @@ export function evaluateFormula(formula: string, workbook: WorkbookModel, curren
     memo.set(key, value)
     return value
   }
-  try { return normalizeResult(evaluateNode(parseFormula(formula), sheet, resolve, workbook, byName, undefined, evaluationTime)) }
+  try { return normalizeResult(evaluateNode(parseFormula(formula), sheet, resolve, workbook, byName, options.formulaCell, evaluationTime)) }
   catch (error) { return toFormulaError(error) }
 }
 
@@ -191,6 +193,21 @@ function evaluateNode(
       return finiteResult(node.operator === '-' ? -number : number)
     }
     case 'binary': {
+      if (node.operator === ':') {
+        const endpoint = (part: FormulaNode) => evaluateReferenceOperand(part, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
+        const left = endpoint(node.left)
+        if (isFormulaError(left)) return left
+        const right = endpoint(node.right)
+        if (isFormulaError(right)) return right
+        if (left.sheet.id !== right.sheet.id) return formulaError('#REF!')
+        return { kind: 'rangeValue', sheet: left.sheet, reference: {
+          kind: 'range', sheetName: left.reference.sheetName,
+          start: { ...left.reference.start, row: Math.min(left.reference.start.row, left.reference.end.row, right.reference.start.row, right.reference.end.row),
+            column: Math.min(left.reference.start.column, left.reference.end.column, right.reference.start.column, right.reference.end.column) },
+          end: { ...right.reference.end, row: Math.max(left.reference.start.row, left.reference.end.row, right.reference.start.row, right.reference.end.row),
+            column: Math.max(left.reference.start.column, left.reference.end.column, right.reference.start.column, right.reference.end.column) },
+        } }
+      }
       const left = evaluateNode(node.left, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
       if (isFormulaError(left)) return left
       const right = evaluateNode(node.right, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
@@ -201,6 +218,21 @@ function evaluateNode(
     case 'error': return formulaError(node.code)
   }
   return formulaError('#VALUE!')
+}
+
+function evaluateReferenceOperand(
+  node: FormulaNode, sheet: SpreadsheetSheet, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue,
+  workbook: WorkbookModel, byName: Map<string, SpreadsheetSheet>, formulaCell: Pick<FormulaCellAddress, 'row' | 'column'> | undefined, evaluationTime: Date,
+): RangeValue | FormulaErrorValue {
+  if (node.kind === 'reference') {
+    const target = resolveSheet(workbook, node.reference.sheetName, sheet, byName)
+    return target ? { kind: 'rangeValue', sheet: target, reference: { kind: 'range', sheetName: node.reference.sheetName, start: { ...node.reference }, end: { ...node.reference } } } : formulaError('#REF!')
+  }
+  if (node.kind === 'function' && node.name === 'INDEX') {
+    return indexReference(node.arguments.map(argument => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)), node.arguments.length)
+  }
+  const value = evaluateNode(node, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+  return isFormulaError(value) || isRangeValue(value) ? value : formulaError('#VALUE!')
 }
 
 function evaluateFunction(
@@ -750,9 +782,11 @@ function evaluateFunction(
   return formulaError('#NAME?')
 }
 
-function evaluateIndex(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): RuntimeValue {
-  if ((argumentCount !== 2 && argumentCount !== 3) || !isRangeValue(values[0]!)) return formulaError('#VALUE!')
-  const source = values[0] as RangeValue
+function indexReference(values: RuntimeValue[], argumentCount: number): RangeValue | FormulaErrorValue {
+  if (argumentCount !== 2 && argumentCount !== 3) return formulaError('#VALUE!')
+  const source = values[0]!
+  if (isFormulaError(source)) return source
+  if (!isRangeValue(source)) return formulaError('#VALUE!')
   const rowNumber = numericCoercion(values[1]!)
   const columnNumber = argumentCount === 3 ? numericCoercion(values[2]!) : 1
   if (isFormulaError(rowNumber)) return rowNumber
@@ -765,18 +799,23 @@ function evaluateIndex(values: RuntimeValue[], argumentCount: number, resolve: (
   const height = maxRow - minRow + 1
   const width = maxColumn - minColumn + 1
   if (rowNumber > height || columnNumber > width) return formulaError('#REF!')
-  if (rowNumber === 0 || columnNumber === 0) {
-    return {
-      ...source,
-      reference: {
-        ...source.reference,
-        start: { ...source.reference.start, row: rowNumber ? minRow + rowNumber - 1 : minRow, column: columnNumber ? minColumn + columnNumber - 1 : minColumn },
-        end: { ...source.reference.end, row: rowNumber ? minRow + rowNumber - 1 : maxRow, column: columnNumber ? minColumn + columnNumber - 1 : maxColumn },
-      },
-    }
+  return {
+    ...source,
+    reference: {
+      ...source.reference,
+      start: { ...source.reference.start, row: rowNumber ? minRow + rowNumber - 1 : minRow, column: columnNumber ? minColumn + columnNumber - 1 : minColumn },
+      end: { ...source.reference.end, row: rowNumber ? minRow + rowNumber - 1 : maxRow, column: columnNumber ? minColumn + columnNumber - 1 : maxColumn },
+    },
   }
-  const cell = source.sheet.cells[cellKey(minRow + rowNumber - 1, minColumn + columnNumber - 1)]
-  return cell ? cell.formula ? resolve(source.sheet, minRow + rowNumber - 1, minColumn + columnNumber - 1) : rawCellValue(cell) : null
+}
+
+function evaluateIndex(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): RuntimeValue {
+  const reference = indexReference(values, argumentCount)
+  if (isFormulaError(reference)) return reference
+  if (numericCoercion(values[1]!) === 0 || argumentCount === 3 && numericCoercion(values[2]!) === 0) return reference
+  const row = reference.reference.start.row, column = reference.reference.start.column
+  const cell = reference.sheet.cells[cellKey(row, column)]
+  return cell ? cell.formula ? resolve(reference.sheet, row, column) : rawCellValue(cell) : null
 }
 
 function evaluateMatch(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {

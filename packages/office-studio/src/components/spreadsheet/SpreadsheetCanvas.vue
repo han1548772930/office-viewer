@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Alert, AutoComplete, Button, theme } from 'antdv-next'
+import { Alert, AutoComplete, Button, Input, theme } from 'antdv-next'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import type { TimelineLevel } from '../../domain/model'
@@ -12,26 +12,39 @@ import type { SheetNumberFormatPreview } from '../../rendering/spreadsheet/scene
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
-import { canEditProtectedRanges } from '../../features/sheet-protection/range-protection.ts'
+import type { SheetFormatPainterCanvasState } from '../../features/sheet-workbench/sheet-format-painter.ts'
+import { canEditProtectedRanges, canEditWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
+import { sheetAxisHeaderAffectedRange, sheetAxisHeaderDestination, sheetAxisHeaderMoveSource,
+  type SheetAxisHeaderMoveSource } from '../../features/sheet-workbench/sheet-axis-header-gesture.ts'
+import { sheetHeaderAxisIndexAt, sheetHeaderDragCommands } from '../../rendering/spreadsheet/header-drag.ts'
 import { convertTextToNumber } from '../../features/sheet-workbench/text-to-number.ts'
 import { sheetCellTextAlignment } from '../../features/sheet-workbench/sheet-cell-alignment.ts'
+import { replaceSheetCellInputSelection, sheetCellInputActionForKey, sheetCellNeedsMultilineEditor } from '../../features/sheet-workbench/sheet-cell-edit-input.ts'
+import { sheetCellWrapStrategy } from '../../features/sheet-workbench/sheet-cell-layout.ts'
+import { layoutSheetCellText, sheetCellTextFont } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
+import { measureSpreadsheetText } from '../../rendering/spreadsheet/text-metrics.ts'
 import { Minus, Plus } from 'lucide-vue-next'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
+import { sheetContextStructureTarget } from './sheet-context-menu.ts'
+import { sheetAxisVisibilityTargetHasHidden } from '../../features/sheet-workbench/sheet-axis-visibility.ts'
 import { useOfficeRegion } from '../../i18n/office-i18n'
 
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; currentUserId?: string; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string } }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
+  (event: 'selection-end', value: { canceled: boolean; ranges: GridRange[]; key: string }): void
   (event: 'fill-selection', source: GridRange, target: { row: number; column: number }, applyType?: SheetFillApplyType): void
   (event: 'select-header', hit: GridHit, pointer: PointerEvent): void
+  (event: 'extend-header-selection', axis: 'row' | 'column', index: number): void
   (event: 'edit-cell', key: string): void
   (event: 'update:editValue', value: string): void
   (event: 'finish-edit'): void
+  (event: 'composition-change', composing: boolean): void
   (event: 'editor-keydown', eventValue: KeyboardEvent): void
   (event: 'paste', eventValue: ClipboardEvent): void
   (event: 'resize-axis', axis: 'row' | 'column', index: number, size: number): void
@@ -48,9 +61,10 @@ const emit = defineEmits<{
   (event: 'slicer-move', payload: { slicerId: string; left: number; top: number }): void
   (event: 'slicer-resize', payload: { slicerId: string; width: number; height: number }): void
 }>()
-const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: (options?: { preventScroll?: boolean; cursor?: 'start' | 'end' | 'all' }) => void } | null>(null)
+const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: () => void } | null>(null)
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const fillPreview = ref<GridRange>()
+const headerDrag = ref<(SheetAxisHeaderMoveSource & { pointerStart: number; moved: boolean; copy: boolean; destination?: number; allowed: boolean; revision?: number })>()
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
 const region = useOfficeRegion()
 const slicerLayouts = computed(() => slicerObjectLayouts(geometry.value, props.slicers ?? [], props.sheet.date1904 ?? false, region.value))
@@ -61,7 +75,13 @@ const scene = computed(() => {
   const selectionCommands: DrawCommand[] = []
   const selected = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
   if (selected) selectionCommands.push({ kind: 'rect', ...selected.rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2 })
-  return createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
+  const result = createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, formatPainterSource: props.formatPainter?.sourceSheetId === props.sheet.id ? props.formatPainter.sourceRange : undefined, formatPainterColor: token.value.colorPrimary, suppressFillHandle: Boolean(props.formatPainter), searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
+  const drag = headerDrag.value
+  result.commands.push(...sheetHeaderDragCommands(geometry.value, viewport.value, drag?.moved ? {
+    axis: drag.axis, source: drag.interval, destination: drag.destination, allowed: drag.allowed,
+  } : undefined, { source: token.value.colorFillSecondary, preview: token.value.colorFillTertiary,
+    target: token.value.colorPrimary, invalid: token.value.colorError }))
+  return result
 })
 const selectedCellText = computed(() => {
   const position = parseAddress(props.selectedKey)
@@ -85,7 +105,20 @@ const outlineLevelButtons = computed(() => {
   })
 })
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
-const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
+const editedCell = computed(() => props.sheet.cells[props.editingKey ?? ''])
+const retainedMultiline = ref(false)
+const useMultilineEditor = computed(() => sheetCellNeedsMultilineEditor(editedCell.value, props.editValue, retainedMultiline.value))
+const editFont = computed(() => sheetCellTextFont(editedCell.value, viewport.value.zoom))
+const editLayout = computed(() => {
+  if (!props.editingKey) return undefined
+  const position = parseAddress(props.editingKey)
+  if (!useMultilineEditor.value || !position) return createCellEditorLayout(geometry.value, props.editingKey, viewport.value)
+  const rect = geometry.value.cellRect(position.row, position.column, viewport.value)
+  const layout = layoutSheetCellText(props.editValue, { width: Math.max(1, rect.width - 12 * viewport.value.zoom),
+    lineHeight: editFont.value.lineHeight, wrap: sheetCellWrapStrategy(editedCell.value) === 'wrap',
+    measure: text => measureSpreadsheetText(text, editFont.value.font) })
+  return createCellEditorLayout(geometry.value, props.editingKey, viewport.value, { contentHeight: layout.height + 6 * viewport.value.zoom })
+})
 const { token } = theme.useToken()
 const themeStyle = computed(() => ({
   '--sheet-canvas-background': token.value.colorBgContainer,
@@ -100,12 +133,18 @@ const editInputStyles = computed(() => ({
     minHeight: 0,
     border: `${SHEET_SELECTION_STROKE_WIDTH}px solid ${token.value.colorPrimary}`,
     borderRadius: 0,
-    background: props.sheet.cells[props.editingKey ?? '']?.background ?? token.value.colorBgContainer,
+    background: editedCell.value?.background ?? token.value.colorBgContainer,
     boxShadow: 'none',
   },
   input: { boxSizing: 'border-box' as const, height: '100%', padding: 0,
-    color: props.sheet.cells[props.editingKey ?? '']?.color ?? token.value.colorText,
-    font: 'inherit', textAlign: sheetCellTextAlignment(props.sheet.cells[props.editingKey ?? '']) },
+    color: editedCell.value?.color ?? token.value.colorText,
+    font: 'inherit', textAlign: sheetCellTextAlignment(editedCell.value) },
+}))
+const editTextAreaStyles = computed(() => ({
+  root: { boxSizing: 'border-box' as const, height: '100%', minHeight: 0, border: 0, borderRadius: 0, background: 'transparent', boxShadow: 'none' },
+  textarea: { ...editInputStyles.value.input, minHeight: 0, border: 0, borderRadius: 0, resize: 'none' as const,
+    lineHeight: `${editFont.value.lineHeight}px`, whiteSpace: sheetCellWrapStrategy(editedCell.value) === 'wrap' ? 'pre-wrap' as const : 'pre' as const,
+    overflow: 'auto', background: 'transparent', boxShadow: 'none' },
 }))
 const editStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
@@ -114,10 +153,10 @@ const editStyle = computed(() => editLayout.value ? {
   borderWidth: `${SHEET_SELECTION_STROKE_WIDTH}px`,
   paddingLeft: `${Math.max(0, 6 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
   paddingRight: `${Math.max(0, 6 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
-  fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif',
-  fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px`,
-  fontWeight: props.sheet.cells[props.editingKey ?? '']?.bold ? 700 : 400,
-  fontStyle: props.sheet.cells[props.editingKey ?? '']?.italic ? 'italic' as const : 'normal' as const,
+  fontFamily: editedCell.value?.fontFamily ?? 'Aptos, "Microsoft YaHei", sans-serif',
+  fontSize: `${editFont.value.fontSize}px`, lineHeight: `${editFont.value.lineHeight}px`,
+  fontWeight: editedCell.value?.bold ? 600 : 400,
+  fontStyle: editedCell.value?.italic ? 'italic' as const : 'normal' as const,
 } : { clipPath: 'inset(50%)' })
 const fillHandleStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.fillHandle.x}px`, top: `${editLayout.value.fillHandle.y}px`,
@@ -144,6 +183,31 @@ const canShiftVertically = computed(() => {
     startRow: range.startRow, endRow: MAX_SHEET_ROWS - 1, startCol: range.startColumn, endCol: range.endColumn,
   }], props.currentUserId ?? 'local-user')
 })
+function canChangeContextAxis(axis: 'row' | 'column'): boolean {
+  const hit = contextMenuHit.value
+  if (!hit || !canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')) return false
+  const target = sheetContextStructureTarget(hit, { sheetId: props.sheet.id, rowCount: props.sheet.rowCount,
+    columnCount: props.sheet.columnCount, selectedRanges: props.selectedRanges }, axis)
+  const first = target.params.ranges[0]
+  if (!first) return false
+  const range = axis === 'row' ? { ...first, endRow: MAX_SHEET_ROWS - 1 } : { ...first, endCol: MAX_SHEET_COLUMNS - 1 }
+  return canEditProtectedRanges(props.sheet, [range], props.currentUserId ?? 'local-user')
+}
+const canStructureRows = computed(() => canChangeContextAxis('row'))
+const canStructureColumns = computed(() => canChangeContextAxis('column'))
+function contextAxisRanges(axis: 'row' | 'column') {
+  return contextMenuHit.value ? sheetContextStructureTarget(contextMenuHit.value, { sheetId: props.sheet.id,
+    rowCount: props.sheet.rowCount, columnCount: props.sheet.columnCount, selectedRanges: props.selectedRanges }, axis).params.ranges : []
+}
+function canChangeContextVisibility(axis: 'row' | 'column'): boolean {
+  const ranges = contextAxisRanges(axis)
+  return ranges.length > 0 && canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')
+    && canEditProtectedRanges(props.sheet, ranges, props.currentUserId ?? 'local-user')
+}
+const canVisibilityRows = computed(() => canChangeContextVisibility('row'))
+const canVisibilityColumns = computed(() => canChangeContextVisibility('column'))
+const hasContextHiddenRows = computed(() => sheetAxisVisibilityTargetHasHidden(props.sheet, 'row', contextAxisRanges('row')))
+const hasContextHiddenColumns = computed(() => sheetAxisVisibilityTargetHasHidden(props.sheet, 'column', contextAxisRanges('column')))
 const hasContextHyperlink = computed(() => contextMenuHit.value?.kind === 'cell' && Boolean(props.sheet.cells[contextMenuHit.value.key]?.hyperlink))
 const canConvertSelectedText = computed(() => contextMenuOpen.value && Object.entries(props.sheet.cells).some(([key, cell]) => {
   const address = parseAddress(key)
@@ -158,24 +222,36 @@ let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, fr
 let dprQuery: MediaQueryList | undefined
 let resizeDrag: { axis: 'row' | 'column'; index: number; size: number; origin: number } | undefined
 let fillDrag: { source: GridRange; target?: { row: number; column: number } } | undefined
+let selectionPress: { pointerId: number; sheetId: string; painter: boolean } | undefined
+let headerSelectionDrag: { axis: 'row' | 'column' } | undefined
+let gesturePointerId: number | undefined
+let painterDoubleClickUntil = 0
 let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; startPoint: { x: number; y: number } } | undefined
 const slicerAnchor = new Map<string, number>()
 const multiSelect = ref(new Set<string>())
 let lastPointer: { x: number; y: number } | undefined
+let swappingEditor = false, editorHasPendingFocus = false, editorFocusRequest = 0, editorSwapRequest = 0
 function queueRender() { if (active && !disposed && !frame) frame = requestAnimationFrame(draw) }
 function draw() {
   frame = 0
   if (disposed || !active || !surface) return
   surface.render(scene.value)
-  if (dragging && lastPointer && scroller.value) {
-    const dx = lastPointer.x < GRID_HEADER_WIDTH ? -16 : lastPointer.x > viewport.value.width - 16 ? 16 : 0
-    const dy = lastPointer.y < GRID_HEADER_HEIGHT ? -16 : lastPointer.y > viewport.value.height - 16 ? 16 : 0
+  if ((dragging || headerDrag.value?.moved || headerSelectionDrag) && lastPointer && scroller.value) {
+    const axis = headerDrag.value?.axis ?? headerSelectionDrag?.axis
+    const dx = axis === 'row' ? 0 : lastPointer.x < GRID_HEADER_WIDTH ? -16 : lastPointer.x > viewport.value.width - 16 ? 16 : 0
+    const dy = axis === 'column' ? 0 : lastPointer.y < GRID_HEADER_HEIGHT ? -16 : lastPointer.y > viewport.value.height - 16 ? 16 : 0
     if (dx || dy) {
       const oldLeft = scroller.value.scrollLeft, oldTop = scroller.value.scrollTop
-      scroller.value.scrollBy(dx, dy); onScroll()
-      const hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, lastPointer.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, lastPointer.y)), viewport.value)
-      if (hit?.kind === 'cell') emit('extend-selection', hit.key)
-      if (oldLeft !== scroller.value.scrollLeft || oldTop !== scroller.value.scrollTop) queueRender()
+      scroller.value.scrollBy(dx, dy)
+      if (oldLeft !== scroller.value.scrollLeft || oldTop !== scroller.value.scrollTop) {
+        onScroll()
+        if (axis) updateHeaderGesture(lastPointer)
+        else {
+          const hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, lastPointer.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, lastPointer.y)), viewport.value)
+          if (hit?.kind === 'cell') emit('extend-selection', hit.key)
+        }
+        queueRender()
+      }
     }
   }
 }
@@ -212,8 +288,33 @@ function restoreViewport() {
   onScroll()
 }
 function point(event: MouseEvent) { const rect = root.value!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top } }
+function selectedAxisMoveSource(hit: GridHit): SheetAxisHeaderMoveSource | undefined {
+  if (props.editingKey || props.formatPainter || !canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')) return undefined
+  const axis = hit.kind === 'row' ? 'row' : hit.kind === 'column' ? 'column' : undefined
+  if (!axis) return undefined
+  const ranges = (props.selectedRanges ?? []).map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }))
+  const source = sheetAxisHeaderMoveSource(props.sheet, ranges, axis, hit.kind === 'row' ? hit.row : hit.kind === 'column' ? hit.column : -1)
+  return source && canEditProtectedRanges(props.sheet, [source.range], props.currentUserId ?? 'local-user') ? source : undefined
+}
+function updateHeaderGesture(position: { x: number; y: number }, copy?: boolean): void {
+  const drag = headerDrag.value, axis = drag?.axis ?? headerSelectionDrag?.axis
+  if (!axis) return
+  const coordinate = axis === 'row' ? position.y : position.x
+  const index = sheetHeaderAxisIndexAt(geometry.value, viewport.value, axis, coordinate)
+  if (drag) {
+    const moved = drag.moved || Math.abs(coordinate - drag.pointerStart) >= 3
+    const destination = index === undefined ? undefined : sheetAxisHeaderDestination(drag.interval, index)
+    const copying = copy ?? drag.copy
+    const allowed = destination !== undefined && canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')
+      && canEditProtectedRanges(props.sheet, [sheetAxisHeaderAffectedRange(props.sheet, drag, destination, copying)], props.currentUserId ?? 'local-user')
+    headerDrag.value = { ...drag, moved, copy: copying, destination, allowed }
+    if (root.value) root.value.style.cursor = !moved ? 'grab' : allowed || destination === undefined ? copying ? 'copy' : 'grabbing' : 'not-allowed'
+  } else if (index !== undefined) emit('extend-header-selection', axis, index)
+  queueRender()
+}
 function onPointerDown(event: PointerEvent) {
-  if ((event.target as HTMLElement).closest('input')) return
+  if (gesturePointerId !== undefined || !active || disposed) return
+  if ((event.target as HTMLElement).closest('input, textarea')) return
   const position = point(event)
   const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
   const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
@@ -234,14 +335,27 @@ function onPointerDown(event: PointerEvent) {
       focusedTimelinePeriods.value = next
     }
     slicerPress = { hit: slicerHit, start: slicerHit, startPoint: content }
+    gesturePointerId = event.pointerId
     root.value?.setPointerCapture(event.pointerId)
     return
   }
-  const fillRange = event.button === 0 && !props.editingKey ? hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y) : undefined
-  const hit: GridHit | undefined = fillRange ? { kind: 'fill-handle', range: fillRange } : geometry.value.hitTest(position.x, position.y, viewport.value)
+  const fillRange = event.button === 0 && !props.editingKey && !props.formatPainter ? hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y) : undefined
+  let hit: GridHit | undefined = fillRange ? { kind: 'fill-handle', range: fillRange } : geometry.value.hitTest(position.x, position.y, viewport.value)
+  if (event.button === 2 && hit?.kind === 'resize-row') hit = { kind: 'row', row: hit.row }
+  else if (event.button === 2 && hit?.kind === 'resize-column') hit = { kind: 'column', column: hit.column }
   if (!hit) return
   if (event.button !== 0 && event.button !== 2) return
   event.preventDefault(); root.value?.focus({ preventScroll: true })
+  const headerSource = event.button === 0 && !event.shiftKey ? selectedAxisMoveSource(hit) : undefined
+  if (headerSource) {
+    headerDrag.value = { ...headerSource, pointerStart: headerSource.axis === 'row' ? position.y : position.x,
+      moved: false, copy: event.ctrlKey || event.metaKey, allowed: true, revision: props.workbookRevision }
+    lastPointer = position
+    gesturePointerId = event.pointerId
+    root.value?.setPointerCapture(event.pointerId)
+    if (root.value) root.value.style.cursor = 'grab'
+    return
+  }
   if (hit.kind === 'fill-handle') {
     fillDrag = { source: hit.range }
     fillPreview.value = undefined
@@ -252,18 +366,29 @@ function onPointerDown(event: PointerEvent) {
   } else if (hit.kind === 'resize-column' || hit.kind === 'resize-row') {
     resizeDrag = { axis: hit.kind === 'resize-column' ? 'column' : 'row', index: hit.kind === 'resize-column' ? hit.column : hit.row, size: hit.size, origin: hit.kind === 'resize-column' ? position.x : position.y }
   } else if (hit.kind === 'cell') {
-    if (event.button === 0 && (event.ctrlKey || event.metaKey) && !props.editingKey && props.sheet.cells[hit.key]?.hyperlink) {
+    if (event.button === 0 && (event.ctrlKey || event.metaKey) && !props.editingKey && !props.formatPainter && props.sheet.cells[hit.key]?.hyperlink) {
       emit('open-hyperlink', hit.key)
       return
     }
     dragging = event.button === 0; lastPointer = position
     emit('select-cell', hit.key, event)
-  } else emit('select-header', hit, event)
+  } else {
+    if (event.button === 0 && (hit.kind === 'row' || hit.kind === 'column')) {
+      headerSelectionDrag = { axis: hit.kind === 'row' ? 'row' : 'column' }; lastPointer = position
+    }
+    emit('select-header', hit, event)
+  }
+  if (event.button === 0 && (hit.kind === 'cell' || hit.kind === 'row' || hit.kind === 'column' || hit.kind === 'all')) {
+    selectionPress = { pointerId: event.pointerId, sheetId: props.sheet.id, painter: Boolean(props.formatPainter) }
+  }
+  gesturePointerId = event.pointerId
   root.value?.setPointerCapture(event.pointerId)
 }
 function onPointerMove(event: PointerEvent) {
+  if (!active || disposed || gesturePointerId !== undefined && gesturePointerId !== event.pointerId) return
   const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
+  if (headerDrag.value || headerSelectionDrag) { updateHeaderGesture(position, event.ctrlKey || event.metaKey); return }
   if (slicerPress && ['period', 'timelineStart', 'timelineEnd', 'scroll'].includes(slicerPress.start.type)) {
     const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
     const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
@@ -278,16 +403,32 @@ function onPointerMove(event: PointerEvent) {
   if (dragging && hit?.kind === 'cell') { emit('extend-selection', hit.key); queueRender() }
   if (root.value && !dragging && !fillDrag) {
     const hover = geometry.value.hitTest(position.x, position.y, viewport.value)
-    const fillHandle = !props.editingKey && hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y)
+    const fillHandle = !props.editingKey && !props.formatPainter && hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y)
     const hasHyperlink = hover?.kind === 'cell' && Boolean(props.sheet.cells[hover.key]?.hyperlink)
-    root.value.style.cursor = fillHandle ? 'crosshair' : hasHyperlink || hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
+    root.value.style.cursor = fillHandle ? 'crosshair' : hasHyperlink || hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : hover && selectedAxisMoveSource(hover) ? 'grab' : 'cell'
   }
 }
 function onPointerUp(event: PointerEvent) {
+  if (gesturePointerId !== event.pointerId) return
+  gesturePointerId = undefined
+  const canceled = event.type !== 'pointerup'
+  if (headerDrag.value) {
+    const drag = headerDrag.value
+    headerDrag.value = undefined; lastPointer = undefined
+    if (root.value) root.value.style.cursor = ''
+    if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
+    queueRender()
+    if (!canceled && drag.moved && drag.allowed && drag.destination !== undefined && !props.editingKey) {
+      emit('context-command', `sheet.command.${drag.copy ? 'copy' : 'move'}-${drag.axis === 'row' ? 'rows' : 'cols'}`, {
+        sheetId: props.sheet.id, fromRange: drag.range, destinationIndex: drag.destination, expectedRevision: drag.revision,
+      })
+    }
+    return
+  }
   if (slicerPress) {
     const press = slicerPress
     slicerPress = undefined
-    if (event.type !== 'pointercancel') {
+    if (!canceled) {
       const position = point(event)
       const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
       const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
@@ -364,22 +505,47 @@ function onPointerUp(event: PointerEvent) {
     if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
     return
   }
-  if (fillDrag && event.type !== 'pointercancel' && fillDrag.target) {
+  if (fillDrag && !canceled && fillDrag.target) {
     const { source, target } = fillDrag
     const insideSource = target.row >= source.startRow && target.row <= source.endRow && target.column >= source.startColumn && target.column <= source.endColumn
     if (!insideSource) emit('fill-selection', source, target)
   }
   fillDrag = undefined
   fillPreview.value = undefined
-  if (resizeDrag && event.type !== 'pointercancel') {
+  if (resizeDrag && !canceled) {
     const position = point(event), delta = ((resizeDrag.axis === 'column' ? position.x : position.y) - resizeDrag.origin) / viewport.value.zoom
-    emit('resize-axis', resizeDrag.axis, resizeDrag.index, Math.max(resizeDrag.axis === 'column' ? 24 : 16, Math.round(resizeDrag.size + delta)))
+    emit('resize-axis', resizeDrag.axis, resizeDrag.index, Math.max(0, Math.round(resizeDrag.size + delta)))
   }
   resizeDrag = undefined
+  headerSelectionDrag = undefined
   dragging = false; lastPointer = undefined
+  const press = selectionPress
+  if (press?.pointerId === event.pointerId) {
+    selectionPress = undefined
+    if (press.painter && !canceled) painterDoubleClickUntil = event.timeStamp + 600
+    // Parent selection handlers update props after the native pointer event; defer application until those updates arrive.
+    void nextTick(() => {
+      if (!active || disposed || props.sheet.id !== press.sheetId) return
+      const cell = parseAddress(props.selectedKey)
+      const ranges = props.selectedRanges?.length ? props.selectedRanges.map(range => ({ ...range }))
+        : cell ? [{ startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }] : []
+      emit('selection-end', { canceled: canceled || Boolean(props.editingKey), ranges, key: props.selectedKey })
+    })
+  }
   if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
 }
+function clearPointerGesture() {
+  const pointerId = gesturePointerId
+  gesturePointerId = undefined
+  selectionPress = undefined; dragging = false; fillDrag = undefined; fillPreview.value = undefined; lastPointer = undefined; resizeDrag = undefined; slicerPress = undefined
+  headerDrag.value = undefined; headerSelectionDrag = undefined
+  if (root.value) root.value.style.cursor = ''
+  if (pointerId !== undefined && root.value?.hasPointerCapture(pointerId)) root.value.releasePointerCapture(pointerId)
+  queueRender()
+}
 function onDoubleClick(event: MouseEvent) {
+  if ((event.target as HTMLElement).closest('input, textarea')) return
+  if (props.formatPainter || event.timeStamp < painterDoubleClickUntil) { event.preventDefault(); return }
   const p = point(event)
   const content = slicerObjectContentPoint(p.x, p.y, viewport.value)
   const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
@@ -392,9 +558,14 @@ function onDoubleClick(event: MouseEvent) {
   }
   const hit = geometry.value.hitTest(p.x, p.y, viewport.value)
   if (hit?.kind === 'cell') emit('edit-cell', hit.key)
+  else if (hit?.kind === 'resize-row' || hit?.kind === 'resize-column') emit('context-command',
+    hit.kind === 'resize-row' ? 'sheet.command.auto-fit-row' : 'sheet.command.auto-fit-column', {
+      sheetId: props.sheet.id, index: hit.kind === 'resize-row' ? hit.row : hit.column,
+    })
 }
 
 function onContextMenu(event: MouseEvent) {
+  if ((event.target as HTMLElement).closest('input, textarea')) return
   event.preventDefault()
   const bounds = root.value?.getBoundingClientRect()
   if (!bounds) return
@@ -403,15 +574,59 @@ function onContextMenu(event: MouseEvent) {
   const content = slicerObjectContentPoint(localX, localY, viewport.value)
   const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
   if (slicerHit) { emit('select-slicer', slicerHit.id); emit('slicer-settings', slicerHit.id); return }
-  const hit = geometry.value.hitTest(localX, localY, viewport.value)
-  if (!hit || hit.kind === 'resize-row' || hit.kind === 'resize-column') { contextMenuOpen.value = false; return }
+  const actual = geometry.value.hitTest(localX, localY, viewport.value)
+  const hit = actual?.kind === 'resize-row' ? { kind: 'row' as const, row: actual.row }
+    : actual?.kind === 'resize-column' ? { kind: 'column' as const, column: actual.column } : actual
+  if (!hit) { contextMenuOpen.value = false; return }
   contextMenuHit.value = hit
   contextMenuPosition.value = { x: event.clientX, y: event.clientY }
   contextMenuOpen.value = true
 }
-function onInputKeydown(event: KeyboardEvent) { if (!composing.value && !event.isComposing && event.keyCode !== 229) emit('editor-keydown', event) }
-function onPaste(event: ClipboardEvent) { if (!(event.target as HTMLElement).closest('input')) emit('paste', event) }
+function changeInputComposition(value: boolean): void {
+  composing.value = value
+  emit('composition-change', value)
+}
+function onInputKeydown(event: KeyboardEvent) {
+  if (!event.defaultPrevented && !composing.value && !event.isComposing && event.keyCode !== 229) emit('editor-keydown', event)
+}
+function onEditorKeydownCapture(event: KeyboardEvent): void {
+  if (!(event.target as HTMLElement).closest('.canvas-cell-input')) return
+  // Capture before AutoComplete's option list can interpret an IME Enter or Alt+Enter as a choice.
+  if (composing.value || event.isComposing || event.keyCode === 229) { event.stopPropagation(); return }
+  if (sheetCellInputActionForKey(event) === 'line-break') { event.stopPropagation(); emit('editor-keydown', event) }
+}
+function onEditValueChange(value: unknown): void {
+  const draft = String(value ?? '')
+  if (/[\r\n]/u.test(draft)) retainedMultiline.value = true
+  emit('update:editValue', draft)
+}
+function onTextAreaChange(event: Event): void {
+  if (event.target instanceof HTMLTextAreaElement) onEditValueChange(event.target.value)
+}
+function onEditorPasteCapture(event: ClipboardEvent): void {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
+  const text = event.clipboardData?.getData('text/plain')
+  if (!text || !/[\r\n]/u.test(text) || composing.value) return
+  event.preventDefault(); event.stopPropagation()
+  const replacement = replaceSheetCellInputSelection(target.value, text, { start: target.selectionStart ?? target.value.length, end: target.selectionEnd ?? target.value.length })
+  onEditValueChange(replacement.value)
+  focusEditor(replacement.selection)
+}
+function onEditorBlur(event: FocusEvent): void {
+  const next = event.relatedTarget
+  if (next instanceof HTMLElement && next.closest('.canvas-cell-input, .formula-toolbar')) return
+  const key = props.editingKey
+  void nextTick(() => {
+    if (!key || props.editingKey !== key || composing.value || swappingEditor) return
+    const focused = document.activeElement
+    if (focused instanceof HTMLElement && focused.closest('.canvas-cell-input, .formula-toolbar')) return
+    emit('finish-edit')
+  })
+}
+function onPaste(event: ClipboardEvent) { if (!(event.target as HTMLElement).closest('input, textarea')) emit('paste', event) }
 function onWheel(event: WheelEvent) {
+  if ((event.target as HTMLElement).closest('input, textarea')) return
   const position = point(event)
   const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
   const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
@@ -432,6 +647,9 @@ function onWheel(event: WheelEvent) {
 }
 function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
 function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (headerDrag.value || headerSelectionDrag)) {
+    event.preventDefault(); event.stopPropagation(); clearPointerGesture(); return
+  }
   if (!props.selectedSlicerId || props.editingKey || event.isComposing || event.keyCode === 229) return
   const layout = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
   if (!layout) return
@@ -490,7 +708,21 @@ function onKeydown(event: KeyboardEvent) {
   }
   event.preventDefault(); event.stopPropagation(); queueRender()
 }
-function focusEditor() { void nextTick(() => input.value?.focus({ preventScroll: true })) }
+function focusEditor(selection?: { start: number; end: number }) {
+  const key = props.editingKey, request = ++editorFocusRequest
+  editorHasPendingFocus = true
+  void nextTick(() => {
+    if (!key || props.editingKey !== key || request !== editorFocusRequest || !active || disposed) return
+    editorHasPendingFocus = false
+    input.value?.focus()
+    // AutoComplete exposes focus but no selection API. Both native elements are owned by antdv-next.
+    const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      element.focus({ preventScroll: true })
+      if (selection && !composing.value) element.setSelectionRange(selection.start, selection.end)
+    }
+  })
+}
 function ensureVisible(address: string) {
   const cell = parseAddress(address), scroll = scroller.value
   if (!cell || !scroll) return
@@ -503,8 +735,30 @@ defineExpose({ focusEditor, ensureVisible, focus, getBackend: () => surface?.bac
 watch(scene, queueRender)
 watch(fullSize, () => { void nextTick(resize) })
 watch(() => props.zoom, () => { viewport.value = { ...viewport.value, zoom: props.zoom / 100 }; void nextTick(() => { resize(); ensureVisible(props.selectedKey) }) })
-watch(() => props.editingKey, key => { if (key) ensureVisible(key) })
-watch(() => props.sheet.id, () => { void nextTick(restoreViewport) })
+watch(() => props.editingKey, key => {
+  changeInputComposition(false); retainedMultiline.value = false; editorHasPendingFocus = false; editorFocusRequest++
+  if (key) ensureVisible(key)
+}, { flush: 'sync' })
+watch(() => props.editValue, draft => { if (props.editingKey && /[\r\n]/u.test(draft)) retainedMultiline.value = true }, { flush: 'sync' })
+watch(useMultilineEditor, () => {
+  if (!props.editingKey) return
+  const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
+  const focused = element === document.activeElement
+  const selection = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+    ? { start: element.selectionStart ?? element.value.length, end: element.selectionEnd ?? element.value.length } : undefined
+  const key = props.editingKey, request = ++editorSwapRequest
+  const focusRequest = editorFocusRequest, preserveSelection = !editorHasPendingFocus
+  swappingEditor = true
+  void nextTick(() => {
+    if (key === props.editingKey && focused && preserveSelection && focusRequest === editorFocusRequest) focusEditor(selection)
+    void nextTick(() => { if (request === editorSwapRequest) swappingEditor = false })
+  })
+})
+watch(() => props.sheet.id, () => {
+  clearPointerGesture()
+  void nextTick(restoreViewport)
+}, { flush: 'sync' })
+watch([() => props.sheet, () => props.workbookRevision, () => props.editingKey], clearPointerGesture, { flush: 'sync' })
 onMounted(async () => {
   if (!canvasHost.value) return
   // Layout and navigation must be ready while the GPU adapter/pipeline is
@@ -526,14 +780,14 @@ onDeactivated(() => {
   sheetViews.set(props.sheet.id, { left: viewport.value.scrollLeft, top: viewport.value.scrollTop })
   active = false
   cancelAnimationFrame(frame); frame = 0
-  dragging = false; fillDrag = undefined; fillPreview.value = undefined; lastPointer = undefined; resizeDrag = undefined
+  clearPointerGesture()
   surface?.resize(0, 0, window.devicePixelRatio || 1)
 })
-onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
+onUnmounted(() => { disposed = true; clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
+  <div ref="root" class="spreadsheet-canvas" :class="{ 'format-painter-active': Boolean(formatPainter) }" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste.capture="onEditorPasteCapture" @paste="onPaste" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
     <Button
@@ -562,8 +816,10 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
       @pointerdown.stop
       @click.stop="emit('context-command', 'sheet.operation.outline-set-level', { axis: control.axis, level: control.level })"
     >{{ control.level }}</Button>
-    <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="value => emit('update:editValue', String(value ?? ''))" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
-    <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
+    <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="onEditValueChange" @blur="onEditorBlur" @keydown.stop="onInputKeydown" @compositionstart="changeInputComposition(true)" @compositionend="changeInputComposition(false)">
+      <Input.TextArea v-if="useMultilineEditor" :rows="1" :auto-size="false" :change-on-composing="true" :styles="editTextAreaStyles" :wrap="sheetCellWrapStrategy(editedCell) === 'wrap' ? 'soft' : 'off'" variant="borderless" spellcheck="false" aria-label="单元格编辑" @change="onTextAreaChange" />
+    </AutoComplete>
+    <span v-if="editingKey && editLayout && !formatPainter" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ selectedCellText }}</span></div>
     <Alert v-if="surfaceError" class="canvas-surface-error" type="error" :title="`画布初始化失败：${surfaceError}`" show-icon />
     <SheetContextMenu
@@ -575,12 +831,20 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
       :can-delete-row="sheet.rowCount > 1"
       :can-delete-column="sheet.columnCount > 1"
       :frozen="Boolean(sheet.freeze?.rows || sheet.freeze?.columns)"
-      :has-hidden-rows="Boolean(sheet.hiddenRows?.length)"
-      :has-hidden-columns="Boolean(sheet.hiddenColumns?.length)"
+      :has-hidden-rows="hasContextHiddenRows"
+      :has-hidden-columns="hasContextHiddenColumns"
       :can-convert-text="canConvertSelectedText"
       :has-hyperlink="hasContextHyperlink"
+      :can-format="canFormat"
       :can-shift-horizontally="canShiftHorizontally"
       :can-shift-vertically="canShiftVertically"
+      :selected-ranges="selectedRanges"
+      :row-count="sheet.rowCount"
+      :column-count="sheet.columnCount"
+      :can-structure-rows="canStructureRows"
+      :can-structure-columns="canStructureColumns"
+      :can-visibility-rows="canVisibilityRows"
+      :can-visibility-columns="canVisibilityColumns"
       @command="(commandId, params) => emit('context-command', commandId, params)"
     />
   </div>
@@ -589,13 +853,15 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 <style scoped>
 .spreadsheet-canvas { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; outline: none; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); touch-action: none; user-select: none; }
 .spreadsheet-canvas:focus-visible { box-shadow: inset 0 0 0 1px var(--sheet-canvas-primary); }
+.spreadsheet-canvas.format-painter-active { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M2 1v18l4-4 3 7 3-2-3-6h6z' fill='white' stroke='black'/%3E%3Cpath d='m17 13 8-10 2 2-8 10z' fill='white' stroke='black'/%3E%3Cpath d='M17 14c-4 0-2 5-6 6 5 2 10-1 8-5z' fill='black' stroke='white'/%3E%3C/svg%3E") 2 1, crosshair !important; }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; min-width: 12px; min-height: 12px; margin: 0; padding: 0; border: 1px solid var(--sheet-canvas-border); border-radius: 1px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); box-shadow: none; line-height: 10px; }
 .outline-control :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
 .outline-level { font-size: 8px; }
-.canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; }
+.canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; touch-action: auto; }
 .canvas-cell-input :deep(.ant-select-input) { height: 100%; }
+.canvas-cell-input :deep(.ant-select-content) { height: 100%; min-height: 0; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; inset-inline-start: 12px; max-width: calc(100% - 24px); }

@@ -1,6 +1,11 @@
 import { defaultCellStyle, type CellScalar, type ChartModel, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel, type SheetDataValidationRule } from '../domain/model.ts'
+import { conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from '../features/conditional-formatting/conditional-format-office-source.ts'
 import type { ParseEnvelope } from './contracts.ts'
+import { cloneModel } from '../domain/serialization.ts'
 import { array, finite, positive, record, text } from './validation.ts'
+import { normalizeWorkbookAxisDimensions } from './workbookAxisDimensions.ts'
+import { normalizeWorkbookAutoFilter } from './workbookAutoFilter.ts'
+import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 
 function normalizeCell(value: unknown): SpreadsheetCell {
   const raw = record(value)
@@ -63,9 +68,11 @@ function normalizeSparkline(value: unknown): SparklineSpec | undefined {
 
 function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetSheet {
   const raw = record(value)
+  const axis = normalizeWorkbookAxisDimensions(raw)
+  const autoFilter = normalizeWorkbookAutoFilter(raw.autoFilter)
   const cells: Record<string, SpreadsheetCell> = {}
-  let rowCount = 100
-  let columnCount = 26
+  let rowCount = axis.rowCount ?? 100
+  let columnCount = axis.columnCount ?? 26
   for (const source of array(raw.cells)) {
     const cell = normalizeCell(source)
     cells[cell.id] = cell
@@ -74,14 +81,6 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
   }
   const dimensions = record(raw.dimensions)
   const frozen = record(raw.freezePanes)
-  const sizes = (source: unknown): Record<number, number> => {
-    const result: Record<number, number> = {}
-    for (const item of array(source)) {
-      const axis = record(item)
-      if (finite(axis.index, -1) >= 0) result[Math.floor(finite(axis.index))] = positive(axis.size, 20)
-    }
-    return result
-  }
   const dataValidations = array(raw.dataValidations).flatMap((value): SheetDataValidationRule[] => {
     const wrapped = record(value)
     const item = record(wrapped.rule) ? record(wrapped.rule) : wrapped
@@ -130,47 +129,61 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
   const conditionalFormats = array(raw.conditionalFormats).flatMap((value): SheetConditionalFormatRule[] => {
     const item = record(value)
     if (typeof item.id !== 'string' || typeof item.type !== 'string') return []
-    const supportedTypes: SheetConditionalFormatRule['type'][] = ['cellIs', 'highlightCell', 'top10', 'average', 'duplicateValues', 'uniqueValues', 'timePeriod', 'containsText', 'notContainsText', 'beginsWith', 'endsWith', 'expression', 'dataBar', 'colorScale', 'iconSet']
-    if (!supportedTypes.includes(item.type as SheetConditionalFormatRule['type'])) return []
+    if (!conditionalFormatRuleTypes.includes(item.type as SheetConditionalFormatRule['type'])) return []
+    const officeSource = normalizeConditionalFormatOfficeSource(item.officeSource)
+    if (item.type === 'office' && !officeSource) throw new TypeError('源文件条件格式缺少往返来源。')
     const operators: Record<string, SheetConditionalFormatRule['operator']> = {
       equal: 'equal', notequal: 'notEqual', greaterthan: 'greaterThan', greaterthanorequal: 'greaterThanOrEqual',
       lessthan: 'lessThan', lessthanorequal: 'lessThanOrEqual', between: 'between', notbetween: 'notBetween',
     }
     const operator = typeof item.operator === 'string' ? operators[item.operator.toLowerCase()] ?? item.operator : undefined
+    if (!Array.isArray(item.ranges) || !item.ranges.length) throw new TypeError('条件格式范围无效。')
     const ranges = array(item.ranges).flatMap(rangeValue => {
       const range = record(rangeValue)
       const startRow = finite(range.startRow, -1), startCol = finite(range.startCol, -1)
       const endRow = finite(range.endRow, -1), endCol = finite(range.endCol, -1)
       return Number.isInteger(startRow) && Number.isInteger(startCol) && Number.isInteger(endRow) && Number.isInteger(endCol) &&
-        startRow >= 0 && startCol >= 0 && endRow >= startRow && endCol >= startCol
+        startRow >= 0 && startCol >= 0 && endRow >= startRow && endCol >= startCol && endRow <= 1_048_575 && endCol <= 16_383
         ? [{ startRow, startCol, endRow, endCol }]
         : []
     })
+    if (ranges.length !== array(item.ranges).length) throw new TypeError('条件格式范围无效。')
     if (!ranges.length || (item.type === 'cellIs' && (!operator || typeof item.formula1 !== 'string'))) return []
+    const formulaAnchor = record(item.formulaAnchor)
+    if (item.formulaAnchor !== undefined && (typeof formulaAnchor.row !== 'number' || typeof formulaAnchor.col !== 'number'
+      || !Number.isSafeInteger(formulaAnchor.row) || !Number.isSafeInteger(formulaAnchor.col)
+      || formulaAnchor.row < 0 || formulaAnchor.row > 1_048_575 || formulaAnchor.col < 0 || formulaAnchor.col > 16_383)) {
+      throw new TypeError('条件格式公式基准无效。')
+    }
     const style = record(item.style)
     const config = record(item.config)
+    const extensions = (source: Record<string, unknown>, known: readonly string[]): Record<string, unknown> =>
+      cloneModel(Object.fromEntries(Object.entries(source).filter(([key]) => !known.includes(key))))
     const normalizeValueConfig = (input: unknown): { type: string; value?: number | string } | undefined => {
       const value = record(input)
       if (typeof value.type !== 'string') return undefined
-      return { type: value.type, ...(typeof value.value === 'string' || typeof value.value === 'number' ? { value: value.value } : {}) }
+      return { ...extensions(value, ['type', 'value']), type: value.type, ...(typeof value.value === 'string' || typeof value.value === 'number' ? { value: value.value } : {}) }
     }
     const thresholds = array(config.thresholds).flatMap(entry => {
       const threshold = record(entry), value = normalizeValueConfig(threshold.value)
-      return value && typeof threshold.color === 'string' ? [{ value, color: threshold.color }] : []
+      return value && typeof threshold.color === 'string' ? [{ ...extensions(threshold, ['value', 'color']), value, color: threshold.color }] : []
     })
     const icons = array(config.icons).flatMap(entry => {
       const icon = record(entry), value = normalizeValueConfig(icon.value)
-      return value ? [{ value, ...(typeof icon.operator === 'string' ? { operator: icon.operator } : {}), ...(typeof icon.iconType === 'string' ? { iconType: icon.iconType } : {}), ...(typeof icon.iconId === 'string' || typeof icon.iconId === 'number' ? { iconId: String(icon.iconId) } : {}) }] : []
+      return value ? [{ ...extensions(icon, ['value', 'operator', 'iconType', 'iconId']), value, ...(typeof icon.operator === 'string' ? { operator: icon.operator } : {}), ...(typeof icon.iconType === 'string' ? { iconType: icon.iconType } : {}), ...(typeof icon.iconId === 'string' || typeof icon.iconId === 'number' ? { iconId: String(icon.iconId) } : {}) }] : []
     })
     return [{
+      ...extensions(item, ['id', 'type', 'subType', 'ranges', 'formulaAnchor', 'operator', 'formula1', 'formula2', 'value', 'isBottom', 'isPercent', 'config', 'style', 'priority', 'stopIfTrue', 'metadata', 'officeSource']),
       id: item.id, type: item.type as SheetConditionalFormatRule['type'], ranges,
+      ...(typeof formulaAnchor.row === 'number' && typeof formulaAnchor.col === 'number' ? { formulaAnchor: { row: formulaAnchor.row, col: formulaAnchor.col } } : {}),
       ...(typeof item.subType === 'string' ? { subType: item.subType as SheetConditionalFormatRule['subType'] } : {}),
       operator: operator ?? '', formula1: typeof item.formula1 === 'string' ? item.formula1 : '',
       ...(typeof item.formula2 === 'string' ? { formula2: item.formula2 } : {}),
-      ...(typeof item.value === 'string' || typeof item.value === 'number' || Array.isArray(item.value) ? { value: item.value as string | number | [number, number] } : {}),
+      ...(typeof item.value === 'string' || typeof item.value === 'number' || Array.isArray(item.value) ? { value: cloneModel(item.value) as string | number | [number, number] } : {}),
       ...(typeof item.isBottom === 'boolean' ? { isBottom: item.isBottom } : {}),
       ...(typeof item.isPercent === 'boolean' ? { isPercent: item.isPercent } : {}),
       ...(Object.keys(config).length ? { config: {
+        ...extensions(config, ['min', 'max', 'isGradient', 'positiveColor', 'nativeColor', 'thresholds', 'icons', 'isShowValue', 'iconSet', 'reverse', 'minLength', 'maxLength', 'border', 'borderColor', 'negativeBorderColor', 'axisColor', 'negativeBarColorSameAsPositive', 'negativeBarBorderColorSameAsPositive', 'direction', 'axisPosition']),
         ...(normalizeValueConfig(config.min) ? { min: normalizeValueConfig(config.min) } : {}),
         ...(normalizeValueConfig(config.max) ? { max: normalizeValueConfig(config.max) } : {}),
         ...(typeof config.isGradient === 'boolean' ? { isGradient: config.isGradient } : {}),
@@ -180,8 +193,19 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
         ...(typeof config.isShowValue === 'boolean' ? { isShowValue: config.isShowValue } : {}),
         ...(typeof config.iconSet === 'string' ? { iconSet: config.iconSet } : {}),
         ...(typeof config.reverse === 'boolean' ? { reverse: config.reverse } : {}),
+        ...(typeof config.minLength === 'number' ? { minLength: config.minLength } : {}),
+        ...(typeof config.maxLength === 'number' ? { maxLength: config.maxLength } : {}),
+        ...(typeof config.border === 'boolean' ? { border: config.border } : {}),
+        ...(typeof config.borderColor === 'string' ? { borderColor: config.borderColor } : {}),
+        ...(typeof config.negativeBorderColor === 'string' ? { negativeBorderColor: config.negativeBorderColor } : {}),
+        ...(typeof config.axisColor === 'string' ? { axisColor: config.axisColor } : {}),
+        ...(typeof config.negativeBarColorSameAsPositive === 'boolean' ? { negativeBarColorSameAsPositive: config.negativeBarColorSameAsPositive } : {}),
+        ...(typeof config.negativeBarBorderColorSameAsPositive === 'boolean' ? { negativeBarBorderColorSameAsPositive: config.negativeBarBorderColorSameAsPositive } : {}),
+        ...(typeof config.direction === 'string' && ['context', 'leftToRight', 'rightToLeft'].includes(config.direction) ? { direction: config.direction as NonNullable<SheetConditionalFormatRule['config']>['direction'] } : {}),
+        ...(typeof config.axisPosition === 'string' && ['automatic', 'middle', 'none'].includes(config.axisPosition) ? { axisPosition: config.axisPosition as NonNullable<SheetConditionalFormatRule['config']>['axisPosition'] } : {}),
       } } : {}),
       style: {
+        ...extensions(style, ['fill', 'fontColor', 'bold', 'italic', 'underline', 'strike']),
         ...(typeof style.fill === 'string' ? { fill: style.fill } : {}),
         ...(typeof style.fontColor === 'string' ? { fontColor: style.fontColor } : {}),
         ...(typeof style.bold === 'boolean' ? { bold: style.bold } : {}),
@@ -190,7 +214,8 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
         ...(typeof style.strike === 'boolean' ? { strike: style.strike } : {}),
       },
       priority: Math.max(1, Math.floor(finite(item.priority, 1))), stopIfTrue: item.stopIfTrue === true,
-      ...(Object.keys(record(item.metadata)).length ? { metadata: record(item.metadata) } : {}),
+      ...(Object.keys(record(item.metadata)).length ? { metadata: cloneModel(record(item.metadata)) } : {}),
+      ...(officeSource ? { officeSource } : {}),
     }]
   })
   const rangeProtectionRules = array(raw.rangeProtectionRules).flatMap((value): SheetRangeProtectionRule[] => {
@@ -232,7 +257,7 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
       viewState: worksheetProtectionInput.viewState === 'noOneElseCanView' ? 'noOneElseCanView' as const : 'othersCanView' as const,
     }
     : undefined
-  return {
+  const normalized: SpreadsheetSheet = {
     id: id+'-sheet-'+index, name: text(raw.name, 'Sheet'+(index+1)),
     visible: raw.visible !== 'hidden' && raw.visible !== 'veryHidden' && raw.visible !== false,
     cells,
@@ -240,22 +265,36 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
       const range = record(value)
       return { startRow: finite(range.firstRow), startCol: finite(range.firstCol), endRow: finite(range.lastRow), endCol: finite(range.lastCol) }
     }),
-    columnWidths: sizes(raw.columnWidths), rowHeights: sizes(raw.rowHeights),
+    axisUnit: axis.axisUnit, columnWidths: axis.columnWidths, rowHeights: axis.rowHeights,
+    rowHeightSpans: axis.rowHeightSpans, columnWidthSpans: axis.columnWidthSpans,
+    rowAutoHeightSpans: axis.rowAutoHeightSpans, rowAutoHeights: axis.rowAutoHeights,
     frozenRows: Math.max(0, Math.floor(finite(frozen.rows))),
     frozenCols: Math.max(0, Math.floor(finite(frozen.columns))),
     showGridlines: raw.gridlines !== false,
-    hiddenRows: array(raw.hiddenRows).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
-    hiddenColumns: array(raw.hiddenColumns).filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
+    hiddenRows: axis.hiddenRows,
+    hiddenColumns: axis.hiddenColumns,
+    rowHiddenSpans: axis.rowHiddenSpans,
+    columnHiddenSpans: axis.columnHiddenSpans,
+    autoFilter,
     dataValidations,
     conditionalFormats,
     rangeProtectionRules,
     worksheetProtection,
-    defaultColumnWidth: positive(raw.defaultColumnWidth, 96), defaultRowHeight: positive(raw.defaultRowHeight, 24),
-    rowCount: Math.max(rowCount, finite(dimensions.lastRow, -1) + 1),
-    columnCount: Math.max(columnCount, finite(dimensions.lastCol, -1) + 1),
+    defaultColumnWidth: axis.defaultColumnWidth, defaultRowHeight: axis.defaultRowHeight, defaultRowAutoHeight: axis.defaultRowAutoHeight,
+    rowCount: Math.max(rowCount, axis.rowExtent, finite(dimensions.lastRow, -1) + 1, autoFilter ? autoFilter.range.endRow + 1 : 0),
+    columnCount: Math.max(columnCount, axis.columnExtent, finite(dimensions.lastCol, -1) + 1, autoFilter ? autoFilter.range.endCol + 1 : 0),
     zoom: positive(raw.zoom, 100) / 100,
-    metadata: { source: raw },
+    metadata: { source: raw, axisDimensions: { sourceUnit: axis.compatibility, valuesKeptForLegacyView: axis.compatibility === 'legacyUnspecified' } },
   }
+  const filterExtension = record(record(raw.sourceAxisDimensions).projectAutoFilterExtension)
+  const axesExtension = record(record(raw.sourceAxisDimensions).projectAxisExtension)
+  if (autoFilter && raw.sourceAutoFilter && filterExtension.restored !== true) {
+    // Standard XLSX has one hidden bit for multiple causes. Criteria identify
+    // failed rows; exact project geometry retains manual overlaps separately.
+    const filteredRows = new Set(refreshAutoFilter(normalized))
+    if (axesExtension.restored !== true) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
+  }
+  return normalized
 }
 
 function normalizePivotCharts(rawSheets: unknown, sheets: SpreadsheetSheet[], pivots: PivotTableModel[]): ChartModel[] {

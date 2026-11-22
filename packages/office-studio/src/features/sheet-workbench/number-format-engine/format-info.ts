@@ -222,6 +222,10 @@ export function dateInfo(partitions: Array<FormatSection | undefined>): FormatDa
     }
     const positive = isParsedSection(partPositive) ? partPositive : undefined;
     const date = positive?.date ?? 0;
+    const elapsedToken = positive?.tokens.find((token) => token.type.endsWith('-elap'));
+    const elapsedUnit = elapsedToken?.type === 'hour-elap' ? 'hours'
+        : elapsedToken?.type === 'min-elap' ? 'minutes'
+            : elapsedToken?.type === 'sec-elap' ? 'seconds' : undefined;
     return {
         year: !!(date & u_YEAR),
         month: !!(date & u_MONTH),
@@ -229,7 +233,8 @@ export function dateInfo(partitions: Array<FormatSection | undefined>): FormatDa
         hours: !!(date & u_HOUR),
         minutes: !!(date & u_MIN),
         seconds: !!(date & u_SEC),
-        isDuration: positive?.tokens.some((token) => token.type.endsWith('-elap')) ?? false,
+        isDuration: !!elapsedToken,
+        ...(elapsedUnit ? { elapsedUnit } : {}),
         clockType: positive?.clock === 12 ? 12 : 24,
     };
 }

@@ -5,10 +5,17 @@ import { listKind, listMarker, listPresets, type ListKind, type ListPreset } fro
 
 const props = defineProps<{ kind: ListKind; active?: ListPreset; title: string; canRestart?: boolean; canContinue?: boolean }>()
 const emit = defineEmits<{ insert: [value: ListPreset]; execute: [commandId: string, params?: Record<string, unknown>] }>()
-const numbering = ref({ start: 1 })
+const numbering = ref<{ start: number | null }>({ start: 1 })
+const composing = ref(false)
 function restart() {
   const start = numbering.value.start
-  if (props.canRestart && Number.isSafeInteger(start) && start >= 0 && start <= 2147483647) emit('execute', 'doc.command.restart-list-numbering', { start })
+  if (!composing.value && props.canRestart && typeof start === 'number' && Number.isSafeInteger(start) && start >= 0 && start <= 2147483647) emit('execute', 'doc.command.restart-list-numbering', { start })
+}
+function onNumberingKeydown(event: KeyboardEvent) {
+  if ((event.key === 'Enter' || event.key === 'Escape') && (composing.value || event.isComposing || event.keyCode === 229)) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
 }
 const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind).map(preset => ({
   preset, preview: [0, 1, 2, 0].map(level => ({ level, glyph: listMarker(preset, level) })),
@@ -16,7 +23,7 @@ const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind)
 </script>
 
 <template>
-  <div class="doc-list-picker" role="group" :aria-label="title">
+  <div class="doc-list-picker" role="group" :aria-label="title" @keydown.capture="onNumberingKeydown">
     <Button v-for="card in cards" :key="card.preset" class="doc-list-card" :aria-pressed="active === card.preset"
       :aria-label="`${title}: ${card.preview.slice(0, 3).map(row => row.glyph).join(' ')}`" :data-list-preset="card.preset" @mousedown.prevent @click="emit('insert', card.preset)">
       <span class="doc-list-preview" aria-hidden="true">
@@ -27,9 +34,10 @@ const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind)
     </Button>
     <Form v-if="kind === 'numbered'" class="doc-numbering-actions" :model="numbering" layout="vertical" @finish="restart">
       <Form.Item label="起始编号" name="start" :rules="[{ required: true, type: 'integer', min: 0, max: 2147483647 }]">
-        <InputNumber v-model:value="numbering.start" :min="0" :max="2147483647" :precision="0" :disabled="!canRestart" aria-label="起始编号" />
+        <InputNumber v-model:value="numbering.start" :min="0" :max="2147483647" :precision="0" :disabled="!canRestart" aria-label="起始编号"
+          @compositionstart="composing = true" @compositionend="composing = false" />
       </Form.Item>
-      <Button html-type="submit" :disabled="!canRestart">重新编号</Button>
+      <Button html-type="submit" :disabled="!canRestart || composing">重新编号</Button>
       <Button :disabled="!canContinue" @mousedown.prevent @click="emit('execute', 'doc.command.continue-list-numbering')">继续前一编号</Button>
     </Form>
   </div>

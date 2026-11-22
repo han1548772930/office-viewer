@@ -226,12 +226,14 @@ export function relocateDocumentThreadComment(
 }
 
 export function documentThreadCommentAnchorStatus(model: DocumentModel, comment: DocumentThreadComment): DocumentCommentAnchorStatus {
-  const body = flattenDocumentBody(model)
+  if (!comment.anchor.length) return 'orphaned'
   let resolved = 0
   for (const anchor of comment.anchor) {
-    const segment = body.segments.find(candidate => (candidate.cellBlockId ?? candidate.blockId) === anchor.blockId)
-    if (!segment) return 'orphaned'
-    const current = segment.text.slice(anchor.startOffset, anchor.endOffset)
+    const paragraph = findParagraph(model.blocks, anchor.blockId)
+    if (!paragraph || ['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(paragraph.type)) return 'orphaned'
+    const sourceText = paragraph.runs.map(run => run.text).join('')
+    if (!Number.isSafeInteger(anchor.startOffset) || !Number.isSafeInteger(anchor.endOffset) || anchor.startOffset < 0 || anchor.endOffset < anchor.startOffset || anchor.endOffset > sourceText.length) return 'stale'
+    const current = sourceText.slice(anchor.startOffset, anchor.endOffset)
     if (current !== anchor.text) return 'stale'
     resolved += current.length
   }

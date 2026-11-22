@@ -1,5 +1,5 @@
 use duke_pages::StructuredDocument;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -39,6 +39,40 @@ pub struct DocumentPayload {
     pub endnotes: Option<Vec<DocumentNotePayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comments: Option<Vec<DocumentCommentPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub office_source: Option<DocumentOfficeSourcePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_style: Option<DocumentDefaultStylePayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentDefaultStylePayload {
+    pub version: u32,
+    pub text: Option<duke_pages::TextStyle>,
+    pub paragraph: Option<duke_pages::ParagraphStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub word_wrap: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentOfficeSourcePayload {
+    pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub styles: Option<DocumentOfficeXmlPartPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<DocumentOfficeXmlPartPayload>,
+    /// A legal absent part differs from a declared part that could not be read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resource_errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentOfficeXmlPartPayload {
+    pub part_name: String,
+    pub xml: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +183,9 @@ impl ParserDiagnostics {
         }
         if workbook.sheets.iter().any(|sheet| !sheet.conditional_formats.is_empty()) {
             diagnostics.capabilities.push("conditionalFormatting".into());
+        }
+        if workbook.sheets.iter().any(|sheet| sheet.auto_filter.is_some()) {
+            diagnostics.capabilities.push("autoFilter".into());
         }
         if workbook.sheets.iter().flat_map(|sheet| &sheet.charts).any(|chart| chart.pivot_table_id.is_some()) {
             diagnostics.capabilities.push("pivotCharts".into());
@@ -308,8 +345,18 @@ pub struct SheetPayload {
     pub merged_ranges: Vec<RangePayload>,
     pub column_widths: Vec<AxisPayload>,
     pub row_heights: Vec<AxisPayload>,
-    pub default_column_width: Option<f32>,
-    pub default_row_height: Option<f32>,
+    pub axis_unit: String,
+    pub column_width_spans: Vec<AxisSpanPayload<f64>>,
+    pub row_height_spans: Vec<AxisSpanPayload<f64>>,
+    pub row_auto_height_spans: Vec<AxisSpanPayload<bool>>,
+    pub row_auto_heights: Vec<AxisPayload>,
+    pub default_row_auto_height: Option<bool>,
+    pub row_count: Option<u32>,
+    pub column_count: Option<u32>,
+    /// Retain exact imported units and source geometry beside the CSS-pixel projection.
+    pub source_axis_dimensions: Value,
+    pub default_column_width: Option<f64>,
+    pub default_row_height: Option<f64>,
     pub gridlines: Option<bool>,
     pub freeze_panes: Option<FreezePanePayload>,
     pub zoom: Option<u16>,
@@ -317,6 +364,12 @@ pub struct SheetPayload {
     pub right_to_left: bool,
     pub hidden_rows: Vec<u32>,
     pub hidden_columns: Vec<u16>,
+    pub row_hidden_spans: Vec<AxisSpanPayload<bool>>,
+    pub column_hidden_spans: Vec<AxisSpanPayload<bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_filter: Option<crate::sheet_filter_import::AutoFilterState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_auto_filter: Option<office_io_common::OfficeFilterNode>,
     pub hyperlinks: Vec<HyperlinkPayload>,
     pub data_validations: Vec<DataValidationPayload>,
     pub conditional_formats: Vec<Value>,
@@ -600,11 +653,19 @@ pub struct RangePayload {
     pub last_col: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AxisPayload {
     pub index: u32,
-    pub size: f32,
+    pub size: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AxisSpanPayload<T> {
+    pub start: u32,
+    pub end: u32,
+    pub value: T,
 }
 
 #[cfg(test)]

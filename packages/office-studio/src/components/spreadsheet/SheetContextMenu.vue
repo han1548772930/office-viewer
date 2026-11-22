@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Button, Menu } from 'antdv-next'
+import { Button, Menu, theme } from 'antdv-next'
 import type { MenuItemType, MenuRef } from 'antdv-next'
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Hash, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
-import type { GridHit } from '../../rendering/spreadsheet/layout.ts'
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Grid2X2, Hash, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
+import type { GridHit, GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { createSheetContextMenuItems, type SheetContextMenuItem } from './sheet-context-menu.ts'
-import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{
   hit: GridHit | null
@@ -18,10 +18,18 @@ const props = defineProps<{
   frozen: boolean
   hasHiddenRows: boolean
   hasHiddenColumns: boolean
+  canFormat?: boolean
   canConvertText?: boolean
   hasHyperlink?: boolean
   canShiftHorizontally?: boolean
   canShiftVertically?: boolean
+  selectedRanges?: readonly GridRange[]
+  rowCount?: number
+  columnCount?: number
+  canStructureRows?: boolean
+  canStructureColumns?: boolean
+  canVisibilityRows?: boolean
+  canVisibilityColumns?: boolean
 }>()
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -29,7 +37,9 @@ const emit = defineEmits<{
 }>()
 
 const panel = ref<HTMLElement>()
+const { token } = theme.useToken()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
+const direction = inject(OfficeDirectionKey, ref<'ltr' | 'rtl'>('ltr'))
 function translateItems(source: SheetContextMenuItem[]): SheetContextMenuItem[] {
   return source.flatMap(item => {
     const entries: SheetContextMenuItem[] = []
@@ -37,10 +47,15 @@ function translateItems(source: SheetContextMenuItem[]): SheetContextMenuItem[] 
     entries.push({ ...item, separatorBefore: false })
     return entries.map(entry => ({
       ...entry,
-      label: entry.type === 'divider' ? '' : translate(`sheet.context-menu.${entry.id}`, entry.label),
+      label: entry.type === 'divider' ? '' : translatedLabel(entry),
       children: entry.children ? translateItems(entry.children) : undefined,
     }))
   })
+}
+function translatedLabel(item: SheetContextMenuItem): string {
+  const text = translate(item.translationKey ?? `sheet.context-menu.${item.id}`, item.label)
+  if (item.count === undefined) return text
+  return text.includes('{count}') ? text.replaceAll('{count}', String(item.count)) : item.count > 1 && text !== item.label ? `${text} (${item.count})` : text
 }
 const items = computed(() => props.hit ? translateItems(createSheetContextMenuItems(props.hit, props)) : [])
 const itemById = computed(() => {
@@ -55,7 +70,13 @@ const itemById = computed(() => {
 const quickItems = computed(() => items.value.filter(item => item.quick))
 const regularItems = computed(() => items.value.filter(item => !item.quick))
 const menuItems = computed<MenuItemType[]>(() => toMenuItems(regularItems.value))
-const position = computed(() => ({ left: `${Math.max(4, props.x)}px`, top: `${Math.max(4, props.y)}px` }))
+const position = computed(() => ({
+  left: `${Math.max(4, props.x)}px`, top: `${Math.max(4, props.y)}px`,
+  '--context-border': token.value.colorBorderSecondary, '--context-background': token.value.colorBgElevated,
+  '--context-text': token.value.colorText, '--context-disabled': token.value.colorTextDisabled,
+  '--context-hover': token.value.colorBgTextHover, '--context-focus': token.value.colorPrimary,
+  '--context-shadow': token.value.boxShadowSecondary,
+}))
 const menuRef = ref<MenuRef | null>(null)
 
 const menuIcons = {
@@ -63,6 +84,7 @@ const menuIcons = {
   CutIcon: Scissors,
   PasteSpecialDoubleIcon: ClipboardPaste,
   ClearFormatDoubleIcon: Eraser,
+  AllBorderIcon: Grid2X2,
   FreezeToSelectedIcon: Snowflake,
   FreezeRowIcon: Rows3,
   FreezeColumnIcon: Columns3,
@@ -154,7 +176,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open && items.length" ref="panel" class="sheet-context-menu" :style="position">
+    <div v-if="open && items.length" ref="panel" class="sheet-context-menu" :dir="direction" :style="position">
       <div v-if="quickItems.length" class="sheet-context-menu__quick" role="group" aria-label="快捷操作">
         <Button
           v-for="item in quickItems"
@@ -177,11 +199,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.sheet-context-menu { position: fixed; z-index: 3000; box-sizing: border-box; width: 208px; max-width: calc(100vw - 8px); max-height: min(520px, calc(100vh - 8px)); overflow: auto; border: 1px solid #d8dde5; border-radius: 6px; background: #fff; box-shadow: 0 4px 12px #17203326; color: #263244; padding: 4px 8px; }
+.sheet-context-menu { position: fixed; z-index: 3000; box-sizing: border-box; width: 208px; max-width: calc(100vw - 8px); max-height: min(520px, calc(100vh - 8px)); overflow: auto; border: 1px solid var(--context-border); border-radius: 6px; background: var(--context-background); box-shadow: var(--context-shadow); color: var(--context-text); padding: 4px 8px; }
 .sheet-context-menu__quick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; gap: 6px; padding: 4px 0; }
 .sheet-context-menu :deep(.sheet-context-menu__quick-item) { display: flex; min-width: 0; width: 100%; height: 48px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; border-radius: 6px; padding: 4px; color: inherit; line-height: normal; }
-.sheet-context-menu :deep(.sheet-context-menu__quick-item:not(:disabled):hover), .sheet-context-menu :deep(.sheet-context-menu__quick-item:focus-visible) { outline: none; background: #f1f3f5; }
-.sheet-context-menu :deep(.sheet-context-menu__quick-item:disabled) { color: #9aa3af; cursor: default; }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item:not(:disabled):hover) { background: var(--context-hover); }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item:focus-visible) { outline: 2px solid var(--context-focus); outline-offset: -2px; }
+.sheet-context-menu :deep(.sheet-context-menu__quick-item:disabled) { color: var(--context-disabled); cursor: default; }
 .sheet-context-menu :deep(.sheet-context-menu__quick-item span) { max-width: 100%; overflow: hidden; font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-context-menu :deep(.ant-menu) { max-height: inherit; overflow: auto; border-inline-end: 0; padding: 4px 0; font-size: 14px; }
 .sheet-context-menu :deep(.ant-menu-item), .sheet-context-menu :deep(.ant-menu-submenu-title) { min-height: 32px; height: auto; line-height: 22px; padding-block: 5px; font-size: 14px; }

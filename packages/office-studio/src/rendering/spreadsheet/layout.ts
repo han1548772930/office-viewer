@@ -1,6 +1,9 @@
 import type { ExcelSheetView } from '../../services/excelViewAdapter'
 import type { RenderRect } from '../contracts'
 import { hiddenSheetRows } from '../../features/sheet-workbench/sheet-row-visibility.ts'
+import { isSheetCellCoverable } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
+import { effectiveSheetRowSizes, sheetAxisSpanAt, SparseAxisIndex as AxisIndex } from '../../domain/sheet-axis.ts'
+export { SparseAxisIndex as AxisIndex } from '../../domain/sheet-axis.ts'
 
 export type SpreadsheetRenderSheet = ExcelSheetView & {
   columnWidths?: Record<number, number>
@@ -11,7 +14,7 @@ export type SpreadsheetRenderSheet = ExcelSheetView & {
   showGridlines?: boolean
 }
 export interface GridViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
-export interface GridRange { startRow: number; startColumn: number; endRow: number; endColumn: number }
+export interface GridRange { startRow: number; startColumn: number; endRow: number; endColumn: number; rangeType?: 0 | 1 | 2 | 3 }
 export type GridHit = { kind: 'cell'; row: number; column: number; key: string } | { kind: 'fill-handle'; range: GridRange } | { kind: 'row'; row: number } | { kind: 'column'; column: number } | { kind: 'all' } | { kind: 'resize-row'; row: number; size: number } | { kind: 'resize-column'; column: number; size: number } | { kind: 'outline-toggle'; axis: 'row' | 'column'; groupId: string; collapsed: boolean } | { kind: 'outline-level'; axis: 'row' | 'column'; level: number }
 export interface OutlineControlRect extends RenderRect { axis: 'row' | 'column'; groupId: string; collapsed: boolean }
 export const GRID_HEADER_WIDTH = 44
@@ -30,6 +33,16 @@ interface MergeRowNode {
   byEnd: MergeBand[]
   left?: MergeRowNode
   right?: MergeRowNode
+}
+
+function lowerBound(values: readonly number[], value: number): number {
+  let low = 0, high = values.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (values[middle]! < value) low = middle + 1
+    else high = middle
+  }
+  return low
 }
 
 function buildMergeRowIndex(bands: MergeBand[]): MergeRowNode | undefined {
@@ -100,47 +113,13 @@ export function parseAddress(address: string): { row: number; column: number } |
   return { row: Number(match[2]) - 1, column: column - 1 }
 }
 
-/** Sparse prefix-size index: storage is proportional to custom/hidden axes, not sheet size. */
-export class AxisIndex {
-  readonly count: number
-  readonly defaultSize: number
-  private readonly indices: number[]
-  private readonly adjustments: number[]
-  private readonly values: Map<number, number>
-  constructor(count: number, defaultSize: number, sizes: Record<number, number> = {}, hidden: readonly number[] = []) {
-    this.count = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
-    this.defaultSize = Number.isFinite(defaultSize) ? Math.max(0, defaultSize) : 0
-    this.values = new Map(Object.entries(sizes).filter(([key, value]) => Number.isInteger(Number(key)) && Number(key) >= 0 && Number(key) < this.count && Number.isFinite(value)).map(([key, value]) => [Number(key), Math.max(0, value)]))
-    for (const index of hidden) if (Number.isInteger(index) && index >= 0 && index < this.count) this.values.set(index, 0)
-    this.indices = [...this.values.keys()].filter(index => index >= 0 && index < this.count).sort((a, b) => a - b)
-    this.adjustments = [0]
-    for (const index of this.indices) this.adjustments.push(this.adjustments[this.adjustments.length - 1] + this.values.get(index)! - this.defaultSize)
-  }
-  size(index: number): number { return this.values.get(index) ?? this.defaultSize }
-  offset(index: number): number {
-    let low = 0, high = this.indices.length
-    while (low < high) { const middle = (low + high) >>> 1; if (this.indices[middle] < index) low = middle + 1; else high = middle }
-    return index * this.defaultSize + this.adjustments[low]
-  }
-  locate(coordinate: number): number {
-    let low = 0, high = this.count
-    while (low < high) { const middle = (low + high) >>> 1; if (this.offset(middle + 1) <= coordinate) low = middle + 1; else high = middle }
-    return Math.min(this.count - 1, Math.max(0, low))
-  }
-  visible(start: number, end: number, minimum = 0, maximum = this.count): number[] {
-    const result: number[] = []
-    let index = Math.max(minimum, this.locate(Math.max(0, start)))
-    while (index < Math.min(maximum, this.count) && this.offset(index) < end) { if (this.size(index) > 0) result.push(index); index += 1 }
-    return result
-  }
-}
-
 export class SpreadsheetGeometry {
   readonly sheet: SpreadsheetRenderSheet
   readonly rows: AxisIndex
   readonly columns: AxisIndex
   readonly merges: GridRange[]
   private readonly mergeRowIndex: MergeRowNode | undefined
+  private readonly contentColumns = new Map<number, number[]>()
   readonly frozenRows: number
   readonly frozenColumns: number
   constructor(sheet: SpreadsheetRenderSheet) {
@@ -149,11 +128,12 @@ export class SpreadsheetGeometry {
     // its wider first column only for sheets without an explicit default.
     const defaultRowHeight = sheet.defaultRowHeight ?? 26
     const defaultColumnWidth = sheet.defaultColumnWidth ?? 112
-    const columnWidths = sheet.defaultColumnWidth === undefined
+    const columnWidths = sheet.defaultColumnWidth === undefined && !sheetAxisSpanAt(sheet.columnWidthSpans, 0)
       ? { 0: 152, ...sheet.columnWidths }
       : sheet.columnWidths
-    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, sheet.rowHeights, [...hiddenSheetRows(sheet)])
-    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, [...(sheet.hiddenColumns ?? []), ...(sheet.outlineHiddenColumns ?? [])])
+    const rowSizes = effectiveSheetRowSizes(sheet)
+    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, rowSizes.sizes, [...hiddenSheetRows(sheet)], rowSizes.spans, sheet.rowHiddenSpans)
+    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, [...(sheet.hiddenColumns ?? []), ...(sheet.outlineHiddenColumns ?? [])], sheet.columnWidthSpans, sheet.columnHiddenSpans)
     this.frozenRows = Math.max(0, Math.min(sheet.rowCount, sheet.freeze?.rows ?? 0))
     this.frozenColumns = Math.max(0, Math.min(sheet.columnCount, sheet.freeze?.columns ?? 0))
     this.merges = (sheet.merges ?? []).flatMap(value => { const [a, b] = value.split(':'); const start = parseAddress(a), end = parseAddress(b ?? a); return start && end ? [{ startRow: Math.min(start.row, end.row), startColumn: Math.min(start.column, end.column), endRow: Math.max(start.row, end.row), endColumn: Math.max(start.column, end.column) }] : [] })
@@ -178,6 +158,15 @@ export class SpreadsheetGeometry {
       }
     }
     this.mergeRowIndex = buildMergeRowIndex([...bands.values()])
+    for (const [address, cell] of Object.entries(sheet.cells)) {
+      const position = parseAddress(address)
+      if (!position || position.row >= this.rows.count || position.column >= this.columns.count
+        || this.rows.size(position.row) <= 0 || this.columns.size(position.column) <= 0 || isSheetCellCoverable(cell)) continue
+      const columns = this.contentColumns.get(position.row) ?? []
+      columns.push(position.column)
+      this.contentColumns.set(position.row, columns)
+    }
+    for (const columns of this.contentColumns.values()) columns.sort((a, b) => a - b)
   }
   mergeAt(row: number, column: number): GridRange | undefined {
     let match: MergeEntry | undefined
@@ -186,6 +175,49 @@ export class SpreadsheetGeometry {
       if (candidate && (!match || candidate.order < match.order)) match = candidate
     })
     return match?.range
+  }
+  /** Nearest visible content anchors can be outside the viewport; empty styled cells remain coverable. */
+  contentColumnBefore(row: number, column: number): number | undefined {
+    const columns = this.contentColumns.get(row) ?? []
+    return columns[lowerBound(columns, column) - 1]
+  }
+  contentColumnAfter(row: number, column: number): number | undefined {
+    const columns = this.contentColumns.get(row) ?? []
+    return columns[lowerBound(columns, column + 1)]
+  }
+  /** Content, merged ranges and frozen-column boundaries delimit a text overflow lane. */
+  overflowColumnBounds(row: number, column: number): { startColumn: number; endColumn: number } {
+    const minimum = column < this.frozenColumns ? 0 : this.frozenColumns
+    const maximum = column < this.frozenColumns ? this.frozenColumns - 1 : this.columns.count - 1
+    const left = this.contentColumnBefore(row, column), right = this.contentColumnAfter(row, column)
+    let startColumn = Math.max(minimum, left === undefined ? minimum : left + 1)
+    let endColumn = Math.min(maximum, right === undefined ? maximum : right - 1)
+    const inspect = ({ range }: MergeEntry) => {
+      if (this.columns.offset(range.endColumn + 1) <= this.columns.offset(range.startColumn)) return
+      if (range.endColumn < column) startColumn = Math.max(startColumn, range.endColumn + 1)
+      else if (range.startColumn > column) endColumn = Math.min(endColumn, range.startColumn - 1)
+      else { startColumn = column; endColumn = column }
+    }
+    visitMergeBands(this.mergeRowIndex, row, band => {
+      if (band.hasColumnOverlap) { for (const entry of band.columns) inspect(entry); return }
+      let low = 0, high = band.columns.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        if (band.columns[middle]!.range.startColumn <= column) low = middle + 1
+        else high = middle
+      }
+      for (let index = low - 1; index >= 0; index--) {
+        const entry = band.columns[index]!
+        if (this.columns.offset(entry.range.endColumn + 1) <= this.columns.offset(entry.range.startColumn)) continue
+        inspect(entry); break
+      }
+      for (let index = low; index < band.columns.length; index++) {
+        const entry = band.columns[index]!
+        if (this.columns.offset(entry.range.endColumn + 1) <= this.columns.offset(entry.range.startColumn)) continue
+        inspect(entry); break
+      }
+    })
+    return { startColumn, endColumn }
   }
   cellRect(row: number, column: number, viewport: GridViewport, merged = true): RenderRect {
     const range = merged ? this.mergeAt(row, column) : undefined

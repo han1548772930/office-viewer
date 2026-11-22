@@ -3,8 +3,9 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { Alert, Button, Input, Tooltip, theme } from 'antdv-next'
 import type { InputTextAreaRef } from 'antdv-next'
 import { Check, ChevronDown, ChevronUp, X } from 'lucide-vue-next'
+import { sheetCellInputActionForKey } from '../../features/sheet-workbench/sheet-cell-edit-input.ts'
 
-const props = defineProps<{ address: string; value: string; editing: boolean; error?: string }>()
+const props = defineProps<{ address: string; value: string; editing: boolean; composing?: boolean; error?: string }>()
 const emit = defineEmits<{
   (event: 'update:value', value: string): void
   (event: 'begin'): void
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   (event: 'cancel'): void
   (event: 'navigate', address: string): void
   (event: 'focus-grid'): void
+  (event: 'composition-change', composing: boolean): void
 }>()
 
 const addressDraft = ref(props.address)
@@ -26,15 +28,24 @@ const colors = computed(() => ({
   '--formula-muted': token.value.colorTextSecondary,
 }))
 watch(() => props.address, address => { addressDraft.value = address })
+watch(() => props.editing, editing => { if (!editing) changeFormulaComposition(false) })
+
+function changeFormulaComposition(composing: boolean): void {
+  formulaComposing.value = composing
+  emit('composition-change', composing)
+}
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || formulaComposing.value) return
-  if (event.key === 'Escape') {
+  if (event.defaultPrevented) return
+  const action = sheetCellInputActionForKey(event, formulaComposing.value || props.composing)
+  if (action === 'cancel') {
     event.preventDefault()
     emit('cancel')
-  } else if ((event.key === 'Enter' && !event.altKey) || event.key === 'Tab') {
+  } else if (action === 'commit') {
+    event.preventDefault(); emit('confirm')
+  } else if (action !== 'native' && action !== 'line-break') {
     event.preventDefault()
-    emit('confirm', { key: event.key, shift: event.shiftKey })
+    emit('confirm', { key: action === 'next-column' || action === 'previous-column' ? 'Tab' : 'Enter', shift: action === 'previous-column' || action === 'previous-row' })
   }
 }
 
@@ -61,7 +72,12 @@ function startFormula() {
   void nextTick(() => editor.value?.focus())
 }
 
-function focus() { editor.value?.focus() }
+function focus(selection?: { start: number; end: number }) {
+  editor.value?.focus({ preventScroll: true })
+  const native = editor.value?.nativeElement
+  const element = native instanceof HTMLTextAreaElement ? native : native?.querySelector('textarea')
+  if (element instanceof HTMLTextAreaElement && selection && !formulaComposing.value && !props.composing) element.setSelectionRange(selection.start, selection.end)
+}
 defineExpose({ focus })
 </script>
 
@@ -82,7 +98,7 @@ defineExpose({ focus })
     />
     <div class="formula-actions">
       <Tooltip title="取消编辑（Esc）"><Button type="text" size="small" aria-label="取消编辑" :disabled="!editing" @mousedown.prevent @click="emit('cancel')"><X :size="15" /></Button></Tooltip>
-      <Tooltip title="确认编辑（Enter）"><Button type="text" size="small" aria-label="确认编辑" :disabled="!editing" @mousedown.prevent @click="emit('confirm')"><Check :size="15" /></Button></Tooltip>
+      <Tooltip title="确认编辑（Enter）"><Button type="text" size="small" aria-label="确认编辑" :disabled="!editing || formulaComposing || composing" @mousedown.prevent @click="emit('confirm')"><Check :size="15" /></Button></Tooltip>
       <Tooltip title="编辑公式"><Button type="text" size="small" aria-label="编辑公式" @mousedown.prevent @click="startFormula"><span class="formula-symbol">fx</span></Button></Tooltip>
     </div>
     <Input.TextArea
@@ -90,13 +106,14 @@ defineExpose({ focus })
       class="formula-input"
       aria-label="公式编辑"
       :rows="expanded ? 3 : 1"
+      :change-on-composing="true"
       variant="borderless"
       spellcheck="false"
       @focus="emit('begin')"
       @update:value="emit('update:value', $event)"
       @keydown="onKeydown"
-      @compositionstart="formulaComposing = true"
-      @compositionend="formulaComposing = false"
+      @compositionstart="changeFormulaComposition(true)"
+      @compositionend="changeFormulaComposition(false)"
       :value="value"
     />
     <Tooltip :title="expanded ? '折叠公式栏' : '展开公式栏'">

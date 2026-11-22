@@ -1,0 +1,14 @@
+[
+  { "name": "relative and mixed absolute references", "formula": "=A1+$B$2+A$3+$C4", "origin": { "row": 0, "col": 0 }, "target": { "row": 3, "col": 3 }, "projected": "=D4+$B$2+D$3+$C7", "ordinary": true },
+  { "name": "quoted sheet range and following references", "formula": "='工''作 表'!A1:B2+$A1", "origin": { "row": 0, "col": 0 }, "target": { "row": 3, "col": 3 }, "projected": "='工''作 表'!D4:E5+$A4", "ordinary": true },
+  { "name": "function names that resemble cell references", "formula": "=LOG10(A1)", "origin": { "row": 0, "col": 0 }, "target": { "row": 1, "col": 1 }, "projected": "=LOG10(B2)", "ordinary": true },
+  { "name": "escaped string literals", "formula": "=IF(A1=\"A1\",\"B2\",$A1)", "origin": { "row": 0, "col": 0 }, "target": { "row": 1, "col": 1 }, "projected": "=IF(B2=\"A1\",\"B2\",$A2)", "ordinary": true },
+  { "name": "structured column names", "formula": "=SUM(Table[A1])+A1", "origin": { "row": 0, "col": 0 }, "target": { "row": 1, "col": 1 }, "projected": "=SUM(Table[A1])+B2", "ordinary": true },
+  { "name": "external workbook qualifier", "formula": "=[Book.xlsx]Q1!A1+$A1", "origin": { "row": 0, "col": 0 }, "target": { "row": 1, "col": 1 }, "projected": "=[Book.xlsx]Q1!B2+$A2", "ordinary": true },
+  { "name": "partly valid rows", "formula": "=A1>5", "origin": { "row": 1, "col": 0 }, "target": { "row": 0, "col": 0 }, "projected": "=INDEX($A$1:$XFD$1048576,IF(ROW()-1<1,1048577,ROW()-1),COLUMN())>5" },
+  { "name": "partly valid columns", "formula": "=A1", "origin": { "row": 0, "col": 1 }, "target": { "row": 0, "col": 0 }, "projected": "=INDEX($A$1:$XFD$1048576,ROW(),IF(COLUMN()-1<1,16385,COLUMN()-1))" },
+  { "name": "absolute operand survives an invalid relative operand", "formula": "=IFERROR(A1,0)+$B$1", "origin": { "row": 1, "col": 0 }, "target": { "row": 0, "col": 0 }, "projected": "=IFERROR(INDEX($A$1:$XFD$1048576,IF(ROW()-1<1,1048577,ROW()-1),COLUMN()),0)+$B$1" },
+  { "name": "upper row boundary", "formula": "=A1048576", "origin": { "row": 0, "col": 0 }, "target": { "row": 1, "col": 0 }, "projected": "=INDEX($A$1:$XFD$1048576,ROW()+1048575,COLUMN())" },
+  { "name": "upper column boundary", "formula": "=XFD1", "origin": { "row": 0, "col": 0 }, "target": { "row": 0, "col": 1 }, "projected": "=INDEX($A$1:$XFD$1048576,ROW(),COLUMN()+16383)" },
+  { "name": "qualified range inherits its sheet at both dynamic endpoints", "formula": "=SUM('Other'!A1:B2)", "origin": { "row": 1, "col": 0 }, "target": { "row": 0, "col": 0 }, "projected": "=SUM(INDEX('Other'!$A$1:$XFD$1048576,IF(ROW()-1<1,1048577,ROW()-1),COLUMN()):INDEX('Other'!$A$1:$XFD$1048576,ROW(),COLUMN()+1))" }
+]

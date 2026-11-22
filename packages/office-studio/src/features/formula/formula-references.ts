@@ -1,10 +1,27 @@
 import type { FormulaReference } from './formula-types.ts'
+export { mapFormulaReferenceAreas, translateFormulaReferenceAreas, transformFormulaReferenceAreasForAxisEdit,
+  type FormulaReferenceArea } from './formula-reference-areas.ts'
 
 const MAX_COLUMN = 16_383
 const MAX_ROW = 1_048_575
 
 interface ReferenceSpan { start: number; end: number; replacementStart: number; reference: FormulaReference; raw: string }
 interface TextPatch { start: number; end: number; replacement: string }
+/** Compare relative references without converting a recoverable offset into #REF! or changing literal text. */
+export function formulaRelativeReferenceSignature(formula: string, row: number, column: number): string {
+  if (typeof formula !== 'string' || !Number.isSafeInteger(row) || !Number.isSafeInteger(column)) throw new TypeError('Invalid formula reference origin')
+  const parts: Array<string | readonly [string, string, number, boolean, number, boolean]> = []
+  let cursor = 0
+  for (const span of findReferenceSpans(formula)) {
+    parts.push(formula.slice(cursor, span.replacementStart))
+    const reference = span.reference
+    parts.push(['reference', sheetPrefix(formula, span), reference.absoluteRow ? reference.row : reference.row - row,
+      Boolean(reference.absoluteRow), reference.absoluteColumn ? reference.column : reference.column - column, Boolean(reference.absoluteColumn)])
+    cursor = span.end
+  }
+  parts.push(formula.slice(cursor))
+  return JSON.stringify(parts)
+}
 export interface FormulaStructureEdit {
   kind: 'insert' | 'delete'
   axis: 'row' | 'column'
@@ -170,12 +187,31 @@ function findReferenceSpans(source: string): ReferenceSpan[] {
             if (reference) {
               references.push({ start, end: reference.end, replacementStart: start, reference: reference.reference, raw: source.slice(start, reference.end) })
               index = reference.end
-              continue
+              break
             }
           }
           break
         }
         index += 1
+      }
+      continue
+    }
+
+    if (character === '[') {
+      const start = index
+      let nesting = 1
+      index += 1
+      while (index < source.length && nesting) {
+        if (source[index] === '[') nesting += 1
+        else if (source[index] === ']') nesting -= 1
+        index += 1
+      }
+      // External workbook qualifiers include their brackets; structured column names are literal identifiers.
+      const qualifier = !isIdentifierPart(source[start - 1]) ? /^([\p{L}_\\][\p{L}\p{N}_.\\]*)!/u.exec(source.slice(index)) : null
+      const address = qualifier ? readAddress(source, index + qualifier[0].length) : undefined
+      if (address) {
+        references.push({ start, end: address.end, replacementStart: start, reference: address.reference, raw: source.slice(start, address.end) })
+        index = address.end
       }
       continue
     }
@@ -229,7 +265,7 @@ function readAddress(source: string, start: number): { reference: FormulaReferen
   const digitsStart = cursor
   while (/\d/.test(source[cursor] ?? '')) cursor += 1
   const digits = source.slice(digitsStart, cursor)
-  if (!digits || /^0+$/.test(digits) || isIdentifierPart(source[cursor])) return undefined
+  if (!digits || /^0+$/.test(digits) || isIdentifierPart(source[cursor]) || /^\s*\(/.test(source.slice(cursor))) return undefined
   const column = letters.toUpperCase().split('').reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0) - 1
   const row = Number(digits) - 1
   if (column < 0 || column > MAX_COLUMN || row < 0 || row > MAX_ROW) return undefined

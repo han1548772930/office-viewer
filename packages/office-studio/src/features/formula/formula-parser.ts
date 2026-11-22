@@ -135,7 +135,7 @@ function readReference(source: string, start: number): { reference: FormulaRefer
   const column = letters.toUpperCase().split('').reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0) - 1
   const row = Number(digits) - 1
   if (column < 0 || column > MAX_COLUMN || row < 0 || row > MAX_ROW) return undefined
-  if (/[A-Za-z0-9_.]/.test(source[index] ?? '')) return undefined
+  if (/[A-Za-z0-9_.]/.test(source[index] ?? '') || /^\s*\(/.test(source.slice(index))) return undefined
   return { reference: { kind: 'cell', row, column, absoluteRow, absoluteColumn }, end: index }
 }
 
@@ -202,11 +202,14 @@ class Parser {
     while (this.accept('percent')) node = { kind: 'binary', operator: '/', left: node, right: { kind: 'literal', value: 100 } }
     if (this.accept('colon')) {
       const end = this.parsePrimary()
-      if (node.kind !== 'reference' || end.kind !== 'reference') throw new FormulaSyntaxError('FORMULA_RANGE', 'Range endpoints must be cell references', this.peek().position)
-      const firstSheet = node.reference.sheetName, lastSheet = end.reference.sheetName
-      if (firstSheet && lastSheet && firstSheet.toLocaleLowerCase() !== lastSheet.toLocaleLowerCase()) throw new FormulaSyntaxError('FORMULA_RANGE', 'A range cannot span different sheets', this.peek().position)
-      const reference: FormulaRangeReference = { kind: 'range', sheetName: firstSheet ?? lastSheet, start: node.reference, end: end.reference }
-      node = { kind: 'range', reference }
+      if (node.kind === 'reference' && end.kind === 'reference') {
+        const firstSheet = node.reference.sheetName, lastSheet = end.reference.sheetName
+        if (firstSheet && lastSheet && firstSheet.toLocaleLowerCase() !== lastSheet.toLocaleLowerCase()) throw new FormulaSyntaxError('FORMULA_RANGE', 'A range cannot span different sheets', this.peek().position)
+        const reference: FormulaRangeReference = { kind: 'range', sheetName: firstSheet ?? lastSheet, start: node.reference, end: end.reference }
+        node = { kind: 'range', reference }
+      } else if ((node.kind === 'reference' || node.kind === 'range' || node.kind === 'function') && (end.kind === 'reference' || end.kind === 'range' || end.kind === 'function')) {
+        node = { kind: 'binary', operator: ':', left: node, right: end }
+      } else throw new FormulaSyntaxError('FORMULA_RANGE', 'Range endpoints must return references', this.peek().position)
     }
     return node
   }
@@ -214,7 +217,7 @@ class Parser {
     const token = this.take()
     if (token.kind === 'number') return { kind: 'literal', value: Number(token.text) }
     if (token.kind === 'string') return { kind: 'literal', value: token.text }
-    if (token.kind === 'error') return { kind: 'literal', value: token.text }
+    if (token.kind === 'error') return { kind: 'error', code: token.text }
     if (token.kind === 'reference') {
       if (!token.reference) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Invalid cell reference', token.position)
       return { kind: 'reference', reference: { ...token.reference, sheetName: token.sheetName } }
@@ -227,7 +230,7 @@ class Parser {
     if (token.kind === 'identifier') {
       if (this.accept('bang')) {
         const cell = this.take()
-        if (cell.kind === 'error') return { kind: 'literal', value: cell.text }
+        if (cell.kind === 'error') return { kind: 'error', code: cell.text }
         if (cell.kind !== 'reference' || !cell.reference) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Expected a cell reference after sheet name', cell.position)
         return { kind: 'reference', reference: { ...cell.reference, sheetName: token.text } }
       }

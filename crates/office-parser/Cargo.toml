@@ -8,6 +8,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+office-io-common = { path = "../office-io-common" }
 duke-pages = { version = "0.6.0", default-features = false }
 rxls = { version = "0.1.4", default-features = false, features = ["full"] }
 quick-xml = "0.41"
