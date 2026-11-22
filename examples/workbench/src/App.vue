@@ -21,17 +21,26 @@ interface WorkbenchHandle { save: () => void; focus?: () => void }
 const workbookRef = ref<WorkbenchHandle | null>(null)
 const documentRef = ref<WorkbenchHandle | null>(null)
 const { locale, t, te } = useI18n()
-const { p: preferences, display, reset, regionFor } = useDisplayPreferences(localStorage)
+const { p: preferences, display, reset } = useDisplayPreferences(localStorage)
+const regional = studio.regionalSettings
+regional.setLocale(locale.value)
+function setRegion(value: OfficeLocale | 'auto') {
+  if (value === 'auto') regional.followLanguage()
+  else regional.setRegion(value)
+}
+setRegion(preferences.value.region)
+watch(regional.regionPreference, value => { preferences.value.region = value }, { flush: 'sync' })
+watch(regional.locale, value => { locale.value = value }, { flush: 'sync' })
 const ribbonVariant = computed(() => preferences.value.ribbon)
 const direction = computed(() => preferences.value.direction)
 watch(direction, value => { document.documentElement.dir = value }, { immediate: true })
-function resetPreferences() { locale.value = 'zh-CN'; reset() }
+function resetPreferences() { regional.setLocale('zh-CN'); regional.followLanguage(); reset() }
 const importTrigger = ref<{ $el: HTMLElement } | null>(null)
 function requestImport(): void { importTrigger.value?.$el.click() }
 function importSelectedFile(file: File): false { void files.importFile(file); return false }
-provide(OfficeLocaleKey, computed(() => locale.value as OfficeLocale))
+provide(OfficeLocaleKey, regional.locale)
 provide(OfficeDirectionKey, direction)
-provide(OfficeRegionKey, computed(() => regionFor(locale.value as OfficeLocale)))
+provide(OfficeRegionKey, regional.region)
 provide(WorkbenchDisplayKey, display)
 provide(OfficeTranslatorKey, (key, fallback) => {
   const normalized = key.replace(/^(sheet|doc|core)\./, '')
@@ -88,8 +97,8 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       :parser-status="editor.state.parserStatus" :parser-message="editor.state.parserMessage"
       :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale as OfficeLocale"
       :ribbon-variant="ribbonVariant" :direction="direction" :dark="preferences.dark" :accent="preferences.accent" :region="preferences.region" :chrome="preferences.chrome" :zoom="preferences.zoom"
-      @ribbon="preferences.ribbon = $event" @direction="preferences.direction = $event" @dark="preferences.dark = $event" @accent="preferences.accent = $event" @region="preferences.region = $event" @chrome="preferences.chrome = $event" @zoom="preferences.zoom = $event" @reset="resetPreferences"
-      @action="onHeaderAction" @switch="switchWorkspace" @locale="locale = $event"
+      @ribbon="preferences.ribbon = $event" @direction="preferences.direction = $event" @dark="preferences.dark = $event" @accent="preferences.accent = $event" @region="setRegion" @chrome="preferences.chrome = $event" @zoom="preferences.zoom = $event" @reset="resetPreferences"
+      @action="onHeaderAction" @switch="switchWorkspace" @locale="regional.setLocale($event)"
     />
     <Upload accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
 

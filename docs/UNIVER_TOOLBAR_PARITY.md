@@ -12,7 +12,9 @@
 
 第一行从左到右核对 `examples/index.html`、`examples/src/global.css`、`examples/src/main.ts` 和 `examples/src/workbench-settings-control.tsx`。品牌只展示，不负责切换产品；品牌位宽 68px、高 20px，随后是 Sheets、Docs。顶行高 36px，导航高 35px；当前产品使用 2px 内侧下划线。示例保留 Office Studio 自有品牌和本地化产品名。产品导航现在反映 `#sheets` / `#docs`，支持直达、未知片段回退及浏览器历史；现有 Office 文件菜单是本项目扩展，不插在两个产品标签之间。
 
-最右侧设置已接通语言、LTR/RTL、明暗外观和 grid/classic 布局偏好，方向独立于语言。控件使用 antdv-next Dropdown/Menu/Button，Provider 主题派生顶栏颜色。与上游相比，设备、地区、主题色、simple/collapsed、UI chrome、缩放及重置偏好仍需逐项对齐；不将设置菜单已出现视为完成。浏览器用例已改用新菜单，并增加产品顺序、路由与前进/后退契约，尚未运行。旧记录中的独立“双行工具栏”按钮为历史实现。
+固定版分层：`examples/src/workbench-settings-control.tsx`、`workbench-settings.ts` 和 `main.ts` 管设置入口、当前值展示与存储；`examples/src/mount-example.ts` 调产品 API，不实现 Ribbon 或数字格式。这里也只在示例中保留宿主设置、品牌、路由、文件操作。当前有语言、地区、方向、七种主题色、外观、四种 Ribbon、界面显隐、八档缩放与重置，设备切换仍缺。设置样式按 `examples/src/global.css` 的 240px 菜单、184px 双栏标签与 112px 当前值宽度适配 antdv-next。
+
+产品包对应：`packages/core/src/services/region/region.service.ts` 与 `packages/core/src/facade/f-univer.ts` 对应本地 `i18n/regional-settings.ts`、`api/office-studio.ts`、`api/facade.ts`。地区默认跟随语言，显式设置后独立；Facade 接受 `deDE` 等上游标识，Vue / Intl 使用 `de-DE`。Sheets 画布和无障碍文本、统计、格式预览、时间线刻度读同一地区；不改保存的单元格标量，不把 Docs 日期字段的语言改为地区。上游货币按钮还按 `packages/sheets-numfmt/src/commands/commands/set-currency.command.ts` 选择地区格式，本地对此尚未完整对齐。四种 Ribbon 的呈现属于 `platform/ribbon`，Docs/Sheets 显隐和缩放属于各自工作台，不是示例 CSS。产品切换、跨表缩放、RTL 焦点、设备和真实文件往返未统一验收；旧记录中的独立“双行工具栏”按钮为历史实现。
 
 ### 2026-11-22 入口位置修正（待统一测试）
 
@@ -150,6 +152,11 @@ pnpm --filter @office-studio/office-studio check:types
 - 浏览器暴露并修复了真实可访问性问题：所用 Select 的 `aria-label` 没有转发到内部 combobox，现用明确 input ID 与原生 `label for` 关联。隐藏测量树为 `aria-hidden` + `inert` + 零尺寸裁剪，不额外占文档滚动宽度。
 
 这些测试验证共享控件及派发契约，**不证明表中每个业务功能已经实现**。Sheets/Docs 集成、透视/切片器面板、Office 重开及性能结果由对应验收记录另列。没有同数据集的设备/帧时间/长任务/内存前后对照，本记录不作性能达标或优化完成声明。
+
+### 本轮按位置复核（未统一测试）
+
+- 共享“更多”：固定版 `packages/ui/src/views/components/ribbon/RibbonOverflow.tsx` 渲染同一 `ToolbarItem`，不是把入口展开成菜单命令。对应本地 `platform/ribbon/RibbonOverflowPanel.vue`，classic/grid 复用实际按钮、选择器、拆分按钮与弹层，分组折行；simple 的测宽键区分同一命令在不同标签的位置。弹层嵌套、键盘焦点、窄屏尺寸仍待浏览器核验。
+- Sheets Home 第一组：`packages/ui/src/menu/schema.ts` 给出撤销/重做的 18px 图标与无文字的格式刷/清除格式；粘贴跨行来自 `packages/sheets-ui/src/menu/schema.ts`。对照 `ToolbarItem.tsx`、`format-painter.menu.ts` 和 `format-painter-session.service.ts`，本地支持单击启用或取消、双击升级连续模式、成功后单次退出及 Escape；修改目标前检查大小、工作表与选区权限。`tests/browser/sheet-toolbar.spec.ts` 补连续应用及撤销用例，尚未执行。Docs 及图形的格式刷适配器不在这一条完成记录内。
 
 ## 6. 更新方法
 

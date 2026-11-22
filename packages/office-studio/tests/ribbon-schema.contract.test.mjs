@@ -1,10 +1,21 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonGridGroups, fitRibbonItems, groupRibbonGridOverflowItems, nextRibbonTab, placeRibbonGridItems, resolveRibbonTab, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
+import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonGridGroups, fitRibbonItems, groupRibbonGridOverflowItems, nextRibbonTab, placeRibbonGridItems, resolveRibbonTab, ribbonInvocation, ribbonPlacementKey, simpleRibbonTab, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 
 const button = (id, extra = {}) => ({ id, title: id, type: 'button', commandId: `doc.command.${id}`, ...extra })
 const group = (id, items, extra = {}) => ({ id, items, ...extra })
 const tab = (id, groups, extra = {}) => ({ id, title: id, groups, ...extra })
+
+test('simple measures each placement independently while retaining command and slot IDs', () => {
+  const tabs = visibleRibbonTabs(['home', 'insert'].map(id => tab(id, [group('tools', [button('shared', { params: id })])])))
+  const groups = simpleRibbonTab(tabs).groups
+  const measurements = groups.map(g => ({ id: ribbonPlacementKey(g.id, g.items[0].id), groupId: g.id, width: 40 }))
+  const fit = fitRibbonItems(measurements, 120)
+  assert.deepEqual(fit.visibleIds, [measurements[0].id])
+  assert.deepEqual(fit.overflowIds, [measurements[1].id])
+  assert.notEqual(measurements[0].id, measurements[1].id)
+  assert.deepEqual(groups.map(g => [g.items[0].id, ribbonInvocation(g.items[0]).params]), [['shared', 'home'], ['shared', 'insert']])
+})
 
 test('orders tabs/groups/items by explicit order and preserves equal-order registration order without mutation', () => {
   const input = [tab('insert', [group('second', [button('c')], { order: 2 }), group('first', [button('b', { order: 2 }), button('a', { order: 1 }), button('d', { order: 2 })], { order: 1 })], { order: 2 }), tab('start', [group('x', [button('x')])], { order: 1 })]

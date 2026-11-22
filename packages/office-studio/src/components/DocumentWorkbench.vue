@@ -2,7 +2,7 @@
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Tooltip, Upload } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
-import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import { createBlankDocument } from '../domain/model'

@@ -20,6 +20,7 @@ import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, typ
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 
 export interface SheetRibbonState {
+  painterActive?: boolean
   canUndo: boolean
   canRedo: boolean
   hasSheet: boolean
@@ -102,10 +103,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'home', title: '开始', order: 0, groups: [
         { id: 'clipboard', title: '剪贴板', order: 0, items: [
-          button('sheet.command.undo', '撤销', { icon: Undo2, disabled: !state.canUndo, shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1 } }),
-          button('sheet.command.redo', '重做', { icon: Redo2, disabled: !state.canRedo, shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1 } }),
-          button('sheet.operation.format-painter', '格式刷', { icon: Brush, showLabel: true, gridLayout: { row: 1, column: 2 } }),
-          button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 2, column: 2 } }),
+          button('sheet.command.undo', '撤销', { icon: Undo2, disabled: !state.canUndo, shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1, iconSize: 18 } }),
+          button('sheet.command.redo', '重做', { icon: Redo2, disabled: !state.canRedo, shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
+          button('sheet.operation.format-painter', '格式刷', { icon: Brush, activated: Boolean(state.painterActive), subId: 'sheet.operation.continuous-format-painter', gridLayout: { row: 1, column: 2, showLabel: false } }),
+          button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, gridLayout: { row: 2, column: 2, showLabel: false } }),
           { ...button('sheet.command.paste', '粘贴', { icon: ClipboardPaste, shortcut: 'Ctrl+V', gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'split', children: [
             button('sheet.menu.paste-all', '保留源格式粘贴', { commandId: 'sheet.command.paste' }),
             button('sheet.menu.paste-values', '仅粘贴值', { commandId: 'sheet.command.paste-values' }),

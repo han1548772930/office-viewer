@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
@@ -268,7 +268,7 @@ const sparklineTargetRange = ref('A1')
 const customNumberFormatOpen = ref(false)
 const conditionalFormattingOpen = ref(false)
 const conditionalFormattingRange = ref('A1')
-const formatPainterSource = ref<FormatPainterSource | null>(null)
+const formatPainterSource = ref<(FormatPainterSource & { continuous: boolean }) | null>(null)
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
 const functionOptions = computed(() => SHEET_FUNCTION_CATALOG
   .filter(entry => functionCategory.value === null || entry.category === functionCategory.value)
@@ -368,6 +368,7 @@ const canEditValidationSelection = computed(() => Boolean(props.studio && workbo
 const borderOptions = ref<SheetBorderOptions>({ style: 'thin', color: '#1f2937' })
 const borderPreset = ref<SheetBorderPreset>('all')
 const ribbonTabs = computed(() => createSheetRibbon({
+  painterActive: Boolean(formatPainterSource.value),
   borderOptions: borderOptions.value, borderPreset: borderPreset.value, onBorderOptions: changeBorderOptions,
   ...selectionFormat.value, canUndo: canUndo.value, canRedo: canRedo.value, hasSheet: Boolean(activeSheet.value),
   canMerge: selectedCount.value > 1, canUnmerge: canUnmerge.value,
@@ -847,15 +848,20 @@ function selectCell(key: string, extend = false, keepHidden = false) {
   if (!selecting.value) applyFormatPainterToSelection()
 }
 
-function armFormatPainter(): void {
+function armFormatPainter(continuous = false): void {
+  if (formatPainterSource.value) {
+    if (continuous) formatPainterSource.value.continuous = true
+    else formatPainterSource.value = null
+    return
+  }
   const range = selectionBounds(selectedRanges.value)
-  if (!range || !activeSheet.value) return
+  if (!range || !activeSheet.value || !checkDirectSelection(selectionCount([range]))) return
   const cells = Array.from({ length: range.endRow - range.startRow + 1 }, (_, rowOffset) =>
     Array.from({ length: range.endColumn - range.startColumn + 1 }, (_, columnOffset) =>
       ({ ...getCell(`${columnName(range.startColumn + columnOffset)}${range.startRow + rowOffset + 1}`) })),
   )
-  formatPainterSource.value = { range, cells }
-  emit('notify', { type: 'info', message: '格式刷已就绪，请选择目标单元格范围。' })
+  formatPainterSource.value = { range, cells, continuous }
+  spreadsheetCanvas.value?.focus()
 }
 
 function applyFormatPainterToSelection(): void {
@@ -863,10 +869,11 @@ function applyFormatPainterToSelection(): void {
   const sheet = activeSheet.value
   const targets = selectedRanges.value
   if (!source || !sheet || !targets.length) return
+  if (!checkDirectSelection(selectionCount(targets))) return
+  if (!canEditWorksheetProtection(sheet, userId.value) || !canEditProtectedRanges(sheet, selectedModelRanges(), userId.value)) return
   const patches = createFormatPainterPatches(source, targets, sheet.cells, (row, column) => `${columnName(column)}${row + 1}`)
-  if (!checkDirectSelection(patches.length)) return
   for (const patch of patches) sheet.cells[`${columnName(patch.column)}${patch.row + 1}`] = patch.cell
-  formatPainterSource.value = null
+  if (!source.continuous) formatPainterSource.value = null
   commitHistory()
 }
 
@@ -927,6 +934,9 @@ function handleGridKeydown(event: KeyboardEvent) {
   if (event.isComposing) return
   const target = event.target as HTMLElement | null
   if (!target?.closest('.spreadsheet-canvas')) return
+  if (event.key === 'Escape' && formatPainterSource.value && !editingKey.value) {
+    event.preventDefault(); formatPainterSource.value = null; return
+  }
   if (target?.matches('input, textarea, select')
     && !target.closest('.canvas-cell-input, .formula-input')) return
   if (event.ctrlKey && event.key === 'PageDown') {
@@ -2214,7 +2224,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.set-number-format': () => { if (typeof params === 'string' && Object.hasOwn(SHEET_NUMBER_FORMATS, params)) setNumberFormat(params as SheetNumberFormat) },
     'sheet.command.increase-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, 1)),
     'sheet.command.decrease-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, -1)),
-    'sheet.command.clear-format': () => changeSelectedCells(clearSheetCellFormat),
+    'sheet.command.clear-format': () => { formatPainterSource.value = null; changeSelectedCells(clearSheetCellFormat) },
     'sheet.command.set-vertical-align': () => { if (params === 'top' || params === 'middle' || params === 'bottom') setCellFormat('vertical', params) },
     'sheet.command.set-borders': () => { if (isSheetBorderPreset(params)) setBorders(params) },
     'sheet.command.set-border-color': () => { if (typeof params === 'string' && /^#[0-9a-f]{6}$/i.test(params)) changeBorderOptions({ ...borderOptions.value, color: params }) },
@@ -2267,7 +2277,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.quick-data-validation': () => applyQuickDataValidation(params),
     'sheet.operation.open-conditional-formatting': openConditionalFormattingPanel,
     'sheet.operation.open-sparkline': openSparklinePanel,
-    'sheet.operation.format-painter': armFormatPainter,
+    'sheet.operation.format-painter': () => armFormatPainter(),
+    'sheet.operation.continuous-format-painter': () => armFormatPainter(true),
     'sheet.operation.open-custom-number-format': () => { customNumberFormatOpen.value = true },
     'sheet.operation.open-range-protection': () => {
       if (typeof params === 'object' && params !== null && 'sheetId' in params && typeof params.sheetId === 'string') {
@@ -2365,6 +2376,7 @@ function onWindowKeydown(event: KeyboardEvent) {
 }
 
 watch(selectedKey, () => { nameError.value = ''; void nextTick(scrollToSelected) })
+watch(() => workbook.value.id, () => { formatPainterSource.value = null }, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], () => { validationPanelOpen.value = false })
 watch(hyperlinkDialogOpen, open => { if (!open) void nextTick(() => spreadsheetCanvas.value?.focus()) })
 watch(() => workbook.value.id, id => { if (hyperlinkCell.value?.unitId !== id) hyperlinkDialogOpen.value = false })
@@ -2383,6 +2395,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeydown)
 })
 onDeactivated(() => {
+  formatPainterSource.value = null
   validationPanelOpen.value = false
   sortController?.abort()
   if (document.fullscreenElement === workbenchRef.value) {

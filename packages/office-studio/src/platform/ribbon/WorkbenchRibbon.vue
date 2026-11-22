@@ -1,20 +1,19 @@
 <script setup lang="ts">
-import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, useSlots, watch } from 'vue'
+import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { Button, Menu, Popover, Tooltip } from 'antdv-next'
-import type { MenuInfo, MenuItemType, MenuRef } from 'antdv-next'
+import type { MenuItemType, MenuRef } from 'antdv-next'
 import { ChevronDown, Database, EllipsisVertical, Eye, House, LayoutPanelLeft, ListPlus, MoreVertical, Sigma } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import RibbonGridToolbar from './RibbonGridToolbar.vue'
-import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, ribbonInvocation, simpleRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab, type RibbonVariant } from './ribbon-schema'
+import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, ribbonPlacementKey, simpleRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab, type RibbonVariant } from './ribbon-schema'
 import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
-import { createRibbonMenuModel, renderOverflowControl, type RibbonMenuAction } from './ribbon-command-menu'
+import RibbonOverflowPanel from './RibbonOverflowPanel.vue'
 
 const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: RibbonVariant }>(), { modelValue: undefined, label: '功能区', variant: 'classic' })
 const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
 const id = useId()
-const slots = useSlots()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const workspaceDirection = inject(OfficeDirectionKey, ref<'ltr' | 'rtl'>('ltr'))
 const direction = computed(() => props.direction ?? workspaceDirection.value)
@@ -47,7 +46,7 @@ const toolbar = ref<HTMLElement>()
 const measurer = ref<HTMLElement>()
 const tablist = ref<HTMLElement>()
 const moreButton = ref<HTMLElement>()
-const moreMenuRef = ref<MenuRef | null>(null)
+const moreMenuRef = ref<{ focus: () => void } | null>(null)
 const availableWidth = ref(Number.POSITIVE_INFINITY)
 const measuredWidths = ref<Record<string, number>>({})
 const moreOpen = ref(false)
@@ -55,38 +54,19 @@ let observer: ResizeObserver | undefined
 let disposed = false
 let measurePending = false
 
-const fitted = computed(() => fitRibbonItems((activeTab.value?.groups ?? []).flatMap((group) => group.items.map((item) => ({ id: item.id, groupId: group.id, width: measuredWidths.value[item.id] ?? item.width ?? (item.type === 'select' ? 96 : 32) }))), availableWidth.value))
+const fitted = computed(() => fitRibbonItems((activeTab.value?.groups ?? []).flatMap(group => group.items.map(item => {
+  const id = ribbonPlacementKey(group.id, item.id)
+  return { id, groupId: group.id, width: measuredWidths.value[id] ?? item.width ?? (item.type === 'select' ? 96 : 32) }
+})), availableWidth.value))
 function groupsFor(ids: readonly string[]): RibbonGroup[] {
   const visible = new Set(ids)
   return (activeTab.value?.groups ?? []).flatMap((group) => {
-    const items = group.items.filter((item) => visible.has(item.id))
+    const items = group.items.filter(item => visible.has(ribbonPlacementKey(group.id, item.id)))
     return items.length ? [{ ...group, items }] : []
   })
 }
 const visibleGroups = computed(() => groupsFor(fitted.value.visibleIds))
 const overflowGroups = computed(() => groupsFor(fitted.value.overflowIds))
-const overflowMenuModel = computed(() => {
-  const items: MenuItemType[] = []
-  const actions = new Map<string, RibbonMenuAction>()
-  overflowGroups.value.forEach((group, index) => {
-    const model = createRibbonMenuModel(group.items, (item) => slots[`item-${item.id}`]?.({
-      item,
-      overflow: true,
-      execute: (commandId: string, params?: unknown) => {
-        closeMore()
-        executeSlot(item, commandId, params)
-      },
-    }) ?? renderOverflowControl(item, (id, params) => { closeMore(); executeSlot(item, id, params) }))
-    if (index > 0) items.push({ type: 'divider', key: `group-divider:${group.id}` })
-    if (group.title) items.push({ type: 'group', key: `group:${group.id}`, label: group.title, children: model.items })
-    else items.push(...model.items)
-    model.actions.forEach((action, key) => {
-      const rootItemId = key.split('::', 1)[0]
-      if (!slots[`item-${rootItemId}`] && !action.item.inlineComponent) actions.set(key, action)
-    })
-  })
-  return { items, actions }
-})
 
 function selectTab(tabId: string) {
   const tab = tabs.value.find((candidate) => candidate.id === tabId)
@@ -158,20 +138,6 @@ async function openMore() {
   moreMenuRef.value?.focus()
 }
 
-function onMoreKeydown(event: KeyboardEvent) {
-  if (event.defaultPrevented) return
-  if (event.key === 'Escape') { closeMore(event); return }
-}
-
-function executeOverflowItem({ key }: MenuInfo) {
-  const action = overflowMenuModel.value.actions.get(String(key))
-  if (!action || action.item.disabled || action.item.hidden) return
-  const invocation = ribbonInvocation(action.item, action.value)
-  if (invocation) {
-    closeMore()
-    execute(invocation.commandId, invocation.params)
-  }
-}
 
 watch(activeId, (value) => {
   popupScope.close()
@@ -228,9 +194,11 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
         </div>
         <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor" :class="{ 'has-visible-groups': visibleGroups.length > 0 }">
           <Popover v-model:open="moreOpen" trigger="click" :placement="direction === 'rtl' ? 'bottomLeft' : 'bottomRight'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
-            <Tooltip :title="translate('common.more', '更多功能')"><Button type="text" size="small" class="ribbon-more-button" :aria-label="translate('common.more', '更多功能')" aria-haspopup="menu" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><MoreVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
+            <Tooltip :title="translate('common.more', '更多功能')"><Button type="text" size="small" class="ribbon-more-button" :aria-label="translate('common.more', '更多功能')" aria-haspopup="dialog" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><MoreVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
             <template #content>
-              <Menu ref="moreMenuRef" class="ribbon-overflow-menu" :dir="direction" :style="themeStyle" :aria-label="translate('common.more', '更多功能')" :items="overflowMenuModel.items" :selectable="false" :trigger-sub-menu-action="'click'" @click="executeOverflowItem" @keydown.esc.capture="onMoreKeydown" />
+              <RibbonOverflowPanel ref="moreMenuRef" :groups="overflowGroups" :direction="direction" :label="translate('common.more', '更多功能')" @execute="execute" @close="closeMore">
+                <template v-for="(_, name) in $slots" #[name]="slotProps"><slot :name="name" v-bind="slotProps" /></template>
+              </RibbonOverflowPanel>
             </template>
           </Popover>
         </span>
@@ -238,7 +206,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
     </div>
     <div v-if="variant !== 'grid'" ref="measurer" class="ribbon-measurer" aria-hidden="true" inert>
       <template v-for="group in activeTab?.groups ?? []" :key="group.id">
-        <span v-for="item in group.items" :key="item.id" :data-measure-item="item.id" class="ribbon-measure-item">
+        <span v-for="item in group.items" :key="item.id" :data-measure-item="ribbonPlacementKey(group.id, item.id)" class="ribbon-measure-item">
           <slot v-if="$slots[`item-${item.id}`]" :name="`item-${item.id}`" :item="item" :measurement="true" :execute="() => undefined" />
           <RibbonItemControl v-else :item="item" measurement />
         </span>
@@ -278,10 +246,4 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 .ribbon-custom-item { display: inline-flex; align-items: center; min-height: 28px; flex: 0 0 auto; }
 .ribbon-measurer { position: absolute; inset-inline-start: 0; top: 0; display: flex; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; contain: layout; }
 .ribbon-measure-item { display: inline-flex; flex: 0 0 auto; }
-.ribbon-overflow-menu { box-sizing: border-box; width: max-content; min-width: min(210px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(520px, 70vh); overflow: auto; }
-.ribbon-overflow-menu :deep(.ant-menu-item-group-title) { padding: 3px 8px; color: var(--ribbon-text-secondary, #64748b); font-size: 11px; }
-.ribbon-overflow-menu :deep(.ant-menu-item), .ribbon-overflow-menu :deep(.ant-menu-submenu-title) { min-height: 30px; height: auto; line-height: 22px; padding-block: 4px; white-space: normal; }
-.ribbon-overflow-menu :deep(.ribbon-menu-item-label) { display: flex; min-width: 0; align-items: center; gap: 12px; }
-.ribbon-overflow-menu :deep(.ribbon-menu-item-text) { min-width: 0; overflow-wrap: anywhere; }
-.ribbon-overflow-menu :deep(.ribbon-menu-item-shortcut) { flex: 0 0 auto; margin-inline-start: auto; color: var(--ribbon-text-secondary, #94a3b8); font-size: 11px; }
 </style>

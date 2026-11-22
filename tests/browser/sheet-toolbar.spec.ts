@@ -18,7 +18,7 @@ async function address(page: Page, text: string) {
 async function control(page: Page, name: string, role: 'button' | 'combobox' = 'button'): Promise<Locator> {
   let target = ribbon(page).getByRole(role, { name, exact: true })
   if (await target.count() && await target.isVisible()) return target
-  const menu = page.getByRole('menu', { name: '更多功能', exact: true })
+  const menu = page.getByRole('dialog', { name: '更多功能', exact: true })
   if (!await menu.isVisible()) await ribbon(page).getByRole('button', { name: '更多功能', exact: true }).click()
   target = menu.getByRole(role, { name, exact: true })
   await expect(target).toBeVisible()
@@ -45,6 +45,27 @@ test.beforeEach(async ({ page }) => {
     sheet.getRange('A1:B4').setValues([[1234.5, 10], [.25, 20], [61.5, 30], ['1234.5', 40]])
   })
   await address(page, 'A1')
+})
+
+test('history grid and continuous painter preserve data across two applications and cancel on Escape', async ({ page }) => {
+  const painter = await control(page, '格式刷')
+  const undo = ribbon(page).getByRole('button', { name: '撤销', exact: true })
+  await expect(undo.locator('svg')).toHaveCSS('width', '18px')
+  await expect(painter).toHaveText('')
+  await click(page, '加粗')
+  await painter.dblclick()
+  await expect(painter).toHaveAttribute('aria-pressed', 'true')
+  const grid = page.getByRole('grid', { name: '工作表画布', exact: true })
+  await grid.press('ArrowRight')
+  await expect.poll(async () => (await cell(page, '0:1'))?.style.font.bold).toBe(true)
+  await grid.press('ArrowDown')
+  await expect.poll(async () => (await cell(page, '1:1'))?.style.font.bold).toBe(true)
+  expect((await cell(page, '1:1'))?.value).toBe(20)
+  await grid.press('Escape')
+  await expect(painter).toHaveAttribute('aria-pressed', 'false')
+  await undo.click()
+  await expect.poll(async () => Boolean((await cell(page, '1:1'))?.style.font.bold)).toBe(false)
+  expect((await cell(page, '0:1'))?.style.font.bold).toBe(true)
 })
 
 test('View tab separates display and visibility tools and toggles real fullscreen state', async ({ page }) => {

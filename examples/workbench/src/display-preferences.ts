@@ -1,5 +1,5 @@
 import { computed, ref, watch } from 'vue'
-import { isRibbonVariant, supportedOfficeLocales, WORKBENCH_ACCENTS, WORKBENCH_CHROME, WORKBENCH_ZOOMS, type OfficeLocale, type WorkbenchAccent } from '@office-studio/office-studio'
+import { isRibbonVariant, supportedOfficeLocales, WORKBENCH_ACCENTS, WORKBENCH_CHROME, WORKBENCH_ZOOMS, type WorkbenchAccent } from '@office-studio/office-studio'
 
 const prefix = 'office-studio.'
 export function readDisplayPreferences(storage: Pick<Storage, 'getItem'>) {
@@ -25,6 +25,5 @@ export function useDisplayPreferences(storage: Storage) {
     p.value = { ribbon: 'grid', direction: 'ltr', dark: false, accent: 'blue', region: 'auto', chrome: 'full', zoom: 100 }
     for (const key of ['ribbon-variant', 'direction', 'appearance', 'theme', 'region', 'chrome', 'zoom', 'locale']) storage.removeItem(prefix + key)
   }
-  const regionFor = (locale: OfficeLocale) => p.value.region === 'auto' ? locale : p.value.region
-  return { p, reset, regionFor, display: computed(() => ({ chrome: p.value.chrome, zoom: p.value.zoom })) }
+  return { p, reset, display: computed(() => ({ chrome: p.value.chrome, zoom: p.value.zoom })) }
 }

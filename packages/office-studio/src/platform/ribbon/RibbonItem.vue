@@ -39,7 +39,6 @@ const classicStyle = { '--ribbon-button-height': `${CLASSIC_RIBBON.buttonHeight}
 const children = computed(() => visibleRibbonItems(props.item.children ?? []))
 const menuModel = computed(() => createRibbonMenuModel(children.value))
 const showLabel = computed(() => {
-  if (props.overflow) return true
   if (props.grid && props.large && props.item.type !== 'menu') return true
   const requested = props.showLabel ?? props.item.showLabel
   return requested ?? !props.item.icon
@@ -88,7 +87,7 @@ async function openMenu(event: KeyboardEvent, last = false) {
 
 function closeMenu() {
   open.value = false
-  const target = trigger.value ?? root.value?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')
+  const target = trigger.value ?? root.value?.querySelector<HTMLButtonElement>('button[aria-haspopup]')
   if (target?.isConnected) target.focus({ preventScroll: true })
 }
 
@@ -137,9 +136,9 @@ onBeforeUnmount(() => { open.value = false })
           </template>
         </Popover>
       </span>
-      <Button v-else type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
+      <Button v-else type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="event => { if (!item.subId || event.detail <= 1) execute() }" @dblclick="item.subId && forward(item.subId)">
         <span v-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" />
-        <component :is="item.icon" v-else-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span><span v-if="overflow && item.shortcut" class="ribbon-shortcut">{{ item.shortcut }}</span>
+        <component :is="item.icon" v-else-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span>
       </Button>
     </Tooltip>
   </span>
@@ -186,8 +185,7 @@ onBeforeUnmount(() => { open.value = false })
 .ribbon-component-popup { box-sizing: border-box; max-width: calc(100vw - 24px); max-height: min(520px, 70vh); overflow: auto; }
 .ribbon-button:not(:disabled):hover { background: var(--ribbon-hover-background, #f1f5f9); }
 .ribbon-button:disabled { color: var(--ribbon-disabled, #94a3b8); background: transparent; cursor: not-allowed; }
-.is-overflow { width: 100%; min-width: 0; height: auto; min-height: 30px; }
-.workbench-ribbon-item.is-grid.is-overflow { height: auto; min-height: 30px; }
+.workbench-ribbon-item.is-grid.is-overflow { width: auto; min-width: 28px; height: auto; min-height: 28px; }
 .is-overflow > :deep(span), .is-overflow .ribbon-dropdown, .is-overflow .ribbon-select-wrap { width: 100%; }
 .is-overflow .ribbon-button { width: 100%; height: auto; min-height: 28px; justify-content: flex-start; white-space: normal; text-align: start; }
 .workbench-ribbon-item.is-grid.is-overflow .ribbon-button { height: auto; min-height: 28px; }
@@ -195,5 +193,4 @@ onBeforeUnmount(() => { open.value = false })
 .is-overflow .ribbon-select { flex: 1; min-width: 0; max-width: 150px; }
 .is-overflow .ribbon-select-label { flex: 0 0 auto; font-size: 13px; white-space: nowrap; }
 .is-overflow .ribbon-split-arrow { width: 24px; flex: 0 0 24px; }
-.ribbon-shortcut { margin-inline-start: auto; padding-inline-start: 16px; color: var(--ribbon-text-secondary, #94a3b8); font-size: 11px; }
 </style>

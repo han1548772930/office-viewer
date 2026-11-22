@@ -3,7 +3,7 @@ import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
 
 const FORMAT_KEYS = [
   'bold', 'italic', 'underline', 'strike', 'align', 'vertical', 'background', 'color',
-  'fontSize', 'fontFamily', 'numberFormat', 'rawNumberFormat', 'wrap', 'border', 'rotation',
+  'fontSize', 'fontFamily', 'numberFormat', 'rawNumberFormat', 'wrap', 'wrapStrategy', 'border', 'rotation',
   'rotationVertical', 'indent', 'shrinkToFit',
 ] as const satisfies readonly (keyof ExcelCellView)[]
 

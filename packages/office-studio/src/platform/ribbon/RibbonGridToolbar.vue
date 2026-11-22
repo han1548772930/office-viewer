@@ -1,56 +1,29 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useSlots, watch } from 'vue'
-import { Button, Menu, Popover, Tooltip } from 'antdv-next'
-import type { MenuItemType, MenuInfo, MenuRef } from 'antdv-next'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Button, Popover, Tooltip } from 'antdv-next'
 import { ChevronDown, MoreHorizontal } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
-import { fitRibbonGridGroups, GRID_RIBBON, groupRibbonGridOverflowItems, placeRibbonGridItems, ribbonInvocation, type RibbonGroup, type RibbonItem } from './ribbon-schema'
+import { fitRibbonGridGroups, GRID_RIBBON, placeRibbonGridItems, type RibbonGroup, type RibbonItem } from './ribbon-schema'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { RibbonPopupScopeKey } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
-import { createRibbonMenuModel, renderOverflowControl, type RibbonMenuAction } from './ribbon-command-menu'
+import RibbonOverflowPanel from './RibbonOverflowPanel.vue'
 
 const props = withDefaults(defineProps<{ groups: RibbonGroup[]; title: string; direction?: 'ltr' | 'rtl'; alignStart?: boolean }>(), { direction: 'ltr', alignStart: false })
 const emit = defineEmits<{ execute: [commandId: string, params?: unknown] }>()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
-const slots = useSlots()
 const popupScope = inject(RibbonPopupScopeKey, undefined)
 const themeStyle = useRibbonTheme()
 
 const container = ref<HTMLElement>()
 const moreAnchor = ref<HTMLElement>()
-const overflowMenuRef = ref<MenuRef | null>(null)
+const overflowMenuRef = ref<{ focus: () => void } | null>(null)
 const groupElements = new Map<string, HTMLElement>()
 const visibleGroupCount = ref(props.groups.length)
 const moreOpen = ref(false)
 const placements = computed(() => props.groups.map((group) => ({ group, items: placeRibbonGridItems(group.items) })))
 const overflowGroups = computed(() => placements.value.slice(visibleGroupCount.value))
-const overflowMenuModel = computed(() => {
-  const items: MenuItemType[] = []
-  const actions = new Map<string, RibbonMenuAction>()
-  overflowGroups.value.forEach(({ group }, groupIndex) => {
-    if (groupIndex > 0) items.push({ type: 'divider', key: `group-divider:${group.id}` })
-    const rowGroups = groupRibbonGridOverflowItems(group.items)
-    const rows = rowGroups.map((row, rowIndex) => {
-      const model = createRibbonMenuModel(row, (item) => slots[`item-${item.id}`]?.({
-        item,
-        grid: true,
-        overflow: true,
-        execute: (commandId: string, params?: unknown) => {
-          closeOverflow()
-          executeSlot(item, commandId, params)
-        },
-      }) ?? renderOverflowControl(item, (id, params) => { closeOverflow(); executeSlot(item, id, params) }))
-      model.actions.forEach((action, key) => {
-        const itemId = key.split('::', 1)[0]
-        if (!slots[`item-${itemId}`] && !action.item.inlineComponent) actions.set(key, action)
-      })
-      return { type: 'group' as const, key: `grid-row:${group.id}:${rowIndex}`, label: '', className: 'ribbon-grid-overflow-row', children: model.items }
-    })
-    items.push({ type: 'group', key: `grid-group:${group.id}`, label: group.title, className: 'ribbon-grid-overflow-group', children: rows })
-  })
-  return { items, actions }
-})
+const hiddenGroups = computed(() => overflowGroups.value.map(({ group }) => group))
 const gridStyle = {
   '--ribbon-grid-toolbar-height': `${GRID_RIBBON.toolbarHeight}px`,
   '--ribbon-grid-row-height': `${GRID_RIBBON.rowHeight}px`,
@@ -136,24 +109,6 @@ function closeOverflow(event?: KeyboardEvent) {
   }
   moreOpen.value = false
   moreAnchor.value?.querySelector<HTMLButtonElement>('button')?.focus()
-}
-
-function onOverflowKeydown(event: KeyboardEvent) {
-  if (event.defaultPrevented) return
-  if (event.key === 'Escape') {
-    closeOverflow(event)
-    return
-  }
-}
-
-function executeOverflowItem({ key }: MenuInfo) {
-  const action = overflowMenuModel.value.actions.get(String(key))
-  if (!action || action.item.disabled || action.item.hidden) return
-  const invocation = ribbonInvocation(action.item, action.value)
-  if (invocation) {
-    closeOverflow()
-    emit('execute', invocation.commandId, invocation.params)
-  }
 }
 
 function executeSlot(item: RibbonItem, commandId: string, params?: unknown) {
@@ -244,7 +199,7 @@ onBeforeUnmount(() => {
             type="text"
             class="ribbon-grid-more-button"
             :aria-label="translate('common.more', '更多功能')"
-            aria-haspopup="menu"
+            aria-haspopup="dialog"
             :aria-expanded="moreOpen"
             @mousedown.prevent
             @keydown.down.prevent="openOverflow"
@@ -255,7 +210,9 @@ onBeforeUnmount(() => {
           </Button>
         </Tooltip>
         <template #content>
-          <Menu ref="overflowMenuRef" class="ribbon-grid-overflow" :dir="direction" :style="themeStyle" :aria-label="translate('common.more', '更多功能')" :items="overflowMenuModel.items" :selectable="false" :trigger-sub-menu-action="'click'" @click="executeOverflowItem" @keydown.esc.capture="onOverflowKeydown" />
+          <RibbonOverflowPanel ref="overflowMenuRef" grid :groups="hiddenGroups" :direction="direction" :label="translate('common.more', '更多功能')" @execute="(id, params) => emit('execute', id, params)" @close="closeOverflow">
+            <template v-for="(_, name) in $slots" #[name]="slotProps"><slot :name="name" v-bind="slotProps" /></template>
+          </RibbonOverflowPanel>
         </template>
       </Popover>
     </span>
@@ -278,12 +235,4 @@ onBeforeUnmount(() => {
 .ribbon-grid-more-button { display: inline-flex; box-sizing: border-box; width: 56px; min-width: 56px; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 2px; font-size: 12px; line-height: 16px; }
 .ribbon-grid-more-label { display: flex; align-items: center; gap: 4px; }
 .ribbon-grid-more-button:focus-visible { outline: 2px solid var(--ribbon-primary, #5274d7); outline-offset: -2px; }
-.ribbon-grid-overflow { box-sizing: border-box; width: min(320px, calc(100vw - 24px)); min-width: 0; max-width: calc(100vw - 24px); max-height: min(520px, 70vh); overflow: auto; padding: 4px 8px; }
-.ribbon-grid-overflow :deep(.ant-menu-item-group-title) { padding: 3px 4px; color: var(--ribbon-text-secondary, #64748b); font-size: 11px; font-weight: 500; }
-.ribbon-grid-overflow :deep(.ribbon-grid-overflow-group > .ant-menu-item-group-list) { display: flex; flex-direction: column; gap: 4px; padding-block: 6px; }
-.ribbon-grid-overflow :deep(.ribbon-grid-overflow-row > .ant-menu-item-group-list) { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.ribbon-grid-overflow :deep(.ribbon-grid-overflow-row .ant-menu-item) { width: auto; min-width: 28px; flex: 0 1 auto; }
-.ribbon-grid-overflow :deep(.ant-menu-item), .ribbon-grid-overflow :deep(.ant-menu-submenu-title) { min-height: 30px; height: auto; line-height: 22px; padding-block: 4px; white-space: normal; }
-.ribbon-grid-overflow :deep(.ribbon-menu-item-label) { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.ribbon-grid-overflow :deep(.ribbon-menu-item-text) { min-width: 0; overflow-wrap: anywhere; }
 </style>

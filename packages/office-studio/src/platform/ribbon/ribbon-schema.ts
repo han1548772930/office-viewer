@@ -19,6 +19,7 @@ export interface RibbonItem {
   disabledReason?: string
   activated?: boolean
   commandId?: string
+  subId?: string
   params?: unknown
   width?: number
   showLabel?: boolean
@@ -154,6 +155,8 @@ export function nextRibbonTab(tabs: readonly RibbonTab[], current: string, key: 
 }
 
 export interface RibbonMeasurement { id: string; groupId: string; width: number }
+
+export function ribbonPlacementKey(groupId: string, itemId: string): string { return JSON.stringify([groupId, itemId]) }
 
 /** Collapse a suffix in source order, including each visible group's padding and borders. */
 export function fitRibbonItems(items: readonly RibbonMeasurement[], availableWidth: number): { visibleIds: string[]; overflowIds: string[] } {

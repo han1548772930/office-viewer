@@ -12,14 +12,6 @@ export interface RibbonMenuModel {
   actions: Map<string, RibbonMenuAction>
 }
 
-export function renderOverflowControl(item: RibbonItem, execute: (id: string, params?: unknown) => void) {
-  if (!item.inlineComponent) return undefined
-  return h(item.inlineComponent, { ...item.popupProps, overflow: true, onInsert: (params: unknown) => {
-    const id = item.popupCommandId ?? item.commandId
-    if (id && !item.disabled && !item.hidden) execute(id, params)
-  } })
-}
-
 function itemIcon(item: RibbonItem): Component | undefined {
   return item.icon
 }
