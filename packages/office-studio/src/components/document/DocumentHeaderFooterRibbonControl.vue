@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Button, Checkbox, Form, FormItem, InputNumber, Select } from 'antdv-next'
+import { Button, Checkbox, Form, FormItem, InputNumber, Select, Popover, Modal, Menu } from 'antdv-next'
+import { CalendarClock, ChevronDown, Hash } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
 export type HeaderFooterRibbonKind = 'insertion' | 'navigation' | 'options' | 'position'
@@ -23,7 +24,7 @@ export type HeaderFooterAction =
   | { action: 'navigate'; area: 'header' | 'footer' }
   | { action: 'set-options'; patch: { linkToPrevious?: boolean; differentFirstPage?: boolean; differentOddEven?: boolean; marginHeader?: number; marginFooter?: number } }
 
-const props = defineProps<{ kind: HeaderFooterRibbonKind; state: HeaderFooterRibbonState }>()
+const props = defineProps<{ kind: HeaderFooterRibbonKind; state: HeaderFooterRibbonState; classic?: boolean }>()
 const emit = defineEmits<{ insert: [value: string] }>()
 const dateFormat = ref<'short' | 'long' | 'time'>('short')
 const automaticDateTime = ref(true)
@@ -33,9 +34,11 @@ const dateFormatOptions = [
   { value: 'time', label: '时间' },
 ]
 const area = computed(() => props.state.area)
+const pageOpen = ref(false), dateOpen = ref(false)
 
 function run(action: HeaderFooterAction): void {
   if (props.state.disabled || props.state.contentDisabled && ['insert-field', 'insert-date-time', 'refresh-fields'].includes(action.action)) return
+  pageOpen.value = dateOpen.value = false
   emit('insert', JSON.stringify(action))
 }
 
@@ -49,16 +52,16 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
 </script>
 
 <template>
-  <div class="header-footer-ribbon-control" :data-control-kind="kind">
+  <div class="header-footer-ribbon-control" :class="{ 'is-classic': classic }" :data-control-kind="kind">
     <fieldset v-if="kind === 'insertion'" :disabled="state.disabled || state.contentDisabled" class="header-footer-ribbon-control__fields">
-      <Button type="text" size="small" :disabled="state.disabled" @click="run({ action: 'insert-field', field: 'PAGE' })">插入页码</Button>
-      <Button type="text" size="small" :disabled="state.disabled" @click="run({ action: 'insert-field', field: 'NUMPAGES' })">插入总页数</Button>
-      <div class="header-footer-ribbon-control__row">
-        <Select v-model:value="dateFormat" size="small" :options="dateFormatOptions" aria-label="日期和时间格式" />
-        <Checkbox v-model:checked="automaticDateTime">自动更新</Checkbox>
-        <Button size="small" :disabled="state.disabled" @click="run({ action: 'insert-date-time', format: dateFormat, automatic: automaticDateTime })">插入</Button>
-      </div>
-      <Button type="text" size="small" :disabled="state.disabled" @click="run({ action: 'refresh-fields' })">更新字段</Button>
+      <Popover v-model:open="pageOpen" placement="bottomLeft" trigger="click">
+        <Button type="text" size="small" aria-label="页码" @mousedown.prevent><Hash :size="14" />页码<ChevronDown :size="12" /></Button>
+        <template #content><Menu :selectable="false" :items="[{ key: 'PAGE', label: '当前页码' }, { key: 'NUMPAGES', label: '总页数' }, { type: 'divider' }, { key: 'refresh', label: '更新字段' }]" @click="({ key }) => key === 'refresh' ? run({ action: 'refresh-fields' }) : run({ action: 'insert-field', field: key === 'PAGE' ? 'PAGE' : 'NUMPAGES' })" /></template>
+      </Popover>
+      <Button type="text" size="small" @mousedown.prevent @click="dateOpen = true"><CalendarClock :size="14" />日期和时间</Button>
+      <Modal v-model:open="dateOpen" title="日期和时间" ok-text="插入" @ok="run({ action: 'insert-date-time', format: dateFormat, automatic: automaticDateTime })">
+        <Form layout="vertical"><FormItem label="日期和时间格式"><Select v-model:value="dateFormat" :options="dateFormatOptions" /></FormItem><FormItem><Checkbox v-model:checked="automaticDateTime">自动更新</Checkbox></FormItem></Form>
+      </Modal>
     </fieldset>
 
     <template v-else-if="kind === 'navigation'">
@@ -84,11 +87,13 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
 </template>
 
 <style scoped>
-.header-footer-ribbon-control { display: grid; min-width: 208px; gap: 4px; padding: 4px; }
+.header-footer-ribbon-control { display: grid; width: max-content; align-items: center; gap: 2px 8px; white-space: nowrap; }
+.header-footer-ribbon-control[data-control-kind="navigation"] { grid-template-rows: repeat(2, auto); grid-auto-flow: column; }
+.header-footer-ribbon-control.is-classic, .is-classic .header-footer-ribbon-control__fields, .is-classic .header-footer-ribbon-control__form { display: flex; align-items: center; }
 .header-footer-ribbon-control__fields { display: grid; gap: 4px; border: none; padding: 0; margin: 0; }
 .header-footer-ribbon-control__row { display: flex; align-items: center; gap: 6px; }
 .header-footer-ribbon-control__row :deep(.ant-select) { min-width: 92px; }
-.header-footer-ribbon-control__form { display: grid; gap: 8px; }
+.header-footer-ribbon-control__form { display: grid; gap: 2px; }
 .header-footer-ribbon-control__form :deep(.ant-form-item) { display: grid; grid-template-columns: minmax(0, 1fr) 92px; align-items: center; gap: 12px; margin-bottom: 0; white-space: nowrap; }
 .header-footer-ribbon-control__form :deep(.ant-form-item-label), .header-footer-ribbon-control__form :deep(.ant-form-item-control) { min-width: 0; padding: 0; }
 </style>

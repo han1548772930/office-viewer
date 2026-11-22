@@ -4,6 +4,14 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 ## Reference
 
+### Current working tree, not yet tested
+
+The following supersedes the earlier modal-only observation below. The traditional Docs workbench now connects the Insert entry and Canvas story hit areas to a page/section/variant-specific antdv-next input bridge. The body selection is retained separately. The contextual tab has four inline control groups and Close. Responsive grouping uses the toolbar-width thresholds in `packages/docs-ui/src/views/header-footer/panel/DocHeaderFooterRibbonControl.tsx`. Insert/refresh date and time uses the locale-derived masks in upstream `utils/date-time-field.ts`. Positioned fields are represented independently of literal UTF-16 text, including repeated fields and field cached results. DOCX import reads the referenced story XML, and export places simple fields between literal runs. Contracts for field deletion, Unicode, distance rounding, writer/reader reopening and a browser editing path have been added, not executed. The WASM artifact has not been rebuilt for this change.
+
+Still unverified/incomplete: classic and grid width/overflow, localized display, permissions and IME across focus transitions, rendering rich multiline stories, unresolved nested field instructions and preservation of unknown story XML. The text bridge denotes an editable field by an object replacement character; it is not rich field rendering. Manual refresh currently handles recognized date/time masks in the selected section. This work does not establish DOC-03 acceptance.
+
+### Earlier implementation notes
+
 2026-11-22 (implementation, unified tests pending): v1.6.0 `docs-ui/src/menu/header-footer-ribbon.ts` registers four distinct control groups plus Close; local contextual schema now separates them rather than grouping five items under Insert. The running workbench still opens the header/footer modal, not an in-Canvas story-editing session. `views/header-footer/panel/use-header-footer-options.ts` and its tests scope header/footer distances to the current section. Local InputNumber controls write `marginHeader`/`marginFooter` through `doc.command.set-section-setup`, independently of story linking. Canvas uses the stored distances for text placement. DOCX reader/writer map section `w:pgMar` header/footer twips to/from CSS pixels, retaining the existing writer default of 720 twips (48px) when unspecified. Text/field changes no longer request body focus on each keystroke; closing the modal requests it. No new tests or WASM builds have been run for this change; real file reopening, IME, field positioning and contextual activation remain unaccepted.
 
 - The local Univer Docs UI registers column breaks and five section break types: `nextPage`, `continuous`, `nextColumn`, `evenPage`, and `oddPage`.

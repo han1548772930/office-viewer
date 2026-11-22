@@ -43,6 +43,7 @@ function graphemes(text: string): string[] {
 }
 
 export interface SpreadsheetSceneOptions {
+  region?: string
   activeCell: string
   editing?: boolean
   selectedCells: readonly string[]
@@ -54,12 +55,12 @@ export interface SpreadsheetSceneOptions {
   overlayCommands?: readonly DrawCommand[]
   crosshairHighlight?: { enabled: boolean; color: string }
 }
-export function displayCell(cell: ExcelCellView | undefined, date1904 = false): string {
+export function displayCell(cell: ExcelCellView | undefined, date1904 = false, region?: string): string {
   if (!cell) return ''
   const value = cell.formula ? cell.cachedValue ?? cell.formula : cell.value
   const scalar = cell.rawValue !== undefined ? cell.rawValue : value !== '' && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ? Number(value) : value
   const pattern = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : 'General')
-  return formatSheetValue(scalar, pattern, date1904) ?? cell.displayValue ?? value
+  return formatSheetValue(scalar, pattern, date1904, region) ?? cell.displayValue ?? value
 }
 
 /** Layout and hit-testing share the same sparse axes and frozen-pane transforms. */
@@ -150,7 +151,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
           rect.x + x2 * rect.width, rect.y + y2 * rect.height, edge.style, edge.color, z, clip))
       }
     }
-    const text = conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue ? '' : displayCell(cell, geometry.sheet.date1904)
+    const text = conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue ? '' : displayCell(cell, geometry.sheet.date1904, options.region)
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
     if (text) {
       const align = cell?.align ?? (column === 0 ? 'left' : Number.isFinite(Number(text)) ? 'right' : 'left')

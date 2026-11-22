@@ -8,6 +8,12 @@
 
 ## 1. 当前装配与证据边界
 
+### 按屏幕顺序核对（顶行，待统一测试）
+
+第一行从左到右核对 `examples/index.html`、`examples/src/global.css`、`examples/src/main.ts` 和 `examples/src/workbench-settings-control.tsx`。品牌只展示，不负责切换产品；品牌位宽 68px、高 20px，随后是 Sheets、Docs。顶行高 36px，导航高 35px；当前产品使用 2px 内侧下划线。示例保留 Office Studio 自有品牌和本地化产品名。产品导航现在反映 `#sheets` / `#docs`，支持直达、未知片段回退及浏览器历史；现有 Office 文件菜单是本项目扩展，不插在两个产品标签之间。
+
+最右侧设置已接通语言、LTR/RTL、明暗外观和 grid/classic 布局偏好，方向独立于语言。控件使用 antdv-next Dropdown/Menu/Button，Provider 主题派生顶栏颜色。与上游相比，设备、地区、主题色、simple/collapsed、UI chrome、缩放及重置偏好仍需逐项对齐；不将设置菜单已出现视为完成。浏览器用例已改用新菜单，并增加产品顺序、路由与前进/后退契约，尚未运行。旧记录中的独立“双行工具栏”按钮为历史实现。
+
 ### 2026-11-22 入口位置修正（待统一测试）
 
 Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型均不另计 Ribbon 根项；源码、Canvas 行为和文件边界见 [SHEET-04 边框记录](feature-evidence/SHEET-04-borders.md)。

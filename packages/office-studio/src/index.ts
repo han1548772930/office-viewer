@@ -99,9 +99,12 @@ export { useDocumentStore } from './stores/documentStore'
 export { useHistoryStore, type HistoryEntry, type HistorySavepoint, type UnitHistory } from './stores/historyStore'
 export { useParserStore } from './stores/parserStore'
 export { default as WorkbenchRibbon } from './platform/ribbon/WorkbenchRibbon.vue'
-export { createOfficeI18n, OfficeLocaleKey, OfficeTranslatorKey, supportedOfficeLocales, createOfficeMessages, createOfficeTranslator, createRibbonTranslator, localizeRibbon } from './i18n/office-i18n.ts'
+export { createOfficeI18n, OfficeDirectionKey, OfficeLocaleKey, OfficeRegionKey, OfficeTranslatorKey, supportedOfficeLocales, createOfficeMessages, createOfficeTranslator, createRibbonTranslator, localizeRibbon } from './i18n/office-i18n.ts'
 export type { OfficeLocale, OfficeTranslator } from './i18n/office-i18n.ts'
-export type { RibbonTab, RibbonGroup, RibbonItem } from './platform/ribbon/ribbon-schema'
+export type { RibbonTab, RibbonGroup, RibbonItem, RibbonVariant } from './platform/ribbon/ribbon-schema'
+export { RIBBON_VARIANTS, isRibbonVariant } from './platform/ribbon/ribbon-schema'
+export { WORKBENCH_CHROME, WORKBENCH_ACCENTS, WORKBENCH_ZOOMS, WorkbenchDisplayKey } from './platform/workbench-display'
+export type { WorkbenchChrome, WorkbenchAccent, WorkbenchZoom } from './platform/workbench-display'
 
 export {
   applyExcelWorkbookView,

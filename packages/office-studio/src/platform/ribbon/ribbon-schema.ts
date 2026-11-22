@@ -1,5 +1,11 @@
 import type { Component } from 'vue'
 
+export const RIBBON_VARIANTS = ['grid', 'classic', 'collapsed', 'simple'] as const
+export type RibbonVariant = typeof RIBBON_VARIANTS[number]
+export function isRibbonVariant(value: unknown): value is RibbonVariant {
+  return RIBBON_VARIANTS.some(variant => variant === value)
+}
+
 /** State is supplied by the active editor selection, never stored by a toolbar item. */
 export interface RibbonItem {
   id: string
@@ -23,6 +29,7 @@ export interface RibbonItem {
   placeholder?: string
   valueParams?: (value: string | number) => unknown
   children?: RibbonItem[]
+  inlineComponent?: Component
   popupComponent?: Component
   popupProps?: Record<string, unknown>
   popupCommandId?: string
@@ -126,6 +133,13 @@ export function resolveRibbonTab(tabs: readonly RibbonTab[], requested?: string,
   if (visible.some((tab) => tab.id === requested)) return requested
   if (visible.some((tab) => tab.id === previousRegular)) return previousRegular
   return visible[0]?.id
+}
+
+/** Simple has one toolbar, but does not change the editor's selected regular/contextual tab. */
+export function simpleRibbonTab(visible: readonly RibbonTab[]): RibbonTab | undefined {
+  if (!visible[0]) return undefined
+  return { id: 'home', title: visible.find(tab => tab.id === 'home')?.title ?? visible[0].title,
+    groups: visible.flatMap(tab => tab.groups.map(group => ({ ...group, id: JSON.stringify([tab.id, group.id]) }))) }
 }
 
 export function nextRibbonTab(tabs: readonly RibbonTab[], current: string, key: string, direction: 'ltr' | 'rtl' = 'ltr'): string | undefined {

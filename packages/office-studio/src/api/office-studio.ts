@@ -1,6 +1,7 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
+import { OfficeRegionalSettings } from '../i18n/regional-settings.ts'
 import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
@@ -60,6 +61,8 @@ import {
 } from '../features/document/services/content-controls'
 
 export interface OfficeStudioOptions {
+  locale?: string
+  region?: string
   workbook?: Partial<WorkbookModel> & Record<string, unknown>
   document?: Partial<DocumentModel> & Record<string, unknown>
   computeClient?: OfficeComputeClient
@@ -72,6 +75,7 @@ export interface OfficeStudioOptions {
 export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
 
 export class OfficeStudio {
+  readonly regionalSettings: OfficeRegionalSettings
   readonly pinia: Pinia
   readonly editor: ReturnType<typeof useEditorStore>
   readonly events = new EventHub<ApiEventMap>()
@@ -91,6 +95,7 @@ export class OfficeStudio {
   private readonly stopModelSync: Array<() => void> = []
 
   constructor(options: OfficeStudioOptions = {}) {
+    this.regionalSettings = new OfficeRegionalSettings(options.locale, options.region)
     this.pinia = createPinia()
     this.editor = useEditorStore(this.pinia)
     const workbook = workbookFromInput(options.workbook ?? this.editor.workbook.model)

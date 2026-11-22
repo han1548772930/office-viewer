@@ -2,7 +2,7 @@ import type { DocumentModel } from '../../../domain/model'
 import type { DrawCommand, RenderRect, RenderScene } from '../../../rendering/contracts'
 import type { DocumentSelection } from '../model/document-model'
 import { orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets, type TextTarget } from '../model/document-model'
-import { caretRect, type DocumentLayout } from '../layout/document-layout'
+import { caretRect, STORY_LINE_HEIGHT, type DocumentLayout } from '../layout/document-layout'
 import { codeBlockData, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
 
 export interface DocumentViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
@@ -26,10 +26,14 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     visiblePages.add(page.index)
     commands.push({ kind: 'rect', ...rect({ ...page, x: page.x + 3, y: page.y + 4 }), fill: '#dce1e8' })
     commands.push({ kind: 'rect', ...rect(page), fill: '#ffffff', stroke: '#d9dfe7', strokeWidth: 1 })
-    commands.push({ kind: 'text', x: x(page.x + page.width / 2), y: y(page.y + page.height - 24), text: String(page.index + 1), font: `${10 * scale}px Arial`, color: '#9ca3af', align: 'center', baseline: 'middle' })
     const headerFooter = layout.pageHeaderFooters?.[page.index]
-    if (headerFooter?.header) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(headerFooter.headerTop), text: headerFooter.header, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'top' })
-    if (headerFooter?.footer) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(headerFooter.footerBottom), text: headerFooter.footer, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'bottom' })
+    if (headerFooter) {
+      const append = (text: string, top: number) => {
+        if (text && y(top + STORY_LINE_HEIGHT) >= 0 && y(top) <= viewport.height) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(top), text, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'top', clip: rect(page) })
+      }
+      headerFooter.headerLines.forEach((text, i) => append(text, headerFooter.headerTop + i * STORY_LINE_HEIGHT))
+      headerFooter.footerLines.forEach((text, i, lines) => append(text, headerFooter.footerBottom - (lines.length - i) * STORY_LINE_HEIGHT))
+    }
   }
   for (const pageIndex of visiblePages) {
     const content = layout.pageContent[pageIndex]

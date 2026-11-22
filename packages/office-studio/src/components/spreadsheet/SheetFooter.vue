@@ -6,7 +6,7 @@ import type { ExcelSheetView } from '../../services/excelViewAdapter'
 import { formatSelectionStatistic, selectSelectionStatistic, visibleSheetMenuEntries } from '../../features/sheet-workbench/sheet-workbench'
 import type { calculateSelectionStatistics, SelectionStatisticType } from '../../features/sheet-workbench/sheet-workbench'
 import { createSheetTabMenu } from './sheet-tab-menu.ts'
-import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import { OfficeTranslatorKey, useOfficeRegion } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ sheets: ExcelSheetView[]; activeSheetId: string; zoom: number; statistics: ReturnType<typeof calculateSelectionStatistics>; numberFormat?: string }>()
 const emit = defineEmits<{
@@ -28,7 +28,8 @@ const preferredStatistic = ref<SelectionStatisticType>('SUM')
 const visibleSheets = computed(() => props.sheets.filter(sheet => sheet.visible !== false))
 const menuEntries = computed(() => visibleSheetMenuEntries(props.sheets, props.activeSheetId))
 const statistic = computed(() => selectSelectionStatistic(props.statistics, preferredStatistic.value))
-function statisticCaption(item: NonNullable<typeof statistic.value>) { return formatSelectionStatistic(item, { numberFormat: props.numberFormat }) }
+const region = useOfficeRegion()
+function statisticCaption(item: NonNullable<typeof statistic.value>) { return formatSelectionStatistic(item, { locale: region.value, numberFormat: props.numberFormat }) }
 const statisticsMenu = computed(() => ({
   items: props.statistics.items.map(item => ({ key: item.id, label: statisticCaption(item) })),
   selectedKeys: statistic.value ? [statistic.value.id] : [],

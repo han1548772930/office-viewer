@@ -110,7 +110,8 @@ onBeforeUnmount(() => { open.value = false })
 
 <template>
   <span ref="root" class="workbench-ribbon-item" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
-    <Tooltip :title="measurement ? undefined : description" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
+    <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :measurement="measurement" :grid="grid" :overflow="overflow" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
+    <Tooltip v-else :title="measurement ? undefined : description" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
       <span v-if="item.type === 'select'" class="ribbon-select-wrap">
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
         <Select

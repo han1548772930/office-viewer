@@ -1,4 +1,6 @@
-import type { InjectionKey, Ref } from 'vue'
+import { computed, inject, provide, ref, type InjectionKey, type Ref } from 'vue'
+import { supportedOfficeLocales, type OfficeLocale, type OfficeRegionalSettings } from './regional-settings.ts'
+export { supportedOfficeLocales, type OfficeLocale } from './regional-settings.ts'
 import { createI18n } from 'vue-i18n'
 import type { RibbonTab } from '../platform/ribbon/ribbon-schema.ts'
 import { coreEnUS } from './core/locales/en-US.ts'
@@ -29,14 +31,22 @@ import { sheetCrosshairHighlightLocales } from './sheets/locales/crosshair-highl
 import { sheetLocalearSA, sheetLocaleesES, sheetLocalecaES, sheetLocaledeDE, sheetLocalefaIR, sheetLocalefrFR, sheetLocaleidID, sheetLocaleitIT, sheetLocalejaJP, sheetLocalekoKR, sheetLocaleplPL, sheetLocaleptBR, sheetLocaleruRU, sheetLocaleskSK, sheetLocaleviVN, sheetLocalezhHK, sheetLocalezhTW } from './sheets/locales/univer-parity.ts'
 import { docLocalearSA, docLocaleesES, docLocalecaES, docLocaledeDE, docLocalefaIR, docLocalefrFR, docLocaleidID, docLocaleitIT, docLocalejaJP, docLocalekoKR, docLocaleplPL, docLocaleptBR, docLocaleruRU, docLocaleskSK, docLocaleviVN, docLocalezhHK, docLocalezhTW } from './docs/locales/univer-parity.ts'
 
-export const supportedOfficeLocales = [
-  'ar-SA', 'ca-ES', 'de-DE', 'en-US', 'es-ES', 'fa-IR', 'fr-FR', 'id-ID', 'it-IT', 'ja-JP',
-  'ko-KR', 'pl-PL', 'pt-BR', 'ru-RU', 'sk-SK', 'vi-VN', 'zh-CN', 'zh-HK', 'zh-TW',
-] as const
-export type OfficeLocale = (typeof supportedOfficeLocales)[number]
 export type OfficeTranslator = (key: string, fallback: string) => string
 
 export const OfficeLocaleKey: InjectionKey<Readonly<Ref<OfficeLocale>>> = Symbol('OfficeLocale')
+export const OfficeRegionKey: InjectionKey<Readonly<Ref<OfficeLocale>>> = Symbol('OfficeRegion')
+export function useOfficeRegion() {
+  return inject(OfficeRegionKey, undefined) ?? inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
+}
+export function provideWorkbenchLocales(settings: () => OfficeRegionalSettings | undefined) {
+  const hostLocale = inject(OfficeLocaleKey, undefined), hostRegion = inject(OfficeRegionKey, undefined)
+  const locale = computed(() => hostLocale?.value ?? settings()?.locale.value ?? 'zh-CN')
+  const region = computed(() => hostRegion?.value ?? (settings()?.regionPreference.value === 'auto' ? locale.value : settings()?.region.value ?? locale.value))
+  provide(OfficeLocaleKey, locale)
+  provide(OfficeRegionKey, region)
+  return locale
+}
+export const OfficeDirectionKey: InjectionKey<Readonly<Ref<'ltr' | 'rtl'>>> = Symbol('OfficeDirection')
 export const OfficeTranslatorKey: InjectionKey<OfficeTranslator> = Symbol('OfficeTranslator')
 
 const appLabels: Record<OfficeLocale, Record<string, string>> = {

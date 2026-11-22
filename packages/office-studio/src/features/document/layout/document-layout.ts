@@ -18,7 +18,8 @@ export interface LayoutPageContent {
   images: LayoutImage[]
   dividers: Array<LayoutRect & { page: number }>
 }
-export interface LayoutPageHeaderFooter extends LayoutRect { page: number; sectionId: string; headerStory: DocumentPageField['story']; footerStory: DocumentPageField['story']; header: string; footer: string; headerTop: number; footerBottom: number }
+export const STORY_LINE_HEIGHT = 14
+export interface LayoutPageHeaderFooter extends LayoutRect { page: number; sectionId: string; headerStory: DocumentPageField['story']; footerStory: DocumentPageField['story']; header: string; footer: string; headerLines: string[]; footerLines: string[]; headerTop: number; footerBottom: number }
 export interface DocumentLayout {
   width: number
   height: number
@@ -255,6 +256,17 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
   for (const image of result.images) result.pageContent[image.page]?.images.push(image)
   for (const divider of result.dividers) result.pageContent[divider.page]?.dividers.push(divider)
   const sectionPageCounts = new Map<string, number>()
+  const wrappedStories = new Map<string, string[]>()
+  function storyLines(text: string, width: number): string[] {
+    if (!text) return []
+    const key = `${width}\0${text}`
+    const cached = wrappedStories.get(key)
+    if (cached) return cached
+    const run = createRun(text, { fontSize: 8.25, fontFamily: 'Arial' })
+    const lines = wrapRuns([run], width, measurer).map(line => text.slice(line.start, line.end))
+    wrappedStories.set(key, lines)
+    return lines
+  }
   result.pageHeaderFooters = result.pages.map((page) => {
     const pageSectionId = pageSections[page.index] ?? DEFAULT_DOCUMENT_SECTION_ID
     const section = resolveSectionHeaderFooter(model, pageSectionId)
@@ -268,6 +280,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
     const footer = renderSectionStory(section, footerStory, page.index + 1, result.pages.length)
     const setup = documentSectionSetup(model, pageSectionId)
     return { page: page.index, sectionId: pageSectionId, headerStory, footerStory, x: page.content.x, y: page.y + 6, width: page.content.width, height: page.content.y - page.y - 12, header, footer,
+      headerLines: storyLines(header, page.content.width), footerLines: storyLines(footer, page.content.width),
       headerTop: page.y + (setup.marginHeader ?? 48), footerBottom: page.y + page.height - (setup.marginFooter ?? 48) }
   })
   return result

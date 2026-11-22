@@ -1,4 +1,7 @@
 export const coreZhCN: Record<string, string> = {
+  'workspace.catalonia': '加泰罗尼亚（西班牙）',
+  'workspace.region': '地区', 'workspace.follow-language': '跟随语言', 'workspace.theme': '主题', 'workspace.zoom': '缩放', 'workspace.chrome': '界面显示', 'workspace.full': '完整界面', 'workspace.no-ribbon': '隐藏工具栏', 'workspace.canvas-only': '仅画布', 'workspace.reset-preferences': '重置偏好设置',
+  'workspace.theme-blue': '蓝色', 'workspace.theme-green': '绿色', 'workspace.theme-orange': '橙色', 'workspace.theme-purple': '紫色', 'workspace.theme-red': '红色', 'workspace.theme-yellow': '黄色', 'workspace.theme-dark-blue': '深蓝色',
   'common.more': '更多', 'common.cancel': '取消', 'common.close': '关闭', 'common.save': '保存', 'common.insert': '插入', 'common.empty': '空',
   'common.mixed': '混合', 'common.general': '常规', 'common.standard': '标准', 'common.text': '文本', 'common.number': '数字',
   'common.currency': '货币', 'common.accounting': '会计专用', 'common.percent': '百分比', 'common.date': '日期', 'common.time': '时间',
@@ -11,6 +14,8 @@ export const coreZhCN: Record<string, string> = {
   'workspace.file-menu': '文件', 'workspace.file-menu-label': '文件菜单', 'workspace.tabs-label': '工作台', 'workspace.document-types': '文档类型',
   'workspace.workbook': '表格', 'workspace.document': '文档', 'workspace.new-workbook': '新建工作簿',
   'workspace.grid-ribbon': '双行工具栏',
+  'workspace.collapsed-ribbon': '折叠分类工具栏', 'workspace.simple-ribbon': '单行合并工具栏',
+  'workspace.settings': '设置', 'workspace.direction': '界面方向', 'workspace.appearance': '外观', 'workspace.dark': '深色', 'workspace.light': '浅色', 'workspace.ribbon': '工具栏布局', 'workspace.classic-ribbon': '经典工具栏',
   'workspace.new-document': '新建文档', 'workspace.open-office-file': '打开 Office 文件', 'workspace.rename': '重命名',
   'workspace.save-office-file': '保存 Office 文件', 'workspace.export-office-file': '导出 Office 文件',
   'workspace.cancel-import': '取消文件导入', 'workspace.cancel-export': '取消文件导出', 'workspace.diagnostics': '解析诊断',

@@ -47,7 +47,7 @@ export function applySectionHeaderFooter(
   next.pageFields = next.pageFields?.map(field => ({ ...field }))
   if (sectionIndex > 0 && next.linkToPrevious) {
     const previous = resolveSectionHeaderFooter(model, sectionIds[sectionIndex - 1]!)
-    model.sectionHeaderFooters = { ...model.sectionHeaderFooters, [sectionId]: { ...previous, linkToPrevious: true } }
+    model.sectionHeaderFooters = { ...model.sectionHeaderFooters, [sectionId]: { ...previous, differentFirstPage: next.differentFirstPage, differentOddEven: next.differentOddEven, linkToPrevious: true } }
   } else {
     model.sectionHeaderFooters = { ...model.sectionHeaderFooters, [sectionId]: next }
   }
@@ -91,7 +91,7 @@ export function resolveSectionHeaderFooter(model: DocumentModel, sectionId: stri
       : { ...resolveSectionHeaderFooter(model, sectionIds[index - 1]!), linkToPrevious: true }
   }
   if (index > 0 && section.linkToPrevious) {
-    return { ...resolveSectionHeaderFooter(model, sectionIds[index - 1]!), linkToPrevious: true }
+    return { ...resolveSectionHeaderFooter(model, sectionIds[index - 1]!), differentFirstPage: section.differentFirstPage, differentOddEven: section.differentOddEven, linkToPrevious: true }
   }
   return { ...EMPTY_SECTION_HEADER_FOOTER, ...section }
 }

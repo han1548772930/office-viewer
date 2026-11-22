@@ -16,6 +16,8 @@ import { SpreadsheetGeometry, type GridHit, type GridRange, type SpreadsheetRend
 import { addRange, containsCell, selectionBounds, selectionCount, subtractRange } from '../rendering/spreadsheet/selection'
 import { ArrowDown, ArrowUp, Download, FileSpreadsheet, FolderOpen, ListRestart, Replace, Save, Search, X } from 'lucide-vue-next'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
+import type { RibbonVariant } from '../platform/ribbon/ribbon-schema'
+import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
 import SheetFormulaBar from './spreadsheet/SheetFormulaBar.vue'
 import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
@@ -33,7 +35,7 @@ import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
 import { createFormatPainterPatches, type FormatPainterSource } from '../features/sheet-workbench/sheet-format-painter.ts'
 import { CHANGE_SHEET_OUTLINE_COMMAND, getCollapsedOutlineIndexes, getSheetOutlineUpdate, type ChangeSheetOutlineInput, type SheetOutlineAction, type SheetOutlineOperation } from '../features/sheet-outline/sheet-outline.ts'
-import { createOfficeTranslator, createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n.ts'
+import { createOfficeTranslator, createRibbonTranslator, provideWorkbenchLocales } from '../i18n/office-i18n.ts'
 import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type SheetFindBy, type SheetFindDirection, type SheetFindScope } from '../features/sheet-find-replace/sheet-find-replace.ts'
 import { convertTextToNumber } from '../features/sheet-workbench/text-to-number.ts'
 import { moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit, type SheetCellMoveDirection } from '../features/sheet-workbench/sheet-cell-range-move.ts'
@@ -56,7 +58,7 @@ export type ExcelCell = ExcelCellView
 export type ExcelSheet = SpreadsheetRenderSheet
 export type ExcelWorkbook = Omit<DomainExcelWorkbookView, 'sheets'> & { sheets: ExcelSheet[]; charts?: ChartModel[] }
 
-const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean; studio?: OfficeStudio; ribbonVariant?: 'classic' | 'grid' }>(), {
+const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean; studio?: OfficeStudio; ribbonVariant?: RibbonVariant }>(), {
   modelValue: undefined,
   model: undefined,
   canUndo: undefined,
@@ -65,7 +67,7 @@ const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: Exc
   studio: undefined,
   ribbonVariant: 'classic',
 })
-const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
+const officeLocale = provideWorkbenchLocales(() => props.studio?.regionalSettings)
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: ExcelWorkbook): void
@@ -147,7 +149,9 @@ const editValue = ref('')
 const selecting = ref(false)
 const formulaInput = ref<InstanceType<typeof SheetFormulaBar> | null>(null)
 const spreadsheetCanvas = ref<InstanceType<typeof SpreadsheetCanvas> | null>(null)
-const zoom = ref(100)
+const displayPreference = useWorkbenchDisplay()
+const chrome = computed(() => workbenchVisibility(displayPreference?.value.chrome ?? 'full'))
+const zoom = ref<number>(displayPreference?.value.zoom ?? 100)
 const searchText = ref('')
 const replaceText = ref('')
 const findBy = ref<SheetFindBy>('value')
@@ -166,6 +170,11 @@ const renameSheetId = ref<string | null>(null)
 const renameValue = ref('')
 const renameError = ref('')
 const viewSessions = new Map<string, SheetViewState>()
+watch(() => displayPreference?.value.zoom, value => {
+  if (value === undefined) return
+  for (const [id, session] of viewSessions) viewSessions.set(id, { ...session, zoom: value })
+  zoom.value = value
+})
 const copiedCells = ref<Array<Array<ExcelCell | undefined>> | null>(null)
 const copiedFormulaCells = ref<Array<Array<ExcelCell | undefined>> | null>(null)
 const chartCommands = ref<DrawCommand[]>([])
@@ -421,7 +430,7 @@ function applyExternalWorkbook(value: ExcelWorkbook) {
   selectedKey.value = next.key
   selectedRanges.value = next.ranges
   selectionAnchor.value = next.anchor
-  zoom.value = next.zoom
+  zoom.value = session?.zoom ?? displayPreference?.value.zoom ?? next.zoom
   if (nextSheetId !== previousSheetId || (editingKey.value && !parseSheetAddress(editingKey.value, sheet ?? { rowCount: 0, columnCount: 0 }))) editingKey.value = null
 }
 
@@ -1654,7 +1663,7 @@ function activateSheet(id: string) {
   selectedKey.value = next.key
   selectionAnchor.value = next.anchor
   selectedRanges.value = next.ranges
-  zoom.value = next.zoom
+  zoom.value = session?.zoom ?? displayPreference?.value.zoom ?? next.zoom
   if (props.studio && workbook.value.id && props.studio.getWorkbookModel(workbook.value.id)?.sheets.some(candidate => candidate.id === id)) {
     FOffice.newAPI(props.studio).getWorkbook(workbook.value.id)?.setActiveSheet(id)
   }
@@ -2386,7 +2395,7 @@ onDeactivated(() => {
 <template>
   <ConfigProvider>
   <section ref="workbenchRef" class="excel-workbench" @keydown="handleGridKeydown">
-    <header v-if="showHeader" class="excel-header">
+    <header v-if="showHeader && chrome.header" class="excel-header">
       <div class="document-brand">
         <div class="excel-logo"><FileSpreadsheet :size="18" /></div>
         <div class="document-title-wrap">
@@ -2401,8 +2410,8 @@ onDeactivated(() => {
       </div>
     </header>
 
-    <WorkbenchRibbon v-model="activeTab" :tabs="ribbonTabs" :variant="props.ribbonVariant" @execute="executeRibbon" />
-    <SheetFormulaBar ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :error="nameError" @update:value="editValue = $event" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
+    <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :tabs="ribbonTabs" :variant="props.ribbonVariant" @execute="executeRibbon" />
+    <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :error="nameError" @update:value="editValue = $event" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
       <div class="find-input-row">
@@ -2496,7 +2505,7 @@ onDeactivated(() => {
     <Modal v-model:open="cellMoveConfirmOpen" title="合并单元格" ok-text="继续" cancel-text="取消" :width="420" @ok="confirmCellRangeMove" @cancel="pendingCellMove = null">
       <p>此操作会拆分与移位区域交叉的合并单元格，是否继续？</p>
     </Modal>
-    <SheetFooter :sheets="availableSheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
+    <SheetFooter v-if="chrome.footer" :sheets="availableSheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <PivotChartPanel v-if="pivotChartPanelOpen && activeSheet && studio && workbook.id" v-model:open="pivotChartPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
@@ -2505,7 +2514,7 @@ onDeactivated(() => {
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
     <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
     <SparklinePanel v-if="sparklinePanelOpen && activeSheet && studio && workbook.id" :open="sparklinePanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :target-range="sparklineTargetRange" @update:open="sparklinePanelOpen = $event" />
-      <CustomNumberFormatPanel v-model:open="customNumberFormatOpen" :current-pattern="activeCell.rawNumberFormat ?? 'General'" @apply="(pattern) => changeSelectedCells(cell => ({ ...cell, rawNumberFormat: pattern }))" />
+      <CustomNumberFormatPanel v-model:open="customNumberFormatOpen" :date1904="activeSheet?.date1904 ?? workbook.date1904" :current-pattern="activeCell.rawNumberFormat ?? 'General'" @apply="(pattern) => changeSelectedCells(cell => ({ ...cell, rawNumberFormat: pattern }))" />
   </section>
   </ConfigProvider>
 </template>

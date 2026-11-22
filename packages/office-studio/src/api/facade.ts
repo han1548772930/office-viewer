@@ -126,6 +126,11 @@ export class FOffice {
     return new FOffice(studio)
   }
 
+  setLocale(locale: string): void { this.studio.regionalSettings.setLocale(locale) }
+  setRegion(region: string): void { this.studio.regionalSettings.setRegion(region) }
+  getCurrentLocale(): string { return this.studio.regionalSettings.locale.value.replace('-', '') }
+  getCurrentRegion(): string { return this.studio.regionalSettings.region.value.replace('-', '') }
+
   createWorkbook(data: Partial<WorkbookModel> & Record<string, unknown> = {}, options: CreateUnitOptions = {}): FWorkbook {
     const model = this.studio.createWorkbook(data, options.makeCurrent ?? true)
     return new FWorkbook(this.studio, model.id!)
@@ -966,6 +971,7 @@ export class FSheetSlicer {
 }
 
 export class FDocument {
+  get regionalSettings() { return this.api.regionalSettings }
   private readonly api: OfficeStudio
   readonly id: string
 

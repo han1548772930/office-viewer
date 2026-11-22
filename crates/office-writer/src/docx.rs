@@ -1767,10 +1767,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     context
         .package
         .add_xml("word/document.xml", DOCUMENT_CONTENT_TYPE, document_xml)?;
-    if has_different_odd_even {
+    let has_story_fields = section_header_footers.as_object().is_some_and(|sections| sections.values().any(|s| s["pageFields"].as_array().is_some_and(|fields| !fields.is_empty())));
+    if has_different_odd_even || has_story_fields {
         context
             .package
-            .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml())?;
+            .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml(has_different_odd_even))?;
         context.relationship(REL_SETTINGS, "settings.xml", false)?;
     }
     Ok(context.warnings)
@@ -1938,12 +1939,10 @@ fn section_properties_with_headers(
                 xml_attribute(relationship),
             ));
         }
-        if section_refs.different_first_page {
-            header_footer.push_str("<w:titlePg/>");
-        }
     }
+    let title_page = if header_footer_refs.is_some_and(|r| r.different_first_page) { "<w:titlePg/>" } else { "" };
     format!(
-        "<w:sectPr>{section_type}{header_footer}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/></w:sectPr>",
+        "<w:sectPr>{header_footer}{section_type}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/>{title_page}</w:sectPr>",
         page.width, page.height, page.top, page.right, page.bottom, page.left,
         header_footer_refs.map_or(720, |r| r.header_distance), header_footer_refs.map_or(720, |r| r.footer_distance),
     )
@@ -2121,9 +2120,10 @@ fn page_fields_for_story<'a>(section: &'a Value, story: &str) -> Vec<&'a Value> 
     fields
 }
 
-fn settings_xml() -> String {
+fn settings_xml(different_odd_even: bool) -> String {
+    let variants = if different_odd_even { "<w:evenAndOddHeaders/>" } else { "" };
     format!(
-        "{}<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:evenAndOddHeaders/><w:updateFields w:val=\"true\"/></w:settings>",
+        "{}<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{variants}<w:updateFields w:val=\"true\"/></w:settings>",
         xml::DECL
     )
 }

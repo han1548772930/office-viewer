@@ -10,6 +10,7 @@ import {
   readPivotPanelSourceFields, type PivotPanelDraft, type PivotPanelField,
 } from '../../features/pivot/services/pivot-panel-state'
 import PivotFieldToolsDialog from '../../features/pivot/views/PivotFieldToolsDialog.vue'
+import { useOfficeRegion } from '../../i18n/office-i18n'
 import { readPivotFieldMembers, type PivotFieldToolChange } from '../../features/pivot/services/pivot-field-tools'
 import { formatSheetValue, SHEET_NUMBER_FORMATS } from '../../features/sheet-workbench/sheet-number-format'
 
@@ -31,7 +32,8 @@ const toolsFieldId = ref(''), toolsKind = ref<'filter' | 'group'>('filter')
 const numberFormatOpen = ref(false), numberFormatDraft = ref('')
 const toolsField = computed(() => selectedPivot.value?.fields.find(field => field.id === toolsFieldId.value))
 const numberFormatOptions = Object.entries(SHEET_NUMBER_FORMATS).map(([value, pattern]) => ({ value: pattern, label: ({ general: '常规', number: '数值', currency: '货币', accounting: '会计', percent: '百分比', date: '日期', time: '时间', datetime: '日期时间', text: '文本' } as Record<string, string>)[value] ?? value }))
-const numberFormatPreview = computed(() => formatSheetValue(1234.56, numberFormatDraft.value, workbook.value?.date1904) ?? '此自定义格式将按原样保存在值字段中')
+const region = useOfficeRegion()
+const numberFormatPreview = computed(() => formatSheetValue(1234.56, numberFormatDraft.value, workbook.value?.date1904, region.value) ?? '此自定义格式将按原样保存在值字段中')
 const aggregationOptions: Array<{ label: string; value: PivotAggregation }> = [
   { label: '平均值', value: 'average' }, { label: '计数', value: 'count' }, { label: '数值计数', value: 'countNums' },
   { label: '最大值', value: 'max' }, { label: '最小值', value: 'min' }, { label: '乘积', value: 'product' },

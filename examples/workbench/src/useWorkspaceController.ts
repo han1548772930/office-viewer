@@ -129,9 +129,23 @@ export function useWorkspaceController() {
 
   function onPageHide(event: PageTransitionEvent): void { if (!event.persisted) files.dispose() }
   watch(activeFileName, (name) => { document.title = `${name} · Office Studio` }, { immediate: true })
-  onMounted(() => window.addEventListener('pagehide', onPageHide))
+  const routeHash = (kind: WorkspaceKind) => kind === 'document' ? '#docs' : '#sheets'
+  function readProductRoute() {
+    const kind = location.hash === '#docs' ? 'document' : 'workbook'
+    if (location.hash !== routeHash(kind)) history.replaceState(history.state, '', routeHash(kind))
+    switchWorkspace(kind)
+  }
+  watch(() => editor.state.activeKind, kind => {
+    if (location.hash !== routeHash(kind)) history.pushState(null, '', routeHash(kind))
+  }, { flush: 'sync' })
+  onMounted(() => {
+    readProductRoute()
+    window.addEventListener('hashchange', readProductRoute)
+    window.addEventListener('pagehide', onPageHide)
+  })
   onUnmounted(() => {
     files.dispose()
+    window.removeEventListener('hashchange', readProductRoute)
     window.removeEventListener('pagehide', onPageHide)
     if (noticeTimer) clearTimeout(noticeTimer)
   })

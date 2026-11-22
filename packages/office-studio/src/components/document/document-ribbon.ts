@@ -13,7 +13,8 @@ import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 import DocumentCharacterPicker from './DocumentCharacterPicker.vue'
-import DocumentHeaderFooterRibbonControl, { type HeaderFooterRibbonState, type HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
+import type { HeaderFooterRibbonState, HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
+import DocumentHeaderFooterRibbonGroup from './DocumentHeaderFooterRibbonGroup.vue'
 
 export interface DocumentRibbonContext {
   state: DocumentToolbarState
@@ -215,13 +216,13 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     const headerFooter = context.headerFooter
     const headerFooterControl = (kind: HeaderFooterRibbonKind, title: string, icon: Component, order: number): RibbonItem => ({
       id: `doc-header-footer-${kind}`,
-      type: 'menu',
+      type: 'button',
       title,
       icon,
       order,
       disabled: headerFooter.disabled,
-      popupComponent: DocumentHeaderFooterRibbonControl,
-      popupProps: { kind, state: headerFooter },
+      inlineComponent: DocumentHeaderFooterRibbonGroup,
+      popupProps: { kind, title, state: headerFooter },
       popupCommandId: 'doc.operation.header-footer-control',
       gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
     })

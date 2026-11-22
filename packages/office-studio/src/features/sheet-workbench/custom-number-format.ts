@@ -41,6 +41,6 @@ export function validateCustomNumberFormat(input: string): CustomNumberFormatRes
   return { pattern, preview: formatSheetValue(1234.567, pattern) }
 }
 
-export function previewCustomNumberFormat(pattern: string, value: CellScalar, locale = 'zh-CN'): string | undefined {
-  return formatSheetValue(value, pattern, false, locale)
+export function previewCustomNumberFormat(pattern: string, value: CellScalar, locale = 'zh-CN', date1904 = false): string | undefined {
+  return formatSheetValue(value, pattern, date1904, locale)
 }

@@ -1,4 +1,9 @@
 export const coreEnUS: Record<string, string> = {
+  'workspace.catalonia': 'Catalonia (Spain)',
+  'workspace.region': 'Region', 'workspace.follow-language': 'Follow language', 'workspace.theme': 'Theme', 'workspace.zoom': 'Zoom', 'workspace.chrome': 'UI chrome', 'workspace.full': 'Full', 'workspace.no-ribbon': 'No ribbon', 'workspace.canvas-only': 'Canvas only', 'workspace.reset-preferences': 'Reset preferences',
+  'workspace.theme-blue': 'Blue', 'workspace.theme-green': 'Green', 'workspace.theme-orange': 'Orange', 'workspace.theme-purple': 'Purple', 'workspace.theme-red': 'Red', 'workspace.theme-yellow': 'Yellow', 'workspace.theme-dark-blue': 'Dark blue',
+  'workspace.collapsed-ribbon': 'Collapsed ribbon', 'workspace.simple-ribbon': 'Simple ribbon',
+  'workspace.settings': 'Settings', 'workspace.direction': 'Direction', 'workspace.appearance': 'Appearance', 'workspace.dark': 'Dark', 'workspace.light': 'Light', 'workspace.ribbon': 'Ribbon', 'workspace.classic-ribbon': 'Classic ribbon',
   'common.more': 'More', 'common.cancel': 'Cancel', 'common.close': 'Close', 'common.save': 'Save', 'common.insert': 'Insert', 'common.empty': 'Empty',
   'common.mixed': 'Mixed', 'common.general': 'General', 'common.standard': 'Standard', 'common.text': 'Text', 'common.number': 'Number',
   'common.currency': 'Currency', 'common.accounting': 'Accounting', 'common.percent': 'Percent', 'common.date': 'Date', 'common.time': 'Time',

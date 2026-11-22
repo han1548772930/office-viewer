@@ -3,9 +3,10 @@ import { computed, inject, ref, watch } from 'vue'
 import { Button, Form, FormItem, Input, Modal } from 'antdv-next'
 import { previewCustomNumberFormat, validateCustomNumberFormat } from '../../features/sheet-workbench/custom-number-format.ts'
 import type { CellScalar } from '../../domain/model.ts'
-import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import { OfficeTranslatorKey, useOfficeRegion } from '../../i18n/office-i18n.ts'
 
-const props = defineProps<{ open: boolean; currentPattern: string }>()
+const props = defineProps<{ open: boolean; currentPattern: string; date1904?: boolean }>()
+const region = useOfficeRegion()
 const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [pattern: string] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
@@ -18,7 +19,7 @@ const example = computed(() => {
     const numeric = Number(sample.value)
     const value: CellScalar = sample.value.trim() && Number.isFinite(numeric) ? numeric : sample.value
     error.value = ''
-    return previewCustomNumberFormat(result.pattern, value)
+    return previewCustomNumberFormat(result.pattern, value, region.value, props.date1904)
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : t('sheet.number-format.invalid', '格式代码无效。')
     return undefined

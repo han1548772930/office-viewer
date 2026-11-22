@@ -5,7 +5,7 @@ import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
-import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
+import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, STORY_LINE_HEIGHT, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../../features/document/model/document-model'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
@@ -266,8 +266,8 @@ function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | und
   const page = layout.value.pages.find(p => pos.x >= p.x && pos.x <= p.x + p.width && pos.y >= p.y && pos.y <= p.y + p.height)
   const entry = page && layout.value.pageHeaderFooters[page.index]
   if (!page || !entry) return
-  if (pos.y < page.content.y || (pos.y >= entry.headerTop && pos.y < entry.headerTop + 14)) return { page: page.index, area: 'header' }
-  if (pos.y >= page.content.y + page.content.height || (pos.y <= entry.footerBottom && pos.y > entry.footerBottom - 14)) return { page: page.index, area: 'footer' }
+  if (pos.y < page.content.y || (pos.y >= entry.headerTop && pos.y < entry.headerTop + Math.max(1, entry.headerLines.length) * STORY_LINE_HEIGHT)) return { page: page.index, area: 'header' }
+  if (pos.y >= page.content.y + page.content.height || (pos.y <= entry.footerBottom && pos.y > entry.footerBottom - Math.max(1, entry.footerLines.length) * STORY_LINE_HEIGHT)) return { page: page.index, area: 'footer' }
 }
 
 function pointerDown(event: PointerEvent) {

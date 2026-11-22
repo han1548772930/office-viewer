@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, useSlots, watch } from 'vue'
+import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, useSlots, watch } from 'vue'
 import { Button, Menu, Popover, Tooltip } from 'antdv-next'
 import type { MenuInfo, MenuItemType, MenuRef } from 'antdv-next'
-import { MoreVertical } from 'lucide-vue-next'
+import { ChevronDown, Database, EllipsisVertical, Eye, House, LayoutPanelLeft, ListPlus, MoreVertical, Sigma } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import RibbonGridToolbar from './RibbonGridToolbar.vue'
-import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, ribbonInvocation, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab } from './ribbon-schema'
-import { OfficeTranslatorKey } from '../../i18n/office-i18n'
+import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonItems, nextRibbonTab, resolveRibbonTab, ribbonInvocation, simpleRibbonTab, visibleRibbonTabs, type RibbonGroup, type RibbonItem, type RibbonTab, type RibbonVariant } from './ribbon-schema'
+import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
-import { createRibbonMenuModel, type RibbonMenuAction } from './ribbon-command-menu'
+import { createRibbonMenuModel, renderOverflowControl, type RibbonMenuAction } from './ribbon-command-menu'
 
-const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: 'classic' | 'grid' }>(), { modelValue: undefined, direction: 'ltr', label: '功能区', variant: 'classic' })
+const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: RibbonVariant }>(), { modelValue: undefined, label: '功能区', variant: 'classic' })
 const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
 const id = useId()
 const slots = useSlots()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
-const popupScope = provideRibbonPopupScope(computed(() => props.direction))
+const workspaceDirection = inject(OfficeDirectionKey, ref<'ltr' | 'rtl'>('ltr'))
+const direction = computed(() => props.direction ?? workspaceDirection.value)
+const popupScope = provideRibbonPopupScope(direction)
 const themeStyle = useRibbonTheme()
 const ribbonStyle = computed(() => ({
   '--ribbon-tab-height': `${props.variant === 'grid' ? GRID_RIBBON.tabHeight : CLASSIC_RIBBON.tabHeight}px`,
@@ -32,7 +34,15 @@ const selectedId = ref(props.modelValue)
 const previousRegular = ref<string>()
 const tabs = computed(() => visibleRibbonTabs(props.tabs))
 const activeId = computed(() => resolveRibbonTab(props.tabs, props.modelValue ?? selectedId.value, previousRegular.value))
-const activeTab = computed(() => tabs.value.find((tab) => tab.id === activeId.value))
+const activeTab = computed(() => props.variant === 'simple' ? simpleRibbonTab(tabs.value) : tabs.value.find((tab) => tab.id === activeId.value))
+const singleRow = computed(() => props.variant === 'simple' || props.variant === 'collapsed')
+const selector = ref<HTMLElement>()
+const selectorOpen = ref(false)
+const selectorMenu = ref<MenuRef | null>(null)
+const tabIcons = { home: House, insert: ListPlus, formulas: Sigma, data: Database, view: Eye, layout: LayoutPanelLeft }
+const categoryItems = computed<MenuItemType[]>(() => tabs.value.map(tab => ({ key: tab.id, label: tab.title, icon: h(tabIcons[tab.id as keyof typeof tabIcons] ?? EllipsisVertical, { size: 18 }) })))
+function closeSelector() { selectorOpen.value = false; selector.value?.querySelector('button')?.focus({ preventScroll: true }) }
+async function openSelector() { selectorOpen.value = true; await nextTick(); selectorMenu.value?.focus() }
 const toolbar = ref<HTMLElement>()
 const measurer = ref<HTMLElement>()
 const tablist = ref<HTMLElement>()
@@ -66,13 +76,13 @@ const overflowMenuModel = computed(() => {
         closeMore()
         executeSlot(item, commandId, params)
       },
-    }))
+    }) ?? renderOverflowControl(item, (id, params) => { closeMore(); executeSlot(item, id, params) }))
     if (index > 0) items.push({ type: 'divider', key: `group-divider:${group.id}` })
     if (group.title) items.push({ type: 'group', key: `group:${group.id}`, label: group.title, children: model.items })
     else items.push(...model.items)
     model.actions.forEach((action, key) => {
       const rootItemId = key.split('::', 1)[0]
-      if (!slots[`item-${rootItemId}`]) actions.set(key, action)
+      if (!slots[`item-${rootItemId}`] && !action.item.inlineComponent) actions.set(key, action)
     })
   })
   return { items, actions }
@@ -104,7 +114,7 @@ function tabStyle(tab: RibbonTab) {
 function onTabKeydown(event: KeyboardEvent) {
   const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[role="tab"]') : null
   if (!target) return
-  const targetId = nextRibbonTab(props.tabs, target.dataset.tabId ?? '', event.key, props.direction)
+  const targetId = nextRibbonTab(props.tabs, target.dataset.tabId ?? '', event.key, direction.value)
   if (!targetId) return
   event.preventDefault()
   event.stopPropagation()
@@ -126,7 +136,7 @@ async function measure() {
   await nextTick()
   measurePending = false
   if (disposed) return
-  if (toolbar.value) availableWidth.value = toolbar.value.getBoundingClientRect().width
+  if (toolbar.value) availableWidth.value = toolbar.value.getBoundingClientRect().width - (selector.value?.getBoundingClientRect().width ?? 0)
   const widths: Record<string, number> = {}
   for (const element of measurer.value?.querySelectorAll<HTMLElement>('[data-measure-item]') ?? []) {
     const itemId = element.dataset.measureItem
@@ -170,7 +180,9 @@ watch(activeId, (value) => {
   moreOpen.value = false
   if (value && props.modelValue !== undefined && props.modelValue !== value) emit('update:modelValue', value)
 }, { immediate: true })
-watch(() => props.variant, () => { moreOpen.value = false; popupScope.close(); void measure() })
+watch(() => props.variant, () => { moreOpen.value = selectorOpen.value = false; popupScope.close(); void measure() })
+watch(selector, (element, previous) => { if (previous) observer?.unobserve(previous); if (element) observer?.observe(element) }, { flush: 'post' })
+watch(selectorOpen, open => { if (open) { moreOpen.value = false; popupScope.close() } })
 watch(moreOpen, (open) => { if (open) popupScope.close() })
 watch(activeTab, () => { void measure() }, { flush: 'post' })
 watch(toolbar, (element, previous) => {
@@ -182,6 +194,7 @@ watch(() => overflowGroups.value.length, (count) => { if (!count) moreOpen.value
 onMounted(() => {
   observer = new ResizeObserver(() => { void measure() })
   if (toolbar.value) observer.observe(toolbar.value)
+  if (selector.value) observer.observe(selector.value)
   void measure()
 })
 onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
@@ -189,15 +202,22 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 
 <template>
   <section v-if="tabs.length" class="workbench-ribbon" data-testid="workbench-ribbon" :dir="direction" :aria-label="label" :style="[ribbonStyle, themeStyle]">
-    <div ref="tablist" class="workbench-ribbon-tabs" :class="{ 'is-grid': variant === 'grid' }" role="tablist" :aria-label="label" aria-orientation="horizontal" @keydown="onTabKeydown">
+    <div v-if="!singleRow" ref="tablist" class="workbench-ribbon-tabs" :class="{ 'is-grid': variant === 'grid' }" role="tablist" :aria-label="label" aria-orientation="horizontal" @keydown="onTabKeydown">
       <Button v-for="tab in tabs" :id="`${id}-tab-${tab.id}`" :key="tab.id" type="text" role="tab" class="workbench-ribbon-tab" :class="{ 'is-selected': tab.id === activeId, 'is-contextual': tab.contextual, 'is-grid-tab': variant === 'grid' }" :style="tabStyle(tab)" :aria-selected="tab.id === activeId" :aria-controls="`${id}-panel`" :tabindex="tab.id === activeId ? 0 : -1" :data-tab-id="tab.id" @mousedown.prevent @click="selectTab(tab.id)">{{ tab.title }}</Button>
       <div v-if="$slots['tab-extra']" class="ribbon-tab-extra"><slot name="tab-extra" /></div>
     </div>
-    <div :id="`${id}-panel`" ref="toolbar" class="workbench-ribbon-toolbar" :class="{ 'is-grid': variant === 'grid' }" role="tabpanel" :aria-labelledby="`${id}-tab-${activeId}`">
+    <div v-else-if="$slots['tab-extra']" class="ribbon-tab-extra ribbon-single-row-extra"><slot name="tab-extra" /></div>
+    <div :id="`${id}-panel`" ref="toolbar" class="workbench-ribbon-toolbar" :class="{ 'is-grid': variant === 'grid', 'is-single-row': singleRow }" :role="singleRow ? 'group' : 'tabpanel'" :aria-label="singleRow ? label : undefined" :aria-labelledby="singleRow ? undefined : `${id}-tab-${activeId}`">
       <RibbonGridToolbar v-if="variant === 'grid' && activeTab" :key="activeTab.id" :groups="activeTab.groups" :title="activeTab.title" :direction="direction" :align-start="activeTab.id === 'data'" @execute="execute">
         <template v-for="(_, name) in $slots" #[name]="slotProps"><slot :name="name" v-bind="slotProps" /></template>
       </RibbonGridToolbar>
       <template v-else>
+        <span v-if="variant === 'collapsed'" ref="selector" class="ribbon-category-anchor">
+          <Popover v-model:open="selectorOpen" :trigger="['hover', 'click']" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'">
+            <Button type="text" size="small" class="ribbon-category-toggle" aria-haspopup="menu" :aria-expanded="selectorOpen" @mousedown.prevent @keydown.down.prevent="openSelector" @keydown.esc.stop.prevent="closeSelector">{{ activeTab?.title }}<ChevronDown :size="14" /></Button>
+            <template #content><Menu ref="selectorMenu" class="ribbon-category-menu" :items="categoryItems" :selected-keys="activeId ? [activeId] : []" @click="({ key }) => { selectTab(String(key)); closeSelector() }" @keydown.esc.stop.prevent="closeSelector" /></template>
+          </Popover>
+        </span>
         <div class="ribbon-visible-groups" role="toolbar" :aria-label="activeTab?.title">
           <div v-for="group in visibleGroups" :key="group.id" class="workbench-ribbon-group" role="group" :aria-label="group.title">
             <template v-for="item in group.items" :key="item.id">
@@ -216,7 +236,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
         </span>
       </template>
     </div>
-    <div v-if="variant === 'classic'" ref="measurer" class="ribbon-measurer" aria-hidden="true" inert>
+    <div v-if="variant !== 'grid'" ref="measurer" class="ribbon-measurer" aria-hidden="true" inert>
       <template v-for="group in activeTab?.groups ?? []" :key="group.id">
         <span v-for="item in group.items" :key="item.id" :data-measure-item="item.id" class="ribbon-measure-item">
           <slot v-if="$slots[`item-${item.id}`]" :name="`item-${item.id}`" :item="item" :measurement="true" :execute="() => undefined" />
@@ -244,6 +264,11 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
 .ribbon-tab-extra:empty { display: none; }
 .workbench-ribbon-toolbar { display: flex; min-width: 0; height: var(--ribbon-toolbar-height); align-items: center; justify-content: center; padding: 0 var(--ribbon-horizontal-padding); box-sizing: border-box; }
 .workbench-ribbon-toolbar.is-grid { display: block; padding: 0; }
+.workbench-ribbon-toolbar.is-single-row { justify-content: flex-start; }
+.ribbon-category-anchor { display: inline-flex; flex: none; padding-inline-end: 8px; }
+.ribbon-category-anchor .ribbon-category-toggle { height: 28px; padding-inline: 12px 8px; gap: 6px; border-radius: 14px; background: var(--ribbon-text); color: var(--ribbon-background); white-space: nowrap; }
+.ribbon-category-menu { max-width: 384px; min-width: 160px; }
+.ribbon-single-row-extra { justify-content: flex-end; }
 .ribbon-visible-groups { display: flex; min-width: 0; align-items: center; }
 .workbench-ribbon-group { display: flex; flex: 0 0 auto; gap: var(--ribbon-item-gap); align-items: center; padding: 0 var(--ribbon-group-padding); box-sizing: border-box; }
 .workbench-ribbon-group + .workbench-ribbon-group { border-inline-start: var(--ribbon-separator-width) solid var(--ribbon-border, #e2e8f0); }

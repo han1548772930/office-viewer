@@ -8,7 +8,7 @@ import { fitRibbonGridGroups, GRID_RIBBON, groupRibbonGridOverflowItems, placeRi
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { RibbonPopupScopeKey } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
-import { createRibbonMenuModel, type RibbonMenuAction } from './ribbon-command-menu'
+import { createRibbonMenuModel, renderOverflowControl, type RibbonMenuAction } from './ribbon-command-menu'
 
 const props = withDefaults(defineProps<{ groups: RibbonGroup[]; title: string; direction?: 'ltr' | 'rtl'; alignStart?: boolean }>(), { direction: 'ltr', alignStart: false })
 const emit = defineEmits<{ execute: [commandId: string, params?: unknown] }>()
@@ -40,10 +40,10 @@ const overflowMenuModel = computed(() => {
           closeOverflow()
           executeSlot(item, commandId, params)
         },
-      }))
+      }) ?? renderOverflowControl(item, (id, params) => { closeOverflow(); executeSlot(item, id, params) }))
       model.actions.forEach((action, key) => {
         const itemId = key.split('::', 1)[0]
-        if (!slots[`item-${itemId}`]) actions.set(key, action)
+        if (!slots[`item-${itemId}`] && !action.item.inlineComponent) actions.set(key, action)
       })
       return { type: 'group' as const, key: `grid-row:${group.id}:${rowIndex}`, label: '', className: 'ribbon-grid-overflow-row', children: model.items }
     })

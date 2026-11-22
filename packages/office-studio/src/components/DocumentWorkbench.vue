@@ -22,6 +22,8 @@ import DocumentCommentsPanel from './document/DocumentCommentsPanel.vue'
 import DocumentTableOfContentsDialog from './document/DocumentTableOfContentsDialog.vue'
 import DocumentTableInsertDialog from './document/DocumentTableInsertDialog.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
+import type { RibbonVariant } from '../platform/ribbon/ribbon-schema'
+import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
@@ -45,10 +47,10 @@ import { canManageDocumentPermissions, permissionTargetsForSelection, resolveDoc
 import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
 import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
-import { createRibbonTranslator, OfficeLocaleKey, type OfficeLocale } from '../i18n/office-i18n'
+import { createRibbonTranslator, provideWorkbenchLocales } from '../i18n/office-i18n'
 
-const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: 'classic' | 'grid' }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
-const officeLocale = inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
+const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
+const officeLocale = provideWorkbenchLocales(() => props.documentApi?.regionalSettings)
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
   'update:fileName': [value: string]
@@ -66,7 +68,10 @@ const layout = shallowRef<DocumentLayout>(emptyLayout())
 const canvasRef = ref<InstanceType<typeof DocumentCanvasViewport> | null>(null)
 const activeTab = ref('home')
 const documentTitle = ref(props.fileName || '无标题文档')
-const zoom = ref(100)
+const displayPreference = useWorkbenchDisplay()
+const chrome = computed(() => workbenchVisibility(displayPreference?.value.chrome ?? 'full'))
+const zoom = ref<number>(displayPreference?.value.zoom ?? 100)
+watch(() => displayPreference?.value.zoom, value => { if (value !== undefined) setZoom(value) })
 const paperSize = ref<DocumentPaperSize>('A4')
 const orientation = ref<'portrait' | 'landscape'>('portrait')
 const outlineOverride = ref<boolean>()
@@ -1012,8 +1017,8 @@ function handleStoryAction(raw: unknown) {
       })
       if (fields && fields.some((field, i) => field.cachedResult !== section.pageFields?.[i]?.cachedResult)) applyHeaderFooter({ pageFields: fields })
     } else if (action.action === 'insert-field' || action.action === 'insert-date-time') {
-      const field = action.action === 'insert-field' ? { field: action.field } : storyDateField(action.format, locale, now)
-      const insert = action.action === 'insert-date-time' && !action.automatic && 'cachedResult' in field ? field.cachedResult : field
+      const date = action.action === 'insert-date-time' ? storyDateField(action.format, locale, now) : undefined
+      const insert = action.action === 'insert-field' ? { field: action.field } : action.automatic ? date! : date!.cachedResult
       const { start, end } = canvasRef.value?.storyRange() ?? { start: 0, end: 0 }
       applyHeaderFooter(replaceStoryRange(section, key, start, end, insert))
       canvasRef.value?.focusStory(start + (typeof insert === 'string' ? insert.length : 1))
@@ -1185,7 +1190,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 <template>
   <ConfigProvider>
   <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
-    <header v-if="showHeader && !isFocusMode" class="document-header">
+    <header v-if="showHeader && chrome.header && !isFocusMode" class="document-header">
       <FileText class="document-mark" :size="20" />
       <Input v-model:value="documentTitle" class="document-name" aria-label="文档名称" variant="borderless" @change="updateTitle" @press-enter="($event.target as HTMLInputElement).blur()" />
       <Tooltip title="打印文档"><Button type="text" aria-label="打印文档" @click="printDocument"><Printer :size="16" /></Button></Tooltip>
@@ -1194,7 +1199,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         <Button type="primary"><FileUp :size="15" />打开文档</Button>
       </Upload>
     </header>
-    <WorkbenchRibbon v-if="!isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant" label="文档功能区" @execute="onRibbonExecute">
+    <WorkbenchRibbon v-if="chrome.toolbar && !isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant" label="文档功能区" @execute="onRibbonExecute">
       <template #tab-extra>
         <div v-if="showFind" class="find-replace-toolbar">
           <div class="find-row">
@@ -1217,7 +1222,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       </template>
     </WorkbenchRibbon>
     <main class="editor-workspace">
-      <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
+      <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
       <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
         :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-readonly="!canEditStory || storySection.linkToPrevious"
         @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
@@ -1242,7 +1247,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         />
       </aside>
     </main>
-    <DocumentFooter :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
+    <DocumentFooter v-if="chrome.footer" :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
     <div v-if="documentContextMenu" class="document-context-menu" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.menu-label', 'Document context menu')" :style="{ left: `${documentContextMenu.left}px`, top: `${documentContextMenu.top}px` }">
       <Menu mode="vertical" :selectable="false" :items="documentContextMenuItems" @click="selectDocumentContextMenuItem" />

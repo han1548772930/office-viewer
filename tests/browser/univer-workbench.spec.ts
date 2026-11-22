@@ -88,10 +88,43 @@ test.beforeEach(async ({ page }) => {
 
 test.afterEach(async ({ page }) => { expect(runtimeErrors.get(page) ?? []).toEqual([]) })
 
-const layoutToggle = (page: Page) => page.getByRole('button', { name: '双行工具栏', exact: true })
+async function chooseLayout(page: Page, name: '经典工具栏' | '双行工具栏' | '折叠分类工具栏' | '单行合并工具栏' = '经典工具栏') {
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('menuitem', { name: /^工具栏布局/ }).click()
+  await page.getByRole('menuitem', { name, exact: true }).click()
+}
+
+test('collapsed chooses a category in the toolbar; simple merges categories without changing selection', async ({ page }) => {
+  await chooseLayout(page, '折叠分类工具栏')
+  await expect(ribbon(page).getByRole('tablist')).toHaveCount(0)
+  await ribbon(page).getByRole('button', { name: '开始', exact: true }).press('ArrowDown')
+  await page.getByRole('menuitem', { name: '插入', exact: true }).click()
+  await expect(ribbon(page).getByRole('toolbar', { name: '插入', exact: true })).toBeVisible()
+  await chooseLayout(page, '单行合并工具栏')
+  await expect(ribbon(page).getByRole('tablist')).toHaveCount(0)
+  await expect(ribbon(page).locator('.ribbon-category-toggle')).toHaveCount(0)
+  await expect(ribbon(page).getByRole('toolbar', { name: '开始', exact: true })).toBeVisible()
+  await chooseLayout(page, '双行工具栏')
+  await expect(ribbon(page).getByRole('tab', { name: '插入', exact: true })).toHaveAttribute('aria-selected', 'true')
+})
+
+test('product links honor the source header order, route and browser history', async ({ page }) => {
+  await page.goto('/#docs')
+  const header = page.locator('.workspace-header')
+  await expectHeight(header, 36)
+  const docs = header.getByRole('tab', { name: '文档', exact: true }), sheets = header.getByRole('tab', { name: '表格', exact: true })
+  await expect(docs).toHaveAttribute('aria-current', 'page')
+  await expect(sheets).toHaveAttribute('href', '#sheets')
+  const left = await header.locator('.workspace-brand').boundingBox(), tab = await sheets.boundingBox(), next = await docs.boundingBox()
+  expect(left && tab && next && left.x + left.width <= tab.x && tab.x + tab.width <= next.x).toBeTruthy()
+  await sheets.click()
+  await expect(page).toHaveURL(/#sheets$/)
+  await page.goBack(); await expect(docs).toHaveAttribute('aria-selected', 'true')
+  await page.goForward(); await expect(sheets).toHaveAttribute('aria-selected', 'true')
+  await page.goto('/#unknown'); await expect(page).toHaveURL(/#sheets$/)
+})
 
 test('workspace defaults to the source example grid and remembers layout across products and reload', async ({ page }) => {
-  await expect(layoutToggle(page)).toHaveAttribute('aria-pressed', 'true')
   const assertGrid = async () => {
     await expectHeight(ribbon(page).locator('.workbench-ribbon-tabs'), 32)
     await expectHeight(page.getByTestId('ribbon-grid-toolbar'), 69)
@@ -100,18 +133,18 @@ test('workspace defaults to the source example grid and remembers layout across 
   await assertGrid()
   await switchWorkspace(page, '文档')
   await assertGrid()
-  await layoutToggle(page).click()
+  await chooseLayout(page)
   await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
   await switchWorkspace(page, '表格')
   await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
   await page.reload()
-  await expect(layoutToggle(page)).toHaveAttribute('aria-pressed', 'false')
-  await layoutToggle(page).click()
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+  await chooseLayout(page, '双行工具栏')
   await assertGrid()
 })
 
 test('Sheets uses classic Ribbon, a formula header, Canvas and one product footer', async ({ page }) => {
-  await layoutToggle(page).click()
+  await chooseLayout(page)
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(ribbon(page)).toHaveCount(1)
@@ -146,7 +179,7 @@ test('Sheets uses classic Ribbon, a formula header, Canvas and one product foote
 })
 
 test('Ribbon tabs implement roving keyboard focus and keep their classic row dimensions', async ({ page }) => {
-  await layoutToggle(page).click()
+  await chooseLayout(page)
   const tabs = ribbon(page).getByRole('tab')
   const names = await tabs.allTextContents()
   expect(names).toContain('开始')
@@ -221,7 +254,7 @@ test('switching worksheets and products preserves content and isolated undo hist
 })
 
 test('narrow Sheets keeps overflow tools operable and the editor inside the viewport', async ({ page }) => {
-  await layoutToggle(page).click()
+  await chooseLayout(page)
   await page.setViewportSize({ width: 620, height: 800 })
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
@@ -249,7 +282,7 @@ test('narrow Sheets keeps overflow tools operable and the editor inside the view
 })
 
 test('Docs keeps its logical text range while formatting through classic Ribbon', async ({ page }) => {
-  await layoutToggle(page).click()
+  await chooseLayout(page)
   await switchWorkspace(page, '文档')
   await expect(ribbon(page)).toHaveCount(1)
   await expectHeight(ribbon(page).locator('.workbench-ribbon-tabs'), 36)
