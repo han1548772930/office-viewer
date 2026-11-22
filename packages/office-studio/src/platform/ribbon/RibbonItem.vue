@@ -39,7 +39,8 @@ const classicStyle = { '--ribbon-button-height': `${CLASSIC_RIBBON.buttonHeight}
 const children = computed(() => visibleRibbonItems(props.item.children ?? []))
 const menuModel = computed(() => createRibbonMenuModel(children.value))
 const showLabel = computed(() => {
-  if (props.overflow || (props.grid && props.large)) return true
+  if (props.overflow) return true
+  if (props.grid && props.large && props.item.type !== 'menu') return true
   const requested = props.showLabel ?? props.item.showLabel
   return requested ?? !props.item.icon
 })
@@ -156,7 +157,7 @@ onBeforeUnmount(() => { open.value = false })
 .workbench-ribbon-item:not(.has-icon) .ribbon-button { padding-inline: 8px; }
 .is-selector .ribbon-button { height: var(--ribbon-selector-height); }
 .ribbon-button :deep(svg) { flex-shrink: 0; }
-.ribbon-color-swatch { display: inline-block; width: 14px; height: 14px; flex: 0 0 14px; border: 1px solid #aeb7c2; border-radius: 2px; }
+.ribbon-color-swatch { display: inline-block; width: 14px; height: 14px; flex: 0 0 14px; border: 1px solid var(--ribbon-border); border-radius: 2px; }
 .ribbon-button.is-active { background: var(--ribbon-active-background, #e7edfa); color: var(--ribbon-primary, #315bc2); }
 .ribbon-button:focus-visible { outline: 2px solid var(--ribbon-primary, #5274d7); outline-offset: -2px; }
 .ribbon-select-wrap { display: flex; align-items: center; gap: 12px; }

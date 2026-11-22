@@ -3,6 +3,7 @@ import { test } from 'vitest'
 import {
   changeValidationType,
   formatValidationRange,
+  validationPickedAddress,
   parseValidationRanges,
   validationPanelSettings,
   validationRuleFromPanel,
@@ -23,6 +24,16 @@ test('validation range parsing rejects another sheet and addresses beyond Excel 
   assert.throws(() => parseValidationRanges("'Other Sheet'!A1", 'Sheet1'), RangeError)
   assert.throws(() => parseValidationRanges('XFE1', 'Sheet1'), TypeError)
   assert.throws(() => parseValidationRanges('A1048577', 'Sheet1'), TypeError)
+})
+
+test('picking keeps separate rule areas and accepts a single operand reference', () => {
+  const ranges = parseValidationRanges('B2:C3,F7')
+  assert.equal(validationPickedAddress('range', ranges), 'B2:C3, F7')
+  for (const target of ['list', 'formula1', 'formula2']) {
+    assert.equal(validationPickedAddress(target, ranges), undefined)
+    assert.equal(validationPickedAddress(target, ranges.slice(1)), '=F7')
+  }
+  assert.equal(validationPickedAddress('range', []), undefined)
 })
 
 test('formatted sheet-qualified ranges can be parsed back without changing their coordinates', () => {

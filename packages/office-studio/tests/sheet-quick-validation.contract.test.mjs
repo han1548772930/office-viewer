@@ -46,6 +46,20 @@ test('quick checkbox, dropdown and date presets create rules over all selected r
   assert.throws(() => quickValidation.createQuickSheetDataValidationRule('dropdown', ranges), /至少需要一个选项/)
 })
 
+test('quick actions target every selected rectangle, localize list contents and open only explicit edits', () => {
+  const ranges = [{ startRow: 0, endRow: 1, startCol: 1, endCol: 2 }, { startRow: 6, endRow: 6, startCol: 0, endCol: 0 }]
+  const label = (key, fallback) => ({ 'sheet.validation.preset.yes': 'Yes', 'sheet.validation.preset.no': 'No' })[key] ?? fallback
+  const plan = action => quickValidation.planQuickValidation(action, ranges, label)
+  assert.deepEqual(plan('clear-dropdown'), { kind: 'clear', ranges, types: ['list', 'listMultiple'] })
+  assert.deepEqual(plan('dropdown-yes-no').rule.ranges, ranges)
+  assert.equal(plan('dropdown-yes-no').rule.formula1, '"Yes,No"')
+  assert.equal(plan('dropdown-status').edit, false)
+  assert.equal(plan('edit-dropdown').edit, true)
+  assert.equal(plan('edit-date').rule.operator, undefined)
+  assert.equal(plan('clear-other'), undefined)
+  assert.equal(quickValidation.planQuickValidation('clear-date', [], label), undefined)
+})
+
 test('quick validation commands persist, undo and clear only matching rule types', () => {
   const studio = new apiModule.OfficeStudio()
   const office = apiModule.FOffice.newAPI(studio)

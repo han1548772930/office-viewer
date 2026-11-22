@@ -55,18 +55,21 @@ test('header/footer contextual ribbon follows Univer groups and carries live sec
   })
   const tab = tabs.find(candidate => candidate.id === 'header-footer')
   assert.equal(tab?.contextual, true)
-  assert.deepEqual(tab?.groups[0]?.items.map(item => item.id), [
+  assert.deepEqual(tab.groups.map(group => group.items.length), [1, 1, 1, 1, 1])
+  const items = tab.groups.flatMap(group => group.items)
+  assert.deepEqual(items.map(item => item.id), [
     'doc-header-footer-insertion',
     'doc-header-footer-navigation',
     'doc-header-footer-options',
     'doc-header-footer-position',
     'doc-header-footer-close',
   ])
-  for (const item of tab.groups[0].items.slice(0, 4)) {
+  for (const item of items.slice(0, 4)) {
+    assert.equal(item.gridLayout.column, 1)
     assert.equal(item.popupCommandId, 'doc.operation.header-footer-control')
     assert.equal(item.popupProps.state, headerFooterState)
   }
-  assert.equal(tab.groups[0].items[4].commandId, 'doc.operation.close-header-footer')
+  assert.equal(items[4].commandId, 'doc.operation.close-header-footer')
 })
 
 test('header/footer contextual ribbon is absent outside an active header/footer edit area', () => {

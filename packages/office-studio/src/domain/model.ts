@@ -9,12 +9,12 @@ export interface FontStyle {
   italic: boolean
   underline: boolean
   strike: boolean
-  color: string
+  color: string | null
 }
 
 export interface CellStyle {
   font: FontStyle
-  fill: string
+  fill: string | null
   horizontal: 'left' | 'center' | 'right' | 'justify'
   vertical: 'top' | 'middle' | 'bottom'
   wrap: boolean
@@ -453,6 +453,8 @@ export interface DocumentParagraphStyle {
 }
 
 export interface DocumentSectionSetup {
+  marginHeader?: number
+  marginFooter?: number
   width?: number
   height?: number
   orientation?: 'portrait' | 'landscape'
@@ -562,7 +564,11 @@ export interface DocumentSectionHeaderFooter {
 
 export interface DocumentPageField {
   story: 'header' | 'footer' | 'firstPageHeader' | 'firstPageFooter' | 'evenPageHeader' | 'evenPageFooter'
-  field: 'PAGE' | 'NUMPAGES'
+  field: 'PAGE' | 'NUMPAGES' | 'DATE' | 'TIME'
+  /** UTF-16 offset in the story's literal text (field results are not counted). */
+  offset?: number
+  instruction?: string
+  cachedResult?: string
 }
 
 export interface DocumentNote {
@@ -656,9 +662,9 @@ export const defaultCellStyle = (): CellStyle => ({
     italic: false,
     underline: false,
     strike: false,
-    color: '#1f2937',
+    color: null,
   },
-  fill: '#ffffff',
+  fill: null,
   horizontal: 'left',
   vertical: 'middle',
   wrap: false,

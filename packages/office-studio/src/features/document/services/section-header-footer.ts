@@ -32,14 +32,16 @@ export function applySectionHeaderFooter(
   const next = { ...current, ...patch, linkToPrevious: patch.linkToPrevious ?? current.linkToPrevious }
   for (const key of ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const) {
     if (typeof next[key] !== 'string') throw new TypeError(`Invalid section ${key}`)
-    next[key] = next[key].slice(0, 500)
   }
   for (const key of ['differentFirstPage', 'differentOddEven', 'linkToPrevious'] as const) {
     if (typeof next[key] !== 'boolean') throw new TypeError(`Invalid section ${key}`)
   }
   if (next.pageFields !== undefined && (!Array.isArray(next.pageFields) || next.pageFields.some(field =>
     !['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'].includes(field.story)
-      || !['PAGE', 'NUMPAGES'].includes(field.field)))) {
+      || !['PAGE', 'NUMPAGES', 'DATE', 'TIME'].includes(field.field)
+      || (field.offset !== undefined && (!Number.isSafeInteger(field.offset) || field.offset < 0))
+      || (field.instruction !== undefined && field.instruction.trim().split(/\s+/)[0]?.toUpperCase() !== field.field)
+      || (field.cachedResult !== undefined && typeof field.cachedResult !== 'string')))) {
     throw new TypeError('Invalid section page fields')
   }
   next.pageFields = next.pageFields?.map(field => ({ ...field }))
@@ -56,9 +58,26 @@ export function insertSectionPageField(
   sectionId: string,
   story: DocumentPageField['story'],
   field: DocumentPageField['field'],
+  details: Pick<DocumentPageField, 'offset' | 'cachedResult' | 'instruction'> = {},
 ): void {
   const current = resolveSectionHeaderFooter(model, sectionId)
-  applySectionHeaderFooter(model, sectionId, { pageFields: [...(current.pageFields ?? []), { story, field }] })
+  if (current.linkToPrevious) throw new Error('Unlink the section before editing its fields')
+  const { offset, cachedResult, instruction } = details
+  applySectionHeaderFooter(model, sectionId, { pageFields: [...(current.pageFields ?? []), { story, field, offset, cachedResult, instruction }] })
+}
+
+export function renderSectionStory(section: DocumentSectionHeaderFooter, story: DocumentPageField['story'], page: number, total: number): string {
+  const text = section[story]
+  const fields = (section.pageFields ?? []).filter(field => field.story === story)
+    .sort((a, b) => (a.offset ?? Infinity) - (b.offset ?? Infinity))
+  let result = '', cursor = 0
+  for (const field of fields) {
+    const offset = Math.min(text.length, field.offset ?? text.length)
+    result += text.slice(cursor, offset) + (field.offset === undefined ? ' ' : '')
+    result += field.field === 'PAGE' ? page : field.field === 'NUMPAGES' ? total : field.cachedResult ?? ''
+    cursor = offset
+  }
+  return result + text.slice(cursor)
 }
 
 export function resolveSectionHeaderFooter(model: DocumentModel, sectionId: string): DocumentSectionHeaderFooter {

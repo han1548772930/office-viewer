@@ -4,6 +4,7 @@ import { createServer } from 'vite'
 import { createBlankDocument } from '../src/domain/model.ts'
 import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter } from '../src/features/document/services/section-header-footer.ts'
 import { createParagraph } from '../src/features/document/model/document-model.ts'
+import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField } from '../src/features/document/services/story-editor.ts'
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
@@ -53,6 +54,18 @@ test('section header/footer commands are persisted by document snapshots and lay
   assert.equal(sectionBreak.type, 'sectionBreak')
 })
 
+test('story distances are section-local even when the header content is linked', () => {
+  const { model, sectionBreak } = modelWithSection()
+  const point = { blockId: model.blocks[0].id, offset: 0 }
+  applySectionHeaderFooter(model, 'first', { header: 'Shared' })
+  executeDocumentCommand(model, { anchor: point, focus: point }, { id: 'doc.command.set-section-setup', sectionId: sectionBreak.id, patch: { marginHeader: 25.5, marginFooter: 0 } })
+  const layout = layoutDocument(JSON.parse(JSON.stringify(model)), { measure: text => text.length * 7 })
+  assert.equal(layout.pageHeaderFooters[0].headerTop - layout.pages[0].y, 48)
+  assert.equal(layout.pageHeaderFooters[1].header, 'Shared')
+  assert.equal(layout.pageHeaderFooters[1].headerTop - layout.pages[1].y, 25.5)
+  assert.equal(layout.pageHeaderFooters[1].footerBottom, layout.pages[1].y + layout.pages[1].height)
+})
+
 test('page and total-page fields recalculate from the paginated document after command execution', () => {
   const { model } = modelWithSection()
   const target = { blockId: model.blocks[0].id, offset: 0 }
@@ -77,4 +90,23 @@ test('invalid section ids and malformed patch values fail before mutating the mo
   assert.throws(() => applySectionHeaderFooter(model, 'missing', { header: 'x' }), /Unknown document section/)
   assert.throws(() => applySectionHeaderFooter(model, 'first', { header: 5 }), /Invalid section header/)
   assert.equal(JSON.stringify(model), before)
+})
+
+test('inline story objects stay ordered at identical UTF-16 positions and are individually editable', () => {
+  const { model } = modelWithSection()
+  const longText = '🗂' + 'x'.repeat(650)
+  const section = () => resolveSectionHeaderFooter(model, 'first')
+  const set = patch => applySectionHeaderFooter(model, 'first', patch)
+  set({ header: longText })
+  set(replaceStoryRange(section(), 'header', 2, 2, { field: 'PAGE' }))
+  set(replaceStoryRange(section(), 'header', 3, 3, { field: 'NUMPAGES' }))
+  assert.equal(layoutDocument(model, { measure: t => t.length }).pageHeaderFooters[0].header, '🗂14' + 'x'.repeat(650))
+  const input = storyBuffer(section(), 'header').value
+  set(editStoryBuffer(section(), 'header', input.slice(0, 2) + input.slice(3), 2))
+  assert.deepEqual(section().pageFields.map(f => [f.field, f.offset]), [['NUMPAGES', 2]])
+  assert.equal(section().header, longText)
+  const automatic = storyDateField('time', 'en-US', new Date(2026, 4, 2, 16, 30, 45))
+  set(replaceStoryRange(section(), 'header', 2, 3, automatic))
+  assert.equal(section().pageFields[0].cachedResult, '16:30:45')
+  assert.ok(section().pageFields[0].instruction.startsWith('TIME \\@'))
 })

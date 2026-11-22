@@ -12,10 +12,14 @@ import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../fea
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
+import type { StoryLocation } from '../../features/document/services/story-editor'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storyReadonly?: boolean; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
+  'open-story': [location: StoryLocation]
+  'close-story': []
+  'edit-story': [value: string, caret: number]
   'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline']
   'update:selection': [selection: DocumentSelection]
@@ -37,6 +41,24 @@ function inputElement(): HTMLTextAreaElement | null {
   return element instanceof HTMLTextAreaElement ? element : element?.querySelector('textarea') ?? null
 }
 const layout = shallowRef<DocumentLayout>(emptyLayout())
+const storyRef = ref<{ $el: HTMLElement; focus: (options?: { preventScroll?: boolean }) => void }>()
+function storyElement() {
+  const el = storyRef.value?.$el
+  return el instanceof HTMLTextAreaElement ? el : el?.querySelector('textarea')
+}
+function storyRange() { const el = storyElement(); return { start: el?.selectionStart ?? 0, end: el?.selectionEnd ?? 0 } }
+function focusStory(offset?: number) {
+  void nextTick(() => { storyRef.value?.focus({ preventScroll: true }); if (offset !== undefined) storyElement()?.setSelectionRange(offset, offset) })
+}
+function storyKeys(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return
+  const key = event.key.toLowerCase(), mod = event.ctrlKey || event.metaKey
+  if (key === 'escape') emit('close-story')
+  else if (mod && key === 's') emit('save')
+  else if (mod && (key === 'z' || key === 'y')) { if (key === 'y' || event.shiftKey) emit('redo'); else emit('undo') }
+  else return
+  event.preventDefault(); event.stopPropagation()
+}
 const preview = shallowRef<DocumentModel | null>(null)
 const compositionSelection = shallowRef<DocumentSelection | null>(null)
 const composing = ref(false)
@@ -61,6 +83,12 @@ let active = true
 const measurer = createTextMeasurer()
 const displayModel = computed(() => preview.value ?? props.model)
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
+const storyStyle = computed(() => {
+  const target = props.story, entry = target && layout.value.pageHeaderFooters[target.page]
+  if (!entry || !target) return { display: 'none' }
+  const k = props.zoom / 100, off = sceneOffset(layout.value, viewport.value)
+  return { left: `${off.x + entry.x * k}px`, width: `${entry.width * k}px`, top: `${off.y + (target.area === 'header' ? entry.headerTop : entry.footerBottom) * k}px`, fontSize: `${11 * k}px`, transform: target.area === 'footer' ? 'translateY(-100%)' : undefined }
+})
 const spacerStyle = computed(() => ({ width: `${Math.max(viewport.value.width, layout.value.width * props.zoom / 100)}px`, height: `${layout.value.height * props.zoom / 100}px` }))
 const inputStyle = computed(() => {
   const caret = caretRect(layout.value, displaySelection.value.focus)
@@ -231,11 +259,22 @@ function select(selection: DocumentSelection) {
   requestDraw()
 }
 
-function focus() { inputRef.value?.focus({ preventScroll: true }); focused.value = true; requestDraw() }
+function focus() { if (props.story) { focusStory(); return }; inputRef.value?.focus({ preventScroll: true }); focused.value = true; requestDraw() }
+
+function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | undefined {
+  if (!pos || !props.storiesEnabled) return
+  const page = layout.value.pages.find(p => pos.x >= p.x && pos.x <= p.x + p.width && pos.y >= p.y && pos.y <= p.y + p.height)
+  const entry = page && layout.value.pageHeaderFooters[page.index]
+  if (!page || !entry) return
+  if (pos.y < page.content.y || (pos.y >= entry.headerTop && pos.y < entry.headerTop + 14)) return { page: page.index, area: 'header' }
+  if (pos.y >= page.content.y + page.content.height || (pos.y <= entry.footerBottom && pos.y > entry.footerBottom - 14)) return { page: page.index, area: 'footer' }
+}
 
 function pointerDown(event: PointerEvent) {
   if (event.button !== 0 || composing.value) return
   const coordinates = coordinatesFromEvent(event)
+  if (storyAt(coordinates)) { event.preventDefault(); return }
+  if (props.story) emit('close-story')
   const checklistBlockId = coordinates && hitTestChecklist(layout.value, coordinates.x, coordinates.y)
   if (checklistBlockId) {
     event.preventDefault()
@@ -293,6 +332,8 @@ function pointerUp(event: PointerEvent) {
 }
 
 function doubleClick(event: MouseEvent) {
+  const location = storyAt(coordinatesFromEvent(event))
+  if (location) { event.preventDefault(); emit('open-story', location); return }
   const point = pointFromEvent(event)
   if (!point) return
   const text = runText(runsForTarget(props.model, point))
@@ -477,7 +518,14 @@ function scrollToBlock(id: string) {
   const line = layout.value.lines.find((candidate) => candidate.target.blockId === id)
   if (line && scrollRef.value) scrollRef.value.scrollTo({ top: Math.max(0, line.y * props.zoom / 100 - 28), behavior: 'smooth' })
 }
-defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value })
+function revealStory(target: StoryLocation) {
+  const entry = layout.value.pageHeaderFooters[target.page], el = scrollRef.value
+  if (!entry || !el) return
+  const y = (target.area === 'header' ? entry.headerTop : entry.footerBottom) * props.zoom / 100
+  if (y < el.scrollTop + 30 || y > el.scrollTop + el.clientHeight - 30) el.scrollTop = Math.max(0, y - el.clientHeight / 2)
+  focusStory()
+}
+defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value })
 </script>
 
 <template>
@@ -487,6 +535,7 @@ defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => lay
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
     <Input.TextArea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
+    <Input.TextArea v-if="story" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyValue" :readonly="storyReadonly" :auto-size="{ minRows: 1 }" @keydown="storyKeys" @update:value="emit('edit-story', String($event ?? ''), storyRange().start)" />
     <span v-if="error" class="canvas-error" role="alert">{{ error }}</span>
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
   </div>
@@ -497,6 +546,7 @@ defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => lay
 .document-surface { position: absolute; inset: 0; pointer-events: none; }
 .document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; cursor: text; outline: none; }
 .document-scroll-spacer { pointer-events: none; }
+.document-story-bridge { position: absolute; z-index: 3; padding: 1px 3px; text-align: center; resize: none; line-height: 1.25; }
 .document-input-bridge { position: absolute; z-index: 2; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .document-input-bridge :deep(textarea) { position: absolute; inset: 0; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }
 .backend-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

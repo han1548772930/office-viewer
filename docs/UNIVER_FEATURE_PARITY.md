@@ -23,7 +23,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
-| COMMON-01 | 应用壳与工作台区域 | 公开源码：ui/workbench、parts | 文件操作、类型切换、Ribbon、产品 Header、编辑区、面板、单条产品 Footer 和统一浮层；无重复工具区 | 未验收 |
+| COMMON-01 | 应用壳与工作台区域 | 公开源码：ui/workbench、parts | 文件操作、类型切换、Ribbon、产品 Header、编辑区、面板、单条产品 Footer 和统一浮层；无重复工具区 | 未验收；[工作台 Grid/Classic 切换验证](UNIVER_TOOLBAR_PARITY.md#1-当前装配与证据边界) |
 | COMMON-02 | 命令、菜单和插件 | 公开源码：core/command、ui/menu、presets | command/mutation/operation 分层；各入口同命令；按 feature 注册、排序、上下文显隐/禁用、正确销毁 | 未验收 |
 | COMMON-03 | 选择、输入、快捷键与剪贴板 | 公开源码：Sheets/Docs selection、editing、clipboard | 中文输入法、光标/选区保留、系统剪贴板；Docs 源格式/目标格式/纯文本粘贴及最近粘贴切换；工具栏和右键不破坏范围 | 未验收 |
 | COMMON-04 | 主题、语言、字体与配置 | 公开源码 ui/config、examples/workbench-settings；[主题规格][shared-themes] | 中文默认、多语言资源、明暗主题、字体加载/度量、LTR/RTL、布局变体与配置保存；不污染文档内容 | 未验收 |
@@ -47,7 +47,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-01 | 工作簿、工作表生命周期 | 公开源码 sheets、sheets-ui；[核心][sheet-core]、[API][sheet-api] | 新建/复制/删除/重命名/重排、颜色、隐藏/veryHidden、活动表、校验和可撤销事务 | 未验收 |
 | SHEET-02 | 范围、选区和网格编辑 | 公开源码 selection/editor；[范围规格][sheet-selection] | 单元格/区域/行列/全选/多选、拖选、填充、合并、F2/直接输入、Enter/Tab/Escape；双向视口处理 | 未验收 |
 | SHEET-03 | 行列结构与尺寸 | [行列规格][sheet-row-col]、公开源码 commands | 插删/移动/复制/隐藏/显示/自动适应、行高列宽；更新公式与所有范围资源 | 未验收 |
-| SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收；[旋转/竖排/缩小适应切片证据](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md) |
+| SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收；[旋转/竖排/缩小适应](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md)、[颜色重置](feature-evidence/SHEET-04-color-reset.md) |
 | SHEET-05 | 富文本 | [富文本规格][sheet-rich-text]、公开源码 docs/editor bridge | 单格多运行样式、部分文本选择和编辑、复制粘贴、链接与导出；不扁平化成一个字符串样式 | 未验收 |
 | SHEET-06 | 数字格式与日期系统 | [数字格式][sheet-numfmt]、公开源码 sheets-numfmt | 数字/货币/会计/百分比/日期/自定义、小数位、locale、1900/1904；原始值与显示值分离 | 未验收；[日期系统续作](feature-evidence/continuation-2026-11-20.md#calendar-input) |
 | SHEET-07 | 冻结、网格线、视口和缩放 | [冻结][sheet-freeze]、[网格线][sheet-gridlines]、公开源码 render | 多分区真实冻结、坐标命中/编辑一致、每表视口保存、组合底栏缩放 | 未验收 |

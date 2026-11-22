@@ -171,29 +171,35 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
       differentOddEven: data.evenAndOddHeaders === true,
       linkToPrevious: index > 0 && !array(section.headerSections).length && !array(section.footerSections).length,
     }
+    const defined = new Set<DocumentPageField['story']>()
     for (const entry of array(section.headerSections)) {
       const reference = record(entry)
       const field = headerFields[text(reference.referenceType, 'default')]
       if (field) {
-        value[field] = storyText(text(reference.partName), 'header')
-        appendPageFields(value, array(reference.pageFields), field)
+        defined.add(field)
+        readStory(value, field, reference, storyText(text(reference.partName), 'header'))
       }
     }
     for (const entry of array(section.footerSections)) {
       const reference = record(entry)
       const field = footerFields[text(reference.referenceType, 'default')]
       if (field) {
-        value[field] = storyText(text(reference.partName), 'footer')
-        appendPageFields(value, array(reference.pageFields), field)
+        defined.add(field)
+        readStory(value, field, reference, storyText(text(reference.partName), 'footer'))
       }
     }
     if (index > 0 && !value.linkToPrevious) {
-      const previous = result[index === 1 ? 'first' : sectionBreaks[index - 2]?.id ?? '']
+      let prior = index - 1
+      let previous = result[prior === 0 ? 'first' : sectionBreaks[prior - 1]?.id ?? '']
+      while (prior > 0 && previous?.linkToPrevious) {
+        prior--
+        previous = result[prior === 0 ? 'first' : sectionBreaks[prior - 1]?.id ?? '']
+      }
       if (previous) {
         for (const key of ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const) {
-          if (!value[key]) value[key] = previous[key]
+          if (!defined.has(key)) value[key] = previous[key]
         }
-        value.pageFields = [...(previous.pageFields ?? []), ...(value.pageFields ?? [])]
+        value.pageFields = [...(previous.pageFields ?? []).filter(f => !defined.has(f.story)), ...(value.pageFields ?? [])]
       }
     }
     result[sectionId] = value
@@ -201,14 +207,16 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
   return result
 }
 
-function appendPageFields(
-  section: DocumentSectionHeaderFooter,
-  fields: unknown[],
-  story: DocumentPageField['story'],
-) {
+function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageField['story'], reference: Record<string, unknown>, fallbackText: string) {
+  const content = record(reference.storyText)
+  const positioned = typeof content.text === 'string'
+  section[story] = positioned ? text(content.text) : fallbackText
+  const fields = array(positioned ? content.fields : reference.pageFields)
   for (const raw of fields) {
-    const field = text(raw)
-    if (field === 'PAGE' || field === 'NUMPAGES') section.pageFields?.push({ story, field })
+    const detail = record(raw)
+    const field = text(positioned ? detail.field : raw)
+    if (field !== 'PAGE' && field !== 'NUMPAGES' && field !== 'DATE' && field !== 'TIME') continue
+    section.pageFields?.push(positioned ? { story, field, offset: finite(detail.offset), instruction: text(detail.instruction), cachedResult: text(detail.cachedResult) } : { story, field })
   }
 }
 
@@ -291,6 +299,21 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   Object.assign(result, normalizeDocumentNotes(data, result.blocks))
   result.comments = normalizeDocumentComments(data.comments, result.blocks)
   result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks)
+  const breaks = result.blocks.filter(block => block.type === 'sectionBreak')
+  array(data.sectionLayout).forEach((raw, index) => {
+    const section = record(raw)
+    const distance = (val: unknown) => typeof val === 'number' && Number.isFinite(val) && val >= 0
+    const setup = {
+      ...(distance(section.marginHeader) ? { marginHeader: Number(section.marginHeader) } : {}),
+      ...(distance(section.marginFooter) ? { marginFooter: Number(section.marginFooter) } : {}),
+    }
+    if (!Object.keys(setup).length) return
+    if (index === 0) result.sectionSetup = { ...result.sectionSetup, ...setup }
+    else {
+      const marker = breaks[index - 1]?.sectionBreak
+      if (marker) marker.setup = { ...marker.setup, ...setup }
+    }
+  })
   result.modified = false
   result.wordCount = result.blocks.reduce((count, block) => count+block.runs.reduce((sum, run) => sum+run.text.length, 0), 0)
   result.metadata = {

@@ -166,6 +166,8 @@ struct PageGeometry {
 struct SectionHeaderFooterRefs {
     references: Vec<(String, String)>,
     different_first_page: bool,
+    header_distance: u32,
+    footer_distance: u32,
 }
 
 struct WriteContext<'a> {
@@ -1667,7 +1669,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         current_section: "first".to_owned(),
     };
     let has_different_odd_even =
-        prepare_section_header_footers(&mut context, &section_header_footers, blocks)?;
+        prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
     let mut next_num_id = 1;
     assign_lists(
         blocks,
@@ -1941,26 +1943,28 @@ fn section_properties_with_headers(
         }
     }
     format!(
-        "<w:sectPr>{section_type}{header_footer}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr>",
-        page.width, page.height, page.top, page.right, page.bottom, page.left
+        "<w:sectPr>{section_type}{header_footer}<w:pgSz w:w=\"{}\" w:h=\"{}\"{orientation}/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/></w:sectPr>",
+        page.width, page.height, page.top, page.right, page.bottom, page.left,
+        header_footer_refs.map_or(720, |r| r.header_distance), header_footer_refs.map_or(720, |r| r.footer_distance),
     )
 }
 
 fn prepare_section_header_footers(
     context: &mut WriteContext<'_>,
     sections: &Value,
+    first_setup: &Value,
     blocks: &[Value],
 ) -> Result<bool, ExportError> {
-    let mut section_ids = vec!["first".to_owned()];
+    let mut section_ids = vec![("first".to_owned(), first_setup)];
     section_ids.extend(
         blocks
             .iter()
             .filter(|block| string(get(block, "type")).as_deref() == Some("sectionBreak"))
-            .filter_map(|block| string(get(block, "id"))),
+            .filter_map(|block| Some((string(get(block, "id"))?, get(get(block, "sectionBreak"), "setup")))),
     );
     let mut has_different_odd_even = false;
     let mut next_part = 1usize;
-    for (section_index, section_id) in section_ids.iter().enumerate() {
+    for (section_index, (section_id, setup)) in section_ids.iter().enumerate() {
         let value = get(sections, section_id);
         let linked = section_index > 0
             && (value.is_null() || get(value, "linkToPrevious").as_bool() == Some(true));
@@ -1970,6 +1974,8 @@ fn prepare_section_header_footers(
         let mut refs = SectionHeaderFooterRefs {
             references: Vec::new(),
             different_first_page,
+            header_distance: twips(get(setup, "marginHeader").as_f64().unwrap_or(48.0)),
+            footer_distance: twips(get(setup, "marginFooter").as_f64().unwrap_or(48.0)),
         };
         if !linked {
             for (story, page_type, field_name, relationship_type, content_type) in [
@@ -2057,7 +2063,7 @@ fn add_header_footer_part(
     story: &str,
     page_type: &str,
     text: &str,
-    page_fields: &[String],
+    page_fields: &[&Value],
     relationship_type: &str,
     content_type: &str,
 ) -> Result<(), ExportError> {
@@ -2073,27 +2079,46 @@ fn add_header_footer_part(
     Ok(())
 }
 
-fn header_footer_xml(story: &str, text: &str, page_fields: &[String]) -> String {
+fn header_footer_xml(story: &str, text: &str, page_fields: &[&Value]) -> String {
     let root = if story == "header" { "hdr" } else { "ftr" };
-    let fields = page_fields.iter().map(|field| {
-        format!("<w:fldSimple w:instr=\" {field} \"><w:r><w:t></w:t></w:r></w:fldSimple>")
-    }).collect::<String>();
+    let style = Value::Null;
+    let mut runs = String::new();
+    let mut chars = text.char_indices().peekable();
+    let (mut cursor, mut units) = (0, 0);
+    for entry in page_fields {
+        let position = entry["offset"].as_u64();
+        let offset = position.unwrap_or(u64::MAX);
+        while let Some(&(_, ch)) = chars.peek() {
+            let next = units + ch.len_utf16() as u64;
+            if next > offset { break; }
+            units = next;
+            chars.next();
+        }
+        let end = chars.peek().map_or(text.len(), |(i, _)| *i);
+        if cursor < end { runs.push_str(&run_xml(&style, &text[cursor..end])); }
+        if position.is_none() { runs.push_str(&run_xml(&style, " ")); }
+        cursor = end;
+        let name = entry["field"].as_str().unwrap_or_default();
+        let instr = entry["instruction"].as_str().filter(|s| s.split_whitespace().next().is_some_and(|key| key.eq_ignore_ascii_case(name))).unwrap_or(name);
+        let cached = run_xml(&style, entry["cachedResult"].as_str().unwrap_or_default());
+        runs.push_str(&format!("<w:fldSimple w:instr=\" {} \">{cached}</w:fldSimple>", xml_attribute(instr)));
+    }
+    if cursor < text.len() { runs.push_str(&run_xml(&style, &text[cursor..])); }
     format!(
-        "{}<w:{root} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>{}{fields}</w:p></w:{root}>",
-        xml::DECL,
-        run_xml(&serde_json::json!({}), text)
+        "{}<w:{root} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>{runs}</w:p></w:{root}>", xml::DECL
     )
 }
 
-fn page_fields_for_story(section: &Value, story: &str) -> Vec<String> {
-    field(section, "pageFields")
+fn page_fields_for_story<'a>(section: &'a Value, story: &str) -> Vec<&'a Value> {
+    let mut fields: Vec<_> = field(section, "pageFields")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|entry| string(get(entry, "story")).as_deref() == Some(story))
-        .filter_map(|entry| string(get(entry, "field")))
-        .filter(|field| matches!(field.as_str(), "PAGE" | "NUMPAGES"))
-        .collect()
+        .filter(|entry| matches!(entry["field"].as_str(), Some("PAGE" | "NUMPAGES" | "DATE" | "TIME")))
+        .collect();
+    fields.sort_by_key(|entry| entry["offset"].as_u64().unwrap_or(u64::MAX));
+    fields
 }
 
 fn settings_xml() -> String {
@@ -2414,7 +2439,7 @@ mod tests {
                 { "id": "body-1", "type": "paragraph", "runs": [{ "text": "First" }] },
                 { "id": "section-2", "type": "sectionBreak", "sectionBreak": { "type": "nextPage" }, "runs": [] },
                 { "id": "body-2", "type": "paragraph", "runs": [{ "text": "Second" }] },
-                { "id": "section-3", "type": "sectionBreak", "sectionBreak": { "type": "continuous" }, "runs": [] },
+                { "id": "section-3", "type": "sectionBreak", "sectionBreak": { "type": "continuous", "setup": {"marginHeader": 25.5, "marginFooter": 0} }, "runs": [] },
                 { "id": "body-3", "type": "paragraph", "runs": [{ "text": "Third" }] }
             ],
             "sectionHeaderFooters": {
@@ -2455,6 +2480,7 @@ mod tests {
         let settings = read_part(&mut archive, "word/settings.xml");
 
         assert!(first_header.contains("A&amp;B"));
+        assert!(document.contains("w:header=\"383\" w:footer=\"0\""));
         assert!(first_header.starts_with("<?xml"));
         assert!(section_two_first_header.contains("Cover header"));
         assert!(even_header.contains("Even header"));

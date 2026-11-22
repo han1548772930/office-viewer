@@ -68,33 +68,33 @@ fn parse_document_impl(
         "columnBreaks".into(),
         "sectionBreaks".into(),
     ]);
+    let mut archive = (format == "docx").then(|| zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()).flatten();
+    let mut stories = std::collections::HashMap::new();
+    let mut story_reference = |part: &str, kind: &Option<String>, header| {
+        let story = stories.entry(part.to_owned()).or_insert_with(|| archive.as_mut().and_then(|zip| crate::story_fields::read_story(zip, part)));
+        DocumentStoryReferencePayload {
+            part_name: part.into(), reference_type: kind.clone(),
+            page_fields: story.as_ref().map(|s| s.fields.iter().map(|f| f.field.clone()).collect()).unwrap_or_else(|| page_fields_for_story_nodes(&source_model, part, header)),
+            story_text: story.clone(),
+        }
+    };
     let section_layout = source_model
         .metadata
         .sections
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|section| DocumentSectionLayoutPayload {
-            start_node_index: section.start_node_index,
-            section_properties_xml: section.section_properties_xml.clone(),
-            header_sections: section
-                .header_sections
-                .iter()
-                .map(|reference| DocumentStoryReferencePayload {
-                    part_name: reference.part_name.clone(),
-                    reference_type: reference.reference_type.clone(),
-                    page_fields: page_fields_for_story_nodes(&source_model, &reference.part_name, true),
-                })
-                .collect(),
-            footer_sections: section
-                .footer_sections
-                .iter()
-                .map(|reference| DocumentStoryReferencePayload {
-                    part_name: reference.part_name.clone(),
-                    reference_type: reference.reference_type.clone(),
-                    page_fields: page_fields_for_story_nodes(&source_model, &reference.part_name, false),
-                })
-                .collect(),
+        .map(|section| {
+            let (margin_header, margin_footer) =
+                story_distances(section.section_properties_xml.as_deref().unwrap_or_default());
+            DocumentSectionLayoutPayload {
+                margin_header,
+                margin_footer,
+                start_node_index: section.start_node_index,
+                section_properties_xml: section.section_properties_xml.clone(),
+                header_sections: section.header_sections.iter().map(|r| story_reference(&r.part_name, &r.reference_type, true)).collect(),
+                footer_sections: section.footer_sections.iter().map(|r| story_reference(&r.part_name, &r.reference_type, false)).collect(),
+            }
         })
         .collect();
     let even_and_odd_headers = source_model
@@ -214,6 +214,31 @@ fn push_page_field(instruction: &str, output: &mut Vec<String>) {
     let name = instruction.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
     if matches!(name.as_str(), "PAGE" | "NUMPAGES") && !output.contains(&name) {
         output.push(name);
+    }
+}
+
+fn story_distances(xml: &str) -> (Option<f64>, Option<f64>) {
+    let mut reader = Reader::from_str(xml);
+    let mut depth = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element) | Event::Empty(element)) if depth == 1 && local_name(element.name().as_ref()) == b"pgMar" => {
+                let (mut header, mut footer) = (None, None);
+                for attr in element.attributes().flatten() {
+                    let pixels = std::str::from_utf8(attr.value.as_ref()).ok().and_then(|s| s.parse::<u32>().ok()).map(|twips| f64::from(twips) / 15.0);
+                    match local_name(attr.key.as_ref()) {
+                        b"header" => header = pixels,
+                        b"footer" => footer = pixels,
+                        _ => {}
+                    }
+                }
+                return (header, footer);
+            }
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::End(_)) => depth = depth.saturating_sub(1),
+            Ok(Event::Eof) | Err(_) => return (None, None),
+            _ => {}
+        }
     }
 }
 
@@ -1110,6 +1135,13 @@ mod tests {
     use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     #[test]
+    fn reads_current_section_story_distances_not_historical_properties() {
+        let xml = r#"<w:sectPr><w:sectPrChange><w:sectPr><w:pgMar w:header="720"/></w:sectPr></w:sectPrChange><w:pgMar w:header="375" w:footer="0"/></w:sectPr>"#;
+        assert_eq!(super::story_distances(xml), (Some(25.0), Some(0.0)));
+        assert_eq!(super::story_distances("<w:sectPr/>"), (None, None));
+    }
+
+    #[test]
     fn detects_supported_extensions() {
         assert_eq!(detect_format("report.docx", &[]), "docx");
         assert_eq!(detect_format("sheet.xlsx", &[]), "xlsx");
@@ -1205,12 +1237,13 @@ mod tests {
         let model = serde_json::json!({
             "kind": "document",
             "name": "section headers",
+            "sectionSetup": { "marginHeader": 25.5, "marginFooter": 30 },
             "page": { "width": 794, "height": 1123, "marginTop": 72, "marginBottom": 72, "marginLeft": 72, "marginRight": 72 },
             "blocks": [
                 { "id": "body-1", "type": "paragraph", "runs": [{ "text": "First section" }] },
                 { "id": "section-2", "type": "sectionBreak", "sectionBreak": { "type": "nextPage" }, "runs": [] },
                 { "id": "body-2", "type": "paragraph", "runs": [{ "text": "Second section" }] },
-                { "id": "section-3", "type": "sectionBreak", "sectionBreak": { "type": "continuous" }, "runs": [] },
+                { "id": "section-3", "type": "sectionBreak", "sectionBreak": { "type": "continuous", "setup": { "marginHeader": 0, "marginFooter": 200 } }, "runs": [] },
                 { "id": "body-3", "type": "paragraph", "runs": [{ "text": "Third section" }] }
             ],
             "sectionHeaderFooters": {
@@ -1219,7 +1252,10 @@ mod tests {
                     "footer": "Main footer",
                     "pageFields": [
                         { "story": "footer", "field": "PAGE" },
-                        { "story": "footer", "field": "NUMPAGES" }
+                        { "story": "footer", "field": "NUMPAGES" },
+                        { "story": "header", "field": "DATE", "offset": 4, "instruction": "DATE \\@ \"yyyy\"", "cachedResult": "2026" },
+                        { "story": "header", "field": "PAGE", "offset": 4 },
+                        { "story": "header", "field": "PAGE", "offset": 4 }
                     ]
                 },
                 "section-2": {
@@ -1246,7 +1282,17 @@ mod tests {
         let data = &value["payload"]["data"];
         let sections = data["sectionLayout"].as_array().expect("section layout is exposed");
         assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0]["marginHeader"].as_f64(), Some(383.0 / 15.0));
+        assert_eq!(sections[0]["marginFooter"].as_f64(), Some(30.0));
+        assert_eq!(sections[1]["marginHeader"].as_f64(), Some(48.0));
+        assert_eq!(sections[2]["marginHeader"].as_f64(), Some(0.0));
+        assert_eq!(sections[2]["marginFooter"].as_f64(), Some(200.0));
         assert_eq!(sections[0]["headerSections"][0]["referenceType"], "default");
+        let header = &sections[0]["headerSections"][0]["storyText"];
+        assert_eq!(header["text"], "Main & header");
+        assert_eq!(header["fields"][0], json!({ "field": "DATE", "offset": 4, "instruction": "DATE \\@ \"yyyy\"", "cachedResult": "2026" }));
+        assert_eq!(header["fields"][1]["offset"], 4);
+        assert_eq!(header["fields"][2]["field"], "PAGE");
         assert_eq!(sections[0]["footerSections"][0]["pageFields"], serde_json::json!(["PAGE", "NUMPAGES"]));
         assert_eq!(sections[1]["headerSections"][1]["referenceType"], "first");
         assert_eq!(sections[1]["headerSections"][2]["referenceType"], "even");
@@ -1257,7 +1303,7 @@ mod tests {
 
         let stories = data["blocks"].as_array().unwrap();
         assert!(stories.iter().any(|block| {
-            block["type"] == "header" && block["content"] == "Main & header"
+            block["type"] == "header" && block["content"].as_str().is_some_and(|text| text.contains("Main") && text.contains("& header"))
         }));
         assert!(stories.iter().any(|block| {
             block["type"] == "footer" && block["content"] == "Even footer"

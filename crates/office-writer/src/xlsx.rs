@@ -413,7 +413,7 @@ impl StyleRegistry {
             italic: false,
             underline: false,
             strike: false,
-            color: "FF1F2937".to_owned(),
+            color: "none".to_owned(),
         };
         registry.fonts.push(default_font.clone());
         registry.font_ids.insert(default_font, 0);
@@ -489,7 +489,7 @@ fn style_key(style: Option<&StyleInput>) -> StyleKey {
         italic: false,
         underline: false,
         strike: false,
-        color: "FF1F2937".to_owned(),
+        color: "none".to_owned(),
     };
     let Some(style) = style else {
         return StyleKey {
@@ -507,11 +507,6 @@ fn style_key(style: Option<&StyleInput>) -> StyleKey {
     };
     let font = style.font.as_ref().map(font_key).unwrap_or(default_font);
     let fill = normalize_color(style.fill.as_deref().unwrap_or("none"));
-    let fill = if fill == "FFFFFFFF" || fill == "FF" {
-        "none".to_owned()
-    } else {
-        fill
-    };
     let vertical = match style.vertical.as_deref() {
         Some("middle") | Some("center") => "center",
         Some("top") => "top",
@@ -568,7 +563,7 @@ fn font_key(font: &FontInput) -> FontKey {
         italic: font.italic,
         underline: font.underline,
         strike: font.strike || font.strikethrough,
-        color: normalize_color(font.color.as_deref().unwrap_or("FF1F2937")),
+        color: normalize_color(font.color.as_deref().unwrap_or("none")),
     }
 }
 
@@ -578,6 +573,11 @@ fn normalize_color(value: &str) -> String {
         return "none".to_owned();
     }
     let upper = stripped.to_ascii_uppercase();
+    if upper.len() == 3 && upper.bytes().all(|ch| ch.is_ascii_hexdigit()) {
+        let mut rgb = String::from("FF");
+        for ch in upper.chars() { rgb.push(ch); rgb.push(ch); }
+        return rgb;
+    }
     if upper.len() == 6 {
         format!("FF{upper}")
     } else if upper.len() == 8 {
@@ -605,7 +605,7 @@ fn border_key(value: Option<&Value>) -> String {
             _ => String::new(),
         }
     };
-    ["left", "right", "top", "bottom", "diagonal"]
+    ["left", "right", "top", "bottom", "diagonal", "diagonalUp", "diagonalDown"]
         .iter()
         .map(|key| format!("{key}={}", edge(key)))
         .collect::<Vec<_>>()
@@ -720,7 +720,9 @@ fn style_xml(registry: &StyleRegistry) -> String {
     for font in &registry.fonts {
         xml_out.push_str("<font>");
         xml_out.push_str(&format!("<sz val=\"{}\"/>", font.size));
-        xml_out.push_str(&format!("<color rgb=\"{}\"/>", font.color));
+        if font.color != "none" {
+            xml_out.push_str(&format!("<color rgb=\"{}\"/>", font.color));
+        }
         xml_out.push_str(&format!("<name val=\"{}\"/>", esc(&font.family)));
         if font.bold {
             xml_out.push_str("<b/>");
@@ -850,15 +852,19 @@ fn border_xml(value: &str) -> String {
             map.insert(key, data);
         }
     }
-    let edge = |name: &str| -> String {
-        let Some(value) = map.get(name).copied() else {
+    let edge = |name: &str, key: &str| -> String {
+        let Some(value) = map.get(key).copied() else {
             return format!("<{name}/>");
         };
         if value.is_empty() {
             return format!("<{name}/>");
         }
         let mut pieces = value.splitn(2, ':');
-        let style = pieces.next().unwrap_or("thin");
+        let style = match pieces.next().unwrap_or("thin") {
+            "dash-dot" => "dashDot", "dash-dot-dot" => "dashDotDot",
+            "medium-dashed" => "mediumDashed", "medium-dash-dot" => "mediumDashDot",
+            "medium-dash-dot-dot" => "mediumDashDotDot", other => other,
+        };
         let color = pieces.next().unwrap_or("");
         if color.is_empty() {
             format!("<{name} style=\"{}\"/>", esc(style))
@@ -870,12 +876,17 @@ fn border_xml(value: &str) -> String {
             )
         }
     };
+    let up = map.get("diagonalUp").is_some_and(|v| !v.is_empty());
+    let down = map.get("diagonalDown").is_some_and(|v| !v.is_empty());
     format!(
-        "<border>{}<diagonal/></border>",
+        "<border{}{}>{}{}</border>",
+        if up { " diagonalUp=\"1\"" } else { "" },
+        if down { " diagonalDown=\"1\"" } else { "" },
         ["left", "right", "top", "bottom"]
             .iter()
-            .map(|name| edge(name))
-            .collect::<String>()
+            .map(|name| edge(name, name))
+            .collect::<String>(),
+        edge("diagonal", if down { "diagonalDown" } else if up { "diagonalUp" } else { "diagonal" }),
     )
 }
 
@@ -906,6 +917,14 @@ fn worksheet_xml(
             cell.id.clone(),
         )
     });
+    let limited_borders = cells.iter().filter(|cell| {
+        let Some(border) = cell.style.as_ref().and_then(|s| s.border.as_ref()).and_then(Value::as_object) else { return false; };
+        ["topLeftBottomCenter", "topLeftMiddleRight", "middleLeftTopRight", "bottomCenterTopRight"].iter().any(|key| border.get(*key).is_some_and(|v| !v.is_null())) ||
+            matches!((border.get("diagonalUp"), border.get("diagonalDown")), (Some(up), Some(down)) if !up.is_null() && !down.is_null() && up != down)
+    }).count();
+    if limited_borders > 0 {
+        warnings.push(ExportWarning::new("LIMITED_DIAGONAL_BORDER", format!("{}: {limited_borders} cell(s) have compound diagonals or different diagonal pens that standard XLSX cell borders cannot fully represent", sheet.name)));
+    }
     let hyperlinks = cells
         .iter()
         .filter_map(|cell| {
@@ -2597,6 +2616,15 @@ mod tests {
     }
 
     #[test]
+    fn writes_diagonal_flags_and_ooxml_line_styles() {
+        let value = serde_json::json!({ "diagonalDown": { "style": "medium-dash-dot", "color": "#123456" }, "diagonalUp": { "style": "medium-dash-dot", "color": "#123456" }, "bottom": { "style": "dash-dot-dot", "color": "#abcdef" } });
+        let xml = border_xml(&border_key(Some(&value)));
+        assert!(xml.contains("diagonalUp=\"1\" diagonalDown=\"1\""));
+        assert!(xml.contains("<diagonal style=\"mediumDashDot\"><color rgb=\"FF123456\"/></diagonal>"));
+        assert!(xml.contains("<bottom style=\"dashDotDot\"><color rgb=\"FFABCDEF\"/></bottom>"));
+    }
+
+    #[test]
     fn styles_are_deduplicated() {
         let mut registry = StyleRegistry::new();
         let style = StyleInput {
@@ -2617,6 +2645,21 @@ mod tests {
             registry.register(Some(&style)),
             registry.register(Some(&style))
         );
+    }
+
+    #[test]
+    fn reset_colors_are_distinct_from_an_explicit_white_fill_and_font() {
+        let reset: StyleInput = serde_json::from_str(r##"{"fill":null,"font":{"color":null}}"##).unwrap();
+        let white: StyleInput = serde_json::from_str(r##"{"fill":"#fff","font":{"color":"#ffffff"}}"##).unwrap();
+        let mut registry = StyleRegistry::new();
+        let reset_id = registry.register(Some(&reset));
+        let white_id = registry.register(Some(&white));
+        assert_ne!(reset_id, white_id);
+        assert_eq!(style_key(Some(&reset)).fill, "none");
+        let xml = style_xml(&registry);
+        assert!(xml.contains("<fgColor rgb=\"FFFFFFFF\"/>"));
+        assert!(xml.contains("<color rgb=\"FFFFFFFF\"/>"));
+        assert_eq!(xml.matches("<color rgb=").count(), 1);
     }
 
     #[test]

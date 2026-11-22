@@ -743,8 +743,12 @@ export class FRange {
     if (size !== null && (!Number.isFinite(size) || size <= 0)) throw new RangeError('Font size must be a positive number')
     return this.mutateStyle('sheet.command.set-font-size', 'Set font size', (cell) => { if (size !== null) cell.style.font.size = size })
   }
-  setFontColor(color: string | null): this { return this.mutateStyle('sheet.command.set-font-color', 'Set font color', (cell) => { if (color) cell.style.font.color = color }) }
-  setBackground(color: string): this { return this.mutateStyle('sheet.command.set-background', 'Set background', (cell) => { cell.style.fill = color }) }
+  setFontColor(color: string | null): this { return color === null ? this.resetColor('sheet.command.reset-text-color') : this.mutateStyle('sheet.command.set-font-color', 'Set font color', (cell) => { if (color) cell.style.font.color = color }) }
+  setBackground(color: string | null): this { return color === null ? this.resetColor('sheet.command.reset-background-color') : this.mutateStyle('sheet.command.set-background', 'Set background', (cell) => { cell.style.fill = color }) }
+  private resetColor(command: 'sheet.command.reset-text-color' | 'sheet.command.reset-background-color'): this {
+    this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)] })
+    return this
+  }
   setHorizontalAlignment(alignment: 'left' | 'center' | 'right' | 'justify'): this { return this.mutateStyle('sheet.command.set-horizontal-alignment', 'Set horizontal alignment', (cell) => { cell.style.horizontal = alignment }) }
   setVerticalAlignment(alignment: 'top' | 'middle' | 'bottom'): this { return this.mutateStyle('sheet.command.set-vertical-alignment', 'Set vertical alignment', (cell) => { cell.style.vertical = alignment }) }
   setWrap(enabled: boolean): this { return this.mutateStyle('sheet.command.set-wrap', 'Set text wrapping', (cell) => { cell.style.wrap = enabled }) }

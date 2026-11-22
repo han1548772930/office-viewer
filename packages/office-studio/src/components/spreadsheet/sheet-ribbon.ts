@@ -2,17 +2,21 @@ import type { Component } from 'vue'
 import {
   AArrowDown, AArrowUp, AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowDownAZ, ArrowDownWideNarrow, ArrowUpAZ,
-  BadgeDollarSign, Baseline, BetweenHorizontalStart, Bold, Brush, Calculator, CalendarDays,
-  ChartColumnIncreasing, ChartLine, ChartNoAxesColumnIncreasing, ChartNoAxesCombined, ChevronDown,
+  BadgeDollarSign, Baseline, Bold, Brush, Calculator, CalendarDays,
+  ChartColumnIncreasing, ChartLine, ChartNoAxesColumnIncreasing, ChartNoAxesCombined,
   ClipboardCheck, ClipboardPaste, Clock, Crosshair, DecimalsArrowLeft, DecimalsArrowRight, Expand,
   Database, Filter, FilterX, FunctionSquare, Grid2X2, Group, Info, Italic, Link, ListFilter, Minimize, PaintBucket, Palette,
-  PanelBottom, PanelLeft, PanelRight, PanelTop, Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
-  RotateCw, Search, SearchCode, Settings2, ShieldCheck, Shrink, Sigma, SquareCheck, SquareDashed, Strikethrough,
+  Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
+  RotateCw, Search, SearchCode, Settings2, ShieldCheck, Shrink, Sigma, SquareCheck, Strikethrough,
   TableCellsMerge, TableCellsSplit, TableProperties, TextCursor, Underline, Undo2, Ungroup, Workflow,
   WrapText, Percent,
 } from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 import { SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
+import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
+import QuickDropdownPicker from './QuickDropdownPicker.vue'
+import SheetBorderSelector from './SheetBorderSelector.vue'
+import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 
 export interface SheetRibbonState {
@@ -26,6 +30,8 @@ export interface SheetRibbonState {
   chartAvailable: boolean
   pivotChartAvailable?: boolean
   dataValidationAvailable: boolean
+  quickValidationEditable?: boolean
+  validationPanelOpen?: boolean
   hyperlinkAvailable?: boolean
   canSort: boolean
   filterEnabled?: boolean
@@ -39,8 +45,11 @@ export interface SheetRibbonState {
   strike?: boolean
   wrap?: boolean
   wrapStrategy?: 'overflow' | 'wrap' | 'clip' | null
-  color?: string
-  background?: string
+  color?: string | null
+  background?: string | null
+  borderOptions?: SheetBorderOptions
+  borderPreset?: SheetBorderPreset
+  onBorderOptions?: (value: SheetBorderOptions) => void
   align?: string
   vertical?: string
   rotation?: number | null
@@ -82,6 +91,13 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const button = (id: string, title: string, extra: Partial<RibbonItem> = {}): RibbonItem => ({
     id, title, commandId: id, type: 'button', disabled: !state.hasSheet, ...extra,
   })
+  const quickDisabled = !state.dataValidationAvailable || state.quickValidationEditable === false
+  const quick = (id: string, title: string, params: string, icon?: Component) => button(id, title, { commandId: 'sheet.operation.quick-data-validation', params, icon, disabled: quickDisabled })
+  const tr: OfficeTranslator = translate ?? ((_key, fallback) => fallback)
+  const presetValues = quickDropdownPresets(tr)
+  const presets = (['dropdown-yes-no', 'dropdown-status', 'dropdown-abc'] as const).map(id => ({ id, values: presetValues[id] }))
+  const editDropdown = tr('sheet.validation.quick.edit-dropdown', '编辑下拉列表')
+  const clearDropdown = tr('sheet.validation.quick.clear-dropdown', '清除下拉列表')
   const tabs: RibbonTab[] = [
     {
       id: 'home', title: '开始', order: 0, groups: [
@@ -108,11 +124,22 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.command.toggle-italic', '斜体', { icon: Italic, activated: state.italic === true, gridLayout: { row: 2, column: 2 } }),
           button('sheet.command.toggle-underline', '下划线', { icon: Underline, activated: state.underline === true, gridLayout: { row: 2, column: 3 } }),
           button('sheet.command.toggle-strike', '删除线', { icon: Strikethrough, activated: state.strike === true, gridLayout: { row: 2, column: 4 } }),
-          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Palette, disabled: !state.hasSheet, gridLayout: { row: 2, column: 7 }, children: colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, activated: state.color === color.value })) },
-          { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, gridLayout: { row: 2, column: 6 }, children: colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value, activated: state.background === color.value })) },
-          { id: 'sheet.menu.borders', type: 'menu', title: '边框', icon: Grid2X2, disabled: !state.hasSheet, gridLayout: { row: 2, column: 5 }, children: [
-            ['all', '所有边框'], ['outside', '外侧框线'], ['inside', '内部框线'], ['top', '上框线'], ['bottom', '下框线'], ['left', '左框线'], ['right', '右框线'], ['none', '无框线'],
-          ].map(([value, label]) => button(`sheet.menu.border.${value}`, label!, { commandId: 'sheet.command.set-borders', params: value, icon: ({ all: Grid2X2, outside: PanelTop, inside: BetweenHorizontalStart, top: PanelTop, bottom: PanelBottom, left: PanelLeft, right: PanelRight, none: SquareDashed } as const)[value as 'all' | 'outside' | 'inside' | 'top' | 'bottom' | 'left' | 'right' | 'none'] })) },
+          { id: 'sheet.menu.text-color', type: 'menu', title: '文字颜色', icon: Palette, disabled: !state.hasSheet, gridLayout: { row: 2, column: 7 }, children: [
+            button('sheet.command.reset-text-color', '重置文字颜色', { icon: RemoveFormatting, activated: state.color === null }),
+            ...colors.map(color => button(`sheet.menu.text-color.${color.value}`, color.label, { commandId: 'sheet.command.set-color', params: color.value, swatch: color.value, activated: state.color === color.value })),
+          ] },
+          { id: 'sheet.menu.fill', type: 'menu', title: '填充颜色', icon: PaintBucket, disabled: !state.hasSheet, gridLayout: { row: 2, column: 6 }, children: [
+            button('sheet.command.reset-background-color', '无填充', { icon: RemoveFormatting, activated: state.background === null }),
+            ...colors.map(color => button(`sheet.menu.fill.${color.value}`, color.label, { commandId: 'sheet.command.set-background', params: color.value, swatch: color.value, activated: state.background === color.value })),
+          ] },
+          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: Grid2X2, params: state.borderPreset ?? 'all', disabled: !state.hasSheet, gridLayout: { row: 2, column: 5 },
+            popupComponent: SheetBorderSelector, popupCommandId: 'sheet.command.set-borders', popupProps: {
+              value: state.borderOptions ?? { style: 'thin', color: '#1f2937' }, preset: state.borderPreset ?? 'all', translate: tr, 'onUpdate:value': state.onBorderOptions,
+            }, children: [
+              ...Object.entries(sheetBorderLabels).map(([value, label]) => button(`sheet.menu.border.${value}`, label, { commandId: 'sheet.command.set-borders', params: value })),
+              { id: 'sheet.menu.border-style', type: 'menu', title: '边框样式', children: Object.entries(sheetBorderStyleLabels).map(([value, label]) => button(`sheet.menu.border-style.${value}`, tr(`sheet.border.style.${value}`, label), { commandId: 'sheet.command.set-border-style', params: value })) },
+              { id: 'sheet.menu.border-color', type: 'menu', title: '边框颜色', children: colors.map(({ value, label }) => button(`sheet.menu.border-color.${value}`, label, { commandId: 'sheet.command.set-border-color', params: value, swatch: value })) },
+            ] },
         ] },
         { id: 'layout', title: '布局', order: 20, items: [
           { id: 'sheet.menu.horizontal-align', type: 'menu', title: '水平对齐', icon: state.align === 'center' ? AlignCenter : state.align === 'right' ? AlignRight : AlignLeft, disabled: !state.hasSheet, gridLayout: { row: 1, column: 1 }, children: [
@@ -130,18 +157,17 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.menu.text-wrap.wrap', '自动换行', { commandId: 'sheet.command.set-wrap-strategy', params: 'wrap', icon: WrapText, activated: state.wrapStrategy === 'wrap' || state.wrapStrategy == null && state.wrap === true }),
             button('sheet.menu.text-wrap.clip', '截断', { commandId: 'sheet.command.set-wrap-strategy', params: 'clip', activated: state.wrapStrategy === 'clip' }),
           ] },
-          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, disabled: !state.hasSheet, gridLayout: { row: 1, column: 3 }, children: [
-            ...textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
-            commandId: 'sheet.command.set-text-rotation', params: angle,
-            activated: angle === 'v' ? state.rotationVertical === true : state.rotationVertical !== true && state.rotation === angle,
-            icon: angle === 'v' ? TextCursor : angle === 0 ? Baseline : angle === -45 ? RotateCcw : angle === 45 ? RotateCw : angle === -90 ? RotateCcw : RotateCw,
-          }))] },
           button('sheet.command.set-shrink-to-fit', '缩小字体填充', {
             icon: Shrink, params: !(state.shrinkToFit === true && state.wrap !== true),
             activated: state.shrinkToFit === true && state.wrap !== true, disabled: !state.hasSheet || state.wrap === true,
             disabledReason: state.wrap === true ? '关闭自动换行后可使用缩小字体填充' : undefined,
             gridLayout: { row: 2, column: 2 },
           }),
+          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, disabled: !state.hasSheet, gridLayout: { row: 1, column: 3 }, children: textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
+            commandId: 'sheet.command.set-text-rotation', params: angle,
+            activated: angle === 'v' ? state.rotationVertical === true : state.rotationVertical !== true && state.rotation === angle,
+            icon: angle === 'v' ? TextCursor : angle === 0 ? Baseline : angle === -45 ? RotateCcw : angle === 45 ? RotateCw : angle === -90 ? RotateCcw : RotateCw,
+          })) },
           { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, disabled: !state.hasSheet || !state.canMerge && !state.canUnmerge, activated: state.canUnmerge, gridLayout: { row: 2, column: 3 }, children: [
             button('sheet.command.merge-all', '全部合并', { commandId: 'sheet.command.merge', params: 'all', icon: TableCellsMerge, disabled: !state.canMerge }),
             button('sheet.command.merge-vertical', '垂直合并', { commandId: 'sheet.command.merge', params: 'vertical', icon: TableCellsMerge, disabled: !state.canMerge }),
@@ -161,8 +187,8 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.operation.open-custom-number-format', '自定义格式', { icon: Calculator, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'tools', title: '工具', order: 40, items: [
-          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
         ] },
       ],
     },
@@ -171,18 +197,29 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         { id: 'media', title: '媒体', order: 10, items: [
           button('sheet.operation.insert-hyperlink', '超链接', { icon: Link, showLabel: true, disabled: !state.hyperlinkAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
         ] },
-        { id: 'objects', title: '对象', order: 20, items: [
+        { id: 'objects', title: '对象', order: 30, items: [
           button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           button('sheet.insert.pivot-table', '数据透视表', { commandId: 'sheet.operation.open-pivot', icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, disabledReason: '数据透视表需要绑定到已打开的工作簿', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.insert.slicer', '切片器', { commandId: 'sheet.operation.open-slicer', icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
           button('sheet.insert.timeline', '时间线', { commandId: 'sheet.operation.open-timeline', icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
         ] },
-        { id: 'quick-validation', title: '快速数据验证', order: 20, items: [
-          button('sheet.operation.quick-data-validation.checkbox', '复选框', { commandId: 'sheet.operation.quick-data-validation', params: 'checkbox', icon: SquareCheck, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.quick-data-validation.dropdown', '下拉列表', { commandId: 'sheet.operation.quick-data-validation', params: 'dropdown', icon: ChevronDown, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          { ...button('sheet.operation.quick-data-validation.date', '日期', { commandId: 'sheet.operation.quick-data-validation', params: 'date', icon: CalendarDays, showLabel: true, disabled: !state.dataValidationAvailable, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'split', children: [
-            button('sheet.menu.quick-data-validation.date', '日期', { commandId: 'sheet.operation.quick-data-validation', params: 'date', icon: CalendarDays, disabled: !state.dataValidationAvailable }),
-            button('sheet.operation.quick-data-validation.date-time', '日期和时间', { commandId: 'sheet.operation.quick-data-validation', params: 'date-time', icon: CalendarDays, disabled: !state.dataValidationAvailable }),
+        { id: 'cells', title: '单元格', order: 20, items: [
+          { ...quick('sheet.operation.quick-data-validation.checkbox', '复选框', 'checkbox', SquareCheck), type: 'split', children: [
+            quick('sheet.menu.quick-validation.set-checkbox', tr('sheet.validation.quick.set-checkbox', '设置复选框'), 'checkbox'),
+            quick('sheet.menu.quick-validation.clear-checkbox', tr('sheet.validation.quick.clear-checkbox', '清除复选框'), 'clear-checkbox'),
+          ] },
+          { id: 'sheet.operation.quick-data-validation.dropdown', type: 'menu', title: '下拉列表', icon: ListFilter, disabled: quickDisabled,
+            popupComponent: QuickDropdownPicker, popupCommandId: 'sheet.operation.quick-data-validation',
+            popupProps: { presets, editDropdown, clearDropdown, title: tr('sheet.validation.quick.presets', '下拉预设') }, children: [
+              ...presets.map(p => quick(`sheet.menu.quick-validation.${p.id}`, p.values.join(' / '), p.id)),
+              quick('sheet.menu.quick-validation.edit-dropdown', editDropdown, 'edit-dropdown'),
+              quick('sheet.menu.quick-validation.clear-dropdown', clearDropdown, 'clear-dropdown'),
+            ] },
+          { ...quick('sheet.operation.quick-data-validation.date', '日期', 'date', CalendarDays), type: 'split', children: [
+            quick('sheet.menu.quick-data-validation.date', '日期', 'date', CalendarDays),
+            quick('sheet.operation.quick-data-validation.date-time', '日期和时间', 'date-time', CalendarDays),
+            quick('sheet.menu.quick-validation.edit-date', tr('sheet.validation.quick.edit-date', '编辑日期规则'), 'edit-date'),
+            quick('sheet.menu.quick-validation.clear-date', tr('sheet.validation.quick.clear-date', '移除日期规则'), 'clear-date'),
           ] },
         ] },
       ],
@@ -204,7 +241,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           ] },
         ] },
         { id: 'rules', title: '规则', order: 20, items: [
-          button('sheet.operation.open-data-validation', '数据验证', { icon: ClipboardCheck, showLabel: true, disabled: !state.dataValidationAvailable, disabledReason: '数据验证需要连接工作簿命令服务', gridLayout: { row: 1, column: 1, showLabel: true } }),
+          { id: 'sheet.menu.data-validation', type: 'menu', title: '数据验证', icon: ClipboardCheck, disabled: quickDisabled, gridLayout: { row: 1, column: 1 }, children: [
+            button('sheet.operation.open-data-validation', tr('sheet.validation.manage-rules', '管理验证规则'), { disabled: quickDisabled, activated: state.validationPanelOpen }),
+            button('sheet.operation.add-data-validation', tr('sheet.validation.add', '添加规则'), { disabled: quickDisabled }),
+          ] },
           button('sheet.operation.open-conditional-formatting', '条件格式', { icon: ChartColumnIncreasing, showLabel: true, gridLayout: { row: 2, column: 1, showLabel: true } }),
         ] },
         { id: 'pivot', title: '分析', order: 30, items: [
@@ -236,27 +276,26 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'formulas', title: '公式', order: 20, groups: [
         { id: 'formula-edit', title: '公式编辑', items: [
-          button('sheet.operation.open-function', '插入函数', { icon: FunctionSquare, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           ...functionCategories.map((category, index) => ({
             id: `sheet.operation.open-function.category-${index}`,
             type: 'menu' as const,
             title: category,
             icon: functionCategoryIcons[category] ?? FunctionSquare,
             disabled: !state.hasSheet,
-            gridLayout: { row: index % 2 + 1, column: Math.floor(index / 2) + 2, showLabel: true },
-            children: SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category).map(entry => button(
+            gridLayout: index === 0 ? { row: 1, column: 1, rowSpan: 2, showLabel: false } : undefined,
+            children: [...SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category).map(entry => button(
               `sheet.function.${entry.name}`,
               entry.name,
               { commandId: 'sheet.operation.insert-function', params: entry.name },
-            )),
+            )), ...(index === 0 ? [button('sheet.operation.open-function', '插入函数', { icon: FunctionSquare })] : [])],
           })),
-          button('sheet.operation.start-formula', '编辑公式', { icon: FunctionSquare, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
-          button('sheet.command.recalculate', '重新计算', { icon: Calculator, showLabel: true, gridLayout: { row: 1, column: 7, rowSpan: 2, showLabel: true } }),
         ] },
         { id: 'calculation-options', title: '计算选项', order: 10, items: [
-          { id: 'sheet.command.set-calculation-mode', commandId: 'sheet.command.set-calculation-mode', type: 'select', title: '计算模式', width: 116, value: state.calculationMode ?? 'automatic', gridLayout: { row: 1, column: 1, rowSpan: 2, width: 116, showLabel: true }, options: [
+          { id: 'sheet.command.set-calculation-mode', commandId: 'sheet.command.set-calculation-mode', type: 'select', title: '计算模式', width: 116, value: state.calculationMode ?? 'automatic', gridLayout: { row: 1, column: 1, rowSpan: 2, columnSpan: 2, width: 116, showLabel: true }, options: [
             { label: '自动', value: 'automatic' }, { label: '手动', value: 'manual' },
           ] },
+          button('sheet.operation.start-formula', '编辑公式', { icon: FunctionSquare, gridLayout: { row: 1, column: 3 } }),
+          button('sheet.command.recalculate', '重新计算', { icon: Calculator, gridLayout: { row: 2, column: 3 } }),
         ] },
       ],
     },

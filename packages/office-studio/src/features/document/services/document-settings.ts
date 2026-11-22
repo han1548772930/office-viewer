@@ -29,6 +29,9 @@ export function applyDocumentParagraphStylePatch(block: DocumentBlock, patch: Do
 }
 
 export function validateDocumentSectionSetupPatch(patch: DocumentSectionSetupPatch): void {
+  for (const value of [patch.marginHeader, patch.marginFooter]) {
+    if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 200)) throw new RangeError('Header/footer distance must be between 0 and 200')
+  }
   if (patch.orientation !== undefined && patch.orientation !== 'portrait' && patch.orientation !== 'landscape') throw new TypeError('Unsupported section orientation')
   if (patch.columnSeparator !== undefined && patch.columnSeparator !== 'none' && patch.columnSeparator !== 'line') throw new TypeError('Unsupported section column separator')
   if (patch.sectionStart !== undefined && !['unspecified', 'nextPage', 'continuous', 'nextColumn', 'evenPage', 'oddPage'].includes(patch.sectionStart)) throw new TypeError('Unsupported section start')

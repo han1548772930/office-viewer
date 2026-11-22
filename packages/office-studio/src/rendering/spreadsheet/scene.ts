@@ -144,6 +144,11 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       if (diagonalDown) commands.push(...createBorderLines(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, diagonalDown.style, diagonalDown.color, z, clip))
       const diagonalUp = borderEdge(cell.border.diagonalUp)
       if (diagonalUp) commands.push(...createBorderLines(rect.x, rect.y + rect.height, rect.x + rect.width, rect.y, diagonalUp.style, diagonalUp.color, z, clip))
+      for (const [key, x1, y1, x2, y2] of compoundDiagonalSegments) {
+        const edge = borderEdge(cell.border[key])
+        if (edge) commands.push(...createBorderLines(rect.x + x1 * rect.width, rect.y + y1 * rect.height,
+          rect.x + x2 * rect.width, rect.y + y2 * rect.height, edge.style, edge.color, z, clip))
+      }
     }
     const text = conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue ? '' : displayCell(cell, geometry.sheet.date1904)
     if (search && text.toLocaleLowerCase().includes(search)) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
@@ -292,6 +297,11 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   if (geometry.frozenColumns) { const x = GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: GRID_HEADER_HEIGHT, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
   return { width: viewport.width, height: viewport.height, background: '#ffffff', commands }
 }
+
+const compoundDiagonalSegments = [
+  ['topLeftBottomCenter', 0, 0, .5, 1], ['topLeftMiddleRight', 0, 0, 1, .5],
+  ['middleLeftTopRight', 0, .5, 1, 0], ['bottomCenterTopRight', .5, 1, 1, 0],
+] as const
 
 function borderEdge(raw: unknown): { style: string; color: string } | undefined {
   if (!raw) return undefined

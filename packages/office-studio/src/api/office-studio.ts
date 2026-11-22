@@ -5,6 +5,7 @@ import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
+import { RESET_BACKGROUND_COLOR, RESET_TEXT_COLOR, resetSheetColors } from '../features/sheet-workbench/sheet-color-reset.ts'
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
@@ -556,6 +557,17 @@ export class OfficeStudio {
         if (outline) sheet.outline = outline
       }),
     )
+    for (const id of [RESET_TEXT_COLOR, RESET_BACKGROUND_COLOR] as const) {
+      this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[] }, boolean>(id, ({ unitId, sheetId, ranges }) => {
+        if (!ranges.length) return false
+        this.assertCanEditWorksheet(unitId, sheetId)
+        for (const r of ranges) {
+          if (![r.startRow, r.startCol, r.endRow, r.endCol].every(Number.isSafeInteger) || r.startRow < 0 || r.startCol < 0 || r.endRow < r.startRow || r.endCol < r.startCol || r.endRow >= 1_048_576 || r.endCol >= 16_384) throw new RangeError('Invalid cell color range')
+          this.assertCanEditRange(unitId, sheetId, r)
+        }
+        return this.commitWorkbook(unitId, id === RESET_TEXT_COLOR ? '重置文字颜色' : '清除填充颜色', model => resetSheetColors(requireSheet(model, sheetId), ranges, id))
+      })
+    }
     this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number; draft: SheetHyperlinkDraft }, boolean>(SET_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col, draft }) => this.commitWorkbook(unitId, '设置单元格超链接', (model) => {
       this.assertCanEditWorksheet(unitId, sheetId)
       this.assertCanEditRange(unitId, sheetId, { startRow: row, endRow: row, startCol: col, endCol: col })

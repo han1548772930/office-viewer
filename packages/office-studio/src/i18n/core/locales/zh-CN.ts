@@ -10,6 +10,7 @@ export const coreZhCN: Record<string, string> = {
   'workspace.app-label': 'Office Studio 工作台', 'workspace.brand-label': 'Office Studio 工作台',
   'workspace.file-menu': '文件', 'workspace.file-menu-label': '文件菜单', 'workspace.tabs-label': '工作台', 'workspace.document-types': '文档类型',
   'workspace.workbook': '表格', 'workspace.document': '文档', 'workspace.new-workbook': '新建工作簿',
+  'workspace.grid-ribbon': '双行工具栏',
   'workspace.new-document': '新建文档', 'workspace.open-office-file': '打开 Office 文件', 'workspace.rename': '重命名',
   'workspace.save-office-file': '保存 Office 文件', 'workspace.export-office-file': '导出 Office 文件',
   'workspace.cancel-import': '取消文件导入', 'workspace.cancel-export': '取消文件导出', 'workspace.diagnostics': '解析诊断',

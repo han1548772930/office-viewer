@@ -86,7 +86,7 @@ Exchange 仅用于观察公开转换行为和样本互操作对照，不是本�
 - 本项目保持 Tab → Group → Item 的 schema。顺序以 `order` 等元数据确定，不能依赖模块偶然加载顺序。
 - START 下保留历史/剪贴板、字体格式、段落或单元格布局、数字格式、其他工具等语义分组；INSERT、DATA 等由对应 feature 注入。
 - 默认采用上游 desktop 的 classic 变体：分类行 + 紧凑工具行。按上游默认 16px 根字号换算，分类行 36px、工具行 40px；将尺寸提取为 token。
-- grid 变体是独立布局：分类行 32px，工具区 73px，按 `gridLayout` 排两行、支持跨行/跨列与可见标签；不得把 grid 的双行配置强行套进 classic。[U10] [U11]
+- v1.6.0 可运行示例 `examples/src/workbench-settings.ts` 明确选择 grid，与组件的 classic 缺省值不同。grid 分类行 32px，工具区 69px（`4.25rem + 1px`）；按 `gridLayout` 排两行、支持跨行/跨列与可见标签。[U10] [U11]
 - simple/collapsed 是可选布局能力，不能用一个 simple 工具条替代完整功能范围。
 - classic 根据可用宽度把溢出项放入更多菜单；grid 先收紧组密度，再按组收纳。溢出后必须仍可操作，不能只裁掉按钮或减小字体。[U10] [U11]
 - 没有当前可用功能的空分组/空分类不显示；表格、图形、页眉页脚等上下文分类结束后恢复到有效分类。[U09]

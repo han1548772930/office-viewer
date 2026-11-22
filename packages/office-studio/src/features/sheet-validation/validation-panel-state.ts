@@ -3,6 +3,13 @@ import { parseSheetAddress } from '../sheet-workbench/sheet-workbench.ts'
 import { createSheetDataValidationRule, parseValidationListItems, serializeValidationListItems } from './validation-engine.ts'
 
 export type ValidationRangeTarget = 'range' | 'list' | 'formula1' | 'formula2'
+
+/** Rule coverage can be discontinuous; an operand must be one reference. */
+export function validationPickedAddress(target: ValidationRangeTarget, ranges: readonly CellRange[]): string | undefined {
+  if (!ranges.length || (target !== 'range' && ranges.length !== 1)) return undefined
+  const addresses = ranges.map(range => formatValidationRange(range))
+  return target === 'range' ? addresses.join(', ') : `=${addresses[0]}`
+}
 export interface ValidationListItem { id: string; label: string; color: string }
 export interface ValidationPanelSettings {
   type: SheetDataValidationType

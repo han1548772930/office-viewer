@@ -28,8 +28,8 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     commands.push({ kind: 'rect', ...rect(page), fill: '#ffffff', stroke: '#d9dfe7', strokeWidth: 1 })
     commands.push({ kind: 'text', x: x(page.x + page.width / 2), y: y(page.y + page.height - 24), text: String(page.index + 1), font: `${10 * scale}px Arial`, color: '#9ca3af', align: 'center', baseline: 'middle' })
     const headerFooter = layout.pageHeaderFooters?.[page.index]
-    if (headerFooter?.header) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(page.y + 18), text: headerFooter.header, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'middle' })
-    if (headerFooter?.footer) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(page.y + page.height - 44), text: headerFooter.footer, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'middle' })
+    if (headerFooter?.header) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(headerFooter.headerTop), text: headerFooter.header, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'top' })
+    if (headerFooter?.footer) commands.push({ kind: 'text', x: x(headerFooter.x + headerFooter.width / 2), y: y(headerFooter.footerBottom), text: headerFooter.footer, font: `${11 * scale}px Arial`, color: '#5b6470', align: 'center', baseline: 'bottom' })
   }
   for (const pageIndex of visiblePages) {
     const content = layout.pageContent[pageIndex]

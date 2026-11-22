@@ -88,7 +88,30 @@ test.beforeEach(async ({ page }) => {
 
 test.afterEach(async ({ page }) => { expect(runtimeErrors.get(page) ?? []).toEqual([]) })
 
+const layoutToggle = (page: Page) => page.getByRole('button', { name: '双行工具栏', exact: true })
+
+test('workspace defaults to the source example grid and remembers layout across products and reload', async ({ page }) => {
+  await expect(layoutToggle(page)).toHaveAttribute('aria-pressed', 'true')
+  const assertGrid = async () => {
+    await expectHeight(ribbon(page).locator('.workbench-ribbon-tabs'), 32)
+    await expectHeight(page.getByTestId('ribbon-grid-toolbar'), 69)
+    await expect(ribbon(page).locator('.ribbon-grid-cells').first()).toHaveCSS('grid-template-rows', '24px 24px')
+  }
+  await assertGrid()
+  await switchWorkspace(page, '文档')
+  await assertGrid()
+  await layoutToggle(page).click()
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+  await switchWorkspace(page, '表格')
+  await expectHeight(ribbon(page).locator('.workbench-ribbon-toolbar'), 40)
+  await page.reload()
+  await expect(layoutToggle(page)).toHaveAttribute('aria-pressed', 'false')
+  await layoutToggle(page).click()
+  await assertGrid()
+})
+
 test('Sheets uses classic Ribbon, a formula header, Canvas and one product footer', async ({ page }) => {
+  await layoutToggle(page).click()
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(ribbon(page)).toHaveCount(1)
@@ -123,6 +146,7 @@ test('Sheets uses classic Ribbon, a formula header, Canvas and one product foote
 })
 
 test('Ribbon tabs implement roving keyboard focus and keep their classic row dimensions', async ({ page }) => {
+  await layoutToggle(page).click()
   const tabs = ribbon(page).getByRole('tab')
   const names = await tabs.allTextContents()
   expect(names).toContain('开始')
@@ -197,6 +221,7 @@ test('switching worksheets and products preserves content and isolated undo hist
 })
 
 test('narrow Sheets keeps overflow tools operable and the editor inside the viewport', async ({ page }) => {
+  await layoutToggle(page).click()
   await page.setViewportSize({ width: 620, height: 800 })
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
@@ -224,6 +249,7 @@ test('narrow Sheets keeps overflow tools operable and the editor inside the view
 })
 
 test('Docs keeps its logical text range while formatting through classic Ribbon', async ({ page }) => {
+  await layoutToggle(page).click()
   await switchWorkspace(page, '文档')
   await expect(ribbon(page)).toHaveCount(1)
   await expectHeight(ribbon(page).locator('.workbench-ribbon-tabs'), 36)

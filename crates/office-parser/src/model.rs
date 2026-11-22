@@ -72,6 +72,8 @@ pub struct DocumentCommentTargetPayload {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSectionLayoutPayload {
+    pub margin_header: Option<f64>,
+    pub margin_footer: Option<f64>,
     pub start_node_index: i64,
     pub section_properties_xml: Option<String>,
     pub header_sections: Vec<DocumentStoryReferencePayload>,
@@ -81,6 +83,8 @@ pub struct DocumentSectionLayoutPayload {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentStoryReferencePayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story_text: Option<crate::story_fields::StoryText>,
     pub part_name: String,
     pub reference_type: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

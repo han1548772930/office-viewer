@@ -2,7 +2,7 @@
 import { Button, Dropdown, Select, Tooltip, type MenuProps } from 'antdv-next'
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { BookOpenText, ChevronDown, FileSpreadsheet, FileText, FolderOpen, Save } from 'lucide-vue-next'
+import { BookOpenText, ChevronDown, FileSpreadsheet, FileText, FolderOpen, Rows2, Save } from 'lucide-vue-next'
 import type { ExportTask, WorkspaceKind } from './workspace-file-operations'
 import { supportedOfficeLocales, type OfficeLocale } from '@office-studio/office-studio'
 
@@ -16,11 +16,13 @@ const props = defineProps<{
   exportTask: ExportTask | null
   diagnosticCount: number
   locale: OfficeLocale
+  ribbonVariant: 'classic' | 'grid'
 }>()
 const emit = defineEmits<{
   action: [action: WorkspaceHeaderAction]
   switch: [kind: WorkspaceKind]
   locale: [locale: OfficeLocale]
+  'toggle-ribbon': []
 }>()
 const tabs = ref<HTMLElement | null>(null)
 const fileMenuOpen = ref(false)
@@ -93,6 +95,7 @@ async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
       <span :class="['file-context-status', { modified, busy: exportTask || parserStatus === 'loading' }]" role="status" :title="statusText">{{ statusText }}</span>
     </div>
     <div class="header-actions">
+      <Tooltip :title="t('workspace.grid-ribbon')"><Button type="text" :aria-label="t('workspace.grid-ribbon')" :aria-pressed="ribbonVariant === 'grid'" @mousedown.prevent @click="emit('toggle-ribbon')"><Rows2 :size="16" /></Button></Tooltip>
       <Tooltip :title="t('workspace.open-shortcut')"><Button :title="t('workspace.open-office-file')" :aria-label="t('workspace.open-office-file')" @click="emit('action', 'open')"><FolderOpen :size="16" /><span>{{ t('workspace.open') }}</span></Button></Tooltip>
       <Tooltip :title="exportTask ? `${exportTask.fileName}: ${exportTask.message}` : t('workspace.save-shortcut')"><Button type="primary" :title="t('workspace.save-office-file')" :aria-label="t('workspace.save-office-file')" :loading="Boolean(exportTask)" :disabled="Boolean(exportTask)" @mousedown.prevent @click="emit('action', 'save')"><Save v-if="!exportTask" :size="16" /><span>{{ exportTask ? t('workspace.processing') : t('workspace.save') }}</span></Button></Tooltip>
     </div>

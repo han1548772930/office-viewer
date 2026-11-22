@@ -10,6 +10,7 @@ export const coreEnUS: Record<string, string> = {
   'workspace.app-label': 'Office Studio workbench', 'workspace.brand-label': 'Office Studio workbench',
   'workspace.file-menu': 'File', 'workspace.file-menu-label': 'File menu', 'workspace.tabs-label': 'Workbench', 'workspace.document-types': 'Document type',
   'workspace.workbook': 'Spreadsheet', 'workspace.document': 'Document', 'workspace.new-workbook': 'New workbook',
+  'workspace.grid-ribbon': 'Two-row ribbon',
   'workspace.new-document': 'New document', 'workspace.open-office-file': 'Open Office file', 'workspace.rename': 'Rename',
   'workspace.save-office-file': 'Save Office file', 'workspace.export-office-file': 'Export Office file',
   'workspace.cancel-import': 'Cancel file import', 'workspace.cancel-export': 'Cancel file export', 'workspace.diagnostics': 'Parsing diagnostics',

@@ -27,9 +27,9 @@ function normalizeCell(value: unknown): SpreadsheetCell {
       font: {
         family: text(font.name, base.font.family), size: positive(font.sizePt, base.font.size),
         bold: font.bold === true, italic: font.italic === true, underline: font.underline === true,
-        strike: font.strikethrough === true, color: text(font.color, base.font.color),
+        strike: font.strikethrough === true, color: text(font.color) || null,
       },
-      fill: text(style.fill, base.fill),
+      fill: text(style.fill) || null,
       numberFormat: text(style.numberFormat, 'General'),
       horizontal: style.horizontal === 'center' || style.horizontal === 'right' || style.horizontal === 'justify' ? style.horizontal : 'left',
       vertical: style.vertical === 'top' || style.vertical === 'bottom' ? style.vertical : 'middle',

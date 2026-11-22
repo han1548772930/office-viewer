@@ -1,4 +1,5 @@
 export const docsZhCN: Record<string, string> = {
+  'doc.header-footer.margin-header': '页眉距顶端', 'doc.header-footer.margin-footer': '页脚距底端',
   'tabs.home': '开始', 'tabs.insert': '插入', 'tabs.view': '视图', 'tabs.table': '表格',
   'groups.doc-history': '历史记录与剪贴板', 'groups.doc-editing': '编辑', 'groups.doc-format': '字体与样式',
   'groups.doc-layout': '段落与列表', 'groups.doc-insert': '插入内容', 'groups.doc-display': '页面与显示',

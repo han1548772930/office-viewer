@@ -189,6 +189,8 @@ onBeforeUnmount(() => {
         :key="group.id"
         :ref="element => setGroupElement(group.id, element as Element | null)"
         class="ribbon-grid-group"
+        role="group"
+        :aria-label="group.title"
         :class="{ 'is-hidden': index >= visibleGroupCount }"
         :data-group-id="group.id"
         :aria-hidden="index >= visibleGroupCount ? 'true' : undefined"

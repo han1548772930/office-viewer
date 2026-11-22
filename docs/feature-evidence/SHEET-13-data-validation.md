@@ -4,6 +4,10 @@
 
 ## 参考依据
 
+**数据页与画布取区（待统一测试）：** 固定版 `sheets-data-validation-ui/src/menu/schema.ts` 注册管理与添加两个子项；`sheets-data-validation/src/utils/create.ts` 的默认规则为 decimal/equal/100。工作台的 Data/RULES 菜单与规则列表的添加操作共用创建和按 ID 编辑路径。对照 `DataValidationDetail.tsx` 的 RangeSelector，本地以同工作表 Canvas 选区加显式确认回填草稿：应用范围保留多个矩形，列表源和比较操作数接受单一连续引用。取消不改草稿，切换工作表关闭面板。本地编辑规则采用显式应用，与上游回调提交时机不同；焦点、明暗主题、实际拖选、跨表来源和 Office 互操作尚未验收。
+
+**2026-11-22 续作，待统一验证：** 对照固定提交 `packages/sheets-data-validation-ui/src/menu/dv.menu.ts`、`views/components/DropdownPresets.tsx` 及 `commands/commands/data-validation-ui.command.ts`。Insert/CELL 的复选框与日期分别使用 split 主动作和分类清除；下拉菜单含三列预设、编辑与清除。`QuickDropdownPicker.vue` 用 antdv-next Button/Divider 与主题 token，窄屏 More 复用相同命令参数。工作台将每个选区矩形单独交给 `sheet.command.set-data-validation` 或 `sheet.command.clear-quick-data-validation`；清除下拉同时匹配 list/listMultiple。编辑下拉、编辑日期先创建规则再以该规则 ID 打开详情。中文和英文预设文案已接入；其它语言的本地化、焦点、真实多选区、XLSX 往返与受保护主体留待统一测试，未验收。
+
 - 固定版菜单注册：`packages/sheets-data-validation-ui/src/menu/schema.ts`，规则面板入口位于 RibbonDataGroup.RULES；快速复选框、下拉和日期入口属于 RibbonInsertGroup.CELL。
 - 固定版命令入口：`packages/sheets-data-validation-ui/src/commands/commands/data-validation-ui.command.ts`，快捷规则绑定当前选择并转发至统一数据验证命令。
 - 固定版规则服务：`packages/sheets-data-validation/src/commands/commands/data-validation.command.ts`、`models/rule-matrix.ts`、`services/dv-validator.service.ts` 和 `validators/`。覆盖规则/范围更新、选区冲突、单元格写入、复选框默认值和公式验证。

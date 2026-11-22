@@ -1,7 +1,8 @@
 import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentPageSetup } from '../../../domain/model'
 import type { DocumentPoint, DocumentRun, TextTarget } from '../model/document-model'
 import { createRun, imageForBlock, runText, sameTarget, tableForBlock, targetKey } from '../model/document-model'
-import { DEFAULT_DOCUMENT_SECTION_ID, resolveSectionHeaderFooter } from '../services/section-header-footer'
+import { DEFAULT_DOCUMENT_SECTION_ID, renderSectionStory, resolveSectionHeaderFooter } from '../services/section-header-footer'
+import { documentSectionSetup } from '../services/document-settings'
 import { codeBlockData } from '../code-blocks/code-blocks.ts'
 import { getLatexFormula, layoutLatexFormula, type LatexLayout } from '../latex/latex-formula.ts'
 
@@ -17,7 +18,7 @@ export interface LayoutPageContent {
   images: LayoutImage[]
   dividers: Array<LayoutRect & { page: number }>
 }
-export interface LayoutPageHeaderFooter extends LayoutRect { page: number; header: string; footer: string }
+export interface LayoutPageHeaderFooter extends LayoutRect { page: number; sectionId: string; headerStory: DocumentPageField['story']; footerStory: DocumentPageField['story']; header: string; footer: string; headerTop: number; footerBottom: number }
 export interface DocumentLayout {
   width: number
   height: number
@@ -263,23 +264,13 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
     const evenPage = section.differentOddEven && page.index % 2 === 1
     const headerStory = firstPage ? 'firstPageHeader' : evenPage ? 'evenPageHeader' : 'header'
     const footerStory = firstPage ? 'firstPageFooter' : evenPage ? 'evenPageFooter' : 'footer'
-    const header = `${section[headerStory]}${renderPageFields(section.pageFields, headerStory, page.index + 1, result.pages.length)}`
-    const footer = `${section[footerStory]}${renderPageFields(section.pageFields, footerStory, page.index + 1, result.pages.length)}`
-    return { page: page.index, x: page.content.x, y: page.y + 6, width: page.content.width, height: page.content.y - page.y - 12, header, footer }
+    const header = renderSectionStory(section, headerStory, page.index + 1, result.pages.length)
+    const footer = renderSectionStory(section, footerStory, page.index + 1, result.pages.length)
+    const setup = documentSectionSetup(model, pageSectionId)
+    return { page: page.index, sectionId: pageSectionId, headerStory, footerStory, x: page.content.x, y: page.y + 6, width: page.content.width, height: page.content.y - page.y - 12, header, footer,
+      headerTop: page.y + (setup.marginHeader ?? 48), footerBottom: page.y + page.height - (setup.marginFooter ?? 48) }
   })
   return result
-}
-
-function renderPageFields(
-  fields: DocumentPageField[] | undefined,
-  story: DocumentPageField['story'],
-  currentPage: number,
-  pageCount: number,
-): string {
-  return (fields ?? [])
-    .filter(field => field.story === story)
-    .map(field => ` ${field.field === 'PAGE' ? currentPage : pageCount}`)
-    .join('')
 }
 
 export function lineForPoint(layout: DocumentLayout, point: DocumentPoint): LayoutLine | undefined {

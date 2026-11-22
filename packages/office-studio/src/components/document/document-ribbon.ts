@@ -178,9 +178,9 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         ],
       }] },
       { id: 'doc-insert-extensions', title: '更多', order: 3, items: [
-      action('doc-comment-toggle', '评论', MessageSquarePlus, 'docs.operation.toggle-comment-panel', undefined, { activated: context.commentsPanelOpen, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-      action('doc-comment-add', '添加评论', MessageSquarePlus, 'docs.operation.start-add-comment', undefined, { disabled: !context.canCreateComment, disabledReason: '选择文本后可添加评论', gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-      action('doc-code-block', '代码块', CodeXml, 'doc.operation.insert-code-block', undefined, { showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+      action('doc-comment-toggle', '评论', MessageSquarePlus, 'docs.operation.toggle-comment-panel', undefined, { activated: context.commentsPanelOpen, gridLayout: { row: 1, column: 1, showLabel: true } }),
+      action('doc-comment-add', '添加评论', MessageSquarePlus, 'docs.operation.start-add-comment', undefined, { disabled: !context.canCreateComment, disabledReason: '选择文本后可添加评论', gridLayout: { row: 2, column: 1, showLabel: true } }),
+      action('doc-code-block', '代码块', CodeXml, 'doc.operation.insert-code-block', undefined, { showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
       { ...action('doc-controls', '内容控件', SquareCheckBig, 'doc.operation.insert-content-control', 'richText', { showLabel: true, disabled: !context.contentControlsAvailable, disabledReason: '内容控件需要连接文档命令服务', gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }), type: 'split', children: [
         ...[
           { type: 'richText', title: '富文本控件', icon: TextCursorInput },
@@ -223,7 +223,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       popupComponent: DocumentHeaderFooterRibbonControl,
       popupProps: { kind, state: headerFooter },
       popupCommandId: 'doc.operation.header-footer-control',
-      gridLayout: { row: 1, column: order + 1, rowSpan: 2, showLabel: true },
+      gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
     })
     // Univer 1.6.0 docs-ui/src/menu/header-footer-ribbon.ts registers four groups and a close command.
     tabs.push({
@@ -231,23 +231,19 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       title: '页眉和页脚',
       order: 90,
       contextual: true,
-      groups: [{
-        id: 'header-footer-fields',
-        title: '插入',
-        order: 0,
-        items: [
+      groups: [
+        ...[
           headerFooterControl('insertion', '插入', FileText, 0),
           headerFooterControl('navigation', '导航', PanelTop, 1),
           headerFooterControl('options', '选项', FileCog, 2),
           headerFooterControl('position', '位置', IndentIncrease, 3),
-          action('doc-header-footer-close', '关闭页眉和页脚', X, 'doc.operation.close-header-footer', undefined, {
+        ].map(item => ({ id: item.id, title: item.title, order: item.order, items: [item] })),
+        { id: 'header-footer-close', title: '关闭', order: 5, items: [action('doc-header-footer-close', '关闭页眉和页脚', X, 'doc.operation.close-header-footer', undefined, {
             order: 5,
-            disabled: headerFooter.disabled,
             showLabel: true,
-            gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true },
-          }),
-        ],
-      }],
+            gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
+          })] },
+      ],
     })
   }
   if (context.tableOfContents?.selectedId) {

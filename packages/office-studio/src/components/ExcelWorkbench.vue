@@ -21,12 +21,13 @@ import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
 import { calculateSelectionStatistics, createUniqueSheetName, frozenPaneCountsForSelection, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
-import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, nextSheetFontSize, setSheetTextFit, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
+import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, isSheetBorderPreset, nextSheetFontSize, setSheetTextFit, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
 import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format'
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
-import { createQuickSheetDataValidationRule, type QuickSheetDataValidationPreset } from '../features/sheet-validation/quick-validation.ts'
+import { planQuickValidation } from '../features/sheet-validation/quick-validation.ts'
+import { formatValidationRange } from '../features/sheet-validation/validation-panel-state.ts'
 import { createSheetPastePlan, type SheetPasteMode } from '../features/sheet-workbench/sheet-paste.ts'
 import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
@@ -237,6 +238,7 @@ const functionArguments = ref('')
 const functionError = ref('')
 const validationPanelOpen = ref(false)
 const validationPanelRange = ref('A1')
+const validationPanelRuleId = ref<string>()
 const validationPanelInitialType = ref<'checkbox' | 'list' | 'date' | 'time' | undefined>()
 const protectionPanelOpen = ref(false)
 const worksheetProtectionSheetId = ref<string | null>(null)
@@ -336,7 +338,7 @@ const selectionFormat = computed(() => {
     bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
     align: common('align', 'left'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
     wrapStrategy: common('wrapStrategy', 'overflow'),
-    color: common('color', '#1f2937'), background: common('background', '#ffffff'),
+    color: common('color', null), background: common('background', null),
     rotation: common('rotation', 0) ?? null, rotationVertical: common('rotationVertical', false),
     shrinkToFit: common('shrinkToFit', false),
   }
@@ -352,13 +354,20 @@ const canUnmerge = computed(() => {
   const [column, row] = splitKey(selectedKey.value)
   return activeSheet.value?.merges?.some(merge => { const range = parseChartRange(merge); return range && containsCell([range], row - 1, column) }) ?? false
 })
+const canEditValidationSelection = computed(() => Boolean(props.studio && workbook.value.id && activeSheet.value && selectedRanges.value.length
+  && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)))
+const borderOptions = ref<SheetBorderOptions>({ style: 'thin', color: '#1f2937' })
+const borderPreset = ref<SheetBorderPreset>('all')
 const ribbonTabs = computed(() => createSheetRibbon({
+  borderOptions: borderOptions.value, borderPreset: borderPreset.value, onBorderOptions: changeBorderOptions,
   ...selectionFormat.value, canUndo: canUndo.value, canRedo: canRedo.value, hasSheet: Boolean(activeSheet.value),
   canMerge: selectedCount.value > 1, canUnmerge: canUnmerge.value,
   canDeleteRow: totalRows.value > 1, canDeleteColumn: (activeSheet.value?.columnCount ?? 0) > 1,
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
   pivotChartAvailable: Boolean(props.studio && workbook.value.pivotTables?.length),
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
+  validationPanelOpen: validationPanelOpen.value,
+  quickValidationEditable: canEditValidationSelection.value,
   hyperlinkAvailable: canOpenHyperlinkDialog(),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
   filterEnabled: Boolean(activeSheet.value?.autoFilter),
@@ -1212,8 +1221,18 @@ function setNumberFormat(format: SheetNumberFormat): void { changeSelectedCells(
 function changeFontSize(direction: -1 | 1): void { changeSelectedCells(cell => ({ ...cell, fontSize: nextSheetFontSize(cell.fontSize ?? 11, direction) })) }
 function setBorders(preset: SheetBorderPreset): void {
   if (!activeSheet.value || !checkDirectSelection()) return
-  applySheetBorders(activeSheet.value.cells, selectedRanges.value, preset)
+  if (!canEditWorksheetProtection(activeSheet.value, userId.value) || !canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)) {
+    emit('notify', { type: 'warning', message: '当前选区受保护。' }); return
+  }
+  borderPreset.value = preset
+  applySheetBorders(activeSheet.value.cells, selectedRanges.value, preset, borderOptions.value)
   commitHistory()
+}
+
+function changeBorderOptions(value: SheetBorderOptions): void {
+  if (value.style === borderOptions.value.style && value.color === borderOptions.value.color) return
+  borderOptions.value = { ...value }
+  setBorders(borderPreset.value)
 }
 
 function setAlign(align: 'left' | 'center' | 'right') {
@@ -1231,6 +1250,25 @@ function setBackground(color: string) {
     const cell = activeSheet.value?.cells[key] ?? { value: '' }
     activeSheet.value!.cells[key] = { ...cell, background: color }
   })) return
+  commitHistory()
+}
+
+function resetSelectionColor(command: 'sheet.command.reset-text-color' | 'sheet.command.reset-background-color') {
+  const sheet = activeSheet.value
+  if (!sheet) return
+  const ranges = selectedModelRanges()
+  if (props.studio && workbook.value.id) {
+    const unitId = workbook.value.id
+    if (!props.studio.executeCommandSync(command, { unitId, sheetId: sheet.id, ranges })) return
+    const model = props.studio.getWorkbookModel(unitId)
+    if (model) workbook.value = toExcelWorkbookView(model)
+  } else {
+    if (!canEditWorksheetProtection(sheet, userId.value) || !canEditProtectedRanges(sheet, ranges, userId.value)) throw new Error('当前选区受保护。')
+    const field = command === 'sheet.command.reset-text-color' ? 'color' : 'background'
+    const keys = selectedExistingKeys().filter(key => sheet.cells[key]?.[field] != null)
+    if (!keys.length) return
+    for (const key of keys) sheet.cells[key]![field] = null
+  }
   commitHistory()
 }
 
@@ -1963,36 +2001,41 @@ function openDataPanel(mode: 'filter' | 'sort'): void {
   dataPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
   dataPanelOpen.value = true
 }
-function openDataValidationPanel(initialType?: 'checkbox' | 'list' | 'date' | 'time'): void {
-  const bounds = selectionBounds(selectedRanges.value)
-  validationPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
+function openDataValidationPanel(initialType?: 'checkbox' | 'list' | 'date' | 'time', ruleId?: string): void {
+  validationPanelRuleId.value = ruleId
+  validationPanelRange.value = selectedModelRanges().map(range => formatValidationRange(range)).join(', ') || selectedKey.value
   validationPanelInitialType.value = initialType
   validationPanelOpen.value = true
 }
 
-function applyQuickDataValidation(preset: QuickSheetDataValidationPreset): void {
-  if (preset === 'dropdown') {
-    openDataValidationPanel('list')
-    return
-  }
-  if (!props.studio || !workbook.value.id || !activeSheet.value) return
-  const ranges = selectedRanges.value.map(range => ({
+function selectedModelRanges() {
+  return selectedRanges.value.map(range => ({
     startRow: range.startRow,
     endRow: range.endRow,
     startCol: range.startColumn,
     endCol: range.endColumn,
   }))
-  if (!ranges.length) return
+}
+
+function refreshValidationView(): void {
+  const model = workbook.value.id && props.studio?.getWorkbookModel(workbook.value.id)
+  if (!model) return
+  workbook.value = toExcelWorkbookView(model)
+  commitHistory()
+}
+
+function applyQuickDataValidation(action: unknown): void {
+  if (!props.studio || !workbook.value.id || !activeSheet.value) return
   try {
-    const rule = createQuickSheetDataValidationRule(preset, ranges)
-    props.studio.executeCommandSync('sheet.command.set-data-validation', {
-      unitId: workbook.value.id,
-      sheetId: activeSheet.value.id,
-      rule,
-    })
-    const model = props.studio.getWorkbookModel(workbook.value.id)
-    if (model) workbook.value = toExcelWorkbookView(model)
-    commitHistory()
+    const plan = planQuickValidation(action === 'dropdown' ? 'edit-dropdown' : action, selectedModelRanges(), createRibbonTranslator(officeLocale.value, 'sheet'))
+    if (!plan) return
+    const target = { unitId: workbook.value.id, sheetId: activeSheet.value.id }
+    const changed = plan.kind === 'set'
+      ? props.studio.executeCommandSync('sheet.command.set-data-validation', { ...target, rule: plan.rule })
+      : props.studio.executeCommandSync('sheet.command.clear-quick-data-validation', { ...target, ranges: plan.ranges, types: plan.types })
+    if (!changed) return
+    refreshValidationView()
+    if (plan.kind === 'set' && plan.edit) openDataValidationPanel(undefined, plan.rule.id)
   } catch (error) {
     emit('notify', { type: 'error', message: error instanceof Error ? error.message : t('sheet.validation.save-failed', 'Could not apply data validation') })
   }
@@ -2164,8 +2207,12 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.decrease-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, -1)),
     'sheet.command.clear-format': () => changeSelectedCells(clearSheetCellFormat),
     'sheet.command.set-vertical-align': () => { if (params === 'top' || params === 'middle' || params === 'bottom') setCellFormat('vertical', params) },
-    'sheet.command.set-borders': () => { if (typeof params === 'string' && ['all', 'outside', 'inside', 'top', 'bottom', 'left', 'right', 'none'].includes(params)) setBorders(params as SheetBorderPreset) },
+    'sheet.command.set-borders': () => { if (isSheetBorderPreset(params)) setBorders(params) },
+    'sheet.command.set-border-color': () => { if (typeof params === 'string' && /^#[0-9a-f]{6}$/i.test(params)) changeBorderOptions({ ...borderOptions.value, color: params }) },
+    'sheet.command.set-border-style': () => { if (typeof params === 'string' && Object.hasOwn(sheetBorderStyleLabels, params)) changeBorderOptions({ ...borderOptions.value, style: params as SheetBorderOptions['style'] }) },
     'sheet.command.set-color': () => { if (typeof params === 'string') setCellFormat('color', params) },
+    'sheet.command.reset-text-color': () => resetSelectionColor('sheet.command.reset-text-color'),
+    'sheet.command.reset-background-color': () => resetSelectionColor('sheet.command.reset-background-color'),
     'sheet.command.set-background': () => { if (typeof params === 'string') setBackground(params) },
     'sheet.command.set-align': () => { if (params === 'left' || params === 'center' || params === 'right') setAlign(params) },
     'sheet.command.toggle-wrap': () => changeSelectedCells(cell => setSheetTextFit(cell, 'wrap', selectionFormat.value.wrap !== true)),
@@ -2207,9 +2254,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-timeline': () => openSlicerPanel('timeline'),
     'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
     'sheet.operation.open-data-validation': openDataValidationPanel,
-    'sheet.operation.quick-data-validation': () => {
-      if (params === 'checkbox' || params === 'dropdown' || params === 'date' || params === 'date-time') applyQuickDataValidation(params)
-    },
+    'sheet.operation.add-data-validation': () => applyQuickDataValidation('add-default'),
+    'sheet.operation.quick-data-validation': () => applyQuickDataValidation(params),
     'sheet.operation.open-conditional-formatting': openConditionalFormattingPanel,
     'sheet.operation.open-sparkline': openSparklinePanel,
     'sheet.operation.format-painter': armFormatPainter,
@@ -2310,6 +2356,7 @@ function onWindowKeydown(event: KeyboardEvent) {
 }
 
 watch(selectedKey, () => { nameError.value = ''; void nextTick(scrollToSelected) })
+watch([() => workbook.value.id, activeSheetId], () => { validationPanelOpen.value = false })
 watch(hyperlinkDialogOpen, open => { if (!open) void nextTick(() => spreadsheetCanvas.value?.focus()) })
 watch(() => workbook.value.id, id => { if (hyperlinkCell.value?.unitId !== id) hyperlinkDialogOpen.value = false })
 defineExpose({ save: saveWorkbook, focus: () => spreadsheetCanvas.value?.focus() })
@@ -2327,6 +2374,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeydown)
 })
 onDeactivated(() => {
+  validationPanelOpen.value = false
   sortController?.abort()
   if (document.fullscreenElement === workbenchRef.value) {
     void document.exitFullscreen().catch((error: unknown) => emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法退出全屏' }))
@@ -2382,7 +2430,7 @@ onDeactivated(() => {
     <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
         <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @pointerdown.capture="rememberChartPointer" @click.capture="focusChartFromOverlay" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
       </div>
-      <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" />
+      <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" :initial-rule-id="validationPanelRuleId" :canvas-ranges="selectedModelRanges()" :can-add="canEditValidationSelection" @add="applyQuickDataValidation('add-default')" @applied="refreshValidationView" />
     </div>
 
     <ChartEditorPanel v-model:open="chartEditorOpen" :chart="focusedChart" :sheet="activeSheet" @apply="applyChartSettings" />

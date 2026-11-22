@@ -32,7 +32,9 @@ import type { DocumentViewportLocation } from '../features/document/layout/docum
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
-import { documentSectionIds, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
+import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
+import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField, type StoryLocation } from '../features/document/services/story-editor'
+import type { HeaderFooterAction } from './document/DocumentHeaderFooterRibbonControl.vue'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { selectedDocumentContentControl } from '../features/document/services/content-controls'
 import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
@@ -123,7 +125,13 @@ const selectedContentControl = computed(() => selectedContentControlId.value
   : undefined)
 const pageSettingsOpen = ref(false)
 const headerFooterPanelOpen = ref(false)
-const headerFooterSectionId = computed(() => sectionIdForBlock(model.value, selection.value.focus.blockId))
+const storyLocation = ref<StoryLocation>()
+const previousStoryTab = ref('home')
+const storyPage = computed(() => storyLocation.value && layout.value.pageHeaderFooters[storyLocation.value.page])
+const headerFooterSectionId = computed(() => storyPage.value?.sectionId ?? sectionIdForBlock(model.value, selection.value.focus.blockId))
+const storyKey = computed(() => storyLocation.value?.area === 'footer' ? storyPage.value?.footerStory : storyPage.value?.headerStory)
+const storySection = computed(() => resolveSectionHeaderFooter(model.value, headerFooterSectionId.value))
+const storyValue = computed(() => storyKey.value && storyBuffer(storySection.value, storyKey.value).value)
 const paragraphSettingsPanelOpen = ref(false)
 const sectionSettingsPanelOpen = ref(false)
 const activeParagraphBlock = computed(() => blockAtPoint(model.value, selection.value.focus))
@@ -276,6 +284,14 @@ const modalTitle = computed(() => ({ image: '插入图片', link: '插入链接'
 const ribbonTabs = computed(() => {
   const control = selectedContentControl.value
   return createDocumentRibbon({
+    mode: pageMode.value,
+    headerFooter: storyLocation.value && {
+      visible: true, area: storyLocation.value.area, disabled: !canEditStory.value,
+      contentDisabled: storySection.value.linkToPrevious, canLinkToPrevious: headerFooterSectionId.value !== 'first',
+      linkedToPrevious: storySection.value.linkToPrevious, differentFirstPage: storySection.value.differentFirstPage,
+      differentOddEven: storySection.value.differentOddEven, marginHeader: activeSectionSetup.value.marginHeader ?? 48,
+      marginFooter: activeSectionSetup.value.marginFooter ?? 48,
+    },
     state: toolbarState.value,
     canUndo: !!props.canUndo,
     canRedo: !!props.canRedo,
@@ -322,6 +338,7 @@ onMounted(() => {
 })
 onUnmounted(() => { document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); imageRequest++; clipboardRequest++ })
 onDeactivated(() => {
+  closeStory(false)
   imageRequest++
   clipboardRequest++
   modalOpen.value = false
@@ -366,7 +383,7 @@ function publish(next: DocumentModel) {
   emit('document-change', next)
 }
 function execute(command: DocumentCommand, restoreFocus = true) {
-  const targets = command.id === 'doc.command.set-document-permission-rules' ? [] : permissionTargetsForSelection(model.value, selection.value)
+  const targets = 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(model.value, selection.value)
   if (command.id !== 'doc.command.set-document-permission-rules' && !canDocumentPermission('edit', targets)) return
   if (command.id === 'doc.command.insert-text') {
     const next = cloneDocument(model.value)
@@ -484,7 +501,7 @@ function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMo
   void nextTick(() => canvasRef.value?.focus())
 }
 function applyHeaderFooter(patch: SectionHeaderFooterPatch) {
-  execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch })
+  execute({ id: 'doc.command.set-section-header-footer', sectionId: headerFooterSectionId.value, patch }, false)
 }
 function applyParagraphSettings(patch: Partial<DocumentParagraphStyle>) {
   execute({ id: 'doc.command.format-paragraph', patch }, false)
@@ -557,7 +574,7 @@ function insertContentControl(type: DocumentContentControlType) {
   }
 }
 function insertPageField(story: 'header' | 'footer', field: 'PAGE' | 'NUMPAGES') {
-  execute({ id: 'doc.command.insert-page-field', sectionId: headerFooterSectionId.value, story, field })
+  execute({ id: 'doc.command.insert-page-field', sectionId: headerFooterSectionId.value, story, field }, false)
 }
 function updateTitle() { emit('update:fileName', documentTitle.value); publish(cloneDocument(model.value)) }
 function saveDocument() { emit('save', { fileName: documentTitle.value, html: documentHtml(model.value), model: model.value }) }
@@ -949,7 +966,65 @@ async function toggleFullscreen() {
   }
 }
 function notify(message: string) { notice.value = message; emit('notify', message) }
+const canEditStory = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'edit', [{ scope: 'section', id: headerFooterSectionId.value }]).allowed)
+function openStory(location: StoryLocation) {
+  if (pageMode.value !== 'traditional' || !layout.value.pageHeaderFooters[location.page]) return
+  if (!storyLocation.value) previousStoryTab.value = activeTab.value
+  storyLocation.value = location
+  activeTab.value = 'header-footer'
+  void nextTick(() => canvasRef.value?.revealStory(location))
+}
+function closeStory(refocus = true) {
+  if (!storyLocation.value) return
+  storyLocation.value = undefined
+  if (activeTab.value === 'header-footer') activeTab.value = previousStoryTab.value
+  if (refocus) void nextTick(() => canvasRef.value?.focus())
+}
+watch(activeTab, tab => { if (storyLocation.value && tab !== 'header-footer') closeStory(false) })
+watch([pageMode, () => model.value.id, storyPage], ([mode, id, page], [, oldId]) => {
+  if (storyLocation.value && (mode !== 'traditional' || id !== oldId || !page)) closeStory(false)
+})
+function editStory(value: string, caret: number) {
+  if (!storyKey.value || storySection.value.linkToPrevious || !canEditStory.value || value === storyValue.value) return
+  applyHeaderFooter(editStoryBuffer(storySection.value, storyKey.value, value, caret))
+}
+function handleStoryAction(raw: unknown) {
+  const location = storyLocation.value, key = storyKey.value
+  if (!location || !key || typeof raw !== 'string') return
+  let action: HeaderFooterAction
+  try { action = JSON.parse(raw) } catch { return }
+  if (action.action === 'navigate') { openStory({ page: location.page, area: action.area }); return }
+  if (!canEditStory.value) return
+  if (action.action === 'set-options') {
+    const { marginHeader, marginFooter, ...options } = action.patch
+    if (marginHeader !== undefined) applySectionSettings(headerFooterSectionId.value, { marginHeader })
+    if (marginFooter !== undefined) applySectionSettings(headerFooterSectionId.value, { marginFooter })
+    if (Object.keys(options).length) applyHeaderFooter(options)
+  } else {
+    const section = storySection.value
+    if (section.linkToPrevious) return
+    const now = new Date(), locale = officeLocale.value.replaceAll('_', '-')
+    if (action.action === 'refresh-fields') {
+      const dates = (['short', 'long', 'time'] as const).map(format => storyDateField(format, locale, now))
+      const fields = section.pageFields?.map(field => {
+        const date = dates.find(d => d.instruction === field.instruction)
+        return date ? { ...field, cachedResult: date.cachedResult } : field
+      })
+      if (fields && fields.some((field, i) => field.cachedResult !== section.pageFields?.[i]?.cachedResult)) applyHeaderFooter({ pageFields: fields })
+    } else if (action.action === 'insert-field' || action.action === 'insert-date-time') {
+      const field = action.action === 'insert-field' ? { field: action.field } : storyDateField(action.format, locale, now)
+      const insert = action.action === 'insert-date-time' && !action.automatic && 'cachedResult' in field ? field.cachedResult : field
+      const { start, end } = canvasRef.value?.storyRange() ?? { start: 0, end: 0 }
+      applyHeaderFooter(replaceStoryRange(section, key, start, end, insert))
+      canvasRef.value?.focusStory(start + (typeof insert === 'string' ? insert.length : 1))
+      return
+    }
+  }
+  canvasRef.value?.focusStory()
+}
 function onRibbonExecute(id: string, params?: unknown) {
+  if (id === 'doc.operation.header-footer-control') { handleStoryAction(params); return }
+  if (id === 'doc.operation.close-header-footer') { closeStory(); return }
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
   if (id === 'core.command.redo') { if (props.canRedo) redo(); return }
   const command = documentCommandFromRibbon(id, params)
@@ -1097,7 +1172,7 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.set-zoom': if (typeof params === 'number') { setZoom(params); void nextTick(() => canvasRef.value?.focus()) }; break
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
     case 'doc.operation.open-page-settings': pageSettingsOpen.value = true; break
-    case 'doc.operation.open-header-footer': headerFooterPanelOpen.value = true; break
+    case 'doc.operation.open-header-footer': openStory({ page: layout.value.lines.find(line => line.target.blockId === selection.value.focus.blockId && line.start <= selection.value.focus.offset && line.end >= selection.value.focus.offset)?.page ?? activePageIndex.value, area: 'header' }); break
     case 'sidebar.operation.doc-paragraph-setting-panel': paragraphSettingsPanelOpen.value = true; break
     case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
     case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
@@ -1143,7 +1218,9 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+      <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
+        :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-readonly="!canEditStory || storySection.linkToPrevious"
+        @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
       <aside v-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">
         <DocumentCommentsPanel
           :comments="model.comments ?? {}"
@@ -1182,7 +1259,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" @error="notify" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="size => execute({ id: 'doc.command.insert-table', rows: size.rows, cols: size.columns })" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
-    <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" @apply="applyHeaderFooter" @insert-page-field="insertPageField" />
+    <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
     <DocumentParagraphSettingsPanel v-model:open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" :font-size="paragraphSettingsFontSize" @apply="applyParagraphSettings" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />

@@ -1,5 +1,6 @@
 mod model;
 mod parser;
+mod story_fields;
 mod validation_sidecar;
 mod sparkline_sidecar;
 mod pivot_sidecar;

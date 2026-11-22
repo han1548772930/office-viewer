@@ -36,7 +36,7 @@ export function createRibbonMenuModel(items: readonly RibbonItem[], renderItem?:
       const base = {
         'data-ribbon-item': item.id,
         disabled: item.disabled,
-        icon: icon ? h(icon, { size: 16 }) : undefined,
+        icon: icon ? h(icon, { size: 16 }) : item.swatch ? h('span', { 'aria-hidden': true, style: { display: 'inline-block', width: '14px', height: '14px', borderRadius: '2px', border: '1px solid var(--ribbon-border)', backgroundColor: item.swatch } }) : undefined,
         title: item.disabledReason && item.disabled ? `${item.title}: ${item.disabledReason}` : item.title,
       }
 

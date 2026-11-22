@@ -60,6 +60,7 @@ export const docsEnUS: Record<string, string> = {
   'page-settings.margin-bottom-aria': 'Bottom Margin', 'page-settings.margin-left': 'Left', 'page-settings.margin-left-aria': 'Left Margin',
   'page-settings.margin-right': 'Right', 'page-settings.margin-right-aria': 'Right Margin',
   'header-footer.title': 'Header and Footer', 'header-footer.current-section': 'Current Section',
+  'header-footer.margin-header': 'Header from top', 'header-footer.margin-footer': 'Footer from bottom',
   'header-footer.link-previous': 'Link to Previous Section', 'header-footer.header': 'Header', 'header-footer.footer': 'Footer',
   'header-footer.different-first': 'Different First Page', 'header-footer.first-header': 'First Page Header',
   'header-footer.first-footer': 'First Page Footer', 'header-footer.different-odd-even': 'Different Odd and Even Pages',

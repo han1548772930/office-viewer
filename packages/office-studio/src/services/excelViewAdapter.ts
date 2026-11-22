@@ -12,8 +12,8 @@ export interface ExcelCellView {
   strike?: boolean
   align?: 'left' | 'center' | 'right'
   vertical?: 'top' | 'middle' | 'bottom'
-  background?: string
-  color?: string
+  background?: string | null
+  color?: string | null
   fontSize?: number
   numberFormat?: SheetNumberFormat
   cachedValue?: string
@@ -185,9 +185,9 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
               family: cell.fontFamily ?? previous?.style.font.family ?? 'Aptos', size: cell.fontSize ?? previous?.style.font.size ?? 11,
               bold: cell.bold ?? previous?.style.font.bold ?? false, italic: cell.italic ?? previous?.style.font.italic ?? false,
               underline: cell.underline ?? previous?.style.font.underline ?? false, strike: cell.strike ?? previous?.style.font.strike ?? false,
-              color: cell.color ?? previous?.style.font.color ?? '#1f2937',
+              color: cell.color === undefined ? previous?.style.font.color ?? null : cell.color,
             },
-            fill: cell.background ?? previous?.style.fill ?? '#fff',
+            fill: cell.background === undefined ? previous?.style.fill ?? null : cell.background,
             horizontal: cell.align ?? previous?.style.horizontal ?? 'left', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
             wrap: cell.wrap ?? previous?.style.wrap ?? false, wrapStrategy: cell.wrapStrategy ?? previous?.style.wrapStrategy, border: cell.border ?? previous?.style.border,
             rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,

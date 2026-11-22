@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
-import { ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
+import { placeRibbonGridItems, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 import { SHEET_FUNCTION_CATALOG } from '../src/features/sheet-workbench/sheet-function-catalog.ts'
 import { frozenPaneCountsForSelection } from '../src/features/sheet-workbench/sheet-workbench.ts'
 
@@ -108,11 +108,26 @@ test('formula categories expose function dropdowns and insert functions directly
   assert.deepEqual(ribbonInvocation(picker), { commandId: 'sheet.operation.open-function', params: undefined })
   assert.deepEqual(categories.map(item => item.title), supportedCategories)
   assert.ok(categories.every(item => item.type === 'menu' && item.children.length > 0))
+  assert.equal(categories[0].children.at(-1), picker)
   for (const category of categories) {
     const functions = SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category.title)
-    assert.deepEqual(category.children.map(item => item.title), functions.map(entry => entry.name))
-    assert.ok(category.children.every(item => item.commandId === 'sheet.operation.insert-function'))
+    const entries = category === categories[0] ? category.children.slice(0, -1) : category.children
+    assert.deepEqual(entries.map(item => item.title), functions.map(entry => entry.name))
+    assert.ok(entries.every(item => item.commandId === 'sheet.operation.insert-function'))
   }
+})
+
+test('Insert cell tools fill two rows in source order and keep their quick-rule commands', () => {
+  const insert = visibleRibbonTabs(createSheetRibbon(state)).find(tab => tab.id === 'insert')
+  const cells = insert.groups.find(group => group.id === 'cells')
+  assert.deepEqual(placeRibbonGridItems(cells.items).map(({ item, row, column, rowSpan }) =>
+    [item.type, row, column, rowSpan]), [
+    ['split', 1, 1, 1], ['split', 1, 2, 1], ['menu', 2, 1, 1],
+  ])
+  const [checkbox, dropdown, date] = cells.items
+  assert.deepEqual([checkbox, date].map(item => ribbonInvocation(item).params), ['checkbox', 'date'])
+  assert.deepEqual(dropdown.children.map(item => ribbonInvocation(item).params), ['dropdown-yes-no', 'dropdown-status', 'dropdown-abc', 'edit-dropdown', 'clear-dropdown'])
+  assert.equal(dropdown.popupCommandId, 'sheet.operation.quick-data-validation')
 })
 
 test('data validation ribbon entry opens the worksheet rule panel operation', () => {

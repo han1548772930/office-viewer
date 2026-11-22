@@ -20,6 +20,8 @@ interface WorkbenchHandle { save: () => void; focus?: () => void }
 const workbookRef = ref<WorkbenchHandle | null>(null)
 const documentRef = ref<WorkbenchHandle | null>(null)
 const { locale, t, te } = useI18n()
+const ribbonVariant = ref<'classic' | 'grid'>(localStorage.getItem('office-studio.ribbon-variant') === 'classic' ? 'classic' : 'grid')
+watch(ribbonVariant, value => localStorage.setItem('office-studio.ribbon-variant', value))
 const importTrigger = ref<{ $el: HTMLElement } | null>(null)
 function requestImport(): void { importTrigger.value?.$el.click() }
 function importSelectedFile(file: File): false { void files.importFile(file); return false }
@@ -79,6 +81,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       :active-kind="editor.state.activeKind" :file-name="activeFileName" :modified="modified"
       :parser-status="editor.state.parserStatus" :parser-message="editor.state.parserMessage"
       :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale === 'en-US' ? 'en-US' : 'zh-CN'"
+      :ribbon-variant="ribbonVariant" @toggle-ribbon="ribbonVariant = ribbonVariant === 'grid' ? 'classic' : 'grid'"
       @action="onHeaderAction" @switch="switchWorkspace" @locale="locale = $event"
     />
     <Upload accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
@@ -95,13 +98,13 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       <KeepAlive :max="2">
         <ExcelWorkbench
           v-if="editor.state.activeKind === 'workbook'" :key="'workbook:' + editor.state.workbook.id" ref="workbookRef"
-          :model-value="excelView" :studio="studio" :show-header="false" :can-undo="editor.canUndo" :can-redo="editor.canRedo" class="workbench"
+          :model-value="excelView" :ribbon-variant="ribbonVariant" :studio="studio" :show-header="false" :can-undo="editor.canUndo" :can-redo="editor.canRedo" class="workbench"
           @update:model-value="onExcelChange" @import="files.importFile" @save="(view) => saveWorkbook(view, requestedAction)" @export="(view) => saveWorkbook(view, 'export')"
           @undo="editor.undo" @redo="editor.redo" @notify="(payload) => showNotice(payload.type, payload.message)"
         />
         <DocumentWorkbench
           v-else :key="'document:' + editor.state.document.id" ref="documentRef"
-          :model-value="editor.state.document" :file-name="editor.state.document.name" :document-api="documentApi" :show-header="false"
+          :model-value="editor.state.document" :ribbon-variant="ribbonVariant" :file-name="editor.state.document.name" :document-api="documentApi" :show-header="false"
           :can-undo="editor.canUndo" :can-redo="editor.canRedo" class="workbench"
           @update:model-value="onDocumentChange" @import-file="files.importFile" @save="(payload) => saveDocument(payload, requestedAction)"
           @undo="editor.undo" @redo="editor.redo" @notify="(message) => showNotice('info', message)"

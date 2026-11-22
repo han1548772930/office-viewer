@@ -1,4 +1,4 @@
-import type { DocumentBlock, DocumentModel, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
+import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
@@ -33,7 +33,7 @@ export type DocumentCommand =
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch }
   | { id: 'doc.command.set-section-setup'; sectionId: string; patch: DocumentSectionSetupPatch }
-  | { id: 'doc.command.insert-page-field'; sectionId: string; story: 'header' | 'footer'; field: 'PAGE' | 'NUMPAGES' }
+  | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
   | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers }
   | { id: 'doc.command.delete-table-of-contents'; tocId: string }
@@ -90,7 +90,7 @@ export function executeDocumentCommand(
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
   } else {
-    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(model, selection))
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   switch (command.id) {
     case 'doc.command.table-insert-row':
@@ -179,7 +179,7 @@ export function executeDocumentCommand(
       applyDocumentSectionSetupPatch(model, command.sectionId, command.patch)
       return selection
     case 'doc.command.insert-page-field':
-      insertSectionPageField(model, command.sectionId, command.story, command.field)
+      insertSectionPageField(model, command.sectionId, command.story, command.field, command)
       return selection
     case 'doc.command.update-table-of-contents':
     case 'doc.command.delete-table-of-contents': {

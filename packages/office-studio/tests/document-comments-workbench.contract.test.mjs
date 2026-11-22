@@ -25,6 +25,10 @@ test('comment entries match the two fixed Docs Insert > Others operations and se
   assert.equal(toggle.activated, undefined)
   assert.equal(add.disabled, true)
   assert.deepEqual([toggle.id, add.id], ['doc-comment-toggle', 'doc-comment-add'])
+  assert.deepEqual([toggle.gridLayout, add.gridLayout], [
+    { row: 1, column: 1, showLabel: true },
+    { row: 2, column: 1, showLabel: true },
+  ])
   assert.equal(ribbon.createDocumentRibbon({ state, canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: false, commentsPanelOpen: true, canCreateComment: true })
     .find(item => item.id === 'insert').groups.find(group => group.id === 'doc-insert-extensions').items.find(item => item.id === 'doc-comment-toggle').activated, true)
 })

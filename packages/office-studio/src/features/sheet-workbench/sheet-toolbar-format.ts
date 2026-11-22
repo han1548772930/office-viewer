@@ -4,9 +4,22 @@ import { defaultCellStyle } from '../../domain/model.ts'
 import { cellAddress } from '../../rendering/spreadsheet/layout.ts'
 import { changeSheetDecimalPlaces, classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from './sheet-number-format.ts'
 
-export type SheetBorderPreset = 'all' | 'outside' | 'inside' | 'top' | 'bottom' | 'left' | 'right' | 'horizontal' | 'vertical' | 'diagonal-down' | 'diagonal-up' | 'none'
+export const sheetBorderLabels = {
+  top: '上框线', bottom: '下框线', left: '左框线', right: '右框线', none: '无框线',
+  all: '所有边框', outside: '外侧框线', inside: '内部框线', horizontal: '内侧横线', vertical: '内侧竖线',
+  'diagonal-down': '右下斜线', 'diagonal-down-pair': '右下双斜线', 'diagonal-down-triple': '右下三斜线',
+  'diagonal-up': '右上斜线', 'diagonal-up-pair': '右上双斜线',
+} as const
+export type SheetBorderPreset = keyof typeof sheetBorderLabels
 export type SheetBorderStyle = 'thin' | 'hair' | 'dotted' | 'dashed' | 'dash-dot' | 'dash-dot-dot' | 'medium' | 'medium-dashed' | 'medium-dash-dot' | 'medium-dash-dot-dot' | 'thick' | 'double'
 export interface SheetBorderOptions { style: SheetBorderStyle; color: string }
+export const sheetBorderStyleLabels: Record<SheetBorderStyle, string> = {
+  thin: '细实线', hair: '极细线', dotted: '点线', dashed: '虚线', 'dash-dot': '点划线', 'dash-dot-dot': '双点划线',
+  medium: '中等实线', 'medium-dashed': '中等虚线', 'medium-dash-dot': '中等点划线', 'medium-dash-dot-dot': '中等双点划线', thick: '粗实线', double: '双线',
+}
+export function isSheetBorderPreset(value: unknown): value is SheetBorderPreset {
+  return typeof value === 'string' && Object.hasOwn(sheetBorderLabels, value)
+}
 
 const DEFAULT_BORDER_OPTIONS: SheetBorderOptions = { style: 'thin', color: '#1f2937' }
 const FONT_STEPS = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
@@ -47,12 +60,18 @@ export function applySheetBorders(
       const selected = preset === 'all' || preset === 'outside' && edges[side]
         || preset === 'inside' && !edges[side]
         || preset === side && edges[side]
-        || preset === 'horizontal' && (side === 'top' || side === 'bottom') && (edges[side] || row > range.startRow)
-        || preset === 'vertical' && (side === 'left' || side === 'right') && (edges[side] || column > range.startColumn)
+        || preset === 'horizontal' && (side === 'top' || side === 'bottom') && !edges[side]
+        || preset === 'vertical' && (side === 'left' || side === 'right') && !edges[side]
       if (selected) border[side] = { ...options }
     }
-    if (preset === 'diagonal-down') border.diagonalDown = { ...options }
+    if (preset === 'diagonal-down' || preset === 'diagonal-down-triple') border.diagonalDown = { ...options }
     if (preset === 'diagonal-up') border.diagonalUp = { ...options }
+    if (preset === 'diagonal-down-pair' || preset === 'diagonal-down-triple') {
+      border.topLeftBottomCenter = { ...options }; border.topLeftMiddleRight = { ...options }
+    }
+    if (preset === 'diagonal-up-pair') {
+      border.middleLeftTopRight = { ...options }; border.bottomCenterTopRight = { ...options }
+    }
     cells[key] = { ...cell, border }
   }
 }

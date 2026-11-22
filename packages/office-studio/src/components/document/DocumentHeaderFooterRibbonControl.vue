@@ -7,6 +7,7 @@ export interface HeaderFooterRibbonState {
   visible: boolean
   area: 'header' | 'footer'
   disabled: boolean
+  contentDisabled?: boolean
   canLinkToPrevious: boolean
   linkedToPrevious: boolean
   differentFirstPage: boolean
@@ -15,7 +16,7 @@ export interface HeaderFooterRibbonState {
   marginFooter: number
 }
 
-type HeaderFooterAction =
+export type HeaderFooterAction =
   | { action: 'insert-field'; field: 'PAGE' | 'NUMPAGES' }
   | { action: 'insert-date-time'; format: 'short' | 'long' | 'time'; automatic: boolean }
   | { action: 'refresh-fields' }
@@ -34,7 +35,7 @@ const dateFormatOptions = [
 const area = computed(() => props.state.area)
 
 function run(action: HeaderFooterAction): void {
-  if (props.state.disabled) return
+  if (props.state.disabled || props.state.contentDisabled && ['insert-field', 'insert-date-time', 'refresh-fields'].includes(action.action)) return
   emit('insert', JSON.stringify(action))
 }
 
@@ -49,7 +50,7 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
 
 <template>
   <div class="header-footer-ribbon-control" :data-control-kind="kind">
-    <template v-if="kind === 'insertion'">
+    <fieldset v-if="kind === 'insertion'" :disabled="state.disabled || state.contentDisabled" class="header-footer-ribbon-control__fields">
       <Button type="text" size="small" :disabled="state.disabled" @click="run({ action: 'insert-field', field: 'PAGE' })">插入页码</Button>
       <Button type="text" size="small" :disabled="state.disabled" @click="run({ action: 'insert-field', field: 'NUMPAGES' })">插入总页数</Button>
       <div class="header-footer-ribbon-control__row">
@@ -58,7 +59,7 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
         <Button size="small" :disabled="state.disabled" @click="run({ action: 'insert-date-time', format: dateFormat, automatic: automaticDateTime })">插入</Button>
       </div>
       <Button type="text" size="small" :disabled="state.disabled" @click="run({ action: 'refresh-fields' })">更新字段</Button>
-    </template>
+    </fieldset>
 
     <template v-else-if="kind === 'navigation'">
       <Button size="small" :disabled="state.disabled || area === 'header'" @click="run({ action: 'navigate', area: 'header' })">转到页眉</Button>
@@ -84,6 +85,7 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
 
 <style scoped>
 .header-footer-ribbon-control { display: grid; min-width: 208px; gap: 4px; padding: 4px; }
+.header-footer-ribbon-control__fields { display: grid; gap: 4px; border: none; padding: 0; margin: 0; }
 .header-footer-ribbon-control__row { display: flex; align-items: center; gap: 6px; }
 .header-footer-ribbon-control__row :deep(.ant-select) { min-width: 92px; }
 .header-footer-ribbon-control__form { display: grid; gap: 8px; }
