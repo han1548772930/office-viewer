@@ -1,5 +1,4 @@
 // Run from the repository root. Read the OSS schema and Pro registration audits; never load a Pro SDK.
-import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
@@ -44,4 +43,4 @@ for (const p of pro.packages.filter(p => p.registrations.length)) {
   out.push(`| ${code(p.package)} | ${p.registrations.length} | ${entries.filter(e => e.category === 'ribbon').length} | ${entries.filter(e => e.category === 'contextual-ribbon').length} | ${p.registrations.flatMap(r => r.unresolved).length} |`)
 }
 out.push('', '商业包的逐声明路径、order、gridLayout、注册语句行列及未解析分支可用 `node scripts/count-univer-pro-ribbon-schemas.mjs .research.local/univer-1.6.0/packages --bundle-only --inventory` 复查。没有执行商业 SDK。', '')
-fs.writeFileSync('docs/feature-evidence/RIBBON-REGISTRATION-BATCH-v1.6.0.md', out.join('\n'))
+process.stdout.write(out.join('\n'))

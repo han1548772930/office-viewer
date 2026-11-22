@@ -1,9 +1,10 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
 import { blockAtPoint, defaultParagraphStyle, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed, type DocumentSelection, type RunPatch } from '../model/document-model'
+import { blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, type DocumentNumberingDefinition } from '../model/document-numbering'
 
 type CharacterFormat = Required<Pick<RunPatch, 'fontFamily' | 'eastAsiaFontFamily' | 'fontSize' | 'color' | 'bold' | 'italic' | 'underline' | 'strike' | 'verticalAlign' | 'highlight'>>
 interface ParagraphFormat {
-  type: DocumentBlock['type']; level: number; style: DocumentParagraphStyle; namedStyle?: string; checklistId?: string
+  type: DocumentBlock['type']; level: number; style: DocumentParagraphStyle; namedStyle?: string; list?: DocumentBlock['list']; checklistId?: string; numbering?: DocumentNumberingDefinition; numberingId?: string
 }
 export interface DocumentPainterFormat { text: CharacterFormat; paragraph?: ParagraphFormat }
 
@@ -25,7 +26,10 @@ export function captureDocumentFormat(model: DocumentModel, selection: DocumentS
   // marksAtPoint reads the preceding character; a non-empty selection samples the first selected one.
   const text = characterFormat(marksAtPoint(model, { ...start, offset: start.offset + (selectionCollapsed(selection) ? 0 : 1) }))
   if (sameTarget(start, end)) return { text }
+  const numbering = blockNumberingDefinition(block)
   return { text, paragraph: { type: block.type, level: block.level, style: { ...block.style },
+    list: block.list && { ...block.list },
+    numbering: numbering && cloneNumberingDefinition(numbering), numberingId: blockNumberingId(block),
     namedStyle: typeof block.metadata.namedStyleType === 'string' ? block.metadata.namedStyleType : undefined, checklistId: block.checklist?.listId } }
 }
 
@@ -47,6 +51,10 @@ export function applyPainterParagraph(block: DocumentBlock, format: ParagraphFor
   block.style = { ...format.style }
   block.type = format.type
   block.level = format.level
+  clearBlockNumbering(block)
+  if (format.list) block.list = { ...format.list }
+  if (format.numbering) block.metadata.numberingDefinition = cloneNumberingDefinition(format.numbering)
+  if (format.numberingId) block.metadata.numberingListId = format.numberingId
   if (format.namedStyle === undefined) delete block.metadata.namedStyleType
   else block.metadata.namedStyleType = format.namedStyle
   if (format.type === 'checklist' && format.checklistId) block.checklist = { listId: format.checklistId, checked: block.checklist?.checked ?? false }

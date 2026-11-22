@@ -37,11 +37,15 @@ test('reversed selection samples its first character, caret samples its left nei
 test('paragraph mark copies list layout to affected paragraphs, excluding the next paragraph at offset zero', () => {
   const model = createBlankDocument(), from = createParagraph('sample'), to = createParagraph('one'), last = createParagraph('two')
   from.type = 'numbered'; from.level = 2; from.style.indent = 3
+  from.list = { id: 'sequence', preset: 'ORDER_LIST_2' }
   to.metadata.bookmark = 'destination'
   model.blocks = [from, to, last]
   const format = captureDocumentFormat(model, { anchor: pt(from, 0), focus: pt(to, 0) })
   apply(model, { anchor: pt(to, 0), focus: pt(last, 0) }, format)
   assert.deepEqual([to.type, to.level, to.style.indent, to.metadata.bookmark, last.type], ['numbered', 2, 3, 'destination', 'paragraph'])
+  assert.deepEqual(to.list, from.list)
+  assert.notEqual(to.list, from.list)
   apply(model, collapsedSelection(pt(to, 3)), clearDocumentFormat())
   assert.equal(to.type, 'paragraph'); assert.equal(to.style.indent, 0); assert.equal(to.runs[0].text, 'one')
+  assert.equal(to.list, undefined)
 })

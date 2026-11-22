@@ -1,4 +1,4 @@
-import type { Component } from 'vue'
+import { h, type Component } from 'vue'
 import {
   AArrowDown, AArrowUp, AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowDownAZ, ArrowDownWideNarrow, ArrowUpAZ,
@@ -17,6 +17,9 @@ import { SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-fun
 import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
 import SheetBorderSelector from './SheetBorderSelector.vue'
+import SheetNumberFormatControl from './SheetNumberFormatControl.vue'
+import { SHEET_NUMBER_FORMATS, sheetNumberFormatMenu } from '../../features/sheet-workbench/sheet-number-format.ts'
+import { numberFormatCurrency, sheetCurrencySymbol } from '../../features/sheet-workbench/sheet-currency.ts'
 import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 
@@ -43,6 +46,8 @@ export interface SheetRibbonState {
   fontFamily: string | null
   fontSize: number | null
   numberFormat: string | null
+  numberFormatPattern?: string | null
+  region?: string
   bold?: boolean
   italic?: boolean
   underline?: boolean
@@ -96,6 +101,11 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const quickDisabled = !state.dataValidationAvailable || state.quickValidationEditable === false
   const quick = (id: string, title: string, params: string, icon?: Component) => button(id, title, { commandId: 'sheet.operation.quick-data-validation', params, icon, disabled: quickDisabled })
   const tr: OfficeTranslator = translate ?? ((_key, fallback) => fallback)
+  const numberFormatDisabled = !state.hasSheet || state.fontEditable === false
+  const currencySymbol = sheetCurrencySymbol(state.region)
+  const currentPattern = state.numberFormatPattern !== undefined ? state.numberFormatPattern
+    : state.numberFormat && Object.hasOwn(SHEET_NUMBER_FORMATS, state.numberFormat) ? SHEET_NUMBER_FORMATS[state.numberFormat as keyof typeof SHEET_NUMBER_FORMATS] : null
+  const currencyIcon: Component = (props: { size?: number }) => h('span', { 'aria-hidden': 'true', style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: `${props.size ?? 16}px`, height: `${props.size ?? 16}px`, fontSize: `${Math.min(props.size ?? 16, currencySymbol.length > 1 ? 12 : 18)}px`, fontFamily: 'Arial, sans-serif', lineHeight: 1 } }, currencySymbol)
   const presetValues = quickDropdownPresets(tr)
   const presets = (['dropdown-yes-no', 'dropdown-status', 'dropdown-abc'] as const).map(id => ({ id, values: presetValues[id] }))
   const editDropdown = tr('sheet.validation.quick.edit-dropdown', '编辑下拉列表')
@@ -178,15 +188,18 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           ] },
         ] },
         { id: 'number', title: '数字', order: 30, items: [
-          { id: 'sheet.command.set-number-format', commandId: 'sheet.command.set-number-format', type: 'select', title: '数字格式', width: 160, disabled: !state.hasSheet, value: state.numberFormat, placeholder: '混合或自定义', gridLayout: { row: 1, column: 1, columnSpan: 4, width: 160 }, options: [
-            { label: '常规', value: 'general' }, { label: '数字', value: 'number' }, { label: '货币', value: 'currency' }, { label: '会计专用', value: 'accounting' },
-            { label: '百分比', value: 'percent' }, { label: '日期', value: 'date' }, { label: '时间', value: 'time' }, { label: '日期和时间', value: 'datetime' }, { label: '文本', value: 'text' },
-          ] },
-          button('sheet.number-format.percent', '百分比格式', { commandId: 'sheet.command.set-number-format', params: 'percent', icon: Percent, activated: state.numberFormat === 'percent', gridLayout: { row: 2, column: 1 } }),
-          button('sheet.number-format.currency', '货币格式', { commandId: 'sheet.command.set-number-format', params: 'currency', icon: BadgeDollarSign, activated: state.numberFormat === 'currency', gridLayout: { row: 2, column: 2 } }),
-          button('sheet.command.increase-decimals', '增加小数位', { icon: DecimalsArrowRight, gridLayout: { row: 2, column: 3 } }),
-          button('sheet.command.decrease-decimals', '减少小数位', { icon: DecimalsArrowLeft, gridLayout: { row: 2, column: 4 } }),
-          button('sheet.operation.open-custom-number-format', '自定义格式', { icon: Calculator, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
+          { id: 'sheet.command.set-number-format', commandId: 'sheet.command.set-number-format', type: 'select', title: '数字格式', width: 160, disabled: numberFormatDisabled,
+            value: state.numberFormat, placeholder: '混合或自定义', gridLayout: { row: 1, column: 1, columnSpan: 4, width: 160 }, inlineComponent: SheetNumberFormatControl,
+            popupCommandId: 'sheet.command.set-number-format', popupProps: { pattern: currentPattern, region: state.region, title: tr('sheet.number-format.title', '数字格式'), translate: tr },
+            options: sheetNumberFormatMenu(state.region).flatMap(entry => entry.type === 'divider' ? [] : entry.type === 'more'
+              ? [{ label: entry.label, value: entry.id, commandId: 'sheet.operation.open-custom-number-format' }]
+              : [{ label: entry.label, value: entry.id, params: { pattern: entry.pattern } }]),
+          },
+          button('sheet.number-format.percent', '百分比格式', { commandId: 'sheet.command.set-percent-format', icon: Percent, disabled: numberFormatDisabled, activated: state.numberFormat === 'percent', gridLayout: { row: 2, column: 1 } }),
+          button('sheet.number-format.currency', '货币格式', { commandId: 'sheet.command.set-currency-format', icon: currencyIcon, disabled: numberFormatDisabled,
+            activated: currentPattern !== null && ['currency', 'accounting', 'roundingCurrency'].includes(state.numberFormat ?? '') && numberFormatCurrency(currentPattern) === currencySymbol, gridLayout: { row: 2, column: 2 } }),
+          button('sheet.command.increase-decimals', '增加小数位', { icon: DecimalsArrowRight, disabled: numberFormatDisabled, gridLayout: { row: 2, column: 3 } }),
+          button('sheet.command.decrease-decimals', '减少小数位', { icon: DecimalsArrowLeft, disabled: numberFormatDisabled, gridLayout: { row: 2, column: 4 } }),
         ] },
         { id: 'tools', title: '工具', order: 40, items: [
           button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),

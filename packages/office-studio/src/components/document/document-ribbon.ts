@@ -1,10 +1,10 @@
 import type { Component } from 'vue'
 import {
   AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, BookMarked, Brush, CalendarDays, ChevronDown,
-  ClipboardPaste, CodeXml, Columns3, Copy, Expand, FileCog, Grid2X2, Highlighter, ImagePlus,
+  ClipboardPaste, CodeXml, Columns3, Copy, Expand, FileCog, Grid2X2, ImagePlus,
   IndentDecrease, IndentIncrease, Italic, Layers2, Link, List, ListOrdered, ListTodo, ListTree, LockKeyhole, MessageSquarePlus,
   Minimize, NotebookPen, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
-  SeparatorHorizontal, ShieldCheck, Sigma, Smile, SquareCheckBig, Strikethrough, Subscript, Superscript,
+  PaintBucket, SeparatorHorizontal, ShieldCheck, Sigma, Smile, SquareCheckBig, Strikethrough, Subscript, Superscript,
   TextCursorInput, Trash2, Underline, Undo2, X,
 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
@@ -16,6 +16,8 @@ import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 import DocumentCharacterPicker from './DocumentCharacterPicker.vue'
 import DocumentListPicker from './DocumentListPicker.vue'
+import DocumentColorControl from './DocumentColorControl.vue'
+import { DOCUMENT_DEFAULT_TEXT_COLOR, DOCUMENT_STANDARD_COLORS, documentColorIsAutomatic, documentColorPreview, isDocumentColorField } from '../../features/document/services/document-colors'
 import { isListPreset, type ListKind } from '../../features/document/model/document-lists'
 import type { HeaderFooterRibbonState, HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
 import DocumentHeaderFooterRibbonGroup from './DocumentHeaderFooterRibbonGroup.vue'
@@ -24,6 +26,11 @@ export interface DocumentRibbonContext {
   fontList?: OfficeFontList
   painterActive?: boolean
   painterUnavailable?: boolean
+  lastTextColor?: string
+  lastHighlightColor?: string
+  defaultTextColor?: string
+  defaultHighlightColor?: string
+  numbering?: { canRestart: boolean; canContinue: boolean }
   state: DocumentToolbarState
   canUndo: boolean
   canRedo: boolean
@@ -67,14 +74,6 @@ export interface DocumentRibbonContext {
 }
 
 const action = (id: string, title: string, icon: Component | undefined, commandId = id, params?: unknown, more: Partial<RibbonItem> = {}): RibbonItem => ({ id, type: 'button', title, icon, commandId, params, ...more })
-const colors = [
-  { key: 'black', value: '#1f2937' }, { key: 'gray', value: '#6b7280' }, { key: 'white', value: '#ffffff' },
-  { key: 'red', value: '#dc2626' }, { key: 'orange', value: '#ea580c' }, { key: 'yellow', value: '#facc15' },
-  { key: 'green', value: '#16a34a' }, { key: 'teal', value: '#0d9488' }, { key: 'blue', value: '#2563eb' },
-  { key: 'navy', value: '#1e3a8a' }, { key: 'purple', value: '#9333ea' }, { key: 'pink', value: '#db2777' },
-  { key: 'brown', value: '#92400e' }, { key: 'light-gray', value: '#d1d5db' }, { key: 'light-blue', value: '#bfdbfe' },
-  { key: 'light-yellow', value: '#fef3c7' },
-]
 
 /** Univer 1.6.0 eaf4cfa, docs-ui/menu/schema.ts and docs-ui/services/doc-zoom.ts. */
 export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
@@ -84,7 +83,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     ...action(`doc-${kind}`, title, icon, 'doc.command.set-block-type', { type: kind }), type: 'split',
     disabled: context.editingDisabled, activated: state.blockStyle === kind, gridLayout: { row, column },
     popupComponent: DocumentListPicker, popupCommandId: 'doc.command.change-list-type',
-    popupProps: { kind, title: tocLabel(`items.doc-${kind}`, title), active: state.listPreset },
+    popupProps: { kind, title: tocLabel(`items.doc-${kind}`, title), active: state.listPreset,
+      canRestart: kind === 'numbered' && Boolean(context.numbering?.canRestart), canContinue: kind === 'numbered' && Boolean(context.numbering?.canContinue) },
   })
   const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => {
     const column = ['bold', 'italic', 'underline', 'strike'].indexOf(key) + 1
@@ -92,14 +92,24 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
   }
   const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { order: value === 'subscript' ? 4 : 5, disabled: context.editingDisabled, activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title, gridLayout: { row: 2, column: value === 'subscript' ? 6 : 5, width: 32, minWidth: 28 } })
   const alignments = [{ value: 'left', title: '左对齐', icon: AlignLeft }, { value: 'center', title: '居中', icon: AlignCenter }, { value: 'right', title: '右对齐', icon: AlignRight }, { value: 'justify', title: '两端对齐', icon: AlignJustify }]
-  const palette = (id: string, title: string, key: 'color' | 'highlight', icon: Component): RibbonItem => ({
-    id, type: 'menu', title, icon, order: key === 'color' ? 8 : 9, disabled: context.editingDisabled,
-    gridLayout: { row: 2, column: key === 'color' ? 8 : 7, width: 40, minWidth: 38 },
-    children: [
-      ...colors.map((color) => action(`${id}-${color.value}`, translate?.(`colors.${color.key}`, color.key) || color.key, icon, 'doc.command.format-text', { patch: { [key]: color.value } }, { activated: state.marks[key] === color.value, tooltip: color.value, swatch: color.value })),
-      action(`${id}-reset`, translate?.(key === 'color' ? 'items.doc-text-color-reset' : 'items.doc-highlight-reset', key === 'color' ? 'Reset Font Color' : 'No Background') || (key === 'color' ? 'Reset Font Color' : 'No Background'), RemoveFormatting, 'doc.command.format-text', { patch: { [key]: key === 'color' ? '#1f2937' : '' } }),
-    ],
-  })
+  const palette = (id: string, title: string, key: 'color' | 'highlight', icon: Component): RibbonItem => {
+    const defaultColor = key === 'color' ? context.defaultTextColor ?? DOCUMENT_DEFAULT_TEXT_COLOR : context.defaultHighlightColor ?? '#315bc2'
+    const lastColor = (key === 'color' ? context.lastTextColor : context.lastHighlightColor) ?? defaultColor
+    return {
+      id, type: 'split', title, icon, order: key === 'color' ? 8 : 9, disabled: context.editingDisabled,
+      commandId: 'doc.command.format-text', params: { patch: { [key]: lastColor } }, value: lastColor, swatch: documentColorPreview(key, lastColor, defaultColor),
+      inlineComponent: DocumentColorControl, popupCommandId: 'doc.command.format-text', popupProps: {
+        title: tocLabel(`items.${id}`, title), field: key, icon, defaultColor, lastColor,
+        selectedColor: state.marks[key], mixed: state.mixedMarks.includes(key),
+      },
+      gridLayout: { row: 2, column: key === 'color' ? 8 : 7, width: 40, minWidth: 38 },
+      children: [
+        ...DOCUMENT_STANDARD_COLORS.map((color) => action(`${id}-preset-${color.slice(1)}`, color.toUpperCase(), icon, 'doc.command.format-text', { patch: { [key]: color } }, { activated: !state.mixedMarks.includes(key) && state.marks[key]?.toLowerCase() === color, tooltip: color.toUpperCase(), swatch: color })),
+        action(`${id}-reset`, tocLabel('document.color.reset', '重置颜色'), RemoveFormatting, 'doc.command.format-text', { patch: { [key]: defaultColor } }),
+        action(`${id}-clear`, tocLabel(key === 'color' ? 'document.color.automatic' : 'document.color.noBackground', key === 'color' ? '自动文字颜色' : '无背景'), RemoveFormatting, 'doc.command.format-text', { patch: {}, clearFields: [key] }, { activated: !state.mixedMarks.includes(key) && documentColorIsAutomatic(key, state.marks[key]) }),
+      ],
+    }
+  }
   const tabs: RibbonTab[] = [
     { id: 'home', title: '开始', order: 0, groups: [
       { id: 'doc-history', title: '历史与剪贴板', order: 0, items: [
@@ -125,7 +135,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         { id: 'doc-font-size', type: 'select', edit: { kind: 'number', min: 1, max: 400 }, title: '字号', order: 6, disabled: context.editingDisabled, width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: fontSizeOptions, valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
         format('doc-bold', '加粗', Bold, 'bold'), format('doc-italic', '斜体', Italic, 'italic'), format('doc-underline', '下划线', Underline, 'underline'), format('doc-strike', '删除线', Strikethrough, 'strike'),
         verticalFormat('doc-superscript', '上标', Superscript, 'superscript'), verticalFormat('doc-subscript', '下标', Subscript, 'subscript'),
-        palette('doc-highlight', '文本高亮', 'highlight', Highlighter), palette('doc-text-color', '字体颜色', 'color', Palette),
+        palette('doc-highlight', '文本高亮', 'highlight', PaintBucket), palette('doc-text-color', '字体颜色', 'color', Palette),
       ] },
       { id: 'doc-layout', title: '段落与列表', order: 2, items: [
         { id: 'doc-align', type: 'menu', title: '段落对齐', disabled: context.editingDisabled, icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, gridLayout: { row: 1, column: 1 }, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value })) },
@@ -393,6 +403,13 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
+  if (id === 'doc.command.restart-list-numbering') {
+    if (params === undefined) return { id }
+    if (!record(params)) return undefined
+    const start = params.start
+    return start === undefined ? { id } : typeof start === 'number' && Number.isSafeInteger(start) && start >= 0 && start <= 2147483647 ? { id, start } : undefined
+  }
+  if (id === 'doc.command.continue-list-numbering') return { id }
   if (id === 'doc.command.change-list-type') {
     const listType = record(params) ? params.listType : params
     return isListPreset(listType) ? { id, listType } : undefined
@@ -429,13 +446,17 @@ export function documentCommandFromRibbon(id: string, params: unknown): Document
     if (level !== undefined && (typeof level !== 'number' || !Number.isInteger(level) || level < 0 || level > 6)) return undefined
     return { id, type, level }
   }
-  if (!record(params.patch) || !Object.keys(params.patch).length) return undefined
+  if (!record(params.patch)) return undefined
   const patch = params.patch
   if (id === 'doc.command.format-text') {
+    const clearFields = params.clearFields
+    if (clearFields !== undefined && (!Array.isArray(clearFields) || !clearFields.every(isDocumentColorField))) return undefined
+    if (!Object.keys(patch).length && !clearFields?.length) return undefined
     if (!Object.entries(patch).every(([key, value]) => ['bold', 'italic', 'underline', 'strike'].includes(key) ? typeof value === 'boolean' : key === 'verticalAlign' ? value === 'baseline' || value === 'subscript' || value === 'superscript' : key === 'fontSize' ? typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 400 : ['fontFamily', 'color', 'highlight', 'href'].includes(key) && typeof value === 'string')) return undefined
-    return { id, patch }
+    return { id, patch, ...(clearFields?.length ? { clearFields: [...new Set(clearFields)] } : {}) }
   }
   if (id === 'doc.command.format-paragraph') {
+    if (!Object.keys(patch).length) return undefined
     if (!Object.entries(patch).every(([key, value]) => key === 'align' ? ['left', 'center', 'right', 'justify'].includes(String(value)) : ['indent', 'lineHeight', 'spaceBefore', 'spaceAfter'].includes(key) && typeof value === 'number' && Number.isFinite(value) && value >= 0)) return undefined
     return { id, patch }
   }

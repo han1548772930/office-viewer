@@ -13,6 +13,7 @@ export interface RibbonItem {
   title: string
   tooltip?: string
   icon?: Component
+  iconColor?: string
   order?: number
   hidden?: boolean
   disabled?: boolean

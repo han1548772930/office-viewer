@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
-import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Tooltip, Upload } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
@@ -24,8 +24,11 @@ import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
 import { calculateSelectionStatistics, createUniqueSheetName, frozenPaneCountsForSelection, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
-import { adjustSheetDecimals, applySheetBorders, applySheetNumberFormat, clearSheetCellFormat, isSheetBorderPreset, nextSheetFontSize, setSheetTextFit, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
-import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format'
+import { applySheetBorders, clearSheetCellFormat, isSheetBorderPreset, nextSheetFontSize, setSheetTextFit, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../features/sheet-workbench/sheet-toolbar-format'
+import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS } from '../features/sheet-workbench/sheet-number-format'
+import { applySheetViewNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
+import { sheetCellNumberPattern, sheetCellNumberValue } from '../features/sheet-workbench/sheet-number-presentation.ts'
+import type { SheetNumberFormatPreview } from '../rendering/spreadsheet/scene.ts'
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
@@ -36,7 +39,7 @@ import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
 import { createFormatPainterPatches, type FormatPainterSource } from '../features/sheet-workbench/sheet-format-painter.ts'
 import { CHANGE_SHEET_OUTLINE_COMMAND, getCollapsedOutlineIndexes, getSheetOutlineUpdate, type ChangeSheetOutlineInput, type SheetOutlineAction, type SheetOutlineOperation } from '../features/sheet-outline/sheet-outline.ts'
-import { createOfficeTranslator, createRibbonTranslator, provideWorkbenchLocales } from '../i18n/office-i18n.ts'
+import { createOfficeTranslator, createRibbonTranslator, provideWorkbenchRegionalSettings } from '../i18n/office-i18n.ts'
 import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type SheetFindBy, type SheetFindDirection, type SheetFindScope } from '../features/sheet-find-replace/sheet-find-replace.ts'
 import { convertTextToNumber } from '../features/sheet-workbench/text-to-number.ts'
 import { moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit, type SheetCellMoveDirection } from '../features/sheet-workbench/sheet-cell-range-move.ts'
@@ -68,7 +71,7 @@ const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: Exc
   studio: undefined,
   ribbonVariant: 'classic',
 })
-const officeLocale = provideWorkbenchLocales(() => props.studio?.regionalSettings)
+const { locale: officeLocale, region: officeRegion, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.studio?.regionalSettings)
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: ExcelWorkbook): void
@@ -267,6 +270,9 @@ const copiedDefaultColumnWidth = ref<number>()
 const sparklinePanelOpen = ref(false)
 const sparklineTargetRange = ref('A1')
 const customNumberFormatOpen = ref(false)
+const numberFormatPreview = ref<SheetNumberFormatPreview>()
+const sheetSidebarWidth = ref(384)
+const workbenchActive = ref(true)
 const conditionalFormattingOpen = ref(false)
 const conditionalFormattingRange = ref('A1')
 const formatPainterSource = ref<(FormatPainterSource & { continuous: boolean }) | null>(null)
@@ -306,6 +312,15 @@ const activeSheet = computed(() => availableSheets.value.find((sheet) => sheet.i
 const translate = computed(() => createOfficeTranslator(officeLocale.value))
 function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
 const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
+const numberFormatSource = computed(() => {
+  const range = selectedRanges.value[0]
+  const key = range ? `${columnName(range.startColumn)}${range.startRow + 1}` : selectedKey.value
+  const cell = activeSheet.value?.cells[key]
+  return { key, pattern: sheetCellNumberPattern(cell), sample: sheetCellNumberValue(cell) }
+})
+const numberFormatSelectionKey = computed(() => JSON.stringify([workbook.value.id, activeSheet.value?.id, selectedRanges.value]))
+const sheetSidebarOpen = computed(() => Boolean(activeSheet.value && (customNumberFormatOpen.value
+  || validationPanelOpen.value && props.studio && workbook.value.id)))
 const selectedAddress = computed(() => {
   const range = selectedRanges.value[0]
   return selectedRanges.value.length === 1 && range && (range.startRow !== range.endRow || range.startColumn !== range.endColumn) ? rangeNotation(range) : selectedKey.value
@@ -336,15 +351,15 @@ const selectionFormat = computed(() => {
     if (selectedCount.value > keys.length || !values.length) values.push(fallback)
     return values.every(value => value === values[0]) ? values[0] : undefined
   }
+  const formats = keys.map(key => sheetCells.value[key]?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[sheetCells.value[key]?.numberFormat ?? 'general'])
+  if (selectedCount.value > keys.length || !formats.length) formats.push('General')
+  const numberFormatPattern = formats.every(format => format === formats[0]) ? formats[0]! : null
+  const numberFormatKind = numberFormatPattern === null ? 'custom' : classifySheetNumberFormat(numberFormatPattern)
   return {
     fontFamily: common('fontFamily', 'Aptos') ?? null,
     fontSize: common('fontSize', 11) ?? null,
-    numberFormat: (() => {
-      const formats = keys.map(key => sheetCells.value[key]?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[sheetCells.value[key]?.numberFormat ?? 'general'])
-      if (selectedCount.value > keys.length || !formats.length) formats.push('General')
-      const value = formats.every(format => format === formats[0]) ? classifySheetNumberFormat(formats[0]!) : 'custom'
-      return value === 'custom' ? null : value
-    })(),
+    numberFormat: numberFormatKind === 'custom' ? null : numberFormatKind,
+    numberFormatPattern,
     bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
     align: common('align', 'left'), vertical: common('vertical', 'middle'), wrap: common('wrap', false),
     wrapStrategy: common('wrapStrategy', 'overflow'),
@@ -372,6 +387,7 @@ const officeFonts = inject(OfficeFontListKey, undefined)
 const canFormatSelection = computed(() => !!activeSheet.value && !!selectedRanges.value.length
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value))
 const ribbonTabs = computed(() => createSheetRibbon({
+  region: officeRegion.value,
   fontList: officeFonts?.value, fontEditable: canFormatSelection.value,
   painterActive: Boolean(formatPainterSource.value),
   borderOptions: borderOptions.value, borderPreset: borderPreset.value, onBorderOptions: changeBorderOptions,
@@ -426,7 +442,7 @@ function applyExternalWorkbook(value: ExcelWorkbook) {
   const requested = viewableSheets.find(sheet => sheet.id === value.activeSheetId && sheet.visible !== false)
   const nextSheetId = requested?.id ?? viewableSheets.find(sheet => sheet.id === previousSheetId && sheet.visible !== false)?.id ?? viewableSheets.find(sheet => sheet.visible !== false)?.id ?? ''
   if (sameDocument) saveViewSession()
-  else { viewSessions.clear(); sortController?.abort(); editingKey.value = null }
+  else { viewSessions.clear(); sortController?.abort(); editingKey.value = null; closeNumberFormatPanel() }
   const session = sameDocument ? viewSessions.get(nextSheetId) : undefined
   workbook.value = cloneWorkbook(value)
   activeSheetId.value = nextSheetId
@@ -1242,7 +1258,50 @@ function setTextRotation(value: number | 'v'): void {
     ? { ...cell, rotation: value, rotationVertical: false }
     : { ...cell, rotation: 0, rotationVertical: true })
 }
-function setNumberFormat(format: SheetNumberFormat): void { changeSelectedCells(cell => applySheetNumberFormat(cell, format)) }
+function runNumberFormatCommand(commandId: string, params?: unknown): boolean {
+  const sheet = activeSheet.value
+  if (!sheet || !canFormatSelection.value || !checkDirectSelection()) return false
+  const action = numberFormatActionForCommand(commandId, params, officeRegion.value)
+  if (!action) return false
+  const ranges = selectedModelRanges()
+  let changed = false
+  if (props.studio && workbook.value.id) {
+    const input: SheetNumberFormatCommandInput = { unitId: workbook.value.id, sheetId: sheet.id, ranges,
+      ...(action.kind === 'set' ? { pattern: action.pattern } : action.kind === 'cells' ? { values: action.values } : {}) }
+    changed = props.studio.executeCommandSync<SheetNumberFormatCommandInput, boolean>(commandId, input)
+    if (changed) {
+      const model = props.studio.getWorkbookModel(workbook.value.id)
+      if (model) workbook.value = toExcelWorkbookView(model)
+    }
+  } else changed = applySheetViewNumberFormatCommand(sheet, ranges, action, officeRegion.value, userId.value)
+  if (changed) commitHistory()
+  return true
+}
+function openNumberFormatPanel(): void {
+  if (!canFormatSelection.value) return
+  numberFormatPreview.value = undefined
+  validationPanelOpen.value = false
+  customNumberFormatOpen.value = true
+}
+function closeNumberFormatPanel(): void {
+  numberFormatPreview.value = undefined
+  customNumberFormatOpen.value = false
+}
+function previewNumberFormat(pattern: string | undefined): void {
+  numberFormatPreview.value = customNumberFormatOpen.value && canFormatSelection.value && pattern !== undefined
+    ? { pattern, ranges: selectedRanges.value.map(range => ({ ...range })) } : undefined
+}
+function applyCustomNumberFormat(pattern: string, complete: (applied: boolean) => void): void {
+  try { complete(finishEdit() && runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.set, { pattern })) }
+  catch (error: unknown) {
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '数字格式操作失败。' })
+    complete(false)
+  }
+}
+function resizeSheetSidebar(sizes: number[]): void {
+  const size = sizes[1]
+  if (sheetSidebarOpen.value && size !== undefined && Number.isFinite(size)) sheetSidebarWidth.value = Math.max(280, Math.min(800, size))
+}
 function changeFontSize(direction: -1 | 1): void { setCellFormat('fontSize', nextSheetFontSize(getCell(selectedKey.value).fontSize ?? 11, direction)) }
 function setBorders(preset: SheetBorderPreset): void {
   if (!activeSheet.value || !checkDirectSelection()) return
@@ -2027,6 +2086,7 @@ function openDataPanel(mode: 'filter' | 'sort'): void {
   dataPanelOpen.value = true
 }
 function openDataValidationPanel(initialType?: 'checkbox' | 'list' | 'date' | 'time', ruleId?: string): void {
+  closeNumberFormatPanel()
   validationPanelRuleId.value = ruleId
   validationPanelRange.value = selectedModelRanges().map(range => formatValidationRange(range)).join(', ') || selectedKey.value
   validationPanelInitialType.value = initialType
@@ -2227,9 +2287,11 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.command.set-font-size': () => { if (typeof params === 'number' && params > 0) setCellFormat('fontSize', params) },
     'sheet.command.increase-font-size': () => changeFontSize(1),
     'sheet.command.decrease-font-size': () => changeFontSize(-1),
-    'sheet.command.set-number-format': () => { if (typeof params === 'string' && Object.hasOwn(SHEET_NUMBER_FORMATS, params)) setNumberFormat(params as SheetNumberFormat) },
-    'sheet.command.increase-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, 1)),
-    'sheet.command.decrease-decimals': () => changeSelectedCells(cell => adjustSheetDecimals(cell, -1)),
+    'sheet.command.set-number-format': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.set, params) },
+    'sheet.command.set-currency-format': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.currency) },
+    'sheet.command.set-percent-format': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.percent) },
+    'sheet.command.increase-decimals': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.increase) },
+    'sheet.command.decrease-decimals': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.decrease) },
     'sheet.command.clear-format': () => { formatPainterSource.value = null; changeSelectedCells(clearSheetCellFormat) },
     'sheet.command.set-vertical-align': () => { if (params === 'top' || params === 'middle' || params === 'bottom') setCellFormat('vertical', params) },
     'sheet.command.set-borders': () => { if (isSheetBorderPreset(params)) setBorders(params) },
@@ -2285,7 +2347,9 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-sparkline': openSparklinePanel,
     'sheet.operation.format-painter': () => armFormatPainter(),
     'sheet.operation.continuous-format-painter': () => armFormatPainter(true),
-    'sheet.operation.open-custom-number-format': () => { customNumberFormatOpen.value = true },
+    'sheet.operation.open-custom-number-format': openNumberFormatPanel,
+    'sheet.operation.open.numfmt.panel': openNumberFormatPanel,
+    'sheet.operation.close.numfmt.panel': closeNumberFormatPanel,
     'sheet.operation.open-range-protection': () => {
       if (typeof params === 'object' && params !== null && 'sheetId' in params && typeof params.sheetId === 'string') {
         const sheet = workbook.value.sheets.find(candidate => candidate.id === params.sheetId)
@@ -2384,6 +2448,16 @@ function onWindowKeydown(event: KeyboardEvent) {
 watch(selectedKey, () => { nameError.value = ''; void nextTick(scrollToSelected) })
 watch(() => workbook.value.id, () => { formatPainterSource.value = null }, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], () => { validationPanelOpen.value = false })
+watch([() => workbook.value.id, activeSheetId], closeNumberFormatPanel, { flush: 'sync' })
+watch(numberFormatSelectionKey, () => { numberFormatPreview.value = undefined }, { flush: 'sync' })
+watch(editingKey, key => { if (key) closeNumberFormatPanel() }, { flush: 'sync' })
+watch(canFormatSelection, editable => { if (!editable) closeNumberFormatPanel() }, { flush: 'sync' })
+watch([customNumberFormatOpen, validationPanelOpen], async ([numberFormatOpen, validationOpen]) => {
+  if (!numberFormatOpen) numberFormatPreview.value = undefined
+  if (numberFormatOpen || validationOpen) return
+  await nextTick()
+  if (workbenchActive.value && !customNumberFormatOpen.value && !validationPanelOpen.value && !editingKey.value) spreadsheetCanvas.value?.focus()
+})
 watch(hyperlinkDialogOpen, open => { if (!open) void nextTick(() => spreadsheetCanvas.value?.focus()) })
 watch(() => workbook.value.id, id => { if (hyperlinkCell.value?.unitId !== id) hyperlinkDialogOpen.value = false })
 defineExpose({ save: saveWorkbook, focus: () => spreadsheetCanvas.value?.focus() })
@@ -2401,19 +2475,22 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeydown)
 })
 onDeactivated(() => {
+  workbenchActive.value = false
   formatPainterSource.value = null
   validationPanelOpen.value = false
+  closeNumberFormatPanel()
   sortController?.abort()
   if (document.fullscreenElement === workbenchRef.value) {
     void document.exitFullscreen().catch((error: unknown) => emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法退出全屏' }))
   }
 })
+onActivated(() => { workbenchActive.value = true })
 
 </script>
 
 <template>
-  <ConfigProvider>
-  <section ref="workbenchRef" class="excel-workbench" @keydown="handleGridKeydown">
+  <ConfigProvider :direction="officeDirection">
+  <section ref="workbenchRef" class="excel-workbench" :dir="officeDirection" @keydown="handleGridKeydown">
     <header v-if="showHeader && chrome.header" class="excel-header">
       <div class="document-brand">
         <div class="excel-logo"><FileSpreadsheet :size="18" /></div>
@@ -2453,13 +2530,16 @@ onDeactivated(() => {
       </div>
     </div>
 
-    <div class="sheet-canvas-layout">
-      <div class="sheet-canvas-stack">
-    <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :search-text="searchText" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
+    <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" orientation="horizontal" @resize="resizeSheetSidebar">
+      <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
+    <SpreadsheetCanvas v-if="activeSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue" :sheet="activeSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :search-text="searchText" :number-format-preview="numberFormatPreview" :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId" @select-cell="startCellSelection" @extend-selection="extendCellSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis" @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event" @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo" @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings" @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
         <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @pointerdown.capture="rememberChartPointer" @click.capture="focusChartFromOverlay" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
-      </div>
-      <SheetDataValidationPanel v-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" :initial-rule-id="validationPanelRuleId" :canvas-ranges="selectedModelRanges()" :can-add="canEditValidationSelection" @add="applyQuickDataValidation('add-default')" @applied="refreshValidationView" />
-    </div>
+      </SplitterPanel>
+      <SplitterPanel class="sheet-context-panel" :size="sheetSidebarOpen ? sheetSidebarWidth : 0" :min="sheetSidebarOpen ? 280 : 0" :max="800" :resizable="sheetSidebarOpen">
+        <CustomNumberFormatPanel v-if="customNumberFormatOpen" v-model:open="customNumberFormatOpen" :disabled="!canFormatSelection" :date1904="activeSheet?.date1904 ?? workbook.date1904" :current-pattern="numberFormatSource.pattern" :sample-value="numberFormatSource.sample" :selection-key="numberFormatSelectionKey" @preview="previewNumberFormat" @apply="applyCustomNumberFormat" @preference-error="(message) => emit('notify', { type: 'warning', message })" />
+        <SheetDataValidationPanel v-else-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" :initial-rule-id="validationPanelRuleId" :canvas-ranges="selectedModelRanges()" :can-add="canEditValidationSelection" @add="applyQuickDataValidation('add-default')" @applied="refreshValidationView" />
+      </SplitterPanel>
+    </Splitter>
 
     <ChartEditorPanel v-model:open="chartEditorOpen" :chart="focusedChart" :sheet="activeSheet" @apply="applyChartSettings" />
 
@@ -2533,7 +2613,6 @@ onDeactivated(() => {
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
     <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
     <SparklinePanel v-if="sparklinePanelOpen && activeSheet && studio && workbook.id" :open="sparklinePanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :target-range="sparklineTargetRange" @update:open="sparklinePanelOpen = $event" />
-      <CustomNumberFormatPanel v-model:open="customNumberFormatOpen" :date1904="activeSheet?.date1904 ?? workbook.date1904" :current-pattern="activeCell.rawNumberFormat ?? 'General'" @apply="(pattern) => changeSelectedCells(cell => ({ ...cell, rawNumberFormat: pattern }))" />
   </section>
   </ConfigProvider>
 </template>
@@ -2548,8 +2627,11 @@ onDeactivated(() => {
 .document-status { color: #8994a6; font-size: 11px; }
 .header-actions { gap: 3px; }
 .sheet-canvas-layout { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
-.sheet-canvas-stack { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.sheet-canvas-layout:not(.has-sidebar) :deep(.ant-splitter-bar) { display: none; }
+.sheet-canvas-stack { position: relative; display: flex; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
 .sheet-canvas-stack :deep(.spreadsheet-canvas) { flex: 1; }
+.sheet-context-panel { display: flex; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.sheet-context-panel :deep(.validation-sidebar) { width: 100%; min-width: 0; flex: 1; }
 .chart-insert-form { display: flex; flex-direction: column; gap: 14px; padding: 12px 0 4px; }
 .chart-insert-form :deep(.ant-form-item) { margin-bottom: 0; }
 .hyperlink-actions { display: flex; justify-content: space-between; gap: 8px; }

@@ -5,6 +5,7 @@ import type {
   FormulaEvaluationOptions, FormulaRangeReference, FormulaRecalculationResult, FormulaReference, FormulaValue,
 } from './formula-types.ts'
 import { FormulaSyntaxError, parseFormula } from './formula-parser.ts'
+import { formatSheetValue } from '../sheet-workbench/sheet-number-format.ts'
 
 interface RangeValue { kind: 'rangeValue'; sheet: SpreadsheetSheet; reference: FormulaRangeReference }
 type RuntimeValue = FormulaValue | RangeValue
@@ -119,7 +120,8 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
       const value = memo.get(formulaCellKey({ sheetId: sheet.id, row: cell.row, column: cell.col }))
       if (value === undefined) continue
       const scalar: CellScalar = isFormulaError(value) ? value.code : value
-      const display = displayFormulaValue(value)
+      const display = isFormulaError(value) ? value.code
+        : formatSheetValue(scalar, cell.style.numberFormat, workbook.date1904, options.numberFormatLocale) ?? displayFormulaValue(value)
       const errorCode = isFormulaError(value) ? value.code : undefined
       if (cell.value === scalar && cell.display === display && cell.dataType === 'formula' && cell.cachedDataType === valueType(value)
         && cell.metadata?.formulaError === errorCode) continue

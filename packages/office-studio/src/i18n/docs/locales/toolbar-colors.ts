@@ -52,11 +52,40 @@ const resetLabels: Record<string, { fontColor: string; noBackground: string }> =
   'zh-TW': { fontColor: '重設字體顏色', noBackground: '無背景色' },
 }
 
+/** More/cancel/confirm/reset follow Univer eaf4cfa design and docs-ui locale sources. */
+const pickerLabels: Record<string, { more: string; cancel: string; confirm: string; reset: string; automatic: string; standard: string; value: string; format: string; invalid: string }> = {
+  'ar-SA': { more: 'المزيد من الألوان', cancel: 'إلغاء', confirm: 'موافق', reset: 'إعادة تعيين', automatic: 'لون نص تلقائي', standard: 'ألوان قياسية', value: 'قيمة اللون', format: 'تنسيق اللون', invalid: 'أدخل قيمة لون صالحة' },
+  'ca-ES': { more: 'Més colors', cancel: 'cancel·la', confirm: "D'acord", reset: 'Restableix', automatic: 'Color de text automàtic', standard: 'Colors estàndard', value: 'Valor del color', format: 'Format del color', invalid: 'Introduïu un valor de color vàlid' },
+  'de-DE': { more: 'Mehr Farben', cancel: 'Abbrechen', confirm: 'OK', reset: 'Zurücksetzen', automatic: 'Automatische Textfarbe', standard: 'Standardfarben', value: 'Farbwert', format: 'Farbformat', invalid: 'Geben Sie einen gültigen Farbwert ein' },
+  'en-US': { more: 'More Colors', cancel: 'cancel', confirm: 'ok', reset: 'Reset', automatic: 'Automatic Text Color', standard: 'Standard Colors', value: 'Color Value', format: 'Color Format', invalid: 'Enter a valid color value' },
+  'es-ES': { more: 'Más colores', cancel: 'Cancelar', confirm: 'Aceptar', reset: 'Restablecer', automatic: 'Color de texto automático', standard: 'Colores estándar', value: 'Valor de color', format: 'Formato de color', invalid: 'Introduce un valor de color válido' },
+  'fa-IR': { more: 'رنگ‌های بیشتر', cancel: 'لغو', confirm: 'باشه', reset: 'بازنشانی', automatic: 'رنگ متن خودکار', standard: 'رنگ‌های استاندارد', value: 'مقدار رنگ', format: 'قالب رنگ', invalid: 'یک مقدار رنگ معتبر وارد کنید' },
+  'fr-FR': { more: 'Plus de couleurs', cancel: 'annuler', confirm: 'OK', reset: 'Réinitialiser', automatic: 'Couleur du texte automatique', standard: 'Couleurs standard', value: 'Valeur de couleur', format: 'Format de couleur', invalid: 'Saisissez une valeur de couleur valide' },
+  'id-ID': { more: 'Warna Lainnya', cancel: 'Batal', confirm: 'OK', reset: 'Atur Ulang', automatic: 'Warna Teks Otomatis', standard: 'Warna Standar', value: 'Nilai Warna', format: 'Format Warna', invalid: 'Masukkan nilai warna yang valid' },
+  'it-IT': { more: 'Altri Colori', cancel: 'annulla', confirm: 'OK', reset: 'Reimposta', automatic: 'Colore del testo automatico', standard: 'Colori standard', value: 'Valore del colore', format: 'Formato del colore', invalid: 'Inserisci un valore di colore valido' },
+  'ja-JP': { more: 'その他の色', cancel: 'キャンセル', confirm: '確認', reset: '既定の色に戻す', automatic: '自動文字色', standard: '標準の色', value: '色の値', format: '色の形式', invalid: '有効な色の値を入力してください' },
+  'ko-KR': { more: '추가 색상', cancel: '취소', confirm: '확인', reset: '기본색으로 재설정', automatic: '자동 텍스트 색', standard: '표준 색상', value: '색상 값', format: '색상 형식', invalid: '유효한 색상 값을 입력하세요' },
+  'pl-PL': { more: 'Więcej kolorów', cancel: 'anuluj', confirm: 'OK', reset: 'Resetuj', automatic: 'Automatyczny kolor tekstu', standard: 'Kolory standardowe', value: 'Wartość koloru', format: 'Format koloru', invalid: 'Wprowadź prawidłową wartość koloru' },
+  'pt-BR': { more: 'Mais Cores', cancel: 'cancelar', confirm: 'OK', reset: 'Redefinir', automatic: 'Cor de Texto Automática', standard: 'Cores Padrão', value: 'Valor da Cor', format: 'Formato da Cor', invalid: 'Insira um valor de cor válido' },
+  'ru-RU': { more: 'Больше цветов', cancel: 'отмена', confirm: 'ок', reset: 'Сбросить', automatic: 'Автоматический цвет текста', standard: 'Стандартные цвета', value: 'Значение цвета', format: 'Формат цвета', invalid: 'Введите допустимое значение цвета' },
+  'sk-SK': { more: 'Viac farieb', cancel: 'zrušiť', confirm: 'OK', reset: 'Obnoviť', automatic: 'Automatická farba textu', standard: 'Štandardné farby', value: 'Hodnota farby', format: 'Formát farby', invalid: 'Zadajte platnú hodnotu farby' },
+  'vi-VN': { more: 'Màu sắc khác', cancel: 'Hủy bỏ', confirm: 'Xác nhận', reset: 'Đặt lại màu', automatic: 'Màu văn bản tự động', standard: 'Màu tiêu chuẩn', value: 'Giá trị màu', format: 'Định dạng màu', invalid: 'Nhập giá trị màu hợp lệ' },
+  'zh-CN': { more: '更多颜色', cancel: '取消', confirm: '确定', reset: '重置颜色', automatic: '自动文字颜色', standard: '标准颜色', value: '颜色值', format: '颜色格式', invalid: '请输入有效的颜色值' },
+  'zh-HK': { more: '更多顏色', cancel: '取消', confirm: '確定', reset: '重置顏色', automatic: '自動文字顏色', standard: '標準顏色', value: '顏色值', format: '顏色格式', invalid: '請輸入有效的顏色值' },
+  'zh-TW': { more: '更多顏色', cancel: '取消', confirm: '確定', reset: '重置顏色', automatic: '自動文字顏色', standard: '標準顏色', value: '顏色值', format: '顏色格式', invalid: '請輸入有效的顏色值' },
+}
+
 export const docToolbarColorLocales: Record<string, Record<string, string>> = Object.fromEntries(
   Object.entries(labels).map(([locale, names]) => {
+    const picker = pickerLabels[locale] ?? pickerLabels['en-US']!
+    const noBackground = resetLabels[locale]?.noBackground ?? 'No Background'
     const messages: Record<string, string> = {
       'items.doc-text-color-reset': resetLabels[locale]?.fontColor ?? 'Reset Font Color',
-      'items.doc-highlight-reset': resetLabels[locale]?.noBackground ?? 'No Background',
+      'items.doc-highlight-reset': picker.reset,
+      'items.doc-text-color-clear': picker.automatic,
+      'items.doc-highlight-clear': noBackground,
+      'document.color.noBackground': noBackground,
+      ...Object.fromEntries(Object.entries(picker).map(([key, value]) => [`document.color.${key}`, value])),
     }
     colorKeys.forEach((key, index) => {
       const value = colorValues[index]

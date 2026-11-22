@@ -2,6 +2,7 @@ import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, t
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 import { normalizeDocumentNotes } from '../features/document/notes/document-notes.ts'
+import { documentNumberingIndex } from './documentNumbering.ts'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 function normalizeRun(value: unknown, id: string): InlineRun {
@@ -23,7 +24,7 @@ function normalizeVerticalAlign(value: unknown): InlineRun['verticalAlign'] {
   if (value === 'sub' || value === 'subscript') return 'subscript'
   return undefined
 }
-function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
+function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<typeof documentNumberingIndex>): DocumentBlock {
   const raw = record(value)
   const details = record(raw.details)
   const sectionBreakData = record(details.sectionBreak)
@@ -46,12 +47,17 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
   if (!runs.length) runs.push(normalizeRun({ text: text(raw.content) }, id+'-run-0'))
   const level = Math.min(6, Math.max(0, finite(details.headingLevel, finite(style.headingLevel))))
   const numbering = record(details.numbering)
+  const listLevel = Math.min(8, Math.max(0, Math.trunc(finite(numbering.ilvl))))
+  const definition = typeof numbering.numId === 'number' ? lists.get(numbering.numId) : undefined
+  const format = definition?.levels.get(listLevel)?.format
   const listLabel = text(details.listLabel).trimStart()
   const checklistLabel = listLabel.startsWith('☐') || listLabel.startsWith('☑')
   const type = sectionBreak ? 'sectionBreak' : columnBreak ? 'columnBreak' : pageBreak ? 'pageBreak' : raw.type === 'table' ? 'table' : raw.type === 'figure' ? 'image'
     : titleStyle ? 'paragraph' : raw.type === 'heading' || raw.type === 'section_heading' || level > 0 ? 'heading'
       : checklistLabel ? 'checklist'
-        : Object.keys(numbering).length ? (listLabel.match(/^[\d一二三四五六七八九十]/) ? 'numbered' : 'bullet') : 'paragraph'
+        : Object.keys(numbering).length && numbering.numId !== 0 && format !== 'none'
+          ? (format ? format !== 'bullet' : /^[\d一二三四五六七八九十]|^[a-z]+[.)]/i.test(listLabel)) ? 'numbered' : 'bullet'
+          : 'paragraph'
   const block: DocumentBlock = {
     id, type, level, runs: ['sectionBreak', 'columnBreak', 'pageBreak'].includes(type) ? [] : runs,
     style: {
@@ -96,6 +102,14 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
     }
   }
   const numberingId = numbering.numId
+  if (type === 'numbered' || type === 'bullet' || type === 'checklist') block.level = listLevel
+  if ((type === 'numbered' || type === 'bullet') && definition?.preset && definition.levels.has(listLevel)) {
+    block.list = { id: `num-${numberingId}`, preset: definition.preset }
+  }
+  if (definition && (type === 'numbered' || type === 'bullet' || type === 'checklist')) {
+    block.metadata.numberingDefinition = definition.definition
+    block.metadata.numberingListId = `num-${numberingId}`
+  }
   if (type === 'checklist') block.checklist = {
     listId: typeof numberingId === 'string' || typeof numberingId === 'number' ? String(numberingId) : id,
     checked: listLabel.startsWith('☑'),
@@ -127,8 +141,8 @@ function normalizeBlock(value: unknown, fallbackId: string): DocumentBlock {
       const rowIndex = Math.max(0, finite(cellDetails.rowIndex))
       const row = rows.get(rowIndex) ?? []
       const cellId = text(cell.id, id+'-cell-'+cellIndex)
-      let blocks = array(cell.children).map((child, index) => normalizeBlock(child, cellId+'-block-'+index))
-      if (!blocks.length) blocks = [normalizeBlock({ id: cellId+'-text', content: text(cell.content), type: 'text' }, cellId+'-text')]
+      let blocks = array(cell.children).map((child, index) => normalizeBlock(child, cellId+'-block-'+index, lists))
+      if (!blocks.length) blocks = [normalizeBlock({ id: cellId+'-text', content: text(cell.content), type: 'text' }, cellId+'-text', lists)]
       row.push({
         id: cellId, blocks, colSpan: positive(cellDetails.columnSpan, 1), rowSpan: positive(cellDetails.rowSpan, 1),
         columnIndex: finite(cellDetails.columnIndex), style: record(cellDetails.style),
@@ -285,6 +299,7 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   result.name = envelope.fileName
   result.blocks = []
   const stories: Record<string, unknown[]> = {}
+  const lists = documentNumberingIndex(data.numberingDefinitions)
   for (const [index, source] of array(data.blocks).entries()) {
     const raw = record(source)
     const story = text(record(array(raw.sourceRefs)[0]).story, 'body')
@@ -293,10 +308,10 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
       ;(stories[key] ??= []).push(raw)
       continue
     }
-    const block = normalizeBlock(raw, id+'-block-'+index)
+    const block = normalizeBlock(raw, id+'-block-'+index, lists)
     result.blocks.push(block)
     if (block.type !== 'table') for (const [childIndex, child] of array(raw.children).entries()) {
-      if (record(child).type === 'figure') result.blocks.push(normalizeBlock(child, block.id+'-object-'+childIndex))
+      if (record(child).type === 'figure') result.blocks.push(normalizeBlock(child, block.id+'-object-'+childIndex, lists))
     }
   }
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks

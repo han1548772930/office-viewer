@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Button } from 'antdv-next'
+import { computed, ref } from 'vue'
+import { Button, Form, InputNumber } from 'antdv-next'
 import { listKind, listMarker, listPresets, type ListKind, type ListPreset } from '../../features/document/model/document-lists'
 
-const props = defineProps<{ kind: ListKind; active?: ListPreset; title: string }>()
-const emit = defineEmits<{ insert: [value: ListPreset] }>()
+const props = defineProps<{ kind: ListKind; active?: ListPreset; title: string; canRestart?: boolean; canContinue?: boolean }>()
+const emit = defineEmits<{ insert: [value: ListPreset]; execute: [commandId: string, params?: Record<string, unknown>] }>()
+const numbering = ref({ start: 1 })
+function restart() {
+  const start = numbering.value.start
+  if (props.canRestart && Number.isSafeInteger(start) && start >= 0 && start <= 2147483647) emit('execute', 'doc.command.restart-list-numbering', { start })
+}
 const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind).map(preset => ({
   preset, preview: [0, 1, 2, 0].map(level => ({ level, glyph: listMarker(preset, level) })),
 })))
@@ -20,6 +25,13 @@ const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind)
         </span>
       </span>
     </Button>
+    <Form v-if="kind === 'numbered'" class="doc-numbering-actions" :model="numbering" layout="vertical" @finish="restart">
+      <Form.Item label="起始编号" name="start" :rules="[{ required: true, type: 'integer', min: 0, max: 2147483647 }]">
+        <InputNumber v-model:value="numbering.start" :min="0" :max="2147483647" :precision="0" :disabled="!canRestart" aria-label="起始编号" />
+      </Form.Item>
+      <Button html-type="submit" :disabled="!canRestart">重新编号</Button>
+      <Button :disabled="!canContinue" @mousedown.prevent @click="emit('execute', 'doc.command.continue-list-numbering')">继续前一编号</Button>
+    </Form>
   </div>
 </template>
 
@@ -31,4 +43,7 @@ const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind)
 .doc-list-row { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 10px; line-height: 1; }
 .doc-list-row > span { min-width: 12px; text-align: center; }
 .doc-list-row i { min-width: 2px; flex: 1; height: 4px; border-radius: 2px; background: var(--ribbon-border); }
+.doc-numbering-actions { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; padding-block-start: 6px; border-block-start: 1px solid var(--ribbon-border); }
+.doc-numbering-actions :deep(.ant-form-item) { margin-block-end: 0; }
+.doc-numbering-actions :deep(.ant-input-number) { width: 100%; }
 </style>

@@ -9,10 +9,11 @@ import { assertDocumentPermission, canManageDocumentPermissions, permissionTarge
 import { documentTocIdAtBlock } from '../toc/document-toc'
 import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
 import { selectionFontPatch } from '../model/document-font'
-import { isListPreset, listKind, listLevelSpec, type ListPreset } from '../model/document-lists'
+import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
+import { blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 export { blockAtPoint } from '../model/document-model'
 import {
-  applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId,
+  applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets,
   type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
@@ -22,12 +23,15 @@ export type DocumentCommand =
   | DocumentTableCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
-  | { id: 'doc.command.format-text'; patch: RunPatch }
+  | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'> }
   | { id: 'doc.command.apply-format-painter'; format: DocumentPainterFormat }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
   | { id: 'doc.command.set-paragraph-named-style'; namedStyle: DocumentNamedParagraphStyle }
   | { id: 'doc.command.set-block-type'; type: DocumentBlock['type']; level?: number }
   | { id: 'doc.command.change-list-type'; listType: ListPreset }
+  | { id: 'doc.command.change-list-nesting-level'; direction: -1 | 1 }
+  | { id: 'doc.command.restart-list-numbering'; start?: number }
+  | { id: 'doc.command.continue-list-numbering' }
   | { id: 'doc.command.toggle-checklist-item'; blockId: string }
   | { id: 'doc.command.insert-page-break' }
   | { id: 'doc.command.insert-column-break' }
@@ -78,6 +82,87 @@ function pointForBlock(template: DocumentPoint, block: DocumentBlock, offset: nu
   return template.row == null ? { blockId: block.id, offset } : { ...template, cellBlockId: block.id, offset }
 }
 
+export function documentTabCommand(model: DocumentModel, selection: DocumentSelection, shift: boolean): DocumentCommand | undefined {
+  const targets = selectedTargets(model, selection), direction = shift ? -1 : 1
+  const blocks = targets.map(target => blockAtPoint(model, target))
+  const isList = (b?: DocumentBlock) => !!b && ['numbered', 'bullet', 'checklist'].includes(b.type)
+  if (blocks.length > 1 && blocks.some(isList)) return { id: 'doc.command.change-list-nesting-level', direction }
+  const block = blocks[0], target = targets[0]
+  if (block && target && isList(block) && orderedSelection(model, selection).start.offset === 0) {
+    const container = blockContainer(model, target), index = container.indexOf(block)
+    const id = blockNumberingId(block)
+    const hasPrevious = id ? container.slice(0, index).some(b => blockNumberingId(b) === id) : container[index - 1]?.type === block.type
+    if (hasPrevious) return { id: 'doc.command.change-list-nesting-level', direction }
+  }
+  if (selection.focus.row != null) return { id: 'doc.command.table-tab', direction }
+}
+
+function numberingStyleKey(block: DocumentBlock): string {
+  return blockListPreset(block) ?? JSON.stringify(blockNumberingDefinition(block)?.abstract ?? { type: block.type })
+}
+
+function targetForBlock(model: DocumentModel, block: DocumentBlock): TextTarget | undefined {
+  return textTargets(model).find(target => blockAtPoint(model, target) === block)
+}
+
+function legacyNumberingTargets(model: DocumentModel, block: DocumentBlock): TextTarget[] {
+  const target = targetForBlock(model, block)
+  if (!target) return []
+  const container = blockContainer(model, target), index = container.indexOf(block), key = numberingStyleKey(block)
+  const compatible = (candidate: DocumentBlock | undefined) => candidate?.type === block.type && !blockNumberingId(candidate) && numberingStyleKey(candidate) === key
+  let first = index, last = index
+  while (compatible(container[first - 1])) first--
+  while (compatible(container[last + 1])) last++
+  const ids = new Set(container.slice(first, last + 1).map(candidate => candidate.id))
+  return textTargets(model).filter(candidate => ids.has(candidate.cellBlockId ?? candidate.blockId))
+}
+
+function numberingCommandPlan(model: DocumentModel, selection: DocumentSelection): { block: DocumentBlock; targets: TextTarget[] } | undefined {
+  const first = selectedTargets(model, selection)[0], block = first && blockAtPoint(model, first)
+  if (!first || block?.type !== 'numbered') return
+  const targets = textTargets(model), index = targets.findIndex(target => sameTarget(target, first)), id = blockNumberingId(block)
+  const affected = id ? targets.slice(index).filter(target => {
+    const candidate = blockAtPoint(model, target)
+    return candidate && ['numbered', 'bullet'].includes(candidate.type) && blockNumberingId(candidate) === id
+  }) : legacyNumberingTargets(model, block).filter(target => targets.findIndex(candidate => sameTarget(candidate, target)) >= index)
+  return { block, targets: affected }
+}
+
+function precedingCompatibleNumbering(model: DocumentModel, block: DocumentBlock): DocumentBlock | undefined {
+  const targets = textTargets(model), current = targets.findIndex(target => blockAtPoint(model, target) === block), key = numberingStyleKey(block)
+  for (let index = current - 1; index >= 0; index--) {
+    const candidate = blockAtPoint(model, targets[index]!)
+    if (candidate?.type === 'numbered' && numberingStyleKey(candidate) === key) return candidate
+  }
+}
+
+function sameNumberingSequence(model: DocumentModel, previous: DocumentBlock, block: DocumentBlock): boolean {
+  const id = blockNumberingId(block), previousId = blockNumberingId(previous)
+  if (id || previousId) return !!id && id === previousId
+  return legacyNumberingTargets(model, previous).some(target => blockAtPoint(model, target) === block)
+}
+
+function numberingPermissionsAllowed(model: DocumentModel, targets: TextTarget[], permissionContext?: DocumentPermissionContext): boolean {
+  try {
+    assertDocumentPermission(model.permissionRules ?? [], permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }, 'edit', targets.flatMap(target => permissionTargetsForSelection(model, collapsedSelection({ ...target, offset: 0 }))))
+    return true
+  } catch { return false }
+}
+
+export function canRestartDocumentNumbering(model: DocumentModel, selection: DocumentSelection, permissionContext?: DocumentPermissionContext): boolean {
+  const plan = numberingCommandPlan(model, selection)
+  if (!plan) return false
+  const preset = blockListPreset(plan.block), source = blockNumberingDefinition(plan.block) ?? (preset ? presetNumberingDefinition(preset) : undefined)
+  return !!source?.levels.some(level => level.ilvl === plan.block.level) && numberingPermissionsAllowed(model, plan.targets, permissionContext)
+}
+
+export function canContinueDocumentNumbering(model: DocumentModel, selection: DocumentSelection, permissionContext?: DocumentPermissionContext): boolean {
+  const plan = numberingCommandPlan(model, selection), previous = plan && precedingCompatibleNumbering(model, plan.block)
+  if (!plan || !previous || sameNumberingSequence(model, previous, plan.block)) return false
+  const targets = blockNumberingId(previous) ? plan.targets : [...legacyNumberingTargets(model, previous), ...plan.targets]
+  return numberingPermissionsAllowed(model, targets, permissionContext)
+}
+
 /** Model mutation only. The application command bus owns the resulting history snapshot. */
 export function executeDocumentCommand(
   model: DocumentModel,
@@ -99,7 +184,7 @@ export function executeDocumentCommand(
     case 'doc.command.table-delete': return executeDocumentTableCommand(model, selection, command)
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
     case 'doc.command.delete': return deleteContent(model, selection, command.direction)
-    case 'doc.command.format-text': formatText(model, selection, selectionFontPatch(model, selection, command.patch)); return selection
+    case 'doc.command.format-text': formatText(model, selection, selectionFontPatch(model, selection, documentRunFormatPatch(command.patch, command.clearFields))); return selection
     case 'doc.command.apply-format-painter': {
       const range = documentPainterTarget(model, selection)
       if (!range) return selection
@@ -132,6 +217,60 @@ export function executeDocumentCommand(
       block.checklist = { listId: block.checklist?.listId || documentId('checklist'), checked: block.checklist?.checked !== true }
       return selection
     }
+    case 'doc.command.change-list-nesting-level': {
+      if (command.direction !== -1 && command.direction !== 1) throw new RangeError('List nesting direction must be -1 or 1')
+      for (const target of selectedTargets(model, selection)) {
+        const block = blockAtPoint(model, target)
+        if (!block || !['bullet', 'numbered', 'checklist'].includes(block.type)) continue
+        const { index, maximum } = blockListLevel(block)
+        block.level = Math.max(0, Math.min(maximum, index + command.direction))
+      }
+      return selection
+    }
+    case 'doc.command.restart-list-numbering':
+    case 'doc.command.continue-list-numbering': {
+      const plan = numberingCommandPlan(model, selection)
+      if (!plan) throw new RangeError('Numbering changes require a numbered paragraph')
+      if (command.id === 'doc.command.continue-list-numbering') {
+        const previous = precedingCompatibleNumbering(model, plan.block)
+        if (!previous) throw new RangeError('No compatible preceding numbering instance is available')
+        if (sameNumberingSequence(model, previous, plan.block)) return selection
+        const previousTargets = blockNumberingId(previous) ? [] : legacyNumberingTargets(model, previous)
+        assertDocumentPermission(model.permissionRules ?? [], context, 'edit', [...previousTargets, ...plan.targets].flatMap(target => permissionTargetsForSelection(model, collapsedSelection({ ...target, offset: 0 }))))
+        if (!blockNumberingId(previous)) {
+          const preset = blockListPreset(previous)
+          const id = documentId('list')
+          for (const target of previousTargets) {
+            const block = blockAtPoint(model, target)
+            if (!block) continue
+            if (preset) block.list = { id, preset }
+            else block.metadata.numberingListId = id
+          }
+        }
+        for (const target of plan.targets) {
+          const block = blockAtPoint(model, target)
+          if (block) copyBlockNumbering(previous, block)
+        }
+      } else {
+        const start = command.start ?? 1
+        if (!Number.isSafeInteger(start) || start < 0 || start > 2_147_483_647) throw new RangeError('The numbering start must be an integer between 0 and 2147483647')
+        const preset = blockListPreset(plan.block)
+        const source = blockNumberingDefinition(plan.block) ?? (preset ? presetNumberingDefinition(preset) : undefined)
+        if (!source?.levels.some(level => level.ilvl === plan.block.level)) throw new RangeError('The imported numbering definition has no editable level for this paragraph')
+        assertDocumentPermission(model.permissionRules ?? [], context, 'edit', plan.targets.flatMap(target => permissionTargetsForSelection(model, collapsedSelection({ ...target, offset: 0 }))))
+        const instance = { ...source.instance, levelStartOverrides: { ...numberingRecord(source.instance.levelStartOverrides), [String(plan.block.level)]: start } }
+        const definition = numberingDefinitionFromParts(source.abstract, instance), id = documentId('list')
+        for (const target of plan.targets) {
+          const block = blockAtPoint(model, target)
+          if (!block) continue
+          clearBlockNumbering(block)
+          block.metadata.numberingDefinition = cloneNumberingDefinition(definition)
+          block.metadata.numberingListId = id
+          if (preset) block.list = { id, preset }
+        }
+      }
+      return selection
+    }
     case 'doc.command.change-list-type':
     case 'doc.command.set-block-type': {
       const targets = selectedTargets(model, selection)
@@ -142,15 +281,15 @@ export function executeDocumentCommand(
       const isList = type === 'bullet' || type === 'numbered' || type === 'checklist'
       const toggleOff = !explicit && isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === type)
       let list: DocumentBlock['list']
+      let adjacent: DocumentBlock | undefined
       if (!toggleOff && (type === 'bullet' || type === 'numbered')) {
         const first = targets[0], last = targets.at(-1)
-        let adjacent: DocumentBlock | undefined
         if (!explicit && targets.length === 1 && first && last) {
           const before = blockContainer(model, first), after = blockContainer(model, last)
           const left = before.indexOf(blockAtPoint(model, first)!), right = after.indexOf(blockAtPoint(model, last)!)
-          adjacent = [before[left - 1], after[right + 1]].find(b => b?.type === type && b.list)
+          adjacent = [before[left - 1], after[right + 1]].find(b => b?.type === type && (b.list || blockNumberingDefinition(b)))
         }
-        list = adjacent?.list ?? { id: documentId('list'), preset: explicit ?? (type === 'bullet' ? 'BULLET_LIST' : 'ORDER_LIST') }
+        list = adjacent?.list ?? (adjacent && blockNumberingDefinition(adjacent) ? undefined : { id: documentId('list'), preset: explicit ?? (type === 'bullet' ? 'BULLET_LIST' : 'ORDER_LIST') })
       }
       const selectedChecklist = targets.map((target) => blockAtPoint(model, target)).find((block) => block?.type === 'checklist')
       const checklistListId = type === 'checklist' && !toggleOff
@@ -163,8 +302,10 @@ export function executeDocumentCommand(
         block.type = toggleOff ? 'paragraph' : type
         delete block.metadata.namedStyleType
         block.level = block.type === 'paragraph' ? 0 : level ?? (isList && wasList ? block.level : 0)
-        if (list) { block.list = { ...list }; block.level = listLevelSpec(list.preset, block.level).index }
-        else delete block.list
+        clearBlockNumbering(block)
+        if (adjacent) copyBlockNumbering(adjacent, block)
+        else if (list) block.list = { ...list }
+        if (block.type === 'bullet' || block.type === 'numbered') block.level = blockListLevel(block).index
         if (block.type === 'checklist') block.checklist = { listId: checklistListId ?? block.checklist?.listId ?? documentId('checklist'), checked: block.checklist?.checked === true }
         else delete block.checklist
         if (type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: level === 1 ? 24 : level === 2 ? 18 : 14 }))
@@ -269,7 +410,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
     startBlock.type = 'paragraph'
     startBlock.level = 0
     delete startBlock.checklist
-    delete startBlock.list
+    clearBlockNumbering(startBlock)
     return collapsedSelection(start)
   }
   const paragraphs = normalizedText.split('\n')
@@ -279,7 +420,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
     if (['bullet', 'numbered', 'checklist', 'quote'].includes(startBlock.type)) {
       paragraph.type = startBlock.type
       paragraph.level = startBlock.level
-      if (startBlock.list) paragraph.list = { ...startBlock.list }
+      copyBlockNumbering(startBlock, paragraph)
       if (startBlock.type === 'checklist') paragraph.checklist = { listId: startBlock.checklist?.listId ?? documentId('checklist'), checked: false }
     }
     if (index === paragraphs.length - 2) paragraph.runs = compactRuns([...paragraph.runs as DocumentRun[], ...after])
@@ -357,8 +498,9 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
     const from = sameTarget(target, start) ? start.offset : 0
     const to = sameTarget(target, end) ? end.offset : runText(runs).length
     const selected = sliceRuns(runs, from, to)
-    if (!selected.length || selected.every((run) => Object.entries(patch).every(([key, value]) => Object.is(Reflect.get(run, key), value)))) return
+    if (!selected.length) return
     const changed = selected.map((run) => applyRunPatch(run, patch))
+    if (selected.every((run, index) => JSON.stringify(run) === JSON.stringify(changed[index]))) return
     setTargetRuns(model, target, [...sliceRuns(runs, 0, from), ...changed, ...sliceRuns(runs, to)])
   })
 }

@@ -13,6 +13,7 @@ import {
 } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
+import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
 
 export type ApiCellData = {
   v?: CellScalar
@@ -137,6 +138,7 @@ export function cellFromApi(row: number, col: number, raw: unknown): Spreadsheet
     cell.display = source.v == null ? source.f : String(source.v)
   }
   if (source?.s) cell.style = mergeCellStyle(cell.style, source.s)
+  if (!cell.formula || cell.value !== null) cell.display = formatSheetValue(cell.value, cell.style.numberFormat) ?? cell.display
   return cell
 }
 
@@ -156,6 +158,7 @@ export function applyCellValue(cell: SpreadsheetCell | undefined, row: number, c
   next.value = next.formula ? (source?.v ?? null) : scalar
   next.display = next.formula ? (source?.v == null ? next.formula : String(source.v)) : scalar == null ? '' : String(scalar)
   if (source?.s) next.style = mergeCellStyle(next.style, source.s)
+  if (!next.formula || next.value !== null) next.display = formatSheetValue(next.value, next.style.numberFormat) ?? next.display
   return next
 }
 

@@ -7,6 +7,7 @@ import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
 import { RESET_BACKGROUND_COLOR, RESET_TEXT_COLOR, resetSheetColors } from '../features/sheet-workbench/sheet-color-reset.ts'
+import { applySheetNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_ALIASES, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
@@ -343,7 +344,7 @@ export class OfficeStudio {
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
     const recalculated = !forceRecalculation && before.calculationMode === 'manual' && after.calculationMode === 'manual'
       ? after
-      : recalculateWorkbookFormulas(after, before).workbook
+      : recalculateWorkbookFormulas(after, before, { numberFormatLocale: this.regionalSettings.region.value }).workbook
     for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
     recalculated.id = id
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
@@ -549,6 +550,24 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    for (const id of [...Object.values(SHEET_NUMBER_FORMAT_COMMANDS), ...Object.values(SHEET_NUMBER_FORMAT_ALIASES)]) {
+      this.registerCommand<SheetNumberFormatCommandInput | undefined, boolean>(id, input => {
+        const action = numberFormatActionForCommand(id, input, this.regionalSettings.region.value)
+        if (!action) return false
+        const unitId = input?.unitId ?? this.activeWorkbookId
+        const workbook = this.getWorkbookModel(unitId)
+        if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+        const selected = this.getSelection()
+        const sheetId = input?.sheetId ?? input?.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
+        const ranges = input?.ranges ?? (selected?.unitId === unitId && selected.sheetId === sheetId ? [{
+          startRow: selected.startRow, endRow: selected.endRow, startCol: selected.startColumn, endCol: selected.endColumn,
+        }] : [])
+        const label = action.kind === 'decimals' ? action.delta === 1 ? '增加小数位' : '减少小数位' : '设置数字格式'
+        return this.commitWorkbook(unitId, label, model => {
+          applySheetNumberFormatCommand(requireSheet(model, sheetId), ranges, action, this.regionalSettings.region.value, model.date1904, this.currentUserId)
+        })
+      })
+    }
     this.registerCommand<ChangeSheetOutlineInput, boolean>(CHANGE_SHEET_OUTLINE_COMMAND, ({ unitId, sheetId, action }) =>
       this.commitWorkbook(unitId, '编辑工作表分组', (model) => {
         const sheet = requireSheet(model, sheetId)

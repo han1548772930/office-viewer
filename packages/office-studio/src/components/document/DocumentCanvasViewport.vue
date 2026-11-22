@@ -4,7 +4,7 @@ import { Input } from 'antdv-next'
 import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
-import { blockAtPoint, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
+import { blockAtPoint, documentTabCommand, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
 import { caretRect, createTextMeasurer, emptyLayout, hitTestChecklist, hitTestDocument, layoutDocument, lineForPoint, STORY_LINE_HEIGHT, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../../features/document/model/document-model'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
@@ -486,11 +486,8 @@ function keydown(event: KeyboardEvent) {
   } else if (event.key === 'Backspace' || event.key === 'Delete') { event.preventDefault(); emit('command', { id: 'doc.command.delete', direction: event.key === 'Backspace' ? -1 : 1 }) }
   else if (event.key === 'Tab') {
     event.preventDefault()
-    if (props.selection.focus.row != null) emit('command', { id: 'doc.command.table-tab', direction: event.shiftKey ? -1 : 1 })
-    else {
-      const block = blockAtPoint(props.model, props.selection.focus)
-      emit('command', { id: 'doc.command.format-paragraph', patch: { indent: Math.max(0, (block?.style.indent ?? 0) + (event.shiftKey ? -1 : 1)) } })
-    }
+    const tab = documentTabCommand(props.model, props.selection, event.shiftKey)
+    if (tab) emit('command', tab)
   } else {
     const direction = ({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Home: 'home', End: 'end' } as const)[event.key as 'ArrowLeft']
     if (direction) { event.preventDefault(); move(direction, event.shiftKey, command) }

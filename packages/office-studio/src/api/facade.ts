@@ -63,6 +63,8 @@ import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
 import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
 import { parseSheetHyperlinkTarget } from '../features/sheet-workbench/sheet-hyperlink.ts'
+import { SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCellInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
+import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
 
 export type {
   DocumentBodySegment,
@@ -681,8 +683,8 @@ export class FRange {
   getValues(): CellScalar[][] { return this.mapCells((cell) => cell?.value ?? null) }
   getRawValue(): CellScalar { return this.getValue() }
   getRawValues(): CellScalar[][] { return this.getValues() }
-  getDisplayValue(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.display ?? '' }
-  getDisplayValues(): string[][] { return this.mapCells((cell) => cell?.display ?? '') }
+  getDisplayValue(): string { return this.formattedCell(this.cellAt(this.range.startRow, this.range.startColumn)) }
+  getDisplayValues(): string[][] { return this.mapCells(cell => this.formattedCell(cell)) }
   getFormula(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.formula ?? '' }
   getFormulas(): string[][] { return this.mapCells((cell) => cell?.formula ?? '') }
   getDataValidation(): DataValidationRule | null { return new FWorksheet(this.api, this.unitId, this.sheetId).getDataValidation(this.range) }
@@ -741,6 +743,26 @@ export class FRange {
   }
   setFormula(formula: string): this { return this.setValue({ f: formula }) }
   setFormulas(formulas: string[][]): this { return this.setValues(formulas.map((row) => row.map((formula) => ({ f: formula || null }))) as ApiCellValue[][]) }
+  setNumberFormat(pattern: string): this {
+    this.api.executeCommandSync(SHEET_NUMBER_FORMAT_COMMANDS.set, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)], pattern })
+    return this
+  }
+  setNumberFormats(patterns: string[][]): this {
+    assertMatrixSize(patterns, this.getHeight(), this.getWidth())
+    const values: SheetNumberFormatCellInput[] = []
+    for (let row = 0; row < this.getHeight(); row += 1) for (let col = 0; col < this.getWidth(); col += 1) {
+      const pattern = patterns[row]![col]!
+      if (typeof pattern !== 'string') throw new TypeError('数字格式矩阵必须包含字符串。')
+      values.push({ row: this.range.startRow + row, col: this.range.startColumn + col, pattern })
+    }
+    this.api.executeCommandSync(SHEET_NUMBER_FORMAT_COMMANDS.setCells, { unitId: this.unitId, subUnitId: this.sheetId, values })
+    return this
+  }
+  getNumberFormat(): string {
+    const pattern = this.cellAt(this.range.startRow, this.range.startColumn)?.style.numberFormat
+    return !pattern || /^general$/i.test(pattern) ? '' : pattern
+  }
+  getNumberFormats(): string[][] { return this.mapCells(cell => !cell?.style.numberFormat || /^general$/i.test(cell.style.numberFormat) ? '' : cell.style.numberFormat) }
   setFontWeight(weight: 'normal' | 'bold' | null): this { return this.mutateStyle('sheet.command.set-font-weight', 'Set font weight', (cell) => { cell.style.font.bold = weight === 'bold' }) }
   setFontStyle(style: 'normal' | 'italic' | null): this { return this.mutateStyle('sheet.command.set-font-style', 'Set font style', (cell) => { cell.style.font.italic = style === 'italic' }) }
   setFontFamily(family: string | null): this { return this.mutateStyle('sheet.command.set-font-family', 'Set font family', (cell) => { if (family) cell.style.font.family = family }) }
@@ -803,6 +825,13 @@ export class FRange {
       }
     })
     return this
+  }
+
+  private formattedCell(cell: SpreadsheetCell | undefined): string {
+    if (!cell) return ''
+    if (cell.formula && cell.value === null) return cell.display
+    const workbook = this.api.getWorkbookModel(this.unitId)
+    return formatSheetValue(cell.value, cell.style.numberFormat, workbook?.date1904, this.api.regionalSettings.region.value) ?? cell.display
   }
   private mutate(id: string, label: string, update: (model: WorkbookModel) => void, params: unknown = { range: this.range }): void {
     this.api.mutateWorkbook(this.unitId, id, label, update, { ...asRecord(params), unitId: this.unitId, sheetId: this.sheetId })

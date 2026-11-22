@@ -1,5 +1,6 @@
 import type { CellScalar } from '../../domain/model.ts'
 import { formatSheetValue } from './sheet-number-format.ts'
+import { isValidSheetNumberFormat } from './number-format-render.ts'
 
 export interface CustomNumberFormatResult {
   pattern: string
@@ -33,10 +34,7 @@ export function validateCustomNumberFormat(input: string): CustomNumberFormatRes
   if (escaped) throw new Error('格式代码不能以转义符结尾。')
   if (bracketDepth !== 0) throw new Error('格式代码中的方括号不匹配。')
   if (sectionCount > 4) throw new Error('格式代码最多支持四个分段。')
-  const tokens = pattern.replace(/"[^"]*"|\\.|\[[^\]]*\]/g, '')
-  if (!/[0#?@]/.test(tokens) && !/(?:y{2,4}|m{1,4}|d{1,4}|h{1,2}|s{1,2})/i.test(tokens)) {
-    throw new Error('格式代码没有可识别的数字、日期或文本占位符。')
-  }
+  if (!isValidSheetNumberFormat(pattern)) throw new Error('格式代码无效。')
 
   return { pattern, preview: formatSheetValue(1234.567, pattern) }
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Tooltip, Upload } from 'antdv-next'
+import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Tooltip, Upload, theme } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
 import { computed, inject, nextTick, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
@@ -30,10 +30,11 @@ import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, 
 import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } from './document/document-toolbar-state'
 import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
-import { blockAtPoint, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
+import { blockAtPoint, canContinueDocumentNumbering, canRestartDocumentNumbering, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
-import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
+import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
+import { DOCUMENT_DEFAULT_TEXT_COLOR, rememberDocumentColors, type DocumentColorMemory } from '../features/document/services/document-colors'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { DOCUMENT_PASTE_OPTIONS, documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
@@ -70,6 +71,8 @@ const selection = shallowRef<DocumentSelection>(collapsedSelection({ ...firstTar
 const layout = shallowRef<DocumentLayout>(emptyLayout())
 const canvasRef = ref<InstanceType<typeof DocumentCanvasViewport> | null>(null)
 const activeTab = ref('home')
+const { token: themeToken } = theme.useToken()
+const colorMemory = shallowRef<DocumentColorMemory>({})
 const documentTitle = ref(props.fileName || '无标题文档')
 const displayPreference = useWorkbenchDisplay()
 const chrome = computed(() => workbenchVisibility(displayPreference?.value.chrome ?? 'full'))
@@ -295,6 +298,9 @@ const ribbonTabs = computed(() => {
   const control = selectedContentControl.value
   return createDocumentRibbon({
     fontList: officeFonts?.value,
+    lastTextColor: colorMemory.value.color, lastHighlightColor: colorMemory.value.highlight,
+    defaultTextColor: DOCUMENT_DEFAULT_TEXT_COLOR, defaultHighlightColor: themeToken.value.colorPrimary,
+    numbering: { canRestart: canRestartDocumentNumbering(model.value, selection.value, permissionContext.value), canContinue: canContinueDocumentNumbering(model.value, selection.value, permissionContext.value) },
     painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || !!storyLocation.value,
     mode: pageMode.value,
     editingDisabled: !canEditContextSelection.value || !!storyLocation.value,
@@ -383,7 +389,7 @@ watch(() => props.modelValue, (value) => {
   // the undo state and make redo appear to do nothing.
   if (typeof value !== 'string' && JSON.stringify(value) === JSON.stringify(model.value)) return
   const next = typeof value === 'string' ? { ...createBlankDocument(), blocks: blocksFromHtml(value) } : value
-  if (typeof value === 'string' || next.id !== model.value.id) painter.value = undefined
+  if (typeof value === 'string' || next.id !== model.value.id) { painter.value = undefined; pendingMarks.value = {} }
   model.value = normalizeDocument(next)
   documentTitle.value = next.name
   selection.value = { anchor: clampPoint(model.value, selection.value.anchor), focus: clampPoint(model.value, selection.value.focus) }
@@ -411,16 +417,18 @@ function execute(command: DocumentCommand, restoreFocus = true) {
     if (codeSelection) { selection.value = codeSelection; if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next); return }
   }
   if (command.id === 'doc.command.format-text' && selectionCollapsed(selection.value)) {
-    pendingMarks.value = { ...pendingMarks.value, ...selectionFontPatch(model.value, selection.value, command.patch) }
-    canvasRef.value?.focus()
-    return
+    pendingMarks.value = { ...pendingMarks.value, ...selectionFontPatch(model.value, selection.value, documentRunFormatPatch(command.patch, command.clearFields)) }
+    colorMemory.value = rememberDocumentColors(colorMemory.value, command)
+    if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
+    return true
   }
   try {
     const next = cloneDocument(model.value)
     const nextCommand = command.id === 'doc.command.insert-text' ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
     selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
-    publish(next)
+    if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next)
+    colorMemory.value = rememberDocumentColors(colorMemory.value, command)
     if (restoreFocus) void nextTick(() => canvasRef.value?.focus())
     return true
   } catch (error) {

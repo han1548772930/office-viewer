@@ -46,6 +46,8 @@ export interface FormulaRecalculationResult {
 }
 
 export interface FormulaEvaluationOptions {
+  /** Display formatting uses the host region; scalar formula results are locale independent. */
+  numberFormatLocale?: string
   /** A fixed clock value for deterministic evaluation and consistent recalculation. */
   now?: Date
 }

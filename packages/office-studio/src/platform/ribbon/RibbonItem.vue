@@ -7,7 +7,7 @@ import { CLASSIC_RIBBON, GRID_RIBBON, ribbonInvocation, visibleRibbonItems, type
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope, RibbonPopupScopeKey } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
-import { createRibbonMenuModel } from './ribbon-command-menu'
+import { createRibbonMenuModel, ribbonMenuInvocation } from './ribbon-command-menu'
 import RibbonEditableSelect from './RibbonEditableSelect.vue'
 
 const props = withDefaults(defineProps<{ item: RibbonItem; overflow?: boolean; measurement?: boolean; grid?: boolean; large?: boolean; alignStart?: boolean; showLabel?: boolean; iconSize?: number; fullWidth?: boolean }>(), { overflow: false, measurement: false, grid: false, large: false, alignStart: false, fullWidth: false })
@@ -66,9 +66,8 @@ function forward(commandId: string, params?: unknown) {
 }
 
 function executeMenuItem({ key }: MenuInfo) {
-  const action = menuModel.value.actions.get(String(key))
-  if (!action || props.item.disabled || props.item.hidden || props.measurement || action.item.disabled || action.item.hidden) return
-  const invocation = ribbonInvocation(action.item, action.value)
+  if (props.item.disabled || props.item.hidden || props.measurement) return
+  const invocation = ribbonMenuInvocation(menuModel.value, String(key))
   if (!invocation) return
   open.value = false
   emit('execute', invocation.commandId, invocation.params)
@@ -93,7 +92,7 @@ function closeMenu() {
 }
 
 function onPanelKeydown(event: KeyboardEvent) {
-  if (event.defaultPrevented) return
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(); return }
   if (event.key === 'Tab') { open.value = false; return }
   if (event.target instanceof HTMLElement && event.target.matches('input, textarea, [contenteditable="true"]')) return
@@ -110,7 +109,7 @@ onBeforeUnmount(() => { open.value = false })
 
 <template>
   <span ref="root" class="workbench-ribbon-item" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
-    <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :measurement="measurement" :grid="grid" :overflow="overflow" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
+    <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" :measurement="measurement" :grid="grid" :overflow="overflow" :icon-size="iconSize" :open="open" @update:open="(value: boolean) => { open = value }" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
     <Tooltip v-else :title="measurement ? undefined : description" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
       <span v-if="item.type === 'select'" class="ribbon-select-wrap">
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
@@ -127,23 +126,24 @@ onBeforeUnmount(() => { open.value = false })
       </span>
       <span v-else-if="isDropdown" class="ribbon-dropdown" :class="{ 'ribbon-split': item.type === 'split' }">
         <Button v-if="item.type === 'split'" type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
-          <component :is="item.icon" v-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span>
+          <span v-if="item.icon" class="ribbon-button-icon" aria-hidden="true"><component :is="item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.swatch" class="ribbon-icon-color-bar" :style="{ backgroundColor: item.swatch }" /></span>
+          <span v-else-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" /><span v-if="showLabel">{{ item.title }}</span>
         </Button>
         <Popover v-model:open="open" trigger="click" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="!item.popupComponent">
           <Button type="text" size="small" class="ribbon-button" :class="{ 'ribbon-split-arrow': item.type === 'split', 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.type === 'split' ? `${item.title}选项` : item.title" :aria-pressed="item.type === 'menu' ? item.activated : undefined" :aria-haspopup="item.popupComponent ? 'dialog' : 'menu'" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown.down.prevent.stop="openMenu" @keydown.up.prevent.stop="openMenu($event, true)" @keydown.esc.prevent.stop="closeMenu">
-            <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
+            <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
           </Button>
           <template #content>
             <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
-              <component :is="item.popupComponent" v-bind="item.popupProps" @insert="(value: string) => forward(item.popupCommandId ?? item.commandId ?? '', value)" />
+              <component :is="item.popupComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
             </div>
             <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selected-keys="menuModel.selectedKeys" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
           </template>
         </Popover>
       </span>
       <Button v-else type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="event => { if (!item.subId || event.detail <= 1) execute() }" @dblclick="item.subId && forward(item.subId)">
-        <span v-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" />
-        <component :is="item.icon" v-else-if="item.icon" :size="iconSize" /><span v-if="showLabel">{{ item.title }}</span>
+        <span v-if="item.icon" class="ribbon-button-icon" aria-hidden="true"><component :is="item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.swatch" class="ribbon-icon-color-bar" :style="{ backgroundColor: item.swatch }" /></span>
+        <span v-else-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" /><span v-if="showLabel">{{ item.title }}</span>
       </Button>
     </Tooltip>
   </span>
@@ -163,6 +163,9 @@ onBeforeUnmount(() => { open.value = false })
 .is-selector .ribbon-button { height: var(--ribbon-selector-height); }
 .ribbon-button :deep(svg) { flex-shrink: 0; }
 .ribbon-color-swatch { display: inline-block; width: 14px; height: 14px; flex: 0 0 14px; border: 1px solid var(--ribbon-border); border-radius: 2px; }
+.ribbon-button-icon { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; }
+.ribbon-icon-color-bar { position: absolute; inset-inline: 0; bottom: -2px; height: 3px; border-radius: 1px; }
+.ribbon-button:disabled .ribbon-icon-color-bar { opacity: 0.35; }
 .ribbon-button.is-active { background: var(--ribbon-active-background, #e7edfa); color: var(--ribbon-primary, #315bc2); }
 .ribbon-button:focus-visible { outline: 2px solid var(--ribbon-primary, #5274d7); outline-offset: -2px; }
 .ribbon-select-wrap { display: flex; align-items: center; gap: 12px; }

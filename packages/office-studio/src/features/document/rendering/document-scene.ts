@@ -1,7 +1,7 @@
 import type { DocumentModel } from '../../../domain/model'
 import type { DrawCommand, RenderRect, RenderScene } from '../../../rendering/contracts'
 import type { DocumentSelection } from '../model/document-model'
-import { orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets, type TextTarget } from '../model/document-model'
+import { documentTextColor, orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets, type TextTarget } from '../model/document-model'
 import { caretRect, STORY_LINE_HEIGHT, type DocumentLayout } from '../layout/document-layout'
 import { codeBlockData, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
 
@@ -83,7 +83,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       if (line.codeBlock.lineNumber === 1) commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: Math.max(2, scale), fill: '#dce3ec', clip })
       commands.push({ kind: 'text', x: x(line.x - 3), y: y(line.baseline), text: String(line.codeBlock.lineNumber), font: `${10 * scale}px Consolas, monospace`, color: '#8a96a5', align: 'right', baseline: 'alphabetic', clip })
     }
-    if (line.marker) commands.push({ kind: 'text', x: x(line.x - 17), y: y(line.baseline), text: line.marker, font: `${14 * scale}px Arial`, color: '#445166', clip })
+    if (line.marker) commands.push({ kind: 'text', x: x(line.x - 6), y: y(line.baseline), text: line.marker, font: `${14 * scale}px Arial`, color: '#445166', align: 'right', clip })
     if (line.checklist) {
       const size = 14 * scale
       const left = x(line.x - 23)
@@ -95,6 +95,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       }
     }
     for (const glyph of line.glyphs) {
+      const textColor = documentTextColor(glyph.run.color)
       const baselineOffset = glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0
       const baseline = line.baseline + baselineOffset
       if (glyph.run.highlight) commands.push({ kind: 'rect', ...rect(glyph), fill: glyph.run.highlight, clip })
@@ -104,18 +105,18 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
         for (const primitive of glyph.latex.primitives) {
           if (primitive.kind === 'text') {
             const font = primitive.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`)
-            commands.push({ kind: 'text', x: x(glyph.x + primitive.x), y: y(line.baseline + primitive.y), text: primitive.text, font, color: glyph.run.color, clip })
+            commands.push({ kind: 'text', x: x(glyph.x + primitive.x), y: y(line.baseline + primitive.y), text: primitive.text, font, color: textColor, clip })
           } else {
-            commands.push({ kind: 'line', x1: x(glyph.x + primitive.x1), y1: y(line.baseline + primitive.y1), x2: x(glyph.x + primitive.x2), y2: y(line.baseline + primitive.y2), color: glyph.run.color, width: Math.max(0.8, primitive.width * scale), clip })
+            commands.push({ kind: 'line', x1: x(glyph.x + primitive.x1), y1: y(line.baseline + primitive.y1), x2: x(glyph.x + primitive.x2), y2: y(line.baseline + primitive.y2), color: textColor, width: Math.max(0.8, primitive.width * scale), clip })
           }
         }
         continue
       }
       const font = glyph.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`)
       const token = codeData && codeTokens.get(line.target.blockId)?.find((candidate) => glyph.offset >= candidate.start && glyph.offset < candidate.end)
-      commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: token ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : glyph.run.color, clip })
-      if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: glyph.run.color, width: Math.max(0.7, scale), clip })
-      if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: glyph.run.color, width: Math.max(0.7, scale), clip })
+      commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: token ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor, clip })
+      if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: textColor, width: Math.max(0.7, scale), clip })
+      if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: textColor, width: Math.max(0.7, scale), clip })
       if (options.composing && sameTarget(line.target, options.selection.focus) && glyph.end <= options.selection.focus.offset) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline + 3), x2: x(glyph.x + glyph.width), y2: y(line.baseline + 3), color: '#3478df', width: 1, clip })
     }
     if (hasSelection && !line.glyphs.length && start <= line.start && end >= line.end) commands.push({ kind: 'rect', x: x(line.x), y: y(line.y), width: 5 * scale, height: line.height * scale, fill: '#bdd8ff', clip })

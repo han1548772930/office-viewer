@@ -40,7 +40,7 @@ export const docsZhCN: Record<string, string> = {
   'items.doc-spaceAfter-0': '段后 0 磅', 'items.doc-spaceAfter-6': '段后 6 磅', 'items.doc-spaceAfter-8': '段后 8 磅',
   'items.doc-spaceAfter-12': '段后 12 磅', 'items.doc-spaceAfter-18': '段后 18 磅', 'items.doc-spaceAfter-24': '段后 24 磅', 'items.doc-spaceAfter-36': '段后 36 磅',
   'items.doc-text-color-custom': '自定义颜色', 'items.doc-highlight-custom': '自定义颜色', 'items.doc-paper-size-custom': '自定义',
-  'items.doc-text-color-reset': '重置字体颜色', 'items.doc-highlight-reset': '无背景色',
+  'items.doc-text-color-reset': '重置字体颜色', 'items.doc-highlight-reset': '重置颜色',
   'colors.black': '黑色', 'colors.gray': '灰色', 'colors.white': '白色', 'colors.red': '红色', 'colors.orange': '橙色', 'colors.yellow': '黄色', 'colors.green': '绿色', 'colors.teal': '青色', 'colors.blue': '蓝色', 'colors.navy': '藏青色', 'colors.purple': '紫色', 'colors.pink': '粉色', 'colors.brown': '棕色', 'colors.light-gray': '浅灰色', 'colors.light-blue': '浅蓝色', 'colors.light-yellow': '浅黄色',
   'options.doc.doc-block-style.P': '正文', 'options.doc.doc-block-style.quote': '引用',
   'options.doc.doc-block-style.normal': '正文', 'options.doc.doc-block-style.title': '标题', 'options.doc.doc-block-style.subtitle': '副标题',

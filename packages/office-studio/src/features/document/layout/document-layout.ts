@@ -188,7 +188,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
           column += Math.max(1, cell.colSpan)
           const markers = paragraphListMarkers(cell.blocks)
           const paragraphs = cell.blocks.filter((paragraph) => !['table', 'image', 'divider', 'pageBreak'].includes(paragraph.type)).map((paragraph) => {
-            const list = markers.get(paragraph.id), inset = list?.inset ?? (paragraph.type === 'checklist' ? 28 : 0)
+            const list = markers.get(paragraph.id), inset = list?.inset ?? (paragraph.type === 'checklist' ? 28 * (paragraph.level + 1) : 0)
             return { paragraph, inset, marker: list?.marker, lines: wrapRuns(paragraph.runs as DocumentRun[], Math.max(16, width - 16 - inset), measurer) }
           })
           const height = Math.max(34, 16 + paragraphs.reduce((sum, item) => sum + item.lines.reduce((lineSum, line) => lineSum + paragraphLineHeight(line.fontHeight, item.paragraph.style), 0) + item.paragraph.style.spaceAfter, 0))
@@ -231,7 +231,7 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
     } else {
       const indent = Math.max(0, block.style.indent) * 24
       const list = bodyMarkers.get(block.id)
-      const listInset = list?.inset ?? (block.type === 'checklist' ? 28 : block.type === 'quote' ? 16 : 0)
+      const listInset = list?.inset ?? (block.type === 'checklist' ? 28 * (block.level + 1) : block.type === 'quote' ? 16 : 0)
       const width = Math.max(16, currentPage!.content.width - indent - listInset)
       const codeData = codeBlockData(block)
       const codeFont = codeData ? 'Consolas, "Cascadia Code", monospace' : undefined

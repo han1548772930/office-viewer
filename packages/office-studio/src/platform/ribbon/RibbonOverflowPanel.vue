@@ -20,7 +20,7 @@ function focus() {
   target?.focus({ preventScroll: true })
 }
 function escape(event: KeyboardEvent) {
-  if (event.defaultPrevented) return
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   event.stopPropagation(); event.preventDefault()
   if (scope.activeId.value) scope.close()
   else emit('close')

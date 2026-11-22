@@ -19,6 +19,7 @@ import { documentCommentLocaleMessages } from './docs/locales/document-comments.
 import { documentTableInsertLocales } from './docs/locales/document-table-insert.ts'
 import { sheetsEnUS } from './sheets/locales/en-US.ts'
 import { sheetsZhCN } from './sheets/locales/zh-CN.ts'
+import { sheetNumberFormatLocales } from './sheets/locales/number-format.ts'
 import { sheetsTranslations } from './sheets/locales/generated.ts'
 import { reviewedSheetsTranslations } from './sheets/locales/reviewed.ts'
 import { sheetFindReplaceLocales } from './sheets/locales/find-replace.ts'
@@ -38,13 +39,21 @@ export const OfficeRegionKey: InjectionKey<Readonly<Ref<OfficeLocale>>> = Symbol
 export function useOfficeRegion() {
   return inject(OfficeRegionKey, undefined) ?? inject(OfficeLocaleKey, ref<OfficeLocale>('zh-CN'))
 }
-export function provideWorkbenchLocales(settings: () => OfficeRegionalSettings | undefined) {
+export function provideWorkbenchRegionalSettings(settings: () => OfficeRegionalSettings | undefined) {
   const hostLocale = inject(OfficeLocaleKey, undefined), hostRegion = inject(OfficeRegionKey, undefined)
+  const hostDirection = inject(OfficeDirectionKey, undefined)
   const locale = computed(() => hostLocale?.value ?? settings()?.locale.value ?? 'zh-CN')
   const region = computed(() => hostRegion?.value ?? (settings()?.regionPreference.value === 'auto' ? locale.value : settings()?.region.value ?? locale.value))
+  const direction = computed(() => hostDirection?.value ?? (locale.value === 'ar-SA' || locale.value === 'fa-IR' ? 'rtl' : 'ltr'))
+  const translator = computed(() => createOfficeTranslator(locale.value))
   provide(OfficeLocaleKey, locale)
   provide(OfficeRegionKey, region)
-  return locale
+  provide(OfficeDirectionKey, direction)
+  provide(OfficeTranslatorKey, (key, fallback) => translator.value(key, fallback))
+  return { locale, region, direction }
+}
+export function provideWorkbenchLocales(settings: () => OfficeRegionalSettings | undefined) {
+  return provideWorkbenchRegionalSettings(settings).locale
 }
 export const OfficeDirectionKey: InjectionKey<Readonly<Ref<'ltr' | 'rtl'>>> = Symbol('OfficeDirection')
 export const OfficeTranslatorKey: InjectionKey<OfficeTranslator> = Symbol('OfficeTranslator')
@@ -190,6 +199,7 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       'groups.rules': sheetRibbonRuleGroupLabels[locale],
       ...conditionalFormattingLocaleMessages[locale],
       ...sheetCrosshairHighlightLocales[locale],
+      ...sheetNumberFormatLocales[locale],
       ...docsTranslations[locale],
       ...documentTocLocales[locale as keyof typeof documentTocLocales],
       'items.doc-insert-table-of-contents': documentTocLocales[locale]['document.toc.insert'],

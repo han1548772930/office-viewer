@@ -14,6 +14,19 @@ export interface DocumentCell {
 export interface DocumentTable { rows: Array<{ id: string; cells: DocumentCell[] }>; columnWidths?: number[]; headerRowCount?: number; style?: Record<string, unknown> }
 export interface DocumentImage { src: string; alt: string; width: number; height: number }
 export type RunPatch = Partial<Omit<DocumentRun, 'id' | 'text'>>
+export type DocumentRunClearField = 'color' | 'highlight'
+export const DOCUMENT_AUTOMATIC_TEXT_COLOR = 'auto'
+export const documentTextColor = (color: string): string => color === DOCUMENT_AUTOMATIC_TEXT_COLOR ? '#1f2937' : color
+
+/** The command keeps its clear intent in JSON; undefined is only an in-memory run patch. */
+export function documentRunFormatPatch(patch: RunPatch, clearFields: readonly DocumentRunClearField[] = []): RunPatch {
+  const result = { ...patch }
+  for (const field of clearFields) {
+    if (field !== 'color' && field !== 'highlight') throw new RangeError('Unknown document text style field to clear')
+    result[field] = undefined
+  }
+  return result
+}
 
 export type DocumentNamedParagraphStyle = 'normal' | 'title' | 'subtitle' | 'heading1' | 'heading2' | 'heading3' | 'heading4' | 'heading5'
 
@@ -56,7 +69,18 @@ export function applyNamedParagraphStyle(block: DocumentBlock, namedStyle: Docum
 }
 
 export function applyRunPatch(run: DocumentRun, patch: RunPatch): DocumentRun {
-  const updated = { ...run, ...patch }
+  const updated: DocumentRun = { ...run, ...patch, color: patch.color ?? run.color }
+  for (const field of ['color', 'highlight'] as const) {
+    if (!Object.hasOwn(patch, field) || patch[field] !== undefined) continue
+    if (field === 'color') updated.color = DOCUMENT_AUTOMATIC_TEXT_COLOR
+    else delete updated.highlight
+    if (updated.metadata?.[field] !== undefined) {
+      const metadata = { ...updated.metadata }
+      delete metadata[field]
+      if (Object.keys(metadata).length) updated.metadata = metadata
+      else delete updated.metadata
+    }
+  }
   if (patch.verticalAlign === 'baseline') {
     delete updated.verticalAlign
     if (updated.metadata?.verticalAlign !== undefined) {
@@ -73,7 +97,7 @@ let sequence = 0
 export const documentId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${(++sequence).toString(36)}`
 export const cloneDocument = (value: DocumentModel): DocumentModel => JSON.parse(JSON.stringify(value)) as DocumentModel
 export const defaultParagraphStyle = (): DocumentParagraphStyle => ({ align: 'left', indent: 0, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 8 })
-export const createRun = (text = '', patch: RunPatch = {}): DocumentRun => applyRunPatch({ id: documentId('run'), text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11, ...patch }, patch)
+export const createRun = (text = '', patch: RunPatch = {}): DocumentRun => applyRunPatch({ id: documentId('run'), text, bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 }, patch)
 export const createParagraph = (text = '', patch: RunPatch = {}): DocumentBlock => ({ id: documentId('paragraph'), type: 'paragraph', level: 0, runs: [createRun(text, patch)], style: defaultParagraphStyle(), metadata: {} })
 export const createChecklistParagraph = (text = '', checked = false, listId = documentId('checklist')): DocumentBlock => ({ ...createParagraph(text), type: 'checklist', checklist: { listId, checked } })
 export const targetKey = (target: TextTarget): string => target.row == null ? target.blockId : `${target.blockId}/r${target.row}/c${target.col ?? 0}/${target.cellBlockId ?? ''}`
@@ -352,7 +376,7 @@ function inlineRunsFromElement(root: HTMLElement, defaults: RunPatch = {}): Docu
       underline: patch.underline || node.tagName === 'U' || style.textDecoration.includes('underline'),
       strike: patch.strike || ['S', 'STRIKE'].includes(node.tagName) || style.textDecoration.includes('line-through'),
       verticalAlign: node.tagName === 'SUP' ? 'superscript' : node.tagName === 'SUB' ? 'subscript' : normalizeVerticalAlign(style.verticalAlign) ?? patch.verticalAlign,
-      color: style.color || node.getAttribute('color') || patch.color,
+      color: node.dataset.officeTextColor === 'auto' ? DOCUMENT_AUTOMATIC_TEXT_COLOR : style.color || node.getAttribute('color') || patch.color,
       fontFamily: style.fontFamily || node.getAttribute('face') || patch.fontFamily,
       fontSize: fontSize ? (style.fontSize.endsWith('px') ? fontSize * 0.75 : fontSize) : patch.fontSize,
       highlight: style.backgroundColor || patch.highlight,
@@ -391,7 +415,8 @@ function runsHtml(runs: readonly InlineRun[]): string {
     if (run.strike) value = `<s>${value}</s>`
     if (run.verticalAlign === 'superscript') value = `<sup>${value}</sup>`
     else if (run.verticalAlign === 'subscript') value = `<sub>${value}</sub>`
-    value = `<span style="font-family:${escapeHtml(run.fontFamily)};font-size:${run.fontSize}pt;color:${escapeHtml(run.color)}${run.highlight ? `;background-color:${escapeHtml(run.highlight)}` : ''}">${value}</span>`
+    const automaticColor = run.color === DOCUMENT_AUTOMATIC_TEXT_COLOR
+    value = `<span${automaticColor ? ' data-office-text-color="auto"' : ''} style="font-family:${escapeHtml(run.fontFamily)};font-size:${run.fontSize}pt;color:${automaticColor ? 'inherit' : escapeHtml(run.color)}${run.highlight ? `;background-color:${escapeHtml(run.highlight)}` : ''}">${value}</span>`
     return run.href ? `<a href="${escapeHtml(run.href)}">${value}</a>` : value
   }).join('') || '<br>'
 }
