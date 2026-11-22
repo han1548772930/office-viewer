@@ -52,6 +52,7 @@ const fieldAreas = computed(() => [
   { area: 'value' as const, label: '值', fields: draft.value?.fields.filter(field => field.area === 'value') ?? [] },
 ])
 const filterField = computed(() => draft.value?.fields.find(field => field.fieldId === filterFieldId.value))
+const filterFieldSort = computed(() => selectedPivot.value?.fields.find(field => field.id === filterField.value?.fieldId)?.sort)
 const settingsField = computed(() => draft.value?.fields.find(field => field.fieldId === settingsFieldId.value))
 const filterItems = computed(() => {
   const field = selectedPivot.value?.fields.find(candidate => candidate.id === filterFieldId.value)
@@ -417,8 +418,8 @@ function close() { if (!busy.value) { filterFieldId.value = ''; settingsFieldId.
   <Modal :open="Boolean(filterFieldId)" :title="null" :width="336" :footer="null" :closable="false" :mask="false" :mask-closable="false" :confirm-loading="fieldDialogBusy" destroy-on-hidden @cancel="filterFieldId = ''">
     <Form v-if="filterField" layout="vertical" class="pivot-filter-dialog" :aria-label="`筛选字段 ${filterField.fieldName}`" @submit.prevent>
       <div v-if="filterField.area === 'row' || filterField.area === 'column'" class="pivot-sort-segment" role="group" aria-label="透视字段排序">
-        <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'ascending'" @click="applyLabelSort('ascending')"><ArrowUpAZ :size="16" />升序</Button>
-        <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending' }" :aria-pressed="selectedPivot?.fields.find(field => field.id === filterField.fieldId)?.sort === 'descending'" @click="applyLabelSort('descending')"><ArrowDownAZ :size="16" />降序</Button>
+        <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': filterFieldSort === 'ascending' }" :aria-pressed="filterFieldSort === 'ascending'" @click="applyLabelSort('ascending')"><ArrowUpAZ :size="16" />升序</Button>
+        <Button type="text" :disabled="fieldDialogBusy" :class="{ 'is-active': filterFieldSort === 'descending' }" :aria-pressed="filterFieldSort === 'descending'" @click="applyLabelSort('descending')"><ArrowDownAZ :size="16" />降序</Button>
       </div>
       <div class="pivot-filter-items">
         <FormItem class="pivot-filter-checkbox pivot-filter-select-all"><Checkbox :checked="allFilterItemsSelected" :indeterminate="filterSelection.length > 0 && !allFilterItemsSelected" @change="toggleAllFilterItems(!allFilterItemsSelected)">全选</Checkbox></FormItem>

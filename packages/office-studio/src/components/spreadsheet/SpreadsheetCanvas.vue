@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AutoComplete, Input } from 'antdv-next'
+import { AutoComplete, Button, theme } from 'antdv-next'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import type { TimelineLevel } from '../../domain/model'
@@ -13,6 +13,7 @@ import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH 
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
 import { canEditProtectedRanges } from '../../features/sheet-protection/range-protection.ts'
 import { convertTextToNumber } from '../../features/sheet-workbench/text-to-number.ts'
+import { Minus, Plus } from 'lucide-vue-next'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
 
@@ -32,6 +33,7 @@ const emit = defineEmits<{
   (event: 'paste', eventValue: ClipboardEvent): void
   (event: 'resize-axis', axis: 'row' | 'column', index: number, size: number): void
   (event: 'context-command', commandId: string, params?: unknown): void
+  (event: 'open-hyperlink', key: string): void
   (event: 'backend-change', backend: RenderBackend, reason?: string): void
   (event: 'select-slicer', slicerId: string): void
   (event: 'slicer-item', payload: { slicerId: string; value: string; index: number; anchorIndex?: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; multiSelect: boolean }): void
@@ -57,8 +59,37 @@ const scene = computed(() => {
   if (selected) selectionCommands.push({ kind: 'rect', ...selected.rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2 })
   return createSpreadsheetScene(geometry.value, viewport.value, { activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, searchText: props.searchText, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
 })
+const outlineToggleRects = computed(() => geometry.value.outlineToggleRects(viewport.value))
+const outlineLevelButtons = computed(() => {
+  const outline = props.sheet.outline
+  if (!outline) return []
+  return (['row', 'column'] as const).flatMap(axis => {
+    const groups = outline.groups.filter(group => group.axis === axis)
+    if (!groups.length) return []
+    const maxDepth = Math.max(...groups.map(group => groups.filter(parent =>
+      parent.start <= group.start && parent.end >= group.end && (parent.start < group.start || parent.end > group.end),
+    ).length)) + 1
+    return Array.from({ length: maxDepth }, (_, index) => ({
+      axis, level: index + 1, left: 1 + index * 12, top: axis === 'row' ? 1 : 13,
+      label: `${axis === 'row' ? '行' : '列'}大纲级别 ${index + 1}`,
+    }))
+  })
+})
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
+const { token } = theme.useToken()
+const editInputStyles = computed(() => ({
+  root: {
+    boxSizing: 'border-box' as const,
+    height: '100%',
+    minHeight: 0,
+    border: `${SHEET_SELECTION_STROKE_WIDTH}px solid ${token.value.colorPrimary}`,
+    borderRadius: 0,
+    background: props.sheet.cells[props.editingKey ?? '']?.background ?? token.value.colorBgContainer,
+    boxShadow: 'none',
+  },
+  input: { boxSizing: 'border-box' as const, height: '100%', padding: 0, color: 'inherit', font: 'inherit' },
+}))
 const editStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
   width: `${editLayout.value.rect.width}px`, height: `${editLayout.value.rect.height}px`,
@@ -93,6 +124,7 @@ const canShiftVertically = computed(() => {
     startRow: range.startRow, endRow: MAX_SHEET_ROWS - 1, startCol: range.startColumn, endCol: range.endColumn,
   }], props.currentUserId ?? 'local-user')
 })
+const hasContextHyperlink = computed(() => contextMenuHit.value?.kind === 'cell' && Boolean(props.sheet.cells[contextMenuHit.value.key]?.hyperlink))
 const canConvertSelectedText = computed(() => contextMenuOpen.value && Object.entries(props.sheet.cells).some(([key, cell]) => {
   const address = parseAddress(key)
   if (!address) return false
@@ -200,6 +232,10 @@ function onPointerDown(event: PointerEvent) {
   } else if (hit.kind === 'resize-column' || hit.kind === 'resize-row') {
     resizeDrag = { axis: hit.kind === 'resize-column' ? 'column' : 'row', index: hit.kind === 'resize-column' ? hit.column : hit.row, size: hit.size, origin: hit.kind === 'resize-column' ? position.x : position.y }
   } else if (hit.kind === 'cell') {
+    if (event.button === 0 && (event.ctrlKey || event.metaKey) && !props.editingKey && props.sheet.cells[hit.key]?.hyperlink) {
+      emit('open-hyperlink', hit.key)
+      return
+    }
     dragging = event.button === 0; lastPointer = position
     emit('select-cell', hit.key, event)
   } else emit('select-header', hit, event)
@@ -223,7 +259,8 @@ function onPointerMove(event: PointerEvent) {
   if (root.value && !dragging && !fillDrag) {
     const hover = geometry.value.hitTest(position.x, position.y, viewport.value)
     const fillHandle = !props.editingKey && hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y)
-    root.value.style.cursor = fillHandle ? 'crosshair' : hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
+    const hasHyperlink = hover?.kind === 'cell' && Boolean(props.sheet.cells[hover.key]?.hyperlink)
+    root.value.style.cursor = fillHandle ? 'crosshair' : hasHyperlink || hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : 'cell'
   }
 }
 function onPointerUp(event: PointerEvent) {
@@ -479,7 +516,33 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
   <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
-    <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" :bordered="false" aria-label="单元格编辑" @change="value => emit('update:editValue', String(value ?? ''))" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
+    <Button
+      v-for="control in outlineToggleRects"
+      :key="`outline-${control.axis}-${control.groupId}`"
+      class="outline-control outline-toggle"
+      :style="{ left: `${control.x}px`, top: `${control.y}px` }"
+      type="default"
+      size="small"
+      :aria-label="`${control.axis === 'row' ? '行' : '列'}分组${control.collapsed ? '展开' : '折叠'}`"
+      :title="`${control.axis === 'row' ? '行' : '列'}分组${control.collapsed ? '展开' : '折叠'}`"
+      @pointerdown.stop
+      @click.stop="emit('context-command', 'sheet.operation.outline-toggle-group', { axis: control.axis, groupId: control.groupId })"
+    >
+      <component :is="control.collapsed ? Plus : Minus" :size="10" aria-hidden="true" />
+    </Button>
+    <Button
+      v-for="control in outlineLevelButtons"
+      :key="`outline-${control.axis}-level-${control.level}`"
+      class="outline-control outline-level"
+      :style="{ left: `${control.left}px`, top: `${control.top}px` }"
+      type="default"
+      size="small"
+      :aria-label="control.label"
+      :title="control.label"
+      @pointerdown.stop
+      @click.stop="emit('context-command', 'sheet.operation.outline-set-level', { axis: control.axis, level: control.level })"
+    >{{ control.level }}</Button>
+    <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="value => emit('update:editValue', String(value ?? ''))" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
     <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ displayCell(sheet.cells[selectedKey]) }}</span></div>
     <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
@@ -495,6 +558,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
       :has-hidden-rows="Boolean(sheet.hiddenRows?.length)"
       :has-hidden-columns="Boolean(sheet.hiddenColumns?.length)"
       :can-convert-text="canConvertSelectedText"
+      :has-hyperlink="hasContextHyperlink"
       :can-shift-horizontally="canShiftHorizontally"
       :can-shift-vertically="canShiftVertically"
       @command="(commandId, params) => emit('context-command', commandId, params)"
@@ -507,10 +571,11 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 .spreadsheet-canvas:focus-visible { box-shadow: inset 0 0 0 1px #246bfd; }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.canvas-cell-input { position: absolute; z-index: 3; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; user-select: text; }
-.canvas-cell-input :deep(.ant-select-selector) { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; padding: 0; border: 1px solid #246bfd; border-radius: 0; background: #fff; box-shadow: none; }
-.canvas-cell-input :deep(.ant-select-selection-search-input) { box-sizing: border-box; height: 100%; padding: 2px 5px; color: #243247; font: inherit; }
-.canvas-cell-input :deep(.ant-select-selection-search) { inset: 0; }
+.outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; min-width: 12px; min-height: 12px; margin: 0; padding: 0; border: 1px solid #7c899a; border-radius: 1px; color: #465568; background: #fff; box-shadow: none; line-height: 10px; }
+.outline-control :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
+.outline-level { font-size: 8px; }
+.canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; }
+.canvas-cell-input :deep(.ant-select-input) { height: 100%; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid #fff; background: #246bfd; pointer-events: none; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; left: 12px; max-width: calc(100% - 24px); padding: 8px 12px; border: 1px solid #e3b3b3; color: #922f2f; background: #fff2f2; font-size: 12px; }

@@ -10,6 +10,7 @@ import {
   getOutlineLevels,
   removeSheetOutlineGroup,
   setSheetOutlineCollapsed,
+  setSheetOutlineLevel,
   setSheetOutlineSummaryPosition,
 } from '../src/features/sheet-outline/sheet-outline.ts'
 import { hiddenSheetRows } from '../src/features/sheet-workbench/sheet-row-visibility.ts'
@@ -17,6 +18,8 @@ import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/exc
 import { createBlankWorkbook } from '../src/domain/model.ts'
 import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
 import { ribbonInvocation } from '../src/platform/ribbon/ribbon-schema.ts'
+import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineUpdate } from '../src/features/sheet-outline/sheet-outline.ts'
+import { OfficeStudio } from '../src/api/office-studio.ts'
 
 test('outline groups support nested levels, collapse and immutable updates', () => {
   let state = createSheetOutlineState()
@@ -75,11 +78,36 @@ test('outline state round-trips through the editor view while derived visibility
 test('outline group boundaries and crossings reject invalid state', () => {
   let state = addSheetOutlineGroup(createSheetOutlineState(), 'column', 0, 2, 6, 'outer')
   assert.throws(() => addSheetOutlineGroup(state, 'column', 2, 4, 6, 'crossing'), /nested or disjoint/)
-  assert.throws(() => addSheetOutlineGroup(state, 'row', 0, 0, 6, 'bad'), /at least two/)
+  assert.equal(addSheetOutlineGroup(state, 'row', 0, 0, 6, 'single').groups.length, 2)
   assert.throws(() => addSheetOutlineGroup(state, 'row', 4, 8, 6, 'outside'), /outside its axis/)
   assert.throws(() => setSheetOutlineCollapsed(state, 'missing', true), /not found/)
   state = removeSheetOutlineGroup(state, 'outer')
   assert.deepEqual(state.groups, [])
+})
+
+test('adjacent outlines merge and nested depth follows the upstream eight-level limit', () => {
+  let state = addSheetOutlineGroup(createSheetOutlineState(), 'row', 0, 1, 20, 'first')
+  state = addSheetOutlineGroup(state, 'row', 2, 4, 20, 'second')
+  assert.equal(state.groups.length, 1)
+  assert.deepEqual({ start: state.groups[0].start, end: state.groups[0].end }, { start: 0, end: 4 })
+
+  state = createSheetOutlineState()
+  for (let depth = 0; depth < 8; depth += 1) {
+    state = addSheetOutlineGroup(state, 'row', depth, 29 - depth, 30, `nested-${depth}`)
+  }
+  assert.equal(getOutlineDepth({ count: 30, groups: state.groups }, 10), 8)
+  assert.throws(() => addSheetOutlineGroup(state, 'row', 8, 21, 30, 'too-deep'), /depth cannot exceed 8/)
+})
+
+test('ungroup removes only selected nested outlines and sets level states exactly', () => {
+  let state = addSheetOutlineGroup(createSheetOutlineState(), 'row', 0, 9, 20, 'outer')
+  state = addSheetOutlineGroup(state, 'row', 2, 7, 20, 'middle')
+  state = addSheetOutlineGroup(state, 'row', 3, 5, 20, 'inner')
+  const expanded = setSheetOutlineLevel(setSheetOutlineCollapsed(state, 'outer', true), 'row', 2)
+  assert.deepEqual(expanded.groups.map(group => group.collapsed), [false, true, true])
+  const selected = applySheetOutlineOperation(expanded, 'row', 'remove', 2, 7, 20, 'unused')
+  assert.deepEqual(selected.groups.map(group => group.id), ['outer'])
+  assert.deepEqual(applySheetOutlineOperation(selected, 'row', 'remove', 0, 9, 20, 'unused').groups, [])
 })
 
 test('Ribbon operations update the selected model range and summary positions', () => {
@@ -87,7 +115,7 @@ test('Ribbon operations update the selected model range and summary positions', 
   const grouped = applySheetOutlineOperation(empty, 'row', 'group', 2, 5, 20, 'ribbon-row')
   const folded = applySheetOutlineOperation(grouped, 'row', 'toggle', 3, 4, 20, 'unused')
   const expanded = applySheetOutlineOperation(folded, 'row', 'toggle', 3, 4, 20, 'unused')
-  const ungrouped = applySheetOutlineOperation(expanded, 'row', 'remove', 3, 4, 20, 'unused')
+  const ungrouped = applySheetOutlineOperation(expanded, 'row', 'remove', 2, 5, 20, 'unused')
   assert.equal(folded.groups[0].collapsed, true)
   assert.equal(expanded.groups[0].collapsed, false)
   assert.deepEqual(ungrouped.groups, [])
@@ -105,11 +133,46 @@ test('Ribbon operations update the selected model range and summary positions', 
   assert.equal(summary.summaryLeft, true)
 })
 
-test('workbench dispatch persists outline commands through the outline model operations', () => {
+test('workbench dispatch persists outline commands through history-backed workbook commands', () => {
   const source = readFileSync(new URL('../src/components/ExcelWorkbench.vue', import.meta.url), 'utf8')
   assert.match(source, /'sheet\.operation\.outline-group-rows':\s*\(\)\s*=>\s*changeOutline\('row', 'group'\)/)
   assert.match(source, /'sheet\.operation\.outline-toggle-columns':\s*\(\)\s*=>\s*changeOutline\('column', 'toggle'\)/)
-  assert.match(source, /applySheetOutlineOperation\(state, axis, operation, start, end, count, crypto\.randomUUID\(\)\)/)
-  assert.match(source, /'sheet\.operation\.outline-summary-position':\s*\(\)\s*=>/)
-  assert.match(source, /setSheetOutlineSummaryPosition\(sheet\.outline \?\? createSheetOutlineState\(\), axis, atStart\)/)
+  assert.match(source, /executeCommandSync<ChangeSheetOutlineInput, boolean>\(CHANGE_SHEET_OUTLINE_COMMAND/)
+  assert.match(source, /kind: 'summary-position', axis: value\.axis, atStart: value\.atStart/)
+})
+
+test('outline command persists nested groups and supports undo and redo', () => {
+  const studio = new OfficeStudio()
+  const workbook = studio.editor.workbook.model
+  const sheet = workbook.sheets[0]
+  sheet.rowCount = 20
+  sheet.columnCount = 10
+  const workbookId = workbook.id
+  const sheetId = sheet.id
+  const run = action => studio.executeCommandSync(CHANGE_SHEET_OUTLINE_COMMAND, { unitId: workbookId, sheetId, action })
+
+  run({ kind: 'group', axis: 'row', start: 1, end: 10 })
+  run({ kind: 'group', axis: 'row', start: 3, end: 6 })
+  assert.deepEqual(studio.getWorkbookModel(workbookId).sheets[0].outline.groups.map(group => [group.start, group.end]), [[1, 10], [3, 6]])
+  assert.equal(studio.undo('workbook', workbookId), true)
+  assert.deepEqual(studio.getWorkbookModel(workbookId).sheets[0].outline.groups.map(group => [group.start, group.end]), [[1, 10]])
+  assert.equal(studio.redo('workbook', workbookId), true)
+  assert.equal(studio.getWorkbookModel(workbookId).sheets[0].outline.groups.length, 2)
+  studio.dispose()
+})
+
+test('outline command rejects edits to protected rows and adjacent protected groups', () => {
+  const studio = new OfficeStudio()
+  const worksheet = studio.editor.workbook.model.sheets[0]
+  worksheet.rowCount = 20
+  worksheet.columnCount = 10
+  worksheet.rangeProtectionRules = [{
+    id: 'protected-cells', unitType: 'range', ownerUserId: 'owner', permissionId: 'edit', editState: 'onlyOwnerCanEdit',
+    allowedUserIds: [], ranges: [{ startRow: 5, startCol: 0, endRow: 5, endCol: 9 }],
+  }]
+  const workbookId = studio.editor.workbook.model.id
+  assert.throws(() => studio.executeCommandSync(CHANGE_SHEET_OUTLINE_COMMAND, {
+    unitId: workbookId, sheetId: worksheet.id, action: { kind: 'group', axis: 'row', start: 2, end: 6 },
+  }), /受保护/)
+  studio.dispose()
 })

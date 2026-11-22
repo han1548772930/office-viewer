@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Dropdown, Form, FormItem, Input, Select, Tooltip, theme } from 'antdv-next'
+import { Button, Card, Dropdown, Form, FormItem, Input, Select, Tooltip, theme } from 'antdv-next'
 import { CircleCheck, MoreHorizontal, Plus, Reply, RotateCcw, Trash2, X } from 'lucide-vue-next'
 import { computed, inject, nextTick, ref, watch } from 'vue'
 import type { DocumentCommentMessage, DocumentThreadComment } from '../../domain/model.ts'
@@ -233,10 +233,12 @@ async function submitEdit(comment: DocumentThreadComment, message: DocumentComme
     <div v-if="visibleComments.length" class="document-comments__threads">
       <template v-for="(comment, index) in visibleComments" :key="comment.id">
       <div v-if="comment.resolved && index === openComments.length" class="document-comments__solved-label">{{ t('doc.comments.status.resolved', 'Resolved') }}</div>
-      <article
+      <Card
         :id="`document-comment-${comment.id}`"
         class="document-comments__thread"
         :class="{ 'is-selected': selectedCommentId === comment.id, 'is-resolved': comment.resolved }"
+        role="article"
+        :styles="{ body: { padding: '10px' } }"
         @click="selectThread($event, comment)"
       >
         <div class="document-comments__thread-header">
@@ -284,7 +286,7 @@ async function submitEdit(comment: DocumentThreadComment, message: DocumentComme
             <Button size="small" type="text" :disabled="controlsBusy" @click.stop="replyingTo = ''; replyDrafts[comment.id] = ''; replyMentions[comment.id] = []">{{ t('common.cancel', 'Cancel') }}</Button>
           </div>
         </Form>
-      </article>
+      </Card>
       </template>
     </div>
     <div v-else class="document-comments__empty">
@@ -313,7 +315,7 @@ async function submitEdit(comment: DocumentThreadComment, message: DocumentComme
 .document-comments__filter { width: 136px; flex: 0 0 136px; }
 .document-comments__error { margin: 10px 14px 0; color: var(--comment-error); font-size: 12px; overflow-wrap: anywhere; }
 .document-comments__threads { min-height: 0; flex: 1; overflow: auto; padding: 12px; }
-.document-comments__thread { margin-bottom: 10px; padding: 10px; border: 1px solid var(--comment-border); border-radius: 4px; background: var(--comment-background); cursor: pointer; }
+.document-comments__thread { margin-bottom: 10px; border-color: var(--comment-border); border-radius: 4px; background: var(--comment-background); cursor: pointer; }
 .document-comments__thread.is-selected { border-color: var(--comment-primary); box-shadow: 0 0 0 1px var(--comment-primary); }
 .document-comments__thread.is-resolved { background: var(--comment-subtle-background); }
 .document-comments__thread-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }

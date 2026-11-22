@@ -14,7 +14,7 @@ import {
 import { executeDocumentCommand } from '../src/features/document/commands/document-commands.ts'
 import { createOfficeMessages, supportedOfficeLocales } from '../src/i18n/office-i18n.ts'
 import { createDocumentRibbon, documentTocContextMenuItems } from '../src/components/document/document-ribbon.ts'
-import { collapsedSelection, createRun, normalizeDocument } from '../src/features/document/model/document-model.ts'
+import { collapsedSelection, createRun, normalizeDocument, runText } from '../src/features/document/model/document-model.ts'
 import { saveDocumentSnapshot } from '../src/features/document/services/document-facade.ts'
 import { visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 
@@ -115,12 +115,33 @@ test('updates only page numbers without changing entry IDs or heading text', () 
   const document = model([block('one', 'Chapter 1')])
   const toc = buildDocumentTocBlocks(document, options, { one: 1 }, 'toc-a')
   document.blocks.splice(0, 0, ...toc)
-  const entry = document.blocks[1]
+  const entryId = document.blocks[1].id
 
   assert.equal(updateDocumentToc(document, 'toc-a', 'pageNumbersOnly', { one: 6 }), true)
-  assert.equal(document.blocks[1].id, entry.id)
-  assert.equal(document.blocks[1].runs[0].text, 'Chapter 1\t6')
-  assert.equal(document.blocks[1].metadata.documentToc.headingText, 'Chapter 1')
+  const entry = document.blocks[1]
+  assert.equal(entry.id, entryId)
+  assert.equal(runText(entry.runs), 'Chapter 1\t6')
+  assert.equal(entry.metadata.documentToc.headingText, 'Chapter 1')
+  assert.equal(entry.metadata.documentToc.headingId, 'one')
+  assert.equal(entry.metadata.documentToc.pageNumber, 6)
+
+  const refreshedRuns = entry.runs
+  assert.equal(updateDocumentToc(document, 'toc-a', 'pageNumbersOnly', { one: 6 }), true)
+  assert.equal(entry.runs, refreshedRuns)
+})
+
+test('appends the first page number to unnumbered entries without truncating multiword labels', () => {
+  for (const rightAlignPageNumbers of [true, false]) {
+    const document = model([block('one', 'Chapter 1')])
+    const [entry] = buildDocumentTocBlocks(document, { ...options, rightAlignPageNumbers }, {}, 'toc-a', [], 'Contents', false)
+    document.blocks.unshift(entry)
+    const separator = rightAlignPageNumbers ? '\t' : ' '
+
+    assert.equal(updateDocumentToc(document, 'toc-a', 'pageNumbersOnly', { one: 6 }), true)
+    assert.equal(runText(entry.runs), `Chapter 1${separator}6`)
+    assert.equal(updateDocumentToc(document, 'toc-a', 'pageNumbersOnly', { one: 14 }), true)
+    assert.equal(runText(entry.runs), `Chapter 1${separator}14`)
+  }
 })
 
 test('rebuilds all entries in place and keeps matching paragraph identities', () => {

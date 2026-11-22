@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { Button, Menu, Popover, Select, Tooltip } from 'antdv-next'
-import type { MenuInfo } from 'antdv-next'
+import type { MenuInfo, MenuRef } from 'antdv-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { CLASSIC_RIBBON, GRID_RIBBON, ribbonInvocation, visibleRibbonItems, type RibbonItem } from './ribbon-schema'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
@@ -15,7 +15,7 @@ const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) =
 const localOpen = ref(false)
 const root = ref<HTMLElement>()
 const panel = ref<HTMLElement>()
-const menuRef = ref<InstanceType<typeof Menu> | null>(null)
+const menuRef = ref<MenuRef | null>(null)
 const popupId = useId()
 const popupScope = inject(RibbonPopupScopeKey, undefined)
 const childPopupScope = provideRibbonPopupScope(popupScope?.direction)
@@ -78,7 +78,7 @@ async function openMenu(event: KeyboardEvent, last = false) {
   if (event.currentTarget instanceof HTMLElement) trigger.value = event.currentTarget
   open.value = true
   await nextTick()
-  const controls = menuRef.value?.$el?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
+  const controls = menuRef.value?.menu?.list.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
   const target = last ? controls?.[controls.length - 1] : controls?.[0]
   if (target) target.focus()
   else if (menuRef.value) menuRef.value.focus()
@@ -114,7 +114,7 @@ onBeforeUnmount(() => { open.value = false })
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
         <Select
           :id="`${popupId}-select`" :value="item.value == null ? undefined : item.value" :options="item.options ?? []" :disabled="item.disabled || measurement"
-          :placeholder="item.placeholder ?? (item.value === null ? translate('common.mixed', '混合') : item.title)" :aria-label="item.title" size="small"
+          :placeholder="item.placeholder ?? (item.value === null ? translate('common.mixed', '混合') : item.title)" :aria-label="item.title" size="small" variant="borderless"
           class="ribbon-select" :style="{ width: overflow ? '150px' : grid && fullWidth ? '100%' : `${item.width ?? 96}px`, height: `${grid && !overflow ? GRID_RIBBON.rowHeight : CLASSIC_RIBBON.selectorHeight}px`, alignItems: 'center', flex: overflow ? '1 1 0' : undefined, minWidth: overflow || (grid && fullWidth) ? '0' : undefined, maxWidth: overflow ? '150px' : undefined }" :popup-match-select-width="false"
           :open="open" @open-change="value => { open = value }" @change="execute"
         />
@@ -162,7 +162,8 @@ onBeforeUnmount(() => { open.value = false })
 .ribbon-select-wrap { display: flex; align-items: center; gap: 12px; }
 .workbench-ribbon-item.is-grid .ribbon-select-wrap { box-sizing: border-box; width: 100%; height: 100%; flex-direction: column; align-items: stretch; justify-content: center; gap: 2px; }
 .ribbon-grid-select-title { display: block; overflow: hidden; font-size: 11px; line-height: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.workbench-ribbon-item .ribbon-select { min-width: 52px; height: var(--ribbon-selector-height); font-size: 14px; }
+.workbench-ribbon-item .ribbon-select { min-width: 52px; height: var(--ribbon-selector-height); border-radius: 4px; font-size: 14px; }
+.workbench-ribbon-item .ribbon-select:not(.ant-select-disabled):hover { background: var(--ribbon-hover-background); }
 .workbench-ribbon-item.is-grid .ribbon-select, .workbench-ribbon-item.is-grid .ribbon-select :deep(input) { font-size: 12px; }
 .workbench-ribbon-item.is-grid-align-start .ribbon-button { justify-content: flex-start; }
 .ribbon-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

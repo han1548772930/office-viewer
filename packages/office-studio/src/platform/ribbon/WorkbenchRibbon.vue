@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, useSlots, watch } from 'vue'
 import { Button, Menu, Popover, Tooltip } from 'antdv-next'
-import type { MenuInfo, MenuItemType } from 'antdv-next'
+import type { MenuInfo, MenuItemType, MenuRef } from 'antdv-next'
 import { MoreVertical } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import RibbonGridToolbar from './RibbonGridToolbar.vue'
@@ -37,7 +37,7 @@ const toolbar = ref<HTMLElement>()
 const measurer = ref<HTMLElement>()
 const tablist = ref<HTMLElement>()
 const moreButton = ref<HTMLElement>()
-const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreMenuRef = ref<MenuRef | null>(null)
 const availableWidth = ref(Number.POSITIVE_INFINITY)
 const measuredWidths = ref<Record<string, number>>({})
 const moreOpen = ref(false)
@@ -145,9 +145,7 @@ async function openMore() {
   popupScope.close()
   moreOpen.value = true
   await nextTick()
-  const firstItem = moreMenuRef.value?.$el?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
-  if (firstItem) firstItem.focus()
-  else moreMenuRef.value?.focus()
+  moreMenuRef.value?.focus()
 }
 
 function onMoreKeydown(event: KeyboardEvent) {

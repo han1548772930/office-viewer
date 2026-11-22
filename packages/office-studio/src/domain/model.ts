@@ -289,7 +289,7 @@ export interface PivotTableModel {
   revision: number
 }
 
-export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-column' | 'scatter'
+export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-column' | 'scatter' | 'radar'
 export type ChartSourceOrientation = 'columns' | 'rows'
 export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
 export type ChartAxisScaleType = 'linear' | 'log'

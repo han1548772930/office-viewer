@@ -157,11 +157,13 @@ export function updateDocumentToc(
       const pageNumber = pageNumbers[metadata.headingId]
       if (pageNumber == null || !Number.isInteger(pageNumber) || pageNumber < 1) return false
       const text = runText(block.runs)
+      const pageText = String(pageNumber)
       const separator = metadata.options.rightAlignPageNumbers ? '\t' : ' '
-      const separatorIndex = text.lastIndexOf(separator)
+      const separatorIndex = metadata.pageNumber == null ? -1 : text.lastIndexOf(separator)
       const prefixEnd = separatorIndex >= 0 ? separatorIndex + 1 : text.length
+      if (separatorIndex >= 0 && metadata.pageNumber === pageNumber && text.slice(prefixEnd) === pageText) continue
       const prefix = sliceRuns(block.runs as DocumentRun[], 0, prefixEnd)
-      const pageRun = { ...(block.runs.at(-1) ?? createRun()), id: documentId('run'), text: String(pageNumber) }
+      const pageRun = { ...(block.runs.at(-1) ?? createRun()), id: documentId('run'), text: pageText }
       if (separatorIndex < 0) prefix.push({ ...pageRun, id: documentId('run'), text: separator })
       replacements.push({ block, metadata, pageNumber, runs: [...prefix, pageRun] })
     }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useSlots, watch } from 'vue'
 import { Button, Menu, Popover, Tooltip } from 'antdv-next'
-import type { MenuItemType, MenuInfo } from 'antdv-next'
+import type { MenuItemType, MenuInfo, MenuRef } from 'antdv-next'
 import { ChevronDown, MoreHorizontal } from 'lucide-vue-next'
 import RibbonItemControl from './RibbonItem.vue'
 import { fitRibbonGridGroups, GRID_RIBBON, groupRibbonGridOverflowItems, placeRibbonGridItems, ribbonInvocation, type RibbonGroup, type RibbonItem } from './ribbon-schema'
@@ -19,7 +19,7 @@ const themeStyle = useRibbonTheme()
 
 const container = ref<HTMLElement>()
 const moreAnchor = ref<HTMLElement>()
-const overflowMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const overflowMenuRef = ref<MenuRef | null>(null)
 const groupElements = new Map<string, HTMLElement>()
 const visibleGroupCount = ref(props.groups.length)
 const moreOpen = ref(false)
@@ -126,9 +126,7 @@ async function openOverflow() {
   popupScope?.close()
   moreOpen.value = true
   await nextTick()
-  const firstItem = overflowMenuRef.value?.$el?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
-  if (firstItem) firstItem.focus()
-  else overflowMenuRef.value?.focus()
+  overflowMenuRef.value?.focus()
 }
 
 function closeOverflow(event?: KeyboardEvent) {

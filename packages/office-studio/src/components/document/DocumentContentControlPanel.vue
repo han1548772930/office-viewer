@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Button, Checkbox, ColorPicker, Form, FormItem, Input, Modal, Select } from 'antdv-next'
 import { computed, inject, reactive, ref, watch } from 'vue'
+import type { ColorValueType } from 'antdv-next'
 import type { DocumentContentControl, DocumentContentControlType } from '../../domain/model'
 import type { FDocument } from '../../api/facade'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -96,7 +97,8 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
   return typeof value === 'boolean' ? value : Boolean(value.target?.checked)
 }
 
-function updateListItems(value: string): void {
+function updateListItems(value?: string | number): void {
+  if (typeof value !== 'string') return
   listText.value = value
   patch({ items: value.split(/\r?\n/).filter(Boolean).map((line) => {
     const separator = line.indexOf('|')
@@ -104,6 +106,12 @@ function updateListItems(value: string): void {
       ? { displayText: line, value: line }
       : { displayText: line.slice(0, separator), value: line.slice(separator + 1) }
   }) })
+}
+
+function updateColor(value: ColorValueType): void {
+  if (value === null || Array.isArray(value)) return
+  const color = typeof value === 'string' ? value : value.toHexString()
+  patch({ color: color.replace(/^#/, '').toUpperCase() })
 }
 
 function close(): void {
@@ -174,8 +182,9 @@ function save(): void {
             <ColorPicker
               :value="`#${(properties.color ?? '4472C4').replace(/^#/, '')}`"
               value-format="hex"
+              mode="single"
               :aria-label="t('doc.content-control.color', '颜色')"
-              @update:value="value => patch({ color: value.replace(/^#/, '').toUpperCase() })"
+              @update:value="updateColor"
             />
             <Input :value="properties.color ?? '4472C4'" @update:value="value => patch({ color: value.replace(/^#/, '').toUpperCase() })" />
           </div>

@@ -287,20 +287,24 @@ function normalizePivotCharts(rawSheets: unknown, sheets: SpreadsheetSheet[], pi
   })
 }
 
-function normalizeScatterCharts(rawSheets: unknown, sheets: SpreadsheetSheet[]): ChartModel[] {
+function normalizeRangeCharts(rawSheets: unknown, sheets: SpreadsheetSheet[]): ChartModel[] {
   return array(rawSheets).flatMap((sheetValue, sheetIndex) => {
     const sheet = sheets[sheetIndex]
     if (!sheet) return []
     return array(record(sheetValue).charts).flatMap((chartValue, chartIndex): ChartModel[] => {
       const raw = record(chartValue)
-      if (raw.kind !== 'scatter' || raw.pivotTableId) return []
+      const type = raw.kind
+      if ((type !== 'scatter' && type !== 'radar') || raw.pivotTableId) return []
       const vectors = array(raw.series).map((value) => {
         const series = record(value)
-        return { x: parseChartVector(series.categories, sheet.name), y: parseChartVector(series.values, sheet.name) }
+        return {
+          x: parseChartVector(series.categories, sheet.name),
+          y: parseChartVector(series.values, sheet.name),
+        }
       })
       if (!vectors.length || vectors.some((vector) => !vector.x || !vector.y)) return []
       const first = vectors[0]!.x!
-      const orientation = first.startCol === first.endCol ? 'columns' : 'rows'
+      const orientation = first.startRow === first.endRow ? 'rows' : 'columns'
       const ranges = vectors.flatMap((vector) => [vector.x!, vector.y!])
       const aligned = orientation === 'columns'
         ? ranges.every((range) => range.startCol === range.endCol && range.startRow === first.startRow && range.endRow === first.endRow)
@@ -313,15 +317,21 @@ function normalizeScatterCharts(rawSheets: unknown, sheets: SpreadsheetSheet[]):
         endCol: Math.max(...ranges.map((value) => value.endCol)),
       }
       const field = (vector: NonNullable<ReturnType<typeof parseChartVector>>) => orientation === 'columns' ? vector.startCol - range.startCol : vector.startRow - range.startRow
+      if (type === 'radar' && vectors.some(vector => field(vector.x!) !== field(first))) return []
       const drawing = record(raw.drawing)
       const offset = array(drawing.fromOffsetEmu), size = array(drawing.absoluteSizeEmu)
+      const legendPosition = raw.legendPosition
       return [{
-        id: `scatter-chart-${sheetIndex + 1}-${chartIndex + 1}`, sheetId: sheet.id, type: 'scatter',
+        id: `${type}-chart-${sheetIndex + 1}-${chartIndex + 1}`, sheetId: sheet.id, type,
         source: { range, orientation }, categoryField: field(first), valueFields: vectors.map((vector) => field(vector.y!)),
-        seriesToCategory: Object.fromEntries(vectors.map((vector) => [field(vector.y!), [field(vector.x!)]])),
+        ...(type === 'scatter' ? { seriesToCategory: Object.fromEntries(vectors.map((vector) => [field(vector.y!), [field(vector.x!)]])) } : {}),
         position: { x: Math.max(0, finite(offset[0]) / 9525), y: Math.max(0, finite(offset[1]) / 9525) },
         size: { width: Math.max(1, finite(size[0], 480 * 9525) / 9525), height: Math.max(1, finite(size[1], 300 * 9525) / 9525) },
-        ...(typeof raw.title === 'string' ? { title: raw.title } : {}), legend: { visible: raw.legend !== false, position: 'bottom' },
+        ...(typeof raw.title === 'string' ? { title: raw.title } : {}),
+        legend: {
+          visible: raw.legend !== false,
+          position: legendPosition === 'top' || legendPosition === 'right' || legendPosition === 'left' ? legendPosition : 'bottom',
+        },
         xAxis: normalizeChartAxis(raw.xAxis, raw.xAxisTitle), yAxis: normalizeChartAxis(raw.yAxis, raw.yAxisTitle), revision: 0,
       }]
     })
@@ -435,7 +445,7 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
     date1904: data.date1904 === true, modified: false,
     pivotTables,
     tables: normalizeTables(data.tables, sheets),
-    charts: [...normalizePivotCharts(data.sheets, sheets, pivotTables), ...normalizeScatterCharts(data.sheets, sheets)],
+    charts: [...normalizePivotCharts(data.sheets, sheets, pivotTables), ...normalizeRangeCharts(data.sheets, sheets)],
     metadata: {
       format: envelope.format, parserVersion: envelope.parserVersion,
       definedNames: array(data.definedNames), localDefinedNames: array(data.localDefinedNames),

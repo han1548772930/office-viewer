@@ -314,7 +314,7 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :width="384" :mask="false" :closable="true" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px' } }" :footer-style="{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }" @close="emit('update:open', false)">
+  <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :size="384" :mask="false" :closable="true" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px' } }" :footer-style="{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }" @close="emit('update:open', false)">
     <div class="conditional-panel">
       <aside v-if="!editing" class="conditional-rule-list" :aria-label="t('conditional.rules', '规则')">
         <Button size="small" type="primary" @click="newRule"><Plus :size="14" />{{ t('conditional.add', '新建规则') }}</Button>

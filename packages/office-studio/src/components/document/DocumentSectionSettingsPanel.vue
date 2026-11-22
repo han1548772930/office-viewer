@@ -46,7 +46,7 @@ watch(draft, value => {
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('doc.section-settings.title', 'Section settings')" :width="300" placement="right" :mask="false" :destroy-on-close="true" @close="emit('update:open', false)">
+  <Drawer :open="open" :title="t('doc.section-settings.title', 'Section settings')" :size="300" placement="right" :mask="false" :destroy-on-hidden="true" @close="emit('update:open', false)">
     <Form :model="draft" layout="horizontal" class="section-settings">
       <FormItem v-if="sectionOptions.length" :label="t('doc.section-settings.section', 'Section')">
         <Select :value="sectionId" :options="sectionOptions" @change="emit('selectSection', String($event))" />

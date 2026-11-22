@@ -95,6 +95,21 @@ test('list rules validate inline and range values, including each multi-select t
   assert.equal(validateSheetDataValidationChanges(workbook, sheet.id, [{ row: 0, column: 2 }]).blocked, true)
 })
 
+test('list rules resolve cross-sheet references using the worksheet cell coordinates', () => {
+  const workbook = createBlankWorkbook()
+  const entrySheet = workbook.sheets[0]
+  const lookupSheet = { ...createBlankWorkbook().sheets[0], id: 'lookup', name: 'Lookup Data', cells: {} }
+  workbook.sheets.push(lookupSheet)
+  setCell(lookupSheet, 0, 0, 'Red')
+  setCell(lookupSheet, 1, 0, 'Blue')
+
+  const listRule = rule('list', { startRow: 0, startCol: 1, endRow: 0, endCol: 1 }, { formula1: "='Lookup Data'!$A$1:$A$2" })
+  assert.deepEqual(sheetDataValidationOptions(listRule, workbook, entrySheet.id), ['Red', 'Blue'])
+  entrySheet.dataValidations = [listRule]
+  setCell(entrySheet, 0, 1, 'Blue')
+  assert.equal(validateSheetDataValidationChanges(workbook, entrySheet.id, [{ row: 0, column: 1 }]).valid, true)
+})
+
 test('custom formula is translated from rule anchor for each cell', () => {
   const workbook = createBlankWorkbook()
   const sheet = workbook.sheets[0]

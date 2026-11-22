@@ -19,6 +19,12 @@ beforeAll(async () => {
 
 afterAll(async () => { await server?.close() })
 
+test('header/footer popup component compiles through its normal Vue module entry', async () => {
+  const module = await server.ssrLoadModule('/packages/office-studio/src/components/document/DocumentHeaderFooterRibbonControl.vue')
+  assert.equal(typeof module.default.setup, 'function')
+  assert.equal(typeof module.default.ssrRender, 'function')
+})
+
 const toolbarState = { marks: {}, mixedMarks: [], paragraph: {}, hasSelection: false }
 const headerFooterState = {
   visible: true,

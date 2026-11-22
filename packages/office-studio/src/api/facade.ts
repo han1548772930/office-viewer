@@ -62,6 +62,7 @@ import type { OfficeStudio } from './office-studio'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
 import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
+import { parseSheetHyperlinkTarget } from '../features/sheet-workbench/sheet-hyperlink.ts'
 
 export type {
   DocumentBodySegment,
@@ -232,6 +233,20 @@ export class FWorkbook {
     this.api.mutateWorkbook(this.id, 'sheet.operation.set-active-sheet', 'Set active worksheet', (model) => { model.activeSheetId = id })
     this.api.activateWorkbook(this.id)
     return new FWorksheet(this.api, this.id, id)
+  }
+  navigateToSheetHyperlink(hyperlink: string): this {
+    const target = parseSheetHyperlinkTarget(hyperlink, this.model())
+    if (!target || target.type !== 'internal') throw new Error('Invalid internal worksheet hyperlink')
+    const sheet = this.model().sheets.find((candidate) => candidate.id === target.sheetId)
+    if (!sheet || sheet.visible === false) throw new Error('Worksheet hyperlink target is unavailable')
+    this.setActiveSheet(sheet.id)
+    this.api.setSelection(this.id, sheet.id, {
+      startRow: target.range.startRow,
+      startColumn: target.range.startCol,
+      endRow: target.range.endRow,
+      endColumn: target.range.endCol,
+    })
+    return this
   }
   insertSheet(sheetName?: string, options: { index?: number; sheet?: Partial<SpreadsheetSheet> } = {}): FWorksheet {
     const model = this.model()

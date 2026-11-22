@@ -39,6 +39,7 @@ import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type Configur
 import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
+import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineUpdate, type ChangeSheetOutlineInput } from '../features/sheet-outline/sheet-outline.ts'
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
@@ -542,10 +543,23 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    this.registerCommand<ChangeSheetOutlineInput, boolean>(CHANGE_SHEET_OUTLINE_COMMAND, ({ unitId, sheetId, action }) =>
+      this.commitWorkbook(unitId, '编辑工作表分组', (model) => {
+        const sheet = requireSheet(model, sheetId)
+        let rowCount = Math.max(100, sheet.rowCount ?? 0)
+        let columnCount = Math.max(26, sheet.columnCount ?? 0)
+        for (const cell of Object.values(sheet.cells)) {
+          rowCount = Math.max(rowCount, cell.row + 1)
+          columnCount = Math.max(columnCount, cell.col + 1)
+        }
+        const outline = getSheetOutlineUpdate({ ...sheet, rowCount, columnCount }, action, this.currentUserId)
+        if (outline) sheet.outline = outline
+      }),
+    )
     this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number; draft: SheetHyperlinkDraft }, boolean>(SET_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col, draft }) => this.commitWorkbook(unitId, '设置单元格超链接', (model) => {
       this.assertCanEditWorksheet(unitId, sheetId)
       this.assertCanEditRange(unitId, sheetId, { startRow: row, endRow: row, startCol: col, endCol: col })
-      setSheetCellHyperlink(requireSheet(model, sheetId), row, col, draft)
+      setSheetCellHyperlink(model, requireSheet(model, sheetId), row, col, draft)
       const validation = validateSheetDataValidationChanges(model, sheetId, [{ row, column: col }])
       if (validation.blocked) throw new Error(validation.issues[0]?.message ?? '超链接显示文字未通过数据验证。')
     }))

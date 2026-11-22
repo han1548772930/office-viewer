@@ -11,8 +11,15 @@ use crate::model::ChartAxisPayload;
 pub(crate) struct PivotSidecar {
     pub(crate) pivot_tables: Vec<Value>,
     pub(crate) chart_pivot_ids: HashMap<(String, usize), String>,
-    pub(crate) chart_axes: HashMap<(String, usize), (ChartAxisPayload, ChartAxisPayload)>,
+    pub(crate) chart_settings: HashMap<(String, usize), ChartSettings>,
     pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ChartSettings {
+    pub(crate) x_axis: ChartAxisPayload,
+    pub(crate) y_axis: ChartAxisPayload,
+    pub(crate) legend_position: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -117,7 +124,27 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
                             ChartAxisPayload { scale_type: if log_base.is_some() { "log" } else { "linear" }.into(), log_base }
                         }).unwrap_or_else(|| ChartAxisPayload { scale_type: "linear".into(), log_base: None })
                     };
-                    sidecar.chart_axes.insert((sheet_name.clone(), index), (axis(&["b", "t"]), axis(&["l", "r"])));
+                    let legend_position = chart_xml
+                        .descendants("legend")
+                        .into_iter()
+                        .next()
+                        .and_then(|legend| legend.children.iter().find(|child| child.name == "legendPos"))
+                        .and_then(|position| match position.attrs.get("val")?.as_str() {
+                            "t" => Some("top"),
+                            "r" => Some("right"),
+                            "b" => Some("bottom"),
+                            "l" => Some("left"),
+                            _ => None,
+                        })
+                        .map(str::to_owned);
+                    sidecar.chart_settings.insert(
+                        (sheet_name.clone(), index),
+                        ChartSettings {
+                            x_axis: axis(&["b", "t"]),
+                            y_axis: axis(&["l", "r"]),
+                            legend_position,
+                        },
+                    );
                     let Some(source_name) = chart_xml
                         .descendants("name")
                         .into_iter()

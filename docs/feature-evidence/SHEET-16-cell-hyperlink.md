@@ -1,4 +1,4 @@
-# SHEET-16 单元格超链接（外部链接切片）
+# SHEET-16 单元格超链接
 
 ## 固定版依据
 
@@ -14,12 +14,14 @@
 
 ## 当前实现
 
-插入 Ribbon MEDIA 分组及网格位置、Ctrl/Cmd+K、外部 HTTP(S)/mailto 整单元格链接编辑、已有链接打开/移除、Canvas 蓝色下划线渲染均有对应实现。新增与移除经 `OfficeStudio` 工作簿命令进入同一内容历史，执行工作表与范围保护校验，写入/撤销/重做继续经已有模型适配和文件写出链路。
+Ribbon 插入入口位于 MEDIA 分组，支持 Ctrl/Cmd+K、外部 HTTP(S)/mailto 与工作簿内工作表单元格范围目标。单元格链接以 `#gid=<sheetId>&range=<A1-range>` 保存，可在编辑弹窗中更新/移除，通过右键菜单、Enter 或 Ctrl/Cmd+点击导航。内部导航校验目标工作表可见性与查看权限，切换工作表、选择目标范围并滚动至可视区域。工作簿模型和 Excel 视图适配保留该 payload，XLSX writer 将有效目标映射为标准 worksheet `location`。
+
+新增与移除经 `OfficeStudio` 工作簿命令进入内容历史，并执行工作表/范围保护和数据验证写入校验。链接文字显示为蓝色并带下划线。`FWorkbook.navigateToSheetHyperlink` 提供内部工作表导航 API，对应上游 `packages/sheets-hyper-link-ui/src/facade/f-workbook.ts`。上游桌面悬停预览与权限检查见 `packages/sheets-hyper-link-ui/src/controllers/popup.controller.ts`。
 
 文件入口为 `packages/office-studio/src/features/sheet-workbench/sheet-hyperlink.ts`、`packages/office-studio/src/api/office-studio.ts`、`packages/office-studio/src/services/excelViewAdapter.ts`、`packages/office-studio/src/rendering/spreadsheet/scene.ts`、`packages/office-studio/src/components/ExcelWorkbench.vue` 与 `packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts`。
 
 ## 差异与验收
 
-当前切片只支持外部 URL 且作用于整单元格纯文本。它没有 Univer 的富文本局部链接/custom range、tooltip、多条链接模型、编辑弹层预览、单元格范围/工作表/定义名称内部导航、链接上下文菜单或可访问演示中的权限细节。公式与 checkbox/list/listMultiple 单元格明确禁用，避免覆盖公式并遵循上游判断。图像入口仍未实现。
+本地模型仍是单元格级链接字段，不具备 Univer `CustomRangeType.HYPERLINK` 的局部富文本链接、tooltip、多条链接/custom range 或悬停预览编辑弹层。内部目标目前支持工作表 ID + A1 单元格/矩形范围，不支持定义名称或上游 parser 的其它内部目标形式。公式禁用和 checkbox/list/listMultiple 验证规则禁用已对齐上游判断。shared/array formula 与 cell custom blocks 在本地模型中没有等价字段，尚未核实对应文件导入后的限制行为。单元格链接编辑 UI 使用 antdv-next Modal，悬停 popup 仍待实现。
 
-新增契约测试覆盖外部 URL 规范化、安全协议限制、上游禁用状态、模型视图往返，以及命令新增/移除、撤销重做和模型重开。按主任务约定本次未运行测试或构建，运行行为、浏览器导航及 Office 文件样本保存/重开均未验收。不得将此切片记作超链接全量对齐。
+契约覆盖外部 URL 安全规范化、公式和受限验证单元格拒绝、单元格模型视图往返、命令撤销/重做/重开、内部 payload 解析及导航选区。已执行 `sheet-hyperlink.contract.test.mjs`，5 项通过。Rust writer 的 `hyperlink` 过滤用例和 `writes_univer_internal_link_payload_as_an_xlsx_location` 精确用例分别通过，验证 Univer internal payload 可写成 XLSX worksheet location。命令/API 契约、Canvas Ctrl/Cmd+点击、浏览器焦点/滚动、实际 XLSX 样本往返和不同权限主体仍待集中验收。此功能保持未验收，不代表超链接全量对齐。

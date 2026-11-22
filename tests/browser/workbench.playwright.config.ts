@@ -18,10 +18,10 @@ export default defineConfig({
     viewport: { width: 1440, height: 1000 },
   },
   webServer: {
-    command: 'pnpm --filter @office-studio/workbench dev -- --host 127.0.0.1 --port 4191 --strictPort',
+    command: 'pnpm exec vite --host 127.0.0.1 --port 4191 --strictPort',
     url: 'http://127.0.0.1:4191/',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
-    cwd: workspaceRoot,
+    cwd: fileURLToPath(new URL('../../examples/workbench', import.meta.url)),
   },
 })

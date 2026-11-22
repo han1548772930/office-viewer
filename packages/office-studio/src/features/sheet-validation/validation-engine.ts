@@ -161,12 +161,10 @@ export function sheetDataValidationOptions(
   if (inline) return inline
   const source = validationListSource(rule.formula1 ?? '', workbook, sheetId)
   if (!source) return []
-  const sourceSheet = workbook.sheets.find(sheet => sheet.id === sheetId)
-  const sheet = source.sheetName ? workbook.sheets.find(item => item.name === source.sheetName) : sourceSheet
-  if (!sheet) return []
+  const sheet = source.sheet
   const values: string[] = []
-  const positions = Object.values(sheet.cells).filter(cell => contains(source.range, cell.row, cell.column))
-    .sort((left, right) => left.row - right.row || left.column - right.column)
+  const positions = Object.values(sheet.cells).filter(cell => contains(source.range, cell.row, cell.col))
+    .sort((left, right) => left.row - right.row || left.col - right.col)
   for (const cell of positions) {
       const value = cell.formula ? evaluateFormula(cell.formula, workbook, sheet.id) : cell.value
       if (!isFormulaError(value) && value !== null && value !== '') values.push(String(value))
@@ -360,7 +358,9 @@ function collectFormulaFunctions(node: FormulaNode): string[] {
 function validationListSource(formula: string, workbook: WorkbookModel, sheetId: string): { sheet: SpreadsheetSheet; range: CellRange } | undefined {
   const source = parseListRange(formula)
   if (!source) return undefined
-  const sheet = source.sheetName ? workbook.sheets.find(item => item.name.toLocaleLowerCase() === source.sheetName!.toLocaleLowerCase()) : workbook.sheets.find(item => item.id === sheetId)
+  const sheet = source.sheetName
+    ? workbook.sheets.find(item => item.name.toLocaleLowerCase() === source.sheetName!.toLocaleLowerCase())
+    : workbook.sheets.find(item => item.id === sheetId)
   return sheet ? { sheet, range: source.range } : undefined
 }
 

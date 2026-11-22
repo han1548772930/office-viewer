@@ -178,7 +178,7 @@ test('icon-set validation checks visible buckets and permits a no-icon entry', (
     { operator: 'greaterThanOrEqual', value: { type: 'num', value: 33 }, iconType: '3Arrows', iconId: '0' },
     { operator: 'greaterThanOrEqual', value: { type: 'num', value: 67 }, iconType: '3Arrows', iconId: '1' },
     config.icons[2],
-  ] }), /descending order/)
+  ] }), /从高到低/)
 })
 
 test('color scales support two or three threshold stops and ignore invalid formula thresholds', () => {
@@ -204,4 +204,10 @@ test('text rules handle case-insensitive matching, empty cells, and spreadsheet 
   assert.equal(evaluateConditionalFormatRule({ ...textRule, operator: 'containsBlanks' }, '   '), true)
   assert.equal(evaluateConditionalFormatRule({ ...textRule, operator: 'containsErrors' }, '#DIV/0!'), true)
   assert.equal(evaluateConditionalFormatRule({ ...textRule, operator: 'notContainsErrors' }, '#DIV/0!'), false)
+})
+
+test('formula rules return false when no formula evaluator is connected', () => {
+  const formulaRule = { ...baseRule, type: 'expression', operator: undefined, formula1: '=A1>0' }
+  assert.equal(evaluateConditionalFormatRule(formulaRule, 1), false)
+  assert.equal(evaluateConditionalFormatRule(formulaRule, 1, [], formula => formula === '=A1>0'), true)
 })

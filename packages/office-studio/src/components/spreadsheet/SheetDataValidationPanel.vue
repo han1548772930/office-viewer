@@ -35,7 +35,7 @@ const advancedOptionsKeys = computed({
 })
 const rangeValue = ref('')
 const type = ref<SheetDataValidationType>('whole')
-const operator = ref<SheetDataValidationOperator>('between')
+const operator = ref<SheetDataValidationOperator | ''>('between')
 const formula1 = ref('1')
 const formula2 = ref('10')
 const listValues = ref('')
@@ -268,7 +268,7 @@ function needsSecondFormulaFor(value?: SheetDataValidationOperator): boolean {
 
 function parseRanges(value: string): CellRange[] {
   try {
-    return parseValidationRanges(value, sheet.value?.getName())
+  return parseValidationRanges(value, sheet.value?.getSheetName())
   } catch {
     throw new TypeError(t('sheet.validation.range-invalid', '请输入有效的单元格区域，例如 A1、A1:B4、A:A 或 1:3。'))
   }
@@ -291,7 +291,7 @@ function columnLabel(index: number): string {
     <header class="validation-header">
       <strong>{{ title }}</strong>
       <div class="validation-header-actions">
-        <Button v-if="!detailOpen" type="primary" size="small" @click="openNewRule">{{ t('sheet.validation.add', '添加规则') }}</Button>
+        <Button v-if="!detailOpen" type="primary" size="small" @click="openNewRule()">{{ t('sheet.validation.add', '添加规则') }}</Button>
         <Button type="text" size="small" :aria-label="t('common.close', '关闭')" @click="emit('update:open', false)"><X :size="16" /></Button>
       </div>
     </header>

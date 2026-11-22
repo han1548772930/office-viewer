@@ -882,6 +882,8 @@ fn border_xml(value: &str) -> String {
 fn worksheet_xml(
     sheet: &SheetInput,
     sheet_index: usize,
+    sheet_ids: &[String],
+    sheet_names: &[String],
     registry: &mut StyleRegistry,
     warnings: &mut Vec<ExportWarning>,
     drawing_rel_id: Option<&str>,
@@ -1050,11 +1052,11 @@ fn worksheet_xml(
     if !hyperlinks.is_empty() {
         out.push_str("<hyperlinks>");
         for (link_index, (reference, target)) in hyperlinks.iter().enumerate() {
-            if target.starts_with('#') {
+            if let Some(location) = hyperlink_location(target, sheet_ids, sheet_names) {
                 out.push_str(&format!(
                     "<hyperlink ref=\"{}\" location=\"{}\"/>",
                     reference,
-                    esc(target.trim_start_matches('#'))
+                    esc(&location)
                 ));
             } else {
                 let id = format!("rIdHyperlink{}", link_index + 1);
@@ -1072,6 +1074,52 @@ fn worksheet_xml(
     out.push_str(&sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?);
     out.push_str("</worksheet>");
     Ok((out, hyperlinks))
+}
+
+fn hyperlink_location(target: &str, sheet_ids: &[String], sheet_names: &[String]) -> Option<String> {
+    if !target.starts_with('#') {
+        return None;
+    }
+    let value = target.trim_start_matches('#');
+    if !value.starts_with("gid=") {
+        return Some(value.to_owned());
+    }
+    let mut gid = None;
+    let mut range = None;
+    for (key, value) in value.split('&').filter_map(|pair| pair.split_once('=')) {
+        let value = decode_query_component(value)?;
+        match key {
+            "gid" => gid = Some(value),
+            "range" => range = Some(value),
+            _ => {}
+        }
+    }
+    let index = sheet_ids.iter().position(|id| Some(id.as_str()) == gid.as_deref())?;
+    let name = sheet_names.get(index)?;
+    let range = range?;
+    let quoted_name = if name.chars().any(|character| character.is_whitespace() || character == '\'') {
+        format!("'{}'", name.replace('\'', "''"))
+    } else {
+        name.clone()
+    };
+    Some(format!("{quoted_name}!{range}"))
+}
+
+fn decode_query_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 fn write_conditional_formats(
@@ -1648,6 +1696,17 @@ fn chart_xml(
             chart.id
         )));
     }
+    if chart.chart_type == "radar"
+        && chart
+            .y_axis
+            .as_ref()
+            .is_some_and(|axis| axis.scale_type != "linear")
+    {
+        return Err(ExportError::invalid(format!(
+            "chart {} radar charts require a linear value axis",
+            chart.id
+        )));
+    }
     let chart_kind = match chart.chart_type.as_str() {
         "bar" | "stacked-column" => "barChart",
         "line" => "lineChart",
@@ -1655,6 +1714,7 @@ fn chart_xml(
         "pie" => "pieChart",
         "doughnut" => "doughnutChart",
         "scatter" => "scatterChart",
+        "radar" => "radarChart",
         other => {
             return Err(ExportError::unsupported(format!(
                 "XLSX chart type {other} is not supported by the writer"
@@ -1695,6 +1755,7 @@ fn chart_xml(
         "pieChart" => out.push_str("<c:pieChart><c:varyColors val=\"1\"/>"),
         "doughnutChart" => out.push_str("<c:doughnutChart><c:varyColors val=\"1\"/>"),
         "scatterChart" => out.push_str("<c:scatterChart><c:scatterStyle val=\"marker\"/><c:varyColors val=\"0\"/>"),
+        "radarChart" => out.push_str("<c:radarChart><c:radarStyle val=\"standard\"/><c:varyColors val=\"0\"/>"),
         _ => unreachable!("chart type validated above"),
     }
     for (index, field) in fields.iter().enumerate() {
@@ -2330,6 +2391,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
     registry.register(None);
+    let sheet_ids = workbook.sheets.iter().map(|sheet| sheet.id.clone()).collect::<Vec<_>>();
     let charts = workbook.charts.as_deref().unwrap_or(&[]);
     let mut chart_index_by_sheet = HashMap::<String, Vec<(usize, usize)>>::new();
     for (chart_index, chart) in charts.iter().enumerate() {
@@ -2397,7 +2459,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             .unwrap_or_default();
         let drawing_rel_id = (!sheet_charts.is_empty()).then_some("rIdDrawing");
         let (mut content, hyperlinks) =
-            worksheet_xml(sheet, index, &mut registry, &mut warnings, drawing_rel_id)?;
+            worksheet_xml(sheet, index, &sheet_ids, &sheet_names, &mut registry, &mut warnings, drawing_rel_id)?;
         let sheet_pivots = pivot_exports.iter().enumerate().filter(|(_, item)| item.3 == index).collect::<Vec<_>>();
         if !sheet_pivots.is_empty() {
             let mut pivot_parts = format!("<pivotTableParts count=\"{}\">", sheet_pivots.len());
@@ -2590,10 +2652,10 @@ mod tests {
         std::io::Read::read_to_string(&mut archive.by_name("xl/worksheets/sheet1.xml").unwrap(), &mut worksheet).unwrap();
         std::io::Read::read_to_string(&mut archive.by_name("xl/styles.xml").unwrap(), &mut styles).unwrap();
 
-        assert!(worksheet.contains("sqref=\"A1:A5\"><cfRule type=\"cellIs\" dxfId=\"0\" priority=\"1\" operator=\"lessThan\"><formula>60</formula>"));
-        assert!(worksheet.contains("sqref=\"A1:A5 C1:C5\"><cfRule type=\"cellIs\" dxfId=\"1\" priority=\"2\" operator=\"greaterThanOrEqual\" stopIfTrue=\"1\"><formula>90</formula>"));
-        assert!(worksheet.contains("sqref=\"B3:B5\"><cfRule type=\"containsText\" dxfId=\"2\" priority=\"3\" operator=\"containsText\" text=\"A&quot;B\">") );
-        assert!(worksheet.contains("NOT(ISERROR(SEARCH(\"A\"\"B\",B3)))"), "{worksheet}");
+        assert!(worksheet.contains("sqref=\"A1:A5\"><cfRule type=\"cellIs\" priority=\"1\" dxfId=\"0\" operator=\"lessThan\"><formula>60</formula>"));
+        assert!(worksheet.contains("sqref=\"A1:A5 C1:C5\"><cfRule type=\"cellIs\" priority=\"2\" dxfId=\"1\" operator=\"greaterThanOrEqual\" stopIfTrue=\"1\"><formula>90</formula>"));
+        assert!(worksheet.contains("sqref=\"B3:B5\"><cfRule type=\"containsText\" priority=\"3\" dxfId=\"2\" operator=\"containsText\" text=\"A&quot;B\">") );
+        assert!(worksheet.contains("NOT(ISERROR(SEARCH(&quot;A&quot;&quot;B&quot;,B3)))"), "{worksheet}");
         assert!(styles.contains("<dxfs count=\"3\"><dxf><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEE3344\"/>"));
         assert!(styles.contains("<dxf><font><b/><color rgb=\"FFFFFFFF\"/></font><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF00AA55\"/>"));
     }
@@ -2708,6 +2770,22 @@ mod tests {
     }
 
     #[test]
+    fn writes_univer_internal_link_payload_as_an_xlsx_location() {
+        let data = r##"{"kind":"workbook","sheets":[{"id":"source","name":"Source","cells":{"A1":{"value":"internal","hyperlink":"#gid=target&range=B2%3AC4"}}},{"id":"target","name":"Quarter's Report","cells":{}}]}"##;
+        let mut package = Package::new();
+        write(data, &mut package).unwrap();
+        let bytes = package.finish().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut worksheet = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("xl/worksheets/sheet1.xml").unwrap(),
+            &mut worksheet,
+        )
+        .unwrap();
+        assert!(worksheet.contains("<hyperlink ref=\"A1\" location=\"&apos;Quarter&apos;&apos;s Report&apos;!B2:C4\"/>"));
+    }
+
+    #[test]
     fn writes_hidden_rows_columns_and_custom_sizes() {
         let data = r#"{"kind":"workbook","sheets":[{"id":"sheet-1","name":"Axes","rowCount":5,"columnCount":7,"hiddenRows":[2],"hiddenColumns":[4],"rowHeights":{"3":32},"columnWidths":{"5":120}}]}"#;
         let mut package = Package::new();
@@ -2757,6 +2835,11 @@ mod tests {
 
     #[test]
     fn writes_structured_table_parts_and_sheet_relationships() {
+        let read_part = |archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, path: &str| {
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut archive.by_name(path).unwrap(), &mut content).unwrap();
+            content
+        };
         let mut package = Package::new();
         let model = serde_json::json!({
             "kind":"workbook","name":"Tables","sheets":[{"id":"sheet-1","name":"Data","cells":{}}],
@@ -3125,6 +3208,46 @@ mod tests {
         assert!(chart.contains("<c:yVal><c:numRef><c:f>&apos;Data&apos;!$B$2:$B$3</c:f>"));
         assert!(chart.contains("<c:valAx><c:axId val=\"1000003\"/>"));
         assert!(!chart.contains("<c:catAx>"));
+    }
+
+    #[test]
+    fn writes_radar_chart_with_category_and_value_axes() {
+        let mut workbook: WorkbookInput = serde_json::from_value(serde_json::json!({
+            "sheets": [{"id": "data", "name": "Survey", "cells": {
+                "B1": {"value": "Quality"}, "C1": {"value": "Speed"}, "D1": {"value": "Cost"},
+                "A2": {"value": "Team A"}, "B2": {"value": 8}, "C2": {"value": 7}, "D2": {"value": 9}
+            }}],
+            "charts": [{
+                "id": "radar-1", "sheetId": "data", "type": "radar",
+                "source": {"range": {"startRow": 0, "startCol": 0, "endRow": 1, "endCol": 3}, "orientation": "rows"},
+                "position": {"x": 12, "y": 16}, "size": {"width": 480, "height": 320},
+                "title": "Survey scores", "legend": {"visible": true, "position": "right"},
+                "categoryField": 0, "valueFields": [1], "yAxis": {"scaleType": "linear"}
+            }]
+        }))
+        .unwrap();
+        let chart = &workbook.charts.as_ref().unwrap()[0];
+        let xml = chart_xml(&workbook, chart, 0, None).unwrap();
+        assert!(xml.contains("<c:radarChart><c:radarStyle val=\"standard\"/>"));
+        assert!(xml.contains(
+            "<c:cat><c:strRef><c:f>&apos;Survey&apos;!$B$1:$D$1</c:f>"
+        ));
+        assert!(xml.contains("<c:val><c:numRef><c:f>&apos;Survey&apos;!$B$2:$D$2</c:f>"));
+        assert!(xml.contains(
+            "<c:axId val=\"1000002\"/><c:axId val=\"1000003\"/></c:radarChart>"
+        ));
+        assert!(xml.contains("<c:catAx><c:axId val=\"1000002\"/>"));
+        assert!(xml.contains("<c:valAx><c:axId val=\"1000003\"/>"));
+        assert!(xml.contains("<c:legendPos val=\"r\"/>"));
+
+        workbook.charts.as_mut().unwrap()[0]
+            .y_axis
+            .as_mut()
+            .unwrap()
+            .scale_type = "log".to_owned();
+        let chart = &workbook.charts.as_ref().unwrap()[0];
+        let error = chart_xml(&workbook, chart, 0, None).unwrap_err();
+        assert!(error.message.contains("radar charts require a linear value axis"));
     }
 
     #[test]

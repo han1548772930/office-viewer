@@ -29,9 +29,9 @@ import { documentOrientedPage, documentPageSettingsError, documentPaperSize, typ
 import { blockAtPoint, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
-import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
+import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, selectedPlainText, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { printDocumentModel } from '../features/document/services/document-print'
-import { documentPasteCommand, readDocumentClipboard } from '../features/document/services/document-clipboard'
+import { documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
 import { documentSectionIds, sectionIdForBlock, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { selectedDocumentContentControl } from '../features/document/services/content-controls'
@@ -216,13 +216,28 @@ const tocDialog = ref<{ open: boolean; mode: 'insert' | 'update'; insertMode: 'a
 const tocDialogOptions = ref<DocumentTocOptions>({ ...DEFAULT_DOCUMENT_TOC_OPTIONS })
 const contextMenuActions = computed(() => {
   const translate = createRibbonTranslator(officeLocale.value, 'doc')
+  const pasteSpecialActions = (['source', 'destination', 'text'] as const).map((mode) => ({
+    id: `doc-context-paste-special-${mode}`,
+    title: translate(`doc.context.paste-special.${mode}`, { source: '保留源格式', destination: '匹配目标格式', text: '仅保留文本' }[mode]),
+    commandId: 'doc.command.paste-special',
+    params: { mode },
+    disabled: !canEditContextSelection.value || typeof navigator === 'undefined' || !navigator.clipboard
+      || (mode === 'destination' && !blockAtPoint(model.value, selection.value.focus)),
+    group: 'paste-special' as const,
+  }))
+  const quickActions = [
+    { id: 'doc-context-copy', title: translate('doc.context.copy', '复制'), commandId: 'doc.command.copy', params: undefined, disabled: !toolbarState.value.hasSelection || !canDocumentPermission('copy'), group: 'quick' as const },
+    { id: 'doc-context-cut', title: translate('doc.context.cut', '剪切'), commandId: 'doc.command.cut', params: undefined, disabled: !toolbarState.value.hasSelection || !canDocumentPermission('copy') || !canEditContextSelection.value, group: 'quick' as const },
+    { id: 'doc-context-paste', title: translate('doc.context.paste', '粘贴'), commandId: 'doc.command.paste', params: undefined, disabled: !canEditContextSelection.value || typeof navigator === 'undefined' || !navigator.clipboard, group: 'quick' as const },
+    { id: 'doc-context-delete', title: translate('doc.context.delete', '删除'), commandId: 'doc.command.delete', params: { direction: -1 }, disabled: !toolbarState.value.hasSelection || !canEditContextSelection.value, group: 'format' as const },
+  ]
   const paragraphSettings = {
     id: 'doc-context-paragraph-settings', title: translate('doc.context.paragraph-settings', 'Paragraph settings'),
     commandId: 'sidebar.operation.doc-paragraph-setting-panel', params: undefined,
     disabled: !canEditContextSelection.value, group: 'layout' as const,
   }
   const layoutActions = [paragraphSettings]
-  if (selection.value.focus.row == null) layoutActions.push({
+  if (supportsDocumentTableOfContents(model.value) && selection.value.focus.row == null) layoutActions.push({
     id: 'doc-context-section-settings', title: translate('doc.context.section-settings', 'Section settings'),
     commandId: 'sidebar.operation.doc-section-setting-panel', params: undefined,
     disabled: !canEditContextSelection.value, group: 'layout' as const,
@@ -233,13 +248,26 @@ const contextMenuActions = computed(() => {
   const tocActions = selectedTocId.value
     ? documentTocContextMenuItems(selectedTocId.value, !canEditSelectedToc.value, translate).map(action => ({ ...action, group: 'layout' as const }))
     : []
-  return [...layoutActions, ...tocActions, ...tableActions]
+  return [...quickActions, ...pasteSpecialActions, ...layoutActions, ...tocActions, ...tableActions]
 })
 const documentContextMenuItems = computed<MenuItemType[]>(() => {
+  const quickItems = contextMenuActions.value.filter(item => item.group === 'quick')
+  const pasteSpecialActions = contextMenuActions.value.filter(item => item.group === 'paste-special')
+  const formatItems = contextMenuActions.value.filter(item => item.group === 'format')
   const layoutItems = contextMenuActions.value.filter(item => item.group === 'layout')
   const tableItems = contextMenuActions.value.filter(item => item.group === 'table')
   return [
-    ...layoutItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled })),
+    ...quickItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled })),
+    ...(pasteSpecialActions.length || formatItems.length ? [
+      { type: 'divider' as const },
+      ...(pasteSpecialActions.length ? [{
+        key: 'doc-context-paste-special',
+        label: createRibbonTranslator(officeLocale.value, 'doc')('doc.context.paste-special', '选择性粘贴'),
+        children: pasteSpecialActions.map(action => ({ key: action.id, label: action.title, disabled: action.disabled })),
+      }] : []),
+      ...formatItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled })),
+    ] : []),
+    ...(layoutItems.length ? [{ type: 'divider' as const }, ...layoutItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled }))] : []),
     ...(tableItems.length ? [{ type: 'divider' as const }, ...tableItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled }))] : []),
   ]
 })
@@ -874,6 +902,24 @@ async function pasteSelection(plainText = false) {
   } catch { notify('无法读取剪贴板，请在文档中使用 Ctrl+V 或 Ctrl+Shift+V 粘贴') }
   canvasRef.value?.focus()
 }
+async function pasteSpecialSelection(mode: DocumentPasteMode) {
+  const base = model.value
+  const range = JSON.stringify(selection.value)
+  const request = ++clipboardRequest
+  try {
+    if (!navigator.clipboard) throw new Error('Clipboard is unavailable')
+    const data = await readDocumentClipboard(navigator.clipboard)
+    if (request !== clipboardRequest || model.value !== base || JSON.stringify(selection.value) !== range) { notify('文档或选区已变化，请重新粘贴'); return }
+    const paragraph = blockAtPoint(model.value, selection.value.focus)
+    if (!paragraph) { notify('无法确定目标段落格式，请重新选择插入位置。'); return }
+    const command = documentPasteSpecialCommand(data, mode, {
+      paragraphStyle: { ...paragraph.style },
+      textStyle: { ...marksAtPoint(model.value, selection.value.focus), ...pendingMarks.value },
+    })
+    if (command) execute(command)
+  } catch { notify('无法读取剪贴板，请在文档中使用 Ctrl+V 或 Ctrl+Shift+V 粘贴') }
+  canvasRef.value?.focus()
+}
 function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
 function savePermissionRules(rules: DocumentPermissionRule[]) {
   if (!canManagePermissionRules.value) return
@@ -927,6 +973,12 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.cut': void copySelection(true); break
     case 'doc.command.paste': void pasteSelection(); break
     case 'doc.command.paste-text': void pasteSelection(true); break
+    case 'doc.command.paste-special':
+      if (params && typeof params === 'object' && 'mode' in params
+        && (params.mode === 'source' || params.mode === 'destination' || params.mode === 'text')) {
+        void pasteSpecialSelection(params.mode)
+      }
+      break
     case 'doc.command.print': printDocument(); break
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image': insertImage(); break

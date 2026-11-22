@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
-import { Button, Input, Tooltip } from 'antdv-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import { Button, Input, Tooltip, theme } from 'antdv-next'
+import type { InputTextAreaRef } from 'antdv-next'
 import { Check, ChevronDown, ChevronUp, X } from 'lucide-vue-next'
 
 const props = defineProps<{ address: string; value: string; editing: boolean; error?: string }>()
@@ -15,7 +16,17 @@ const emit = defineEmits<{
 
 const addressDraft = ref(props.address)
 const expanded = ref(false)
-const editor = ref<HTMLElement | null>(null)
+const editor = ref<InputTextAreaRef | null>(null)
+const { token } = theme.useToken()
+const colors = computed(() => ({
+  '--formula-surface': token.value.colorBgContainer,
+  '--formula-divider': token.value.colorBorderSecondary,
+  '--formula-accent': token.value.colorPrimary,
+  '--formula-muted': token.value.colorTextSecondary,
+  '--formula-error-bg': token.value.colorErrorBg,
+  '--formula-error-border': token.value.colorErrorBorder,
+  '--formula-error-text': token.value.colorErrorText,
+}))
 watch(() => props.address, address => { addressDraft.value = address })
 
 function onKeydown(event: KeyboardEvent) {
@@ -31,21 +42,21 @@ function onKeydown(event: KeyboardEvent) {
 
 function toggleExpanded() {
   expanded.value = !expanded.value
-  void nextTick(() => { if (props.editing) editor.value?.querySelector('textarea')?.focus({ preventScroll: true }) })
+  void nextTick(() => { if (props.editing) editor.value?.focus() })
 }
 
 function startFormula() {
   emit('begin')
   if (!props.value) emit('update:value', '=')
-  void nextTick(() => editor.value?.querySelector('textarea')?.focus({ preventScroll: true }))
+  void nextTick(() => editor.value?.focus())
 }
 
-function focus() { editor.value?.querySelector('textarea')?.focus({ preventScroll: true }) }
+function focus() { editor.value?.focus() }
 defineExpose({ focus })
 </script>
 
 <template>
-  <div class="formula-toolbar" :class="{ expanded }" data-testid="sheet-formula-bar" @keydown.stop>
+  <div class="formula-toolbar" :class="{ expanded }" :style="colors" data-testid="sheet-formula-bar" @keydown.stop>
     <Input
       v-model:value="addressDraft"
       class="name-box"
@@ -53,7 +64,7 @@ defineExpose({ focus })
       :aria-invalid="Boolean(error)"
       :title="error || '输入单元格或范围，例如 A1 或 A1:C8'"
       :status="error ? 'error' : undefined"
-      :bordered="false"
+      variant="borderless"
       @keydown.enter.prevent.stop="emit('navigate', addressDraft)"
       @keydown.esc.prevent.stop="addressDraft = address; emit('focus-grid')"
       @focus="($event.target as HTMLInputElement).select()"
@@ -68,6 +79,7 @@ defineExpose({ focus })
       class="formula-input"
       aria-label="公式编辑"
       :rows="expanded ? 3 : 1"
+      variant="borderless"
       spellcheck="false"
       @focus="emit('begin')"
       @update:value="emit('update:value', $event)"
@@ -82,15 +94,15 @@ defineExpose({ focus })
 </template>
 
 <style scoped>
-.formula-toolbar { position: relative; display: flex; box-sizing: border-box; flex: 0 0 28px; min-width: 0; height: 28px; align-items: flex-start; border-bottom: 1px solid var(--line, #dfe5ee); background: #fff; }
+.formula-toolbar { position: relative; display: flex; box-sizing: border-box; flex: 0 0 28px; min-width: 0; height: 28px; align-items: flex-start; border-bottom: 1px solid var(--formula-divider); background: var(--formula-surface); }
 .formula-toolbar.expanded { flex-basis: 80px; height: 80px; }
-.name-box { flex: 0 0 100px; box-sizing: border-box; width: 100px; height: 27px; border-radius: 0; border-right: 1px solid var(--line, #dfe5ee); padding: 2px 9px; color: #37445a; font-size: 12px; }
-.formula-actions { display: flex; flex: 0 0 88px; height: 27px; align-items: center; justify-content: center; border-right: 1px solid var(--line, #dfe5ee); }
+.formula-toolbar .name-box { flex: 0 0 100px; box-sizing: border-box; width: 100px; height: 27px; border-radius: 0; border-inline-end: 1px solid var(--formula-divider); padding: 2px 9px; font-size: 12px; }
+.formula-actions { display: flex; flex: 0 0 88px; height: 27px; align-items: center; justify-content: center; border-inline-end: 1px solid var(--formula-divider); }
 .formula-actions :deep(.ant-btn) { display: inline-flex; width: 27px; height: 24px; align-items: center; justify-content: center; padding: 0; }
-.formula-symbol { color: #627087; font-family: Georgia, serif; font-size: 16px; font-style: italic; }
+.formula-symbol { color: var(--formula-muted); font-family: Georgia, serif; font-size: 16px; font-style: italic; }
 .formula-input { display: block; box-sizing: border-box; flex: 1; min-width: 0; height: 100%; }
-.formula-input :deep(textarea) { box-sizing: border-box; height: 100%; resize: none; border: 0; outline: 0; padding: 4px 10px; color: #364257; background: transparent; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 12px; line-height: 19px; white-space: pre-wrap; overflow-y: auto; }
-.formula-input :deep(textarea:focus) { box-shadow: inset 0 0 0 1px #91b5fe; }
+.formula-toolbar textarea.formula-input, .formula-input :deep(textarea) { box-sizing: border-box; height: 100%; resize: none; border: 0; border-radius: 0; padding: 4px 10px; background: transparent; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 12px; line-height: 19px; white-space: pre-wrap; overflow-y: auto; }
+.formula-toolbar textarea.formula-input:focus, .formula-input :deep(textarea:focus) { box-shadow: inset 0 0 0 1px var(--formula-accent); }
 .formula-expand { display: flex; flex: 0 0 26px; width: 26px; height: 27px; align-items: center; justify-content: center; padding: 0; }
-.formula-error { position: absolute; z-index: 8; top: 100%; left: 0; max-width: min(360px, 90vw); border: 1px solid #ffd1d1; padding: 5px 9px; color: #a52c2c; background: #fff3f3; font-size: 12px; }
+.formula-error { position: absolute; z-index: 8; top: 100%; inset-inline-start: 0; max-width: min(360px, 90vw); border: 1px solid var(--formula-error-border); padding: 5px 9px; color: var(--formula-error-text); background: var(--formula-error-bg); font-size: 12px; }
 </style>

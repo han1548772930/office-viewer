@@ -18,6 +18,7 @@ window.commentPanelFixture = { comments, createResult, replyResult, editResult, 
 createApp({ render: () => h(ConfigProvider, null, { default: () => h(DocumentCommentsPanel, {
   comments: comments.value, currentUserId: 'alice', canComment: true, canCreate: true, canStartCreate: true,
   selectedCommentId: 'comment-1',
+  onSelect: (commentId) => window.commentPanelFixture.calls.push(['select', commentId]),
   onCreateComment: async (text) => { window.commentPanelFixture.calls.push(['create', text]); if (!createResult.value) return false; comments.value = { ...comments.value, 'comment-2': { ...comment, id: 'comment-2', messages: [{ ...comment.messages[0], id: 'message-2', text }] } }; return true },
   onReplyComment: async (commentId, text, mentions) => { window.commentPanelFixture.calls.push(['reply', commentId, text, mentions]); if (!replyResult.value) return false; comments.value = { ...comments.value, [commentId]: { ...comments.value[commentId], messages: [...comments.value[commentId].messages, { id: 'message-3', authorId: 'alice', authorName: 'Alice', text, createdAt: '2026-11-21T00:01:00.000Z', mentions }] } }; return true },
   onEditComment: async (commentId, messageId, text) => { window.commentPanelFixture.calls.push(['edit', commentId, messageId, text]); if (!editResult.value) return false; comments.value = { ...comments.value, [commentId]: { ...comments.value[commentId], messages: comments.value[commentId].messages.map(message => message.id === messageId ? { ...message, text } : message) } }; return true },
@@ -55,7 +56,7 @@ beforeAll(async () => {
   if (!address || typeof address === 'string') throw new Error('Vite did not allocate an HTTP port')
   baseURL = `http://127.0.0.1:${address.port}${fixturePath}`
   browser = await chromium.launch({ channel: 'msedge', headless: true })
-}, { timeout: 60_000 })
+}, 60_000)
 
 afterAll(async () => {
   await page?.close()
@@ -99,6 +100,15 @@ test('create, reply and edit keep drafts after failed mutations and clear them a
   await edit.press('Control+Enter')
   await expect(edit).toHaveCount(0)
   await expect(page.getByText('Edited comment', { exact: true })).toBeVisible()
-  assert.deepEqual(await page.evaluate(() => window.commentPanelFixture.calls.map(([kind]) => kind)), ['create', 'create', 'reply', 'reply', 'edit', 'edit'])
+  assert.deepEqual(await page.evaluate(() => window.commentPanelFixture.calls.map(([kind]) => kind)), ['create', 'create', 'select', 'reply', 'reply', 'edit', 'edit'])
+  assert.deepEqual(errors, [])
+})
+
+test('comment threads use antdv-next Card while retaining the source card activation behavior', async () => {
+  const thread = page.getByRole('article').filter({ hasText: 'Original comment' })
+  await expect(thread).toHaveClass(/ant-card/)
+  await expect(thread).toHaveAttribute('id', 'document-comment-comment-1')
+  await page.getByText('Original comment', { exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => window.commentPanelFixture.calls), [['select', 'comment-1']])
   assert.deepEqual(errors, [])
 })

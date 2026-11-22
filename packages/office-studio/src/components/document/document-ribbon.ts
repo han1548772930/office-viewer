@@ -379,6 +379,7 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
   if (id === 'doc.command.insert-page-break' || id === 'doc.command.insert-column-break' || id === 'doc.command.insert-divider') return { id }
+  if (id === 'doc.command.delete' && record(params) && (params.direction === -1 || params.direction === 1)) return { id, direction: params.direction }
   if (id === 'doc.command.insert-table' && record(params)) {
     const { rows, cols } = params
     return Number.isInteger(rows) && Number.isInteger(cols) && Number(rows) >= 1 && Number(rows) <= 20 && Number(cols) >= 1 && Number(cols) <= 20

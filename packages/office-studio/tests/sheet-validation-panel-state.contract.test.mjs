@@ -66,14 +66,18 @@ test('switching between list modes retains items, colors and reference configura
   assert.deepEqual(multi.listItems.map(item => [item.label, item.color]), [
     ['Open', '#1677ff'], ['Closed', '#ff4d4f'],
   ])
-  assert.deepEqual(changeValidationType(multi, 'list'), multi)
+  const single = changeValidationType(multi, 'list')
+  assert.equal(single.type, 'list')
+  assert.equal(single.listMode, multi.listMode)
+  assert.deepEqual(single.listItems, multi.listItems)
+  assert.equal(single.listReference, multi.listReference)
 })
 
 test('validation panel uses antdv-next Form items for editable fields', async () => {
   const { readFile } = await import('node:fs/promises')
   const panel = await readFile(new URL('../src/components/spreadsheet/SheetDataValidationPanel.vue', import.meta.url), 'utf8')
-  assert.match(panel, /import \{ Button, Checkbox, Form, Input, Select \} from 'antdv-next'/)
+  assert.match(panel, /import \{[^}]*\bForm,\s*FormItem\b[^}]*\} from 'antdv-next'/)
   assert.match(panel, /<Form v-else class="validation-body validation-form"/)
-  assert.match(panel, /<Form\.Item :label=/)
+  assert.match(panel, /<FormItem :label=/)
   assert.doesNotMatch(panel, /<input\b|<select\b|<textarea\b/)
 })

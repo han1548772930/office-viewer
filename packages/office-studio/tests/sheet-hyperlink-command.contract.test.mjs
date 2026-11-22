@@ -57,3 +57,24 @@ test('cell hyperlink commands share model history, reject formulas, and retain l
     studio.dispose()
   }
 })
+
+test('workbook hyperlink navigation activates the target sheet and selects the linked range', () => {
+  const studio = new apiModule.OfficeStudio()
+  const api = apiModule.FOffice.newAPI(studio)
+  try {
+    const workbook = api.createWorkbook({ sheets: [
+      { id: 'source', name: 'Source' },
+      { id: 'target', name: 'Quarter Report' },
+    ] })
+    workbook.navigateToSheetHyperlink('#gid=target&range=B2%3AC4')
+    assert.equal(workbook.getActiveSheet()?.getSheetId(), 'target')
+    assert.deepEqual(studio.getSelection(), {
+      startRow: 1, startColumn: 1, endRow: 3, endColumn: 2,
+      sheetId: 'target', unitId: workbook.getId(),
+    })
+    assert.throws(() => workbook.navigateToSheetHyperlink('#gid=missing&range=A1'), /Invalid internal worksheet hyperlink/)
+    assert.throws(() => workbook.navigateToSheetHyperlink('https://example.com'), /Invalid internal worksheet hyperlink/)
+  } finally {
+    studio.dispose()
+  }
+})

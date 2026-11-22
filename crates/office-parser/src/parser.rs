@@ -475,13 +475,15 @@ fn parse_workbook(
         .collect::<Vec<_>>();
     for sheet in &mut sheets {
         for chart in &mut sheet.charts {
-            if let Some((x_axis, y_axis)) = pivot_sidecar.chart_axes.get(&(sheet.name.clone(), chart.index)) {
-                chart.x_axis = Some(x_axis.clone());
-                chart.y_axis = Some(y_axis.clone());
+            let chart_key = (sheet.name.clone(), chart.index);
+            if let Some(settings) = pivot_sidecar.chart_settings.get(&chart_key) {
+                chart.x_axis = Some(settings.x_axis.clone());
+                chart.y_axis = Some(settings.y_axis.clone());
+                chart.legend_position = settings.legend_position.clone();
             }
             chart.pivot_table_id = pivot_sidecar
                 .chart_pivot_ids
-                .get(&(sheet.name.clone(), chart.index))
+                .get(&chart_key)
                 .cloned();
         }
     }
@@ -788,6 +790,7 @@ fn chart_payload(
             })
             .collect(),
         legend: chart.legend,
+        legend_position: None,
         data_labels: chart.data_labels,
         x_axis_title: chart.x_axis_title.clone(),
         y_axis_title: chart.y_axis_title.clone(),
@@ -1626,6 +1629,51 @@ mod tests {
         assert_eq!(chart["xAxis"]["scaleType"], "log");
         assert_eq!(chart["xAxis"]["logBase"], 2.0);
         assert_eq!(chart["yAxis"]["scaleType"], "linear");
+    }
+
+    #[test]
+    fn writer_radar_chart_xlsx_reopens_with_series_layout_axes_and_legend() {
+        let model = serde_json::json!({
+            "kind": "workbook", "name": "Radar", "sheets": [{"id": "data", "name": "Team's Survey", "cells": {
+                "A1": {"value": "Metric"}, "B1": {"value": "Team A"}, "C1": {"value": "Team B"},
+                "A2": {"value": "Quality"}, "B2": {"value": 8}, "C2": {"value": 7},
+                "A3": {"value": "Speed"}, "B3": {"value": 9}, "C3": {"value": 6},
+                "A4": {"value": "Cost"}, "B4": {"value": 3}, "C4": {"value": 5}
+            }}], "charts": [{
+                "id": "radar-1", "sheetId": "data", "type": "radar",
+                "source": {"range": {"startRow": 0, "startCol": 0, "endRow": 3, "endCol": 2}, "orientation": "columns"},
+                "position": {"x": 24, "y": 48}, "size": {"width": 480, "height": 320},
+                "title": "Team scores", "legend": {"visible": true, "position": "right"},
+                "categoryField": 0, "valueFields": [1, 2],
+                "xAxis": {"title": "Metrics", "scaleType": "linear"},
+                "yAxis": {"title": "Score", "scaleType": "linear"}
+            }]
+        });
+        let (bytes, warnings) =
+            office_writer::export_xlsx_bytes(&model.to_string()).expect("radar chart exports");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let envelope = parse_office_bytes(&bytes, "radar.xlsx").expect("radar chart reopens");
+        let payload = serde_json::to_value(envelope).expect("parse payload serializes");
+        let chart = &payload["payload"]["data"]["sheets"][0]["charts"][0];
+        assert_eq!(chart["kind"], "radar");
+        assert_eq!(chart["title"], "Team scores");
+        assert_eq!(chart["series"].as_array().unwrap().len(), 2);
+        assert_eq!(chart["series"][0]["categories"], "'Team''s Survey'!$A$2:$A$4");
+        assert_eq!(chart["series"][0]["values"], "'Team''s Survey'!$B$2:$B$4");
+        assert_eq!(chart["series"][1]["categories"], "'Team''s Survey'!$A$2:$A$4");
+        assert_eq!(chart["series"][1]["values"], "'Team''s Survey'!$C$2:$C$4");
+        assert_eq!(chart["drawing"]["behavior"], "absolute");
+        assert_eq!(chart["drawing"]["fromOffsetEmu"], json!([228_600, 457_200]));
+        assert_eq!(
+            chart["drawing"]["absoluteSizeEmu"],
+            json!([4_572_000, 3_048_000])
+        );
+        assert_eq!(chart["xAxisTitle"], "Metrics");
+        assert_eq!(chart["yAxisTitle"], "Score");
+        assert_eq!(chart["xAxis"]["scaleType"], "linear");
+        assert_eq!(chart["yAxis"]["scaleType"], "linear");
+        assert_eq!(chart["legend"], true);
+        assert_eq!(chart["legendPosition"], "right");
     }
 
     fn add_xlsx_validation_attributes(bytes: &[u8]) -> Vec<u8> {

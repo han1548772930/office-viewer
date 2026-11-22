@@ -54,7 +54,7 @@ watch(draft, value => {
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('doc.paragraph-settings.title', 'Paragraph settings')" :width="300" placement="right" :mask="false" :destroy-on-close="true" @close="emit('update:open', false)">
+  <Drawer :open="open" :title="t('doc.paragraph-settings.title', 'Paragraph settings')" :size="300" placement="right" :mask="false" :destroy-on-hidden="true" @close="emit('update:open', false)">
     <Form :model="draft" layout="horizontal" class="paragraph-settings">
       <section>
         <div class="settings-heading">{{ t('doc.paragraph-settings.alignment', 'Alignment') }}</div>

@@ -23,11 +23,6 @@ const { locale, t, te } = useI18n()
 const importTrigger = ref<{ $el: HTMLElement } | null>(null)
 function requestImport(): void { importTrigger.value?.$el.click() }
 function importSelectedFile(file: File): false { void files.importFile(file); return false }
-function setImportTrigger(element: unknown): void {
-  importTrigger.value = element && typeof element === 'object' && '$el' in element
-    ? element as { $el: HTMLElement }
-    : null
-}
 provide(OfficeLocaleKey, computed(() => locale.value as OfficeLocale))
 provide(OfficeTranslatorKey, (key, fallback) => {
   const normalized = key.replace(/^(sheet|doc|core)\./, '')
@@ -86,7 +81,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale === 'en-US' ? 'en-US' : 'zh-CN'"
       @action="onHeaderAction" @switch="switchWorkspace" @locale="locale = $event"
     />
-    <Upload accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="setImportTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
+    <Upload accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
 
     <main :id="editor.state.activeKind === 'workbook' ? 'workbook-workspace' : 'document-workspace'" class="workspace" role="tabpanel" :aria-labelledby="editor.state.activeKind === 'workbook' ? 'workbook-tab' : 'document-tab'" :aria-label="editor.state.activeKind === 'workbook' ? t('workspace.workbook-area') : t('workspace.document-area')">
       <div v-if="editor.state.parserStatus === 'loading'" class="workspace-task-strip" role="status" aria-live="polite">

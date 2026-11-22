@@ -359,6 +359,8 @@ pub struct ChartPayload {
     pub title: Option<String>,
     pub series: Vec<ChartSeriesPayload>,
     pub legend: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legend_position: Option<String>,
     pub data_labels: bool,
     pub x_axis_title: Option<String>,
     pub y_axis_title: Option<String>,

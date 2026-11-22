@@ -103,6 +103,8 @@ onDeactivated(() => {
 
 onMounted(async () => {
   if (!hostRef.value || !scrollRef.value) return
+  resize()
+  relayout()
   try {
     const nextSurface = await createRenderSurface(hostRef.value, { preferredBackend: 'webgpu', onBackendChange: (value) => { backend.value = value; requestDraw() } })
     if (disposed) { nextSurface.dispose(); return }
@@ -113,8 +115,6 @@ onMounted(async () => {
     watchDevicePixelRatio()
     window.addEventListener('resize', onViewportResize)
     window.visualViewport?.addEventListener('resize', onViewportResize)
-    resize()
-    relayout()
     document.fonts?.ready.then(() => { if (!disposed) relayout() })
     blink = setInterval(() => { caretVisible.value = !caretVisible.value; requestDraw() }, 530)
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
@@ -486,7 +486,7 @@ defineExpose({ focus, scrollToPage, scrollToBlock, backend, getLayout: () => lay
     <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
-    <Input.TextArea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" :bordered="false" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
+    <Input.TextArea ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
     <span v-if="error" class="canvas-error" role="alert">{{ error }}</span>
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
   </div>

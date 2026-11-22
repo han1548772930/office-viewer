@@ -9,6 +9,16 @@ export interface ValidationPanelSettings {
   operator: SheetDataValidationOperator | ''
   formula1: string
   formula2: string
+  allowBlank: boolean
+  showDropDown: boolean
+  showErrorMessage: boolean
+  error?: string
+  errorTitle?: string
+  errorStyle?: SheetDataValidationRule['errorStyle']
+  showInputMessage: boolean
+  prompt?: string
+  promptTitle?: string
+  renderMode?: SheetDataValidationRule['renderMode']
   checkboxCustomValues: boolean
   listMode: 'custom' | 'reference'
   listItems: ValidationListItem[]
@@ -35,6 +45,16 @@ export function validationPanelSettings(rule?: SheetDataValidationRule | null, i
     operator: rule ? rule.operator ?? '' : validationUsesOperator(type) ? type === 'date' ? '' : 'between' : '',
     formula1: rule?.formula1 ?? '',
     formula2: rule?.formula2 ?? '',
+    allowBlank: rule?.allowBlank ?? true,
+    showDropDown: rule?.showDropDown ?? true,
+    showErrorMessage: rule?.showErrorMessage ?? true,
+    ...(rule?.error === undefined ? {} : { error: rule.error }),
+    ...(rule?.errorTitle === undefined ? {} : { errorTitle: rule.errorTitle }),
+    ...(rule?.errorStyle === undefined ? {} : { errorStyle: rule.errorStyle }),
+    showInputMessage: rule?.showInputMessage ?? false,
+    ...(rule?.prompt === undefined ? {} : { prompt: rule.prompt }),
+    ...(rule?.promptTitle === undefined ? {} : { promptTitle: rule.promptTitle }),
+    ...(rule?.renderMode === undefined ? {} : { renderMode: rule.renderMode }),
     checkboxCustomValues: type === 'checkbox' && (rule?.formula1 !== undefined || rule?.formula2 !== undefined),
     listMode: reference ? 'reference' : 'custom',
     listItems: labels.map((label, index) => ({ id: crypto.randomUUID(), label, color: colors[index] ?? '' })),
@@ -58,7 +78,22 @@ export function validationRuleFromPanel(
   previous?: SheetDataValidationRule | null,
 ): SheetDataValidationRule {
   const draft: Omit<SheetDataValidationRule, 'id' | 'ranges'> & { id?: string } = {
-    ...previous, ...options, type: settings.type, operator: undefined, formula1: undefined, formula2: undefined,
+    ...previous,
+    allowBlank: settings.allowBlank,
+    showDropDown: settings.showDropDown,
+    showErrorMessage: settings.showErrorMessage,
+    error: settings.error,
+    errorTitle: settings.errorTitle,
+    errorStyle: settings.errorStyle,
+    showInputMessage: settings.showInputMessage,
+    prompt: settings.prompt,
+    promptTitle: settings.promptTitle,
+    renderMode: settings.renderMode,
+    ...options,
+    type: settings.type,
+    operator: undefined,
+    formula1: undefined,
+    formula2: undefined,
   }
   if (settings.type === 'list' || settings.type === 'listMultiple') {
     if (settings.listMode === 'reference') {

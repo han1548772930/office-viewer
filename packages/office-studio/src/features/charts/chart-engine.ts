@@ -301,6 +301,20 @@ export function chartLayout(workbook: WorkbookModel, chart: ChartModel): ChartLa
     height: Math.max(1, frame.height - top - bottom),
   }
   if (chart.type === 'scatter') return scatterLayout(data, chart, frame, plot)
+  if (chart.type === 'radar') {
+    const { min, max } = radarValueExtent(data)
+    const series = data.series.map((source, seriesIndex) => ({
+      name: source.name,
+      color: CHART_COLORS[seriesIndex % CHART_COLORS.length]!,
+      points: source.values.flatMap((value, categoryIndex) => value == null ? [] : [{
+        ...radarPoint(plot, categoryIndex, data.categories.length, (value - min) / (max - min)),
+        categoryIndex,
+        category: data.categories[categoryIndex] ?? '',
+        value,
+      }]),
+    }))
+    return { frame, plot, min, max, categories: data.categories, series }
+  }
   const values = data.series.flatMap((series) => series.values.filter((value): value is number => value !== null && Number.isFinite(value) && (chart.yAxis.scaleType !== 'log' || value > 0)))
   const stackTotals = chart.type === 'stacked-column' ? stackedExtents(data) : undefined
   const rangeValues = stackTotals ? [...stackTotals] : values
@@ -352,6 +366,11 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
   if (chart.title) commands.push({ kind: 'text', x: layout.frame.x + layout.frame.width / 2, y: layout.frame.y + 20, text: chart.title, font: '600 14px Aptos, Arial, sans-serif', color: '#172033', align: 'center', baseline: 'middle' })
   if (chart.type === 'pie' || chart.type === 'doughnut') {
     renderPieChart(commands, layout, readChartData(workbook, chart), chart)
+    return commands
+  }
+  if (chart.type === 'radar') {
+    renderRadarChart(commands, layout)
+    renderSeriesLegend(commands, layout, chart)
     return commands
   }
   commands.push({ kind: 'rect', ...layout.plot, fill: '#ffffff', stroke: '#e2e8f0', strokeWidth: 1 })
@@ -432,6 +451,11 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
       series.points.forEach((point) => commands.push({ kind: 'rect', x: point.x - 3, y: point.y - 3, width: 6, height: 6, fill: series.color }))
     })
   }
+  renderSeriesLegend(commands, layout, chart)
+  return commands
+}
+
+function renderSeriesLegend(commands: DrawCommand[], layout: ChartLayout, chart: ChartModel): void {
   if (chart.legend.visible) {
     const y = chart.legend.position === 'top'
       ? layout.frame.y + (chart.title ? 44 : 12)
@@ -442,7 +466,56 @@ export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel):
       commands.push({ kind: 'text', x: x + 15, y, text: series.name, font: '11px Aptos, Arial, sans-serif', color: '#475569', baseline: 'middle' })
     })
   }
-  return commands
+}
+
+export function radarValueExtent(data: ChartData): { min: number; max: number } {
+  let min = 0
+  let max = 0
+  for (const series of data.series) {
+    for (const value of series.values) {
+      if (value == null) continue
+      min = Math.min(min, value)
+      max = Math.max(max, value)
+    }
+  }
+  return { min, max: min === max ? 1 : max }
+}
+
+function radarPoint(plot: RenderRect, index: number, count: number, ratio: number): { x: number; y: number } {
+  const angle = index * Math.PI * 2 / count
+  const radius = Math.min(plot.width, plot.height) * 0.36 * ratio
+  return {
+    x: plot.x + plot.width / 2 + Math.sin(angle) * radius,
+    y: plot.y + plot.height / 2 - Math.cos(angle) * radius,
+  }
+}
+
+function renderRadarChart(commands: DrawCommand[], layout: ChartLayout): void {
+  const { plot, categories, series } = layout
+  const count = categories.length
+  const center = radarPoint(plot, 0, count, 0)
+  for (const ratio of [0.25, 0.5, 0.75, 1]) {
+    categories.forEach((_category, index) => {
+      const start = radarPoint(plot, index, count, ratio)
+      const end = radarPoint(plot, (index + 1) % count, count, ratio)
+      commands.push({ kind: 'line', x1: start.x, y1: start.y, x2: end.x, y2: end.y, color: '#e2e8f0', width: 1 })
+    })
+  }
+  categories.forEach((category, index) => {
+    const end = radarPoint(plot, index, count, 1)
+    const label = radarPoint(plot, index, count, 1.22)
+    commands.push({ kind: 'line', x1: center.x, y1: center.y, x2: end.x, y2: end.y, color: '#cbd5e1', width: 1 })
+    commands.push({ kind: 'text', ...label, text: category, font: '10px Aptos, Arial, sans-serif', color: '#64748b', align: 'center', baseline: 'middle' })
+  })
+  for (const entry of series) {
+    const points = new Map(entry.points.map(point => [point.categoryIndex, point]))
+    categories.forEach((_category, index) => {
+      const start = points.get(index) ?? center
+      const end = points.get((index + 1) % count) ?? center
+      commands.push({ kind: 'line', x1: start.x, y1: start.y, x2: end.x, y2: end.y, color: entry.color, width: 2 })
+    })
+    entry.points.forEach(point => commands.push({ kind: 'rect', x: point.x - 2, y: point.y - 2, width: 4, height: 4, fill: entry.color }))
+  }
 }
 
 export function normalizeSource(source: ChartSource): ChartSource {
@@ -453,15 +526,17 @@ export function normalizeSource(source: ChartSource): ChartSource {
 }
 
 function validateChartType(type: ChartType): void {
-  if (!['bar', 'line', 'area', 'pie', 'doughnut', 'stacked-column', 'scatter'].includes(type)) throw new TypeError(`Unsupported chart type: ${type}`)
+  if (!['bar', 'line', 'area', 'pie', 'doughnut', 'stacked-column', 'scatter', 'radar'].includes(type)) throw new TypeError(`Unsupported chart type: ${type}`)
 }
 
 function validateChartData(type: ChartType, data: ChartData, axis: ChartAxisOptions): void {
   if (!data.categories.length || !data.series.length) throw new RangeError('Chart source must contain at least one category and value series')
+  if (type === 'radar' && data.categories.length < 3) throw new RangeError('Radar charts require at least three categories')
   if (data.series.some((series) => !series.values.length || series.values.length !== data.categories.length)) throw new RangeError('Chart series must have one value per category')
   if (type === 'scatter' && data.series.some((series) => !series.xValues || series.xValues.length !== series.values.length)) throw new RangeError('Scatter series must have one X value per Y value')
   if (type === 'scatter' && !data.series.some((series) => series.values.some((value, index) => value !== null && series.xValues?.[index] != null))) throw new RangeError('Scatter chart requires at least one numeric X/Y pair')
   if (type === 'stacked-column' && axis.scaleType !== 'linear') throw new TypeError('Stacked column charts require a linear value axis')
+  if (type === 'radar' && axis.scaleType !== 'linear') throw new TypeError('Radar charts require a linear value axis')
   if (type === 'pie' || type === 'doughnut') {
     if (data.series.length !== 1) throw new RangeError(`${type} charts require exactly one value series`)
     const values = data.series[0]!.values.filter((value): value is number => value !== null && Number.isFinite(value))

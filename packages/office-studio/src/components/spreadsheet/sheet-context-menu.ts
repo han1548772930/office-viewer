@@ -21,6 +21,7 @@ export interface SheetContextMenuContext {
   hasHiddenRows: boolean
   hasHiddenColumns: boolean
   canConvertText?: boolean
+  hasHyperlink?: boolean
   canShiftHorizontally?: boolean
   canShiftVertically?: boolean
 }
@@ -58,6 +59,9 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     ] },
     ...(options.canConvertText ? [{ id: 'text-to-number', label: '文本转数字', commandId: 'sheet.command.text-to-number', icon: 'ConvertToNumberIcon' }] : []),
   ]
+  const linkActions: SheetContextMenuItem[] = hit.kind === 'cell' && options.hasHyperlink
+    ? [{ id: 'open-hyperlink', label: '打开超链接', commandId: 'sheet.operation.open-cell-hyperlink', params: { key: hit.key }, icon: 'LinkIcon', separatorBefore: true }]
+    : []
   const freeze: SheetContextMenuItem[] = [
     { id: 'freeze', label: '冻结', commandId: '', icon: 'FreezeToSelectedIcon', children: [
       { id: 'freeze-selection', label: hit.kind === 'row' ? `冻结至第 ${hit.row + 1} 行` : hit.kind === 'column' ? `冻结至第 ${hit.column + 1} 列` : hit.kind === 'cell' ? `冻结至活动单元格（${hit.row + 1}行${hit.column + 1}列）` : '冻结至活动单元格', commandId: 'sheet.command.freeze-selection', icon: hit.kind === 'row' ? 'FreezeRowIcon' : hit.kind === 'column' ? 'FreezeColumnIcon' : 'FreezeToSelectedIcon', params: hit.kind === 'row' ? { sheetId: options.sheetId, axis: 'row', index: hit.row } : hit.kind === 'column' ? { sheetId: options.sheetId, axis: 'column', index: hit.column } : undefined },
@@ -109,6 +113,7 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
   ]
   return [
     ...clipboard,
+    ...linkActions,
     {
       id: 'insert-cells', label: '插入', commandId: '', icon: 'InsertDoubleIcon', separatorBefore: true, children: [
         { id: 'insert-range-right', label: '右移单元格', commandId: 'sheet.command.insert-range-move-right', icon: 'InsertCellShiftRightDoubleIcon', disabled: options.canShiftHorizontally === false },

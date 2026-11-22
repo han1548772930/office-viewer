@@ -66,7 +66,10 @@ export function displayCell(cell: ExcelCellView | undefined, date1904 = false): 
 export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: GridViewport, options: SpreadsheetSceneOptions): RenderScene {
   const commands: DrawCommand[] = [], selected = new Set(options.selectedCells), search = options.searchText?.toLocaleLowerCase()
   const panes = geometry.panes(viewport), z = viewport.zoom
-  const conditionalScopeValues = Object.values(geometry.sheet.cells).map(cell => ({ row: cell.row, column: cell.col, value: cell.rawValue }))
+  const conditionalScopeValues = Object.entries(geometry.sheet.cells).flatMap(([address, cell]) => {
+    const position = parseAddress(address)
+    return position ? [{ row: position.row, column: position.column, value: cell.rawValue }] : []
+  })
   const formulaSheet = createBlankSheet(geometry.sheet.name)
   formulaSheet.id = geometry.sheet.id
   formulaSheet.cells = Object.fromEntries(Object.entries(geometry.sheet.cells).flatMap(([address, cell]) => {
@@ -285,26 +288,6 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   commands.push({ kind: 'rect', x: 0, y: 0, width: GRID_HEADER_WIDTH, height: GRID_HEADER_HEIGHT, fill: '#eef2f7', stroke: '#dfe5ee' })
   commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH - 13, y1: GRID_HEADER_HEIGHT - 5, x2: GRID_HEADER_WIDTH - 5, y2: GRID_HEADER_HEIGHT - 13, color: '#9aa8b9', width: 3 })
   for (const line of geometry.outlineBracketLines(viewport)) commands.push({ kind: 'line', x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2, color: '#8593a5', width: 1 })
-  for (const control of geometry.outlineToggleRects(viewport)) {
-    commands.push({ kind: 'rect', x: control.x, y: control.y, width: control.width, height: control.height, fill: '#ffffff', stroke: '#7c899a', strokeWidth: 1 })
-    const centerX = control.x + control.width / 2, centerY = control.y + control.height / 2
-    commands.push({ kind: 'line', x1: centerX - 3, y1: centerY, x2: centerX + 3, y2: centerY, color: '#465568', width: 1 })
-    if (control.collapsed) commands.push({ kind: 'line', x1: centerX, y1: centerY - 3, x2: centerX, y2: centerY + 3, color: '#465568', width: 1 })
-  }
-  const outline = geometry.sheet.outline
-  if (outline) {
-    for (const axis of ['row', 'column'] as const) {
-      const groups = outline.groups.filter(group => group.axis === axis)
-      if (!groups.length) continue
-      const maxLevel = Math.max(...groups.map(group => groups.filter(parent => parent.start <= group.start && parent.end >= group.end && (parent.start < group.start || parent.end > group.end)).length)) + 2
-      for (let level = 1; level <= maxLevel; level += 1) {
-        const x = 1 + (level - 1) * 12
-        const y = axis === 'row' ? 1 : 13
-        commands.push({ kind: 'rect', x, y, width: 11, height: 11, fill: '#ffffff', stroke: '#9aa6b4', strokeWidth: 1 })
-        commands.push({ kind: 'text', x: x + 5.5, y: y + 5.5, text: String(level), font: '8px "Segoe UI", sans-serif', color: '#536174', align: 'center', baseline: 'middle' })
-      }
-    }
-  }
   if (geometry.frozenRows) { const y = GRID_HEADER_HEIGHT + geometry.rows.offset(geometry.frozenRows) * z; commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH, y1: y, x2: viewport.width, y2: y, color: '#9eacbf', width: 2 }) }
   if (geometry.frozenColumns) { const x = GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: GRID_HEADER_HEIGHT, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
   return { width: viewport.width, height: viewport.height, background: '#ffffff', commands }

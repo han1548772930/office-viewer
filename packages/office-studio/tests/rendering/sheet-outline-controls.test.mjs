@@ -39,8 +39,11 @@ test('outline level buttons and bracket drawing commands are present for each gr
   assert.equal(geometry.outlineBracketLines(viewport).filter(line => line.axis === 'row').length, 6)
   assert.equal(geometry.outlineBracketLines(viewport).filter(line => line.axis === 'column').length, 3)
   assert.ok(scene.commands.some(command => command.kind === 'line' && command.color === '#8593a5'))
-  assert.ok(scene.commands.some(command => command.kind === 'rect' && command.width === 12 && command.height === 12))
-  assert.ok(scene.commands.some(command => command.kind === 'text' && command.text === '2'))
+  assert.ok(!scene.commands.some(command => command.kind === 'rect' && command.width === 12 && command.height === 12))
+  const canvas = readFileSync(new URL('../../src/components/spreadsheet/SpreadsheetCanvas.vue', import.meta.url), 'utf8')
+  assert.match(canvas, /<Button\s+v-for="control in outlineToggleRects"/)
+  assert.match(canvas, /<Button\s+v-for="control in outlineLevelButtons"/)
+  assert.match(canvas, /:aria-label="control\.label"/)
 })
 
 test('level and plus/minus operations update the same persisted group state', () => {
@@ -62,6 +65,6 @@ test('Canvas hit results dispatch the group id and axis to the persisted workben
   const workbench = readFileSync(new URL('../../src/components/ExcelWorkbench.vue', import.meta.url), 'utf8')
   assert.match(canvas, /'sheet\.operation\.outline-toggle-group', \{ axis: hit\.axis, groupId: hit\.groupId \}/)
   assert.match(canvas, /'sheet\.operation\.outline-set-level', \{ axis: hit\.axis, level: hit\.level \}/)
-  assert.match(workbench, /setSheetOutlineCollapsed\(sheet\.outline, groupId, !group\.collapsed\)/)
-  assert.match(workbench, /setSheetOutlineLevel\(sheet\.outline, axis, level\)/)
+  assert.match(workbench, /'sheet\.operation\.outline-toggle-group':\s*\(\)\s*=>/)
+  assert.match(workbench, /CHANGE_SHEET_OUTLINE_COMMAND/)
 })

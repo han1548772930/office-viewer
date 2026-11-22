@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Menu } from 'antdv-next'
-import type { ItemType } from 'antdv-next/es/menu/interface'
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Hash, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
+import type { MenuItemType, MenuRef } from 'antdv-next'
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Hash, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
 import type { GridHit } from '../../rendering/spreadsheet/layout.ts'
 import { createSheetContextMenuItems, type SheetContextMenuItem } from './sheet-context-menu.ts'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -19,6 +19,7 @@ const props = defineProps<{
   hasHiddenRows: boolean
   hasHiddenColumns: boolean
   canConvertText?: boolean
+  hasHyperlink?: boolean
   canShiftHorizontally?: boolean
   canShiftVertically?: boolean
 }>()
@@ -30,14 +31,16 @@ const emit = defineEmits<{
 const panel = ref<HTMLElement>()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 function translateItems(source: SheetContextMenuItem[]): SheetContextMenuItem[] {
-  return source.flatMap(item => [
-    ...(item.separatorBefore ? [{ id: `${item.id}-separator`, label: '', commandId: '', type: 'divider' as const }] : []),
-    { ...item, separatorBefore: false },
-  ].map(entry => ({
-    ...entry,
-    label: entry.type === 'divider' ? '' : translate(`sheet.context-menu.${entry.id}`, entry.label),
-    children: entry.children ? translateItems(entry.children) : undefined,
-  })))
+  return source.flatMap(item => {
+    const entries: SheetContextMenuItem[] = []
+    if (item.separatorBefore) entries.push({ id: `${item.id}-separator`, label: '', commandId: '', type: 'divider' })
+    entries.push({ ...item, separatorBefore: false })
+    return entries.map(entry => ({
+      ...entry,
+      label: entry.type === 'divider' ? '' : translate(`sheet.context-menu.${entry.id}`, entry.label),
+      children: entry.children ? translateItems(entry.children) : undefined,
+    }))
+  })
 }
 const items = computed(() => props.hit ? translateItems(createSheetContextMenuItems(props.hit, props)) : [])
 const itemById = computed(() => {
@@ -51,9 +54,9 @@ const itemById = computed(() => {
 })
 const quickItems = computed(() => items.value.filter(item => item.quick))
 const regularItems = computed(() => items.value.filter(item => !item.quick))
-const menuItems = computed<ItemType[]>(() => toMenuItems(regularItems.value))
+const menuItems = computed<MenuItemType[]>(() => toMenuItems(regularItems.value))
 const position = computed(() => ({ left: `${Math.max(4, props.x)}px`, top: `${Math.max(4, props.y)}px` }))
-const menuRef = ref<InstanceType<typeof Menu> | null>(null)
+const menuRef = ref<MenuRef | null>(null)
 
 const menuIcons = {
   CopyDoubleIcon: Copy,
@@ -85,9 +88,10 @@ const menuIcons = {
   AutoHeightDoubleIcon: Rows3,
   AutoWidthDoubleIcon: Columns3,
   ConvertToNumberIcon: Hash,
+  LinkIcon: Link,
 } as const
 
-function toMenuItem(item: (typeof items.value)[number]): ItemType {
+function toMenuItem(item: (typeof items.value)[number]): MenuItemType {
   const Icon = iconComponent(item)
   return {
     key: item.id,
@@ -102,7 +106,7 @@ function toMenuItem(item: (typeof items.value)[number]): ItemType {
 function iconComponent(item: (typeof items.value)[number]) {
   return item.icon ? menuIcons[item.icon as keyof typeof menuIcons] : undefined
 }
-function toMenuItems(source: typeof items.value): ItemType[] {
+function toMenuItems(source: typeof items.value): MenuItemType[] {
   return source.map(item => item.type === 'divider'
     ? { type: 'divider' as const, key: item.id }
     : toMenuItem(item))

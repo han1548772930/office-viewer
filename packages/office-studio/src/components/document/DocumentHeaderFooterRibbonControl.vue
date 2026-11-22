@@ -71,14 +71,14 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
       <Checkbox :checked="state.differentOddEven" :disabled="state.disabled" @change="setOptions({ differentOddEven: checkboxValue($event) })">奇偶页不同</Checkbox>
     </template>
 
-    <Form v-else layout="vertical" class="header-footer-ribbon-control__form">
-      <FormItem :label="'页眉距顶端'">
+    <Form v-else layout="vertical" class="header-footer-ribbon-control__form" @submit.prevent>
+      <FormItem label="页眉距顶端">
         <InputNumber :value="state.marginHeader" :min="0" :max="200" :precision="1" size="small" :disabled="state.disabled" @change="setOptions({ marginHeader: Number($event ?? 0) })" />
       </FormItem>
-      <FormItem :label="'页脚距底端'">
+      <FormItem label="页脚距底端">
         <InputNumber :value="state.marginFooter" :min="0" :max="200" :precision="1" size="small" :disabled="state.disabled" @change="setOptions({ marginFooter: Number($event ?? 0) })" />
       </FormItem>
-    </template>
+    </Form>
   </div>
 </template>
 

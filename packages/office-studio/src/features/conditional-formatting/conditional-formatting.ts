@@ -128,6 +128,7 @@ export function evaluateConditionalFormatRule(rule: SheetConditionalFormatRule, 
     case 'lessThanOrEqual': return value <= first
     case 'between': return value >= first && value <= second!
     case 'notBetween': return value < first || value > second!
+    default: return false
   }
 }
 
@@ -199,7 +200,7 @@ export function conditionalFormatStyleAt(
       }
       continue
     }
-    if (!evaluateConditionalFormatRule(rule, value, scopedValues, formula => expressionMatches?.(formula, rule))) continue
+    if (!evaluateConditionalFormatRule(rule, value, scopedValues, formula => expressionMatches?.(formula, rule) ?? false)) continue
     applyConditionalStyle(output, assigned, rule.style)
     if (rule.stopIfTrue) break
   }

@@ -71,12 +71,21 @@ const styleOptions = computed(() => [
   ...(draft.value?.type === 'timeline' ? styleNames.timeline : styleNames.slicer)
     .map((value, index) => ({ label: `样式 ${index + 1}`, value })),
 ])
+const selectedStyleLabel = computed(() => {
+  const style = draft.value?.style ?? ''
+  return styleOptions.value.find(option => option.value === style)?.label ?? '样式'
+})
 const settingsDirty = computed(() => Boolean(draft.value && originalDraft.value
   && JSON.stringify(presentation(draft.value)) !== JSON.stringify(presentation(originalDraft.value))))
-const settingsValid = computed(() => Boolean(draft.value?.caption.trim() && draft.value.layout
-  && Number.isFinite(draft.value.layout.left) && Number.isFinite(draft.value.layout.top)
-  && draft.value.layout.width >= 80 && draft.value.layout.height >= 48
-  && (draft.value.type !== 'slicer' || Number(draft.value.columnCount) >= 1 && Number(draft.value.rowHeight) > 0)))
+const settingsValid = computed(() => {
+  const current = draft.value
+  const layout = current?.layout
+  if (!current || !layout) return false
+  return Boolean(current.caption.trim()
+    && Number.isFinite(layout.left) && Number.isFinite(layout.top)
+    && layout.width >= 80 && layout.height >= 48
+    && (current.type !== 'slicer' || Number(current.columnCount) >= 1 && Number(current.rowHeight) > 0))
+})
 const timelineLevels: Array<{ label: string; value: TimelineLevel }> = [
   { label: '年', value: 'year' }, { label: '季度', value: 'quarter' }, { label: '月', value: 'month' }, { label: '日', value: 'day' },
 ]
@@ -245,7 +254,7 @@ function arrange(action: 'forward' | 'backward' | 'front' | 'back'): void {
     </Form>
   </Modal>
 
-  <Drawer :open="open && !!settingsId" :title="draft?.type === 'timeline' ? '时间线设置' : '切片器设置'" :width="388" placement="right" :mask="false" destroy-on-hidden @close="close">
+  <Drawer :open="open && !!settingsId" :title="draft?.type === 'timeline' ? '时间线设置' : '切片器设置'" :size="388" placement="right" :mask="false" destroy-on-hidden @close="close">
     <Form v-if="draft" class="slicer-settings" layout="vertical" @submit.prevent="saveSettings">
       <Segmented v-model:value="settingsPage" :options="[{ value: draft.type, label: draft.type === 'timeline' ? '时间线' : '切片器' }, { value: 'size', label: '大小与属性' }]" block />
       <template v-if="settingsPage !== 'size'">
@@ -277,7 +286,7 @@ function arrange(action: 'forward' | 'backward' | 'front' | 'back'): void {
               </div>
             </template>
             <Button html-type="button" class="slicer-style-trigger" :style="stylePreview(draft.style ?? '')" aria-label="选择样式" :disabled="busy">
-              <span class="slicer-style-sample"><i /><i /><i /></span><span>{{ styleOptions.find(({ value }) => value === (draft.style ?? ''))?.label ?? '样式' }}</span><ChevronDown :size="14" />
+              <span class="slicer-style-sample"><i /><i /><i /></span><span>{{ selectedStyleLabel }}</span><ChevronDown :size="14" />
             </Button>
           </Popover>
         </section>

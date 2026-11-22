@@ -61,7 +61,7 @@ export function moveSheetCellRange(
   return { status: 'applied', sheet: next }
 }
 
-export function affectedCellMoveRange(sheet: ExcelSheetView, range: GridRange, direction: SheetCellMoveDirection): GridRange {
+export function affectedCellMoveRange(_sheet: ExcelSheetView, range: GridRange, direction: SheetCellMoveDirection): GridRange {
   return direction === 'right' || direction === 'left'
     ? { ...range, endColumn: MAX_SHEET_COLUMNS - 1 }
     : { ...range, endRow: MAX_SHEET_ROWS - 1 }
