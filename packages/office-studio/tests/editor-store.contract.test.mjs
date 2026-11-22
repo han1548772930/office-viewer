@@ -204,3 +204,30 @@ test('only changing a document dirty flag is not a content edit', () => {
   assert.equal(editor.state.document.modified, false)
   assert.equal(editor.canUndo, false)
 })
+
+test('regional view edits retain one history source through callbacks, undo and redo', () => {
+  const editor = freshEditor()
+  const model = snapshot(editor.state.workbook)
+  const cell = createCell(0, 0, 1234.5)
+  cell.style.numberFormat = '#,##0.00'; cell.display = '1.234,50'
+  model.sheets[0].cells['0:0'] = cell
+  editor.workbook.replace(model)
+  const view = toExcelWorkbookView(model)
+  view.sheets[0].cells.A1.bold = true
+  assert.equal(editor.replaceWorkbookFromView(view, 'de-DE'), true)
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].display, '1.234,50')
+  assert.equal(editor.replaceWorkbookFromView(toExcelWorkbookView(editor.state.workbook), 'de-DE'), false)
+  const depth = () => editor.history.units[model.id].undo.length
+  assert.equal(depth(), 1)
+  const edited = toExcelWorkbookView(editor.state.workbook)
+  edited.sheets[0].cells.A1.value = '2000.25'; edited.sheets[0].cells.A1.rawValue = 2000.25
+  assert.equal(editor.replaceWorkbookFromView(edited, 'de-DE'), true)
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].display, '2.000,25')
+  assert.equal(depth(), 2)
+  editor.undo()
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].display, '1.234,50')
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].style.font.bold, true)
+  editor.redo()
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].display, '2.000,25')
+  assert.equal(editor.state.workbook.sheets[0].cells['0:0'].value, 2000.25)
+})

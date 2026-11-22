@@ -22,7 +22,7 @@ export function sheetNumberFormatPattern(kind: SheetNumberFormat, region = 'zh-C
 
 export function classifySheetNumberFormat(pattern: string): SheetNumberFormat | 'custom' {
   if (!pattern || /^general$/i.test(pattern)) return 'general'
-  if (pattern === '@') return 'text'
+  if (isSheetTextNumberFormat(pattern)) return 'text'
   const first = readNumberFormatSections(pattern)?.[0]
   if (!first) return 'custom'
   if (isDateNumberFormatSection(first)) {
@@ -41,6 +41,10 @@ export function classifySheetNumberFormat(pattern: string): SheetNumberFormat | 
   return /^[#,0?.()\-+ ]+$/.test(mask) && /[0#?]/.test(mask) ? 'number' : 'custom'
 }
 
+export function isSheetTextNumberFormat(pattern: string | undefined): boolean {
+  return pattern === '@' || pattern === '@@@'
+}
+
 export const SHEET_NUMBER_FORMAT_LABELS: Readonly<Record<SheetNumberFormat | 'custom', string>> = Object.freeze({
   general: '常规', text: '文本', number: '数字', percent: '百分比', scientific: '科学计数',
   accounting: '会计专用', financial: '财务数值', currency: '货币', roundingCurrency: '整数货币',
@@ -51,7 +55,7 @@ export type SheetNumberFormatMenuEntry = { type: 'format'; id: SheetNumberFormat
   | { type: 'divider'; id: string }
   | { type: 'more'; id: 'more'; label: string }
 
-/** sheets-numfmt-ui/menu/number-format-options.ts, including separators and the distinct More action. */
+/** Built-in format menu, including separators and the distinct More action. */
 export function sheetNumberFormatMenu(region = 'zh-CN'): SheetNumberFormatMenuEntry[] {
   const entries: Array<SheetNumberFormat | '|'> = ['general', 'text', '|', 'number', 'percent', 'scientific', '|', 'accounting', 'financial', 'currency', 'roundingCurrency', '|', 'date', 'time', 'datetime', 'duration', '|']
   return [...entries.map((id, index): SheetNumberFormatMenuEntry => id === '|'

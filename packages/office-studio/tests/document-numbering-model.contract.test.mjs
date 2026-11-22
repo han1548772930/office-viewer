@@ -68,7 +68,7 @@ test('numbered headings keep independent heading and list levels and invisible n
 test('one list instance continues across body paragraphs and separate table cells', () => {
   const numbering = definition([{ ilvl: 0, start: 1, format: 'decimal', text: '%1.' }], { levelStartOverrides: { 0: 0 } })
   const first = listed('first', 0, numbering)
-  const table = createTable(1, 2)
+  const table = { ...createParagraph(), type: 'table', metadata: { table: createTable(1, 2) } }
   table.metadata.table.rows[0].cells[0].blocks = [listed('cell-a', 0, numbering)]
   table.metadata.table.rows[0].cells[1].blocks = [listed('cell-b', 0, numbering)]
   const markers = paragraphListMarkers([first, table, listed('last', 0, numbering)])

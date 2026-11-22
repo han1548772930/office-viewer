@@ -22,6 +22,10 @@ export function inferSheetCellValueType(value: CellScalar): SheetCellValueType {
   return value === null ? 'blank' : typeof value === 'string' ? 'text' : typeof value === 'boolean' ? 'boolean' : 'number'
 }
 
+export function isForcedSheetCellValueType(type: SheetCellTypeInput): boolean {
+  return type === 4 || typeof type === 'string' && /^(?:force_string|force-string|forcestring)$/i.test(type.trim())
+}
+
 /** Parse editable/cached text only when its declared type allows it; displays are never inputs. */
 export function parseSheetCellText(value: string, type?: SheetCellTypeInput): CellScalar {
   const kind = normalizeSheetCellValueType(type)

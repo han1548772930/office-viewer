@@ -15,7 +15,7 @@
     "test:benchmark:smoke": "vitest run --config vitest.benchmark.config.ts",
     "test:parser": "cargo test --manifest-path crates/office-parser/Cargo.toml",
     "test:api": "vitest run --config vitest.config.ts packages/office-studio/tests/document-facade.contract.test.mjs packages/office-studio/tests/office-api.contract.test.mjs",
-    "test:browser": "playwright test --config tests/browser/univer-workbench.playwright.config.ts",
+    "test:browser": "playwright test --config tests/browser/office-workbench.playwright.config.ts",
     "test:browser:features": "playwright test --config tests/browser/feature-panels.playwright.config.ts",
     "test:browser:toolbars": "playwright test --config tests/browser/toolbar-parity.playwright.config.ts",
     "test:browser:docs": "playwright test --config tests/browser/workbench.playwright.config.ts",

@@ -12,7 +12,7 @@ import {
   type WorkbookModel,
 } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
-import { inferSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText, type SheetCellTypeInput } from '../domain/sheet-cell-value.ts'
+import { inferSheetCellValueType, isForcedSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText, type SheetCellTypeInput } from '../domain/sheet-cell-value.ts'
 import { normalizeDocument } from '../features/document/model/document-model.ts'
 import { setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
@@ -131,7 +131,7 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
 }
 
 export function cellFromApi(row: number, col: number, raw: unknown): SpreadsheetCell {
-  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as ApiCellData : undefined
+  const source = apiCellSource(raw)
   const scalar = apiCellScalar(source ? source.v : raw, source?.t)
   const cell = createCell(row, col, scalar)
   if (source?.f) {
@@ -152,9 +152,9 @@ export function mergeCellStyle(style: CellStyle, patch: Partial<CellStyle> & { f
   }
 }
 
-export function applyCellValue(cell: SpreadsheetCell | undefined, row: number, col: number, value: ApiCellValue): SpreadsheetCell {
+export function applyCellValue(cell: SpreadsheetCell | undefined, row: number, col: number, value: unknown): SpreadsheetCell {
   const next = cell ? clone(cell) : createCell(row, col, null)
-  const source = value && typeof value === 'object' && !Array.isArray(value) ? value as ApiCellData : undefined
+  const source = apiCellSource(value)
   const scalar = apiCellScalar(source ? source.v : value, source?.t)
   next.formula = source ? source.f ?? null : typeof scalar === 'string' && scalar.startsWith('=') ? scalar : null
   next.value = next.formula && !source ? null : scalar
@@ -164,6 +164,16 @@ export function applyCellValue(cell: SpreadsheetCell | undefined, row: number, c
   if (source?.s) next.style = mergeCellStyle(next.style, source.s)
   if (!next.formula || next.value !== null) next.display = formatSheetValue(next.value, next.style.numberFormat) ?? next.display
   return next
+}
+
+function apiCellSource(value: unknown): ApiCellData | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const source = value as ApiCellData
+  if (source.f !== undefined && source.f !== null && typeof source.f !== 'string') throw new TypeError('单元格公式必须是文本或空值。')
+  if (source.t !== undefined && source.t !== null && typeof source.t !== 'string' && ![1, 2, 3, 4].includes(source.t)) {
+    throw new TypeError('单元格数据类型无效。')
+  }
+  return source
 }
 
 function apiCellScalar(value: unknown, type?: SheetCellTypeInput): CellScalar {
@@ -179,7 +189,7 @@ function apiCellScalar(value: unknown, type?: SheetCellTypeInput): CellScalar {
 function applyApiCellTypes(cell: SpreadsheetCell, source: ApiCellData | undefined): void {
   const declared = normalizeSheetCellValueType(source?.t)
   const type = declared === 'formula' ? undefined : declared ?? (typeof source?.t === 'string' ? source.t : undefined)
-  cell.dataType = cell.formula ? 'formula' : type ?? inferSheetCellValueType(cell.value)
+  cell.dataType = cell.formula ? 'formula' : isForcedSheetCellValueType(source?.t) ? 'force_string' : type ?? inferSheetCellValueType(cell.value)
   cell.cachedDataType = cell.formula ? type ?? (cell.value === null ? null : inferSheetCellValueType(cell.value)) : null
 }
 

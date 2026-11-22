@@ -9,7 +9,7 @@ function matchPreset(levels: Map<number, DocumentNumberingLevel>): ListPreset | 
       const level = levels.get(i), spec = listLevelSpec(preset, i)
       if (!level || spec.format !== level.format || spec.pattern !== level.text ||
           (level.start ?? 1) !== 1 || level.lvlRestart != null || level.isLgl === true ||
-          level.pictureBulletId != null || level.pictureBullet != null || level.minimumDigits != null) return false
+          level.pictureBulletId != null || level.pictureBullet != null || level.minimumDigits != null || level.customFormat != null) return false
     }
     return true
   })

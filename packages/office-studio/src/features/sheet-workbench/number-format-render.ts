@@ -74,7 +74,7 @@ function formatRuns(value: number, parsed: ParsedPattern, options: ResolvedForma
 /** Raw values and formula caches stay in the model; presentation is derived for the current region. */
 export function renderSheetNumberFormat(value: CellScalar, pattern: string, date1904 = false, locale = 'zh-CN'): SheetNumberPresentation | undefined {
   try {
-    const parsed = parsedFormat(pattern)
+    const parsed = parsedFormat(pattern === '@@@' ? '@' : pattern)
     const options: ResolvedFormatOptions = { ...defaultOptions, locale: sheetNumberFormatLocale(locale),
       dateSystem: date1904 ? DateSystem.Date1904 : DateSystem.Date1900, throws: true }
     const text = formatValue(value, parsed, options)

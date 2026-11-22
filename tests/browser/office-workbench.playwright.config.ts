@@ -5,8 +5,8 @@ const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url))
 
 export default defineConfig({
   testDir: '.',
-  testMatch: 'univer-workbench.spec.ts',
-  outputDir: '../../test-results/univer-workbench',
+  testMatch: 'office-workbench.spec.ts',
+  outputDir: '../../test-results/office-workbench',
   fullyParallel: false,
   workers: 1,
   timeout: 45_000,

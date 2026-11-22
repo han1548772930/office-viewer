@@ -66,7 +66,7 @@ test('wordWrap controls breaks within words and oversized words still break at g
 test('list layout shares body counters with cells and uses marker font, color and image dimensions', () => {
   const numbering = numberingDefinitionFromParts({ abstractNumId: 7, levels: [{ ilvl: 0, start: 1, format: 'decimal', text: '%1.', indent: { leftTwips: 420, hangingTwips: 420 }, runStyle: { fontFamilyAscii: 'Georgia', fontSizePt: 9, color: 'auto', bold: true } }] }, { numId: 9, abstractNumId: 7 })
   const listed = id => ({ ...createParagraph(id), id, type: 'numbered', metadata: { numberingDefinition: numbering, numberingListId: 'shared' } })
-  const table = createTable(1, 2)
+  const table = { ...createParagraph(), type: 'table', metadata: { table: createTable(1, 2) } }
   table.metadata.table.rows[0].cells[0].blocks = [listed('cell-a')]
   table.metadata.table.rows[0].cells[1].blocks = [listed('cell-b')]
   const model = documentWith([listed('first'), table, listed('last')]), layout = layoutDocument(model, measurer)
@@ -80,6 +80,7 @@ test('list layout shares body counters with cells and uses marker font, color an
   assert.equal(marker.color, '#1f2937')
   const picture = structuredClone(numbering)
   picture.levels[0].pictureBullet = { src: 'data:image/png;base64,AA==', widthPx: 9, heightPx: 13 }
+  picture.abstract.levels[0].pictureBullet = picture.levels[0].pictureBullet
   const imageModel = documentWith([{ ...listed('picture'), metadata: { numberingDefinition: picture, numberingListId: 'image-list' } }])
   const imageLayout = layoutDocument(imageModel, measurer)
   assert.equal(imageLayout.lines[0].marker, '')

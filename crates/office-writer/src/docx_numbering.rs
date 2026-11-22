@@ -8,6 +8,10 @@ use super::{
 };
 use crate::xml;
 
+#[path = "docx_numbering_sequence.rs"]
+mod sequence;
+pub(super) use sequence::{prepare_sequences, SequencePlan};
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ListKind {
     Preset(&'static str),
@@ -19,6 +23,7 @@ pub(super) struct NumberingInstance {
     id: u32,
     kind: ListKind,
     definition: Option<Value>,
+    name: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -129,7 +134,7 @@ pub(super) fn assign_lists(blocks: &[Value]) -> (HashMap<usize, u32>, Vec<Number
             let id = existing.unwrap_or_else(|| {
                 let id = state.next_id;
                 state.next_id += 1;
-                state.numbering.push(NumberingInstance { id, kind, definition: source.cloned() });
+                state.numbering.push(NumberingInstance { id, kind, definition: source.cloned(), name: name.clone() });
                 id
             });
             if let Some(name) = name {
@@ -173,9 +178,24 @@ pub(super) fn write_numbering_xml(instances: &[NumberingInstance], package: &mut
     for instance in instances {
         let Some(definition) = &instance.definition else { continue };
         let base = abstract_definition(definition);
+        let overrides = array(get(get(definition, "instance"), "levelOverrides")).iter().map(|level| merged_level(definition, level)).collect::<Vec<_>>();
         for level in array(get(&base, "levels")).iter()
-            .chain(array(get(get(definition, "instance"), "levelOverrides")))
+            .chain(&overrides)
             .chain(array(get(definition, "levels"))) {
+            let format = get(level, "format").as_str().unwrap_or("decimal");
+            let custom_format = get(level, "customFormat");
+            if !custom_format.is_null() && custom_format.as_str().is_none_or(|pattern| pattern.len() > 4096) {
+                return Err(ExportError::invalid("自定义编号格式必须是至多 4096 字节的字符串。"));
+            }
+            let digits = get(level, "minimumDigits");
+            if !digits.is_null() {
+                let Some(digits) = digits.as_f64().filter(|digits| digits.is_finite() && digits.fract() == 0.0 && (0.0..=f64::from(u8::MAX)).contains(digits)) else {
+                    return Err(ExportError::invalid("编号的最小数字位数必须是 0 到 255 之间的整数。"));
+                };
+                if digits > 0.0 && !matches!(format, "decimal" | "decimalZero" | "custom") && custom_format.is_null() {
+                    return Err(ExportError::unsupported("当前 DOCX 写出尚不能保留非十进制编号格式上的补零位数。"));
+                }
+            }
             let Some(key) = picture_key(level) else {
                 if integer(get(level, "pictureBulletId")).is_some() {
                     return Err(ExportError::unsupported("A picture bullet has no embedded image data."));
@@ -289,7 +309,15 @@ fn level_xml(level: &Value, pictures: &HashMap<String, NumberingPicture>) -> Str
     let Some(index) = integer(get(level, "ilvl")).filter(|index| (0..=8).contains(index)) else { return String::new() };
     let mut properties = String::new();
     if let Some(start) = integer(get(level, "start")).filter(|start| (0..=i64::from(i32::MAX)).contains(start)) { properties.push_str(&format!("<w:start w:val=\"{start}\"/>")); }
-    if let Some(format) = get(level, "format").as_str() { properties.push_str(&format!("<w:numFmt w:val=\"{}\"/>", xml_attribute(format))); }
+    let format = get(level, "format").as_str().unwrap_or("decimal");
+    let minimum_digits = integer(get(level, "minimumDigits")).unwrap_or(0);
+    let custom = if let Some(pattern) = get(level, "customFormat").as_str() {
+        format!(" w:format=\"{}\"", xml_attribute(pattern))
+    } else if minimum_digits > 0 && matches!(format, "decimal" | "decimalZero") {
+        let width = minimum_digits.max(if format == "decimalZero" { 2 } else { 1 }).min(i64::from(u8::MAX)) as usize;
+        format!(" w:format=\"{}1\"", "0".repeat(width - 1))
+    } else { String::new() };
+    properties.push_str(&format!("<w:numFmt w:val=\"{}\"{custom}/>", xml_attribute(format)));
     if let Some(restart) = integer(get(level, "lvlRestart")).filter(|restart| (0..=8).contains(restart)) { properties.push_str(&format!("<w:lvlRestart w:val=\"{restart}\"/>")); }
     if let Some(legal) = get(level, "isLgl").as_bool() { properties.push_str(&format!("<w:isLgl w:val=\"{}\"/>", u8::from(legal))); }
     if let Some(suffix) = get(level, "suffix").as_str() { properties.push_str(&format!("<w:suff w:val=\"{}\"/>", xml_attribute(suffix))); }

@@ -48,7 +48,7 @@ export const useEditorStore = defineStore('editor-session', () => {
     if (workbook.model.modified !== workbookDirty) workbook.replace({ ...workbook.model, modified: workbookDirty })
     if (document.model.modified !== documentDirty) document.replace({ ...document.model, modified: documentDirty })
   }
-  function replaceWorkbookFromView(view: ExcelWorkbookView): boolean {
+  function replaceWorkbookFromView(view: ExcelWorkbookView, numberFormatLocale?: string): boolean {
     const before = cloneModel(workbook.model)
     // Viewport defaults (e.g. 100 visible rows) must not rewrite untouched imported geometry.
     if (equivalentModelData(toExcelWorkbookView(before), view, ['id', 'activeSheetId'])) {
@@ -57,7 +57,7 @@ export const useEditorStore = defineStore('editor-session', () => {
       }
       return false
     }
-    const after = cloneModel(applyExcelWorkbookView(before, view))
+    const after = cloneModel(applyExcelWorkbookView(before, view, numberFormatLocale))
     after.id = before.id
     if (!after.sheets.some((sheet) => sheet.id === after.activeSheetId)) after.activeSheetId = after.sheets[0]?.id ?? ''
     if (equivalentModelData(before, after, ['modified', 'activeSheetId'])) {

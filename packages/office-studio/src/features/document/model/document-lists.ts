@@ -1,7 +1,8 @@
 import type { DocumentBlock } from '../../../domain/model'
 import definitions from '../../../domain/document-list-presets.json'
 import { tableForBlock } from './document-model'
-import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, normalizeNumberingLevel, numberingRecord, type DocumentNumberingDefinition, type DocumentNumberingLevel, type DocumentNumberingPicture } from './document-numbering'
+import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, consecutiveNumberingGroup, normalizeNumberingLevel, numberingRecord, type DocumentNumberingDefinition, type DocumentNumberingLevel, type DocumentNumberingPicture } from './document-numbering'
+import { numberingOrdinal } from './document-numbering-format'
 
 export type ListPreset = keyof typeof definitions
 export type ListKind = 'bullet' | 'numbered'
@@ -25,23 +26,8 @@ export function listLevelSpec(preset: ListPreset, level: number) {
   const pattern = symbol ?? (def.compound ? Array.from({ length: index + 1 }, (_, i) => `%${i + 1}`).join('.') : `%${index + 1}`) + def.suffix
   return { index, format, pattern }
 }
-export function formatListOrdinal(value: number, format: string, minimumDigits = 0): string {
-  if (format === 'lowerLetter' || format === 'upperLetter') {
-    if (value < 1 || Math.ceil(value / 26) > 4096) return String(value)
-    const result = String.fromCharCode(65 + (value - 1) % 26).repeat(Math.ceil(value / 26))
-    return format === 'lowerLetter' ? result.toLowerCase() : result
-  }
-  if ((format === 'lowerRoman' || format === 'upperRoman') && value > 0 && value <= 3999999) {
-    let result = '', n = value
-    for (const [v, glyph] of [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']] as const) {
-      while (n >= v) { result += glyph; n -= v }
-    }
-    return format === 'upperRoman' ? result.toUpperCase() : result
-  }
-  if (format === 'ordinal') return `${value}${value % 100 >= 11 && value % 100 <= 13 ? 'th' : value % 10 === 1 ? 'st' : value % 10 === 2 ? 'nd' : value % 10 === 3 ? 'rd' : 'th'}`
-  if (format === 'hex') return value.toString(16).toUpperCase()
-  const width = Math.max(format === 'decimalZero' ? 2 : 0, Math.min(255, Math.trunc(minimumDigits)))
-  return value === 0 ? '0' : String(value).padStart(width, '0')
+export function formatListOrdinal(value: number, format: string, minimumDigits = 0, customFormat?: string): string {
+  return numberingOrdinal(value, format, minimumDigits, customFormat).text
 }
 export function listMarker(preset: ListPreset, level: number, counters: readonly number[] = []): string {
   return listLevelSpec(preset, level).pattern.replace(/%([1-9])/g, (_, slot: string) => {
@@ -131,7 +117,8 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
       previous = id ? undefined : styleKey
       const consecutive = definition?.abstract.consecutiveNumbering === true
       const instanceKey = id ?? `legacy-${legacyId}`
-      const counterId = consecutive ? String(definition?.instance.consecutiveListId ?? instanceKey) : instanceKey
+      const group = definition && consecutive ? consecutiveNumberingGroup(definition, instanceKey) : { id: instanceKey, primary: true }
+      const counterId = group.id
       const key = JSON.stringify([styleKey, counterId])
       const state: Sequence = sequences.get(key) ?? { counters: [], initialized: new Map<string, Set<number>>() }
       const initialized = state.initialized.get(instanceKey) ?? new Set<number>()
@@ -140,7 +127,7 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
       for (let slot = 0; slot < index; slot++) state.counters[slot] ??= starts(slot, !initialized.has(slot))
       if (consecutive) {
         const overrides = numberingRecord(definition?.instance.levelStartOverrides)
-        const restart = !initialized.size && instanceKey !== counterId ? Object.values(overrides).find(value => typeof value === 'number') : undefined
+        const restart = !initialized.size && !group.primary ? Array.from({ length: 9 }, (_, slot) => overrides[String(slot)]).find(value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) : undefined
         state.total = typeof restart === 'number' ? restart : state.total === undefined ? starts(0, true) : state.total + 1
         state.counters[index] = state.total
       } else state.counters[index] = state.counters[index] === undefined ? starts(index, !initialized.has(index)) : state.counters[index]! + 1
@@ -160,8 +147,9 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
       marker = marker.replace(/%([1-9])/g, (_whole, slot: string) => {
         const referenced = definition?.levels.find(candidate => candidate.ilvl === Number(slot) - 1)
         const format = level?.isLgl ? 'decimal' : referenced?.format ?? 'decimal'
-        if (!['decimal', 'decimalZero', 'lowerLetter', 'upperLetter', 'lowerRoman', 'upperRoman', 'ordinal', 'hex'].includes(format)) diagnostics.push(`Number format ${format} uses a decimal display fallback.`)
-        return formatListOrdinal(state.counters[Number(slot) - 1] ?? starts(Number(slot) - 1, true), format, level?.isLgl ? 0 : referenced?.minimumDigits)
+        const ordinal = numberingOrdinal(state.counters[Number(slot) - 1] ?? starts(Number(slot) - 1, true), format, level?.isLgl ? 0 : referenced?.minimumDigits, level?.isLgl ? undefined : referenced?.customFormat)
+        if (!ordinal.recognized) diagnostics.push(`Number format ${referenced?.customFormat ?? format} uses the OOXML fallback while its original pattern remains editable.`)
+        return ordinal.text
       })
       if (level?.format === 'bullet') {
         const symbols: Record<string, string> = { '\uF0B7': '•', '\uF0A7': '□', '\uF0A8': '▪', '\uF0D8': '➢' }

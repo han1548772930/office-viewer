@@ -1,5 +1,5 @@
 import type { CellScalar, CellStyle, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
-import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
+import { classifySheetNumberFormat, formatSheetValue, isSheetTextNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
 import { inferSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText } from '../domain/sheet-cell-value.ts'
@@ -155,11 +155,12 @@ function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
   }
   if (cell.rawValue !== undefined) return cell.rawValue
   if (original && String(original.value ?? '') === cell.value) return original.value
-  return parseSheetCellText(cell.value, cell.dataType ?? (cell.rawNumberFormat === '@' || cell.numberFormat === 'text' ? 'text' : undefined))
+  return parseSheetCellText(cell.value, cell.dataType ?? (isSheetTextNumberFormat(cell.rawNumberFormat) || cell.numberFormat === 'text' ? 'text' : undefined))
 }
-export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView): WorkbookModel {
+export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView, numberFormatLocale?: string): WorkbookModel {
+  const date1904 = view.date1904 ?? workbook.date1904
   return {
-    ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904: view.date1904 ?? workbook.date1904,
+    ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904,
     metadata: view.metadata ? structuredClone(view.metadata) : workbook.metadata,
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
     pivotTables: view.pivotTables?.map(clonePivotTableModel) ?? workbook.pivotTables,
@@ -177,15 +178,16 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         const numberFormat = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : previous?.style.numberFormat) ?? 'General'
         const value = rawValue(cell, previous)
         const formula = cell.formula ?? null
-        const sameContent = previous?.formula === formula && Object.is(previous.value, value)
-        const dataType = formula ? 'formula' : normalizeSheetCellValueType(cell.dataType) === 'formula'
-          ? inferSheetCellValueType(value) : cell.dataType ?? (sameContent ? previous?.dataType : undefined) ?? inferSheetCellValueType(value)
-        const cachedDataType = formula ? cell.cachedDataType === undefined
-          ? sameContent ? previous?.cachedDataType ?? (value === null ? null : inferSheetCellValueType(value)) : value === null ? null : inferSheetCellValueType(value)
-          : cell.cachedDataType : null
-        const display = formula && value === null ? cell.displayValue ?? cell.cachedValue ?? (sameContent ? previous?.display : undefined) ?? formula
-          : formatSheetValue(value, numberFormat, view.date1904 ?? workbook.date1904)
-            ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value)
+        const sameContent = previous !== undefined && previous.formula === formula && Object.is(previous.value, value)
+        const dataType = sameContent ? cell.dataType ?? previous?.dataType : formula ? 'formula'
+          : normalizeSheetCellValueType(cell.dataType) === 'formula' ? inferSheetCellValueType(value) : cell.dataType ?? inferSheetCellValueType(value)
+        const cachedDataType = sameContent ? cell.cachedDataType === undefined ? previous?.cachedDataType : cell.cachedDataType
+          : formula ? cell.cachedDataType === undefined ? value === null ? null : inferSheetCellValueType(value) : cell.cachedDataType : null
+        const samePresentation = sameContent && previous?.style.numberFormat === numberFormat && date1904 === workbook.date1904
+        const preservedDisplay = samePresentation ? cell.displayValue ?? (formula ? cell.cachedValue : undefined) ?? previous?.display : undefined
+        const display = preservedDisplay ?? (formula && value === null ? cell.displayValue ?? cell.cachedValue ?? (sameContent ? previous?.display : undefined) ?? formula
+          : formatSheetValue(value, numberFormat, date1904, numberFormatLocale)
+            ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value))
         const metadata = previous?.metadata ? { ...previous.metadata } : undefined
         if (metadata && !sameContent) delete metadata.formulaError
         const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)

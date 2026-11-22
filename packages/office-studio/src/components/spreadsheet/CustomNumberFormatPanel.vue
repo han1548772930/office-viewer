@@ -69,6 +69,10 @@ function publishPreview(): void {
   if (!props.open || props.disabled) { emit('preview', undefined); return }
   emit('preview', validation.value.pattern)
 }
+function onCustomPatternEnter(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || composing.value) return
+  publishPreview()
+}
 function changeCategory(value: unknown): void {
   if (props.disabled || !isSheetNumberFormatCategory(value)) return
   draft.value = createSheetNumberFormatDraft(props.currentPattern, locale.value, currencies.value.map(option => option.value), value)
@@ -176,20 +180,20 @@ watch(() => props.disabled, disabled => { if (disabled) emit('preview', undefine
         <template v-if="draft.category === 'custom'">
           <FormItem :label="t('sheet.number-format.custom', '自定义格式')" :validate-status="validation.error ? 'error' : undefined" :help="validation.error || undefined">
             <Input :value="draft.pattern || (pristine ? currentPattern : '')" :disabled="disabled" :maxlength="255" :aria-label="t('sheet.number-format.pattern-aria', '自定义数字格式代码')"
-              @update:value="changeCustomPattern" @blur="publishPreview" @press-enter="publishPreview" @compositionstart="composing = true" @compositionend="composing = false" />
+              @update:value="changeCustomPattern" @blur="publishPreview" @press-enter="onCustomPatternEnter" @compositionstart="composing = true" @compositionend="composing = false" />
           </FormItem>
           <Menu class="number-format-options number-format-custom-options" :items="customOptions" :selected-keys="[draft.pattern]" :aria-label="t('sheet.number-format.custom', '自定义格式')" @click="choosePattern" />
         </template>
         <p class="number-format-description">{{ description }}</p>
         <div class="number-format-preview" aria-live="polite"><span>{{ t('sheet.number-format.preview', '预览') }}</span><strong>{{ example ?? t('sheet.number-format.unavailable', '无法预览') }}</strong></div>
-        <Alert v-if="validation.error && draft.category !== 'custom'" type="error" :message="validation.error" show-icon />
-        <Alert v-if="applicationFailed" type="error" :message="t('sheet.number-format.apply-error', '数字格式未应用，请检查选区后重试。')" show-icon />
-        <Alert v-if="storageFailed" type="warning" :message="t('sheet.number-format.preference-read-error', '此浏览器未能读取格式偏好，可继续设置数字格式。')" show-icon />
+        <Alert v-if="validation.error && draft.category !== 'custom'" type="error" :title="validation.error" show-icon />
+        <Alert v-if="applicationFailed" type="error" :title="t('sheet.number-format.apply-error', '数字格式未应用，请检查选区后重试。')" show-icon />
+        <Alert v-if="storageFailed" type="warning" :title="t('sheet.number-format.preference-read-error', '此浏览器未能读取格式偏好，可继续设置数字格式。')" show-icon />
       </Form>
     </div>
     <div class="number-format-panel-footer">
       <Button @click="close">{{ t('sheet.number-format.cancel', '取消') }}</Button>
-      <Button type="primary" :disabled="disabled || Boolean(validation.error)" @click="apply">{{ t('sheet.number-format.confirm', '确认') }}</Button>
+      <Button type="primary" :disabled="disabled || composing || Boolean(validation.error)" @click="apply">{{ t('sheet.number-format.confirm', '确认') }}</Button>
     </div>
   </Card>
 </template>

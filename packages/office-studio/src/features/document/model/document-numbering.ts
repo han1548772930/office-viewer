@@ -11,6 +11,7 @@ export interface DocumentNumberingLevel extends Record<string, unknown> {
   ilvl: number
   start?: number
   format?: string
+  customFormat?: string
   text?: string
   minimumDigits?: number
   suffix?: 'tab' | 'space' | 'nothing'
@@ -46,7 +47,7 @@ export function normalizeNumberingLevel(value: unknown): DocumentNumberingLevel 
   const picture = numberingRecord(raw.pictureBullet)
   return {
     ...raw, ilvl,
-    start: integer(raw.start), format: string(raw.format), text: string(raw.text),
+    start: integer(raw.start), format: string(raw.format), customFormat: string(raw.customFormat), text: string(raw.text),
     minimumDigits: positive(raw.minimumDigits), lvlRestart: integer(raw.lvlRestart),
     isLgl: typeof raw.isLgl === 'boolean' ? raw.isLgl : undefined,
     suffix: raw.suffix === 'tab' || raw.suffix === 'space' || raw.suffix === 'nothing' ? raw.suffix : undefined,
@@ -119,6 +120,13 @@ export function blockNumberingId(block: DocumentBlock): string | undefined {
   if (typeof block.metadata.numberingListId === 'string' && block.metadata.numberingListId) return block.metadata.numberingListId
   const definition = blockNumberingDefinition(block)
   return definition && typeof definition.instance.numId === 'number' ? `num-${definition.instance.numId}` : block.checklist?.listId
+}
+
+export function consecutiveNumberingGroup(definition: DocumentNumberingDefinition, instanceId: string): { id: string; primary: boolean } {
+  const group = definition.instance.consecutiveListId
+  if (typeof group === 'number' && Number.isSafeInteger(group)) return { id: `num-${group}`, primary: definition.instance.numId === group || instanceId === `num-${group}` }
+  if (typeof group === 'string' && group) return { id: group, primary: group === instanceId }
+  return { id: instanceId, primary: true }
 }
 
 export function clearBlockNumbering(block: DocumentBlock): void {

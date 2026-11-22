@@ -4,7 +4,8 @@ import { convertTextToNumber } from '../src/features/sheet-workbench/text-to-num
 
 test('converts finite numeric text and removes an explicit text number format', () => {
   assert.deepEqual(convertTextToNumber({ value: '  -1.25e2  ', rawValue: '  -1.25e2  ', rawNumberFormat: '@', numberFormat: 'text' }), {
-    value: '-125', rawValue: -125, numberFormat: 'general', rawNumberFormat: 'General', displayValue: undefined,
+    value: '-125', rawValue: -125, dataType: 'number', cachedDataType: null,
+    numberFormat: 'general', rawNumberFormat: 'General', displayValue: undefined,
   })
 })
 

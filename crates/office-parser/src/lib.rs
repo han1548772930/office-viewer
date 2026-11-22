@@ -1,6 +1,8 @@
 mod model;
 mod parser;
 mod document_format_sidecar;
+#[cfg(test)]
+mod document_format_roundtrip_tests;
 mod story_fields;
 mod validation_sidecar;
 mod sparkline_sidecar;

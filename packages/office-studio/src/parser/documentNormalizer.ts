@@ -127,15 +127,20 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     }
   }
   const numberingId = numbering.numId
+  const numberingListId = text(details.numberingListId, `num-${numberingId}`)
   const hasNumbering = Object.keys(numbering).length > 0 && numberingId !== 0 && ['paragraph', 'heading', 'numbered', 'bullet', 'checklist'].includes(type)
   if (type === 'numbered' || type === 'bullet' || type === 'checklist') block.level = listLevel
   else if (hasNumbering) block.metadata.numberingLevel = listLevel
   if (hasNumbering && type !== 'checklist' && definition?.preset && definition.levels.has(listLevel)) {
-    block.list = { id: `num-${numberingId}`, preset: definition.preset }
+    block.list = { id: numberingListId, preset: definition.preset }
   }
   if (definition && hasNumbering) {
     block.metadata.numberingDefinition = definition.definition
-    block.metadata.numberingListId = `num-${numberingId}`
+    block.metadata.numberingListId = numberingListId
+  }
+  const officeNumberingMarker = record(details.officeNumberingMarker)
+  if (officeNumberingMarker.version === 1 && typeof officeNumberingMarker.xml === 'string' && typeof officeNumberingMarker.text === 'string' && typeof officeNumberingMarker.bookmark === 'string' && typeof officeNumberingMarker.bookmarkId === 'number' && Number.isSafeInteger(officeNumberingMarker.bookmarkId)) {
+    block.metadata.officeNumberingMarker = { ...officeNumberingMarker }
   }
   if (type === 'checklist') block.checklist = {
     listId: typeof numberingId === 'string' || typeof numberingId === 'number' ? String(numberingId) : id,

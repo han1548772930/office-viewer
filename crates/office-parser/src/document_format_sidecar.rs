@@ -9,12 +9,20 @@ const XML_LIMIT: u64 = 16 * 1024 * 1024;
 const XML_DEPTH_LIMIT: usize = 128;
 const XML_ELEMENT_LIMIT: usize = 262_144;
 
+#[path = "document_numbering_extension.rs"]
+mod numbering_extension;
+pub(crate) use numbering_extension::{NumberingRestoration, restore_numbering_with_extensions, restore_numbering_details};
+
 #[derive(Default)]
 struct Element {
     name: String,
+    qualified_name: String,
     attributes: HashMap<String, String>,
+    namespaces: HashMap<String, String>,
     text: String,
     children: Vec<Element>,
+    start: usize,
+    end: usize,
 }
 
 impl Element {
@@ -31,6 +39,7 @@ fn parse_xml(xml: &str) -> Result<Element, String> {
     let mut root = None;
     let mut elements = 0;
     loop {
+        let position = reader.buffer_position() as usize;
         let event = reader.read_event().map_err(|error| error.to_string())?;
         let empty = matches!(&event, Event::Empty(_));
         match event {
@@ -39,10 +48,13 @@ fn parse_xml(xml: &str) -> Result<Element, String> {
                 if elements > XML_ELEMENT_LIMIT || stack.len() >= XML_DEPTH_LIMIT {
                     return Err("Office XML exceeds the element or nesting limit.".into());
                 }
-                let mut node = Element { name: String::from_utf8_lossy(tag.local_name().as_ref()).into_owned(), ..Default::default() };
+                let mut node = Element { name: String::from_utf8_lossy(tag.local_name().as_ref()).into_owned(), qualified_name: String::from_utf8_lossy(tag.name().as_ref()).into_owned(), start: position, end: reader.buffer_position() as usize, ..Default::default() };
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| error.to_string())?;
                     let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
+                    let key = String::from_utf8_lossy(attribute.key.as_ref());
+                    if key == "xmlns" { node.namespaces.insert(String::new(), value.to_string()); }
+                    else if let Some(prefix) = key.strip_prefix("xmlns:") { node.namespaces.insert(prefix.to_owned(), value.to_string()); }
                     node.attributes.insert(String::from_utf8_lossy(attribute.key.local_name().as_ref()).into_owned(), value.into_owned());
                 }
                 if empty {
@@ -51,7 +63,8 @@ fn parse_xml(xml: &str) -> Result<Element, String> {
                 } else { stack.push(node); }
             }
             Event::End(_) => {
-                let node = stack.pop().ok_or("XML has an unmatched closing element.")?;
+                let mut node = stack.pop().ok_or("XML has an unmatched closing element.")?;
+                node.end = reader.buffer_position() as usize;
                 if let Some(parent) = stack.last_mut() { parent.children.push(node); }
                 else if root.replace(node).is_some() { return Err("XML has more than one root element.".into()); }
             }
@@ -95,20 +108,60 @@ fn part_for_type(archive: &mut ZipArchive<Cursor<&[u8]>>, suffix: &str, fallback
         .unwrap_or_else(|| fallback.to_owned()))
 }
 
-fn patch_level_color(level: &mut NumberingLevelDefinition, xml: &Element) {
+fn picture_dimension(style: &str, property: &str) -> Option<f64> {
+    for declaration in style.rsplit(';') {
+        let Some((name, value)) = declaration.split_once(':') else { continue };
+        if !name.trim().eq_ignore_ascii_case(property) { continue; }
+        let value = value.trim().to_ascii_lowercase();
+        for (unit, scale) in [("px", 1.0), ("pt", 4.0 / 3.0), ("in", 96.0), ("cm", 96.0 / 2.54), ("mm", 96.0 / 25.4)] {
+            let Some(number) = value.strip_suffix(unit) else { continue };
+            return number.trim().parse::<f64>().ok().map(|number| number * scale).filter(|number| number.is_finite() && *number > 0.0);
+        }
+        return None;
+    }
+    None
+}
+
+fn picture_dimensions(root: &Element) -> HashMap<i64, (Option<f64>, Option<f64>)> {
+    root.children.iter().filter(|node| node.name == "numPicBullet").filter_map(|node| {
+        let id = node.integer("numPicBulletId")?;
+        let style = node.child("pict")?.child("shape")?.attribute("style")?;
+        Some((id, (picture_dimension(style, "width"), picture_dimension(style, "height"))))
+    }).collect()
+}
+
+fn patch_level(level: &mut NumberingLevelDefinition, xml: &Element, pictures: &HashMap<i64, (Option<f64>, Option<f64>)>, _warnings: &mut Vec<String>) {
+    if let Some(start) = xml.child("start").and_then(|start| start.integer("val")).filter(|start| (0..=i64::from(i32::MAX)).contains(start)) {
+        level.start = Some(start);
+    }
+    if let Some(pattern) = xml.child("numFmt").and_then(|format| format.attribute("format")) {
+        let bytes = pattern.as_bytes();
+        if !bytes.is_empty() && bytes.len() <= u8::MAX as usize && bytes.last() == Some(&b'1') && bytes[..bytes.len() - 1].iter().all(|byte| *byte == b'0') {
+            level.format = Some("decimal".to_owned());
+            level.minimum_digits = Some(bytes.len() as u8);
+        }
+    }
     if xml.child("rPr").and_then(|run| run.child("color")).and_then(|color| color.attribute("val")) == Some("auto") {
         level.bullet_color = Some("auto".to_owned());
         level.run_style.get_or_insert_with(Default::default).color = Some("auto".to_owned());
     }
+    if let Some(picture) = &mut level.picture_bullet {
+        if let Some((width, height)) = pictures.get(&picture.num_pic_bullet_id) {
+            if width.is_some() { picture.width_px = *width; }
+            if height.is_some() { picture.height_px = *height; }
+        }
+    }
 }
 
-fn patch_numbering(definitions: &mut NumberingDefinitionSet, root: &Element) {
+fn patch_numbering(definitions: &mut NumberingDefinitionSet, root: &Element) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let pictures = picture_dimensions(root);
     for node in &root.children {
         if node.name == "abstractNum" {
             let Some(abstract_id) = node.integer("abstractNumId") else { continue };
             let Some(definition) = definitions.abstracts.iter_mut().find(|value| value.abstract_num_id == abstract_id) else { continue };
             for xml in node.children.iter().filter(|child| child.name == "lvl") {
-                if let Some(level) = definition.levels.iter_mut().find(|level| Some(level.ilvl) == xml.integer("ilvl")) { patch_level_color(level, xml); }
+                if let Some(level) = definition.levels.iter_mut().find(|level| Some(level.ilvl) == xml.integer("ilvl")) { patch_level(level, xml, &pictures, &mut warnings); }
             }
         } else if node.name == "num" {
             let Some(num_id) = node.integer("numId") else { continue };
@@ -119,11 +172,12 @@ fn patch_numbering(definitions: &mut NumberingDefinitionSet, root: &Element) {
                     instance.level_start_overrides.get_or_insert_with(HashMap::new).insert(index.to_string(), start);
                 }
                 if let Some(xml) = override_xml.child("lvl") {
-                    if let Some(level) = instance.level_overrides.iter_mut().flatten().find(|level| level.ilvl == index) { patch_level_color(level, xml); }
+                    if let Some(level) = instance.level_overrides.iter_mut().flatten().find(|level| level.ilvl == index) { patch_level(level, xml, &pictures, &mut warnings); }
                 }
             }
         }
     }
+    warnings
 }
 
 pub(crate) fn restore_numbering(source: &mut DocModel, archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<String> {
@@ -131,7 +185,7 @@ pub(crate) fn restore_numbering(source: &mut DocModel, archive: &mut ZipArchive<
     let result = part_for_type(archive, ".numbering+xml", "word/numbering.xml")
         .and_then(|part| read_xml(archive, &part)).and_then(|text| text.map(|text| parse_xml(&text)).transpose());
     match result {
-        Ok(Some(root)) => { patch_numbering(definitions, &root); Vec::new() }
+        Ok(Some(root)) => patch_numbering(definitions, &root),
         Ok(None) => Vec::new(),
         Err(error) => vec![format!("DOCX numbering properties could not be restored: {error}")],
     }
@@ -353,6 +407,43 @@ mod tests {
         assert_eq!(definitions.abstracts[0].levels[0].bullet_color.as_deref(), Some("auto"));
         assert_eq!(definitions.abstracts[0].levels[0].run_style.as_ref().unwrap().color.as_deref(), Some("auto"));
         assert_eq!(definitions.instances[0].level_overrides.as_ref().unwrap()[0].bullet_color.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn numbering_restoration_reads_padded_decimal_tokens_and_reports_unmapped_custom_formats() {
+        let mut source = source_model(json!([]), json!({
+            "abstracts": [{ "abstractNumId": 7, "levels": [{ "ilvl": 0, "format": "custom" }, { "ilvl": 1, "format": "custom" }] }],
+            "instances": [{ "numId": 9, "abstractNumId": 7, "levelOverrides": [{ "ilvl": 0 }] }]
+        }));
+        let bytes = archive_bytes(&[("word/numbering.xml", r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="0"/><w:numFmt w:val="custom" w:format="001"/></w:lvl><w:lvl w:ilvl="1"><w:numFmt w:val="custom" w:format="ア"/></w:lvl></w:abstractNum><w:num w:numId="9"><w:lvlOverride w:ilvl="0"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal" w:format="0001"/></w:lvl></w:lvlOverride></w:num></w:numbering>"#)]);
+        let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let warnings = restore_numbering(&mut source, &mut archive);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("ア"));
+        let definitions = source.metadata.numbering_definitions.unwrap();
+        assert_eq!(definitions.abstracts[0].levels[0].start, Some(0));
+        assert_eq!(definitions.abstracts[0].levels[0].format.as_deref(), Some("decimal"));
+        assert_eq!(definitions.abstracts[0].levels[0].minimum_digits, Some(3));
+        assert_eq!(definitions.instances[0].level_overrides.as_ref().unwrap()[0].minimum_digits, Some(4));
+    }
+
+    #[test]
+    fn picture_bullet_dimensions_preserve_fractional_pixels_and_convert_css_units() {
+        let mut source = source_model(json!([]), json!({
+            "abstracts": [{ "abstractNumId": 7, "levels": [{ "ilvl": 0, "format": "bullet", "pictureBulletId": 5,
+                "pictureBullet": { "numPicBulletId": 5, "src": "data:image/png;base64,AA==", "widthPx": 1, "heightPx": 1 } }] }],
+            "instances": []
+        }));
+        let bytes = archive_bytes(&[("word/numbering.xml", r##"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml"><w:numPicBullet w:numPicBulletId="5"><w:pict><v:shapetype id="_x0000_t75"/><v:shape type="#_x0000_t75" style="width:2pt;width:9.5px;height:7.125PT"/></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:lvlPicBulletId w:val="5"/></w:lvl></w:abstractNum></w:numbering>"##)]);
+        let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        assert!(restore_numbering(&mut source, &mut archive).is_empty());
+        let definitions = source.metadata.numbering_definitions.unwrap();
+        let picture = definitions.abstracts[0].levels[0].picture_bullet.as_ref().unwrap();
+        assert_eq!(picture.width_px, Some(9.5));
+        assert_eq!(picture.height_px, Some(9.5));
+        assert_eq!(picture_dimension("width:1in", "width"), Some(96.0));
+        assert_eq!(picture_dimension("width:auto", "width"), None);
+        assert_eq!(picture_dimension("width:-2px", "width"), None);
     }
 
     #[test]

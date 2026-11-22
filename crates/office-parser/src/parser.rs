@@ -63,8 +63,15 @@ fn parse_document_impl(
         Some(zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ParseFailure::office_file)?)
     } else { None };
     let mut format_warnings = Vec::new();
+    let mut numbering_restoration = if let Some(zip) = archive.as_mut() {
+        crate::document_format_sidecar::restore_numbering_with_extensions(&mut source_model, zip)
+    } else {
+        let mut restoration = crate::document_format_sidecar::NumberingRestoration::default();
+        restoration.definitions = source_model.metadata.numbering_definitions.as_ref().map(serde_json::to_value).transpose().map_err(ParseFailure::office_file)?;
+        restoration
+    };
+    format_warnings.append(&mut numbering_restoration.warnings);
     let paragraph_wrap = if let Some(zip) = archive.as_mut() {
-        format_warnings.extend(crate::document_format_sidecar::restore_numbering(&mut source_model, zip));
         match crate::document_format_sidecar::read_word_wrap(zip) {
             Ok(wrap) => wrap,
             Err(error) => {
@@ -76,6 +83,7 @@ fn parse_document_impl(
     let mut document = extract_document_blocks(&source_model);
     if archive.is_some() {
         crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
+        crate::document_format_sidecar::restore_numbering_details(&mut document, &numbering_restoration);
     }
     document.warnings.extend(format_warnings);
     insert_section_breaks(&mut document, &source_model);
@@ -148,7 +156,7 @@ fn parse_document_impl(
         model: "document".into(),
         payload: DocumentModel::Document(DocumentPayload {
             document,
-            numbering_definitions: source_model.metadata.numbering_definitions,
+            numbering_definitions: numbering_restoration.definitions,
             section_layout,
             even_and_odd_headers,
             footnotes,

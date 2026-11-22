@@ -100,7 +100,7 @@ export function useWorkspaceController() {
     }
   }
 
-  function onExcelChange(view: ExcelWorkbookView): void { editor.replaceWorkbookFromView(view) }
+  function onExcelChange(view: ExcelWorkbookView): void { editor.replaceWorkbookFromView(view, studio.regionalSettings.region.value) }
   function onDocumentChange(model: DocumentModel): void { editor.replaceDocumentFromView(model) }
 
   function saveWorkbook(view: ExcelWorkbookView, action: FileAction = 'save'): void {

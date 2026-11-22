@@ -3,7 +3,7 @@ import type { WorkbookModel } from '../../domain/model.ts'
 import { applyExcelWorkbookView, parseCellKey } from '../../services/excelViewAdapter.ts'
 import type { ExcelWorkbookView } from '../../services/excelViewAdapter.ts'
 import { recalculateWorkbookFormulas } from '../formula/formula-engine.ts'
-import type { FormulaEngineDiagnostic } from '../formula/formula-types.ts'
+import type { FormulaEngineDiagnostic, FormulaEvaluationOptions } from '../formula/formula-types.ts'
 
 export interface SheetViewRecalculationResult {
   workbook: ExcelWorkbookView
@@ -35,10 +35,10 @@ function seedRawValues(workbook: WorkbookModel, view: ExcelWorkbookView): Workbo
  * Only formula result fields are projected back; sheet dimensions, resources,
  * source formulas, formats and non-formula cells remain those of the view.
  */
-export function recalculateSheetViewFormulas(view: ExcelWorkbookView, original?: WorkbookModel): SheetViewRecalculationResult {
-  const baseline = original ?? seedRawValues(applyExcelWorkbookView(createBlankWorkbook(), view), view)
-  const converted = original ? applyExcelWorkbookView(original, view) : baseline
-  const result = recalculateWorkbookFormulas(converted, baseline)
+export function recalculateSheetViewFormulas(view: ExcelWorkbookView, original?: WorkbookModel, options: FormulaEvaluationOptions = {}): SheetViewRecalculationResult {
+  const baseline = original ?? seedRawValues(applyExcelWorkbookView(createBlankWorkbook(), view, options.numberFormatLocale), view)
+  const converted = original ? applyExcelWorkbookView(original, view, options.numberFormatLocale) : baseline
+  const result = recalculateWorkbookFormulas(converted, baseline, options)
   const preservedCaches = new Set(result.diagnostics
     .filter(diagnostic => diagnostic.code === 'FORMULA_UNSUPPORTED_CACHE_PRESERVED')
     .map(diagnostic => `${diagnostic.cell.sheetId}!${diagnostic.cell.row}:${diagnostic.cell.column}`))

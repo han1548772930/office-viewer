@@ -30,9 +30,9 @@ test('values paste calculated/raw values while retaining destination formatting'
     sourceStartRow: 0, sourceStartColumn: 0, targetStartRow: 0, targetStartColumn: 3,
   })
   assert.deepEqual(plan.cellPatches.map(patch => patch.cell), [
-    { value: '17', rawValue: 17, displayValue: undefined, bold: true, numberFormat: 'percent' },
-    { value: 'text', rawValue: 'text', displayValue: undefined, italic: true },
-    { value: '', rawValue: undefined, displayValue: undefined, underline: true },
+    { value: '17', rawValue: 17, dataType: 'number', cachedDataType: null, displayValue: undefined, bold: true, numberFormat: 'percent' },
+    { value: 'text', rawValue: 'text', dataType: 'text', cachedDataType: null, displayValue: undefined, italic: true },
+    { value: '', rawValue: null, dataType: 'blank', cachedDataType: null, displayValue: undefined, underline: true },
   ])
 })
 
@@ -45,8 +45,8 @@ test('formula-only paste shifts references, preserves destination formatting and
   })
 
   assert.deepEqual(plan.cellPatches.map(({ rowOffset, columnOffset, cell }) => ({ rowOffset, columnOffset, cell })), [
-    { rowOffset: 0, columnOffset: 0, cell: { value: '', formula: '=B3+$B$2', bold: true, background: '#fafafa', cachedValue: undefined, rawValue: undefined, displayValue: undefined } },
-    { rowOffset: 1, columnOffset: 1, cell: { value: '', formula: '=D5+$A6+C$2+$D$8', italic: true, cachedValue: undefined, rawValue: undefined, displayValue: undefined } },
+    { rowOffset: 0, columnOffset: 0, cell: { value: '', formula: '=B3+$B$2', bold: true, background: '#fafafa', cachedValue: undefined, rawValue: null, dataType: 'formula', cachedDataType: null, displayValue: undefined } },
+    { rowOffset: 1, columnOffset: 1, cell: { value: '', formula: '=D5+$A6+C$2+$D$8', italic: true, cachedValue: undefined, rawValue: null, dataType: 'formula', cachedDataType: null, displayValue: undefined } },
   ])
 })
 
@@ -95,4 +95,28 @@ test('column-width paste maps source absolute columns to destination columns', (
   assert.deepEqual(plan.columnWidthPatches, [
     { column: 5, width: 144 }, { column: 6, width: 96 }, { column: 7, width: 72 },
   ])
+})
+
+test('values paste preserves raw numeric caches, typed numeric text and errors instead of destination types', () => {
+  const plan = createSheetPastePlan({
+    mode: 'values', sourceCells: [[
+      { value: '', formula: '=1/4', rawValue: .25, cachedValue: '25%', cachedDataType: 'number' },
+      { value: '00123', dataType: 's' },
+      { value: '', formula: '=1/0', cachedValue: '#DIV/0!', cachedDataType: 'e' },
+    ]],
+    targetCells: [[{ value: '#VALUE!', dataType: 'error' }, { value: '0', dataType: 'number' }, { value: 'old', dataType: 'text' }]],
+    sourceStartRow: 0, sourceStartColumn: 0, targetStartRow: 2, targetStartColumn: 0,
+  })
+  assert.deepEqual(plan.cellPatches.map(({ cell }) => [cell.value, cell.rawValue, cell.dataType, cell.cachedDataType]), [
+    ['0.25', .25, 'number', null], ['00123', '00123', 'text', null], ['#DIV/0!', '#DIV/0!', 'error', null],
+  ])
+})
+
+test('format-only paste keeps destination content and cache types', () => {
+  const target = { value: '', formula: '=FALSE()', rawValue: false, cachedValue: 'FALSE', dataType: 'formula', cachedDataType: 'b' }
+  const plan = createSheetPastePlan({ mode: 'formats', sourceCells: [[{ value: 'source', dataType: 'text', bold: true }]], targetCells: [[target]],
+    sourceStartRow: 0, sourceStartColumn: 0, targetStartRow: 0, targetStartColumn: 0 })
+  assert.equal(plan.cellPatches[0].cell.dataType, 'formula')
+  assert.equal(plan.cellPatches[0].cell.cachedDataType, 'b')
+  assert.equal(plan.cellPatches[0].cell.rawValue, false)
 })

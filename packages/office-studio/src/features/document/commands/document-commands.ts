@@ -393,16 +393,19 @@ export function executeDocumentCommand(
     case 'doc.command.insert-image': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'image', metadata: { image: command.image } }])
     case 'doc.command.insert-divider': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'divider', runs: [] }])
     case 'doc.command.paste-blocks': {
-      const paragraph = command.blocks.length === 1 && command.blocks[0]?.type === 'paragraph' ? command.blocks[0] : undefined
+      const blocks = copyBlocksForPaste(command.blocks)
+      const paragraph = blocks.length === 1 && blocks[0]?.type === 'paragraph' ? blocks[0] : undefined
       const text = paragraph && runText(paragraph.runs)
       if (paragraph && text !== undefined && !/[\r\n]/.test(text)) {
+        const { start, end } = orderedSelection(model, selection)
+        const before = sliceRuns(runsForTarget(model, start), 0, start.offset)
+        const after = blockContainer(model, start) === blockContainer(model, end) ? sliceRuns(runsForTarget(model, end), end.offset) : []
         const next = replaceSelectionText(model, selection, text)
-        const offset = next.focus.offset
-        const runs = runsForTarget(model, next.focus)
-        setTargetRuns(model, next.focus, [...sliceRuns(runs, 0, offset - text.length), ...paragraph.runs as DocumentRun[], ...sliceRuns(runs, offset)])
+        if (!text) return next
+        setTargetRuns(model, next.focus, [...before, ...paragraph.runs as DocumentRun[], ...after])
         return next
       }
-      return insertBlocks(model, selection, command.blocks)
+      return insertBlocks(model, selection, blocks)
     }
     case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction)
     case 'doc.command.set-section-header-footer':
@@ -566,6 +569,24 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
     if (selected.every((run, index) => JSON.stringify(run) === JSON.stringify(changed[index]))) return
     setTargetRuns(model, target, [...sliceRuns(runs, 0, from), ...changed, ...sliceRuns(runs, to)])
   })
+}
+
+function copyBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
+  const copies = JSON.parse(JSON.stringify(blocks)) as DocumentBlock[]
+  const visit = (container: DocumentBlock[]) => {
+    for (const block of container) {
+      block.id = documentId(block.type)
+      block.runs = block.runs.map(run => ({ ...run, id: documentId('run') }))
+      const table = tableForBlock(block)
+      if (!table) continue
+      for (const row of table.rows) {
+        row.id = documentId('row')
+        for (const cell of row.cells) { cell.id = documentId('cell'); visit(cell.blocks) }
+      }
+    }
+  }
+  visit(copies)
+  return copies
 }
 
 function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks: DocumentBlock[]): DocumentSelection {

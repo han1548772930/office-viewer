@@ -338,7 +338,7 @@ export class OfficeStudio {
     return changed
   }
 
-  commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, forceRecalculation = false): boolean {
+  commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, options: boolean | { recalculate?: boolean } = false): boolean {
     this.assertAlive()
     const current = this.getWorkbookModel(id)
     if (!current) throw new Error(`Workbook not found: ${id}`)
@@ -346,9 +346,11 @@ export class OfficeStudio {
     const after = cloneModel(current)
     update(after)
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
-    const recalculated = !forceRecalculation && before.calculationMode === 'manual' && after.calculationMode === 'manual'
-      ? after
-      : recalculateWorkbookFormulas(after, before, { numberFormatLocale: this.regionalSettings.region.value }).workbook
+    const automatic = before.calculationMode !== 'manual' || after.calculationMode !== 'manual'
+    const shouldRecalculate = typeof options === 'boolean' ? options || automatic : options.recalculate ?? automatic
+    const recalculated = shouldRecalculate
+      ? recalculateWorkbookFormulas(after, before, { numberFormatLocale: this.regionalSettings.region.value }).workbook
+      : after
     for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
     recalculated.id = id
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
@@ -589,7 +591,7 @@ export class OfficeStudio {
         const label = action.kind === 'decimals' ? action.delta === 1 ? '增加小数位' : '减少小数位' : '设置数字格式'
         return this.commitWorkbook(unitId, label, model => {
           applySheetNumberFormatCommand(requireSheet(model, sheetId), ranges, action, this.regionalSettings.region.value, model.date1904, this.currentUserId)
-        })
+        }, { recalculate: false })
       })
     }
     this.registerCommand<ChangeSheetOutlineInput, boolean>(CHANGE_SHEET_OUTLINE_COMMAND, ({ unitId, sheetId, action }) =>
@@ -613,7 +615,7 @@ export class OfficeStudio {
           if (![r.startRow, r.startCol, r.endRow, r.endCol].every(Number.isSafeInteger) || r.startRow < 0 || r.startCol < 0 || r.endRow < r.startRow || r.endCol < r.startCol || r.endRow >= 1_048_576 || r.endCol >= 16_384) throw new RangeError('Invalid cell color range')
           this.assertCanEditRange(unitId, sheetId, r)
         }
-        return this.commitWorkbook(unitId, id === RESET_TEXT_COLOR ? '重置文字颜色' : '清除填充颜色', model => resetSheetColors(requireSheet(model, sheetId), ranges, id))
+        return this.commitWorkbook(unitId, id === RESET_TEXT_COLOR ? '重置文字颜色' : '清除填充颜色', model => resetSheetColors(requireSheet(model, sheetId), ranges, id), { recalculate: false })
       })
     }
     this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number; draft: SheetHyperlinkDraft }, boolean>(SET_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col, draft }) => this.commitWorkbook(unitId, '设置单元格超链接', (model) => {
@@ -660,7 +662,7 @@ export class OfficeStudio {
         const cell = values[row - range.startRow]?.[col - range.startColumn]
         if (cell === undefined) continue
         const key = `${row}:${col}`
-        sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell as never)
+        sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell)
         positions.push({ row, column: col })
       }
       const validation = validateSheetDataValidationChanges(model, sheetId, positions)

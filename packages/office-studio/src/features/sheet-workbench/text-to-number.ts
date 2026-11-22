@@ -11,5 +11,6 @@ export function convertTextToNumber(cell: ExcelCellView): ExcelCellView | undefi
   if (typeof text === 'string' && (!text.trim() || !numericText.test(text.trim()))) return undefined
   const value = Number(typeof text === 'string' ? text.trim() : text)
   if (!Number.isFinite(value)) return undefined
-  return { ...cell, value: String(value), rawValue: value, displayValue: undefined, ...(isTextFormat ? { numberFormat: 'general', rawNumberFormat: 'General' } : {}) }
+  return { ...cell, value: String(value), rawValue: value, dataType: 'number', cachedDataType: null,
+    displayValue: undefined, ...(isTextFormat ? { numberFormat: 'general', rawNumberFormat: 'General' } : {}) }
 }

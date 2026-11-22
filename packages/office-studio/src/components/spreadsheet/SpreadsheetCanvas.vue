@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { AutoComplete, Button, theme } from 'antdv-next'
+import { Alert, AutoComplete, Button, theme } from 'antdv-next'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import type { TimelineLevel } from '../../domain/model'
@@ -87,6 +87,12 @@ const outlineLevelButtons = computed(() => {
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editLayout = computed(() => props.editingKey ? createCellEditorLayout(geometry.value, props.editingKey, viewport.value) : undefined)
 const { token } = theme.useToken()
+const themeStyle = computed(() => ({
+  '--sheet-canvas-background': token.value.colorBgContainer,
+  '--sheet-canvas-text': token.value.colorText,
+  '--sheet-canvas-primary': token.value.colorPrimary,
+  '--sheet-canvas-border': token.value.colorBorder,
+}))
 const editInputStyles = computed(() => ({
   root: {
     boxSizing: 'border-box' as const,
@@ -97,7 +103,9 @@ const editInputStyles = computed(() => ({
     background: props.sheet.cells[props.editingKey ?? '']?.background ?? token.value.colorBgContainer,
     boxShadow: 'none',
   },
-  input: { boxSizing: 'border-box' as const, height: '100%', padding: 0, color: 'inherit', font: 'inherit', textAlign: sheetCellTextAlignment(props.sheet.cells[props.editingKey ?? '']) },
+  input: { boxSizing: 'border-box' as const, height: '100%', padding: 0,
+    color: props.sheet.cells[props.editingKey ?? '']?.color ?? token.value.colorText,
+    font: 'inherit', textAlign: sheetCellTextAlignment(props.sheet.cells[props.editingKey ?? '']) },
 }))
 const editStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
@@ -108,6 +116,8 @@ const editStyle = computed(() => editLayout.value ? {
   paddingRight: `${Math.max(0, 6 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
   fontFamily: props.sheet.cells[props.editingKey ?? '']?.fontFamily ?? 'Aptos, sans-serif',
   fontSize: `${(props.sheet.cells[props.editingKey ?? '']?.fontSize ?? 11) * 4 / 3 * viewport.value.zoom}px`,
+  fontWeight: props.sheet.cells[props.editingKey ?? '']?.bold ? 700 : 400,
+  fontStyle: props.sheet.cells[props.editingKey ?? '']?.italic ? 'italic' as const : 'normal' as const,
 } : { clipPath: 'inset(50%)' })
 const fillHandleStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.fillHandle.x}px`, top: `${editLayout.value.fillHandle.y}px`,
@@ -399,7 +409,7 @@ function onContextMenu(event: MouseEvent) {
   contextMenuPosition.value = { x: event.clientX, y: event.clientY }
   contextMenuOpen.value = true
 }
-function onInputKeydown(event: KeyboardEvent) { if (!composing.value && !event.isComposing) emit('editor-keydown', event) }
+function onInputKeydown(event: KeyboardEvent) { if (!composing.value && !event.isComposing && event.keyCode !== 229) emit('editor-keydown', event) }
 function onPaste(event: ClipboardEvent) { if (!(event.target as HTMLElement).closest('input')) emit('paste', event) }
 function onWheel(event: WheelEvent) {
   const position = point(event)
@@ -422,7 +432,7 @@ function onWheel(event: WheelEvent) {
 }
 function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
 function onKeydown(event: KeyboardEvent) {
-  if (!props.selectedSlicerId || props.editingKey || event.isComposing) return
+  if (!props.selectedSlicerId || props.editingKey || event.isComposing || event.keyCode === 229) return
   const layout = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
   if (!layout) return
   if (layout.model.type === 'slicer') {
@@ -523,7 +533,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
+  <div ref="root" class="spreadsheet-canvas" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste="onPaste" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
     <Button
@@ -555,7 +565,7 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
     <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="value => emit('update:editValue', String(value ?? ''))" @blur="!composing && emit('finish-edit')" @keydown.stop="onInputKeydown" @compositionstart="composing = true" @compositionend="composing = false" />
     <span v-if="editingKey && editLayout" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ selectedCellText }}</span></div>
-    <div v-if="surfaceError" class="canvas-surface-error" role="alert">画布初始化失败：{{ surfaceError }}</div>
+    <Alert v-if="surfaceError" class="canvas-surface-error" type="error" :title="`画布初始化失败：${surfaceError}`" show-icon />
     <SheetContextMenu
       v-model:open="contextMenuOpen"
       :hit="contextMenuHit"
@@ -577,16 +587,16 @@ onUnmounted(() => { disposed = true; cancelAnimationFrame(frame); observer?.disc
 </template>
 
 <style scoped>
-.spreadsheet-canvas { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; outline: none; background: #fff; touch-action: none; user-select: none; }
-.spreadsheet-canvas:focus-visible { box-shadow: inset 0 0 0 1px #246bfd; }
+.spreadsheet-canvas { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; outline: none; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); touch-action: none; user-select: none; }
+.spreadsheet-canvas:focus-visible { box-shadow: inset 0 0 0 1px var(--sheet-canvas-primary); }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; min-width: 12px; min-height: 12px; margin: 0; padding: 0; border: 1px solid #7c899a; border-radius: 1px; color: #465568; background: #fff; box-shadow: none; line-height: 10px; }
+.outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; min-width: 12px; min-height: 12px; margin: 0; padding: 0; border: 1px solid var(--sheet-canvas-border); border-radius: 1px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); box-shadow: none; line-height: 10px; }
 .outline-control :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
 .outline-level { font-size: 8px; }
 .canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; }
 .canvas-cell-input :deep(.ant-select-input) { height: 100%; }
-.canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid #fff; background: #246bfd; pointer-events: none; }
+.canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
-.canvas-surface-error { position: absolute; z-index: 4; top: 12px; left: 12px; max-width: calc(100% - 24px); padding: 8px 12px; border: 1px solid #e3b3b3; color: #922f2f; background: #fff2f2; font-size: 12px; }
+.canvas-surface-error { position: absolute; z-index: 4; top: 12px; inset-inline-start: 12px; max-width: calc(100% - 24px); }
 </style>

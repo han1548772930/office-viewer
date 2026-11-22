@@ -1,6 +1,7 @@
 import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { translateFormulaReferences } from '../formula/formula-references.ts'
+import { sheetCellNumberValue } from './sheet-number-presentation.ts'
 
 export interface SheetFillCellPatch {
   row: number
@@ -118,9 +119,8 @@ function inferNumericStep(cells: readonly (readonly (ExcelCellView | undefined)[
 
 function numericValue(cell: ExcelCellView | undefined): number | undefined {
   if (!cell || cell.formula) return undefined
-  const value = cell.rawValue ?? cell.value
+  const value = sheetCellNumberValue(cell)
   if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value)
   return undefined
 }
 
@@ -139,6 +139,8 @@ function setLiteralValue(cell: ExcelCellView, value: number): void {
   cell.value = String(value)
   cell.rawValue = value
   cell.formula = undefined
+  cell.dataType = 'number'
+  cell.cachedDataType = null
   cell.cachedValue = undefined
   cell.displayValue = undefined
 }
@@ -147,7 +149,9 @@ function translateFormula(cell: ExcelCellView, rowOffset: number, columnOffset: 
   cell.formula = translateFormulaReferences(cell.formula!, rowOffset, columnOffset)
   cell.value = ''
   cell.cachedValue = undefined
-  cell.rawValue = undefined
+  cell.rawValue = null
+  cell.dataType = 'formula'
+  cell.cachedDataType = null
   cell.displayValue = undefined
 }
 

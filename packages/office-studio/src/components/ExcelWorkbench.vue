@@ -28,7 +28,7 @@ import { applySheetBorders, clearSheetCellFormat, isSheetBorderPreset, nextSheet
 import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS } from '../features/sheet-workbench/sheet-number-format'
 import { applySheetViewNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { sheetCellNumberPattern, sheetCellNumberValue } from '../features/sheet-workbench/sheet-number-presentation.ts'
-import { editSheetCellText } from '../features/sheet-workbench/sheet-cell-edit.ts'
+import { editSheetCellText, sheetCellInputText } from '../features/sheet-workbench/sheet-cell-edit.ts'
 import type { SheetNumberFormatPreview } from '../rendering/spreadsheet/scene.ts'
 import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow } from '../features/sheet-workbench/sheet-row-visibility'
@@ -412,7 +412,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   outlineSummaryAbove: activeSheet.value?.outline?.summaryAbove ?? false,
   outlineSummaryLeft: activeSheet.value?.outline?.summaryLeft ?? false,
 }, createRibbonTranslator(officeLocale.value, 'sheet')))
-const formulaValue = computed(() => editingKey.value ? editValue.value : activeCell.value.formula ?? activeCell.value.value)
+const formulaValue = computed(() => editingKey.value ? editValue.value : sheetCellInputText(activeCell.value))
 const searchMatches = computed(() => findSheetMatches(availableSheets.value, activeSheetId.value, {
   text: searchText.value, replacement: replaceText.value, findBy: findBy.value, direction: findDirection.value,
   scope: findScope.value, caseSensitive: findCaseSensitive.value, wholeCell: findWholeCell.value,
@@ -481,7 +481,7 @@ function validateIncomingValues(entries: readonly { key: string; value: string }
   for (const entry of entries) {
     candidateSheet.cells[entry.key] = editSheetCellText(candidateSheet.cells[entry.key], entry.value, candidateSheet.date1904, officeRegion.value)
   }
-  const model = applyExcelWorkbookView(props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook(), candidateView)
+  const model = applyExcelWorkbookView(props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook(), candidateView, officeRegion.value)
   const positions = entries.map(({ key }) => {
     const [column, row] = splitKey(key)
     return { row: row - 1, column }
@@ -798,7 +798,7 @@ function setCellValue(key: string, value: string): boolean {
   if (!validateIncomingValues([{ key, value }])) return false
   const previous = sheet.cells[key]
   const current = previous ?? { value: '' }
-  if ((current.formula ?? current.value) === value) return true
+  if (sheetCellInputText(current) === value) return true
   sheet.cells[key] = editSheetCellText(current, value, sheet.date1904, officeRegion.value)
   try {
     recalculateFormulas()
@@ -816,14 +816,14 @@ function setCellValue(key: string, value: string): boolean {
 function recalculateFormulas() {
   if (workbook.value.calculationMode === 'manual') return
   const previous = workbook.value.id ? props.studio?.getWorkbookModel(workbook.value.id) : undefined
-  const result = recalculateSheetViewFormulas(workbook.value, previous)
+  const result = recalculateSheetViewFormulas(workbook.value, previous, { numberFormatLocale: officeRegion.value })
   workbook.value = result.workbook
 }
 
 function recalculateWorkbook() {
   const workbookId = workbook.value.id
   if (!workbookId || !props.studio) {
-    const result = recalculateSheetViewFormulas(workbook.value)
+    const result = recalculateSheetViewFormulas(workbook.value, undefined, { numberFormatLocale: officeRegion.value })
     workbook.value = result.workbook
     return
   }
@@ -897,7 +897,7 @@ function applyFormatPainterToSelection(): void {
 
 function beginEdit(key = selectedKey.value, initialValue?: string, target: 'cell' | 'formula' = 'cell') {
   editingKey.value = key
-  editValue.value = initialValue ?? getCell(key).formula ?? getCell(key).value
+  editValue.value = initialValue ?? sheetCellInputText(getCell(key))
   nextTick(() => target === 'cell' ? spreadsheetCanvas.value?.focusEditor() : formulaInput.value?.focus())
 }
 
@@ -918,7 +918,7 @@ function navigateToAddress(input: string) {
   if (!sheet) return
   const parsed = parseSheetAddress(input, sheet)
   if (!parsed) { nameError.value = '请输入当前工作表内的有效地址或范围，例如 A1、A1:C8'; return }
-  finishEdit()
+  if (!finishEdit()) return
   nameError.value = ''
   const next = normalizeSheetViewState(sheet, { key: parsed.anchor, anchor: parsed.anchor, ranges: [parsed.range], zoom: zoom.value })
   selectedKey.value = next.key
@@ -949,7 +949,7 @@ function moveSelection(rowOffset: number, columnOffset: number, extend = false) 
 }
 
 function handleGridKeydown(event: KeyboardEvent) {
-  if (event.isComposing) return
+  if (event.isComposing || event.keyCode === 229) return
   const target = event.target as HTMLElement | null
   if (!target?.closest('.spreadsheet-canvas')) return
   if (event.key === 'Escape' && formatPainterSource.value && !editingKey.value) {
@@ -2013,7 +2013,7 @@ function applyFindReplace(replaceAll: boolean) {
   }
 
   const baseModel = props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook()
-  const candidateModel = applyExcelWorkbookView(baseModel, candidate)
+  const candidateModel = applyExcelWorkbookView(baseModel, candidate, officeRegion.value)
   for (const [sheetId, entries] of grouped) {
     const positions = entries.map(({ key }) => {
       const [column, row] = splitKey(key)

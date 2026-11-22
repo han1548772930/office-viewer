@@ -6,7 +6,7 @@ use crate::{opc::Package, xml, ExportError, ExportWarning};
 
 #[path = "docx_numbering.rs"]
 mod numbering;
-use numbering::{assign_lists, numbering_left, numbering_level, write_numbering_xml, NumberingInstance};
+use numbering::{assign_lists, numbering_left, numbering_level, prepare_sequences, write_numbering_xml, NumberingInstance, SequencePlan};
 #[cfg(test)]
 use numbering::build_numbering_xml;
 
@@ -168,6 +168,7 @@ struct WriteContext<'a> {
     warnings: Vec<ExportWarning>,
     list_ids: HashMap<usize, u32>,
     numbering: Vec<NumberingInstance>,
+    sequences: SequencePlan,
     note_ids: HashMap<(NoteKind, String), i64>,
     comment_entries: Vec<CommentEntry>,
     comment_anchors: HashMap<String, Vec<CommentAnchor>>,
@@ -576,6 +577,7 @@ impl<'a> WriteContext<'a> {
 
     fn paragraph(&mut self, block: &Value, divider: bool) -> Result<String, ExportError> {
         let id = block as *const Value as usize;
+        let sequence = self.sequences.paragraphs.get(&id).cloned();
         let mut properties = String::new();
         let block_type = string(get(block, "type")).unwrap_or_default();
         let code_block = get(get(block, "metadata"), "codeBlock");
@@ -596,7 +598,7 @@ impl<'a> WriteContext<'a> {
                 _ => {}
             }
         }
-        if let Some(num_id) = self.list_ids.get(&id) {
+        if let Some(num_id) = self.list_ids.get(&id).filter(|_| sequence.as_ref().is_none_or(|sequence| !sequence.sequence || sequence.native_marker)) {
             let level = numbering_level(block);
             properties.push_str(&format!(
                 "<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{num_id}\"/></w:numPr>"
@@ -616,14 +618,18 @@ impl<'a> WriteContext<'a> {
             .round()
             .clamp(1.0, 31_680.0) as u32;
         properties.push_str(&format!("<w:spacing w:before=\"{spacing_before}\" w:after=\"{spacing_after}\" w:line=\"{line}\" w:lineRule=\"{line_rule}\"/>"));
+        let inherited_sequence = sequence.as_ref().filter(|sequence| sequence.sequence);
         let left = get(style, "indentStart").as_f64()
             .or_else(|| get(style, "indent").as_f64().filter(|value| *value != 0.0).map(|value| {
-                let inherited = self.list_ids.get(&id).map(|num_id| numbering_left(&self.numbering, *num_id, numbering_level(block))).unwrap_or(0.0);
+                let inherited = inherited_sequence.map(|sequence| sequence.left).unwrap_or_else(|| self.list_ids.get(&id).map(|num_id| numbering_left(&self.numbering, *num_id, numbering_level(block))).unwrap_or(0.0));
                 inherited + value * 24.0
-            }));
-        let right = get(style, "indentEnd").as_f64();
-        let first_line = get(style, "indentFirstLine").as_f64();
-        let hanging = get(style, "hanging").as_f64();
+            })).or_else(|| inherited_sequence.map(|sequence| sequence.left));
+        let right = get(style, "indentEnd").as_f64().or_else(|| inherited_sequence.map(|sequence| sequence.right));
+        let first_line = get(style, "indentFirstLine").as_f64().or_else(|| inherited_sequence.map(|sequence| sequence.first_line));
+        let hanging = get(style, "hanging").as_f64().or_else(|| inherited_sequence.map(|sequence| sequence.hanging));
+        if inherited_sequence.is_some_and(|sequence| sequence.tab && !sequence.native_marker) {
+            properties.push_str(&format!("<w:tabs><w:tab w:val=\"left\" w:pos=\"{}\"/></w:tabs>", signed_twips(left.unwrap_or(0.0))));
+        }
         if left.is_some() || right.is_some() || first_line.is_some() || hanging.is_some() {
             let mut indent = String::new();
             if let Some(left) = left {
@@ -679,7 +685,8 @@ impl<'a> WriteContext<'a> {
         });
         let runs = code_runs.as_deref().unwrap_or(source_runs);
         let paragraph = format!(
-            "<w:p>{paragraph_properties}{}</w:p>",
+            "<w:p>{paragraph_properties}{}{}</w:p>",
+            sequence.as_ref().map(|sequence| sequence.prefix.as_str()).unwrap_or_default(),
             self.runs_with_comments(block, runs)?
         );
         if !is_code_block {
@@ -691,7 +698,8 @@ impl<'a> WriteContext<'a> {
             "office_code_v1_{language}_{}",
             u8::from(line_numbers)
         ));
-        let bookmark_id = u32::try_from(id & 0x7fff_ffff).unwrap_or_default();
+        let bookmark_id = self.sequences.next_bookmark;
+        self.sequences.next_bookmark = self.sequences.next_bookmark.checked_add(1).ok_or_else(|| ExportError::invalid("Too many paragraph bookmarks."))?;
         let bookmark_start =
             format!("<w:bookmarkStart w:id=\"{bookmark_id}\" w:name=\"{bookmark_name}\"/>");
         let bookmark_end = format!("<w:bookmarkEnd w:id=\"{bookmark_id}\"/>");
@@ -1686,6 +1694,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         warnings: Vec::new(),
         list_ids: HashMap::new(),
         numbering: Vec::new(),
+        sequences: SequencePlan { next_bookmark: 1, ..Default::default() },
         note_ids: notes.ids.clone(),
         comment_entries,
         comment_anchors,
@@ -1703,12 +1712,28 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     context.list_ids = list_ids;
     context.numbering = numbering;
     let numbering_xml = write_numbering_xml(&context.numbering, context.package, &mut context.warnings)?;
+    context.sequences = prepare_sequences(blocks, &context.list_ids, &context.numbering, &numbering_xml)?;
+    context.warnings.append(&mut context.sequences.warnings);
     context
         .package
         .add_xml("word/numbering.xml", NUMBERING_CONTENT_TYPE, numbering_xml)?;
     let mut body = String::new();
     for block in blocks {
         body.push_str(&context.block(block)?);
+    }
+    if let Some(mapping) = context.sequences.mapping_xml.take() {
+        context.package.add_xml("customXml/office-numbering.xml", "application/xml", mapping)?;
+        context.relationship("http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml", "../customXml/office-numbering.xml", false)?;
+        context.package.add_xml(
+            "customXml/office-numbering-properties.xml",
+            "application/vnd.openxmlformats-officedocument.customXmlProperties+xml",
+            format!("{}<ds:datastoreItem ds:itemID=\"{{8C2185D8-EB78-4A0E-8981-03B03F7D7A91}}\" xmlns:ds=\"http://schemas.openxmlformats.org/officeDocument/2006/customXml\"><ds:schemaRefs><ds:schemaRef ds:uri=\"urn:office-studio:numbering:1\"/></ds:schemaRefs></ds:datastoreItem>", xml::DECL),
+        )?;
+        context.package.add_relationship(
+            Some("customXml/office-numbering.xml"), "rId1",
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps",
+            "office-numbering-properties.xml", false,
+        )?;
     }
     context.warnings.extend(comment_warnings);
     for (kind, source_id) in &notes.orphaned {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Button, Input, Tooltip, theme } from 'antdv-next'
+import { Alert, Button, Input, Tooltip, theme } from 'antdv-next'
 import type { InputTextAreaRef } from 'antdv-next'
 import { Check, ChevronDown, ChevronUp, X } from 'lucide-vue-next'
 
@@ -15,6 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const addressDraft = ref(props.address)
+const addressComposing = ref(false), formulaComposing = ref(false)
 const expanded = ref(false)
 const editor = ref<InputTextAreaRef | null>(null)
 const { token } = theme.useToken()
@@ -23,20 +24,29 @@ const colors = computed(() => ({
   '--formula-divider': token.value.colorBorderSecondary,
   '--formula-accent': token.value.colorPrimary,
   '--formula-muted': token.value.colorTextSecondary,
-  '--formula-error-bg': token.value.colorErrorBg,
-  '--formula-error-border': token.value.colorErrorBorder,
-  '--formula-error-text': token.value.colorErrorText,
 }))
 watch(() => props.address, address => { addressDraft.value = address })
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.isComposing) return
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || formulaComposing.value) return
   if (event.key === 'Escape') {
     event.preventDefault()
     emit('cancel')
   } else if ((event.key === 'Enter' && !event.altKey) || event.key === 'Tab') {
     event.preventDefault()
     emit('confirm', { key: event.key, shift: event.shiftKey })
+  }
+}
+
+function onAddressKeydown(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || addressComposing.value) return
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    emit('navigate', addressDraft.value)
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    addressDraft.value = props.address
+    emit('focus-grid')
   }
 }
 
@@ -65,8 +75,9 @@ defineExpose({ focus })
       :title="error || '输入单元格或范围，例如 A1 或 A1:C8'"
       :status="error ? 'error' : undefined"
       variant="borderless"
-      @keydown.enter.prevent.stop="emit('navigate', addressDraft)"
-      @keydown.esc.prevent.stop="addressDraft = address; emit('focus-grid')"
+      @keydown="onAddressKeydown"
+      @compositionstart="addressComposing = true"
+      @compositionend="addressComposing = false"
       @focus="($event.target as HTMLInputElement).select()"
     />
     <div class="formula-actions">
@@ -84,12 +95,14 @@ defineExpose({ focus })
       @focus="emit('begin')"
       @update:value="emit('update:value', $event)"
       @keydown="onKeydown"
+      @compositionstart="formulaComposing = true"
+      @compositionend="formulaComposing = false"
       :value="value"
     />
     <Tooltip :title="expanded ? '折叠公式栏' : '展开公式栏'">
       <Button class="formula-expand" type="text" size="small" :aria-label="expanded ? '折叠公式栏' : '展开公式栏'" :aria-expanded="expanded" @mousedown.prevent @click="toggleExpanded"><component :is="expanded ? ChevronUp : ChevronDown" :size="14" /></Button>
     </Tooltip>
-    <span v-if="error" class="formula-error" role="alert">{{ error }}</span>
+    <Alert v-if="error" class="formula-error" type="error" :title="error" show-icon />
   </div>
 </template>
 
@@ -104,5 +117,5 @@ defineExpose({ focus })
 .formula-toolbar textarea.formula-input, .formula-input :deep(textarea) { box-sizing: border-box; height: 100%; resize: none; border: 0; border-radius: 0; padding: 4px 10px; background: transparent; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 12px; line-height: 19px; white-space: pre-wrap; overflow-y: auto; }
 .formula-toolbar textarea.formula-input:focus, .formula-input :deep(textarea:focus) { box-shadow: inset 0 0 0 1px var(--formula-accent); }
 .formula-expand { display: flex; flex: 0 0 26px; width: 26px; height: 27px; align-items: center; justify-content: center; padding: 0; }
-.formula-error { position: absolute; z-index: 8; top: 100%; inset-inline-start: 0; max-width: min(360px, 90vw); border: 1px solid var(--formula-error-border); padding: 5px 9px; color: var(--formula-error-text); background: var(--formula-error-bg); font-size: 12px; }
+.formula-error { position: absolute; z-index: 8; top: 100%; inset-inline-start: 0; max-width: min(360px, 90vw); }
 </style>

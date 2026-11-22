@@ -1,4 +1,5 @@
 import type { CellScalar, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
+import { normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { formulaCellKey, formulaError, isFormulaError } from './formula-types.ts'
 import type {
   FormulaCellAddress, FormulaDependencyGraph, FormulaEngineDiagnostic, FormulaErrorValue, FormulaNode,
@@ -72,12 +73,7 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
     if (cached !== undefined) return cached
     const current = sheet.cells[cellKey(row, column)]
     if (!current) return null
-    if (!current.formula) {
-      if (current.dataType === 'error' || current.cachedDataType === 'error' || (typeof current.value === 'string' && ERROR_CODES.has(current.value.toUpperCase()))) {
-        return formulaError(typeof current.value === 'string' && ERROR_CODES.has(current.value.toUpperCase()) ? current.value.toUpperCase() : current.display || '#VALUE!')
-      }
-      return current.value
-    }
+    if (!current.formula) return rawCellValue(current)
     const cycleStart = active.indexOf(key)
     if (cycleStart >= 0) {
       for (const cycleKey of active.slice(cycleStart)) memo.set(cycleKey, formulaError('#CIRCULAR!'))
@@ -86,21 +82,17 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
     }
     active.push(key)
     let result: FormulaValue
+    let evaluationFailed = false
     const previousCell = previous?.sheets.find((candidate) => candidate.id === sheet.id)?.cells[cellKey(row, column)]
     try {
       result = normalizeResult(evaluateNode(parseFormula(current.formula), sheet, evaluateCell, workbook, sheetsByName, { row, column }, evaluationTime))
     } catch (error) {
-      const failure = toFormulaError(error)
-      // Keep a cached result for an unchanged imported formula outside our grammar/catalog.
-      if (previousCell?.formula === current.formula && hasCachedValue(previousCell)) {
-        result = previousCell.value
-        diagnostics.push({ code: 'FORMULA_UNSUPPORTED_CACHE_PRESERVED', message: `${current.formula} is not implemented; the imported cached value was retained`, cell: address, formula: current.formula })
-      } else {
-        result = failure
-      }
+      result = toFormulaError(error)
+      evaluationFailed = true
     }
-    if (isFormulaError(result) && result.code === '#NAME?' && previousCell?.formula === current.formula && hasCachedValue(previousCell)) {
-      result = previousCell.value
+    // Cached text and cached errors remain distinct when an imported formula is unsupported.
+    if ((evaluationFailed || isFormulaError(result) && result.code === '#NAME?') && previousCell?.formula === current.formula && hasCachedValue(previousCell)) {
+      result = rawCellValue(previousCell)
       diagnostics.push({ code: 'FORMULA_UNSUPPORTED_CACHE_PRESERVED', message: `${current.formula} is not implemented; the imported cached value was retained`, cell: address, formula: current.formula })
     }
     if (!memo.has(key)) memo.set(key, result)
@@ -182,7 +174,7 @@ function evaluateNode(
   evaluationTime: Date = new Date(),
 ): RuntimeValue {
   switch (node.kind) {
-    case 'literal': return typeof node.value === 'string' && ERROR_CODES.has(node.value.toUpperCase()) ? formulaError(node.value.toUpperCase()) : node.value
+    case 'literal': return node.value
     case 'reference': {
       const targetSheet = resolveSheet(workbook, node.reference.sheetName, currentSheet, sheetsByName)
       return targetSheet ? resolveCell(targetSheet, node.reference.row, node.reference.column) : formulaError('#REF!')
@@ -751,7 +743,7 @@ function evaluateFunction(
     if (name === 'ISERROR') return isFormulaError(value)
     if (isFormulaError(value)) return false
     if (name === 'ISNUMBER') return typeof value === 'number'
-    if (name === 'ISTEXT') return typeof value === 'string' && !ERROR_CODES.has(value.toUpperCase())
+    if (name === 'ISTEXT') return typeof value === 'string'
     return value === null || value === ''
   }
   if (name === 'NA' && args.length === 0) return formulaError('#N/A')
@@ -1682,7 +1674,8 @@ function cellsInRange(value: RangeValue): SpreadsheetCell[] {
 }
 
 function rawCellValue(cell: SpreadsheetCell): FormulaValue {
-  if (cell.dataType === 'error' || cell.cachedDataType === 'error' || (typeof cell.value === 'string' && ERROR_CODES.has(cell.value.toUpperCase()))) {
+  const type = normalizeSheetCellValueType(cell.formula ? cell.cachedDataType : cell.dataType)
+  if (type === 'error' || type === undefined && typeof cell.value === 'string' && ERROR_CODES.has(cell.value.toUpperCase())) {
     return formulaError(typeof cell.value === 'string' && ERROR_CODES.has(cell.value.toUpperCase()) ? cell.value.toUpperCase() : cell.display || '#VALUE!')
   }
   return cell.value
@@ -1746,7 +1739,10 @@ function isRangeValue(value: RuntimeValue): value is RangeValue { return Boolean
 function finiteResult(value: number): FormulaValue { return Number.isFinite(value) ? value : formulaError('#NUM!') }
 function displayFormulaValue(value: FormulaValue): string { return isFormulaError(value) ? value.code : typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : value === null ? '' : String(value) }
 function valueType(value: FormulaValue): string { return isFormulaError(value) ? 'error' : value === null ? 'empty' : typeof value }
-function hasCachedValue(cell: SpreadsheetCell): boolean { return cell.value !== null && cell.value !== '' && cell.display !== '' }
+function hasCachedValue(cell: SpreadsheetCell): boolean {
+  const type = normalizeSheetCellValueType(cell.cachedDataType)
+  return cell.value !== null && (type !== undefined && type !== 'formula' || cell.value !== '' || cell.display !== '')
+}
 function diagnostic(cell: FormulaCellAddress, formula: string, error: unknown): FormulaEngineDiagnostic {
   if (error instanceof FormulaSyntaxError) return { code: error.code, message: error.message, cell, formula }
   return { code: 'FORMULA_ERROR', message: error instanceof Error ? error.message : String(error), cell, formula }

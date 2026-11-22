@@ -1,6 +1,8 @@
 import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
 import { translateFormulaReferences } from '../formula/formula-references.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
+import { inferSheetCellValueType } from '../../domain/sheet-cell-value.ts'
+import { sheetCellNumberValue, sheetCellStoredValueType } from './sheet-number-presentation.ts'
 
 export type SheetPasteMode = 'all' | 'values' | 'formulas' | 'formats' | 'columnWidths' | 'exceptBorders'
 
@@ -86,7 +88,9 @@ function pasteCell(
       value: '',
       formula: translateFormulaReferences(source.formula, rowDelta, columnDelta),
       cachedValue: undefined,
-      rawValue: undefined,
+      rawValue: null,
+      dataType: 'formula',
+      cachedDataType: null,
       displayValue: undefined,
     }
   }
@@ -97,7 +101,9 @@ function pasteCell(
     copied.formula = translateFormulaReferences(copied.formula, rowDelta, columnDelta)
     copied.value = ''
     copied.cachedValue = undefined
-    copied.rawValue = undefined
+    copied.rawValue = null
+    copied.dataType = 'formula'
+    copied.cachedDataType = null
     copied.displayValue = undefined
   }
   if (mode === 'exceptBorders') copied.border = cloneBorder(target.border)
@@ -105,15 +111,16 @@ function pasteCell(
 }
 
 function pasteValue(source: ExcelCellView | undefined, target: ExcelCellView): ExcelCellView {
-  const value = source?.formula
-    ? source.cachedValue ?? source.rawValue ?? ''
-    : source?.rawValue ?? source?.value ?? ''
-  const pastedValue = value === null || value === undefined ? '' : String(value)
-  const { formula: _formula, cachedValue: _cachedValue, rawValue: _rawValue, displayValue: _displayValue, ...preserved } = target
+  const value = sheetCellNumberValue(source) ?? null
+  const pastedValue = value === null ? '' : String(value)
+  const { formula: _formula, cachedValue: _cachedValue, rawValue: _rawValue, displayValue: _displayValue,
+    dataType: _dataType, cachedDataType: _cachedDataType, ...preserved } = target
   return {
     ...preserved,
     value: pastedValue,
-    rawValue: source?.formula ? source.rawValue ?? source.cachedValue : source?.rawValue,
+    rawValue: value,
+    dataType: value === null ? 'blank' : sheetCellStoredValueType(source) ?? inferSheetCellValueType(value),
+    cachedDataType: null,
     displayValue: undefined,
   }
 }
@@ -137,6 +144,8 @@ function pasteFormat(source: ExcelCellView | undefined, target: ExcelCellView): 
     cachedValue: target.cachedValue,
     rawValue: target.rawValue,
     displayValue: target.displayValue,
+    dataType: target.dataType,
+    cachedDataType: target.cachedDataType,
   }
 }
 
