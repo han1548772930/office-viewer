@@ -1,5 +1,6 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
 import { transformContentControlsForBlockEdit, transformContentControlsForTextEdit } from './content-controls'
+import { transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 import {
   applyRunPatch,
   compactRuns,
@@ -408,11 +409,6 @@ function replaceAcrossBlocks(
   const inherited = marksAtPoint(model, start)
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const first = startRef.block
-  setTargetRuns(model, start, [
-    ...prefix,
-    ...(lines[0] ? [createRun(lines[0], inherited)] : []),
-    ...(lines.length === 1 ? suffix : []),
-  ])
 
   const additions = lines.slice(1).map((line, index) => {
     const block = paragraphAfter(first, inherited)
@@ -422,6 +418,12 @@ function replaceAcrossBlocks(
   })
 
   const removeCount = endRef.index - startRef.index
+  transformDocumentTextFieldsForBlockRangeEdit(startRef.container.slice(startRef.index, endRef.index + 1), start.offset, end.offset, lines.join('\n'), [first, ...additions])
+  setTargetRuns(model, start, [
+    ...prefix,
+    ...(lines[0] ? [createRun(lines[0], inherited)] : []),
+    ...(lines.length === 1 ? suffix : []),
+  ])
   if (removeCount > 0) startRef.container.splice(startRef.index + 1, removeCount, ...additions)
   else if (additions.length) startRef.container.splice(startRef.index + 1, 0, ...additions)
 }
@@ -451,6 +453,7 @@ function replaceWithinBlock(
       firstBreakOffset: start.offset + normalizedText.indexOf('\n'),
       lastParagraphOffset: start.offset + normalizedText.lastIndexOf('\n') + 1,
     } : undefined)
+  transformDocumentTextFieldsForBlockRangeEdit([reference.block], start.offset, end.offset, normalizedText, [reference.block, ...additions])
   setTargetRuns(model, start, [
     ...prefix,
     ...(lines[0] ? [createRun(lines[0], inherited)] : []),

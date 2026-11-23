@@ -131,12 +131,32 @@ export function permissionTargetsForRange(model: DocumentModel, startOffset: num
 }
 
 function addBlockPermissionTargets(model: DocumentModel, blockId: string, result: Map<string, DocumentPermissionTarget>): void {
-  const block = findBlock(model.blocks, blockId)
+  const ancestry = blockPermissionAncestry(model.blocks, blockId)
+  const block = ancestry?.at(-1)
   if (!block) return
-  const sectionId = sectionIdForBlock(model, block.id)
+  const sectionId = sectionIdForBlock(model, ancestry![0]!.id)
   result.set(`paragraph:${block.id}`, { scope: 'paragraph', id: block.id })
   result.set(`section:${sectionId}`, { scope: 'section', id: sectionId })
-  if (isPermissionEntity(block)) result.set(`entity:${block.id}`, { scope: 'entity', id: block.id })
+  for (const ancestor of ancestry!) if (isPermissionEntity(ancestor)) result.set(`entity:${ancestor.id}`, { scope: 'entity', id: ancestor.id })
+}
+
+/** Global body operations use the same section/table/paragraph scopes as selected edits. */
+export function permissionTargetsForBlock(model: DocumentModel, blockId: string): DocumentPermissionTarget[] {
+  const result = new Map<string, DocumentPermissionTarget>()
+  addBlockPermissionTargets(model, blockId, result)
+  return [...result.values()]
+}
+
+function blockPermissionAncestry(blocks: readonly DocumentBlock[], id: string): DocumentBlock[] | undefined {
+  for (const block of blocks) {
+    if (block.id === id) return [block]
+    const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
+    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
+      const nested = blockPermissionAncestry(cell.blocks ?? [], id)
+      if (nested) return [block, ...nested]
+    }
+  }
+  return undefined
 }
 
 export function permissionTargetsForChangedBlocks(before: DocumentModel, after: DocumentModel): DocumentPermissionTarget[] {
@@ -191,18 +211,6 @@ function flattenBlocks(blocks: readonly DocumentBlock[]): Map<string, DocumentBl
 function samePoint(target: TextTarget, point: TextTarget): boolean {
   return target.blockId === point.blockId && target.row === point.row && target.col === point.col
     && (target.cellBlockId ?? target.blockId) === (point.cellBlockId ?? point.blockId)
-}
-
-function findBlock(blocks: readonly DocumentBlock[], id: string): DocumentBlock | undefined {
-  for (const block of blocks) {
-    if (block.id === id) return block
-    const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
-    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
-      const nested = findBlock(cell.blocks ?? [], id)
-      if (nested) return nested
-    }
-  }
-  return undefined
 }
 
 function isPermissionEntity(block: DocumentBlock): boolean {

@@ -439,3 +439,54 @@ test('story input-state listeners can supersede an advance without reviving an o
   assert.deepEqual(document.getInputState().location.range, { ...range, start: 0, end: 0 })
   assert.deepEqual(document.getInputMarks(), {}); assert.equal(document.advanceInputMarks(body, { ...range, start: 2, end: 2 }), false)
 })
+test('body field refresh keeps typing marks and mapped selection through history and internal save/reopen', () => {
+  const now = new Date(), month = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(now)
+  const current = `${now.getDate()} ${month} ${now.getFullYear()}`
+  const block = paragraph('body', `A${current}Z`)
+  block.metadata.documentTextFields = { version: 1, fields: [{ id: 'body-date', field: 'DATE',
+    instruction: 'DATE \\@ "d MMMM yyyy"', cachedResult: current, startOffset: 1, endOffset: 1 + current.length,
+    language: 'en-US', metadata: { source: { native: 'retained' } } }] }
+  const { studio, document } = openDocument([block]), caret = selection(point('body', current.length + 2))
+  document.executeCommand({ id: 'doc.command.format-text', patch: { bold: true } }, caret)
+  const original = copy(document.getModel()), state = document.getInputState(), beforeHistory = history(studio, document.id)
+  const command = { id: 'doc.command.refresh-header-footer-fields', locale: 'en-US', timestamp: new Date(2071, 5, 15, 13).getTime() }
+  const result = document.executeCommand(command, caret), expected = '15 June 2071'
+  assert.equal(result.changed, true); assert.equal(result.selectionCurrent, true)
+  assert.equal(document.getText(), `A${expected}Z`)
+  assert.equal(result.selection.focus.offset, expected.length + 2)
+  assert.deepEqual(document.getInputMarks(), { bold: true })
+  assert.equal(document.getInputState().valid, true)
+  assert.equal(document.getInputState().generation, state.generation + 1)
+  assert.equal(document.getInputState().modelRevision, result.modelRevision)
+  assert.deepEqual(document.getInputState().location.selection, result.selection)
+  assert.equal(history(studio, document.id).undo, beforeHistory.undo + 1)
+  const unchanged = document.getInputState()
+  assert.equal(document.executeCommand(command, result.selection).changed, false)
+  assert.deepEqual(document.getInputState(), unchanged)
+  assert.equal(history(studio, document.id).undo, beforeHistory.undo + 1)
+  assert.equal(document.undo(), true); assert.deepEqual(document.getModel().blocks, original.blocks)
+  assert.equal(document.redo(), true); assert.equal(document.getText(), `A${expected}Z`)
+  const saved = document.save(), reopened = openDocument(saved.blocks, saved)
+  const field = reopened.document.getModel().blocks[0].metadata.documentTextFields.fields[0]
+  assert.equal(field.id, 'body-date'); assert.equal(field.instruction, 'DATE \\@ "d MMMM yyyy"')
+  assert.deepEqual(field.metadata.source, { native: 'retained' })
+  assert.equal(reopened.document.getText().slice(field.startOffset, field.endOffset), field.cachedResult)
+  assert.deepEqual(reopened.document.getInputMarks(), {})
+})
+
+test('onOpen field refresh rebases caches without discarding existing redo history or dirty state', () => {
+  const now = new Date(), current = String(now.getFullYear()), block = paragraph('body', `A${current}Z`)
+  block.metadata.documentTextFields = { version: 1, fields: [{ id: 'open-date', field: 'DATE', instruction: 'DATE \\@ "yyyy"',
+    cachedResult: current, startOffset: 1, endOffset: 1 + current.length, language: 'en-US' }] }
+  const { studio, document } = openDocument([block, paragraph('tail', 'Tail')])
+  document.executeCommand({ id: 'doc.command.insert-text', text: '!' }, selection(point('tail', 0)))
+  document.undo()
+  const before = history(studio, document.id), revision = document.getModelRevision()
+  const result = document.executeCommand({ id: 'doc.command.refresh-header-footer-fields', locale: 'en-US',
+    timestamp: new Date(2071, 5, 15, 13).getTime(), onOpen: true }, selection(point('body', 0)))
+  assert.equal(result.changed, true); assert.equal(result.modelRevision, revision + 1)
+  assert.equal(document.getText(), 'A2071Z\nTail')
+  assert.deepEqual(history(studio, document.id), before)
+  assert.equal(document.redo(), true); assert.equal(document.getText(), 'A2071Z\n!Tail')
+  assert.equal(document.undo(), true); assert.equal(document.getText(), 'A2071Z\nTail')
+})

@@ -1,12 +1,14 @@
 mod docx;
 mod error;
 mod opc;
+#[cfg(target_arch = "wasm32")]
 mod wasm_api;
 mod xlsx;
 pub(crate) mod xml;
 
 pub use error::{ExportError, ExportWarning};
-pub use wasm_api::export_office;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_api::write_office;
 
 /// Export a workbook model to a native XLSX package and return export diagnostics.
 pub fn export_xlsx_bytes(data: &str) -> Result<(Vec<u8>, Vec<ExportWarning>), ExportError> {

@@ -322,10 +322,110 @@ export interface PivotTableModel {
   revision: number
 }
 
+/** `bar` and `stacked-column` retain the meaning of existing Office Studio snapshots. */
 export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-column' | 'scatter' | 'radar'
+  | 'lineStacked' | 'linePercentStacked' | 'line3D'
+  | 'column' | 'columnStacked' | 'columnPercentStacked' | 'column3D' | 'columnStacked3D' | 'columnPercentStacked3D'
+  | 'bar-horizontal' | 'barStacked' | 'barPercentStacked' | 'bar3D' | 'barStacked3D' | 'barPercentStacked3D'
+  | 'pieOfPie' | 'barOfPie' | 'pie3D' | 'areaStacked' | 'areaPercentStacked' | 'area3D' | 'areaStacked3D' | 'areaPercentStacked3D'
+  | 'combination' | 'wordCloud' | 'funnel' | 'bubble' | 'relation' | 'waterfall' | 'pareto' | 'sankey' | 'heatmap'
+  | 'boxplot' | 'candlestick' | 'histogram' | 'treemap' | 'sunburst' | 'gauge' | 'chord'
 export type ChartSourceOrientation = 'columns' | 'rows'
 export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
 export type ChartAxisScaleType = 'linear' | 'log'
+
+export interface ChartFontOptions { color?: string; fontSize?: number; bold?: boolean; italic?: boolean; family?: string }
+export interface ChartLineOptions { visible?: boolean; color?: string; width?: number; opacity?: number; dashType?: 'solid' | 'dashed' | 'dotted' }
+export interface ChartLabelOptions extends ChartFontOptions {
+  visible?: boolean
+  position?: 'inside' | 'outside' | 'top' | 'bottom' | 'left' | 'right' | 'center'
+  contentType?: 'value' | 'category' | 'series' | 'percentage'
+  format?: string
+}
+export interface ChartSeriesOptions {
+  name?: string
+  type?: 'column' | 'columnStacked' | 'line' | 'area' | 'areaStacked'
+  color?: string
+  fillOpacity?: number
+  border?: ChartLineOptions
+  point?: { shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; size?: number; color?: string }
+  rightAxis?: boolean
+  label?: ChartLabelOptions
+  dataPoints?: Record<number, { color?: string; fillOpacity?: number; size?: number; border?: ChartLineOptions }>
+}
+export interface ChartTrendlineOptions extends ChartLineOptions {
+  seriesIndex: number
+  type: 'exp' | 'linear' | 'log' | 'movingAvg' | 'poly' | 'pow'
+  name?: string
+  order?: number
+  period?: number
+  showFormula?: boolean
+  showR2?: boolean
+}
+export interface ChartErrorBarOptions {
+  seriesIndex: number
+  direction: 'x' | 'y'
+  type: 'both' | 'plus' | 'minus'
+  valueType: 'fixedVal' | 'percentage' | 'stdDev' | 'stdErr' | 'cust'
+  value?: number
+  plusIndex?: number
+  minusIndex?: number
+  noEndCap?: boolean
+  line?: ChartLineOptions
+}
+/** Renderer-independent authored configuration. Derived statistics and geometries are not saved here. */
+export interface ChartSemanticOptions {
+  invalidValueStrategy?: 'zero' | 'break' | 'link'
+  plotVisibleOnly?: boolean
+  appearance?: { background?: string; border?: ChartLineOptions; font?: ChartFontOptions }
+  titleStyle?: ChartFontOptions
+  subtitleStyle?: ChartFontOptions
+  allSeriesStyle?: ChartSeriesOptions
+  /** Keys identify source fields, so a series keeps its style after other series are removed. */
+  series?: Record<number, ChartSeriesOptions>
+  rightYAxis?: ChartAxisOptions
+  trendlines?: ChartTrendlineOptions[]
+  errorBars?: ChartErrorBarOptions[]
+  mapping?: {
+    categoryIndexes?: number[]
+    hierarchyIndexes?: number[]
+    bubble?: { xIndex: number; yIndex: number; sizeIndex?: number; labelIndex?: number; seriesIndex?: number }
+    edge?: { sourceIndex: number; targetIndex: number; valueIndex?: number }
+    candlestick?: { openIndex?: number; highIndex: number; lowIndex: number; closeIndex: number }
+    gauge?: { valueIndex: number; labelIndex?: number }
+  }
+  threeD?: { view?: { rotX?: number; rotY?: number; perspective?: number; rightAngleAxes?: boolean; heightPercent?: number; depthPercent?: number }; grouping?: 'standard' | 'clustered'; gapDepth?: number }
+  bar?: { gapWidth?: number; overlap?: number }
+  area?: { smooth?: boolean }
+  pie?: {
+    startAngle?: number; doughnutHole?: number; explosion?: number; rosePie?: boolean; isHalfPie?: boolean
+    showLabelLine?: boolean; label?: ChartLabelOptions
+    secondaryPlot?: { type?: 'pie' | 'bar'; size?: number; gapWidth?: number; split?: { type: 'auto' | 'position' | 'value' | 'percentage' | 'custom'; count?: number; lessThan?: number; pointIndexes?: number[] } }
+    aggregateLabel?: string
+  }
+  radar?: { shape?: 'polygon' | 'circle'; fill?: boolean }
+  bubble?: { scale?: number; sizeRepresents?: 'area' | 'width' }
+  funnel?: { gap?: number; useAbsoluteValue?: boolean; sort?: 'ascending' | 'descending' | 'none' }
+  relation?: { layout?: 'none' | 'circular' | 'force'; useValueAsSymbolSize?: boolean; force?: { repulsion?: number; gravity?: number; edgeLength?: number } }
+  waterfall?: { pointRoles?: Array<{ seriesIndex: number; dataPointIndex: number; role: 'change' | 'total' }>; connector?: boolean; positiveColor?: string; negativeColor?: string; totalColor?: string }
+  pareto?: { includeZeroValues?: boolean }
+  histogram?: { binning?: { mode: 'count'; count: number } | { mode: 'width'; width: number }; underflowThreshold?: number; overflowThreshold?: number; binGap?: number }
+  boxplot?: { quartileMethod?: 'inclusive' | 'exclusive'; showOutliers?: boolean; whiskerMultiplier?: number }
+  candlestick?: { candleWidth?: number; risingColor?: string; fallingColor?: string; hollow?: boolean }
+  heatmap?: { visualMapType?: 'continuous' | 'piecewise'; min?: number; max?: number; unit?: string; label?: ChartLabelOptions }
+  treemap?: { parentLabelLayout?: 'banner' | 'overlapping' | 'none'; label?: ChartLabelOptions }
+  sunburst?: { label?: ChartLabelOptions; centerLabel?: { visible?: boolean; font?: ChartFontOptions } }
+  gauge?: {
+    mode?: 'pointer' | 'progress'; min?: number; max?: number; startAngle?: number; endAngle?: number
+    splitNumber?: number; ranges?: Array<{ from: number; to: number; color: string }>
+    pointer?: { visible?: boolean; length?: number; width?: number; color?: string }
+    progress?: { visible?: boolean; width?: number; color?: string; rounded?: boolean }
+    label?: ChartLabelOptions
+  }
+  chord?: { startAngle?: number; clockwise?: boolean; padAngle?: number; innerRadiusRatio?: number; outerRadiusRatio?: number; ribbonOpacity?: number; label?: ChartLabelOptions }
+  wordCloud?: { shape?: 'cloud' | 'rect' | 'circle' | 'cardioid' | 'heart' | 'diamond' | 'triangle-forward' | 'triangle' | 'pentagon' | 'star'; repeat?: boolean; minFontSize?: number; maxFontSize?: number; rotation?: number }
+  aggregation?: { aggregate?: boolean; topN?: { count: number; includeOthers?: boolean; othersLabel?: string } }
+}
 
 export interface ChartSource {
   range: CellRange
@@ -338,11 +438,20 @@ export interface ChartAxisOptions {
   title?: string
   scaleType: ChartAxisScaleType
   logBase?: number
+  min?: number
+  max?: number
+  reverse?: boolean
+  line?: ChartLineOptions
+  label?: ChartFontOptions & { visible?: boolean; rotate?: number }
+  gridLine?: ChartLineOptions
+  tick?: ChartLineOptions & { length?: number; position?: 'inside' | 'outside' }
+  format?: string
 }
 
 export interface ChartLegendOptions {
   visible: boolean
   position: ChartLegendPosition
+  font?: ChartFontOptions
 }
 
 export interface ChartModel {
@@ -353,6 +462,9 @@ export interface ChartModel {
   position: { x: number; y: number }
   size: { width: number; height: number }
   title?: string
+  subtitle?: string
+  palette?: string[]
+  options?: ChartSemanticOptions
   legend: ChartLegendOptions
   categoryField: number
   valueFields: number[]
@@ -655,6 +767,10 @@ export interface DocumentPageField {
   offset?: number
   instruction?: string
   cachedResult?: string
+  /** Native field lock prevents automatic refresh; it is separate from an SDT content lock. */
+  locked?: boolean
+  /** An outer field containing another custom range retains its imported result. */
+  containsNestedFields?: boolean
   textStyle?: DocumentDefaultStyle['text']
   /** Parser provenance and source-format replay policy for this field result. */
   metadata?: Record<string, unknown>

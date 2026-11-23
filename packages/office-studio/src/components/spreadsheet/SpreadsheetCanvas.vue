@@ -9,9 +9,11 @@ import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '.
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell, sheetNumberFormatPreviewPatternAt } from '../../rendering/spreadsheet/scene'
 import type { SheetNumberFormatPreview } from '../../rendering/spreadsheet/scene'
-import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
+import { createCellEditorLayout, hitCellEditorFillHandle } from '../../rendering/spreadsheet/editor-layout'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH, sheetRangeDashedOutlineCommands } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
+import { canResumeSheetFillGesture, sheetFillGestureSelectionMatches, sheetFillGestureStillCurrent, snapshotSheetFillGesture,
+  type SheetFillCommitContext, type SheetFillGestureContext } from '../../features/sheet-workbench/sheet-fill-gesture.ts'
 import type { SheetFormatPainterCanvasState } from '../../features/sheet-workbench/sheet-format-painter.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
 import { sheetAxisHeaderAffectedRange, sheetAxisHeaderDestination, sheetAxisHeaderMoveSource,
@@ -38,7 +40,7 @@ import { SHEET_CLIPBOARD_PASTE_OPTIONS, sheetClipboardGridRange, sheetClipboardO
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; inputContext?: () => SheetCellInputBridgeContext; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; inputContext?: () => SheetCellInputBridgeContext; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -77,6 +79,7 @@ const nativeInput = createSheetCellNativeInputBridge({ host: 'cell', sessionId: 
   emit: event => emit('input-event', event) })
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const fillPreview = ref<GridRange>()
+const fillHandleHovered = ref(false)
 const headerDrag = ref<(SheetAxisHeaderMoveSource & { pointerStart: number; moved: boolean; copy: boolean; destination?: number; allowed: boolean; revision?: number })>()
 const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
 const region = useOfficeRegion()
@@ -318,7 +321,8 @@ const sheetViews = new Map<string, { left: number; top: number }>()
 let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, active = true, dragging = false
 let dprQuery: MediaQueryList | undefined
 let resizeDrag: { axis: 'row' | 'column'; index: number; size: number; origin: number } | undefined
-let fillDrag: { source: GridRange; target?: { row: number; column: number } } | undefined
+let fillDrag: { source: GridRange; context: SheetFillGestureContext; startPosition: { x: number; y: number }; moved: boolean; target?: { row: number; column: number } } | undefined
+let pendingFillPress: { pointerId: number; source: GridRange; origin: SheetFillGestureContext; startPosition: { x: number; y: number }; position: { x: number; y: number } } | undefined
 let selectionPress: { pointerId: number; sheetId: string; painter: boolean } | undefined
 let headerSelectionDrag: { axis: 'row' | 'column' } | undefined
 let gesturePointerId: number | undefined
@@ -333,7 +337,7 @@ function draw() {
   frame = 0
   if (disposed || !active || !surface) return
   surface.render(scene.value)
-  if ((dragging || headerDrag.value?.moved || headerSelectionDrag) && lastPointer && scroller.value) {
+  if ((dragging || fillDrag?.moved || headerDrag.value?.moved || headerSelectionDrag) && lastPointer && scroller.value) {
     const axis = headerDrag.value?.axis ?? headerSelectionDrag?.axis
     const dx = axis === 'row' ? 0 : lastPointer.x < GRID_HEADER_WIDTH ? -16 : lastPointer.x > viewport.value.width - 16 ? 16 : 0
     const dy = axis === 'column' ? 0 : lastPointer.y < GRID_HEADER_HEIGHT ? -16 : lastPointer.y > viewport.value.height - 16 ? 16 : 0
@@ -343,6 +347,7 @@ function draw() {
       if (oldLeft !== scroller.value.scrollLeft || oldTop !== scroller.value.scrollTop) {
         onScroll()
         if (axis) updateHeaderGesture(lastPointer)
+        else if (fillDrag) updateFillDragTarget(lastPointer)
         else {
           const hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, lastPointer.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, lastPointer.y)), viewport.value)
           if (hit?.kind === 'cell') emit('extend-selection', hit.key)
@@ -409,6 +414,55 @@ function updateHeaderGesture(position: { x: number; y: number }, copy?: boolean)
   } else if (index !== undefined) emit('extend-header-selection', axis, index)
   queueRender()
 }
+function fillGestureContext(): SheetFillGestureContext {
+  return { sheetId: props.sheet.id, workbookRevision: props.workbookRevision, selectedKey: props.selectedKey,
+    selectedRanges: props.selectedRanges ?? [], editingKey: props.editingKey, editSessionId: inputSessionId() }
+}
+function updateFillDragTarget(position: { x: number; y: number }): void {
+  if (!fillDrag) return
+  if (!sheetFillGestureStillCurrent(fillDrag.context, fillGestureContext()) || props.formatPainter) {
+    clearPointerGesture(); return
+  }
+  fillDrag.moved ||= Math.hypot(position.x - fillDrag.startPosition.x, position.y - fillDrag.startPosition.y) >= 3
+  if (!fillDrag.moved) return
+  const hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)),
+    Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
+  if (hit?.kind !== 'cell') return
+  fillDrag.target = { row: hit.row, column: hit.column }
+  fillPreview.value = fillPreviewRange(fillDrag.source, fillDrag.target)
+  if (root.value) root.value.style.cursor = 'crosshair'
+  queueRender()
+}
+function onEditorFillPointerDown(event: PointerEvent): void {
+  if (event.button !== 0 || !props.editingKey || props.formatPainter || !active || disposed) return
+  const position = point(event)
+  const source = hitCellEditorFillHandle(geometry.value, props.editingKey, viewport.value, position.x, position.y)
+  if (!source) return
+  // Capture before antdv-next's input handlers and before native blur can schedule another commit.
+  event.preventDefault(); event.stopPropagation()
+  if (composing.value || gesturePointerId !== undefined || !props.prepareFill) return
+  const press = { pointerId: event.pointerId, source: { ...source }, origin: snapshotSheetFillGesture(fillGestureContext()), startPosition: position, position }
+  pendingFillPress = press
+  gesturePointerId = event.pointerId
+  root.value?.setPointerCapture(event.pointerId)
+  let committed: SheetFillCommitContext | undefined
+  try { committed = props.prepareFill() }
+  catch (error) { clearPointerGesture(); throw error }
+  if (!committed) { clearPointerGesture(); return }
+  const accepted = committed
+  void nextTick(() => {
+    if (pendingFillPress !== press || gesturePointerId !== press.pointerId) return
+    pendingFillPress = undefined
+    if (!active || disposed || composing.value || props.formatPainter || !root.value?.hasPointerCapture(press.pointerId)
+      || !canResumeSheetFillGesture(press.origin, accepted, fillGestureContext())) {
+      clearPointerGesture(); return
+    }
+    fillDrag = { source: press.source, context: snapshotSheetFillGesture(fillGestureContext()), startPosition: press.startPosition, moved: false }
+    lastPointer = press.position
+    root.value.focus({ preventScroll: true })
+    updateFillDragTarget(press.position)
+  })
+}
 function onPointerDown(event: PointerEvent) {
   if (gesturePointerId !== undefined || !active || disposed) return
   if ((event.target as HTMLElement).closest('input, textarea')) return
@@ -454,8 +508,10 @@ function onPointerDown(event: PointerEvent) {
     return
   }
   if (hit.kind === 'fill-handle') {
-    fillDrag = { source: hit.range }
+    fillDrag = { source: { ...hit.range }, context: snapshotSheetFillGesture(fillGestureContext()), startPosition: position, moved: false }
     fillPreview.value = undefined
+    lastPointer = position
+    if (root.value) root.value.style.cursor = 'crosshair'
   } else if (hit.kind === 'outline-toggle') {
     emit('context-command', 'sheet.operation.outline-toggle-group', { axis: hit.axis, groupId: hit.groupId })
   } else if (hit.kind === 'outline-level') {
@@ -485,6 +541,7 @@ function onPointerMove(event: PointerEvent) {
   if (!active || disposed || gesturePointerId !== undefined && gesturePointerId !== event.pointerId) return
   const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
+  if (pendingFillPress) { pendingFillPress.position = position; return }
   if (headerDrag.value || headerSelectionDrag) { updateHeaderGesture(position, event.ctrlKey || event.metaKey); return }
   if (slicerPress && ['period', 'timelineStart', 'timelineEnd', 'scroll'].includes(slicerPress.start.type)) {
     const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
@@ -492,21 +549,21 @@ function onPointerMove(event: PointerEvent) {
     if (hit?.id === slicerPress.hit.id) slicerPress.hit = hit
     return
   }
-  if (fillDrag && hit?.kind === 'cell') {
-    fillDrag.target = { row: hit.row, column: hit.column }
-    fillPreview.value = fillPreviewRange(fillDrag.source, fillDrag.target)
-    queueRender()
-  }
+  if (fillDrag) updateFillDragTarget(position)
   if (dragging && hit?.kind === 'cell') { emit('extend-selection', hit.key); queueRender() }
   if (root.value && !dragging && !fillDrag) {
     const hover = geometry.value.hitTest(position.x, position.y, viewport.value)
-    const fillHandle = !props.editingKey && !props.formatPainter && hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y)
+    const fillHandle = !props.formatPainter && (props.editingKey
+      ? hitCellEditorFillHandle(geometry.value, props.editingKey, viewport.value, position.x, position.y)
+      : hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y))
+    fillHandleHovered.value = Boolean(fillHandle)
     const hasHyperlink = hover?.kind === 'cell' && Boolean(props.sheet.cells[hover.key]?.hyperlink)
     root.value.style.cursor = fillHandle ? 'crosshair' : hasHyperlink || hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : hover && selectedAxisMoveSource(hover) ? 'grab' : 'cell'
   }
 }
 function onPointerUp(event: PointerEvent) {
   if (gesturePointerId !== event.pointerId) return
+  if (pendingFillPress) { clearPointerGesture(); return }
   gesturePointerId = undefined
   const canceled = event.type !== 'pointerup'
   if (headerDrag.value) {
@@ -602,13 +659,15 @@ function onPointerUp(event: PointerEvent) {
     if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
     return
   }
-  if (fillDrag && !canceled && fillDrag.target) {
-    const { source, target } = fillDrag
+  if (fillDrag && !canceled) updateFillDragTarget(point(event))
+  const completedFill = fillDrag
+  fillDrag = undefined
+  fillPreview.value = undefined
+  if (completedFill?.moved && !canceled && completedFill.target) {
+    const { source, target } = completedFill
     const insideSource = target.row >= source.startRow && target.row <= source.endRow && target.column >= source.startColumn && target.column <= source.endColumn
     if (!insideSource) emit('fill-selection', source, target)
   }
-  fillDrag = undefined
-  fillPreview.value = undefined
   if (resizeDrag && !canceled) {
     const position = point(event), delta = ((resizeDrag.axis === 'column' ? position.x : position.y) - resizeDrag.origin) / viewport.value.zoom
     emit('resize-axis', resizeDrag.axis, resizeDrag.index, Math.max(0, Math.round(resizeDrag.size + delta)))
@@ -634,7 +693,7 @@ function onPointerUp(event: PointerEvent) {
 function clearPointerGesture() {
   const pointerId = gesturePointerId
   gesturePointerId = undefined
-  selectionPress = undefined; dragging = false; fillDrag = undefined; fillPreview.value = undefined; lastPointer = undefined; resizeDrag = undefined; slicerPress = undefined
+  selectionPress = undefined; dragging = false; fillDrag = undefined; pendingFillPress = undefined; fillPreview.value = undefined; fillHandleHovered.value = false; lastPointer = undefined; resizeDrag = undefined; slicerPress = undefined
   headerDrag.value = undefined; headerSelectionDrag = undefined
   if (root.value) root.value.style.cursor = ''
   if (pointerId !== undefined && root.value?.hasPointerCapture(pointerId)) root.value.releasePointerCapture(pointerId)
@@ -780,7 +839,7 @@ function onWheel(event: WheelEvent) {
 }
 function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (headerDrag.value || headerSelectionDrag)) {
+  if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (fillDrag || pendingFillPress || headerDrag.value || headerSelectionDrag)) {
     event.preventDefault(); event.stopPropagation(); clearPointerGesture(); return
   }
   if (!props.selectedSlicerId || props.editingKey || event.isComposing || event.keyCode === 229) return
@@ -903,7 +962,19 @@ watch(() => props.sheet.id, () => {
   clearPointerGesture()
   void nextTick(restoreViewport)
 }, { flush: 'sync' })
-watch([() => props.sheet, () => props.workbookRevision, () => props.editingKey], clearPointerGesture, { flush: 'sync' })
+watch([() => props.sheet, () => props.workbookRevision, () => props.editingKey, () => props.editSessionId], () => {
+  // The synchronous commit updates these props together. Validate its acknowledgement after that flush.
+  if (pendingFillPress && pendingFillPress.origin.sheetId === props.sheet.id) return
+  clearPointerGesture()
+}, { flush: 'sync' })
+watch([() => props.selectedKey, () => props.selectedRanges], () => {
+  const current = fillGestureContext()
+  if (pendingFillPress && !sheetFillGestureSelectionMatches(pendingFillPress.origin, current)
+    || fillDrag && !sheetFillGestureStillCurrent(fillDrag.context, current)) clearPointerGesture()
+}, { flush: 'sync' })
+watch([() => props.zoom, () => props.formatPainter], () => {
+  if (fillDrag || pendingFillPress) clearPointerGesture()
+}, { flush: 'sync' })
 watch([pasteOptionsPosition, () => props.pasteOptions], () => { pasteOptionsOpen.value = false })
 onMounted(async () => {
   if (!canvasHost.value) return
@@ -935,7 +1006,7 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" :class="{ 'format-painter-active': Boolean(formatPainter) }" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="onNativeInputCapture" @compositionstart.capture="onCompositionCapture($event, true)" @compositionend.capture="onCompositionCapture($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @copy="event => onClipboard(event, 'copy')" @cut="event => onClipboard(event, 'cut')" @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
+  <div ref="root" class="spreadsheet-canvas" :class="{ 'format-painter-active': Boolean(formatPainter), 'fill-handle-hovered': fillHandleHovered }" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="onNativeInputCapture" @compositionstart.capture="onCompositionCapture($event, true)" @compositionend.capture="onCompositionCapture($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')" @pointerdown.capture="onEditorFillPointerDown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @copy="event => onClipboard(event, 'copy')" @cut="event => onClipboard(event, 'cut')" @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
     <Dropdown v-if="pasteOptionsPosition && pasteOptions" :open="pasteOptionsOpen" :trigger="['click']" :menu="pasteOptionsMenu" :popup-render="pasteOptionsPopup" :classes="{ root: `sheet-paste-options-popup ${pasteOptionsPopupClass}` }" :auto-focus="false" :auto-adjust-overflow="true" :destroy-on-hidden="true" placement="bottomLeft" @open-change="onPasteOptionsOpenChange">
@@ -1021,6 +1092,7 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
 .canvas-cell-input :deep(.ant-select-input) { height: 100%; }
 .canvas-cell-input :deep(.ant-select-content) { height: 100%; min-height: 0; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
+.fill-handle-hovered :deep(.canvas-cell-input input), .fill-handle-hovered :deep(.canvas-cell-input textarea) { cursor: crosshair; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; inset-inline-start: 12px; max-width: calc(100% - 24px); }
 </style>

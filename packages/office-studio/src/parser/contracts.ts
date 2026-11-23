@@ -1,4 +1,5 @@
 import type { DocumentModel, ParserDiagnostic, WorkbookModel } from '../domain/model.ts'
+import type { WasmTaskControl, WasmTaskMetrics } from '../platform/wasm/task-protocol.ts'
 
 export interface RawParserError {
   code: string
@@ -62,6 +63,8 @@ interface ImportProvenance {
   diagnostics: ParserDiagnostic[]
   stats: Record<string, unknown>
   capabilities: string[]
+  /** Task provenance stays outside the persistent Office model. */
+  task?: { context: WasmTaskControl; metrics: WasmTaskMetrics }
 }
 
 export type ImportedOfficeModel = ImportProvenance & (
@@ -70,8 +73,9 @@ export type ImportedOfficeModel = ImportProvenance & (
 
 export type ParseStage = 'loading' | 'reading' | 'parsing' | 'normalizing' | 'ready'
 export interface ParseProgress { stage: ParseStage; message: string }
-export interface ParseRequest { requestId: string; bytes: ArrayBuffer; fileName: string; baseUrl: string }
+export interface ParseRequest { type: 'parse'; context: WasmTaskControl; bytes: ArrayBuffer; fileName: string; moduleUrl: string }
 export type ParseResponse =
-  | { requestId: string; type: 'progress'; progress: ParseProgress }
-  | { requestId: string; type: 'success'; result: ImportedOfficeModel }
-  | { requestId: string; type: 'error'; error: RawParserError }
+  | { context: WasmTaskControl; type: 'progress'; progress: ParseProgress }
+  | { context: WasmTaskControl; type: 'success'; result: ImportedOfficeModel; metrics: WasmTaskMetrics }
+  | { context: WasmTaskControl; type: 'error'; error: RawParserError }
+  | { type: 'protocol-error'; error: RawParserError }

@@ -13,7 +13,7 @@ export function estimateTaskMemory(task: ComputeTask): { inputBytes: number; est
   // JS input + linear-memory input copy + merge/filter index buffers + a returned
   // JS index array, with a fixed allowance for module/runtime and binding copies.
   const indexBytes = task.kind === 'aggregate' ? 0 : task.rowCount * (task.kind === 'sort' ? 12 : 8)
-  const wasmInput = task.kind === 'aggregate' ? Math.min(task.values.length, 65_536) * 9 : inputBytes
+  const wasmInput = inputBytes
   return { inputBytes, estimatedPeakBytes: inputBytes + wasmInput + indexBytes + 8 * 1024 * 1024 }
 }
 
@@ -46,8 +46,9 @@ export function validateTask(task: unknown, memoryBudgetBytes: number = COMPUTE_
   if (task.values.length > COMPUTE_LIMITS.maxElements) throw new ComputeError('COMPUTE_MEMORY_LIMIT', '输入元素超过计算内核上限')
   const inputBytes = views.reduce((sum, view) => sum + view.byteLength, 0)
   const indexBytes = task.kind === 'aggregate' ? 0 : Number(task.rowCount) * (task.kind === 'sort' ? 12 : 8)
-  const wasmInput = task.kind === 'aggregate' ? Math.min(task.values.length, 65_536) * 9 : inputBytes
-  if (!Number.isFinite(memoryBudgetBytes) || memoryBudgetBytes <= 0 || inputBytes + wasmInput + indexBytes + 8 * 1024 * 1024 > memoryBudgetBytes) {
+  const wasmInput = inputBytes
+  if (!Number.isSafeInteger(memoryBudgetBytes) || memoryBudgetBytes <= 0 || memoryBudgetBytes > 0xffff_ffff
+    || inputBytes + wasmInput + indexBytes + 8 * 1024 * 1024 > memoryBudgetBytes) {
     throw new ComputeError('COMPUTE_MEMORY_LIMIT', '任务预计内存超过配置预算')
   }
 }

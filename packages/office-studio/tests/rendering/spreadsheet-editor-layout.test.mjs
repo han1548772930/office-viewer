@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { createCellEditorLayout } from '../../src/rendering/spreadsheet/editor-layout.ts'
+import { createCellEditorLayout, hitCellEditorFillHandle } from '../../src/rendering/spreadsheet/editor-layout.ts'
 import { SpreadsheetGeometry } from '../../src/rendering/spreadsheet/layout.ts'
 
 function geometry(extra = {}) {
@@ -72,4 +72,37 @@ test('a frozen row multiline bridge remains clipped above the frozen boundary', 
   assert.equal(grown.rect.height, 37)
   assert.equal(grown.clip.y + grown.clip.height, 62)
   assert.equal(grown.clipPath, 'inset(0.5px 0.5px 0.5px 0.5px)')
+})
+
+test('both halves of an editing fill handle hit the same source cell across zoom levels', () => {
+  const grid = geometry({ freeze: { rows: 0, columns: 0 } })
+  for (const zoom of [.5, 1, 2]) {
+    const view = { ...viewport, scrollLeft: 0, scrollTop: 0, zoom }
+    const handle = createCellEditorLayout(grid, 'B2', view).fillHandle
+    const source = { startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }
+    assert.deepEqual(hitCellEditorFillHandle(grid, 'B2', view, handle.x + 1, handle.y + 1), source)
+    assert.deepEqual(hitCellEditorFillHandle(grid, 'B2', view, handle.x + 4, handle.y + 4), source)
+    assert.equal(hitCellEditorFillHandle(grid, 'B2', view, handle.x - 1, handle.y + 1), undefined)
+  }
+})
+
+test('editing fill hits preserve merged source bounds and reject the portion clipped by a frozen pane', () => {
+  const merged = geometry({ merges: ['C3:D4'], freeze: { rows: 0, columns: 0 } })
+  const view = { ...viewport, scrollLeft: 0, scrollTop: 0, zoom: 1 }
+  const handle = createCellEditorLayout(merged, 'D4', view).fillHandle
+  assert.deepEqual(hitCellEditorFillHandle(merged, 'D4', view, handle.x + 2, handle.y + 2),
+    { startRow: 2, endRow: 3, startColumn: 2, endColumn: 3 })
+  const frozen = geometry(), clip = createCellEditorLayout(frozen, 'A1', viewport).fillHandleClip
+  assert.deepEqual(hitCellEditorFillHandle(frozen, 'A1', viewport, clip.x + 1, clip.y + 1),
+    { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })
+  assert.equal(hitCellEditorFillHandle(frozen, 'A1', viewport, clip.x + clip.width, clip.y + 1), undefined)
+  assert.equal(hitCellEditorFillHandle(frozen, 'A1', viewport, clip.x + 1, clip.y + clip.height), undefined)
+})
+
+test('invisible, invalid, and non-finite editing handle coordinates never hit another visible cell', () => {
+  const grid = geometry(), offscreen = { ...viewport, scrollLeft: 300, scrollTop: 200 }
+  const handle = createCellEditorLayout(grid, 'B2', offscreen).fillHandle
+  assert.equal(hitCellEditorFillHandle(grid, 'B2', offscreen, handle.x + 1, handle.y + 1), undefined)
+  assert.equal(hitCellEditorFillHandle(grid, 'invalid', viewport, 50, 50), undefined)
+  assert.equal(hitCellEditorFillHandle(grid, 'A1', viewport, NaN, 60), undefined)
 })

@@ -7,6 +7,8 @@
 
 技术路径遵守[Canvas/WebGPU 与 Rust/WASM 计算标准](RENDERING_AND_COMPUTE_STANDARD.md)。WebGPU 为优先绘制后端，Canvas2D 为功能一致的回退；大型计算优先交给 Worker 中的 Rust/WASM。
 
+全部功能组的责任模块、跨产品共享引擎和实现依赖见 [完整工作台架构](../PROJECT_EXECUTION_STANDARD.md#workbench-architecture)。库调用、主线程 WASM DOM 适配和零拷贝边界见 [WASM 平台标准](RENDERING_AND_COMPUTE_STANDARD.md#wasm-platform-contract)。这些是设计与实施契约，不能作为产品功能完成证据。
+
 ## 1. 范围与状态
 
 用户目标是 Sheets / Docs 工作台的完整功能与界面对齐，包括 Pro。Pro 仅描述上游发行方式，不改变本项目的交付等级；没有公开实现的部分按公开规格独立实现。这里不把 Slides、Bases、Boards 或独立 AI SDK 整个产品线自动加入本次 Sheets / Docs 范围。
@@ -18,6 +20,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 **当前所有条目均为未验收。** 已有组件草稿和 Rust 解析接口不作为完整验收证据。各项可有部分进度，只有补齐第 5 节的证据后才可标为已验收。
 
 清单验收状态仅使用“未验收 / 已验收”；开发进度另用“待核实、待开发、开发中、待验证、待修复”记录。未提供完整证据时保持未验收；永久禁用、按钮提示、静态样例、仅保存 JSON 不能记为功能完成。
+
+当前顶层目录是 COMMON 12、SHEET 30、DOC 23，共 65 个功能组。详细行为、公式函数、图表类型和界面入口分别展开统计；65 不是功能细项总数。v1.6.0 OSS 常规 Ribbon 根声明 101（Sheets 63、Docs 38）、Docs 上下文根声明 7（页眉页脚 5、目录 2）、Pro 图表目录选择项 45 均有各自口径，不能相加成为功能总数。缓存 60 个 Pro ES 包是研究覆盖范围，不能代替 Pro 入口清点或功能完成数量；未解析的动态入口继续登记为待核实。
 
 ## 2. 共享工程与工作台
 

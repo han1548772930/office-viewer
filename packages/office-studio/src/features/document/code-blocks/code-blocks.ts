@@ -5,6 +5,7 @@ import { documentDefaultStyle } from '../model/document-default-style'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { transformContentControlsForBlockEdit } from '../services/content-controls.ts'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments.ts'
+import { transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
 
 export type DocumentCodeLanguage = 'plain' | 'javascript' | 'typescript' | 'json' | 'css' | 'html' | 'python' | 'sql' | 'rust'
 export type CodeTokenKind = 'keyword' | 'string' | 'number' | 'comment' | 'operator' | 'punctuation' | 'plain'
@@ -86,6 +87,7 @@ function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, curren
       || change.endOffset < change.startOffset || current.source.slice(0, change.startOffset) + change.text + current.source.slice(change.endOffset) !== next.source) throw new RangeError('代码编辑范围无效。')
     const nextRuns = replaceDocumentRunRange(block.runs, change.startOffset, change.endOffset, change.text, documentDefaultStyle(model).text, marks)
     transformContentControlsForBlockEdit(model, block.id, change.startOffset, change.endOffset, change.text.length)
+    transformDocumentTextFieldsForBlockEdit(block, change.startOffset, change.endOffset, change.text)
     block.runs = nextRuns
     transformDocumentCommentAnchorsForTextEdit(model, block.id, change.startOffset, change.endOffset, change.text)
   }

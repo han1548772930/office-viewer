@@ -30,10 +30,11 @@ const emit = defineEmits<{
   'story-composing': [value: boolean]
   'code-block-exit': [blockId: string]
   'toggle-format': [field: 'bold' | 'italic' | 'underline', source?: DocumentModel, story?: DocumentStoryRange]
+  'refresh-fields': [source: DocumentModel, story?: DocumentStoryRange, bodySelection?: DocumentSelection]
   'update:selection': [selection: DocumentSelection]
   'selection-committed': []
   'navigate-to-heading': [headingId: string]
-  'context-menu': [payload: { x: number; y: number; point: DocumentPoint }]
+  'context-menu': [payload: { x: number; y: number; point: DocumentPoint; source?: DocumentModel; story?: DocumentStoryRange }]
   layout: [layout: DocumentLayout]
   'active-page': [page: number]
   'viewport-change': [location: DocumentViewportLocation]
@@ -64,6 +65,17 @@ function storyKeys(event: KeyboardEvent) {
   if (!storyEventIsCurrent(event)) return
   if (event.isComposing || event.keyCode === 229) return
   const key = event.key.toLowerCase(), mod = event.ctrlKey || event.metaKey
+  if (key === 'f9' && !mod && !event.altKey && !event.shiftKey) {
+    if (storyComposing.value || document.activeElement !== storyElement()) return
+    event.preventDefault(); event.stopPropagation()
+    const source = props.model, location = props.story, page = location && layout.value.pageHeaderFooters[location.page]
+    const storyKey = location?.area === 'header' ? page?.headerStory : page?.footerStory, range = storyRange()
+    if (!page || page.isParityBlank || !storyKey) return
+    syncStorySelection(event)
+    if (!storyEventIsCurrent(event) || source !== props.model) return
+    emit('refresh-fields', source, { sectionId: page.sectionId, story: storyKey, ...range })
+    return
+  }
   if (key === 'escape') emit('close-story')
   else if (mod && key === 's') emit('save')
   else if (mod && (key === 'z' || key === 'y')) { if (key === 'y' || event.shiftKey) emit('redo'); else emit('undo') }
@@ -374,13 +386,40 @@ function pointerDown(event: PointerEvent) {
 }
 
 function contextMenu(event: MouseEvent) {
-  if (props.story && storyAt(coordinatesFromEvent(event))) { event.preventDefault(); return }
+  if (!active || disposed) return
+  const source = props.model, coordinates = coordinatesFromEvent(event), location = props.story
+  if (location) {
+    event.preventDefault()
+    const target = storyAt(coordinates), page = layout.value.pageHeaderFooters[location.page]
+    const storyKey = location.area === 'header' ? page?.headerStory : page?.footerStory
+    if (storyComposing.value || !coordinates || !target || target.page !== location.page || target.area !== location.area || !page || page.isParityBlank || !storyKey) return
+    const lines = documentStoryLayoutLines(layout.value, location), offset = hitTestDocumentStory(lines, coordinates.x, coordinates.y)
+    const range = storyRange(), element = storyElement()
+    if (!element || !storyEventIsCurrent()) return
+    let selected = range
+    if (range.start === range.end || offset < range.start || offset > range.end) {
+      const line = lines.find(candidate => coordinates.y >= candidate.y && coordinates.y < candidate.y + candidate.height)
+      const glyph = line?.glyphs.find(candidate => coordinates.x >= candidate.x && coordinates.x < candidate.x + candidate.width)
+      selected = glyph && (props.storyValue ?? '')[glyph.offset] === '\uFFFC' ? { start: glyph.offset, end: glyph.end } : { start: offset, end: offset }
+      element.setSelectionRange(selected.start, selected.end)
+    }
+    syncStorySelection()
+    if (source !== props.model || !storyEventIsCurrent()) return
+    const actual = storyRange()
+    if (actual.start !== selected.start || actual.end !== selected.end) return
+    emit('context-menu', { x: event.clientX, y: event.clientY, point: props.selection.focus, source,
+      story: { sectionId: page.sectionId, story: storyKey, ...selected } })
+    caretVisible.value = true
+    requestDraw()
+    return
+  }
   const point = pointFromEvent(event)
   if (!point) return
   event.preventDefault()
   const selection = documentSelectionForContextMenu(props.model, props.selection, point)
   if (selection !== props.selection) select(selection)
-  emit('context-menu', { x: event.clientX, y: event.clientY, point })
+  if (source !== props.model) return
+  emit('context-menu', { x: event.clientX, y: event.clientY, point, source })
   caretVisible.value = true
   requestDraw()
 }
@@ -608,6 +647,12 @@ function keydown(event: KeyboardEvent) {
   if (event.isComposing || composing.value || event.keyCode === 229) return
   const command = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
+  if (key === 'f9' && !command && !event.altKey && !event.shiftKey) {
+    if (document.activeElement !== inputElement()) return
+    event.preventDefault(); event.stopPropagation()
+    emit('refresh-fields', props.model, undefined, { anchor: { ...props.selection.anchor }, focus: { ...props.selection.focus } })
+    return
+  }
   const activeBlock = blockAtPoint(props.model, props.selection.focus)
   if (activeBlock && codeBlockData(activeBlock)) {
     if (command && event.key === 'Enter') {
@@ -690,7 +735,7 @@ function revealStory(target: StoryLocation) {
   focusStory()
 }
 function cancelInput(refocus = true) { cancelBodyComposition(refocus); cancelStoryInput(refocus) }
-defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value })
+defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
 </script>
 
 <template>

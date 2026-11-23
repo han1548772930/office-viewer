@@ -4,17 +4,23 @@ export interface HeaderFooterEditCapabilities {
   disabled: boolean
   contentDisabled?: boolean
   sectionDisabled?: boolean
+  refreshDisabled?: boolean
 }
 
 export function headerFooterControlDisabled(kind: HeaderFooterRibbonKind, state: HeaderFooterEditCapabilities): boolean {
   if (kind === 'navigation') return false
   if (kind === 'position') return state.sectionDisabled ?? state.disabled
-  return state.disabled || kind === 'insertion' && state.contentDisabled === true
+  if (kind === 'insertion') {
+    const localDisabled = state.disabled || state.contentDisabled === true
+    return localDisabled && (state.refreshDisabled ?? localDisabled)
+  }
+  return state.disabled
 }
 
 /** Navigation reads a story; positions edit section geometry independently of story content. */
 export function headerFooterActionDisabled(state: HeaderFooterEditCapabilities, action: HeaderFooterAction): boolean {
   if (action.action === 'navigate') return false
+  if (action.action === 'refresh-fields') return state.refreshDisabled ?? (state.disabled || state.contentDisabled === true)
   if (action.action !== 'set-options') return state.disabled || state.contentDisabled === true
   const patch = action.patch
   const position = patch.marginHeader !== undefined || patch.marginFooter !== undefined

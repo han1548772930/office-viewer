@@ -12,6 +12,7 @@ export interface HeaderFooterRibbonState {
   requestScope?: number
   sectionDisabled?: boolean
   contentDisabled?: boolean
+  refreshDisabled?: boolean
   canLinkToPrevious: boolean
   linkedToPrevious: boolean
   differentFirstPage: boolean
@@ -41,20 +42,23 @@ const dateFormatOptions = [
 const area = computed(() => props.state.area)
 const pageOpen = ref(false), dateOpen = ref(false)
 const pageRequest = ref<HeaderFooterRequestScope>(), dateRequest = ref<HeaderFooterRequestScope>()
-const insertionDisabled = computed(() => headerFooterControlDisabled('insertion', props.state))
+const insertionDisabled = computed(() => props.state.disabled || props.state.contentDisabled === true)
+const pageControlDisabled = computed(() => headerFooterControlDisabled('insertion', props.state))
 const positionDisabled = computed(() => headerFooterControlDisabled('position', props.state))
 const pageActionDisabled = computed(() => insertionDisabled.value || !headerFooterRequestScopeMatches(props.state, pageRequest.value))
 const dateActionDisabled = computed(() => insertionDisabled.value || !headerFooterRequestScopeMatches(props.state, dateRequest.value))
+const refreshActionDisabled = computed(() => headerFooterActionDisabled(props.state, { action: 'refresh-fields' }) || !headerFooterRequestScopeMatches(props.state, pageRequest.value))
 const pageItems = computed(() => [
   { key: 'PAGE', label: '当前页码', disabled: pageActionDisabled.value },
   { key: 'NUMPAGES', label: '总页数', disabled: pageActionDisabled.value },
   { type: 'divider' as const },
-  { key: 'refresh', label: '更新字段', disabled: pageActionDisabled.value },
+  { key: 'refresh', label: '更新字段', disabled: refreshActionDisabled.value },
 ])
 watch(pageOpen, open => { pageRequest.value = open ? { requestScope: props.state.requestScope } : undefined }, { flush: 'sync' })
 watch(dateOpen, open => { dateRequest.value = open ? { requestScope: props.state.requestScope } : undefined }, { flush: 'sync' })
-watch([() => props.state.requestScope, () => props.state.visible, insertionDisabled], ([scope, visible, disabled], [previous]) => {
-  if (scope !== previous || !visible || disabled) pageOpen.value = dateOpen.value = false
+watch([() => props.state.requestScope, () => props.state.visible, insertionDisabled, pageControlDisabled], ([scope, visible, disabled, pageDisabled], [previous]) => {
+  if (scope !== previous || !visible) pageOpen.value = dateOpen.value = false
+  else { if (disabled) dateOpen.value = false; if (pageDisabled) pageOpen.value = false }
 }, { flush: 'sync' })
 
 function emitAction(action: HeaderFooterAction, request: HeaderFooterRequestScope | undefined): void {
@@ -87,16 +91,16 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
 
 <template>
   <div class="header-footer-ribbon-control" :class="{ 'is-classic': classic }" :data-control-kind="kind">
-    <fieldset v-if="kind === 'insertion'" :disabled="insertionDisabled" class="header-footer-ribbon-control__fields">
+    <div v-if="kind === 'insertion'" class="header-footer-ribbon-control__fields">
       <Popover v-model:open="pageOpen" placement="bottomLeft" trigger="click">
-        <Button type="text" size="small" aria-label="页码" :disabled="insertionDisabled" @mousedown.prevent><Hash :size="14" />页码<ChevronDown :size="12" /></Button>
+        <Button type="text" size="small" aria-label="页码" :disabled="pageControlDisabled" @mousedown.prevent><Hash :size="14" />页码<ChevronDown :size="12" /></Button>
         <template #content><Menu :selectable="false" :items="pageItems" @click="({ key }) => runPageAction(key)" /></template>
       </Popover>
       <Button type="text" size="small" :disabled="insertionDisabled" @mousedown.prevent @click="dateOpen = true"><CalendarClock :size="14" />日期和时间</Button>
       <Modal v-model:open="dateOpen" title="日期和时间" ok-text="插入" :ok-button-props="{ disabled: dateActionDisabled }" @ok="insertDateTime">
         <Form layout="vertical"><FormItem label="日期和时间格式"><Select v-model:value="dateFormat" :options="dateFormatOptions" :disabled="insertionDisabled" /></FormItem><FormItem><Checkbox v-model:checked="automaticDateTime" :disabled="insertionDisabled">自动更新</Checkbox></FormItem></Form>
       </Modal>
-    </fieldset>
+    </div>
 
     <template v-else-if="kind === 'navigation'">
       <Button size="small" :disabled="area === 'header'" @click="run({ action: 'navigate', area: 'header' })">转到页眉</Button>

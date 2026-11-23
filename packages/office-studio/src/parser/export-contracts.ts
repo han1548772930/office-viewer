@@ -1,16 +1,27 @@
 import type { OfficeKind } from '../domain/model'
+import type { WasmErrorData, WasmTaskControl, WasmTaskMetrics } from '../platform/wasm/task-protocol.ts'
 
 export type ExportStage = 'loading' | 'writing'
 export interface ExportProgress { stage: ExportStage; message: string }
 export interface ExportWarning { code: string; message: string }
-export interface ExportOutcome { bytes: Uint8Array; warnings: ExportWarning[] }
+export interface ExportOutcome {
+  bytes: Uint8Array; warnings: ExportWarning[]
+  context: WasmTaskControl; metrics: WasmTaskMetrics
+}
 export interface ExportRequest {
-  requestId: string
+  type: 'export'
+  context: WasmTaskControl
   kind: OfficeKind
   data: string
-  baseUrl: string
+  moduleUrl: string
 }
 export type ExportResponse =
-  | { requestId: string; type: 'progress'; progress: ExportProgress }
-  | { requestId: string; type: 'success'; bytes: Uint8Array; warnings: string }
-  | { requestId: string; type: 'error'; error: { code: string; message: string } }
+  | { context: WasmTaskControl; type: 'progress'; progress: ExportProgress }
+  | { context: WasmTaskControl; type: 'success'; bytes: Uint8Array; warnings: ExportWarning[]; metrics: WasmTaskMetrics }
+  | { context: WasmTaskControl; type: 'error'; error: WasmErrorData }
+  | { type: 'protocol-error'; error: WasmErrorData }
+
+export function isExportWarnings(value: unknown): value is ExportWarning[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'object' && item !== null
+    && 'code' in item && typeof item.code === 'string' && 'message' in item && typeof item.message === 'string')
+}

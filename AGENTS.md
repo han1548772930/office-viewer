@@ -11,6 +11,8 @@
 3. [docs/UNIVER_FEATURE_PARITY.md](docs/UNIVER_FEATURE_PARITY.md)
 4. [docs/RENDERING_AND_COMPUTE_STANDARD.md](docs/RENDERING_AND_COMPUTE_STANDARD.md)
 
+完成上述四项后，按 [完整工作台架构](PROJECT_EXECUTION_STANDARD.md#workbench-architecture) 和 [WASM 平台与内存契约](docs/RENDERING_AND_COMPUTE_STANDARD.md#wasm-platform-contract) 确认模块归属、计算域及跨边界协议。
+
 用户目标是以 Vue + Rust/WASM 实现对齐 Univer Sheets / Docs 的完整工作台，包括其 Pro 功能。不得自行交付精简版、仅展示版、仅最小解析流程，或以缺少上游源码为由删除能力。
 
 ## 工作约束
@@ -33,6 +35,10 @@
 - 所有 `antdv-next` 控件通过统一 ConfigProvider 和主题 token 适配主题，覆盖弹层、明暗主题、尺寸及禁用/悬浮/焦点状态。布局和交互按固定版本 Univer 源码依据对齐，样式调整须保持主题切换能力。
 - 办公画布使用 Canvas 并按编辑器需要实现绘制和输入交互；禁止用组件库 Table 或整页 contenteditable 替代完整编辑器内核。
 - 内容渲染统一 Canvas，优先 WebGPU，提供 Canvas2D 回退；特别大的计算优先 Worker 中的 Rust/WASM，执行性能/内存/取消标准。
+- WASM 平台层必须实际使用 `wasm-bindgen-futures`（Promise/Future 与异步让出）、`serde-wasm-bindgen`（类型化控制 DTO）、`web-sys`（浏览器/Worker API）、`js-sys`（TypedArray/Promise/内存视图）；浏览器绑定与内存生命周期测试使用 `wasm-bindgen-test`。按职责集中在可复用适配层，不能只列依赖而没有调用与测试场景。
+- 可提升端到端性能的解析、公式、透视、排序筛选、图表数据变换、索引、布局等重操作优先在 Worker/Rust/WASM 实现；小型交互按同一数据集基准选择路径。算法与 UI 分层，不维护两套互相冲突的权威引擎。
+- WASM 可以通过 `web-sys` 操作 DOM。领域/计算内核不依赖 DOM；主线程 WASM 平台适配层可操作 Canvas 宿主、焦点、选区、事件和输入桥，Worker 层仅使用其环境支持的 API。可替换 UI 仍由 Vue/`antdv-next` 管理，不要求所有 DOM 操作都写在 JavaScript 中。
+- 热路径优先采用 WASM 持有的缓冲区、TypedArray 内存视图和批量计算，保持可实现边界的零拷贝；明确定义所有权、lease、释放、重入及 `memory.grow` 后视图重建。Worker 使用 transferable，禁止转移 WASM 整个 linear-memory buffer；不可避免的入站/出站复制必须记录次数和字节，不能把 serde 转换或 transferable 宣称为整条链路零拷贝。
 - Univer 界面和功能是完整对齐目标，Sheets、Docs 及 Pro 能力按同一模型、命令、权限、持久化和验收标准实现；不能以精简版、仅展示版或永久禁用入口替代目标能力。
 - 可独立测试的模型、解析归一化、命令/mutation、服务、公式/布局/计算算法和 Worker 协议必须编写有意义的单元或契约测试；跨模块编辑闭环使用集成/浏览器测试验证，不能用空测试或仅覆盖渲染快照充数。
 - 性能优化必须有同一数据集的可复现前后对照，记录设备、浏览器/渲染后端、数据规模、耗时、帧时间、主线程长任务、跨 Worker/WASM 传输和内存；没有实测证据不得声称已优化或达标。

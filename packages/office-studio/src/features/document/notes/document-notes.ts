@@ -1,5 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentNote } from '../../../domain/model'
-import { collapsedSelection, createRun, documentId, marksAtPoint, orderedSelection, runText, runsForTarget, setTargetRuns, sliceRuns, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
+import { blockAtPoint, collapsedSelection, createRun, documentId, marksAtPoint, orderedSelection, runText, runsForTarget, setTargetRuns, sliceRuns, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
+import { transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
+import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 
 export type DocumentNoteKind = 'footnote' | 'endnote'
 
@@ -84,10 +86,21 @@ function renumberNotes(model: DocumentModel, kind: DocumentNoteKind): void {
   const notesByRunId = new Map(Object.values(notes).filter(note => note.referenceRunId).map(note => [note.referenceRunId, note]))
   let index = 0
   for (const block of allBlocks(model.blocks)) {
+    let offset = 0
     for (const run of block.runs) {
       const reference = rawRecord(run.metadata?.note)
       const note = notesByRunId.get(run.id) ?? notes[String(reference.noteId)]
-      if (note?.referenceBlockId === block.id && isReferenceRun(run, note, kind)) run.text = String(++index)
+      if (note?.referenceBlockId === block.id && isReferenceRun(run, note, kind)) {
+        const result = String(++index)
+        if (result !== run.text) {
+          const end = offset + run.text.length
+          transformDocumentTextFieldsForBlockEdit(block, offset, end, result)
+          remapNoteContentControlOffsets(model, block.id, offset, end, result.length)
+          run.text = result
+          transformDocumentCommentAnchorsForTextEdit(model, block.id, offset, end, result)
+        }
+      }
+      offset += run.text.length
     }
   }
 }
@@ -108,7 +121,10 @@ export function insertDocumentNote(model: DocumentModel, selection: DocumentSele
   const reference = createRun('1', { ...marks, verticalAlign: 'superscript', metadata: { ...marks.metadata, note: { type: kind, noteId } } })
   const prefix = sliceRuns(runs, 0, start.offset)
   const suffix = sliceRuns(runs, end.offset)
+  transformDocumentTextFieldsForBlockEdit(blockAtPoint(model, start)!, start.offset, end.offset, reference.text)
+  remapNoteContentControlOffsets(model, referenceBlockId, start.offset, end.offset, reference.text.length)
   setTargetRuns(model, start, [...prefix, reference, ...suffix])
+  transformDocumentCommentAnchorsForTextEdit(model, referenceBlockId, start.offset, end.offset, reference.text)
   const persistedReference = runsForTarget(model, start).find((run) => run.metadata?.note && typeof run.metadata.note === 'object' && 'noteId' in run.metadata.note && run.metadata.note.noteId === noteId)
   if (persistedReference) note.referenceRunId = persistedReference.id
   noteCollection(model, kind)[noteId] = note
@@ -130,12 +146,29 @@ export function deleteDocumentNote(model: DocumentModel, kind: DocumentNoteKind,
   const paragraph = allBlocks(model.blocks).find((block) => block.id === note.referenceBlockId)
   const runIndex = paragraph?.runs.findIndex((run) => isReferenceRun(run, note, kind)) ?? -1
   if (paragraph && runIndex >= 0) {
+    const offset = paragraph.runs.slice(0, runIndex).reduce((total, run) => total + run.text.length, 0), length = paragraph.runs[runIndex]!.text.length
+    transformDocumentTextFieldsForBlockEdit(paragraph, offset, offset + length, '')
+    remapNoteContentControlOffsets(model, paragraph.id, offset, offset + length, 0)
     paragraph.runs.splice(runIndex, 1)
     if (!paragraph.runs.length) paragraph.runs.push({ id: documentId('run'), text: '', bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
+    transformDocumentCommentAnchorsForTextEdit(model, paragraph.id, offset, offset + length, '')
   }
   delete notes[id]
   renumberNotes(model, kind)
   return true
+}
+
+/** Note labels are derived numbering; resizing them retains enclosing SDT wrappers. */
+function remapNoteContentControlOffsets(model: DocumentModel, blockId: string, start: number, end: number, length: number): void {
+  const delta = length - (end - start)
+  for (const control of model.contentControls ?? []) {
+    if (control.blockId !== blockId) continue
+    if (end <= control.startOffset) { control.startOffset += delta; control.endOffset += delta }
+    else if (start < control.endOffset && end > control.startOffset) {
+      control.startOffset = Math.min(control.startOffset, start)
+      control.endOffset = Math.max(control.startOffset, control.endOffset >= end ? control.endOffset + delta : start + length)
+    }
+  }
 }
 
 export function noteReferencePoint(model: DocumentModel, note: DocumentNote): DocumentPoint | undefined {

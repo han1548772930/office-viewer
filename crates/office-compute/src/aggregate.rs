@@ -1,4 +1,27 @@
 use crate::error::{ComputeError, MAX_ELEMENTS, validate_states};
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NumericStatistics {
+    pub numeric_count: u64,
+    pub non_empty_count: u64,
+    pub empty_count: u64,
+    pub error_count: u64,
+    pub invalid_numeric_count: u64,
+    pub sum: Option<f64>,
+    pub mean: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub population_variance: Option<f64>,
+    pub sample_variance: Option<f64>,
+    pub sample_standard_deviation: Option<f64>,
+    pub overflowed: bool,
+}
+
+fn finite(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
+}
 
 /// Incremental finite-number statistics. Non-numeric values are never coerced.
 #[derive(Debug, Default)]
@@ -72,9 +95,8 @@ impl NumericAggregate {
         Ok(())
     }
 
-    /// Slot schema v1: counts(5), sum, mean, min, max, population/sample variance,
-    /// sample standard deviation, overflow flag. NaN means no defined result.
-    pub fn packed_result(&self) -> Vec<f64> {
+    /// Undefined or unrepresentable results are null in the structured DTO.
+    pub fn statistics(&self) -> NumericStatistics {
         let sum = self.sum + self.compensation;
         let mean = if self.numeric_count == 0 {
             f64::NAN
@@ -103,20 +125,20 @@ impl NumericAggregate {
         let overflow = !sum.is_finite()
             || (self.numeric_count > 0 && (!mean.is_finite() || !population.is_finite()))
             || (self.numeric_count > 1 && !sample.is_finite());
-        vec![
-            self.numeric_count as f64,
-            self.non_empty_count as f64,
-            self.empty_count as f64,
-            self.error_count as f64,
-            self.invalid_numeric_count as f64,
-            sum,
-            mean,
-            self.min.unwrap_or(f64::NAN),
-            self.max.unwrap_or(f64::NAN),
-            population,
-            sample,
-            sample.sqrt(),
-            u8::from(overflow) as f64,
-        ]
+        NumericStatistics {
+            numeric_count: self.numeric_count,
+            non_empty_count: self.non_empty_count,
+            empty_count: self.empty_count,
+            error_count: self.error_count,
+            invalid_numeric_count: self.invalid_numeric_count,
+            sum: finite(sum),
+            mean: finite(mean),
+            min: self.min,
+            max: self.max,
+            population_variance: finite(population),
+            sample_variance: finite(sample),
+            sample_standard_deviation: finite(sample.sqrt()),
+            overflowed: overflow,
+        }
     }
 }

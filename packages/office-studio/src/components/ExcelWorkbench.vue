@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue'
+import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
+import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme.ts'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
@@ -77,7 +79,16 @@ import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type 
 import { convertTextToNumber } from '../features/sheet-workbench/text-to-number.ts'
 import { moveSheetCellRange, structureEdit, transformWorkbookReferencesForSheetEdit, type SheetCellMoveDirection } from '../features/sheet-workbench/sheet-cell-range-move.ts'
 import { resolveSlicerBounds } from '../features/slicer/slicer-drawing.ts'
+import type { SheetFillCommitContext } from '../features/sheet-workbench/sheet-fill-gesture.ts'
 import { canSetSheetHyperlink, normalizeExternalSheetHyperlink, parseSheetHyperlinkTarget, SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND } from '../features/sheet-workbench/sheet-hyperlink.ts'
+
+defineOptions({ inheritAttrs: false })
+
+// Splitter recreates its DOM inside ResizeObserver; pass sizing through its semantic styles.
+const sheetSplitterStyles: { root: CSSProperties; panel: CSSProperties } = {
+  root: { flex: '1 1 0', height: 'auto', minWidth: 0, minHeight: 0, overflow: 'hidden', alignItems: 'stretch' },
+  panel: { position: 'relative', display: 'flex', height: 'auto', minWidth: 0, minHeight: 0, overflow: 'hidden' },
+}
 
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const PivotChartPanel = defineAsyncComponent(() => import('./spreadsheet/PivotChartPanel.vue'))
@@ -1312,6 +1323,14 @@ function finishEdit(): boolean {
     if (document.activeElement === document.body) spreadsheetCanvas.value?.focus()
   })
   return continueAction
+}
+
+function prepareCanvasFillGesture(): SheetFillCommitContext | undefined {
+  const studio = props.studio, unitId = workbook.value.id, sheetId = activeSheetId.value
+  if (!finishEdit() || !workbenchActive.value || props.studio !== studio
+    || workbook.value.id !== unitId || activeSheetId.value !== sheetId || !activeSheet.value
+    || studio && unitId && (studio.activeWorkbookId !== unitId || studio.editor.state.activeKind !== 'workbook')) return undefined
+  return { sheetId, workbookRevision: studio && unitId ? studio.getWorkbookRevision(unitId) : undefined }
 }
 
 function cancelEdit() {
@@ -2564,8 +2583,8 @@ onActivated(() => { workbenchActive.value = true })
 </script>
 
 <template>
-  <ConfigProvider :direction="officeDirection">
-  <section ref="workbenchRef" class="excel-workbench" :dir="officeDirection" @keydown="handleGridKeydown">
+  <ConfigProvider :direction="officeDirection" :theme="WORKBENCH_CONTROL_THEME">
+  <section v-bind="$attrs" ref="workbenchRef" class="excel-workbench" :dir="officeDirection" @keydown="handleGridKeydown">
     <header v-if="showHeader && chrome.header" class="excel-header">
       <div class="document-brand">
         <div class="excel-logo"><FileSpreadsheet :size="18" /></div>
@@ -2605,9 +2624,9 @@ onActivated(() => { workbenchActive.value = true })
       </div>
     </div>
 
-    <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" orientation="horizontal" @resize="resizeSheetSidebar">
+    <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" :styles="sheetSplitterStyles" orientation="horizontal" @resize="resizeSheetSidebar">
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
-    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext"
+    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :prepare-fill="prepareCanvasFillGesture"
       :sheet="activeRenderSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
@@ -2712,10 +2731,11 @@ onActivated(() => { workbenchActive.value = true })
 .header-actions { gap: 3px; }
 .sheet-canvas-layout { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .sheet-canvas-layout:not(.has-sidebar) :deep(.ant-splitter-bar) { display: none; }
-.sheet-canvas-stack { position: relative; display: flex; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
-.sheet-canvas-stack :deep(.spreadsheet-canvas) { flex: 1; }
-.sheet-context-panel { display: flex; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
-.sheet-context-panel :deep(.validation-sidebar) { width: 100%; min-width: 0; flex: 1; }
+/* Splitter recreates Panel vnodes, so panel layout must target its generated DOM. */
+.sheet-canvas-layout :deep(.sheet-canvas-stack) { position: relative; display: flex; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.sheet-canvas-layout :deep(.sheet-canvas-stack .spreadsheet-canvas) { flex: 1; }
+.sheet-canvas-layout :deep(.sheet-context-panel) { display: flex; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.sheet-canvas-layout :deep(.sheet-context-panel .validation-sidebar) { width: 100%; min-width: 0; flex: 1; }
 .chart-insert-form { display: flex; flex-direction: column; gap: 14px; padding: 12px 0 4px; }
 .chart-insert-form :deep(.ant-form-item) { margin-bottom: 0; }
 .hyperlink-actions { display: flex; justify-content: space-between; gap: 8px; }

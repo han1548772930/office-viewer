@@ -3,6 +3,7 @@ import type {
   DocumentContentControl,
   DocumentModel,
 } from '../../../domain/model'
+import { documentTextFields, insertDocumentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 import {
   compactRuns,
   createParagraph,
@@ -152,6 +153,7 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
       const tail = tailIndex >= 0 ? container[tailIndex] : undefined
       if (tail) {
         const prefixLength = runText(anchor.runs as DocumentRun[]).length
+        transformDocumentTextFieldsForBlockRangeEdit([anchor, tail], prefixLength, 0, '', [anchor])
         anchor.runs = compactRuns([...(anchor.runs as DocumentRun[]), ...(tail.runs as DocumentRun[])])
         for (const candidate of model.contentControls ?? []) {
           if (candidate.blockId !== tail.id) continue
@@ -218,14 +220,19 @@ export function replacePictureContentControlImage(model: DocumentModel, id: stri
     if (candidate.startOffset < endOffset && startOffset < candidate.endOffset
       && !hasAncestor(controls, control, candidate.id)) throw new RangeError(`Picture replacement overlaps another content control: ${candidate.id}`)
   }
-  model.contentControls = controls.filter(candidate => !removedIds.has(candidate.id))
-  setTargetRuns(model, target, sliceRuns(runs, 0, startOffset))
   const tail = createParagraph()
   tail.style = { ...block.style }
   tail.type = block.type
   tail.level = block.level
   tail.metadata = { ...block.metadata }
+  delete tail.metadata.html
   tail.runs = sliceRuns(runs, endOffset)
+  const fieldSource = { ...block, metadata: { ...block.metadata } }
+  setDocumentTextFields(fieldSource, documentTextFields(block).filter(field => field.startOffset < startOffset || field.endOffset > endOffset))
+  transformDocumentTextFieldsForBlockRangeEdit([fieldSource], startOffset, endOffset, '\n', [fieldSource, tail])
+  block.metadata = fieldSource.metadata
+  model.contentControls = controls.filter(candidate => !removedIds.has(candidate.id))
+  setTargetRuns(model, target, sliceRuns(runs, 0, startOffset))
   const picture = createParagraph()
   picture.type = 'image'
   picture.runs = []
@@ -270,11 +277,16 @@ export function duplicateRepeatingSectionItem(model: DocumentModel, id: string):
   const text = sliceRuns(runs, item.startOffset, item.endOffset)
   const textLength = item.endOffset - item.startOffset
   const insertionOffset = item.endOffset
+  const paragraph = findBlock(model, item.blockId)!
+  const copiedFields = documentTextFields(paragraph).filter(field => field.startOffset >= item.startOffset && field.endOffset <= item.endOffset)
+    .map(field => ({ ...field, id: documentId('field'), startOffset: field.startOffset - item.startOffset, endOffset: field.endOffset - item.startOffset }))
+  transformDocumentTextFieldsForBlockEdit(paragraph, insertionOffset, insertionOffset, runText(text))
   setTargetRuns(model, target, [
     ...sliceRuns(runs, 0, insertionOffset),
     ...text,
     ...sliceRuns(runs, insertionOffset),
   ])
+  insertDocumentTextFields(paragraph, copiedFields, insertionOffset)
 
   const controls = model.contentControls ?? []
   const descendants = controls.filter((control) => control.blockId === item.blockId
@@ -327,10 +339,14 @@ export function deleteRepeatingSectionItem(model: DocumentModel, id: string): vo
     if (control.startOffset >= startOffset && control.endOffset <= endOffset) continue
     throw new RangeError(`Repeating-section deletion cannot split another content control: ${control.id}`)
   }
+  const paragraph = findBlock(model, item.blockId)!
+  const removedFields = new Set(documentTextFields(paragraph).filter(field => field.startOffset >= startOffset && field.endOffset <= endOffset).map(field => field.id))
+  transformDocumentTextFieldsForBlockEdit(paragraph, startOffset, endOffset, '')
   setTargetRuns(model, target, [
     ...sliceRuns(runs, 0, startOffset),
     ...sliceRuns(runs, endOffset),
   ])
+  setDocumentTextFields(paragraph, documentTextFields(paragraph).filter(field => !removedFields.has(field.id)))
   const removedIds = new Set(removed.map((control) => control.id))
   model.contentControls = (model.contentControls ?? []).filter((control) => !removedIds.has(control.id))
   for (const control of model.contentControls) {
@@ -456,6 +472,7 @@ export function transformContentControlsForBlockEdit(
   endOffset: number,
   replacementLength: number,
   split?: ContentControlParagraphSplit,
+  preserveControlRanges = false,
 ): void {
   if (!model.contentControls?.length || (startOffset === endOffset && replacementLength === 0 && !split)) return
   // Validate every affected range on a detached plan before changing any live anchors.
@@ -467,7 +484,7 @@ export function transformContentControlsForBlockEdit(
     const overlaps = insertion
       ? startOffset > control.startOffset && startOffset < control.endOffset
       : startOffset < control.endOffset && control.startOffset < endOffset
-    const removesWholeControl = overlaps && startOffset <= control.startOffset && endOffset >= control.endOffset && replacementLength === 0
+    const removesWholeControl = !preserveControlRanges && overlaps && startOffset <= control.startOffset && endOffset >= control.endOffset && replacementLength === 0
     if (removesWholeControl) {
       if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
       removeControlTreeFromModel(next, control)
@@ -554,6 +571,7 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
   const source = runs.find((run) => run.text.length > 0) ?? createRun()
   const { id: _id, text: _text, ...inherited } = source
   const inserted: DocumentRun[] = value ? [createRun(value, inherited)] : []
+  transformDocumentTextFieldsForBlockEdit(findBlock(model, control.blockId)!, control.startOffset, control.endOffset, value)
   setTargetRuns(model, target, compactRuns([...prefix, ...inserted, ...suffix]))
   const delta = value.length - oldLength
   if (delta === 0) return

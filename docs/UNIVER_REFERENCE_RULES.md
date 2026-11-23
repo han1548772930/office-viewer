@@ -8,7 +8,7 @@
 
 本文件是项目执行标准的补充。下面把“上游代码事实”和“本项目执行要求”分开记录。功能范围以[完整功能对齐清单](UNIVER_FEATURE_PARITY.md)为准，覆盖 Sheets / Docs 的所有 Pro 功能。没有公开源码时，反推可观察行为并在本项目独立实现。
 
-用户指定的渲染和计算路径为 Canvas / WebGPU 优先，以及大计算优先 Rust/WASM；具体约束以[渲染与计算标准](RENDERING_AND_COMPUTE_STANDARD.md)执行。此为本项目技术决策，不冒称上游 Univer 已使用 WebGPU。
+用户指定的渲染和计算路径为 Canvas / WebGPU 优先，以及大计算优先 Rust/WASM；具体约束以[渲染与计算标准](RENDERING_AND_COMPUTE_STANDARD.md)、[完整架构](../PROJECT_EXECUTION_STANDARD.md#workbench-architecture)和 [WASM 平台标准](RENDERING_AND_COMPUTE_STANDARD.md#wasm-platform-contract)执行。此为本项目技术决策，不冒称上游 Univer 已使用 WebGPU。
 
 ## 1. 参考方法与版本控制
 
@@ -230,7 +230,8 @@ UI stores 组合状态，不能倒置领域层依赖方向
 
 - 本项目复用已有 Office 转换能力：`crates/office-parser` 负责读取，`crates/office-writer` 负责写出，浏览器通过 Worker 调用；需要在服务端运行时扩展本项目后端。对齐公开 Facade 的输入、输出、格式和失败语义，从样本验证模型及资源保真，不接入 Univer Server 或 Exchange，也不依赖其私有协议。
 - `crates/office-parser` 包含 façade/API、版本化 DTO、格式路由、duke-pages 文档适配、rxls 工作簿适配、诊断与测试；复杂适配继续按功能拆模块，不全部放 parser.rs。
-- WASM 负责真实文件解析、规范化的解析 DTO 以及适合其环境的计算；不依赖 Vue，不操作 DOM，不管理工具栏与菜单。
+- Rust 领域/解析/计算内核不依赖 Vue 或 DOM；浏览器平台适配层与内核分离。主线程 WASM 可通过 `web-sys` 操作 DOM、Canvas 宿主、焦点、输入选区和事件，不要求所有 DOM 操作必须由 JavaScript 完成；Worker 不调用 Window/Document API。可替换 UI 组件和主题仍由 Vue/`antdv-next` 管理，浏览器句柄不进入持久化模型。
+- WASM 适配使用 `wasm-bindgen-futures`、`serde-wasm-bindgen`、`web-sys`、`js-sys`，浏览器契约使用 `wasm-bindgen-test`。批量缓冲区按所有权/lease/重入/`memory.grow` 契约使用零拷贝视图，必要边界复制单独计量；serde/transferable 不等于端到端零拷贝。
 - `schemaVersion/parserVersion/format/fileName/size/model/payload/diagnostics` 契约由 Rust 和 TypeScript 共同验证；payload.modelType/data 不能被前端旧字段假设替代。
 - Worker 协议包含 requestId、documentId、modelVersion、任务类型、进度、取消/过期与错误；取消解析不等于仅隐藏 loading。
 - 解析 DTO → 领域模型 → 布局模型 → 渲染分层。字段映射记录来源、默认值、保留字段和诊断，不能将真实段落替换成一句占位文案。

@@ -2,7 +2,7 @@
 import { Button, ConfigProvider, Form, FormItem, Input, Modal, theme, Upload } from 'antdv-next'
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { DocumentWorkbench, ExcelWorkbench, OfficeDirectionKey, OfficeLocaleKey, OfficeRegionKey, OfficeTranslatorKey, WORKBENCH_ACCENTS, WorkbenchDisplayKey, type OfficeLocale } from '@office-studio/office-studio'
+import { DocumentWorkbench, ExcelWorkbench, OfficeDirectionKey, OfficeLocaleKey, OfficeRegionKey, OfficeTranslatorKey, WORKBENCH_ACCENTS, WORKBENCH_CONTROL_THEME, WorkbenchDisplayKey, type OfficeLocale } from '@office-studio/office-studio'
 import { useDisplayPreferences } from './display-preferences'
 import WorkspaceHeader, { type WorkspaceHeaderAction } from './WorkspaceHeader.vue'
 import WorkspaceFeedback from './WorkspaceFeedback.vue'
@@ -91,7 +91,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 </script>
 
 <template>
-  <ConfigProvider :direction="direction" :theme="{ token: { colorPrimary: WORKBENCH_ACCENTS[preferences.accent] }, algorithm: preferences.dark ? theme.darkAlgorithm : theme.defaultAlgorithm }">
+  <ConfigProvider :direction="direction" :theme="{ ...WORKBENCH_CONTROL_THEME, token: { colorPrimary: WORKBENCH_ACCENTS[preferences.accent] }, algorithm: preferences.dark ? theme.darkAlgorithm : theme.defaultAlgorithm }">
   <div class="app-shell" @dragover="onDragOver" @drop="onDrop">
     <WorkspaceHeader
       :active-kind="editor.state.activeKind" :file-name="activeFileName" :modified="modified"

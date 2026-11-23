@@ -1,27 +1,45 @@
-import { ComputeError } from './errors.ts'
+import { ComputeError, normalizeComputeError } from './errors.ts'
 import { isRecord } from './protocol.ts'
+import { assertWasmProtocol, requireWasmMemory } from '../platform/wasm/task-protocol.ts'
+import type { WasmTaskControl } from '../platform/wasm/task-protocol.ts'
 
-export interface WasmAggregate { push(values: Float64Array, states: Uint8Array): void; result(): Float64Array; free(): void }
-export interface WasmStepper { step(budget: number): boolean; progress(): number; finish(): Uint32Array; free(): void }
+export interface WasmAggregate {
+  step(budget: number): boolean
+  progress(): number
+  result(): unknown
+  free(): void
+}
+export interface WasmIndexResult { copy_indices(): Uint32Array; metadata(): unknown; free(): void }
+export interface WasmStepper { step(budget: number): boolean; progress(): number; finish(): WasmIndexResult; free(): void }
 export interface ComputeWasmModule {
   default(): Promise<unknown>
+  compute_protocol_version(): number
   compute_version(): string
-  NumericAggregator: new () => WasmAggregate
-  NumericIndexSort: new (values: Float64Array, states: Uint8Array, rows: number, directions: Uint8Array, nullsLast: boolean) => WasmStepper
-  NumericIndexFilter: new (values: Float64Array, states: Uint8Array, rows: number, operators: Uint8Array, lower: Float64Array, upper: Float64Array, all: boolean) => WasmStepper
+  compute_yield(): Promise<void>
+  create_numeric_aggregate(values: Float64Array, states: Uint8Array, context: WasmTaskControl): WasmAggregate
+  create_numeric_sort(values: Float64Array, states: Uint8Array, control: {
+    context: WasmTaskControl; rowCount: number; directions: number[]; nullsLast: boolean
+  }): WasmStepper
+  create_numeric_filter(values: Float64Array, states: Uint8Array, control: {
+    context: WasmTaskControl; rowCount: number; operators: number[]; lower: number[]; upper: number[]; matchAll: boolean
+  }): WasmStepper
 }
-
-function isComputeModule(value: unknown): value is ComputeWasmModule {
-  return isRecord(value) && ['default', 'compute_version', 'NumericAggregator', 'NumericIndexSort', 'NumericIndexFilter'].every((key) => typeof value[key] === 'function')
+export interface LoadedComputeWasm { module: ComputeWasmModule; memory: WebAssembly.Memory }
+export function isComputeWasmModule(value: unknown): value is ComputeWasmModule {
+  return isRecord(value) && ['default', 'compute_protocol_version', 'compute_version', 'compute_yield',
+    'create_numeric_aggregate', 'create_numeric_sort', 'create_numeric_filter'].every((key) => typeof value[key] === 'function')
 }
-
-export async function loadComputeWasm(moduleUrl: string): Promise<ComputeWasmModule> {
+export async function initializeComputeWasm(value: unknown): Promise<LoadedComputeWasm> {
+  if (!isComputeWasmModule(value)) throw new ComputeError('COMPUTE_WASM_API_MISSING', 'Rust 计算模块缺少协议 2 接口，请执行 build:compute')
+  try {
+    const memory = requireWasmMemory(await value.default())
+    assertWasmProtocol(value.compute_protocol_version(), '计算模块')
+    return { module: value, memory }
+  } catch (error) { throw normalizeComputeError(error, 'COMPUTE_WASM_LOAD_FAILED') }
+}
+export async function loadComputeWasm(moduleUrl: string): Promise<LoadedComputeWasm> {
   let module: unknown
   try { module = await import(/* @vite-ignore */ moduleUrl) }
   catch (error) { throw new ComputeError('COMPUTE_WASM_LOAD_FAILED', 'Rust 计算模块加载失败，请先执行 build:compute', String(error)) }
-  if (!isComputeModule(module)) throw new ComputeError('COMPUTE_WASM_API_MISSING', 'Rust 计算模块接口不完整')
-  try { await module.default() }
-  catch (error) { throw new ComputeError('COMPUTE_WASM_LOAD_FAILED', 'Rust 计算 WASM 初始化失败', String(error)) }
-  return module
+  return initializeComputeWasm(module)
 }
-

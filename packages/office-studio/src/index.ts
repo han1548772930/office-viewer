@@ -1,5 +1,6 @@
 import './style.css'
 export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon-fonts'
+export { WORKBENCH_CONTROL_THEME } from './platform/workbench-theme'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type WorkbookCommitOptions } from './api/office-studio'
 export { CONTENT_HISTORY_COMMANDS, CONTENT_HISTORY_COMMAND_IDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget,

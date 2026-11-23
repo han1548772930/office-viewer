@@ -223,3 +223,115 @@ test('standalone input uses the same typed mapping and emits one authoritative w
   assert.match((await snapshot()).sheets[0].cells['0:1'].style.numberFormat, /%/)
   assert.equal((await history()).emits, 1); assert.equal((await history()).undo, 0)
 })
+
+async function pressEditingFillHandle() {
+  const handle = await page.locator('.canvas-cell-fill-handle').boundingBox()
+  assert.ok(handle && handle.width > 0 && handle.height > 0)
+  // The inner half overlays the Ant Input and was previously ignored by the canvas.
+  await page.mouse.move(handle.x + 1, handle.y + 1)
+  await page.mouse.down()
+}
+async function moveFillTo(row, column) {
+  const rect = await page.evaluate(({ row, column }) => window.selectionInputFixture.rect(row, column, false), { row, column })
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2, { steps: 4 })
+}
+
+test('editing handle commits the draft and fills on the same pointer, with separate undo entries and snapshot reopen', async () => {
+  const original = await snapshot(), input = await edit('A1')
+  await input.fill('10'); await pressEditingFillHandle()
+  await expect(editor()).toHaveCount(0); await expect(grid()).toBeFocused()
+  await moveFillTo(3, 0); await page.mouse.up()
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['3:0']?.value).toBe(13)
+  const saved = await snapshot()
+  assert.deepEqual([0, 1, 2, 3].map(row => saved.sheets[0].cells[row + ':0'].value), [10, 11, 12, 13])
+  assert.equal((await history()).undo, 2)
+  await grid().press('Control+z')
+  let restored = await snapshot()
+  assert.equal(restored.sheets[0].cells['0:0'].value, 10)
+  assert.equal(restored.sheets[0].cells['1:0']?.value, undefined)
+  await grid().press('Control+z')
+  restored = await snapshot()
+  assert.deepEqual(restored.sheets[0].cells['0:0'], original.sheets[0].cells['0:0'])
+  await grid().press('Control+y'); await grid().press('Control+y')
+  assert.equal((await snapshot()).sheets[0].cells['3:0'].value, 13)
+  await page.evaluate(value => window.selectionInputFixture.reopen(value), saved)
+  const reopened = await snapshot()
+  assert.deepEqual([0, 1, 2, 3].map(row => saved.sheets[0].cells[row + ':0'].value),
+    [0, 1, 2, 3].map(row => reopened.sheets[0].cells[row + ':0'].value))
+})
+
+test('clicking either half of the editing handle confirms input without filling adjacent cells', async () => {
+  for (const offset of [1, 4]) {
+    await page.evaluate(() => window.selectionInputFixture.seed({ entries: [{ value: 5 }] }))
+    const input = await edit('A1'); await input.fill('9')
+    const handle = await page.locator('.canvas-cell-fill-handle').boundingBox()
+    assert.ok(handle)
+    await page.mouse.click(handle.x + offset, handle.y + offset)
+    await expect(editor()).toHaveCount(0)
+    const model = await snapshot()
+    assert.equal(model.sheets[0].cells['0:0'].value, 9)
+    assert.equal(model.sheets[0].cells['1:0']?.value, undefined)
+    assert.equal(model.sheets[0].cells['0:1']?.value, undefined)
+    assert.equal(model.sheets[0].cells['1:1']?.value, undefined)
+    assert.equal((await history()).undo, 1)
+  }
+})
+
+test('editing fill reads the committed formula and translates its relative references at the destination', async () => {
+  await page.evaluate(() => window.selectionInputFixture.seed({ entries: [
+    { value: 1 }, { column: 1, value: 2 }, { row: 1, column: 1, value: 3 }, { row: 2, column: 1, value: 4 },
+  ] }))
+  const input = await edit('A1'); await input.fill('=B1*2'); await pressEditingFillHandle()
+  await expect(editor()).toHaveCount(0); await moveFillTo(2, 0); await page.mouse.up()
+  const model = await snapshot()
+  assert.deepEqual([0, 1, 2].map(row => model.sheets[0].cells[row + ':0'].formula), ['=B1*2', '=B2*2', '=B3*2'])
+  assert.equal((await history()).undo, 2)
+})
+
+for (const rejection of ['validation', 'command-cancel', 'composition']) {
+  test('editing fill preserves draft and model when blocked by ' + rejection, async () => {
+    await page.evaluate(() => window.selectionInputFixture.seed({ entries: [{ value: 5 }] }))
+    if (rejection === 'validation') await page.evaluate(() => window.selectionInputFixture.validation('stop'))
+    const input = await edit('A1'), before = await selection()
+    if (rejection === 'composition') await input.dispatchEvent('compositionstart', { data: '三' })
+    await input.fill('30')
+    if (rejection === 'command-cancel') await page.evaluate(() => window.selectionInputFixture.cancel(true))
+    await pressEditingFillHandle(); await moveFillTo(3, 0); await page.mouse.up()
+    await expect(input).toHaveValue('30'); await expect(input).toBeFocused()
+    const model = await snapshot()
+    assert.equal(model.sheets[0].cells['0:0'].value, 5)
+    assert.equal(model.sheets[0].cells['3:0']?.value, undefined)
+    assert.deepEqual(await selection(), before); assert.equal((await history()).undo, 0)
+  })
+}
+
+test('observer reselection during edit confirmation cancels the fill and preserves the observer selection', async () => {
+  const input = await edit('A1'); await input.fill('7')
+  await page.evaluate(() => window.selectionInputFixture.observer('reselect'))
+  await pressEditingFillHandle(); await moveFillTo(3, 0); await page.mouse.up()
+  await expect(editor()).toHaveCount(0)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 7)
+  assert.equal((await snapshot()).sheets[0].cells['3:0']?.value, undefined)
+  assert.deepEqual((await selection()).primary, { row: 4, column: 4 })
+  assert.equal((await history()).undo, 1)
+})
+
+test('Escape cancels an active fill while preserving its already confirmed source edit', async () => {
+  const input = await edit('A1'); await input.fill('9'); await pressEditingFillHandle()
+  await expect(editor()).toHaveCount(0); await moveFillTo(3, 0)
+  await grid().press('Escape'); await page.mouse.up()
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 9)
+  assert.equal((await snapshot()).sheets[0].cells['3:0']?.value, undefined)
+  assert.equal((await history()).undo, 1)
+})
+
+test('selection changes after a fill begins invalidate its pointer before destination writes', async () => {
+  const input = await edit('A1'); await input.fill('11'); await pressEditingFillHandle()
+  await expect(editor()).toHaveCount(0)
+  await page.evaluate(() => window.selectionInputFixture.select(['C7']))
+  await moveFillTo(3, 0); await page.mouse.up()
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 11)
+  assert.equal((await snapshot()).sheets[0].cells['3:0']?.value, undefined)
+  assert.deepEqual((await selection()).primary, { row: 6, column: 2 })
+  assert.equal((await history()).undo, 1)
+})

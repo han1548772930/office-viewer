@@ -96,6 +96,8 @@ export function applySectionHeaderFooter(
       || (field.offset !== undefined && !isDocumentTextBoundary(next[field.story], field.offset))
       || (field.instruction !== undefined && (typeof field.instruction !== 'string' || field.instruction.trim().split(/\s+/)[0]?.toUpperCase() !== field.field))
       || (field.cachedResult !== undefined && typeof field.cachedResult !== 'string')
+      || (field.locked !== undefined && typeof field.locked !== 'boolean')
+      || (field.containsNestedFields !== undefined && typeof field.containsNestedFields !== 'boolean')
       || (field.metadata !== undefined && (!field.metadata || typeof field.metadata !== 'object' || Array.isArray(field.metadata)))))) {
     throw new TypeError('Invalid section page fields')
   }

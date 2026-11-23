@@ -21,10 +21,12 @@ mod sparkline_sidecar;
 mod pivot_sidecar;
 mod conditional_format_sidecar;
 mod table_sidecar;
+#[cfg(target_arch = "wasm32")]
 mod wasm_api;
 
 pub use model::{
     DocumentModel, ParseEnvelope, ParseError, ParseErrorCode, ParseStats, ParserDiagnostics,
     SCHEMA_VERSION,
 };
+#[cfg(target_arch = "wasm32")]
 pub use wasm_api::{parse_document, parse_excel, parse_office};

@@ -245,6 +245,7 @@ export function insertLatexFormula(model: DocumentModel, selection: DocumentSele
   const after = sliceRuns(runsForTarget(model, start), end.offset)
   if (mode === 'inline') {
     const formula = createLatexFormulaRun(latex, mode)
+    transformDocumentTextFieldsForBlockEdit(block, start.offset, end.offset, formula.text)
     setTargetRuns(model, start, [...before, formula, ...after])
     return { ...start, offset: start.offset + formula.text.length }
   }
@@ -253,7 +254,9 @@ export function insertLatexFormula(model: DocumentModel, selection: DocumentSele
   const trailing = createParagraph()
   trailing.style = { ...block.style }
   trailing.runs = after.length ? after : [createRun()]
+  transformDocumentTextFieldsForBlockRangeEdit([block], start.offset, end.offset, '\n', [block, trailing])
   block.runs = before.length ? before : [createRun()]
   model.blocks.splice(index + 1, 0, equation, trailing)
   return { blockId: equation.id, offset: OBJECT_REPLACEMENT.length }
 }
+import { transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'

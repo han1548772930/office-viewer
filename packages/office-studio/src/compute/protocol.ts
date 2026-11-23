@@ -1,4 +1,6 @@
-export const COMPUTE_PROTOCOL_VERSION = 1 as const
+import { WASM_PROTOCOL_VERSION } from '../platform/wasm/task-protocol.ts'
+import type { BoundaryCopyStats, WasmTaskControl, WorkerTransportStats } from '../platform/wasm/task-protocol.ts'
+export const COMPUTE_PROTOCOL_VERSION = WASM_PROTOCOL_VERSION
 export const COMPUTE_LIMITS = {
   maxElements: 16_000_000,
   maxRows: 10_000_000,
@@ -30,6 +32,7 @@ export type ComputeErrorCode =
   | 'COMPUTE_WASM_LOAD_FAILED' | 'COMPUTE_WASM_API_MISSING' | 'COMPUTE_PROTOCOL_MISMATCH'
   | 'COMPUTE_FAILED' | 'COMPUTE_CANCELLED' | 'COMPUTE_TIMEOUT' | 'COMPUTE_STALE_RESULT'
   | 'COMPUTE_WORKER_FAILED' | 'COMPUTE_WASM_TRAP' | 'COMPUTE_DISPOSED' | 'COMPUTE_NOT_READY'
+  | 'COMPUTE_RESULT_CONSUMED'
 
 export interface ComputeErrorData { code: ComputeErrorCode; message: string; details?: string }
 export interface ComputeContext { requestId: string; documentId: string; modelRevision: number }
@@ -38,6 +41,7 @@ export interface ComputeProgress extends ComputeContext {
   ratio: number; processed: number; total: number
   unit: 'values' | 'rows' | 'merge-writes'
 }
+export type ComputeWorkerProgress = Omit<ComputeProgress, keyof ComputeContext> & { context: WasmTaskControl }
 export interface NumericStatistics {
   numericCount: number; nonEmptyCount: number; emptyCount: number
   errorCount: number; invalidNumericCount: number
@@ -50,29 +54,30 @@ export interface IndexOutput { kind: 'sort' | 'filter'; indices: Uint32Array }
 export type ComputeOutput = AggregateOutput | IndexOutput
 export interface ComputeMetrics {
   elapsedMs: number; inputBytes: number; estimatedPeakBytes: number
-  /** Main-thread scheduling measurements, added by the client. */
+  boundary: BoundaryCopyStats; transport: WorkerTransportStats
+  /** Copy/ownership preparation and scheduling are added by the client. */
+  preparedInputCopies?: number; preparedInputBytes?: number; ownershipTransfers?: number
   queueMs?: number; totalMs?: number
 }
 export interface ComputeResult extends ComputeContext {
-  type: 'result'; engineVersion: string; output: ComputeOutput; metrics: ComputeMetrics
+  type: 'result'; context: WasmTaskControl; engineVersion: string; output: ComputeOutput; metrics: ComputeMetrics
 }
+export type ComputeWorkerResult = Omit<ComputeResult, keyof ComputeContext>
 export type ComputeWorkerRequest =
   | { type: 'init'; protocolVersion: number; moduleUrl: string }
-  | ({ type: 'run'; task: ComputeTask; memoryBudgetBytes: number } & ComputeContext)
-  | { type: 'cancel'; requestId: string }
+  | { type: 'run'; context: WasmTaskControl; task: ComputeTask }
+  | { type: 'cancel'; context: WasmTaskControl }
 export type ComputeWorkerEvent =
   | { type: 'ready'; protocolVersion: number; engineVersion: string }
   | { type: 'init-error'; error: ComputeErrorData }
-  | ComputeProgress | ComputeResult
-  | ({ type: 'cancelled' } & ComputeContext)
-  | ({ type: 'error'; error: ComputeErrorData } & ComputeContext)
+  | ComputeWorkerProgress | ComputeWorkerResult
+  | { type: 'cancelled'; context: WasmTaskControl }
+  | { type: 'error'; context: WasmTaskControl; error: ComputeErrorData }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
 export function isContext(value: Record<string, unknown>): value is Record<string, unknown> & ComputeContext {
-  return typeof value.requestId === 'string' && value.requestId.length > 0 && typeof value.documentId === 'string' && value.documentId.trim().length > 0
+  return typeof value.requestId === 'string' && value.requestId.trim().length > 0 && typeof value.documentId === 'string' && value.documentId.trim().length > 0
     && Number.isSafeInteger(value.modelRevision) && Number(value.modelRevision) >= 0
 }
-

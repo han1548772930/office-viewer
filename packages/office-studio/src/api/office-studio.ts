@@ -13,6 +13,7 @@ import { applySheetBorderFormatCommand, borderFormatActionForCommand, createShee
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
+import { prepareDocumentStoryFieldRefresh } from '../features/document/services/document-story-fields.ts'
 import { createParagraph, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
 import { useDocumentInputStore } from '../features/document/stores/document-input-store.ts'
@@ -945,6 +946,8 @@ export class OfficeStudio {
     const generation = session?.generation
     if (request.expectedRevision !== undefined && request.expectedRevision !== revision) throw new Error('文档内容已更改，请重新执行编辑。')
     const sourceCurrent = !Object.hasOwn(request, 'inputGeneration') || request.inputGeneration === generation
+    const fieldRefresh = request.command.id === 'doc.command.refresh-header-footer-fields' || request.command.id === 'doc.command.update-selected-fields' ? request.command : undefined
+    if (fieldRefresh && !sourceCurrent) throw new Error('字段更新选区已更改，请重新执行。')
     const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind
     const hostCurrent = () => this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind
     const context = { documentId: request.unitId, userId: this.currentUserId, permissionAdminUserId: this.permissionAdminUserId }
@@ -963,7 +966,8 @@ export class OfficeStudio {
     }
     const sourceSelection = resolveDocumentEditorSelection(current, request.selection)
     const story = request.command.id === 'doc.command.set-section-header-footer' ? request.command.input?.range
-      : request.command.id === 'doc.command.format-text' || request.command.id === 'doc.command.clear-formatting' ? request.command.story : undefined
+      : request.command.id === 'doc.command.format-text' || request.command.id === 'doc.command.clear-formatting' ? request.command.story
+      : fieldRefresh && session?.valid && session.modelRevision === revision && session.location.kind === 'story' ? session.location.range : undefined
     const sourceLocation = documentInputLocation(sourceSelection, story)
     const tracksSelection = sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
     let input: RunPatch | undefined
@@ -974,7 +978,11 @@ export class OfficeStudio {
     }
     const effective: DocumentEditorCommandRequest = { ...request, selection: sourceSelection, command }
     let selection = sourceSelection, storyAdvance: DocumentInputLocation | undefined
-    const changed = this.commitDocument(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
+    const fieldRefreshPlan = fieldRefresh ? prepareDocumentStoryFieldRefresh(current, { locale: fieldRefresh.locale, timestamp: fieldRefresh.timestamp,
+      ...(fieldRefresh.id === 'doc.command.update-selected-fields' ? { stories: fieldRefresh.stories ?? [] } : {}) }, context) : undefined
+    // Read-only/unsupported/no-selection refreshes succeed without entering a content mutation.
+    const changed = (!fieldRefresh || fieldRefreshPlan !== undefined) && this.commitDocument(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
+      if (fieldRefreshPlan) { model.sectionHeaderFooters = cloneModel(fieldRefreshPlan.sectionHeaderFooters); return }
       selection = applyDocumentEditorCommand(model, effective, context)
       if (request.command.id === 'doc.command.set-section-header-footer' && request.command.input) {
         storyAdvance = prepareDocumentStoryInputAdvance(current, model, sourceSelection, request.command.sectionId,
@@ -982,10 +990,16 @@ export class OfficeStudio {
       }
     })
     let expectedGeneration = generation
+    let fieldInputPreserved = true
     const modelRevision = revision + (changed ? 1 : 0)
     if (this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === modelRevision
       && this.documentInput.get(request.unitId)?.generation === generation && hostCurrent()) {
-      if (storyAdvance && generation !== undefined) {
+      if (changed && fieldRefresh && tracksSelection && session?.valid) {
+        fieldInputPreserved = this.documentInput.completeUnchangedSelection(request.unitId, session, modelRevision)
+        if (!fieldInputPreserved) this.documentInput.clearMarks(request.unitId)
+        expectedGeneration = (generation ?? 0) + 1
+        this.publishDocumentInputState(request.unitId)
+      } else if (storyAdvance && generation !== undefined) {
         this.documentInput.allowAdvance(request.unitId, storyAdvance, modelRevision, generation)
       } else if (changed && input && tracksSelection) {
         const location = documentInputLocation(selection)
@@ -1003,7 +1017,7 @@ export class OfficeStudio {
         this.publishDocumentInputState(request.unitId)
       }
     }
-    const selectionCurrent = tracksSelection && !!this.getDocumentModel(request.unitId) && hostCurrent()
+    const selectionCurrent = tracksSelection && fieldInputPreserved && !!this.getDocumentModel(request.unitId) && hostCurrent()
       && this.getDocumentRevision(request.unitId) === modelRevision && this.documentInput.get(request.unitId)?.generation === expectedGeneration
     return { changed, selection, selectionCurrent, modelRevision }
   }

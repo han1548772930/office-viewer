@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X }
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { selectionFontPatch } from '../features/document/model/document-font'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
@@ -27,6 +28,7 @@ import DocumentTableInsertDialog from './document/DocumentTableInsertDialog.vue'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import type { RibbonVariant } from '../platform/ribbon/ribbon-schema'
 import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
+import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentStoryToolbarState, documentToolbarState, type DocumentToolbarState } from './document/document-toolbar-state'
@@ -43,7 +45,7 @@ import { printDocumentModel } from '../features/document/services/document-print
 import { DOCUMENT_PASTE_OPTIONS, documentPasteCommand, documentPasteSpecialCommand, readDocumentClipboard, type DocumentPasteMode } from '../features/document/services/document-clipboard'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock, sectionStoryLinkedToPrevious, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField, type StoryLocation } from '../features/document/services/story-editor'
-import { refreshDocumentStoryDateFields } from '../features/document/services/document-story-fields'
+import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, documentBodySelectionHasField, documentStoryRangeHasField } from '../features/document/services/document-story-fields'
 import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeaderFooterAction } from './document/document-header-footer-capabilities'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { selectedDocumentContentControl } from '../features/document/services/content-controls'
@@ -63,6 +65,14 @@ import { assertDocumentTextSelectionEditable, documentTextFormattingState } from
 import { validateDocumentRunPatch } from '../features/document/model/document-run-range'
 import { DOCUMENT_STORY_KEYS, clampDocumentTextRange, type DocumentStoryKey, type DocumentStoryRange } from '../features/document/model/document-story'
 import type { DocumentInputSession, DocumentStoryInputCommit } from '../features/document/model/document-input-session'
+
+defineOptions({ inheritAttrs: false })
+
+// Splitter creates its root and panel DOM in a ResizeObserver slot without this component's scope attribute.
+const documentSplitterStyles: { root: CSSProperties; panel: CSSProperties } = {
+  root: { flex: '1 1 0', height: 'auto', minWidth: 0, minHeight: 0, overflow: 'hidden', alignItems: 'stretch' },
+  panel: { position: 'relative', display: 'flex', height: 'auto', minWidth: 0, minHeight: 0, overflow: 'hidden' },
+}
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
 const { locale: officeLocale, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.documentApi?.regionalSettings)
@@ -150,7 +160,7 @@ const modalValue = ref('')
 const modalError = ref('')
 const tableInsertOpen = ref(false)
 const notice = ref('')
-const documentContextMenu = ref<{ left: number; top: number }>()
+const documentContextMenu = shallowRef<{ left: number; top: number; fieldRequest?: { source: DocumentModel; story?: DocumentStoryRange; bodySelection?: DocumentSelection; requestScope: number } }>()
 const contentControlPanelOpen = ref(false)
 const activeContentControlId = ref<string>()
 const pictureReplacementControlId = ref<string>()
@@ -217,6 +227,8 @@ const permissionContext = computed(() => ({
 const permissionTargets = computed(() => documentPermissionTargetOptions(model.value, createRibbonTranslator(officeLocale.value, 'doc')))
 const canManagePermissionRules = computed(() => canManageDocumentPermissions(permissionContext.value))
 const canComment = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment').allowed)
+const documentInputComposing = computed(() => storyComposing.value || canvasRef.value?.isBodyComposing() === true)
+const canRefreshFields = computed(() => !documentInputComposing.value && canRefreshDocumentStoryFields(model.value, permissionContext.value))
 const canCreateComment = computed(() => canComment.value && !selectionCollapsed(selection.value)
   && resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment', permissionTargetsForSelection(model.value, selection.value)).allowed)
 const deletableCommentIds = computed(() => Object.values(model.value.comments ?? {})
@@ -292,6 +304,12 @@ const tocDialog = ref<{ open: boolean; mode: 'insert' | 'update'; insertMode: 'a
 const tocDialogOptions = ref<DocumentTocOptions>({ ...DEFAULT_DOCUMENT_TOC_OPTIONS })
 const contextMenuActions = computed(() => {
   const translate = createRibbonTranslator(officeLocale.value, 'doc')
+  const story = currentStoryRange.value
+  if (story) return documentStoryRangeHasField(resolveSectionHeaderFooter(model.value, story.sectionId), story.story, story) ? [{
+    id: 'doc-context-update-fields', title: translate('docs-ui.headerFooter.refreshFields', '更新字段'),
+    commandId: 'doc.command.update-selected-fields', params: undefined,
+    disabled: !canEditStory.value || storyLinkedToPrevious.value || storyComposing.value, group: 'format' as const,
+  }] : []
   const pasteSpecialActions = DOCUMENT_PASTE_OPTIONS.map(({ value: mode, label }) => ({
     id: `doc-context-paste-special-${mode}`,
     title: translate(`doc.context.paste-special.${mode}`, label),
@@ -324,7 +342,12 @@ const contextMenuActions = computed(() => {
   const tocActions = selectedTocId.value
     ? documentTocContextMenuItems(selectedTocId.value, !canEditSelectedToc.value, translate).map(action => ({ ...action, group: 'layout' as const }))
     : []
-  return [...quickActions, ...pasteSpecialActions, ...layoutActions, ...tocActions, ...tableActions]
+  const fieldActions = documentBodySelectionHasField(model.value, selection.value) ? [{
+    id: 'doc-context-update-fields', title: translate('docs-ui.headerFooter.refreshFields', '更新字段'),
+    commandId: 'doc.command.update-selected-fields', params: undefined,
+    disabled: documentInputComposing.value || !canRefreshSelectedDocumentBodyFields(model.value, selection.value, permissionContext.value), group: 'format' as const,
+  }] : []
+  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...layoutActions, ...tocActions, ...tableActions]
 })
 const documentContextMenuItems = computed<MenuItemType[]>(() => {
   const quickItems = contextMenuActions.value.filter(item => item.group === 'quick')
@@ -367,6 +390,7 @@ const ribbonTabs = computed(() => {
     editingHeaderFooter: !!storyLocation.value,
     headerFooter: storyLocation.value && {
       visible: true, area: storyLocation.value.area, disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value,
+      refreshDisabled: storyComposing.value || !canRefreshFields.value,
       requestScope: storyActionVersion.value,
       contentDisabled: storyLinkedToPrevious.value, canLinkToPrevious: headerFooterSectionId.value !== 'first',
       linkedToPrevious: storyLinkedToPrevious.value, differentFirstPage: storySection.value.differentFirstPage,
@@ -565,11 +589,12 @@ function syncCurrentInput(api: FDocument) {
 function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number }) {
   if (command.id === 'doc.command.clear-formatting' && !clearFormattingState.value.available) return false
   const documentApi = props.documentApi
+  const fieldRefresh = command.id === 'doc.command.refresh-header-footer-fields' || command.id === 'doc.command.update-selected-fields'
   if (documentApi && documentApi.id !== model.value.id) { notify('文档切换尚未完成，请稍后重试。'); return false }
   if ((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && !command.story && currentStoryRange.value) command = { ...command, story: currentStoryRange.value }
   const targets = (command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story ? [{ scope: 'section' as const, id: command.story.sectionId }]
     : 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(model.value, selection.value)
-  if (command.id !== 'doc.command.set-document-permission-rules' && !canDocumentPermission('edit', targets)) return false
+  if (command.id !== 'doc.command.set-document-permission-rules' && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
   try {
     if (!documentApi && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.delete')) {
       assertDocumentTextSelectionEditable(model.value, selection.value)
@@ -628,7 +653,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
         storySelection.value = { start: clearedStory.start, end: clearedStory.end }
       }
     }
-    if (!documentApi && command.id !== 'doc.command.insert-text' && !collapsedFormat) standalonePendingMarks.value = {}
+    if (!documentApi && command.id !== 'doc.command.insert-text' && !collapsedFormat && !fieldRefresh) standalonePendingMarks.value = {}
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     colorMemory.value = rememberDocumentColors(colorMemory.value, command)
     if (restoreFocus) scheduleInputFocus(() => {
@@ -977,15 +1002,29 @@ function onViewportChange(location: DocumentViewportLocation) {
   visibleBlockId.value = location.firstVisibleBlockId
 }
 function navigateOutline(item: DocumentOutlineItem) { if (item.blockId) jumpToHeading(item.blockId); else setActivePage(0) }
-function openDocumentContextMenu(payload: { x: number; y: number }) {
+function openDocumentContextMenu(payload: { x: number; y: number; source?: DocumentModel; story?: DocumentStoryRange }) {
+  if (payload.source && payload.source !== model.value) return
+  const story = payload.story, current = currentStoryRange.value
+  if (story ? !current || current.sectionId !== story.sectionId || current.story !== story.story || current.start !== story.start || current.end !== story.end : !!storyLocation.value) return
+  if (!contextMenuActions.value.length) return
   const bounds = workbenchRef.value?.getBoundingClientRect()
   if (!bounds) return
   documentContextMenu.value = {
     left: Math.max(4, Math.min(payload.x - bounds.left, bounds.width - 238)),
     top: Math.max(4, Math.min(payload.y - bounds.top, bounds.height - 300)),
+    fieldRequest: { source: model.value, requestScope: storyActionVersion.value,
+      ...(story ? { story: { ...story } } : { bodySelection: { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } } }) },
   }
 }
 function runContextMenuAction(action: { id: string; commandId?: string; params?: unknown }) {
+  if (action.commandId === 'doc.command.update-selected-fields') {
+    const request = documentContextMenu.value?.fieldRequest, native = canvasRef.value?.storyRange()
+    documentContextMenu.value = undefined
+    if (!request || request.requestScope !== storyActionVersion.value
+      || request.story && native && (native.start !== request.story.start || native.end !== request.story.end)) return
+    refreshSelectedFields(request.source, request.story, request.bodySelection)
+    return
+  }
   onRibbonExecute(action.commandId ?? action.id, action.params)
   documentContextMenu.value = undefined
   void nextTick(() => canvasRef.value?.focus())
@@ -1419,7 +1458,18 @@ function handleStoryAction(raw: unknown) {
   }
   if (!targetCurrent()) return
   if (action.action === 'navigate') { openStory({ page: location.page, area: action.area }); return }
-  if (headerFooterActionDisabled({ disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value, contentDisabled: storyLinkedToPrevious.value }, action)) return
+  if (headerFooterActionDisabled({ disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value, contentDisabled: storyLinkedToPrevious.value,
+    refreshDisabled: storyComposing.value || !canRefreshFields.value }, action)) return
+  if (action.action === 'refresh-fields') {
+    const range = canvasRef.value?.storyRange() ?? currentStorySelection.value
+    if (range.start !== currentStorySelection.value.start || range.end !== currentStorySelection.value.end) onStorySelection(range)
+    if (!sourceCurrent() || captureScope !== storyActionVersion.value || !rangeCurrent(range.start, range.end)) { recoverCurrentInput(); return }
+    const feedback: { selectionCurrent: boolean; modelRevision?: number } = { selectionCurrent: true }
+    const accepted = execute({ id: 'doc.command.refresh-header-footer-fields', locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now() }, false, feedback)
+    if (!accepted || !feedback.selectionCurrent || !targetCurrent() || api && feedback.modelRevision !== undefined && feedback.modelRevision !== api.getModelRevision()) { recoverCurrentInput(); return }
+    scheduleInputFocus(() => canvasRef.value?.focusStory(range.start, range.end))
+    return
+  }
   if (action.action === 'set-options') {
     const { marginHeader, marginFooter, linkToPrevious, ...options } = action.patch
     const range = { ...currentStorySelection.value }
@@ -1438,12 +1488,7 @@ function handleStoryAction(raw: unknown) {
     const section = resolveSectionHeaderFooter(source, sectionId)
     if (sectionStoryLinkedToPrevious(section, key)) return
     const now = new Date(), locale = officeLocale.value.replaceAll('_', '-')
-    if (action.action === 'refresh-fields') {
-      try {
-        const fields = refreshDocumentStoryDateFields(section, key, locale, now, source)
-        if (sourceCurrent() && fields && fields.some((field, i) => field.cachedResult !== section.pageFields?.[i]?.cachedResult)) applyHeaderFooter({ pageFields: fields }, undefined, sectionId)
-      } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
-    } else if (action.action === 'insert-field' || action.action === 'insert-date-time') {
+    if (action.action === 'insert-field' || action.action === 'insert-date-time') {
       const { start, end } = canvasRef.value?.storyRange() ?? currentStorySelection.value
       if (start !== currentStorySelection.value.start || end !== currentStorySelection.value.end) onStorySelection({ start, end })
       if (!sourceCurrent() || captureScope !== storyActionVersion.value || !rangeCurrent(start, end)) { recoverCurrentInput(); return }
@@ -1471,6 +1516,18 @@ function handleStoryAction(raw: unknown) {
     }
   }
   if (targetCurrent()) canvasRef.value?.focusStory()
+}
+function refreshSelectedFields(source = model.value, story?: DocumentStoryRange, bodySelection?: DocumentSelection) {
+  if (!inputStateActive || source !== model.value || documentInputComposing.value) return
+  const current = currentStoryRange.value, api = props.documentApi
+  if (story ? !current || current.sectionId !== story.sectionId || current.story !== story.story || current.start !== story.start || current.end !== story.end : !!storyLocation.value) return
+  if (bodySelection && (!sameTarget(bodySelection.anchor, selection.value.anchor) || !sameTarget(bodySelection.focus, selection.value.focus)
+    || bodySelection.anchor.offset !== selection.value.anchor.offset || bodySelection.focus.offset !== selection.value.focus.offset)) return
+  const feedback: { selectionCurrent: boolean; modelRevision?: number } = { selectionCurrent: true }
+  if (!execute({ id: 'doc.command.update-selected-fields', locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now(), stories: story ? [{ ...story }] : [],
+    ...(!story ? { bodySelection: bodySelection ?? { anchor: { ...selection.value.anchor }, focus: { ...selection.value.focus } } } : {}) }, false, feedback)) return
+  if (!feedback.selectionCurrent || api !== props.documentApi || api && feedback.modelRevision !== undefined && feedback.modelRevision !== api.getModelRevision()) return
+  scheduleInputFocus(() => story ? canvasRef.value?.focusStory(story.start, story.end) : canvasRef.value?.focus())
 }
 function activatePainter(continuous: boolean) {
   if (painter.value) {
@@ -1518,6 +1575,8 @@ function onRibbonExecute(id: string, params?: unknown) {
       break
     }
     case 'doc.command.print': printDocument(); break
+    case 'doc.command.refresh-header-footer-fields': execute({ id, locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now() }); break
+    case 'doc.command.update-selected-fields': refreshSelectedFields(model.value, currentStoryRange.value); break
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image': insertImage(); break
     case 'doc.operation.open-link': insertLink(); break
@@ -1651,8 +1710,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </script>
 
 <template>
-  <ConfigProvider :direction="officeDirection">
-  <section ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" :style="workbenchStyle" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
+  <ConfigProvider :direction="officeDirection" :theme="WORKBENCH_CONTROL_THEME">
+  <section v-bind="$attrs" ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" :style="workbenchStyle" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
     <header v-if="showHeader && chrome.header && !isFocusMode" class="document-header">
       <FileText class="document-mark" :size="20" />
       <Input v-model:value="documentTitle" class="document-name" aria-label="文档名称" variant="borderless" @change="updateTitle" @press-enter="($event.target as HTMLInputElement).blur()" />
@@ -1686,12 +1745,12 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <main class="editor-workspace">
       <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
-      <Splitter class="document-editor-splitter" :destroy-on-hidden="false" @resize="resizeDocumentDock">
+      <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
-            @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+            @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @refresh-fields="refreshSelectedFields" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="layout = $event" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
         </SplitterPanel>
         <SplitterPanel :size="documentDockOpen ? documentDockWidth : 0" :min="documentDockOpen ? 280 : 0" :max="800" :resizable="documentDockOpen" :destroy-on-hidden="false">
           <aside v-if="paragraphSettingsPanelOpen" class="document-settings-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.paragraph-settings.title', 'Paragraph settings')">
@@ -1756,7 +1815,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </template>
 
 <style scoped>
-.document-workbench { position: relative; min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; color: var(--document-text); background: var(--document-background); font: 13px/1.45 "Microsoft YaHei", "Segoe UI", sans-serif; }
+.document-workbench { position: relative; min-width: 0; height: 100%; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; color: var(--document-text); background: var(--document-background); font: 13px/1.45 "Microsoft YaHei", "Segoe UI", sans-serif; }
 .document-header { flex: 0 0 44px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 12px; border-bottom: 1px solid var(--document-secondary-border); background: var(--document-surface); }
 .document-mark { flex-shrink: 0; color: var(--document-primary); }
 .document-name { min-width: 60px; flex: 1; }

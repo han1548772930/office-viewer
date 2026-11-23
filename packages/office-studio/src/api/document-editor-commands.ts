@@ -46,6 +46,8 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.table-tab': '跳转表格单元格',
   'doc.command.set-section-header-footer': '设置页眉页脚',
   'doc.command.set-section-setup': '设置节格式',
+  'doc.command.refresh-header-footer-fields': '更新页眉页脚字段',
+  'doc.command.update-selected-fields': '更新选中字段',
   'doc.command.insert-page-field': '插入页面域',
   'doc.command.update-table-of-contents': '更新目录',
   'doc.command.delete-table-of-contents': '删除目录',

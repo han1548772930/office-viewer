@@ -15,10 +15,12 @@ import type { DocumentStoryInputCommit } from '../model/document-input-session'
 import { selectionFontPatch } from '../model/document-font'
 import { documentRunStyleAt, formatDocumentRunRange, splitDocumentRunRange, validateDocumentRunPatch } from '../model/document-run-range'
 import { applyDocumentStoryTextFormatting } from '../services/document-story-formatting'
+import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshRequest } from '../services/document-story-fields'
 import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
+import { documentTextFields, insertDocumentTextFields, remapDocumentTextFieldIds, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
@@ -53,6 +55,8 @@ export type DocumentCommand =
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch; input?: DocumentStoryInputCommit }
   | { id: 'doc.command.set-section-setup'; sectionId: string; patch: DocumentSectionSetupPatch }
+  | ({ id: 'doc.command.refresh-header-footer-fields' } & Omit<DocumentStoryFieldRefreshRequest, 'stories' | 'bodySelection'>)
+  | ({ id: 'doc.command.update-selected-fields' } & DocumentStoryFieldRefreshRequest)
   | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
   | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers }
@@ -140,6 +144,7 @@ function replaceImportedNumberingMarkers(model: DocumentModel, targets: readonly
       }
       // Cached labels may precede zero-length footnote/field objects. Keep
       // those identities when the label is explicitly replaced or cleared.
+      transformDocumentTextFieldsForBlockEdit(block, 0, length, '')
       block.runs = bodyRuns.length ? bodyRuns : [createRun()]
       delete block.metadata.html
       if (target.row !== undefined) {
@@ -286,7 +291,8 @@ export function executeDocumentCommand(
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
-  } else if (command.id !== 'doc.command.change-paragraph-indent' && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
+  } else if (command.id !== 'doc.command.change-paragraph-indent' && command.id !== 'doc.command.refresh-header-footer-fields' && command.id !== 'doc.command.update-selected-fields'
+    && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   switch (command.id) {
@@ -497,11 +503,15 @@ export function executeDocumentCommand(
       const text = paragraph && runText(paragraph.runs)
       if (paragraph && text !== undefined && !/[\r\n]/.test(text)) {
         const { start, end } = orderedSelection(model, selection)
-        const before = sliceRuns(runsForTarget(model, start), 0, start.offset)
-        const after = blockContainer(model, start) === blockContainer(model, end) ? sliceRuns(runsForTarget(model, end), end.offset) : []
+        const startRuns = runsForTarget(model, start)
+        const before = splitDocumentRunRange(startRuns, start.offset, sameTarget(start, end) ? end.offset : runText(startRuns).length).before
+        const after = blockContainer(model, start) === blockContainer(model, end)
+          ? splitDocumentRunRange(runsForTarget(model, end), sameTarget(start, end) ? start.offset : 0, end.offset).after : []
+        const fields = documentTextFields(paragraph)
         const next = replaceSelectionText(model, selection, text)
-        if (!text) return next
-        setTargetRuns(model, next.focus, [...before, ...paragraph.runs as DocumentRun[], ...after])
+        if (text) setEditingRuns(model, next.focus, [...before, ...paragraph.runs as DocumentRun[], ...after], {})
+        const destination = blockAtPoint(model, next.focus)
+        if (destination) insertDocumentTextFields(destination, fields, start.offset)
         return next
       }
       return insertBlocks(model, selection, blocks)
@@ -517,6 +527,18 @@ export function executeDocumentCommand(
     case 'doc.command.set-section-setup':
       applyDocumentSectionSetupPatch(model, command.sectionId, command.patch)
       return selection
+    case 'doc.command.refresh-header-footer-fields':
+    case 'doc.command.update-selected-fields': {
+      const plan = prepareDocumentStoryFieldRefresh(model, { locale: command.locale, timestamp: command.timestamp,
+        onOpen: command.onOpen,
+        ...(command.id === 'doc.command.update-selected-fields' ? { stories: command.stories ?? [],
+          bodySelection: command.bodySelection ?? (!command.stories?.length ? selection : undefined) } : {}) }, context, selection)
+      if (plan) {
+        model.sectionHeaderFooters = plan.sectionHeaderFooters
+        if (plan.blocks) { model.blocks = plan.blocks; model.contentControls = plan.contentControls; model.comments = plan.comments }
+      }
+      return plan?.selection ?? selection
+    }
     case 'doc.command.insert-page-field': {
       const candidate = { ...model, sectionHeaderFooters: model.sectionHeaderFooters ? cloneModel(model.sectionHeaderFooters) : undefined }
       insertSectionPageField(candidate, command.sectionId, command.story, command.field, command)
@@ -618,21 +640,28 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (startContainer !== endContainer) {
     const targets = targetsForSelection(model, selection, true)
     targets.forEach((target, index) => {
-      setEditingRuns(model, target, index === 0 ? [...before, createRun(text, inherited)] : index === targets.length - 1 ? after : [], inherited)
+      const block = blockAtPoint(model, target)
+      if (block) {
+        if (index === 0) transformDocumentTextFieldsForBlockEdit(block, start.offset, runText(block.runs).length, normalizedText)
+        else if (index === targets.length - 1) transformDocumentTextFieldsForBlockEdit(block, 0, end.offset, '')
+        else setDocumentTextFields(block, [], '')
+      }
+      setEditingRuns(model, target, index === 0 ? [...before, createRun(normalizedText, inherited)] : index === targets.length - 1 ? after : [], inherited)
     })
-    return collapsedSelection({ ...start, offset: start.offset + text.length })
+    return collapsedSelection({ ...start, offset: start.offset + normalizedText.length })
   }
 
   const startIndex = startContainer.findIndex((block) => block.id === startBlock.id)
   const endBlock = blockAtPoint(model, end)
   const endIndex = startContainer.findIndex((block) => block.id === endBlock?.id)
+  transformDocumentTextFieldsForBlockRangeEdit(startContainer.slice(startIndex, endIndex + 1), start.offset, end.offset, normalizedText, [startBlock, ...additions])
   if (endIndex > startIndex) startContainer.splice(startIndex + 1, endIndex - startIndex)
   if (paragraphs.length === 1) {
-    setEditingRuns(model, start, [...before, createRun(text, inherited), ...after], inherited)
+    setEditingRuns(model, start, [...before, createRun(normalizedText, inherited), ...after], inherited)
     if (startTargetId === endTargetId) {
-      transformDocumentCommentAnchorsForTextEdit(model, startTargetId, start.offset, end.offset, text)
+      transformDocumentCommentAnchorsForTextEdit(model, startTargetId, start.offset, end.offset, normalizedText)
     }
-    return collapsedSelection({ ...start, offset: start.offset + text.length })
+    return collapsedSelection({ ...start, offset: start.offset + normalizedText.length })
   }
   setEditingRuns(model, start, [...before, createRun(paragraphs[0], inherited)], inherited)
   startContainer.splice(startIndex + 1, 0, ...additions)
@@ -711,6 +740,7 @@ function copyBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
     for (const block of container) {
       block.id = documentId(block.type)
       block.runs = block.runs.map(run => ({ ...run, id: documentId('run') }))
+      remapDocumentTextFieldIds(block)
       const table = tableForBlock(block)
       if (!table) continue
       for (const row of table.rows) {
@@ -741,6 +771,7 @@ function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks
   const index = container.findIndex((candidate) => candidate.id === block.id)
   tail.style = { ...block.style }
   tail.runs = sliceRuns(block.runs as DocumentRun[], point.offset)
+  transformDocumentTextFieldsForBlockRangeEdit([block], point.offset, point.offset, '\n', [block, tail])
   if (sameTarget(start, end) && model.contentControls) model.contentControls = controlPlan.contentControls
   setTargetRuns(model, point, sliceRuns(block.runs as DocumentRun[], 0, point.offset))
   container.splice(index + 1, 0, ...blocks, tail)

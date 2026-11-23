@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
-import type { RunPatch } from '../model/document-model.ts'
+import { sameTarget, type RunPatch } from '../model/document-model.ts'
 import { cloneDocumentInputLocation, cloneDocumentInputMarks, cloneDocumentInputSession, documentInputLocationCollapsed,
   mergeDocumentInputMarks, sameDocumentInputLocation, sameDocumentInputMarks, type DocumentInputLocation, type DocumentInputSession } from '../model/document-input-session.ts'
 
@@ -76,6 +76,21 @@ export const useDocumentInputStore = defineStore('document-input', () => {
       modelRevision, generation: (generation ?? 0) + 1, valid: true } }
     return true
   }
+  /** Restore a checked refresh session, mapping body offsets while retaining typing marks. */
+  function completeUnchangedSelection(unitId: string, source: DocumentInputSession, modelRevision: number, location: DocumentInputLocation = source.location): boolean {
+    const previous = read(unitId)
+    if (!source.valid || !previous || previous.valid || modelRevision !== source.modelRevision + 1
+      || previous.modelRevision !== source.modelRevision || previous.generation !== source.generation
+      || location.kind !== source.location.kind
+      || !sameDocumentInputLocation(previous.location, source.location) || !sameDocumentInputMarks(previous.marks, source.marks)) return false
+    if (location.kind === 'story' && source.location.kind === 'story' && !sameDocumentInputLocation(location, source.location)) return false
+    if (location.kind === 'body' && source.location.kind === 'body'
+      && (!sameTarget(location.selection.anchor, source.location.selection.anchor) || !sameTarget(location.selection.focus, source.location.selection.focus))) return false
+    advances.delete(unitId)
+    units.value = { ...units.value, [unitId]: { ...previous, location: cloneDocumentInputLocation(location),
+      marks: cloneDocumentInputMarks(source.marks), modelRevision, valid: true, generation: previous.generation + 1 } }
+    return true
+  }
   function clearMarks(unitId: string): boolean {
     advances.delete(unitId)
     const previous = read(unitId)
@@ -90,5 +105,5 @@ export const useDocumentInputStore = defineStore('document-input', () => {
     const next = { ...units.value }; delete next[unitId]; units.value = next
   }
   function clear(): void { advances.clear(); units.value = {} }
-  return { units, get, getMarks, select, format, invalidate, allowAdvance, advance, completeInput, clearMarks, removeUnit, clear }
+  return { units, get, getMarks, select, format, invalidate, allowAdvance, advance, completeInput, completeUnchangedSelection, clearMarks, removeUnit, clear }
 })

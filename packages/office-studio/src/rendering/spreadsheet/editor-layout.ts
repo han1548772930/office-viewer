@@ -1,11 +1,12 @@
 import type { RenderRect } from '../contracts'
 import { intersectRect } from '../geometry.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, type GridViewport, type SpreadsheetGeometry } from './layout.ts'
+import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, type GridRange, type GridViewport, type SpreadsheetGeometry } from './layout.ts'
 import { SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
 
 export interface CellEditorLayout {
   rect: RenderRect
   fillHandle: RenderRect
+  fillHandleClip: RenderRect
   clip: RenderRect
   clipPath: string
   fillHandleClipPath: string
@@ -49,10 +50,29 @@ export function createCellEditorLayout(geometry: SpreadsheetGeometry, address: s
   return {
     rect,
     fillHandle,
+    fillHandleClip,
     clip,
     clipPath: clipPathFor(rect, clip),
     fillHandleClipPath: clipPathFor(fillHandle, fillHandleClip),
   }
+}
+
+/** Hit only the visible editor handle, including the part lying over the input bridge. */
+export function hitCellEditorFillHandle(
+  geometry: SpreadsheetGeometry,
+  address: string,
+  viewport: GridViewport,
+  x: number,
+  y: number,
+): GridRange | undefined {
+  const layout = createCellEditorLayout(geometry, address, viewport)
+  const clip = layout?.fillHandleClip
+  if (!clip || clip.width <= 0 || clip.height <= 0 || !Number.isFinite(x) || !Number.isFinite(y)
+    || x < clip.x || x >= clip.x + clip.width || y < clip.y || y >= clip.y + clip.height) return undefined
+  const cell = parseAddress(address)
+  if (!cell) return undefined
+  return geometry.mergeAt(cell.row, cell.column)
+    ?? { startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }
 }
 
 function clipPathFor(rect: RenderRect, visible: RenderRect): string {
