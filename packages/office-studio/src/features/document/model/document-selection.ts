@@ -3,8 +3,10 @@ import {
   collapsedSelection, orderedSelection, runText, runsForTarget, sameTarget, textTargets,
   type DocumentPoint, type DocumentSelection,
 } from './document-model'
+import { documentTableSelectedTextTargets } from './document-table-selection'
 
 export function documentSelectionContainsPoint(model: DocumentModel, selection: DocumentSelection, point: DocumentPoint): boolean {
+  if (selection.tableSelection) return documentTableSelectedTextTargets(model, selection.tableSelection).some(target => sameTarget(target, point))
   const targets = textTargets(model)
   const index = targets.findIndex(target => sameTarget(target, point))
   const target = targets[index]

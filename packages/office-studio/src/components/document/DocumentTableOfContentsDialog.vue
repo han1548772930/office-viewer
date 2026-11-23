@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { Checkbox, Form, FormItem, Modal, Select } from 'antdv-next'
+import { Checkbox, Form, FormItem, Modal, Select, theme } from 'antdv-next'
 import { computed, inject, ref, watch } from 'vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import type { DocumentTocOptions, DocumentTocUpdateMode } from '../../features/document/toc/document-toc.ts'
+import type { DocumentTocActionState } from '../../features/document/toc/document-toc-command'
 
 const props = defineProps<{
   open: boolean
   mode: 'insert' | 'update'
   options: DocumentTocOptions
   updateMode?: DocumentTocUpdateMode
+  updateStates?: Partial<Record<DocumentTocUpdateMode, DocumentTocActionState>>
 }>()
 
 const emit = defineEmits<{
@@ -19,6 +21,10 @@ const emit = defineEmits<{
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const draft = ref<DocumentTocOptions>({ ...props.options })
 const draftUpdateMode = ref<DocumentTocUpdateMode>(props.updateMode ?? 'pageNumbersOnly')
+const currentUpdateState = computed(() => props.mode === 'update' ? props.updateStates?.[draftUpdateMode.value] : undefined)
+const { token } = theme.useToken()
+const previewStyle = computed(() => ({ background: token.value.colorFillQuaternary, color: token.value.colorText,
+  borderColor: token.value.colorBorderSecondary, '--toc-leader-color': token.value.colorTextTertiary }))
 const levelOptions = computed(() => Array.from({ length: 9 }, (_, index) => ({ value: index + 1, label: String(index + 1) })))
 const formatOptions = computed(() => ([
   ['fromTemplate', 'document.toc.format-template'],
@@ -35,7 +41,8 @@ const leaderOptions = computed(() => ([
 const updateOptions = computed(() => ([
   ['pageNumbersOnly', 'document.toc.update-pages'],
   ['all', 'document.toc.update-all'],
-] as const).map(([value, key]) => ({ value, label: t(key, value) })))
+] as const).map(([value, key]) => ({ value, label: t(key, value), disabled: props.updateStates?.[value]?.available === false,
+  title: props.updateStates?.[value]?.reason })))
 
 watch(() => props.open, (open) => {
   if (!open) return
@@ -44,6 +51,7 @@ watch(() => props.open, (open) => {
 })
 
 function apply() {
+  if (currentUpdateState.value?.available === false) return
   emit('apply', {
     options: { ...draft.value },
     ...(props.mode === 'update' ? { updateMode: draftUpdateMode.value } : {}),
@@ -59,6 +67,7 @@ function apply() {
     :ok-text="t('common.apply', 'Apply')"
     :cancel-text="t('common.cancel', 'Cancel')"
     :width="500"
+    :ok-button-props="{ disabled: currentUpdateState?.available === false }"
     destroy-on-hidden
     @ok="apply"
     @cancel="emit('update:open', false)"
@@ -83,10 +92,11 @@ function apply() {
           <Select v-model:value="draft.tabLeader" :options="leaderOptions" :disabled="!draft.showPageNumbers || !draft.rightAlignPageNumbers" />
         </FormItem>
       </div>
-      <FormItem v-else class="toc-update-mode" :label="t('document.toc.update', 'Update Table of Contents')">
+      <FormItem v-else class="toc-update-mode" :label="t('document.toc.update', 'Update Table of Contents')"
+        :help="currentUpdateState?.reason" :validate-status="currentUpdateState?.available === false ? 'warning' : undefined">
         <Select v-model:value="draftUpdateMode" :options="updateOptions" />
       </FormItem>
-      <section v-if="mode === 'insert'" class="toc-preview" :aria-label="t('document.toc.preview', 'Preview')">
+      <section v-if="mode === 'insert'" class="toc-preview" :style="previewStyle" :aria-label="t('document.toc.preview', 'Preview')">
         <div v-for="level in Math.min(draft.levels, 3)" :key="level" class="toc-preview-row" :style="{ paddingInlineStart: `${(level - 1) * 18}px` }">
           <span>{{ t('document.toc.preview-heading', 'Heading') }} {{ level }}</span>
           <span v-if="draft.showPageNumbers && draft.rightAlignPageNumbers" class="toc-preview-leader" aria-hidden="true">
@@ -109,9 +119,9 @@ function apply() {
 .toc-leader :deep(.ant-form-item-label), .toc-update-mode :deep(.ant-form-item-label) { padding: 0; }
 .toc-leader :deep(.ant-form-item-control), .toc-update-mode :deep(.ant-form-item-control) { min-width: 0; }
 .toc-update-mode :deep(.ant-select) { width: 100%; }
-.toc-preview { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid #e5e8ed; background: #f7f8fa; }
+.toc-preview { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid; }
 .toc-preview-row { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
-.toc-preview-leader { flex: 1; overflow: hidden; color: #87919d; white-space: nowrap; }
+.toc-preview-leader { flex: 1; overflow: hidden; color: var(--toc-leader-color); white-space: nowrap; }
 @media (max-width: 520px) {
   .toc-grid { grid-template-columns: minmax(0, 1fr); }
   .toc-leader, .toc-update-mode { grid-template-columns: minmax(0, 1fr); }

@@ -9,6 +9,21 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "camelCase")]
 pub(super) struct AxisSpanInput<T> { pub start: u32, pub end: u32, pub value: T }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OutlineInput {
+    #[serde(default)]
+    pub groups: Vec<OutlineGroupInput>,
+}
+#[derive(Debug, Deserialize)]
+pub(super) struct OutlineGroupInput {
+    pub axis: String,
+    pub start: u32,
+    pub end: u32,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RowSize { pub height: f64, pub automatic: bool }
 #[derive(Debug, Clone)]
@@ -84,6 +99,14 @@ pub(super) fn prepare(sheet: &SheetInput) -> Result<WorksheetAxisPlan, ExportErr
     check_spans(&sheet.row_auto_height_spans, MAX_ROW_INDEX, |_| true)?;
     check_spans(&sheet.row_hidden_spans, sheet.row_count.map(|count| count - 1).unwrap_or(MAX_ROW_INDEX), |_| true)?;
     check_spans(&sheet.column_hidden_spans, sheet.column_count.map(|count| count - 1).unwrap_or(MAX_COLUMN_INDEX), |_| true)?;
+    for group in sheet.outline.iter().flat_map(|outline| &outline.groups) {
+        let maximum = match group.axis.as_str() {
+            "row" => sheet.row_count.map(|count| count - 1).unwrap_or(MAX_ROW_INDEX),
+            "column" => sheet.column_count.map(|count| count - 1).unwrap_or(MAX_COLUMN_INDEX),
+            _ => return Err(ExportError::invalid("worksheet outline axis is invalid")),
+        };
+        if group.start > group.end || group.end > maximum { return Err(ExportError::invalid("worksheet outline group is outside the worksheet")); }
+    }
     let row_points = points(&sheet.row_heights, MAX_ROW_INDEX)?;
     let column_points = points(&sheet.column_widths, MAX_COLUMN_INDEX)?;
     let auto_points = points(&sheet.row_auto_heights, MAX_ROW_INDEX)?;
@@ -148,6 +171,10 @@ impl WorksheetAxisPlan {
     pub fn extra_row_indices(&self) -> impl Iterator<Item = u32> + '_ { self.extra_rows.iter().flat_map(|run| run.start..=run.end) }
     pub fn manual_hidden_row_indices(&self) -> impl Iterator<Item = u32> + '_ { self.manual_hidden_rows.iter().filter(|span| span.value).flat_map(|span| span.start..=span.end) }
     pub fn manual_row_hidden(&self, row: u32) -> bool { span_at(&self.manual_hidden_rows, row).unwrap_or(false) }
+    pub fn column_hidden(&self, column: u32) -> bool {
+        let position = self.columns.partition_point(|run| run.start <= column);
+        self.columns.get(position.wrapping_sub(1)).is_some_and(|run| column <= run.end && run.size.hidden)
+    }
     pub fn row_attributes(&self, row: u32) -> String {
         let size = self.row_size(row);
         let position = self.extra_rows.partition_point(|run| run.start <= row);

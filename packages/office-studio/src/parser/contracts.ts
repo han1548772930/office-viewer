@@ -12,6 +12,17 @@ export interface DocumentOfficeXmlPartDto {
   xml: string
 }
 
+export interface DocumentNumberingMediaDto {
+  partName: string
+  contentType: string
+  dataBase64: string
+}
+
+export interface DocumentNumberingSourceDto extends DocumentOfficeXmlPartDto {
+  relationshipsXml?: string | null
+  resources?: DocumentNumberingMediaDto[]
+}
+
 export type DocumentOfficeSourceResourceDto =
   | { kind: 'xml'; partName: string; xml: string }
   | { kind: 'binary'; streamName: string; offset: number; dataHex: string }
@@ -28,6 +39,7 @@ export interface DocumentOfficeSourceDto {
   version: 1
   styles?: DocumentOfficeXmlPartDto | null
   theme?: DocumentOfficeXmlPartDto | null
+  numbering?: DocumentNumberingSourceDto | null
   resourceErrors?: string[]
   /** DOCX omits origin; non-OOXML resources never become Word styles implicitly. */
   origin?: DocumentOfficeSourceOriginDto

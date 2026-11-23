@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use super::{
-    cell_blocks, decode_data_image, get, integer, text_color, xml_attribute,
+    decode_data_image, get, integer, text_color, xml_attribute,
     ExportError, ExportWarning, Package, REL_IMAGE,
 };
 use crate::xml;
@@ -91,22 +91,20 @@ fn merged_level(definition: &Value, level: &Value) -> Value {
     merged
 }
 
-pub(super) fn assign_lists(blocks: &[Value]) -> (HashMap<usize, u32>, Vec<NumberingInstance>) {
+pub(super) fn assign_lists(blocks: &[Value]) -> Result<(HashMap<usize, u32>, Vec<NumberingInstance>), ExportError> {
     struct Assignments {
         lookup: HashMap<usize, u32>,
         numbering: Vec<NumberingInstance>,
         named: HashMap<(String, String), u32>,
         next_id: u32,
     }
-    fn visit(blocks: &[Value], state: &mut Assignments) {
+    fn visit(blocks: &[Value], state: &mut Assignments) -> Result<(), ExportError> {
         let mut active: Option<(String, u32)> = None;
         for block in blocks {
             let block_type = get(block, "type").as_str().unwrap_or_default();
             if block_type == "table" {
                 active = None;
-                for row in array(get(get(get(block, "metadata"), "table"), "rows")) {
-                    for cell in array(get(row, "cells")) { visit(cell_blocks(cell), state); }
-                }
+                for group in super::table_writer::content_groups(get(get(block, "metadata"), "table"))? { visit(group.blocks, state)?; }
                 continue;
             }
             let list = get(block, "list");
@@ -143,10 +141,11 @@ pub(super) fn assign_lists(blocks: &[Value]) -> (HashMap<usize, u32>, Vec<Number
             } else { active = Some((signature, id)); }
             state.lookup.insert(block as *const Value as usize, id);
         }
+        Ok(())
     }
     let mut state = Assignments { lookup: HashMap::new(), numbering: Vec::new(), named: HashMap::new(), next_id: 1 };
-    visit(blocks, &mut state);
-    (state.lookup, state.numbering)
+    visit(blocks, &mut state)?;
+    Ok((state.lookup, state.numbering))
 }
 
 pub(super) fn numbering_left(instances: &[NumberingInstance], id: u32, level: i64) -> f64 {
@@ -221,6 +220,8 @@ pub(super) fn write_numbering_xml(instances: &[NumberingInstance], package: &mut
     }
     Ok(build_with_pictures(instances, &pictures))
 }
+
+pub(super) fn picture_shape_type_xml() -> &'static str { PICTURE_SHAPE_TYPE }
 
 #[cfg(test)]
 pub(super) fn build_numbering_xml(instances: &[NumberingInstance]) -> String {

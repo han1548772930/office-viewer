@@ -24,10 +24,16 @@ export function arrangeDocumentPages(layout: DocumentLayout): void {
   for (const line of layout.lines) {
     const dx = shifts[line.page]!
     line.x += dx
+    if (line.clip) line.clip.x += dx
     if (line.markerStyle) line.markerStyle.x += dx
     for (const glyph of line.glyphs) glyph.x += dx
   }
-  for (const item of [...layout.cells, ...layout.images, ...layout.dividers]) item.x += shifts[item.page]!
+  for (const item of [...layout.cells, ...layout.images, ...layout.dividers]) {
+    const dx = shifts[item.page]!
+    item.x += dx
+    if (item.clip) item.clip.x += dx
+  }
+  for (const table of layout.tableFragments ?? []) table.x += shifts[table.page]!
   const last = layout.pages.at(-1)
   layout.height = last ? last.y + last.height + PAGE_INSET : 0
   layout.pageContent = layout.pages.map(() => ({ lines: [], cells: [], images: [], dividers: [], columnSeparators: [] }))

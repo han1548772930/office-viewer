@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentModel } from '../domain/model.ts'
 import { flattenDocumentBody, type DocumentBodySegment } from '../features/document/services/document-facade.ts'
 import { isDocumentTextBoundary } from '../features/document/model/document-story.ts'
-import { sameTarget, tableForBlock, type DocumentPoint, type DocumentSelection } from '../features/document/model/document-model.ts'
+import { findDocumentBlock, findDocumentBlockContainer, sameTarget, type DocumentPoint, type DocumentSelection } from '../features/document/model/document-model.ts'
 
 /** Facade offsets keep the existing synthetic-newline and independent-cell contract. */
 export function documentSelectionAtBodyRange(model: DocumentModel, startOffset: number, endOffset: number): DocumentSelection | undefined {
@@ -31,9 +31,9 @@ function pointAtOffset(segments: readonly DocumentBodySegment[], offset: number)
 }
 
 function targetContainer(model: DocumentModel, point: DocumentPoint): { blocks: DocumentBlock[]; index: number } | undefined {
-  const block = model.blocks.find(candidate => candidate.id === point.blockId)
+  const block = findDocumentBlock(model, point.blockId)
   if (!block) return undefined
-  const blocks = point.row === undefined ? model.blocks : tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]?.blocks
+  const blocks = findDocumentBlockContainer(model, point.cellBlockId ?? point.blockId)
   if (!blocks) return undefined
   const index = blocks.findIndex(candidate => candidate.id === (point.cellBlockId ?? point.blockId))
   return index < 0 ? undefined : { blocks, index }

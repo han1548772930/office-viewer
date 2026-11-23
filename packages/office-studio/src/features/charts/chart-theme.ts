@@ -3,5 +3,7 @@ export interface ChartRenderTheme {
   textColor?: string
   axisColor?: string
   splitLineColor?: string
+  axisPointerLabelBackground?: string
+  axisPointerLabelColor?: string
   palette?: string[]
 }

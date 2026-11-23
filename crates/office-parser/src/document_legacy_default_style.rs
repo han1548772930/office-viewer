@@ -45,8 +45,10 @@ pub(crate) fn read_doc_default_style(bytes: &[u8], package: &OoxmlPackage) -> Le
             None
         },
     };
+    let (numbering, numbering_errors) = super::numbering_source::synthesized(package);
+    errors.extend(numbering_errors.into_iter().map(|error| format!("DOC synthesized numbering resources could not be retained: {error}")));
     let mut source = DocumentOfficeSourcePayload {
-        version: 1, styles, theme: None, resource_errors: errors,
+        version: 1, styles, theme: None, numbering, resource_errors: errors,
         origin: Some(DocumentOfficeSourceOriginPayload {
             format: DocumentOfficeSourceOriginFormat::Doc, synthesized: true, resources,
             resource_errors: Vec::new(),
@@ -226,7 +228,7 @@ pub(crate) fn read_odt_default_style(
         }
     }
     let mut source = DocumentOfficeSourcePayload {
-        version: 1, styles: None, theme: None, resource_errors: errors,
+        version: 1, styles: None, theme: None, numbering: None, resource_errors: errors,
         origin: Some(DocumentOfficeSourceOriginPayload {
             format: DocumentOfficeSourceOriginFormat::Odt, synthesized: false, resources,
             resource_errors: Vec::new(),

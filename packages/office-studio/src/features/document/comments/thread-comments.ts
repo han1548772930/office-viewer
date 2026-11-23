@@ -7,12 +7,16 @@ import type {
 import {
   assertDocumentPermission,
   permissionTargetsForRange,
+  permissionTargetsForSelection,
   type DocumentPermissionContext,
 } from '../permissions/document-permissions'
-import { documentId } from '../model/document-model'
+import { documentId, findDocumentBlock, runText, runsForTarget, tableForBlock } from '../model/document-model'
 import { flattenDocumentBody } from '../services/document-facade'
 import type { DocumentSelection } from '../model/document-model'
 import { isDocumentTextBoundary } from '../model/document-story'
+import { createDocumentTableViewSelection, documentTableSelectedTextTargets, resolveDocumentTableViewSelection } from '../model/document-table-selection'
+import { documentTableCellsInRange, documentTableGrid, expandDocumentTableRange } from '../model/document-table-grid'
+import { documentTableCellContentContainers } from '../model/document-table-continuations'
 export { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from './document-comment-anchors'
 
 export interface DocumentCommentActor extends DocumentPermissionContext {
@@ -69,13 +73,15 @@ function updateTimestamp(comment: DocumentThreadComment, now: string): void {
   comment.updatedAt = now
 }
 
-export function createDocumentThreadComment(
-  model: DocumentModel,
-  selection: DocumentSelection,
-  text: string,
-  actor: DocumentCommentActor,
-  now = new Date().toISOString(),
-): DocumentThreadComment {
+export function documentCommentAnchorsForSelection(model: DocumentModel, selection: DocumentSelection): DocumentCommentAnchorSegment[] {
+  if (selection.tableSelection) {
+    const anchors = documentTableSelectedTextTargets(model, selection.tableSelection).flatMap(target => {
+      const text = runText(runsForTarget(model, target))
+      return text ? [{ blockId: target.cellBlockId ?? target.blockId, startOffset: 0, endOffset: text.length, text }] : []
+    })
+    if (!anchors.length) throw new RangeError('Comment anchor must include document text.')
+    return anchors
+  }
   const body = flattenDocumentBody(model)
   const ordered = body.segments.map(segment => ({ segment, start: segment.startOffset, end: segment.endOffset }))
   const pointOffset = (point: DocumentSelection['anchor']): number => {
@@ -92,8 +98,18 @@ export function createDocumentThreadComment(
   const focusOffset = pointOffset(selection.focus)
   const start = Math.min(anchorOffset, focusOffset)
   const end = Math.max(anchorOffset, focusOffset)
-  assertCanComment(model, actor, start, end)
-  const anchor = anchorForRange(model, start, end)
+  return anchorForRange(model, start, end)
+}
+
+/** A comment keeps disjoint paragraph anchors; structural identity is only a navigation hint. */
+export function createDocumentThreadComment(
+  model: DocumentModel, selection: DocumentSelection, text: string, actor: DocumentCommentActor, now = new Date().toISOString(),
+): DocumentThreadComment {
+  assertDocumentPermission(model.permissionRules ?? [], actor, 'comment', permissionTargetsForSelection(model, selection))
+  const anchor = documentCommentAnchorsForSelection(model, selection)
+  const view = selection.tableSelection && resolveDocumentTableViewSelection(model, selection.tableSelection)
+  const table = view && tableForBlock(findDocumentBlock(model, view.tableId)!)
+  const cellIds = table && view ? documentTableCellsInRange(documentTableGrid(table), view.range).map(owner => owner.cell.id) : undefined
   const comment: DocumentThreadComment = {
     id: documentId('comment'),
     anchor,
@@ -102,10 +118,27 @@ export function createDocumentThreadComment(
     resolved: false,
     createdAt: now,
     updatedAt: now,
+    ...(view && cellIds ? { metadata: { officeTableCellAnchor: { version: 1, tableId: view.tableId, cellIds } } } : {}),
   }
   commentsFor(model)[comment.id] = comment
   model.modified = true
   return comment
+}
+
+export function documentCommentTableSelection(model: DocumentModel, comment: DocumentThreadComment, fallback: DocumentSelection): DocumentSelection | undefined {
+  const raw = comment.metadata?.officeTableCellAnchor
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const hint = raw as { version?: unknown; tableId?: unknown; cellIds?: unknown }
+  if (hint.version !== 1 || typeof hint.tableId !== 'string' || !Array.isArray(hint.cellIds) || hint.cellIds.some(id => typeof id !== 'string')) return undefined
+  const block = findDocumentBlock(model, hint.tableId), table = block && tableForBlock(block)
+  if (!table) return undefined
+  const grid = documentTableGrid(table), ids = new Set(hint.cellIds), selected = grid.anchors.filter(owner => ids.has(owner.cell.id))
+  if (selected.length !== ids.size || !selected.length) return undefined
+  const range = expandDocumentTableRange(grid, { startRow: Math.min(...selected.map(owner => owner.row)),
+    endRow: Math.max(...selected.map(owner => owner.row + owner.rowSpan - 1)), startColumn: Math.min(...selected.map(owner => owner.column)),
+    endColumn: Math.max(...selected.map(owner => owner.column + owner.colSpan - 1)) })
+  if (documentTableCellsInRange(grid, range).some(owner => !ids.has(owner.cell.id))) return undefined
+  return createDocumentTableViewSelection(model, hint.tableId, range, 'range', undefined, fallback)
 }
 
 export function replyToDocumentThreadComment(
@@ -251,9 +284,9 @@ export function isDocumentThreadCommentRelevantToUser(comment: DocumentThreadCom
 function findParagraph(blocks: DocumentModel['blocks'], id: string): DocumentModel['blocks'][number] | undefined {
   for (const block of blocks) {
     if (block.id === id) return block
-    const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentModel['blocks'] }> }> } | undefined
-    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
-      const nested = findParagraph(cell.blocks ?? [], id)
+    const table = tableForBlock(block)
+    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) for (const content of documentTableCellContentContainers(cell)) {
+      const nested = findParagraph(content, id)
       if (nested) return nested
     }
   }

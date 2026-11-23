@@ -1,12 +1,18 @@
 import type { DocumentModel } from '../../../domain/model'
 import type { DrawCommand, RenderRect, RenderScene } from '../../../rendering/contracts'
+import { intersectRect, parseColor } from '../../../rendering/geometry'
 import type { DocumentSelection } from '../model/document-model'
-import { documentTextColor, orderedSelection, sameTarget, selectionCollapsed, targetKey, textTargets, type TextTarget } from '../model/document-model'
+import { blockAtPoint, documentTextColor, findDocumentBlock, orderedSelection, sameTarget, selectionCollapsed, tableForBlock, targetKey, textTargets, type TextTarget } from '../model/document-model'
 import { caretRect, documentStoryCaretRect, type DocumentLayout, type LayoutStoryLine } from '../layout/document-layout'
 import { codeBlockData, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
+import { documentTocHighlightLayout } from '../toc/document-toc-layout'
+import { appendDocumentTableCell } from './document-table-scene'
+import { documentTableCellsInRange, documentTableGrid, expandDocumentTableRange } from '../model/document-table-grid'
+import type { DocumentTableGesturePreview } from '../layout/document-table-interaction'
+import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 
 export interface DocumentViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
-export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; searchMatches?: Array<{ target: TextTarget; start: number; end: number }>; story?: { location: { page: number; area: 'header' | 'footer' }; selection: { start: number; end: number } } }
+export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; tocPrimaryColor?: string; tableGesture?: DocumentTableGesturePreview; searchMatches?: Array<{ target: TextTarget; start: number; end: number }>; host?: DocumentAuxiliaryBlockHost; selectionModel?: DocumentModel; selectionLayout?: DocumentLayout; story?: { location: { page: number; area: 'header' | 'footer' }; selection: { start: number; end: number } } }
 
 export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, viewport: DocumentViewport, options: DocumentSceneOptions): RenderScene {
   const commands: DrawCommand[] = []
@@ -16,6 +22,14 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const y = (value: number) => pageOffsetY + value * scale
   const rect = (source: RenderRect): RenderRect => ({ x: x(source.x), y: y(source.y), width: source.width * scale, height: source.height * scale })
   const visible = (source: RenderRect) => y(source.y + source.height) >= -20 && y(source.y) <= viewport.height + 20 && x(source.x + source.width) >= -20 && x(source.x) <= viewport.width + 20
+  const primary = parseColor(options.tocPrimaryColor ?? '#1677ff').slice(0, 3).map(value => Math.round(value * 255)).join(', ')
+  const selectionModel = options.selectionModel ?? model, selectionLayout = options.selectionLayout ?? layout
+  const tableView = options.story ? undefined : options.selection.tableSelection
+  const tableBlock = tableView && findDocumentBlock(selectionModel, tableView.tableId), table = tableBlock && tableForBlock(tableBlock)
+  let selectedCells = new Set<string>()
+  if (table && tableView) {
+    try { const grid = documentTableGrid(table); selectedCells = new Set(documentTableCellsInRange(grid, expandDocumentTableRange(grid, tableView.range)).map(owner => owner.cell.id)) } catch { /* Stale derived input has no body highlight. */ }
+  }
   // Layout objects are ordered by page. Keep a page index set so a long
   // document does not run every cell/image/divider through viewport math on
   // every animation frame. Objects on a visible page still use the precise
@@ -42,9 +56,14 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
             if (glyph.run.highlight) commands.push({ kind: 'rect', ...rect(glyph), fill: glyph.run.highlight, clip: rect(page) })
             if (active && glyph.end > selectedStart && glyph.offset < selectedEnd) commands.push({ kind: 'rect', ...rect(glyph), fill: options.focused ? '#bdd8ff' : '#dde6f2', clip: rect(page) })
             const font = glyph.font.replace(/([\d.]+)px/, (_whole, size: string) => `${Number(size) * scale}px`)
-            if (group && (group.runId !== glyph.run.id || group.font !== font || group.color !== color || group.y !== y(baseline))) flush()
-            if (group) group.text += glyph.text === '\t' ? '    ' : glyph.text
-            else group = { text: glyph.text === '\t' ? '    ' : glyph.text, x: x(glyph.x), y: y(baseline), font, color, runId: glyph.run.id }
+            if (glyph.tab) {
+              flush()
+              if (glyph.tab.leaderText) commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.tab.leaderText, font, color, maxWidth: glyph.width * scale, clip: rect(page) })
+            } else {
+              if (group && (group.runId !== glyph.run.id || group.font !== font || group.color !== color || group.y !== y(baseline))) flush()
+              if (group) group.text += glyph.text === '\t' ? '    ' : glyph.text
+              else group = { text: glyph.text === '\t' ? '    ' : glyph.text, x: x(glyph.x), y: y(baseline), font, color, runId: glyph.run.id }
+            }
             if (glyph.run.underline) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color, width: Math.max(0.7, scale), clip: rect(page) })
             if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color, width: Math.max(0.7, scale), clip: rect(page) })
           }
@@ -55,18 +74,26 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
           if (caret && visible(caret)) commands.push({ kind: 'rect', ...rect(caret), width: Math.max(1, scale), fill: '#24569c', clip: rect(page) })
         }
       }
-      append(headerFooter.headerLayoutLines ?? [], 'header')
-      append(headerFooter.footerLayoutLines ?? [], 'footer')
+      if (!headerFooter.headerBlockLayout) append(headerFooter.headerLayoutLines ?? [], 'header')
+      if (!headerFooter.footerBlockLayout) append(headerFooter.footerLayoutLines ?? [], 'footer')
     }
   }
   for (const pageIndex of visiblePages) {
-    const content = layout.pageContent[pageIndex]
-    if (!content) continue
+    const body = layout.pageContent[pageIndex], auxiliary = (layout.auxiliaryContent ?? []).filter(content => content.page === pageIndex)
+    if (!body && !auxiliary.length) continue
+    const content = { cells: [...(body?.cells ?? []), ...auxiliary.flatMap(content => content.cells)], images: [...(body?.images ?? []), ...auxiliary.flatMap(content => content.images)],
+      dividers: [...(body?.dividers ?? []), ...auxiliary.flatMap(content => content.dividers)], columnSeparators: body?.columnSeparators ?? [] }
     for (const cell of content.cells) {
-      if (visible(cell)) commands.push({ kind: 'rect', ...rect(cell), fill: cell.fill, stroke: '#aeb8c6', strokeWidth: Math.max(0.5, scale) })
+      if (visible(cell)) appendDocumentTableCell(commands, cell, rect(cell), rect(layout.pages[pageIndex]!), scale, cell.clip ? rect(cell.clip) : undefined)
+    }
+    for (const cell of content.cells) {
+      if (cell.tableId !== tableView?.tableId || !cell.cellId || !selectedCells.has(cell.cellId) || !visible(cell)) continue
+      const clip = cell.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(cell.clip)) : rect(layout.pages[pageIndex]!)
+      commands.push({ kind: 'rect', ...rect(cell), fill: `rgba(${primary}, ${options.focused ? 0.16 : 0.10})`, stroke: `rgba(${primary}, 0.65)`, strokeWidth: Math.max(1, scale), clip })
     }
     for (const divider of content.dividers) {
-      if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: '#b3bdca', width: Math.max(1, scale) })
+      if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: '#b3bdca', width: Math.max(1, scale),
+        clip: divider.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(divider.clip)) : rect(layout.pages[pageIndex]!) })
     }
     for (const separator of content.columnSeparators) {
       if (visible(separator)) commands.push({ kind: 'line', x1: x(separator.x), y1: y(separator.y), x2: x(separator.x), y2: y(separator.y + separator.height),
@@ -75,15 +102,21 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     for (const image of content.images) {
       if (!visible(image)) continue
     const source = options.images.get(image.src)
-    if (source?.complete && source.naturalWidth) commands.push({ kind: 'image', ...rect(image), source })
+    const clip = image.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(image.clip)) : rect(layout.pages[pageIndex]!)
+    if (source?.complete && source.naturalWidth) commands.push({ kind: 'image', ...rect(image), source, clip })
     else {
-      commands.push({ kind: 'rect', ...rect(image), fill: '#f1f4f8', stroke: '#ccd5e0' })
-      commands.push({ kind: 'text', x: x(image.x + 12), y: y(image.y + 22), text: image.alt || '图片', font: `${12 * scale}px Arial`, color: '#738096' })
+      commands.push({ kind: 'rect', ...rect(image), fill: '#f1f4f8', stroke: '#ccd5e0', clip })
+      commands.push({ kind: 'text', x: x(image.x + 12), y: y(image.y + 22), text: image.alt || '图片', font: `${12 * scale}px Arial`, color: '#738096', clip })
     }
     }
   }
-  const ordered = orderedSelection(model, options.selection)
-  const targets = textTargets(model)
+  const tocHighlight = options.story || options.host || tableView ? undefined : documentTocHighlightLayout(model, layout, options.selection)
+  for (const range of tocHighlight?.ranges ?? []) {
+    if (!visiblePages.has(range.page) || !visible(range)) continue
+    commands.push({ kind: 'rect', ...rect(range), fill: `rgba(${primary}, 0.08)`, clip: rect(layout.pages[range.page]!) })
+  }
+  const ordered = orderedSelection(selectionModel, options.selection)
+  const targets = textTargets(selectionModel)
   const first = targets.findIndex((target) => sameTarget(target, ordered.start))
   const last = targets.findIndex((target) => sameTarget(target, ordered.end))
   const selected = new Set(targets.slice(first, last + 1).map(targetKey))
@@ -95,17 +128,22 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     matchesByTarget.set(key, matches)
   }
   for (const matches of matchesByTarget.values()) matches.sort((a, b) => a.start - b.start)
-  const visibleLines = [...visiblePages].flatMap((pageIndex) => layout.pageContent[pageIndex]?.lines ?? [])
-  const codeBlocks = new Map(model.blocks.map((block) => [block.id, codeBlockData(block)]).filter((entry): entry is [string, NonNullable<ReturnType<typeof codeBlockData>>] => entry[1] !== undefined))
+  const visibleLines = [...visiblePages].flatMap((pageIndex) => [...(layout.pageContent[pageIndex]?.lines ?? []), ...(layout.auxiliaryContent ?? []).filter(content => content.page === pageIndex).flatMap(content => content.lines)])
+  const codeBlocks = new Map(targets.flatMap(target => {
+    const block = blockAtPoint(selectionModel, target), data = block && codeBlockData(block)
+    return block && data ? [[block.id, data] as const] : []
+  }))
   const codeTokens = new Map([...codeBlocks].map(([blockId, data]) => [blockId, tokenizeCode(data.source, data.language)]))
   for (const line of visibleLines) {
     if (!visible(line)) continue
-    const clip = rect(layout.pages[line.page]!)
-    const hasSelection = !options.story && !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))
+    const clip = line.clip ? intersectRect(rect(layout.pages[line.page]!), rect(line.clip)) : rect(layout.pages[line.page]!)
+    if (clip.width <= 0 || clip.height <= 0) continue
+    const hasSelection = !options.story && !tableView && !selectionCollapsed(options.selection) && selected.has(targetKey(line.target))
     const lineMatches = matchesByTarget.get(targetKey(line.target)) ?? []
     const start = sameTarget(line.target, ordered.start) ? ordered.start.offset : 0
     const end = sameTarget(line.target, ordered.end) ? ordered.end.offset : Number.POSITIVE_INFINITY
-    const codeData = line.codeBlock ? codeBlocks.get(line.target.blockId) : undefined
+    const codeKey = line.target.cellBlockId ?? line.target.blockId
+    const codeData = line.codeBlock ? codeBlocks.get(codeKey) : undefined
     if (line.codeBlock) {
       commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: line.height * scale, fill: '#f1f4f8', clip })
       if (line.codeBlock.lineNumber === 1) commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: Math.max(2, scale), fill: '#dce3ec', clip })
@@ -115,16 +153,6 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       const font = line.markerStyle?.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`) ?? `${14 * scale}px Arial`
       commands.push({ kind: 'text', x: x(line.markerStyle?.x ?? line.x - 6), y: y(line.baseline), text: line.marker, font,
         color: line.markerStyle ? documentTextColor(line.markerStyle.color) : '#445166', align: line.markerStyle ? 'left' : 'right', baseline: 'alphabetic', clip })
-    }
-    if (line.checklist) {
-      const size = 14 * scale
-      const left = x(line.x - 23)
-      const top = y(line.y + (line.height - 14) / 2)
-      commands.push({ kind: 'rect', x: left, y: top, width: size, height: size, fill: '#ffffff', stroke: line.checklist.checked ? '#28744b' : '#718096', strokeWidth: Math.max(1, scale), clip })
-      if (line.checklist.checked) {
-        commands.push({ kind: 'line', x1: left + 3 * scale, y1: top + 7 * scale, x2: left + 6 * scale, y2: top + 10 * scale, color: '#28744b', width: Math.max(1.4, scale), clip })
-        commands.push({ kind: 'line', x1: left + 6 * scale, y1: top + 10 * scale, x2: left + 12 * scale, y2: top + 3 * scale, color: '#28744b', width: Math.max(1.4, scale), clip })
-      }
     }
     for (const glyph of line.glyphs) {
       const textColor = documentTextColor(glyph.run.color)
@@ -145,18 +173,27 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
         continue
       }
       const font = glyph.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`)
-      const token = codeData && codeTokens.get(line.target.blockId)?.find((candidate) => glyph.offset >= candidate.start && glyph.offset < candidate.end)
-      commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text: glyph.text === '\t' ? '    ' : glyph.text, font, color: token && glyph.run.metadata?.codeSyntaxHighlight !== false ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor, clip })
+      const token = codeData && codeTokens.get(codeKey)?.find((candidate) => glyph.offset >= candidate.start && glyph.offset < candidate.end)
+      const text = glyph.tab ? glyph.tab.leaderText : glyph.text === '\t' ? '    ' : glyph.text
+      if (text) commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text, font, color: token && glyph.run.metadata?.codeSyntaxHighlight !== false ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor,
+        ...(glyph.tab ? { maxWidth: glyph.width * scale } : {}), clip })
       if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: textColor, width: Math.max(0.7, scale), clip })
       if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: textColor, width: Math.max(0.7, scale), clip })
       if (options.composing && sameTarget(line.target, options.selection.focus) && glyph.end <= options.selection.focus.offset) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline + 3), x2: x(glyph.x + glyph.width), y2: y(line.baseline + 3), color: '#3478df', width: 1, clip })
     }
     if (hasSelection && !line.glyphs.length && start <= line.start && end >= line.end) commands.push({ kind: 'rect', x: x(line.x), y: y(line.y), width: 5 * scale, height: line.height * scale, fill: '#bdd8ff', clip })
   }
+  for (const outline of tocHighlight?.outlines ?? []) {
+    if (!visiblePages.has(outline.page) || !visible(outline)) continue
+    commands.push({ kind: 'rect', ...rect(outline), fill: 'rgba(0, 0, 0, 0)', stroke: `rgba(${primary}, 0.8)`, strokeWidth: Math.max(1, scale), clip: rect(layout.pages[outline.page]!) })
+  }
   if (!options.story && options.focused && options.caretVisible && selectionCollapsed(options.selection)) {
-    const caret = caretRect(layout, options.selection.focus)
+    const caret = caretRect(selectionLayout, options.selection.focus)
     if (caret && visible(caret)) commands.push({ kind: 'rect', ...rect(caret), width: Math.max(1, scale), fill: '#24569c' })
   }
+  const gesture = options.tableGesture, guideColor = gesture?.available ? `rgba(${primary}, 0.9)` : '#ff4d4f'
+  if (gesture?.rectangle) commands.push({ kind: 'rect', ...rect(gesture.rectangle), fill: `rgba(${primary}, 0.08)`, stroke: guideColor, strokeWidth: Math.max(1, scale) })
+  if (gesture?.guide) commands.push({ kind: 'line', x1: x(gesture.guide.x1), y1: y(gesture.guide.y1), x2: x(gesture.guide.x2), y2: y(gesture.guide.y2), color: guideColor, width: Math.max(1, scale) })
   return { width: viewport.width, height: viewport.height, background: '#eef1f5', commands }
 }
 

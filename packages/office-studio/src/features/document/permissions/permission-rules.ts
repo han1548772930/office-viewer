@@ -2,6 +2,7 @@ import type { DocumentModel, DocumentPermissionRule, DocumentPermissionScope } f
 import { validateDocumentPermissionRules } from './document-permissions.ts'
 import { findDocumentParagraphs } from '../services/document-facade.ts'
 import { documentSectionIds } from '../services/section-header-footer.ts'
+import { documentTableCellBlocks } from '../model/document-table-continuations'
 
 export interface DocumentPermissionRuleDraft {
   scope: DocumentPermissionScope
@@ -88,7 +89,7 @@ function permissionEntities(blocks: DocumentModel['blocks']): DocumentModel['blo
   for (const block of blocks) {
     if (['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) result.push(block)
     const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentModel['blocks'] }> }> } | undefined
-    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) result.push(...permissionEntities(cell.blocks ?? []))
+    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) result.push(...permissionEntities(documentTableCellBlocks(cell)))
   }
   return result
 }

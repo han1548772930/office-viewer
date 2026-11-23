@@ -4,6 +4,8 @@ import type { ChartConfig } from '../chart-engine'
 import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-settings-draft'
 import { chartPalette } from '../chart-options'
 import { optionGroup } from '../chart-settings-controls'
+import { CHART_GAUGE_PRESETS, type ChartGaugePreset } from '../chart-gauge'
+import { applyChartGaugePreset, resetChartGaugeSettings } from '../chart-gauge-settings-controls'
 
 const props = defineProps<{ config: ChartConfig; seriesFields: ChartSettingsField[]; categories: string[]; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
@@ -17,6 +19,8 @@ function addRange(): void { mutate(config => { const gauge = optionGroup(config,
 function rangeNumber(index: number, key: 'from' | 'to', value: unknown): void { if (typeof value === 'number' && Number.isFinite(value)) mutate(config => { const range = config.options?.gauge?.ranges?.[index]; if (range) range[key] = value }) }
 function rangeColor(index: number, value: unknown): void { if (typeof value === 'string') mutate(config => { const range = config.options?.gauge?.ranges?.[index]; if (range) range.color = value }) }
 function removeRange(index: number): void { mutate(config => { config.options?.gauge?.ranges?.splice(index, 1) }) }
+function resetGauge(): void { mutate(resetChartGaugeSettings) }
+function setGaugePreset(preset: ChartGaugePreset): void { mutate(config => { applyChartGaugePreset(config, preset) }) }
 function addRole(): void { mutate(config => { const roles = optionGroup(config, 'waterfall').pointRoles ??= [], seriesIndex = props.seriesFields[0]?.value ?? 1; let dataPointIndex = 0; while (roles.some(role => role.seriesIndex === seriesIndex && role.dataPointIndex === dataPointIndex)) dataPointIndex++; roles.push({ seriesIndex, dataPointIndex, role: 'total' }) }) }
 function roleNumber(index: number, key: 'seriesIndex' | 'dataPointIndex', value: unknown): void { if (typeof value === 'number' && Number.isSafeInteger(value)) mutate(config => { const role = config.options?.waterfall?.pointRoles?.[index]; if (role) role[key] = value }) }
 function roleType(index: number, value: unknown): void { if (value === 'total' || value === 'change') mutate(config => { const role = config.options?.waterfall?.pointRoles?.[index]; if (role) role.role = value }) }
@@ -37,6 +41,8 @@ function removeRole(index: number): void { mutate(config => { config.options?.wa
       <Button danger :disabled="disabled" @click="removeColor(index)">移除颜色</Button>
     </div>
     <template v-if="config.type === 'gauge'">
+      <FormItem label="仪表预设"><div class="chart-collection-actions"><Button v-for="preset in CHART_GAUGE_PRESETS" :key="preset.value" :disabled="disabled" @click="setGaugePreset(preset.value)">{{ preset.label }}</Button></div></FormItem>
+      <FormItem label="仪表默认设置" extra="恢复现代仪表的量程、刻度、指针和文字设置。"><Button :disabled="disabled" @click="resetGauge">恢复仪表默认设置</Button></FormItem>
       <FormItem label="仪表分段颜色"><Button :disabled="disabled" @click="addRange">添加刻度区间</Button></FormItem>
       <div v-for="(range, index) in config.options?.gauge?.ranges ?? []" :key="`range-${index}`" class="chart-collection-row chart-range-row">
         <FormItem label="起点"><InputNumber :value="range.from" aria-label="仪表区间起点" :disabled="disabled" @update:value="rangeNumber(index, 'from', $event)" /></FormItem>

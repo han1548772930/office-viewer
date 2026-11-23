@@ -55,6 +55,51 @@ function xmlPart(value: unknown): void {
   xmlBytes(value.xml)
 }
 
+function packagePath(value: unknown): string {
+  name(value)
+  if (/[\\\0?#:]/.test(value)) throw new TypeError('编号来源资源路径无效。')
+  const path = value.replace(/^\/+/, '')
+  if (!path || path.split('/').some(part => !part || part === '.' || part === '..')) throw new TypeError('编号来源资源路径必须为规范包路径。')
+  return path
+}
+
+function mediaBytes(value: unknown): number {
+  const limit = Math.ceil(BINARY_BYTE_LIMIT / 3) * 4
+  if (typeof value !== 'string' || !value || value.length % 4 || value.length > limit
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new TypeError('编号图片必须为预算内的标准 Base64。')
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const digit = alphabet.indexOf(value[value.length - padding - 1]!)
+  if (padding === 2 && (digit & 15) !== 0 || padding === 1 && (digit & 3) !== 0) throw new TypeError('编号图片 Base64 填充位无效。')
+  const bytes = value.length / 4 * 3 - padding
+  if (bytes > BINARY_BYTE_LIMIT) throw new RangeError('单个编号图片超过 16 MiB。')
+  return bytes
+}
+
+function numberingPart(value: unknown): void {
+  if (value === undefined || value === null) return
+  object(value, '文档编号来源')
+  fields(value, ['partName', 'xml', 'relationshipsXml', 'resources'])
+  packagePath(value.partName)
+  let bytes = xmlBytes(value.xml)
+  if (value.relationshipsXml !== undefined && value.relationshipsXml !== null) bytes += xmlBytes(value.relationshipsXml)
+  const resources = value.resources === undefined ? [] : value.resources
+  if (!Array.isArray(resources) || resources.length > RESOURCE_COUNT_LIMIT) throw new TypeError('编号媒体资源列表无效。')
+  const paths = new Set<string>()
+  for (const resource of resources) {
+    object(resource, '编号媒体资源')
+    fields(resource, ['partName', 'contentType', 'dataBase64'])
+    const path = packagePath(resource.partName)
+    if (paths.has(path)) throw new TypeError('编号媒体资源路径重复。')
+    paths.add(path)
+    name(resource.contentType)
+    if (/[\r\n]/.test(resource.contentType)) throw new TypeError('编号媒体内容类型无效。')
+    bytes += mediaBytes(resource.dataBase64)
+    if (bytes > TOTAL_RESOURCE_BYTE_LIMIT) throw new RangeError('编号 XML 和媒体来源合计超过 32 MiB。')
+  }
+  if (bytes > TOTAL_RESOURCE_BYTE_LIMIT) throw new RangeError('编号 XML 和媒体来源合计超过 32 MiB。')
+}
+
 function resourceErrors(value: unknown): string[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > ERROR_COUNT_LIMIT) throw new TypeError('文档来源资源诊断列表无效。')
@@ -145,12 +190,14 @@ export function validateDocumentOfficeSource(
 ): asserts value is DocumentOfficeSourceDto | null | undefined {
   if (value === undefined || value === null) return
   object(value, '文档来源')
-  fields(value, ['version', 'styles', 'theme', 'resourceErrors', 'origin', 'legacyOrigins'])
+  fields(value, ['version', 'styles', 'theme', 'numbering', 'resourceErrors', 'origin', 'legacyOrigins'])
   if (value.version !== 1) throw new TypeError('文档来源版本无效。')
   xmlPart(value.styles)
   xmlPart(value.theme)
+  numberingPart(value.numbering)
   const errors = resourceErrors(value.resourceErrors)
-  if (format === 'odt' && (value.styles !== undefined && value.styles !== null || value.theme !== undefined && value.theme !== null)) throw new TypeError('ODT 来源资源不能送入 Word 样式或主题。')
+  if (format === 'odt' && (value.styles !== undefined && value.styles !== null || value.theme !== undefined && value.theme !== null
+    || value.numbering !== undefined && value.numbering !== null)) throw new TypeError('ODT 来源资源不能送入 Word 样式、主题或编号。')
   const candidates: OriginBudget[] = []
   if (value.origin === undefined) {
     if (format === 'doc' || format === 'odt') throw new TypeError('DOC/ODT 文档来源缺少格式标记。')

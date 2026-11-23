@@ -7,10 +7,20 @@ use crate::{ExportError, xml};
 
 #[path = "docx_source_story.rs"]
 mod story;
+#[path = "docx_source_tables.rs"]
+mod tables;
+#[path = "docx_source_numbering.rs"]
+mod numbering_source;
 
 #[cfg(test)]
 #[path = "docx_source_story_tests.rs"]
 mod story_tests;
+#[cfg(test)]
+#[path = "docx_source_tables_tests.rs"]
+mod table_tests;
+#[cfg(test)]
+#[path = "docx_source_numbering_tests.rs"]
+mod numbering_tests;
 
 const STYLE_LIMIT: usize = 4_096;
 const STYLE_DEPTH_LIMIT: usize = 64;
@@ -29,6 +39,7 @@ struct Source {
     default_paragraph: Option<String>,
     namespaces: BTreeMap<String, String>,
     theme: Result<Option<Theme>, String>,
+    numbering: Result<Option<numbering_source::SourceNumbering>, String>,
 }
 
 pub(super) struct SourceStyles {
@@ -40,6 +51,7 @@ pub(super) struct SourceStyles {
     used_ids: HashSet<String>,
     next_id: u32,
     theme_used: bool,
+    numbering_resources: numbering_source::NumberingRegistry,
 }
 
 #[derive(Clone, Default)]
@@ -215,7 +227,8 @@ fn read_source(resource: &Value) -> Result<Source, String> {
         validate_resource(paragraph, WORD_NAMESPACE)?;
         scoped_children(paragraph, &scope)
     } else { Vec::new() };
-    Ok(Source { styles, default_paragraph, defaults, paragraph_defaults, namespaces: namespaces(&root), theme })
+    Ok(Source { styles, default_paragraph, defaults, paragraph_defaults, namespaces: namespaces(&root), theme,
+        numbering: numbering_source::read(get(resource, "numbering")) })
 }
 
 fn source_style(source: &Source, id: &str) -> Result<Element, String> {
@@ -248,10 +261,10 @@ fn style_closure(source: &Source, id: &str, result: &mut BTreeMap<String, Elemen
     if depth >= STYLE_DEPTH_LIMIT { return Err("Referenced source style dependencies exceed the maximum depth of 64.".into()); }
     if result.len() >= STYLE_LIMIT { return Err("Referenced source styles exceed the supported style count.".into()); }
     let style = source_style(source, id)?;
-    if !matches!(style.attribute("type"), Some("character" | "paragraph")) { return Err(format!("Referenced style {id:?} has an unsupported type.")); }
+    let kind = style.attribute("type").filter(|kind| matches!(*kind, "character" | "paragraph" | "table" | "numbering"))
+        .ok_or_else(|| format!("Referenced style {id:?} has an unsupported type."))?;
+    style_chain(source, id, kind, &mut BTreeSet::new())?;
     validate_resource(&style, WORD_NAMESPACE)?;
-    if style.child("pPr").is_some_and(|paragraph| paragraph.child("numPr").is_some()) { return Err(format!("Linked style {id:?} uses original numbering IDs that could not be remapped.")); }
-    if style.child("rPr").is_some_and(|run| run.child("rStyle").is_some()) { return Err(format!("Original style {id:?} delegates run properties to another rStyle.")); }
     let dependencies = ["basedOn", "next", "link"].into_iter().filter_map(|name| style.child(name).and_then(|child| child.attribute("val")).map(str::to_owned)).collect::<Vec<_>>();
     result.insert(id.into(), style);
     for dependency in dependencies { style_closure(source, &dependency, result, depth + 1)?; }
@@ -259,8 +272,10 @@ fn style_closure(source: &Source, id: &str, result: &mut BTreeMap<String, Elemen
 }
 
 fn theme_requirements(element: &Element) -> (bool, bool) {
-    let fonts = element.attributes.iter().any(|attribute| attribute.namespace == WORD_NAMESPACE && matches!(attribute.local.as_str(), "asciiTheme" | "hAnsiTheme" | "eastAsiaTheme" | "cstheme"));
-    let colors = element.attributes.iter().any(|attribute| attribute.namespace == WORD_NAMESPACE && matches!(attribute.local.as_str(), "themeColor" | "themeFill"));
+    let fonts = element.attributes.iter().any(|attribute| attribute.namespace == WORD_NAMESPACE && matches!(attribute.local.as_str(), "asciiTheme" | "hAnsiTheme" | "eastAsiaTheme" | "cstheme")
+        || element.namespace == DRAWING_NAMESPACE && attribute.namespace.is_empty() && attribute.local == "typeface" && attribute.value.starts_with('+'));
+    let colors = element.namespace == DRAWING_NAMESPACE && element.local == "schemeClr"
+        || element.attributes.iter().any(|attribute| attribute.namespace == WORD_NAMESPACE && matches!(attribute.local.as_str(), "themeColor" | "themeFill"));
     element.children().fold((fonts, colors), |(fonts, colors), child| { let requirements = theme_requirements(child); (fonts || requirements.0, colors || requirements.1) })
 }
 
@@ -287,7 +302,8 @@ impl SourceStyles {
         // with historical ODT resources still has its own native Word parts.
         let current_odt = get(get(resources, "origin"), "format").as_str() == Some("odt");
         let (source, source_error) = if resources.is_null() || current_odt { (None, None) } else { match read_source(resources) { Ok(source) => (Some(source), None), Err(error) => (None, Some(error)) } };
-        Ok(Self { generated, source, source_error, imported: BTreeMap::new(), remap: BTreeMap::new(), used_ids, next_id: 1, theme_used: false })
+        Ok(Self { generated, source, source_error, imported: BTreeMap::new(), remap: BTreeMap::new(), used_ids, next_id: 1, theme_used: false,
+            numbering_resources: numbering_source::NumberingRegistry::default() })
     }
 
     pub fn restore_marker(&mut self, elements: &mut [Element], marker_namespaces: &BTreeMap<String, String>, block: &Value) -> Result<(), String> {
@@ -347,16 +363,20 @@ impl SourceStyles {
     }
 
     fn import_styles(&mut self, closure: &BTreeMap<String, Element>, requirements: (bool, bool)) -> Result<(), String> {
+        self.import_dependencies(closure, requirements, None)
+    }
+
+    fn import_dependencies(&mut self, closure: &BTreeMap<String, Element>, requirements: (bool, bool), properties: Option<&Element>) -> Result<(), String> {
         let source = self.source.as_ref().ok_or_else(|| self.source_error.clone().unwrap_or_else(|| "Original styles.xml and its inheritance context were not retained.".into()))?;
-        let requirements = closure.values().fold(requirements, |required, style| {
-            let current = theme_requirements(style); (required.0 || current.0, required.1 || current.1)
-        });
+        let dependencies = numbering_source::expand(source, closure, properties)?;
+        let requirements = dependencies.theme_requirements(requirements);
         if requirements != (false, false) {
             let theme = source.theme.as_ref().map_err(Clone::clone)?.as_ref().ok_or("Referenced source theme was not retained.")?;
             if requirements.0 && !theme.has_fonts || requirements.1 && !theme.has_colors { return Err("Referenced source theme is missing the required font or color scheme.".into()); }
             self.theme_used = true;
         }
-        for (id, style) in closure {
+        self.numbering_resources.import(source, &dependencies)?;
+        for (id, style) in &dependencies.styles {
             if self.remap.contains_key(id) { continue; }
             let mut mapped = id.clone();
             if self.used_ids.contains(&mapped.to_ascii_lowercase()) {
@@ -373,20 +393,26 @@ impl SourceStyles {
         Ok(())
     }
 
-    pub fn styles_xml(&self) -> String {
-        let Some(source) = &self.source else { return self.generated.clone(); };
+    pub fn styles_xml(&self) -> Result<String, String> {
+        let Some(source) = &self.source else { return Ok(self.generated.clone()); };
         let mut imported = String::new();
         for (id, original) in &self.imported {
             let mut style = original.clone();
             style.attributes.retain(|attribute| !(attribute.namespace == WORD_NAMESPACE && attribute.local == "default"));
             style.set_word_attribute("styleId", self.remap[id].clone());
-            for content in &mut style.content { if let Content::Element(reference) = content { if reference.namespace == WORD_NAMESPACE && matches!(reference.local.as_str(), "basedOn" | "next" | "link") {
-                if let Some(mapped) = reference.attribute("val").and_then(|id| self.remap.get(id)).cloned() { reference.set_word_attribute("val", mapped); }
-            } } }
+            tables::remap_references(&mut style, &self.remap);
+            self.numbering_resources.remap(&mut style)?;
             canonicalize_word(&mut style);
             imported.push_str(&style.render(Some(&source.namespaces)));
         }
-        self.generated.replacen("</w:styles>", &format!("{imported}</w:styles>"), 1)
+        Ok(self.generated.replacen("</w:styles>", &format!("{imported}</w:styles>"), 1))
+    }
+
+    pub fn reserve_numbering(&mut self, generated: &str) -> Result<(), String> { self.numbering_resources.reserve(generated) }
+
+    pub fn numbering_xml(&self, package: &mut crate::opc::Package) -> Result<String, ExportError> {
+        let source = self.source.as_ref().and_then(|source| source.numbering.as_ref().ok()).and_then(Option::as_ref);
+        self.numbering_resources.finish(source, &self.remap, package)
     }
 
     pub fn theme_xml(&self) -> Option<&str> {

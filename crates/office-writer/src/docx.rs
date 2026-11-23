@@ -18,6 +18,8 @@ mod story_writer;
 #[path = "docx_text_fields.rs"]
 mod text_fields;
 use text_fields::TextFieldPlan;
+#[path = "docx_table.rs"]
+mod table_writer;
 
 #[path = "docx_numbering.rs"]
 mod numbering;
@@ -75,7 +77,6 @@ const FOOTER_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const SETTINGS_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml";
-const MAX_TABLE_SPAN: usize = 512;
 const EMU_PER_PIXEL: f64 = 9_525.0;
 const TWIPS_PER_PIXEL: f64 = 15.0;
 
@@ -211,6 +212,7 @@ struct WriteContext<'a> {
     next_story_control: u32,
     source_styles: source_styles::SourceStyles,
     text_fields: TextFieldPlan,
+    tables: table_writer::TableWriteState,
 }
 
 impl<'a> WriteContext<'a> {
@@ -798,276 +800,12 @@ impl<'a> WriteContext<'a> {
     }
 
     fn table(&mut self, block: &Value) -> Result<String, ExportError> {
-        let table = get(get(block, "metadata"), "table");
-        let source_rows = field(table, "rows")
-            .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice);
-        let header_rows = integer(get(table, "headerRowCount")).unwrap_or(0).max(0) as usize;
-        let mut future_merges: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
-        let mut rendered_rows = Vec::new();
-        let mut total_columns = 1usize;
-        let mut row_count = source_rows.len();
-
-        let mut row_index = 0usize;
-        while row_index < row_count {
-            if rendered_rows.len() >= 10_000 {
-                return Err(ExportError::unsupported(
-                    "A DOCX table exceeds the 10,000 row safety limit.",
-                ));
-            }
-            let continuations = future_merges.remove(&row_index).unwrap_or_default();
-            let source_cells = field(source_rows.get(row_index).unwrap_or(&Value::Null), "cells")
-                .and_then(Value::as_array)
-                .map_or(&[][..], Vec::as_slice);
-            let mut items: Vec<TableItem<'_>> = continuations
-                .into_iter()
-                .map(|(column, span)| TableItem {
-                    column,
-                    span,
-                    row_span: 0,
-                    cell: None,
-                    continuation: true,
-                })
-                .collect();
-            let mut next_column = 0usize;
-            for cell in source_cells {
-                let span = bounded_span(integer(get(cell, "colSpan")).unwrap_or(1), self);
-                let row_span = bounded_span(integer(get(cell, "rowSpan")).unwrap_or(1), self);
-                let explicit_column = integer(get(cell, "columnIndex"))
-                    .filter(|column| *column >= 0)
-                    .map(|column| column as usize);
-                let mut column = explicit_column.unwrap_or_else(|| {
-                    while items
-                        .iter()
-                        .any(|item| column_intersects(next_column, item.column, item.span))
-                    {
-                        next_column += 1;
-                    }
-                    next_column
-                });
-                while items
-                    .iter()
-                    .any(|item| column_intersects(column, item.column, item.span))
-                {
-                    column += 1;
-                    self.warn(
-                        "DOCX_TABLE_OVERLAP",
-                        "Overlapping table cells were shifted to the next available column.",
-                    );
-                }
-                next_column = column.saturating_add(span);
-                items.push(TableItem {
-                    column,
-                    span,
-                    row_span,
-                    cell: Some(cell),
-                    continuation: false,
-                });
-            }
-            items.sort_by_key(|item| item.column);
-
-            let mut row_xml = String::from("<w:tr>");
-            if row_index < header_rows {
-                row_xml.push_str("<w:trPr><w:tblHeader/></w:trPr>");
-            }
-            let mut column = 0usize;
-            for item in items {
-                if item.column < column {
-                    continue;
-                }
-                while column < item.column {
-                    row_xml.push_str(&table_cell_xml(self, &[], 1, 1, false, None)?);
-                    column += 1;
-                }
-                let span = item.span.max(1);
-                let merge = !item.continuation && item.row_span > 1;
-                let cell = if let Some(cell) = item.cell {
-                    table_cell_xml(
-                        self,
-                        cell_blocks(cell),
-                        span,
-                        item.row_span,
-                        merge,
-                        Some(cell),
-                    )?
-                } else {
-                    table_cell_xml(self, &[], span, 0, true, None)?
-                };
-                row_xml.push_str(&cell);
-                if merge {
-                    for offset in 1..item.row_span {
-                        let target_row = row_index + offset;
-                        future_merges
-                            .entry(target_row)
-                            .or_default()
-                            .push((column, span));
-                    }
-                    row_count = row_count.max(row_index + item.row_span);
-                }
-                column = column.saturating_add(span);
-            }
-            total_columns = total_columns.max(column);
-            row_xml.push_str("</w:tr>");
-            rendered_rows.push(row_xml);
-            row_index += 1;
-        }
-
-        let columns = total_columns.clamp(1, MAX_TABLE_SPAN);
-        let widths = self.table_column_widths(table, columns);
-        let grid = widths
-            .iter()
-            .map(|width| format!("<w:gridCol w:w=\"{width}\"/>"))
-            .collect::<String>();
-        let mut rows = String::new();
-        for row in rendered_rows {
-            rows.push_str(&row);
-        }
-        let width = widths.iter().copied().sum::<u32>();
-        Ok(format!(
-            "<w:tbl><w:tblPr><w:tblW w:w=\"{width}\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB3BF\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB3BF\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB3BF\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB3BF\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB3BF\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB3BF\"/></w:tblBorders><w:tblCellMar><w:top w:w=\"80\" w:type=\"dxa\"/><w:left w:w=\"100\" w:type=\"dxa\"/><w:bottom w:w=\"80\" w:type=\"dxa\"/><w:right w:w=\"100\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr><w:tblGrid>{grid}</w:tblGrid>{rows}</w:tbl>"
-        ))
+        table_writer::write(self, block, None)
     }
-
-    fn table_column_widths(&self, table: &Value, columns: usize) -> Vec<u32> {
-        let available = self
-            .page
-            .width
-            .saturating_sub(self.page.left + self.page.right)
-            .max(720);
-        let source = field(table, "columnWidths").and_then(Value::as_array);
-        let mut widths = (0..columns)
-            .map(|index| {
-                source
-                    .and_then(|values| values.get(index))
-                    .map_or(0.0, |value| positive(value, 0.0))
-            })
-            .map(|width| (width * TWIPS_PER_PIXEL).round().max(0.0) as u32)
-            .collect::<Vec<_>>();
-        let total = widths.iter().copied().sum::<u32>();
-        if total == 0 {
-            widths.fill((available / columns as u32).max(1));
-        } else {
-            for width in &mut widths {
-                *width = ((*width as u64 * u64::from(available)) / u64::from(total)).max(1) as u32;
-            }
-        }
-        widths
-    }
-}
-
-struct TableItem<'a> {
-    column: usize,
-    span: usize,
-    row_span: usize,
-    cell: Option<&'a Value>,
-    continuation: bool,
 }
 
 fn cell_blocks(cell: &Value) -> &[Value] {
-    field(cell, "blocks")
-        .and_then(Value::as_array)
-        .map_or(&[][..], Vec::as_slice)
-}
-
-fn table_cell_xml(
-    context: &mut WriteContext<'_>,
-    blocks: &[Value],
-    span: usize,
-    row_span: usize,
-    merged: bool,
-    cell: Option<&Value>,
-) -> Result<String, ExportError> {
-    let mut cell_properties = String::new();
-    if span > 1 {
-        cell_properties.push_str(&format!("<w:gridSpan w:val=\"{span}\"/>"));
-    }
-    if merged {
-        let value = if row_span > 1 { "restart" } else { "continue" };
-        cell_properties.push_str(&format!("<w:vMerge w:val=\"{value}\"/>"));
-    }
-    if let Some(cell) = cell {
-        let style = get(cell, "style");
-        if let Some(fill) = string(get(style, "fill")).and_then(color) {
-            cell_properties.push_str(&format!(
-                "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>"
-            ));
-        }
-    }
-    let cell_properties = if cell_properties.is_empty() {
-        String::new()
-    } else {
-        format!("<w:tcPr>{cell_properties}</w:tcPr>")
-    };
-    let mut content = String::new();
-    if blocks.is_empty() {
-        content.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>");
-    } else {
-        for block in blocks {
-            match string(get(block, "type")).unwrap_or_default().as_str() {
-                "table" => {
-                    context.warn(
-                        "DOCX_NESTED_TABLE",
-                        "Nested table content was converted to plain text.",
-                    );
-                    let text = nested_table_text(block);
-                    content.push_str(&format!(
-                        "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
-                        xml_text(&text)
-                    ));
-                }
-                _ => content.push_str(&context.block(block)?),
-            }
-        }
-    }
-    Ok(format!("<w:tc>{cell_properties}{content}</w:tc>"))
-}
-
-fn nested_table_text(block: &Value) -> String {
-    let rows = field(get(get(block, "metadata"), "table"), "rows").and_then(Value::as_array);
-    rows.map_or_else(String::new, |rows| {
-        rows.iter()
-            .map(|row| {
-                field(row, "cells")
-                    .and_then(Value::as_array)
-                    .map_or_else(String::new, |cells| {
-                        cells
-                            .iter()
-                            .map(|cell| {
-                                cell_blocks(cell)
-                                    .iter()
-                                    .flat_map(|paragraph| {
-                                        field(paragraph, "runs")
-                                            .and_then(Value::as_array)
-                                            .into_iter()
-                                            .flatten()
-                                            .map(|run| string(get(run, "text")).unwrap_or_default())
-                                    })
-                                    .collect::<String>()
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\t")
-                    })
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
-}
-
-fn bounded_span(value: i64, context: &mut WriteContext<'_>) -> usize {
-    let value = value.max(1) as usize;
-    if value > MAX_TABLE_SPAN {
-        context.warn(
-            "DOCX_TABLE_SPAN_LIMIT",
-            format!("A table cell span larger than {MAX_TABLE_SPAN} was clamped."),
-        );
-        MAX_TABLE_SPAN
-    } else {
-        value
-    }
-}
-
-fn column_intersects(start: usize, other_start: usize, other_span: usize) -> bool {
-    start >= other_start && start < other_start.saturating_add(other_span)
+    field(cell, "blocks").and_then(Value::as_array).map_or(&[][..], Vec::as_slice)
 }
 
 fn note_reference(run: &Value) -> Option<(NoteKind, String)> {
@@ -1129,7 +867,7 @@ fn collect_note_entries(model: &Value, kind: NoteKind) -> Vec<(String, Value)> {
     }
 }
 
-fn collect_references(blocks: &[Value], found: &mut BTreeSet<(NoteKind, String)>) {
+fn collect_references(blocks: &[Value], found: &mut BTreeSet<(NoteKind, String)>) -> Result<(), ExportError> {
     for block in blocks {
         if let Some(runs) = field(block, "runs").and_then(Value::as_array) {
             for run in runs {
@@ -1138,21 +876,14 @@ fn collect_references(blocks: &[Value], found: &mut BTreeSet<(NoteKind, String)>
                 }
             }
         }
-        let rows = field(get(get(block, "metadata"), "table"), "rows").and_then(Value::as_array);
-        if let Some(rows) = rows {
-            for cell in rows.iter().flat_map(|row| {
-                field(row, "cells")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            }) {
-                collect_references(cell_blocks(cell), found);
-            }
+        if get(block, "type").as_str() == Some("table") {
+            for group in table_writer::content_groups(get(get(block, "metadata"), "table"))? { collect_references(group.blocks, found)?; }
         }
     }
+    Ok(())
 }
 
-fn collect_notes(model: &Value, blocks: &[Value]) -> NoteBundle {
+fn collect_notes(model: &Value, blocks: &[Value]) -> Result<NoteBundle, ExportError> {
     let mut notes: [Vec<NoteEntry>; 2] = [Vec::new(), Vec::new()];
     let mut ids = HashMap::new();
     let mut next_id = [1i64, 1i64];
@@ -1170,7 +901,7 @@ fn collect_notes(model: &Value, blocks: &[Value]) -> NoteBundle {
     }
 
     let mut references = BTreeSet::new();
-    collect_references(blocks, &mut references);
+    collect_references(blocks, &mut references)?;
     let mut orphaned = Vec::new();
     for (kind, source_id) in references {
         if ids.contains_key(&(kind, source_id.clone())) {
@@ -1186,23 +917,23 @@ fn collect_notes(model: &Value, blocks: &[Value]) -> NoteBundle {
         });
         orphaned.push((kind, source_id));
     }
-    NoteBundle {
+    Ok(NoteBundle {
         footnotes: std::mem::take(&mut notes[0]),
         endnotes: std::mem::take(&mut notes[1]),
         ids,
         orphaned,
-    }
+    })
 }
 
 fn collect_content_controls(
     model: &Value,
     blocks: &[Value],
-) -> HashMap<String, Vec<ContentControl>> {
+) -> Result<HashMap<String, Vec<ContentControl>>, ExportError> {
     let Some(items) = field(model, "contentControls").and_then(Value::as_array) else {
-        return HashMap::new();
+        return Ok(HashMap::new());
     };
     let mut block_ids = BTreeSet::new();
-    collect_block_ids(blocks, &mut block_ids);
+    collect_block_ids(blocks, &mut block_ids)?;
     let mut controls = HashMap::<String, Vec<ContentControl>>::new();
     for (index, value) in items.iter().enumerate() {
         let id = string(get(value, "id")).unwrap_or_default();
@@ -1239,26 +970,19 @@ fn collect_content_controls(
             )
         });
     }
-    controls
+    Ok(controls)
 }
 
-fn collect_block_ids(blocks: &[Value], found: &mut BTreeSet<String>) {
+fn collect_block_ids(blocks: &[Value], found: &mut BTreeSet<String>) -> Result<(), ExportError> {
     for block in blocks {
         if let Some(id) = string(get(block, "id")).filter(|id| !id.trim().is_empty()) {
             found.insert(id);
         }
-        let rows = field(get(get(block, "metadata"), "table"), "rows").and_then(Value::as_array);
-        if let Some(rows) = rows {
-            for cell in rows.iter().flat_map(|row| {
-                field(row, "cells")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            }) {
-                collect_block_ids(cell_blocks(cell), found);
-            }
+        if get(block, "type").as_str() == Some("table") {
+            for group in table_writer::content_groups(get(get(block, "metadata"), "table"))? { collect_block_ids(group.blocks, found)?; }
         }
     }
+    Ok(())
 }
 
 fn slice_utf16(text: &str, start: usize, end: usize) -> Option<&str> {
@@ -1732,11 +1456,12 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         return Err(ExportError::invalid("正文包含尚未映射的原生字段段落；完整来源已保留，需补齐范围映射后才能写出 DOCX。"));
     }
     let legacy_source = legacy_source::prepare(&model)?;
+    table_writer::validate_document_tables(blocks)?;
     let generated_styles = default_style::styles_xml(&model, styles_xml())?;
     let run_defaults = RunDefaultEffects::for_model(&model);
-    let notes = collect_notes(&model, blocks);
+    let notes = collect_notes(&model, blocks)?;
     let (comment_entries, comment_anchors, comment_warnings) = collect_comments(&model)?;
-    let controls_by_block = collect_content_controls(&model, blocks);
+    let controls_by_block = collect_content_controls(&model, blocks)?;
     let declared_control_count = field(&model, "contentControls")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
@@ -1802,38 +1527,35 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         next_story_control: 1_073_741_824,
         source_styles: source_styles::SourceStyles::new(&model, generated_styles)?,
         text_fields: TextFieldPlan::default(),
+        tables: table_writer::TableWriteState::default(),
     };
     if let Some(bytes) = legacy_source {
         use office_io_common::document_legacy_source::{LEGACY_SOURCE_CONTENT_TYPE, LEGACY_SOURCE_PART, LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET};
         context.package.add_binary(LEGACY_SOURCE_PART, LEGACY_SOURCE_CONTENT_TYPE, bytes)?;
         context.relationship(LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET, false)?;
     }
-    let has_different_odd_even =
-        prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
-    let (list_ids, numbering) = assign_lists(blocks);
+    let (list_ids, numbering) = assign_lists(blocks)?;
     context.list_ids = list_ids;
     context.numbering = numbering;
     let numbering_xml = write_numbering_xml(&context.numbering, context.package, &mut context.warnings)?;
+    // Source stories may import numbered paragraph styles. Reserve all generated
+    // list/picture IDs before any source consumer is allowed to allocate IDs.
+    context.source_styles.reserve_numbering(&numbering_xml).map_err(ExportError::invalid)?;
+    let has_different_odd_even =
+        prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
     context.preserved_markers = prepare_preserved_markers(blocks, &context.controls_by_block, &mut context.source_styles)?;
     context.warnings.append(&mut context.preserved_markers.warnings);
     context.sequences = prepare_sequences(blocks, &context.list_ids, &context.numbering, &numbering_xml, &context.preserved_markers)?;
     context.warnings.append(&mut context.sequences.warnings);
     context.text_fields = TextFieldPlan::prepare(&mut context, blocks)?;
-    context
-        .package
-        .add_xml("word/numbering.xml", NUMBERING_CONTENT_TYPE, numbering_xml)?;
     let mut body = String::new();
     for block in blocks {
         body.push_str(&context.block(block)?);
     }
+    table_writer::write_sources(&mut context)?;
     let fields = std::mem::take(&mut context.text_fields);
     fields.write_identities(&mut context)?;
     let has_body_fields = fields.has_fields;
-    context.package.add_xml("word/styles.xml", STYLES_CONTENT_TYPE, context.source_styles.styles_xml())?;
-    if let Some(theme) = context.source_styles.theme_xml().map(str::to_owned) {
-        context.package.add_xml("word/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
-        context.relationship(REL_THEME, "theme/theme1.xml", false)?;
-    }
     if let Some(mapping) = context.sequences.mapping_xml.take() {
         context.package.add_xml("customXml/office-numbering.xml", "application/xml", mapping)?;
         context.relationship("http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml", "../customXml/office-numbering.xml", false)?;
@@ -1914,6 +1636,15 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             .package
             .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml(has_different_odd_even))?;
         context.relationship(REL_SETTINGS, "settings.xml", false)?;
+    }
+    // Package global resources after body, tables, stories, notes and comments
+    // have all had the opportunity to import their native dependency closures.
+    let numbering_xml = context.source_styles.numbering_xml(context.package)?;
+    context.package.add_xml("word/numbering.xml", NUMBERING_CONTENT_TYPE, numbering_xml)?;
+    context.package.add_xml("word/styles.xml", STYLES_CONTENT_TYPE, context.source_styles.styles_xml().map_err(ExportError::invalid)?)?;
+    if let Some(theme) = context.source_styles.theme_xml().map(str::to_owned) {
+        context.package.add_xml("word/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
+        context.relationship(REL_THEME, "theme/theme1.xml", false)?;
     }
     Ok(context.warnings)
 }
@@ -2653,7 +2384,7 @@ mod tests {
     }
 
     #[test]
-    fn table_row_span_emits_dynamic_continuation_row() {
+    fn table_row_span_keeps_its_declared_covered_row() {
         let model = json!({
             "kind": "document",
             "name": "Merged table",
@@ -2664,7 +2395,7 @@ mod tests {
                         "rowSpan": 2,
                         "blocks": [{"type": "paragraph", "runs": [{"text": "Merged"}]}]
                     }]
-                }]}}
+                }, { "cells": [] }]}}
             }]
         });
         let mut package = Package::new();

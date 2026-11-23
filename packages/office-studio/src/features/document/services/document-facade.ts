@@ -2,6 +2,7 @@ import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../..
 import { transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit } from './content-controls'
 import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 import { transformDocumentCommentAnchorsForBodyRangeEdit } from '../comments/document-comment-anchors'
+import { documentTableCellBlocks } from '../model/document-table-continuations'
 import {
   applyRunPatch,
   compactRuns,
@@ -15,6 +16,8 @@ import {
   setTargetRuns,
   sliceRuns,
   tableForBlock,
+  findDocumentBlock,
+  findDocumentBlockContainer,
   textTargets,
   type DocumentRun,
   type DocumentPoint,
@@ -380,25 +383,27 @@ function hasUnaddressableBlocksBetween(start: TargetReference, end: TargetRefere
 }
 
 function locateTarget(model: DocumentModel, point: DocumentPoint): TargetReference | undefined {
-  const block = model.blocks.find((candidate) => candidate.id === point.blockId)
+  const block = findDocumentBlock(model, point.blockId)
   if (!block) return undefined
   if (point.row == null) {
-    const index = model.blocks.findIndex((candidate) => candidate.id === point.blockId)
-    return index < 0 ? undefined : { block, container: model.blocks, index }
+    const container = findDocumentBlockContainer(model, point.blockId)
+    const index = container?.findIndex((candidate) => candidate.id === point.blockId) ?? -1
+    return !container || index < 0 ? undefined : { block, container, index }
   }
   const cell = tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]
   if (!cell) return undefined
-  const targetId = point.cellBlockId ?? cell.blocks[0]?.id
-  const index = cell.blocks.findIndex((candidate) => candidate.id === targetId)
-  const target = cell.blocks[index]
-  return target && index >= 0 ? { block: target, container: cell.blocks, index } : undefined
+  const targetId = point.cellBlockId ?? documentTableCellBlocks(cell)[0]?.id
+  const container = targetId && findDocumentBlockContainer(model, targetId)
+  const index = container?.findIndex(candidate => candidate.id === targetId) ?? -1
+  const target = container?.[index]
+  return target && container && index >= 0 ? { block: target, container, index } : undefined
 }
 
 function blockForTarget(model: DocumentModel, target: TextTarget): DocumentBlock | undefined {
-  const block = model.blocks.find((candidate) => candidate.id === target.blockId)
+  const block = findDocumentBlock(model, target.blockId)
   if (target.row == null || !block) return block
   const cell = tableForBlock(block)?.rows[target.row]?.cells[target.col ?? 0]
-  return cell?.blocks.find((candidate) => candidate.id === target.cellBlockId)
+  return cell && documentTableCellBlocks(cell).find((candidate) => candidate.id === target.cellBlockId)
 }
 
 function replaceAcrossBlocks(

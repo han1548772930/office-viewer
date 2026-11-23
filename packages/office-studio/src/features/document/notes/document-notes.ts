@@ -1,8 +1,16 @@
-import type { DocumentBlock, DocumentModel, DocumentNote } from '../../../domain/model'
+import type { DocumentBlock, DocumentModel, DocumentNote, DocumentStoryContent } from '../../../domain/model'
+import { cloneModel } from '../../../domain/serialization'
+import { projectDocumentStoryBlocks } from '../model/document-story-blocks'
+import { documentDefaultStyle } from '../model/document-default-style'
+import { documentStoryParagraphs } from '../model/document-story'
+import { documentModelForBlockHost, applyDocumentBlockHostModel } from '../services/document-block-host'
+import { documentTextFieldParagraphs } from '../model/document-text-fields'
+import { replaceDocumentRange } from '../services/document-facade'
 import { blockAtPoint, collapsedSelection, createRun, documentId, marksAtPoint, orderedSelection, runText, runsForTarget, setTargetRuns, sliceRuns, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
 import { transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
+import { documentTableCellBlocks } from '../model/document-table-continuations'
 
 export type DocumentNoteKind = 'footnote' | 'endnote'
 
@@ -33,7 +41,7 @@ function noteEntries(value: unknown): Array<[string, unknown]> {
 }
 
 function allBlocks(blocks: DocumentBlock[]): DocumentBlock[] {
-  return blocks.flatMap((block) => [block, ...((tableForBlock(block)?.rows.flatMap((row) => row.cells.flatMap((cell) => allBlocks(cell.blocks))) ?? []))])
+  return blocks.flatMap((block) => [block, ...((tableForBlock(block)?.rows.flatMap((row) => row.cells.flatMap((cell) => allBlocks(documentTableCellBlocks(cell)))) ?? []))])
 }
 
 export function normalizeDocumentNotes(data: Record<string, unknown>, blocks: DocumentBlock[]): Pick<DocumentModel, 'footnotes' | 'endnotes'> {
@@ -63,6 +71,15 @@ export function normalizeDocumentNotes(data: Record<string, unknown>, blocks: Do
         text: rawNoteText(value),
         referenceBlockId: reference?.block.id ?? '',
         referenceRunId: reference?.run.id ?? '',
+      }
+      const candidate = rawRecord(value).content
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate) && Array.isArray(Reflect.get(candidate, 'blocks'))) {
+        const content = projectDocumentStoryBlocks(cloneModel(candidate as DocumentStoryContent), 'display').content
+        notes[id]!.content = content
+        notes[id]!.text = runText(content.runs)
+      } else if (candidate && typeof candidate === 'object' && !Array.isArray(candidate) && Array.isArray(Reflect.get(candidate, 'runs')) && Array.isArray(Reflect.get(candidate, 'paragraphs'))) {
+        notes[id]!.content = cloneModel(candidate as DocumentStoryContent)
+        notes[id]!.text = runText(notes[id]!.content!.runs)
       }
     }
     if (Object.keys(notes).length) result[property] = notes
@@ -106,7 +123,23 @@ function renumberNotes(model: DocumentModel, kind: DocumentNoteKind): void {
   }
 }
 
+/** Table/paragraph structure retains note IDs and removes notes whose references were deleted. */
+export function reconcileDocumentNotesAfterStructure(model: DocumentModel, removedBlockIds: ReadonlySet<string>): void {
+  const blocks = new Map(allBlocks(model.blocks).map(block => [block.id, block]))
+  for (const property of ['footnotes', 'endnotes'] as const) {
+    const notes = model[property]
+    if (!notes) continue
+    for (const [id, note] of Object.entries(notes)) {
+      const paragraph = blocks.get(note.referenceBlockId)
+      if (removedBlockIds.has(note.referenceBlockId) || note.referenceBlockId && (!paragraph || !paragraph.runs.some(run => isReferenceRun(run, note)))) delete notes[id]
+    }
+  }
+  if (model.footnotes) renumberNotes(model, 'footnote')
+  if (model.endnotes) renumberNotes(model, 'endnote')
+}
+
 export function insertDocumentNote(model: DocumentModel, selection: DocumentSelection, kind: DocumentNoteKind): { selection: DocumentSelection; note: DocumentNote } {
+  if (selection.tableSelection) throw new RangeError('脚注或尾注需要单元格内的文字选区或插入位置')
   const { start, end } = orderedSelection(model, selection)
   if (start.blockId !== end.blockId || start.row !== end.row || start.col !== end.col || start.cellBlockId !== end.cellBlockId) {
     throw new RangeError('A note reference must be inserted within one paragraph or table cell.')
@@ -139,7 +172,21 @@ export function insertDocumentNote(model: DocumentModel, selection: DocumentSele
 export function updateDocumentNote(model: DocumentModel, kind: DocumentNoteKind, id: string, text: string): void {
   const note = noteCollection(model, kind)[id]
   if (!note) throw new RangeError(`Unknown ${kind} id: ${id}`)
+  if (note.content?.blocks !== undefined) {
+    if (text === note.text) return
+    const host = { kind: 'note' as const, noteKind: kind, noteId: id }, scoped = documentModelForBlockHost(cloneModel(model), host, true)
+    const paragraphs = documentTextFieldParagraphs(scoped)
+    // The legacy text setter remains useful for ordinary notes; real tables require block-target editing.
+    if (scoped.blocks.some(block => block.type !== 'paragraph') || paragraphs.some(paragraph => paragraph.container !== scoped.blocks)) throw new RangeError('包含表格或对象的注释需要在画布中编辑对应内容。')
+    const updated = replaceDocumentRange(scoped, 0, paragraphs.at(-1)?.absoluteEnd ?? 0, text)
+    applyDocumentBlockHostModel(model, host, updated)
+    return
+  }
   note.text = text
+  if (note.content) {
+    const defaults = documentDefaultStyle(model)
+    note.content = { ...note.content, runs: [createRun(text, defaults.text)], paragraphs: documentStoryParagraphs(text, defaults.paragraph) }
+  }
 }
 
 export function deleteDocumentNote(model: DocumentModel, kind: DocumentNoteKind, id: string): boolean {

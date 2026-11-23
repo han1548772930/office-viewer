@@ -1,4 +1,5 @@
 import type { ChartModel, ChartType } from '../../domain/model'
+import { chartNamedSeriesStyle } from './chart-series-selector'
 
 export type ChartDataShape = 'category' | 'xy' | 'bubble' | 'edge' | 'hierarchy' | 'distribution' | 'ohlc' | 'heatmap' | 'gauge'
 export type ChartFamily = 'line' | 'column' | 'bar' | 'pie' | 'area' | 'radar' | 'scatter' | 'combination'
@@ -83,11 +84,12 @@ export function chartTypeSelectOptions(): Array<{ label: string; value: ChartTyp
 
 /** Shared by controls, the small-data path and Worker scheduling. Combination
  * charts apply this to each series, because only some may be stacked. */
-export function supportsChartStatistics(chart: Pick<ChartModel, 'type' | 'options'>, field?: number, position = 0): boolean {
+export function supportsChartStatistics(chart: Pick<ChartModel, 'type' | 'options'>, field?: number, position = 0, sourceName?: string): boolean {
   const descriptor = resolveChartType(chart.type)
   if (descriptor.threeD || descriptor.stacked || !['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination'].includes(descriptor.family)) return false
   if (descriptor.family !== 'combination' || field === undefined) return true
-  const seriesType = chart.options?.series?.[field]?.type ?? chart.options?.allSeriesStyle?.type ?? (position === 0 ? 'column' : 'line')
+  const seriesType = chartNamedSeriesStyle(chart.options, sourceName)?.type ?? chart.options?.series?.[field]?.type
+    ?? chart.options?.allSeriesStyle?.type ?? (position === 0 ? 'column' : 'line')
   return !seriesType.endsWith('Stacked')
 }
 

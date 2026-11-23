@@ -4,6 +4,7 @@ import { documentDefaultStyle } from './document-default-style'
 import { createRun, runText } from './document-model'
 import { documentRunStyleAt, splitDocumentRunRange } from './document-run-range'
 import type { DocumentRun, RunPatch } from './document-model'
+import { projectDocumentStoryBlocks } from './document-story-blocks'
 
 export const DOCUMENT_STORY_KEYS = ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const
 export type DocumentStoryKey = DocumentPageField['story']
@@ -123,6 +124,7 @@ export function clampDocumentTextRange(text: string, range: { start: number; end
 }
 
 export function validateDocumentStoryContent(content: DocumentStoryContent, text: string): void {
+  if (content?.blocks !== undefined) content = projectDocumentStoryBlocks(content).content
   if (!content || !Array.isArray(content.runs) || !Array.isArray(content.paragraphs) || !content.paragraphs.length) throw new TypeError('页眉页脚富文本数据无效。')
   let runOffset = 0
   for (const run of content.runs) {
@@ -224,7 +226,11 @@ export function documentStoryParagraphs(text: string, style: DocumentDefaultStyl
 
 export function documentStoryContent(section: DocumentSectionHeaderFooter, story: DocumentStoryKey, model?: StoryDefaultsSource): DocumentStoryContent {
   const text = section[story], content = section.storyContent?.[story]
-  if (content !== undefined) { validateDocumentStoryContent(content, text); return content }
+  if (content !== undefined) {
+    const prepared = content.blocks === undefined ? content : projectDocumentStoryBlocks(content).content
+    validateDocumentStoryContent(prepared, content.blocks === undefined ? text : runText(prepared.runs))
+    return prepared
+  }
   const defaults = documentStoryDefaultStyle(model)
   // Keep legacy stories centered until the user applies paragraph formatting.
   return { runs: [createRun(text, defaults.text)], paragraphs: documentStoryParagraphs(text, { ...defaults.paragraph, align: 'center', lineHeight: 1.25, spaceBefore: 0, spaceAfter: 0 }) }

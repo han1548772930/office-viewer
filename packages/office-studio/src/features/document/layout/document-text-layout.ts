@@ -2,7 +2,7 @@ import type { DocumentBlock } from '../../../domain/model'
 import { hasEastAsianLetters } from '../model/document-font'
 import type { DocumentRun, TextTarget } from '../model/document-model'
 import { getLatexFormula, layoutLatexFormula, type LatexLayout } from '../latex/latex-formula'
-import type { LayoutGlyph, LayoutLine, LayoutMeasurer } from './document-layout-types'
+import type { LayoutGlyph, LayoutLine, LayoutMeasurer, LayoutRightTabStop, LayoutTabGlyph, LayoutTabLeader } from './document-layout-types'
 
 export function paragraphLineHeight(fontHeight: number, style: DocumentBlock['style']): number {
   if (style.spacingRule === 'exact') return Math.max(1, style.lineHeight)
@@ -34,7 +34,27 @@ export function createTextMeasurer(): LayoutMeasurer {
 export type RawGlyph = Omit<LayoutGlyph, 'x' | 'y' | 'height'>
 export interface RawLine { glyphs: RawGlyph[]; start: number; end: number; width: number; fontHeight: number }
 
-export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: number) => number), measurer: LayoutMeasurer, wordWrap = false, minimumFontHeight = 14.67): RawLine[] {
+/** Leader text is measured decoration; the original tab remains one UTF-16 glyph. */
+function tabLeaderGlyph(width: number, leader: LayoutTabLeader, font: string, measurer: LayoutMeasurer): LayoutTabGlyph {
+  const character = leader === 'dots' ? '.' : leader === 'dashes' ? '-' : leader === 'underline' ? '_' : leader === 'middleDots' ? '·' : ''
+  const advance = character ? measurer.measure(character, font) : 0
+  let count = advance > 0 && Number.isFinite(advance) ? Math.floor(width / advance) : 0
+  if (!Number.isSafeInteger(count) || count < 1) return { leader, leaderText: '', leaderWidth: 0 }
+  let text = character.repeat(count), measured = measurer.measure(text, font)
+  if (!Number.isFinite(measured) || measured > width) {
+    let low = 0, high = count
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2), candidate = measurer.measure(character.repeat(middle), font)
+      if (Number.isFinite(candidate) && candidate <= width) low = middle
+      else high = middle - 1
+    }
+    count = low; text = character.repeat(count); measured = count ? measurer.measure(text, font) : 0
+  }
+  return { leader, leaderText: text, leaderWidth: Math.max(0, measured) }
+}
+
+export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: number) => number), measurer: LayoutMeasurer, wordWrap = false, minimumFontHeight = 14.67,
+  rightTabs?: readonly LayoutRightTabStop[] | ((line: number) => readonly LayoutRightTabStop[])): RawLine[] {
   const tokens: RawGlyph[] = []
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
   let offset = 0
@@ -62,17 +82,42 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
     glyphs = []; lineWidth = 0; lineStart = end
   }
   const availableWidth = () => Math.max(1, typeof width === 'number' ? width : width(lines.length))
+  const currentRightTab = (offset: number): LayoutRightTabStop | undefined => {
+    const stops = (typeof rightTabs === 'function' ? rightTabs(lines.length) : rightTabs ?? [])
+      .filter(stop => stop.offset === offset && (stop.right === undefined || Number.isFinite(stop.right) && stop.right >= 0))
+      .sort((a, b) => (a.right ?? availableWidth()) - (b.right ?? availableWidth()))
+    return stops.find(stop => Math.min(stop.right ?? availableWidth(), availableWidth()) > lineWidth) ?? stops.at(-1)
+  }
   const joinsWord = (token: RawGlyph) => /^[\p{L}\p{M}\p{N}_]+$/u.test(token.text) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Bopomofo}]/u.test(token.text)
   for (let index = 0; index < tokens.length;) {
     const token = tokens[index]!
     if (token.text === '\n' || token.text === '\u2028') { commit(token.offset); lineStart = token.end; index++; continue }
+    let tab = token.text === '\t' ? currentRightTab(token.offset) : undefined
+    if (tab) {
+      let followingWidth = 0
+      for (let following = index + 1; following < tokens.length; following++) {
+        const glyph = tokens[following]!
+        if (glyph.text === '\t' || glyph.text === '\n' || glyph.text === '\u2028') break
+        followingWidth += glyph.width
+      }
+      let target = Math.min(tab.right ?? availableWidth(), availableWidth())
+      if (lineWidth > 0 && target - lineWidth - followingWidth < -1e-6) {
+        commit(token.offset)
+        tab = currentRightTab(token.offset) ?? tab
+        target = Math.min(tab.right ?? availableWidth(), availableWidth())
+      }
+      const gap = Math.max(0, target - lineWidth - followingWidth)
+      glyphs.push({ ...token, width: gap, tab: tabLeaderGlyph(gap, tab.leader, token.font, measurer) })
+      lineWidth += gap; index++
+      continue
+    }
     let end = index + 1
     if (!wordWrap && joinsWord(token)) while (end < tokens.length && joinsWord(tokens[end]!)) end++
     const word = tokens.slice(index, end)
     const wordWidth = word.reduce((sum, glyph) => sum + glyph.width, 0)
-    if (glyphs.length && lineWidth + wordWidth > availableWidth()) commit(token.offset)
+    if (lineWidth > 0 && lineWidth + wordWidth > availableWidth()) commit(token.offset)
     for (const glyph of word) {
-      if (glyphs.length && lineWidth + glyph.width > availableWidth()) commit(glyph.offset)
+      if (lineWidth > 0 && lineWidth + glyph.width > availableWidth()) commit(glyph.offset)
       glyphs.push(glyph); lineWidth += glyph.width
     }
     index = end
@@ -82,10 +127,11 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
 }
 
 export function positionLine(raw: RawLine, target: TextTarget, x: number, y: number, width: number, lineHeight: number, page: number, align: DocumentBlock['style']['align'], justify: boolean, marker?: string): LayoutLine {
+  const tabbed = raw.glyphs.some(glyph => glyph.tab !== undefined)
   const spare = Math.max(0, width - raw.width)
-  const shift = align === 'center' ? spare / 2 : align === 'right' ? spare : 0
+  const shift = !tabbed && align === 'center' ? spare / 2 : !tabbed && align === 'right' ? spare : 0
   const spaces = raw.glyphs.filter(glyph => glyph.text === ' ').length
-  const gap = align === 'justify' && justify && spaces ? spare / spaces : 0
+  const gap = !tabbed && align === 'justify' && justify && spaces ? spare / spaces : 0
   let cursor = x + shift
   const glyphs = raw.glyphs.map(glyph => {
     const value: LayoutGlyph = { ...glyph, x: cursor, y, height: lineHeight, width: glyph.width + (glyph.text === ' ' ? gap : 0) }

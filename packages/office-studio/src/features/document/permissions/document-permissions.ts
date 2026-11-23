@@ -1,6 +1,10 @@
 import type { DocumentBlock, DocumentModel, DocumentPermissionAction, DocumentPermissionRule, DocumentPermissionScope } from '../../../domain/model'
 import type { DocumentSelection, TextTarget } from '../model/document-model'
-import { orderedSelection, textTargets } from '../model/document-model'
+import { documentBlockAncestry, findDocumentBlock, orderedSelection, tableForBlock, textTargets } from '../model/document-model'
+import { documentBlockHostForId, documentBlockHostId, documentEditingBlockHost, documentStoredBlockHosts, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import { documentTableCellsInRange, documentTableGrid } from '../model/document-table-grid'
+import { documentTableDescendantIds, resolveDocumentTableViewSelection } from '../model/document-table-selection'
+import { documentTableCellBlocks } from '../model/document-table-continuations'
 import { flattenDocumentBody } from '../services/document-facade'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock } from '../services/section-header-footer'
 import { DOCUMENT_STORY_KEYS } from '../model/document-story'
@@ -103,6 +107,13 @@ export function assertDocumentPermission(
 }
 
 export function permissionTargetsForSelection(model: DocumentModel, selection: DocumentSelection): DocumentPermissionTarget[] {
+  if (selection.tableSelection) {
+    const view = resolveDocumentTableViewSelection(model, selection.tableSelection), block = findDocumentBlock(model, view.tableId)!
+    const owners = documentTableCellsInRange(documentTableGrid(tableForBlock(block)!), view.range), result = new Map<string, DocumentPermissionTarget>()
+    addBlockPermissionTargets(model, view.tableId, result)
+    for (const owner of owners) for (const id of documentTableDescendantIds(documentTableCellBlocks(owner.cell))) addBlockPermissionTargets(model, id, result)
+    return [...result.values()]
+  }
   const { start, end } = orderedSelection(model, selection)
   const targets = textTargets(model)
   const firstIndex = targets.findIndex(target => samePoint(target, start))
@@ -131,15 +142,40 @@ export function permissionTargetsForRange(model: DocumentModel, startOffset: num
 }
 
 function addBlockPermissionTargets(model: DocumentModel, blockId: string, result: Map<string, DocumentPermissionTarget>): void {
-  const ancestry = blockPermissionAncestry(model.blocks, blockId)
+  const host = documentEditingBlockHost(model) ?? documentBlockHostForId(model, blockId)
+  const hostBlocks = host && !documentEditingBlockHost(model) ? documentStoredBlockHosts(model).find(entry => documentBlockHostId(entry.host) === documentBlockHostId(host))?.blocks : undefined
+  const ancestry = blockPermissionAncestry(hostBlocks ?? model.blocks, blockId)
   const block = ancestry?.at(-1)
   if (!block) return
-  const sectionId = sectionIdForBlock(model, ancestry![0]!.id)
+  const sectionId = host ? permissionSectionIdForHost(model, host) : sectionIdForBlock(model, ancestry![0]!.id)
   result.set(`section:${sectionId}`, { scope: 'section', id: sectionId })
+  if (host) {
+    const id = documentBlockHostId(host)
+    result.set(`entity:${id}`, { scope: 'entity', id })
+    if (host.kind === 'story') {
+      const area = host.story.toLowerCase().includes('header') ? 'header' : 'footer'
+      result.set(`entity:${host.sectionId}:${area}`, { scope: 'entity', id: `${host.sectionId}:${area}` })
+    }
+  }
   for (const ancestor of ancestry!) {
     result.set(`paragraph:${ancestor.id}`, { scope: 'paragraph', id: ancestor.id })
     if (isPermissionEntity(ancestor)) result.set(`entity:${ancestor.id}`, { scope: 'entity', id: ancestor.id })
   }
+}
+
+function permissionSectionIdForHost(model: DocumentModel, host: DocumentAuxiliaryBlockHost): string {
+  if (host.kind === 'story') return host.sectionId
+  const scoped = model.metadata?.documentEditingSectionId
+  if (typeof scoped === 'string') return scoped
+  const note = (host.noteKind === 'footnote' ? model.footnotes : model.endnotes)?.[host.noteId]
+  const reference = note && documentBlockAncestry(model, note.referenceBlockId)
+  return sectionIdForBlock(model, reference?.[0]?.id ?? note?.referenceBlockId ?? '')
+}
+
+function allPermissionBlocks(model: DocumentModel): Map<string, DocumentBlock> {
+  const result = flattenBlocks(model.blocks)
+  for (const entry of documentStoredBlockHosts(model)) for (const [id, block] of flattenBlocks(entry.blocks)) result.set(id, block)
+  return result
 }
 
 /** Global body operations use the same section/table/paragraph scopes as selected edits. */
@@ -154,7 +190,7 @@ function blockPermissionAncestry(blocks: readonly DocumentBlock[], id: string): 
     if (block.id === id) return [block]
     const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
     for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
-      const nested = blockPermissionAncestry(cell.blocks ?? [], id)
+      const nested = blockPermissionAncestry(documentTableCellBlocks(cell), id)
       if (nested) return [block, ...nested]
     }
   }
@@ -162,8 +198,8 @@ function blockPermissionAncestry(blocks: readonly DocumentBlock[], id: string): 
 }
 
 export function permissionTargetsForChangedBlocks(before: DocumentModel, after: DocumentModel): DocumentPermissionTarget[] {
-  const beforeBlocks = flattenBlocks(before.blocks)
-  const afterBlocks = flattenBlocks(after.blocks)
+  const beforeBlocks = allPermissionBlocks(before)
+  const afterBlocks = allPermissionBlocks(after)
   const changedIds = new Set<string>()
   for (const [id, block] of beforeBlocks) {
     if (JSON.stringify(block) !== JSON.stringify(afterBlocks.get(id))) changedIds.add(id)
@@ -175,6 +211,19 @@ export function permissionTargetsForChangedBlocks(before: DocumentModel, after: 
     addBlockPermissionTargets(after, id, result)
   }
   for (const target of permissionTargetsForChangedStories(before, after)) result.set(`${target.scope}:${target.id}`, target)
+  for (const noteKind of ['footnote', 'endnote'] as const) {
+    const property = noteKind === 'footnote' ? 'footnotes' : 'endnotes'
+    for (const id of new Set([...Object.keys(before[property] ?? {}), ...Object.keys(after[property] ?? {})])) {
+      if (JSON.stringify(before[property]?.[id]) === JSON.stringify(after[property]?.[id])) continue
+      const host: DocumentAuxiliaryBlockHost = { kind: 'note', noteKind, noteId: id }, entityId = documentBlockHostId(host)
+      result.set(`entity:${entityId}`, { scope: 'entity', id: entityId })
+      for (const model of [before, after]) {
+        if (!model[property]?.[id]) continue
+        const sectionId = permissionSectionIdForHost(model, host)
+        result.set(`section:${sectionId}`, { scope: 'section', id: sectionId })
+      }
+    }
+  }
   if (JSON.stringify(before.sectionSetup) !== JSON.stringify(after.sectionSetup)) result.set('section:first', { scope: 'section', id: 'first' })
   return [...result.values()]
 }
@@ -204,7 +253,7 @@ function flattenBlocks(blocks: readonly DocumentBlock[]): Map<string, DocumentBl
     result.set(block.id, block)
     const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
     for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
-      for (const [id, nested] of flattenBlocks(cell.blocks ?? [])) result.set(id, nested)
+      for (const [id, nested] of flattenBlocks(documentTableCellBlocks(cell))) result.set(id, nested)
     }
   }
   return result

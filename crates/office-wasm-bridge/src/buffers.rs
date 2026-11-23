@@ -4,6 +4,15 @@ use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use wasm_bindgen::{JsCast, prelude::*};
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = Uint8Array)]
+    type ReadableBufferProbe;
+
+    #[wasm_bindgen(constructor, catch, js_class = "Uint8Array")]
+    fn probe_buffer(buffer: &JsValue, byte_offset: u32, length: u32) -> Result<ReadableBufferProbe, JsValue>;
+}
+
 thread_local! {
     static NEXT_OWNER: Cell<u32> = const { Cell::new(1) };
 }
@@ -35,8 +44,18 @@ pub fn reject_linear_memory_input(buffer: &JsValue) -> Result<(), JsValue> {
     } else { Ok(()) }
 }
 
+fn validate_input_buffer(buffer: &JsValue) -> Result<(), JsValue> {
+    reject_linear_memory_input(buffer)?;
+    // Detached TypedArrays report length 0, just like a legitimate empty
+    // input. A caught, zero-length view constructor distinguishes them without
+    // copying any payload or requiring the newer ArrayBuffer.detached getter.
+    ReadableBufferProbe::probe_buffer(buffer, 0, 0).map(|_| ()).map_err(|_| error_to_js(
+        BridgeError::new("WASM_BUFFER_DETACHED", "Input buffer was detached or is not readable"),
+    ))
+}
+
 pub fn copy_bytes_in(input: &Uint8Array, maximum: u32, stats: &mut BoundaryCopyStats) -> Result<Vec<u8>, JsValue> {
-    reject_linear_memory_input(&input.buffer())?;
+    validate_input_buffer(&input.buffer())?;
     let length = input.length() as usize;
     if length > maximum as usize {
         return Err(error_to_js(BridgeError::new("WASM_MEMORY_LIMIT", "Input buffer exceeds its budget")));
@@ -52,7 +71,7 @@ pub fn copy_bytes_in(input: &Uint8Array, maximum: u32, stats: &mut BoundaryCopyS
 }
 
 pub fn copy_numbers_in(input: &Float64Array, maximum: u32, stats: &mut BoundaryCopyStats) -> Result<Vec<f64>, JsValue> {
-    reject_linear_memory_input(&input.buffer())?;
+    validate_input_buffer(&input.buffer())?;
     let length = input.length() as usize;
     let bytes = length.checked_mul(8).ok_or_else(|| error_to_js(
         BridgeError::new("WASM_MEMORY_LIMIT", "Numeric buffer size overflow"),
@@ -65,6 +84,25 @@ pub fn copy_numbers_in(input: &Float64Array, maximum: u32, stats: &mut BoundaryC
         BridgeError::new("WASM_MEMORY_LIMIT", "Could not reserve numeric input"),
     ))?;
     output.resize(length, 0.0);
+    input.copy_to(&mut output);
+    stats.input(bytes);
+    Ok(output)
+}
+
+pub fn copy_indices_in(input: &Uint32Array, maximum: u32, stats: &mut BoundaryCopyStats) -> Result<Vec<u32>, JsValue> {
+    validate_input_buffer(&input.buffer())?;
+    let length = input.length() as usize;
+    let bytes = length.checked_mul(4).ok_or_else(|| error_to_js(
+        BridgeError::new("WASM_MEMORY_LIMIT", "Index buffer size overflow"),
+    ))?;
+    if bytes > maximum as usize {
+        return Err(error_to_js(BridgeError::new("WASM_MEMORY_LIMIT", "Index input exceeds its budget")));
+    }
+    let mut output = Vec::new();
+    output.try_reserve_exact(length).map_err(|_| error_to_js(
+        BridgeError::new("WASM_MEMORY_LIMIT", "Could not reserve index input"),
+    ))?;
+    output.resize(length, 0);
     input.copy_to(&mut output);
     stats.input(bytes);
     Ok(output)
@@ -91,12 +129,32 @@ pub fn copy_indices_out(indices: &[u32], stats: &mut BoundaryCopyStats) -> Resul
     let length = u32::try_from(indices.len()).map_err(|_| error_to_js(
         BridgeError::new("WASM_MEMORY_LIMIT", "Index output does not fit a TypedArray"),
     ))?;
+    let bytes = indices.len().checked_mul(4).ok_or_else(|| error_to_js(
+        BridgeError::new("WASM_MEMORY_LIMIT", "Index output size overflow"),
+    ))?;
     let output = Uint32Array::new_with_length(length);
     // SAFETY: same synchronous, immutable lease as copy_bytes_out.
     let view = unsafe { Uint32Array::view(indices) };
     output.set(&view, 0);
     drop(view);
-    stats.output(indices.len() * 4);
+    stats.output(bytes);
+    Ok(output)
+}
+
+pub fn copy_numbers_out(values: &[f64], stats: &mut BoundaryCopyStats) -> Result<Float64Array, JsValue> {
+    let length = u32::try_from(values.len()).map_err(|_| error_to_js(
+        BridgeError::new("WASM_MEMORY_LIMIT", "Numeric output does not fit a TypedArray"),
+    ))?;
+    let bytes = values.len().checked_mul(8).ok_or_else(|| error_to_js(
+        BridgeError::new("WASM_MEMORY_LIMIT", "Numeric output size overflow"),
+    ))?;
+    let output = Float64Array::new_with_length(length);
+    // SAFETY: values belong to the live result owner. Destination allocation is
+    // complete; this view is used only by synchronous set and never escapes.
+    let view = unsafe { Float64Array::view(values) };
+    output.set(&view, 0);
+    drop(view);
+    stats.output(bytes);
     Ok(output)
 }
 

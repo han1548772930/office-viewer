@@ -17,6 +17,7 @@ struct Projection { text: String, offset: usize, spans: Vec<RunSpan> }
 
 struct Pending {
     id: String,
+    begin_sequence: usize,
     instruction: String,
     instruction_xml: String,
     begin: Position,
@@ -84,7 +85,7 @@ impl Reader {
         for ancestor in &mut self.pending { ancestor.nested = true; }
         let id = self.tagged_identity.take().filter(|(offset, _)| *offset == at.offset).map(|(_, id)| id)
             .unwrap_or_else(|| format!("word-field-{}", self.next_id));
-        self.pending.push(Pending { id, instruction: simple.unwrap_or_default().to_owned(), instruction_xml: String::new(),
+        self.pending.push(Pending { id, begin_sequence: self.next_id, instruction: simple.unwrap_or_default().to_owned(), instruction_xml: String::new(),
             begin: at, result: simple.map(|_| at), locked, nested: false,
             in_instruction: self.pending.iter().any(|field| field.result.is_none()), language: None,
             parent_id: self.pending.last().map(|field| field.id.clone()), namespaces: BTreeMap::new(), has_instruction_text: false });
@@ -271,7 +272,7 @@ fn field_value(field: Field, paragraphs: &[Paragraph<'_>]) -> Result<(String, Va
     let mut value = json!({ "id": pending.id, "field": name, "instruction": instruction, "cachedResult": cached,
         "startOffset": start.offset, "endOffset": field.end.offset, "locked": pending.locked, "containsNestedFields": pending.nested,
         "metadata": { "source": { "format": "docx", "instruction": instruction, "instructionXml": pending.instruction_xml,
-            "nestedInInstruction": pending.in_instruction, "parentFieldId": pending.parent_id,
+            "nestedInInstruction": pending.in_instruction, "parentFieldId": pending.parent_id, "beginSequence": pending.begin_sequence,
             "instructionNamespaces": pending.namespaces, "hasInstructionText": pending.has_instruction_text,
             "beginNodeId": paragraphs[pending.begin.paragraph].source_id, "beginOffset": pending.begin.offset } } });
     if start.paragraph != field.end.paragraph { value["endBlockId"] = json!(last.block_id); }

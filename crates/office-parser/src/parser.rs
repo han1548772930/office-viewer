@@ -13,7 +13,7 @@ use crate::validation_sidecar::ValidationSidecar;
 use crate::sparkline_sidecar::SparklineSidecar;
 use crate::pivot_sidecar::PivotSidecar;
 use crate::conditional_format_sidecar::ConditionalFormatSidecar;
-use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, build_doc_model, extract_document_blocks, extract_document_review, parse_doc, parse_document_model};
+use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, build_doc_model, extract_document_review, parse_doc, parse_document_model};
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use rxls::{Cell, Workbook};
@@ -132,7 +132,12 @@ fn parse_document_impl(
             Err(error) => { format_warnings.push(format!("DOCX story styles could not be resolved: {error}")); duke_pages::parse::ParsedStyleSheet::empty() },
         }
     } else { duke_pages::parse::ParsedStyleSheet::empty() };
-    let mut document = extract_document_blocks(&source_model);
+    let mut document = crate::document_block_extraction::extract(&mut source_model);
+    if is_docx || format == "doc" {
+        let table_warnings = crate::document_table_sidecar::restore(&mut document, &source_model, archive.as_mut().filter(|_| is_docx))
+            .map_err(|error| ParseFailure::office_file(format!("Native document tables could not be retained: {error}")))?;
+        document.warnings.extend(table_warnings);
+    }
     let mut native_field_source = None;
     if is_docx || format == "doc" {
         crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
@@ -584,7 +589,7 @@ fn parse_workbook(
     } else {
         SparklineSidecar::default()
     };
-    let pivot_sidecar = if format == "xlsx" {
+    let mut pivot_sidecar = if format == "xlsx" {
         PivotSidecar::read(bytes)
     } else {
         PivotSidecar::default()
@@ -630,14 +635,32 @@ fn parse_workbook(
     for sheet in &mut sheets {
         validation_sidecar.restore(sheet);
         dimension_sidecar.restore(sheet);
+        if let Some(mut native_charts) = pivot_sidecar.native_charts.remove(&sheet.name) {
+            let mut previous = std::mem::take(&mut sheet.charts);
+            for native in &mut native_charts {
+                if let Some(previous) = previous.iter_mut().find(|previous| previous.index == native.index && previous.series.len() == native.series.len()
+                    && previous.series.iter().zip(&native.series).all(|(old, new)| old.values == new.values && old.categories == new.categories)) {
+                    if let Some(mut old) = previous.drawing.take() {
+                        // rxls contributes cache/style metadata, while the native
+                        // drawing reader owns the actual anchor and offsets.
+                        if let Some(anchor) = native.drawing.take() {
+                            old.from_cell = anchor.from_cell;
+                            old.to_cell = anchor.to_cell;
+                            old.from_offset_emu = anchor.from_offset_emu;
+                            old.to_offset_emu = anchor.to_offset_emu;
+                            old.absolute_size_emu = anchor.absolute_size_emu.or(old.absolute_size_emu);
+                            old.name = anchor.name.or(old.name);
+                            old.alt_text = anchor.alt_text.or(old.alt_text);
+                            old.behavior = anchor.behavior;
+                        }
+                        native.drawing = Some(old);
+                    }
+                }
+            }
+            sheet.charts = native_charts;
+        }
         for chart in &mut sheet.charts {
             let chart_key = (sheet.name.clone(), chart.index);
-            if let Some(settings) = pivot_sidecar.chart_settings.get(&chart_key) {
-                if let Some(kind) = settings.kind.as_ref() { chart.kind = kind.clone(); }
-                chart.x_axis = Some(settings.x_axis.clone());
-                chart.y_axis = Some(settings.y_axis.clone());
-                chart.legend_position = settings.legend_position.clone();
-            }
             chart.pivot_table_id = pivot_sidecar
                 .chart_pivot_ids
                 .get(&chart_key)
@@ -940,6 +963,7 @@ fn chart_payload(
         index,
         kind: format!("{:?}", chart.kind).to_ascii_lowercase(),
         title: chart.title.clone(),
+        subtitle: None,
         series: chart
             .series
             .iter()
@@ -948,10 +972,19 @@ fn chart_payload(
                 categories: series.categories.clone(),
                 values: series.values.clone(),
                 bubble_sizes: series.bubble_sizes.clone(),
+                native_kind: None,
+                options: None,
+                trendlines: Vec::new(),
+                error_bars: Vec::new(),
             })
             .collect(),
         legend: chart.legend,
         legend_position: None,
+        legend_font: None,
+        options: None,
+        authored: None,
+        unsupported_reasons: Vec::new(),
+        office_source: None,
         data_labels: chart.data_labels,
         x_axis_title: chart.x_axis_title.clone(),
         y_axis_title: chart.y_axis_title.clone(),

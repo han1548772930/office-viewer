@@ -9,6 +9,10 @@ const XML_LIMIT: u64 = 16 * 1024 * 1024;
 const XML_DEPTH_LIMIT: usize = 128;
 const XML_ELEMENT_LIMIT: usize = 262_144;
 
+use crate::model::DocumentOfficeXmlPartPayload;
+#[path = "document_numbering_source.rs"]
+mod numbering_source;
+
 #[path = "document_numbering_extension.rs"]
 mod numbering_extension;
 pub(crate) use numbering_extension::{NumberingRestoration, restore_numbering_with_extensions, restore_numbering_details};
@@ -147,7 +151,7 @@ pub(crate) fn read_office_source(archive: &mut ZipArchive<Cursor<&[u8]>>) -> (Op
         Ok(part) => part,
         Err(error) => {
             warnings.push(format!("DOCX source style resources could not be located: {error}"));
-            return (Some(DocumentOfficeSourcePayload { version: 1, styles: None, theme: None, resource_errors: warnings.clone(), origin: None, legacy_origins: Vec::new() }), warnings);
+            return (Some(DocumentOfficeSourcePayload { version: 1, styles: None, theme: None, numbering: None, resource_errors: warnings.clone(), origin: None, legacy_origins: Vec::new() }), warnings);
         },
     };
     let mut read = |kind: &str, suffix: &str, fallback: &str| {
@@ -171,7 +175,13 @@ pub(crate) fn read_office_source(archive: &mut ZipArchive<Cursor<&[u8]>>) -> (Op
     };
     let styles = read("styles", ".styles+xml", "word/styles.xml");
     let theme = read("theme", ".theme+xml", "word/theme/theme1.xml");
-    let source = Some(DocumentOfficeSourcePayload { version: 1, styles, theme, resource_errors: warnings.clone(), origin: None, legacy_origins: Vec::new() });
+    let numbering_part = read("numbering", ".numbering+xml", "word/numbering.xml");
+    let numbering = numbering_part.map(|part| {
+        let (resource, errors) = numbering_source::read(archive, part);
+        warnings.extend(errors.into_iter().map(|error| format!("DOCX source numbering resource could not be retained: {error}")));
+        resource
+    });
+    let source = Some(DocumentOfficeSourcePayload { version: 1, styles, theme, numbering, resource_errors: warnings.clone(), origin: None, legacy_origins: Vec::new() });
     (source, warnings)
 }
 

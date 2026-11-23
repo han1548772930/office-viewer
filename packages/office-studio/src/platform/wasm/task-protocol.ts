@@ -142,7 +142,7 @@ export function requireMatchingWasmResult(value: unknown, expected: WasmTaskCont
   }
   return value
 }
-export function requireIndependentOutput(view: Uint8Array | Uint32Array, memory: WebAssembly.Memory): ArrayBuffer {
+export function requireIndependentOutput(view: Uint8Array | Uint32Array | Float64Array, memory: WebAssembly.Memory): ArrayBuffer {
   if (!(view.buffer instanceof ArrayBuffer) || view.buffer === memory.buffer
     || view.byteOffset !== 0 || view.byteLength !== view.buffer.byteLength) {
     throw new WasmProtocolError('WASM_OUTPUT_ALIAS', '结果必须使用独立且只覆盖有效区间的 ArrayBuffer')

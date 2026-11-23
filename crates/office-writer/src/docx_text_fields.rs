@@ -10,6 +10,9 @@ use crate::ExportError;
 const IDENTITY_PART: &str = "customXml/office-fields.xml";
 const IDENTITY_NAMESPACE: &str = "urn:office-studio:document-fields:1";
 
+#[path = "docx_field_topology.rs"]
+mod topology;
+
 pub(super) struct Boundary {
     pub offset: usize,
     pub priority: u8,
@@ -28,6 +31,7 @@ struct Field {
     local_end: usize,
     bookmark: u32,
     bookmark_name: String,
+    begin_sequence: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -53,11 +57,7 @@ fn collect<'a>(blocks: &'a [Value], output: &mut Vec<Paragraph<'a>>, absolute: &
             return Err(ExportError::invalid("正文包含未映射的原生字段；来源已保留，需补齐范围映射后才能导出 DOCX。"));
         }
         if get(block, "type").as_str() == Some("table") {
-            for row in get(get(metadata, "table"), "rows").as_array().into_iter().flatten() {
-                for cell in get(row, "cells").as_array().into_iter().flatten() {
-                    collect(get(cell, "blocks").as_array().map(Vec::as_slice).unwrap_or_default(), output, absolute)?;
-                }
-            }
+            for group in super::table_writer::content_groups(get(metadata, "table"))? { collect(group.blocks, output, absolute)?; }
         } else if !matches!(get(block, "type").as_str(), Some("image" | "divider" | "pageBreak" | "columnBreak" | "sectionBreak")) {
             let id = get(block, "id").as_str().map(str::to_owned).unwrap_or_else(|| format!("__office-field-paragraph-{}", output.len()));
             let text = get(block, "runs").as_array().into_iter().flatten().map(|run| get(run, "text").as_str().unwrap_or_default()).collect::<String>();
@@ -103,14 +103,17 @@ fn instruction(context: &mut WriteContext<'_>, block: &Value, field: &Value) -> 
 
 impl TextFieldPlan {
     pub fn prepare(context: &mut WriteContext<'_>, blocks: &[Value]) -> Result<Self, ExportError> {
-        fn has_fields(blocks: &[Value]) -> bool {
-            blocks.iter().any(|block| {
+        fn has_fields(blocks: &[Value]) -> Result<bool, ExportError> {
+            for block in blocks {
                 let metadata = get(block, "metadata");
-                metadata.get("documentTextFields").is_some() || metadata.get("nativeFieldSource").is_some()
-                    || get(get(metadata, "table"), "rows").as_array().into_iter().flatten().any(|row| get(row, "cells").as_array().into_iter().flatten().any(|cell| has_fields(get(cell, "blocks").as_array().map(Vec::as_slice).unwrap_or_default())))
-            })
+                if metadata.get("documentTextFields").is_some() || metadata.get("nativeFieldSource").is_some() { return Ok(true); }
+                if get(block, "type").as_str() == Some("table") {
+                    for group in super::table_writer::content_groups(get(metadata, "table"))? { if has_fields(group.blocks)? { return Ok(true); } }
+                }
+            }
+            Ok(false)
         }
-        if !has_fields(blocks) { return Ok(Self::default()); }
+        if !has_fields(blocks)? { return Ok(Self::default()); }
         let mut paragraphs = Vec::new(); let mut absolute = 0;
         collect(blocks, &mut paragraphs, &mut absolute)?;
         let mut by_id = HashMap::new();
@@ -130,6 +133,11 @@ impl TextFieldPlan {
                 boolean(entry, "locked")?; boolean(entry, "containsNestedFields")?;
                 if entry.get("metadata").is_some_and(|value| !value.is_object()) { return Err(ExportError::invalid("字段来源必须为对象。")); }
                 let source = get(get(entry, "metadata"), "source");
+                let begin_sequence = match source.get("beginSequence") {
+                    None => None,
+                    Some(value) => Some(value.as_u64().filter(|value| *value <= 9_007_199_254_740_991)
+                        .ok_or_else(|| ExportError::invalid("正文字段 beginSequence 必须为非负安全整数。"))?),
+                };
                 if get(source, "nestedInInstruction").as_bool() == Some(true) || get(source, "hasInstructionText").as_bool() == Some(true) {
                     return Err(ExportError::invalid("字段指令区包含嵌套结果；当前来源已保留，需补齐隐藏代码文本的范围映射后才能导出。"));
                 }
@@ -145,19 +153,13 @@ impl TextFieldPlan {
                 let bookmark = context.sequences.next_bookmark;
                 context.sequences.next_bookmark = bookmark.checked_add(1).ok_or_else(|| ExportError::invalid("字段书签数量超出范围。"))?;
                 let bookmark_name = format!("office_field_v1_{bookmark:08x}");
-                fields.push(Field { value: entry.clone(), start, end, first: index, last, local_start: from, local_end: to, bookmark, bookmark_name });
+                fields.push(Field { value: entry.clone(), start, end, first: index, last, local_start: from, local_end: to, bookmark, bookmark_name, begin_sequence });
                 let _ = name;
             }
         }
-        fields.sort_by_key(|field| (field.start, std::cmp::Reverse(field.end), field.bookmark));
-        let mut enclosing: Vec<usize> = Vec::new(); let mut depths = Vec::new();
-        for (index, field) in fields.iter().enumerate() {
-            while enclosing.last().is_some_and(|&parent| fields[parent].end <= field.start) { enclosing.pop(); }
-            if enclosing.last().is_some_and(|&parent| field.end > fields[parent].end) { return Err(ExportError::invalid("正文字段结果范围部分交叉。")); }
-            depths.push(enclosing.len());
-            if field.start < field.end { enclosing.push(index); }
-        }
+        let topology = topology::resolve(&fields)?;
         let mut result = Self { has_fields: !fields.is_empty(), ..Self::default() };
+        let mut delimiters = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
             let id = get(&field.value, "id").as_str().unwrap_or_default();
             let locked = boolean(&field.value, "locked")?;
@@ -165,20 +167,27 @@ impl TextFieldPlan {
             let code = instruction(context, paragraphs[field.first].block, &field.value)?;
             let opening = format!("<w:bookmarkStart w:id=\"{}\" w:name=\"{}\"/><w:r><w:fldChar w:fldCharType=\"begin\"{lock_xml}/></w:r>{code}<w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>", field.bookmark, field.bookmark_name);
             let closing = format!("<w:r><w:fldChar w:fldCharType=\"end\"/></w:r><w:bookmarkEnd w:id=\"{}\"/>", field.bookmark);
-            if field.start == field.end {
-                result.by_block.entry(paragraphs[field.first].id.clone()).or_default().push(Boundary { offset: field.local_start, priority: 4, order: index as i64, xml: format!("{opening}{closing}") });
-            } else {
-                result.by_block.entry(paragraphs[field.first].id.clone()).or_default().push(Boundary { offset: field.local_start, priority: 5, order: index as i64, xml: opening });
-                result.by_block.entry(paragraphs[field.last].id.clone()).or_default().push(Boundary { offset: field.local_end, priority: 0, order: -(index as i64), xml: closing });
-            }
+            delimiters.push((opening, closing));
             result.identities.push((field.bookmark_name.clone(), id.to_owned()));
             if let Some(language) = get(&field.value, "language").as_str().filter(|value| !value.is_empty()) {
                 for paragraph in paragraphs.iter().take(field.last + 1).skip(field.first) {
                     let start = field.start.saturating_sub(paragraph.absolute).min(paragraph.text.encode_utf16().count());
                     let end = field.end.saturating_sub(paragraph.absolute).min(paragraph.text.encode_utf16().count());
-                    result.languages.entry(paragraph.id.clone()).or_default().push(LanguageRange { start, end, depth: depths[index], language: language.to_owned() });
+                    result.languages.entry(paragraph.id.clone()).or_default().push(LanguageRange { start, end, depth: topology.depths[index], language: language.to_owned() });
                 }
             }
+        }
+        for (order, (index, closing)) in topology.events.into_iter().enumerate() {
+            let field = &fields[index];
+            let (paragraph, offset, marker) = if closing {
+                (field.last, field.local_end, &mut delimiters[index].1)
+            } else {
+                (field.first, field.local_start, &mut delimiters[index].0)
+            };
+            result.by_block.entry(paragraphs[paragraph].id.clone()).or_default().push(Boundary {
+                offset, priority: 4, order: i64::try_from(order).map_err(|_| ExportError::invalid("正文字段事件数量超出范围。"))?,
+                xml: std::mem::take(marker),
+            });
         }
         Ok(result)
     }

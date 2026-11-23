@@ -2,12 +2,26 @@ import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentParagraph
 import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit } from '../services/content-controls'
 import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
+import { isDocumentTableCommand } from './table-command-types'
+import type { DocumentTableInsertCommand } from './table-command-types'
+import { createDocumentTableBlock } from './table-insertion'
+import { documentPointAtClampedBodyOffset, insertDocumentBlocksAtPoint } from '../services/document-block-insertion'
+import { reconcileDocumentTableAnchors } from '../services/document-table-anchors'
+import { documentTableSelectionForCell, prepareDocumentTablePasteMutation } from './table-mutations'
+import { copyDocumentBlocksForPaste } from '../services/document-block-paste'
+import { documentTableGrid } from '../model/document-table-grid'
+import { documentTableCellBlocks, documentTableCellContentContainers } from '../model/document-table-continuations'
+import { createDocumentTableViewSelection, documentTableDescendantIds, documentTableSelectedTextTargets } from '../model/document-table-selection'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
-import { applyDocumentTocPageNumberUpdate, deleteDocumentToc, prepareDocumentTocPageNumberUpdate, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
+import { applyDocumentTocMutation, applyDocumentTocPageNumberUpdate, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
+import { prepareDocumentTocAction } from '../toc/document-toc-command'
 import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedBlocks, permissionTargetsForChangedStories, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { cloneModel } from '../../../domain/serialization'
-import { documentTocIdAtBlock } from '../toc/document-toc'
+import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../services/document-block-host'
+import { assertDocumentStoryLocksPreserved } from '../services/document-story-locks'
+import { resolveSectionHeaderFooter } from '../services/section-header-footer'
 import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
 import { applyDocumentClearFormatting, applyDocumentStoryClearFormatting, prepareDocumentClearFormatting } from '../services/document-clear-formatting'
 import type { DocumentStoryRange } from '../model/document-story'
@@ -20,16 +34,16 @@ import { assertDocumentTextSelectionEditable } from '../services/document-text-f
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
-import { documentTextFieldParagraphs, documentTextFieldRanges, documentTextFields, insertDocumentTextFields, remapDocumentTextFieldIds, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentTextFieldParagraphs, documentTextFieldRanges, documentTextFields, insertDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 export { blockAtPoint } from '../model/document-model'
 import {
-  applyNamedParagraphStyle, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
+  applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
-  setTargetRuns, sliceRuns, tableForBlock, textTargets,
+  setTargetRuns, sliceRuns, tableForBlock, textTargets, findDocumentBlock, findDocumentBlockContainer,
   type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
 } from '../model/document-model'
 
-export type DocumentCommand =
+export type DocumentBodyCommand =
   | DocumentTableCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
@@ -48,10 +62,10 @@ export type DocumentCommand =
   | { id: 'doc.command.insert-page-break' }
   | { id: 'doc.command.insert-column-break' }
   | { id: 'doc.command.insert-section-break'; type: DocumentSectionBreakType }
-  | { id: 'doc.command.insert-table'; rows: number; cols: number }
+  | DocumentTableInsertCommand
   | { id: 'doc.command.insert-image'; image: DocumentImage }
   | { id: 'doc.command.insert-divider' }
-  | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[] }
+  | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[]; tablePasteMode?: 'source' | 'destination' }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch; input?: DocumentStoryInputCommit }
   | { id: 'doc.command.set-section-setup'; sectionId: string; patch: DocumentSectionSetupPatch }
@@ -60,11 +74,22 @@ export type DocumentCommand =
   | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
   | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers; timestamp?: number }
-  | { id: 'doc.command.delete-table-of-contents'; tocId: string }
+  | { id: 'doc.command.delete-table-of-contents'; tocId: string; timestamp?: number }
+
+/** Menus, Canvas, keyboard and API carry the same explicit auxiliary-content address. */
+export type DocumentCommand = DocumentBodyCommand & { host?: DocumentAuxiliaryBlockHost }
+
+export function documentCommandSupportsBlockHost(command: Pick<DocumentCommand, 'id'>): boolean {
+  return !['doc.command.set-document-permission-rules', 'doc.command.set-section-header-footer', 'doc.command.set-section-setup',
+    'doc.command.insert-section-break', 'doc.command.insert-column-break', 'doc.command.insert-page-break',
+    'doc.command.refresh-header-footer-fields', 'doc.command.update-table-of-contents', 'doc.command.delete-table-of-contents'].includes(command.id)
+}
 
 function blockContainer(model: DocumentModel, point: TextTarget): DocumentBlock[] {
+  const actual = findDocumentBlockContainer(model, point.cellBlockId ?? point.blockId)
+  if (actual) return actual
   if (point.row == null) return model.blocks
-  const block = model.blocks.find((candidate) => candidate.id === point.blockId)
+  const block = findDocumentBlock(model, point.blockId)
   return block ? tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]?.blocks ?? model.blocks : model.blocks
 }
 
@@ -74,7 +99,7 @@ function findBlockById(blocks: readonly DocumentBlock[], id: string): DocumentBl
     const table = tableForBlock(block)
     for (const row of table?.rows ?? []) {
       for (const cell of row.cells) {
-        const nested = findBlockById(cell.blocks, id)
+        const nested = findBlockById(documentTableCellBlocks(cell), id)
         if (nested) return nested
       }
     }
@@ -97,6 +122,7 @@ function pointForBlock(template: DocumentPoint, block: DocumentBlock, offset: nu
 }
 
 export function documentTabCommand(model: DocumentModel, selection: DocumentSelection, shift: boolean): DocumentCommand | undefined {
+  if (selection.tableSelection) return { id: 'doc.command.table-tab', direction: shift ? -1 : 1 }
   const targets = selectedTargets(model, selection), direction = shift ? -1 : 1
   const blocks = targets.map(target => blockAtPoint(model, target))
   const isList = (b?: DocumentBlock) => !!b && blockHasNumbering(b)
@@ -148,7 +174,7 @@ function replaceImportedNumberingMarkers(model: DocumentModel, targets: readonly
       block.runs = bodyRuns.length ? bodyRuns : [createRun()]
       delete block.metadata.html
       if (target.row !== undefined) {
-        const container = model.blocks.find(candidate => candidate.id === target.blockId)
+        const container = findDocumentBlock(model, target.blockId)
         if (container) delete container.metadata.html
       }
       transformDocumentCommentAnchorsForTextEdit(model, target.cellBlockId ?? target.blockId, 0, length, '')
@@ -159,7 +185,7 @@ function replaceImportedNumberingMarkers(model: DocumentModel, targets: readonly
     const plan = plans.find(plan => sameTarget(plan.target, current))
     return plan?.length ? { ...current, offset: Math.max(0, current.offset - plan.length) } : current
   }
-  return { anchor: point(selection.anchor), focus: point(selection.focus) }
+  return { ...selection, anchor: point(selection.anchor), focus: point(selection.focus) }
 }
 
 function legacyNumberingTargets(model: DocumentModel, block: DocumentBlock): TextTarget[] {
@@ -289,18 +315,53 @@ export function executeDocumentCommand(
   permissionContext?: DocumentPermissionContext,
 ): DocumentSelection {
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
+  if (command.host) {
+    const host = command.host
+    if (!documentCommandSupportsBlockHost(command)
+      || ((command.id === 'doc.command.format-text' || command.id === 'doc.command.clear-formatting') && command.story)) throw new RangeError('该命令需要使用对应的内容区或节级 API。')
+    const draft = cloneModel(model), scoped = documentModelForBlockHost(draft, host, true)
+    const local: DocumentCommand = { ...command }
+    delete local.host
+    let next: DocumentSelection
+    if (local.id === 'doc.command.insert-page-field') {
+      if (host.kind !== 'story' || local.sectionId !== host.sectionId || local.story !== host.story || selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) throw new RangeError('页面字段需要位于当前页眉页脚的同一段落内。')
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(scoped, selection))
+      const cache = local.cachedResult ?? ''
+      next = replaceSelectionText(scoped, selection, cache, local.textStyle)
+      const block = blockAtPoint(scoped, next.focus)!
+      insertDocumentTextFields(block, [{ id: documentId('story-field'), field: local.field, instruction: local.instruction, cachedResult: cache,
+        startOffset: 0, endOffset: cache.length, locked: local.locked, containsNestedFields: local.containsNestedFields,
+        ...(local.metadata ? { metadata: cloneModel(local.metadata) } : {}) }], next.focus.offset - cache.length)
+    } else {
+      if (local.id === 'doc.command.update-selected-fields') { local.stories = []; local.bodySelection = cloneDocumentSelectionForHost(selection) }
+      next = executeDocumentCommand(scoped, selection, local, context)
+    }
+    applyDocumentBlockHostModel(draft, host, scoped)
+    if (host.kind === 'story') assertDocumentStoryLocksPreserved(resolveSectionHeaderFooter(model, host.sectionId), resolveSectionHeaderFooter(draft, host.sectionId), host.story, model)
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, draft))
+    Object.assign(model, draft)
+    return next
+  }
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
   } else if (command.id !== 'doc.command.change-paragraph-indent' && command.id !== 'doc.command.refresh-header-footer-fields' && command.id !== 'doc.command.update-selected-fields'
-    && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
+    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command)
+    && !(selection.tableSelection && command.id === 'doc.command.paste-blocks') && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
+  if (isDocumentTableCommand(command)) return executeDocumentTableCommand(model, selection, command, context)
+  if (selection.tableSelection && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.delete')) {
+    const view = selection.tableSelection
+    return executeDocumentTableCommand(model, selection, { id: 'doc.command.table-set-range-text', tableId: view.tableId, range: view.range,
+      mode: command.id === 'doc.command.delete' || !command.text ? 'clear' : 'replace',
+      ...(command.id === 'doc.command.insert-text' ? { text: command.text, marks: command.marks } : {}) }, context)
+  }
+  if (selection.tableSelection && command.id === 'doc.command.paste-blocks') {
+    const plan = prepareDocumentTablePasteMutation(model, selection, command.blocks, context, command.tablePasteMode)
+    if (plan.changed) Object.assign(model, plan.model)
+    return plan.selection
+  }
   switch (command.id) {
-    case 'doc.command.table-insert-row':
-    case 'doc.command.table-insert-column':
-    case 'doc.command.table-delete-rows':
-    case 'doc.command.table-delete-columns':
-    case 'doc.command.table-delete': return executeDocumentTableCommand(model, selection, command)
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
     case 'doc.command.delete': return deleteContent(model, selection, command.direction)
     case 'doc.command.format-text': {
@@ -490,15 +551,34 @@ export function executeDocumentCommand(
     case 'doc.command.insert-column-break': return insertBreakBlock(model, selection, 'columnBreak')
     case 'doc.command.insert-section-break': return insertBreakBlock(model, selection, 'sectionBreak', command.type)
     case 'doc.command.insert-table': {
-      const block = { ...createParagraph(), type: 'table' as const, metadata: { table: createTable(command.rows, command.cols) } }
-      insertBlocks(model, selection, [block])
-      const paragraph = tableForBlock(block)?.rows[0]?.cells[0]?.blocks[0]
-      return paragraph ? collapsedSelection({ blockId: block.id, row: 0, col: 0, cellBlockId: paragraph.id, offset: 0 }) : selection
+      const block = createDocumentTableBlock(model, command), draft = cloneModel(model)
+      const fieldIds = new Set(documentTextFieldRanges(model).map(range => range.field.id))
+      let input = selection
+      if (command.offset !== undefined) input = collapsedSelection(documentPointAtClampedBodyOffset(draft, command.offset))
+      else if (command.position === 'documentEnd') {
+        let at = draft.blocks.length
+        while (at > 0 && ['pageBreak', 'columnBreak', 'sectionBreak'].includes(draft.blocks[at - 1]!.type)) at--
+        const last = draft.blocks[at - 1], target = last && textTargets(draft).find(candidate => candidate.blockId === last.id && candidate.row === undefined)
+        if (target) input = collapsedSelection({ ...target, offset: runText(last!.runs).length })
+        else {
+          const paragraph = createParagraph(); draft.blocks.splice(at, 0, paragraph)
+          input = collapsedSelection({ blockId: paragraph.id, offset: 0 })
+        }
+      } else if (command.position === 'offset') input = collapsedSelection(selection.focus)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(draft, input))
+      const collapsed = replaceSelectionText(draft, input, '')
+      const inserted = insertDocumentBlocksAtPoint(draft, collapsed.focus, [block])
+      for (const id of inserted.transformedFieldIds) fieldIds.add(id)
+      const next = documentTableSelectionForCell(draft, block.id, 0, 0)
+      reconcileDocumentTableAnchors(model, draft, next, fieldIds)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, draft))
+      Object.assign(model, draft)
+      return next
     }
     case 'doc.command.insert-image': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'image', metadata: { image: command.image } }])
     case 'doc.command.insert-divider': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'divider', runs: [] }])
     case 'doc.command.paste-blocks': {
-      const blocks = copyBlocksForPaste(command.blocks)
+      const blocks = copyDocumentBlocksForPaste(command.blocks)
       const paragraph = blocks.length === 1 && blocks[0]?.type === 'paragraph' ? blocks[0] : undefined
       const text = paragraph && runText(paragraph.runs)
       if (paragraph && text !== undefined && !/[\r\n]/.test(text)) {
@@ -516,12 +596,15 @@ export function executeDocumentCommand(
       }
       return insertBlocks(model, selection, blocks)
     }
-    case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction)
+    case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction, context)
     case 'doc.command.set-section-header-footer': {
-      const candidate = { ...model, sectionHeaderFooters: model.sectionHeaderFooters ? cloneModel(model.sectionHeaderFooters) : undefined }
+      const candidate = cloneModel(model)
       applySectionHeaderFooter(candidate, command.sectionId, command.patch)
       assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedStories(model, candidate))
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
       model.sectionHeaderFooters = candidate.sectionHeaderFooters
+      model.contentControls = candidate.contentControls
+      model.comments = candidate.comments
       return selection
     }
     case 'doc.command.set-section-setup':
@@ -535,36 +618,36 @@ export function executeDocumentCommand(
           bodySelection: command.bodySelection ?? (!command.stories?.length ? selection : undefined) } : {}) }, context, selection)
       if (plan) {
         model.sectionHeaderFooters = plan.sectionHeaderFooters
-        if (plan.blocks) { model.blocks = plan.blocks; model.contentControls = plan.contentControls; model.comments = plan.comments }
+        if (plan.blocks) model.blocks = plan.blocks
+        if (Object.hasOwn(plan, 'contentControls')) model.contentControls = plan.contentControls
+        if (Object.hasOwn(plan, 'comments')) model.comments = plan.comments
+        if (Object.hasOwn(plan, 'footnotes')) model.footnotes = plan.footnotes
+        if (Object.hasOwn(plan, 'endnotes')) model.endnotes = plan.endnotes
       }
       return plan?.selection ?? selection
     }
     case 'doc.command.insert-page-field': {
-      const candidate = { ...model, sectionHeaderFooters: model.sectionHeaderFooters ? cloneModel(model.sectionHeaderFooters) : undefined }
+      const candidate = cloneModel(model)
       insertSectionPageField(candidate, command.sectionId, command.story, command.field, command)
       assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedStories(model, candidate))
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
       model.sectionHeaderFooters = candidate.sectionHeaderFooters
+      model.contentControls = candidate.contentControls
+      model.comments = candidate.comments
       return selection
     }
     case 'doc.command.update-table-of-contents':
     case 'doc.command.delete-table-of-contents': {
-      const tocBlocks = model.blocks.filter((block) => documentTocIdAtBlock(block) === command.tocId)
-      const targets = selectedTargets(model, selection)
-      if (!tocBlocks.length || !targets.length || targets.some((target) => documentTocIdAtBlock(blockAtPoint(model, target)) !== command.tocId)) {
-        throw new RangeError('Table of contents commands require a selection inside the target table.')
-      }
-      const tocPermissionTargets = tocBlocks.flatMap((block) => permissionTargetsForSelection(model, collapsedSelection({ blockId: block.id, offset: 0 })))
-      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', tocPermissionTargets)
+      const action = command.id === 'doc.command.delete-table-of-contents' ? 'delete' : command.mode
+      const plan = prepareDocumentTocAction(model, selection, command.tocId, action,
+        command.id === 'doc.command.update-table-of-contents' ? command.pageNumbers ?? {} : {}, context, command.timestamp)
+      if (!plan.changed) return selection
       if (command.id === 'doc.command.update-table-of-contents' && command.mode === 'pageNumbersOnly') {
-        const plan = prepareDocumentTocPageNumberUpdate(model, command.tocId, command.pageNumbers, selection, command.timestamp)
-        if (!plan?.changed) return selection
-        assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, { ...model, blocks: plan.blocks }))
         applyDocumentTocPageNumberUpdate(model, plan)
         return plan.selection ?? selection
       }
-      if (command.id === 'doc.command.update-table-of-contents') updateDocumentToc(model, command.tocId, command.mode, command.pageNumbers)
-      else deleteDocumentToc(model, command.tocId)
-      return selection
+      applyDocumentTocMutation(model, plan)
+      return plan.selection ?? selection
     }
     case 'doc.command.set-document-permission-rules':
       validateDocumentPermissionRules(command.rules)
@@ -573,11 +656,16 @@ export function executeDocumentCommand(
   }
 }
 
+function cloneDocumentSelectionForHost(selection: DocumentSelection): DocumentSelection {
+  return { anchor: { ...selection.anchor }, focus: { ...selection.focus }, ...(selection.tableSelection ? { tableSelection: { ...selection.tableSelection, range: { ...selection.tableSelection.range } } } : {}) }
+}
+
 export function selectedTargets(model: DocumentModel, selection: DocumentSelection): TextTarget[] {
   return targetsForSelection(model, selection, false)
 }
 
 function targetsForSelection(model: DocumentModel, selection: DocumentSelection, includeEndBoundary: boolean): TextTarget[] {
+  if (selection.tableSelection) return documentTableSelectedTextTargets(model, selection.tableSelection)
   const { start, end } = orderedSelection(model, selection)
   const targets = textTargets(model)
   const first = targets.findIndex((target) => sameTarget(target, start))
@@ -589,6 +677,7 @@ function targetsForSelection(model: DocumentModel, selection: DocumentSelection,
 }
 
 export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch): DocumentSelection {
+  if (selection.tableSelection) throw new RangeError('表格结构选区需要通过表格内容命令编辑')
   if (marks) validateDocumentRunPatch(marks)
   assertDocumentTextSelectionEditable(model, selection)
   const { start, end } = orderedSelection(model, selection)
@@ -721,7 +810,7 @@ function setEditingRuns(model: DocumentModel, target: TextTarget, runs: Document
   block.runs = runs.length ? runs : [createRun('', fallback)]
   delete block.metadata.html
   if (target.row !== undefined) {
-    const container = model.blocks.find(candidate => candidate.id === target.blockId)
+    const container = findDocumentBlock(model, target.blockId)
     if (container) delete container.metadata.html
   }
 }
@@ -731,12 +820,14 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
   assertDocumentTextSelectionEditable(model, selection)
   const { start, end } = orderedSelection(model, selection)
   // Typing marks at a caret are session state; an empty range must not rewrite persistent run IDs.
-  if (sameTarget(start, end) && start.offset === end.offset) return
+  if (!selection.tableSelection && sameTarget(start, end) && start.offset === end.offset) return
   const updates = selectedTargets(model, selection).flatMap((target) => {
     const runs = runsForTarget(model, target)
-    const from = sameTarget(target, start) ? start.offset : 0
-    const to = sameTarget(target, end) ? end.offset : runText(runs).length
-    const changed = formatDocumentRunRange(runs, from, to, patch)
+    const from = !selection.tableSelection && sameTarget(target, start) ? start.offset : 0
+    const to = !selection.tableSelection && sameTarget(target, end) ? end.offset : runText(runs).length
+    const changed = selection.tableSelection && !runText(runs).length
+      ? runs.map(run => run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula ? run : applyRunPatch(run, patch))
+      : formatDocumentRunRange(runs, from, to, patch)
     if (JSON.stringify(runs) === JSON.stringify(changed)) return []
     const block = blockAtPoint(model, target)
     return block ? [{ block, target, runs: changed }] : []
@@ -745,35 +836,10 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
     update.block.runs = update.runs
     delete update.block.metadata.html
     if (update.target.row !== undefined) {
-      const container = model.blocks.find(block => block.id === update.target.blockId)
+      const container = findDocumentBlock(model, update.target.blockId)
       if (container) delete container.metadata.html
     }
   }
-}
-
-function copyBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
-  const copies = JSON.parse(JSON.stringify(blocks)) as DocumentBlock[]
-  const blockIds = new Map<string, string>(), paragraphs: DocumentBlock[] = []
-  const visit = (container: DocumentBlock[]) => {
-    for (const block of container) {
-      const nextId = documentId(block.type)
-      if (blockIds.has(block.id)) throw new TypeError(`复制范围的段落标识重复：${block.id}`)
-      blockIds.set(block.id, nextId)
-      block.id = nextId
-      block.runs = block.runs.map(run => ({ ...run, id: documentId('run') }))
-      paragraphs.push(block)
-      const table = tableForBlock(block)
-      if (!table) continue
-      for (const row of table.rows) {
-        row.id = documentId('row')
-        for (const cell of row.cells) { cell.id = documentId('cell'); visit(cell.blocks) }
-      }
-    }
-  }
-  visit(copies)
-  for (const block of paragraphs) remapDocumentTextFieldIds(block, blockIds)
-  documentTextFieldRanges({ blocks: copies })
-  return copies
 }
 
 function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks: DocumentBlock[]): DocumentSelection {
@@ -814,24 +880,25 @@ function insertBreakBlock(model: DocumentModel, selection: DocumentSelection, ty
   return split
 }
 
-function moveTableCell(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1): DocumentSelection {
-  const point = selection.focus
-  if (point.row == null) return selection
-  const block = model.blocks.find((candidate) => candidate.id === point.blockId)
+function moveTableCell(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1, context: DocumentPermissionContext): DocumentSelection {
+  const point = selection.focus, view = selection.tableSelection
+  if (!view && point.row == null) return selection
+  const block = findDocumentBlock(model, view?.tableId ?? point.blockId)
   const table = block && tableForBlock(block)
   if (!table) return selection
-  let row = point.row
-  let col = (point.col ?? 0) + direction
-  if (col < 0) { row -= 1; col = (table.rows[row]?.cells.length ?? 1) - 1 }
-  if (col >= (table.rows[row]?.cells.length ?? 0)) { row += 1; col = 0 }
-  if (row < 0) return selection
-  if (row >= table.rows.length) {
+  const grid = documentTableGrid(table), owner = view
+    ? grid.cellAt(direction === 1 ? view.range.endRow : view.range.startRow, direction === 1 ? view.range.endColumn : view.range.startColumn)
+    : grid.storedCell(point.row!, point.col ?? 0)
+  const nextIndex = grid.anchors.findIndex(candidate => candidate === owner) + direction
+  if (!owner || nextIndex < 0) return selection
+  if (nextIndex >= grid.anchors.length) {
     if (direction === -1) return selection
-    const inserted = executeDocumentTableCommand(model, selection, { id: 'doc.command.table-insert-row', position: 'after' })
-    const insertedRow = inserted.focus.row ?? row
-    const paragraph = table.rows[insertedRow]?.cells[0]?.blocks[0]
-    return paragraph ? collapsedSelection({ blockId: point.blockId, row: insertedRow, col: 0, cellBlockId: paragraph.id, offset: 0 }) : selection
+    executeDocumentTableCommand(model, selection, { id: 'doc.command.table-insert-row', tableId: block!.id, position: 'after', row: grid.rowCount - 1 }, context)
+    return documentTableSelectionForCell(model, block!.id, grid.rowCount, 0)
   }
-  const paragraph = table.rows[row]?.cells[col]?.blocks[0]
-  return paragraph ? collapsedSelection({ blockId: point.blockId, row, col, cellBlockId: paragraph.id, offset: 0 }) : selection
+  const next = grid.anchors[nextIndex]!
+  const ids = documentTableDescendantIds(documentTableCellBlocks(next.cell)), target = textTargets(model).find(candidate => ids.has(candidate.cellBlockId ?? candidate.blockId))
+  return target ? collapsedSelection({ ...target, offset: 0 })
+    : createDocumentTableViewSelection(model, block!.id, { startRow: next.row, endRow: next.row + next.rowSpan - 1,
+      startColumn: next.column, endColumn: next.column + next.colSpan - 1 }, 'cell', undefined, selection)
 }

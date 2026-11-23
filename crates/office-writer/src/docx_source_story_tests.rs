@@ -41,7 +41,7 @@ fn story_and_numbering_marker_share_remapped_style_ids_and_dependency_closure() 
     let mut marker = vec![parse_xml(&format!(r#"<w:r xmlns:w="{WORD_NAMESPACE}"><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>1.</w:t></w:r>"#), false).unwrap()];
     styles.restore_marker(&mut marker, &BTreeMap::from([("w".into(), WORD_NAMESPACE.into())]), &json!({ "metadata": { "style": { "styleId": "Heading1" } } })).unwrap();
     assert_eq!(marker[0].child("rPr").unwrap().child("rStyle").unwrap().attribute("val"), Some(run_id.as_str()));
-    let result = parse_xml(&styles.styles_xml(), true).unwrap();
+    let result = parse_xml(&styles.styles_xml().unwrap(), true).unwrap();
     let imported = result.children().find(|style| style.attribute("styleId") == Some(paragraph_id.as_str())).unwrap();
     let base = imported.child("basedOn").unwrap().attribute("val").unwrap();
     assert_ne!(base, "Normal");
@@ -159,5 +159,5 @@ fn malformed_source_envelope_and_unmapped_paragraph_numbering_are_explicit_error
     assert!(legal_absence.story_run_properties("", &current, &provenance).is_ok());
     let mut numbering = registry(&format!(r#"<w:styles xmlns:w="{WORD_NAMESPACE}"><w:docDefaults><w:pPrDefault><w:pPr><w:numPr><w:numId w:val="99"/></w:numPr></w:pPr></w:pPrDefault></w:docDefaults></w:styles>"#), None);
     let paragraph = json!({ "metadata": { "source": { "sourceFormat": source_format("<w:pPr/>", None) }, "officeStoryParagraphStyleBaseline": {} } });
-    assert!(numbering.story_paragraph_properties("", &json!({}), &paragraph).unwrap_err().contains("numbering IDs"));
+    assert!(numbering.story_paragraph_properties("", &json!({}), &paragraph).unwrap_err().contains("DOCX_NUMBERING_SOURCE_MISSING"));
 }

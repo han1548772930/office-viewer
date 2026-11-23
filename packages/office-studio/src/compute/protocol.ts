@@ -1,5 +1,8 @@
 import { WASM_PROTOCOL_VERSION } from '../platform/wasm/task-protocol.ts'
 import type { BoundaryCopyStats, WasmTaskControl, WorkerTransportStats } from '../platform/wasm/task-protocol.ts'
+import type { ChartStatisticsOutput, ChartStatisticsTask } from './chart-protocol.ts'
+export type { ChartStatisticsFit, ChartStatisticsJob, ChartStatisticsOutput, ChartStatisticsParams,
+  ChartStatisticsSegment, ChartStatisticsSeries, ChartStatisticsTask } from './chart-protocol.ts'
 export const COMPUTE_PROTOCOL_VERSION = WASM_PROTOCOL_VERSION
 export const COMPUTE_LIMITS = {
   maxElements: 16_000_000,
@@ -26,20 +29,20 @@ export interface FilterTask extends NumericColumn {
   kind: 'filter'; rowCount: number; operators: Uint8Array
   lower: Float64Array; upper: Float64Array; match: 'all' | 'any'
 }
-export type ComputeTask = AggregateTask | SortTask | FilterTask
+export type ComputeTask = AggregateTask | SortTask | FilterTask | ChartStatisticsTask
 export type ComputeErrorCode =
   | 'COMPUTE_INVALID_INPUT' | 'COMPUTE_MEMORY_LIMIT' | 'COMPUTE_UNSUPPORTED_TYPE'
   | 'COMPUTE_WASM_LOAD_FAILED' | 'COMPUTE_WASM_API_MISSING' | 'COMPUTE_PROTOCOL_MISMATCH'
   | 'COMPUTE_FAILED' | 'COMPUTE_CANCELLED' | 'COMPUTE_TIMEOUT' | 'COMPUTE_STALE_RESULT'
   | 'COMPUTE_WORKER_FAILED' | 'COMPUTE_WASM_TRAP' | 'COMPUTE_DISPOSED' | 'COMPUTE_NOT_READY'
-  | 'COMPUTE_RESULT_CONSUMED'
+  | 'COMPUTE_RESULT_CONSUMED' | 'COMPUTE_NUMERIC_RANGE'
 
 export interface ComputeErrorData { code: ComputeErrorCode; message: string; details?: string }
 export interface ComputeContext { requestId: string; documentId: string; modelRevision: number }
 export interface ComputeProgress extends ComputeContext {
   type: 'progress'; phase: 'initializing' | 'computing' | 'completed'
   ratio: number; processed: number; total: number
-  unit: 'values' | 'rows' | 'merge-writes'
+  unit: 'values' | 'rows' | 'merge-writes' | 'jobs'
 }
 export type ComputeWorkerProgress = Omit<ComputeProgress, keyof ComputeContext> & { context: WasmTaskControl }
 export interface NumericStatistics {
@@ -51,7 +54,7 @@ export interface NumericStatistics {
 }
 export interface AggregateOutput { kind: 'aggregate'; statistics: NumericStatistics }
 export interface IndexOutput { kind: 'sort' | 'filter'; indices: Uint32Array }
-export type ComputeOutput = AggregateOutput | IndexOutput
+export type ComputeOutput = AggregateOutput | IndexOutput | ChartStatisticsOutput
 export interface ComputeMetrics {
   elapsedMs: number; inputBytes: number; estimatedPeakBytes: number
   boundary: BoundaryCopyStats; transport: WorkerTransportStats

@@ -5,6 +5,7 @@ import { blockAtPoint } from '../../features/document/commands/document-commands
 import { documentStorySelectionFormatting } from '../../features/document/services/document-story-formatting'
 import type { DocumentStoryRange } from '../../features/document/model/document-story'
 import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
+import { documentTableSelectedTextTargets } from '../../features/document/model/document-table-selection'
 import { DOCUMENT_PARAGRAPH_SETTING_FIELDS, documentParagraphSettingsStyle, type DocumentParagraphSettingField } from './document-paragraph-settings-state'
 import {
   DOCUMENT_NAMED_PARAGRAPH_STYLES, applyRunPatch, createRun, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
@@ -31,19 +32,19 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
   const targets = textTargets(model)
   const first = targets.findIndex((target) => sameTarget(target, start))
   const last = targets.findIndex((target) => sameTarget(target, end))
-  const selected = targets.slice(Math.max(0, first), last + 1)
+  const selected = selection.tableSelection ? documentTableSelectedTextTargets(model, selection.tableSelection) : targets.slice(Math.max(0, first), last + 1)
   const marks: RunPatch[] = []
   const paragraphs: DocumentParagraphStyle[] = []
   const styles: string[] = []
   const presets: (ListPreset | undefined)[] = []
   for (const [index, target] of selected.entries()) {
     const runs = runsForTarget(model, target)
-    const from = index === 0 ? start.offset : 0
-    const to = index === selected.length - 1 ? end.offset : Number.POSITIVE_INFINITY
+    const from = !selection.tableSelection && index === 0 ? start.offset : 0
+    const to = !selection.tableSelection && index === selected.length - 1 ? end.offset : Number.POSITIVE_INFINITY
     const included: DocumentRun[] = []
     let offset = 0
     for (const run of runs) {
-      if (!collapsed && offset < to && offset + run.text.length > from) {
+      if (!collapsed && (offset < to && offset + run.text.length > from || selection.tableSelection && !run.text.length)) {
         const eastAsian = run.eastAsiaFontFamily && hasEastAsianLetters(run.text.slice(Math.max(0, from - offset), to - offset))
         included.push(eastAsian ? { ...run, fontFamily: run.eastAsiaFontFamily! } : run)
       }
@@ -63,8 +64,9 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
       else styles.push(block.type === 'paragraph' ? 'normal' : block.type)
     }
   }
-  if (collapsed || !marks.length) {
-    const mark = applyRunPatch(createRun('', marksAtPoint(model, selection.focus)), pending)
+  if (collapsed || !marks.length && (!selection.tableSelection || selected.length)) {
+    const point = selection.tableSelection ? { ...selected[0]!, offset: 0 } : selection.focus
+    const mark = applyRunPatch(createRun('', marksAtPoint(model, point)), collapsed ? pending : {})
     if (mark.eastAsiaFontFamily && caretUsesEastAsianFont(model, selection)) mark.fontFamily = mark.eastAsiaFontFamily
     marks.push(mark)
   }

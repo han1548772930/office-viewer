@@ -1,4 +1,5 @@
-import type { CellRange, ChartModel, ChartSource } from '../../domain/model'
+import type { CellRange, ChartModel, ChartSource, SheetOutlineState } from '../../domain/model'
+import type { SheetRowVisibility, SheetColumnVisibility } from '../sheet-workbench/sheet-row-visibility'
 import { cloneModel } from '../../domain/serialization'
 import type { ChartConfig } from './chart-engine'
 import { cloneChartOptions, cloneOptionValue } from './chart-options'
@@ -6,7 +7,12 @@ import { resolveChartType } from './chart-catalog'
 
 export interface ChartSettingsDraft { config: ChartConfig; sourceText: string }
 export interface ChartSettingsField { value: number; label: string }
-export interface ChartSettingsSourceSheet { id: string; name: string; cells: Record<string, { value?: string | number | boolean | null; rawValue?: string | number | boolean | null; cachedValue?: string }>; rowCount?: number; columnCount?: number }
+export interface ChartSettingsSourceSheet extends Partial<SheetRowVisibility & SheetColumnVisibility> {
+  id: string
+  name: string
+  cells: Record<string, { value?: string | number | boolean | null; rawValue?: string | number | boolean | null; cachedValue?: string; formula?: string }>
+  outline?: SheetOutlineState
+}
 
 /** Internal UI drafts are already typed. Preserve explicit undefined resets while fields are being edited. */
 export function cloneChartDraftConfig(config: ChartConfig): ChartConfig { return cloneOptionValue(config) as ChartConfig }

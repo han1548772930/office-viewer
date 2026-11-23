@@ -8,9 +8,10 @@ import { layoutDocumentParagraph } from './document-paragraph-layout'
 import { layoutDocumentTable } from './document-table-layout'
 import { arrangeDocumentPages } from './document-page-arrangement'
 import { layoutDocumentPageStories } from './document-page-stories'
+import { intersectTableRect } from './document-table-measurement'
 import type { DocumentLayout, LayoutLine, LayoutMeasurer, LayoutRect, LayoutStoryLine } from './document-layout-types'
 
-export type { DocumentLayout, LayoutCell, LayoutColumn, LayoutDivider, LayoutFlowLocation, LayoutGlyph, LayoutImage, LayoutLine, LayoutMeasurer, LayoutPage, LayoutPageContent, LayoutPageHeaderFooter, LayoutRect, LayoutSection, LayoutStoryLine } from './document-layout-types'
+export type { DocumentLayout, LayoutCell, LayoutColumn, LayoutDivider, LayoutFlowLocation, LayoutGlyph, LayoutImage, LayoutLine, LayoutMeasurer, LayoutPage, LayoutPageContent, LayoutPageHeaderFooter, LayoutRect, LayoutRightTabStop, LayoutSection, LayoutStoryLine, LayoutTableFragment, LayoutTableRowMetric, LayoutTabGlyph, LayoutTabLeader } from './document-layout-types'
 export { PAGE_GAP, PAGE_INSET, STORY_LINE_HEIGHT } from './document-layout-types'
 export { createTextMeasurer, runFont } from './document-text-layout'
 
@@ -59,12 +60,17 @@ export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): 
   }
   arrangeDocumentPages(result)
   result.pageHeaderFooters = layoutDocumentPageStories(model, result.pages, flow.settings, measurer)
+  result.auxiliaryContent = result.pageHeaderFooters.flatMap(page => [page.headerBlockLayout, page.footerBlockLayout].filter((content): content is NonNullable<typeof content> => !!content))
   return result
 }
 
 export function lineForPoint(layout: DocumentLayout, point: DocumentPoint): LayoutLine | undefined {
-  const lines = layout.lines.filter((line) => sameTarget(line.target, point))
-  return lines.find((line, index) => point.offset >= line.start && (point.offset < line.end || index === lines.length - 1 || point.offset === line.end && line.end !== lines[index + 1]?.start)) ?? lines.at(-1)
+  const all = layout.lines.filter((line) => sameTarget(line.target, point))
+  const atOffset = (lines: LayoutLine[]) => lines.find((line, index) => point.offset >= line.start && point.offset <= line.end
+    && (point.offset < line.end || index === lines.length - 1 || line.end !== lines[index + 1]?.start))
+  const preferred = point.pageAffinity === undefined ? [] : all.filter(line => line.page === point.pageAffinity)
+  const original = all.filter(line => !line.repeatedHeader)
+  return atOffset(preferred) ?? atOffset(original) ?? atOffset(all) ?? original.at(-1) ?? all.at(-1)
 }
 
 export function documentStoryLayoutLines(layout: DocumentLayout, location: { page: number; area: 'header' | 'footer' }): LayoutStoryLine[] {
@@ -113,34 +119,60 @@ export function caretRect(layout: DocumentLayout, point: DocumentPoint): LayoutR
   const line = lineForPoint(layout, point)
   if (!line) return undefined
   const glyph = line.glyphs.find((candidate) => point.offset <= candidate.offset)
-  const x = glyph?.x ?? (line.glyphs.at(-1) ? line.glyphs.at(-1)!.x + line.glyphs.at(-1)!.width : line.x)
-  return { x, y: line.y + 2, width: 1.3, height: Math.max(12, line.height - 4) }
+  const rawX = glyph?.x ?? (line.glyphs.at(-1) ? line.glyphs.at(-1)!.x + line.glyphs.at(-1)!.width : line.x)
+  const width = line.clip ? Math.min(1.3, Math.max(0, line.clip.width)) : 1.3
+  // At an exact-width cell's trailing edge the caret still occupies a visible
+  // pixel inside the content clip, rather than intersecting to zero width.
+  const x = line.clip ? Math.max(line.clip.x, Math.min(rawX, line.clip.x + line.clip.width - width)) : rawX
+  const caret = { x, y: line.y + 2, width, height: Math.max(12, line.height - 4) }
+  const clipped = line.clip ? intersectTableRect(caret, line.clip) : caret
+  return clipped.width > 0 && clipped.height > 0 ? clipped : undefined
 }
 
 export function hitTestDocument(layout: DocumentLayout, x: number, y: number): DocumentPoint | undefined {
   const page = layout.pages.find(page => x >= page.x && x <= page.x + page.width && y >= page.y && y <= page.y + page.height)
   if (page?.isParityBlank) return undefined
   const pageLines = page ? layout.pageContent[page.index]?.lines ?? [] : layout.lines
-  const columnLines = pageLines.filter(line => {
+  const pageCells = page ? layout.pageContent[page.index]?.cells ?? [] : layout.cells
+  const cell = pageCells.filter(cell => {
+    const visible = cell.clip ? intersectTableRect(cell, cell.clip) : cell
+    return x >= visible.x && x <= visible.x + visible.width && y >= visible.y && y <= visible.y + visible.height
+  }).sort((left, right) => (right.depth ?? 0) - (left.depth ?? 0) || left.width * left.height - right.width * right.height)[0]
+  const visibleLines = pageLines.filter(line => !line.clip || intersectTableRect(line, line.clip).width > 0 && intersectTableRect(line, line.clip).height > 0)
+  const cellLines = cell?.cellId ? visibleLines.filter(line => line.tableCellId === cell.cellId) : []
+  if (cell?.cellId && !cellLines.length) return undefined
+  const columnLines = visibleLines.filter(line => {
     const section = layout.pages[line.page]?.sections.find(section => section.fragment === line.sectionFragment)
     const column = section?.columns[line.column ?? 0]
     return column && x >= column.x && x <= column.x + column.width
   })
   let nearest: LayoutLine | undefined
   let best = Number.POSITIVE_INFINITY
-  for (const line of columnLines.length ? columnLines : pageLines) {
-    const dy = y < line.y ? line.y - y : y > line.y + line.height ? y - line.y - line.height : 0
-    const dx = x < line.x ? line.x - x : x > line.x + line.width ? x - line.x - line.width : 0
+  for (const line of cellLines.length ? cellLines : columnLines.length ? columnLines : visibleLines) {
+    const visible = line.clip ? intersectTableRect(line, line.clip) : line
+    const dy = y < visible.y ? visible.y - y : y > visible.y + visible.height ? y - visible.y - visible.height : 0
+    const dx = x < visible.x ? visible.x - x : x > visible.x + visible.width ? x - visible.x - visible.width : 0
     const score = dy * 8 + dx
     if (score < best) { best = score; nearest = line }
   }
   if (!nearest) return undefined
-  const glyph = nearest.glyphs.find((candidate) => x < candidate.x + candidate.width / 2)
-  return { ...nearest.target, offset: glyph?.offset ?? nearest.end }
+  return hitTestDocumentLine(nearest, x)
+}
+
+/** Resolve a known visual line without re-entering page/cell hit routing. */
+export function hitTestDocumentLine(line: LayoutLine, x: number): DocumentPoint {
+  const visibleX = line.clip ? Math.max(line.clip.x, Math.min(x, line.clip.x + line.clip.width)) : x
+  const glyph = line.glyphs.find(candidate => visibleX < candidate.x + candidate.width / 2)
+  return { ...line.target, offset: glyph?.offset ?? line.end, pageAffinity: line.page }
 }
 
 export function hitTestChecklist(layout: DocumentLayout, x: number, y: number): string | undefined {
-  const line = layout.lines.find((candidate) => candidate.checklist && y >= candidate.y && y <= candidate.y + candidate.height && x >= candidate.x - 28 && x <= candidate.x - 6)
+  const line = layout.lines.find(candidate => {
+    if (!candidate.checklist) return false
+    const bounds = { x: candidate.x - 28, y: candidate.y, width: 22, height: candidate.height }
+    const visible = candidate.clip ? intersectTableRect(bounds, candidate.clip) : bounds
+    return visible.width > 0 && visible.height > 0 && y >= visible.y && y <= visible.y + visible.height && x >= visible.x && x <= visible.x + visible.width
+  })
   return line?.checklist?.blockId
 }
 

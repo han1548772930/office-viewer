@@ -1,7 +1,8 @@
-import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions } from '../../domain/model'
+import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSeriesFillPattern } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
 import { chartColorChannels, normalizeChartColor } from './chart-color'
 import { chartInterpolate, chartLinearRatio, finiteChartValue } from './chart-math'
+import { appendChartFillPattern } from './chart-fill-pattern-geometry'
 
 export interface ChartVector { x: number; y: number }
 export interface ChartVector3 extends ChartVector { z: number }
@@ -46,7 +47,7 @@ export function chartLabelText(label: ChartLabelOptions | undefined, value: numb
   }
 }
 
-export function chartAxisExtent(values: readonly number[], axis: ChartAxisOptions): { min: number; max: number } {
+export function chartAxisExtent(values: Iterable<number>, axis: ChartAxisOptions): { min: number; max: number } {
   const logarithmic = axis.scaleType === 'log', base = axis.logBase ?? 10
   for (const value of [axis.min, axis.max]) if (value !== undefined) {
     finiteChartValue(value, '坐标轴边界')
@@ -123,11 +124,13 @@ export function chartLine(commands: DrawCommand[], start: ChartVector, end: Char
   }
 }
 
-export function chartPolygon(commands: DrawCommand[], points: ChartVector[], fill: string, border?: ChartLineOptions, clip?: RenderRect): void {
+export function chartPolygon(commands: DrawCommand[], points: ChartVector[], fill: string, border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
   if (points.length < 3) return
   // The shared WebGPU driver accepts triangle fans. Emit explicit triangles for
   // concave ribbons and annular sectors so both backends receive the same fill.
-  for (const triangle of triangulateChartPolygon(points)) commands.push({ kind: 'polygon', points: triangle, fill, ...(clip ? { clip } : {}) })
+  const triangles = triangulateChartPolygon(points)
+  if (pattern) appendChartFillPattern(commands, triangles, pattern, clip)
+  else for (const triangle of triangles) commands.push({ kind: 'polygon', points: triangle, fill, ...(clip ? { clip } : {}) })
   if (border && border.visible !== false) points.forEach((point, index) => chartLine(commands, point, points[(index + 1) % points.length]!, border, fill, clip))
 }
 
@@ -158,9 +161,19 @@ export function triangulateChartPolygon(input: readonly ChartVector[]): ChartVec
   return triangles
 }
 
-export function chartCircle(commands: DrawCommand[], center: ChartVector, radius: number, fill: string, border?: ChartLineOptions, clip?: RenderRect): void {
+export function chartCircle(commands: DrawCommand[], center: ChartVector, radius: number, fill: string, border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
   if (radius <= 0) return
-  chartPolygon(commands, Array.from({ length: 36 }, (_unused, index) => chartPolar(center, radius, index * Math.PI / 18)), fill, border, clip)
+  chartPolygon(commands, Array.from({ length: 36 }, (_unused, index) => chartPolar(center, radius, index * Math.PI / 18)), fill, border, clip, pattern)
+}
+
+export function chartRect(commands: DrawCommand[], rectangle: RenderRect, fill: string, border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
+  if (pattern) {
+    const { x, y, width, height } = rectangle
+    chartPolygon(commands, [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }], fill,
+      border?.color !== undefined || border?.width !== undefined ? border : undefined, clip, pattern)
+    return
+  }
+  commands.push({ kind: 'rect', ...rectangle, fill, ...(border?.visible === false ? {} : { stroke: border?.color === undefined ? undefined : chartColorOpacity(border.color, border.opacity ?? 1), strokeWidth: border?.width }), ...(clip ? { clip } : {}) })
 }
 
 export function chartPolar(center: ChartVector, radius: number, angle: number): ChartVector {
@@ -183,14 +196,16 @@ export function chartBezier(start: ChartVector, first: ChartVector, second: Char
   })
 }
 
-export function chartSymbol(commands: DrawCommand[], point: ChartVector, size: number, color: string, shape = 'rect', border?: ChartLineOptions, clip?: RenderRect): void {
+export function chartSymbol(commands: DrawCommand[], point: ChartVector, size: number, color: string, shape = 'rect', border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
   if (shape === 'none' || size <= 0) return
   const radius = size / 2
-  if (shape === 'circle') return chartCircle(commands, point, radius, color, border, clip)
+  if (shape === 'circle') return chartCircle(commands, point, radius, color, border, clip, pattern)
   if (shape === 'diamond' || shape === 'triangle') {
     const points = shape === 'diamond' ? [{ x: point.x, y: point.y - radius }, { x: point.x + radius, y: point.y }, { x: point.x, y: point.y + radius }, { x: point.x - radius, y: point.y }]
       : [{ x: point.x, y: point.y - radius }, { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }]
-    chartPolygon(commands, points, color, border, clip); return
+    chartPolygon(commands, points, color, border, clip, pattern); return
   }
-  commands.push({ kind: 'rect', x: point.x - radius, y: point.y - radius, width: size, height: size, fill: color, ...(border?.visible === false ? {} : { stroke: border?.color, strokeWidth: border?.width }), ...(clip ? { clip } : {}) })
+  if (pattern) return chartPolygon(commands, [{ x: point.x - radius, y: point.y - radius }, { x: point.x + radius, y: point.y - radius },
+    { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }], color, border, clip, pattern)
+  chartRect(commands, { x: point.x - radius, y: point.y - radius, width: size, height: size }, color, border, clip)
 }

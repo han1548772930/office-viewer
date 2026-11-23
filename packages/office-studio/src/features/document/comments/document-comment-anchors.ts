@@ -10,6 +10,15 @@ interface SourceParagraph {
 
 interface DestinationParagraph extends SourceParagraph { text: string }
 
+export interface DocumentCommentParagraphEdit {
+  blockId: string
+  startOffset: number
+  endOffset: number
+  insertedText: string
+  /** A removed paragraph can collapse to a boundary in a surviving paragraph. */
+  targetOffset?: number
+}
+
 function mappedAnchorRange(from: number, to: number, start: number, end: number, length: number): { start: number; end: number } {
   const delta = length - (end - start)
   if (from === to) {
@@ -84,15 +93,12 @@ function mergeAnchors(
   return result
 }
 
-/** Split/merge logical anchors after an edit, preparing every thread before publication. */
-export function transformDocumentCommentAnchorsForBodyRangeEdit(
+function transformKnownCommentAnchors(
   model: DocumentModel,
   sourceParagraphs: readonly SourceParagraph[],
   destinationParagraphs: readonly DestinationParagraph[],
-  startOffset: number,
-  endOffset: number,
-  insertedText: string,
-  timestamp = Date.now(),
+  map: (anchor: DocumentCommentAnchorSegment, paragraph: SourceParagraph) => DocumentCommentAnchorSegment[],
+  timestamp: number,
 ): void {
   if (!Object.keys(model.comments ?? {}).length) return
   const updatedAt = new Date(timestamp).toISOString()
@@ -112,9 +118,7 @@ export function transformDocumentCommentAnchorsForBodyRangeEdit(
         || anchor.endOffset < anchor.startOffset || anchor.endOffset > paragraph.absoluteEnd - paragraph.absoluteStart) {
         throw new RangeError(`批注 ${comment.id} 的源 UTF-16 锚点无效。`)
       }
-      const range = mappedAnchorRange(paragraph.absoluteStart + anchor.startOffset, paragraph.absoluteStart + anchor.endOffset,
-        startOffset, endOffset, insertedText.length)
-      return anchorsForMappedRange(anchor, range.start, range.end, destinationParagraphs)
+      return map(anchor, paragraph)
     })
     const anchor = mergeAnchors(mapped, destination, preserved)
     if (JSON.stringify(anchor) !== JSON.stringify(comment.anchor)) plans.push({ comment, anchor })
@@ -124,6 +128,49 @@ export function transformDocumentCommentAnchorsForBodyRangeEdit(
     comment.referenceText = anchor.map(segment => segment.text).join('\n')
     comment.updatedAt = updatedAt
   }
+}
+
+/** Split/merge logical anchors after an edit, preparing every thread before publication. */
+export function transformDocumentCommentAnchorsForBodyRangeEdit(
+  model: DocumentModel,
+  sourceParagraphs: readonly SourceParagraph[],
+  destinationParagraphs: readonly DestinationParagraph[],
+  startOffset: number,
+  endOffset: number,
+  insertedText: string,
+  timestamp = Date.now(),
+): void {
+  transformKnownCommentAnchors(model, sourceParagraphs, destinationParagraphs, (anchor, paragraph) => {
+    const range = mappedAnchorRange(paragraph.absoluteStart + anchor.startOffset, paragraph.absoluteStart + anchor.endOffset,
+      startOffset, endOffset, insertedText.length)
+    return anchorsForMappedRange(anchor, range.start, range.end, destinationParagraphs)
+  }, timestamp)
+}
+
+/** A structural rebuild keeps anchors on surviving paragraph IDs and maps only changed row text. */
+export function transformDocumentCommentAnchorsForParagraphEdits(
+  model: DocumentModel,
+  sourceParagraphs: readonly SourceParagraph[],
+  destinationParagraphs: readonly DestinationParagraph[],
+  edits: ReadonlyMap<string, DocumentCommentParagraphEdit | readonly DocumentCommentParagraphEdit[]>,
+  timestamp = Date.now(),
+): void {
+  const destination = new Map(destinationParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
+  transformKnownCommentAnchors(model, sourceParagraphs, destinationParagraphs, anchor => {
+    const value = edits.get(anchor.blockId)
+    if (!value) return [{ ...anchor }]
+    const changes = 'blockId' in value ? [value] : value
+    let range = { start: anchor.startOffset, end: anchor.endOffset }, blockId = anchor.blockId
+    for (const edit of changes) {
+      const mapped = mappedAnchorRange(range.start, range.end, edit.startOffset, edit.endOffset, edit.insertedText.length)
+      range = { start: mapped.start + (edit.targetOffset ?? 0), end: mapped.end + (edit.targetOffset ?? 0) }
+      blockId = edit.blockId
+    }
+    const paragraph = destination.get(blockId)
+    if (!paragraph) throw new RangeError('正文重建后的批注目标段落不存在。')
+    const offset = paragraph.absoluteStart
+    return anchorsForMappedRange(anchor, offset + range.start, offset + range.end, destinationParagraphs)
+  }, timestamp)
 }
 
 /** The paragraph's runs already contain the replacement; recover source geometry from its delta. */

@@ -158,7 +158,7 @@ export class NumericIndexService {
       onProgress: context.onProgress,
     }).promise
     if (!this.client.isCurrent(context)) throw new ComputeError('COMPUTE_STALE_RESULT', 'Numeric result belongs to an older workbook revision')
-    if (result.output.kind === 'aggregate') throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', 'Numeric index task returned aggregate output')
+    if (result.output.kind !== task.kind) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', 'Numeric index task returned an unexpected output kind')
     return { documentId: context.documentId, modelRevision: context.modelRevision, indices: result.output.indices, metrics: result.metrics }
   }
 }

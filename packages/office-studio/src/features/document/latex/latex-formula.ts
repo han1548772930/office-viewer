@@ -1,8 +1,12 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
 import type { DrawCommand } from '../../../rendering/contracts.ts'
 import type { DocumentPoint, DocumentRun, DocumentSelection } from '../model/document-model.ts'
-import { createParagraph, createRun, orderedSelection, runsForTarget, sameTarget, setTargetRuns, sliceRuns } from '../model/document-model.ts'
-import { transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { blockAtPoint, createParagraph, createRun, findDocumentBlockContainer, orderedSelection, runsForTarget, sameTarget, setTargetRuns, sliceRuns } from '../model/document-model.ts'
+import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentTableCellContentContainers } from '../model/document-table-continuations'
+import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
+import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
+import { transformDocumentCommentAnchorsForBodyRangeEdit } from '../comments/document-comment-anchors'
 
 export type LatexFormulaMode = 'inline' | 'block'
 export interface LatexFormula { latex: string; mode: LatexFormulaMode; version: 1 }
@@ -208,7 +212,7 @@ export function getLatexFormulas(model: DocumentModel): Array<{ blockId: string;
         if (formula) result.push({ blockId: block.id, runId: run.id, formula })
       }
       const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
-      for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) visit(cell.blocks ?? [])
+      for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) for (const content of documentTableCellContentContainers(cell)) visit(content)
     }
   }
   visit(model.blocks)
@@ -235,28 +239,42 @@ export function createLatexFormulaBlock(latex: string): DocumentBlock {
 }
 
 export function insertLatexFormula(model: DocumentModel, selection: DocumentSelection, latex: string, mode: LatexFormulaMode = 'inline'): DocumentPoint {
+  if (selection.tableSelection) throw new RangeError('公式需要单元格内的文字选区或插入位置')
   const { start, end } = orderedSelection(model, selection)
   if (!sameTarget(start, end)) throw new RangeError('公式插入暂时要求在同一段落内选择内容。')
-  const block = model.blocks.find((item) => item.id === start.blockId)
-  if (!block || start.row != null) throw new RangeError('公式只能插入文档正文段落。')
-  if (model.contentControls?.some((control) => control.blockId === block.id && start.offset < control.endOffset && end.offset > control.startOffset)) {
-    throw new RangeError('不能替换内容控件中的文字来插入公式。')
-  }
+  const block = blockAtPoint(model, start), container = block && findDocumentBlockContainer(model, block.id)
+  if (!block || !container) throw new RangeError('公式插入目标已不存在')
+  assertDocumentTextSelectionEditable(model, { anchor: start, focus: end })
+  const sourceParagraphs = documentTextFieldParagraphs(model), paragraph = sourceParagraphs.find(paragraph => paragraph.block.id === block.id)
+  if (!paragraph) throw new RangeError('公式插入目标缺少正文映射')
   const before = sliceRuns(runsForTarget(model, start), 0, start.offset)
   const after = sliceRuns(runsForTarget(model, start), end.offset)
+  const controls: DocumentModel = { ...model, contentControls: model.contentControls && getDocumentContentControls(model) }
   if (mode === 'inline') {
     const formula = createLatexFormulaRun(latex, mode)
+    transformContentControlsForBlockEdit(controls, block.id, start.offset, end.offset, formula.text.length)
     transformDocumentTextFieldsForBlockEdit(block, start.offset, end.offset, formula.text, undefined, model)
+    model.contentControls = controls.contentControls
     setTargetRuns(model, start, [...before, formula, ...after])
+    transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
+      paragraph.absoluteStart + start.offset, paragraph.absoluteStart + end.offset, formula.text)
     return { ...start, offset: start.offset + formula.text.length }
   }
-  const index = model.blocks.findIndex((item) => item.id === block.id)
+  const index = container.indexOf(block)
   const equation = createLatexFormulaBlock(latex)
   const trailing = createParagraph()
   trailing.style = { ...block.style }
   trailing.runs = after.length ? after : [createRun()]
-  transformDocumentTextFieldsForBlockRangeEdit([block], start.offset, end.offset, '\n', [block, trailing], undefined, model)
-  block.runs = before.length ? before : [createRun()]
-  model.blocks.splice(index + 1, 0, equation, trailing)
-  return { blockId: equation.id, offset: OBJECT_REPLACEMENT.length }
+  const replacement = `\n${OBJECT_REPLACEMENT}\n`
+  transformContentControlsForBlockEdit(controls, block.id, start.offset, end.offset, replacement.length, {
+    blockId: trailing.id, firstBreakOffset: start.offset, lastParagraphOffset: start.offset + replacement.length,
+  })
+  transformDocumentTextFieldsForBlockRangeEdit([block], start.offset, end.offset, replacement, [block, equation, trailing], undefined, model)
+  model.contentControls = controls.contentControls
+  setTargetRuns(model, start, before.length ? before : [createRun()])
+  container.splice(index + 1, 0, equation, trailing)
+  transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
+    paragraph.absoluteStart + start.offset, paragraph.absoluteStart + end.offset, replacement)
+  return start.row === undefined ? { blockId: equation.id, offset: OBJECT_REPLACEMENT.length }
+    : { ...start, cellBlockId: equation.id, offset: OBJECT_REPLACEMENT.length }
 }

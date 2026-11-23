@@ -101,7 +101,7 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
       @ribbon="preferences.ribbon = $event" @direction="preferences.direction = $event" @dark="preferences.dark = $event" @accent="preferences.accent = $event" @region="setRegion" @chrome="preferences.chrome = $event" @zoom="preferences.zoom = $event" @reset="resetPreferences"
       @action="onHeaderAction" @switch="switchWorkspace" @locale="regional.setLocale($event)"
     />
-    <Upload class="file-picker-host" style="display: none" aria-hidden="true" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
+    <Upload class="file-picker-host" :styles="{ root: { display: 'none' } }" aria-hidden="true" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
 
     <main :id="editor.state.activeKind === 'workbook' ? 'workbook-workspace' : 'document-workspace'" class="workspace" role="tabpanel" :aria-labelledby="editor.state.activeKind === 'workbook' ? 'workbook-tab' : 'document-tab'" :aria-label="editor.state.activeKind === 'workbook' ? t('workspace.workbook-area') : t('workspace.document-area')">
       <WorkspaceFeedback :parser-status="editor.state.parserStatus" :parser-message="editor.state.parserMessage" :notice="notice" @cancel-import="cancelImport" @dismiss-parser-error="editor.state.parserStatus = 'idle'" />

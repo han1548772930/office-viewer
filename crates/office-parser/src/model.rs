@@ -71,6 +71,8 @@ pub struct DocumentOfficeSourcePayload {
     pub styles: Option<DocumentOfficeXmlPartPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<DocumentOfficeXmlPartPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numbering: Option<office_io_common::document_numbering_source::DocumentNumberingSource>,
     /// A legal absent part differs from a declared part that could not be read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resource_errors: Vec<String>,
@@ -442,10 +444,23 @@ pub struct ChartPayload {
     pub index: usize,
     pub kind: String,
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
     pub series: Vec<ChartSeriesPayload>,
     pub legend: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legend_position: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legend_font: Option<office_io_common::chart_options::Font>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<office_io_common::chart_options::Options>,
+    /// Exact authored source is accepted only while native settings/references match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authored: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unsupported_reasons: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub office_source: Option<String>,
     pub data_labels: bool,
     pub x_axis_title: Option<String>,
     pub y_axis_title: Option<String>,
@@ -466,24 +481,37 @@ pub struct ChartSeriesPayload {
     pub categories: Option<String>,
     pub values: String,
     pub bubble_sizes: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChartAxisPayload {
-    pub scale_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub log_base: Option<f64>,
+    pub native_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<office_io_common::chart_options::Series>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trendlines: Vec<office_io_common::chart_options::Trendline>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub error_bars: Vec<ChartErrorBarPayload>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartErrorBarPayload {
+    #[serde(flatten)]
+    pub options: office_io_common::chart_options::ErrorBar,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plus_formula: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minus_formula: Option<String>,
+}
+
+pub type ChartAxisPayload = office_io_common::chart_options::Axis;
+
+#[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorCellPayload {
     pub row: u32,
     pub col: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChartDrawingPayload {
     pub object_index: usize,

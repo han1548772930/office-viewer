@@ -4,8 +4,8 @@ import { chromium, expect } from '@playwright/test'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 
-// Deferred Canvas/antdv-next/public facade drafts, 2026-11-22. No browser run.
-// This fixture does not cover the production application history adapter or a real Windows IME.
+// Deferred Canvas/antdv-next/public facade drafts, 2026-11-22 through 2026-11-24. No browser run.
+// This fixture covers the OfficeStudio field-cache adapter; production app wiring and real Windows IME remain unverified.
 const fixturePath = '/__document-section-layout-test__'
 const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Docs 节布局</title><style>body{margin:0}#app{height:100vh;min-width:0}</style></head><body><div id="app"></div><script type="module">
 import { computed, createApp, h, ref, shallowRef, watch } from 'vue'
@@ -17,9 +17,13 @@ import { createBlankDocument } from '/packages/office-studio/src/domain/model'
 import { createParagraph, createRun, normalizeDocument, runText } from '/packages/office-studio/src/features/document/model/document-model'
 import { EMPTY_SECTION_HEADER_FOOTER, resolveSectionHeaderFooter, sectionStoryLinkedToPrevious } from '/packages/office-studio/src/features/document/services/section-header-footer'
 import { DOCUMENT_STORY_KEYS, documentStoryDefaultStyle } from '/packages/office-studio/src/features/document/model/document-story'
+import { documentTextFields, setDocumentTextFields } from '/packages/office-studio/src/features/document/model/document-text-fields'
+import { hydrateDocumentTocsFromNativeFields } from '/packages/office-studio/src/features/document/toc/document-native-toc'
+import { documentTocHighlightLayout } from '/packages/office-studio/src/features/document/toc/document-toc-layout'
 import { replaceStoryRange, storyBuffer } from '/packages/office-studio/src/features/document/services/story-editor'
 import { createTextMeasurer, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display'
 import { createOfficeMessages, OfficeDirectionKey, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
 const copy = value => JSON.parse(JSON.stringify(value))
 const initial = createBlankDocument(); initial.id = 'section-layout-browser'; initial.name = '节布局编辑'
@@ -34,7 +38,9 @@ initial.sectionHeaderFooters = { first: { ...EMPTY_SECTION_HEADER_FOOTER, header
 let studio = new OfficeStudio({ document: normalizeDocument(initial), currentUserId: 'local-user' })
 studio.activateDocument(initial.id)
 const documentApi = shallowRef(new FDocument(studio, initial.id)), model = ref(documentApi.value.getModel())
-const dark = ref(false), variant = ref('classic'), locale = ref('zh-CN'), notices = [], commands = []
+const fieldCacheAdapter = shallowRef(studio.getDocumentFieldCacheAdapter(initial.id)), standalone = ref(false), workbenchGeneration = ref(0)
+const dark = ref(false), variant = ref('classic'), locale = ref('zh-CN'), notices = [], commands = [], cacheEvents = [], contentEvents = []
+const primary = ref('#3064c7'), mountedWorkbench = ref(null), display = ref({ chrome: 'full', zoom: 100 })
 let reentrantReplacements = 0
 let stopWatching
 function observe() {
@@ -45,11 +51,70 @@ function observe() {
 observe()
 const bodySelection = () => ({ anchor: { blockId: 'body', offset: 0 }, focus: { blockId: 'body', offset: 0 } })
 const layout = () => layoutDocument(model.value, createTextMeasurer())
+function resetDocumentHost(source, useStandalone = false, prepare) {
+  const next = new OfficeStudio({ document: normalizeDocument(source), currentUserId: 'local-user' }), api = new FDocument(next, source.id)
+  next.activateDocument(source.id)
+  prepare?.(api)
+  const unit = next.editor.history.units[source.id]
+  const before = { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, dirty: next.editor.history.isDirty(source.id), input: copy(api.getInputState()) }
+  stopWatching?.(); studio.dispose(); studio = next
+  documentApi.value = api; model.value = api.getModel(); fieldCacheAdapter.value = studio.getDocumentFieldCacheAdapter(source.id)
+  standalone.value = useStandalone; workbenchGeneration.value++; commands.length = 0; cacheEvents.length = 0; contentEvents.length = 0; observe()
+  return before
+}
 function position(pageIndex, x, y) {
   const scroll = document.querySelector('.document-scroll'), bounds = scroll.getBoundingClientRect(), current = layout()
   scroll.scrollTop = Math.max(0, y - 120); scroll.dispatchEvent(new Event('scroll'))
   const offset = sceneOffset(current, { width: scroll.clientWidth, height: scroll.clientHeight, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, zoom: 100 })
   return { page: pageIndex, x: bounds.left + offset.x + x, y: bounds.top + offset.y + y }
+}
+function liveCanvasLayout() {
+  const current = mountedWorkbench.value?.$refs?.canvasRef?.getLayout()
+  if (!current) throw new Error('Mounted Docs Canvas layout is not available')
+  return current
+}
+function liveTocTab(blockId) {
+  const current = liveCanvasLayout()
+  for (const line of current.lines.filter(line => line.target.blockId === blockId)) {
+    const glyph = line.glyphs.find(glyph => glyph.tab)
+    if (glyph) return { current, line, glyph }
+  }
+  throw new Error('Mounted TOC row has no right tab')
+}
+function canvasTabPoint(blockId, fraction, top = false) {
+  const { current, line, glyph } = liveTocTab(blockId), scroll = document.querySelector('.document-scroll')
+  const scale = display.value.zoom / 100, x = glyph.x + glyph.width * fraction, y = top ? line.y + 2 : line.y + line.height / 2
+  scroll.scrollTop = Math.max(0, y * scale - 120); scroll.dispatchEvent(new Event('scroll'))
+  const bounds = scroll.getBoundingClientRect(), offset = sceneOffset(current, { width: scroll.clientWidth, height: scroll.clientHeight,
+    scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, zoom: display.value.zoom })
+  return { x: bounds.left + offset.x + x * scale, y: bounds.top + offset.y + y * scale, start: glyph.offset, end: glyph.end }
+}
+function liveTocGeometry() {
+  const current = liveCanvasLayout(), input = documentApi.value.getInputState()
+  const highlight = input?.valid && input.location.kind === 'body' ? documentTocHighlightLayout(model.value, current, input.location.selection) : undefined
+  return { zoom: display.value.zoom, highlight: highlight && copy(highlight),
+    rows: model.value.blocks.filter(block => block.metadata.documentToc?.role === 'entry').map(block => {
+      const { line, glyph } = liveTocTab(block.id)
+      const field = documentTextFields(block).find(field => field.field === 'PAGEREF')
+      const digits = current.lines.filter(line => line.target.blockId === block.id).flatMap(line => line.glyphs)
+        .filter(glyph => glyph.offset >= field.startOffset && glyph.end <= field.endOffset)
+      const column = current.pages[line.page].sections.find(section => section.fragment === line.sectionFragment).columns[line.column ?? 0]
+      return { id: block.id, start: glyph.offset, end: glyph.end, width: glyph.width, leader: glyph.tab.leader, leaderText: glyph.tab.leaderText,
+        page: line.page, x: line.x, columnX: column.x, columnWidth: column.width, pageRight: digits.at(-1).x + digits.at(-1).width }
+    }) }
+}
+async function sampleCanvasContext(blockId) {
+  const point = canvasTabPoint(blockId, 0.5, true)
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  const canvas = document.querySelector('.document-surface canvas'), bounds = canvas?.getBoundingClientRect()
+  if (!canvas || !bounds?.width || !bounds.height) throw new Error('Docs Canvas is not ready for a pixel sample')
+  const sx = Math.floor((point.x - bounds.left) * canvas.width / bounds.width), sy = Math.floor((point.y - bounds.top) * canvas.height / bounds.height)
+  if (sx < 0 || sy < 0 || sx >= canvas.width || sy >= canvas.height) throw new Error('TOC context probe is outside the rendered viewport')
+  const scratch = document.createElement('canvas'); scratch.width = scratch.height = 1
+  const context = scratch.getContext('2d')
+  if (!context) throw new Error('Pixel-sampling Canvas2D context is unavailable')
+  context.drawImage(canvas, sx, sy, 1, 1, 0, 0, 1, 1)
+  return { rgba: [...context.getImageData(0, 0, 1, 1).data], backend: document.querySelector('.backend-announcement')?.textContent, dpr: window.devicePixelRatio }
 }
 window.documentSectionFixture = {
   snapshot: () => copy(model.value), input: () => copy(documentApi.value.getInputState()),
@@ -59,6 +124,59 @@ window.documentSectionFixture = {
     return Object.fromEntries(DOCUMENT_STORY_KEYS.map(story => [story, sectionStoryLinkedToPrevious(section, story)]))
   },
   text: () => runText(model.value.blocks.find(block => block.id === 'body').runs),
+  tocText: () => model.value.blocks.filter(block => block.metadata.documentToc).map(block => runText(block.runs)),
+  selectBody: (blockId, start = 0, end = start) => documentApi.value.setInputSelection({ anchor: { blockId, offset: start }, focus: { blockId, offset: end } }),
+  pointInBlock: blockId => {
+    const line = layout().lines.find(line => line.target.blockId === blockId && line.glyphs.length)
+    if (!line) throw new Error('Requested block has no Canvas line')
+    const glyph = line.glyphs[0]
+    return position(line.page, glyph.x + 1, line.y + line.height / 2)
+  },
+  canvasReady: blockId => {
+    const current = mountedWorkbench.value?.$refs?.canvasRef?.getLayout(), block = model.value.blocks.find(block => block.id === blockId)
+    return !!block && !!current && current.lines.filter(line => line.target.blockId === blockId).flatMap(line => line.glyphs).map(glyph => glyph.text).join('') === runText(block.runs)
+      && ['webgpu', 'canvas2d'].includes(document.querySelector('.backend-announcement')?.textContent)
+  },
+  canvasTabPoint, canvasGeometry: liveTocGeometry, sampleCanvasContext,
+  zoom: value => { display.value = { ...display.value, zoom: value } },
+  bodyFields: () => copy(documentTextFields(model.value.blocks.find(block => block.id === 'body'))),
+  remount: () => { workbenchGeneration.value++ },
+  redo: () => documentApi.value.redo(),
+  cacheNotifications: () => ({ cache: cacheEvents.length, content: contentEvents.length }),
+  openFieldCommands: () => commands.filter(event => event.id === 'doc.command.refresh-header-footer-fields' && event.params?.command?.onOpen === true).length,
+  seedFieldDocument: useStandalone => {
+    const source = createBlankDocument(); source.id = 'field-cache-browser'; source.name = '字段缓存'
+    const paragraph = createParagraph('old tail'); paragraph.id = 'body'
+    setDocumentTextFields(paragraph, [{ id: 'date-year', field: 'DATE', instruction: 'DATE \\\\@ "yyyy"', cachedResult: 'old', startOffset: 0, endOffset: 3 }])
+    source.blocks = [paragraph]
+    return resetDocumentHost(source, useStandalone, api => {
+      api.executeCommand({ id: 'doc.command.insert-text', text: '-draft' }, { anchor: { blockId: 'body', offset: 8 }, focus: { blockId: 'body', offset: 8 } })
+      api.undo()
+      api.executeCommand({ id: 'doc.command.format-text', patch: { bold: true } }, { anchor: { blockId: 'body', offset: 0 }, focus: { blockId: 'body', offset: 0 } })
+    })
+  },
+  seedNativeToc: unresolved => {
+    const source = createBlankDocument(); source.id = 'native-toc-browser'; source.name = '原生目录'
+    source.page = { width: 440, height: 360, marginLeft: 40, marginRight: 40, marginTop: 40, marginBottom: 40 }
+    const first = createParagraph(); first.id = 'toc-one'; first.runs = [createRun('Alpha\\t', { fontFamily: 'Georgia', italic: true }), createRun('9', { bold: true, color: '#aa0022' })]
+    const second = createParagraph('Beta\\t99'); second.id = 'toc-two'
+    for (const row of [first, second]) row.metadata.source = { details: { style: { tabStops: [{ alignment: 'right', leader: 'hyphen', positionTwips: 4800 }] } } }
+    const heading = createParagraph('Revised heading'); heading.id = 'body'; heading.type = 'heading'; heading.level = 1
+    const other = createParagraph('Beta'); other.id = 'after'; other.type = 'heading'; other.level = 2
+    heading.metadata.source = { details: { bookmarks: unresolved ? [] : [{ name: '_TocFirst', childIndex: 0 }] } }
+    other.metadata.source = { details: { bookmarks: [{ name: '_TocSecond', childIndex: 0 }] } }
+    setDocumentTextFields(first, [
+      { id: 'native-toc', field: 'TOC', instruction: 'TOC \\\\o "1-3" \\\\h \\\\z \\\\u', cachedResult: 'Alpha\\t9\\nBeta\\t99', startOffset: 0, endBlockId: second.id, endOffset: 7, containsNestedFields: true },
+      { id: 'page-one', field: 'PAGEREF', instruction: 'PAGEREF _TocFirst \\\\h', cachedResult: '9', startOffset: 6, endOffset: 7 },
+    ])
+    setDocumentTextFields(second, [{ id: 'page-two', field: 'PAGEREF', instruction: 'PAGEREF _TocSecond \\\\h', cachedResult: '99', startOffset: 5, endOffset: 7 }])
+    source.blocks = [first, second, heading, { ...createParagraph(), id: 'break', type: 'pageBreak', runs: [] }, other]
+    source.contentControls = [{ id: 'wrapper', type: 'group', blockId: first.id, startOffset: 0, endOffset: 7, lock: unresolved ? 'unlocked' : 'sdtLocked' },
+      { id: 'page-control', type: 'richText', parentId: 'wrapper', blockId: first.id, startOffset: 6, endOffset: 7 }]
+    source.comments = { page: { id: 'page', messages: [], anchor: [{ blockId: first.id, startOffset: 6, endOffset: 7, text: '9' }], referenceText: '9', updatedAt: 'old' } }
+    hydrateDocumentTocsFromNativeFields(source)
+    return resetDocumentHost(source)
+  },
   history: () => { const unit = studio.editor.history.units[documentApi.value.id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, dirty: studio.editor.history.isDirty(documentApi.value.id) } },
   geometry: () => layout().pages.map(page => ({ x: page.x, y: page.y, width: page.width, height: page.height, number: page.pageNumber, blank: page.isParityBlank, sectionId: page.sectionId })),
   storyGlyphs: (pageIndex, area = 'header') => layout().pageHeaderFooters[pageIndex][area + 'LayoutLines'].flatMap(line => line.glyphs)
@@ -94,21 +212,25 @@ window.documentSectionFixture = {
     })
   },
   reentrantReplacements: () => reentrantReplacements,
-  appearance: (isDark, ribbonVariant) => { dark.value = isDark; variant.value = ribbonVariant },
+  appearance: (isDark, ribbonVariant, colorPrimary) => { dark.value = isDark; variant.value = ribbonVariant; if (colorPrimary) primary.value = colorPrimary },
   saveReopen: () => {
     const saved = copy(documentApi.value.save()), next = new OfficeStudio({ document: saved, currentUserId: 'local-user' })
     stopWatching?.(); studio.dispose(); studio = next; studio.activateDocument(saved.id)
-    documentApi.value = new FDocument(studio, saved.id); model.value = documentApi.value.getModel(); observe()
+    documentApi.value = new FDocument(studio, saved.id); model.value = documentApi.value.getModel()
+    fieldCacheAdapter.value = studio.getDocumentFieldCacheAdapter(saved.id); workbenchGeneration.value++; observe()
     return saved
   },
   notices: () => [...notices], commands: () => copy(commands),
 }
 const direction = computed(() => 'ltr'), messages = createOfficeMessages(), translate = (key, fallback) => messages[locale.value][key] ?? fallback
-const app = createApp({ render: () => h(ConfigProvider, { direction: direction.value, theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' } } }, {
-  default: () => h(DocumentWorkbench, { modelValue: model.value, documentApi: documentApi.value, canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo, ribbonVariant: variant.value,
-    'onUpdate:modelValue': value => { model.value = value }, onUndo: () => documentApi.value.undo(), onRedo: () => documentApi.value.redo(), onNotify: message => notices.push(message) }),
+const app = createApp({ render: () => h(ConfigProvider, { direction: direction.value, theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: primary.value } } }, {
+  default: () => h(DocumentWorkbench, { ref: mountedWorkbench, key: workbenchGeneration.value, modelValue: model.value, documentApi: standalone.value ? undefined : documentApi.value,
+    fieldCacheAdapter: standalone.value ? fieldCacheAdapter.value : undefined, canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo, ribbonVariant: variant.value,
+    'onUpdate:modelValue': value => { model.value = value }, onDocumentCacheChange: value => cacheEvents.push(copy(value)), onDocumentChange: value => contentEvents.push(copy(value)),
+    onUndo: () => documentApi.value.undo(), onRedo: () => documentApi.value.redo(), onNotify: message => notices.push(message) }),
 }) })
 app.provide(OfficeLocaleKey, locale); app.provide(OfficeDirectionKey, direction); app.provide(OfficeTranslatorKey, translate)
+app.provide(WorkbenchDisplayKey, display)
 app.mount('#app')
 window.addEventListener('pagehide', () => { stopWatching?.(); app.unmount(); studio.dispose() }, { once: true })
 </script></body></html>`
@@ -137,6 +259,18 @@ beforeEach(async () => {
 }, { timeout: 60_000 })
 afterEach(async () => { try { assert.deepEqual(errors, []) } finally { await page?.close() } })
 const inputState = () => page.evaluate(() => window.documentSectionFixture.input())
+async function renderedNativeToc() {
+  await expect.poll(() => page.evaluate(() => ['toc-one', 'toc-two'].every(id => window.documentSectionFixture.canvasReady(id)))).toBe(true)
+  return page.evaluate(() => window.documentSectionFixture.canvasGeometry())
+}
+function assertNativeTocStops(geometry) {
+  assert.equal(geometry.rows.length, 2)
+  for (const row of geometry.rows) {
+    assert.equal(row.end - row.start, 1); assert.equal(row.leader, 'dashes'); assert.ok(row.width > 32)
+    assert.ok(row.leaderText.length > 0); assert.ok([...row.leaderText].every(character => character === '-'))
+    assert.ok(Math.abs(row.pageRight - row.columnX - 320) < 0.001)
+  }
+}
 
 test('Canvas input in the second column retains logical positions through edit, keyboard history and internal reopen', async () => {
   const before = await page.evaluate(() => window.documentSectionFixture.text())
@@ -155,6 +289,191 @@ test('Canvas input in the second column retains logical positions through edit, 
   await page.evaluate(() => window.documentSectionFixture.saveReopen())
   await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(edited)
   assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), { undo: 0, redo: 0, dirty: false })
+})
+
+test('standalone on-open field caches share the host redo/savepoint and emit only cache notifications across remounts', async () => {
+  const before = await page.evaluate(() => window.documentSectionFixture.seedFieldDocument(true))
+  assert.equal(before.input.marks.bold, true)
+  const year = await page.evaluate(() => String(new Date().getFullYear()))
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(year + ' tail')
+  const { input: _input, ...history } = before
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), history)
+  assert.deepEqual((await inputState()).marks, before.input.marks)
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.snapshot())).modified, false)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.cacheNotifications()), { cache: 1, content: 0 })
+  assert.equal(await page.evaluate(() => window.documentSectionFixture.openFieldCommands()), 1)
+  await page.evaluate(() => window.documentSectionFixture.remount())
+  await expect(page.getByRole('textbox', { name: '文档画布编辑区', exact: true })).toBeVisible()
+  assert.equal(await page.evaluate(() => window.documentSectionFixture.openFieldCommands()), 1)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), history)
+  await page.evaluate(() => window.documentSectionFixture.redo())
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(year + ' tail-draft')
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.bodyFields()))[0].cachedResult, year)
+})
+
+test('F9 restores an edited native body result as one undoable command and ignores a composing key event', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedFieldDocument(false))
+  const year = await page.evaluate(() => String(new Date().getFullYear())), bridge = page.getByLabel('文档文字输入', { exact: true })
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(year + ' tail')
+  await page.evaluate(() => window.documentSectionFixture.selectBody('body', 2))
+  await expect.poll(async () => (await inputState())?.location.selection.focus.offset).toBe(2)
+  await bridge.focus(); await page.keyboard.insertText('x')
+  const manual = year.slice(0, 2) + 'x' + year.slice(2) + ' tail'
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(manual)
+  const history = await page.evaluate(() => window.documentSectionFixture.history())
+  await bridge.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'F9', isComposing: true, bubbles: true })))
+  assert.equal(await page.evaluate(() => window.documentSectionFixture.text()), manual)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), history)
+  await bridge.press('F9')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(year + ' tail')
+  const refreshed = await page.evaluate(() => window.documentSectionFixture.history())
+  assert.equal(refreshed.undo, history.undo + 1)
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.bodyFields()))[0].id, 'date-year')
+  await expect(bridge).toBeFocused(); await bridge.press('Control+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(manual)
+  await bridge.press('Control+Shift+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.text())).toBe(year + ' tail')
+})
+
+test('mounted TOC Canvas tab halves preserve one UTF-16 offset and numeric typing marks through zoom and Ctrl navigation', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedNativeToc(false))
+  assertNativeTocStops(await renderedNativeToc())
+  const before = await page.evaluate(() => window.documentSectionFixture.snapshot())
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  for (const zoom of [100, 150]) {
+    await page.evaluate(value => window.documentSectionFixture.zoom(value), zoom)
+    await expect(page.locator('.zoom-value')).toContainText(zoom + '%')
+    assertNativeTocStops(await renderedNativeToc())
+    const left = await page.evaluate(() => window.documentSectionFixture.canvasTabPoint('toc-one', 0.25))
+    await page.mouse.click(left.x, left.y)
+    await expect(bridge).toBeFocused()
+    await expect.poll(async () => (await inputState()).location.selection.focus.offset).toBe(left.start)
+    const right = await page.evaluate(() => window.documentSectionFixture.canvasTabPoint('toc-one', 0.75))
+    await page.mouse.click(right.x, right.y)
+    await expect.poll(async () => (await inputState()).location.selection.focus.offset).toBe(right.end)
+    await expect.poll(async () => (await inputState()).marks.bold).toBe(true)
+    assert.equal((await inputState()).marks.color, '#aa0022')
+    await bridge.press('ArrowRight')
+    await expect.poll(async () => (await inputState()).location.selection.focus.offset).toBe(right.end + 1)
+  }
+  const point = await page.evaluate(() => window.documentSectionFixture.canvasTabPoint('toc-one', 0.5))
+  await page.keyboard.down('Control'); await page.mouse.click(point.x, point.y); await page.keyboard.up('Control')
+  await expect.poll(async () => (await inputState()).location.selection.focus.blockId).toBe('body')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.canvasGeometry().highlight?.tocId ?? null)).toBeNull()
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.snapshot()), before)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), { undo: 0, redo: 0, dirty: false })
+})
+
+test('real Canvas context pixels follow antdv-next primary/theme changes and clear for story or body selection outside the TOC', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedNativeToc(false))
+  await renderedNativeToc()
+  await page.evaluate(() => window.documentSectionFixture.selectBody('body', 0))
+  const before = await page.evaluate(() => window.documentSectionFixture.snapshot())
+  const unselected = await page.evaluate(() => window.documentSectionFixture.sampleCanvasContext('toc-one'))
+  assert.ok(['webgpu', 'canvas2d'].includes(unselected.backend)); assert.deepEqual(unselected.rgba, [255, 255, 255, 255])
+  await page.evaluate(() => window.documentSectionFixture.selectBody('toc-one', 6))
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.canvasGeometry().highlight?.tocId)).toBe('native-toc')
+  const selected = await page.evaluate(() => window.documentSectionFixture.sampleCanvasContext('toc-one'))
+  assert.notDeepEqual(selected.rgba, unselected.rgba); assert.equal(selected.rgba[3], 255)
+  await page.evaluate(() => window.documentSectionFixture.appearance(true, 'grid', '#b42850'))
+  const themed = await page.evaluate(() => window.documentSectionFixture.sampleCanvasContext('toc-one'))
+  assert.notDeepEqual(themed.rgba, selected.rgba); assert.notDeepEqual(themed.rgba, unselected.rgba)
+  const header = await page.evaluate(() => window.documentSectionFixture.pageHeaderPoint(0))
+  await page.mouse.dblclick(header.x, header.y)
+  const story = page.getByLabel('编辑页眉', { exact: true })
+  await expect(story).toBeFocused()
+  await expect.poll(async () => (await inputState()).location.kind).toBe('story')
+  assert.deepEqual((await page.evaluate(() => window.documentSectionFixture.sampleCanvasContext('toc-one'))).rgba, unselected.rgba)
+  await story.press('Escape')
+  await expect(page.getByLabel('文档文字输入', { exact: true })).toBeFocused()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.canvasGeometry().highlight?.tocId)).toBe('native-toc')
+  assert.notDeepEqual((await page.evaluate(() => window.documentSectionFixture.sampleCanvasContext('toc-one'))).rgba, unselected.rgba)
+  const body = await page.evaluate(() => window.documentSectionFixture.pointInBlock('body'))
+  await page.mouse.click(body.x, body.y)
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.canvasGeometry().highlight?.tocId ?? null)).toBeNull()
+  assert.deepEqual((await page.evaluate(() => window.documentSectionFixture.sampleCanvasContext('toc-one'))).rgba, unselected.rgba)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.snapshot()), before)
+})
+
+test('TOC page-only dialog recomputes real Canvas gaps through keyboard undo/redo and internal save/reopen', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedNativeToc(false))
+  const before = await renderedNativeToc(); assertNativeTocStops(before)
+  await page.evaluate(() => window.documentSectionFixture.selectBody('toc-one', 6))
+  await page.getByTestId('workbench-ribbon').getByRole('button', { name: '更新目录', exact: true }).click()
+  const dialog = page.locator('.ant-modal:visible')
+  await expect(dialog.locator('.ant-form')).toBeVisible()
+  await dialog.getByRole('button', { name: /应\s*用/ }).click(); await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t1', 'Beta\t2'])
+  const updated = await renderedNativeToc(); assertNativeTocStops(updated)
+  assert.ok(updated.rows[1].width > before.rows[1].width + 3)
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await expect(bridge).toBeFocused(); await bridge.press('Control+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t9', 'Beta\t99'])
+  const undone = await renderedNativeToc(); assertNativeTocStops(undone)
+  assert.ok(Math.abs(undone.rows[1].width - before.rows[1].width) < 0.001)
+  await bridge.press('Control+Shift+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t1', 'Beta\t2'])
+  assertNativeTocStops(await renderedNativeToc())
+  const saved = await page.evaluate(() => window.documentSectionFixture.saveReopen())
+  assert.equal(JSON.stringify(saved).includes('"leaderText"'), false)
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t1', 'Beta\t2'])
+  const reopened = await renderedNativeToc(); assertNativeTocStops(reopened)
+  assert.ok(Math.abs(reopened.rows[1].width - updated.rows[1].width) < 0.001)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), { undo: 0, redo: 0, dirty: false })
+})
+
+test('native TOC full-update dialog preserves numeric anchors and formatting, keyboard history, navigation and internal reopen', async () => {
+  await page.evaluate(() => { window.documentSectionFixture.seedNativeToc(false); window.documentSectionFixture.appearance(true, 'grid') })
+  await page.evaluate(() => window.documentSectionFixture.selectBody('toc-one', 7, 6))
+  const ribbon = page.getByTestId('workbench-ribbon'), update = ribbon.getByRole('button', { name: '更新目录', exact: true })
+  await expect(update).toBeEnabled(); await update.click()
+  const dialog = page.locator('.ant-modal:visible')
+  await expect(dialog.locator('.ant-form')).toBeVisible(); await dialog.getByRole('combobox').click()
+  await page.locator('.ant-select-dropdown:visible').getByText('更新整个目录', { exact: true }).click()
+  const apply = dialog.getByRole('button', { name: /应\s*用/ })
+  await expect(apply).toBeEnabled(); await apply.click(); await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Revised heading\t1', 'Beta\t2'])
+  const updatedCanvas = await renderedNativeToc(); assertNativeTocStops(updatedCanvas)
+  assert.ok(Math.abs(updatedCanvas.rows[1].x - updatedCanvas.rows[1].columnX - 18) < 0.001)
+  const updated = await page.evaluate(() => window.documentSectionFixture.snapshot()), start = 'Revised heading\t'.length
+  const control = updated.contentControls.find(control => control.id === 'page-control')
+  assert.deepEqual([control.startOffset, control.endOffset], [start, start + 1])
+  assert.deepEqual(updated.comments.page.anchor, [{ blockId: 'toc-one', startOffset: start, endOffset: start + 1, text: '1' }])
+  assert.equal(updated.blocks[0].runs.find(run => run.text === '1').bold, true)
+  assert.equal(updated.blocks[0].runs.find(run => run.text === '1').color, '#aa0022')
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await expect(bridge).toBeFocused(); await bridge.press('Control+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t9', 'Beta\t99'])
+  assertNativeTocStops(await renderedNativeToc())
+  await bridge.press('Control+Shift+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Revised heading\t1', 'Beta\t2'])
+  assertNativeTocStops(await renderedNativeToc())
+  const point = await page.evaluate(() => window.documentSectionFixture.pointInBlock('toc-one'))
+  await page.keyboard.down('Control'); await page.mouse.click(point.x, point.y); await page.keyboard.up('Control')
+  await expect.poll(async () => (await inputState())?.location.selection.focus.blockId).toBe('body')
+  await page.evaluate(() => window.documentSectionFixture.saveReopen())
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Revised heading\t1', 'Beta\t2'])
+  assertNativeTocStops(await renderedNativeToc())
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.history()), { undo: 0, redo: 0, dirty: false })
+})
+
+test('unresolved native TOC targets disable update while antdv-next Ribbon and Layout menu keep deletion executable', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedNativeToc(true))
+  await page.evaluate(() => window.documentSectionFixture.selectBody('toc-one', 0))
+  const ribbon = page.getByTestId('workbench-ribbon')
+  await expect(ribbon.getByRole('button', { name: '更新目录', exact: true })).toBeDisabled()
+  await expect(ribbon.getByRole('button', { name: '删除目录', exact: true })).toBeEnabled()
+  const point = await page.evaluate(() => window.documentSectionFixture.pointInBlock('toc-one'))
+  await page.mouse.click(point.x, point.y, { button: 'right' })
+  const menu = page.locator('.document-context-menu .ant-menu')
+  await expect(menu.getByRole('menuitem', { name: '更新目录', exact: true })).toHaveClass(/ant-menu-item-disabled/)
+  const remove = menu.getByRole('menuitem', { name: '删除目录', exact: true })
+  await expect(remove).not.toHaveClass(/ant-menu-item-disabled/); await remove.click()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual([])
+  const history = await page.evaluate(() => window.documentSectionFixture.history()); assert.equal(history.undo, 1)
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await expect(bridge).toBeFocused(); await bridge.press('Control+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t9', 'Beta\t99'])
 })
 
 test('mixed page geometry stays clickable after a section change and theme/Ribbon switching', async () => {

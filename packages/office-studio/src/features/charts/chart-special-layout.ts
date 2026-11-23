@@ -1,6 +1,7 @@
 import type { ChartModel, ChartSemanticOptions } from '../../domain/model'
 import type { RenderRect } from '../../rendering/contracts'
 import type { ChartGraphData, ChartHierarchyNode } from './chart-data'
+import { chartHierarchyItems } from './chart-data'
 import type { ChartData } from './chart-engine'
 import { chartBezier, chartPolar, type ChartVector } from './chart-geometry'
 
@@ -10,8 +11,8 @@ export interface ChartGraphLayout { nodes: ChartGraphNodeLayout[]; links: ChartG
 export interface ChartChordNodeLayout { name: string; value: number; start: number; end: number; index: number }
 export interface ChartChordLinkLayout { sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number; value: number; sourceIndex: number; targetIndex: number }
 export interface ChartChordLayout { center: ChartVector; innerRadius: number; outerRadius: number; nodes: ChartChordNodeLayout[]; links: ChartChordLinkLayout[] }
-export interface ChartTreeRect extends RenderRect { node: ChartHierarchyNode; depth: number; colorIndex: number; path: string[] }
-export interface ChartSunburstSector { node: ChartHierarchyNode; start: number; end: number; inner: number; outer: number; depth: number; colorIndex: number }
+export interface ChartTreeRect extends RenderRect { node: ChartHierarchyNode; pointIndex: number; rootIndex: number; depth: number; colorIndex: number; path: string[] }
+export interface ChartSunburstSector { node: ChartHierarchyNode; pointIndex: number; rootIndex: number; start: number; end: number; inner: number; outer: number; depth: number; colorIndex: number; path: string[] }
 export interface ChartCloudWord extends RenderRect { text: string; value: number; categoryIndex: number; fontSize: number; rotation: number }
 
 /** Fixed-order, deterministic graph coordinates, shared by both Canvas APIs. */
@@ -72,6 +73,7 @@ export function chartRelationLayout(graph: ChartGraphData, chart: ChartModel, pl
 
 /** Cycles remain directed links; SCCs occupy a column and feedback links use an outside port. */
 export function chartSankeyLayout(graph: ChartGraphData, plot: RenderRect): ChartGraphLayout {
+  const weightScale = graph.nodes.reduce((max, node) => Math.max(max, node.value), 0) || 1
   const components = stronglyConnectedComponents(graph)
   const componentByName = new Map<string, number>()
   components.forEach((names, index) => names.forEach(name => componentByName.set(name, index)))
@@ -87,7 +89,7 @@ export function chartSankeyLayout(graph: ChartGraphData, plot: RenderRect): Char
     degrees[next]!--; if (!degrees[next]) queue.push(next)
   }
   const nodeWeights = new Map(graph.nodes.map(node => [node.name, { in: 0, out: 0 }]))
-  for (const link of graph.links) { nodeWeights.get(link.source)!.out += link.value; nodeWeights.get(link.target)!.in += link.value }
+  for (const link of graph.links) { nodeWeights.get(link.source)!.out += link.value / weightScale; nodeWeights.get(link.target)!.in += link.value / weightScale }
   const columns = new Map<number, string[]>()
   for (const node of graph.nodes) { const layer = layers[componentByName.get(node.name)!]!, list = columns.get(layer) ?? []; list.push(node.name); columns.set(layer, list) }
   const maxLayer = Math.max(0, ...layers), nodeWidth = Math.max(4, Math.min(18, plot.width / Math.max(4, (maxLayer + 1) * 3)))
@@ -96,7 +98,7 @@ export function chartSankeyLayout(graph: ChartGraphData, plot: RenderRect): Char
   let scale = Infinity
   for (const names of columns.values()) {
     const sum = names.reduce((total, name) => total + Math.max(nodeWeights.get(name)!.in, nodeWeights.get(name)!.out), 0)
-    scale = Math.min(scale, Math.max(1, plot.height - reserved * 2 - (names.length - 1) * gap) / Math.max(1, sum))
+    if (sum > 0) scale = Math.min(scale, Math.max(1, plot.height - reserved * 2 - (names.length - 1) * gap) / sum)
   }
   if (!Number.isFinite(scale)) scale = 1
   const byName = new Map<string, ChartGraphNodeLayout>()
@@ -111,7 +113,7 @@ export function chartSankeyLayout(graph: ChartGraphData, plot: RenderRect): Char
   }
   const usedIn = new Map<string, number>(), usedOut = new Map<string, number>()
   const links = graph.links.map((link, index) => {
-    const source = byName.get(link.source)!, target = byName.get(link.target)!, width = link.value * scale
+    const source = byName.get(link.source)!, target = byName.get(link.target)!, width = (link.value / weightScale) * scale
     const out = usedOut.get(source.name) ?? 0, input = usedIn.get(target.name) ?? 0
     usedOut.set(source.name, out + width); usedIn.set(target.name, input + width)
     const start = { x: source.x + source.width, y: source.y + (source.height - nodeWeights.get(source.name)!.out * scale) / 2 + out + width / 2 }
@@ -165,15 +167,16 @@ export function chartChordLayout(graph: ChartGraphData, chart: ChartModel, plot:
   const options = chart.options?.chord, clockwise = options?.clockwise !== false ? 1 : -1
   const radius = Math.max(1, Math.min(plot.width, plot.height) / 2), innerRadius = radius * (options?.innerRadiusRatio ?? 0.66), outerRadius = radius * (options?.outerRadiusRatio ?? 0.73)
   const padding = Math.min(Math.PI / Math.max(1, graph.nodes.length), (options?.padAngle ?? 3) * Math.PI / 180)
-  const total = graph.nodes.reduce((sum, node) => sum + node.value, 0)
+  const weightScale = graph.nodes.reduce((max, node) => Math.max(max, node.value), 0) || 1
+  const total = graph.nodes.reduce((sum, node) => sum + node.value / weightScale, 0)
   const anglePerWeight = Math.max(0, Math.PI * 2 - graph.nodes.length * padding) / Math.max(1e-9, total)
   let angle = (options?.startAngle ?? -90) * Math.PI / 180
-  const nodes = graph.nodes.map((node, index) => { const start = angle, end = start + clockwise * node.value * anglePerWeight; angle = end + clockwise * padding; return { ...node, start, end, index } })
+  const nodes = graph.nodes.map((node, index) => { const start = angle, end = start + clockwise * (node.value / weightScale) * anglePerWeight; angle = end + clockwise * padding; return { ...node, start, end, index } })
   const byName = new Map(nodes.map(node => [node.name, node])), offsets = new Map(nodes.map(node => [node.name, node.start]))
   const links = graph.links.map(link => {
     const source = byName.get(link.source)!, target = byName.get(link.target)!
-    const sourceStart = offsets.get(source.name)!, sourceEnd = sourceStart + clockwise * link.value * anglePerWeight; offsets.set(source.name, sourceEnd)
-    const targetStart = offsets.get(target.name)!, targetEnd = targetStart + clockwise * link.value * anglePerWeight; offsets.set(target.name, targetEnd)
+    const sourceStart = offsets.get(source.name)!, sourceEnd = sourceStart + clockwise * (link.value / weightScale) * anglePerWeight; offsets.set(source.name, sourceEnd)
+    const targetStart = offsets.get(target.name)!, targetEnd = targetStart + clockwise * (link.value / weightScale) * anglePerWeight; offsets.set(target.name, targetEnd)
     return { sourceStart, sourceEnd, targetStart, targetEnd, value: link.value, sourceIndex: source.index, targetIndex: target.index }
   })
   return { center: { x: plot.x + plot.width / 2, y: plot.y + plot.height / 2 }, innerRadius, outerRadius, nodes, links }
@@ -181,11 +184,12 @@ export function chartChordLayout(graph: ChartGraphData, chart: ChartModel, plot:
 
 /** Squarified rows preserve each sibling's weight and its nested parent rectangle. */
 export function chartTreemapLayout(nodes: ChartHierarchyNode[], plot: RenderRect, banner = true): ChartTreeRect[] {
-  const output: ChartTreeRect[] = []
-  function layout(siblings: ChartHierarchyNode[], area: RenderRect, depth: number, colorIndex: number, path: string[]): void {
-    const total = siblings.reduce((sum, node) => sum + node.value, 0)
+  const output: ChartTreeRect[] = [], items = new Map(chartHierarchyItems(nodes).map(item => [item.node, item]))
+  function layout(siblings: ChartHierarchyNode[], area: RenderRect): void {
+    const scale = siblings.reduce((max, node) => Math.max(max, node.value), 0) || 1
+    const total = siblings.reduce((sum, node) => sum + node.value / scale, 0)
     if (total <= 0 || area.width <= 0 || area.height <= 0) return
-    const sorted = siblings.map((node, index) => ({ node, index, size: node.value / total * area.width * area.height })).sort((a, b) => b.size - a.size || a.index - b.index)
+    const sorted = siblings.map((node, index) => ({ node, index, size: (node.value / scale) / total * area.width * area.height })).filter(entry => entry.size > 0).sort((a, b) => b.size - a.size || a.index - b.index)
     let remaining = { ...area }, cursor = 0
     while (cursor < sorted.length) {
       const side = Math.min(remaining.width, remaining.height), row: typeof sorted = []
@@ -198,38 +202,36 @@ export function chartTreemapLayout(nodes: ChartHierarchyNode[], plot: RenderRect
       const rowSize = row.reduce((sum, entry) => sum + entry.size, 0), vertical = remaining.width >= remaining.height, thickness = rowSize / Math.max(1e-9, side)
       let offset = 0
       for (const entry of row) {
-        const length = entry.size / Math.max(1e-9, thickness), index = depth === 0 ? entry.index : colorIndex
+        const length = entry.size / Math.max(1e-9, thickness), item = items.get(entry.node)!
         const rect = vertical ? { x: remaining.x, y: remaining.y + offset, width: thickness, height: length } : { x: remaining.x + offset, y: remaining.y, width: length, height: thickness }
-        const nextPath = [...path, entry.node.name]
-        output.push({ ...rect, node: entry.node, depth, colorIndex: index, path: nextPath })
+        output.push({ ...rect, ...item, colorIndex: item.rootIndex })
         if (entry.node.children?.length) {
           const header = banner ? Math.min(18, rect.height * 0.2) : 0
-          layout(entry.node.children, { x: rect.x + 2, y: rect.y + header + 2, width: Math.max(0, rect.width - 4), height: Math.max(0, rect.height - header - 4) }, depth + 1, index, nextPath)
+          layout(entry.node.children, { x: rect.x + 2, y: rect.y + header + 2, width: Math.max(0, rect.width - 4), height: Math.max(0, rect.height - header - 4) })
         }
         offset += length
       }
       remaining = vertical ? { ...remaining, x: remaining.x + thickness, width: Math.max(0, remaining.width - thickness) } : { ...remaining, y: remaining.y + thickness, height: Math.max(0, remaining.height - thickness) }
     }
   }
-  layout(nodes, plot, 0, 0, [])
+  layout(nodes, plot)
   return output
 }
 
 export function chartSunburstLayout(nodes: ChartHierarchyNode[], plot: RenderRect): ChartSunburstSector[] {
-  const output: ChartSunburstSector[] = []
-  const depthOf = (siblings: ChartHierarchyNode[]): number => siblings.reduce((max, node) => Math.max(max, 1 + (node.children?.length ? depthOf(node.children) : 0)), 0)
-  const depthCount = Math.max(1, depthOf(nodes)), radius = Math.max(1, Math.min(plot.width, plot.height) * 0.43), step = radius / (depthCount + 1)
-  function layout(siblings: ChartHierarchyNode[], start: number, end: number, depth: number, colorIndex: number): void {
-    const total = siblings.reduce((sum, node) => sum + node.value, 0); let angle = start
-    siblings.forEach((node, index) => {
+  const output: ChartSunburstSector[] = [], hierarchy = chartHierarchyItems(nodes), items = new Map(hierarchy.map(item => [item.node, item]))
+  const depthCount = Math.max(1, hierarchy.reduce((max, item) => Math.max(max, item.depth + 1), 0)), radius = Math.max(1, Math.min(plot.width, plot.height) * 0.43), step = radius / (depthCount + 1)
+  function layout(siblings: ChartHierarchyNode[], start: number, end: number): void {
+    const scale = siblings.reduce((max, node) => Math.max(max, node.value), 0) || 1, total = siblings.reduce((sum, node) => sum + node.value / scale, 0); let angle = start
+    siblings.forEach(node => {
       if (node.value <= 0 || total <= 0) return
-      const next = angle + (end - start) * node.value / total, color = depth === 0 ? index : colorIndex
-      output.push({ node, start: angle, end: next, inner: step * (depth + 1), outer: step * (depth + 2), depth, colorIndex: color })
-      if (node.children?.length) layout(node.children, angle, next, depth + 1, color)
+      const next = angle + (end - start) * (node.value / scale) / total, item = items.get(node)!
+      output.push({ ...item, start: angle, end: next, inner: step * (item.depth + 1), outer: step * (item.depth + 2), colorIndex: item.rootIndex })
+      if (node.children?.length) layout(node.children, angle, next)
       angle = next
     })
   }
-  layout(nodes, -Math.PI / 2, Math.PI * 1.5, 0, 0)
+  layout(nodes, -Math.PI / 2, Math.PI * 1.5)
   return output
 }
 
@@ -237,7 +239,7 @@ export function chartWordCloudLayout(data: ChartData, options: ChartSemanticOpti
   const words = data.categories.map((text, categoryIndex) => ({ text, categoryIndex, value: data.series[0]?.values[categoryIndex] ?? 0 })).filter(word => word.text && word.value > 0)
     .sort((a, b) => b.value - a.value || a.categoryIndex - b.categoryIndex)
   if (!words.length) return []
-  const largest = words[0]!.value, minSize = options?.minFontSize ?? 10, maxSize = options?.maxFontSize ?? Math.min(54, plot.height / 3), rotation = options?.rotation ?? 0
+  const largest = words[0]!.value, minSize = options?.minFontSize ?? 10, maxSize = options?.maxFontSize ?? 54, rotation = options?.rotation ?? 0
   const radians = rotation * Math.PI / 180, cos = Math.abs(Math.cos(radians)), sin = Math.abs(Math.sin(radians))
   // Font metrics are conservatively estimated here; the measured Canvas/Worker layout remains unaccepted.
   for (let expansion = 1; expansion <= 32; expansion *= 1.6) {

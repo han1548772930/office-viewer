@@ -94,4 +94,6 @@ OfficeStudio 立即让过期 Docs 会话失效，但在 history 应用期间推�
 
 生产壳的重命名迁入 Form/Form.Item；解析加载、错误和消息通过新 `WorkspaceFeedback.vue` 使用 Spin/Alert/Button；诊断详情由 `WorkspaceDiagnostics.vue` 使用 Collapse，移除原生 details/summary。两个子组件在应用统一 ConfigProvider 内读取 theme token，错误/警告/背景/边框随主题切换；原有文件操作与诊断 DTO 不归 UI 所有。移除对应硬编码反馈颜色和自绘 spinner，仅保留布局 CSS；RTL 消息定位、Form Enter 提交、Collapse 键盘/焦点及真实明暗主题均未运行验证。
 
+2026-11-24 补应用壳文件选择间隔：`examples/workbench/src/App.vue` 将隐藏导入触发器设置为 `Upload :styles="{ root: { display: 'none' } }"`，隐藏最外层 wrapper，避免内层按钮隐藏后 wrapper 仍作为纵向 flex 项占位。静态依据是当前安装的 `antdv-next@1.8.2` 的 `dist/upload/Upload.js`：普通 `attrs.style` 合入 semantic `trigger`，最外层 span 使用 `mergedStyles.root`。文件菜单和 Ctrl/Cmd+O 仍执行库 Button 的 `$el.click()` 并通过 `beforeUpload` 调用文件服务；Upload 内部创建的原生 file input 属于库实现，未添加新的应用原生表单控件。整体仍在统一 ConfigProvider 内。本项没有新入口或业务协议；真实文件选择、同文件再次选择、取消、焦点恢复、明暗主题与无布局占位尚未浏览器复核，保持未验收。
+
 共享候选/view 克隆、来源 JSON 物化、snapshot 历史和签名比较仍可能产生较大的临时分配。尚无同数据前后耗时、帧时间、主线程长任务、Worker/WASM 传输和内存实测；没有性能达标或优化完成结论。大任务的 Worker/Rust/WASM、取消、复杂 shaping/布局、跨用户协作/持久权限/历史及全部 Sheets/Docs Pro 目标继续保留，均未验收。

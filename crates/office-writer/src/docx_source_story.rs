@@ -110,14 +110,9 @@ fn explicit_reset(result: &mut Element, local: &str, value: &str) {
 }
 
 impl SourceStyles {
-    fn remap_property_references(&self, properties: &mut Element) {
-        for content in &mut properties.content {
-            if let Content::Element(reference) = content {
-                if reference.is_word("rStyle") || reference.is_word("pStyle") {
-                    if let Some(mapped) = reference.attribute("val").and_then(|id| self.remap.get(id)).cloned() { reference.set_word_attribute("val", mapped); }
-                }
-            }
-        }
+    fn remap_property_references(&self, properties: &mut Element) -> Result<(), String> {
+        super::tables::remap_references(properties, &self.remap);
+        self.numbering_resources.remap(properties)
     }
 
     fn resolved_story_run(&mut self, original: &Element, paragraph_id: Option<&str>) -> Result<Element, String> {
@@ -147,15 +142,14 @@ impl SourceStyles {
         attach_namespaces(&mut result, &source.namespaces);
         canonicalize_word(&mut result);
         self.import_styles(&closure, theme_requirements(&result))?;
-        self.remap_property_references(&mut result);
+        self.remap_property_references(&mut result)?;
         Ok(result)
     }
 
     fn resolved_story_paragraph(&mut self, original: &Element, paragraph_id: Option<&str>) -> Result<Element, String> {
         validate_resource(original, WORD_NAMESPACE)?;
-        if original.child("numPr").is_some() { return Err("Story paragraph uses original numbering IDs whose resource mapping remains unimplemented.".into()); }
         let Some(source) = self.source.as_ref() else {
-            if self.source_error.is_some() || paragraph_id.is_some() || theme_requirements(original) != (false, false) {
+            if self.source_error.is_some() || paragraph_id.is_some() || theme_requirements(original) != (false, false) || super::numbering_source::has_live_numbering(original) {
                 return Err(self.source_error.clone().unwrap_or_else(|| "Story paragraph style/theme dependencies were not retained.".into()));
             }
             return Ok(original.clone());
@@ -172,7 +166,6 @@ impl SourceStyles {
             style_closure(source, id, &mut closure, 0)?;
         }
         merge_paragraph(&mut merged, &scoped_children(original, &BTreeMap::new()));
-        if merged.0.iter().any(|property| property.is_word("numPr")) { return Err("Story paragraph defaults use original numbering IDs whose resource mapping remains unimplemented.".into()); }
         if let Some(id) = id {
             let mut reference = Element::word("pStyle"); reference.set_word_attribute("val", id);
             merged.0.retain(|property| !property.is_word("pStyle")); merged.0.insert(0, reference);
@@ -182,8 +175,8 @@ impl SourceStyles {
         result.content = merged.0.into_iter().map(Content::Element).collect();
         attach_namespaces(&mut result, &source.namespaces);
         canonicalize_word(&mut result);
-        self.import_styles(&closure, theme_requirements(&result))?;
-        self.remap_property_references(&mut result);
+        self.import_dependencies(&closure, theme_requirements(&result), Some(&result))?;
+        self.remap_property_references(&mut result)?;
         Ok(result)
     }
 

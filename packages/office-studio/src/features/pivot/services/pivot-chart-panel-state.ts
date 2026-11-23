@@ -1,6 +1,7 @@
 import type { ChartModel, ChartType } from '../../../domain/model.ts'
 import type { ChartConfig } from '../../charts/chart-engine.ts'
-import { chartConfigFromDraft, createChartSettingsDraft, parseChartSourceRange, type ChartSettingsDraft } from '../../charts/chart-settings-draft.ts'
+import { chartColumnName, chartConfigFromDraft, createChartSettingsDraft, type ChartSettingsDraft } from '../../charts/chart-settings-draft.ts'
+import { chartCellPosition, chartPositionCell, type ChartPlacementGeometry } from '../../charts/chart-placement'
 
 export interface PivotChartDraft {
   chartId: string
@@ -14,11 +15,12 @@ export interface PivotChartDraft {
   initialPositionText: string
 }
 
-export function createPivotChartDraft(chart?: ChartModel, pivotTableId = ''): PivotChartDraft {
-  const position = chart ? positionToAddress(chart.position.x, chart.position.y) : 'F2'
+export function createPivotChartDraft(chart?: ChartModel, pivotTableId = '', geometry?: ChartPlacementGeometry): PivotChartDraft {
+  const position = chart ? chartPositionCell(chart.position, geometry) : geometry
+    ? `${chartColumnName(Math.min(5, geometry.columns.count - 1))}${Math.min(1, geometry.rows.count - 1) + 1}` : 'F2'
   const settings = createChartSettingsDraft(chart ?? {
     type: 'bar', source: { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 }, orientation: 'columns' },
-    pivotTableId, position: addressToPosition(position), size: { width: 480, height: 300 },
+    pivotTableId, position: chartCellPosition(position, geometry), size: { width: 480, height: 300 },
   })
   return {
     chartId: chart?.id ?? '',
@@ -37,32 +39,17 @@ export function createPivotChartDraft(chart?: ChartModel, pivotTableId = ''): Pi
   }
 }
 
-export function pivotChartConfig(draft: PivotChartDraft): ChartConfig & { pivotTableId: string } {
+export function pivotChartConfig(draft: PivotChartDraft, geometry?: ChartPlacementGeometry): ChartConfig & { pivotTableId: string } {
   if (!draft.pivotTableId.trim()) throw new TypeError('Select a pivot table for this chart')
   const config = chartConfigFromDraft(draft.settings)
   // The address is a placement shortcut. Leaving it unchanged preserves the
   // precise dragged position, source, size and full authored chart settings.
   return { ...config, pivotTableId: draft.pivotTableId,
-    position: draft.position.trim().toUpperCase() === draft.initialPositionText ? { ...config.position } : addressToPosition(draft.position) }
+    position: draft.position.trim().toUpperCase() === draft.initialPositionText ? { ...config.position } : chartCellPosition(draft.position, geometry) }
 }
 
-export function pivotChartPatch(draft: PivotChartDraft): Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>> {
-  return pivotChartConfig(draft)
+export function pivotChartPatch(draft: PivotChartDraft, geometry?: ChartPlacementGeometry): Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>> {
+  return pivotChartConfig(draft, geometry)
 }
 
-export function addressToPosition(address: string): { x: number; y: number } {
-  const range = parseChartSourceRange(address)
-  if (!range || address.includes(':')) throw new TypeError('Enter a valid cell address such as F2')
-  return { x: range.startCol * 96, y: range.startRow * 24 }
-}
-
-function positionToAddress(x: number, y: number): string {
-  let column = Math.floor(Math.max(0, x) / 96) + 1
-  let name = ''
-  while (column > 0) {
-    const remainder = (column - 1) % 26
-    name = String.fromCharCode(65 + remainder) + name
-    column = Math.floor((column - 1) / 26)
-  }
-  return `${name}${Math.floor(Math.max(0, y) / 24) + 1}`
-}
+export function addressToPosition(address: string, geometry?: ChartPlacementGeometry): { x: number; y: number } { return chartCellPosition(address, geometry) }

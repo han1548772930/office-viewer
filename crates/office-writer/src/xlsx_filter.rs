@@ -34,17 +34,17 @@ pub(super) fn snapshot_value(sheet: &SheetInput) -> Result<Value, ExportError> {
     Ok(serde_json::json!({ "range": { "startRow": start_row, "startCol": start_col, "endRow": end_row, "endCol": end_col }, "columns": columns, "filteredRows": filtered_rows }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AutoFilterInput {
     pub(super) range: RangeInput,
     #[serde(default)]
     pub(super) columns: BTreeMap<u32, Criterion>,
     #[serde(default)]
-    filtered_rows: Vec<u32>,
+    pub(super) filtered_rows: Vec<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(super) enum Criterion {
     Values {

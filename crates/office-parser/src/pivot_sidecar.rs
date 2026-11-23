@@ -5,22 +5,14 @@ use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use serde_json::{Value, json};
 use zip::ZipArchive;
-use crate::model::ChartAxisPayload;
+use crate::model::{AnchorCellPayload, ChartDrawingPayload, ChartPayload};
 
 #[derive(Debug, Default)]
 pub(crate) struct PivotSidecar {
     pub(crate) pivot_tables: Vec<Value>,
     pub(crate) chart_pivot_ids: HashMap<(String, usize), String>,
-    pub(crate) chart_settings: HashMap<(String, usize), ChartSettings>,
+    pub(crate) native_charts: HashMap<String, Vec<ChartPayload>>,
     pub(crate) warnings: Vec<String>,
-}
-
-#[derive(Debug)]
-pub(crate) struct ChartSettings {
-    pub(crate) kind: Option<String>,
-    pub(crate) x_axis: ChartAxisPayload,
-    pub(crate) y_axis: ChartAxisPayload,
-    pub(crate) legend_position: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -67,6 +59,15 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
     let mut sidecar = PivotSidecar::default();
     let mut table_names = HashMap::<String, String>::new();
     let mut pending_chart_links = Vec::<(String, usize, String)>::new();
+    let theme = relation_map.values().find(|(kind, _)| kind == "theme").map(|(_, path)| path.clone());
+    let mut theme = theme.as_deref().map(|path| parse_part(&mut archive, path)).transpose()?.flatten()
+        .map(|theme| theme.descendants("clrScheme").into_iter().flat_map(|scheme| scheme.children.iter()).filter_map(|color| {
+            let value = color.children.iter().find_map(|node| node.attrs.get("val").filter(|value| value.len() == 6).or_else(|| node.attrs.get("lastClr")))?;
+            Some((color.name.clone(), value.clone()))
+        }).collect::<HashMap<_, _>>()).unwrap_or_default();
+    for (alias, key) in [("tx1", "dk1"), ("bg1", "lt1"), ("tx2", "dk2"), ("bg2", "lt2")] {
+        if let Some(value) = theme.get(key).cloned() { theme.insert(alias.into(), value); }
+    }
     let sheets = workbook
         .descendants("sheet")
         .into_iter()
@@ -106,7 +107,7 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
                     .filter(|rel| !rel.external)
                     .filter_map(|rel| resolve(drawing_path, &rel.target).map(|path| (rel.id, path)))
                     .collect::<HashMap<_, _>>();
-                for (index, chart_link) in drawing_xml.descendants("chart").into_iter().enumerate()
+                for (index, (anchor, chart_link)) in drawing_xml.children.iter().flat_map(|anchor| anchor.descendants("chart").into_iter().map(move |link| (anchor, link))).enumerate()
                 {
                     let Some(rel_id) = chart_link.attrs.get("id") else {
                         continue;
@@ -114,55 +115,27 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
                     let Some(chart_path) = drawing_rel_map.get(rel_id) else {
                         continue;
                     };
-                    let Some(chart_xml) = parse_part(&mut archive, chart_path)? else {
+                    let Some(chart_source) = read_chart_part(&mut archive, chart_path)? else {
                         continue;
                     };
-                    let axis = |positions: &[&str]| {
-                        chart_xml.descendants("valAx").into_iter().find(|node| {
-                            node.descendants("axPos").into_iter().any(|position| position.attrs.get("val").is_some_and(|value| positions.contains(&value.as_str())))
-                        }).map(|node| {
-                            let log_base = node.descendants("logBase").into_iter().find_map(|base| base.attrs.get("val").and_then(|value| value.parse::<f64>().ok())).filter(|value| value.is_finite() && (2.0..=1000.0).contains(value));
-                            ChartAxisPayload { scale_type: if log_base.is_some() { "log" } else { "linear" }.into(), log_base }
-                        }).unwrap_or_else(|| ChartAxisPayload { scale_type: "linear".into(), log_base: None })
+                    let (mut payload, pivot_name) = match crate::native_chart::read(index, &chart_source, &theme) {
+                        Ok(native) => (native.payload, native.pivot_source_name),
+                        Err(reason) => {
+                            sidecar.warnings.push(format!("Chart {chart_path}: {reason}"));
+                            (unsupported_chart(index, chart_source, reason), None)
+                        }
                     };
-                    let legend_position = chart_xml
-                        .descendants("legend")
-                        .into_iter()
-                        .next()
-                        .and_then(|legend| legend.children.iter().find(|child| child.name == "legendPos"))
-                        .and_then(|position| match position.attrs.get("val")?.as_str() {
-                            "t" => Some("top"),
-                            "r" => Some("right"),
-                            "b" => Some("bottom"),
-                            "l" => Some("left"),
-                            _ => None,
-                        })
-                        .map(str::to_owned);
-                    sidecar.chart_settings.insert(
-                        (sheet_name.clone(), index),
-                        ChartSettings {
-                            kind: chart_kind(&chart_xml),
-                            x_axis: axis(&["b", "t"]),
-                            y_axis: axis(&["l", "r"]),
-                            legend_position,
-                        },
-                    );
-                    let Some(source_name) = chart_xml
-                        .descendants("name")
-                        .into_iter()
-                        .find(|node| node.text.contains('!'))
-                        .map(|node| node.text.clone())
-                    else {
-                        continue;
-                    };
-                    let table_name = source_name
-                        .rsplit('!')
-                        .next()
-                        .unwrap_or_default()
-                        .trim_start_matches('\'')
-                        .trim_end_matches('\'')
-                        .to_owned();
-                    pending_chart_links.push((sheet_name.clone(), index, table_name));
+                    let drawing = chart_anchor_payload(index, anchor);
+                    payload.from = drawing.from_cell.clone().unwrap_or_default();
+                    payload.to = drawing.to_cell.clone().unwrap_or_default();
+                    payload.drawing = Some(drawing);
+                    for reason in &payload.unsupported_reasons { sidecar.warnings.push(format!("Chart {chart_path}: {reason}")); }
+                    sidecar.native_charts.entry(sheet_name.clone()).or_default().push(payload);
+                    if let Some(source_name) = pivot_name {
+                        let table_name = source_name.rsplit('!').next().unwrap_or_default()
+                            .trim_start_matches('\'').trim_end_matches('\'').to_owned();
+                        pending_chart_links.push((sheet_name.clone(), index, table_name));
+                    }
                 }
             }
         }
@@ -246,22 +219,36 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
     Ok(sidecar)
 }
 
-fn chart_kind(chart: &Node) -> Option<String> {
-    let plots = ["barChart", "lineChart", "areaChart", "pieChart", "doughnutChart", "scatterChart", "radarChart"]
-        .into_iter().flat_map(|kind| chart.descendants(kind)).collect::<Vec<_>>();
-    if plots.len() != 1 { return None; }
-    let plot = plots[0];
-    Some(match plot.name.as_str() {
-        "barChart" if plot.children.iter().any(|child| child.name == "grouping" && child.attrs.get("val").is_some_and(|value| value == "stacked")) => "stacked-column",
-        "barChart" => "bar",
-        "lineChart" => "line",
-        "areaChart" => "area",
-        "pieChart" => "pie",
-        "doughnutChart" => "doughnut",
-        "scatterChart" => "scatter",
-        "radarChart" => "radar",
-        _ => return None,
-    }.to_owned())
+fn read_chart_part(archive: &mut ZipArchive<std::io::Cursor<&[u8]>>, path: &str) -> Result<Option<String>, String> {
+    let Ok(mut file) = archive.by_name(path) else { return Ok(None); };
+    if file.size() > office_io_common::chart_xml::MAX_XML_BYTES as u64 { return Err(format!("CHART_XML_RESOURCE_LIMIT: {path} exceeds its native chart part budget")); }
+    let mut source = String::new();
+    file.read_to_string(&mut source).map_err(|error| error.to_string())?;
+    Ok(Some(source))
+}
+
+fn unsupported_chart(index: usize, source: String, reason: String) -> ChartPayload {
+    ChartPayload { index, kind: "office".into(), title: None, subtitle: None, series: Vec::new(), legend: false, legend_position: None,
+        legend_font: None, options: None, authored: None, unsupported_reasons: vec![reason], office_source: Some(source), data_labels: false,
+        x_axis_title: None, y_axis_title: None, x_axis: None, y_axis: None, from: AnchorCellPayload::default(), to: AnchorCellPayload::default(), drawing: None, pivot_table_id: None }
+}
+
+fn chart_anchor_payload(index: usize, anchor: &Node) -> ChartDrawingPayload {
+    let integer = |parent: &Node, name: &str| parent.children.iter().find(|node| node.name == name).and_then(|node| node.text.trim().parse::<i64>().ok());
+    let cell = |name: &str| anchor.children.iter().find(|node| node.name == name).and_then(|node| Some(AnchorCellPayload { row: u32::try_from(integer(node, "row")?).ok()?, col: u16::try_from(integer(node, "col")?).ok()? }));
+    let offset = |name: &str| anchor.children.iter().find(|node| node.name == name).map(|node| [integer(node, "colOff").unwrap_or(0), integer(node, "rowOff").unwrap_or(0)]);
+    let absolute = anchor.children.iter().find(|node| node.name == "pos");
+    let size = anchor.children.iter().find(|node| node.name == "ext").or_else(|| anchor.descendants("graphicFrame").into_iter().flat_map(|frame| frame.descendants("ext")).find(|node| node.attrs.get("cx").is_some_and(|value| value != "0")));
+    let names = anchor.descendants("cNvPr").into_iter().next();
+    ChartDrawingPayload { object_index: index, from_cell: cell("from"), to_cell: cell("to"),
+        from_offset_emu: absolute.map(|position| [position.attrs.get("x").and_then(|value| value.parse().ok()).unwrap_or(0), position.attrs.get("y").and_then(|value| value.parse().ok()).unwrap_or(0)]).or_else(|| offset("from")),
+        to_offset_emu: offset("to"), absolute_size_emu: size.and_then(|size| Some([size.attrs.get("cx")?.parse().ok()?, size.attrs.get("cy")?.parse().ok()?])),
+        name: names.and_then(|node| node.attrs.get("name")).cloned(), alt_text: names.and_then(|node| node.attrs.get("descr")).cloned(),
+        behavior: match anchor.name.as_str() {
+            "absoluteAnchor" => "absolute", "oneCellAnchor" => "moveonly",
+            "twoCellAnchor" => match anchor.attrs.get("editAs").map(String::as_str) { Some("absolute") => "absolute", Some("oneCell") => "moveonly", _ => "moveandsize" },
+            _ => "moveandsize",
+        }.into(), ..Default::default() }
 }
 
 fn canonical_fields(table: &Node, cache: &Node, source_start_col: u32) -> Vec<Value> {
@@ -369,7 +356,7 @@ fn parse_part(
 
 fn parse_xml(source: &str) -> Result<Node, String> {
     let mut reader = Reader::from_str(source);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut stack = vec![Node::default()];
     loop {
         match reader.read_event() {
@@ -392,6 +379,12 @@ fn parse_xml(source: &str) -> Result<Node, String> {
                 if let Some(node) = stack.last_mut() {
                     node.text.push_str(&decoded);
                 }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                let decoded = reference.decode().map_err(|error| error.to_string())?;
+                let resolved = reference.resolve_char_ref().map_err(|error| error.to_string())?.map(|value| value.to_string())
+                    .or_else(|| quick_xml::escape::resolve_xml_entity(&decoded).map(str::to_owned)).ok_or_else(|| format!("unknown Office XML entity &{decoded};"))?;
+                if let Some(node) = stack.last_mut() { node.text.push_str(&resolved); }
             }
             Ok(Event::End(_)) => {
                 if stack.len() > 1 {

@@ -1,13 +1,23 @@
 import { OfficeComputeClient } from '../../packages/office-studio/src/compute/client.ts'
-import type { ComputeProgress, ComputeTask } from '../../packages/office-studio/src/compute/protocol.ts'
+import type { ComputeMetrics, ComputeProgress, ComputeTask, NumericStatistics } from '../../packages/office-studio/src/compute/protocol.ts'
+import type { ChartStatisticsSegment, ChartStatisticsTask } from '../../packages/office-studio/src/compute/chart-protocol.ts'
+import { ChartStatisticsService } from '../../packages/office-studio/src/features/charts/services/chart-statistics-service.ts'
+import { createChart } from '../../packages/office-studio/src/features/charts/chart-engine.ts'
+import { createBlankWorkbook, createCell } from '../../packages/office-studio/src/domain/model.ts'
 
-type RuntimeCheck = { indices?: number[]; engineVersion?: string; cancelled?: string; stale?: string; disposed?: string }
+type RuntimeCheck = { indices?: number[]; recoveredIndices?: number[]; engineVersion?: string; cancelled?: string; stale?: string; disposed?: string; recoveredChart?: number[] }
+type ChartRuntimeCheck = { values: number[]; indices: number[]; segments: ChartStatisticsSegment[]; metrics: ComputeMetrics; callerDetached: boolean }
+type ChartServiceCheck = { categories: string[]; values: Array<number | null>; counts: number[]; updatedCounts: number[]; cached: boolean; invalidated: boolean; metrics?: ComputeMetrics }
 
 declare global {
   interface Window {
     computeRuntime: {
       runSortAndFilter(): Promise<{ sort: RuntimeCheck; filter: RuntimeCheck }>
-    runAggregate(): Promise<{ statistics: Record<string, number | boolean | null>; engineVersion: string }>
+      runAggregate(): Promise<{ statistics: NumericStatistics; engineVersion: string }>
+      runChartStatistics(): Promise<ChartRuntimeCheck>
+      runChartService(): Promise<ChartServiceCheck>
+      runChartCancellation(): Promise<RuntimeCheck>
+      runChartStaleRevision(): Promise<RuntimeCheck>
       runCancellation(): Promise<RuntimeCheck>
       runStaleRevision(): Promise<RuntimeCheck>
       runDispose(): Promise<RuntimeCheck>
@@ -68,6 +78,85 @@ window.computeRuntime = {
     } finally {
       client.dispose()
     }
+  },
+
+  async runChartStatistics() {
+    const client = new OfficeComputeClient(), task = smallChartTask()
+    try {
+      const job = client.submit(task, { documentId: 'chart-binding-book', modelRevision: 11, ownership: 'transfer', timeoutMs: 10_000 })
+      const callerDetached = [task.values, task.states, task.categoryIds].every(view => view.byteLength === 0)
+      const result = await job.promise
+      if (result.output.kind !== 'chartStatistics') throw new Error(`Unexpected chart output: ${result.output.kind}`)
+      // Verify transferred result data remains readable after the Worker owner
+      // and client have been released, as it does in the real chart host.
+      client.dispose()
+      return { values: Array.from(result.output.values), indices: Array.from(result.output.indices),
+        segments: result.output.segments, metrics: result.metrics, callerDetached }
+    } finally { client.dispose() }
+  },
+
+  async runChartService() {
+    const client = new OfficeComputeClient(), service = new ChartStatisticsService(client)
+    const workbook = { ...createBlankWorkbook(), id: 'chart-source-book' }, sheet = workbook.sheets[0]!
+    sheet.cells = { '0:0': createCell('Label'), '0:1': createCell('Value') }
+    for (const [index, value] of [4, 7, 9].entries()) {
+      sheet.cells[`${index + 1}:0`] = createCell(['A', 'B', 'C'][index]!)
+      sheet.cells[`${index + 1}:1`] = createCell(value)
+    }
+    const chart = createChart(workbook, sheet.id, { type: 'histogram',
+      source: { orientation: 'columns', range: { startRow: 0, startCol: 0, endRow: 3, endCol: 1 } },
+      position: { x: 20, y: 20 }, size: { width: 360, height: 240 }, categoryField: 0, valueFields: [1],
+      options: { histogram: { binning: { mode: 'count', count: 2 } } },
+    }, 'runtime-histogram')
+    workbook.charts = [chart]
+    service.setDocumentRevision(workbook.id, 1)
+    const context = { documentId: workbook.id, modelRevision: 1, priority: 'interactive' as const, timeoutMs: 10_000 }
+    try {
+      const first = await service.request(workbook, chart, context).promise
+      const cached = service.getCached(chart, context) === first
+      sheet.cells['3:1'] = createCell(14)
+      service.setDocumentRevision(workbook.id, 2)
+      const nextContext = { ...context, modelRevision: 2 }
+      const invalidated = service.getCached(chart, nextContext) === undefined
+      const updated = await service.request(workbook, chart, nextContext).promise
+      return { categories: first.statistics.preparedData?.categories ?? [], values: first.statistics.preparedData?.series[0]?.values ?? [],
+        counts: first.statistics.histogram?.bins.map(bin => bin.count) ?? [], updatedCounts: updated.statistics.histogram?.bins.map(bin => bin.count) ?? [],
+        cached, invalidated, metrics: first.metrics }
+    } finally { service.dispose(); client.dispose() }
+  },
+
+  async runChartCancellation() {
+    const client = new OfficeComputeClient()
+    let resolveProgress!: (progress: ComputeProgress) => void
+    const progress = new Promise<ComputeProgress>(resolve => { resolveProgress = resolve })
+    const job = client.submit(largeChartTask(800_000), { documentId: 'cancel-chart-book', modelRevision: 3,
+      ownership: 'transfer', timeoutMs: 20_000, onProgress: value => resolveProgress(value) })
+    try {
+      await Promise.race([progress, job.promise.then(() => { throw new Error('Chart completed before cancellation checkpoint') })])
+      job.cancel()
+      const cancelled = await job.promise.then(() => { throw new Error('Cancelled chart returned a result') }, error => errorCode(error))
+      const recovered = await client.submit(smallChartTask(), { documentId: 'cancel-chart-book', modelRevision: 3,
+        ownership: 'transfer', timeoutMs: 10_000 }).promise
+      if (recovered.output.kind !== 'chartStatistics') throw new Error(`Unexpected chart recovery: ${recovered.output.kind}`)
+      return { cancelled, recoveredChart: Array.from(recovered.output.values) }
+    } finally { client.dispose() }
+  },
+
+  async runChartStaleRevision() {
+    const client = new OfficeComputeClient()
+    let resolveProgress!: (progress: ComputeProgress) => void
+    const progress = new Promise<ComputeProgress>(resolve => { resolveProgress = resolve })
+    const job = client.submit(largeChartTask(800_000), { documentId: 'stale-chart-book', modelRevision: 5,
+      ownership: 'transfer', timeoutMs: 20_000, onProgress: value => resolveProgress(value) })
+    try {
+      await Promise.race([progress, job.promise.then(() => { throw new Error('Chart completed before revision checkpoint') })])
+      client.setDocumentRevision('stale-chart-book', 6)
+      const stale = await job.promise.then(() => { throw new Error('Stale chart returned a result') }, error => errorCode(error))
+      const recovered = await client.submit(smallChartTask(), { documentId: 'stale-chart-book', modelRevision: 6,
+        ownership: 'transfer', timeoutMs: 10_000 }).promise
+      if (recovered.output.kind !== 'chartStatistics') throw new Error(`Unexpected current chart: ${recovered.output.kind}`)
+      return { stale, recoveredChart: Array.from(recovered.output.values) }
+    } finally { client.dispose() }
   },
 
   async runCancellation() {
@@ -150,6 +239,24 @@ function largeSortTask(rowCount: number): ComputeTask {
   const values = new Float64Array(rowCount)
   for (let row = 0; row < rowCount; row += 1) values[row] = (rowCount - row) % 8191
   return { kind: 'sort', values, states: new Uint8Array(rowCount).fill(1), rowCount, directions: new Uint8Array([0]), nullsLast: true }
+}
+
+function smallChartTask(): ChartStatisticsTask {
+  return { kind: 'chartStatistics', values: new Float64Array([4, 7, 9]), states: new Uint8Array([1, 1, 1]),
+    categoryIds: new Uint32Array([0, 1, 2]), params: { rowCount: 3, columnCount: 1, categoryCount: 3,
+      series: [{ field: 7, seriesPosition: 0, column: 0 }], jobs: [
+        { kind: 'histogram', seriesIndex: 0, slot: 2, binning: { mode: 'count', count: 2 } },
+        { kind: 'boxplot', seriesIndex: 0, slot: 5, quartileMethod: 'inclusive', whiskerMultiplier: 1.5 },
+      ] } }
+}
+
+function largeChartTask(rowCount: number): ChartStatisticsTask {
+  const values = new Float64Array(rowCount)
+  for (let row = 0; row < rowCount; row++) values[row] = (rowCount - row) % 8191
+  return { kind: 'chartStatistics', values, states: new Uint8Array(rowCount).fill(1), categoryIds: new Uint32Array(rowCount),
+    params: { rowCount, columnCount: 1, categoryCount: 1, series: [{ field: 7, seriesPosition: 0, column: 0 }],
+      jobs: Array.from({ length: 8 }, (_, slot) => ({ kind: 'histogram' as const, seriesIndex: 0, slot,
+        binning: { mode: 'count' as const, count: 64 } })) } }
 }
 
 function errorCode(error: unknown): string {

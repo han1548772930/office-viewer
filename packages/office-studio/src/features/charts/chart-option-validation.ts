@@ -1,5 +1,6 @@
-import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions } from '../../domain/model'
+import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions, ChartSeriesFillPattern } from '../../domain/model'
 import { chartColorChannels } from './chart-color'
+import { isChartFillPatternPreset } from './chart-fill-pattern'
 
 export function validateChartPalette(palette: readonly string[] | undefined): void {
   if (palette === undefined) return
@@ -14,25 +15,49 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   visitValues(options)
   enumeration(options.invalidValueStrategy, ['zero', 'break', 'link'], '空值处理')
   boolean(options.plotVisibleOnly, '仅绘制可见单元格')
-  for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'rightYAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) optionalObject(options[key], `图表.${key}`)
+  for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'axisPointer', 'rightYAxis', 'depthAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) optionalObject(options[key], `图表.${key}`)
   if (options.appearance) {
     color(options.appearance.background, '图表背景'); line(options.appearance.border, '图表边框'); font(options.appearance.font, '图表字体')
   }
   font(options.titleStyle, '标题字体'); font(options.subtitleStyle, '副标题字体')
+  if (options.axisPointer) {
+    color(options.axisPointer.indicatorLineColor, '轴指示线颜色'); color(options.axisPointer.indicatorLabelColor, '轴指示标签背景')
+    color(options.axisPointer.indicatorLabelTextColor, '轴指示标签文字'); enumeration(options.axisPointer.indicatorLineType, ['solid', 'dashed', 'dotted'], '轴指示线型')
+  }
   series(options.allSeriesStyle, '所有系列样式'); axis(options.rightYAxis, '右侧数值轴')
+  if (options.depthAxis) {
+    for (const key of ['scaleType', 'logBase', 'min', 'max', 'format']) if (key in options.depthAxis) throw new TypeError(`分类深度轴不接受 ${key}。`)
+    axis({ scaleType: 'linear', ...options.depthAxis }, '分类深度轴')
+  }
   if (options.series !== undefined) {
     plain(options.series, '系列样式')
     for (const [key, style] of Object.entries(options.series)) { recordIndex(key, '系列字段'); series(style, `系列 ${key}`) }
   }
+  if (options.namedSeries !== undefined) {
+    optionalArray(options.namedSeries, '名称系列样式')
+    const names = new Set<string>()
+    for (let index = 0; index < options.namedSeries.length; index++) {
+      if (!Object.hasOwn(options.namedSeries, index)) throw new TypeError('名称系列样式不接受稀疏数组。')
+      const entry = options.namedSeries[index]!
+      plain(entry, `名称系列 ${index + 1}`)
+      if (typeof entry.name !== 'string') throw new TypeError('名称系列选择器须为文本。')
+      if (names.has(entry.name)) throw new RangeError(`名称系列 ${JSON.stringify(entry.name)} 不能重复配置。`)
+      names.add(entry.name)
+      plain(entry.style, `名称系列 ${index + 1} 样式`)
+      series(entry.style, `名称系列 ${index + 1}`)
+    }
+  }
 
   const mapping = options.mapping
   if (mapping) {
+    boolean(mapping.useDateAxis, '使用日期轴')
     indexes(mapping.categoryIndexes, '分类字段', true); indexes(mapping.hierarchyIndexes, '层级字段', true)
     for (const key of ['bubble', 'edge', 'candlestick', 'gauge'] as const) {
       const role = mapping[key]
       optionalObject(role, `${key} 字段映射`)
       if (role) for (const [name, value] of Object.entries(role)) if (name.endsWith('Index')) optionalInteger(value, 0, 1_048_575, `${key}.${name}`)
     }
+    if (mapping.bubble) { integer(mapping.bubble.xIndex, 0, 1_048_575, 'bubble.xIndex'); integer(mapping.bubble.yIndex, 0, 1_048_575, 'bubble.yIndex') }
   }
   const threeD = options.threeD
   if (threeD) {
@@ -66,6 +91,10 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
     }
   }
   enumeration(options.radar?.shape, ['polygon', 'circle'], '雷达网格'); boolean(options.radar?.fill, '雷达区域填充')
+  optionalObject(options.radar?.axisLabel, '雷达数值刻度标签')
+  if (options.radar?.axisLabel) {
+    font(options.radar.axisLabel, '雷达数值刻度标签'); boolean(options.radar.axisLabel.visible, '雷达数值刻度标签显隐'); string(options.radar.axisLabel.format, '雷达刻度数字格式')
+  }
   optionalNumber(options.bubble?.scale, Number.MIN_VALUE, 10_000, '气泡比例'); enumeration(options.bubble?.sizeRepresents, ['area', 'width'], '气泡大小含义')
   optionalNumber(options.funnel?.gap, 0, 100, '漏斗段间距'); boolean(options.funnel?.useAbsoluteValue, '漏斗绝对值'); enumeration(options.funnel?.sort, ['ascending', 'descending', 'none'], '漏斗排序')
   const relation = options.relation
@@ -109,32 +138,40 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   label(options.sunburst?.label, '旭日图标签'); optionalObject(options.sunburst?.centerLabel, '旭日图中心标签'); boolean(options.sunburst?.centerLabel?.visible, '旭日图中心标签显隐'); font(options.sunburst?.centerLabel?.font, '旭日图中心字体')
   const gauge = options.gauge
   if (gauge) {
-    enumeration(gauge.mode, ['pointer', 'progress'], '仪表模式'); optionalNumber(gauge.min, -Number.MAX_VALUE, Number.MAX_VALUE, '仪表最小刻度'); optionalNumber(gauge.max, -Number.MAX_VALUE, Number.MAX_VALUE, '仪表最大刻度')
+    enumeration(gauge.mode, ['modern', 'classic', 'pointer', 'progress'], '仪表模式'); optionalNumber(gauge.min, -Number.MAX_VALUE, Number.MAX_VALUE, '仪表最小刻度'); optionalNumber(gauge.max, -Number.MAX_VALUE, Number.MAX_VALUE, '仪表最大刻度')
     const min = gauge.min ?? 0, max = gauge.max ?? 100
-    if (gauge.min !== undefined && gauge.max !== undefined && min >= max) throw new RangeError('仪表最大刻度须大于最小刻度。')
+    if (min >= max) throw new RangeError('仪表最大刻度须大于最小刻度，包括未设置端使用的默认值。')
     optionalNumber(gauge.startAngle, -360, 360, '仪表起始角'); optionalNumber(gauge.endAngle, -360, 360, '仪表终止角'); optionalInteger(gauge.splitNumber, 1, 100, '仪表主刻度分段数')
     optionalArray(gauge.ranges, '仪表颜色区间')
     let previousEnd = -Infinity
-    gauge.ranges?.forEach(range => {
-      plain(range, '仪表颜色区间'); number(range.from, gauge.min ?? -Number.MAX_VALUE, gauge.max ?? Number.MAX_VALUE, '仪表区间起点'); number(range.to, gauge.min ?? -Number.MAX_VALUE, gauge.max ?? Number.MAX_VALUE, '仪表区间终点'); color(range.color, '仪表区间颜色', true)
+    for (const range of gauge.ranges ?? []) {
+      plain(range, '仪表颜色区间'); number(range.from, min, max, '仪表区间起点'); number(range.to, min, max, '仪表区间终点'); color(range.color, '仪表区间颜色', true)
       if (range.from >= range.to || range.from < previousEnd) throw new RangeError('仪表颜色区间须按起点升序排列，且不能重叠或为空。')
       previousEnd = range.to
-    })
-    optionalObject(gauge.pointer, '仪表指针'); boolean(gauge.pointer?.visible, '仪表指针显隐'); optionalNumber(gauge.pointer?.length, 0, 1, '指针长度'); optionalNumber(gauge.pointer?.width, 0, 100, '指针宽度'); color(gauge.pointer?.color, '指针颜色')
+    }
+    optionalObject(gauge.axisLine, '仪表轴线'); boolean(gauge.axisLine?.visible, '仪表轴线显隐'); optionalNumber(gauge.axisLine?.width, 0, 100, '仪表轴线宽度'); color(gauge.axisLine?.color, '仪表轴线颜色')
+    optionalObject(gauge.axisTick, '仪表次刻度'); boolean(gauge.axisTick?.visible, '仪表次刻度显隐'); optionalInteger(gauge.axisTick?.splitNumber, 1, 100, '仪表每段次刻度数')
+    optionalNumber(gauge.axisTick?.length, 0, 100, '仪表次刻度长度'); optionalNumber(gauge.axisTick?.width, 0, 100, '仪表次刻度线宽'); color(gauge.axisTick?.color, '仪表次刻度颜色')
+    optionalObject(gauge.splitLine, '仪表主刻度'); boolean(gauge.splitLine?.visible, '仪表主刻度显隐'); optionalNumber(gauge.splitLine?.length, 0, 100, '仪表主刻度长度'); optionalNumber(gauge.splitLine?.width, 0, 100, '仪表主刻度线宽'); color(gauge.splitLine?.color, '仪表主刻度颜色')
+    font(gauge.axisLabel, '仪表刻度标签'); boolean(gauge.axisLabel?.visible, '仪表刻度标签显隐'); optionalNumber(gauge.axisLabel?.distance, -100, 100, '仪表刻度标签距离'); string(gauge.axisLabel?.format, '仪表刻度数字格式')
+    optionalObject(gauge.pointer, '仪表指针'); boolean(gauge.pointer?.visible, '仪表指针显隐'); optionalNumber(gauge.pointer?.length, 0, 1, '指针长度'); optionalNumber(gauge.pointer?.width, 0, 100, '指针宽度'); color(gauge.pointer?.color, '指针颜色'); enumeration(gauge.pointer?.shape, ['needle', 'slim', 'arrow'], '仪表指针形状')
+    optionalObject(gauge.anchor, '仪表中心锚点'); boolean(gauge.anchor?.visible, '仪表中心锚点显隐'); optionalNumber(gauge.anchor?.size, 0, 256, '仪表中心锚点大小'); color(gauge.anchor?.color, '仪表中心锚点颜色'); color(gauge.anchor?.borderColor, '仪表中心锚点边框颜色'); optionalNumber(gauge.anchor?.borderWidth, 0, 100, '仪表中心锚点边框宽度')
     optionalObject(gauge.progress, '仪表进度弧'); boolean(gauge.progress?.visible, '仪表进度弧显隐'); boolean(gauge.progress?.rounded, '进度弧圆端'); optionalNumber(gauge.progress?.width, 0, 100, '进度弧宽度'); color(gauge.progress?.color, '进度弧颜色'); label(gauge.label, '仪表标签')
+    font(gauge.title, '仪表标题'); boolean(gauge.title?.visible, '仪表标题显隐'); optionalNumber(gauge.title?.offsetY, 0, 1, '仪表标题纵向比例')
+    font(gauge.detail, '仪表数值文本'); boolean(gauge.detail?.visible, '仪表数值文本显隐'); optionalNumber(gauge.detail?.offsetY, 0, 1, '仪表数值文本纵向比例'); string(gauge.detail?.format, '仪表数值数字格式')
   }
   const chord = options.chord
   if (chord) {
     optionalNumber(chord.startAngle, -360, 360, '和弦图起始角'); boolean(chord.clockwise, '和弦图方向'); optionalNumber(chord.padAngle, 0, 45, '和弦图节点间距')
     optionalNumber(chord.innerRadiusRatio, 0.05, 0.95, '和弦图内半径'); optionalNumber(chord.outerRadiusRatio, 0.05, 1, '和弦图外半径'); optionalNumber(chord.ribbonOpacity, 0, 1, '和弦带不透明度')
-    if (chord.innerRadiusRatio !== undefined && chord.outerRadiusRatio !== undefined && chord.innerRadiusRatio >= chord.outerRadiusRatio) throw new RangeError('和弦图内半径须小于外半径。')
+    if ((chord.innerRadiusRatio ?? 0.66) >= (chord.outerRadiusRatio ?? 0.73)) throw new RangeError('和弦图内半径须小于外半径，包括未设置端使用的默认值。')
     label(chord.label, '和弦图标签')
   }
   const wordCloud = options.wordCloud
   if (wordCloud) {
     enumeration(wordCloud.shape, ['cloud', 'rect', 'circle', 'cardioid', 'heart', 'diamond', 'triangle-forward', 'triangle', 'pentagon', 'star'], '词云形状'); boolean(wordCloud.repeat, '词云重复填充')
     optionalNumber(wordCloud.minFontSize, 1, 256, '词云最小字号'); optionalNumber(wordCloud.maxFontSize, 1, 256, '词云最大字号'); optionalNumber(wordCloud.rotation, -90, 90, '词云旋转角')
-    if (wordCloud.minFontSize !== undefined && wordCloud.maxFontSize !== undefined && wordCloud.minFontSize > wordCloud.maxFontSize) throw new RangeError('词云最小字号不能大于最大字号。')
+    if ((wordCloud.minFontSize ?? 10) > (wordCloud.maxFontSize ?? 54)) throw new RangeError('词云最小字号不能大于最大字号，包括未设置端使用的默认值。')
   }
   boolean(options.aggregation?.aggregate, '分类聚合'); optionalObject(options.aggregation?.topN, '前 N 项')
   if (options.aggregation?.topN) {
@@ -193,6 +230,7 @@ function axis(value: ChartAxisOptions | undefined, name: string): void {
   optionalObject(value, name)
   if (!value) return
   string(value.title, `${name}标题`); string(value.format, `${name}数字格式`); enumeration(value.scaleType, ['linear', 'log'], `${name}刻度`); boolean(value.reverse, `${name}方向`)
+  font(value.titleStyle, `${name}标题字体`); enumeration(value.titleAlignment, ['start', 'center', 'end'], `${name}标题对齐`)
   optionalNumber(value.logBase, 2, 1000, `${name}对数底数`)
   optionalNumber(value.min, -Number.MAX_VALUE, Number.MAX_VALUE, `${name}最小刻度`); optionalNumber(value.max, -Number.MAX_VALUE, Number.MAX_VALUE, `${name}最大刻度`)
   if (value.scaleType === 'log' && (value.min !== undefined && value.min <= 0 || value.max !== undefined && value.max <= 0)) throw new RangeError(`${name}对数轴刻度须为正数。`)
@@ -204,6 +242,7 @@ function series(value: ChartSeriesOptions | undefined, name: string): void {
   optionalObject(value, name)
   if (!value) return
   string(value.name, `${name}名称`); enumeration(value.type, ['column', 'columnStacked', 'line', 'area', 'areaStacked'], `${name}图型`); color(value.color, `${name}颜色`); optionalNumber(value.fillOpacity, 0, 1, `${name}填充不透明度`); boolean(value.rightAxis, `${name}右轴`)
+  fillPattern(value.fillPattern, `${name}填充纹理`)
   line(value.border, `${name}边框`); label(value.label, `${name}标签`); optionalObject(value.point, `${name}标记`)
   enumeration(value.point?.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}标记形状`); optionalNumber(value.point?.size, 0, 256, `${name}标记大小`); color(value.point?.color, `${name}标记颜色`)
   if (value.dataPoints !== undefined) {
@@ -212,8 +251,16 @@ function series(value: ChartSeriesOptions | undefined, name: string): void {
       recordIndex(key, `${name}项目索引`); optionalObject(point, `${name}项目 ${key}`)
       if (!point) continue
       color(point.color, `${name}项目颜色`); optionalNumber(point.fillOpacity, 0, 1, `${name}项目不透明度`); optionalNumber(point.size, 0, 256, `${name}项目大小`); line(point.border, `${name}项目边框`)
+      fillPattern(point.fillPattern, `${name}项目填充纹理`)
+      enumeration(point.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}项目标记形状`)
     }
   }
+}
+function fillPattern(value: ChartSeriesFillPattern | null | undefined, name: string): void {
+  if (value === undefined || value === null) return
+  plain(value, name)
+  if (!isChartFillPatternPreset(value.preset)) throw new TypeError(`${name}包含无效的 DrawingML 纹理预设。`)
+  color(value.foregroundColor, `${name}前景色`, true); color(value.backgroundColor, `${name}背景色`, true)
 }
 function plain(value: unknown, name: string): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${name}须为可序列化的普通配置对象。`)

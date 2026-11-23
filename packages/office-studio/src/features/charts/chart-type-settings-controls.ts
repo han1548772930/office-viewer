@@ -2,6 +2,8 @@ import type { ChartSemanticOptions } from '../../domain/model'
 import type { ChartConfig } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { chartLabelControls, colorControl, fieldControl, fieldsControl, numberControl, optionGroup, selectControl, switchControl, textControl, type ChartSettingControl } from './chart-settings-controls'
+import { chartGaugeSettingsControls, chartGaugeSettingsMapping } from './chart-gauge-settings-controls'
+import { chartRadarSettingsControls } from './chart-radar-settings-controls'
 
 type Mapping = NonNullable<ChartSemanticOptions['mapping']>
 function mapping(config: ChartConfig): Mapping { return (config.options ??= {}).mapping ??= {} }
@@ -11,7 +13,7 @@ function candle(config: ChartConfig): NonNullable<Mapping['candlestick']> {
   const fields = config.valueFields?.length ? config.valueFields : [1, 2, 3]
   return mapping(config).candlestick ??= fields.length >= 4 ? { openIndex: fields[0], highIndex: fields[1]!, lowIndex: fields[2]!, closeIndex: fields[3]! } : { highIndex: fields[0]!, lowIndex: fields[1]!, closeIndex: fields[2]! }
 }
-function gaugeMapping(config: ChartConfig): NonNullable<Mapping['gauge']> { return mapping(config).gauge ??= { valueIndex: config.valueFields?.[0] ?? 1, labelIndex: config.categoryField ?? 0 } }
+function gaugeMapping(config: ChartConfig, fieldCount: number): NonNullable<Mapping['gauge']> { return mapping(config).gauge ??= chartGaugeSettingsMapping(config, fieldCount) }
 function secondary(config: ChartConfig): NonNullable<NonNullable<ChartSemanticOptions['pie']>['secondaryPlot']> { return optionGroup(config, 'pie').secondaryPlot ??= {} }
 function split(config: ChartConfig): NonNullable<NonNullable<NonNullable<ChartSemanticOptions['pie']>['secondaryPlot']>['split']> { return secondary(config).split ??= { type: 'auto' } }
 
@@ -37,8 +39,14 @@ export function chartDataMappingControls(config: ChartConfig, fieldCount: number
     fieldControl('mapping.candlestick.closeIndex', '收盘字段', item => item.options?.mapping?.candlestick?.closeIndex ?? candle({ ...item, options: undefined }).closeIndex, (item, value) => { if (value !== undefined) candle(item).closeIndex = value }),
   ]
   if (descriptor.dataShape === 'gauge') return [
-    fieldControl('mapping.gauge.valueIndex', '仪表数值字段', item => item.options?.mapping?.gauge?.valueIndex ?? item.valueFields?.[0] ?? 1, (item, value) => { gaugeMapping(item).valueIndex = value ?? 1 }),
-    fieldControl('mapping.gauge.labelIndex', '仪表标签字段（可选）', item => item.options?.mapping?.gauge?.labelIndex ?? item.categoryField, (item, value) => { gaugeMapping(item).labelIndex = value }),
+    fieldControl('mapping.gauge.valueIndex', '仪表数值字段', item => chartGaugeSettingsMapping(item, fieldCount).valueIndex, (item, value) => {
+      const field = value ?? (fieldCount > 1 ? 1 : 0)
+      gaugeMapping(item, fieldCount).valueIndex = field; item.valueFields = [field]
+    }),
+    fieldControl('mapping.gauge.labelIndex', '仪表标签字段（可选）', item => chartGaugeSettingsMapping(item, fieldCount).labelIndex, (item, value) => {
+      gaugeMapping(item, fieldCount).labelIndex = value
+      if (value !== undefined) item.categoryField = value
+    }),
   ]
   if (descriptor.dataShape === 'hierarchy') return [
     fieldsControl('mapping.hierarchyIndexes', '层级字段（从根到叶）', item => item.options?.mapping?.hierarchyIndexes ?? [item.categoryField ?? 0], (item, value) => { mapping(item).hierarchyIndexes = value.length ? value : undefined }),
@@ -50,7 +58,7 @@ export function chartDataMappingControls(config: ChartConfig, fieldCount: number
   ])]
 }
 
-export function chartTypeSettingsControls(config: ChartConfig): ChartSettingControl[] {
+export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: number, sourceName?: string): ChartSettingControl[] {
   const descriptor = resolveChartType(config.type), controls: ChartSettingControl[] = []
   if (descriptor.threeD) controls.push(
     numberControl('threeD.view.rotX', '三维俯仰角', item => item.options?.threeD?.view?.rotX, (item, value) => { (optionGroup(item, 'threeD').view ??= {}).rotX = value }, -90, 90, 28),
@@ -90,10 +98,7 @@ export function chartTypeSettingsControls(config: ChartConfig): ChartSettingCont
       if (splitType === 'custom') controls.push(fieldsControl('pie.secondaryPlot.split.pointIndexes', '副图项目', item => item.options?.pie?.secondaryPlot?.split?.pointIndexes, (item, value) => { split(item).pointIndexes = value }, true))
     }
   }
-  if (descriptor.family === 'radar') controls.push(
-    selectControl('radar.shape', '雷达网格', [['polygon', '多边形'], ['circle', '圆形']], item => item.options?.radar?.shape, (item, value) => { optionGroup(item, 'radar').shape = value }, 'polygon'),
-    switchControl('radar.fill', '填充雷达区域', item => item.options?.radar?.fill, (item, value) => { optionGroup(item, 'radar').fill = value }),
-  )
+  if (descriptor.family === 'radar') controls.push(...chartRadarSettingsControls(config))
   if (descriptor.family === 'bubble') controls.push(
     numberControl('bubble.scale', '气泡比例', item => item.options?.bubble?.scale, (item, value) => { optionGroup(item, 'bubble').scale = value }, 0.01, 10_000, 1),
     selectControl('bubble.sizeRepresents', '数值对应', [['area', '面积'], ['width', '直径']], item => item.options?.bubble?.sizeRepresents, (item, value) => { optionGroup(item, 'bubble').sizeRepresents = value }, 'area'),
@@ -153,29 +158,13 @@ export function chartTypeSettingsControls(config: ChartConfig): ChartSettingCont
     switchControl('sunburst.centerLabel.visible', '显示中心标题', item => item.options?.sunburst?.centerLabel?.visible, (item, value) => { (optionGroup(item, 'sunburst').centerLabel ??= {}).visible = value }),
     ...chartLabelControls('sunburst.label', item => item.options?.sunburst?.label, item => optionGroup(item, 'sunburst').label ??= {}, true),
   )
-  if (descriptor.family === 'gauge') controls.push(
-    selectControl('gauge.mode', '仪表模式', [['pointer', '指针'], ['progress', '进度']], item => item.options?.gauge?.mode, (item, value) => { optionGroup(item, 'gauge').mode = value }, 'pointer'),
-    numberControl('gauge.min', '仪表最小刻度', item => item.options?.gauge?.min, (item, value) => { optionGroup(item, 'gauge').min = value }, undefined, undefined, 0),
-    numberControl('gauge.max', '仪表最大刻度', item => item.options?.gauge?.max, (item, value) => { optionGroup(item, 'gauge').max = value }, undefined, undefined, 100),
-    numberControl('gauge.startAngle', '仪表起始角', item => item.options?.gauge?.startAngle, (item, value) => { optionGroup(item, 'gauge').startAngle = value }, -360, 360, 225),
-    numberControl('gauge.endAngle', '仪表终止角', item => item.options?.gauge?.endAngle, (item, value) => { optionGroup(item, 'gauge').endAngle = value }, -360, 360, -45),
-    numberControl('gauge.splitNumber', '主刻度分段数', item => item.options?.gauge?.splitNumber, (item, value) => { optionGroup(item, 'gauge').splitNumber = value }, 1, 100, 5),
-    switchControl('gauge.pointer.visible', '显示指针', item => item.options?.gauge?.pointer?.visible, (item, value) => { (optionGroup(item, 'gauge').pointer ??= {}).visible = value }, true),
-    numberControl('gauge.pointer.length', '指针长度比例', item => item.options?.gauge?.pointer?.length, (item, value) => { (optionGroup(item, 'gauge').pointer ??= {}).length = value }, 0, 1, 0.7),
-    numberControl('gauge.pointer.width', '指针宽度', item => item.options?.gauge?.pointer?.width, (item, value) => { (optionGroup(item, 'gauge').pointer ??= {}).width = value }, 0, 100, 4),
-    colorControl('gauge.pointer.color', '指针颜色', item => item.options?.gauge?.pointer?.color, (item, value) => { (optionGroup(item, 'gauge').pointer ??= {}).color = value }),
-    switchControl('gauge.progress.visible', '显示进度弧', item => item.options?.gauge?.progress?.visible, (item, value) => { (optionGroup(item, 'gauge').progress ??= {}).visible = value }),
-    numberControl('gauge.progress.width', '进度弧宽度', item => item.options?.gauge?.progress?.width, (item, value) => { (optionGroup(item, 'gauge').progress ??= {}).width = value }, 0, 100),
-    colorControl('gauge.progress.color', '进度弧颜色', item => item.options?.gauge?.progress?.color, (item, value) => { (optionGroup(item, 'gauge').progress ??= {}).color = value }),
-    switchControl('gauge.progress.rounded', '进度弧圆端', item => item.options?.gauge?.progress?.rounded, (item, value) => { (optionGroup(item, 'gauge').progress ??= {}).rounded = value }),
-    ...chartLabelControls('gauge.label', item => item.options?.gauge?.label, item => optionGroup(item, 'gauge').label ??= {}, true),
-  )
+  if (descriptor.family === 'gauge') controls.push(...chartGaugeSettingsControls(config, fieldCount, sourceName))
   if (descriptor.family === 'chord') controls.push(
     numberControl('chord.startAngle', '和弦起始角', item => item.options?.chord?.startAngle, (item, value) => { optionGroup(item, 'chord').startAngle = value }, -360, 360, -90),
     switchControl('chord.clockwise', '顺时针', item => item.options?.chord?.clockwise, (item, value) => { optionGroup(item, 'chord').clockwise = value }, true),
     numberControl('chord.padAngle', '节点间隔角', item => item.options?.chord?.padAngle, (item, value) => { optionGroup(item, 'chord').padAngle = value }, 0, 45, 3),
-    numberControl('chord.innerRadiusRatio', '内半径比例', item => item.options?.chord?.innerRadiusRatio, (item, value) => { optionGroup(item, 'chord').innerRadiusRatio = value }, 0.05, 0.95, 0.78),
-    numberControl('chord.outerRadiusRatio', '外半径比例', item => item.options?.chord?.outerRadiusRatio, (item, value) => { optionGroup(item, 'chord').outerRadiusRatio = value }, 0.05, 1, 0.9),
+    numberControl('chord.innerRadiusRatio', '内半径比例', item => item.options?.chord?.innerRadiusRatio, (item, value) => { optionGroup(item, 'chord').innerRadiusRatio = value }, 0.05, 0.95, 0.66),
+    numberControl('chord.outerRadiusRatio', '外半径比例', item => item.options?.chord?.outerRadiusRatio, (item, value) => { optionGroup(item, 'chord').outerRadiusRatio = value }, 0.05, 1, 0.73),
     numberControl('chord.ribbonOpacity', '弦带不透明度', item => item.options?.chord?.ribbonOpacity, (item, value) => { optionGroup(item, 'chord').ribbonOpacity = value }, 0, 1, 0.55),
     ...chartLabelControls('chord.label', item => item.options?.chord?.label, item => optionGroup(item, 'chord').label ??= {}, true),
   )

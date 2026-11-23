@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 
-use super::{ContentControl, cell_blocks, get, integer, numbering::numbering_level};
+use super::{ContentControl, get, integer, numbering::numbering_level};
 use super::source_xml::{Content, Element, WORD_NAMESPACE, XML_NAMESPACE, parse_xml, valid_name, valid_xml_characters};
 use super::source_styles::SourceStyles;
 use crate::{ExportError, ExportWarning, xml};
@@ -331,7 +331,7 @@ pub(super) fn prepare_preserved_markers(blocks: &[Value], controls: &HashMap<Str
     fn visit(blocks: &[Value], controls: &HashMap<String, Vec<ContentControl>>, styles: &mut SourceStyles, plan: &mut PreservedMarkerPlan, names: &mut HashSet<String>, sequence_names: &mut HashSet<String>) -> Result<(), ExportError> {
         for block in blocks {
             if get(block, "type").as_str() == Some("table") {
-                for row in array(get(get(get(block, "metadata"), "table"), "rows")) { for cell in array(get(row, "cells")) { visit(cell_blocks(cell), controls, styles, plan, names, sequence_names)?; } }
+                for group in super::table_writer::content_groups(get(get(block, "metadata"), "table"))? { visit(group.blocks, controls, styles, plan, names, sequence_names)?; }
                 continue;
             }
             let marker = get(get(block, "metadata"), "officeNumberingMarker");

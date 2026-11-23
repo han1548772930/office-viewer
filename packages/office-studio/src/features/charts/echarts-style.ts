@@ -1,5 +1,6 @@
 import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartSeriesOptions } from '../../domain/model'
-import { chartLabelText, formatChartNumber } from './chart-geometry'
+import { chartColorOpacity, chartLabelText, formatChartNumber } from './chart-geometry'
+import { definedChartStyleFields } from './chart-options'
 
 export function chartEChartsFont(font: ChartFontOptions | undefined, fallback: string, size?: number) {
   return { color: font?.color ?? fallback, fontSize: font?.fontSize ?? size, fontWeight: font?.bold ? 'bold' as const : 'normal' as const,
@@ -7,8 +8,12 @@ export function chartEChartsFont(font: ChartFontOptions | undefined, fallback: s
 }
 
 export function chartEChartsItemStyle(style: ChartSeriesOptions) {
-  return { color: style.color, opacity: style.fillOpacity ?? 1, borderColor: style.border?.color,
+  return { color: style.color, opacity: style.fillOpacity ?? 1, borderColor: style.border?.color === undefined ? undefined : chartColorOpacity(style.border.color, style.border.opacity ?? 1),
     borderWidth: style.border?.visible === false ? 0 : style.border?.width, borderType: style.border?.dashType, borderJoin: 'round' as const }
+}
+
+export function chartEChartsMarkerStyle(style: ChartSeriesOptions) {
+  return chartEChartsItemStyle({ ...style, color: style.point?.color ?? style.color })
 }
 
 export function chartEChartsLineStyle(style: ChartSeriesOptions) {
@@ -24,14 +29,16 @@ export function chartEChartsPointLabel(label: ChartLabelOptions | undefined, col
   return { ...chartEChartsLabel(label, color), formatter: chartLabelText(label, value, category, series, percentage) }
 }
 
-export function chartEChartsAxisStyle(axis: ChartAxisOptions, color: string, gridColor: string, numeric: boolean) {
+export function chartEChartsAxisStyle(axis: ChartAxisOptions, color: string, gridColor: string, numeric: boolean, inheritedFont?: ChartFontOptions) {
+  const titleFont = { ...definedChartStyleFields(inheritedFont), ...definedChartStyleFields(axis.titleStyle) }
   return {
     inverse: axis.reverse,
-    name: axis.title, nameLocation: 'middle' as const,
+    name: axis.title, nameLocation: axis.titleAlignment === 'start' ? 'start' as const : axis.titleAlignment === 'end' ? 'end' as const : 'middle' as const,
+    nameTextStyle: chartEChartsFont(titleFont, color, 11), nameGap: Math.max(28, (titleFont.fontSize ?? 11) + 17),
     axisLine: { show: axis.line?.visible ?? true, lineStyle: { color: axis.line?.color ?? color, width: axis.line?.width ?? 1, opacity: axis.line?.opacity ?? 1, type: axis.line?.dashType ?? 'solid' as const } },
     axisTick: { show: axis.tick?.visible ?? false, inside: axis.tick?.position === 'inside', length: axis.tick?.length ?? 4,
       lineStyle: { color: axis.tick?.color ?? color, width: axis.tick?.width ?? 1, type: axis.tick?.dashType ?? 'solid' as const } },
-    axisLabel: { show: axis.label?.visible ?? true, rotate: axis.label?.rotate ?? 0, ...chartEChartsFont(axis.label, color, 10),
+    axisLabel: { show: axis.label?.visible ?? true, rotate: axis.label?.rotate ?? 0, ...chartEChartsFont({ ...definedChartStyleFields(inheritedFont), ...definedChartStyleFields(axis.label) }, color, 10),
       ...(numeric && axis.format ? { formatter: (value: string | number) => formatChartNumber(Number(value), axis.format) } : {}) },
     splitLine: { show: axis.gridLine?.visible ?? numeric, lineStyle: { color: axis.gridLine?.color ?? gridColor, width: axis.gridLine?.width ?? 1, opacity: axis.gridLine?.opacity ?? 1, type: axis.gridLine?.dashType ?? 'solid' as const } },
   }

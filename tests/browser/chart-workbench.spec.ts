@@ -1,5 +1,117 @@
 import { expect, test } from '@playwright/test'
 
+// P12/P14 drafts for unified validation. These new cases have not been run in the implementation phase.
+test('hover at worksheet zoom/scroll changes only the raster and pointer cancellation discards a drag draft', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+  await expect(page.getByRole('grid', { name: '工作表画布' })).toBeVisible()
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), sheet = officeAPI.getActiveWorkbook()!.getActiveSheet()!
+    sheet.getRange('A1:B4').setValues([['Date', 'Units'], [59, 10], [60, 20], [63, 30]])
+    await sheet.insertChart(sheet.newChart('line').setSource('A1:B4').setValueFields([1]).setUseDateAxis(true)
+      .setAbsolutePosition(120, 100).setSize(420, 280).setTitle('Pointer draft')
+      .setAxisPointer({ indicatorLineColor: 'red', indicatorLineType: 'dashed', indicatorLabelColor: 'navy', indicatorLabelTextColor: 'white' }).build())
+  })
+  const hitbox = page.getByRole('button', { name: 'Pointer draft', exact: true })
+  await expect(hitbox).toHaveAttribute('data-rendered', 'true')
+  const slider = page.getByRole('slider', { name: '工作表缩放' })
+  await slider.press('Home')
+  for (let index = 0; index < 14; index++) await slider.press('ArrowRight')
+  await expect(slider).toHaveAttribute('aria-valuenow', '150')
+  await page.locator('.canvas-scroll').evaluate(element => { element.scrollLeft = 60; element.scrollTop = 40 })
+  await expect.poll(() => hitbox.evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(630)
+  const snapshot = async () => page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), workbook = officeAPI.getActiveWorkbook()!, chart = workbook.getActiveSheet()!.getCharts()[0]!
+    const info = chart.getInfo(), plot = chart.getLayout().plot
+    return { contents: JSON.stringify(workbook.save()), revision: info.revision, position: info.position,
+      plot: { x: plot.x - info.position.x, y: plot.y - info.position.y, width: plot.width, height: plot.height } }
+  })
+  const before = await snapshot(), bounds = (await hitbox.boundingBox())!, version = Number(await hitbox.getAttribute('data-source-version'))
+  const pointer = { x: bounds.x + (before.plot.x + before.plot.width / 3) * 1.5,
+    y: bounds.y + (before.plot.y + before.plot.height / 2) * 1.5 }
+  await page.mouse.move(pointer.x, pointer.y)
+  await expect.poll(async () => Number(await hitbox.getAttribute('data-source-version'))).toBeGreaterThan(version)
+  expect((await snapshot()).contents).toBe(before.contents)
+  expect((await snapshot()).revision).toBe(before.revision)
+  const hoverVersion = Number(await hitbox.getAttribute('data-source-version'))
+  await page.mouse.move(10, 10)
+  await expect.poll(async () => Number(await hitbox.getAttribute('data-source-version'))).toBeGreaterThan(hoverVersion)
+  await page.mouse.move(pointer.x, pointer.y)
+  await page.mouse.down()
+  await page.mouse.move(pointer.x + 60, pointer.y + 30)
+  await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel')))
+  await page.mouse.up()
+  await expect.poll(async () => (await snapshot()).position).toEqual(before.position)
+  expect((await snapshot()).contents).toBe(before.contents)
+  await expect(page.locator('.chart-render-error')).toHaveCount(0)
+})
+
+test('pattern controls edit a detached draft, apply a real solid override, and preserve history and internal reopen', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+  await expect(page.getByRole('grid', { name: '工作表画布' })).toBeVisible()
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), sheet = officeAPI.getActiveWorkbook()!.getActiveSheet()!
+    sheet.getRange('A1:B4').setValues([['Category', 'Units'], ['A', 10], ['B', 20], ['C', 30]])
+    await sheet.insertChart(sheet.newChart('column').setSource('A1:B4').setValueFields([1]).setAbsolutePosition(100, 100).setSize(420, 280)
+      .setTitle('Pattern draft').setAllSeriesStyle({ fillOpacity: 1, fillPattern: { preset: 'horz', foregroundColor: '#ff0000', backgroundColor: '#ffff00' } }).build())
+  })
+  const hitbox = page.getByRole('button', { name: 'Pattern draft', exact: true })
+  await expect(hitbox).toHaveAttribute('data-rendered', 'true')
+  const snapshot = async () => page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), workbook = officeAPI.getActiveWorkbook()!, chart = workbook.getActiveSheet()!.getCharts()[0]!
+    return { contents: JSON.stringify(workbook.save()), pattern: chart.getOptions().allSeriesStyle?.fillPattern,
+      red: chart.getRenderCommands().filter(command => command.kind === 'polygon' && command.fill === 'rgba(255, 0, 0, 1)').length }
+  })
+  const before = await snapshot()
+  expect(before.red).toBeGreaterThan(0)
+  const openPatternPanel = async () => {
+    await hitbox.click()
+    const editor = page.getByRole('dialog', { name: '图表设置' })
+    await expect(editor).toBeVisible()
+    await editor.getByText('系列、标记与数据标签', { exact: true }).click()
+    await editor.getByText('所有系列', { exact: true }).click()
+    return editor
+  }
+  let editor = await openPatternPanel()
+  await editor.getByLabel('填充纹理', { exact: true }).click()
+  await page.getByText('向上对角线', { exact: true }).last().click()
+  await expect(editor.getByLabel('纹理前景色', { exact: true })).toBeVisible()
+  expect((await snapshot()).contents).toBe(before.contents)
+  await editor.getByRole('button', { name: '关闭', exact: true }).last().click()
+  await expect(editor).toBeHidden()
+  expect((await snapshot()).contents).toBe(before.contents)
+  editor = await openPatternPanel()
+  await editor.getByLabel('填充纹理', { exact: true }).click()
+  await page.getByText('纯色填充', { exact: true }).last().click()
+  await expect(editor.getByLabel('纹理前景色', { exact: true })).toHaveCount(0)
+  await editor.getByRole('button', { name: '应用', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).pattern).toBeNull()
+  await expect.poll(async () => (await snapshot()).red).toBe(0)
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name)
+    officeAPI.getActiveWorkbook()!.undo()
+  })
+  await expect.poll(async () => (await snapshot()).pattern).toEqual(before.pattern)
+  await expect.poll(async () => (await snapshot()).red).toBeGreaterThan(0)
+  const reopened = await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), workbook = officeAPI.getActiveWorkbook()!
+    const saved = officeAPI.createWorkbook({ ...workbook.save(), id: crypto.randomUUID() }, { makeCurrent: false })
+    return saved.getActiveSheet()!.getCharts()[0]!.getOptions().allSeriesStyle?.fillPattern
+  })
+  expect(reopened).toEqual(before.pattern)
+  await expect(page.locator('.chart-render-error')).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
 test('inserts a radar chart from the worksheet and keeps its type across a saved snapshot', async ({ page }) => {
   await page.goto('/')
   const grid = page.getByRole('grid', { name: '工作表画布' })
@@ -113,10 +225,15 @@ test('inserts, moves, resizes and refreshes an editable chart on the worksheet c
   const editor = page.getByRole('dialog', { name: '图表设置' })
   await expect(editor).toBeVisible()
   await editor.getByRole('textbox', { name: '图表标题' }).fill('Quarterly revenue')
-  await editor.getByRole('textbox', { name: '数据区域' }).fill('A1:B4')
-  await editor.getByRole('textbox', { name: 'X 轴标题' }).fill('Product')
-  await editor.getByRole('textbox', { name: 'Y 轴标题' }).fill('Revenue')
-  await editor.getByRole('checkbox', { name: '显示图例' }).uncheck()
+  await editor.getByRole('textbox', { name: '图表数据区域' }).fill('A1:B4')
+  await editor.getByText('坐标轴', { exact: true }).click()
+  await editor.getByText('X 轴 / 分类轴', { exact: true }).click()
+  const xPanel = editor.locator('.ant-collapse-item').filter({ has: editor.getByText('X 轴 / 分类轴', { exact: true }) }).last()
+  await xPanel.getByRole('textbox', { name: '轴标题', exact: true }).fill('Product')
+  await editor.getByText('Y 轴 / 数值轴', { exact: true }).click()
+  const yPanel = editor.locator('.ant-collapse-item').filter({ has: editor.getByText('Y 轴 / 数值轴', { exact: true }) }).last()
+  await yPanel.getByRole('textbox', { name: '轴标题', exact: true }).fill('Revenue')
+  await editor.getByRole('switch', { name: '显示图例' }).click()
   await editor.locator('.chart-editor-actions button').last().click()
   await expect.poll(() => chart.getAttribute('aria-label')).toBe('Quarterly revenue')
 

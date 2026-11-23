@@ -19,6 +19,13 @@ import {
   type TextTarget,
 } from '../model/document-model'
 import type { DocumentImage } from '../model/document-model'
+import { isDocumentTextBoundary } from '../model/document-story'
+import { documentTableCellContentContainers } from '../model/document-table-continuations'
+import { documentBlockHostForId, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import { applyDocumentBlockHostModel, documentModelForBlockHost } from './document-block-host'
+import { cloneModel } from '../../../domain/serialization'
+import { assertDocumentStoryLocksPreserved } from './document-story-locks'
+import { resolveSectionHeaderFooter } from './section-header-footer'
 
 export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: string }
 
@@ -26,6 +33,20 @@ export type ContentControlPatch = Partial<Omit<DocumentContentControl, 'id' | 'b
 
 const lockedContent = new Set<DocumentContentControl['lock']>(['contentLocked', 'sdtContentLocked'])
 const lockedControl = new Set<DocumentContentControl['lock']>(['controlLocked', 'sdtLocked', 'sdtContentLocked'])
+
+function editHostedControl<T>(model: DocumentModel, blockId: string, edit: (scoped: DocumentModel) => T, requestedHost?: DocumentAuxiliaryBlockHost): { value: T } | undefined {
+  const host = requestedHost ?? documentBlockHostForId(model, blockId)
+  if (!host) return undefined
+  const candidate = cloneModel(model), scoped = documentModelForBlockHost(candidate, host, true), value = edit(scoped)
+  applyDocumentBlockHostModel(candidate, host, scoped)
+  if (host.kind === 'story') assertDocumentStoryLocksPreserved(resolveSectionHeaderFooter(model, host.sectionId), resolveSectionHeaderFooter(candidate, host.sectionId), host.story, model)
+  Object.assign(model, candidate)
+  return { value }
+}
+
+function hostedControlBlock(model: DocumentModel, id: string): string | undefined {
+  return model.contentControls?.find(control => control.id === id)?.blockId
+}
 
 /** A paragraph split maps the suffix of a linear replacement into its new paragraph. */
 export interface ContentControlParagraphSplit {
@@ -60,7 +81,12 @@ export function createDocumentContentControl(
   model: DocumentModel,
   input: ContentControlInput,
   id = input.id ?? `content-control-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  host?: DocumentAuxiliaryBlockHost,
 ): DocumentContentControl {
+  if (!id.trim()) throw new TypeError('Content control id must not be empty')
+  if (model.contentControls?.some((control) => control.id === id)) throw new Error(`Content control already exists: ${id}`)
+  const hosted = editHostedControl(model, input.blockId, scoped => createDocumentContentControl(scoped, input, id), host)
+  if (hosted) return hosted.value
   if (!id.trim()) throw new TypeError('Content control id must not be empty')
   if (model.contentControls?.some((control) => control.id === id)) throw new Error(`Content control already exists: ${id}`)
   const control: DocumentContentControl = {
@@ -84,6 +110,8 @@ export function createDocumentContentControl(
 }
 
 export function updateDocumentContentControl(model: DocumentModel, id: string, patch: ContentControlPatch): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => updateDocumentContentControl(scoped, id, patch))) return
   const control = requireControl(model, id)
   if (hasControlStructurePatch(control, patch) && isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${id}`)
   const next: DocumentContentControl = {
@@ -103,6 +131,8 @@ export function updateDocumentContentControl(model: DocumentModel, id: string, p
 }
 
 export function setDocumentContentControlValue(model: DocumentModel, id: string, value: string): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => setDocumentContentControlValue(scoped, id, value))) return
   const control = requireControl(model, id)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
@@ -125,6 +155,8 @@ export function setDocumentContentControlValue(model: DocumentModel, id: string,
 }
 
 export function setDocumentContentControlChecked(model: DocumentModel, id: string, checked: boolean): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => setDocumentContentControlChecked(scoped, id, checked))) return
   const control = requireControl(model, id)
   if (control.type !== 'checkbox') throw new TypeError(`Content control ${id} is not a checkbox`)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
@@ -136,6 +168,8 @@ export function setDocumentContentControlChecked(model: DocumentModel, id: strin
 }
 
 export function resetDocumentContentControlPlaceholder(model: DocumentModel, id: string): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => resetDocumentContentControlPlaceholder(scoped, id))) return
   const control = requireControl(model, id)
   if (!control.placeholder) throw new Error(`Content control has no placeholder: ${id}`)
   if (control.showingPlaceholder) return
@@ -187,6 +221,8 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
 }
 
 export function replacePictureContentControlImage(model: DocumentModel, id: string, image: DocumentImage): string {
+  const blockId = hostedControlBlock(model, id), hosted = blockId && editHostedControl(model, blockId, scoped => replacePictureContentControlImage(scoped, id, image))
+  if (hosted) return hosted.value
   const control = requireControl(model, id)
   if (control.type !== 'picture') throw new TypeError(`Content control ${id} is not a picture control`)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
@@ -263,6 +299,8 @@ export function replacePictureContentControlImage(model: DocumentModel, id: stri
 }
 
 export function duplicateRepeatingSectionItem(model: DocumentModel, id: string): DocumentContentControl {
+  const blockId = hostedControlBlock(model, id), hosted = blockId && editHostedControl(model, blockId, scoped => duplicateRepeatingSectionItem(scoped, id))
+  if (hosted) return hosted.value
   const item = requireControl(model, id)
   if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
   if (['row', 'cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be duplicated')
@@ -317,6 +355,8 @@ export function duplicateRepeatingSectionItem(model: DocumentModel, id: string):
 }
 
 export function deleteRepeatingSectionItem(model: DocumentModel, id: string): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => deleteRepeatingSectionItem(scoped, id))) return
   const item = requireControl(model, id)
   if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
   if (['cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be deleted')
@@ -362,6 +402,8 @@ export function deleteRepeatingSectionItem(model: DocumentModel, id: string): vo
 }
 
 export function selectDocumentContentControlItem(model: DocumentModel, id: string, value: string): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => selectDocumentContentControlItem(scoped, id, value))) return
   const control = requireControl(model, id)
   if (control.type !== 'dropDownList' && control.type !== 'comboBox') throw new TypeError(`Content control ${id} is not a list control`)
   const item = control.items?.find((candidate) => candidate.value === value)
@@ -370,6 +412,8 @@ export function selectDocumentContentControlItem(model: DocumentModel, id: strin
 }
 
 export function removeDocumentContentControl(model: DocumentModel, id: string): void {
+  const blockId = hostedControlBlock(model, id)
+  if (blockId && editHostedControl(model, blockId, scoped => removeDocumentContentControl(scoped, id))) return
   const control = requireControl(model, id)
   if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${id}`)
   const removing = new Set([id])
@@ -388,6 +432,8 @@ export function removeDocumentContentControl(model: DocumentModel, id: string): 
 }
 
 export function contentControlText(model: DocumentModel, control: DocumentContentControl): string {
+  const host = documentBlockHostForId(model, control.blockId)
+  if (host) return contentControlText(documentModelForBlockHost(model, host), control)
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
   return runText(sliceRuns(runsForTarget(model, target), control.startOffset, control.endOffset))
@@ -551,6 +597,20 @@ export function assertContentControlBlockRemovable(model: DocumentModel, blockId
   for (const control of controls) removeControlTreeFromModel(model, control)
 }
 
+/** Validate mapped ranges and the wrapper tree before publishing a structural edit. */
+export function validateDocumentContentControlRanges(model: DocumentModel): void {
+  const paragraphs = new Map(documentTextFieldParagraphs(model).map(paragraph => [paragraph.block.id, paragraph]))
+  for (const control of model.contentControls ?? []) {
+    const host = documentBlockHostForId(model, control.blockId), scoped = host ? documentModelForBlockHost(model, host) : model
+    validateControl(scoped, cloneControl(control))
+    const paragraph = host ? documentTextFieldParagraphs(scoped).find(candidate => candidate.block.id === control.blockId) : paragraphs.get(control.blockId)
+    if (paragraph && (!isDocumentTextBoundary(paragraph.text, control.startOffset) || !isDocumentTextBoundary(paragraph.text, control.endOffset))) {
+      throw new RangeError(`Content control UTF-16 range splits a character: ${control.id}`)
+    }
+    assertNoPartialOverlap(model.contentControls ?? [], control)
+  }
+}
+
 /** Map paragraph-local SDT wrappers after a body edit; field refreshes retain the wrappers. */
 export function transformContentControlsForBodyRangeEdit(
   model: DocumentModel,
@@ -669,8 +729,8 @@ function findBlock(model: DocumentModel, id: string): DocumentBlock | undefined 
       if (block.id === id) return block
       const table = tableForBlock(block)
       for (const row of table?.rows ?? []) {
-        for (const cell of row.cells) {
-          const nested = visit(cell.blocks)
+        for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) {
+          const nested = visit(content)
           if (nested) return nested
         }
       }
@@ -686,9 +746,9 @@ function blockContainerForTarget(model: DocumentModel, target: TextTarget): Docu
     for (const block of blocks) {
       const table = tableForBlock(block)
       for (const row of table?.rows ?? []) {
-        for (const cell of row.cells) {
-          if (cell.blocks.some(candidate => candidate.id === target.cellBlockId)) return cell.blocks
-          const nested = visit(cell.blocks)
+        for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) {
+          if (content.some(candidate => candidate.id === target.cellBlockId)) return content
+          const nested = visit(content)
           if (nested) return nested
         }
       }
@@ -703,8 +763,8 @@ function blockContainerContaining(model: DocumentModel, blockId: string): Docume
     if (blocks.some(block => block.id === blockId)) return blocks
     for (const block of blocks) {
       for (const row of tableForBlock(block)?.rows ?? []) {
-        for (const cell of row.cells) {
-          const nested = visit(cell.blocks)
+        for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) {
+          const nested = visit(content)
           if (nested) return nested
         }
       }

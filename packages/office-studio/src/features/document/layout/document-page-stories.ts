@@ -5,6 +5,7 @@ import type { EffectiveDocumentSectionSetup } from '../services/document-setting
 import { documentStoryDisplay } from '../services/story-rendering'
 import type { LayoutMeasurer, LayoutPage, LayoutPageHeaderFooter, LayoutStoryLine } from './document-layout-types'
 import { paragraphLineHeight, positionLine, wrapRuns } from './document-text-layout'
+import { layoutDocumentAuxiliaryBlocks } from './document-auxiliary-layout'
 
 export function layoutDocumentPageStories(model: DocumentModel, pages: readonly LayoutPage[], settings: ReadonlyMap<string, EffectiveDocumentSectionSetup>, measurer: LayoutMeasurer): LayoutPageHeaderFooter[] {
   return pages.map(page => {
@@ -50,9 +51,14 @@ export function layoutDocumentPageStories(model: DocumentModel, pages: readonly 
       return output.map(line => ({ ...line, y: line.y + shift, baseline: line.baseline + shift,
         glyphs: line.glyphs.map(glyph => ({ ...glyph, y: glyph.y + shift })) }))
     }
-    const headerLayoutLines = storyLines(headerStory, headerTop), footerLayoutLines = storyLines(footerStory, footerBottom, true)
+    const headerBlockLayout = section.storyContent?.[headerStory]?.blocks !== undefined ? layoutDocumentAuxiliaryBlocks(model, { kind: 'story', sectionId: page.sectionId, story: headerStory },
+      { x: page.content.x, y: headerTop, width: page.content.width, height: Math.max(1, page.height - setup.marginHeader - setup.marginFooter) }, page.index, page.pageNumber, pages.length, measurer) : undefined
+    const footerBlockLayout = section.storyContent?.[footerStory]?.blocks !== undefined ? layoutDocumentAuxiliaryBlocks(model, { kind: 'story', sectionId: page.sectionId, story: footerStory },
+      { x: page.content.x, y: page.y + setup.marginHeader, width: page.content.width, height: Math.max(1, page.height - setup.marginHeader - setup.marginFooter) }, page.index, page.pageNumber, pages.length, measurer, true) : undefined
+    const headerLayoutLines = headerBlockLayout?.lines ?? storyLines(headerStory, headerTop), footerLayoutLines = footerBlockLayout?.lines ?? storyLines(footerStory, footerBottom, true)
     return { ...base, header: renderSectionStory(section, headerStory, page.pageNumber, pages.length), footer: renderSectionStory(section, footerStory, page.pageNumber, pages.length),
       headerLines: headerLayoutLines.map(line => line.glyphs.map(glyph => glyph.text).join('')),
-      footerLines: footerLayoutLines.map(line => line.glyphs.map(glyph => glyph.text).join('')), headerLayoutLines, footerLayoutLines }
+      footerLines: footerLayoutLines.map(line => line.glyphs.map(glyph => glyph.text).join('')), headerLayoutLines, footerLayoutLines,
+      ...(headerBlockLayout ? { headerBlockLayout } : {}), ...(footerBlockLayout ? { footerBlockLayout } : {}) }
   })
 }

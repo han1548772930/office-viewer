@@ -88,8 +88,22 @@ export type { SheetFontFormatAction, SheetFontFormatCommandInput, SheetFontForma
   SheetFontPrimaryPosition, SheetFontRangeInput, SheetFontMark } from './features/sheet-workbench/sheet-font-format-command.ts'
 export { type ApiCellData, type ApiCellValue } from './api/model-utils'
 export type { DocumentEditorCommandRequest, DocumentEditorCommandResult } from './api/document-editor-commands.ts'
+export type { DocumentFieldCacheAdapter, DocumentFieldCacheState, DocumentFieldCacheRefreshRequest,
+  DocumentFieldCacheRefreshResult } from './features/document/services/document-field-open-refresh.ts'
 export type { DocumentCommand } from './features/document/commands/document-commands.ts'
-export type { DocumentPoint, DocumentSelection, RunPatch, DocumentRunClearField } from './features/document/model/document-model.ts'
+export type { DocumentPoint, DocumentSelection, DocumentTableViewSelection, DocumentTable, DocumentTableRow, DocumentCell, DocumentTableContinuationContent,
+  DocumentTableStyle, DocumentTableCellStyle, DocumentTableBorder, DocumentTableBorders, DocumentTableCellMargin,
+  DocumentTableColumnTypeConfig, RunPatch, DocumentRunClearField } from './features/document/model/document-model.ts'
+export { FDocumentTable, FDocumentTableCell, DocsTableSelectionKinds, DocsTableRowInsertPositions, DocsTableColumnInsertPositions,
+  DocsTableSortDirections, DocsTableColumnTypes, DocsTableRowHeightRules, DocsTableBorderPresets,
+  type DocumentTableFindQuery, type DocumentTableInfo, type DocumentTableDescription, type DocumentTableMetadata,
+  type DocumentTableCellContentRange, type DocumentTableCellOffsetRange, type DocumentTableOffsetRange } from './api/document-tables.ts'
+export type { DocumentTableInsertOptions, DocumentTableBorderOptions, DocumentTableStylePatch, DocumentTableCommand,
+  DocumentTableCommandTarget } from './features/document/commands/table-command-types.ts'
+export type { DocumentTableRowPropertiesPatch } from './features/document/model/document-table-style.ts'
+export type { DocumentTableCellRange, DocumentTableGridCell } from './features/document/model/document-table-grid.ts'
+export { documentTableCellContentContainers, documentTableCellBlocks, documentTableContinuationEntries,
+  assertDocumentTableContinuationRows } from './features/document/model/document-table-continuations.ts'
 export type { DocumentStoryRange } from './features/document/model/document-story.ts'
 export { SET_DOCUMENT_INPUT_SELECTION_OPERATION, CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION,
   type DocumentInputLocation, type DocumentInputSession, type DocumentStoryInputCommit } from './features/document/model/document-input-session.ts'
@@ -192,6 +206,22 @@ export { type ExportOutcome, type ExportProgress, type ExportWarning } from './p
 export type { ImportedOfficeModel, ParseEnvelope, ParseProgress } from './parser/contracts.ts'
 export { WASM_PROTOCOL_VERSION, createWasmTaskControl, WasmProtocolError } from './platform/wasm/task-protocol.ts'
 export type { WasmTaskKind, WasmTaskControl, WasmTaskBudget, WasmTaskMetrics, BoundaryCopyStats, WorkerTransportStats } from './platform/wasm/task-protocol.ts'
+export * from './compute/index.ts'
+export { ChartStatisticsService, chartStatisticsSignature, type ChartStatisticsServiceOptions, type ChartStatisticsRequestContext,
+  type ChartStatisticsRequest, type ChartStatisticsSnapshot, type ChartStatisticsInvalidation } from './features/charts/services/chart-statistics-service.ts'
+export { prepareChartStatisticsTask, decodeChartStatistics, type ChartStatisticsPlan } from './features/charts/chart-statistics-compute.ts'
+export { prepareChartComputeInputs } from './features/charts/chart-input-preparation.ts'
+export { readChartRecordsAsync } from './features/charts/chart-source-compute.ts'
+export type { ChartComputePreparationContext } from './features/charts/chart-compute-lifecycle.ts'
+export type { ChartComputedStatistics } from './features/charts/chart-derived.ts'
+export type { ChartConfig, ChartData, ChartSeriesData } from './features/charts/chart-engine.ts'
+export { ChartGaugeModes, ChartGaugePointerShapes, CHART_GAUGE_PRESETS, chartGaugePresetOptions,
+  type ChartGaugePreset } from './features/charts/chart-gauge.ts'
+export { ChartRadarShapes } from './features/charts/chart-radar.ts'
+export { ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, ChartAllSeriesStyleTargets,
+  chartAxisPointerValues, clearChartAxisPointer,
+  type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget, type ChartAllSeriesStyleTarget } from './features/charts/chart-cartesian-api.ts'
+export { chartDateSerial, prepareChartDateData, supportsChartDateAxis } from './features/charts/chart-date-axis.ts'
 export { createSparklineGroupPatches, createSparklineSpec, translateSparklineForMove, type SparklineGroupRequest } from './features/sparkline/sparkline-model.ts'
 export { createSparklineCommands, parseSparklineRange, readSparklineValues, sparklineCommandsForCell } from './features/sparkline/sparkline-render.ts'
 export { default as SparklinePanel } from './components/spreadsheet/SparklinePanel.vue'

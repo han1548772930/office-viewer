@@ -10,6 +10,8 @@ import { DOCUMENT_STORY_KEYS, documentStoryDefaultStyle, documentStoryFieldCache
 import { storyBuffer } from '../features/document/services/story-editor.ts'
 import { validateDocumentOfficeSource } from './documentOfficeSource.ts'
 import { documentTextFields, documentTextFieldRanges } from '../features/document/model/document-text-fields.ts'
+import { hydrateDocumentTocsFromNativeFields } from '../features/document/toc/document-native-toc.ts'
+import { normalizeDocumentTable, normalizedDocumentTableId } from './documentTables'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -111,7 +113,7 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   const style = record(details.style)
   const styleId = (text(details.styleId) || text(style.styleId)).toLowerCase()
   const titleStyle = styleId === 'title' || styleId === 'subtitle' ? styleId : undefined
-  const id = text(raw.id, fallbackId)
+  const id = raw.type === 'table' ? normalizedDocumentTableId(raw, fallbackId) : text(raw.id, fallbackId)
   const runs = array(details.inlines).filter((inline) => {
     const type = record(inline).type
     return type === 'text' || type === 'form_field'
@@ -210,33 +212,9 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     block.metadata.height = positive(details.heightPx, 180)
   }
   if (type === 'table') {
-    const sourceCells: unknown[] = []
-    for (const child of array(raw.children)) {
-      const item = record(child)
-      if (item.type === 'table_head') sourceCells.push(...array(item.children))
-      else if (item.type === 'table_cell') sourceCells.push(item)
-    }
-    const rows = new Map<number, Array<Record<string, unknown>>>()
-    for (const [cellIndex, source] of sourceCells.entries()) {
-      const cell = record(source)
-      const cellDetails = record(cell.details)
-      const rowIndex = Math.max(0, finite(cellDetails.rowIndex))
-      const row = rows.get(rowIndex) ?? []
-      const cellId = text(cell.id, id+'-cell-'+cellIndex)
-      let blocks = array(cell.children).map((child, index) => normalizeBlock(child, cellId+'-block-'+index, lists))
-      if (!blocks.length) blocks = [normalizeBlock({ id: cellId+'-text', content: text(cell.content), type: 'text' }, cellId+'-text', lists)]
-      row.push({
-        id: cellId, blocks, colSpan: positive(cellDetails.columnSpan, 1), rowSpan: positive(cellDetails.rowSpan, 1),
-        columnIndex: finite(cellDetails.columnIndex), style: record(cellDetails.style),
-      })
-      rows.set(rowIndex, row)
-    }
-    block.metadata.table = {
-      rows: [...rows.entries()].sort(([a], [b]) => a-b).map(([rowIndex, cells]) => ({
-        id: id+'-row-'+rowIndex, cells: cells.sort((a, b) => finite(a.columnIndex)-finite(b.columnIndex)),
-      })),
-      style, rowStyles: details.rowStyles,
-    }
+    block.metadata.table = normalizeDocumentTable(raw, id, (child, childId) => normalizeBlock(child, childId, lists))
+    const officeTable = record(details.officeTable)
+    if (officeTable.topologyMatches === false) block.metadata.officeTableStaleSource = { ...officeTable }
     block.runs = []
   }
   if (details.documentTextFields !== undefined) {
@@ -515,6 +493,7 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
     source: data, stories, format: envelope.format, parserVersion: envelope.parserVersion,
     geometryStatus: data.geometryStatus,
     geometryNote: 'StructuredDocument 目前未携带完整节/纸张几何；使用默认页面并保留原数据，待补齐解析契约。',
+    nativeTocHydration: hydrateDocumentTocsFromNativeFields(result),
   }
   return result
 }

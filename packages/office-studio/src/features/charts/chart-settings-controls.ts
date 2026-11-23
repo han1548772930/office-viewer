@@ -1,7 +1,10 @@
-import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLegendOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions } from '../../domain/model'
+import type { ChartAxisOptions, ChartFillPatternPreset, ChartFontOptions, ChartLabelOptions, ChartLegendOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions, ChartSeriesSelector } from '../../domain/model'
 import type { ChartConfig } from './chart-engine'
+import { chartPalette, chartSeriesStyle } from './chart-options'
+import { chartSeriesOverride, validateChartSeriesSelector } from './chart-series-selector'
+import { CHART_FILL_PATTERN_PRESETS } from './chart-fill-pattern'
 
-interface ControlBase { key: string; label: string; extra?: string }
+interface ControlBase { key: string; label: string; extra?: string; visible?: (config: ChartConfig) => boolean }
 export type ChartSettingControl = ControlBase & (
   | { kind: 'number'; read: (config: ChartConfig) => number | undefined; write: (config: ChartConfig, value: number | undefined) => void; min?: number; max?: number; step?: number; fallback?: number }
   | { kind: 'text' | 'color'; read: (config: ChartConfig) => string | undefined; write: (config: ChartConfig, value: string | undefined) => void }
@@ -24,7 +27,7 @@ export function selectControl<T extends string>(key: string, label: string, valu
     write: (config, value) => write(config, values.find(([choice]) => choice === value)?.[0]) }
 }
 
-type ChartObjectOptionGroup = Exclude<keyof ChartSemanticOptions, 'invalidValueStrategy' | 'plotVisibleOnly' | 'series' | 'trendlines' | 'errorBars'>
+type ChartObjectOptionGroup = Exclude<keyof ChartSemanticOptions, 'invalidValueStrategy' | 'plotVisibleOnly' | 'series' | 'namedSeries' | 'trendlines' | 'errorBars'>
 export function optionGroup<K extends ChartObjectOptionGroup>(config: ChartConfig, key: K): NonNullable<ChartSemanticOptions[K]> {
   const options = config.options ??= {}
   if (options[key] === undefined) Object.assign(options, { [key]: {} })
@@ -32,10 +35,16 @@ export function optionGroup<K extends ChartObjectOptionGroup>(config: ChartConfi
   // create a required mapping role through this helper.
   return options[key] as NonNullable<ChartSemanticOptions[K]>
 }
-export function seriesStyleGroup(config: ChartConfig, field?: number): ChartSeriesOptions {
+export function seriesStyleGroup(config: ChartConfig, selector?: ChartSeriesSelector): ChartSeriesOptions {
   const options = config.options ??= {}
-  if (field === undefined) return options.allSeriesStyle ??= {}
-  return (options.series ??= {})[field] ??= {}
+  if (selector === undefined) return options.allSeriesStyle ??= {}
+  validateChartSeriesSelector(selector)
+  if (typeof selector === 'number') return (options.series ??= {})[selector] ??= {}
+  const entries = options.namedSeries ??= [], existing = entries.find(entry => entry.name === selector.name)
+  if (existing) return existing.style
+  const style: ChartSeriesOptions = {}
+  entries.push({ name: selector.name, style })
+  return style
 }
 
 export function chartFontControls(key: string, read: (config: ChartConfig) => ChartFontOptions | undefined, write: (config: ChartConfig) => ChartFontOptions): ChartSettingControl[] {
@@ -75,22 +84,70 @@ export function chartCommonControls(): ChartSettingControl[] {
     switchControl('legend.visible', '显示图例', config => config.legend?.visible, (config, value) => { (config.legend ??= {}).visible = value }, true),
     selectControl('legend.position', '图例位置', [['top', '上方'], ['right', '右侧'], ['bottom', '下方'], ['left', '左侧']], config => config.legend?.position, (config, value) => { (config.legend ??= {}).position = value }, 'bottom'),
     colorControl('appearance.background', '图表背景', config => config.options?.appearance?.background, (config, value) => { optionGroup(config, 'appearance').background = value }),
-    switchControl('plotVisibleOnly', '仅绘制可见单元格', config => config.options?.plotVisibleOnly, (config, value) => { (config.options ??= {}).plotVisibleOnly = value }),
+    switchControl('plotVisibleOnly', '仅绘制可见单元格', config => config.options?.plotVisibleOnly !== false, (config, value) => { (config.options ??= {}).plotVisibleOnly = value }, true),
     selectControl('invalidValueStrategy', '空值处理', [['break', '断开'], ['link', '连接'], ['zero', '按零值']], config => config.options?.invalidValueStrategy, (config, value) => { (config.options ??= {}).invalidValueStrategy = value }, 'break'),
     numberControl('size.width', '宽度', config => config.size.width, (config, value) => { if (value !== undefined) config.size.width = value }, 1, 100_000),
     numberControl('size.height', '高度', config => config.size.height, (config, value) => { if (value !== undefined) config.size.height = value }, 1, 100_000),
   ]
 }
 
-export function chartSeriesControls(field?: number, combination = false, secondaryAxis = false): ChartSettingControl[] {
-  const read = (config: ChartConfig): ChartSeriesOptions | undefined => field === undefined ? config.options?.allSeriesStyle : config.options?.series?.[field]
-  const write = (config: ChartConfig): ChartSeriesOptions => seriesStyleGroup(config, field)
-  const key = field === undefined ? 'allSeriesStyle' : `series.${field}`
+/** Fixed chart-ui Hs fields: line color, line type, label background, label text. */
+export function chartAxisPointerControls(): ChartSettingControl[] {
   return [
-    ...(field === undefined ? [] : [textControl(`${key}.name`, '系列名称', config => read(config)?.name, (config, value) => { write(config).name = value })]),
+    colorControl('axisPointer.indicatorLineColor', '指示线颜色', config => config.options?.axisPointer?.indicatorLineColor, (config, value) => { optionGroup(config, 'axisPointer').indicatorLineColor = value }),
+    selectControl('axisPointer.indicatorLineType', '指示线型', [['solid', '实线'], ['dashed', '虚线'], ['dotted', '点线']], config => config.options?.axisPointer?.indicatorLineType, (config, value) => { optionGroup(config, 'axisPointer').indicatorLineType = value }, 'solid'),
+    colorControl('axisPointer.indicatorLabelColor', '指示标签背景', config => config.options?.axisPointer?.indicatorLabelColor, (config, value) => { optionGroup(config, 'axisPointer').indicatorLabelColor = value }),
+    colorControl('axisPointer.indicatorLabelTextColor', '指示标签文字', config => config.options?.axisPointer?.indicatorLabelTextColor, (config, value) => { optionGroup(config, 'axisPointer').indicatorLabelTextColor = value }),
+  ]
+}
+
+export function chartDateAxisControls(): ChartSettingControl[] {
+  return [switchControl('mapping.useDateAxis', '日期轴', config => config.options?.mapping?.useDateAxis, (config, value) => {
+    optionGroup(config, 'mapping').useDateAxis = value
+    if (value && config.xAxis?.scaleType === 'log') { config.xAxis.scaleType = 'linear'; config.xAxis.logBase = undefined }
+  })]
+}
+
+type ChartPatternStyle = Pick<ChartSeriesOptions, 'color' | 'fillPattern'>
+/** The preset selector edits the authored layer, keeping inherited and explicitly solid fills distinguishable. */
+export function chartFillPatternControls(key: string, read: (config: ChartConfig) => ChartPatternStyle | undefined,
+  write: (config: ChartConfig) => ChartPatternStyle, effective = read, prefix = ''): ChartSettingControl[] {
+  const choices: ReadonlyArray<readonly [ChartFillPatternPreset | 'inherit' | 'none', string]> = [['inherit', '继承默认填充'], ['none', '纯色填充'], ...CHART_FILL_PATTERN_PRESETS]
+  const foreground = (config: ChartConfig): string => effective(config)?.fillPattern?.foregroundColor ?? effective(config)?.color ?? chartPalette(config)[0]!
+  const background = (config: ChartConfig): string => effective(config)?.fillPattern?.backgroundColor ?? config.options?.appearance?.background ?? '#ffffff'
+  const preset = selectControl(`${key}.fillPattern.preset`, `${prefix}填充纹理`, choices,
+    config => read(config)?.fillPattern === null ? 'none' : read(config)?.fillPattern?.preset ?? 'inherit', (config, value) => {
+      if (value === undefined || value === 'inherit') write(config).fillPattern = undefined
+      else if (value === 'none') write(config).fillPattern = null
+      else write(config).fillPattern = { preset: value, foregroundColor: foreground(config), backgroundColor: background(config) }
+    }, 'inherit')
+  preset.visible = config => config.type !== 'wordCloud'
+  const colors = (['foregroundColor', 'backgroundColor'] as const).map(property => ({
+    ...colorControl(`${key}.fillPattern.${property}`, `${prefix}纹理${property === 'foregroundColor' ? '前景色' : '背景色'}`,
+      config => read(config)?.fillPattern?.[property], (config, value) => {
+        const pattern = read(config)?.fillPattern
+        if (pattern) write(config).fillPattern = { ...pattern, [property]: value ?? (property === 'foregroundColor' ? effective(config)?.color ?? chartPalette(config)[0]! : config.options?.appearance?.background ?? '#ffffff') }
+      }), visible: (config: ChartConfig) => config.type !== 'wordCloud' && Boolean(read(config)?.fillPattern),
+  }))
+  return [preset, ...colors]
+}
+
+export function chartSeriesControls(selector?: ChartSeriesSelector, combination = false, secondaryAxis = false, horizontal = false,
+  source?: { field: number; position: number; name: string }): ChartSettingControl[] {
+  const read = (config: ChartConfig): ChartSeriesOptions | undefined => selector === undefined ? config.options?.allSeriesStyle
+    : typeof selector === 'object' && source ? chartSeriesStyle(config, source.field, source.position, chartPalette(config), selector.name)
+      : chartSeriesOverride(config.options, selector)
+  const write = (config: ChartConfig): ChartSeriesOptions => seriesStyleGroup(config, selector)
+  const authored = (config: ChartConfig): ChartSeriesOptions | undefined => selector === undefined ? config.options?.allSeriesStyle : chartSeriesOverride(config.options, selector)
+  const effective = (config: ChartConfig): ChartSeriesOptions | undefined => selector === undefined ? authored(config)
+    : chartSeriesStyle(config, typeof selector === 'number' ? selector : source?.field ?? 0, source?.position ?? 0, chartPalette(config), typeof selector === 'object' ? selector.name : undefined)
+  const key = selector === undefined ? 'allSeriesStyle' : typeof selector === 'number' ? `series.${selector}` : `namedSeries.${JSON.stringify(selector.name)}`
+  return [
+    ...(selector === undefined ? [] : [textControl(`${key}.name`, '系列显示名称', config => read(config)?.name, (config, value) => { write(config).name = value })]),
     ...(combination ? [selectControl(`${key}.type`, '系列图型', [['column', '柱形'], ['columnStacked', '堆积柱形'], ['line', '折线'], ['area', '面积'], ['areaStacked', '堆积面积']], config => read(config)?.type, (config, value) => { write(config).type = value })] : []),
-    ...(secondaryAxis ? [switchControl(`${key}.rightAxis`, '使用右侧数值轴', config => read(config)?.rightAxis, (config, value) => { write(config).rightAxis = value })] : []),
-    colorControl(`${key}.color`, '系列颜色', config => read(config)?.color, (config, value) => { write(config).color = value }),
+    ...(secondaryAxis ? [switchControl(`${key}.rightAxis`, horizontal ? '使用顶部数值轴' : '使用右侧数值轴', config => read(config)?.rightAxis, (config, value) => { write(config).rightAxis = value })] : []),
+    colorControl(`${key}.color`, '系列颜色', config => read(config)?.color, (config, value) => { const style = write(config); style.color = value; style.fillPattern = null }),
+    ...chartFillPatternControls(key, authored, write, effective),
     numberControl(`${key}.fillOpacity`, '填充不透明度', config => read(config)?.fillOpacity, (config, value) => { write(config).fillOpacity = value }, 0, 1),
     selectControl(`${key}.point.shape`, '标记形状', [['circle', '圆形'], ['rect', '方形'], ['triangle', '三角形'], ['diamond', '菱形'], ['none', '无标记']], config => read(config)?.point?.shape, (config, value) => { (write(config).point ??= {}).shape = value }),
     numberControl(`${key}.point.size`, '标记大小', config => read(config)?.point?.size, (config, value) => { (write(config).point ??= {}).size = value }, 0, 256),
@@ -100,7 +157,8 @@ export function chartSeriesControls(field?: number, combination = false, seconda
   ]
 }
 
-function axisGroup(config: ChartConfig, axis: 'xAxis' | 'yAxis' | 'rightYAxis'): ChartAxisOptions {
+function axisGroup(config: ChartConfig, axis: 'xAxis' | 'yAxis' | 'rightYAxis' | 'depthAxis'): Partial<ChartAxisOptions> {
+  if (axis === 'depthAxis') return optionGroup(config, 'depthAxis')
   if (axis === 'rightYAxis') return (config.options ??= {}).rightYAxis ??= { scaleType: 'linear' }
   const current = config[axis]
   const next: ChartAxisOptions = { scaleType: 'linear', ...current }
@@ -108,15 +166,19 @@ function axisGroup(config: ChartConfig, axis: 'xAxis' | 'yAxis' | 'rightYAxis'):
   return next
 }
 
-export function chartAxisControls(axis: 'xAxis' | 'yAxis' | 'rightYAxis', allowScale = true): ChartSettingControl[] {
-  const read = (config: ChartConfig): Partial<ChartAxisOptions> | undefined => axis === 'rightYAxis' ? config.options?.rightYAxis : config[axis]
-  const write = (config: ChartConfig): ChartAxisOptions => axisGroup(config, axis)
+export function chartAxisControls(axis: 'xAxis' | 'yAxis' | 'rightYAxis' | 'depthAxis', allowScale = true, dateAxis = false): ChartSettingControl[] {
+  const read = (config: ChartConfig): Partial<ChartAxisOptions> | undefined => axis === 'rightYAxis' || axis === 'depthAxis' ? config.options?.[axis] : config[axis]
+  const write = (config: ChartConfig): Partial<ChartAxisOptions> => axisGroup(config, axis)
   return [
     textControl(`${axis}.title`, '轴标题', config => read(config)?.title, (config, value) => { write(config).title = value }),
+    selectControl(`${axis}.titleAlignment`, '轴标题对齐', [['start', '起点'], ['center', '居中'], ['end', '终点']], config => read(config)?.titleAlignment, (config, value) => { write(config).titleAlignment = value }, 'center'),
+    ...chartFontControls(`${axis}.titleStyle`, config => read(config)?.titleStyle, config => write(config).titleStyle ??= {}),
     switchControl(`${axis}.reverse`, '反向轴', config => read(config)?.reverse, (config, value) => { write(config).reverse = value }),
-    ...(allowScale ? [
+    ...(allowScale && axis !== 'depthAxis' ? [
+      ...(!dateAxis ? [
       selectControl(`${axis}.scaleType`, '刻度', [['linear', '线性'], ['log', '对数']], config => read(config)?.scaleType, (config, value) => { write(config).scaleType = value ?? 'linear' }, 'linear'),
       numberControl(`${axis}.logBase`, '对数底数', config => read(config)?.logBase, (config, value) => { write(config).logBase = value }, 2, 1000, 10),
+      ] : []),
       numberControl(`${axis}.min`, '最小刻度', config => read(config)?.min, (config, value) => { write(config).min = value }),
       numberControl(`${axis}.max`, '最大刻度', config => read(config)?.max, (config, value) => { write(config).max = value }),
       textControl(`${axis}.format`, '轴数字格式', config => read(config)?.format, (config, value) => { write(config).format = value }),

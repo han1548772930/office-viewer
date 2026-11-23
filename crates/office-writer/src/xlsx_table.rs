@@ -18,6 +18,8 @@ pub(crate) struct TableInput {
     pub(crate) show_totals_row: bool,
     #[serde(default = "default_style")]
     pub(crate) style_name: String,
+    #[serde(default)]
+    pub(super) auto_filter: Option<super::auto_filter::AutoFilterInput>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -12,6 +12,13 @@ pub mod conditional_format_source;
 pub mod conditional_format_color;
 pub mod sheet_validation_source;
 pub mod document_legacy_source;
+pub mod chart_kind;
+pub mod chart_options;
+pub mod chart_color;
+pub mod chart_xml;
+pub mod excel_date;
+pub mod document_table_source;
+pub mod document_numbering_source;
 
 pub const MAXIMUM_DIGIT_WIDTH_PIXELS: f64 = 7.0;
 pub const CSS_PIXELS_PER_POINT: f64 = 4.0 / 3.0;

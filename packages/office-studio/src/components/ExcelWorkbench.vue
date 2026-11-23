@@ -4,7 +4,7 @@ import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme.ts'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
-import { FOffice } from '../api/facade'
+import { FOffice, type FChart } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ApiSheetSelection } from '../api/events.ts'
 import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND } from '../api/sheet-selection-commands.ts'
@@ -14,7 +14,7 @@ import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from
 import { applyExcelWorkbookView, toExcelCellView, toExcelWorkbookView } from '../services/excelViewAdapter'
 import { createBlankWorkbook } from '../domain/model'
 import type { ChartModel } from '../domain/model'
-import type { ChartConfig } from '../features/charts/chart-engine'
+import { useSheetChartPanels } from '../features/charts/views/use-sheet-chart-panels'
 import type { SlicerModel } from '../domain/model'
 import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
 import ChartOverlay from './ChartOverlay.vue'
@@ -245,16 +245,8 @@ watch(() => displayPreference?.value.zoom, value => {
   zoom.value = value
 })
 const chartCommands = ref<DrawCommand[]>([])
-const chartEditorOpen = ref(false)
 const focusedChartId = ref<string | null>(null)
 const chartPointerOrigin = ref<{ x: number; y: number } | null>(null)
-const chartModalOpen = ref(false)
-const chartInsertConfig = ref<ChartConfig | null>(null)
-const chartInsertBusy = ref(false)
-const chartEditorBusy = ref(false)
-const chartEditorError = ref('')
-const chartInsertContext = shallowRef<{ studio: OfficeStudio; unitId: string; sheetId: string }>()
-const chartError = ref('')
 const hyperlinkDialogOpen = ref(false)
 const hyperlinkTarget = ref('')
 const hyperlinkDisplay = ref('')
@@ -267,7 +259,6 @@ const editingHyperlink = computed(() => {
 const workbenchRef = ref<HTMLElement | null>(null)
 const isFullscreen = ref(false)
 const pivotPanelOpen = ref(false)
-const pivotChartPanelOpen = ref(false)
 const pivotSource = ref('')
 const slicerPanelOpen = ref(false)
 const slicerKind = ref<'slicer' | 'timeline'>('slicer')
@@ -331,6 +322,19 @@ const slicerControls = computed(() => {
 })
 
 const activeSheet = computed(() => availableSheets.value.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? availableSheets.value.find(sheet => sheet.visible !== false))
+const { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, chartEditorBusy, chartError, chartEditorError,
+  chartInsertContext, chartEditorContext, pivotChartContext, chartEditorChart, chartEditorData, chartEditorSheet, chartEditorSheets, chartInsertSheets,
+  openInsertChart, openChartEditor, openPivotChart } = useSheetChartPanels({
+  studio: () => props.studio, unitId: () => workbook.value.id, sheetId: () => activeSheet.value?.id,
+  sheets: () => availableSheets.value, active: () => workbenchActive.value,
+  canRestoreFocus: () => !editingKey.value && !editComposing.value
+    && (!props.studio || props.studio.activeWorkbookId === workbook.value.id && props.studio.editor.state.activeKind === 'workbook'),
+  refresh: (studio, unitId) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (model && props.studio === studio && workbook.value.id === unitId) applyExternalWorkbook(toExcelWorkbookView(model))
+  },
+  focus: () => spreadsheetCanvas.value?.focus(), notify: message => emit('notify', { type: 'error', message }),
+})
 const activeDate1904 = computed(() => resolveSheetDate1904(activeSheet.value, workbook.value))
 const activeRenderSheet = computed(() => activeSheet.value
   ? { ...activeSheet.value, date1904: activeDate1904.value } : undefined)
@@ -794,42 +798,8 @@ function openChartDialog() {
     return
   }
   const bounds = selectionBounds(selectedRanges.value) ?? { startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }
-  chartInsertContext.value = { studio, unitId, sheetId: sheet.id }
-  chartInsertConfig.value = { type: 'bar', source: { range: chartSourceFromGridRange(bounds), orientation: 'columns', sheetId: sheet.id },
-    position: chartPositionForRange(bounds, sheet), size: { width: 480, height: 300 }, categoryField: 0, valueFields: [] }
-  chartError.value = ''
-  chartModalOpen.value = true
-}
-
-async function confirmChartDialog(config: ChartConfig) {
-  const context = chartInsertContext.value
-  if (!context || chartInsertBusy.value) return
-  chartInsertBusy.value = true
-  chartError.value = ''
-  try {
-    if (props.studio !== context.studio) throw new Error('图表所属的编辑会话已经关闭，请重新打开插入图表。')
-    const target = FOffice.newAPI(context.studio).getWorkbook(context.unitId)?.getSheetBySheetId(context.sheetId)
-    if (!target) throw new Error('图表所属的工作簿或工作表已经关闭。')
-    await target.insertChart(config)
-    const model = context.studio.getWorkbookModel(context.unitId)
-    if (model && props.studio === context.studio && workbook.value.id === context.unitId) applyExternalWorkbook(toExcelWorkbookView(model))
-    chartModalOpen.value = false
-  } catch (error) {
-    chartError.value = error instanceof Error ? error.message : '图表数据范围不可用。'
-  } finally { chartInsertBusy.value = false }
-}
-
-function afterChartDialogClose(): void {
-  const context = chartInsertContext.value
-  chartInsertContext.value = undefined
-  chartInsertConfig.value = null
-  if (context && props.studio === context.studio && workbook.value.id === context.unitId && activeSheetId.value === context.sheetId
-    && workbenchActive.value && !editingKey.value && !editComposing.value) spreadsheetCanvas.value?.focus()
-}
-
-function afterChartEditorClose(): void {
-  chartEditorError.value = ''
-  if (workbenchActive.value && !editingKey.value && !editComposing.value) spreadsheetCanvas.value?.focus()
+  openInsertChart({ type: 'bar', source: { range: chartSourceFromGridRange(bounds), orientation: 'columns', sheetId: sheet.id },
+    position: chartPositionForRange(bounds, sheet), size: { width: 480, height: 300 }, categoryField: 0, valueFields: [] })
 }
 
 function openHyperlinkDialog(): void {
@@ -1011,8 +981,26 @@ function scrollSlicerTo(payload: { slicerId: string; position: number }) {
 }
 
 async function updateChartLayout(payload: { chartId: string; patch: Partial<Pick<ChartModel, 'position' | 'size'>> }) {
-  const chart = getChartWorksheet(activeSheet.value?.id ?? '')?.getChartById(payload.chartId)
-  if (chart) await chart.update(payload.patch)
+  await applyChartChange(payload.chartId, async chart => { await chart.update(payload.patch); return true })
+}
+
+async function applyChartChange(chartId: string, change: (chart: FChart) => Promise<boolean>, applied?: () => void): Promise<void> {
+  const studio = props.studio, unitId = workbook.value.id, sheetId = activeSheet.value?.id
+  if (!studio || !unitId || !sheetId || !workbenchActive.value) return
+  const current = (): boolean => props.studio === studio && workbook.value.id === unitId && activeSheet.value?.id === sheetId
+    && workbenchActive.value && studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook'
+    && studio.getWorkbookModel(unitId)?.activeSheetId === sheetId
+  try {
+    const chart = FOffice.newAPI(studio).getWorkbook(unitId)?.getSheetBySheetId(sheetId)?.getChartById(chartId)
+    if (!chart) throw new Error('图表所属的工作簿、工作表或图表已被删除。')
+    if (!await change(chart)) throw new Error('图表操作未能提交。')
+    if (!current()) return
+    const model = studio.getWorkbookModel(unitId)
+    if (model) applyExternalWorkbook(toExcelWorkbookView(model))
+    if (current()) applied?.()
+  } catch (reason) {
+    if (current()) emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : String(reason) })
+  }
 }
 
 function rememberChartPointer(event: PointerEvent): void {
@@ -1035,30 +1023,14 @@ function focusChartFromOverlay(event: MouseEvent): void {
   const chart = sheetCharts.value[index]
   if (!chart) return
   focusedChartId.value = chart.id
-  chartEditorError.value = ''
-  chartEditorOpen.value = true
-}
-
-async function applyChartSettings(patch: Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>): Promise<void> {
-  if (chartEditorBusy.value) return
-  const chart = focusedChart.value
-  const studio = props.studio, unitId = workbook.value.id
-  const target = chart && getChartWorksheet(chart.sheetId)?.getChartById(chart.id)
-  if (!chart || !target || !studio || !unitId) { chartEditorError.value = '图表所属的工作簿或图表已经关闭。'; return }
-  chartEditorBusy.value = true
-  chartEditorError.value = ''
-  try {
-    await target.update(patch)
-    const model = studio.getWorkbookModel(unitId)
-    if (model && props.studio === studio && workbook.value.id === unitId) applyExternalWorkbook(toExcelWorkbookView(model))
-  } catch (error) {
-    chartEditorError.value = error instanceof Error ? error.message : '图表设置未能应用。'
-  } finally { chartEditorBusy.value = false }
+  openChartEditor(chart)
 }
 
 async function removeChart(chartId: string) {
-  const chart = getChartWorksheet(activeSheet.value?.id ?? '')?.getChartById(chartId)
-  if (chart) await chart.remove()
+  await applyChartChange(chartId, chart => chart.remove(), () => {
+    if (focusedChartId.value === chartId) focusedChartId.value = null
+    if (chartEditorContext.value?.chartId === chartId) chartEditorContext.value.setOpen(false)
+  })
 }
 
 function setCellValue(key: string, value: string, region = officeRegion.value, date1904 = activeDate1904.value,
@@ -2115,7 +2087,7 @@ function openPivotChartPanel(): void {
     emit('notify', { type: 'info', message: '请先创建数据透视表。' })
     return
   }
-  pivotChartPanelOpen.value = true
+  openPivotChart()
 }
 
 function openDataPanel(mode: 'filter' | 'sort'): void {
@@ -2608,7 +2580,7 @@ onActivated(() => { workbenchActive.value = true })
       @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo"
       @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings"
       @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
-        <ChartOverlay v-if="activeSheet" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @pointerdown.capture="rememberChartPointer" @click.capture="focusChartFromOverlay" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
+        <ChartOverlay v-if="activeSheet" :studio="props.studio" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" @pointerdown.capture="rememberChartPointer" @click.capture="focusChartFromOverlay" @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
       </SplitterPanel>
       <SplitterPanel class="sheet-context-panel" :size="sheetSidebarOpen ? sheetSidebarWidth : 0" :min="sheetSidebarOpen ? 280 : 0" :max="800" :resizable="sheetSidebarOpen">
         <CustomNumberFormatPanel v-if="customNumberFormatOpen" v-model:open="customNumberFormatOpen" :disabled="!canFormatSelection" :date1904="activeDate1904" :current-pattern="numberFormatSource.pattern" :sample-value="numberFormatSource.sample" :selection-key="numberFormatSelectionKey" @preview="previewNumberFormat" @apply="applyCustomNumberFormat" @preference-error="(message) => emit('notify', { type: 'warning', message })" />
@@ -2616,8 +2588,8 @@ onActivated(() => { workbenchActive.value = true })
       </SplitterPanel>
     </Splitter>
 
-    <ChartEditorPanel v-model:open="chartEditorOpen" :chart="focusedChart" :sheet="activeSheet" :sheets="availableSheets" :busy="chartEditorBusy" :error="chartEditorError" @apply="applyChartSettings" @closed="afterChartEditorClose" />
-    <ChartInsertDialog v-model:open="chartModalOpen" :config="chartInsertConfig" :sheets="availableSheets" :host-sheet-id="chartInsertContext?.sheetId" :busy="chartInsertBusy" :error="chartError" @apply="confirmChartDialog" @closed="afterChartDialogClose" />
+    <ChartEditorPanel v-if="chartEditorContext" :key="chartEditorContext.key" :open="chartEditorOpen" :chart="chartEditorChart" :sheet="chartEditorSheet" :sheets="chartEditorSheets" :data="chartEditorData" :date1904="activeDate1904" :busy="chartEditorBusy" :error="chartEditorError" @update:open="chartEditorContext.setOpen" @apply="chartEditorContext.apply" @closed="chartEditorContext.closed" />
+    <ChartInsertDialog v-if="chartInsertContext" :key="chartInsertContext.key" :open="chartModalOpen" :config="chartInsertContext.config" :sheets="chartInsertSheets" :host-sheet-id="chartInsertContext.sheetId" :date1904="activeDate1904" :busy="chartInsertBusy" :error="chartError" @update:open="chartInsertContext.setOpen" @apply="chartInsertContext.apply" @closed="chartInsertContext.closed" />
 
     <Modal v-model:open="hyperlinkDialogOpen" :title="editingHyperlink ? '编辑超链接' : '插入超链接'" ok-text="确定" cancel-text="取消" :width="440" @ok="confirmHyperlinkDialog">
       <Form layout="vertical" @submit.prevent>
@@ -2659,7 +2631,7 @@ onActivated(() => { workbenchActive.value = true })
     <SheetMergeConfirmationDialog :request="painterRequest" :error="painterError" @confirm="confirmPainter" @cancel="cancelPainterConfirmation" @closed="afterPainterClose" />
     <SheetFooter v-if="chrome.footer" :sheets="availableSheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
-    <PivotChartPanel v-if="pivotChartPanelOpen && activeSheet && studio && workbook.id" v-model:open="pivotChartPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" />
+    <PivotChartPanel v-if="pivotChartContext" :key="pivotChartContext.key" :open="pivotChartPanelOpen" :studio="pivotChartContext.studio" :workbook-id="pivotChartContext.unitId" :sheet-id="pivotChartContext.sheetId" @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
     <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" v-model:open="conditionalFormattingOpen" :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />

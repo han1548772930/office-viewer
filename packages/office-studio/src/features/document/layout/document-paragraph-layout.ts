@@ -5,6 +5,7 @@ import { codeBlockData } from '../code-blocks/code-blocks'
 import type { DocumentLayout, LayoutImage, LayoutLine, LayoutMeasurer } from './document-layout-types'
 import type { DocumentSectionFlow } from './document-section-flow'
 import { paragraphLineHeight, positionLine, runFont, wrapRuns } from './document-text-layout'
+import { documentTocPageTab } from '../toc/document-toc-layout'
 
 export interface ParagraphGeometry {
   indent: number
@@ -55,8 +56,13 @@ export function appendListMarker(line: LayoutLine, block: DocumentBlock, list: P
 export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphListMarker | undefined, flow: DocumentSectionFlow, result: DocumentLayout, measurer: LayoutMeasurer): void {
   const codeData = codeBlockData(block), text = runText(block.runs)
   let available = flow.column.width, geometry = paragraphGeometry(block, list, available, measurer)
-  let lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true)
   let rawIndex = 0, lineIndex = 0, baseOffset = 0
+  const pageTab = documentTocPageTab(block)
+  const rightTabs = (index: number) => !pageTab || pageTab.offset < baseOffset ? [] : pageTab.stops.map(stop => ({ ...stop,
+    offset: pageTab.offset - baseOffset,
+    ...(stop.right === undefined ? {} : { right: Math.max(0, stop.right - (index + lineIndex === 0 ? geometry.firstIndent : geometry.indent)) }),
+  }))
+  let lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined)
   while (rawIndex < lines.length) {
     const raw = lines[rawIndex]!
     const height = paragraphLineHeight(Math.max(raw.fontHeight, lineIndex === 0 ? geometry.markerHeight : 0), block.style)
@@ -69,7 +75,7 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
       geometry = paragraphGeometry(block, list, available, measurer)
       const remaining = sliceRuns(block.runs as DocumentRun[], baseOffset, text.length)
       if (!remaining.length && block.runs.length) remaining.push({ ...block.runs.at(-1)!, text: '' })
-      lines = wrapRuns(remaining, index => geometry.width(index + lineIndex), measurer, block.style.wordWrap === true)
+      lines = wrapRuns(remaining, index => geometry.width(index + lineIndex), measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined)
       rawIndex = 0
       continue
     }

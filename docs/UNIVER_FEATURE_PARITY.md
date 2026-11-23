@@ -76,7 +76,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-26 | 迷你图（Pro 目标） | [公开规格][sheet-sparkline] | 公开图型、源范围、分组/比例/空值/负值样式、源更新与复制移动引用、导出 | 未验收 |
 | SHEET-27 | 大纲分组（Pro 目标） | [分组规格][sheet-outline] | 行列嵌套组、层级、折叠/展开、汇总方向；与筛选/手动隐藏原因组合，不互相覆盖 | 未验收 |
 | SHEET-28 | 打印和 PDF（Pro 目标） | [打印规格][sheet-print] | 纸张/方向/边距/打印区域/缩放适页、分页预览、重复标题、页眉页脚、网格与隐藏处理、真实输出 | 未验收 |
-| SHEET-29 | 导入和 Office 导出（Pro/Server 对齐目标） | [导入导出规格][sheet-io]、duke-pages/rxls 的实际契约 | XLS/XLSX/CSV/TSV 对齐公开规格；保留已有 XLSB/ODS 读取；真实 XLSX/CSV/TSV 写出及重导入 | 未验收；[条件格式来源与资源预算、Office 往返草稿](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md) |
+| SHEET-29 | 导入和 Office 导出（Pro/Server 对齐目标） | [导入导出规格][sheet-io]、duke-pages/rxls 的实际契约 | XLS/XLSX/CSV/TSV 对齐公开规格；保留已有 XLSB/ODS 读取；真实 XLSX/CSV/TSV 写出及重导入 | 未验收；[条件格式来源与资源预算、Office 往返草稿](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md)、[原生图表/辅助公式绑定与往返草稿](feature-evidence/SHEET-29-native-charts.md) |
 | SHEET-30 | 工作簿/工作表/范围保护 | [权限规格][sheet-permission]、公开源码 permission | 保护粒度、可执行操作、只读反馈与撤销/协作边界；服务端验证，不能仅隐藏菜单 | 未验收 |
 
 每个模块的“全部公开”指固定基线对应的具体行为/函数/图型目录，不代表可以用一条笼统说明代替细项。开发前把目录展开为可测试子项；未核实的子项记录为待核实，不能自行选择一小部分后将整个模块标完成。
@@ -91,8 +91,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | DOC-02 | 字符和段落格式 | 核心 API、公开源码 docs-ui/menu | 字体/字号/颜色/高亮/上下标/字符样式、标题级别、对齐/缩进/行距/段前后、混合选区；格式与模型一致 | 未验收；[上下标](feature-evidence/DOC-02-vertical-align.md)、[局部格式、清除与来源保留](feature-evidence/DOC-02-clear-formatting.md)、[输入偏好与取消/历史](feature-evidence/COMMON-03-input-selection-axis-history.md) |
 | DOC-03 | 分页、分栏、分节与页眉页脚 | 公开源码 header-footer、insert-break、布局引擎 | 连续/下一页/奇偶页等公开分节语义、节级布局、首页/奇偶页、与前节关联、页码与字段更新 | 未验收；[分节符切片证据](feature-evidence/DOC-03-section-breaks.md) |
 | DOC-04 | 左侧大纲、标题折叠和正文目录 | [目录规格][doc-toc]、公开源码 DocSideMenu/docs-toc/doc-heading-collapse/docs-toc-ui | 大纲导航；现代标题折叠保留子状态、隐藏选区迁回可见标题、历史/保存/同步；正文目录支持整体/页码更新与删除 | 未验收；[正文目录源码对照与本地差异](feature-evidence/DOC-04-table-of-contents.md) |
-| DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收；[清单列表切片证据](feature-evidence/DOC-05-checklist.md) |
-| DOC-06 | 表格与增强表格（含 Pro 目标） | [表格规格][doc-table]、公开基础表格 | 行列/单元格模型、插删移动/尺寸、合并拆分、边框背景、文字对齐与整表对齐分别实现；上游整表对齐限传统模式，跨页/嵌套细项待核实并保留目标 | 未验收 |
+| DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收；[清单列表切片证据](feature-evidence/DOC-05-checklist.md)、[原生编号资源映射及未运行草稿](feature-evidence/DOC-22-native-numbering-resources.md) |
+| DOC-06 | 表格与增强表格（含 Pro 目标） | [表格规格][doc-table]、公开基础表格 | 行列/单元格模型、插删移动/尺寸、合并拆分、边框背景、文字对齐与整表对齐分别实现；上游整表对齐限传统模式，跨页/嵌套细项待核实并保留目标 | 未验收；[17 根清点、候选事务/续格/富文本粘贴与未运行草稿](feature-evidence/DOC-06-enhanced-tables.md)、[原生表格来源与读写草稿](feature-evidence/DOC-22-native-tables.md) |
 | DOC-07 | 图片和文字环绕 | [图片规格][doc-images]、公开源码 docs-drawing | 行内/环绕、锚点、偏移、尺寸/裁剪/旋转/层级、替换及 Office 关系；输入/分页随对象更新 | 未验收 |
 | DOC-08 | 超链接和书签/锚点 | [超链接规格][doc-links]、公开源码 docs-hyper-link | 范围目标、插入/编辑/删除、位置变换、跳转、序列化与文件映射 | 未验收 |
 | DOC-09 | 查找替换 | [查找替换规格][doc-find]、公开源码 docs-find-replace | 遍历与作用域明确、匹配高亮/定位、可撤销替换；正文表格、页眉页脚等覆盖分别记录，不虚报上游一期限制 | 未验收 |
@@ -108,7 +108,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | DOC-19 | 文档图表（Pro 目标） | [共享图表规格][shared-charts]及官方 Docs 图表 API | 复用可编辑图表模型、内嵌数据/源引用、尺寸/环绕/分页、属性编辑及 Office 图表关系 | 未验收 |
 | DOC-20 | 水印 | [水印规格][doc-watermark]、公开源码 watermark | 文本/图片、样式/透明度/定位、页面范围、打印与导出保留 | 未验收 |
 | DOC-21 | 打印和 PDF（Pro 目标） | [打印规格][doc-print] | 使用真实排版、页范围/纸张/方向/边距、分页/页眉页脚/图表/脚注正确；真实打印/PDF 输出 | 未验收 |
-| DOC-22 | 导入与 DOCX 写出（Pro/Server 对齐目标） | [导入导出规格][doc-io]、本项目 duke-pages 适配 | DOC/DOCX 导入、DOCX 真正写出；保留已有 ODT 读取；样式/节/列表/表格/对象/关系重开验证 | 未验收；[默认样式、字段缓存与 DOC/ODT 历史来源](feature-evidence/DOC-02-clear-formatting.md) |
+| DOC-22 | 导入与 DOCX 写出（Pro/Server 对齐目标） | [导入导出规格][doc-io]、本项目 duke-pages 适配 | DOC/DOCX 导入、DOCX 真正写出；保留已有 ODT 读取；样式/节/列表/表格/对象/关系重开验证 | 未验收；[默认样式与历史来源](feature-evidence/DOC-02-clear-formatting.md)、[正文原生字段与段落保留](feature-evidence/DOC-22-native-fields.md)、[原生表格/续格/legacy merge 来源与草稿](feature-evidence/DOC-22-native-tables.md)、[原生编号/媒体依赖映射](feature-evidence/DOC-22-native-numbering-resources.md) |
 | DOC-23 | 文档统计与排版状态 | 公开源码 DocFooter/DocStatistics/DocLayoutProgress | 文档/选区统计、页信息、缩放、排版任务真实进度；与内容历史、保存状态分开 | 未验收 |
 
 传统分页和现代连续模式中，上游标明尚未支持/计划中的行为，应记录真实成熟度；用户完整目标仍保留。不能将未知细节写成“已经完整实现”，也不能将单个模式限制扩大为全部文档能力限制。

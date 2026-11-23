@@ -1,5 +1,6 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
-import { collapsedSelection, createParagraph, createRun, orderedSelection, runText, selectionCollapsed, type DocumentSelection, type RunPatch } from '../model/document-model.ts'
+import { blockAtPoint, collapsedSelection, createParagraph, createRun, findDocumentBlock, findDocumentBlockContainer, orderedSelection,
+  runText, sameTarget, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../model/document-model.ts'
 import { replaceDocumentRunRange } from '../model/document-run-range'
 import { documentDefaultStyle } from '../model/document-default-style'
 import { isDocumentTextBoundary } from '../model/document-story'
@@ -49,11 +50,11 @@ export function codeBlockData(block: DocumentBlock): DocumentCodeBlockData | und
 }
 
 export function codeBlocks(model: DocumentModel): DocumentBlock[] {
-  return model.blocks.filter((block) => codeBlockData(block) !== undefined)
+  return textTargets(model).flatMap(target => { const block = blockAtPoint(model, target); return block && codeBlockData(block) ? [block] : [] })
 }
 
 export function updateCodeBlock(model: DocumentModel, blockId: string, patch: Partial<DocumentCodeBlockData>): boolean {
-  const block = model.blocks.find((candidate) => candidate.id === blockId)
+  const block = findDocumentBlock(model, blockId)
   if (!block) return false
   const current = codeBlockData(block)
   if (!current) return false
@@ -96,9 +97,10 @@ function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, curren
 }
 
 export function editCodeBlockText(model: DocumentModel, selection: DocumentSelection, edit: { text: string; marks?: RunPatch } | { deleteDirection: -1 | 1 }): DocumentSelection | undefined {
+  if (selection.tableSelection) return undefined
   const { start, end } = orderedSelection(model, selection)
-  if (start.blockId !== end.blockId || start.row != null || end.row != null) return undefined
-  const block = model.blocks.find((candidate) => candidate.id === start.blockId)
+  if (!sameTarget(start, end)) return undefined
+  const block = blockAtPoint(model, start)
   const data = block && codeBlockData(block)
   if (!block || !data || !isDocumentTextBoundary(data.source, start.offset) || !isDocumentTextBoundary(data.source, end.offset)) return undefined
   let startOffset = start.offset
@@ -117,32 +119,37 @@ export function editCodeBlockText(model: DocumentModel, selection: DocumentSelec
   const source = `${data.source.slice(0, startOffset)}${insertion}${data.source.slice(endOffset)}`
   applyCodeBlockUpdate(model, block, data, { ...data, source }, { startOffset, endOffset, text: insertion }, 'text' in edit ? edit.marks : undefined)
   const caret = startOffset + insertion.length
-  return collapsedSelection({ blockId: block.id, offset: caret })
+  return collapsedSelection({ ...start, offset: caret })
 }
 
 export function insertCodeBlock(model: DocumentModel, afterBlockId: string | undefined, source = '', language: DocumentCodeLanguage = 'plain'): DocumentBlock {
   const block = createCodeBlock(source, language)
-  const index = afterBlockId ? model.blocks.findIndex((candidate) => candidate.id === afterBlockId) : model.blocks.length - 1
-  model.blocks.splice(index < 0 ? model.blocks.length : index + 1, 0, block)
+  const container = afterBlockId ? findDocumentBlockContainer(model, afterBlockId) : model.blocks
+  if (!container) throw new RangeError('代码块插入目标已不存在')
+  const index = afterBlockId ? container.findIndex((candidate) => candidate.id === afterBlockId) : container.length - 1
+  if (afterBlockId && index < 0) throw new RangeError('代码块插入目标已不存在')
+  container.splice(index + 1, 0, block)
   return block
 }
 
 export function exitCodeBlock(model: DocumentModel, blockId: string): DocumentBlock | undefined {
-  const index = model.blocks.findIndex((candidate) => candidate.id === blockId)
-  const block = model.blocks[index]
+  const container = findDocumentBlockContainer(model, blockId)
+  const index = container?.findIndex((candidate) => candidate.id === blockId) ?? -1
+  const block = container?.[index]
   if (!block || !codeBlockData(block)) return undefined
   const paragraph = createParagraph()
-  model.blocks.splice(index + 1, 0, paragraph)
+  container!.splice(index + 1, 0, paragraph)
   return paragraph
 }
 
 export function cancelEmptyCodeParagraph(model: DocumentModel, blockId: string): boolean {
-  const index = model.blocks.findIndex((candidate) => candidate.id === blockId)
-  const block = model.blocks[index]
+  const container = findDocumentBlockContainer(model, blockId)
+  const index = container?.findIndex((candidate) => candidate.id === blockId) ?? -1
+  const block = container?.[index]
   const data = block && codeBlockData(block)
   if (!block || !data || data.source.length !== 0 || runText(block.runs).length !== 0) return false
-  model.blocks.splice(index, 1)
-  if (!model.blocks.length) model.blocks.push(createParagraph())
+  container!.splice(index, 1)
+  if (!container!.length) container!.push(createParagraph())
   return true
 }
 

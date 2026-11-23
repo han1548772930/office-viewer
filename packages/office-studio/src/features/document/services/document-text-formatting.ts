@@ -4,9 +4,23 @@ import { isDocumentTextBoundary } from '../model/document-story'
 import { assertDocumentPermission, permissionTargetsForSelection, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { assertTextRangeEditable } from './content-controls'
 import { flattenDocumentBody } from './document-facade'
+import { documentTableSelectedTextTargets } from '../model/document-table-selection'
 
 /** Formatting and insertion share the same text boundaries and content-lock decision. */
 export function assertDocumentTextSelectionEditable(model: DocumentModel, selection: DocumentSelection): void {
+  if (selection.tableSelection) {
+    const selected = documentTableSelectedTextTargets(model, selection.tableSelection)
+    if (!selected.length) throw new RangeError('选中的单元格没有可设置字符格式的文本')
+    if (model.contentControls?.length) {
+      const body = flattenDocumentBody(model)
+      for (const target of selected) {
+        const segment = body.segments.find(candidate => sameTarget(candidate, target))
+        if (!segment) throw new RangeError('表格选区的文本内容已不存在')
+        assertTextRangeEditable(model, segment.startOffset, segment.endOffset)
+      }
+    }
+    return
+  }
   const targets = textTargets(model)
   for (const point of [selection.anchor, selection.focus]) {
     if (!targets.some(target => sameTarget(target, point)) || !isDocumentTextBoundary(runText(runsForTarget(model, point)), point.offset)) {

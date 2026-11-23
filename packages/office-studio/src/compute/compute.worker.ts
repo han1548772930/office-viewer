@@ -4,7 +4,8 @@ import { COMPUTE_PROTOCOL_VERSION, isRecord } from './protocol.ts'
 import type { ComputeOutput, ComputeTask, ComputeWorkerEvent, ComputeWorkerRequest } from './protocol.ts'
 import { estimateTaskMemory, taskViews, validateTask } from './tasks.ts'
 import { loadComputeWasm } from './wasm.worker.ts'
-import type { LoadedComputeWasm, WasmAggregate, WasmIndexResult, WasmStepper } from './wasm.worker.ts'
+import type { LoadedComputeWasm, WasmAggregate, WasmChartResult, WasmIndexResult, WasmStepper } from './wasm.worker.ts'
+import { readChartStatisticsOutput } from './chart-results.ts'
 import {
   matchesWasmTaskControl, readBoundaryCopyStats, requireIndependentOutput, requireMatchingWasmResult,
   requireWasmTaskControl, WasmProtocolError,
@@ -30,13 +31,16 @@ function checkCancellation(context: WasmTaskControl): void {
 function isAggregate(value: unknown): value is WasmAggregate {
   return isRecord(value) && ['step', 'progress', 'result', 'free'].every((key) => typeof value[key] === 'function')
 }
-function isStepper(value: unknown): value is WasmStepper {
+function isStepper(value: unknown): value is WasmStepper<unknown> {
   return isRecord(value) && ['step', 'progress', 'finish', 'free'].every((key) => typeof value[key] === 'function')
 }
 function isIndexResult(value: unknown): value is WasmIndexResult {
   return isRecord(value) && ['copy_indices', 'metadata', 'free'].every((key) => typeof value[key] === 'function')
 }
-interface Calculated { output: ComputeOutput; boundary: BoundaryCopyStats; buffer?: ArrayBuffer }
+function isChartResult(value: unknown): value is WasmChartResult {
+  return isRecord(value) && ['copy_values', 'copy_indices', 'metadata', 'free'].every((key) => typeof value[key] === 'function')
+}
+interface Calculated { output: ComputeOutput; boundary: BoundaryCopyStats; buffers: ArrayBuffer[] }
 
 async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: WasmTaskControl): Promise<Calculated> {
   const module = loaded.module
@@ -71,10 +75,12 @@ async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: 
       const result = requireMatchingWasmResult(accumulator.result(), context)
       if (!isNumericStatistics(result.statistics, task.values.length)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '聚合结果不是协议 2 统计 DTO')
       progress(1, true)
-      return { output: { kind: 'aggregate', statistics: result.statistics }, boundary: readBoundaryCopyStats(result.transfer) }
+      return { output: { kind: 'aggregate', statistics: result.statistics }, boundary: readBoundaryCopyStats(result.transfer), buffers: [] }
     } finally { accumulator.free() }
   }
-  const candidate: unknown = task.kind === 'sort'
+  const candidate: unknown = task.kind === 'chartStatistics'
+    ? module.create_chart_statistics(task.values, task.states, task.categoryIds, { context, params: task.params })
+    : task.kind === 'sort'
     ? module.create_numeric_sort(task.values, task.states, { context, rowCount: task.rowCount,
       directions: Array.from(task.directions), nullsLast: task.nullsLast })
     : module.create_numeric_filter(task.values, task.states, { context, rowCount: task.rowCount,
@@ -84,12 +90,27 @@ async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: 
     let done = false
     while (!done) {
       checkCancellation(context)
-      done = candidate.step(task.kind === 'sort' ? 32_768 : 16_384)
+      done = candidate.step(task.kind === 'chartStatistics' ? 1 : task.kind === 'sort' ? 32_768 : 16_384)
       progress(candidate.progress())
       await module.compute_yield()
     }
     checkCancellation(context)
     const result: unknown = candidate.finish()
+    if (task.kind === 'chartStatistics') {
+      if (!isChartResult(result)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '图表结果缺少协议 2 所有权接口')
+      try {
+        const values = result.copy_values(), indices = result.copy_indices()
+        if (!(values instanceof Float64Array) || !(indices instanceof Uint32Array)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '图表结果必须为数值及索引 TypedArray')
+        const valueBuffer = requireIndependentOutput(values, loaded.memory), indexBuffer = requireIndependentOutput(indices, loaded.memory)
+        const metadata = requireMatchingWasmResult(result.metadata(), context)
+        if (metadata.valueLength !== values.length || metadata.indexLength !== indices.length
+          || metadata.byteLength !== values.byteLength + indices.byteLength) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '图表结果长度与元数据不匹配')
+        const output = readChartStatisticsOutput({ kind: 'chartStatistics', values, indices, segments: metadata.segments }, task.params)
+        if (!output) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '图表分段结果与请求不匹配')
+        progress(1, true)
+        return { output, boundary: readBoundaryCopyStats(metadata.transfer), buffers: [valueBuffer, indexBuffer] }
+      } finally { result.free() }
+    }
     if (!isIndexResult(result)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '索引结果缺少协议 2 所有权接口')
     try {
       const indices = result.copy_indices()
@@ -98,7 +119,7 @@ async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: 
       const metadata = requireMatchingWasmResult(result.metadata(), context)
       if (metadata.byteLength !== indices.byteLength) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '索引结果长度与元数据不匹配')
       progress(1, true)
-      return { output: { kind: task.kind, indices }, boundary: readBoundaryCopyStats(metadata.transfer), buffer }
+      return { output: { kind: task.kind, indices }, boundary: readBoundaryCopyStats(metadata.transfer), buffers: [buffer] }
     } finally { result.free() }
   } finally { candidate.free() }
 }
@@ -130,15 +151,16 @@ async function handle(request: ComputeWorkerRequest): Promise<void> {
     if (!wasm) throw new ComputeError('COMPUTE_NOT_READY', '计算 Worker 尚未就绪')
     validateTask(request.task, context.budget.maxWorkingBytes)
     const memory = estimateTaskMemory(request.task)
-    const { output, boundary, buffer } = await calculate(wasm, request.task, context)
+    const { output, boundary, buffers } = await calculate(wasm, request.task, context)
     checkCancellation(context)
-    const outputBytes = output.kind === 'aggregate' ? 0 : output.indices.byteLength
+    const outputBytes = output.kind === 'aggregate' ? 0 : output.kind === 'chartStatistics'
+      ? output.values.byteLength + output.indices.byteLength : output.indices.byteLength
     scope.postMessage({ type: 'result', context, engineVersion: wasm.module.compute_version(), output, metrics: {
       elapsedMs: performance.now() - started, ...memory, boundary,
       transport: { inputTransfers: taskViews(request.task).length, inputBytes: memory.inputBytes,
-        outputTransfers: output.kind === 'aggregate' ? 0 : 1, outputBytes,
-        structuredResultMessages: output.kind === 'aggregate' ? 1 : 0 },
-    } }, buffer ? [buffer] : [])
+        outputTransfers: buffers.length, outputBytes,
+        structuredResultMessages: output.kind === 'aggregate' || output.kind === 'chartStatistics' ? 1 : 0 },
+    } }, buffers)
   } catch (error) {
     const failure = normalizeComputeError(error)
     if (failure.code === 'COMPUTE_CANCELLED') scope.postMessage({ type: 'cancelled', context })
@@ -155,7 +177,7 @@ scope.addEventListener('message', (event) => {
       void handle({ type: 'init', moduleUrl: data.moduleUrl, protocolVersion: data.protocolVersion }); return
     }
     if (data.type !== 'run' && data.type !== 'cancel') throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求必须使用协议 2')
-    if (!isRecord(data.context) || (data.context.kind !== 'aggregate' && data.context.kind !== 'sort' && data.context.kind !== 'filter')) {
+    if (!isRecord(data.context) || (data.context.kind !== 'aggregate' && data.context.kind !== 'sort' && data.context.kind !== 'filter' && data.context.kind !== 'chartStatistics')) {
       throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求的计算域无效')
     }
     context = requireWasmTaskControl(data.context, data.context.kind)

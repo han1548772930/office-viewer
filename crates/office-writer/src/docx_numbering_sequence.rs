@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
-use super::{NumberingInstance, abstract_definition, abstract_key, array, cell_blocks, get, integer, numbering_level, text_color};
+use super::{NumberingInstance, abstract_definition, abstract_key, array, get, integer, numbering_level, text_color};
 use crate::{ExportError, ExportWarning, xml};
 use crate::docx::numbering_marker::PreservedMarkerPlan;
 
@@ -358,7 +358,7 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
     fn visit(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &HashMap<u32, &NumberingInstance>, groups: &HashMap<(String, String), u32>, counters: &mut HashMap<u32, CounterState>, mappings: &mut Vec<Value>, warnings: &mut HashSet<String>, plan: &mut SequencePlan, preserved: &PreservedMarkerPlan) -> Result<(), ExportError> {
         for block in blocks {
             if get(block, "type").as_str() == Some("table") {
-                for row in array(get(get(get(block, "metadata"), "table"), "rows")) { for cell in array(get(row, "cells")) { visit(cell_blocks(cell), lookup, instances, groups, counters, mappings, warnings, plan, preserved)?; } }
+                for group in crate::docx::table_writer::content_groups(get(get(block, "metadata"), "table"))? { visit(group.blocks, lookup, instances, groups, counters, mappings, warnings, plan, preserved)?; }
                 continue;
             }
             let pointer = block as *const Value as usize;

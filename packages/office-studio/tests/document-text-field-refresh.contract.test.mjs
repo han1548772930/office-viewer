@@ -6,14 +6,14 @@ import { documentFieldAutomaticRefreshBlocked, documentTextFieldRanges, document
 import { executeDocumentCommand, replaceSelectionText } from '../src/features/document/commands/document-commands.ts'
 import { replaceDocumentRange } from '../src/features/document/services/document-facade.ts'
 import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, documentBodySelectionHasField, prepareDocumentStoryFieldRefresh } from '../src/features/document/services/document-story-fields.ts'
-import { reserveDocumentFieldOpenRefresh } from '../src/features/document/services/document-field-open-refresh.ts'
+import { releaseDocumentFieldOpenRefresh, reserveDocumentFieldOpenRefresh } from '../src/features/document/services/document-field-open-refresh.ts'
 import { DOCUMENT_STORY_KEYS } from '../src/features/document/model/document-story.ts'
 import { EMPTY_SECTION_HEADER_FOOTER, resolveSectionHeaderFooter } from '../src/features/document/services/section-header-footer.ts'
 import { deleteRepeatingSectionItem, duplicateRepeatingSectionItem, replacePictureContentControlImage, resetDocumentContentControlPlaceholder } from '../src/features/document/services/content-controls.ts'
 import { deleteDocumentNote, insertDocumentNote } from '../src/features/document/notes/document-notes.ts'
 import { insertLatexFormula } from '../src/features/document/latex/latex-formula.ts'
 
-// DOC-03 contract drafts. Implementation batch 2026-11-23; execution is deferred.
+// DOC-03 contract drafts. Implementation batch 2026-11-23 through 2026-11-24; execution is deferred.
 const copy = value => JSON.parse(JSON.stringify(value))
 const context = { documentId: 'body-fields', userId: 'editor' }
 const timestamp = new Date(2030, 5, 15, 13, 24, 0).getTime()
@@ -64,6 +64,48 @@ test('one candidate refreshes body and every independent story while mapping con
     assert.equal(resolveSectionHeaderFooter(candidate, id).pageFields.find(field => field.story === story).cachedResult, '2030-06-15')
   }
   assert.equal(prepareDocumentStoryFieldRefresh(candidate, request, context), undefined)
+})
+
+test('host selections follow both field replacements without changing the request caret or caller-owned arrays', () => {
+  const { model, block } = bodyModel('📅 old / old')
+  setDocumentTextFields(block, [dateField('first', 3, 6), dateField('second', 9, 12)])
+  const primary = selection(point('body', 10))
+  const additional = [selection(point('body', 12), point('body', 4)), selection(point('body', 6)),
+    selection(point('body', 2)), copy(primary)]
+  const before = copy({ model, primary, additional })
+  const plan = prepareDocumentStoryFieldRefresh(model, request, context, primary, additional)
+  assert.equal(plan.updatedFields, 2)
+  assert.deepEqual(plan.selection, selection(point('body', 17)))
+  assert.deepEqual(plan.mappedAdditionalBodySelections, [selection(point('body', 26), point('body', 4)),
+    selection(point('body', 13)), selection(point('body', 2)), plan.selection])
+  assert.notEqual(plan.mappedAdditionalBodySelections, additional)
+  assert.notEqual(plan.mappedAdditionalBodySelections[2], additional[2])
+  assert.deepEqual({ model, primary, additional }, before)
+  assert.equal(Object.hasOwn(plan.blocks[0].metadata, 'mappedAdditionalBodySelections'), false)
+})
+
+test('additional host selections map through the selected field without selecting another result', () => {
+  const { model, block } = bodyModel('old / old')
+  setDocumentTextFields(block, [dateField('first', 0, 3), dateField('second', 6, 9)])
+  const primary = selection(point('body', 1)), host = selection(point('body', 7))
+  const plan = prepareDocumentStoryFieldRefresh(model, { ...request, stories: [], bodySelection: primary }, context, primary, [host])
+  assert.equal(plan.updatedFields, 1)
+  assert.equal(runText(plan.blocks[0].runs), '2030-06-15 / old')
+  assert.deepEqual(plan.selection, primary)
+  assert.deepEqual(plan.mappedAdditionalBodySelections, [selection(point('body', 14))])
+  assert.equal(documentTextFields(plan.blocks[0]).find(field => field.id === 'second').cachedResult, 'old')
+})
+
+test('mapped request and host carets stay on UTF-16 boundaries when a picture generates an emoji', () => {
+  const { model, block } = bodyModel('XabcdY')
+  setDocumentTextFields(block, [dateField('emoji-date', 1, 5, { instruction: 'DATE \\@ "\'📅\'"' })])
+  const primary = selection(point(block.id, 2)), host = selection(point(block.id, 5), point(block.id, 2))
+  const before = copy({ model, primary, host })
+  const plan = prepareDocumentStoryFieldRefresh(model, request, context, primary, [host])
+  assert.equal(runText(plan.blocks[0].runs), 'X📅Y')
+  assert.deepEqual(plan.selection, selection(point(block.id, 1)))
+  assert.deepEqual(plan.mappedAdditionalBodySelections, [selection(point(block.id, 3), point(block.id, 1))])
+  assert.deepEqual({ model, primary, host }, before)
 })
 
 test('a caret within a body result selects only that field and leaves stories untouched', () => {
@@ -177,9 +219,16 @@ test('typing, field-result edits, paragraph split/merge and facade text replacem
   const replaced = replaceDocumentRange(model, 2, 5, 'longer')
   assert.equal(runText(replaced.blocks[0].runs), 'ZXlongerY')
   assert.deepEqual(documentTextFields(replaced.blocks[0]).map(field => [field.id, field.startOffset, field.endOffset, field.cachedResult]), [['date', 2, 8, 'old']])
-  const before = copy(replaced)
-  assert.throws(() => replaceSelectionText(replaced, selection(point('body', 4)), '\n'), /段落拆分穿过字段/)
-  assert.deepEqual(replaced, before)
+  const before = copy(model)
+  const insideSplit = replaceSelectionText(replaced, selection(point('body', 4)), '\n')
+  assert.deepEqual(replaced.blocks.map(paragraph => runText(paragraph.runs)), ['ZXlo', 'ngerY'])
+  assert.deepEqual(documentTextFields(replaced.blocks[0]).map(field => [field.id, field.startOffset, field.endBlockId, field.endOffset, field.cachedResult]),
+    [['date', 2, replaced.blocks[1].id, 4, 'old']])
+  executeDocumentCommand(replaced, insideSplit, { id: 'doc.command.delete', direction: -1 }, context)
+  assert.equal(runText(replaced.blocks[0].runs), 'ZXlongerY')
+  assert.deepEqual(documentTextFields(replaced.blocks[0]).map(field => [field.id, field.startOffset, field.endBlockId, field.endOffset, field.cachedResult]),
+    [['date', 2, undefined, 8, 'old']])
+  assert.deepEqual(model, before)
 })
 
 test('rich paragraph paste inserts fresh field identities with shifted result ranges', () => {
@@ -259,6 +308,11 @@ test('invalid UTF-16, crossing metadata and malformed refresh requests fail befo
   assert.throws(() => prepareDocumentStoryFieldRefresh(model, { ...request, bodySelection: null }, context), /选区/)
   assert.throws(() => prepareDocumentStoryFieldRefresh(model, { ...request, onOpen: 1 }, context), /布尔值/)
   assert.throws(() => prepareDocumentStoryFieldRefresh(model, { ...request, bodySelection: selection(point('missing', 0)) }, context), /UTF-16/)
+  assert.throws(() => prepareDocumentStoryFieldRefresh(model, request, context, undefined, null), /列表/)
+  assert.throws(() => prepareDocumentStoryFieldRefresh(model, request, context, undefined, {}), /列表/)
+  assert.throws(() => prepareDocumentStoryFieldRefresh(model, request, context, undefined, [null]), /选区/)
+  assert.throws(() => prepareDocumentStoryFieldRefresh(model, request, context, undefined, [selection(point('body', 1))]), /UTF-16/)
+  assert.throws(() => prepareDocumentStoryFieldRefresh(model, { ...request, stories: [] }, context, undefined, [selection(point('missing', 0))]), /UTF-16/)
   assert.deepEqual(model, before)
 })
 
@@ -311,6 +365,25 @@ test('cross-paragraph refresh selects a caret in the last paragraph and preserve
   assert.deepEqual(plan.comments.suffix.anchor, [{ blockId: first.id, startOffset: 11, endOffset: 12, text: 'Z' }])
   assert.equal(plan.comments.suffix.updatedAt, new Date(timestamp).toISOString())
   assert.deepEqual(model, before)
+})
+
+test('additional backward host selections survive a later field update and a preceding paragraph merge', () => {
+  const first = createParagraph('Aold'); first.id = 'first'
+  const last = createParagraph('cache / oldZ'); last.id = 'last'
+  const model = { ...createBlankDocument(), id: context.documentId, blocks: [first, last] }
+  setDocumentTextFields(first, [dateField('cross-date', 1, 5, { endBlockId: last.id, cachedResult: 'old\ncache' })])
+  setDocumentTextFields(last, [dateField('last-date', 8, 11)])
+  const primary = selection(point(last.id, 9))
+  const additional = [selection(point(last.id, 12), point(last.id, 2)), selection(point(first.id, 0))]
+  const before = copy({ model, primary, additional })
+  const plan = prepareDocumentStoryFieldRefresh(model, request, context, primary, additional)
+  assert.equal(plan.updatedFields, 2)
+  assert.equal(plan.blocks.length, 1)
+  assert.equal(runText(plan.blocks[0].runs), 'A2030-06-15 / 2030-06-15Z')
+  assert.deepEqual(plan.selection, selection(point(first.id, 15)))
+  assert.deepEqual(plan.mappedAdditionalBodySelections, [selection(point(first.id, 25), point(first.id, 7)),
+    selection(point(first.id, 0))])
+  assert.deepEqual({ model, primary, additional }, before)
 })
 
 test('nested cross-paragraph definitions follow an inner update without evaluating an unknown enclosing field', () => {
@@ -384,6 +457,11 @@ test('cache-only refresh retains partial comment and control ranges and the curr
   assert.deepEqual(plan.comments, model.comments)
   assert.deepEqual(plan.selection, caret)
   assert.deepEqual(plan.blocks[0].runs, block.runs)
+  const host = selection(point(block.id, 8), point(block.id, 1))
+  const additionalPlan = prepareDocumentStoryFieldRefresh(model, request, context, caret, [host])
+  assert.deepEqual(additionalPlan.mappedAdditionalBodySelections, [host])
+  assert.notEqual(additionalPlan.mappedAdditionalBodySelections[0], host)
+  assert.deepEqual(prepareDocumentStoryFieldRefresh(model, request, context, caret, []).mappedAdditionalBodySelections, [])
 })
 
 test('availability tolerates an out-of-date body selection while command validation and invalid field metadata remain strict', () => {
@@ -404,6 +482,21 @@ test('field open refresh follows unit and history lifetime across Facades, undo/
   assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 1), false)
   assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 3), true)
   assert.equal(reserveDocumentFieldOpenRefresh(secondHost, 'first', 1), true)
+})
+
+test('failed field open refresh releases only its own unit and generation for retry', () => {
+  const host = {}
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 1), true)
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'second', 1), true)
+  assert.equal(releaseDocumentFieldOpenRefresh(host, 'first', 1), true)
+  assert.equal(releaseDocumentFieldOpenRefresh(host, 'first', 1), false)
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 1), true)
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'second', 1), false)
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 2), true)
+  assert.equal(releaseDocumentFieldOpenRefresh(host, 'first', 1), false)
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 2), false)
+  assert.equal(releaseDocumentFieldOpenRefresh(host, 'first', 2), true)
+  assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 2), true)
 })
 
 test('retained native nested cache ranges block automatic body and story refresh even after a flag override', () => {

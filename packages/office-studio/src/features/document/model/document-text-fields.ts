@@ -1,6 +1,7 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import { documentId, runText, tableForBlock } from './document-model'
+import { documentTableCellContentContainers } from './document-table-continuations'
 import { isDocumentTextBoundary } from './document-story'
 
 /** A native field result is ordinary Canvas text; offsets exclude file-format delimiters. */
@@ -114,7 +115,7 @@ export function documentTextFieldParagraphs(model: Pick<DocumentModel, 'blocks'>
       } else if (block.metadata.documentTextFields !== undefined && documentTextFields(block).length) {
         throw new TypeError(`正文字段起始位置必须属于文本段落：${block.id}`)
       }
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) visit(cell.blocks)
+      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) visit(content)
     }
   }
   visit(model.blocks)

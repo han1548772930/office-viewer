@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Alert, Button, theme } from 'antdv-next'
+import { Alert, Button, Spin, theme } from 'antdv-next'
+import type { OfficeStudio } from '../api/office-studio'
 import type { ChartModel } from '../domain/model'
 import { chartEChartsOption } from '../features/charts/echarts-option'
-import { EChartsCanvasRenderer } from '../features/charts/echarts-renderer'
+import { EChartsCanvasRenderer, type EChartsCanvasFrame } from '../features/charts/echarts-renderer'
+import { chartAxisPointerLocalPoint } from '../features/charts/chart-axis-pointer'
+import type { ChartVector } from '../features/charts/chart-geometry'
 import type { ChartComputedStatistics } from '../features/charts/chart-derived'
+import { useChartStatistics } from '../features/charts/views/use-chart-statistics'
 import type { DrawCommand } from '../rendering/contracts'
 import type { ExcelWorkbookChartView } from './chart-overlay-model'
 import { cloneChart, toChartWorkbook } from './chart-overlay-model'
@@ -14,6 +18,7 @@ const props = withDefaults(defineProps<{
   activeSheetId: string
   zoom: number
   computedStatistics?: Readonly<Record<string, ChartComputedStatistics>>
+  studio?: OfficeStudio
 }>(), { zoom: 100 })
 
 const emit = defineEmits<{
@@ -42,6 +47,7 @@ const scrollLeft = ref(0)
 const scrollTop = ref(0)
 const selectedId = ref<string | null>(null)
 const renderError = ref('')
+const pointerError = ref('')
 const renderedFrames = ref<Record<string, { version: number; width: number; height: number }>>({})
 const drafts = ref<Record<string, Pick<ChartDisplay, 'position' | 'size'>>>({})
 const drag = ref<DragState | null>(null)
@@ -50,10 +56,21 @@ let resizeObserver: ResizeObserver | undefined
 let frameRequest: number | undefined
 let pixelRatioQuery: MediaQueryList | undefined
 let mounted = false
+let contentDirty = true
+let pointerDirty = false
+let desiredPointer: { chartId: string; point: ChartVector } | undefined
+let activePointerId: string | undefined
+let contentCommands: DrawCommand[] = []
+const commandIndexes = new Map<string, number>()
 const chartRenderer = new EChartsCanvasRenderer()
 
 const sheetCharts = computed(() => (props.workbook.charts ?? []).filter((chart) => chart.sheetId === props.activeSheetId))
-const domainWorkbook = computed(() => toChartWorkbook(props.workbook))
+const domainWorkbook = computed(() => props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : toChartWorkbook(props.workbook))
+const { statistics, snapshots, pending, errors: computeErrors } = useChartStatistics({
+  studio: () => props.studio, workbook: () => props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : domainWorkbook.value, activeSheetId: () => props.activeSheetId,
+  externalStatistics: () => props.computedStatistics,
+})
+const errorMessage = computed(() => renderError.value || pointerError.value || Object.values(computeErrors.value).join('；'))
 const displayCharts = computed<ChartDisplay[]>(() => sheetCharts.value.map((chart) => {
   const draft = drafts.value[chart.id]
   const position = draft?.position ?? chart.position
@@ -66,6 +83,8 @@ const chartTheme = computed(() => ({
   textColor: token.value.colorText,
   axisColor: token.value.colorTextSecondary,
   splitLineColor: token.value.colorBorderSecondary,
+  axisPointerLabelBackground: token.value.colorBgSpotlight,
+  axisPointerLabelColor: token.value.colorTextLightSolid,
 }))
 const overlayStyle = computed(() => ({
   '--chart-primary': token.value.colorPrimary,
@@ -76,22 +95,32 @@ const renderedChartIds = computed(() => new Set(sheetCharts.value.map(chart => c
 
 function renderCommands(): DrawCommand[] {
   const host = root.value
-  if (!host || host.clientWidth <= 0 || host.clientHeight <= 0) return []
+  commandIndexes.clear()
+  if (!host || host.clientWidth <= 0 || host.clientHeight <= 0) {
+    chartRenderer.retain(new Set())
+    renderedFrames.value = {}
+    activePointerId = undefined
+    return []
+  }
+  const workbook = props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : domainWorkbook.value
   const dpr = Math.max(0.1, window.devicePixelRatio || 1) * zoomScale()
   const commands: DrawCommand[] = []
   const frames: Record<string, { version: number; width: number; height: number }> = {}
   let errorMessage = ''
   for (const item of displayCharts.value) {
+    const computed = statistics.value[item.chart.id]
+    if (!computed || !workbook) continue
     try {
       const draft = drafts.value[item.chart.id]
       const model = draft ? { ...cloneChart(item.chart), position: { ...item.position }, size: { ...item.size } } : item.chart
-      const option = chartEChartsOption(domainWorkbook.value, model, chartTheme.value, props.computedStatistics?.[model.id])
+      const option = chartEChartsOption(workbook, model, chartTheme.value, computed)
       const frame = chartRenderer.render(item.chart.id, option, {
         width: Math.max(1, item.size.width),
         height: Math.max(1, item.size.height),
         devicePixelRatio: dpr,
       }, chartTheme.value)
       frames[item.chart.id] = { version: frame.sourceVersion, width: frame.source.width, height: frame.source.height }
+      commandIndexes.set(item.chart.id, commands.length)
       commands.push({
         kind: 'image',
         source: frame.source,
@@ -129,16 +158,53 @@ function chartStyle(item: ChartDisplay): Record<string, string> {
 }
 
 function selectChart(chartId: string): void { selectedId.value = chartId }
+function hoverChart(event: PointerEvent, item: ChartDisplay): void {
+  if (!mounted || drag.value || !root.value || !commandIndexes.has(item.chart.id)) return
+  desiredPointer = { chartId: item.chart.id, point: chartAxisPointerLocalPoint(pointerPoint(event), item.position,
+    { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }) }
+  pointerDirty = true
+  queueOverlayFrame()
+}
+
+function clearChartPointer(chartId?: string): void {
+  if (chartId !== undefined && desiredPointer?.chartId !== chartId) return
+  if (!desiredPointer && !activePointerId && !pointerDirty) return
+  desiredPointer = undefined
+  pointerDirty = true
+  queueOverlayFrame()
+}
+
+function updatePointerFrame(chartId: string, frame: EChartsCanvasFrame | undefined): void {
+  const index = commandIndexes.get(chartId), command = index === undefined ? undefined : contentCommands[index]
+  if (!frame || index === undefined || command?.kind !== 'image') return
+  contentCommands[index] = { ...command, source: frame.source, sourceVersion: frame.sourceVersion }
+  renderedFrames.value = { ...renderedFrames.value, [chartId]: { version: frame.sourceVersion, width: frame.source.width, height: frame.source.height } }
+}
+
+function updatePointerFrames(): void {
+  if (activePointerId && activePointerId !== desiredPointer?.chartId) {
+    updatePointerFrame(activePointerId, chartRenderer.updatePointer(activePointerId))
+    activePointerId = undefined
+  }
+  if (desiredPointer && commandIndexes.has(desiredPointer.chartId)) {
+    updatePointerFrame(desiredPointer.chartId, chartRenderer.updatePointer(desiredPointer.chartId, desiredPointer.point))
+    activePointerId = desiredPointer.chartId
+    pointerError.value = ''
+  }
+}
+
 function removeChart(event: KeyboardEvent, chartId: string): void {
   if (event.key !== 'Delete' && event.key !== 'Backspace') return
   event.preventDefault(); event.stopPropagation()
   emit('remove-chart', chartId)
+  clearChartPointer(chartId)
   selectedId.value = null
 }
 
 function beginDrag(event: PointerEvent, item: ChartDisplay, mode: DragState['mode']): void {
   if (event.button !== 0) return
   event.preventDefault(); event.stopPropagation()
+  clearChartPointer()
   selectedId.value = item.chart.id
   const point = pointerPoint(event)
   drag.value = {
@@ -152,6 +218,7 @@ function beginDrag(event: PointerEvent, item: ChartDisplay, mode: DragState['mod
 }
 
 function onPointerMove(event: PointerEvent): void {
+  if (!mounted) return
   const active = drag.value
   if (!active) return
   const point = pointerPoint(event)
@@ -178,17 +245,48 @@ function onPointerUp(): void {
   drag.value = null
 }
 
+function onPointerCancel(): void {
+  clearChartPointer()
+  const active = drag.value
+  if (!active) return
+  const next = { ...drafts.value }
+  delete next[active.chartId]
+  drafts.value = next
+  drag.value = null
+}
+
 function onScroll(): void {
   if (!scroller) return
+  clearChartPointer()
   scrollLeft.value = scroller.scrollLeft
   scrollTop.value = scroller.scrollTop
 }
 
 function publishOverlayCommands(): void {
+  contentDirty = true
+  queueOverlayFrame()
+}
+
+function queueOverlayFrame(): void {
   if (!mounted || frameRequest !== undefined) return
   frameRequest = window.requestAnimationFrame(() => {
     frameRequest = undefined
-    emit('overlay-commands', renderCommands())
+    if (!mounted) return
+    const renderContent = contentDirty
+    contentDirty = false
+    if (renderContent) contentCommands = renderCommands()
+    if (pointerDirty || renderContent) {
+      pointerDirty = false
+      try { updatePointerFrames() }
+      catch (reason) {
+        pointerError.value = reason instanceof Error ? reason.message : '图表指示器绘制失败'
+        desiredPointer = undefined
+        activePointerId = undefined
+        chartRenderer.invalidate()
+        publishOverlayCommands()
+      }
+    }
+    emit('overlay-commands', [...contentCommands])
   })
 }
 function watchPixelRatio(): void {
@@ -198,15 +296,20 @@ function watchPixelRatio(): void {
   publishOverlayCommands()
 }
 function fontsChanged(): void {
+  clearChartPointer()
   chartRenderer.invalidate()
   publishOverlayCommands()
 }
 
-watch([domainWorkbook, displayCharts, chartTheme, () => props.computedStatistics, () => props.zoom], publishOverlayCommands, { deep: true, flush: 'post' })
+watch([displayCharts, chartTheme, () => props.zoom], publishOverlayCommands, { deep: true, flush: 'post' })
+watch(statistics, publishOverlayCommands, { flush: 'post' })
 watch(() => props.activeSheetId, () => {
+  clearChartPointer()
+  pointerError.value = ''
   selectedId.value = null
   drag.value = null
   drafts.value = {}
+  publishOverlayCommands()
 })
 
 onMounted(() => {
@@ -219,6 +322,8 @@ onMounted(() => {
   }
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', onPointerUp)
+  window.addEventListener('pointercancel', onPointerCancel)
+  window.addEventListener('blur', onPointerCancel)
   window.addEventListener('resize', publishOverlayCommands)
   document.fonts?.addEventListener('loadingdone', fontsChanged)
   watchPixelRatio()
@@ -237,6 +342,14 @@ onDeactivated(() => {
   mounted = false
   if (frameRequest !== undefined) window.cancelAnimationFrame(frameRequest)
   frameRequest = undefined
+  pixelRatioQuery?.removeEventListener('change', watchPixelRatio)
+  desiredPointer = undefined
+  activePointerId = undefined
+  pointerError.value = ''
+  pointerDirty = false
+  contentDirty = true
+  contentCommands = []
+  commandIndexes.clear()
   drag.value = null
   drafts.value = {}
   chartRenderer.dispose()
@@ -246,6 +359,10 @@ onDeactivated(() => {
 
 onUnmounted(() => {
   mounted = false
+  desiredPointer = undefined
+  activePointerId = undefined
+  contentCommands = []
+  commandIndexes.clear()
   if (frameRequest !== undefined) window.cancelAnimationFrame(frameRequest)
   pixelRatioQuery?.removeEventListener('change', watchPixelRatio)
   document.fonts?.removeEventListener('loadingdone', fontsChanged)
@@ -254,13 +371,14 @@ onUnmounted(() => {
   chartRenderer.dispose()
   scroller?.removeEventListener('scroll', onScroll)
   window.removeEventListener('pointermove', onPointerMove); window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', onPointerCancel); window.removeEventListener('blur', onPointerCancel)
   emit('overlay-commands', [])
 })
 </script>
 
 <template>
   <div ref="root" class="chart-overlay" :style="overlayStyle" aria-label="工作表图表图层">
-    <Alert v-if="renderError" class="chart-render-error" type="error" show-icon :message="renderError" />
+    <Alert v-if="errorMessage" class="chart-render-error" type="error" show-icon :message="errorMessage" />
     <Button
       v-for="item in displayCharts"
       :key="item.chart.id"
@@ -275,12 +393,18 @@ onUnmounted(() => {
       :data-source-version="renderedFrames[item.chart.id]?.version"
       :data-bitmap-width="renderedFrames[item.chart.id]?.width"
       :data-bitmap-height="renderedFrames[item.chart.id]?.height"
+      :data-compute-revision="snapshots[item.chart.id]?.modelRevision"
+      :aria-busy="Boolean(pending[item.chart.id])"
       tabindex="0"
       @pointerdown="beginDrag($event, item, 'move')"
+      @pointermove="hoverChart($event, item)"
+      @pointerleave="clearChartPointer(item.chart.id)"
+      @blur="clearChartPointer(item.chart.id)"
       @click.stop="selectChart(item.chart.id)"
       @keydown.enter.prevent="selectChart(item.chart.id)"
       @keydown="removeChart($event, item.chart.id)"
     >
+      <Spin v-if="pending[item.chart.id]" size="small" class="chart-compute-spinner" />
       <span v-if="selectedId === item.chart.id" class="chart-resize-handle" aria-label="调整图表大小" @pointerdown="beginDrag($event, item, 'resize')" />
     </Button>
   </div>
@@ -292,5 +416,6 @@ onUnmounted(() => {
 .chart-hitbox:hover, .chart-hitbox:focus-visible { background: transparent; }
 .chart-hitbox:hover, .chart-hitbox.selected { border-color: var(--chart-primary); box-shadow: 0 0 0 1px var(--chart-focus-ring); }
 .chart-render-error { position: absolute; z-index: 3; inset: 30px 4px auto 48px; pointer-events: auto; }
+.chart-compute-spinner { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); pointer-events: none; }
 .chart-resize-handle { position: absolute; right: -5px; bottom: -5px; width: 9px; height: 9px; border: 1px solid var(--chart-surface); border-radius: 2px; background: var(--chart-primary); cursor: nwse-resize; }
 </style>

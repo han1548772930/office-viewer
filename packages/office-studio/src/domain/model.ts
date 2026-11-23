@@ -333,6 +333,7 @@ export type ChartType = 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'stacked-
 export type ChartSourceOrientation = 'columns' | 'rows'
 export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
 export type ChartAxisScaleType = 'linear' | 'log'
+export type ChartAxisTitleAlignment = 'start' | 'center' | 'end'
 
 export interface ChartFontOptions { color?: string; fontSize?: number; bold?: boolean; italic?: boolean; family?: string }
 export interface ChartLineOptions { visible?: boolean; color?: string; width?: number; opacity?: number; dashType?: 'solid' | 'dashed' | 'dotted' }
@@ -342,16 +343,40 @@ export interface ChartLabelOptions extends ChartFontOptions {
   contentType?: 'value' | 'category' | 'series' | 'percentage'
   format?: string
 }
+export type ChartFillPatternPreset = 'pct5' | 'pct10' | 'pct20' | 'pct25' | 'pct30' | 'pct40' | 'pct50' | 'pct60' | 'pct70' | 'pct75' | 'pct80' | 'pct90'
+  | 'horz' | 'vert' | 'ltHorz' | 'ltVert' | 'dkHorz' | 'dkVert' | 'narHorz' | 'narVert' | 'dashHorz' | 'dashVert' | 'cross'
+  | 'dnDiag' | 'upDiag' | 'ltDnDiag' | 'ltUpDiag' | 'dkDnDiag' | 'dkUpDiag' | 'wdDnDiag' | 'wdUpDiag' | 'dashDnDiag' | 'dashUpDiag' | 'diagCross'
+  | 'smCheck' | 'lgCheck' | 'smGrid' | 'lgGrid' | 'dotGrid' | 'smConfetti' | 'lgConfetti' | 'horzBrick' | 'diagBrick'
+  | 'solidDmnd' | 'openDmnd' | 'dotDmnd' | 'plaid' | 'sphere' | 'weave' | 'divot' | 'shingle' | 'wave' | 'trellis' | 'zigZag'
+/** Omission inherits the surrounding style; null explicitly paints a solid fill. */
+export interface ChartSeriesFillPattern { preset: ChartFillPatternPreset; foregroundColor: string; backgroundColor: string }
+/** Public null patches reset authored fields, except fillPattern:null disables the inherited pattern. */
+export type ChartNullablePatch<T> = T extends ChartSeriesFillPattern ? T : T extends readonly unknown[] ? T : T extends object
+  ? { [K in keyof T]?: ChartNullablePatch<T[K]> | null } : T
+export type ChartRadarShape = 'polygon' | 'circle'
+export interface ChartRadarAxisLabelOptions extends ChartFontOptions { visible?: boolean; format?: string }
+export interface ChartRadarOptions { shape?: ChartRadarShape; fill?: boolean; axisLabel?: ChartRadarAxisLabelOptions }
 export interface ChartSeriesOptions {
   name?: string
   type?: 'column' | 'columnStacked' | 'line' | 'area' | 'areaStacked'
   color?: string
   fillOpacity?: number
+  fillPattern?: ChartSeriesFillPattern | null
   border?: ChartLineOptions
   point?: { shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; size?: number; color?: string }
   rightAxis?: boolean
   label?: ChartLabelOptions
-  dataPoints?: Record<number, { color?: string; fillOpacity?: number; size?: number; border?: ChartLineOptions }>
+  dataPoints?: Record<number, { color?: string; fillOpacity?: number; fillPattern?: ChartSeriesFillPattern | null; size?: number; shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; border?: ChartLineOptions }>
+}
+/** Numeric selectors keep the source-field contract; names match source identities exactly. */
+export type ChartSeriesSelector = number | { name: string }
+export interface ChartNamedSeriesOptions { name: string; style: ChartSeriesOptions }
+export interface ChartBubbleMappingOptions { xIndex: number; yIndex: number; sizeIndex?: number; labelIndex?: number; seriesIndex?: number }
+export interface ChartAxisPointerOptions {
+  indicatorLabelColor?: string
+  indicatorLineType?: 'solid' | 'dashed' | 'dotted'
+  indicatorLineColor?: string
+  indicatorLabelTextColor?: string
 }
 export interface ChartTrendlineOptions extends ChartLineOptions {
   seriesIndex: number
@@ -373,6 +398,39 @@ export interface ChartErrorBarOptions {
   noEndCap?: boolean
   line?: ChartLineOptions
 }
+export type ChartGaugeMode = 'modern' | 'classic' | 'pointer' | 'progress'
+export type ChartGaugePointerShape = 'needle' | 'slim' | 'arrow'
+export interface ChartGaugeScaleOptions { min?: number; max?: number; splitNumber?: number }
+export interface ChartGaugeAnglesOptions { startAngle?: number; endAngle?: number }
+export interface ChartGaugeRangeOptions { from: number; to: number; color: string }
+export interface ChartGaugeAxisLineOptions { visible?: boolean; width?: number; color?: string }
+export interface ChartGaugeAxisTickOptions extends ChartGaugeAxisLineOptions { splitNumber?: number; length?: number }
+export interface ChartGaugeSplitLineOptions extends ChartGaugeAxisLineOptions { length?: number }
+export interface ChartGaugeAxisLabelOptions extends ChartFontOptions { visible?: boolean; distance?: number; format?: string }
+export interface ChartGaugePointerOptions { visible?: boolean; length?: number; width?: number; color?: string; shape?: ChartGaugePointerShape }
+export interface ChartGaugeAnchorOptions { visible?: boolean; size?: number; color?: string; borderColor?: string; borderWidth?: number }
+export interface ChartGaugeProgressOptions { visible?: boolean; width?: number; color?: string; rounded?: boolean }
+export interface ChartGaugeTitleOptions extends ChartFontOptions { visible?: boolean; offsetY?: number }
+export interface ChartGaugeDetailOptions extends ChartGaugeTitleOptions { format?: string }
+/** Facade patches use null to reset individual authored values. The model saves undefined resets. */
+export type ChartGaugeNullablePatch<T> = { [K in keyof T]?: T[K] | null }
+export interface ChartGaugeTicksPatch { majorDivisions?: number | null; minorDivisionsPerMajor?: number | null }
+export interface ChartGaugeOptions extends ChartGaugeScaleOptions, ChartGaugeAnglesOptions {
+  /** Modern/Classic follow the fixed public presets; pointer/progress preserve local historical modes. */
+  mode?: ChartGaugeMode
+  ranges?: ChartGaugeRangeOptions[]
+  axisLine?: ChartGaugeAxisLineOptions
+  axisTick?: ChartGaugeAxisTickOptions
+  splitLine?: ChartGaugeSplitLineOptions
+  axisLabel?: ChartGaugeAxisLabelOptions
+  pointer?: ChartGaugePointerOptions
+  anchor?: ChartGaugeAnchorOptions
+  progress?: ChartGaugeProgressOptions
+  title?: ChartGaugeTitleOptions
+  detail?: ChartGaugeDetailOptions
+  /** Historical shared title/detail font and content configuration. Dedicated groups take precedence. */
+  label?: ChartLabelOptions
+}
 /** Renderer-independent authored configuration. Derived statistics and geometries are not saved here. */
 export interface ChartSemanticOptions {
   invalidValueStrategy?: 'zero' | 'break' | 'link'
@@ -383,13 +441,20 @@ export interface ChartSemanticOptions {
   allSeriesStyle?: ChartSeriesOptions
   /** Keys identify source fields, so a series keeps its style after other series are removed. */
   series?: Record<number, ChartSeriesOptions>
+  /** Applied after field overrides. Display-name changes do not rename these source selectors. */
+  namedSeries?: ChartNamedSeriesOptions[]
+  axisPointer?: ChartAxisPointerOptions
   rightYAxis?: ChartAxisOptions
+  /** Categorical series-depth axis, authored independently of the 3D camera. */
+  depthAxis?: ChartDepthAxisOptions
   trendlines?: ChartTrendlineOptions[]
   errorBars?: ChartErrorBarOptions[]
   mapping?: {
+    /** Use elapsed date serials on the category axis; the date system belongs to the workbook. */
+    useDateAxis?: boolean
     categoryIndexes?: number[]
     hierarchyIndexes?: number[]
-    bubble?: { xIndex: number; yIndex: number; sizeIndex?: number; labelIndex?: number; seriesIndex?: number }
+    bubble?: ChartBubbleMappingOptions
     edge?: { sourceIndex: number; targetIndex: number; valueIndex?: number }
     candlestick?: { openIndex?: number; highIndex: number; lowIndex: number; closeIndex: number }
     gauge?: { valueIndex: number; labelIndex?: number }
@@ -403,7 +468,7 @@ export interface ChartSemanticOptions {
     secondaryPlot?: { type?: 'pie' | 'bar'; size?: number; gapWidth?: number; split?: { type: 'auto' | 'position' | 'value' | 'percentage' | 'custom'; count?: number; lessThan?: number; pointIndexes?: number[] } }
     aggregateLabel?: string
   }
-  radar?: { shape?: 'polygon' | 'circle'; fill?: boolean }
+  radar?: ChartRadarOptions
   bubble?: { scale?: number; sizeRepresents?: 'area' | 'width' }
   funnel?: { gap?: number; useAbsoluteValue?: boolean; sort?: 'ascending' | 'descending' | 'none' }
   relation?: { layout?: 'none' | 'circular' | 'force'; useValueAsSymbolSize?: boolean; force?: { repulsion?: number; gravity?: number; edgeLength?: number } }
@@ -415,13 +480,7 @@ export interface ChartSemanticOptions {
   heatmap?: { visualMapType?: 'continuous' | 'piecewise'; min?: number; max?: number; unit?: string; label?: ChartLabelOptions }
   treemap?: { parentLabelLayout?: 'banner' | 'overlapping' | 'none'; label?: ChartLabelOptions }
   sunburst?: { label?: ChartLabelOptions; centerLabel?: { visible?: boolean; font?: ChartFontOptions } }
-  gauge?: {
-    mode?: 'pointer' | 'progress'; min?: number; max?: number; startAngle?: number; endAngle?: number
-    splitNumber?: number; ranges?: Array<{ from: number; to: number; color: string }>
-    pointer?: { visible?: boolean; length?: number; width?: number; color?: string }
-    progress?: { visible?: boolean; width?: number; color?: string; rounded?: boolean }
-    label?: ChartLabelOptions
-  }
+  gauge?: ChartGaugeOptions
   chord?: { startAngle?: number; clockwise?: boolean; padAngle?: number; innerRadiusRatio?: number; outerRadiusRatio?: number; ribbonOpacity?: number; label?: ChartLabelOptions }
   wordCloud?: { shape?: 'cloud' | 'rect' | 'circle' | 'cardioid' | 'heart' | 'diamond' | 'triangle-forward' | 'triangle' | 'pentagon' | 'star'; repeat?: boolean; minFontSize?: number; maxFontSize?: number; rotation?: number }
   aggregation?: { aggregate?: boolean; topN?: { count: number; includeOthers?: boolean; othersLabel?: string } }
@@ -436,6 +495,8 @@ export interface ChartSource {
 
 export interface ChartAxisOptions {
   title?: string
+  titleStyle?: ChartFontOptions
+  titleAlignment?: ChartAxisTitleAlignment
   scaleType: ChartAxisScaleType
   logBase?: number
   min?: number
@@ -453,6 +514,8 @@ export interface ChartLegendOptions {
   position: ChartLegendPosition
   font?: ChartFontOptions
 }
+
+export type ChartDepthAxisOptions = Omit<ChartAxisOptions, 'scaleType' | 'logBase' | 'min' | 'max' | 'format'>
 
 export interface ChartModel {
   id: string
@@ -745,6 +808,8 @@ export interface DocumentStoryParagraph {
 }
 
 export interface DocumentStoryContent {
+  /** When present, this block tree is authoritative; runs/paragraphs are compatibility projections. */
+  blocks?: DocumentBlock[]
   /** Concatenated run text must equal the section's corresponding literal story string. */
   runs: InlineRun[]
   paragraphs: DocumentStoryParagraph[]
@@ -779,6 +844,8 @@ export interface DocumentPageField {
 export interface DocumentNote {
   id: string
   text: string
+  /** Rich note body. Its blocks, when present, are authoritative over the plain text projection. */
+  content?: DocumentStoryContent
   referenceBlockId: string
   referenceRunId: string
 }

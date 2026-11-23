@@ -102,6 +102,43 @@ afterAll(async () => {
   await server?.close()
 })
 
+// P14 real-pixel draft for the unified verification phase; it has not run in this implementation phase.
+test('pattern foreground and background paint real pixels for Scatter, Heatmap, Boxplot, Area and Pie, and null restores solid fills', async () => {
+  const results = await page.evaluate(() => {
+    const fixture = window.rendererFixture
+    const colors = canvas => {
+      const bytes = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+      let red = 0, yellow = 0
+      for (let index = 0; index < bytes.length; index += 4) {
+        if (bytes[index] > 240 && bytes[index + 1] < 15 && bytes[index + 2] < 15 && bytes[index + 3] > 240) red++
+        if (bytes[index] > 240 && bytes[index + 1] > 240 && bytes[index + 2] < 15 && bytes[index + 3] > 240) yellow++
+      }
+      return { red, yellow }
+    }
+    return ['scatter', 'heatmap', 'boxplot', 'area', 'pie'].map(type => {
+      const { workbook, chart } = fixture.model(type)
+      chart.options = { allSeriesStyle: { color: '#0000ff', fillOpacity: 1,
+        fillPattern: { preset: 'pct50', foregroundColor: '#ff0000', backgroundColor: '#ffff00' } } }
+      const before = JSON.stringify(chart)
+      const frame = fixture.renderer.render(type, fixture.chartEChartsOption(workbook, chart), fixture.size)
+      const patterned = { ...colors(frame.source), ...fixture.pixels(frame.source), version: frame.sourceVersion }
+      const unchanged = before === JSON.stringify(chart)
+      chart.options.allSeriesStyle.fillPattern = null
+      const solidFrame = fixture.renderer.render(type, fixture.chartEChartsOption(workbook, chart), fixture.size)
+      return { type, unchanged, patterned, solid: { ...colors(solidFrame.source), ...fixture.pixels(solidFrame.source), version: solidFrame.sourceVersion } }
+    })
+  })
+  for (const result of results) {
+    assert.equal(result.unchanged, true, result.type)
+    assert.ok(result.patterned.red > 20 && result.patterned.yellow > 20, `${result.type} lacks a two-color fill`)
+    assert.equal(result.solid.red, 0, result.type)
+    assert.equal(result.solid.yellow, 0, result.type)
+    assert.ok(result.solid.blue > 20, `${result.type} lacks a restored solid fill`)
+    assert.notEqual(result.patterned.hash, result.solid.hash, result.type)
+    assert.equal(result.solid.version, result.patterned.version + 1, result.type)
+  }
+})
+
 test('all supported workbook chart types paint real series pixels into a Canvas', async () => {
   const results = await page.evaluate(() => {
     const fixture = window.rendererFixture
@@ -126,7 +163,7 @@ test('cached options reuse the source and version while data changes repaint and
     const option = fixture.chartEChartsOption(workbook, chart)
     const first = fixture.renderer.render('chart', option, fixture.size)
     const firstPixels = fixture.pixels(first.source)
-    const cached = fixture.renderer.render('chart', structuredClone(option), fixture.size)
+    const cached = fixture.renderer.render('chart', fixture.chartEChartsOption(workbook, chart), fixture.size)
     workbook.sheets[0].cells['1:1'].value = 35
     const updated = fixture.renderer.render('chart', fixture.chartEChartsOption(workbook, chart), fixture.size)
     return {
@@ -228,4 +265,57 @@ test('invalid sizes are rejected before creating or changing an existing chart s
   assert.equal(result.sameSource, true)
   assert.equal(result.version, 1)
   assert.deepEqual(result.size, [420, 280])
+})
+
+// P12 drafts only: added during the implementation phase and not executed here.
+test('native hover changes the raster version through pointer actions while the content option remains cached', async () => {
+  const result = await page.evaluate(() => {
+    const fixture = window.rendererFixture, { workbook, chart } = fixture.model('line')
+    chart.options = { axisPointer: { indicatorLineColor: 'red', indicatorLineType: 'dashed', indicatorLabelColor: 'navy', indicatorLabelTextColor: 'white' } }
+    const option = fixture.chartEChartsOption(workbook, chart), first = fixture.renderer.render('pointer', option, fixture.size)
+    const instance = fixture.getInstanceByDom(first.source), baselineSeries = JSON.stringify(instance.getOption().series)
+    const originalSetOption = instance.setOption.bind(instance)
+    let optionUpdates = 0
+    instance.setOption = (...args) => { optionUpdates++; return originalSetOption(...args) }
+    const point = { x: instance.convertToPixel({ xAxisIndex: 0 }, 1), y: instance.convertToPixel({ yAxisIndex: 0 }, 12) }
+    const shown = fixture.renderer.updatePointer('pointer', point)
+    const visible = instance.getOption().xAxis[0].axisPointer.status
+    const repeated = fixture.renderer.updatePointer('pointer', point)
+    const cached = fixture.renderer.render('pointer', fixture.chartEChartsOption(workbook, chart), fixture.size)
+    const hidden = fixture.renderer.updatePointer('pointer')
+    const hiddenStatus = instance.getOption().xAxis[0].axisPointer.status
+    return { first: first.sourceVersion, shown: shown.sourceVersion, sameCanvas: shown.source === first.source,
+      repeated: repeated === undefined, cached: cached.sourceVersion, hidden: hidden.sourceVersion, visible, hiddenStatus,
+      optionUpdates, sameSeries: baselineSeries === JSON.stringify(instance.getOption().series),
+      removedMetadata: !Object.hasOwn(instance.getOption(), 'officeChartPointer') }
+  })
+  assert.deepEqual(result, { first: 1, shown: 2, sameCanvas: true, repeated: true, cached: 2, hidden: 3,
+    visible: 'show', hiddenStatus: 'hide', optionUpdates: 0, sameSeries: true, removedMetadata: true })
+})
+
+test('graphic hover replaces only its transient group and leaving preserves content graphics and authorship', async () => {
+  const result = await page.evaluate(() => {
+    const fixture = window.rendererFixture, { workbook, chart } = fixture.model('radar')
+    chart.yAxis.reverse = true
+    const option = fixture.chartEChartsOption(workbook, chart), pointer = option.officeChartPointer.geometry
+    const first = fixture.renderer.render('radial', option, fixture.size), instance = fixture.getInstanceByDom(first.source)
+    const originalSetOption = instance.setOption.bind(instance), patches = []
+    instance.setOption = (value, ...args) => { patches.push(value); return originalSetOption(value, ...args) }
+    const before = JSON.stringify(chart), baselineCount = instance.getZr().storage.getDisplayList(true).length
+    const radial = pointer.radar, vertex = radial.vertices[1], point = {
+      x: radial.center.x + (vertex.x - radial.center.x) / 2,
+      y: radial.center.y + (vertex.y - radial.center.y) / 2,
+    }
+    const shown = fixture.renderer.updatePointer('radial', point), shownCount = instance.getZr().storage.getDisplayList(true).length
+    const repeated = fixture.renderer.updatePointer('radial', point)
+    const cleared = fixture.renderer.updatePointer('radial')
+    const clearedCount = instance.getZr().storage.getDisplayList(true).length
+    return { shown: shown.sourceVersion, cleared: cleared.sourceVersion, repeated: repeated === undefined,
+      paintsPointer: shownCount > baselineCount, restoresContent: clearedCount === baselineCount,
+      onlyPointerGroups: patches.length === 2 && patches.every(patch => Object.keys(patch).join() === 'graphic'
+        && patch.graphic.elements.length === 1 && patch.graphic.elements[0].id === 'radial:axis-pointer'),
+      actions: patches.map(patch => patch.graphic.elements[0].$action), sameChart: before === JSON.stringify(chart) }
+  })
+  assert.deepEqual(result, { shown: 2, cleared: 3, repeated: true, paintsPointer: true, restoresContent: true,
+    onlyPointerGroups: true, actions: ['replace', 'remove'], sameChart: true })
 })

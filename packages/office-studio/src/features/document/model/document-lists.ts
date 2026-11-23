@@ -1,6 +1,7 @@
 import type { DocumentBlock } from '../../../domain/model'
 import definitions from '../../../domain/document-list-presets.json'
 import { tableForBlock } from './document-model'
+import { documentTableCellContentContainers } from './document-table-continuations'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, consecutiveNumberingGroup, normalizeNumberingLevel, numberingRecord, type DocumentNumberingDefinition, type DocumentNumberingLevel, type DocumentNumberingPicture } from './document-numbering'
 import { numberingOrdinal } from './document-numbering-format'
 
@@ -104,7 +105,7 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
       const table = tableForBlock(block)
       if (table) {
         previous = undefined
-        for (const row of table.rows) for (const cell of row.cells) visit(cell.blocks)
+        for (const row of table.rows) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) visit(content)
         continue
       }
       if (!blockHasNumbering(block) || block.type === 'checklist') { previous = undefined; continue }

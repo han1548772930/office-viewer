@@ -1,12 +1,35 @@
 import type {
   CellScalar,
   ChartAxisOptions,
+  ChartAxisPointerOptions,
   ChartLegendOptions,
   ChartModel,
   ChartSemanticOptions,
   ChartSeriesOptions,
+  ChartSeriesSelector,
+  ChartBubbleMappingOptions,
   ChartTrendlineOptions,
   ChartErrorBarOptions,
+  ChartGaugeOptions,
+  ChartGaugeMode,
+  ChartGaugeScaleOptions,
+  ChartGaugeAnglesOptions,
+  ChartGaugeRangeOptions,
+  ChartGaugeAxisLineOptions,
+  ChartGaugeAxisTickOptions,
+  ChartGaugeSplitLineOptions,
+  ChartGaugeAxisLabelOptions,
+  ChartGaugePointerOptions,
+  ChartGaugeAnchorOptions,
+  ChartGaugeProgressOptions,
+  ChartGaugeTitleOptions,
+  ChartGaugeDetailOptions,
+  ChartGaugeNullablePatch,
+  ChartGaugeTicksPatch,
+  ChartNullablePatch,
+  ChartRadarOptions,
+  ChartRadarShape,
+  ChartRadarAxisLabelOptions,
   ChartSource,
   ChartSourceOrientation,
   ChartType,
@@ -41,6 +64,13 @@ import { createBlankSheet, createCell } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { cloneChartOptions, mergeChartOptions } from '../features/charts/chart-options'
 import { chartTypeSelectOptions, resolveChartType } from '../features/charts/chart-catalog'
+import { convertChartType } from '../features/charts/chart-type-conversion'
+import { chartGaugeNullableValues, chartGaugeRangesOptions, chartGaugeTicksOptions, patchChartGaugeOptions } from '../features/charts/chart-gauge-api'
+import { ChartGaugeModes, ChartGaugePointerShapes, chartGaugePresetOptions, type ChartGaugePreset } from '../features/charts/chart-gauge'
+import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/chart-radar'
+import { ChartAllSeriesStyleTargets, ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, chartCartesianAxisPatch, chartAxisPointerValues, chartSeriesStyleValues, clearChartAllSeriesStyle, clearChartAxis, clearChartAxisPointer, clearChartSeriesStyle, patchChartSeriesOverride,
+  type ChartAllSeriesStyleTarget, type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget } from '../features/charts/chart-cartesian-api'
+import { chartSeriesOverride, validateChartSeriesSelector } from '../features/charts/chart-series-selector'
 import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
 import {
   getCommonDocumentTextStyle,
@@ -78,6 +108,12 @@ import type { DocumentCommand } from '../features/document/commands/document-com
 import { textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
 import type { DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
+import type { DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host'
+import { FDocumentTable, getDocumentTables, findDocumentTables, getDocumentTableAtSelection, insertDocumentTable,
+  DocsTableSelectionKinds, DocsTableRowInsertPositions, DocsTableColumnInsertPositions, DocsTableSortDirections,
+  DocsTableColumnTypes, DocsTableRowHeightRules, DocsTableBorderPresets,
+  type DocumentTableFindQuery } from './document-tables.ts'
+import type { DocumentTableInsertOptions } from '../features/document/commands/table-command-types.ts'
 import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
@@ -149,7 +185,14 @@ export type DocumentContentControlPatch = ContentControlPatch
  */
 export class FOffice {
   readonly Event = new FEventName()
-  readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections })
+  readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
+    ChartGaugeMode: ChartGaugeModes, ChartGaugePointerShape: ChartGaugePointerShapes, ChartRadarShape: ChartRadarShapes,
+    ChartAxisTarget: ChartAxisTargets, ChartSeriesClearTarget: ChartSeriesClearTargets, ChartAllSeriesStyleTarget: ChartAllSeriesStyleTargets,
+    ChartAxisPointerTarget: ChartAxisPointerTargets, AxisAlignEnum: ChartAxisTitleAlignments,
+    DocsTableSelectionKind: DocsTableSelectionKinds, DocsTableRowInsertPosition: DocsTableRowInsertPositions,
+    DocsTableColumnInsertPosition: DocsTableColumnInsertPositions, DocsTableSortDirection: DocsTableSortDirections,
+    DocsTableColumnType: DocsTableColumnTypes, DocsTableRowHeightRule: DocsTableRowHeightRules,
+    DocsTableBorderPreset: DocsTableBorderPresets })
   readonly studio: OfficeStudio
 
   private constructor(studio: OfficeStudio) {
@@ -835,27 +878,38 @@ export class ChartConfigBuilder {
     resolveChartType(type)
     this.value = { type, source: { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 }, orientation: 'columns' }, position: { x: 0, y: 0 }, size: { width: 480, height: 300 } }
   }
-  setType(type: ChartType): this { resolveChartType(type); this.value = { ...this.value, type }; return this }
+  setType(type: ChartType): this { this.value = convertChartType(this.value, type); return this }
   setSource(range: string | ChartSource, orientation: ChartSourceOrientation = 'columns'): this {
     const source = typeof range === 'string' ? { range: parseChartA1Range(range), orientation } : range
     this.value = { ...this.value, source: { ...source, range: { ...source.range } } }
     return this
   }
   setPosition(cell: string): this {
-    const { row, column } = parseA1Cell(cell)
-    const x = column * 96, y = row * 24
-    this.value = { ...this.value, position: { x, y } }
+    parseA1Cell(cell)
+    this.value = { ...this.value, positionCell: cell }
     return this
   }
-  setAbsolutePosition(x: number, y: number): this { this.value = { ...this.value, position: { x, y } }; return this }
+  setAbsolutePosition(x: number, y: number): this { this.value = { ...this.value, position: { x, y }, positionCell: undefined }; return this }
   setSize(width: number, height: number): this { this.value = { ...this.value, size: { width, height } }; return this }
-  setCategoryField(index: number): this { this.value = { ...this.value, categoryField: index }; return this }
+  setCategoryField(index: number): this {
+    const mapping = this.value.options?.mapping
+    const options = this.value.type === 'gauge' && mapping?.gauge
+      ? mergeChartOptions(this.value.options, { mapping: { ...mapping, gauge: { ...mapping.gauge, labelIndex: index } } }) : this.value.options
+    this.value = { ...this.value, categoryField: index, options }; return this
+  }
   setPivotTableId(pivotTableId: string): this {
     if (!pivotTableId.trim()) throw new TypeError('Pivot table id is required')
     this.value = { ...this.value, pivotTableId }
     return this
   }
-  setValueFields(fields: number[]): this { this.value = { ...this.value, valueFields: [...fields] }; return this }
+  setValueFields(fields: number[]): this {
+    if (this.value.type === 'gauge') {
+      if (!Array.isArray(fields) || fields.length !== 1) throw new RangeError('仪表仅支持一个数值字段。')
+      validateChartSeriesField(fields[0]!)
+      if (this.value.options?.mapping?.gauge) return this.setGaugeValueField(fields[0]!)
+    }
+    this.value = { ...this.value, valueFields: [...fields] }; return this
+  }
   setSeriesToCategory(mapping: Record<number, number[]>): this {
     this.value = { ...this.value, seriesToCategory: Object.fromEntries(Object.entries(mapping).map(([field, categories]) => [field, [...categories]])) }
     return this
@@ -866,18 +920,82 @@ export class ChartConfigBuilder {
   setOptions(options: ChartSemanticOptions): this { this.value = { ...this.value, options: mergeChartOptions(this.value.options, options) }; return this }
   setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): this { return this.setOptions(chartOptionPatch(key, value)) }
   setMapping(mapping: ChartSemanticOptions['mapping']): this { return this.setOption('mapping', mapping) }
-  setAllSeriesStyle(style: ChartSeriesOptions | undefined): this { return this.setOption('allSeriesStyle', style) }
-  setSeries(field: number, style: ChartSeriesOptions | undefined): this {
-    validateChartSeriesField(field)
-    return this.setOption('series', chartSeriesPatch(this.value.options?.series, field, style))
+  setUseDateAxis(value: boolean): this { return this.setOption('mapping', { useDateAxis: value }) }
+  resetUseDateAxis(): this { return this.setUseDateAxis(false) }
+  setAxisPointer(value: ChartNullablePatch<ChartAxisPointerOptions> | undefined): this { return this.setOption('axisPointer', chartAxisPointerValues(value)) }
+  clearAxisPointer(target?: ChartAxisPointerTarget): this { return this.setOption('axisPointer', clearChartAxisPointer(this.value.options?.axisPointer, target)) }
+  setBubbleMapping(mapping: ChartBubbleMappingOptions): this { assertChartBubbleType(this.value.type); return this.setOption('mapping', { bubble: mapping }) }
+  clearBubbleMapping(): this { assertChartBubbleType(this.value.type); return this.setOption('mapping', { bubble: undefined }) }
+  setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): this { return this.setOption('allSeriesStyle', chartSeriesStyleValues(style)) }
+  clearAllSeriesStyle(target?: ChartAllSeriesStyleTarget): this { return this.setOption('allSeriesStyle', clearChartAllSeriesStyle(this.value.options?.allSeriesStyle, target)) }
+  setSeries(selector: ChartSeriesSelector, style: ChartNullablePatch<ChartSeriesOptions> | undefined): this {
+    return this.setOptions(patchChartSeriesOverride(this.value.options, selector, chartSeriesStyleValues(style)))
   }
+  clearSeries(selector: ChartSeriesSelector, target?: ChartSeriesClearTarget): this {
+    validateChartSeriesSelector(selector)
+    return this.setOptions(patchChartSeriesOverride(this.value.options, selector, clearChartSeriesStyle(chartSeriesOverride(this.value.options, selector), target)))
+  }
+  clearAllSeriesOverrides(): this { return this.setOptions({ series: {}, namedSeries: [] }) }
   setTrendlines(trendlines: readonly ChartTrendlineOptions[]): this { return this.setOption('trendlines', [...trendlines]) }
   setErrorBars(errorBars: readonly ChartErrorBarOptions[]): this { return this.setOption('errorBars', [...errorBars]) }
   setThreeD(threeD: ChartSemanticOptions['threeD']): this { return this.setOption('threeD', threeD) }
-  setRightYAxis(axis: ChartAxisOptions | undefined): this { return this.setOption('rightYAxis', axis) }
+  clearThreeD(): this { return this.setOption('threeD', undefined) }
+  setDepthAxis(axis: ChartSemanticOptions['depthAxis']): this { return this.setOption('depthAxis', axis) }
+  clearDepthAxis(): this { return this.setOption('depthAxis', undefined) }
+  setRightYAxis(axis: ChartNullablePatch<ChartAxisOptions> | undefined): this { return this.setOption('rightYAxis', axis === undefined ? undefined : chartAxisPatch(this.value.options?.rightYAxis, axis)) }
+  clearRightYAxis(target?: ChartAxisTarget): this { return this.setOption('rightYAxis', clearChartAxis(this.value.options?.rightYAxis, target)) }
+  setRadar(value: ChartNullablePatch<ChartRadarOptions> | undefined): this { assertChartRadarType(this.value.type); return this.setOption('radar', patchChartRadarOptions(this.value.options?.radar, value)) }
+  setShape(value: ChartRadarShape): this { return this.setRadar({ shape: value }) }
+  resetShape(): this { return this.setRadar({ shape: undefined }) }
+  setFill(value: boolean): this { return this.setRadar({ fill: value }) }
+  resetFill(): this { return this.setRadar({ fill: undefined }) }
+  setRadarAxisLabel(value: ChartNullablePatch<ChartRadarAxisLabelOptions>): this { return this.setRadar({ axisLabel: value }) }
+  resetRadarAxisLabel(): this { return this.setRadar({ axisLabel: undefined }) }
+  setGauge(value: ChartGaugeOptions | undefined): this { return this.setOption('gauge', patchChartGaugeOptions(this.value.options?.gauge, value)) }
+  setGaugePreset(preset: ChartGaugePreset): this { return this.setGauge(chartGaugePresetOptions(preset)) }
+  setGaugeValueField(index: number): this {
+    const mapping = chartGaugeValueFieldMapping(this.value.options?.mapping, index, this.value.categoryField ?? 0)
+    const options = mergeChartOptions(this.value.options, { mapping })
+    this.value = { ...this.value, valueFields: [index], options }; return this
+  }
+  setGaugeMode(value: ChartGaugeMode): this { return this.setGauge({ mode: value }) }
+  resetGaugeMode(): this { return this.setGauge({ mode: undefined }) }
+  setGaugeScale(value: ChartGaugeNullablePatch<ChartGaugeScaleOptions>): this { return this.setGauge(chartGaugeNullableValues<ChartGaugeScaleOptions>(value)) }
+  resetGaugeScale(): this { return this.setGauge({ min: undefined, max: undefined, splitNumber: undefined }) }
+  setGaugeTicks(value: ChartGaugeTicksPatch): this { return this.setGauge(chartGaugeTicksOptions(value)) }
+  setGaugeAngles(value: ChartGaugeNullablePatch<ChartGaugeAnglesOptions>): this { return this.setGauge(chartGaugeNullableValues<ChartGaugeAnglesOptions>(value)) }
+  resetGaugeAngles(): this { return this.setGauge({ startAngle: undefined, endAngle: undefined }) }
+  setGaugeRanges(value: readonly ChartGaugeRangeOptions[]): this { return this.setGauge(chartGaugeRangesOptions(value)) }
+  resetGaugeRanges(): this { return this.setGauge({ ranges: undefined }) }
+  setGaugeAxisLine(value: ChartGaugeNullablePatch<ChartGaugeAxisLineOptions>): this { return this.setGauge({ axisLine: chartGaugeNullableValues<ChartGaugeAxisLineOptions>(value) }) }
+  resetGaugeAxisLine(): this { return this.setGauge({ axisLine: undefined }) }
+  setGaugeAxisTick(value: ChartGaugeNullablePatch<ChartGaugeAxisTickOptions>): this { return this.setGauge({ axisTick: chartGaugeNullableValues<ChartGaugeAxisTickOptions>(value) }) }
+  resetGaugeAxisTick(): this { return this.setGauge({ axisTick: undefined }) }
+  setGaugeSplitLine(value: ChartGaugeNullablePatch<ChartGaugeSplitLineOptions>): this { return this.setGauge({ splitLine: chartGaugeNullableValues<ChartGaugeSplitLineOptions>(value) }) }
+  resetGaugeSplitLine(): this { return this.setGauge({ splitLine: undefined }) }
+  setGaugeAxisLabel(value: ChartGaugeNullablePatch<ChartGaugeAxisLabelOptions>): this { return this.setGauge({ axisLabel: chartGaugeNullableValues<ChartGaugeAxisLabelOptions>(value) }) }
+  resetGaugeAxisLabel(): this { return this.setGauge({ axisLabel: undefined }) }
+  setGaugePointer(value: ChartGaugeNullablePatch<ChartGaugePointerOptions>): this { return this.setGauge({ pointer: chartGaugeNullableValues<ChartGaugePointerOptions>(value) }) }
+  resetGaugePointer(): this { return this.setGauge({ pointer: undefined }) }
+  setGaugeAnchor(value: ChartGaugeNullablePatch<ChartGaugeAnchorOptions>): this { return this.setGauge({ anchor: chartGaugeNullableValues<ChartGaugeAnchorOptions>(value) }) }
+  resetGaugeAnchor(): this { return this.setGauge({ anchor: undefined }) }
+  setGaugeProgress(value: ChartGaugeNullablePatch<ChartGaugeProgressOptions>): this { return this.setGauge({ progress: chartGaugeNullableValues<ChartGaugeProgressOptions>(value) }) }
+  resetGaugeProgress(): this { return this.setGauge({ progress: undefined }) }
+  setGaugeTitle(value: ChartGaugeNullablePatch<ChartGaugeTitleOptions>): this { return this.setGauge({ title: chartGaugeNullableValues<ChartGaugeTitleOptions>(value) }) }
+  resetGaugeTitle(): this { return this.setGauge({ title: undefined }) }
+  setGaugeDetail(value: ChartGaugeNullablePatch<ChartGaugeDetailOptions>): this { return this.setGauge({ detail: chartGaugeNullableValues<ChartGaugeDetailOptions>(value) }) }
+  resetGaugeDetail(): this { return this.setGauge({ detail: undefined }) }
   setLegend(legend: Partial<ChartLegendOptions>): this { this.value = { ...this.value, legend: { ...this.value.legend, ...legend } }; return this }
-  setXAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: chartAxisPatch(this.value.xAxis, axis) }; return this }
-  setYAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, yAxis: chartAxisPatch(this.value.yAxis, axis) }; return this }
+  setXAxis(axis: ChartNullablePatch<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: chartAxisPatch(this.value.xAxis, axis) }; return this }
+  setYAxis(axis: ChartNullablePatch<ChartAxisOptions>): this { this.value = { ...this.value, yAxis: chartAxisPatch(this.value.yAxis, axis) }; return this }
+  clearXAxis(target?: ChartAxisTarget): this { this.value = { ...this.value, xAxis: clearChartAxis(this.value.xAxis, target) }; return this }
+  clearYAxis(target?: ChartAxisTarget): this { this.value = { ...this.value, yAxis: clearChartAxis(this.value.yAxis, target) }; return this }
+  setXAxisTitle(title: string): this { return this.setXAxis({ title }) }
+  clearXAxisTitle(): this { return this.setXAxis({ title: undefined }) }
+  setYAxisTitle(title: string): this { return this.setYAxis({ title }) }
+  clearYAxisTitle(): this { return this.setYAxis({ title: undefined }) }
+  setRightYAxisTitle(title: string): this { return this.setOption('rightYAxis', chartAxisPatch(this.value.options?.rightYAxis, { title })) }
+  clearRightYAxisTitle(): this { return this.setOption('rightYAxis', chartAxisPatch(this.value.options?.rightYAxis, { title: undefined })) }
   build(): ChartInfo { return cloneModel(this.value) }
 }
 
@@ -908,17 +1026,77 @@ export class FChart {
   async setOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
   async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.setOptions(chartOptionPatch(key, value)) }
   async setMapping(mapping: ChartSemanticOptions['mapping']): Promise<this> { return this.setOption('mapping', mapping) }
-  async setAllSeriesStyle(style: ChartSeriesOptions | undefined): Promise<this> { return this.setOption('allSeriesStyle', style) }
-  async setSeries(field: number, style: ChartSeriesOptions | undefined): Promise<this> {
-    validateChartSeriesField(field)
-    return this.setOption('series', chartSeriesPatch(this.model().options?.series, field, style))
+  async setUseDateAxis(value: boolean): Promise<this> { return this.setOption('mapping', { useDateAxis: value }) }
+  async resetUseDateAxis(): Promise<this> { return this.setUseDateAxis(false) }
+  async setAxisPointer(value: ChartNullablePatch<ChartAxisPointerOptions> | undefined): Promise<this> { return this.setOption('axisPointer', chartAxisPointerValues(value)) }
+  async clearAxisPointer(target?: ChartAxisPointerTarget): Promise<this> { return this.setOption('axisPointer', clearChartAxisPointer(this.model().options?.axisPointer, target)) }
+  async setBubbleMapping(mapping: ChartBubbleMappingOptions): Promise<this> { assertChartBubbleType(this.model().type); return this.setOption('mapping', { bubble: mapping }) }
+  async clearBubbleMapping(): Promise<this> { assertChartBubbleType(this.model().type); return this.setOption('mapping', { bubble: undefined }) }
+  async setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> { return this.setOption('allSeriesStyle', chartSeriesStyleValues(style)) }
+  async clearAllSeriesStyle(target?: ChartAllSeriesStyleTarget): Promise<this> { return this.setOption('allSeriesStyle', clearChartAllSeriesStyle(this.model().options?.allSeriesStyle, target)) }
+  async setSeries(selector: ChartSeriesSelector, style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> {
+    return this.setOptions(patchChartSeriesOverride(this.model().options, selector, chartSeriesStyleValues(style)))
   }
+  async clearSeries(selector: ChartSeriesSelector, target?: ChartSeriesClearTarget): Promise<this> {
+    validateChartSeriesSelector(selector)
+    return this.setOptions(patchChartSeriesOverride(this.model().options, selector, clearChartSeriesStyle(chartSeriesOverride(this.model().options, selector), target)))
+  }
+  async clearAllSeriesOverrides(): Promise<this> { return this.setOptions({ series: {}, namedSeries: [] }) }
   async setTrendlines(trendlines: readonly ChartTrendlineOptions[]): Promise<this> { return this.setOption('trendlines', [...trendlines]) }
   async setErrorBars(errorBars: readonly ChartErrorBarOptions[]): Promise<this> { return this.setOption('errorBars', [...errorBars]) }
-  async setRightYAxis(axis: ChartAxisOptions | undefined): Promise<this> { return this.setOption('rightYAxis', axis) }
+  async setRightYAxis(axis: ChartNullablePatch<ChartAxisOptions> | undefined): Promise<this> { return this.setOption('rightYAxis', axis === undefined ? undefined : chartAxisPatch(this.model().options?.rightYAxis, axis)) }
+  async clearRightYAxis(target?: ChartAxisTarget): Promise<this> { return this.setOption('rightYAxis', clearChartAxis(this.model().options?.rightYAxis, target)) }
+  async setRadar(value: ChartNullablePatch<ChartRadarOptions> | undefined): Promise<this> { const model = this.model(); assertChartRadarType(model.type); return this.setOption('radar', patchChartRadarOptions(model.options?.radar, value)) }
+  async setShape(value: ChartRadarShape): Promise<this> { return this.setRadar({ shape: value }) }
+  async resetShape(): Promise<this> { return this.setRadar({ shape: undefined }) }
+  async setFill(value: boolean): Promise<this> { return this.setRadar({ fill: value }) }
+  async resetFill(): Promise<this> { return this.setRadar({ fill: undefined }) }
+  async setRadarAxisLabel(value: ChartNullablePatch<ChartRadarAxisLabelOptions>): Promise<this> { return this.setRadar({ axisLabel: value }) }
+  async resetRadarAxisLabel(): Promise<this> { return this.setRadar({ axisLabel: undefined }) }
+  async setGauge(value: ChartGaugeOptions | undefined): Promise<this> { return this.setOption('gauge', patchChartGaugeOptions(this.model().options?.gauge, value)) }
+  async setGaugePreset(preset: ChartGaugePreset): Promise<this> { return this.setGauge(chartGaugePresetOptions(preset)) }
+  async setGaugeValueField(index: number): Promise<this> {
+    const model = this.model(), mapping = chartGaugeValueFieldMapping(model.options?.mapping, index, model.categoryField)
+    return this.update({ valueFields: [index], options: { mapping } })
+  }
+  async setGaugeMode(value: ChartGaugeMode): Promise<this> { return this.setGauge({ mode: value }) }
+  async resetGaugeMode(): Promise<this> { return this.setGauge({ mode: undefined }) }
+  async setGaugeScale(value: ChartGaugeNullablePatch<ChartGaugeScaleOptions>): Promise<this> { return this.setGauge(chartGaugeNullableValues<ChartGaugeScaleOptions>(value)) }
+  async resetGaugeScale(): Promise<this> { return this.setGauge({ min: undefined, max: undefined, splitNumber: undefined }) }
+  async setGaugeTicks(value: ChartGaugeTicksPatch): Promise<this> { return this.setGauge(chartGaugeTicksOptions(value)) }
+  async setGaugeAngles(value: ChartGaugeNullablePatch<ChartGaugeAnglesOptions>): Promise<this> { return this.setGauge(chartGaugeNullableValues<ChartGaugeAnglesOptions>(value)) }
+  async resetGaugeAngles(): Promise<this> { return this.setGauge({ startAngle: undefined, endAngle: undefined }) }
+  async setGaugeRanges(value: readonly ChartGaugeRangeOptions[]): Promise<this> { return this.setGauge(chartGaugeRangesOptions(value)) }
+  async resetGaugeRanges(): Promise<this> { return this.setGauge({ ranges: undefined }) }
+  async setGaugeAxisLine(value: ChartGaugeNullablePatch<ChartGaugeAxisLineOptions>): Promise<this> { return this.setGauge({ axisLine: chartGaugeNullableValues<ChartGaugeAxisLineOptions>(value) }) }
+  async resetGaugeAxisLine(): Promise<this> { return this.setGauge({ axisLine: undefined }) }
+  async setGaugeAxisTick(value: ChartGaugeNullablePatch<ChartGaugeAxisTickOptions>): Promise<this> { return this.setGauge({ axisTick: chartGaugeNullableValues<ChartGaugeAxisTickOptions>(value) }) }
+  async resetGaugeAxisTick(): Promise<this> { return this.setGauge({ axisTick: undefined }) }
+  async setGaugeSplitLine(value: ChartGaugeNullablePatch<ChartGaugeSplitLineOptions>): Promise<this> { return this.setGauge({ splitLine: chartGaugeNullableValues<ChartGaugeSplitLineOptions>(value) }) }
+  async resetGaugeSplitLine(): Promise<this> { return this.setGauge({ splitLine: undefined }) }
+  async setGaugeAxisLabel(value: ChartGaugeNullablePatch<ChartGaugeAxisLabelOptions>): Promise<this> { return this.setGauge({ axisLabel: chartGaugeNullableValues<ChartGaugeAxisLabelOptions>(value) }) }
+  async resetGaugeAxisLabel(): Promise<this> { return this.setGauge({ axisLabel: undefined }) }
+  async setGaugePointer(value: ChartGaugeNullablePatch<ChartGaugePointerOptions>): Promise<this> { return this.setGauge({ pointer: chartGaugeNullableValues<ChartGaugePointerOptions>(value) }) }
+  async resetGaugePointer(): Promise<this> { return this.setGauge({ pointer: undefined }) }
+  async setGaugeAnchor(value: ChartGaugeNullablePatch<ChartGaugeAnchorOptions>): Promise<this> { return this.setGauge({ anchor: chartGaugeNullableValues<ChartGaugeAnchorOptions>(value) }) }
+  async resetGaugeAnchor(): Promise<this> { return this.setGauge({ anchor: undefined }) }
+  async setGaugeProgress(value: ChartGaugeNullablePatch<ChartGaugeProgressOptions>): Promise<this> { return this.setGauge({ progress: chartGaugeNullableValues<ChartGaugeProgressOptions>(value) }) }
+  async resetGaugeProgress(): Promise<this> { return this.setGauge({ progress: undefined }) }
+  async setGaugeTitle(value: ChartGaugeNullablePatch<ChartGaugeTitleOptions>): Promise<this> { return this.setGauge({ title: chartGaugeNullableValues<ChartGaugeTitleOptions>(value) }) }
+  async resetGaugeTitle(): Promise<this> { return this.setGauge({ title: undefined }) }
+  async setGaugeDetail(value: ChartGaugeNullablePatch<ChartGaugeDetailOptions>): Promise<this> { return this.setGauge({ detail: chartGaugeNullableValues<ChartGaugeDetailOptions>(value) }) }
+  async resetGaugeDetail(): Promise<this> { return this.setGauge({ detail: undefined }) }
   async setLegend(legend: Partial<ChartLegendOptions>): Promise<this> { return this.update({ legend: { ...this.model().legend, ...legend } }) }
-  async setXAxis(axis: Partial<ChartAxisOptions>): Promise<this> { return this.update({ xAxis: chartAxisPatch(this.model().xAxis, axis) }) }
-  async setYAxis(axis: Partial<ChartAxisOptions>): Promise<this> { return this.update({ yAxis: chartAxisPatch(this.model().yAxis, axis) }) }
+  async setXAxis(axis: ChartNullablePatch<ChartAxisOptions>): Promise<this> { return this.update({ xAxis: chartAxisPatch(this.model().xAxis, axis) }) }
+  async setYAxis(axis: ChartNullablePatch<ChartAxisOptions>): Promise<this> { return this.update({ yAxis: chartAxisPatch(this.model().yAxis, axis) }) }
+  async clearXAxis(target?: ChartAxisTarget): Promise<this> { return this.update({ xAxis: clearChartAxis(this.model().xAxis, target) }) }
+  async clearYAxis(target?: ChartAxisTarget): Promise<this> { return this.update({ yAxis: clearChartAxis(this.model().yAxis, target) }) }
+  async setXAxisTitle(title: string): Promise<this> { return this.setXAxis({ title }) }
+  async clearXAxisTitle(): Promise<this> { return this.setXAxis({ title: undefined }) }
+  async setYAxisTitle(title: string): Promise<this> { return this.setYAxis({ title }) }
+  async clearYAxisTitle(): Promise<this> { return this.setYAxis({ title: undefined }) }
+  async setRightYAxisTitle(title: string): Promise<this> { return this.setOption('rightYAxis', chartAxisPatch(this.model().options?.rightYAxis, { title })) }
+  async clearRightYAxisTitle(): Promise<this> { return this.setOption('rightYAxis', chartAxisPatch(this.model().options?.rightYAxis, { title: undefined })) }
   async setAbsolutePosition(x: number, y: number): Promise<this> { return this.update({ position: { x, y } }) }
   async setSize(width: number, height: number): Promise<this> { return this.update({ size: { width, height } }) }
   async remove(): Promise<boolean> { return this.api.executeCommand('sheet.command.remove-chart', { unitId: this.unitId, chartId: this.id }) }
@@ -945,14 +1123,14 @@ function chartOptionPatch<K extends keyof ChartSemanticOptions>(key: K, value: C
   return cloneChartOptions(patch)!
 }
 function validateChartSeriesField(field: number): void { if (!Number.isSafeInteger(field) || field < 0) throw new RangeError('图表系列字段须为非负安全整数。') }
-function chartSeriesPatch(current: ChartSemanticOptions['series'], field: number, style: ChartSeriesOptions | undefined): NonNullable<ChartSemanticOptions['series']> {
-  const series = cloneChartOptions({ series: current })?.series ?? {}
-  if (style === undefined) delete series[field]
-  else series[field] = mergeChartOptions({ allSeriesStyle: series[field] }, { allSeriesStyle: style })!.allSeriesStyle!
-  return series
+function assertChartRadarType(type: ChartType): void { if (type !== 'radar') throw new TypeError('雷达专属 API 仅适用于雷达图。') }
+function assertChartBubbleType(type: ChartType): void { if (type !== 'bubble') throw new TypeError('气泡映射 API 仅适用于气泡图。') }
+function chartGaugeValueFieldMapping(current: ChartSemanticOptions['mapping'], index: number, category: number): NonNullable<ChartSemanticOptions['mapping']> {
+  validateChartSeriesField(index)
+  return { ...current, gauge: { ...(current?.gauge ?? { labelIndex: category }), valueIndex: index } }
 }
-function chartAxisPatch(current: Partial<ChartAxisOptions> | undefined, patch: Partial<ChartAxisOptions>): ChartAxisOptions {
-  return mergeChartOptions({ rightYAxis: { scaleType: 'linear', ...current } }, { rightYAxis: { scaleType: current?.scaleType ?? 'linear', ...patch } })!.rightYAxis!
+function chartAxisPatch(current: Partial<ChartAxisOptions> | undefined, patch: ChartNullablePatch<ChartAxisOptions>): ChartAxisOptions {
+  return chartCartesianAxisPatch(current, patch)
 }
 
 export class FRange {
@@ -1372,20 +1550,38 @@ export class FDocument {
     return this.getParagraphs().at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  getTables(segmentId = ''): FDocumentTable[] { return getDocumentTables(this, segmentId) }
+  getTable(tableId: string, segmentId = ''): FDocumentTable | null {
+    return findDocumentTables(this, { tableId }, segmentId)[0] ?? null
+  }
+  /** index is the table ordinal in recursive body order, not a text offset. */
+  getTableAt(index: number, segmentId = ''): FDocumentTable | null {
+    return Number.isSafeInteger(index) && index >= 0 ? getDocumentTables(this, segmentId)[index] ?? null : null
+  }
+  getTableAtSelection(): FDocumentTable | null { return getDocumentTableAtSelection(this) }
+  findTableByText(text: string, segmentId = ''): FDocumentTable | null { return findDocumentTables(this, text, segmentId)[0] ?? null }
+  findTables(query: string | DocumentTableFindQuery, segmentId = ''): FDocumentTable[] { return findDocumentTables(this, query, segmentId) }
+  insertTable(rows: number, columns: number, options: DocumentTableInsertOptions = {}): FDocumentTable | null {
+    return insertDocumentTable(this, rows, columns, options)
+  }
+  insertTableFromData(data: string[][], options: Omit<DocumentTableInsertOptions, 'values'> = {}): FDocumentTable | null {
+    return insertDocumentTable(this, undefined, undefined, { ...options, values: data })
+  }
   executeCommand(command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
     return this.api.executeDocumentEditorCommand(this.id, command, selection)
   }
   /** Pending input overrides; clearing color/highlight preserves an own undefined property. */
-  getInputMarks(selection?: DocumentSelection, story?: DocumentStoryRange): RunPatch { return this.api.getDocumentInputMarks(this.id, selection, story) }
+  getInputMarks(selection?: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): RunPatch { return this.api.getDocumentInputMarks(this.id, selection, story, host) }
   getModelRevision(): number { return this.api.getDocumentRevision(this.id) }
   getHistoryGeneration(): number { return this.api.editor.history.captureSavepoint(this.id).generation }
+  getFieldCacheAdapter() { return this.api.getDocumentFieldCacheAdapter(this.id) }
   getInputState() { return this.api.getDocumentInputState(this.id) }
   onInputStateChanged(listener: (event: ApiEventMap['DocumentInputStateChanged']) => void): Disposable {
     return this.api.events.addEvent('DocumentInputStateChanged', event => { if (event.unitId === this.id) listener(event) })
   }
-  setInputSelection(selection: DocumentSelection, story?: DocumentStoryRange): boolean { return this.api.setDocumentInputSelection(this.id, selection, story) }
+  setInputSelection(selection: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): boolean { return this.api.setDocumentInputSelection(this.id, selection, story, host) }
   clearInputMarks(): boolean { return this.api.clearDocumentInputMarks(this.id) }
-  advanceInputMarks(selection: DocumentSelection, story?: DocumentStoryRange): boolean { return this.api.advanceDocumentInputMarks(this.id, selection, story) }
+  advanceInputMarks(selection: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): boolean { return this.api.advanceDocumentInputMarks(this.id, selection, story, host) }
   clearFormatting(selection: DocumentSelection, story?: DocumentStoryRange): DocumentEditorCommandResult {
     return this.executeCommand({ id: 'doc.command.clear-formatting', ...(story ? { story } : {}) }, selection)
   }

@@ -3,12 +3,14 @@ import { documentStoryContent, documentStoryDefaultStyle, documentStoryInputEdit
 import { documentStoryFieldDisplayRuns } from '../model/document-story'
 import { applyRunPatch, createRun, type RunPatch } from '../model/document-model'
 import { documentRunStyleAt, replaceDocumentRunRange, validateDocumentRunPatch } from '../model/document-run-range'
+import { projectDocumentSectionStories } from '../model/document-story-blocks'
 
 export type StoryKey = DocumentPageField['story']
 export interface StoryLocation { page: number; area: 'header' | 'footer' }
 
 /** A field is a single selectable object in the input bridge, independent of its displayed width. */
 export function storyBuffer(section: DocumentSectionHeaderFooter, story: StoryKey) {
+  section = projectDocumentSectionStories(section)
   const literal = section[story]
   let value = '', pos = 0
   const objects = new Map<number, DocumentPageField>()

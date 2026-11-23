@@ -52,22 +52,26 @@ function selection(model, row = 0, col = 0, endRow = row, endCol = col) {
   }
 }
 function apply(model, range, id, params = {}) { return commands.executeDocumentCommand(model, range, { id: `doc.command.table-${id}`, ...params }) }
+const currentTable = model => models.tableForBlock(model.blocks.find(block => block.id === 'table'))
 const cellText = (cell) => cell.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')
 
 test('table context follows logical selection and exposes executable structural commands in its context menu', () => {
   const { model } = fixture()
   const state = toolbar.documentToolbarState(model, selection(model, 0, 1, 1, 2))
-  assert.deepEqual(state.table, { blockId: 'table', startRow: 0, endRow: 1, startColumn: 1, endColumn: 2, rowCount: 3, columnCount: 3, hasMergedCells: false })
-  const context = { state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true }
+  assert.deepEqual(state.table, { blockId: 'table', startRow: 0, endRow: 1, startColumn: 1, endColumn: 2, rowCount: 3, columnCount: 3, hasMergedCells: false, canMergeCells: true, canUnmergeCells: false })
+  const context = { state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true,
+    table: { model, selection: selection(model, 0, 1, 1, 2), permission: { documentId: model.id, userId: 'local-user' }, mode: 'traditional', floatingToolbarOpen: false } }
   const tabs = ribbon.createDocumentRibbon(context)
-  assert.equal(tabs.some((candidate) => candidate.id === 'table'), false)
+  const tableTab = tabs.find(candidate => candidate.id === 'table')
+  assert.equal(tableTab.contextual, true)
+  assert.deepEqual(tableTab.groups.map(group => [group.id, group.items.length]), [['doc-table-style', 5], ['doc-table-layout', 6], ['doc-table-data', 2], ['doc-table-options', 4]])
   const items = ribbon.documentTableContextMenuItems()
   assert.equal(items.length, 7)
   for (const item of items) assert.ok(ribbon.documentCommandFromRibbon(item.commandId, item.params), item.title)
   assert.equal(ribbon.documentCommandFromRibbon('doc.command.table-insert-row', { position: 'inside' }), undefined)
   const plain = toolbar.documentToolbarState(model, models.collapsedSelection({ blockId: 'before', offset: 0 }))
   assert.equal(plain.table, undefined)
-  assert.equal(ribbon.createDocumentRibbon({ ...context, state: plain }).some((candidate) => candidate.id === 'table'), false)
+  assert.equal(ribbon.createDocumentRibbon({ ...context, state: plain, table: { ...context.table, selection: models.collapsedSelection({ blockId: 'before', offset: 0 }) } }).some((candidate) => candidate.id === 'table'), false)
 })
 
 test('table dropdown opens the source-matched size dialog and inserts the confirmed dimensions', () => {
@@ -85,9 +89,10 @@ test('table dropdown opens the source-matched size dialog and inserts the confir
   const dialog = readFileSync(new URL('../src/components/document/DocumentTableInsertDialog.vue', import.meta.url), 'utf8')
   assert.match(workbench, /case 'doc\.operation\.open-table': tableInsertOpen\.value = true/)
   assert.match(workbench, /DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert=/)
-  assert.match(dialog, /const rows = ref<number \| null>\(3\)/)
-  assert.match(dialog, /const columns = ref<number \| null>\(5\)/)
-  assert.match(dialog, /:min="1" :max="20"/)
+  assert.match(dialog, /reactive\(\{ rows: 3, columns: 5/)
+  assert.match(dialog, /<Form :model="form"/)
+  assert.match(dialog, /v-model:value="form.rows" :min="1" :max="10000"/)
+  assert.match(dialog, /v-model:value="form.columns" :min="1" :max="512"/)
 
   const model = api.createBlankDocument()
   const point = models.collapsedSelection({ blockId: model.blocks[0].id, offset: 0 })
@@ -196,9 +201,10 @@ test('document fixed roots preserve source two-row grid coordinates and baseline
 })
 
 test('inserted rows preserve the table style, existing cells and header semantics, while receiving unique empty models', () => {
-  const { model, table } = fixture()
+  const { model } = fixture()
   const original = structuredClone(model)
   const result = apply(model, selection(model, 0, 1), 'insert-row', { position: 'before' })
+  const table = currentTable(model)
   assert.equal(table.rows.length, 4)
   assert.equal(table.headerRowCount, 2)
   assert.deepEqual(table.rows.slice(1), original.blocks[1].metadata.table.rows)
@@ -212,17 +218,19 @@ test('inserted rows preserve the table style, existing cells and header semantic
 })
 
 test('inserted columns update widths and retain existing paragraph identities and control anchors', () => {
-  const { model, table } = fixture()
+  const { model } = fixture()
+  const before = currentTable(model)
   controlService.createDocumentContentControl(model, { id: 'anchor', type: 'text', blockId: 'r0c2', startOffset: 0, endOffset: 4 })
-  const original = structuredClone(table.rows)
-  const originalTableWidth = table.columnWidths.reduce((sum, width) => sum + width, 0)
+  const original = structuredClone(before.rows)
+  const originalTableWidth = before.columnWidths.reduce((sum, width) => sum + width, 0)
   const range = apply(model, selection(model, 1, 1), 'insert-column', { position: 'after' })
+  const table = currentTable(model)
   assert.equal(table.columnWidths.length, 4)
   assert.ok(Math.abs(table.columnWidths.reduce((sum, width) => sum + width, 0) - originalTableWidth) < 1e-9)
   assert.ok(Math.abs(table.columnWidths[1] - table.columnWidths[2]) < 1e-9)
   assert.equal(range.focus.col, 2)
   for (let r = 0; r < 3; r++) {
-    assert.deepEqual(table.rows[r].cells[3], original[r].cells[2])
+    assert.deepEqual(table.rows[r].cells[3], { ...original[r].cells[2], columnIndex: 3 })
     assert.equal(cellText(table.rows[r].cells[2]), '')
   }
   assert.equal(controlService.contentControlText(model, model.contentControls[0]), 'R0C2')
@@ -236,11 +244,12 @@ test('clamping a caret after structural undo retains its table cell coordinate w
 })
 
 test('deleting a row range adjusts repeating headers, removes unlocked anchors, and selects the surviving row', () => {
-  const { model, table } = fixture(4, 2)
-  table.headerRowCount = 2
+  const { model } = fixture(4, 2)
+  currentTable(model).headerRowCount = 2
   controlService.createDocumentContentControl(model, { id: 'remove', type: 'text', blockId: 'r0c0', startOffset: 0, endOffset: 4 })
   controlService.createDocumentContentControl(model, { id: 'keep', type: 'text', blockId: 'r3c1', startOffset: 0, endOffset: 4, lock: 'sdtLocked' })
   const result = apply(model, selection(model, 0, 0, 1, 1), 'delete-rows')
+  const table = currentTable(model)
   assert.equal(table.headerRowCount, 0)
   assert.equal(table.rows.length, 2)
   assert.equal(cellText(table.rows[0].cells[0]), 'R2C0')
@@ -249,8 +258,9 @@ test('deleting a row range adjusts repeating headers, removes unlocked anchors, 
 })
 
 test('deleting a column range updates widths and keeps the caret inside the remaining grid', () => {
-  const { model, table } = fixture(2, 4)
+  const { model } = fixture(2, 4)
   const result = apply(model, selection(model, 0, 1, 1, 2), 'delete-columns')
+  const table = currentTable(model)
   assert.deepEqual(table.columnWidths, [100, 400])
   assert.deepEqual(table.rows.map((row) => row.cells.map(cellText)), [['R0C0', 'R0C3'], ['R1C0', 'R1C3']])
   assert.equal(result.focus.col, 1)
@@ -282,7 +292,7 @@ test('deleting a row, column, or table preflights every locked descendant withou
     controlService.createDocumentContentControl(model, { id: 'unlocked', type: 'text', blockId: 'r0c0', startOffset: 0, endOffset: 4 })
     controlService.createDocumentContentControl(model, { id: 'locked', type: 'text', blockId: 'r0c1', startOffset: 0, endOffset: 4, lock: 'controlLocked' })
     const original = structuredClone(model)
-    assert.throws(() => apply(model, selection(model, 0, 0, 0, 1), id), /wrapper is locked/)
+    assert.throws(() => apply(model, selection(model, 0, 0, 0, 1), id), /locked|锁定/)
     assert.deepEqual(model, original)
   }
 })
@@ -295,21 +305,24 @@ test('table deletion also checks controls in nested table descendants', () => {
   table.rows[0].cells[1].blocks.push(block)
   model.contentControls = [{ id: 'nested-lock', type: 'text', blockId: 'nested-paragraph', startOffset: 0, endOffset: 0, lock: 'sdtLocked' }]
   const original = structuredClone(model)
-  assert.throws(() => apply(model, selection(model), 'delete-rows'), /wrapper is locked/)
+  assert.throws(() => apply(model, selection(model), 'delete-rows'), /locked|锁定/)
   assert.deepEqual(model, original)
 })
 
 test('matching horizontal merge layouts support structural edits and preserve their logical column widths', () => {
-  const { model, table } = fixture(3, 3)
-  table.rows.forEach((row) => { row.cells[1].colSpan = 2 })
+  const { model } = fixture(3, 3)
+  let table = currentTable(model)
+  table.rows.forEach((row) => { row.cells[1].colSpan = 2; row.cells[2].columnIndex = 3 })
   table.columnWidths = [100, 200, 300, 400]
   const originalWidth = table.columnWidths.reduce((sum, width) => sum + width, 0)
   const insertedRow = apply(model, selection(model, 1, 0), 'insert-row', { position: 'after' })
+  table = currentTable(model)
   assert.equal(table.rows[2].cells[1].colSpan, 2)
   assert.equal(insertedRow.focus.row, 2)
   assert.deepEqual(table.columnWidths, [100, 200, 300, 400])
 
   const insertedColumn = apply(model, selection(model, 0, 1), 'insert-column', { position: 'after' })
+  table = currentTable(model)
   assert.equal(table.rows[0].cells[2].colSpan, 1)
   assert.equal(table.columnWidths.length, 5)
   assert.ok(Math.abs(table.columnWidths.reduce((sum, width) => sum + width, 0) - originalWidth) < 1e-9)
@@ -318,33 +331,52 @@ test('matching horizontal merge layouts support structural edits and preserve th
   assert.equal(insertedColumn.focus.col, 2)
 
   const deletedColumn = apply(model, selection(model, 0, 1), 'delete-columns')
+  table = currentTable(model)
   assert.deepEqual(table.columnWidths, [100, 300, 400].map((width) => width * scale))
   assert.equal(table.rows[0].cells.length, 3)
   assert.equal(deletedColumn.focus.col, 1)
 
   const rowFixture = fixture(3, 3)
-  rowFixture.table.rows.forEach((row) => { row.cells[1].colSpan = 2 })
+  rowFixture.table.rows.forEach((row) => { row.cells[1].colSpan = 2; row.cells[2].columnIndex = 3 })
   rowFixture.table.columnWidths = [100, 200, 300, 400]
   const deletedRow = apply(rowFixture.model, selection(rowFixture.model, 1, 0, 1, 2), 'delete-rows')
-  assert.equal(rowFixture.table.rows.length, 2)
-  assert.equal(rowFixture.table.rows.every((row) => row.cells[1].colSpan === 2), true)
+  assert.equal(currentTable(rowFixture.model).rows.length, 2)
+  assert.equal(currentTable(rowFixture.model).rows.every((row) => row.cells[1].colSpan === 2), true)
   assert.equal(deletedRow.focus.row, 1)
 })
 
-test('vertical merges, inconsistent merge topology, and invalid widths reject atomically', () => {
-  for (const kind of ['vertical', 'different-horizontal-spans', 'irregular', 'invalid-widths', 'non-finite-widths', 'non-positive-widths']) {
+test('overlapping merges, holes, and invalid widths reject atomically', () => {
+  for (const kind of ['overlapping-vertical', 'overlapping-horizontal', 'hole', 'invalid-widths', 'non-finite-widths', 'non-positive-widths']) {
     for (const id of ['insert-row', 'insert-column', 'delete-rows', 'delete-columns']) {
       const { model, table } = fixture()
-      if (kind === 'vertical') table.rows[1].cells[1].rowSpan = 2
-      if (kind === 'different-horizontal-spans') table.rows[1].cells[1].colSpan = 2
-      if (kind === 'irregular') table.rows[1].cells.pop()
+      if (kind === 'overlapping-vertical') table.rows[1].cells[1].rowSpan = 2
+      if (kind === 'overlapping-horizontal') table.rows[1].cells[1].colSpan = 2
+      if (kind === 'hole') table.rows[1].cells.pop()
       if (kind === 'invalid-widths') table.columnWidths = [100, 200]
       if (kind === 'non-finite-widths') table.columnWidths = [100, Number.NaN, 300]
       if (kind === 'non-positive-widths') table.columnWidths = [100, 0, 300]
       const original = structuredClone(model)
-      assert.throws(() => apply(model, selection(model), id, { position: 'after' }), /跨行合并|合并列结构|网格不规则|列宽/)
+      assert.throws(() => apply(model, selection(model), id, { position: 'after', tableId: 'table' }), /跨度重叠|空洞|未覆盖相同逻辑列|列宽/)
       assert.deepEqual(model, original)
     }
+  }
+})
+
+test('valid vertical and mixed horizontal spans remain editable through detached structural commands', () => {
+  for (const kind of ['vertical', 'mixed-horizontal']) {
+    const { model, table } = fixture()
+    table.headerRowCount = 0
+    if (kind === 'vertical') { table.rows[1].cells[1].rowSpan = 2; table.rows[2].cells.splice(1, 1) }
+    else { table.rows[1].cells[1].colSpan = 2; table.rows[1].cells.pop() }
+    const saved = structuredClone(table), cellId = table.rows[1].cells[1].id
+    apply(model, selection(model, 1, 0), 'insert-row', { position: 'before' })
+    const current = currentTable(model)
+    assert.notEqual(current, table)
+    assert.deepEqual(table, saved)
+    assert.equal(current.rows.length, 4)
+    const owner = current.rows.flatMap(row => row.cells).find(cell => cell.id === cellId)
+    assert.equal(owner.rowSpan, kind === 'vertical' ? 2 : 1)
+    assert.equal(owner.colSpan, kind === 'mixed-horizontal' ? 2 : 1)
   }
 })
 

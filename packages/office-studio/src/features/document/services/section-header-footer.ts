@@ -7,6 +7,7 @@ import { replaceDocumentRunRange } from '../model/document-run-range'
 import { storyBuffer } from './story-editor'
 import { assertDocumentStoryLocksPreserved } from './document-story-locks'
 import { replaceSectionStory, sameSectionStory, sectionStoryLinks, sectionStoryLinkedToPrevious, validateSectionStoryLinkMap } from '../model/document-section-stories'
+import { projectDocumentSectionStories } from '../model/document-story-blocks'
 
 export { sectionStoryLinkedToPrevious } from '../model/document-section-stories'
 
@@ -170,7 +171,7 @@ export function resolveSectionHeaderFooter(model: DocumentModel, sectionId: stri
     if (stored?.storyLinkToPrevious !== undefined) { validateSectionStoryLinkMap(stored.storyLinkToPrevious); section.storyLinkToPrevious = { ...links } }
     section.linkToPrevious = DOCUMENT_STORY_KEYS.every(story => links[story])
     for (const key of DOCUMENT_STORY_KEYS) if (links[key]) replaceSectionStory(section, previous, key)
-    previous = section
+    previous = projectDocumentSectionStories(section)
   }
   return cloneModel(previous)
 }

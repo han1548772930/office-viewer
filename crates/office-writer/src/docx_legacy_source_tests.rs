@@ -31,7 +31,7 @@ fn current_odt_does_not_materialize_synthetic_word_absence_defaults() {
     let mut marker = vec![parse_xml(&format!(r#"<w:r xmlns:w="{WORD_NAMESPACE}"><w:t>1.</w:t></w:r>"#), false).unwrap()];
     registry.restore_marker(&mut marker, &BTreeMap::from([("w".into(), WORD_NAMESPACE.into())]), &json!({})).unwrap();
     assert!(marker[0].child("rPr").is_none());
-    assert_eq!(registry.styles_xml(), GENERATED);
+    assert_eq!(registry.styles_xml().unwrap(), GENERATED);
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn historical_odt_diagnostics_do_not_disable_native_word_style_resolution_and_re
     assert!(properties.child("b").is_some() && properties.child("caps").is_some());
     let mapped = properties.child("rStyle").unwrap().attribute("val").unwrap();
     assert_ne!(mapped, "Strong");
-    assert!(registry.styles_xml().contains(&format!("w:styleId=\"{mapped}\"")));
+    assert!(registry.styles_xml().unwrap().contains(&format!("w:styleId=\"{mapped}\"")));
 }
 
 #[test]

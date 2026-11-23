@@ -1,6 +1,6 @@
 import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
-import { watch } from 'vue'
+import { shallowReactive, watch } from 'vue'
 import { OfficeRegionalSettings } from '../i18n/regional-settings.ts'
 import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
@@ -15,11 +15,15 @@ import { equivalentModelData } from '../platform/commands/model-equivalence'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
 import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshPlan, type DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
 import { applyDocumentFieldRefreshPlan, createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase } from '../features/document/services/document-history-cache.ts'
+import type { DocumentFieldCacheAdapter, DocumentFieldCacheState } from '../features/document/services/document-field-open-refresh.ts'
 import { createParagraph, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
+import { cloneDocumentSelection } from '../features/document/model/document-table-selection.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
+import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host.ts'
+import { documentModelForBlockHost, validateDocumentBlockHost } from '../features/document/services/document-block-host.ts'
 import { useDocumentInputStore } from '../features/document/stores/document-input-store.ts'
 import { ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, SET_DOCUMENT_INPUT_SELECTION_OPERATION,
-  documentInputLocation, mergeDocumentInputMarks, sameDocumentInputLocation, type DocumentInputLocation,
+  documentInputLocation, mergeDocumentInputMarks, sameDocumentInputLocation, sanitizeDocumentInputSelection, type DocumentInputLocation,
   type DocumentInputSession } from '../features/document/model/document-input-session.ts'
 import { cloneDocumentInputSession } from '../features/document/model/document-input-session.ts'
 import { parseDocumentInputSelectionRequest, prepareCollapsedDocumentInputFormat, prepareDocumentStoryInputAdvance, resolveDocumentInputLocation,
@@ -77,6 +81,7 @@ import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortR
 import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type ConfigureSheetFilterInput } from '../features/sheet-sort-filter/sheet-data-panel-state'
 import { OfficeComputeClient } from '../compute/client.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
+import { ChartStatisticsService, type ChartStatisticsServiceOptions } from '../features/charts/services/chart-statistics-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
 import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineUpdate, type ChangeSheetOutlineInput } from '../features/sheet-outline/sheet-outline.ts'
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
@@ -104,6 +109,7 @@ export interface OfficeStudioOptions {
   document?: Partial<DocumentModel> & Record<string, unknown>
   computeClient?: OfficeComputeClient
   numericIndexMinRows?: number
+  chartStatisticsOptions?: ChartStatisticsServiceOptions
   currentUserId?: string
   /** Local permission-rule manager. Defaults to currentUserId and is not server authorization. */
   permissionAdminUserId?: string
@@ -137,6 +143,7 @@ export class OfficeStudio {
   readonly documentInput: ReturnType<typeof useDocumentInputStore>
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
+  readonly chartStatisticsService: ChartStatisticsService
   readonly currentUserId: string
   readonly permissionAdminUserId: string
   readonly sheetTextMeasure: SheetTextMeasure
@@ -147,7 +154,8 @@ export class OfficeStudio {
   private _activeDocumentId: string
   private disposed = false
   private readonly workbookRevisions = new Map<string, number>()
-  private readonly documentRevisions = new Map<string, number>()
+  private readonly documentRevisions = shallowReactive(new Map<string, number>())
+  private readonly documentFieldCacheAdapters = new Map<string, DocumentFieldCacheAdapter>()
   private readonly borderFormatStates = new Map<string, Map<string, SheetBorderFormatState>>()
   private readonly computeClient: OfficeComputeClient
   private readonly ownsComputeClient: boolean
@@ -181,7 +189,9 @@ export class OfficeStudio {
     this.ownsComputeClient = options.computeClient === undefined
     this.computeClient = options.computeClient ?? new OfficeComputeClient()
     this.numericIndexService = new NumericIndexService(this.computeClient, { minRows: options.numericIndexMinRows })
+    this.chartStatisticsService = new ChartStatisticsService(this.computeClient, options.chartStatisticsOptions)
     this.numericIndexService.setDocumentRevision(workbook.id!, 0)
+    this.chartStatisticsService.setDocumentRevision(workbook.id!, 0)
     this.documents.set(document.id!, document)
     this.documentRevisions.set(document.id!, 0)
     this.editor.workbook.replace(workbook)
@@ -274,10 +284,14 @@ export class OfficeStudio {
     return this.documentRevisions.get(id) ?? 0
   }
 
-  getDocumentInputMarks(unitId: string, selection?: DocumentSelection, story?: DocumentStoryRange): RunPatch {
+  getDocumentInputMarks(unitId: string, selection?: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): RunPatch {
     if (!this.getDocumentModel(unitId)) return {}
+    if (host) validateDocumentBlockHost(host)
+    if (story && host) throw new RangeError('输入选区不能同时指定旧文字范围和块内容区。')
+    const sessionLocation = this.documentInput.get(unitId)?.location
+    if (host && !selection && (sessionLocation?.kind !== 'body' || !sameDocumentBlockHost(sessionLocation.host, host))) return {}
     const location = story ? { kind: 'story' as const, range: { ...story, start: Math.min(story.start, story.end), end: Math.max(story.start, story.end) } }
-      : selection ? documentInputLocation(selection) : undefined
+      : selection ? documentInputLocation(selection, undefined, host) : host ? sessionLocation : undefined
     return this.documentInput.getMarks(unitId, this.getDocumentRevision(unitId), location)
   }
 
@@ -287,8 +301,54 @@ export class OfficeStudio {
     return state ? { ...state, marks: this.getDocumentInputMarks(unitId) } : undefined
   }
 
-  setDocumentInputSelection(unitId: string, selection: DocumentSelection, story?: DocumentStoryRange): boolean {
-    return this.executeCommandSync<DocumentInputSelectionRequest, boolean>(SET_DOCUMENT_INPUT_SELECTION_OPERATION, { unitId, selection, story })
+  /** Hosts without FDocument still publish automatic fields through the same
+   * command, permissions and derived-history transaction as the workbench. */
+  getDocumentFieldCacheAdapter(unitId: string = this._activeDocumentId): DocumentFieldCacheAdapter {
+    this.assertAlive()
+    if (!this.documents.has(unitId)) throw new Error(`Document not found: ${unitId}`)
+    const existing = this.documentFieldCacheAdapters.get(unitId)
+    if (existing) return existing
+    const getState = (): DocumentFieldCacheState | undefined => {
+      // During DocDisposed the editor can still hold the outgoing model.
+      if (this.disposed || !this.documents.has(unitId)) return undefined
+      const model = this.getDocumentModel(unitId)
+      if (!model) return undefined
+      return { unitId, model, modelRevision: this.getDocumentRevision(unitId),
+        historyGeneration: this.editor.history.captureSavepoint(unitId).generation,
+        inputGeneration: this.documentInput.get(unitId)?.generation }
+    }
+    const adapter: DocumentFieldCacheAdapter = {
+      identity: this.regionalSettings,
+      getState,
+      refresh: request => {
+        const source = getState()
+        if (!source || request.unitId !== unitId || request.expectedRevision !== source.modelRevision
+          || request.expectedHistoryGeneration !== source.historyGeneration || request.inputGeneration !== source.inputGeneration) {
+          return { accepted: false, changed: false }
+        }
+        const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind
+        const result = this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>('doc.command.refresh-header-footer-fields', {
+          unitId, command: { id: 'doc.command.refresh-header-footer-fields', locale: request.locale, timestamp: request.timestamp, onOpen: true },
+          selection: request.selection, expectedRevision: request.expectedRevision,
+          expectedHistoryGeneration: request.expectedHistoryGeneration, inputGeneration: request.inputGeneration,
+        })
+        const committed = result.fieldCache
+        if (!committed) throw new Error('字段缓存命令没有返回已提交的缓存状态。')
+        const latest = getState()
+        return { accepted: true, changed: result.changed, model: committed.model, selection: result.selection,
+          modelRevision: committed.modelRevision, historyGeneration: committed.historyGeneration,
+          selectionCurrent: result.selectionCurrent === true && latest !== undefined
+            && this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind
+            && latest.modelRevision === committed.modelRevision && latest.historyGeneration === committed.historyGeneration
+            && latest.inputGeneration === committed.inputGeneration }
+      },
+    }
+    this.documentFieldCacheAdapters.set(unitId, adapter)
+    return adapter
+  }
+
+  setDocumentInputSelection(unitId: string, selection: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): boolean {
+    return this.executeCommandSync<DocumentInputSelectionRequest, boolean>(SET_DOCUMENT_INPUT_SELECTION_OPERATION, { unitId, selection, story, host })
   }
 
   clearDocumentInputMarks(unitId: string): boolean {
@@ -296,8 +356,8 @@ export class OfficeStudio {
   }
 
   /** Consume a checked input commit once; navigation or a subsequent edit invalidates its caret and overrides. */
-  advanceDocumentInputMarks(unitId: string, selection: DocumentSelection, story?: DocumentStoryRange): boolean {
-    return this.executeCommandSync<DocumentInputSelectionRequest, boolean>(ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, { unitId, selection, story })
+  advanceDocumentInputMarks(unitId: string, selection: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): boolean {
+    return this.executeCommandSync<DocumentInputSelectionRequest, boolean>(ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, { unitId, selection, story, host })
   }
 
   getWorkbookModel(id: string): WorkbookModel | undefined {
@@ -344,6 +404,7 @@ export class OfficeStudio {
     this.workbooks.set(model.id!, model)
     this.workbookRevisions.set(model.id!, 0)
     this.numericIndexService.setDocumentRevision(model.id!, 0)
+    this.chartStatisticsService.setDocumentRevision(model.id!, 0)
     if (makeCurrent) this.activateWorkbook(model.id!)
     this.events.emit('WorkbookCreated', { workbookId: model.id! })
     return model
@@ -712,7 +773,7 @@ export class OfficeStudio {
     return true
   }
 
-  private publishDocumentFieldCaches(id: string, request: DocumentStoryFieldRefreshRequest, plan?: DocumentStoryFieldRefreshPlan): boolean {
+  private publishDocumentFieldCaches(id: string, request: DocumentStoryFieldRefreshRequest, plan?: DocumentStoryFieldRefreshPlan): { changed: boolean; state: DocumentFieldCacheState } {
     const current = this.getDocumentModel(id)
     if (!current) throw new Error(`Document not found: ${id}`)
     const revision = this.getDocumentRevision(id), savepoint = this.editor.history.captureSavepoint(id)
@@ -736,11 +797,13 @@ export class OfficeStudio {
       || [...stack.undo, ...stack.redo].some((entry, index) => entry !== entries[index])) {
       throw new Error('准备字段缓存期间文档或历史已更改，请重新打开。')
     }
+    const state: DocumentFieldCacheState = { unitId: id, model: changed ? next : current,
+      modelRevision: revision + (changed ? 1 : 0), historyGeneration: savepoint.generation }
     this.editor.history.publishDerived(id, () => {
       rebase()
       if (changed) this.replaceDocumentModel(id, next)
     })
-    return changed
+    return { changed, state }
   }
 
   executeCommandSync<P, R>(id: string, params: P): R {
@@ -771,14 +834,15 @@ export class OfficeStudio {
     this.assertAlive()
     if (command.id === 'doc.command.set-document-permission-rules') {
       const changed = this.executeCommandSync<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>(command.id, { unitId, rules: command.rules })
-      return { changed, selection: { anchor: { ...selection.anchor }, focus: { ...selection.focus } } }
+      return { changed, selection: cloneDocumentSelection(selection) }
     }
     if (!Object.hasOwn(DOCUMENT_EDITOR_COMMAND_LABELS, command.id)) throw new Error(`Unknown document editor command: ${command.id}`)
     const expectedRevision = this.getDocumentRevision(unitId), inputGeneration = this.documentInput.get(unitId)?.generation
+    const expectedHistoryGeneration = this.editor.history.captureSavepoint(unitId).generation
     const effective = command.id === 'doc.command.insert-text'
-      ? { ...command, marks: mergeDocumentInputMarks(this.getDocumentInputMarks(unitId, selection), command.marks ?? {}) } : command
+      ? { ...command, marks: mergeDocumentInputMarks(this.getDocumentInputMarks(unitId, selection, undefined, command.host), command.marks ?? {}) } : command
     return this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>(command.id,
-      { unitId, command: effective, selection, expectedRevision, inputGeneration })
+      { unitId, command: effective, selection, expectedRevision, expectedHistoryGeneration, inputGeneration })
   }
 
   registerCommand<P, R>(id: string, handler: OfficeCommandHandler<P, R>): Disposable {
@@ -847,6 +911,7 @@ export class OfficeStudio {
     if (this.workbooks.has(id)) {
       this.sheetClipboard.clearUnit(id)
       this.sheetSelections.removeUnit(id)
+      this.chartStatisticsService.forgetDocument(id)
       this.computeClient.forgetDocument(id)
       this.workbookRevisions.delete(id)
       this.borderFormatStates.delete(id)
@@ -860,6 +925,7 @@ export class OfficeStudio {
       return true
     }
     if (this.documents.has(id)) {
+      this.documentFieldCacheAdapters.delete(id)
       this.documentInput.removeUnit(id)
       this.pendingDocumentInputPublications.delete(id)
       this.documentRevisions.delete(id)
@@ -880,6 +946,7 @@ export class OfficeStudio {
     this.disposed = true
     for (const stop of this.stopModelSync) stop()
     this.editor.parser.cancel()
+    this.chartStatisticsService.dispose()
     if (this.ownsComputeClient) this.computeClient.dispose()
     this.events.emit('LifeCycleChanged', { stage: 'disposed' })
     this.events.clear()
@@ -894,6 +961,7 @@ export class OfficeStudio {
     this.pendingDocumentInputPublications.clear()
     this.documentInput.$dispose()
     this.documentRevisions.clear()
+    this.documentFieldCacheAdapters.clear()
     this.documents.clear()
   }
 
@@ -945,6 +1013,7 @@ export class OfficeStudio {
     const revision = (this.workbookRevisions.get(id) ?? 0) + 1
     this.workbookRevisions.set(id, revision)
     this.numericIndexService.setDocumentRevision(id, revision)
+    this.chartStatisticsService.setDocumentRevision(id, revision)
   }
 
   private replaceDocumentModel(id: string, model: DocumentModel): void {
@@ -952,6 +1021,7 @@ export class OfficeStudio {
     this.documents.set(id, model)
     if (id === this._activeDocumentId) this.editor.document.replace(model)
     else if (previous && !equivalentModelData(previous, model, ['modified'])) this.advanceDocumentRevision(id)
+    if (this.documentInput.revalidateModel(id, model, previous)) this.publishDocumentInputState(id)
   }
 
   private advanceDocumentRevision(id: string): void {
@@ -978,11 +1048,15 @@ export class OfficeStudio {
     const revision = this.getDocumentRevision(request.unitId), session = this.documentInput.get(request.unitId)
     const generation = session?.generation
     if (request.expectedRevision !== undefined && request.expectedRevision !== revision) throw new Error('文档内容已更改，请重新执行编辑。')
+    if (request.expectedHistoryGeneration !== undefined
+      && request.expectedHistoryGeneration !== this.editor.history.captureSavepoint(request.unitId).generation) {
+      throw new Error('文档历史或打开代数已更改，请重新执行编辑。')
+    }
     const sourceCurrent = !Object.hasOwn(request, 'inputGeneration') || request.inputGeneration === generation
     const fieldRefresh = request.command.id === 'doc.command.refresh-header-footer-fields' || request.command.id === 'doc.command.update-selected-fields' ? request.command : undefined
-    const tocPageRefresh = request.command.id === 'doc.command.update-table-of-contents' && request.command.mode === 'pageNumbersOnly'
+    const tocRefresh = request.command.id === 'doc.command.update-table-of-contents' || request.command.id === 'doc.command.delete-table-of-contents'
     if (fieldRefresh && !sourceCurrent) throw new Error('字段更新选区已更改，请重新执行。')
-    if (tocPageRefresh && !sourceCurrent) throw new Error('目录更新选区已更改，请重新执行。')
+    if (tocRefresh && !sourceCurrent) throw new Error('目录更新选区已更改，请重新执行。')
     const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind
     const hostCurrent = () => this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind
     const context = { documentId: request.unitId, userId: this.currentUserId, permissionAdminUserId: this.permissionAdminUserId }
@@ -997,38 +1071,60 @@ export class OfficeStudio {
       const selectionCurrent = !!this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === revision
         && hostCurrent() && latest?.valid === true && latest.generation === expectedGeneration
         && sameDocumentInputLocation(latest.location, prepared.location)
-      return { changed: false, selection: prepared.selection, inputChanged, selectionCurrent, modelRevision: revision }
+      return { changed: false, selection: prepared.selection, inputChanged, selectionCurrent, modelRevision: revision,
+        ...(prepared.location.kind === 'body' && prepared.location.host ? { host: { ...prepared.location.host } } : {}) }
     }
-    const sourceSelection = resolveDocumentEditorSelection(current, request.selection)
-    const story = request.command.id === 'doc.command.set-section-header-footer' ? request.command.input?.range
+    const globalCommand = request.command.id === 'doc.command.set-section-header-footer' || request.command.id === 'doc.command.set-section-setup'
+      || !!fieldRefresh || tocRefresh
+    // Global commands still operate on the full model. Their view selection
+    // retains its independent block host instead of being resolved as body text.
+    const selectionHost = request.command.host ?? (globalCommand && sourceCurrent && session?.valid && session.modelRevision === revision
+      && session.location.kind === 'body' ? session.location.host : undefined)
+    const sourceSelection = resolveDocumentEditorSelection(current, request.selection, selectionHost)
+    const sessionStory = globalCommand && session?.valid && session.modelRevision === revision && session.location.kind === 'story' ? session.location.range : undefined
+    const story = request.command.id === 'doc.command.set-section-header-footer' ? request.command.input?.range ?? sessionStory
       : request.command.id === 'doc.command.format-text' || request.command.id === 'doc.command.clear-formatting' ? request.command.story
-      : fieldRefresh && session?.valid && session.modelRevision === revision && session.location.kind === 'story' ? session.location.range : undefined
-    const sourceLocation = documentInputLocation(sourceSelection, story)
+      : sessionStory
+    const sourceLocation = documentInputLocation(sourceSelection, story, selectionHost)
     const tracksSelection = sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
     let input: RunPatch | undefined
     let command = request.command
     if (command.id === 'doc.command.insert-text') {
-      input = mergeDocumentInputMarks(sourceCurrent ? this.getDocumentInputMarks(request.unitId, sourceSelection) : {}, command.marks ?? {})
+      input = mergeDocumentInputMarks(sourceCurrent ? this.getDocumentInputMarks(request.unitId, sourceSelection, undefined, selectionHost) : {}, command.marks ?? {})
       command = { ...command, marks: input }
     }
-    const effective: DocumentEditorCommandRequest = { ...request, selection: sourceSelection, command }
+    const mutationSelection = selectionHost && !command.host ? sanitizeDocumentInputSelection(current, sourceSelection) : sourceSelection
+    const effective: DocumentEditorCommandRequest = { ...request, selection: mutationSelection, command }
     let selection = sourceSelection, storyAdvance: DocumentInputLocation | undefined
+    const selectedFieldHost = fieldRefresh?.id === 'doc.command.update-selected-fields'
+      ? fieldRefresh.host ?? (!fieldRefresh.bodySelection ? selectionHost : undefined) : fieldRefresh?.host
     const fieldRequest: DocumentStoryFieldRefreshRequest | undefined = fieldRefresh ? { locale: fieldRefresh.locale, timestamp: fieldRefresh.timestamp,
-      onOpen: fieldRefresh.onOpen,
+      onOpen: fieldRefresh.onOpen, ...(selectedFieldHost ? { host: selectedFieldHost } : {}),
       ...(fieldRefresh.id === 'doc.command.update-selected-fields' ? { stories: fieldRefresh.stories ?? [],
         bodySelection: fieldRefresh.bodySelection ?? (!fieldRefresh.stories?.length ? sourceSelection : undefined) } : {}) } : undefined
-    const fieldRefreshPlan = fieldRequest ? prepareDocumentStoryFieldRefresh(current, fieldRequest, context, sourceSelection) : undefined
+    // An opening host can have a different local caret from the existing input
+    // session. Map both through the same field replacements; cache publication
+    // must not discard the authoritative session's typing preferences.
+    const cacheSession = fieldRequest?.onOpen && session?.valid && session.modelRevision === revision ? session : undefined
+    const fieldRefreshPlan = fieldRequest ? prepareDocumentStoryFieldRefresh(current, fieldRequest, context, sourceSelection,
+      cacheSession?.location.kind === 'body' ? [{ selection: cacheSession.location.selection, host: cacheSession.location.host }] : undefined, selectionHost) : undefined
+    const cacheInputLocation = cacheSession && (cacheSession.location.kind === 'body'
+      ? documentInputLocation(fieldRefreshPlan?.mappedAdditionalBodySelections?.[0] ?? cacheSession.location.selection, undefined,
+        fieldRefreshPlan?.mappedAdditionalBodySelectionHosts?.[0] ?? cacheSession.location.host)
+      : cacheSession.location)
     // Read-only/unsupported/no-selection refreshes succeed without entering a content mutation.
     if (fieldRefreshPlan) selection = fieldRefreshPlan.selection ?? sourceSelection
-    const changed = fieldRequest?.onOpen
-      ? this.publishDocumentFieldCaches(request.unitId, fieldRequest, fieldRefreshPlan)
+    const cachePublication = fieldRequest?.onOpen ? this.publishDocumentFieldCaches(request.unitId, fieldRequest, fieldRefreshPlan) : undefined
+    const changed = cachePublication ? cachePublication.changed
       : (!fieldRefresh || fieldRefreshPlan !== undefined) && this.commitDocument(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
       if (fieldRefreshPlan) {
         applyDocumentFieldRefreshPlan(model, fieldRefreshPlan)
         selection = fieldRefreshPlan.selection ?? sourceSelection
         return
       }
-      selection = applyDocumentEditorCommand(model, effective, context)
+      const appliedSelection = applyDocumentEditorCommand(model, effective, context)
+      selection = selectionHost && !command.host
+        ? sanitizeDocumentInputSelection(documentModelForBlockHost(model, selectionHost), sourceSelection, true) : appliedSelection
       if (request.command.id === 'doc.command.set-section-header-footer' && request.command.input) {
         storyAdvance = prepareDocumentStoryInputAdvance(current, model, sourceSelection, request.command.sectionId,
           request.command.input, session, revision, context)
@@ -1039,16 +1135,25 @@ export class OfficeStudio {
     const modelRevision = revision + (changed ? 1 : 0)
     if (this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === modelRevision
       && this.documentInput.get(request.unitId)?.generation === generation && hostCurrent()) {
-      if (changed && (fieldRefresh || tocPageRefresh) && tracksSelection && session?.valid) {
+      if (changed && cacheInputLocation && cacheSession) {
+        fieldInputPreserved = this.documentInput.completeUnchangedSelection(request.unitId, cacheSession, modelRevision,
+          cacheInputLocation, cacheInputLocation.kind === 'body')
+        if (!fieldInputPreserved) this.documentInput.clearMarks(request.unitId)
+        expectedGeneration = (generation ?? 0) + 1
+        this.publishDocumentInputState(request.unitId)
+      } else if (changed && fieldRequest?.onOpen) {
+        // Already invalid drafts stay invalid. A derived cache update neither
+        // revives a stale location nor clears its retained typing preferences.
+      } else if (changed && globalCommand && tracksSelection && session?.valid) {
         fieldInputPreserved = this.documentInput.completeUnchangedSelection(request.unitId, session, modelRevision,
-          sourceLocation.kind === 'body' ? documentInputLocation(selection) : sourceLocation, sourceLocation.kind === 'body')
+          sourceLocation.kind === 'body' ? documentInputLocation(selection, undefined, fieldRefreshPlan?.host ?? selectionHost) : sourceLocation, sourceLocation.kind === 'body')
         if (!fieldInputPreserved) this.documentInput.clearMarks(request.unitId)
         expectedGeneration = (generation ?? 0) + 1
         this.publishDocumentInputState(request.unitId)
       } else if (storyAdvance && generation !== undefined) {
         this.documentInput.allowAdvance(request.unitId, storyAdvance, modelRevision, generation)
       } else if (changed && input && tracksSelection) {
-        const location = documentInputLocation(selection)
+        const location = documentInputLocation(selection, undefined, selectionHost)
         if (this.documentInput.completeInput(request.unitId, location, input, revision + 1, generation)) {
           expectedGeneration = (generation ?? 0) + 1
           this.publishDocumentInputState(request.unitId)
@@ -1057,15 +1162,17 @@ export class OfficeStudio {
         this.documentInput.clearMarks(request.unitId)
         expectedGeneration = generation === undefined ? undefined : generation + 1
         this.publishDocumentInputState(request.unitId)
-      } else if (tracksSelection && sourceLocation.kind === 'body' && !sameDocumentInputLocation(sourceLocation, documentInputLocation(selection))) {
-        this.documentInput.select(request.unitId, documentInputLocation(selection), revision)
+      } else if (tracksSelection && sourceLocation.kind === 'body' && !sameDocumentInputLocation(sourceLocation, documentInputLocation(selection, undefined, selectionHost))) {
+        this.documentInput.select(request.unitId, documentInputLocation(selection, undefined, selectionHost), revision)
         expectedGeneration = (generation ?? 0) + 1
         this.publishDocumentInputState(request.unitId)
       }
     }
     const selectionCurrent = tracksSelection && fieldInputPreserved && !!this.getDocumentModel(request.unitId) && hostCurrent()
       && this.getDocumentRevision(request.unitId) === modelRevision && this.documentInput.get(request.unitId)?.generation === expectedGeneration
-    return { changed, selection, selectionCurrent, modelRevision }
+    const resultHost = fieldRefreshPlan?.host ?? selectionHost
+    return { changed, selection, selectionCurrent, modelRevision, ...(resultHost ? { host: { ...resultHost } } : {}),
+      ...(cachePublication ? { fieldCache: { ...cachePublication.state, inputGeneration: expectedGeneration } } : {}) }
   }
 
   private commitIndexedDocumentInput(unitId: string, startOffset: number, endOffset: number, text: string, expectedRevision?: number): boolean {
@@ -1107,12 +1214,12 @@ export class OfficeStudio {
       const request = parseDocumentInputSelectionRequest(params), model = this.getDocumentModel(request.unitId)
       if (!model) throw new Error(`Document not found: ${request.unitId}`)
       const context = { documentId: request.unitId, userId: this.currentUserId }
-      resolveDocumentInputLocation(model, request.selection, request.story, context)
+      resolveDocumentInputLocation(model, request.selection, request.story, context, undefined, request.host)
       if (this._activeDocumentId !== request.unitId || this.editor.state.activeKind !== 'document') this.activateDocument(request.unitId)
       if (this._activeDocumentId !== request.unitId || this.editor.state.activeKind !== 'document') return false
       const current = this.getDocumentModel(request.unitId)
       if (!current) return false
-      const { location } = resolveDocumentInputLocation(current, request.selection, request.story, context)
+      const { location } = resolveDocumentInputLocation(current, request.selection, request.story, context, undefined, request.host)
       const changed = this.documentInput.select(request.unitId, location, this.getDocumentRevision(request.unitId))
       this.publishDocumentInputState(request.unitId)
       return changed
@@ -1129,7 +1236,7 @@ export class OfficeStudio {
       if (!model) throw new Error(`Document not found: ${request.unitId}`)
       if (this._activeDocumentId !== request.unitId || this.editor.state.activeKind !== 'document') return false
       const { location } = resolveDocumentInputLocation(model, request.selection, request.story,
-        { documentId: request.unitId, userId: this.currentUserId }, 'edit')
+        { documentId: request.unitId, userId: this.currentUserId }, 'edit', request.host)
       const changed = this.documentInput.advance(request.unitId, location, this.getDocumentRevision(request.unitId))
       if (changed) this.publishDocumentInputState(request.unitId)
       return changed
@@ -1534,8 +1641,13 @@ export class OfficeStudio {
       this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
     }
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
-    this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {
-      const created = createDocumentContentControl(model, control, control.id)
+    this.registerCommand<{ unitId: string; control: ContentControlInput; host?: DocumentAuxiliaryBlockHost }, boolean>('doc.command.add-content-control', ({ unitId, control, host }) => {
+      const session = this.documentInput.get(unitId)
+      const currentHost = host ?? (session?.valid && session.modelRevision === this.getDocumentRevision(unitId)
+        && session.location.kind === 'body' && session.location.host
+        && (session.location.selection.anchor.cellBlockId ?? session.location.selection.anchor.blockId) === control.blockId ? session.location.host : undefined)
+      return this.commitDocument(unitId, 'Add content control', (model) => {
+      const created = createDocumentContentControl(model, control, control.id, currentHost)
       if (created.type === 'repeatingSection') {
         createDocumentContentControl(model, {
           type: 'repeatingSectionItem',
@@ -1544,9 +1656,10 @@ export class OfficeStudio {
           endOffset: created.endOffset,
           placement: created.placement,
           parentId: created.id,
-        })
+        }, undefined, currentHost)
       }
-    }))
+    })
+    })
     this.registerCommand<{ unitId: string; controlId: string; patch: ContentControlPatch }, boolean>('doc.command.update-content-control', ({ unitId, controlId, patch }) => this.commitDocument(unitId, 'Update content control', (model) => {
       updateDocumentContentControl(model, controlId, patch)
     }))

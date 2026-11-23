@@ -14,6 +14,7 @@ import { DOCUMENT_STORY_KEYS, documentStoryContent, documentStoryDefaultStyle, d
 import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter, sectionStoryLinkedToPrevious } from './section-header-footer'
 import { storyBuffer } from './story-editor'
 import { assertDocumentStoryFormattingEditable } from './document-story-locks'
+import { documentTableSelectedTextTargets } from '../model/document-table-selection'
 
 export interface DocumentClearFormattingPlan {
   range: DocumentSelection
@@ -31,7 +32,8 @@ export function prepareDocumentClearFormatting(model: DocumentModel, selection: 
   const first = all.findIndex(target => sameTarget(target, start))
   const last = all.findIndex(target => sameTarget(target, end))
   if (first < 0 || last < first) return undefined
-  const targets = all.slice(first, last + (last > first && end.offset === 0 ? 0 : 1))
+  const targets = range.tableSelection ? documentTableSelectedTextTargets(model, range.tableSelection)
+    : all.slice(first, last + (last > first && end.offset === 0 ? 0 : 1))
   if (!targets.length) return undefined
   for (const target of targets) {
     const block = blockAtPoint(model, target)
@@ -171,8 +173,8 @@ export function applyDocumentClearFormatting(model: DocumentModel, range: Docume
     const block = blockAtPoint(model, target)
     if (!block) continue
     const runs = runsForTarget(model, target)
-    const from = sameTarget(target, start) ? start.offset : 0
-    const to = sameTarget(target, end) ? end.offset : runText(runs).length
+    const from = !range.tableSelection && sameTarget(target, start) ? start.offset : 0
+    const to = !range.tableSelection && sameTarget(target, end) ? end.offset : runText(runs).length
     block.runs = clearDocumentFormattingRuns(runs, from, to, defaults.text, !!block.metadata.codeBlock)
     block.style = { ...defaults.paragraph }
     block.type = 'paragraph'

@@ -23,6 +23,15 @@ impl Package {
         Self::default()
     }
 
+    pub(crate) fn contains_part(&self, path: &str) -> bool {
+        self.parts.contains_key(path.trim_start_matches('/'))
+    }
+
+    pub(crate) fn contains_relationship(&self, source: Option<&str>, id: &str) -> bool {
+        let source = source.map(|source| source.trim_start_matches('/').to_owned());
+        self.relationships.get(&source).is_some_and(|entries| entries.iter().any(|entry| entry.id == id))
+    }
+
     pub(crate) fn add_xml(
         &mut self,
         path: &str,

@@ -7,6 +7,7 @@
 use crate::{ExportError, ExportWarning, opc::Package, xml};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use office_io_common::chart_options::Axis as ChartAxisInput;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -26,6 +27,9 @@ mod dimensions;
 mod conditional_formula;
 #[path = "xlsx_conditional_source.rs"]
 mod conditional_source;
+#[path = "xlsx_chart.rs"]
+mod chart;
+use chart::chart_xml;
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -73,7 +77,7 @@ struct WorkbookInput {
     charts: Option<Vec<ChartInput>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SheetInput {
     #[serde(default)]
@@ -114,6 +118,8 @@ struct SheetInput {
     row_hidden_spans: Vec<dimensions::AxisSpanInput<bool>>,
     #[serde(default)]
     column_hidden_spans: Vec<dimensions::AxisSpanInput<bool>>,
+    #[serde(default)]
+    outline: Option<dimensions::OutlineInput>,
     #[serde(default)]
     auto_filter: Option<auto_filter::AutoFilterInput>,
     #[serde(default)]
@@ -203,6 +209,12 @@ struct ChartInput {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
+    subtitle: Option<String>,
+    #[serde(default)]
+    palette: Vec<String>,
+    #[serde(default)]
+    options: AuthoredChartOptions,
+    #[serde(default)]
     legend: Option<ChartLegendInput>,
     #[serde(default)]
     category_field: usize,
@@ -216,9 +228,11 @@ struct ChartInput {
     x_axis: Option<ChartAxisInput>,
     #[serde(default)]
     y_axis: Option<ChartAxisInput>,
+    #[serde(skip)]
+    native_bindings: Option<chart::NativeBindings>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ChartSourceInput {
     range: RangeInput,
@@ -247,17 +261,38 @@ struct ChartLegendInput {
     visible: bool,
     #[serde(default = "default_chart_legend_position")]
     position: String,
+    #[serde(default)]
+    font: Option<office_io_common::chart_options::Font>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ChartAxisInput {
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default = "default_chart_scale_type")]
-    scale_type: String,
-    #[serde(default)]
-    log_base: Option<f64>,
+/// Keep the original settings next to the validated native DTO. Unknown nested
+/// settings must survive the source manifest even before their native adapter
+/// is implemented; this retained source never drives a second chart engine.
+#[derive(Debug, Clone)]
+struct AuthoredChartOptions {
+    typed: office_io_common::chart_options::Options,
+    source: Value,
+}
+
+impl Default for AuthoredChartOptions {
+    fn default() -> Self { Self { typed: Default::default(), source: Value::Object(Map::new()) } }
+}
+
+impl<'de> Deserialize<'de> for AuthoredChartOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let source = Value::deserialize(deserializer)?;
+        let typed = serde_json::from_value(source.clone()).map_err(serde::de::Error::custom)?;
+        Ok(Self { typed, source })
+    }
+}
+
+impl Serialize for AuthoredChartOptions {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> { self.source.serialize(serializer) }
+}
+
+impl std::ops::Deref for AuthoredChartOptions {
+    type Target = office_io_common::chart_options::Options;
+    fn deref(&self) -> &Self::Target { &self.typed }
 }
 
 fn default_chart_orientation() -> String {
@@ -268,9 +303,6 @@ fn default_chart_legend_position() -> String {
     "bottom".to_owned()
 }
 
-fn default_chart_scale_type() -> String {
-    "linear".to_owned()
-}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -1365,490 +1397,6 @@ fn chart_number_text(value: Option<Value>) -> String {
     }
 }
 
-fn chart_string_cache(values: impl IntoIterator<Item = String>) -> String {
-    let values = values.into_iter().collect::<Vec<_>>();
-    let mut out = format!("<c:strCache><c:ptCount val=\"{}\"/>", values.len());
-    for (index, value) in values.iter().enumerate() {
-        out.push_str(&format!(
-            "<c:pt idx=\"{}\"><c:v>{}</c:v></c:pt>",
-            index,
-            esc(value)
-        ));
-    }
-    out.push_str("</c:strCache>");
-    out
-}
-
-fn chart_number_cache(values: impl IntoIterator<Item = String>) -> String {
-    let values = values.into_iter().collect::<Vec<_>>();
-    let mut out = format!(
-        "<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val=\"{}\"/>",
-        values.len()
-    );
-    for (index, value) in values.iter().enumerate() {
-        if value.is_empty() {
-            continue;
-        }
-        out.push_str(&format!(
-            "<c:pt idx=\"{}\"><c:v>{}</c:v></c:pt>",
-            index,
-            esc(value)
-        ));
-    }
-    out.push_str("</c:numCache>");
-    out
-}
-
-fn chart_title_xml(title: Option<&str>) -> String {
-    let Some(title) = title.filter(|value| !value.is_empty()) else {
-        return String::new();
-    };
-    format!(
-        "<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr/><a:r><a:rPr lang=\"zh-CN\"/><a:t>{}</a:t></a:r><a:endParaRPr lang=\"zh-CN\"/></a:p></c:rich></c:tx><c:layout/><c:overlay val=\"0\"/></c:title>",
-        esc(title)
-    )
-}
-
-fn chart_axis_title_xml(title: Option<&str>) -> String {
-    let Some(title) = title.filter(|value| !value.is_empty()) else {
-        return String::new();
-    };
-    format!(
-        "<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang=\"zh-CN\"/><a:t>{}</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val=\"0\"/></c:title>",
-        esc(title)
-    )
-}
-
-fn chart_series_xml(
-    sheet: &SheetInput,
-    sheet_name: &str,
-    chart: &ChartInput,
-    series_index: usize,
-    value_field: usize,
-    bounds: (u32, u32, u32, u32),
-) -> Result<String, ExportError> {
-    let (start_row, start_col, end_row, end_col) = bounds;
-    let orientation = chart.source.orientation.as_str();
-    let (name_formula, category_formula, value_formula, categories, values) = if orientation
-        == "rows"
-    {
-        let category_offset = u32::try_from(chart.category_field)
-            .map_err(|_| ExportError::invalid("chart category field exceeds worksheet limits"))?;
-        let value_offset = u32::try_from(value_field)
-            .map_err(|_| ExportError::invalid("chart value field exceeds worksheet limits"))?;
-        if chart.category_field >= (end_row.saturating_sub(start_row) + 1) as usize
-            || value_field >= (end_row.saturating_sub(start_row) + 1) as usize
-        {
-            return Err(ExportError::invalid(format!(
-                "chart {} field is outside source range",
-                chart.id
-            )));
-        }
-        let category_row = start_row + category_offset;
-        let value_row = start_row + value_offset;
-        (
-            chart_range_formula(sheet_name, value_row, start_col, value_row, start_col),
-            chart_range_formula(
-                sheet_name,
-                category_row,
-                start_col + 1,
-                category_row,
-                end_col,
-            ),
-            chart_range_formula(sheet_name, value_row, start_col + 1, value_row, end_col),
-            (start_col + 1..=end_col)
-                .map(|col| chart_value_text(chart_cell_value(sheet, category_row, col), false))
-                .collect::<Vec<_>>(),
-            (start_col + 1..=end_col)
-                .map(|col| chart_number_text(chart_cell_value(sheet, value_row, col)))
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        let category_offset = u32::try_from(chart.category_field)
-            .map_err(|_| ExportError::invalid("chart category field exceeds worksheet limits"))?;
-        let value_offset = u32::try_from(value_field)
-            .map_err(|_| ExportError::invalid("chart value field exceeds worksheet limits"))?;
-        if chart.category_field >= (end_col.saturating_sub(start_col) + 1) as usize
-            || value_field >= (end_col.saturating_sub(start_col) + 1) as usize
-        {
-            return Err(ExportError::invalid(format!(
-                "chart {} field is outside source range",
-                chart.id
-            )));
-        }
-        let category_col = start_col + category_offset;
-        let value_col = start_col + value_offset;
-        (
-            chart_range_formula(sheet_name, start_row, value_col, start_row, value_col),
-            chart_range_formula(
-                sheet_name,
-                start_row + 1,
-                category_col,
-                end_row,
-                category_col,
-            ),
-            chart_range_formula(sheet_name, start_row + 1, value_col, end_row, value_col),
-            (start_row + 1..=end_row)
-                .map(|row| chart_value_text(chart_cell_value(sheet, row, category_col), false))
-                .collect::<Vec<_>>(),
-            (start_row + 1..=end_row)
-                .map(|row| chart_number_text(chart_cell_value(sheet, row, value_col)))
-                .collect::<Vec<_>>(),
-        )
-    };
-    if matches!(chart.chart_type.as_str(), "pie" | "doughnut") {
-        let numeric_values = values
-            .iter()
-            .filter_map(|value| value.parse::<f64>().ok())
-            .collect::<Vec<_>>();
-        if numeric_values.is_empty()
-            || numeric_values.iter().any(|value| *value < 0.0)
-            || numeric_values.iter().all(|value| *value == 0.0)
-        {
-            return Err(ExportError::invalid(format!(
-                "chart {} requires non-negative pie values with a positive total",
-                chart.id
-            )));
-        }
-    }
-    let name = if orientation == "rows" {
-        chart_value_text(
-            chart_cell_value(
-                sheet,
-                start_row
-                    + u32::try_from(value_field).map_err(|_| {
-                        ExportError::invalid("chart value field exceeds worksheet limits")
-                    })?,
-                start_col,
-            ),
-            false,
-        )
-    } else {
-        chart_value_text(
-            chart_cell_value(
-                sheet,
-                start_row,
-                start_col
-                    + u32::try_from(value_field).map_err(|_| {
-                        ExportError::invalid("chart value field exceeds worksheet limits")
-                    })?,
-            ),
-            false,
-        )
-    };
-    let mut out = format!(
-        "<c:ser><c:idx val=\"{}\"/><c:order val=\"{}\"/><c:tx><c:strRef><c:f>{}</c:f>{}</c:strRef></c:tx>",
-        series_index,
-        series_index,
-        esc(&name_formula),
-        chart_string_cache([name])
-    );
-    if chart.chart_type == "scatter" {
-        let x_field = chart.series_to_category.get(&value_field)
-            .and_then(|fields| fields.first().copied())
-            .unwrap_or(chart.category_field);
-        let (x_formula, x_values) = chart_axis_range(sheet, chart, x_field, bounds, sheet_name)?;
-        out.push_str(&format!("<c:xVal><c:numRef><c:f>{}</c:f>{}</c:numRef></c:xVal>", esc(&x_formula), chart_number_cache(x_values)));
-        out.push_str(&format!("<c:yVal><c:numRef><c:f>{}</c:f>{}</c:numRef></c:yVal></c:ser>", esc(&value_formula), chart_number_cache(values)));
-    } else {
-        out.push_str(&format!(
-            "<c:cat><c:strRef><c:f>{}</c:f>{}</c:strRef></c:cat>",
-            esc(&category_formula),
-            chart_string_cache(categories)
-        ));
-        out.push_str(&format!(
-            "<c:val><c:numRef><c:f>{}</c:f>{}</c:numRef></c:val></c:ser>",
-            esc(&value_formula),
-            chart_number_cache(values)
-        ));
-    }
-    Ok(out)
-}
-
-fn chart_axis_range(
-    sheet: &SheetInput,
-    chart: &ChartInput,
-    field: usize,
-    bounds: (u32, u32, u32, u32),
-    sheet_name: &str,
-) -> Result<(String, Vec<String>), ExportError> {
-    let (start_row, start_col, end_row, end_col) = bounds;
-    if chart.source.orientation == "rows" {
-        if field > (end_row - start_row) as usize {
-            return Err(ExportError::invalid(format!("chart {} X field is outside source range", chart.id)));
-        }
-        let row = start_row + field as u32;
-        Ok((chart_range_formula(sheet_name, row, start_col + 1, row, end_col), (start_col + 1..=end_col).map(|column| chart_number_text(chart_cell_value(sheet, row, column))).collect()))
-    } else {
-        if field > (end_col - start_col) as usize {
-            return Err(ExportError::invalid(format!("chart {} X field is outside source range", chart.id)));
-        }
-        let column = start_col + field as u32;
-        Ok((chart_range_formula(sheet_name, start_row + 1, column, end_row, column), (start_row + 1..=end_row).map(|row| chart_number_text(chart_cell_value(sheet, row, column))).collect()))
-    }
-}
-
-fn chart_xml(
-    workbook: &WorkbookInput,
-    chart: &ChartInput,
-    chart_index: usize,
-    pivot_table_name: Option<&str>,
-) -> Result<String, ExportError> {
-    if chart.pivot_table_id.is_some() && pivot_table_name.is_none() {
-        return Err(ExportError::unsupported(format!("XLSX pivot chart {} requires pivot chart parts that are not implemented", chart.id)));
-    }
-    let pivot = chart.pivot_table_id.as_deref().and_then(|id| {
-        workbook.pivot_tables.as_deref().unwrap_or(&[]).iter().find(|pivot| pivot.id == id)
-    });
-    let source_sheet_id = pivot.map(|pivot| pivot.anchor.sub_unit_id.as_str())
-        .or(chart.source.sheet_id.as_deref()).unwrap_or(chart.sheet_id.as_str());
-    let sheet = workbook
-        .sheets
-        .iter()
-        .find(|sheet| sheet.id == source_sheet_id)
-        .ok_or_else(|| {
-            ExportError::invalid(format!(
-                "chart {} references an unknown data source worksheet",
-                chart.id
-            ))
-        })?;
-    let sheet_name = safe_sheet_names(workbook.sheets.iter().map(|item| item.name.as_str()))
-        .into_iter()
-        .nth(
-            workbook
-                .sheets
-                .iter()
-                .position(|item| item.id == source_sheet_id)
-                .unwrap_or(0),
-        )
-        .unwrap_or_else(|| sheet.name.clone());
-    let source_range = pivot.and_then(|pivot| pivot.output_range.as_ref()).unwrap_or(&chart.source.range);
-    let bounds = range_bounds(source_range).ok_or_else(|| {
-        ExportError::invalid(format!("chart {} source range is missing", chart.id))
-    })?;
-    if chart.source.orientation != "columns" && chart.source.orientation != "rows" {
-        return Err(ExportError::invalid(format!(
-            "chart {} has invalid source orientation",
-            chart.id
-        )));
-    }
-    let (start_row, start_col, end_row, end_col) = bounds;
-    if end_row < start_row || end_col < start_col {
-        return Err(ExportError::invalid(format!(
-            "chart {} source range is invalid",
-            chart.id
-        )));
-    }
-    if end_row > MAX_ROW_INDEX || end_col > MAX_COLUMN_INDEX {
-        return Err(ExportError::invalid(format!(
-            "chart {} source range exceeds XLSX worksheet limits",
-            chart.id
-        )));
-    }
-    if end_row == start_row || end_col == start_col {
-        return Err(ExportError::invalid(format!(
-            "chart {} source must include a header and at least one data point",
-            chart.id
-        )));
-    }
-    if let Some(legend) = chart.legend.as_ref() {
-        if !matches!(
-            legend.position.as_str(),
-            "top" | "right" | "bottom" | "left"
-        ) {
-            return Err(ExportError::invalid(format!(
-                "chart {} has an invalid legend position",
-                chart.id
-            )));
-        }
-    }
-    let field_count = if chart.source.orientation == "rows" {
-        end_row - start_row + 1
-    } else {
-        end_col - start_col + 1
-    };
-    let category = chart.category_field;
-    let fields = if chart.value_fields.is_empty() {
-        (0..field_count as usize)
-            .filter(|field| *field != category && (chart.chart_type != "scatter" || !chart.series_to_category.values().any(|x_fields| x_fields.contains(field))))
-            .collect::<Vec<_>>()
-    } else {
-        chart.value_fields.clone()
-    };
-    if chart.chart_type == "scatter" {
-        for (series_field, x_fields) in &chart.series_to_category {
-            if !fields.contains(series_field) || x_fields.len() != 1 || x_fields[0] >= field_count as usize {
-                return Err(ExportError::invalid(format!("chart {} has an invalid scatter X mapping", chart.id)));
-            }
-        }
-    }
-    if fields.is_empty() {
-        return Err(ExportError::invalid(format!(
-            "chart {} has no value series",
-            chart.id
-        )));
-    }
-    let is_pie = matches!(chart.chart_type.as_str(), "pie" | "doughnut");
-    if is_pie && fields.len() != 1 {
-        return Err(ExportError::invalid(format!(
-            "chart {} requires exactly one value series",
-            chart.id
-        )));
-    }
-    if chart.chart_type == "stacked-column"
-        && chart
-            .y_axis
-            .as_ref()
-            .is_some_and(|axis| axis.scale_type != "linear")
-    {
-        return Err(ExportError::invalid(format!(
-            "chart {} stacked columns require a linear value axis",
-            chart.id
-        )));
-    }
-    if chart.chart_type == "radar"
-        && chart
-            .y_axis
-            .as_ref()
-            .is_some_and(|axis| axis.scale_type != "linear")
-    {
-        return Err(ExportError::invalid(format!(
-            "chart {} radar charts require a linear value axis",
-            chart.id
-        )));
-    }
-    let chart_kind = match chart.chart_type.as_str() {
-        "bar" | "stacked-column" => "barChart",
-        "line" => "lineChart",
-        "area" => "areaChart",
-        "pie" => "pieChart",
-        "doughnut" => "doughnutChart",
-        "scatter" => "scatterChart",
-        "radar" => "radarChart",
-        other => {
-            return Err(ExportError::unsupported(format!(
-                "XLSX chart type {other} is not supported by the writer"
-            )));
-        }
-    };
-    let axis_base = u32::try_from(chart_index)
-        .ok()
-        .and_then(|index| index.checked_add(1))
-        .and_then(|index| index.checked_mul(2))
-        .and_then(|index| index.checked_add(1_000_000))
-        .ok_or_else(|| ExportError::invalid("too many charts in workbook"))?;
-    let axis_ids = axis_base;
-    let axis_id_y = axis_ids + 1;
-    let mut out = format!("{}<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><!-- chart-space -->", xml::DECL);
-    if let Some(name) = pivot_table_name {
-        out = out.replace("<!-- chart-space -->", &format!("<c:pivotSource><c:name>{}</c:name><c:fmtId val=\"0\"/></c:pivotSource>", xml::escape(name)));
-    } else {
-        out = out.replace("<!-- chart-space -->", "");
-    }
-    out.push_str(&format!("<c:chart>{}", chart_title_xml(chart.title.as_deref())));
-    out.push_str("<c:autoTitleDeleted val=\"0\"/><c:plotArea><c:layout/>");
-    match chart_kind {
-        "barChart" => {
-            let grouping = if chart.chart_type == "stacked-column" {
-                "stacked"
-            } else {
-                "clustered"
-            };
-            out.push_str(&format!("<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"{}\"/><c:varyColors val=\"0\"/>", grouping));
-        }
-        "lineChart" => {
-            out.push_str("<c:lineChart><c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>")
-        }
-        "areaChart" => {
-            out.push_str("<c:areaChart><c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>")
-        }
-        "pieChart" => out.push_str("<c:pieChart><c:varyColors val=\"1\"/>"),
-        "doughnutChart" => out.push_str("<c:doughnutChart><c:varyColors val=\"1\"/>"),
-        "scatterChart" => out.push_str("<c:scatterChart><c:scatterStyle val=\"marker\"/><c:varyColors val=\"0\"/>"),
-        "radarChart" => out.push_str("<c:radarChart><c:radarStyle val=\"standard\"/><c:varyColors val=\"0\"/>"),
-        _ => unreachable!("chart type validated above"),
-    }
-    for (index, field) in fields.iter().enumerate() {
-        out.push_str(&chart_series_xml(
-            sheet,
-            &sheet_name,
-            chart,
-            index,
-            *field,
-            bounds,
-        )?);
-    }
-    if is_pie {
-        out.push_str("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:firstSliceAng val=\"0\"/>");
-        if chart_kind == "doughnutChart" {
-            out.push_str("<c:holeSize val=\"55\"/>");
-        }
-        out.push_str(&format!("</c:{}>", chart_kind));
-    } else if chart.chart_type == "scatter" {
-        out.push_str(&format!("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:scatterChart>", axis_ids, axis_id_y));
-        let x_axis_scaling = chart.x_axis.as_ref().filter(|axis| axis.scale_type == "log").map(|axis| format!("<c:scaling><c:logBase val=\"{}\"/><c:orientation val=\"minMax\"/></c:scaling>", axis.log_base.unwrap_or(10.0))).unwrap_or_else(|| "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>".to_owned());
-        out.push_str(&format!("<c:valAx><c:axId val=\"{}\"/>{}<c:delete val=\"0\"/><c:axPos val=\"b\"/>{}<c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/></c:valAx>", axis_ids, x_axis_scaling, chart_axis_title_xml(chart.x_axis.as_ref().and_then(|axis| axis.title.as_deref())), axis_id_y));
-    } else {
-        if chart.chart_type == "stacked-column" {
-            out.push_str("<c:gapWidth val=\"150\"/><c:overlap val=\"100\"/>");
-        }
-        out.push_str(&format!("<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"0\"/><c:showCatName val=\"0\"/><c:showSerName val=\"0\"/></c:dLbls><c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:{}>", axis_ids, axis_id_y, chart_kind));
-        out.push_str(&format!("<c:catAx><c:axId val=\"{}\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/>{}<c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:auto val=\"1\"/><c:lblAlgn val=\"ctr\"/><c:lblOffset val=\"100\"/></c:catAx>", axis_ids, chart_axis_title_xml(chart.x_axis.as_ref().and_then(|axis| axis.title.as_deref())), axis_id_y));
-    }
-    let y_axis = chart.y_axis.as_ref();
-    for axis in [chart.x_axis.as_ref(), y_axis].into_iter().flatten() {
-        if !matches!(axis.scale_type.as_str(), "linear" | "log") {
-            return Err(ExportError::invalid(format!(
-                "chart {} has an invalid axis scale type",
-                chart.id
-            )));
-        }
-        if axis
-            .log_base
-            .is_some_and(|base| !base.is_finite() || !(2.0..=1000.0).contains(&base))
-        {
-            return Err(ExportError::invalid(format!(
-                "chart {} logarithmic axis base must be between 2 and 1000",
-                chart.id
-            )));
-        }
-    }
-    let scaling = if let Some(axis) = y_axis.filter(|axis| axis.scale_type == "log") {
-        format!(
-            "<c:scaling><c:logBase val=\"{}\"/><c:orientation val=\"minMax\"/></c:scaling>",
-            axis.log_base.unwrap_or(10.0)
-        )
-    } else {
-        "<c:scaling><c:orientation val=\"minMax\"/></c:scaling>".to_owned()
-    };
-    if !is_pie {
-        out.push_str(&format!("<c:valAx><c:axId val=\"{}\"/>{}<c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/>{}<c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"none\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"{}\"/><c:crosses val=\"autoZero\"/><c:crossBetween val=\"midCat\"/></c:valAx>", axis_id_y, scaling, chart_axis_title_xml(y_axis.and_then(|axis| axis.title.as_deref())), axis_ids));
-    }
-    out.push_str("</c:plotArea>");
-    if chart.legend.as_ref().is_none_or(|legend| legend.visible) {
-        let position = chart
-            .legend
-            .as_ref()
-            .map(|legend| legend.position.as_str())
-            .unwrap_or("bottom");
-        let position = match position {
-            "top" => "t",
-            "right" => "r",
-            "left" => "l",
-            "bottom" => "b",
-            _ => "b",
-        };
-        out.push_str(&format!(
-            "<c:legend><c:legendPos val=\"{}\"/><c:layout/><c:overlay val=\"0\"/></c:legend>",
-            position
-        ));
-    }
-    out.push_str(
-        "<c:plotVisOnly val=\"1\"/><c:dispBlanksAs val=\"gap\"/></c:chart></c:chartSpace>",
-    );
-    Ok(out)
-}
-
 fn emu(value: f64) -> Result<u32, ExportError> {
     if !value.is_finite() || value < 0.0 || value > u32::MAX as f64 / 9525.0 {
         return Err(ExportError::invalid(
@@ -2320,7 +1868,7 @@ fn add_unsupported_warnings(workbook: &WorkbookInput, warnings: &mut Vec<ExportW
 
 /// Serialize the canonical workbook JSON into XLSX parts.
 pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarning>, ExportError> {
-    let workbook: WorkbookInput = serde_json::from_str(data)
+    let mut workbook: WorkbookInput = serde_json::from_str(data)
         .map_err(|error| ExportError::invalid(format!("workbook JSON is invalid: {error}")))?;
     if workbook
         .kind
@@ -2335,6 +1883,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         return Err(ExportError::invalid(
             "workbook must contain at least one worksheet",
         ));
+    }
+    if workbook.metadata.as_ref().and_then(|metadata| metadata.get("unresolvedOfficeCharts")).and_then(Value::as_array).is_some_and(|charts| !charts.is_empty()) {
+        return Err(ExportError::unsupported("the imported workbook contains unresolved native charts; their original source is retained and cannot be silently omitted from XLSX export"));
     }
     if workbook.sheets.iter().any(|sheet| {
         sheet
@@ -2396,6 +1947,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     }
     let conditional_theme = conditional_source::theme_for_workbook(&workbook)?;
     let mut warnings = Vec::new();
+    chart::prepare_native_bindings(&mut workbook, &mut warnings)?;
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
     registry.register(None);

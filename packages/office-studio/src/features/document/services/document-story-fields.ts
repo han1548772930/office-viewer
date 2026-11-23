@@ -12,6 +12,11 @@ import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentComme
 import { resolveDocumentDateTimeFieldResult } from './document-date-time-field'
 import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter } from './section-header-footer'
 import { storyBuffer } from './story-editor'
+import { cloneDocumentSelection, documentTableSelectedTextTargets } from '../model/document-table-selection'
+import { sanitizeDocumentInputSelection } from '../model/document-input-session'
+import { documentBlockHostId, documentEditingBlockHost, sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import { applyDocumentBlockHostModel, documentBlockHostSelectionFromLegacyRange, documentModelForBlockHost, resolveDocumentBlockHost, validateDocumentBlockHost } from './document-block-host'
+import { assertDocumentStoryLocksPreserved } from './document-story-locks'
 
 export interface DocumentStoryFieldRefreshRequest {
   locale: string
@@ -21,6 +26,8 @@ export interface DocumentStoryFieldRefreshRequest {
   stories?: DocumentStoryRange[]
   /** Selection-only body update; a collapsed caret inside a result selects that field. */
   bodySelection?: DocumentSelection
+  /** The bodySelection uses block/cell coordinates in this auxiliary content area. */
+  host?: DocumentAuxiliaryBlockHost
   /** The caller publishes the same content transaction without adding a history entry. */
   onOpen?: boolean
 }
@@ -30,9 +37,21 @@ export interface DocumentStoryFieldRefreshPlan {
   blocks?: DocumentModel['blocks']
   contentControls?: DocumentModel['contentControls']
   comments?: DocumentModel['comments']
+  footnotes?: DocumentModel['footnotes']
+  endnotes?: DocumentModel['endnotes']
   /** Current body caret/range mapped through every changed result. */
   selection?: DocumentSelection
+  /** Address of selection; undefined denotes the main document body. */
+  host?: DocumentAuxiliaryBlockHost
+  /** Transient host body selections mapped by the same replacements as selection. */
+  mappedAdditionalBodySelections?: DocumentSelection[]
+  mappedAdditionalBodySelectionHosts?: Array<DocumentAuxiliaryBlockHost | undefined>
   updatedFields: number
+}
+
+export interface DocumentFieldSelectionAddress {
+  selection: DocumentSelection
+  host?: DocumentAuxiliaryBlockHost
 }
 
 /** Keep cached run boundaries when a refreshed result changes within several formats. */
@@ -128,10 +147,20 @@ export function canRefreshDocumentStoryFields(model: DocumentModel, context: Doc
     && editableStoryDateFields(section, story, model).length > 0))
 }
 
-interface BodySelectionRanges { start: number; end: number }
+interface BodySelectionRange { start: number; end: number }
+type BodySelectionRanges = BodySelectionRange[]
 
 function bodySelectionRanges(model: DocumentModel, selection: DocumentSelection): BodySelectionRanges {
   if (!selection || !selection.anchor || !selection.focus) throw new TypeError('正文字段更新选区无效。')
+  if (selection.tableSelection) {
+    const selected = documentTableSelectedTextTargets(model, selection.tableSelection)
+    const paragraphs = new Map(documentTextFieldParagraphs(model).map(paragraph => [paragraph.block.id, paragraph]))
+    return selected.map(target => {
+      const paragraph = paragraphs.get(target.cellBlockId ?? target.blockId)
+      if (!paragraph) throw new RangeError('表格字段更新选区的段落已不存在。')
+      return { start: paragraph.absoluteStart, end: paragraph.absoluteEnd }
+    })
+  }
   const targets = textTargets(model)
   for (const point of [selection.anchor, selection.focus]) {
     const target = targets.find(target => sameTarget(target, point)), block = target && blockAtPoint(model, target)
@@ -142,7 +171,7 @@ function bodySelectionRanges(model: DocumentModel, selection: DocumentSelection)
   const focus = paragraphs.get(selection.focus.cellBlockId ?? selection.focus.blockId)
   if (!anchor || !focus) throw new RangeError('正文字段更新选区的段落已不存在。')
   const anchorOffset = anchor.absoluteStart + selection.anchor.offset, focusOffset = focus.absoluteStart + selection.focus.offset
-  return { start: Math.min(anchorOffset, focusOffset), end: Math.max(anchorOffset, focusOffset) }
+  return [{ start: Math.min(anchorOffset, focusOffset), end: Math.max(anchorOffset, focusOffset) }]
 }
 
 /** Availability can be queried between a model update and its mapped selection. */
@@ -157,7 +186,7 @@ function availableBodySelectionRanges(model: DocumentModel, selection: DocumentS
 export function documentBodySelectionHasField(model: DocumentModel, selection: DocumentSelection): boolean {
   const ranges = availableBodySelectionRanges(model, selection)
   if (!ranges) return false
-  return documentTextFieldRanges(model).some(field => documentTextFieldRangeIntersects(field, ranges.start, ranges.end))
+  return documentTextFieldRanges(model).some(field => ranges.some(range => documentTextFieldRangeIntersects(field, range.start, range.end)))
 }
 
 function bodyFieldContentEditable(model: DocumentModel, range: DocumentTextFieldRange, paragraphs: ReadonlyMap<string, DocumentTextFieldParagraph>): boolean {
@@ -204,7 +233,7 @@ function editableBodyDateFields(model: DocumentModel, context: DocumentPermissio
     const field = range.field
     if (field.field !== 'DATE' && field.field !== 'TIME' || documentFieldAutomaticRefreshBlocked(field)
       || documentTextFieldRangeContainsNested(range, ranges) || bodyFieldContainsInlineEntity(range, paragraphs) || !bodyFieldCanMerge(range)
-      || selection && !documentTextFieldRangeIntersects(range, selection.start, selection.end)
+      || selection && !selection.some(selected => documentTextFieldRangeIntersects(range, selected.start, selected.end))
       || !bodyFieldContentEditable(model, range, byId)) continue
     const targets = bodyFieldParagraphs(range, paragraphs).flatMap(paragraph => permissionTargetsForBlock(model, paragraph.block.id))
     for (const outer of ranges) if (outer.field.id !== field.id && outer.absoluteStart <= range.absoluteStart && outer.absoluteEnd >= range.absoluteEnd) {
@@ -234,15 +263,16 @@ function bodyDateLanguage(range: DocumentTextFieldRange, fallback: string): stri
     ?? sourceLanguage(isRecord(fieldSource) ? fieldSource.textStyle : undefined) ?? fallback
 }
 
-function mappedSelectionPoint(point: DocumentPoint, range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[], length: number, model: DocumentModel): DocumentPoint {
+function mappedSelectionPoint(point: DocumentPoint, range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[], result: string, model: DocumentModel): DocumentPoint {
   const paragraph = paragraphs.find(candidate => candidate.block.id === (point.cellBlockId ?? point.blockId))
   if (!paragraph) return point
   const absolute = paragraph.absoluteStart + point.offset
   if (absolute <= range.absoluteStart || absolute >= range.absoluteEnd && paragraph.block.id !== range.endParagraph.block.id) return point
   const target = textTargets(model).find(candidate => (candidate.cellBlockId ?? candidate.blockId) === range.block.id)
   if (!target) throw new RangeError('字段更新后的正文输入目标不可用。')
-  const offset = absolute >= range.absoluteEnd ? range.field.startOffset + length + absolute - range.absoluteEnd
-    : range.field.startOffset + Math.min(absolute - range.absoluteStart, length)
+  const relative = Math.min(absolute - range.absoluteStart, result.length)
+  const offset = absolute >= range.absoluteEnd ? range.field.startOffset + result.length + absolute - range.absoluteEnd
+    : range.field.startOffset + (isDocumentTextBoundary(result, relative) ? relative : relative - 1)
   return { ...target, offset }
 }
 
@@ -273,18 +303,136 @@ function refreshedBodyRuns(range: DocumentTextFieldRange, paragraphs: readonly D
   return [...before, ...remapDocumentStoryFieldRuns(styled, result, defaults), ...after]
 }
 
-/** Prepare all changed caches without modifying the live model or creating overrides for linked stories. */
-export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: DocumentStoryFieldRefreshRequest, context: DocumentPermissionContext, selection?: DocumentSelection): DocumentStoryFieldRefreshPlan | undefined {
+/** One range engine refreshes the body and every source story/note while preserving selection addresses. */
+export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: DocumentStoryFieldRefreshRequest, context: DocumentPermissionContext,
+  selection?: DocumentSelection, additionalBodySelections?: readonly (DocumentSelection | DocumentFieldSelectionAddress)[], selectionHost?: DocumentAuxiliaryBlockHost): DocumentStoryFieldRefreshPlan | undefined {
+  if (!request || typeof request !== 'object') throw new TypeError('字段更新请求无效。')
+  if (request.host) validateDocumentBlockHost(request.host)
+  if (selectionHost) validateDocumentBlockHost(selectionHost)
+  if (additionalBodySelections !== undefined && !Array.isArray(additionalBodySelections)) throw new TypeError('附加内容区选区列表无效。')
+  const scope = documentEditingBlockHost(model)
+  const currentSelection = selection ?? request.bodySelection
+  const currentHost = selectionHost ?? request.host ?? scope
+  const additional: DocumentFieldSelectionAddress[] = (additionalBodySelections ?? []).map(value => {
+    if (!value || typeof value !== 'object') throw new TypeError('附加内容区选区无效。')
+    const address = 'selection' in value ? value : { selection: value, ...(scope ? { host: scope } : {}) }
+    if (address.host) validateDocumentBlockHost(address.host)
+    return { selection: cloneDocumentSelection(address.selection), ...(address.host ? { host: { ...address.host } } : {}) }
+  })
+  if (scope) {
+    if (request.host && !sameDocumentBlockHost(scope, request.host) || currentHost && !sameDocumentBlockHost(scope, currentHost)
+      || additional.some(address => address.host && !sameDocumentBlockHost(scope, address.host))) throw new RangeError('字段更新的内容区地址与当前块视图不一致。')
+    const local = { ...request }; delete local.host
+    const plan = prepareScopedDocumentStoryFieldRefresh(model, local, context, currentSelection, additional.map(address => address.selection), true)
+    return plan ? { ...plan, host: { ...scope }, ...(plan.mappedAdditionalBodySelections ? {
+      mappedAdditionalBodySelectionHosts: additional.map(() => ({ ...scope })) } : {}) } : undefined
+  }
+  const addressModel = (host?: DocumentAuxiliaryBlockHost) => host ? documentModelForBlockHost(model, host) : model
+  if (currentSelection) bodySelectionRanges(addressModel(currentHost), currentSelection)
+  if (request.bodySelection) bodySelectionRanges(addressModel(request.host), request.bodySelection)
+  for (const address of additional) bodySelectionRanges(addressModel(address.host), address.selection)
+  const sectionIds = documentSectionIds(model), sections = sectionIds.map(sectionId => resolveSectionHeaderFooter(model, sectionId))
+  if (request.stories !== undefined && !Array.isArray(request.stories)) throw new TypeError('字段更新选区列表无效。')
+  for (const range of request.stories ?? []) {
+    if (!range || typeof range.sectionId !== 'string' || !DOCUMENT_STORY_KEYS.includes(range.story)) throw new TypeError('字段更新片段无效。')
+    const index = sectionIds.indexOf(range.sectionId)
+    if (index < 0) throw new RangeError('字段更新片段所在的节不存在。')
+    validateStoryRange(storyBuffer(sections[index]!, range.story).value, range)
+  }
+  const ownerId = (host?: DocumentAuxiliaryBlockHost) => host ? documentBlockHostId(resolveDocumentBlockHost(model, host).sourceHost) : 'body'
+  const currentOwner = ownerId(currentHost), additionalOwners = additional.map(address => ownerId(address.host))
+  const selectedAreas = request.stories !== undefined || request.bodySelection !== undefined || request.host !== undefined
+  const candidate = cloneModel(model)
+  let updatedFields = 0, bodyUpdated = false, notesUpdated = false
+  let nextSelection = currentSelection && cloneDocumentSelection(currentSelection)
+  const mappedAdditional = additional.map(address => cloneDocumentSelection(address.selection))
+  const bodyAdditionalIndexes = additional.flatMap((address, index) => address.host ? [] : [index])
+  const bodyRequest = { ...request, ...(selectedAreas ? { stories: request.stories ?? [] } : {}) }
+  delete bodyRequest.host
+  if (request.host) delete bodyRequest.bodySelection
+  const bodyPlan = prepareScopedDocumentStoryFieldRefresh(candidate, bodyRequest, context,
+    currentOwner === 'body' ? nextSelection : undefined, bodyAdditionalIndexes.map(index => mappedAdditional[index]!), true)
+  if (bodyPlan) {
+    applyScopedDocumentFieldPlan(candidate, bodyPlan)
+    updatedFields += bodyPlan.updatedFields
+    bodyUpdated = bodyPlan.blocks !== undefined
+    if (bodyPlan.selection && currentOwner === 'body') nextSelection = bodyPlan.selection
+    for (const [index, range] of (bodyPlan.mappedAdditionalBodySelections ?? []).entries()) mappedAdditional[bodyAdditionalIndexes[index]!] = range
+  }
+  const hosts: DocumentAuxiliaryBlockHost[] = []
+  for (const [index, sectionId] of sectionIds.entries()) for (const story of DOCUMENT_STORY_KEYS) {
+    if (!sectionStoryLinkedToPrevious(sections[index]!, story)) hosts.push({ kind: 'story', sectionId, story })
+  }
+  for (const noteKind of ['footnote', 'endnote'] as const) for (const noteId of Object.keys(noteKind === 'footnote' ? model.footnotes ?? {} : model.endnotes ?? {})) {
+    hosts.push({ kind: 'note', noteKind, noteId })
+  }
+  for (const host of hosts) {
+    const matchingRanges = host.kind === 'story' ? (request.stories ?? []).filter(range => range.sectionId === host.sectionId && range.story === host.story) : []
+    const requestedHost = request.host && sameDocumentBlockHost(request.host, host)
+    if (selectedAreas && !requestedHost && !matchingRanges.length) continue
+    if (host.kind === 'story') {
+      const index = sectionIds.indexOf(host.sectionId)
+      if (!resolveDocumentPermission(model.permissionRules ?? [], context, 'edit', sourceStoryPermissionTargets(sections, sectionIds, index, host.story)).allowed) continue
+    }
+    const scoped = documentModelForBlockHost(candidate, host, true), key = documentBlockHostId(host)
+    const ranges: BodySelectionRanges | undefined = selectedAreas ? [
+      ...(requestedHost && request.bodySelection ? bodySelectionRanges(scoped, request.bodySelection) : []),
+      ...matchingRanges.flatMap(range => bodySelectionRanges(scoped,
+        documentBlockHostSelectionFromLegacyRange(candidate, range.sectionId, range.story, range.start, range.end))),
+    ] : undefined
+    const additionalIndexes = additionalOwners.flatMap((owner, index) => owner === key ? [index] : [])
+    const localRequest: DocumentStoryFieldRefreshRequest = { locale: request.locale, timestamp: request.timestamp, onOpen: request.onOpen,
+      ...(selectedAreas ? { stories: [] } : {}) }
+    const selectedRanges = requestedHost && !request.bodySelection && !matchingRanges.length ? undefined : ranges
+    const plan = prepareScopedDocumentStoryFieldRefresh(scoped, localRequest, context,
+      currentOwner === key ? nextSelection : undefined, additionalIndexes.map(index => mappedAdditional[index]!), true, selectedRanges,
+      requestedHost && !request.bodySelection && !matchingRanges.length)
+    if (!plan) continue
+    applyScopedDocumentFieldPlan(scoped, plan)
+    applyDocumentBlockHostModel(candidate, host, scoped)
+    if (host.kind === 'story') assertDocumentStoryLocksPreserved(resolveSectionHeaderFooter(model, host.sectionId), resolveSectionHeaderFooter(candidate, host.sectionId), host.story, model)
+    else notesUpdated = true
+    updatedFields += plan.updatedFields
+    if (plan.selection && currentOwner === key) nextSelection = plan.selection
+    for (const [index, range] of (plan.mappedAdditionalBodySelections ?? []).entries()) mappedAdditional[additionalIndexes[index]!] = range
+  }
+  if (!updatedFields) return undefined
+  assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+  const finalModel = (host?: DocumentAuxiliaryBlockHost) => host ? documentModelForBlockHost(candidate, host) : candidate
+  if (nextSelection) nextSelection = sanitizeDocumentInputSelection(finalModel(currentHost), nextSelection)
+  const finalAdditional = mappedAdditional.map((range, index) => sanitizeDocumentInputSelection(finalModel(additional[index]?.host), range))
+  return { sectionHeaderFooters: candidate.sectionHeaderFooters, updatedFields,
+    contentControls: candidate.contentControls, comments: candidate.comments,
+    ...(bodyUpdated ? { blocks: candidate.blocks } : {}),
+    ...(notesUpdated ? { footnotes: candidate.footnotes, endnotes: candidate.endnotes } : {}),
+    ...(nextSelection ? { selection: nextSelection, ...(currentHost ? { host: { ...currentHost } } : {}) } : {}),
+    ...(additionalBodySelections !== undefined ? { mappedAdditionalBodySelections: finalAdditional,
+      mappedAdditionalBodySelectionHosts: additional.map(address => address.host ? { ...address.host } : undefined) } : {}) }
+}
+
+function applyScopedDocumentFieldPlan(model: DocumentModel, plan: DocumentStoryFieldRefreshPlan): void {
+  model.sectionHeaderFooters = plan.sectionHeaderFooters
+  if (plan.blocks !== undefined) model.blocks = plan.blocks
+  if (Object.hasOwn(plan, 'contentControls')) model.contentControls = plan.contentControls
+  if (Object.hasOwn(plan, 'comments')) model.comments = plan.comments
+}
+
+/** Prepare caches in a single block view; section/note ownership is managed by the outer planner. */
+function prepareScopedDocumentStoryFieldRefresh(model: DocumentModel, request: DocumentStoryFieldRefreshRequest, context: DocumentPermissionContext,
+  selection?: DocumentSelection, additionalBodySelections?: readonly DocumentSelection[], bodyOnly = false,
+  bodyRangesOverride?: BodySelectionRanges, allBodyFields = false): DocumentStoryFieldRefreshPlan | undefined {
   if (!request || typeof request.locale !== 'string' || !request.locale.trim() || typeof request.timestamp !== 'number'
     || !Number.isFinite(request.timestamp) || !Number.isFinite(new Date(request.timestamp).getTime())) throw new TypeError('字段更新时间或语言无效。')
   // Reject invalid command parameters; an unsupported source language still preserves its cache.
   try { Intl.getCanonicalLocales(request.locale) } catch { throw new TypeError('字段更新语言无效。') }
   if (request.stories !== undefined && !Array.isArray(request.stories)) throw new TypeError('字段更新选区列表无效。')
   if (request.onOpen !== undefined && typeof request.onOpen !== 'boolean') throw new TypeError('字段自动更新标志必须为布尔值。')
-  const bodyRanges = request.bodySelection !== undefined ? bodySelectionRanges(model, request.bodySelection) : undefined
+  const bodyRanges = bodyRangesOverride ?? (request.bodySelection !== undefined ? bodySelectionRanges(model, request.bodySelection) : undefined)
   const currentSelection = selection ?? request.bodySelection
   if (currentSelection) bodySelectionRanges(model, currentSelection)
-  const selectedAreas = request.stories !== undefined || request.bodySelection !== undefined
+  if (additionalBodySelections !== undefined && !Array.isArray(additionalBodySelections)) throw new TypeError('附加正文选区列表无效。')
+  for (const additionalSelection of additionalBodySelections ?? []) bodySelectionRanges(model, additionalSelection)
+  const selectedAreas = !allBodyFields && (request.stories !== undefined || request.bodySelection !== undefined || bodyRangesOverride !== undefined)
   const bodyFields = !selectedAreas || bodyRanges ? editableBodyDateFields(model, context, bodyRanges) : []
   const sectionIds = documentSectionIds(model)
   const sections = sectionIds.map(sectionId => resolveSectionHeaderFooter(model, sectionId))
@@ -298,7 +446,8 @@ export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: 
     ...(bodyFields.length ? { blocks: cloneModel(model.blocks), contentControls: model.contentControls && getDocumentContentControls(model), comments: model.comments && cloneModel(model.comments) } : {}) }
   const date = new Date(request.timestamp)
   let updatedFields = 0
-  let nextSelection = currentSelection && cloneModel(currentSelection)
+  let nextSelection = currentSelection && cloneDocumentSelection(currentSelection)
+  let nextAdditionalBodySelections = additionalBodySelections?.map(cloneDocumentSelection)
   for (const sourceRange of [...bodyFields].sort((a, b) => b.absoluteStart - a.absoluteStart)) {
     const range = documentTextFieldRanges(candidate).find(current => current.field.id === sourceRange.field.id)!
     const block = range.block, field = range.field, paragraphs = documentTextFieldParagraphs(candidate)
@@ -316,10 +465,13 @@ export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: 
     if (isRecord(codeBlock) && typeof codeBlock.source === 'string' && codeBlock.source !== runText(block.runs)) throw new Error('代码源文本与字段结果范围不一致。')
     const crossParagraph = range.startParagraph.block.id !== range.endParagraph.block.id
     if (!crossParagraph) transformContentControlsForBlockEdit(candidate, block.id, field.startOffset, field.endOffset, result.length, undefined, true)
-    const mappedSelection = nextSelection && {
-      anchor: mappedSelectionPoint(nextSelection.anchor, range, paragraphs, result.length, candidate),
-      focus: mappedSelectionPoint(nextSelection.focus, range, paragraphs, result.length, candidate),
-    }
+    const mapBodySelection = (current: DocumentSelection): DocumentSelection => ({
+      ...cloneDocumentSelection(current),
+      anchor: mappedSelectionPoint(current.anchor, range, paragraphs, result, candidate),
+      focus: mappedSelectionPoint(current.focus, range, paragraphs, result, candidate),
+    })
+    const mappedSelection = nextSelection && mapBodySelection(nextSelection)
+    const mappedAdditionalBodySelections = nextAdditionalBodySelections?.map(mapBodySelection)
     const first = range.startParagraph, last = range.endParagraph
     transformDocumentTextFieldsForBlockRangeEdit(first.container.slice(first.index, last.index + 1), field.startOffset, field.endOffset, result, [block], field.id, candidate)
     block.runs = nextRuns
@@ -333,10 +485,12 @@ export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: 
       transformDocumentCommentAnchorsForBodyRangeEdit(candidate, paragraphs, documentTextFieldParagraphs(candidate), range.absoluteStart, range.absoluteEnd, result, request.timestamp)
     } else transformDocumentCommentAnchorsForTextEdit(candidate, block.id, field.startOffset, field.endOffset, result, request.timestamp)
     nextSelection = mappedSelection
+    nextAdditionalBodySelections = mappedAdditionalBodySelections
     updatedFields++
   }
   const bodyUpdated = updatedFields > 0
   for (const [index, sectionId] of sectionIds.entries()) {
+    if (bodyOnly) break
     const section = resolveSectionHeaderFooter(candidate, sectionId)
     const replacements = new Map<DocumentPageField, DocumentPageField>()
     for (const story of DOCUMENT_STORY_KEYS) {
@@ -358,6 +512,9 @@ export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: 
   if (!updatedFields) return undefined
   // Keep the same final inheritance-aware permission contract as other content edits.
   assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+  if (nextSelection?.tableSelection) nextSelection = sanitizeDocumentInputSelection(candidate, nextSelection)
+  nextAdditionalBodySelections = nextAdditionalBodySelections?.map(current => current.tableSelection ? sanitizeDocumentInputSelection(candidate, current) : current)
   return { sectionHeaderFooters: candidate.sectionHeaderFooters, updatedFields, ...(nextSelection ? { selection: nextSelection } : {}),
+    ...(nextAdditionalBodySelections ? { mappedAdditionalBodySelections: nextAdditionalBodySelections } : {}),
     ...(bodyUpdated ? { blocks: candidate.blocks, contentControls: candidate.contentControls, comments: candidate.comments } : {}) }
 }

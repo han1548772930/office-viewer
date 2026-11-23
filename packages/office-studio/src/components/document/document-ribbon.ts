@@ -23,8 +23,15 @@ import { isListPreset, type ListKind } from '../../features/document/model/docum
 import type { HeaderFooterRibbonState, HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
 import DocumentHeaderFooterRibbonGroup from './DocumentHeaderFooterRibbonGroup.vue'
 import { headerFooterControlDisabled } from './document-header-footer-capabilities'
+import type { DocumentTocActionState } from '../../features/document/toc/document-toc-command'
+import { createDocumentTableRibbon, type DocumentTableRibbonContext } from './document-table-ribbon'
+import { documentTableCommandFromRibbon } from './document-table-command-parser'
+import { isDocumentTableCommand } from '../../features/document/commands/table-command-types'
+
+export interface DocumentTocContextActionStates { update: DocumentTocActionState; delete: DocumentTocActionState }
 
 export interface DocumentRibbonContext {
+  table?: DocumentTableRibbonContext
   fontList?: OfficeFontList
   painterActive?: boolean
   painterUnavailable?: boolean
@@ -47,6 +54,7 @@ export interface DocumentRibbonContext {
   contentControlsAvailable: boolean
   mode?: 'traditional' | 'modern'
   editingHeaderFooter?: boolean
+  editingAuxiliaryContent?: boolean
   editingDisabled?: boolean
   /** Character formatting can target an active story independently of body-only tools. */
   textFormattingDisabled?: boolean
@@ -76,6 +84,10 @@ export interface DocumentRibbonContext {
     insertDisabled: boolean
     selectedId?: string
     editDisabled: boolean
+    updateDisabled?: boolean
+    deleteDisabled?: boolean
+    updateReason?: string
+    deleteReason?: string
   }
 }
 
@@ -191,7 +203,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           ] as const).map(([type, title]) => action(`doc-section-break-${type}`, title, undefined, 'doc.command.insert-section-break', { type })),
         ] },
       ] },
-      { ...action('doc-table', '表格', Grid2X2, 'doc.operation.open-table', undefined, { order: 2, hidden: context.editingHeaderFooter, disabled: context.editingDisabled, gridLayout: { row: 1, column: 2 } }), type: 'menu', children: [
+      { ...action('doc-table', '表格', Grid2X2, 'doc.operation.open-table', undefined, { order: 2, disabled: context.editingDisabled, gridLayout: { row: 1, column: 2 } }), type: 'menu', children: [
         action('doc-table-insert', '插入表格', Grid2X2, 'doc.operation.open-table'),
       ] },
       { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { order: 5, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-character' },
@@ -298,12 +310,14 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         items: [
           action('doc-update-table-of-contents', tocLabel('document.toc.update', 'Update Table of Contents'), ListTree, 'doc.operation.update-table-of-contents', { tocId }, {
             showLabel: true,
-            disabled: context.tableOfContents.editDisabled,
+            disabled: context.tableOfContents.updateDisabled ?? context.tableOfContents.editDisabled,
+            disabledReason: context.tableOfContents.updateReason,
             gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
           }),
           action('doc-delete-table-of-contents', tocLabel('document.toc.delete', 'Remove Table of Contents'), Trash2, 'doc.command.delete-table-of-contents', { tocId }, {
             showLabel: true,
-            disabled: context.tableOfContents.editDisabled,
+            disabled: context.tableOfContents.deleteDisabled ?? context.tableOfContents.editDisabled,
+            disabledReason: context.tableOfContents.deleteReason,
             gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true },
           }),
         ],
@@ -384,27 +398,31 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       ],
     })
   }
+  const tableTab = context.table && createDocumentTableRibbon(context.table)
+  if (tableTab) tabs.push(tableTab)
   return translate ? localizeRibbon(tabs, 'doc', translate) : tabs
 }
 
 export function documentTableContextMenuItems(translate?: OfficeTranslator): RibbonItem[] {
   const label = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
   return [
-    { id: 'doc-context-row-before', type: 'button', title: label('items.doc-table-row-before', 'Insert Row Above'), commandId: 'doc.command.table-insert-row', params: { position: 'before' } },
-    { id: 'doc-context-row-after', type: 'button', title: label('items.doc-table-row-after', 'Insert Row Below'), commandId: 'doc.command.table-insert-row', params: { position: 'after' } },
-    { id: 'doc-context-column-before', type: 'button', title: label('items.doc-table-column-before', 'Insert Column Left'), commandId: 'doc.command.table-insert-column', params: { position: 'before' } },
-    { id: 'doc-context-column-after', type: 'button', title: label('items.doc-table-column-after', 'Insert Column Right'), commandId: 'doc.command.table-insert-column', params: { position: 'after' } },
+    { id: 'doc-context-row-before', type: 'button', title: label('items.doc-table-row-before', '在上方插入行'), commandId: 'doc.command.table-insert-row', params: { position: 'before' } },
+    { id: 'doc-context-row-after', type: 'button', title: label('items.doc-table-row-after', '在下方插入行'), commandId: 'doc.command.table-insert-row', params: { position: 'after' } },
+    { id: 'doc-context-column-before', type: 'button', title: label('items.doc-table-column-before', '在左侧插入列'), commandId: 'doc.command.table-insert-column', params: { position: 'before' } },
+    { id: 'doc-context-column-after', type: 'button', title: label('items.doc-table-column-after', '在右侧插入列'), commandId: 'doc.command.table-insert-column', params: { position: 'after' } },
     { id: 'doc-context-delete-rows', type: 'button', title: label('items.doc-table-delete-rows', 'Delete Rows'), commandId: 'doc.command.table-delete-rows' },
     { id: 'doc-context-delete-columns', type: 'button', title: label('items.doc-table-delete-columns', 'Delete Columns'), commandId: 'doc.command.table-delete-columns' },
     { id: 'doc-context-delete-table', type: 'button', title: label('items.doc-table-delete', 'Delete Table'), commandId: 'doc.command.table-delete' },
   ]
 }
 
-export function documentTocContextMenuItems(tocId: string, disabled: boolean, translate?: OfficeTranslator): RibbonItem[] {
+export function documentTocContextMenuItems(tocId: string, states: boolean | DocumentTocContextActionStates, translate?: OfficeTranslator): RibbonItem[] {
   const label = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
+  const update: DocumentTocActionState = typeof states === 'boolean' ? { available: !states } : states.update
+  const remove: DocumentTocActionState = typeof states === 'boolean' ? { available: !states } : states.delete
   return [
-    { id: 'doc-context-update-table-of-contents', type: 'button', title: label('document.toc.update', 'Update Table of Contents'), commandId: 'doc.operation.update-table-of-contents', params: { tocId }, disabled, order: -1 },
-    { id: 'doc-context-delete-table-of-contents', type: 'button', title: label('document.toc.delete', 'Remove Table of Contents'), commandId: 'doc.command.delete-table-of-contents', params: { tocId }, disabled, order: -0.5 },
+    { id: 'doc-context-update-table-of-contents', type: 'button', title: label('document.toc.update', 'Update Table of Contents'), commandId: 'doc.operation.update-table-of-contents', params: { tocId }, disabled: !update.available, disabledReason: update.reason, order: -1 },
+    { id: 'doc-context-delete-table-of-contents', type: 'button', title: label('document.toc.delete', 'Remove Table of Contents'), commandId: 'doc.command.delete-table-of-contents', params: { tocId }, disabled: !remove.available, disabledReason: remove.reason, order: -0.5 },
   ]
 }
 
@@ -412,6 +430,7 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
+  if (isDocumentTableCommand({ id })) return documentTableCommandFromRibbon(id, params)
   if (id === 'ui.command.clear-formatting' || id === 'doc.command.clear-formatting') return { id: 'doc.command.clear-formatting' }
   if (id === 'doc.command.change-paragraph-indent') {
     return record(params) && (params.direction === -1 || params.direction === 1) ? { id, direction: params.direction } : undefined

@@ -25,6 +25,8 @@ export function applyDocumentFieldRefreshPlan(model: DocumentModel, plan: Docume
   }
   if (plan.contentControls !== undefined) model.contentControls = cloneModel(plan.contentControls)
   if (plan.comments !== undefined) model.comments = cloneModel(plan.comments)
+  if (Object.hasOwn(plan, 'footnotes')) model.footnotes = plan.footnotes === undefined ? undefined : cloneModel(plan.footnotes)
+  if (Object.hasOwn(plan, 'endnotes')) model.endnotes = plan.endnotes === undefined ? undefined : cloneModel(plan.endnotes)
 }
 
 /** Prepare every retained undo/redo cache before publishing the live update.

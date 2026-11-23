@@ -15,6 +15,13 @@ mod document_format_roundtrip_tests;
 mod document_story_roundtrip_tests;
 mod story_fields;
 mod document_text_fields;
+mod document_block_extraction;
+mod document_table_sidecar;
+mod document_table_merges;
+#[cfg(test)]
+mod document_table_roundtrip_tests;
+#[cfg(test)]
+mod document_numbering_roundtrip_tests;
 #[cfg(test)]
 mod document_text_fields_roundtrip_tests;
 mod validation_sidecar;
@@ -22,6 +29,9 @@ mod validation_sidecar;
 mod sheet_validation_roundtrip_tests;
 mod sparkline_sidecar;
 mod pivot_sidecar;
+mod native_chart;
+#[cfg(test)]
+mod native_chart_roundtrip_tests;
 mod conditional_format_sidecar;
 mod table_sidecar;
 #[cfg(target_arch = "wasm32")]

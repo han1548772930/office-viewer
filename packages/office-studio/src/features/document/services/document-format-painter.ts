@@ -2,6 +2,7 @@ import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../..
 import { blockAtPoint, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed, type DocumentSelection, type RunPatch } from '../model/document-model'
 import { documentDefaultStyle } from '../model/document-default-style'
 import { blockNumberingDefinition, blockNumberingId, clearBlockNumbering, cloneNumberingDefinition, type DocumentNumberingDefinition } from '../model/document-numbering'
+import { documentTableSelectedTextTargets } from '../model/document-table-selection'
 
 type CharacterFormat = Required<Pick<RunPatch, 'fontFamily' | 'eastAsiaFontFamily' | 'fontSize' | 'color' | 'bold' | 'italic' | 'underline' | 'strike' | 'verticalAlign' | 'highlight'>>
 interface ParagraphFormat {
@@ -22,7 +23,9 @@ export function clearDocumentFormat(model?: DocumentModel): DocumentPainterForma
 }
 
 export function captureDocumentFormat(model: DocumentModel, selection: DocumentSelection): DocumentPainterFormat | undefined {
-  const { start, end } = orderedSelection(model, selection)
+  const tableTargets = selection.tableSelection ? documentTableSelectedTextTargets(model, selection.tableSelection) : undefined
+  if (tableTargets && !tableTargets.length) return
+  const { start, end } = tableTargets ? { start: { ...tableTargets[0]!, offset: 0 }, end: { ...tableTargets.at(-1)!, offset: runText(runsForTarget(model, tableTargets.at(-1)!)).length } } : orderedSelection(model, selection)
   const block = blockAtPoint(model, start)
   if (!block || !['paragraph', 'heading', 'quote', 'numbered', 'bullet', 'checklist'].includes(block.type)) return
   // marksAtPoint reads the preceding character; a non-empty selection samples the first selected one.

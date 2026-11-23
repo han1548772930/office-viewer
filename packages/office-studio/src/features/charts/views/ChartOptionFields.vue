@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Alert, ColorPicker, FormItem, Input, InputNumber, Select, Switch } from 'antdv-next'
 import type { ChartConfig } from '../chart-engine'
 import type { ChartSettingControl } from '../chart-settings-controls'
@@ -8,6 +8,7 @@ import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-setting
 const props = defineProps<{ config: ChartConfig; controls: readonly ChartSettingControl[]; fields?: ChartSettingsField[]; categories?: string[]; fieldCount?: number; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
 const error = ref('')
+const visibleControls = computed(() => props.controls.filter(control => control.visible?.(props.config) !== false))
 
 function choices(control: ChartSettingControl): ChartSettingsField[] {
   return control.kind === 'points' ? (props.categories ?? []).slice(0, 16_384).map((label, value) => ({ label: `${value + 1} · ${label}`, value })) : props.fields ?? []
@@ -50,7 +51,7 @@ function setIndexes(control: ChartSettingControl, value: unknown): void {
 
 <template>
   <div class="chart-option-fields">
-    <FormItem v-for="control in controls" :key="control.key" :label="control.label" :extra="control.extra">
+    <FormItem v-for="control in visibleControls" :key="control.key" :label="control.label" :extra="control.extra">
       <Switch v-if="control.kind === 'switch'" :checked="control.read(config) ?? control.fallback ?? false" :aria-label="control.label" :disabled="disabled" @update:checked="setValue(control, $event)" />
       <InputNumber v-else-if="control.kind === 'number'" :value="numericValue(control)" :min="control.min" :max="control.max" :step="control.step ?? (control.max === 1 ? 0.05 : 1)" :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <ColorPicker v-else-if="control.kind === 'color'" :value="textValue(control)" format="hex" value-format="hex" allow-clear show-text :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" @clear="setValue(control, undefined)" />

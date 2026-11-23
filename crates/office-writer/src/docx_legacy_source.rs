@@ -3,6 +3,7 @@ use office_io_common::document_legacy_source::{
     encode_origins, read_origin_list_value, read_origin_value, read_resource_errors_value,
 };
 use serde_json::Value;
+use serde::Deserialize;
 
 use super::get;
 use crate::ExportError;
@@ -28,17 +29,23 @@ pub(super) fn prepare(model: &Value) -> Result<Option<Vec<u8>>, ExportError> {
     if source.is_null() { return Ok(None); }
     let object = source.as_object().ok_or_else(|| ExportError::invalid("Office source must be an object."))?;
     if get(source, "version").as_u64() != Some(1) { return Err(ExportError::invalid("Office source has an unsupported version.")); }
-    if object.keys().any(|key| !matches!(key.as_str(), "version" | "styles" | "theme" | "resourceErrors" | "origin" | "legacyOrigins")) {
+    if object.keys().any(|key| !matches!(key.as_str(), "version" | "styles" | "theme" | "numbering" | "resourceErrors" | "origin" | "legacyOrigins")) {
         return Err(ExportError::invalid("Office source contains unsupported fields; refusing to discard them."));
     }
     xml_part(get(source, "styles"))?;
     xml_part(get(source, "theme"))?;
+    let numbering = get(source, "numbering");
+    if !numbering.is_null() {
+        let numbering = office_io_common::document_numbering_source::DocumentNumberingSource::deserialize(numbering)
+            .map_err(|error| ExportError::invalid(format!("DOCX_NUMBERING_SOURCE: {error}")))?;
+        numbering.validate().map_err(ExportError::invalid)?;
+    }
     let errors = source.get("resourceErrors").map(read_resource_errors_value).transpose().map_err(ExportError::invalid)?.unwrap_or_default();
     let mut origins = Vec::new();
     if let Some(value) = source.get("origin") {
         let mut origin = read_origin_value(value).map_err(ExportError::invalid)?;
-        if origin.format == DocumentOfficeSourceOriginFormat::Odt && (!get(source, "styles").is_null() || !get(source, "theme").is_null()) {
-            return Err(ExportError::invalid("ODT resources cannot be interpreted as native Word styles or theme."));
+        if origin.format == DocumentOfficeSourceOriginFormat::Odt && (!get(source, "styles").is_null() || !get(source, "theme").is_null() || !numbering.is_null()) {
+            return Err(ExportError::invalid("ODT resources cannot be interpreted as native Word styles, theme, or numbering."));
         }
         for error in errors { if !origin.resource_errors.contains(&error) { origin.resource_errors.push(error); } }
         origins.push(origin);
