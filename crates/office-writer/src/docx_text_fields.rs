@@ -123,7 +123,7 @@ impl TextFieldPlan {
             if get(collection, "version").as_u64() != Some(1) { return Err(ExportError::invalid("正文字段集合版本无效。")); }
             let entries = get(collection, "fields").as_array().ok_or_else(|| ExportError::invalid("正文字段集合必须为数组。"))?;
             for entry in entries {
-                let id = get(entry, "id").as_str().filter(|id| !id.trim().is_empty()).ok_or_else(|| ExportError::invalid("正文字段标识缺失。"))?;
+                let id = get(entry, "id").as_str().filter(|id| !id.trim().is_empty() && id.len() <= 4096).ok_or_else(|| ExportError::invalid("正文字段标识缺失或超出容量。"))?;
                 if !ids.insert(id.to_owned()) { return Err(ExportError::invalid("正文字段标识重复。")); }
                 let name = get(entry, "field").as_str().filter(|name| !name.trim().is_empty()).ok_or_else(|| ExportError::invalid("正文字段类型缺失。"))?;
                 for key in ["instruction", "cachedResult", "language"] { if entry.get(key).is_some_and(|value| !value.is_string()) { return Err(ExportError::invalid(format!("字段 {id:?} 的 {key} 无效。"))); } }

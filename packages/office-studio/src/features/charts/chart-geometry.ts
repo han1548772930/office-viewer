@@ -1,7 +1,7 @@
 import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
-import { chartColorChannels } from './chart-color'
-import { chartInterpolate, chartLinearRatio } from './chart-math'
+import { chartColorChannels, normalizeChartColor } from './chart-color'
+import { chartInterpolate, chartLinearRatio, finiteChartValue } from './chart-math'
 
 export interface ChartVector { x: number; y: number }
 export interface ChartVector3 extends ChartVector { z: number }
@@ -11,7 +11,7 @@ export function chartFont(font: ChartFontOptions = {}, size = 11): string {
 }
 
 export function chartColorOpacity(color: string, opacity = 1): string {
-  if (opacity >= 1) return color
+  if (opacity >= 1) return normalizeChartColor(color)
   const [r, g, b, a] = chartColorChannels(color)
   return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a * opacity})`
 }
@@ -24,7 +24,7 @@ export function chartShade(color: string, factor: number): string {
 /** A small, deterministic numeric-format subset; the authored format is retained in the model. */
 export function formatChartNumber(value: number, format?: string): string {
   if (!Number.isFinite(value)) return ''
-  if (!format || format === 'General') return String(Number(value.toPrecision(5)))
+  if (!format || format === 'General') { const rounded = Number(value.toPrecision(5)); return String(Number.isFinite(rounded) ? rounded : value) }
   const section = format.split(';')[value < 0 ? 1 : 0] ?? format.split(';')[0]!
   const decimal = /[0#][.]([0#]+)/.exec(section)?.[1]?.length ?? 0
   const percent = section.includes('%')
@@ -47,31 +47,62 @@ export function chartLabelText(label: ChartLabelOptions | undefined, value: numb
 }
 
 export function chartAxisExtent(values: readonly number[], axis: ChartAxisOptions): { min: number; max: number } {
+  const logarithmic = axis.scaleType === 'log', base = axis.logBase ?? 10
+  for (const value of [axis.min, axis.max]) if (value !== undefined) {
+    finiteChartValue(value, '坐标轴边界')
+    if (logarithmic && value <= 0) throw new RangeError('对数轴边界须为正数。')
+  }
+  if (logarithmic && (!Number.isFinite(base) || base < 2 || base > 1000)) throw new RangeError('对数轴底数须位于 2 到 1000。')
+  if (axis.min !== undefined && axis.max !== undefined && axis.min >= axis.max) throw new RangeError('坐标轴最小边界须小于最大边界。')
   let min = Infinity, max = -Infinity
   for (const value of values) {
-    if (!Number.isFinite(value) || axis.scaleType === 'log' && value <= 0) continue
+    if (!Number.isFinite(value) || logarithmic && value <= 0) continue
     min = Math.min(min, value); max = Math.max(max, value)
   }
-  if (!Number.isFinite(min)) { min = axis.scaleType === 'log' ? 1 : 0; max = axis.scaleType === 'log' ? axis.logBase ?? 10 : 1 }
-  if (axis.scaleType !== 'log') min = Math.min(0, min)
+  if (!Number.isFinite(min)) { min = logarithmic ? 1 : 0; max = logarithmic ? base : 1 }
+  if (!logarithmic) { min = Math.min(0, min); max = Math.max(0, max) }
   min = axis.min ?? min; max = axis.max ?? max
-  if (min === max) {
-    if (axis.min !== undefined && axis.max === undefined) max = axis.scaleType === 'log' ? min * (axis.logBase ?? 10) : min + Math.max(1, Math.abs(min) * 0.1)
-    else if (axis.max !== undefined && axis.min === undefined) min = axis.scaleType === 'log' ? max / (axis.logBase ?? 10) : max - Math.max(1, Math.abs(max) * 0.1)
-    else max = axis.scaleType === 'log' ? min * (axis.logBase ?? 10) : min + Math.max(1, Math.abs(min) * 0.1)
+  if (min >= max) {
+    const above = (value: number): number | undefined => {
+      const candidate = logarithmic ? value * base : value + Math.max(1, Math.abs(value) * 0.1)
+      return Number.isFinite(candidate) && candidate > value ? candidate : value < Number.MAX_VALUE ? Number.MAX_VALUE : undefined
+    }
+    const below = (value: number): number | undefined => {
+      const candidate = logarithmic ? value / base : value - Math.max(1, Math.abs(value) * 0.1)
+      if (Number.isFinite(candidate) && candidate < value && (!logarithmic || candidate > 0)) return candidate
+      const limit = logarithmic ? Number.MIN_VALUE : -Number.MAX_VALUE
+      return value > limit ? limit : undefined
+    }
+    if (axis.max !== undefined && axis.min === undefined) {
+      const lower = below(max)
+      if (lower === undefined) throw new RangeError('无法为固定的最大边界生成有限坐标轴区间。')
+      min = lower
+    } else {
+      const upper = above(min)
+      if (upper !== undefined) max = upper
+      else if (axis.min === undefined) {
+        const lower = below(max)
+        if (lower === undefined) throw new RangeError('无法生成有限坐标轴区间。')
+        min = lower
+      } else throw new RangeError('无法为固定的最小边界生成有限坐标轴区间。')
+    }
   }
   return { min, max }
 }
 
 export function chartAxisRatio(value: number, min: number, max: number, axis: ChartAxisOptions): number {
+  const logDistance = (last: number, first: number): number => {
+    const relative = (last - first) / first
+    return Number.isFinite(relative) && relative > -1 ? Math.log1p(relative) : Math.log(last) - Math.log(first)
+  }
   const ratio = axis.scaleType === 'log'
-    ? (Math.log(value) - Math.log(min)) / (Math.log(max) - Math.log(min))
+    ? logDistance(value, min) / logDistance(max, min)
     : chartLinearRatio(value, min, max)
   return axis.reverse ? 1 - ratio : ratio
 }
 
 export function chartAxisTicks(min: number, max: number, axis: ChartAxisOptions): number[] {
-  return Array.from({ length: 5 }, (_unused, index) => axis.scaleType === 'log'
+  return Array.from({ length: 5 }, (_unused, index) => index === 0 ? min : index === 4 ? max : axis.scaleType === 'log'
     ? Math.exp(Math.log(min) + (Math.log(max) - Math.log(min)) * index / 4)
     : chartInterpolate(min, max, index / 4))
 }

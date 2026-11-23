@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { Alert, Collapse, CollapsePanel, FormItem, Input, Select } from 'antdv-next'
 import type { ChartConfig, ChartData } from '../chart-engine'
-import { chartDataHint, chartTypeSelectOptions, isChartType, resolveChartType } from '../chart-catalog'
+import { chartDataHint, chartTypeSelectOptions, isChartType, resolveChartType, supportsChartErrorDirection, supportsChartStatistics } from '../chart-catalog'
 import { chartAxisControls, chartCommonControls, chartFontControls, chartLegendFont, chartLineControls, chartSeriesControls, optionGroup } from '../chart-settings-controls'
 import { chartAggregationControls, chartDataMappingControls, chartTypeSettingsControls } from '../chart-type-settings-controls'
 import { chartDraftCategories, chartDraftFieldCount, chartDraftFields, chartDraftNumericFields, cloneChartDraftConfig, type ChartSettingsDraft, type ChartSettingsField, type ChartSettingsSourceSheet } from '../chart-settings-draft'
@@ -36,7 +36,8 @@ const seriesFields = computed<ChartSettingsField[]>(() => {
 const hasAxes = computed(() => ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination', 'waterfall', 'pareto', 'heatmap', 'boxplot', 'candlestick', 'histogram', 'radar'].includes(descriptor.value.family))
 const secondaryAxis = computed(() => !descriptor.value.threeD && ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination', 'waterfall'].includes(descriptor.value.family))
 const hasRightAxis = computed(() => descriptor.value.family === 'pareto' || secondaryAxis.value && (config.value.options?.allSeriesStyle?.rightAxis || Object.values(config.value.options?.series ?? {}).some(style => style.rightAxis)))
-const statistics = computed(() => !descriptor.value.threeD && !descriptor.value.stacked && ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination'].includes(descriptor.value.family))
+const statistics = computed(() => supportsChartStatistics(config.value))
+const statisticsFields = computed(() => seriesFields.value.filter((field, index) => supportsChartStatistics(config.value, field.value, index)))
 const typeOptions = chartTypeSelectOptions()
 const textFontControls = chartFontControls('appearance.font', item => item.options?.appearance?.font, item => optionGroup(item, 'appearance').font ??= {})
 const titleControls = chartFontControls('titleStyle', item => item.options?.titleStyle, item => optionGroup(item, 'titleStyle'))
@@ -87,7 +88,7 @@ function chartType(value: unknown): void { if (isChartType(value)) { const next 
           <CollapsePanel v-if="hasRightAxis" key="right" header="右侧数值轴"><ChartOptionFields :config="config" :controls="chartAxisControls('rightYAxis')" :disabled="disabled" @update:config="change" /></CollapsePanel>
         </Collapse>
       </CollapsePanel>
-      <CollapsePanel v-if="statistics" key="statistics" header="趋势线与误差线"><ChartStatisticsSettings :config="config" :series-fields="seriesFields" :source-fields="fields" :numeric-x="descriptor.dataShape === 'xy' || descriptor.dataShape === 'bubble'" :disabled="disabled" @update:config="change" /></CollapsePanel>
+      <CollapsePanel v-if="statistics" key="statistics" header="趋势线与误差线"><ChartStatisticsSettings :config="config" :series-fields="statisticsFields" :source-fields="fields" :numeric-x="supportsChartErrorDirection(config, 'x')" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel v-if="descriptor.dataShape === 'category'" key="aggregation" header="分类聚合与前 N 项"><ChartOptionFields :config="config" :controls="chartAggregationControls(config)" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel key="collections" header="配色与项目设置"><ChartCollectionSettings :config="config" :series-fields="seriesFields" :categories="categories" :disabled="disabled" @update:config="change" /></CollapsePanel>
     </Collapse>

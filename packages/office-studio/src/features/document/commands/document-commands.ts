@@ -1,6 +1,6 @@
 import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
-import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
-import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
+import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit } from '../services/content-controls'
+import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
@@ -20,7 +20,7 @@ import { assertDocumentTextSelectionEditable } from '../services/document-text-f
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
-import { documentTextFieldRanges, documentTextFields, insertDocumentTextFields, remapDocumentTextFieldIds, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentTextFieldParagraphs, documentTextFieldRanges, documentTextFields, insertDocumentTextFields, remapDocumentTextFieldIds, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
@@ -595,13 +595,10 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (!text && sameTarget(start, end) && start.offset === end.offset) return selection
   const startTargetId = start.cellBlockId ?? start.blockId
   const endTargetId = end.cellBlockId ?? end.blockId
-  if (startTargetId !== endTargetId) {
-    // Replacing a paragraph break relocates the following paragraph, even at its offset zero.
-    const targets = targetsForSelection(model, selection, true)
-    const affectedIds = new Set(targets.map((target) => target.cellBlockId ?? target.blockId))
-    const affectedControl = model.contentControls?.find((control) => affectedIds.has(control.blockId))
-    if (affectedControl) throw new RangeError(`A text edit cannot span content control paragraphs: ${affectedControl.id}`)
-  }
+  const sourceParagraphs = documentTextFieldParagraphs(model)
+  const sourceStart = sourceParagraphs.find(paragraph => paragraph.block.id === startTargetId)
+  const sourceEnd = sourceParagraphs.find(paragraph => paragraph.block.id === endTargetId)
+  if (!sourceStart || !sourceEnd) throw new RangeError('正文编辑缺少文本段落。')
   const startRuns = runsForTarget(model, start), endRuns = runsForTarget(model, end)
   const split = splitDocumentRunRange(startRuns, start.offset, sameTarget(start, end) ? end.offset : runText(startRuns).length)
   const before = split.before
@@ -649,11 +646,19 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
     targets.forEach((target, index) => {
       const block = blockAtPoint(model, target)
       if (block) {
+        transformContentControlsForBlockEdit(model, block.id, index === 0 ? start.offset : 0,
+          index === targets.length - 1 ? end.offset : runText(block.runs).length, index === 0 ? normalizedText.length : 0)
         if (index === 0) transformDocumentTextFieldsForBlockEdit(block, start.offset, runText(block.runs).length, normalizedText, undefined, model)
         else if (index === targets.length - 1) transformDocumentTextFieldsForBlockEdit(block, 0, end.offset, '', undefined, model)
         else transformDocumentTextFieldsForBlockEdit(block, 0, runText(block.runs).length, '', undefined, model)
       }
+      const previousParagraphs = documentTextFieldParagraphs(model)
       setEditingRuns(model, target, index === 0 ? [...before, createRun(normalizedText, inherited)] : index === targets.length - 1 ? after : [], inherited)
+      const paragraph = previousParagraphs.find(paragraph => paragraph.block.id === (target.cellBlockId ?? target.blockId))
+      if (paragraph) transformDocumentCommentAnchorsForBodyRangeEdit(model, previousParagraphs, documentTextFieldParagraphs(model),
+        paragraph.absoluteStart + (index === 0 ? start.offset : 0),
+        paragraph.absoluteStart + (index === targets.length - 1 ? end.offset : paragraph.text.length),
+        index === 0 ? normalizedText : '')
     })
     return collapsedSelection({ ...start, offset: start.offset + normalizedText.length })
   }
@@ -665,13 +670,18 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (endIndex > startIndex) startContainer.splice(startIndex + 1, endIndex - startIndex)
   if (paragraphs.length === 1) {
     setEditingRuns(model, start, [...before, createRun(normalizedText, inherited), ...after], inherited)
-    if (startTargetId === endTargetId) {
-      transformDocumentCommentAnchorsForTextEdit(model, startTargetId, start.offset, end.offset, normalizedText)
-    }
+    if (startTargetId !== endTargetId) transformContentControlsForBodyRangeEdit(model, sourceParagraphs,
+      sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText.length, false)
+    transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
+      sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText)
     return collapsedSelection({ ...start, offset: start.offset + normalizedText.length })
   }
   setEditingRuns(model, start, [...before, createRun(paragraphs[0], inherited)], inherited)
   startContainer.splice(startIndex + 1, 0, ...additions)
+  if (startTargetId !== endTargetId) transformContentControlsForBodyRangeEdit(model, sourceParagraphs,
+    sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText.length, false)
+  transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
+    sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText)
   const last = additions.at(-1)!
   return collapsedSelection(pointForBlock(start, last, paragraphs.at(-1)!.length))
 }

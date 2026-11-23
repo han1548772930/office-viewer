@@ -175,22 +175,29 @@ function nativeFlag(field: RefreshField, key: 'locked' | 'containsNestedFields')
   return value === true || value === 1 || value === '1' || value === 'true'
 }
 
+export function documentFieldRetainsNestedFields(field: RefreshField): boolean {
+  const source = field.metadata?.source
+  // These records are written back with offsets relative to the current cache.
+  // A flag override cannot make their ranges safe after changing that cache.
+  return isRecord(source) && Array.isArray(source.nestedFields) && source.nestedFields.length > 0
+}
+
 export function documentFieldLocked(field: RefreshField): boolean {
   return nativeFlag(field, 'locked')
 }
 
 export function documentFieldAutomaticRefreshBlocked(field: RefreshField): boolean {
-  return documentFieldLocked(field) || nativeFlag(field, 'containsNestedFields')
+  return documentFieldLocked(field) || nativeFlag(field, 'containsNestedFields') || documentFieldRetainsNestedFields(field)
 }
 
 export function documentTextFieldContainsNestedRange(field: DocumentTextField, fields: readonly DocumentTextField[]): boolean {
-  return nativeFlag(field, 'containsNestedFields') || fields.some(inner => inner !== field && field.endBlockId === inner.endBlockId
+  return nativeFlag(field, 'containsNestedFields') || documentFieldRetainsNestedFields(field) || fields.some(inner => inner !== field && field.endBlockId === inner.endBlockId
     && inner.startOffset >= field.startOffset && inner.endOffset <= field.endOffset
     && (inner.startOffset > field.startOffset || inner.endOffset < field.endOffset))
 }
 
 export function documentTextFieldRangeContainsNested(range: DocumentTextFieldRange, ranges: readonly DocumentTextFieldRange[]): boolean {
-  return nativeFlag(range.field, 'containsNestedFields') || ranges.some(inner => inner.field.id !== range.field.id
+  return nativeFlag(range.field, 'containsNestedFields') || documentFieldRetainsNestedFields(range.field) || ranges.some(inner => inner.field.id !== range.field.id
     && inner.absoluteStart >= range.absoluteStart && inner.absoluteEnd <= range.absoluteEnd
     && (inner.absoluteStart > range.absoluteStart || inner.absoluteEnd < range.absoluteEnd))
 }

@@ -980,7 +980,9 @@ export class OfficeStudio {
     if (request.expectedRevision !== undefined && request.expectedRevision !== revision) throw new Error('文档内容已更改，请重新执行编辑。')
     const sourceCurrent = !Object.hasOwn(request, 'inputGeneration') || request.inputGeneration === generation
     const fieldRefresh = request.command.id === 'doc.command.refresh-header-footer-fields' || request.command.id === 'doc.command.update-selected-fields' ? request.command : undefined
+    const tocPageRefresh = request.command.id === 'doc.command.update-table-of-contents' && request.command.mode === 'pageNumbersOnly'
     if (fieldRefresh && !sourceCurrent) throw new Error('字段更新选区已更改，请重新执行。')
+    if (tocPageRefresh && !sourceCurrent) throw new Error('目录更新选区已更改，请重新执行。')
     const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind
     const hostCurrent = () => this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind
     const context = { documentId: request.unitId, userId: this.currentUserId, permissionAdminUserId: this.permissionAdminUserId }
@@ -1037,7 +1039,7 @@ export class OfficeStudio {
     const modelRevision = revision + (changed ? 1 : 0)
     if (this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === modelRevision
       && this.documentInput.get(request.unitId)?.generation === generation && hostCurrent()) {
-      if (changed && fieldRefresh && tracksSelection && session?.valid) {
+      if (changed && (fieldRefresh || tocPageRefresh) && tracksSelection && session?.valid) {
         fieldInputPreserved = this.documentInput.completeUnchangedSelection(request.unitId, session, modelRevision,
           sourceLocation.kind === 'body' ? documentInputLocation(selection) : sourceLocation, sourceLocation.kind === 'body')
         if (!fieldInputPreserved) this.documentInput.clearMarks(request.unitId)

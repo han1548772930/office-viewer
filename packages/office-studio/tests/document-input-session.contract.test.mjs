@@ -490,3 +490,114 @@ test('onOpen field refresh rebases caches without discarding existing redo histo
   assert.equal(document.redo(), true); assert.equal(document.getText(), 'A2071Z\n!Tail')
   assert.equal(document.undo(), true); assert.equal(document.getText(), 'A2071Z\nTail')
 })
+
+test('cross-paragraph selected field refresh retains marks, merges comment segments and completes one saved history transaction', () => {
+  const first = paragraph('first', 'Aold'), last = paragraph('last', 'cacheZ')
+  first.runs = [docModel.createRun('A'), docModel.createRun('old', { bold: true })]
+  last.runs = [docModel.createRun('cache', { italic: true, href: 'https://example.test/result' }), docModel.createRun('Z')]
+  first.metadata.documentTextFields = { version: 1, fields: [{ id: 'cross-date', field: 'DATE', instruction: 'DATE \\@ "yyyy-MM-dd"',
+    cachedResult: 'old\ncache', startOffset: 1, endOffset: 5, endBlockId: last.id, language: 'en-US', metadata: { source: { retained: ['native'] } } }] }
+  const controls = [{ id: 'suffix-control', type: 'richText', blockId: last.id, startOffset: 5, endOffset: 6, lock: 'sdtLocked' }]
+  const comments = {
+    result: { id: 'result', anchor: [{ blockId: first.id, startOffset: 1, endOffset: 4, text: 'old' },
+      { blockId: last.id, startOffset: 0, endOffset: 5, text: 'cache' }], referenceText: 'old\ncache', resolved: false,
+      messages: [{ id: 'reply', authorId: 'editor', authorName: 'Editor', text: 'Keep this thread', createdAt: '2020-01-01T00:00:00.000Z' }],
+      createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z' },
+    suffix: { id: 'suffix', anchor: [{ blockId: last.id, startOffset: 5, endOffset: 6, text: 'Z' }], referenceText: 'Z', resolved: false,
+      messages: [], createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z' },
+  }
+  const { studio, document } = openDocument([first, last], { contentControls: controls, comments })
+  const caret = selection(point(last.id, 6)), selected = selection(point(last.id, 2), point(last.id, 6))
+  document.executeCommand({ id: 'doc.command.format-text', patch: { bold: true, fontSize: 17 } }, caret)
+  const original = copy(document.getModel()), state = document.getInputState()
+  const timestamp = new Date(2030, 5, 15, 13).getTime()
+  const command = { id: 'doc.command.update-selected-fields', locale: 'en-US', timestamp, stories: [], bodySelection: selected }
+  const result = document.executeCommand(command, caret)
+  assert.equal(result.changed, true); assert.equal(result.selectionCurrent, true)
+  assert.equal(document.getText(), 'A2030-06-15Z')
+  assert.deepEqual(result.selection, selection(point(first.id, 12)))
+  assert.deepEqual(document.getInputMarks(), { bold: true, fontSize: 17 })
+  assert.equal(document.getInputState().generation, state.generation + 1)
+  assert.deepEqual(document.getInputState().location.selection, result.selection)
+  assert.equal(document.getInputState().modelRevision, result.modelRevision)
+  assert.deepEqual(document.getModel().comments.result.anchor, [{ blockId: first.id, startOffset: 1, endOffset: 11, text: '2030-06-15' }])
+  assert.deepEqual(document.getModel().comments.result.messages, original.comments.result.messages)
+  assert.deepEqual(document.getModel().comments.suffix.anchor, [{ blockId: first.id, startOffset: 11, endOffset: 12, text: 'Z' }])
+  assert.deepEqual(document.getModel().contentControls.map(control => [control.blockId, control.startOffset, control.endOffset, control.lock]), [[first.id, 11, 12, 'sdtLocked']])
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  const updated = copy(document.getModel()), input = document.getInputState()
+  assert.equal(document.executeCommand({ ...command, bodySelection: result.selection }, result.selection).changed, false)
+  assert.deepEqual(document.getInputState(), input)
+  assert.equal(document.undo(), true); assert.deepEqual(document.getModel().blocks, original.blocks)
+  assert.deepEqual(document.getModel().comments, original.comments); assert.deepEqual(document.getModel().contentControls, original.contentControls)
+  assert.equal(document.redo(), true); assert.deepEqual(document.getModel().blocks, updated.blocks)
+  assert.deepEqual(document.getModel().comments, updated.comments)
+  const saved = document.save(), reopened = openDocument(saved.blocks, saved)
+  assert.deepEqual(reopened.document.getModel().blocks, saved.blocks)
+  assert.deepEqual(reopened.document.getModel().comments, saved.comments)
+  const field = reopened.document.getModel().blocks[0].metadata.documentTextFields.fields[0]
+  assert.deepEqual([field.id, field.startOffset, field.endOffset, field.endBlockId, field.cachedResult], ['cross-date', 1, 11, undefined, '2030-06-15'])
+  assert.deepEqual(field.metadata.source, { retained: ['native'] })
+  assert.deepEqual(reopened.document.getInputMarks(), {})
+  assert.equal(history(studio, document.id).dirty, false)
+})
+
+test('cross-paragraph onOpen refresh rebases both sides of unrelated redo history without changing dirty or generation', () => {
+  const first = paragraph('first', 'Aold'), last = paragraph('last', 'cacheZ')
+  first.metadata.documentTextFields = { version: 1, fields: [{ id: 'open-cross', field: 'DATE', instruction: 'DATE \\@ "yyyy-MM-dd"',
+    cachedResult: 'old\ncache', startOffset: 1, endOffset: 5, endBlockId: last.id, language: 'en-US' }] }
+  const { studio, document } = openDocument([first, last, paragraph('tail', 'Tail')])
+  document.executeCommand({ id: 'doc.command.insert-text', text: '!' }, selection(point('tail', 0)))
+  assert.equal(document.undo(), true)
+  const before = history(studio, document.id), generation = document.getHistoryGeneration()
+  const result = document.refreshFields({ locale: 'en-US', timestamp: new Date(2030, 5, 15, 13).getTime(), onOpen: true })
+  assert.equal(result.changed, true); assert.equal(document.getText(), 'A2030-06-15Z\nTail')
+  assert.deepEqual(history(studio, document.id), before)
+  assert.equal(document.getHistoryGeneration(), generation)
+  assert.equal(document.redo(), true); assert.equal(document.getText(), 'A2030-06-15Z\n!Tail')
+  assert.equal(document.undo(), true); assert.equal(document.getText(), 'A2030-06-15Z\nTail')
+  assert.equal(document.getModel().blocks[0].metadata.documentTextFields.fields[0].cachedResult, '2030-06-15')
+})
+
+test('TOC page-number refresh maps the current input session while cache, anchors and savepoint share one history source', () => {
+  const entry = paragraph('toc-entry', 'Alpha\t99Z'), heading = paragraph('heading', 'Alpha')
+  heading.type = 'heading'; heading.level = 1
+  entry.metadata.documentToc = { id: 'toc-session', role: 'entry', headingId: heading.id, headingText: 'Alpha', level: 1, pageNumber: 99,
+    options: { levels: 3, showPageNumbers: true, rightAlignPageNumbers: true, tabLeader: 'dots', format: 'fromTemplate' } }
+  entry.metadata.documentTextFields = { version: 1, fields: [
+    { id: 'toc-native', field: 'TOC', cachedResult: 'Alpha\t99Z', instruction: 'TOC \\o "1-3"', startOffset: 0, endOffset: 9 },
+    { id: 'toc-page', field: 'PAGEREF', cachedResult: '99', instruction: 'PAGEREF heading', startOffset: 6, endOffset: 8 },
+  ] }
+  const { studio, document } = openDocument([entry, heading], {
+    contentControls: [{ id: 'suffix', type: 'text', blockId: entry.id, startOffset: 8, endOffset: 9, lock: 'sdtLocked' }],
+    comments: { suffix: { id: 'suffix', anchor: [{ blockId: entry.id, startOffset: 8, endOffset: 9, text: 'Z' }], referenceText: 'Z',
+      messages: [], resolved: false, createdAt: 'old', updatedAt: 'old' } },
+  })
+  const caret = selection(point(entry.id, 9))
+  document.executeCommand({ id: 'doc.command.format-text', patch: { italic: true } }, caret)
+  const original = copy(document.getModel()), state = document.getInputState()
+  const command = { id: 'doc.command.update-table-of-contents', tocId: 'toc-session', mode: 'pageNumbersOnly', pageNumbers: { heading: 3 },
+    timestamp: new Date(2030, 5, 15, 13).getTime() }
+  const result = document.executeCommand(command, caret)
+  assert.equal(result.changed, true); assert.equal(result.selectionCurrent, true)
+  assert.deepEqual(result.selection, selection(point(entry.id, 8)))
+  assert.deepEqual(document.getInputMarks(), { italic: true })
+  assert.equal(document.getInputState().generation, state.generation + 1)
+  assert.deepEqual(document.getInputState().location.selection, result.selection)
+  assert.equal(docModel.runText(document.getModel().blocks[0].runs), 'Alpha\t3Z')
+  assert.deepEqual(document.getModel().comments.suffix.anchor, [{ blockId: entry.id, startOffset: 7, endOffset: 8, text: 'Z' }])
+  assert.equal(document.getModel().blocks[0].metadata.documentTextFields.fields[1].cachedResult, '3')
+  assert.equal(document.getModel().blocks[0].metadata.documentTextFields.fields[0].cachedResult, 'Alpha\t3Z')
+  const current = document.getInputState()
+  assert.equal(document.executeCommand(command, result.selection).changed, false)
+  assert.deepEqual(document.getInputState(), current)
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  assert.equal(document.undo(), true); assert.deepEqual(document.getModel().blocks, original.blocks)
+  assert.deepEqual(document.getModel().comments, original.comments)
+  assert.equal(document.redo(), true); assert.equal(docModel.runText(document.getModel().blocks[0].runs), 'Alpha\t3Z')
+  const saved = document.save(), reopened = openDocument(saved.blocks, saved)
+  assert.deepEqual(reopened.document.getModel().blocks, saved.blocks)
+  assert.deepEqual(reopened.document.getModel().contentControls, saved.contentControls)
+  assert.deepEqual(reopened.document.getModel().comments, saved.comments)
+  assert.equal(history(studio, document.id).dirty, false)
+})

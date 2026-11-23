@@ -9,6 +9,8 @@ import {
   documentTocOptionsAtBlock,
   documentTocPageNumbers,
   supportsDocumentTableOfContents,
+  applyDocumentTocPageNumberUpdate,
+  prepareDocumentTocPageNumberUpdate,
   updateDocumentToc,
 } from '../src/features/document/toc/document-toc.ts'
 import { executeDocumentCommand } from '../src/features/document/commands/document-commands.ts'
@@ -17,6 +19,7 @@ import { createDocumentRibbon, documentTocContextMenuItems } from '../src/compon
 import { collapsedSelection, createRun, normalizeDocument, runText } from '../src/features/document/model/document-model.ts'
 import { saveDocumentSnapshot } from '../src/features/document/services/document-facade.ts'
 import { visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
+import { documentTextFieldRanges, documentTextFields } from '../src/features/document/model/document-text-fields.ts'
 
 const options = {
   levels: 3,
@@ -192,6 +195,126 @@ test('page-only refresh preserves edited labels and run styling, and does not pa
   assert.equal(toc[1].runs[0].bold, true)
   assert.equal(toc[1].runs.at(-1).italic, true)
   assert.equal(toc[1].runs.at(-1).color, '#ff0000')
+})
+
+test('page-only preparation preserves native fields, mixed result styles and suffix anchors before one publication', () => {
+  const document = model([block('one', 'Alpha'), block('two', 'Beta')])
+  const entries = buildDocumentTocBlocks(document, options, { one: 99, two: 7 }, 'toc-native', [], 'Contents', false)
+  const [first, second] = entries
+  first.runs = [createRun('Alpha\t'), createRun('9', { bold: true, href: 'https://example.test/page' }),
+    createRun('9', { italic: true, color: '#ff0000' }), createRun('!', { underline: true })]
+  first.metadata.documentTextFields = { version: 1, fields: [
+    { id: 'toc-field', field: 'TOC', instruction: 'TOC \\o "1-3" \\h', cachedResult: 'old', startOffset: 0, endOffset: 6, endBlockId: second.id },
+    { id: 'page-one', field: 'PAGEREF', instruction: 'PAGEREF one \\h', cachedResult: '99', startOffset: 6, endOffset: 8,
+      metadata: { source: { native: { retained: true } } } },
+  ] }
+  second.metadata.documentTextFields = { version: 1, fields: [
+    { id: 'page-two', field: 'PAGEREF', cachedResult: '7', startOffset: 5, endOffset: 6, metadata: { source: { properties: { locked: 1 } } } },
+  ] }
+  document.blocks.unshift(...entries)
+  document.contentControls = [
+    { id: 'wrapper', type: 'group', blockId: first.id, startOffset: 0, endOffset: 9, lock: 'sdtLocked' },
+    { id: 'page-control', type: 'richText', parentId: 'wrapper', blockId: first.id, startOffset: 6, endOffset: 8, lock: 'unlocked' },
+    { id: 'suffix-control', type: 'text', parentId: 'wrapper', blockId: first.id, startOffset: 8, endOffset: 9, lock: 'unlocked' },
+  ]
+  document.comments = { suffix: { id: 'suffix', messages: [], anchor: [{ blockId: first.id, startOffset: 8, endOffset: 9, text: '!' }],
+    referenceText: '!', updatedAt: '2000-01-01T00:00:00.000Z' } }
+  const selection = { anchor: { blockId: first.id, offset: 9 }, focus: { blockId: first.id, offset: 7 } }
+  const before = structuredClone(document), timestamp = new Date(2030, 5, 15, 13).getTime()
+  const plan = prepareDocumentTocPageNumberUpdate(document, 'toc-native', { one: 3 }, selection, timestamp)
+  assert.equal(plan.changed, true)
+  assert.deepEqual(document, before)
+  assert.deepEqual(plan.selection, { anchor: { blockId: first.id, offset: 8 }, focus: { blockId: first.id, offset: 7 } })
+  applyDocumentTocPageNumberUpdate(document, plan)
+  assert.equal(document.blocks[0], first)
+  assert.equal(runText(first.runs), 'Alpha\t3!')
+  assert.equal(runText(second.runs), 'Beta\t7')
+  assert.equal(first.runs.find(run => run.text === '3').bold, true)
+  assert.equal(first.runs.find(run => run.text === '3').href, 'https://example.test/page')
+  assert.deepEqual(documentTextFields(first).find(field => field.id === 'page-one'), {
+    ...before.blocks[0].metadata.documentTextFields.fields[1], endOffset: 7, cachedResult: '3',
+  })
+  assert.equal(documentTextFields(first).find(field => field.id === 'toc-field').cachedResult, 'Alpha\t3!\nBeta\t7')
+  assert.deepEqual(document.contentControls.map(control => [control.id, control.startOffset, control.endOffset]),
+    [['wrapper', 0, 8], ['page-control', 6, 7], ['suffix-control', 7, 8]])
+  assert.deepEqual(document.comments.suffix.anchor, [{ blockId: first.id, startOffset: 7, endOffset: 8, text: '!' }])
+  assert.equal(document.comments.suffix.updatedAt, new Date(timestamp).toISOString())
+  documentTextFields(first).find(field => field.id === 'page-one').metadata.source.native.retained = false
+  assert.equal(before.blocks[0].metadata.documentTextFields.fields[1].metadata.source.native.retained, true)
+  assert.equal(documentTextFieldRanges(document).length, 3)
+})
+
+test('page and outer cache repairs retain runs, partial controls, comment anchors and the selected character', () => {
+  const document = model([block('one', 'Alpha')])
+  const [entry] = buildDocumentTocBlocks(document, options, { one: 3 }, 'toc-cache', [], 'Contents', false)
+  entry.runs = [createRun('Alpha\t', { bold: true }), createRun('3', { italic: true })]
+  entry.metadata.documentTextFields = { version: 1, fields: [
+    { id: 'outer-cache', field: 'TOC', cachedResult: 'stale', startOffset: 0, endOffset: 7 },
+    { id: 'page-cache', field: 'PAGEREF', cachedResult: 'stale', startOffset: 6, endOffset: 7 },
+  ] }
+  document.blocks.unshift(entry)
+  document.contentControls = [{ id: 'partial', type: 'text', blockId: entry.id, startOffset: 6, endOffset: 7, lock: 'unlocked' }]
+  document.comments = { partial: { id: 'partial', messages: [], anchor: [{ blockId: entry.id, startOffset: 6, endOffset: 7, text: '3' }], referenceText: '3', updatedAt: 'old' } }
+  const runs = entry.runs, controls = document.contentControls, comments = document.comments
+  const selection = { anchor: { blockId: entry.id, offset: 6 }, focus: { blockId: entry.id, offset: 7 } }
+  const plan = prepareDocumentTocPageNumberUpdate(document, 'toc-cache', { one: 3 }, selection)
+  assert.equal(plan.changed, true)
+  assert.deepEqual(plan.selection, selection)
+  applyDocumentTocPageNumberUpdate(document, plan)
+  assert.equal(entry.runs, runs)
+  assert.equal(document.contentControls, controls)
+  assert.equal(document.comments, comments)
+  assert.equal(documentTextFields(entry).find(field => field.id === 'page-cache').cachedResult, '3')
+  assert.equal(documentTextFields(entry).find(field => field.id === 'outer-cache').cachedResult, 'Alpha\t3')
+  assert.equal(prepareDocumentTocPageNumberUpdate(document, 'toc-cache', { one: 3 }, selection).changed, false)
+})
+
+test('native locked TOCs and unresolved references preserve the complete source candidate', () => {
+  const document = model([block('one', 'Alpha'), block('two', 'Beta')])
+  const entries = buildDocumentTocBlocks(document, options, { one: 2, two: 4 }, 'toc-locked', [], 'Contents', false)
+  entries[0].metadata.documentTextFields = { version: 1, fields: [{ id: 'native-lock', field: 'TOC', cachedResult: 'old',
+    startOffset: 0, endOffset: 6, endBlockId: entries[1].id, metadata: { source: { locked: '1' } } }] }
+  document.blocks.unshift(...entries)
+  const before = structuredClone(document)
+  assert.equal(prepareDocumentTocPageNumberUpdate(document, 'toc-locked', { one: 9, two: 10 }), undefined)
+  assert.deepEqual(document, before)
+  entries[0].metadata.documentTextFields.fields[0].locked = false
+  const unlocked = structuredClone(document)
+  assert.equal(prepareDocumentTocPageNumberUpdate(document, 'toc-locked', { one: 9 }), undefined)
+  assert.deepEqual(document, unlocked)
+})
+
+test('page-only updates preserve inline note and formula entities in native and fallback page ranges', () => {
+  const entities = [{ note: { id: 'note-1' } }, { noteReference: { noteId: 'note-1' } }, { latexFormula: { latex: 'x', mode: 'inline', version: 1 } }]
+  for (const metadata of entities) for (const native of [false, true]) for (const empty of [false, true]) {
+    const document = model([block('one', 'Alpha'), block('two', 'Beta')])
+    const [unsafe, safe] = buildDocumentTocBlocks(document, options, { one: 99, two: 4 }, 'toc-entities', [], 'Contents', false)
+    unsafe.runs = [createRun('Alpha\t'), createRun('9'), createRun(empty ? '' : '9', { metadata }), ...(empty ? [createRun('9')] : [])]
+    if (native) unsafe.metadata.documentTextFields = { version: 1, fields: [{ id: 'native-page', field: 'PAGEREF', instruction: 'PAGEREF one', cachedResult: '99', startOffset: 6, endOffset: 8 }] }
+    document.blocks.unshift(unsafe, safe)
+    const preserved = structuredClone(unsafe), runs = unsafe.runs
+    const plan = prepareDocumentTocPageNumberUpdate(document, 'toc-entities', { two: 11 })
+    assert.equal(plan.changed, true)
+    applyDocumentTocPageNumberUpdate(document, plan)
+    assert.deepEqual(unsafe, preserved)
+    assert.equal(unsafe.runs, runs)
+    assert.equal(runText(safe.runs), 'Beta\t11')
+  }
+})
+
+test('page updates check permissions for a native outer field owner outside the TOC rows', () => {
+  const document = model([block('one', 'Alpha')])
+  const [entry] = buildDocumentTocBlocks(document, options, { one: 2 }, 'toc-permission', [], 'Contents', false)
+  const owner = block('owner', 'Prefix', 'paragraph')
+  owner.metadata.documentTextFields = { version: 1, fields: [{ id: 'external-toc', field: 'TOC', cachedResult: 'old',
+    startOffset: 0, endOffset: 7, endBlockId: entry.id }] }
+  document.blocks.unshift(owner, entry)
+  document.permissionRules = [{ id: 'deny-owner', scope: 'paragraph', targetId: owner.id, action: 'edit', effect: 'deny', userIds: [] }]
+  const before = structuredClone(document)
+  assert.throws(() => executeDocumentCommand(document, collapsedSelection({ blockId: entry.id, offset: 6 }), {
+    id: 'doc.command.update-table-of-contents', tocId: 'toc-permission', mode: 'pageNumbersOnly', pageNumbers: { one: 3 },
+  }), error => error.code === 'DOCUMENT_PERMISSION_DENIED')
+  assert.deepEqual(document, before)
 })
 
 test('snapshot save and normalized reopen preserve directory options, entry identities and live heading targets', () => {

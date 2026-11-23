@@ -1728,6 +1728,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     let blocks = field(&model, "blocks")
         .and_then(Value::as_array)
         .ok_or_else(|| ExportError::invalid("The document model is missing its blocks array."))?;
+    if !get(get(get(&model, "metadata"), "source"), "nativeFieldSource").is_null() {
+        return Err(ExportError::invalid("正文包含尚未映射的原生字段段落；完整来源已保留，需补齐范围映射后才能写出 DOCX。"));
+    }
     let legacy_source = legacy_source::prepare(&model)?;
     let generated_styles = default_style::styles_xml(&model, styles_xml())?;
     let run_defaults = RunDefaultEffects::for_model(&model);

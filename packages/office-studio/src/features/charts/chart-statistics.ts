@@ -1,7 +1,7 @@
 import type { ChartErrorBarOptions, ChartModel, ChartSemanticOptions, ChartTrendlineOptions } from '../../domain/model'
 import type { ChartData, ChartSeriesData } from './chart-engine'
 import { chartNumber } from './chart-data'
-import { chartFiniteSum, chartInterpolate, chartScaledMoments, finiteChartValue } from './chart-math'
+import { chartFiniteProduct, chartFiniteSum, chartInterpolate, chartScaledMoments, finiteChartValue } from './chart-math'
 import { validateChartOptions } from './chart-options'
 
 export interface HistogramBin { kind: 'underflow' | 'regular' | 'overflow'; lowerBound?: number; upperBound?: number; count: number }
@@ -10,6 +10,9 @@ export interface BoxplotData { min: number; q1: number; median: number; q3: numb
 export interface ParetoData { categories: string[]; values: number[]; cumulativePercent: number[] }
 export interface WaterfallPoint { start: number; end: number; value: number; role: 'change' | 'total'; categoryIndex: number }
 export interface TrendlineData { points: Array<[number, number]>; formula?: string; r2?: number }
+/** Coefficients fit centered normalized Y to centered/spread normalized X.
+ * Log/exp/power transforms are applied before these scale factors. */
+export interface ChartTrendlineFit { coefficients: number[]; xScale: number; xMean: number; xSpread: number; yScale: number; yMean: number }
 export interface ChartErrorInterval { categoryIndex: number; x: number; y: number; minus: number; plus: number }
 
 /** Small-data reference contract. Worker/Rust must use the same boundaries and statistics. */
@@ -24,21 +27,31 @@ export function chartHistogram(samples: readonly number[], options: ChartSemanti
   if (regular.length) {
     let min = regular[0]!, max = min
     for (const value of regular) { min = Math.min(min, value); max = Math.max(max, value) }
-    const lower = options.underflowThreshold ?? min
-    const upper = options.overflowThreshold ?? max
-    const moments = chartScaledMoments(regular), scale = Math.max(Math.abs(lower), Math.abs(upper), moments.scale)
+    let lower = options.underflowThreshold ?? min, upper = options.overflowThreshold ?? max
+    if (lower === upper) {
+      const padding = options.binning?.mode === 'width' ? options.binning.width : Math.max(1, Math.abs(lower) * 0.1)
+      const after = upper + padding, before = lower - padding
+      if (options.overflowThreshold === undefined && Number.isFinite(after) && after > upper) upper = after
+      else if (Number.isFinite(before) && before < lower) lower = before
+      else throw new RangeError('直方图箱宽无法在当前数值精度内形成有效区间。')
+    }
+    const moments = chartScaledMoments(regular), scale = Math.max(Math.abs(lower), Math.abs(upper), moments.scale, options.binning?.mode === 'width' ? options.binning.width : 0)
     const range = upper / scale - lower / scale
     const scottWidth = 3.5 * Math.sqrt(moments.scaledVariance) * (moments.scale / scale) / Math.cbrt(regular.length)
     const defaultCount = range === 0 ? 1 : Math.max(1, Math.ceil(range / (scottWidth > 0 ? scottWidth : range / Math.sqrt(regular.length))))
-    const count = range === 0 ? 1 : options.binning?.mode === 'count' ? options.binning.count : options.binning?.mode === 'width' ? Math.max(1, Math.ceil(range / (options.binning.width / scale))) : defaultCount
+    const count = options.binning?.mode === 'count' ? options.binning.count : options.binning?.mode === 'width' ? Math.max(1, Math.ceil(range / (options.binning.width / scale))) : min === max ? 1 : defaultCount
     if (!Number.isSafeInteger(count) || count < 1 || count > 10_000) throw new RangeError('直方图分箱数量须位于 1 到 10000。')
     const boundary = (index: number): number => {
-      if (options.binning?.mode === 'width') return finiteChartValue((lower / scale + index * (options.binning.width / scale)) * scale, '直方图箱边界')
-      if (range > 0) return chartInterpolate(lower, upper, index / count)
-      const last = lower + Math.max(1, Math.abs(lower) * 0.1)
-      return index === 0 || !Number.isFinite(last) ? lower : last
+      if (index === 0) return lower
+      if (options.binning?.mode === 'width') {
+        if (index === count && options.overflowThreshold !== undefined) return upper
+        const normalized = lower / scale + index * (options.binning.width / scale)
+        return finiteChartValue(normalized * scale, '直方图箱边界')
+      }
+      return chartInterpolate(lower, upper, index / count)
     }
     const entries = Array.from({ length: count }, (_unused, index): HistogramBin => ({ kind: 'regular', lowerBound: boundary(index), upperBound: boundary(index + 1), count: 0 }))
+    if (entries.some(entry => entry.lowerBound! >= entry.upperBound!)) throw new RangeError('直方图箱数或箱宽无法在当前数值精度内形成有效区间。')
     for (const value of regular) {
       // The first interval includes its lower bound; later bins are (lower, upper].
       let first = 0, last = count - 1
@@ -112,7 +125,7 @@ export function chartTrendline(series: ChartSeriesData, options: ChartTrendlineO
       const x = series.xValues === undefined ? index + 1 : series.xValues[index]
       if (x == null || !Number.isFinite(x) || values.some(value => value === null || !Number.isFinite(value))
         || series.xValues?.slice(index - period + 1, index + 1).some(value => value == null || !Number.isFinite(value))) continue
-      points.push([x, chartFiniteSum(values.map(value => value! / period), '移动平均')])
+      points.push([x, chartScaledMoments(values.map(value => value!)).mean])
     }
     return { points }
   }
@@ -122,37 +135,83 @@ export function chartTrendline(series: ChartSeriesData, options: ChartTrendlineO
   const degree = options.type === 'poly' ? options.order ?? 2 : 1
   if (pairs.length <= degree) return { points: [] }
   const xs = pairs.map(([x]) => transformX(x)), ys = pairs.map(([_x, y]) => transformY(y))
-  const meanX = xs.reduce((sum, x) => sum + x / xs.length, 0)
-  let scale = 0
-  for (const x of xs) scale = Math.max(scale, Math.abs(x - meanX))
-  if (!scale) return { points: [] }
-  const coefficients = polynomialFit(xs.map(x => (x - meanX) / scale), ys, degree)
+  const xMoments = chartScaledMoments(xs), yMoments = chartScaledMoments(ys)
+  let spread = 0
+  for (const x of xs) spread = Math.max(spread, Math.abs(x / xMoments.scale - xMoments.scaledMean))
+  if (!spread) return { points: [] }
+  const coefficients = polynomialFit(xs.map(x => (x / xMoments.scale - xMoments.scaledMean) / spread), ys.map(y => y / yMoments.scale - yMoments.scaledMean), degree)
   if (!coefficients) return { points: [] }
-  const predict = (x: number): number => {
-    const argument = (transformX(x) - meanX) / scale
-    const output = coefficients.reduceRight((sum, coefficient) => sum * argument + coefficient, 0)
-    return options.type === 'exp' || options.type === 'pow' ? Math.exp(output) : output
+  const predictScaled = (x: number): number => {
+    const argument = (transformX(x) / xMoments.scale - xMoments.scaledMean) / spread
+    return yMoments.scaledMean + coefficients.reduceRight((sum, coefficient) => sum * argument + coefficient, 0)
   }
+  const exponential = options.type === 'exp' || options.type === 'pow'
+  const predict = (x: number): number => exponential ? Math.exp(predictScaled(x) * yMoments.scale) : predictScaled(x) * yMoments.scale
   let minX = pairs[0]![0], maxX = minX
   for (const [x] of pairs) { minX = Math.min(minX, x); maxX = Math.max(maxX, x) }
   const points = Array.from({ length: 33 }, (_unused, index): [number, number] => { const x = chartInterpolate(minX, maxX, index / 32); return [x, predict(x)] }).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
-  const meanY = pairs.reduce((sum, [_x, y]) => sum + y / pairs.length, 0)
-  const total = pairs.reduce((sum, [_x, y]) => sum + (y - meanY) ** 2, 0), residual = pairs.reduce((sum, [x, y]) => sum + (y - predict(x)) ** 2, 0)
-  const slope = coefficients[1]! / scale, intercept = coefficients[0]! - slope * meanX
-  const formatted = (value: number): string => String(Number(value.toPrecision(5)))
-  const formula = options.type === 'poly' ? `y = ${coefficients.map((coefficient, power) => `${formatted(coefficient)}·((x−${formatted(meanX)})/${formatted(scale)})^${power}`).join(' + ')}`
-    : options.type === 'exp' ? `y = ${formatted(Math.exp(intercept))}·e^(${formatted(slope)}x)`
-      : options.type === 'log' ? `y = ${formatted(slope)}·ln(x) + ${formatted(intercept)}`
-        : options.type === 'pow' ? `y = ${formatted(Math.exp(intercept))}·x^${formatted(slope)}`
-          : `y = ${formatted(slope)}x + ${formatted(intercept)}`
-  return { points, formula, r2: total === 0 ? residual < 1e-12 ? 1 : 0 : 1 - residual / total }
+  const originalMoments = exponential ? chartScaledMoments(pairs.map(([_x, y]) => y)) : yMoments
+  const relativePredictions = pairs.map(([x]) => exponential ? Math.exp(predictScaled(x) * yMoments.scale - Math.log(originalMoments.scale)) : predictScaled(x))
+  const r2 = trendlineRSquared(pairs.map(([_x, y]) => y / originalMoments.scale), relativePredictions)
+  const formula = formatChartTrendlineEquation(options.type, { coefficients, xScale: xMoments.scale, xMean: xMoments.scaledMean, xSpread: spread, yScale: yMoments.scale, yMean: yMoments.scaledMean })
+  return { points, formula, ...(r2 === undefined ? {} : { r2 }) }
+}
+
+/** Rust returns fit metadata; both numerical paths use this one formatter. */
+export function formatChartTrendlineEquation(type: ChartTrendlineOptions['type'], fit: ChartTrendlineFit): string | undefined {
+  if (type === 'movingAvg') return undefined
+  for (const value of [fit.xScale, fit.xMean, fit.xSpread, fit.yScale, fit.yMean, ...fit.coefficients]) finiteChartValue(value, '趋势拟合参数')
+  if (fit.coefficients.length < 2 || fit.coefficients.length > 7 || fit.xScale <= 0 || fit.xSpread <= 0 || fit.xSpread > 2 || fit.yScale <= 0 || Math.abs(fit.xMean) > 1 || Math.abs(fit.yMean) > 1) throw new RangeError('趋势拟合参数无效。')
+  const { coefficients, xScale, xMean, xSpread, yScale, yMean } = fit
+  const formatted = (value: number): string => { const rounded = Number(value.toPrecision(5)); return String(Number.isFinite(rounded) ? rounded : value) }
+  const variable = type === 'log' || type === 'pow' ? 'ln(x)' : 'x', exponential = type === 'exp' || type === 'pow'
+  const argument = `((${variable}/${formatted(xScale)}−${formatted(xMean)})/${formatted(xSpread)})`
+  const terms = [formatted(yMean + coefficients[0]!), ...coefficients.slice(1).map((coefficient, index) => `${formatted(coefficient)}·${argument}^${index + 1}`)]
+  const normalizedFormula = `${formatted(yScale)}·(${terms.join(' + ')})`
+  let formula = `y = ${exponential ? `e^(${normalizedFormula})` : normalizedFormula}`
+  if (type !== 'poly') {
+    const span = xScale * xSpread, reciprocal = 1 / span
+    const slope = Number.isFinite(span) && Number.isFinite(reciprocal) ? finiteTrendlineCoefficient([coefficients[1]!, yScale, reciprocal]) : undefined
+    const intercept = finiteTrendlineCoefficient([yScale, yMean + coefficients[0]! - coefficients[1]! * xMean / xSpread])
+    if (slope !== undefined && intercept !== undefined) {
+      if (exponential) {
+        const coefficient = Math.exp(intercept)
+        formula = type === 'exp'
+          ? Number.isFinite(coefficient) && coefficient > 0 ? `y = ${formatted(coefficient)}·e^(${formatted(slope)}x)` : `y = e^(${formatted(intercept)} + ${formatted(slope)}x)`
+          : `y = ${Number.isFinite(coefficient) && coefficient > 0 ? formatted(coefficient) : `e^(${formatted(intercept)})`}·x^${formatted(slope)}`
+      } else formula = `y = ${formatted(slope)}·${variable} + ${formatted(intercept)}`
+    }
+  }
+  return formula
+}
+
+/** A conventional equation coefficient may be unrepresentable while its
+ * normalized equation and the plotted predictions remain finite. */
+function finiteTrendlineCoefficient(factors: number[]): number | undefined {
+  try { return chartFiniteProduct(factors, '趋势公式系数') }
+  catch (error) { if (error instanceof RangeError) return undefined; throw error }
+}
+
+function trendlineRSquared(actual: number[], predicted: number[]): number | undefined {
+  if (predicted.some(value => !Number.isFinite(value))) return undefined
+  const mean = chartScaledMoments(actual).mean
+  const norm = (values: number[]): { scale: number; sum: number } => {
+    const scale = values.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 0)
+    return { scale, sum: scale ? chartFiniteSum(values.map(value => (value / scale) ** 2)) : 0 }
+  }
+  const total = norm(actual.map(value => value - mean)), residual = norm(actual.map((value, index) => value - predicted[index]!))
+  if (!total.scale) return residual.scale <= 32 * Number.EPSILON ? 1 : 0
+  if (!residual.scale) return 1
+  const ratio = Math.exp(2 * (Math.log(residual.scale) - Math.log(total.scale)) + Math.log(residual.sum) - Math.log(total.sum))
+  const r2 = 1 - ratio
+  return Number.isFinite(r2) ? r2 : undefined
 }
 
 function polynomialFit(xs: number[], ys: number[], degree: number): number[] | undefined {
   const count = degree + 1
   const matrix = Array.from({ length: count }, (_unused, row) => Array.from({ length: count + 1 }, (_value, column) => column === count
-    ? xs.reduce((sum, x, index) => sum + x ** row * ys[index]!, 0)
-    : xs.reduce((sum, x) => sum + x ** (row + column), 0)))
+    ? chartFiniteSum(xs.map((x, index) => x ** row * ys[index]!)) / xs.length
+    : chartFiniteSum(xs.map(x => x ** (row + column))) / xs.length))
   for (let column = 0; column < count; column++) {
     let pivot = column
     for (let row = column + 1; row < count; row++) if (Math.abs(matrix[row]![column]!) > Math.abs(matrix[pivot]![column]!)) pivot = row
@@ -166,28 +225,46 @@ function polynomialFit(xs: number[], ys: number[], degree: number): number[] | u
       for (let entry = column; entry <= count; entry++) matrix[row]![entry]! -= multiplier * matrix[column]![entry]!
     }
   }
-  return matrix.map(row => row[count]!)
+  const coefficients = matrix.map(row => row[count]!)
+  return coefficients.every(Number.isFinite) ? coefficients : undefined
 }
 
 export function chartErrorIntervals(data: ChartData, series: ChartSeriesData, options: ChartErrorBarOptions): ChartErrorInterval[] {
   validateChartOptions({ errorBars: [options] })
-  const samples = (options.direction === 'x' ? series.xValues ?? [] : series.values).filter((value): value is number => value !== null && Number.isFinite(value))
+  if (options.direction === 'x' && series.xValues === undefined) throw new RangeError('X 方向误差线需要数值 X 字段。')
+  const usesPlus = options.type !== 'minus', usesMinus = options.type !== 'plus'
+  if (options.valueType === 'cust') {
+    if (!data.records || data.records.length !== data.categories.length || series.values.length !== data.categories.length) throw new RangeError('自定义误差线需要与当前数据点逐项对应的源记录；请调整分类聚合或误差字段。')
+    const fieldCount = data.fields?.length ?? data.records[0]?.length ?? 0
+    for (const field of [usesPlus ? options.plusIndex : undefined, usesMinus ? options.minusIndex : undefined]) if (field !== undefined && field >= fieldCount) throw new RangeError('自定义误差字段超出数据源范围。')
+  }
+  const samples = series.values.flatMap((y, index) => {
+    const x = series.xValues === undefined ? index : series.xValues[index]
+    return y !== null && x != null && Number.isFinite(x) && Number.isFinite(y) ? [options.direction === 'x' ? x : y] : []
+  })
   if (!samples.length) return []
-  const moments = chartScaledMoments(samples)
-  const deviation = samples.length > 1 ? finiteChartValue(moments.deviation * Math.sqrt(samples.length / (samples.length - 1)), '样本标准差') : 0
   const factor = options.value ?? 1
+  let statisticalError = 0
+  if ((options.valueType === 'stdDev' || options.valueType === 'stdErr') && factor && samples.length > 1) {
+    const moments = chartScaledMoments(samples)
+    const multiplier = options.valueType === 'stdDev' ? samples.length / (samples.length - 1) : 1 / (samples.length - 1)
+    statisticalError = chartFiniteProduct([moments.scale, Math.sqrt(moments.scaledVariance * multiplier), factor], '统计误差值')
+  }
   return series.values.flatMap((y, categoryIndex) => {
     const x = series.xValues === undefined ? categoryIndex : series.xValues[categoryIndex]
     if (y === null || x == null || !Number.isFinite(x) || !Number.isFinite(y)) return []
     const target = options.direction === 'x' ? x : y
-    const error = options.valueType === 'fixedVal' ? factor : options.valueType === 'percentage' ? Math.abs(target) * (factor / 100)
-      : options.valueType === 'stdDev' ? deviation * factor : options.valueType === 'stdErr' ? deviation / Math.sqrt(samples.length) * factor : 0
+    const error = options.valueType === 'fixedVal' ? factor : options.valueType === 'percentage' ? chartFiniteProduct([Math.abs(target), factor, 0.01], '百分比误差值') : statisticalError
     const record = data.records?.[categoryIndex]
-    const plus = options.valueType === 'cust' ? options.plusIndex === undefined ? 0 : chartNumber(record?.[options.plusIndex]) ?? 0 : error
-    const minus = options.valueType === 'cust' ? options.minusIndex === undefined ? 0 : chartNumber(record?.[options.minusIndex]) ?? 0 : error
+    const plus = !usesPlus ? 0 : options.valueType === 'cust' ? chartNumber(record?.[options.plusIndex!]) : error
+    const minus = !usesMinus ? 0 : options.valueType === 'cust' ? chartNumber(record?.[options.minusIndex!]) : error
+    // Missing/invalid authored error cells omit the point's interval. Zero is
+    // reserved for an actual zero or an unselected error direction.
+    if (plus === null || minus === null) return []
     if (plus < 0 || minus < 0) throw new RangeError('自定义误差值不能为负数。')
     finiteChartValue(plus, '正误差值'); finiteChartValue(minus, '负误差值')
-    finiteChartValue(target + plus, '误差上界'); finiteChartValue(target - minus, '误差下界')
-    return [{ categoryIndex, x, y, plus: options.type === 'minus' ? 0 : plus, minus: options.type === 'plus' ? 0 : minus }]
+    if (usesPlus) finiteChartValue(target + plus, '误差上界')
+    if (usesMinus) finiteChartValue(target - minus, '误差下界')
+    return [{ categoryIndex, x, y, plus, minus }]
   })
 }

@@ -309,12 +309,14 @@ impl StoryReader<'_> {
             }
             "sdt" => {
                 let lock = self.lock_properties(node)?;
+                let inside_field = self.pending.is_some();
+                if inside_field { self.unsupported("fieldContentControls"); }
                 let start = self.buffer_offset;
                 if let Some(content) = node.child("sdtContent") {
                     let scope = namespace_scope(content, &scope);
                     for child in &content.children { self.visit_inline(child, paragraph_style, link.clone(), &scope)?; }
                 }
-                if let Some((id, kind, grouped)) = lock { self.push_lock(id, kind, start, self.buffer_offset, grouped)?; }
+                if let Some((id, kind, grouped)) = lock.filter(|_| !inside_field) { self.push_lock(id, kind, start, self.buffer_offset, grouped)?; }
             }
             "sdtContent" | "ins" | "customXml" => for child in &node.children { self.visit_inline(child, paragraph_style, link.clone(), &scope)?; },
             "pPr" | "bookmarkStart" | "bookmarkEnd" | "proofErr" | "commentRangeStart" | "commentRangeEnd" => {},

@@ -133,6 +133,7 @@ fn parse_document_impl(
         }
     } else { duke_pages::parse::ParsedStyleSheet::empty() };
     let mut document = extract_document_blocks(&source_model);
+    let mut native_field_source = None;
     if is_docx || format == "doc" {
         crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
     }
@@ -140,8 +141,9 @@ fn parse_document_impl(
         crate::document_format_sidecar::restore_numbering_details(&mut document, &numbering_restoration);
         let field_identities = archive.as_mut().map(crate::document_text_fields::read_identities).transpose()
             .map_err(|error| ParseFailure::office_file(format!("DOCX native field identities could not be retained: {error}")))?.unwrap_or_default();
-        let warnings = crate::document_text_fields::restore(&mut document, &source_model, &field_identities);
-        document.warnings.extend(warnings);
+        let restoration = crate::document_text_fields::restore(&mut document, &source_model, &field_identities);
+        document.warnings.extend(restoration.warnings);
+        native_field_source = restoration.source;
     }
     document.warnings.extend(format_warnings);
     insert_section_breaks(&mut document, &source_model);
@@ -232,6 +234,7 @@ fn parse_document_impl(
             comments,
             office_source,
             default_style,
+            native_field_source,
         }),
         diagnostics,
     })

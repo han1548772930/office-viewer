@@ -49,6 +49,8 @@ pub struct DocumentPayload {
     pub office_source: Option<DocumentOfficeSourcePayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_style: Option<DocumentDefaultStylePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_field_source: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]

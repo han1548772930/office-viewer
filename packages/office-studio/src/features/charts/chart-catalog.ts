@@ -1,4 +1,4 @@
-import type { ChartType } from '../../domain/model'
+import type { ChartModel, ChartType } from '../../domain/model'
 
 export type ChartDataShape = 'category' | 'xy' | 'bubble' | 'edge' | 'hierarchy' | 'distribution' | 'ohlc' | 'heatmap' | 'gauge'
 export type ChartFamily = 'line' | 'column' | 'bar' | 'pie' | 'area' | 'radar' | 'scatter' | 'combination'
@@ -79,6 +79,20 @@ export function isChartType(value: unknown): value is ChartType {
 
 export function chartTypeSelectOptions(): Array<{ label: string; value: ChartType }> {
   return CHART_TYPE_CATALOG.map(({ label, value }) => ({ label, value }))
+}
+
+/** Shared by controls, the small-data path and Worker scheduling. Combination
+ * charts apply this to each series, because only some may be stacked. */
+export function supportsChartStatistics(chart: Pick<ChartModel, 'type' | 'options'>, field?: number, position = 0): boolean {
+  const descriptor = resolveChartType(chart.type)
+  if (descriptor.threeD || descriptor.stacked || !['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination'].includes(descriptor.family)) return false
+  if (descriptor.family !== 'combination' || field === undefined) return true
+  const seriesType = chart.options?.series?.[field]?.type ?? chart.options?.allSeriesStyle?.type ?? (position === 0 ? 'column' : 'line')
+  return !seriesType.endsWith('Stacked')
+}
+
+export function supportsChartErrorDirection(chart: Pick<ChartModel, 'type' | 'options'>, direction: 'x' | 'y'): boolean {
+  return supportsChartStatistics(chart) && (direction === 'y' || ['xy', 'bubble'].includes(resolveChartType(chart.type).dataShape))
 }
 
 export function chartDataHint(type: ChartType): string {

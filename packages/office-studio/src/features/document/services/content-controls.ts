@@ -551,23 +551,32 @@ export function assertContentControlBlockRemovable(model: DocumentModel, blockId
   for (const control of controls) removeControlTreeFromModel(model, control)
 }
 
-/** Map SDT wrappers after a field result merges several ordinary paragraphs. */
+/** Map paragraph-local SDT wrappers after a body edit; field refreshes retain the wrappers. */
 export function transformContentControlsForBodyRangeEdit(
   model: DocumentModel,
   sourceParagraphs: readonly DocumentTextFieldParagraph[],
   startOffset: number,
   endOffset: number,
   replacementLength: number,
+  preserveControlRanges = true,
 ): void {
   if (!model.contentControls?.length) return
   const source = new Map(sourceParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
   const destination = documentTextFieldParagraphs(model)
-  const next = getDocumentContentControls(model), delta = replacementLength - (endOffset - startOffset)
+  const next: DocumentModel = { ...model, contentControls: getDocumentContentControls(model) }
+  const delta = replacementLength - (endOffset - startOffset)
   const insertion = startOffset === endOffset
-  for (const control of next) {
+  for (const control of [...next.contentControls!]) {
+    if (!next.contentControls!.some(candidate => candidate.id === control.id)) continue
     const paragraph = source.get(control.blockId)
     if (!paragraph) continue
     const from = paragraph.absoluteStart + control.startOffset, to = paragraph.absoluteStart + control.endOffset
+    const overlaps = insertion ? startOffset > from && startOffset < to : startOffset < to && from < endOffset
+    if (!preserveControlRanges && overlaps && startOffset <= from && endOffset >= to && replacementLength === 0) {
+      if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
+      removeControlTreeFromModel(next, control)
+      continue
+    }
     if (isContentControlLockedAtEdit(model, control, startOffset - paragraph.absoluteStart, endOffset - paragraph.absoluteStart, insertion)) {
       throw new Error(`Content control content is locked: ${control.id}`)
     }
@@ -583,12 +592,12 @@ export function transformContentControlsForBodyRangeEdit(
     }
     const first = destination.find(candidate => start >= candidate.absoluteStart && start <= candidate.absoluteEnd)
     const last = destination.find(candidate => end >= candidate.absoluteStart && end <= candidate.absoluteEnd)
-    if (!first || !last || first.block.id !== last.block.id) throw new RangeError(`字段更新无法把内容控件 ${control.id} 映射到同一段落。`)
+    if (!first || !last || first.block.id !== last.block.id) throw new RangeError(`正文编辑无法把内容控件 ${control.id} 映射到同一段落。`)
     control.blockId = first.block.id
     control.startOffset = start - first.absoluteStart
     control.endOffset = end - last.absoluteStart
   }
-  model.contentControls = next
+  model.contentControls = next.contentControls
 }
 
 function replaceControlText(model: DocumentModel, control: DocumentContentControl, value: string): void {

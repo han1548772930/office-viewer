@@ -12,6 +12,8 @@ import {
 import { documentId } from '../model/document-model'
 import { flattenDocumentBody } from '../services/document-facade'
 import type { DocumentSelection } from '../model/document-model'
+import { isDocumentTextBoundary } from '../model/document-story'
+export { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from './document-comment-anchors'
 
 export interface DocumentCommentActor extends DocumentPermissionContext {
   displayName: string
@@ -81,7 +83,7 @@ export function createDocumentThreadComment(
       && segment.row === point.row && segment.col === point.col
       && (segment.cellBlockId ?? segment.blockId) === (point.cellBlockId ?? point.blockId))
     if (!found) throw new RangeError('Comment selection is not in the document body.')
-    if (!Number.isInteger(point.offset) || point.offset < 0 || point.offset > found.end - found.start) {
+    if (!isDocumentTextBoundary(found.segment.text, point.offset)) {
       throw new RangeError('Comment selection offset is outside the paragraph.')
     }
     return found.start + point.offset
@@ -207,7 +209,7 @@ export function relocateDocumentThreadComment(
     const segment = body.segments.find(candidate => candidate.blockId === point.blockId
       && candidate.row === point.row && candidate.col === point.col
       && (candidate.cellBlockId ?? candidate.blockId) === (point.cellBlockId ?? point.blockId))
-    if (!segment || point.offset < 0 || point.offset > segment.endOffset - segment.startOffset) {
+    if (!segment || !isDocumentTextBoundary(segment.text, point.offset)) {
       throw new RangeError('Comment selection is not in the document body.')
     }
     return segment.startOffset + point.offset
@@ -244,85 +246,6 @@ export function isDocumentThreadCommentRelevantToUser(comment: DocumentThreadCom
   if (!userId) return false
   return comment.messages.some(message => message.authorId === userId
     || message.mentions?.some(mention => mention.userId === userId) === true)
-}
-
-export function transformDocumentCommentAnchorsForTextEdit(
-  model: DocumentModel,
-  blockId: string,
-  startOffset: number,
-  endOffset: number,
-  insertedText: string,
-  timestamp = Date.now(),
-): void {
-  const paragraph = findParagraph(model.blocks, blockId)
-  if (!paragraph) return
-  const text = paragraph.runs.map(run => run.text).join('')
-  const insertedLength = insertedText.length
-  const delta = insertedLength - (endOffset - startOffset)
-  for (const comment of Object.values(model.comments ?? {})) {
-    let changed = false
-    for (const anchor of comment.anchor) {
-      if (anchor.blockId !== blockId) continue
-      if (endOffset <= anchor.startOffset) {
-        anchor.startOffset += delta
-        anchor.endOffset += delta
-      } else if (startOffset < anchor.endOffset && endOffset > anchor.startOffset) {
-        const nextStart = startOffset <= anchor.startOffset ? startOffset : anchor.startOffset
-        const nextEnd = endOffset >= anchor.endOffset
-          ? startOffset + insertedLength
-          : anchor.endOffset + delta
-        anchor.startOffset = nextStart
-        anchor.endOffset = Math.max(nextStart, nextEnd)
-      } else {
-        continue
-      }
-      anchor.text = text.slice(anchor.startOffset, anchor.endOffset)
-      changed = true
-    }
-    if (changed) {
-      comment.referenceText = comment.anchor.map(anchor => anchor.text).join('\n')
-      comment.updatedAt = new Date(timestamp).toISOString()
-    }
-  }
-}
-
-/** Preserve thread identities while a body field replaces text across paragraphs. */
-export function transformDocumentCommentAnchorsForBodyRangeEdit(
-  model: DocumentModel,
-  sourceParagraphs: readonly { block: { id: string }; absoluteStart: number; absoluteEnd: number }[],
-  destinationParagraphs: readonly { block: { id: string }; text: string; absoluteStart: number; absoluteEnd: number }[],
-  startOffset: number,
-  endOffset: number,
-  insertedText: string,
-  timestamp = Date.now(),
-): void {
-  const source = new Map(sourceParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
-  const delta = insertedText.length - (endOffset - startOffset)
-  for (const comment of Object.values(model.comments ?? {})) {
-    let changed = false
-    for (const anchor of comment.anchor) {
-      const paragraph = source.get(anchor.blockId)
-      if (!paragraph) continue
-      let start = paragraph.absoluteStart + anchor.startOffset, end = paragraph.absoluteStart + anchor.endOffset
-      if (endOffset <= start) { start += delta; end += delta }
-      else if (startOffset < end && endOffset > start) {
-        start = startOffset <= start ? startOffset : start
-        end = endOffset >= end ? startOffset + insertedText.length : end + delta
-        end = Math.max(start, end)
-      } else continue
-      const first = destinationParagraphs.find(candidate => start >= candidate.absoluteStart && start <= candidate.absoluteEnd)
-      const last = destinationParagraphs.find(candidate => end >= candidate.absoluteStart && end <= candidate.absoluteEnd)
-      if (!first || !last || first.block.id !== last.block.id) throw new RangeError(`字段更新无法把批注 ${comment.id} 的锚点映射到同一段落。`)
-      const text = first.text.slice(start - first.absoluteStart, end - first.absoluteStart)
-      if (anchor.blockId === first.block.id && anchor.startOffset === start - first.absoluteStart && anchor.endOffset === end - first.absoluteStart && anchor.text === text) continue
-      anchor.blockId = first.block.id
-      anchor.startOffset = start - first.absoluteStart
-      anchor.endOffset = end - first.absoluteStart
-      anchor.text = text
-      changed = true
-    }
-    if (changed) { comment.referenceText = comment.anchor.map(anchor => anchor.text).join('\n'); comment.updatedAt = new Date(timestamp).toISOString() }
-  }
 }
 
 function findParagraph(blocks: DocumentModel['blocks'], id: string): DocumentModel['blocks'][number] | undefined {

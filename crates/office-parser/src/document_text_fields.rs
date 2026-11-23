@@ -2,7 +2,7 @@
 //! Positions are the same half-open UTF-16 offsets as the extracted paragraphs.
 use std::{collections::{BTreeMap, HashMap}, io::Cursor};
 
-use duke_pages::{BlockDetails, DocModel, DocNode, DocumentBlock, ParagraphNode, StructuredDocument, TableCellContentNode, TableNode};
+use duke_pages::{BlockDetails, DocModel, DocNode, DocumentBlock, ParagraphChildNode, ParagraphNode, StructuredDocument, TableCellContentNode, TableNode};
 use serde_json::{Value, json};
 use zip::ZipArchive;
 
@@ -33,6 +33,14 @@ struct Pending {
 struct Field { pending: Pending, end: Position }
 
 #[derive(Default)]
+pub(crate) struct FieldRestoration {
+    pub warnings: Vec<String>,
+    /// A whole-body provenance record is necessary if an extracted block is
+    /// absent. Retain it once in the payload, including an entirely empty body.
+    pub source: Option<Value>,
+}
+
+#[derive(Default)]
 struct Reader {
     pending: Vec<Pending>,
     fields: Vec<Field>,
@@ -50,11 +58,20 @@ fn namespaces(node: &Element, inherited: &BTreeMap<String, String>) -> BTreeMap<
 pub(crate) fn read_identities(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<HashMap<String, String>, String> {
     let Some(xml) = read_xml(archive, "customXml/office-fields.xml")? else { return Ok(HashMap::new()); };
     let root = parse_xml(&xml)?;
-    if root.name != "fields" || root.attribute("version") != Some("1") { return Err("Native field identity mapping has an invalid version or root.".into()); }
+    let namespace = |node: &Element, inherited: &HashMap<String, String>| {
+        let prefix = node.qualified_name.split_once(':').map_or("", |(prefix, _)| prefix);
+        node.namespaces.get(prefix).or_else(|| inherited.get(prefix)).cloned()
+    };
+    if root.name != "fields" || root.attribute("version") != Some("1")
+        || namespace(&root, &HashMap::new()).as_deref() != Some("urn:office-studio:document-fields:1") {
+        return Err("Native field identity mapping has an invalid version, namespace or root.".into());
+    }
     let mut identities = HashMap::new(); let mut ids = std::collections::HashSet::new();
     for node in &root.children {
-        if node.name != "field" { return Err("Native field identity mapping has an unknown entry.".into()); }
-        let key = node.attribute("key").filter(|key| key.starts_with("office_field_v1_") && key.len() <= 40).ok_or("Native field bookmark key is invalid.")?;
+        if node.name != "field" || namespace(node, &root.namespaces).as_deref() != Some("urn:office-studio:document-fields:1") {
+            return Err("Native field identity mapping has an unknown entry or namespace.".into());
+        }
+        let key = node.attribute("key").filter(|key| key.strip_prefix("office_field_v1_").is_some_and(|suffix| suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))).ok_or("Native field bookmark key is invalid.")?;
         let id = node.attribute("id").filter(|id| !id.trim().is_empty() && id.len() <= 4096).ok_or("Native field identity is invalid.")?;
         if identities.insert(key.to_owned(), id.to_owned()).is_some() || !ids.insert(id.to_owned()) { return Err("Native field identity mapping has duplicate keys or identities.".into()); }
     }
@@ -223,10 +240,25 @@ fn slice_utf16(text: &str, start: usize, end: usize) -> Option<&str> {
     text.get(from?..to?)
 }
 
+fn source_language(paragraph: &ParagraphNode, at: usize) -> Option<String> {
+    let mut offset = 0;
+    for child in &paragraph.children {
+        if let ParagraphChildNode::Text(run) = child {
+            let end = offset + run.text.encode_utf16().count();
+            if offset <= at && at < end {
+                return run.style.as_ref().and_then(|style| style.language.as_ref().or(style.language_east_asia.as_ref()).or(style.language_bidi.as_ref())).cloned();
+            }
+            offset = end;
+        }
+    }
+    paragraph.paragraph_mark_style.as_ref().and_then(|style| style.language.as_ref().or(style.language_east_asia.as_ref()).or(style.language_bidi.as_ref())).cloned()
+}
+
 fn field_value(field: Field, paragraphs: &[Paragraph<'_>]) -> Result<(String, Value), String> {
-    let pending = field.pending;
+    let mut pending = field.pending;
     let start = pending.result.unwrap_or(pending.begin);
     let first = &paragraphs[start.paragraph]; let last = &paragraphs[field.end.paragraph];
+    if pending.language.is_none() { pending.language = source_language(first.source, start.offset); }
     let mut cached = String::new();
     for (index, paragraph) in paragraphs.iter().enumerate().take(field.end.paragraph + 1).skip(start.paragraph) {
         if index != start.paragraph { cached.push('\n'); }
@@ -274,15 +306,22 @@ fn inline_sources(details: &mut Value, spans: &[RunSpan]) -> Result<(), String> 
 
 /// Prepare every paragraph before publishing any field ranges. A failed mapping
 /// retains source XML and a diagnostic instead of inventing valid offsets.
-pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, identities: &HashMap<String, String>) -> Vec<String> {
+pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, identities: &HashMap<String, String>) -> FieldRestoration {
     let sources = collect_sources(source);
-    if !sources.iter().any(|(paragraph, _)| paragraph.source_xml.as_ref().is_some_and(|xml| xml.contains("fldChar") || xml.contains("fldSimple"))) { return Vec::new(); }
+    if !sources.iter().any(|(paragraph, _)| paragraph.source_xml.as_ref().is_some_and(|xml| xml.contains("fldChar") || xml.contains("fldSimple"))) { return FieldRestoration::default(); }
     let mut blocks = HashMap::new(); collect_blocks(&document.blocks, &mut blocks);
     let mut paragraphs = Vec::new();
+    let mut missing = Vec::new();
     for (paragraph, id) in &sources {
         let block = blocks.get(id).or_else(|| id.rfind("/body/").and_then(|index| blocks.get(&id[index..])));
-        let Some((block_id, text)) = block else { return vec![format!("DOCX native field paragraph {id:?} could not be mapped to an extracted block; source definitions were retained.")]; };
+        let Some((block_id, text)) = block else { missing.push(id.clone()); continue; };
         paragraphs.push(Paragraph { source: paragraph, source_id: id.clone(), block_id: block_id.clone(), text: text.clone() });
+    }
+    if !missing.is_empty() {
+        let error = format!("DOCX native field paragraphs {missing:?} could not be mapped to extracted blocks");
+        let retained = sources.iter().map(|(paragraph, id)| json!({ "sourceNodeId": id, "xml": paragraph.source_xml })).collect::<Vec<_>>();
+        return FieldRestoration { warnings: vec![format!("{error}; source definitions were retained in the document payload.")],
+            source: Some(json!({ "version": 1, "format": "docx", "mappingError": error, "paragraphs": retained, "identities": identities })) };
     }
     let prepared: Result<HashMap<String, Value>, String> = (|| {
         let mut reader = Reader { identities: identities.clone(), ..Reader::default() }; let mut projections = HashMap::new();
@@ -352,7 +391,7 @@ pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, iden
             warnings.push(format!("DOCX native fields could not be mapped safely: {error}; source definitions were retained."));
         }
     }
-    warnings
+    FieldRestoration { warnings, source: None }
 }
 
 #[cfg(test)]
@@ -373,5 +412,42 @@ mod tests {
         reader.visit(&parse_xml(xml).unwrap(), xml, 0, &mut projection, &BTreeMap::new(), None, "").unwrap();
         assert_eq!(reader.fields[0].pending.id, "字段-α");
         assert_eq!(projection.text, "2026");
+    }
+
+    #[test]
+    fn absent_extracted_paragraph_retains_complete_field_source_in_payload() {
+        let xml = "<w:p><w:fldSimple w:instr=\"DATE\"><w:r><w:t/></w:r></w:fldSimple></w:p>";
+        let source: DocModel = serde_json::from_value(json!({ "nodes": [{ "blockId": "empty-source", "type": "paragraph", "children": [], "sourceXml": xml }],
+            "metadata": { "sourceParts": 1, "warnings": [], "headerSections": [], "footerSections": [], "paragraphStyles": [] } })).unwrap();
+        let mut document: StructuredDocument = serde_json::from_value(json!({ "schemaVersion": 1, "parserVersion": "draft", "documentId": "doc", "blocks": [], "warnings": [], "geometryStatus": "unknown" })).unwrap();
+        let restored = restore(&mut document, &source, &HashMap::new());
+        let retained = restored.source.unwrap();
+        assert_eq!(retained["paragraphs"][0]["sourceNodeId"], "empty-source");
+        assert_eq!(retained["paragraphs"][0]["xml"], xml);
+        assert!(!restored.warnings.is_empty());
+        assert!(document.blocks.is_empty());
+    }
+
+    #[test]
+    fn field_language_can_come_from_inherited_source_run_style() {
+        let paragraph: ParagraphNode = serde_json::from_value(json!({ "type": "paragraph", "children": [
+            { "type": "text", "text": "a😀b", "style": { "language": "de-DE" } }
+        ] })).unwrap();
+        assert_eq!(source_language(&paragraph, 1).as_deref(), Some("de-DE"));
+    }
+
+    #[test]
+    fn bookmark_identity_part_requires_its_own_namespace() {
+        use std::io::Write;
+        use zip::{ZipWriter, write::SimpleFileOptions};
+        for (namespace, valid) in [("urn:office-studio:document-fields:1", true), ("urn:unrelated", false)] {
+            let xml = format!("<fields xmlns=\"{namespace}\" version=\"1\"><field key=\"office_field_v1_00000001\" id=\"字段\"/></fields>");
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            writer.start_file("customXml/office-fields.xml", SimpleFileOptions::default()).unwrap();
+            writer.write_all(xml.as_bytes()).unwrap();
+            let bytes = writer.finish().unwrap().into_inner();
+            let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            assert_eq!(read_identities(&mut archive).is_ok(), valid);
+        }
     }
 }

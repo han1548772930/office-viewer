@@ -224,3 +224,51 @@ test('filling an empty child grows its empty parent rather than displacing the p
   assert.equal(textOf(model.blocks[0]), 'AnameB')
   assert.deepEqual(model.contentControls.map((control) => [control.startOffset, control.endOffset]), [[1, 5], [1, 5]])
 })
+
+test('joining ordinary paragraphs moves an unedited suffix wrapper and its child to the retained paragraph', () => {
+  const model = fixture('Left xx'), last = modelUtils.createParagraph('NAME right')
+  last.id = 'paragraph-2'; model.blocks.push(last)
+  add(model, { id: 'group', type: 'group', blockId: last.id, startOffset: 0, endOffset: 4, lock: 'sdtLocked' })
+  add(model, { id: 'child', type: 'text', parentId: 'group', blockId: last.id, startOffset: 1, endOffset: 3, lock: 'sdtLocked' })
+  commands.executeDocumentCommand(model, { anchor: { blockId: 'paragraph-1', offset: 5 }, focus: { blockId: last.id, offset: 0 } },
+    { id: 'doc.command.insert-text', text: '' })
+  assert.deepEqual(model.blocks.map(textOf), ['Left NAME right'])
+  assert.deepEqual(model.contentControls.map(control => [control.id, control.blockId, control.startOffset, control.endOffset, control.lock]),
+    [['group', 'paragraph-1', 5, 9, 'sdtLocked'], ['child', 'paragraph-1', 6, 8, 'sdtLocked']])
+  assert.equal(controls.contentControlText(model, model.contentControls[0]), 'NAME')
+})
+
+test('a multiline replacement across paragraphs maps suffix controls into the new last paragraph', () => {
+  const model = fixture('ABold'), last = modelUtils.createParagraph('cacheZ')
+  last.id = 'paragraph-2'; model.blocks.push(last)
+  add(model, { blockId: last.id, startOffset: 5, endOffset: 6, lock: 'controlLocked' })
+  commands.executeDocumentCommand(model, { anchor: { blockId: 'paragraph-1', offset: 1 }, focus: { blockId: last.id, offset: 2 } },
+    { id: 'doc.command.insert-text', text: 'Q\nR' })
+  assert.deepEqual(model.blocks.map(textOf), ['AQ', 'RcheZ'])
+  assert.deepEqual(controls.contentControlRange(model.contentControls[0]), { blockId: model.blocks[1].id, startOffset: 4, endOffset: 5 })
+  assert.equal(controls.contentControlText(model, model.contentControls[0]), 'Z')
+})
+
+test('a facade deletion across paragraph boundaries removes unlocked wrapper trees and retains locked ones atomically', () => {
+  for (const lock of ['unlocked', 'controlLocked']) {
+    const model = fixture('A'), last = modelUtils.createParagraph('NAMEZ')
+    last.id = 'paragraph-2'; model.blocks.push(last)
+    add(model, { id: 'group', type: 'group', blockId: last.id, startOffset: 0, endOffset: 4, lock })
+    add(model, { id: 'child', type: 'text', parentId: 'group', blockId: last.id, startOffset: 1, endOffset: 3 })
+    const studio = new api.OfficeStudio({ document: model }), document = api.FOffice.newAPI(studio).getActiveDocument()
+    const before = structuredClone(document.getModel())
+    try {
+      if (lock === 'controlLocked') {
+        assert.throws(() => document.replaceRange(1, 6, ''), /wrapper is locked/)
+        assert.deepEqual(document.getModel(), before)
+        assert.equal(document.undo(), false)
+      } else {
+        assert.equal(document.replaceRange(1, 6, ''), true)
+        assert.equal(document.getText(), 'AZ')
+        assert.deepEqual(document.getModel().contentControls, [])
+        assert.equal(document.undo(), true)
+        assert.deepEqual(document.getModel().contentControls, before.contentControls)
+      }
+    } finally { studio.dispose() }
+  }
+})

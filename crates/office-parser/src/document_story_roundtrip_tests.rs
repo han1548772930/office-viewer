@@ -121,6 +121,42 @@ fn parsed_story(data: &Value) -> &Value {
     &data["sectionLayout"][0]["headerSections"].as_array().unwrap().iter().find(|reference| reference["referenceType"] == "default").unwrap()["storyText"]
 }
 
+#[test]
+fn native_story_nested_fields_locks_and_cache_links_survive_an_unrelated_edit_and_two_saves() {
+    let mut model = json!({ "kind": "document", "name": "nested-story", "blocks": [{ "id": "body", "type": "paragraph", "runs": [{ "text": "body unchanged" }] }],
+        "sectionHeaderFooters": { "first": { "header": "word", "footer": "", "pageFields": [{ "story": "header", "field": "DATE", "instruction": "DATE", "offset": 4,
+            "cachedResult": "A😀12Z", "locked": true, "containsNestedFields": true,
+            "metadata": { "source": { "containsNestedFields": true, "nestedFields": [
+                { "field": "TIME", "instruction": "TIME", "startOffset": 3, "endOffset": 5, "locked": true, "containsNestedFields": true,
+                  "nestedFields": [{ "field": "REF", "instruction": "REF Inner", "startOffset": 0, "endOffset": 1, "locked": true, "containsNestedFields": false }] }
+            ] }, "officeStoryFieldCache": { "version": 1, "runs": [
+                { "id": "a", "text": "A😀", "bold": true },
+                { "id": "b", "text": "1", "color": "#0000ff", "href": "https://example.org/nested" },
+                { "id": "c", "text": "2Z", "italic": true }
+            ] } } }] } } });
+    for round in 0..2 {
+        let data = reopen(&export(&model));
+        let story = parsed_story(&data);
+        assert_eq!(story["text"], if round == 0 { "word" } else { "edit" });
+        let field = &story["fields"][0];
+        assert_eq!(field["cachedResult"], "A😀12Z");
+        assert_eq!(field["locked"], true);
+        assert_eq!(field["containsNestedFields"], true);
+        let nested = &field["nestedFields"][0];
+        assert_eq!(nested["instruction"], "TIME");
+        assert_eq!(nested["startOffset"], 3); assert_eq!(nested["endOffset"], 5);
+        assert_eq!(nested["locked"], true);
+        assert_eq!(nested["nestedFields"][0]["instruction"], "REF Inner");
+        assert_eq!(nested["nestedFields"][0]["startOffset"], 0); assert_eq!(nested["nestedFields"][0]["endOffset"], 1);
+        let runs = field["cachedRuns"].as_array().unwrap();
+        assert!(runs.iter().any(|run| run["text"] == "A😀" && run["style"]["bold"] == true));
+        assert!(runs.iter().any(|run| run["text"] == "1" && run["link"] == "https://example.org/nested"));
+        assert!(runs.iter().any(|run| run["text"].as_str().is_some_and(|text| text.contains('Z')) && run["style"]["italic"] == true));
+        model = editable_model(&data);
+        if round == 0 { edit_other_word(&mut model, "word", "edit"); }
+    }
+}
+
 // Assemble the published editable story contract without invoking a second
 // parser. Source provenance is retained, while only model fields form baseline.
 fn editable_story(story: &Value, story_key: &str) -> (Value, Vec<Value>) {
@@ -135,6 +171,7 @@ fn editable_story(story: &Value, story_key: &str) -> (Value, Vec<Value>) {
         let style = text_style(&field["textStyle"]);
         let cache = field["cachedRuns"].as_array().unwrap().iter().enumerate().map(|(index, run)| normalize_run(run, format!("field-{field_index}-run-{index}"))).collect::<Vec<_>>();
         json!({ "story": story_key, "field": field["field"], "offset": field["offset"], "instruction": field["instruction"], "cachedResult": field["cachedResult"], "textStyle": style,
+            "locked": field["locked"], "containsNestedFields": field["containsNestedFields"],
             "metadata": { "source": field, "officeStoryStyleBaseline": style, "officeStoryFieldCache": { "version": 1, "runs": cache } } })
     }).collect::<Vec<_>>();
     let baseline_runs = runs.iter().map(|run| {

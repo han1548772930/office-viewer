@@ -5,9 +5,9 @@ import { blockAtPoint, createParagraph, createRun, documentId, orderedSelection,
 import { documentDefaultStyle } from '../model/document-default-style'
 import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
 import { isDocumentTextBoundary, remapDocumentStoryFieldRuns } from '../model/document-story'
-import { documentFieldLocked, documentTextFieldParagraphs, documentTextFieldRangeContainsNested, documentTextFieldRangeIntersects, documentTextFieldRanges, documentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, type DocumentTextFieldParagraph, type DocumentTextFieldRange } from '../model/document-text-fields'
+import { documentFieldLocked, documentFieldRetainsNestedFields, documentTextFieldParagraphs, documentTextFieldRangeContainsNested, documentTextFieldRangeIntersects, documentTextFieldRanges, documentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, type DocumentTextFieldParagraph, type DocumentTextFieldRange } from '../model/document-text-fields'
 import { transformContentControlsForBlockEdit } from '../services/content-controls'
-import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
+import { transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 
 export type DocumentTocFormat = 'fromTemplate' | 'classic' | 'modern' | 'simple'
 export type DocumentTocTabLeader = 'none' | 'dots' | 'dashes' | 'underline'
@@ -196,6 +196,16 @@ function mapTocPagePoint(point: DocumentPoint, blockId: string, start: number, e
   return { ...point, offset: point.offset >= end ? point.offset + length - (end - start) : start + Math.min(point.offset - start, length) }
 }
 
+function tocPageRangeContainsInlineEntity(block: DocumentBlock, start: number, end: number): boolean {
+  let offset = 0
+  return block.runs.some(run => {
+    const from = offset
+    offset += run.text.length
+    const entity = run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula
+    return Boolean(entity && (run.text.length ? from < end && offset > start : from > start && from < end))
+  })
+}
+
 /** Resolve every page before publishing, preserving native field definitions and ordinary anchors. */
 export function prepareDocumentTocPageNumberUpdate(
   model: DocumentModel,
@@ -216,7 +226,7 @@ export function prepareDocumentTocPageNumberUpdate(
   const outerFields = ranges.filter(range => range.field.field.toUpperCase() === 'TOC'
     && paragraphs.some(paragraph => tocIds.has(paragraph.block.id) && paragraph.absoluteStart >= range.startParagraph.absoluteStart
       && paragraph.absoluteStart <= range.endParagraph.absoluteStart))
-  if (outerFields.some(range => documentFieldLocked(range.field))) return undefined
+  if (outerFields.some(range => documentFieldLocked(range.field) || documentFieldRetainsNestedFields(range.field))) return undefined
   const replacements: Array<{ blockId: string; metadata: DocumentTocMetadata; pageNumber: number; start: number; end: number; text: string; fieldId?: string }> = []
   for (const block of tocBlocks) {
     const metadata = tocMetadata(block)
@@ -231,6 +241,7 @@ export function prepareDocumentTocPageNumberUpdate(
     const separatorIndex = metadata.pageNumber == null ? -1 : text.lastIndexOf(separator)
     const start = pageField?.field.startOffset ?? (separatorIndex >= 0 ? separatorIndex + 1 : text.length)
     const end = pageField?.field.endOffset ?? text.length
+    if (tocPageRangeContainsInlineEntity(block, start, end)) continue
     const paragraph = paragraphs.find(paragraph => paragraph.block.id === block.id)
     if (!paragraph) throw new TypeError('目录页码必须属于文本段落。')
     const absoluteStart = paragraph.absoluteStart + start, absoluteEnd = paragraph.absoluteStart + end

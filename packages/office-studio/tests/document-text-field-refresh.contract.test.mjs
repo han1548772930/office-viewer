@@ -405,3 +405,71 @@ test('field open refresh follows unit and history lifetime across Facades, undo/
   assert.equal(reserveDocumentFieldOpenRefresh(host, 'first', 3), true)
   assert.equal(reserveDocumentFieldOpenRefresh(secondHost, 'first', 1), true)
 })
+
+test('retained native nested cache ranges block automatic body and story refresh even after a flag override', () => {
+  const { model, block } = bodyModel()
+  const nestedFields = [{ field: 'TIME', instruction: 'TIME \\@ "HH:mm"', cachedResult: 'l', startOffset: 1, endOffset: 2, nestedFields: [] }]
+  setDocumentTextFields(block, [dateField('native-nested', 0, 3, { containsNestedFields: false, metadata: { source: { nestedFields: copy(nestedFields) } } })])
+  model.sectionHeaderFooters = { first: { ...EMPTY_SECTION_HEADER_FOOTER, pageFields: [{ story: 'header', field: 'DATE', offset: 0,
+    instruction: 'DATE \\@ "yyyy-MM-dd"', cachedResult: 'old', containsNestedFields: false, metadata: { source: { nestedFields: copy(nestedFields) } } }] } }
+  const before = copy(model)
+  assert.equal(documentFieldAutomaticRefreshBlocked(documentTextFields(block)[0]), true)
+  assert.equal(canRefreshDocumentStoryFields(model, context), false)
+  assert.equal(prepareDocumentStoryFieldRefresh(model, request, context), undefined)
+  assert.deepEqual(model, before)
+})
+
+test('cross-paragraph field refresh checks the last paragraph permission and retains structural or independent-cell results', () => {
+  for (const boundary of ['permission', 'image', 'independentCells']) {
+    const { model, block } = bodyModel('old'), last = createParagraph('cache'); last.id = 'last'
+    model.blocks.push(last)
+    setDocumentTextFields(block, [dateField('cross', 0, 5, { endBlockId: last.id, cachedResult: 'old\ncache' })])
+    if (boundary === 'permission') model.permissionRules = [{ id: 'deny-last', scope: 'paragraph', targetId: last.id, action: 'edit', effect: 'deny', userIds: [] }]
+    if (boundary === 'image') model.blocks.splice(1, 0, { ...createParagraph(), id: 'image', type: 'image', runs: [], metadata: { image: { src: 'data:image/png;base64,AA==', width: 10, height: 10 } } })
+    if (boundary === 'independentCells') {
+      const table = { ...createParagraph(), id: 'table', type: 'table', runs: [], metadata: { table: createTable(1, 2) } }
+      table.metadata.table.rows[0].cells[0].blocks = [block]
+      table.metadata.table.rows[0].cells[1].blocks = [last]
+      model.blocks = [table]
+    }
+    const before = copy(model)
+    assert.equal(canRefreshDocumentStoryFields(model, context), false)
+    assert.equal(prepareDocumentStoryFieldRefresh(model, request, context), undefined)
+    assert.deepEqual(model, before)
+    assert.equal(documentTextFieldRanges(model).length, 1)
+  }
+})
+
+test('deep table-cell field refresh merges only its ordinary paragraphs and keeps enclosing table identities', () => {
+  const { model, block } = bodyModel('old'), last = createParagraph('cache'); last.id = 'last'
+  setDocumentTextFields(block, [dateField('deep-date', 0, 5, { endBlockId: last.id, cachedResult: 'old\ncache' })])
+  const inner = { ...createParagraph(), id: 'inner-table', type: 'table', runs: [], metadata: { table: createTable(1, 1) } }
+  const outer = { ...createParagraph(), id: 'outer-table', type: 'table', runs: [], metadata: { table: createTable(1, 1) } }
+  inner.metadata.table.rows[0].cells[0].blocks = [block, last]
+  outer.metadata.table.rows[0].cells[0].blocks = [inner]
+  model.blocks = [outer]
+  const before = copy(model), plan = prepareDocumentStoryFieldRefresh(model, request, context)
+  const nextInner = plan.blocks[0].metadata.table.rows[0].cells[0].blocks[0]
+  const paragraphs = nextInner.metadata.table.rows[0].cells[0].blocks
+  assert.equal(plan.updatedFields, 1)
+  assert.equal(plan.blocks[0].id, outer.id); assert.equal(nextInner.id, inner.id)
+  assert.equal(paragraphs.length, 1)
+  assert.equal(runText(paragraphs[0].runs), '2030-06-15')
+  assert.deepEqual([documentTextFields(paragraphs[0])[0].endBlockId, documentTextFields(paragraphs[0])[0].endOffset], [undefined, 10])
+  assert.deepEqual(model, before)
+})
+
+test('a field beginning in an empty paragraph keeps the generated language across a second refresh', () => {
+  const { model, block } = bodyModel(''), last = createParagraph('old'); last.id = 'last'
+  block.runs = [createRun('', { metadata: { source: { style: { language: 'fr-FR' } } } })]
+  last.runs = [createRun('old', { metadata: { source: { style: { language: 'de-DE' } } } })]
+  model.blocks.push(last)
+  setDocumentTextFields(block, [dateField('empty-start', 0, 3, { endBlockId: last.id, instruction: 'DATE \\@ "d MMMM yyyy"', cachedResult: '\nold' })])
+  const plan = prepareDocumentStoryFieldRefresh(model, request, context)
+  assert.equal(runText(plan.blocks[0].runs), '15 June 2030')
+  assert.equal(documentTextFields(plan.blocks[0])[0].language, 'en-US')
+  const next = { ...model, blocks: plan.blocks }
+  const second = prepareDocumentStoryFieldRefresh(next, { ...request, timestamp: new Date(2031, 5, 15, 13).getTime() }, context)
+  assert.equal(runText(second.blocks[0].runs), '15 June 2031')
+  assert.equal(documentTextFields(second.blocks[0])[0].language, 'en-US')
+})

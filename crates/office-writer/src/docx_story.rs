@@ -6,6 +6,9 @@ use super::{REL_HYPERLINK, WriteContext, get, run_link, run_properties_xml_with_
 use super::default_style as default_styles;
 use crate::ExportError;
 
+#[path = "docx_story_field_cache.rs"]
+mod field_cache;
+
 pub(super) fn default_style(model: &Value) -> Value {
     let mut text = json!({ "fontFamily": "Aptos", "fontSize": 9, "color": "#1f2937", "bold": false, "italic": false, "underline": false, "strike": false });
     if let Some(declared) = get(get(model, "defaultStyle"), "text").as_object() {
@@ -193,17 +196,9 @@ fn render_token(context: &mut WriteContext<'_>, path: &str, token: &Token<'_>, f
     if let Some(field) = token.field {
         let name = get(field, "field").as_str().unwrap_or_default();
         let instruction = get(field, "instruction").as_str().filter(|value| !value.trim().is_empty()).unwrap_or(name);
-        let cached = get(field, "cachedResult").as_str().unwrap_or_default();
-        let cache = field_cached_runs(field)?;
-        let mut runs = String::new();
-        for run in cache.into_iter().flatten() {
-            let style = field_cache_style(field, run, token.style)?;
-            // Clear source rPr on each cached range while retaining its link
-            // wrapper. The field instruction and object offset do not change.
-            runs.push_str(&render_styled_text(context, path, &style, &style, get(run, "text").as_str().unwrap_or_default(), next_relation)?);
-        }
-        if runs.is_empty() { runs = render_styled_text(context, path, token.style, field, cached, next_relation)?; }
-        return Ok(format!("<w:fldSimple w:instr=\" {} \">{runs}</w:fldSimple>", xml_attribute(instruction)));
+        let runs = field_cache::render(context, path, token, next_relation)?;
+        let lock = if field_cache::is_locked(field)? { " w:fldLock=\"true\"" } else { "" };
+        return Ok(format!("<w:fldSimple w:instr=\" {} \"{lock}>{runs}</w:fldSimple>", xml_attribute(instruction)));
     }
     let text = slice_utf16(&token.text, from - token.start, to - token.start).ok_or_else(|| ExportError::invalid("页眉页脚内容锁拆分了 UTF-16 代理对。"))?;
     render_styled_text(context, path, token.style, token.style, text, next_relation)
@@ -265,6 +260,7 @@ pub(super) fn write_story(context: &mut WriteContext<'_>, path: &str, content_ty
         if let Some(runs) = field_cached_runs(field)? {
             for run in runs { default_styles::validate(&json!({ "version": 1, "text": run, "paragraph": defaults["paragraph"] }))?; }
         }
+        field_cache::validate(field)?;
         let position = if field.get("offset").is_some() { offset(field, "offset")? } else { total };
         if slice_utf16(text, position, position).is_none() { return Err(ExportError::invalid("页眉页脚字段位置无效。")); }
     }

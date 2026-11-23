@@ -1,6 +1,6 @@
 import type { ChartErrorBarOptions, ChartModel, ChartSeriesOptions, ChartTrendlineOptions } from '../../domain/model'
 import type { ChartData } from './chart-engine'
-import { resolveChartType } from './chart-catalog'
+import { resolveChartType, supportsChartErrorDirection, supportsChartStatistics } from './chart-catalog'
 import { normalizedChartValues } from './chart-data'
 import { chartSeriesStyle } from './chart-options'
 import { formatChartNumber } from './chart-geometry'
@@ -72,11 +72,11 @@ export function deriveChartData(source: ChartData, chart: ChartModel, computed?:
   result.data = data
   for (const [index, config] of (chart.options?.trendlines ?? []).entries()) {
     const series = data.series.find(candidate => candidate.field === config.seriesIndex)
-    if (series) result.trends.push({ field: series.field, statistics: computed?.trendlines?.[index] ?? chartTrendline(series, config), config })
+    if (series && supportsChartStatistics(chart, series.field, data.series.indexOf(series))) result.trends.push({ field: series.field, statistics: computed?.trendlines?.[index] ?? chartTrendline(series, config), config })
   }
   for (const [index, config] of (chart.options?.errorBars ?? []).entries()) {
     const series = data.series.find(candidate => candidate.field === config.seriesIndex)
-    if (series) result.errors.push({ field: series.field, intervals: computed?.errorBars?.[index] ?? chartErrorIntervals(data, series, config), config })
+    if (series && supportsChartStatistics(chart, series.field, data.series.indexOf(series)) && supportsChartErrorDirection(chart, config.direction)) result.errors.push({ field: series.field, intervals: computed?.errorBars?.[index] ?? chartErrorIntervals(data, series, config), config })
   }
   return result
 }
@@ -107,6 +107,7 @@ function aggregateChartCategories(data: ChartData, chart: ChartModel): ChartData
     })
   }
   return { categories: entries.map(entry => entry.category), fields: data.fields,
+    ...(data.records && entries.every(entry => entry.indexes.length === 1) ? { records: entries.map(entry => data.records![entry.indexes[0]!]!) } : {}),
     series: data.series.map((series, index) => ({ ...series, values: entries.map(entry => entry.values[index] ?? null) })) }
 }
 

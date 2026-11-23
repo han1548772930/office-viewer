@@ -20,7 +20,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid #436fea; outline-offs
 .header-actions { display: flex; align-items: center; gap: 5px; }
 .header-actions .ant-btn { height: 29px; padding-inline: 8px; font-size: 12px; box-shadow: none; }
 .header-divider { height: 18px; border-left: 1px solid #e1e5ed; margin: 0 4px; }
-.file-picker-trigger { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); padding: 0; border: 0; }
 .workspace { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; flex-direction: column; overflow: hidden; }
 .workbench { flex: 1; min-width: 0; min-height: 0; }
 .parser-error { flex: 0 0 auto; padding: 8px 16px; }

@@ -1,6 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
-import { transformContentControlsForBlockEdit, transformContentControlsForTextEdit } from './content-controls'
-import { transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit } from './content-controls'
+import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { transformDocumentCommentAnchorsForBodyRangeEdit } from '../comments/document-comment-anchors'
 import {
   applyRunPatch,
   compactRuns,
@@ -267,11 +268,17 @@ export function replaceDocumentRange(
   if (!sameTarget(start, end) && hasUnaddressableBlocksBetween(startRef, endRef)) {
     throw new RangeError('A document text range cannot cross non-text blocks.')
   }
+  const sourceParagraphs = documentTextFieldParagraphs(next)
+  const sourceStart = sourceParagraphs.find(paragraph => paragraph.block.id === (start.cellBlockId ?? start.blockId))!
+  const sourceEnd = sourceParagraphs.find(paragraph => paragraph.block.id === (end.cellBlockId ?? end.blockId))!
   if (sameTarget(start, end)) replaceWithinBlock(next, start, end, startRef, text)
   else {
-    transformContentControlsForTextEdit(next, nextBody.segments, startOffset, endOffset, text.replace(/\r\n?/g, '\n').length)
     replaceAcrossBlocks(next, start, end, startRef, endRef, text)
+    transformContentControlsForBodyRangeEdit(next, sourceParagraphs,
+      sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, text.replace(/\r\n?/g, '\n').length, false)
   }
+  transformDocumentCommentAnchorsForBodyRangeEdit(next, sourceParagraphs, documentTextFieldParagraphs(next),
+    sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, text.replace(/\r\n?/g, '\n'))
   updateDocumentStats(next)
   next.modified = true
   return next
