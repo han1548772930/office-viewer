@@ -183,10 +183,15 @@ export {
   exportOfficeModel,
   officeDownloadName,
   OfficeExportError,
+  resetOfficeWriter,
   type ExportOptions,
 } from './services/exportService'
 export { ParserError } from './parser/errors'
-export { type ExportOutcome, type ExportProgress } from './parser/export-contracts'
+export { parseOfficeFile, resetParser, type ImportOptions } from './services/wasmAdapter.ts'
+export { type ExportOutcome, type ExportProgress, type ExportWarning } from './parser/export-contracts'
+export type { ImportedOfficeModel, ParseEnvelope, ParseProgress } from './parser/contracts.ts'
+export { WASM_PROTOCOL_VERSION, createWasmTaskControl, WasmProtocolError } from './platform/wasm/task-protocol.ts'
+export type { WasmTaskKind, WasmTaskControl, WasmTaskBudget, WasmTaskMetrics, BoundaryCopyStats, WorkerTransportStats } from './platform/wasm/task-protocol.ts'
 export { createSparklineGroupPatches, createSparklineSpec, translateSparklineForMove, type SparklineGroupRequest } from './features/sparkline/sparkline-model.ts'
 export { createSparklineCommands, parseSparklineRange, readSparklineValues, sparklineCommandsForCell } from './features/sparkline/sparkline-render.ts'
 export { default as SparklinePanel } from './components/spreadsheet/SparklinePanel.vue'

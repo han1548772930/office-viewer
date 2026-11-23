@@ -87,7 +87,7 @@ function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, curren
       || change.endOffset < change.startOffset || current.source.slice(0, change.startOffset) + change.text + current.source.slice(change.endOffset) !== next.source) throw new RangeError('代码编辑范围无效。')
     const nextRuns = replaceDocumentRunRange(block.runs, change.startOffset, change.endOffset, change.text, documentDefaultStyle(model).text, marks)
     transformContentControlsForBlockEdit(model, block.id, change.startOffset, change.endOffset, change.text.length)
-    transformDocumentTextFieldsForBlockEdit(block, change.startOffset, change.endOffset, change.text)
+    transformDocumentTextFieldsForBlockEdit(block, change.startOffset, change.endOffset, change.text, undefined, model)
     block.runs = nextRuns
     transformDocumentCommentAnchorsForTextEdit(model, block.id, change.startOffset, change.endOffset, change.text)
   }

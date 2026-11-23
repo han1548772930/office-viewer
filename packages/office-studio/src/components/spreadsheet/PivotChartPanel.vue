@@ -1,121 +1,131 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
-import { Button, Form, FormItem, Input, Modal, Select, Switch } from 'antdv-next'
+import { Alert, Button, Form, FormItem, Input, Modal, Select, theme } from 'antdv-next'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
-import type { ChartModel } from '../../domain/model'
 import { createPivotChartDraft, pivotChartConfig, pivotChartPatch, type PivotChartDraft } from '../../features/pivot/services/pivot-chart-panel-state'
+import { readPivotChartSource } from '../../features/charts/chart-pivot-data'
+import type { ChartData } from '../../features/charts/chart-engine'
+import ChartSettingsFields from '../../features/charts/views/ChartSettingsFields.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; pivotTableId?: string; chartId?: string }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [chartId: string] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; applied: [chartId: string]; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
-
+const { token } = theme.useToken()
 const draft = ref<PivotChartDraft>(createPivotChartDraft())
-const error = ref('')
-const status = ref('')
-const busy = ref(false)
+const error = ref(''), status = ref(''), busy = ref(false)
 const workbook = computed(() => props.studio.getWorkbookModel(props.workbookId))
 const pivotTables = computed(() => workbook.value?.pivotTables ?? [])
 const pivotOptions = computed(() => pivotTables.value.map((pivot, index) => ({
   label: `${t('sheet.pivot-chart.title', '透视表')} ${index + 1} · ${workbook.value?.sheets.find(sheet => sheet.id === pivot.anchor.subUnitId)?.name ?? ''}`,
   value: pivot.id,
 })))
-const chart = computed(() => workbook.value?.charts?.find(item => item.id === (props.chartId || draft.value.chartId)))
+const chart = computed(() => workbook.value?.charts?.find(item => item.id === draft.value.chartId))
 const linkedCharts = computed(() => workbook.value?.charts?.filter(item => item.pivotTableId === draft.value.pivotTableId) ?? [])
-const typeOptions = computed(() => [
-  { label: t('sheet.pivot-chart.type.bar', '簇状柱形图'), value: 'bar' },
-  { label: t('sheet.pivot-chart.type.line', '折线图'), value: 'line' },
-  { label: t('sheet.pivot-chart.type.area', '面积图'), value: 'area' },
-  { label: t('sheet.pivot-chart.type.pie', '饼图'), value: 'pie' },
-  { label: t('sheet.pivot-chart.type.doughnut', '圆环图'), value: 'doughnut' },
-  { label: t('sheet.pivot-chart.type.stacked-column', '堆积柱形图'), value: 'stacked-column' },
-])
-const legendOptions = computed(() => [
-  { label: t('sheet.pivot-chart.top', '上方'), value: 'top' }, { label: t('sheet.pivot-chart.right', '右侧'), value: 'right' },
-  { label: t('sheet.pivot-chart.bottom', '下方'), value: 'bottom' }, { label: t('sheet.pivot-chart.left', '左侧'), value: 'left' },
-])
+const preview = computed<{ data?: ChartData; error?: string }>(() => {
+  if (!props.open || !workbook.value || !draft.value.pivotTableId) return {}
+  try {
+    const source = readPivotChartSource(workbook.value, draft.value.pivotTableId)
+    return { data: { fields: source.fields, records: source.records,
+      categories: source.records.map(record => source.categoryFields.map(field => String(record[field] ?? '')).join(' / ')),
+      series: source.valueFields.map(field => ({ field, name: source.fields[field]!, values: source.records.map(record => { const value = record[field]; return typeof value === 'number' ? value : null }) })) } }
+  } catch (reason) { return { error: reason instanceof Error ? reason.message : String(reason) } }
+})
 
-function load() {
+function load(): void {
   error.value = ''; status.value = ''
   const current = props.chartId ? workbook.value?.charts?.find(item => item.id === props.chartId) : undefined
   draft.value = createPivotChartDraft(current, props.pivotTableId ?? pivotTables.value[0]?.id ?? '')
 }
+watch(() => [props.open, props.chartId, props.pivotTableId, props.workbookId, props.sheetId, props.studio] as const, ([open]) => { if (open) load() }, { immediate: true })
 
-watch(() => [props.open, props.chartId, props.pivotTableId, props.workbookId] as const, ([open]) => { if (open) load() }, { immediate: true })
-
-function chooseChart(chartId: string) {
-  const selected = workbook.value?.charts?.find(item => item.id === chartId)
-  if (selected) draft.value = createPivotChartDraft(selected)
+function chooseChart(value: unknown): void {
+  if (typeof value !== 'string' || busy.value) return
+  const selected = workbook.value?.charts?.find(item => item.id === value)
+  if (value && !selected) { error.value = '所选透视图已被删除。'; return }
+  draft.value = createPivotChartDraft(selected, draft.value.pivotTableId)
+  error.value = ''; status.value = ''
 }
-
-function requireWorkbook() {
-  const book = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)
+function choosePivot(value: unknown): void {
+  if (typeof value !== 'string' || busy.value) return
+  const current = draft.value
+  if (current.pivotTableId === value) return
+  current.pivotTableId = value
+  current.settings.config.pivotTableId = value
+  current.settings.config.valueFields = []
+  current.settings.config.categoryField = 0
+  current.settings.config.seriesToCategory = {}
+  // Field roles belong to the selected pivot output. Keep authored appearance,
+  // while the user chooses valid roles for the new source before applying.
+  if (current.settings.config.options) current.settings.config.options.mapping = undefined
+  error.value = ''; status.value = ''
+}
+function requireWorkbook(studio: OfficeStudio, unitId: string) {
+  const book = FOffice.newAPI(studio).getWorkbook(unitId)
   if (!book) throw new Error(t('sheet.pivot-chart.error.workbook-closed', '工作簿已关闭，请重新打开透视图面板。'))
   return book
 }
 
-async function apply() {
+async function apply(): Promise<void> {
   if (busy.value) return
+  const current = draft.value, studio = props.studio, unitId = props.workbookId, hostSheetId = chart.value?.sheetId ?? props.sheetId
   busy.value = true; error.value = ''; status.value = ''
   try {
-    const book = requireWorkbook()
-    const patch = pivotChartPatch(draft.value)
-    const pivot = book.getPivotTables().find(item => item.getPivotTableId() === draft.value.pivotTableId)
-    if (!pivot) throw new Error(t('sheet.pivot-chart.error.pivot-missing', '所选透视表不存在。'))
-    let chartId = draft.value.chartId
+    const book = requireWorkbook(studio, unitId)
+    if (!book.getPivotTables().some(item => item.getPivotTableId() === current.pivotTableId)) throw new Error(t('sheet.pivot-chart.error.pivot-missing', '所选透视表不存在。'))
+    const targetSheet = book.getSheetBySheetId(hostSheetId)
+    if (!targetSheet) throw new Error('放置图表的工作表已被删除。')
+    let chartId = current.chartId
+    const updating = Boolean(chartId)
     if (chartId) {
-      const targetSheet = book.getSheetBySheetId(props.sheetId)
-      const existing = targetSheet?.getChartById(chartId)
+      const existing = targetSheet.getChartById(chartId)
       if (!existing) throw new Error(t('sheet.pivot-chart.error.chart-deleted', '所选透视图已被删除。'))
-      await existing.update(patch)
-      status.value = t('sheet.pivot-chart.status.updated', '透视图设置已更新。')
+      await existing.update(pivotChartPatch(current))
     } else {
-      const created = await pivot.insertChart(pivotChartConfig(draft.value))
+      const created = await targetSheet.insertPivotChart(pivotChartConfig(current))
       chartId = created.getChartId()
-      draft.value.chartId = chartId
-      status.value = t('sheet.pivot-chart.status.created', '已创建并关联透视图。')
+    }
+    if (draft.value === current && props.studio === studio && props.workbookId === unitId) {
+      const saved = studio.getWorkbookModel(unitId)?.charts?.find(item => item.id === chartId)
+      if (saved) draft.value = createPivotChartDraft(saved)
+      status.value = t(updating ? 'sheet.pivot-chart.status.updated' : 'sheet.pivot-chart.status.created', updating ? '透视图设置已更新。' : '已创建并关联透视图。')
     }
     emit('applied', chartId)
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason)
-  } finally { busy.value = false }
-}
-
-async function remove() {
-  if (!draft.value.chartId || busy.value) return
-  busy.value = true; error.value = ''; status.value = ''
-  try {
-    const chartId = draft.value.chartId
-    const target = FOffice.newAPI(props.studio).getWorkbook(props.workbookId)?.getSheetBySheetId(props.sheetId)?.getChartById(chartId)
-    if (!target) throw new Error(t('sheet.pivot-chart.error.chart-deleted', '所选透视图已被删除。'))
-    await target.remove()
-    draft.value.chartId = ''
-    status.value = t('sheet.pivot-chart.status.removed', '透视图已移除，关联透视表仍保留。')
-    emit('applied', chartId)
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
+  } catch (reason) { if (draft.value === current) error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { busy.value = false }
 }
 
-function close() { if (!busy.value) emit('update:open', false) }
+async function remove(): Promise<void> {
+  if (!draft.value.chartId || busy.value) return
+  const current = draft.value, studio = props.studio, unitId = props.workbookId, hostSheetId = chart.value?.sheetId ?? props.sheetId
+  busy.value = true; error.value = ''; status.value = ''
+  try {
+    const target = requireWorkbook(studio, unitId).getSheetBySheetId(hostSheetId)?.getChartById(current.chartId)
+    if (!target) throw new Error(t('sheet.pivot-chart.error.chart-deleted', '所选透视图已被删除。'))
+    await target.remove()
+    if (draft.value === current && props.studio === studio && props.workbookId === unitId) {
+      draft.value = createPivotChartDraft(undefined, current.pivotTableId)
+      status.value = t('sheet.pivot-chart.status.removed', '透视图已移除，关联透视表仍保留。')
+    }
+    emit('applied', current.chartId)
+  } catch (reason) { if (draft.value === current) error.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { busy.value = false }
+}
+function close(): void { if (!busy.value) emit('update:open', false) }
+function opened(value: boolean): void { if (!value) emit('closed') }
 </script>
 
 <template>
-  <Modal :open="open" :title="t('sheet.pivot-chart.title', '透视图')" :width="560" :footer="null" :mask-closable="!busy" @cancel="close">
-    <Form layout="vertical" class="pivot-chart-panel" data-testid="pivot-chart-panel" @submit.prevent>
-      <FormItem :label="t('sheet.pivot-chart.related-pivot', '关联透视表')"><Select v-model:value="draft.pivotTableId" :options="pivotOptions" :aria-label="t('sheet.pivot-chart.related-pivot', '关联透视表')" :disabled="busy" /></FormItem>
-      <FormItem v-if="linkedCharts.length" :label="t('sheet.pivot-chart.edit-existing', '编辑已有透视图')"><Select :value="draft.chartId" :options="[{ label: t('sheet.pivot-chart.create-new', '新建透视图'), value: '' }, ...linkedCharts.map((item: ChartModel, index: number) => ({ label: item.title || `${t('sheet.pivot-chart.title', '透视图')} ${index + 1}`, value: item.id }))]" :aria-label="t('sheet.pivot-chart.edit-existing', '选择透视图')" @change="chooseChart" /></FormItem>
-      <FormItem :label="t('sheet.pivot-chart.type', '图表类型')"><Select v-model:value="draft.type" :options="typeOptions" :aria-label="t('sheet.pivot-chart.type', '透视图类型')" :disabled="busy" /></FormItem>
-      <FormItem :label="t('sheet.pivot-chart.chart-title', '标题')"><Input v-model:value="draft.title" :aria-label="t('sheet.pivot-chart.chart-title', '透视图标题')" :maxlength="120" :disabled="busy" /></FormItem>
+  <Modal :open="open" :title="t('sheet.pivot-chart.title', '透视图')" :width="760" :footer="null" :mask-closable="!busy" @cancel="close" @after-open-change="opened">
+    <Form layout="vertical" class="pivot-chart-panel" data-testid="pivot-chart-panel" @submit.prevent="apply">
+      <FormItem :label="t('sheet.pivot-chart.related-pivot', '关联透视表')"><Select :value="draft.pivotTableId" :options="pivotOptions" :aria-label="t('sheet.pivot-chart.related-pivot', '关联透视表')" :disabled="busy" @update:value="choosePivot" /></FormItem>
+      <FormItem v-if="linkedCharts.length" :label="t('sheet.pivot-chart.edit-existing', '编辑已有透视图')"><Select :value="draft.chartId" :options="[{ label: t('sheet.pivot-chart.create-new', '新建透视图'), value: '' }, ...linkedCharts.map((item, index) => ({ label: item.title || `${t('sheet.pivot-chart.title', '透视图')} ${index + 1}`, value: item.id }))]" :aria-label="t('sheet.pivot-chart.edit-existing', '选择透视图')" :disabled="busy" @update:value="chooseChart" /></FormItem>
       <FormItem :label="t('sheet.pivot-chart.placement', '放置单元格')"><Input v-model:value="draft.position" :aria-label="t('sheet.pivot-chart.placement', '透视图放置单元格')" placeholder="F2" :disabled="busy" /></FormItem>
-      <div class="pivot-chart-legend">
-        <FormItem :label="null"><Switch v-model:checked="draft.legendVisible" size="small" :aria-label="t('sheet.pivot-chart.show-legend', '显示图例')" :disabled="busy" />{{ t('sheet.pivot-chart.show-legend', '显示图例') }}</FormItem>
-        <FormItem v-if="draft.legendVisible" :label="t('sheet.pivot-chart.legend-position', '图例位置')"><Select v-model:value="draft.legendPosition" :options="legendOptions" :aria-label="t('sheet.pivot-chart.legend-position', '图例位置')" :disabled="busy" /></FormItem>
-      </div>
-      <p v-if="chart" class="pivot-chart-binding">{{ t('sheet.pivot-chart.binding', '当前图表绑定透视表 {id}').replace('{id}', chart.pivotTableId ?? '') }}</p>
-      <p v-if="error" class="pivot-chart-error" role="alert">{{ error }}</p>
-      <p v-if="status" class="pivot-chart-status" role="status">{{ status }}</p>
-      <footer>
+      <ChartSettingsFields v-model:draft="draft.settings" :data="preview.data" :host-sheet-id="chart?.sheetId ?? sheetId" locked-source :disabled="busy" />
+      <Alert v-if="error || preview.error" type="error" :message="error || preview.error" show-icon />
+      <Alert v-if="status" type="success" :message="status" show-icon role="status" />
+      <footer :style="{ borderColor: token.colorBorderSecondary }">
         <Button v-if="draft.chartId" danger :disabled="busy" @click="remove">{{ t('sheet.pivot-chart.remove', '移除透视图') }}</Button>
         <span />
         <Button :disabled="busy" @click="close">{{ t('sheet.pivot-chart.close', '关闭') }}</Button>
@@ -126,16 +136,9 @@ function close() { if (!busy.value) emit('update:open', false) }
 </template>
 
 <style scoped>
-.pivot-chart-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px 18px; }
+.pivot-chart-panel { display: grid; gap: 14px; max-height: 70vh; min-width: 0; overflow-y: auto; padding-right: 8px; }
 .pivot-chart-panel :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
-.pivot-chart-legend :deep(.ant-form-item) { display: flex; align-items: center; }
-.pivot-chart-legend { display: flex; align-items: center; gap: 16px; }
-.pivot-chart-legend > label:first-child { display: flex; align-items: center; white-space: nowrap; }
-.pivot-chart-binding, .pivot-chart-error, .pivot-chart-status { grid-column: 1 / -1; margin: 0; font-size: 12px; }
-.pivot-chart-binding { color: #788596; }
-.pivot-chart-error { color: #b42318; }
-.pivot-chart-status { color: #267342; }
-.pivot-chart-panel footer { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid #e7ebf0; }
+.pivot-chart-panel footer { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid; }
 .pivot-chart-panel footer span { flex: 1; }
-@media (max-width: 520px) { .pivot-chart-panel { grid-template-columns: 1fr; } .pivot-chart-binding, .pivot-chart-error, .pivot-chart-status, .pivot-chart-panel footer { grid-column: auto; } .pivot-chart-panel footer { flex-wrap: wrap; } }
+@media (max-width: 520px) { .pivot-chart-panel footer { flex-wrap: wrap; } }
 </style>

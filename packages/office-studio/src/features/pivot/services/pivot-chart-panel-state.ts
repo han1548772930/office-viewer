@@ -1,5 +1,6 @@
 import type { ChartModel, ChartType } from '../../../domain/model.ts'
 import type { ChartConfig } from '../../charts/chart-engine.ts'
+import { chartConfigFromDraft, createChartSettingsDraft, parseChartSourceRange, type ChartSettingsDraft } from '../../charts/chart-settings-draft.ts'
 
 export interface PivotChartDraft {
   chartId: string
@@ -9,53 +10,50 @@ export interface PivotChartDraft {
   position: string
   legendVisible: boolean
   legendPosition: 'top' | 'right' | 'bottom' | 'left'
+  settings: ChartSettingsDraft
+  initialPositionText: string
 }
 
 export function createPivotChartDraft(chart?: ChartModel, pivotTableId = ''): PivotChartDraft {
+  const position = chart ? positionToAddress(chart.position.x, chart.position.y) : 'F2'
+  const settings = createChartSettingsDraft(chart ?? {
+    type: 'bar', source: { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 }, orientation: 'columns' },
+    pivotTableId, position: addressToPosition(position), size: { width: 480, height: 300 },
+  })
   return {
     chartId: chart?.id ?? '',
     pivotTableId: chart?.pivotTableId ?? pivotTableId,
-    type: chart?.type ?? 'bar',
-    title: chart?.title ?? '',
-    position: chart ? positionToAddress(chart.position.x, chart.position.y) : 'F2',
-    legendVisible: chart?.legend.visible ?? true,
-    legendPosition: chart?.legend.position ?? 'bottom',
+    settings,
+    initialPositionText: position,
+    position,
+    get type() { return this.settings.config.type },
+    set type(value: ChartType) { this.settings.config.type = value },
+    get title() { return this.settings.config.title ?? '' },
+    set title(value: string) { this.settings.config.title = value },
+    get legendVisible() { return this.settings.config.legend?.visible ?? true },
+    set legendVisible(value: boolean) { this.settings.config.legend = { ...this.settings.config.legend, visible: value } },
+    get legendPosition() { return this.settings.config.legend?.position ?? 'bottom' },
+    set legendPosition(value: 'top' | 'right' | 'bottom' | 'left') { this.settings.config.legend = { ...this.settings.config.legend, position: value } },
   }
 }
 
 export function pivotChartConfig(draft: PivotChartDraft): ChartConfig & { pivotTableId: string } {
   if (!draft.pivotTableId.trim()) throw new TypeError('Select a pivot table for this chart')
-  const position = addressToPosition(draft.position)
-  return {
-    type: draft.type,
-    source: { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 }, orientation: 'columns' },
-    pivotTableId: draft.pivotTableId,
-    position,
-    size: { width: 480, height: 300 },
-    title: draft.title.trim() || undefined,
-    legend: { visible: draft.legendVisible, position: draft.legendPosition },
-  }
+  const config = chartConfigFromDraft(draft.settings)
+  // The address is a placement shortcut. Leaving it unchanged preserves the
+  // precise dragged position, source, size and full authored chart settings.
+  return { ...config, pivotTableId: draft.pivotTableId,
+    position: draft.position.trim().toUpperCase() === draft.initialPositionText ? { ...config.position } : addressToPosition(draft.position) }
 }
 
 export function pivotChartPatch(draft: PivotChartDraft): Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>> {
-  const config = pivotChartConfig(draft)
-  return {
-    type: config.type,
-    source: config.source,
-    pivotTableId: config.pivotTableId,
-    position: config.position,
-    size: config.size,
-    title: config.title,
-    legend: { visible: draft.legendVisible, position: draft.legendPosition },
-  }
+  return pivotChartConfig(draft)
 }
 
 export function addressToPosition(address: string): { x: number; y: number } {
-  const match = /^([A-Z]+)([1-9]\d*)$/i.exec(address.trim())
-  if (!match) throw new TypeError('Enter a valid cell address such as F2')
-  let column = 0
-  for (const char of match[1]!.toUpperCase()) column = column * 26 + char.charCodeAt(0) - 64
-  return { x: (column - 1) * 96, y: (Number(match[2]) - 1) * 24 }
+  const range = parseChartSourceRange(address)
+  if (!range || address.includes(':')) throw new TypeError('Enter a valid cell address such as F2')
+  return { x: range.startCol * 96, y: range.startRow * 24 }
 }
 
 function positionToAddress(x: number, y: number): string {

@@ -13,11 +13,12 @@ import { COMMIT_SHEET_CELL_INPUT_COMMAND, planSheetCellInput, sheetCellInputConf
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
 import { applyExcelWorkbookView, toExcelCellView, toExcelWorkbookView } from '../services/excelViewAdapter'
 import { createBlankWorkbook } from '../domain/model'
-import type { ChartModel, ChartSourceOrientation, ChartType } from '../domain/model'
+import type { ChartModel } from '../domain/model'
+import type { ChartConfig } from '../features/charts/chart-engine'
 import type { SlicerModel } from '../domain/model'
 import SpreadsheetCanvas from './spreadsheet/SpreadsheetCanvas.vue'
 import ChartOverlay from './ChartOverlay.vue'
-import { chartPositionForRange, type ExcelWorkbookChartView } from './chart-overlay-model'
+import { chartPositionForRange, chartSourceFromGridRange, type ExcelWorkbookChartView } from './chart-overlay-model'
 import type { DrawCommand } from '../rendering/contracts'
 import { SpreadsheetGeometry, type GridHit, type GridRange, type SpreadsheetRenderSheet } from '../rendering/spreadsheet/layout'
 import { addRange, containsCell, selectionBounds, selectionCount, subtractRange } from '../rendering/spreadsheet/selection'
@@ -93,6 +94,7 @@ const sheetSplitterStyles: { root: CSSProperties; panel: CSSProperties } = {
 const PivotTablePanel = defineAsyncComponent(() => import('./spreadsheet/PivotTablePanel.vue'))
 const PivotChartPanel = defineAsyncComponent(() => import('./spreadsheet/PivotChartPanel.vue'))
 const ChartEditorPanel = defineAsyncComponent(() => import('./spreadsheet/ChartEditorPanel.vue'))
+const ChartInsertDialog = defineAsyncComponent(() => import('../features/charts/views/ChartInsertDialog.vue'))
 const SparklinePanel = defineAsyncComponent(() => import('./spreadsheet/SparklinePanel.vue'))
 const SlicerPanel = defineAsyncComponent(() => import('./spreadsheet/SlicerPanel.vue'))
 const SheetDataPanel = defineAsyncComponent(() => import('./spreadsheet/SheetDataPanel.vue'))
@@ -247,43 +249,11 @@ const chartEditorOpen = ref(false)
 const focusedChartId = ref<string | null>(null)
 const chartPointerOrigin = ref<{ x: number; y: number } | null>(null)
 const chartModalOpen = ref(false)
-const chartSource = ref('')
-const chartTitle = ref('')
-const chartType = ref<ChartType>('bar')
-const chartTypeOptions: Array<{ label: string; value: ChartType }> = [
-  { label: '簇状柱形图', value: 'bar' },
-  { label: '折线图', value: 'line' },
-  { label: '面积图', value: 'area' },
-  { label: '饼图', value: 'pie' },
-  { label: '圆环图', value: 'doughnut' },
-  { label: '堆积柱形图', value: 'stacked-column' },
-  { label: '散点图', value: 'scatter' },
-  { label: '雷达图', value: 'radar' },
-]
-const chartOrientation = ref<ChartSourceOrientation>('columns')
-const chartCategoryField = ref(0)
-const chartValueFields = ref<number[]>([])
-const chartSeriesXFields = ref<Record<number, number>>({})
-const chartXScale = ref<'linear' | 'log'>('linear')
-const chartYScale = ref<'linear' | 'log'>('linear')
-const chartFieldOptions = computed(() => {
-  const range = parseChartRange(chartSource.value)
-  const sheet = activeSheet.value
-  if (!range || !sheet) return []
-  const count = chartOrientation.value === 'columns' ? range.endColumn - range.startColumn + 1 : range.endRow - range.startRow + 1
-  return Array.from({ length: count }, (_unused, value) => {
-    const row = range.startRow + (chartOrientation.value === 'rows' ? value : 0)
-    const column = range.startColumn + (chartOrientation.value === 'columns' ? value : 0)
-    const address = `${columnName(column)}${row + 1}`
-    const title = sheet.cells[address]?.value
-    return { value, label: title == null || title === '' ? address : `${address} · ${title}` }
-  })
-})
-watch([chartSource, chartOrientation], () => {
-  chartCategoryField.value = 0
-  chartValueFields.value = []
-  chartSeriesXFields.value = {}
-})
+const chartInsertConfig = ref<ChartConfig | null>(null)
+const chartInsertBusy = ref(false)
+const chartEditorBusy = ref(false)
+const chartEditorError = ref('')
+const chartInsertContext = shallowRef<{ studio: OfficeStudio; unitId: string; sheetId: string }>()
 const chartError = ref('')
 const hyperlinkDialogOpen = ref(false)
 const hyperlinkTarget = ref('')
@@ -817,59 +787,49 @@ function rangeNotation(range: GridRange): string {
   return `${columnName(range.startColumn)}${range.startRow + 1}:${columnName(range.endColumn)}${range.endRow + 1}`
 }
 
-function parseChartRange(value: string): GridRange | undefined {
-  const parts = value.trim().split(':')
-  const first = splitKey(parts[0] ?? '')
-  const last = splitKey(parts[1] ?? parts[0] ?? '')
-  if (!parts[0] || !/^[A-Z]+\d+$/i.test(parts[0]) || !/^[A-Z]+\d+$/i.test(parts[1] ?? parts[0])) return undefined
-  return {
-    startRow: Math.min(first[1], last[1]) - 1,
-    endRow: Math.max(first[1], last[1]) - 1,
-    startColumn: Math.min(first[0], last[0]),
-    endColumn: Math.max(first[0], last[0]),
-  }
-}
-
 function openChartDialog() {
-  const bounds = selectionBounds(selectedRanges.value)
-  chartSource.value = bounds ? rangeNotation(bounds) : 'A1:C4'
-  chartTitle.value = ''
-  chartType.value = 'bar'
-  chartOrientation.value = 'columns'
-  chartCategoryField.value = 0
-  chartValueFields.value = []
-  chartSeriesXFields.value = {}
-  chartXScale.value = 'linear'
-  chartYScale.value = 'linear'
+  const sheet = activeSheet.value, studio = props.studio, unitId = workbook.value.id
+  if (!sheet || !studio || !unitId) {
+    emit('notify', { type: 'error', message: '图表命令上下文尚未绑定到活动工作簿。' })
+    return
+  }
+  const bounds = selectionBounds(selectedRanges.value) ?? { startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }
+  chartInsertContext.value = { studio, unitId, sheetId: sheet.id }
+  chartInsertConfig.value = { type: 'bar', source: { range: chartSourceFromGridRange(bounds), orientation: 'columns', sheetId: sheet.id },
+    position: chartPositionForRange(bounds, sheet), size: { width: 480, height: 300 }, categoryField: 0, valueFields: [] }
   chartError.value = ''
   chartModalOpen.value = true
 }
 
-async function confirmChartDialog() {
-  const sheet = activeSheet.value
-  const range = parseChartRange(chartSource.value)
-  if (!sheet || !range) { chartError.value = '请输入有效的数据范围，例如 A1:C4'; return }
+async function confirmChartDialog(config: ChartConfig) {
+  const context = chartInsertContext.value
+  if (!context || chartInsertBusy.value) return
+  chartInsertBusy.value = true
+  chartError.value = ''
   try {
-    const target = getChartWorksheet(sheet.id)
-    if (!target) throw new Error('图表命令上下文尚未绑定到活动工作簿')
-    const position = chartPositionForRange(range, sheet)
-    await target.insertChart(target.newChart(chartType.value)
-      .setSource(chartSource.value, chartOrientation.value)
-      .setCategoryField(chartCategoryField.value)
-      .setValueFields(chartValueFields.value)
-      .setSeriesToCategory(chartType.value === 'scatter' ? Object.fromEntries(chartValueFields.value
-        .filter((field) => chartSeriesXFields.value[field] !== undefined)
-        .map((field) => [field, [chartSeriesXFields.value[field]!]])) : {})
-      .setXAxis({ scaleType: chartType.value === 'scatter' ? chartXScale.value : 'linear' })
-      .setYAxis({ scaleType: chartType.value === 'scatter' ? chartYScale.value : 'linear' })
-      .setAbsolutePosition(position.x, position.y)
-      .setSize(480, 300)
-      .setTitle(chartTitle.value.trim())
-      .build())
+    if (props.studio !== context.studio) throw new Error('图表所属的编辑会话已经关闭，请重新打开插入图表。')
+    const target = FOffice.newAPI(context.studio).getWorkbook(context.unitId)?.getSheetBySheetId(context.sheetId)
+    if (!target) throw new Error('图表所属的工作簿或工作表已经关闭。')
+    await target.insertChart(config)
+    const model = context.studio.getWorkbookModel(context.unitId)
+    if (model && props.studio === context.studio && workbook.value.id === context.unitId) applyExternalWorkbook(toExcelWorkbookView(model))
     chartModalOpen.value = false
   } catch (error) {
-    chartError.value = error instanceof Error ? error.message : '图表数据范围不可用'
-  }
+    chartError.value = error instanceof Error ? error.message : '图表数据范围不可用。'
+  } finally { chartInsertBusy.value = false }
+}
+
+function afterChartDialogClose(): void {
+  const context = chartInsertContext.value
+  chartInsertContext.value = undefined
+  chartInsertConfig.value = null
+  if (context && props.studio === context.studio && workbook.value.id === context.unitId && activeSheetId.value === context.sheetId
+    && workbenchActive.value && !editingKey.value && !editComposing.value) spreadsheetCanvas.value?.focus()
+}
+
+function afterChartEditorClose(): void {
+  chartEditorError.value = ''
+  if (workbenchActive.value && !editingKey.value && !editComposing.value) spreadsheetCanvas.value?.focus()
 }
 
 function openHyperlinkDialog(): void {
@@ -1075,18 +1035,25 @@ function focusChartFromOverlay(event: MouseEvent): void {
   const chart = sheetCharts.value[index]
   if (!chart) return
   focusedChartId.value = chart.id
+  chartEditorError.value = ''
   chartEditorOpen.value = true
 }
 
 async function applyChartSettings(patch: Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>): Promise<void> {
+  if (chartEditorBusy.value) return
   const chart = focusedChart.value
+  const studio = props.studio, unitId = workbook.value.id
   const target = chart && getChartWorksheet(chart.sheetId)?.getChartById(chart.id)
-  if (!chart || !target) return
+  if (!chart || !target || !studio || !unitId) { chartEditorError.value = '图表所属的工作簿或图表已经关闭。'; return }
+  chartEditorBusy.value = true
+  chartEditorError.value = ''
   try {
     await target.update(patch)
+    const model = studio.getWorkbookModel(unitId)
+    if (model && props.studio === studio && workbook.value.id === unitId) applyExternalWorkbook(toExcelWorkbookView(model))
   } catch (error) {
-    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '图表设置未能应用' })
-  }
+    chartEditorError.value = error instanceof Error ? error.message : '图表设置未能应用。'
+  } finally { chartEditorBusy.value = false }
 }
 
 async function removeChart(chartId: string) {
@@ -2649,25 +2616,8 @@ onActivated(() => { workbenchActive.value = true })
       </SplitterPanel>
     </Splitter>
 
-    <ChartEditorPanel v-model:open="chartEditorOpen" :chart="focusedChart" :sheet="activeSheet" @apply="applyChartSettings" />
-
-    <Modal v-model:open="chartModalOpen" title="插入图表" ok-text="插入" cancel-text="取消" :width="440" @ok="confirmChartDialog">
-      <Form layout="vertical" class="chart-insert-form" @submit.prevent>
-        <FormItem label="数据区域"><Input v-model:value="chartSource" placeholder="A1:C4" /></FormItem>
-        <FormItem label="图表类型"><Select v-model:value="chartType" :options="chartTypeOptions" /></FormItem>
-        <FormItem label="系列方向"><Select v-model:value="chartOrientation" :options="[{ label: '按列', value: 'columns' }, { label: '按行', value: 'rows' }]" /></FormItem>
-        <FormItem :label="chartType === 'scatter' ? '共享 X 字段' : '分类字段'"><Select v-model:value="chartCategoryField" :options="chartFieldOptions" /></FormItem>
-        <FormItem :label="chartType === 'scatter' ? 'Y 系列字段' : '数值系列字段'"><Select v-model:value="chartValueFields" mode="multiple" :options="chartFieldOptions" placeholder="留空时使用其余字段" /></FormItem>
-        <template v-if="chartType === 'scatter'">
-          <FormItem v-for="field in chartValueFields" :key="field" :label="`${chartFieldOptions.find(option => option.value === field)?.label ?? field} 的 X 字段`"><Select v-model:value="chartSeriesXFields[field]" :options="chartFieldOptions" allow-clear placeholder="使用共享 X 字段" /></FormItem>
-          <FormItem label="X 轴刻度"><Select v-model:value="chartXScale" :options="[{ label: '线性', value: 'linear' }, { label: '对数', value: 'log' }]" /></FormItem>
-          <FormItem label="Y 轴刻度"><Select v-model:value="chartYScale" :options="[{ label: '线性', value: 'linear' }, { label: '对数', value: 'log' }]" /></FormItem>
-        </template>
-        <FormItem label="图表标题"><Input v-model:value="chartTitle" placeholder="可选" /></FormItem>
-        <p v-if="chartError" role="alert" class="chart-insert-error">{{ chartError }}</p>
-        <p class="chart-insert-hint">{{ chartOrientation === 'columns' ? '数据区域首行作为字段名。' : '数据区域首列作为字段名。' }}{{ chartType === 'scatter' ? 'X 与 Y 按数据位置配对，空值和无效数值不绘制。对数轴仅绘制正数。' : chartType === 'pie' || chartType === 'doughnut' ? '请选择一个数值系列。' : '' }}</p>
-      </Form>
-    </Modal>
+    <ChartEditorPanel v-model:open="chartEditorOpen" :chart="focusedChart" :sheet="activeSheet" :sheets="availableSheets" :busy="chartEditorBusy" :error="chartEditorError" @apply="applyChartSettings" @closed="afterChartEditorClose" />
+    <ChartInsertDialog v-model:open="chartModalOpen" :config="chartInsertConfig" :sheets="availableSheets" :host-sheet-id="chartInsertContext?.sheetId" :busy="chartInsertBusy" :error="chartError" @apply="confirmChartDialog" @closed="afterChartDialogClose" />
 
     <Modal v-model:open="hyperlinkDialogOpen" :title="editingHyperlink ? '编辑超链接' : '插入超链接'" ok-text="确定" cancel-text="取消" :width="440" @ok="confirmHyperlinkDialog">
       <Form layout="vertical" @submit.prevent>

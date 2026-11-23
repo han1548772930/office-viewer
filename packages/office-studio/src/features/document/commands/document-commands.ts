@@ -4,8 +4,8 @@ import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-c
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
-import { deleteDocumentToc, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
-import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedStories, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { applyDocumentTocPageNumberUpdate, deleteDocumentToc, prepareDocumentTocPageNumberUpdate, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
+import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedBlocks, permissionTargetsForChangedStories, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { cloneModel } from '../../../domain/serialization'
 import { documentTocIdAtBlock } from '../toc/document-toc'
 import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
@@ -20,7 +20,7 @@ import { assertDocumentTextSelectionEditable } from '../services/document-text-f
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
-import { documentTextFields, insertDocumentTextFields, remapDocumentTextFieldIds, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentTextFieldRanges, documentTextFields, insertDocumentTextFields, remapDocumentTextFieldIds, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
@@ -59,7 +59,7 @@ export type DocumentCommand =
   | ({ id: 'doc.command.update-selected-fields' } & DocumentStoryFieldRefreshRequest)
   | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
-  | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers }
+  | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers; timestamp?: number }
   | { id: 'doc.command.delete-table-of-contents'; tocId: string }
 
 function blockContainer(model: DocumentModel, point: TextTarget): DocumentBlock[] {
@@ -144,7 +144,7 @@ function replaceImportedNumberingMarkers(model: DocumentModel, targets: readonly
       }
       // Cached labels may precede zero-length footnote/field objects. Keep
       // those identities when the label is explicitly replaced or cleared.
-      transformDocumentTextFieldsForBlockEdit(block, 0, length, '')
+      transformDocumentTextFieldsForBlockEdit(block, 0, length, '', undefined, model)
       block.runs = bodyRuns.length ? bodyRuns : [createRun()]
       delete block.metadata.html
       if (target.row !== undefined) {
@@ -555,6 +555,13 @@ export function executeDocumentCommand(
       }
       const tocPermissionTargets = tocBlocks.flatMap((block) => permissionTargetsForSelection(model, collapsedSelection({ blockId: block.id, offset: 0 })))
       assertDocumentPermission(model.permissionRules ?? [], context, 'edit', tocPermissionTargets)
+      if (command.id === 'doc.command.update-table-of-contents' && command.mode === 'pageNumbersOnly') {
+        const plan = prepareDocumentTocPageNumberUpdate(model, command.tocId, command.pageNumbers, selection, command.timestamp)
+        if (!plan?.changed) return selection
+        assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, { ...model, blocks: plan.blocks }))
+        applyDocumentTocPageNumberUpdate(model, plan)
+        return plan.selection ?? selection
+      }
       if (command.id === 'doc.command.update-table-of-contents') updateDocumentToc(model, command.tocId, command.mode, command.pageNumbers)
       else deleteDocumentToc(model, command.tocId)
       return selection
@@ -642,9 +649,9 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
     targets.forEach((target, index) => {
       const block = blockAtPoint(model, target)
       if (block) {
-        if (index === 0) transformDocumentTextFieldsForBlockEdit(block, start.offset, runText(block.runs).length, normalizedText)
-        else if (index === targets.length - 1) transformDocumentTextFieldsForBlockEdit(block, 0, end.offset, '')
-        else setDocumentTextFields(block, [], '')
+        if (index === 0) transformDocumentTextFieldsForBlockEdit(block, start.offset, runText(block.runs).length, normalizedText, undefined, model)
+        else if (index === targets.length - 1) transformDocumentTextFieldsForBlockEdit(block, 0, end.offset, '', undefined, model)
+        else transformDocumentTextFieldsForBlockEdit(block, 0, runText(block.runs).length, '', undefined, model)
       }
       setEditingRuns(model, target, index === 0 ? [...before, createRun(normalizedText, inherited)] : index === targets.length - 1 ? after : [], inherited)
     })
@@ -654,7 +661,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const startIndex = startContainer.findIndex((block) => block.id === startBlock.id)
   const endBlock = blockAtPoint(model, end)
   const endIndex = startContainer.findIndex((block) => block.id === endBlock?.id)
-  transformDocumentTextFieldsForBlockRangeEdit(startContainer.slice(startIndex, endIndex + 1), start.offset, end.offset, normalizedText, [startBlock, ...additions])
+  transformDocumentTextFieldsForBlockRangeEdit(startContainer.slice(startIndex, endIndex + 1), start.offset, end.offset, normalizedText, [startBlock, ...additions], undefined, model)
   if (endIndex > startIndex) startContainer.splice(startIndex + 1, endIndex - startIndex)
   if (paragraphs.length === 1) {
     setEditingRuns(model, start, [...before, createRun(normalizedText, inherited), ...after], inherited)
@@ -736,11 +743,15 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
 
 function copyBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
   const copies = JSON.parse(JSON.stringify(blocks)) as DocumentBlock[]
+  const blockIds = new Map<string, string>(), paragraphs: DocumentBlock[] = []
   const visit = (container: DocumentBlock[]) => {
     for (const block of container) {
-      block.id = documentId(block.type)
+      const nextId = documentId(block.type)
+      if (blockIds.has(block.id)) throw new TypeError(`复制范围的段落标识重复：${block.id}`)
+      blockIds.set(block.id, nextId)
+      block.id = nextId
       block.runs = block.runs.map(run => ({ ...run, id: documentId('run') }))
-      remapDocumentTextFieldIds(block)
+      paragraphs.push(block)
       const table = tableForBlock(block)
       if (!table) continue
       for (const row of table.rows) {
@@ -750,6 +761,8 @@ function copyBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
     }
   }
   visit(copies)
+  for (const block of paragraphs) remapDocumentTextFieldIds(block, blockIds)
+  documentTextFieldRanges({ blocks: copies })
   return copies
 }
 
@@ -771,7 +784,7 @@ function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks
   const index = container.findIndex((candidate) => candidate.id === block.id)
   tail.style = { ...block.style }
   tail.runs = sliceRuns(block.runs as DocumentRun[], point.offset)
-  transformDocumentTextFieldsForBlockRangeEdit([block], point.offset, point.offset, '\n', [block, tail])
+  transformDocumentTextFieldsForBlockRangeEdit([block], point.offset, point.offset, '\n', [block, tail], undefined, model)
   if (sameTarget(start, end) && model.contentControls) model.contentControls = controlPlan.contentControls
   setTargetRuns(model, point, sliceRuns(block.runs as DocumentRun[], 0, point.offset))
   container.splice(index + 1, 0, ...blocks, tail)

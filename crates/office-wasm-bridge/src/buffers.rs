@@ -1,7 +1,7 @@
 use crate::{BoundaryCopyStats, BridgeError, error_to_js, to_control};
 use js_sys::{Float64Array, Object, Uint8Array, Uint32Array, WebAssembly};
 use serde::Serialize;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use wasm_bindgen::{JsCast, prelude::*};
 
 thread_local! {
@@ -16,12 +16,16 @@ fn owner_id() -> u32 {
     })
 }
 
-pub fn is_linear_memory_buffer(buffer: &JsValue) -> bool {
+fn current_memory_buffer() -> JsValue {
     let memory: WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
-    Object::is(buffer, &memory.buffer())
+    memory.buffer()
 }
 
-fn reject_linear_memory_input(buffer: &JsValue) -> Result<(), JsValue> {
+pub fn is_linear_memory_buffer(buffer: &JsValue) -> bool {
+    Object::is(buffer, &current_memory_buffer())
+}
+
+pub fn reject_linear_memory_input(buffer: &JsValue) -> Result<(), JsValue> {
     // Allocating the destination can grow memory and detach the source view.
     // Internal kernels borrow Rust slices instead of re-entering this API.
     if is_linear_memory_buffer(buffer) {
@@ -102,12 +106,26 @@ pub struct ByteLeaseBuffer {
     owner: u32,
     generation: u32,
     leased: bool,
+    lease_epoch: u32,
+    memory_epoch: Cell<u32>,
+    memory_buffer: RefCell<JsValue>,
     stats: BoundaryCopyStats,
 }
 
 impl ByteLeaseBuffer {
     pub fn from_vec(bytes: Vec<u8>, stats: BoundaryCopyStats) -> Self {
-        Self { bytes: Some(bytes), owner: owner_id(), generation: 1, leased: false, stats }
+        Self { bytes: Some(bytes), owner: owner_id(), generation: 1, leased: false,
+            lease_epoch: 0, memory_epoch: Cell::new(0),
+            memory_buffer: RefCell::new(current_memory_buffer()), stats }
+    }
+
+    fn observe_memory_epoch(&self) -> u32 {
+        let current = current_memory_buffer();
+        if !Object::is(&current, &self.memory_buffer.borrow()) {
+            *self.memory_buffer.borrow_mut() = current;
+            self.memory_epoch.set(self.memory_epoch.get().wrapping_add(1));
+        }
+        self.memory_epoch.get()
     }
 
     pub fn as_slice(&self) -> Result<&[u8], JsValue> {
@@ -145,6 +163,7 @@ impl ByteLeaseBuffer {
         if self.leased {
             return Err(error_to_js(BridgeError::new("WASM_LEASE_ACTIVE", "Buffer already has an active lease")));
         }
+        self.lease_epoch = self.observe_memory_epoch();
         self.leased = true;
         Ok(self.generation)
     }
@@ -155,6 +174,11 @@ impl ByteLeaseBuffer {
     pub fn lease_view(&self, generation: u32) -> Result<Uint8Array, JsValue> {
         if !self.leased || generation != self.generation {
             return Err(error_to_js(BridgeError::new("WASM_LEASE_STALE", "Invalid buffer lease generation")));
+        }
+        if self.observe_memory_epoch() != self.lease_epoch {
+            return Err(error_to_js(BridgeError::new(
+                "WASM_MEMORY_CHANGED", "Memory changed during the lease; end it and acquire a new lease",
+            )));
         }
         // SAFETY: storage is immutable while leased. The caller is responsible
         // for synchronous lifetime and memory-epoch rules, as documented above.
@@ -181,15 +205,24 @@ impl ByteLeaseBuffer {
     }
 
     pub fn metadata(&self) -> Result<JsValue, JsValue> {
+        if self.leased {
+            return Err(error_to_js(BridgeError::new(
+                "WASM_LEASE_ACTIVE", "Read allocating metadata before beginning a lease",
+            )));
+        }
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Metadata<'a> {
             owner_id: u32, generation: u32, byte_length: usize,
-            access: &'static str, transfer: &'a BoundaryCopyStats,
+            element_type: &'static str, byte_offset: usize, length: usize,
+            memory_epoch: u32, access: &'static str, transfer: &'a BoundaryCopyStats,
         }
+        let bytes = self.as_slice()?;
         to_control(&Metadata {
             owner_id: self.owner, generation: self.generation,
-            byte_length: self.as_slice()?.len(), access: "read", transfer: &self.stats,
+            byte_length: bytes.len(), element_type: "u8", byte_offset: bytes.as_ptr() as usize,
+            length: bytes.len(), memory_epoch: self.observe_memory_epoch(),
+            access: "read", transfer: &self.stats,
         })
     }
 
@@ -197,6 +230,7 @@ impl ByteLeaseBuffer {
         if self.leased {
             return Err(error_to_js(BridgeError::new("WASM_LEASE_ACTIVE", "Cannot dispose an active buffer lease")));
         }
+        self.as_slice()?;
         self.bytes = None;
         self.generation = self.generation.wrapping_add(1).max(1);
         Ok(())

@@ -3,7 +3,7 @@ use js_sys::{Float64Array, Uint8Array, Uint32Array};
 use office_wasm_bridge::{
     BoundaryCopyStats, BridgeError, CONTROL_VERSION, TaskControl, TaskKind,
     copy_bytes_in, copy_indices_out, copy_numbers_in, error_to_js, from_control,
-    to_control, yield_to_browser,
+    reject_linear_memory_input, to_control, yield_to_browser,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -62,6 +62,8 @@ pub struct NumericAggregator {
 pub fn create_numeric_aggregate(
     values: Float64Array, states: Uint8Array, control: JsValue,
 ) -> Result<NumericAggregator, JsValue> {
+    reject_linear_memory_input(&values.buffer())?;
+    reject_linear_memory_input(&states.buffer())?;
     let context: TaskControl = from_control(control)?;
     context.validate(TaskKind::Aggregate).map_err(error_to_js)?;
     validate_inputs(&values, &states, &context, 0)?;
@@ -163,10 +165,15 @@ pub struct NumericIndexSort {
 pub fn create_numeric_sort(
     values: Float64Array, states: Uint8Array, control: JsValue,
 ) -> Result<NumericIndexSort, JsValue> {
+    reject_linear_memory_input(&values.buffer())?;
+    reject_linear_memory_input(&states.buffer())?;
     let params: SortControl = from_control(control)?;
     params.context.validate(TaskKind::Sort).map_err(error_to_js)?;
     if params.row_count as usize > crate::MAX_ROWS || params.directions.len() > crate::MAX_KEYS {
         return Err(js_error(ComputeError::memory()));
+    }
+    if params.directions.is_empty() || params.row_count as usize * params.directions.len() != values.length() as usize {
+        return Err(js_error(ComputeError::invalid("Invalid column-major sort dimensions")));
     }
     let indices_bytes = params.row_count as usize * 8;
     validate_inputs(&values, &states, &params.context, indices_bytes + params.directions.len())?;
@@ -205,10 +212,16 @@ pub struct NumericIndexFilter {
 pub fn create_numeric_filter(
     values: Float64Array, states: Uint8Array, control: JsValue,
 ) -> Result<NumericIndexFilter, JsValue> {
+    reject_linear_memory_input(&values.buffer())?;
+    reject_linear_memory_input(&states.buffer())?;
     let params: FilterControl = from_control(control)?;
     params.context.validate(TaskKind::Filter).map_err(error_to_js)?;
     if params.row_count as usize > crate::MAX_ROWS || params.operators.len() > crate::MAX_KEYS {
         return Err(js_error(ComputeError::memory()));
+    }
+    if params.operators.is_empty() || params.row_count as usize * params.operators.len() != values.length() as usize
+        || params.lower.len() != params.operators.len() || params.upper.len() != params.operators.len() {
+        return Err(js_error(ComputeError::invalid("Invalid column-major filter dimensions or operands")));
     }
     let extra_bytes = params.row_count as usize * 4
         + params.operators.len() + (params.lower.len() + params.upper.len()) * 8;

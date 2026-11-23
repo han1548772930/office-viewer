@@ -135,9 +135,11 @@ function addBlockPermissionTargets(model: DocumentModel, blockId: string, result
   const block = ancestry?.at(-1)
   if (!block) return
   const sectionId = sectionIdForBlock(model, ancestry![0]!.id)
-  result.set(`paragraph:${block.id}`, { scope: 'paragraph', id: block.id })
   result.set(`section:${sectionId}`, { scope: 'section', id: sectionId })
-  for (const ancestor of ancestry!) if (isPermissionEntity(ancestor)) result.set(`entity:${ancestor.id}`, { scope: 'entity', id: ancestor.id })
+  for (const ancestor of ancestry!) {
+    result.set(`paragraph:${ancestor.id}`, { scope: 'paragraph', id: ancestor.id })
+    if (isPermissionEntity(ancestor)) result.set(`entity:${ancestor.id}`, { scope: 'entity', id: ancestor.id })
+  }
 }
 
 /** Global body operations use the same section/table/paragraph scopes as selected edits. */

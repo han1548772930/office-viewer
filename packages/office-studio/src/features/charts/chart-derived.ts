@@ -4,6 +4,7 @@ import { resolveChartType } from './chart-catalog'
 import { normalizedChartValues } from './chart-data'
 import { chartSeriesStyle } from './chart-options'
 import { formatChartNumber } from './chart-geometry'
+import { chartFiniteSum, finiteChartValue } from './chart-math'
 import {
   chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, chartWaterfall,
   type BoxplotData, type ChartErrorInterval, type HistogramData, type ParetoData, type TrendlineData, type WaterfallPoint,
@@ -43,6 +44,7 @@ export function chartSeriesKind(chart: ChartModel, field: number, index: number)
     const type = chartSeriesStyle(chart, field, index).type ?? (index === 0 ? 'column' : 'line')
     return { type: type.startsWith('column') ? 'column' : type.startsWith('area') ? 'area' : 'line', stacked: type.endsWith('Stacked') }
   }
+  if (descriptor.family === 'histogram' || descriptor.family === 'pareto') return { type: 'column', stacked: false }
   return { type: descriptor.family === 'bar' ? 'bar' : descriptor.family === 'column' ? 'column' : descriptor.family === 'area' ? 'area' : 'line', stacked: descriptor.stacked ?? false }
 }
 
@@ -89,16 +91,19 @@ function aggregateChartCategories(data: ChartData, chart: ChartModel): ChartData
   })
   let entries = [...groups.values()].map(indexes => ({
     category: data.categories[indexes[0]!]!, indexes,
-    values: data.series.map(series => indexes.reduce<number | null>((sum, index) => series.values[index] == null ? sum : (sum ?? 0) + series.values[index]!, null)),
+    values: data.series.map(series => { const values = indexes.map(index => series.values[index]).filter((value): value is number => value != null); return values.length ? chartFiniteSum(values, '图表分类合计') : null }),
   }))
   if (options.topN) {
     const top = options.topN
-    const sorted = [...entries].sort((a, b) => b.values.reduce<number>((sum, value) => sum + Math.abs(value ?? 0), 0) - a.values.reduce<number>((sum, value) => sum + Math.abs(value ?? 0), 0) || a.indexes[0]! - b.indexes[0]!)
+    let scale = 1
+    for (const entry of entries) for (const value of entry.values) scale = Math.max(scale, Math.abs(value ?? 0))
+    const weight = (values: Array<number | null>): number => values.reduce((sum, value) => sum + Math.abs(value ?? 0) / scale, 0)
+    const sorted = [...entries].sort((a, b) => weight(b.values) - weight(a.values) || a.indexes[0]! - b.indexes[0]!)
     const retained = sorted.slice(0, top.count), remaining = sorted.slice(top.count)
     entries = retained
     if (top.includeOthers && remaining.length) entries.push({
       category: top.othersLabel ?? '其他', indexes: remaining.flatMap(entry => entry.indexes),
-      values: data.series.map((_series, seriesIndex) => remaining.reduce<number | null>((sum, entry) => entry.values[seriesIndex] === null ? sum : (sum ?? 0) + entry.values[seriesIndex]!, null)),
+      values: data.series.map((_series, seriesIndex) => { const values = remaining.map(entry => entry.values[seriesIndex]).filter((value): value is number => value != null); return values.length ? chartFiniteSum(values, '图表其他分类合计') : null }),
     })
   }
   return { categories: entries.map(entry => entry.category), fields: data.fields,
@@ -111,16 +116,16 @@ export interface ChartCompoundPieData { primary: ChartPiePart[]; secondary: Char
 export function chartCompoundPieData(data: ChartData, chart: ChartModel): ChartCompoundPieData {
   const source = data.series[0]!, parts = data.categories.map((category, index) => ({ category, index, value: Math.max(0, source.values[index] ?? 0) }))
   const split = chart.options?.pie?.secondaryPlot?.split ?? { type: 'auto' as const }
-  const total = parts.reduce((sum, part) => sum + part.value, 0)
+  const scale = parts.reduce((max, part) => Math.max(max, part.value), 0) || 1, total = parts.reduce((sum, part) => sum + part.value / scale, 0)
   const secondary = parts.filter((part, index) => split.type === 'custom' ? split.pointIndexes?.includes(index)
     : split.type === 'value' ? part.value < (split.lessThan ?? 0)
-      : split.type === 'percentage' ? total > 0 && part.value * 100 / total < (split.lessThan ?? 10)
+      : split.type === 'percentage' ? total > 0 && (part.value / scale) / total * 100 < (split.lessThan ?? 10)
         : index >= Math.max(1, parts.length - (split.count ?? Math.max(1, Math.min(3, Math.ceil(parts.length / 3))))))
   if (!secondary.length || secondary.length === parts.length) throw new RangeError('复合饼图须同时保留主图和副图的项目。请调整拆分规则。')
   const indices = new Set(secondary.map(part => part.index))
   const aggregateIndex = parts.length
   const primary = parts.filter(part => !indices.has(part.index))
-  primary.push({ category: chart.options?.pie?.aggregateLabel ?? '其他', value: secondary.reduce((sum, part) => sum + part.value, 0), index: aggregateIndex })
+  primary.push({ category: chart.options?.pie?.aggregateLabel ?? '其他', value: finiteChartValue(chartFiniteSum(secondary.map(part => part.value)), '复合饼图副图合计'), index: aggregateIndex })
   return { primary, secondary, aggregateIndex }
 }
 

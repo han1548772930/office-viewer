@@ -2,7 +2,7 @@ use crate::model::{ParseEnvelope, ParseFailure};
 use crate::parser::{parse_document_bytes, parse_excel_bytes, parse_office_bytes};
 use office_wasm_bridge::{
     BoundaryCopyStats, TaskControl, TaskKind, CONTROL_VERSION,
-    copy_bytes_in, error_to_js, from_control, to_control, yield_to_browser,
+    copy_bytes_in, error_to_js, from_control, reject_linear_memory_input, to_control, yield_to_browser,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -25,6 +25,7 @@ fn to_js_error(error: ParseFailure) -> JsValue {
 type Parser = fn(&[u8], &str) -> Result<ParseEnvelope, ParseFailure>;
 
 async fn parse(bytes: js_sys::Uint8Array, file_name: String, control: JsValue, parser: Parser) -> Result<JsValue, JsValue> {
+    reject_linear_memory_input(&bytes.buffer())?;
     let context: TaskControl = from_control(control)?;
     context.validate(TaskKind::Parse).map_err(error_to_js)?;
     context.budget.check_input(bytes.length() as usize).map_err(error_to_js)?;

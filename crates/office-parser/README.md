@@ -1,21 +1,29 @@
 # office-parser
 
 `office-parser` is the Rust/WASM boundary used by the Vue workbench. It parses
-real Office bytes and returns a versioned JSON DTO; the browser renderer does
+real Office bytes and returns a versioned structured DTO; the browser renderer does
 not depend on internal Rust structs.
 
 ## WASM API
 
-The crate exports three synchronous `wasm-bindgen` functions:
+The crate exposes protocol 2 and three asynchronous `wasm-bindgen` functions:
 
 ```ts
-parse_office(bytes: Uint8Array, fileName: string): string
-parse_excel(bytes: Uint8Array, fileName: string): string
-parse_document(bytes: Uint8Array, fileName: string): string
+parser_protocol_version(): 2
+parse_office(bytes: Uint8Array, fileName: string, context: TaskControl): Promise<ParseResult>
+parse_excel(bytes: Uint8Array, fileName: string, context: TaskControl): Promise<ParseResult>
+parse_document(bytes: Uint8Array, fileName: string, context: TaskControl): Promise<ParseResult>
 ```
 
-Successful calls return an envelope with this shape (Rust fields are serialized
-as camelCase):
+`TaskControl` contains `protocolVersion: 2`, `requestId`, `unitId`,
+`baseRevision`, `kind: 'parse'`, and byte budgets
+`{ maxInputBytes, maxOutputBytes, maxWorkingBytes }`.
+`ParseResult` contains `{ context, envelope, transfer }`. `transfer` records
+JS/WASM copies and DTO conversions; it does not claim end-to-end zero-copy.
+Older generated artifacts are rejected by the Worker and must be rebuilt.
+
+The structured `envelope` has this shape (shown as JSON for documentation;
+Rust fields are serialized as camelCase):
 
 ```json
 {
@@ -39,8 +47,8 @@ as camelCase):
 ```
 
 `payload.modelType` is `spreadsheet` or `document`, and the corresponding
-value is in `payload.data`. On failure the synchronous call throws a JSON
-string:
+value is in `payload.data`. On failure the Promise rejects with a structured
+object:
 
 ```json
 {
@@ -52,6 +60,10 @@ string:
   }
 }
 ```
+
+The parser yields through the shared browser/Worker timer before entering the
+synchronous parsing kernel. Cancellation during the kernel terminates and
+recreates the Worker; an asynchronous binding alone does not make it cooperative.
 
 The spreadsheet DTO uses zero-based row and column coordinates. It retains the
 typed value, `dataType`, formula source, cached formula type, formatted display

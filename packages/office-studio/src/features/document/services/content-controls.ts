@@ -3,7 +3,7 @@ import type {
   DocumentContentControl,
   DocumentModel,
 } from '../../../domain/model'
-import { documentTextFields, insertDocumentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentTextFieldParagraphs, documentTextFields, insertDocumentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit, type DocumentTextFieldParagraph } from '../model/document-text-fields'
 import {
   compactRuns,
   createParagraph,
@@ -153,7 +153,7 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
       const tail = tailIndex >= 0 ? container[tailIndex] : undefined
       if (tail) {
         const prefixLength = runText(anchor.runs as DocumentRun[]).length
-        transformDocumentTextFieldsForBlockRangeEdit([anchor, tail], prefixLength, 0, '', [anchor])
+        transformDocumentTextFieldsForBlockRangeEdit([anchor, tail], prefixLength, 0, '', [anchor], undefined, model)
         anchor.runs = compactRuns([...(anchor.runs as DocumentRun[]), ...(tail.runs as DocumentRun[])])
         for (const candidate of model.contentControls ?? []) {
           if (candidate.blockId !== tail.id) continue
@@ -226,10 +226,11 @@ export function replacePictureContentControlImage(model: DocumentModel, id: stri
   tail.level = block.level
   tail.metadata = { ...block.metadata }
   delete tail.metadata.html
+  delete tail.metadata.documentTextFields
   tail.runs = sliceRuns(runs, endOffset)
   const fieldSource = { ...block, metadata: { ...block.metadata } }
-  setDocumentTextFields(fieldSource, documentTextFields(block).filter(field => field.startOffset < startOffset || field.endOffset > endOffset))
-  transformDocumentTextFieldsForBlockRangeEdit([fieldSource], startOffset, endOffset, '\n', [fieldSource, tail])
+  setDocumentTextFields(fieldSource, documentTextFields(block).filter(field => field.endBlockId !== undefined && field.endBlockId !== block.id || field.startOffset < startOffset || field.endOffset > endOffset))
+  transformDocumentTextFieldsForBlockRangeEdit([fieldSource], startOffset, endOffset, '\n', [fieldSource, tail], undefined, model)
   block.metadata = fieldSource.metadata
   model.contentControls = controls.filter(candidate => !removedIds.has(candidate.id))
   setTargetRuns(model, target, sliceRuns(runs, 0, startOffset))
@@ -278,9 +279,9 @@ export function duplicateRepeatingSectionItem(model: DocumentModel, id: string):
   const textLength = item.endOffset - item.startOffset
   const insertionOffset = item.endOffset
   const paragraph = findBlock(model, item.blockId)!
-  const copiedFields = documentTextFields(paragraph).filter(field => field.startOffset >= item.startOffset && field.endOffset <= item.endOffset)
+  const copiedFields = documentTextFields(paragraph).filter(field => (field.endBlockId === undefined || field.endBlockId === paragraph.id) && field.startOffset >= item.startOffset && field.endOffset <= item.endOffset)
     .map(field => ({ ...field, id: documentId('field'), startOffset: field.startOffset - item.startOffset, endOffset: field.endOffset - item.startOffset }))
-  transformDocumentTextFieldsForBlockEdit(paragraph, insertionOffset, insertionOffset, runText(text))
+  transformDocumentTextFieldsForBlockEdit(paragraph, insertionOffset, insertionOffset, runText(text), undefined, model)
   setTargetRuns(model, target, [
     ...sliceRuns(runs, 0, insertionOffset),
     ...text,
@@ -340,8 +341,8 @@ export function deleteRepeatingSectionItem(model: DocumentModel, id: string): vo
     throw new RangeError(`Repeating-section deletion cannot split another content control: ${control.id}`)
   }
   const paragraph = findBlock(model, item.blockId)!
-  const removedFields = new Set(documentTextFields(paragraph).filter(field => field.startOffset >= startOffset && field.endOffset <= endOffset).map(field => field.id))
-  transformDocumentTextFieldsForBlockEdit(paragraph, startOffset, endOffset, '')
+  const removedFields = new Set(documentTextFields(paragraph).filter(field => (field.endBlockId === undefined || field.endBlockId === paragraph.id) && field.startOffset >= startOffset && field.endOffset <= endOffset).map(field => field.id))
+  transformDocumentTextFieldsForBlockEdit(paragraph, startOffset, endOffset, '', undefined, model)
   setTargetRuns(model, target, [
     ...sliceRuns(runs, 0, startOffset),
     ...sliceRuns(runs, endOffset),
@@ -550,6 +551,46 @@ export function assertContentControlBlockRemovable(model: DocumentModel, blockId
   for (const control of controls) removeControlTreeFromModel(model, control)
 }
 
+/** Map SDT wrappers after a field result merges several ordinary paragraphs. */
+export function transformContentControlsForBodyRangeEdit(
+  model: DocumentModel,
+  sourceParagraphs: readonly DocumentTextFieldParagraph[],
+  startOffset: number,
+  endOffset: number,
+  replacementLength: number,
+): void {
+  if (!model.contentControls?.length) return
+  const source = new Map(sourceParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
+  const destination = documentTextFieldParagraphs(model)
+  const next = getDocumentContentControls(model), delta = replacementLength - (endOffset - startOffset)
+  const insertion = startOffset === endOffset
+  for (const control of next) {
+    const paragraph = source.get(control.blockId)
+    if (!paragraph) continue
+    const from = paragraph.absoluteStart + control.startOffset, to = paragraph.absoluteStart + control.endOffset
+    if (isContentControlLockedAtEdit(model, control, startOffset - paragraph.absoluteStart, endOffset - paragraph.absoluteStart, insertion)) {
+      throw new Error(`Content control content is locked: ${control.id}`)
+    }
+    let start = from, end = to
+    if (insertion) {
+      if (startOffset <= from) { start += replacementLength; end += replacementLength }
+      else if (startOffset < to) end += replacementLength
+    } else if (endOffset <= from) { start += delta; end += delta }
+    else if (startOffset < to && from < endOffset) {
+      start = from >= startOffset ? startOffset : from
+      end = to >= endOffset ? to + delta : startOffset + replacementLength
+      if (end < start) end = start
+    }
+    const first = destination.find(candidate => start >= candidate.absoluteStart && start <= candidate.absoluteEnd)
+    const last = destination.find(candidate => end >= candidate.absoluteStart && end <= candidate.absoluteEnd)
+    if (!first || !last || first.block.id !== last.block.id) throw new RangeError(`字段更新无法把内容控件 ${control.id} 映射到同一段落。`)
+    control.blockId = first.block.id
+    control.startOffset = start - first.absoluteStart
+    control.endOffset = end - last.absoluteStart
+  }
+  model.contentControls = next
+}
+
 function replaceControlText(model: DocumentModel, control: DocumentContentControl, value: string): void {
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
@@ -571,7 +612,7 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
   const source = runs.find((run) => run.text.length > 0) ?? createRun()
   const { id: _id, text: _text, ...inherited } = source
   const inserted: DocumentRun[] = value ? [createRun(value, inherited)] : []
-  transformDocumentTextFieldsForBlockEdit(findBlock(model, control.blockId)!, control.startOffset, control.endOffset, value)
+  transformDocumentTextFieldsForBlockEdit(findBlock(model, control.blockId)!, control.startOffset, control.endOffset, value, undefined, model)
   setTargetRuns(model, target, compactRuns([...prefix, ...inserted, ...suffix]))
   const delta = value.length - oldLength
   if (delta === 0) return

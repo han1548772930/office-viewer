@@ -40,6 +40,14 @@ export const useHistoryStore = defineStore('content-history', () => {
       return { unitId: id, revision: after, generation: target.generation }
     } finally { end(id) }
   }
+  /** Publish derived document caches under the same reentrancy guard without
+   * changing the content revision, dirty state, savepoint or redo branch.
+   */
+  function publishDerived(id: string, publish: () => void): void {
+    unit(id)
+    begin(id)
+    try { publish() } finally { end(id) }
+  }
   /** Only the exact, applied top entry can be changed by a recent-paste option. */
   function canAmend(id: string, savepoint: HistorySavepoint): boolean {
     const target = units[id], entry = target?.undo.at(-1)
@@ -110,5 +118,5 @@ export const useHistoryStore = defineStore('content-history', () => {
     return true
   }
   function isDirty(id: string): boolean { const target = units[id]; return Boolean(target && target.revision !== target.savedRevision) }
-  return { units, activeUnit, applyingDepth, canUndo, canRedo, isApplying, activate, execute, canAmend, amend, amendWithReceipt, undo, redo, clear, captureSavepoint, markSaved, isDirty }
+  return { units, activeUnit, applyingDepth, canUndo, canRedo, isApplying, activate, execute, publishDerived, canAmend, amend, amendWithReceipt, undo, redo, clear, captureSavepoint, markSaved, isDirty }
 })

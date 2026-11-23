@@ -1,6 +1,8 @@
 import type { ChartErrorBarOptions, ChartModel, ChartSemanticOptions, ChartTrendlineOptions } from '../../domain/model'
 import type { ChartData, ChartSeriesData } from './chart-engine'
 import { chartNumber } from './chart-data'
+import { chartFiniteSum, chartInterpolate, chartScaledMoments, finiteChartValue } from './chart-math'
+import { validateChartOptions } from './chart-options'
 
 export interface HistogramBin { kind: 'underflow' | 'regular' | 'overflow'; lowerBound?: number; upperBound?: number; count: number }
 export interface HistogramData { validSampleCount: number; bins: HistogramBin[] }
@@ -12,6 +14,7 @@ export interface ChartErrorInterval { categoryIndex: number; x: number; y: numbe
 
 /** Small-data reference contract. Worker/Rust must use the same boundaries and statistics. */
 export function chartHistogram(samples: readonly number[], options: ChartSemanticOptions['histogram'] = {}): HistogramData {
+  validateChartOptions({ histogram: options })
   const valid = samples.filter(Number.isFinite)
   if (!valid.length) return { validSampleCount: 0, bins: [] }
   const regular = valid.filter(value => (options.underflowThreshold === undefined || value > options.underflowThreshold)
@@ -23,19 +26,24 @@ export function chartHistogram(samples: readonly number[], options: ChartSemanti
     for (const value of regular) { min = Math.min(min, value); max = Math.max(max, value) }
     const lower = options.underflowThreshold ?? min
     const upper = options.overflowThreshold ?? max
-    const range = Math.max(0, upper - lower)
-    const mean = regular.reduce((sum, value) => sum + value / regular.length, 0)
-    const variance = regular.reduce((sum, value) => sum + (value - mean) ** 2 / regular.length, 0)
-    const scottWidth = 3.5 * Math.sqrt(variance) / Math.cbrt(regular.length)
+    const moments = chartScaledMoments(regular), scale = Math.max(Math.abs(lower), Math.abs(upper), moments.scale)
+    const range = upper / scale - lower / scale
+    const scottWidth = 3.5 * Math.sqrt(moments.scaledVariance) * (moments.scale / scale) / Math.cbrt(regular.length)
     const defaultCount = range === 0 ? 1 : Math.max(1, Math.ceil(range / (scottWidth > 0 ? scottWidth : range / Math.sqrt(regular.length))))
-    const count = options.binning?.mode === 'count' ? options.binning.count : options.binning?.mode === 'width' ? Math.max(1, Math.ceil(range / options.binning.width)) : defaultCount
+    const count = range === 0 ? 1 : options.binning?.mode === 'count' ? options.binning.count : options.binning?.mode === 'width' ? Math.max(1, Math.ceil(range / (options.binning.width / scale))) : defaultCount
     if (!Number.isSafeInteger(count) || count < 1 || count > 10_000) throw new RangeError('直方图分箱数量须位于 1 到 10000。')
-    const width = options.binning?.mode === 'width' ? options.binning.width : range > 0 ? range / count : Math.max(1, Math.abs(lower) * 0.1)
-    const entries = Array.from({ length: count }, (_unused, index): HistogramBin => ({ kind: 'regular', lowerBound: lower + index * width, upperBound: lower + (index + 1) * width, count: 0 }))
+    const boundary = (index: number): number => {
+      if (options.binning?.mode === 'width') return finiteChartValue((lower / scale + index * (options.binning.width / scale)) * scale, '直方图箱边界')
+      if (range > 0) return chartInterpolate(lower, upper, index / count)
+      const last = lower + Math.max(1, Math.abs(lower) * 0.1)
+      return index === 0 || !Number.isFinite(last) ? lower : last
+    }
+    const entries = Array.from({ length: count }, (_unused, index): HistogramBin => ({ kind: 'regular', lowerBound: boundary(index), upperBound: boundary(index + 1), count: 0 }))
     for (const value of regular) {
       // The first interval includes its lower bound; later bins are (lower, upper].
-      const index = Math.min(count - 1, Math.max(0, Math.ceil((value - lower) / width) - 1))
-      entries[index]!.count++
+      let first = 0, last = count - 1
+      while (first < last) { const middle = Math.floor((first + last) / 2); if (value <= entries[middle]!.upperBound!) last = middle; else first = middle + 1 }
+      entries[first]!.count++
     }
     bins.push(...entries)
   }
@@ -44,17 +52,20 @@ export function chartHistogram(samples: readonly number[], options: ChartSemanti
 }
 
 export function chartBoxplot(samples: readonly number[], options: ChartSemanticOptions['boxplot'] = {}): BoxplotData | undefined {
+  validateChartOptions({ boxplot: options })
   const sorted = samples.filter(Number.isFinite).sort((a, b) => a - b)
   if (!sorted.length) return undefined
   const quartile = (p: number): number => {
     const position = options.quartileMethod === 'exclusive' ? p * (sorted.length + 1) - 1 : p * (sorted.length - 1)
     const lower = Math.max(0, Math.min(sorted.length - 1, Math.floor(position))), upper = Math.max(0, Math.min(sorted.length - 1, Math.ceil(position)))
-    return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * Math.max(0, Math.min(1, position - Math.floor(position)))
+    return chartInterpolate(sorted[lower]!, sorted[upper]!, Math.max(0, Math.min(1, position - Math.floor(position))))
   }
   const q1 = quartile(0.25), q3 = quartile(0.75), median = quartile(0.5)
-  const distance = (q3 - q1) * (options.whiskerMultiplier ?? 1.5)
-  const within = sorted.filter(value => value >= q1 - distance && value <= q3 + distance)
-  return { min: within[0] ?? q1, q1, median, q3, max: within.at(-1) ?? q3, outliers: sorted.filter(value => value < q1 - distance || value > q3 + distance) }
+  const scale = Math.max(Math.abs(q1), Math.abs(q3), ...[Math.abs(sorted[0]!), Math.abs(sorted.at(-1)!)]) || 1
+  const distance = (q3 / scale - q1 / scale) * (options.whiskerMultiplier ?? 1.5)
+  const isWithin = (value: number): boolean => value / scale >= q1 / scale - distance && value / scale <= q3 / scale + distance
+  const within = sorted.filter(isWithin)
+  return { min: within[0] ?? q1, q1, median, q3, max: within.at(-1) ?? q3, outliers: sorted.filter(value => !isWithin(value)) }
 }
 
 export function chartPareto(categories: readonly string[], samples: readonly (number | null)[], includeZeroValues = false): ParetoData {
@@ -63,30 +74,33 @@ export function chartPareto(categories: readonly string[], samples: readonly (nu
     if (value === null || !Number.isFinite(value)) return
     if (value < 0) throw new RangeError('帕累托图权重不能为负数。')
     const name = categories[index] ?? String(index + 1), group = grouped.get(name) ?? { value: 0, index }
-    group.value += value; grouped.set(name, group)
+    group.value = finiteChartValue(group.value + value, '帕累托分类合计'); grouped.set(name, group)
   })
   const sorted = [...grouped].filter(([_name, group]) => includeZeroValues || group.value > 0).sort((a, b) => b[1].value - a[1].value || a[1].index - b[1].index)
-  const total = sorted.reduce((sum, [_name, group]) => sum + group.value, 0)
+  const scale = sorted[0]?.[1].value || 1
+  const total = sorted.reduce((sum, [_name, group]) => sum + group.value / scale, 0)
   let cumulative = 0
-  return { categories: sorted.map(([name]) => name), values: sorted.map(([_name, group]) => group.value), cumulativePercent: sorted.map(([_name, group]) => { cumulative += group.value; return total ? cumulative * 100 / total : 0 }) }
+  return { categories: sorted.map(([name]) => name), values: sorted.map(([_name, group]) => group.value), cumulativePercent: sorted.map(([_name, group], index) => { cumulative += group.value / scale; return total ? index === sorted.length - 1 ? 100 : Math.min(100, cumulative / total * 100) : 0 }) }
 }
 
 export function chartWaterfall(series: ChartSeriesData, chart: ChartModel): WaterfallPoint[] {
+  validateChartOptions({ waterfall: chart.options?.waterfall })
   let running = 0
   return series.values.map((value, categoryIndex) => {
-    const numeric = value ?? 0
+    const numeric = finiteChartValue(value ?? 0, '瀑布图数据')
     const role = chart.options?.waterfall?.pointRoles?.find(point => point.seriesIndex === series.field && point.dataPointIndex === categoryIndex)?.role ?? 'change'
     const start = role === 'total' ? 0 : running
-    const end = role === 'total' ? numeric : running + numeric
+    const end = role === 'total' ? numeric : finiteChartValue(running + numeric, '瀑布图累计值')
     running = end
     return { start, end, value: numeric, role, categoryIndex }
   })
 }
 
 export function chartTrendline(series: ChartSeriesData, options: ChartTrendlineOptions): TrendlineData {
+  validateChartOptions({ trendlines: [options] })
   const pairs = series.values.flatMap((y, index): Array<[number, number]> => {
-    const x = series.xValues?.[index] ?? index + 1
-    if (y === null || x === null || !Number.isFinite(x) || !Number.isFinite(y)) return []
+    const x = series.xValues === undefined ? index + 1 : series.xValues[index]
+    if (y === null || x == null || !Number.isFinite(x) || !Number.isFinite(y)) return []
     if ((options.type === 'log' || options.type === 'pow') && x <= 0 || (options.type === 'exp' || options.type === 'pow') && y <= 0) return []
     return [[x, y]]
   })
@@ -95,8 +109,10 @@ export function chartTrendline(series: ChartSeriesData, options: ChartTrendlineO
     const points: Array<[number, number]> = []
     for (let index = period - 1; index < series.values.length; index++) {
       const values = series.values.slice(index - period + 1, index + 1)
-      if (values.some(value => value === null)) continue
-      points.push([series.xValues?.[index] ?? index + 1, values.reduce<number>((sum, value) => sum + (value ?? 0), 0) / period])
+      const x = series.xValues === undefined ? index + 1 : series.xValues[index]
+      if (x == null || !Number.isFinite(x) || values.some(value => value === null || !Number.isFinite(value))
+        || series.xValues?.slice(index - period + 1, index + 1).some(value => value == null || !Number.isFinite(value))) continue
+      points.push([x, chartFiniteSum(values.map(value => value! / period), '移动平均')])
     }
     return { points }
   }
@@ -119,7 +135,7 @@ export function chartTrendline(series: ChartSeriesData, options: ChartTrendlineO
   }
   let minX = pairs[0]![0], maxX = minX
   for (const [x] of pairs) { minX = Math.min(minX, x); maxX = Math.max(maxX, x) }
-  const points = Array.from({ length: 33 }, (_unused, index): [number, number] => { const x = minX + (maxX - minX) * index / 32; return [x, predict(x)] }).filter(([_x, y]) => Number.isFinite(y))
+  const points = Array.from({ length: 33 }, (_unused, index): [number, number] => { const x = chartInterpolate(minX, maxX, index / 32); return [x, predict(x)] }).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
   const meanY = pairs.reduce((sum, [_x, y]) => sum + y / pairs.length, 0)
   const total = pairs.reduce((sum, [_x, y]) => sum + (y - meanY) ** 2, 0), residual = pairs.reduce((sum, [x, y]) => sum + (y - predict(x)) ** 2, 0)
   const slope = coefficients[1]! / scale, intercept = coefficients[0]! - slope * meanX
@@ -154,21 +170,24 @@ function polynomialFit(xs: number[], ys: number[], degree: number): number[] | u
 }
 
 export function chartErrorIntervals(data: ChartData, series: ChartSeriesData, options: ChartErrorBarOptions): ChartErrorInterval[] {
+  validateChartOptions({ errorBars: [options] })
   const samples = (options.direction === 'x' ? series.xValues ?? [] : series.values).filter((value): value is number => value !== null && Number.isFinite(value))
   if (!samples.length) return []
-  const mean = samples.reduce((sum, value) => sum + value / samples.length, 0)
-  const deviation = samples.length > 1 ? Math.sqrt(samples.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (samples.length - 1)) : 0
+  const moments = chartScaledMoments(samples)
+  const deviation = samples.length > 1 ? finiteChartValue(moments.deviation * Math.sqrt(samples.length / (samples.length - 1)), '样本标准差') : 0
   const factor = options.value ?? 1
   return series.values.flatMap((y, categoryIndex) => {
-    const x = series.xValues?.[categoryIndex] ?? categoryIndex
-    if (y === null || x === null || !Number.isFinite(x) || !Number.isFinite(y)) return []
+    const x = series.xValues === undefined ? categoryIndex : series.xValues[categoryIndex]
+    if (y === null || x == null || !Number.isFinite(x) || !Number.isFinite(y)) return []
     const target = options.direction === 'x' ? x : y
-    const error = options.valueType === 'fixedVal' ? factor : options.valueType === 'percentage' ? Math.abs(target) * factor / 100
+    const error = options.valueType === 'fixedVal' ? factor : options.valueType === 'percentage' ? Math.abs(target) * (factor / 100)
       : options.valueType === 'stdDev' ? deviation * factor : options.valueType === 'stdErr' ? deviation / Math.sqrt(samples.length) * factor : 0
     const record = data.records?.[categoryIndex]
     const plus = options.valueType === 'cust' ? options.plusIndex === undefined ? 0 : chartNumber(record?.[options.plusIndex]) ?? 0 : error
     const minus = options.valueType === 'cust' ? options.minusIndex === undefined ? 0 : chartNumber(record?.[options.minusIndex]) ?? 0 : error
     if (plus < 0 || minus < 0) throw new RangeError('自定义误差值不能为负数。')
+    finiteChartValue(plus, '正误差值'); finiteChartValue(minus, '负误差值')
+    finiteChartValue(target + plus, '误差上界'); finiteChartValue(target - minus, '误差下界')
     return [{ categoryIndex, x, y, plus: options.type === 'minus' ? 0 : plus, minus: options.type === 'plus' ? 0 : minus }]
   })
 }

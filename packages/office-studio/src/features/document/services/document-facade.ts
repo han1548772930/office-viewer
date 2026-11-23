@@ -418,7 +418,7 @@ function replaceAcrossBlocks(
   })
 
   const removeCount = endRef.index - startRef.index
-  transformDocumentTextFieldsForBlockRangeEdit(startRef.container.slice(startRef.index, endRef.index + 1), start.offset, end.offset, lines.join('\n'), [first, ...additions])
+  transformDocumentTextFieldsForBlockRangeEdit(startRef.container.slice(startRef.index, endRef.index + 1), start.offset, end.offset, lines.join('\n'), [first, ...additions], undefined, model)
   setTargetRuns(model, start, [
     ...prefix,
     ...(lines[0] ? [createRun(lines[0], inherited)] : []),
@@ -453,7 +453,7 @@ function replaceWithinBlock(
       firstBreakOffset: start.offset + normalizedText.indexOf('\n'),
       lastParagraphOffset: start.offset + normalizedText.lastIndexOf('\n') + 1,
     } : undefined)
-  transformDocumentTextFieldsForBlockRangeEdit([reference.block], start.offset, end.offset, normalizedText, [reference.block, ...additions])
+  transformDocumentTextFieldsForBlockRangeEdit([reference.block], start.offset, end.offset, normalizedText, [reference.block, ...additions], undefined, model)
   setTargetRuns(model, start, [
     ...prefix,
     ...(lines[0] ? [createRun(lines[0], inherited)] : []),

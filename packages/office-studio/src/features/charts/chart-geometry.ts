@@ -1,6 +1,7 @@
 import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
-import { parseColor } from '../../rendering/geometry'
+import { chartColorChannels } from './chart-color'
+import { chartInterpolate, chartLinearRatio } from './chart-math'
 
 export interface ChartVector { x: number; y: number }
 export interface ChartVector3 extends ChartVector { z: number }
@@ -11,12 +12,12 @@ export function chartFont(font: ChartFontOptions = {}, size = 11): string {
 
 export function chartColorOpacity(color: string, opacity = 1): string {
   if (opacity >= 1) return color
-  const [r, g, b, a] = parseColor(color)
+  const [r, g, b, a] = chartColorChannels(color)
   return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a * opacity})`
 }
 
 export function chartShade(color: string, factor: number): string {
-  const [r, g, b, a] = parseColor(color)
+  const [r, g, b, a] = chartColorChannels(color)
   return `rgba(${Math.round(Math.min(1, r * factor) * 255)}, ${Math.round(Math.min(1, g * factor) * 255)}, ${Math.round(Math.min(1, b * factor) * 255)}, ${a})`
 }
 
@@ -65,14 +66,14 @@ export function chartAxisExtent(values: readonly number[], axis: ChartAxisOption
 export function chartAxisRatio(value: number, min: number, max: number, axis: ChartAxisOptions): number {
   const ratio = axis.scaleType === 'log'
     ? (Math.log(value) - Math.log(min)) / (Math.log(max) - Math.log(min))
-    : (value - min) / (max - min)
+    : chartLinearRatio(value, min, max)
   return axis.reverse ? 1 - ratio : ratio
 }
 
 export function chartAxisTicks(min: number, max: number, axis: ChartAxisOptions): number[] {
   return Array.from({ length: 5 }, (_unused, index) => axis.scaleType === 'log'
     ? Math.exp(Math.log(min) + (Math.log(max) - Math.log(min)) * index / 4)
-    : min + (max - min) * index / 4)
+    : chartInterpolate(min, max, index / 4))
 }
 
 export function chartLine(commands: DrawCommand[], start: ChartVector, end: ChartVector, style: ChartLineOptions = {}, fallback = '#94a3b8', clip?: RenderRect): void {

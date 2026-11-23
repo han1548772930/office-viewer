@@ -9,6 +9,7 @@ import { runText, sliceRuns, tableForBlock } from '../features/document/model/do
 import { DOCUMENT_STORY_KEYS, documentStoryDefaultStyle, documentStoryFieldCache, documentStoryTextStyle, isDocumentTextBoundary, validateDocumentStoryContent, validateDocumentStoryLocks } from '../features/document/model/document-story.ts'
 import { storyBuffer } from '../features/document/services/story-editor.ts'
 import { validateDocumentOfficeSource } from './documentOfficeSource.ts'
+import { documentTextFields, documentTextFieldRanges } from '../features/document/model/document-text-fields.ts'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -50,7 +51,7 @@ function normalizeRun(value: unknown, id: string): InlineRun {
   const verticalAlign = normalizeVerticalAlign(style.verticalAlign ?? style.vertAlign ?? raw.verticalAlign)
   const highlight = normalizeDocumentHighlight(style.highlight, style.backgroundColor)
   const eastAsiaFontFamily = text(style.fontFamilyEastAsia) || text(style.resolvedFontFamilyEastAsia)
-  return {
+  const run: InlineRun = {
     id, text: text(raw.text), bold: style.bold === true, italic: style.italic === true,
     underline: style.underline === true, strike: style.strike === true,
     ...(verticalAlign ? { verticalAlign } : {}),
@@ -59,6 +60,12 @@ function normalizeRun(value: unknown, id: string): InlineRun {
     color: text(style.color, '#1f2937'), fontFamily: text(style.fontFamilyAscii) || text(style.resolvedFontFamilyAscii) || text(style.fontFamily, 'Aptos'), fontSize: positive(style.fontSizePt, 11),
     metadata: { source: raw, link: raw.link, ...(highlight ? { highlight } : {}), noteReference: raw.noteReference },
   }
+  if (raw.sourceFormat !== undefined) {
+    validateStorySourceFormat(raw.sourceFormat)
+    const { id: _id, text: _text, metadata: _metadata, ...baseline } = run
+    run.metadata = { ...run.metadata, officeTextStyleBaseline: baseline }
+  }
+  return run
 }
 function normalizeVerticalAlign(value: unknown): InlineRun['verticalAlign'] {
   if (value === 'sup' || value === 'super' || value === 'superscript') return 'superscript'
@@ -232,6 +239,11 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     }
     block.runs = []
   }
+  if (details.documentTextFields !== undefined) {
+    block.metadata.documentTextFields = details.documentTextFields
+    documentTextFields(block)
+  }
+  if (details.nativeFieldSource !== undefined) block.metadata.nativeFieldSource = details.nativeFieldSource
   return block
 }
 
@@ -304,8 +316,10 @@ function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageFiel
     const textStyle = detail.textStyle && typeof detail.textStyle === 'object'
       ? documentStoryTextStyle(normalizeRun({ text: '', style: detail.textStyle }, story+'-field'), documentStoryDefaultStyle(model).text) : undefined
     const cachedRuns = detail.cachedRuns === undefined ? undefined : normalizeStoryFieldCachedRuns(detail.cachedRuns, story+'-field-'+fieldIndex+'-cache', model)
+    for (const key of ['locked', 'containsNestedFields'] as const) if (detail[key] !== undefined && typeof detail[key] !== 'boolean') throw new TypeError(`页眉页脚字段 ${key} 必须为布尔值。`)
     const normalizedField: DocumentPageField = positioned ? { story, field, offset: finite(detail.offset), instruction: text(detail.instruction), cachedResult: text(detail.cachedResult),
       ...(textStyle ? { textStyle } : {}),
+      ...(typeof detail.locked === 'boolean' ? { locked: detail.locked } : {}), ...(typeof detail.containsNestedFields === 'boolean' ? { containsNestedFields: detail.containsNestedFields } : {}),
       ...(detail.sourceFormat !== undefined || cachedRuns !== undefined ? { metadata: { source: detail,
         ...(textStyle ? { officeStoryStyleBaseline: { ...textStyle } } : {}), ...(cachedRuns ? { officeStoryFieldCache: { version: 1, runs: cachedRuns } } : {}) } } : {}) } : { story, field }
     documentStoryFieldCache(normalizedField)
@@ -473,6 +487,7 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
     }
   }
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks
+  documentTextFieldRanges(result)
   Object.assign(result, normalizeDocumentNotes(data, result.blocks))
   result.comments = normalizeDocumentComments(data.comments, result.blocks)
   const defaultStyle = normalizeDefaultStyle(data.defaultStyle)

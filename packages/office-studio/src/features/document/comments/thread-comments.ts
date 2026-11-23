@@ -252,6 +252,7 @@ export function transformDocumentCommentAnchorsForTextEdit(
   startOffset: number,
   endOffset: number,
   insertedText: string,
+  timestamp = Date.now(),
 ): void {
   const paragraph = findParagraph(model.blocks, blockId)
   if (!paragraph) return
@@ -280,8 +281,47 @@ export function transformDocumentCommentAnchorsForTextEdit(
     }
     if (changed) {
       comment.referenceText = comment.anchor.map(anchor => anchor.text).join('\n')
-      comment.updatedAt = new Date().toISOString()
+      comment.updatedAt = new Date(timestamp).toISOString()
     }
+  }
+}
+
+/** Preserve thread identities while a body field replaces text across paragraphs. */
+export function transformDocumentCommentAnchorsForBodyRangeEdit(
+  model: DocumentModel,
+  sourceParagraphs: readonly { block: { id: string }; absoluteStart: number; absoluteEnd: number }[],
+  destinationParagraphs: readonly { block: { id: string }; text: string; absoluteStart: number; absoluteEnd: number }[],
+  startOffset: number,
+  endOffset: number,
+  insertedText: string,
+  timestamp = Date.now(),
+): void {
+  const source = new Map(sourceParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
+  const delta = insertedText.length - (endOffset - startOffset)
+  for (const comment of Object.values(model.comments ?? {})) {
+    let changed = false
+    for (const anchor of comment.anchor) {
+      const paragraph = source.get(anchor.blockId)
+      if (!paragraph) continue
+      let start = paragraph.absoluteStart + anchor.startOffset, end = paragraph.absoluteStart + anchor.endOffset
+      if (endOffset <= start) { start += delta; end += delta }
+      else if (startOffset < end && endOffset > start) {
+        start = startOffset <= start ? startOffset : start
+        end = endOffset >= end ? startOffset + insertedText.length : end + delta
+        end = Math.max(start, end)
+      } else continue
+      const first = destinationParagraphs.find(candidate => start >= candidate.absoluteStart && start <= candidate.absoluteEnd)
+      const last = destinationParagraphs.find(candidate => end >= candidate.absoluteStart && end <= candidate.absoluteEnd)
+      if (!first || !last || first.block.id !== last.block.id) throw new RangeError(`字段更新无法把批注 ${comment.id} 的锚点映射到同一段落。`)
+      const text = first.text.slice(start - first.absoluteStart, end - first.absoluteStart)
+      if (anchor.blockId === first.block.id && anchor.startOffset === start - first.absoluteStart && anchor.endOffset === end - first.absoluteStart && anchor.text === text) continue
+      anchor.blockId = first.block.id
+      anchor.startOffset = start - first.absoluteStart
+      anchor.endOffset = end - first.absoluteStart
+      anchor.text = text
+      changed = true
+    }
+    if (changed) { comment.referenceText = comment.anchor.map(anchor => anchor.text).join('\n'); comment.updatedAt = new Date(timestamp).toISOString() }
   }
 }
 

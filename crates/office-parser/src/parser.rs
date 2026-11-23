@@ -138,6 +138,10 @@ fn parse_document_impl(
     }
     if is_docx {
         crate::document_format_sidecar::restore_numbering_details(&mut document, &numbering_restoration);
+        let field_identities = archive.as_mut().map(crate::document_text_fields::read_identities).transpose()
+            .map_err(|error| ParseFailure::office_file(format!("DOCX native field identities could not be retained: {error}")))?.unwrap_or_default();
+        let warnings = crate::document_text_fields::restore(&mut document, &source_model, &field_identities);
+        document.warnings.extend(warnings);
     }
     document.warnings.extend(format_warnings);
     insert_section_breaks(&mut document, &source_model);

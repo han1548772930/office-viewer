@@ -1,4 +1,4 @@
-import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentSectionHeaderFooter } from '../../../domain/model'
+import type { DocumentModel, DocumentPageField, DocumentSectionHeaderFooter } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import { sectionStoryLinkedToPrevious } from '../model/document-section-stories'
 import { DOCUMENT_STORY_KEYS, documentStoryContent, documentStoryDefaultStyle, documentStoryFieldCache, documentStoryFieldDisplayRuns, isDocumentTextBoundary, remapDocumentStoryFieldRuns, validateDocumentStoryLocks, type DocumentStoryKey, type DocumentStoryRange, type StoryDefaultsSource } from '../model/document-story'
@@ -6,9 +6,9 @@ import { assertDocumentPermission, permissionTargetsForBlock, permissionTargetsF
 import { blockAtPoint, runText, sameTarget, sliceRuns, textTargets, type DocumentPoint, type DocumentRun, type DocumentSelection } from '../model/document-model'
 import { documentDefaultStyle } from '../model/document-default-style'
 import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
-import { documentFieldAutomaticRefreshBlocked, documentTextFieldBlocks, documentTextFieldContainsNestedRange, documentTextFieldIntersects, documentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, type DocumentTextField } from '../model/document-text-fields'
-import { getDocumentContentControls, transformContentControlsForBlockEdit } from './content-controls'
-import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
+import { documentFieldAutomaticRefreshBlocked, documentTextFieldParagraphs, documentTextFieldRangeContainsNested, documentTextFieldRangeIntersects, documentTextFieldRanges, documentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockRangeEdit, type DocumentTextFieldParagraph, type DocumentTextFieldRange } from '../model/document-text-fields'
+import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit } from './content-controls'
+import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { resolveDocumentDateTimeFieldResult } from './document-date-time-field'
 import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter } from './section-header-footer'
 import { storyBuffer } from './story-editor'
@@ -128,98 +128,148 @@ export function canRefreshDocumentStoryFields(model: DocumentModel, context: Doc
     && editableStoryDateFields(section, story, model).length > 0))
 }
 
-function bodySelectionRanges(model: DocumentModel, selection: DocumentSelection): Map<string, { start: number; end: number }> {
+interface BodySelectionRanges { start: number; end: number }
+
+function bodySelectionRanges(model: DocumentModel, selection: DocumentSelection): BodySelectionRanges {
   if (!selection || !selection.anchor || !selection.focus) throw new TypeError('正文字段更新选区无效。')
   const targets = textTargets(model)
   for (const point of [selection.anchor, selection.focus]) {
     const target = targets.find(target => sameTarget(target, point)), block = target && blockAtPoint(model, target)
     if (!block || !isDocumentTextBoundary(runText(block.runs), point.offset)) throw new RangeError('正文字段更新选区的 UTF-16 位置无效。')
   }
-  const anchor = targets.findIndex(target => sameTarget(target, selection.anchor))
-  const focus = targets.findIndex(target => sameTarget(target, selection.focus))
-  const forward = anchor < focus || anchor === focus && selection.anchor.offset <= selection.focus.offset
-  const first = forward ? anchor : focus, last = forward ? focus : anchor
-  const start = forward ? selection.anchor : selection.focus, end = forward ? selection.focus : selection.anchor
-  return new Map(targets.slice(first, last + 1).map((target, index) => {
-    const block = blockAtPoint(model, target)!
-    return [block.id, { start: index === 0 ? start.offset : 0, end: first + index === last ? end.offset : runText(block.runs).length }]
-  }))
+  const paragraphs = new Map(documentTextFieldParagraphs(model).map(paragraph => [paragraph.block.id, paragraph]))
+  const anchor = paragraphs.get(selection.anchor.cellBlockId ?? selection.anchor.blockId)
+  const focus = paragraphs.get(selection.focus.cellBlockId ?? selection.focus.blockId)
+  if (!anchor || !focus) throw new RangeError('正文字段更新选区的段落已不存在。')
+  const anchorOffset = anchor.absoluteStart + selection.anchor.offset, focusOffset = focus.absoluteStart + selection.focus.offset
+  return { start: Math.min(anchorOffset, focusOffset), end: Math.max(anchorOffset, focusOffset) }
+}
+
+/** Availability can be queried between a model update and its mapped selection. */
+function availableBodySelectionRanges(model: DocumentModel, selection: DocumentSelection): BodySelectionRanges | undefined {
+  try { return bodySelectionRanges(model, selection) }
+  catch (error) {
+    if (error instanceof RangeError || error instanceof TypeError) return undefined
+    throw error
+  }
 }
 
 export function documentBodySelectionHasField(model: DocumentModel, selection: DocumentSelection): boolean {
-  const ranges = bodySelectionRanges(model, selection)
-  return documentTextFieldBlocks(model).some(block => {
-    const range = ranges.get(block.id)
-    return range && documentTextFields(block).some(field => documentTextFieldIntersects(field, range.start, range.end))
-  })
+  const ranges = availableBodySelectionRanges(model, selection)
+  if (!ranges) return false
+  return documentTextFieldRanges(model).some(field => documentTextFieldRangeIntersects(field, ranges.start, ranges.end))
 }
 
-function bodyFieldContentEditable(model: DocumentModel, block: DocumentBlock, field: DocumentTextField): boolean {
+function bodyFieldContentEditable(model: DocumentModel, range: DocumentTextFieldRange, paragraphs: ReadonlyMap<string, DocumentTextFieldParagraph>): boolean {
   return !(model.contentControls ?? []).some(control => {
-    if (control.blockId !== block.id || !['contentLocked', 'sdtContentLocked'].includes(control.lock ?? '')) return false
-    if (control.type === 'group' && (model.contentControls ?? []).some(child => child.parentId === control.id
-      && child.startOffset <= field.startOffset && child.endOffset >= field.endOffset)) return false
-    return field.startOffset === field.endOffset
-      ? field.startOffset >= control.startOffset && field.startOffset <= control.endOffset
-      : field.startOffset < control.endOffset && control.startOffset < field.endOffset
+    const paragraph = paragraphs.get(control.blockId)
+    if (!paragraph || !['contentLocked', 'sdtContentLocked'].includes(control.lock ?? '')) return false
+    const start = paragraph.absoluteStart + control.startOffset, end = paragraph.absoluteStart + control.endOffset
+    const overlaps = range.absoluteStart === range.absoluteEnd
+      ? range.absoluteStart >= start && range.absoluteStart <= end : range.absoluteStart < end && start < range.absoluteEnd
+    if (!overlaps) return false
+    if (control.type === 'group' && (model.contentControls ?? []).some(child => child.parentId === control.id && child.blockId === control.blockId
+      && paragraph.absoluteStart + child.startOffset <= range.absoluteStart
+      && paragraph.absoluteStart + child.endOffset >= range.absoluteEnd)) return false
+    return true
   })
 }
 
-interface BodyDateField { blockId: string; field: DocumentTextField }
+function bodyFieldParagraphs(range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[]): DocumentTextFieldParagraph[] {
+  return paragraphs.filter(paragraph => paragraph.absoluteStart >= range.startParagraph.absoluteStart && paragraph.absoluteStart <= range.endParagraph.absoluteStart)
+}
 
-function bodyFieldContainsInlineEntity(block: DocumentBlock, field: DocumentTextField): boolean {
-  let offset = 0
-  return block.runs.some(run => {
-    const start = offset; offset += run.text.length
-    const nested = run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula
-    return nested && (run.text.length ? start < field.endOffset && offset > field.startOffset : start > field.startOffset && start < field.endOffset)
+function bodyFieldContainsInlineEntity(range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[]): boolean {
+  return bodyFieldParagraphs(range, paragraphs).some(paragraph => {
+    let offset = paragraph.absoluteStart
+    return paragraph.block.runs.some(run => {
+      const start = offset; offset += run.text.length
+      const nested = run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula
+      return nested && (run.text.length ? start < range.absoluteEnd && offset > range.absoluteStart : start > range.absoluteStart && start < range.absoluteEnd)
+    })
   })
 }
 
-function editableBodyDateFields(model: DocumentModel, context: DocumentPermissionContext, selection?: DocumentSelection): BodyDateField[] {
-  const ranges = selection && bodySelectionRanges(model, selection)
-  const result: BodyDateField[] = []
-  for (const block of documentTextFieldBlocks(model)) {
-    const fields = documentTextFields(block), range = ranges?.get(block.id)
-    if (ranges && !range) continue
-    for (const field of fields) {
-      if (field.field !== 'DATE' && field.field !== 'TIME' || documentFieldAutomaticRefreshBlocked(field)
-        || documentTextFieldContainsNestedRange(field, fields) || bodyFieldContainsInlineEntity(block, field)
-        || range && !documentTextFieldIntersects(field, range.start, range.end)
-        || !bodyFieldContentEditable(model, block, field)) continue
-      if (!resolveDocumentPermission(model.permissionRules ?? [], context, 'edit', [...permissionTargetsForBlock(model, block.id), { scope: 'entity', id: field.id }]).allowed) continue
-      result.push({ blockId: block.id, field })
+function bodyFieldCanMerge(range: DocumentTextFieldRange): boolean {
+  const first = range.startParagraph, last = range.endParagraph
+  return first.container === last.container && first.container.slice(first.index, last.index + 1)
+    .every(block => !['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)
+      && (first.block.id === last.block.id || block.metadata.codeBlock === undefined))
+}
+
+function editableBodyDateFields(model: DocumentModel, context: DocumentPermissionContext, selection?: BodySelectionRanges): DocumentTextFieldRange[] {
+  const paragraphs = documentTextFieldParagraphs(model), byId = new Map(paragraphs.map(paragraph => [paragraph.block.id, paragraph]))
+  const ranges = documentTextFieldRanges(model), result: DocumentTextFieldRange[] = []
+  for (const range of ranges) {
+    const field = range.field
+    if (field.field !== 'DATE' && field.field !== 'TIME' || documentFieldAutomaticRefreshBlocked(field)
+      || documentTextFieldRangeContainsNested(range, ranges) || bodyFieldContainsInlineEntity(range, paragraphs) || !bodyFieldCanMerge(range)
+      || selection && !documentTextFieldRangeIntersects(range, selection.start, selection.end)
+      || !bodyFieldContentEditable(model, range, byId)) continue
+    const targets = bodyFieldParagraphs(range, paragraphs).flatMap(paragraph => permissionTargetsForBlock(model, paragraph.block.id))
+    for (const outer of ranges) if (outer.field.id !== field.id && outer.absoluteStart <= range.absoluteStart && outer.absoluteEnd >= range.absoluteEnd) {
+      targets.push(...permissionTargetsForBlock(model, outer.block.id), { scope: 'entity', id: outer.field.id })
     }
+    if (!resolveDocumentPermission(model.permissionRules ?? [], context, 'edit', [...targets, { scope: 'entity', id: field.id }]).allowed) continue
+    result.push(range)
   }
   return result
 }
 
 export function canRefreshSelectedDocumentBodyFields(model: DocumentModel, selection: DocumentSelection, context: DocumentPermissionContext): boolean {
-  return editableBodyDateFields(model, context, selection).length > 0
+  const ranges = availableBodySelectionRanges(model, selection)
+  return !!ranges && editableBodyDateFields(model, context, ranges).length > 0
 }
 
-function bodyDateLanguage(block: DocumentBlock, field: DocumentTextField, fallback: string): string {
+function bodyDateLanguage(range: DocumentTextFieldRange, fallback: string): string {
+  const block = range.block, field = range.field
   let offset = 0
-  const first = block.runs.find(run => {
+  const first = range.absoluteStart < range.absoluteEnd && field.startOffset < range.startParagraph.text.length ? block.runs.find(run => {
     const from = offset; offset += run.text.length
     return from <= field.startOffset && offset > field.startOffset
-  })
+  }) : undefined
   if (first?.metadata?.officeStoryTextFormatCleared === true || field.metadata?.officeStoryTextFormatCleared === true) return fallback
   const source = first?.metadata?.source, fieldSource = field.metadata?.source
-  return sourceLanguage(isRecord(source) ? source.style : undefined) ?? field.language
+  return (first?.metadata?.officeTextFieldStyleOutsideResult === true ? undefined : sourceLanguage(isRecord(source) ? source.style : undefined)) ?? field.language
     ?? sourceLanguage(isRecord(fieldSource) ? fieldSource.textStyle : undefined) ?? fallback
 }
 
-function mappedSelectionPoint(point: DocumentPoint, blockId: string, start: number, end: number, length: number): DocumentPoint {
-  if ((point.cellBlockId ?? point.blockId) !== blockId || point.offset <= start) return point
-  return { ...point, offset: point.offset >= end ? point.offset + length - (end - start) : start + Math.min(point.offset - start, length) }
+function mappedSelectionPoint(point: DocumentPoint, range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[], length: number, model: DocumentModel): DocumentPoint {
+  const paragraph = paragraphs.find(candidate => candidate.block.id === (point.cellBlockId ?? point.blockId))
+  if (!paragraph) return point
+  const absolute = paragraph.absoluteStart + point.offset
+  if (absolute <= range.absoluteStart || absolute >= range.absoluteEnd && paragraph.block.id !== range.endParagraph.block.id) return point
+  const target = textTargets(model).find(candidate => (candidate.cellBlockId ?? candidate.blockId) === range.block.id)
+  if (!target) throw new RangeError('字段更新后的正文输入目标不可用。')
+  const offset = absolute >= range.absoluteEnd ? range.field.startOffset + length + absolute - range.absoluteEnd
+    : range.field.startOffset + Math.min(absolute - range.absoluteStart, length)
+  return { ...target, offset }
 }
 
-function refreshedBodyRuns(block: DocumentBlock, field: DocumentTextField, result: string, model: DocumentModel): DocumentRun[] {
-  const runs = block.runs as DocumentRun[], defaults = documentDefaultStyle(model).text
-  const { before, after } = splitDocumentRunRange(runs, field.startOffset, field.endOffset)
-  const cache = sliceRuns(runs, field.startOffset, field.endOffset)
-  const styled = cache.length ? cache : [{ ...(documentRunStyleAt(runs, field.startOffset, field.endOffset) ?? defaults), id: `${field.id}:result`, text: '' } as DocumentRun]
+function bodyFieldCacheRuns(range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[]): DocumentRun[] {
+  const cache: DocumentRun[] = []
+  const selected = bodyFieldParagraphs(range, paragraphs)
+  for (const [index, paragraph] of selected.entries()) {
+    const runs = paragraph.block.runs as DocumentRun[]
+    const start = index === 0 ? range.field.startOffset : 0, end = index === selected.length - 1 ? range.field.endOffset : paragraph.text.length
+    cache.push(...sliceRuns(runs, start, end))
+    if (index < selected.length - 1) {
+      const inherited = cache.at(-1) ?? documentRunStyleAt(runs, start, end)
+      cache.push({ ...inherited, id: `${range.field.id}:paragraph:${index}`, text: '\n',
+        metadata: { ...inherited?.metadata, officeTextFieldStyleOutsideResult: true } })
+    }
+  }
+  return cache
+}
+
+function refreshedBodyRuns(range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[], result: string, model: DocumentModel): DocumentRun[] {
+  const runs = range.block.runs as DocumentRun[], field = range.field, defaults = documentDefaultStyle(model).text
+  const before = splitDocumentRunRange(runs, field.startOffset, range.block.id === range.endParagraph.block.id ? field.endOffset : runText(runs).length).before
+  const after = splitDocumentRunRange(range.endParagraph.block.runs as DocumentRun[], range.block.id === range.endParagraph.block.id ? field.startOffset : 0, field.endOffset).after
+  const cache = bodyFieldCacheRuns(range, paragraphs)
+  const inherited = documentRunStyleAt(runs, field.startOffset, range.block.id === range.endParagraph.block.id ? field.endOffset : runText(runs).length) ?? defaults
+  const styled = cache.length ? cache : [{ ...inherited, id: `${field.id}:result`, text: '',
+    metadata: { ...inherited.metadata, officeTextFieldStyleOutsideResult: true } } as DocumentRun]
   return [...before, ...remapDocumentStoryFieldRuns(styled, result, defaults), ...after]
 }
 
@@ -231,11 +281,11 @@ export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: 
   try { Intl.getCanonicalLocales(request.locale) } catch { throw new TypeError('字段更新语言无效。') }
   if (request.stories !== undefined && !Array.isArray(request.stories)) throw new TypeError('字段更新选区列表无效。')
   if (request.onOpen !== undefined && typeof request.onOpen !== 'boolean') throw new TypeError('字段自动更新标志必须为布尔值。')
-  if (request.bodySelection !== undefined) bodySelectionRanges(model, request.bodySelection)
+  const bodyRanges = request.bodySelection !== undefined ? bodySelectionRanges(model, request.bodySelection) : undefined
   const currentSelection = selection ?? request.bodySelection
   if (currentSelection) bodySelectionRanges(model, currentSelection)
   const selectedAreas = request.stories !== undefined || request.bodySelection !== undefined
-  const bodyFields = !selectedAreas || request.bodySelection ? editableBodyDateFields(model, context, request.bodySelection) : []
+  const bodyFields = !selectedAreas || bodyRanges ? editableBodyDateFields(model, context, bodyRanges) : []
   const sectionIds = documentSectionIds(model)
   const sections = sectionIds.map(sectionId => resolveSectionHeaderFooter(model, sectionId))
   for (const range of request.stories ?? []) {
@@ -249,22 +299,40 @@ export function prepareDocumentStoryFieldRefresh(model: DocumentModel, request: 
   const date = new Date(request.timestamp)
   let updatedFields = 0
   let nextSelection = currentSelection && cloneModel(currentSelection)
-  const bodyBlocks = new Map(documentTextFieldBlocks(candidate).map(block => [block.id, block]))
-  for (const { blockId, field: sourceField } of [...bodyFields].sort((a, b) => a.blockId.localeCompare(b.blockId) || b.field.startOffset - a.field.startOffset)) {
-    const block = bodyBlocks.get(blockId)!, field = documentTextFields(block).find(field => field.id === sourceField.id)!
-    const result = resolveDocumentDateTimeFieldResult({ ...field, field: field.field as 'DATE' | 'TIME' }, bodyDateLanguage(block, field, request.locale), date)
-    if (result === undefined || result === field.cachedResult && runText(block.runs).slice(field.startOffset, field.endOffset) === result) continue
-    const nextRuns = refreshedBodyRuns(block, field, result, model)
-    transformContentControlsForBlockEdit(candidate, block.id, field.startOffset, field.endOffset, result.length, undefined, true)
-    transformDocumentTextFieldsForBlockEdit(block, field.startOffset, field.endOffset, result, field.id)
-    block.runs = nextRuns
-    setDocumentTextFields(block, documentTextFields(block).map(current => current.id === field.id ? { ...current, cachedResult: result } : current))
-    delete block.metadata.html
-    transformDocumentCommentAnchorsForTextEdit(candidate, block.id, field.startOffset, field.endOffset, result)
-    if (nextSelection) nextSelection = {
-      anchor: mappedSelectionPoint(nextSelection.anchor, block.id, field.startOffset, field.endOffset, result.length),
-      focus: mappedSelectionPoint(nextSelection.focus, block.id, field.startOffset, field.endOffset, result.length),
+  for (const sourceRange of [...bodyFields].sort((a, b) => b.absoluteStart - a.absoluteStart)) {
+    const range = documentTextFieldRanges(candidate).find(current => current.field.id === sourceRange.field.id)!
+    const block = range.block, field = range.field, paragraphs = documentTextFieldParagraphs(candidate)
+    const language = bodyDateLanguage(range, request.locale)
+    const result = resolveDocumentDateTimeFieldResult({ ...field, field: field.field as 'DATE' | 'TIME' }, language, date)
+    const visibleResult = runText(bodyFieldCacheRuns(range, paragraphs))
+    if (result === undefined || result === field.cachedResult && visibleResult === result) continue
+    if (result === visibleResult) {
+      setDocumentTextFields(block, documentTextFields(block).map(current => current.id === field.id ? { ...current, cachedResult: result } : current))
+      updatedFields++
+      continue
     }
+    const nextRuns = refreshedBodyRuns(range, paragraphs, result, candidate)
+    const codeBlock = block.metadata.codeBlock
+    if (isRecord(codeBlock) && typeof codeBlock.source === 'string' && codeBlock.source !== runText(block.runs)) throw new Error('代码源文本与字段结果范围不一致。')
+    const crossParagraph = range.startParagraph.block.id !== range.endParagraph.block.id
+    if (!crossParagraph) transformContentControlsForBlockEdit(candidate, block.id, field.startOffset, field.endOffset, result.length, undefined, true)
+    const mappedSelection = nextSelection && {
+      anchor: mappedSelectionPoint(nextSelection.anchor, range, paragraphs, result.length, candidate),
+      focus: mappedSelectionPoint(nextSelection.focus, range, paragraphs, result.length, candidate),
+    }
+    const first = range.startParagraph, last = range.endParagraph
+    transformDocumentTextFieldsForBlockRangeEdit(first.container.slice(first.index, last.index + 1), field.startOffset, field.endOffset, result, [block], field.id, candidate)
+    block.runs = nextRuns
+    if (crossParagraph) first.container.splice(first.index + 1, last.index - first.index)
+    if (isRecord(codeBlock) && typeof codeBlock.source === 'string') block.metadata.codeBlock = { ...codeBlock, source: runText(nextRuns) }
+    setDocumentTextFields(block, documentTextFields(block).map(current => current.id === field.id ? { ...current, cachedResult: result,
+      ...(field.language === undefined && (range.absoluteStart === range.absoluteEnd || field.startOffset === first.text.length) ? { language } : {}) } : current))
+    delete block.metadata.html
+    if (crossParagraph) {
+      transformContentControlsForBodyRangeEdit(candidate, paragraphs, range.absoluteStart, range.absoluteEnd, result.length)
+      transformDocumentCommentAnchorsForBodyRangeEdit(candidate, paragraphs, documentTextFieldParagraphs(candidate), range.absoluteStart, range.absoluteEnd, result, request.timestamp)
+    } else transformDocumentCommentAnchorsForTextEdit(candidate, block.id, field.startOffset, field.endOffset, result, request.timestamp)
+    nextSelection = mappedSelection
     updatedFields++
   }
   const bodyUpdated = updatedFields > 0

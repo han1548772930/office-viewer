@@ -1,6 +1,7 @@
 import type { CellScalar, ChartModel, ChartSemanticOptions } from '../../domain/model'
 import type { ChartData } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
+import { finiteChartValue } from './chart-math'
 
 export interface ChartRecords { fields: string[]; records: CellScalar[][] }
 export interface ChartEdge { source: string; target: string; value: number }
@@ -57,8 +58,11 @@ export function readSpecialChartData(source: ChartRecords, chart: ChartModel): C
     if (mapping.labelIndex !== undefined) chartField(source, mapping.labelIndex, '仪表标签字段')
     return { ...source, categories: source.records.map((row, index) => String(mapping.labelIndex === undefined ? source.fields[mapping.valueIndex] : row[mapping.labelIndex] ?? index + 1)), series: [{ field: mapping.valueIndex, name: source.fields[mapping.valueIndex]!, values: source.records.map(row => chartNumber(row[mapping.valueIndex])) }] }
   }
-  if (shape === 'distribution' && source.fields.length === 1) {
-    return { ...source, categories: source.records.map((_row, index) => String(index + 1)), series: [{ field: 0, name: source.fields[0]!, values: source.records.map(row => chartNumber(row[0])) }] }
+  if (shape === 'distribution') {
+    const numericFields = source.fields.map((_field, index) => index).filter(field => source.records.some(record => chartNumber(record[field]) !== null))
+    const fields = chart.valueFields.length ? chart.valueFields : chart.type === 'histogram' ? numericFields.slice(0, 1) : numericFields
+    fields.forEach(field => chartField(source, field, '样本字段'))
+    return { ...source, categories: source.records.map((_row, index) => String(index + 1)), series: fields.map(field => ({ field, name: source.fields[field]!, values: source.records.map(row => chartNumber(row[field])) })) }
   }
   return undefined
 }
@@ -86,9 +90,9 @@ export function chartGraphData(source: ChartRecords, chart: ChartModel): ChartGr
     const [sourceName, targetName] = undirected && first > second ? [second, first] : [first, second]
     const key = JSON.stringify([sourceName, targetName])
     const link = links.get(key) ?? { source: sourceName, target: targetName, value: 0 }
-    link.value += value; links.set(key, link)
-    weights.set(first, (weights.get(first) ?? 0) + value)
-    weights.set(second, (weights.get(second) ?? 0) + value)
+    link.value = finiteChartValue(link.value + value, '关系边权重合计'); links.set(key, link)
+    weights.set(first, finiteChartValue((weights.get(first) ?? 0) + value, '关系节点权重合计'))
+    weights.set(second, finiteChartValue((weights.get(second) ?? 0) + value, '关系节点权重合计'))
   }
   const nodes = [...weights].map(([name, value]) => ({ name, value }))
   const edges = [...links.values()]
@@ -127,7 +131,7 @@ export function chartHierarchyData(source: ChartRecords, chart: ChartModel): Cha
     names.forEach((name, depth) => {
       let node = siblings.find(candidate => candidate.name === name)
       if (!node) { node = { name, value: 0 }; siblings.push(node) }
-      node.value += value
+      node.value = finiteChartValue(node.value + value, '层级权重合计')
       if (depth < names.length - 1) { node.children ??= []; siblings = node.children }
     })
   }
@@ -159,8 +163,9 @@ export function chartCandlestickData(source: ChartRecords, chart: ChartModel): A
 /** Percent stacks retain the sign of each source value and use the absolute category total. */
 export function normalizedChartValues(data: ChartData, chart: ChartModel): Array<Array<number | null>> {
   const percent = resolveChartType(chart.type).percent
-  const totals = data.categories.map((_category, index) => data.series.reduce((sum, series) => sum + Math.abs(series.values[index] ?? 0), 0))
+  const scales = percent ? data.categories.map((_category, index) => data.series.reduce((max, series) => Math.max(max, Math.abs(series.values[index] ?? 0)), 0)) : []
+  const totals = percent ? data.categories.map((_category, index) => scales[index] ? data.series.reduce((sum, series) => sum + Math.abs(series.values[index] ?? 0) / scales[index]!, 0) : 0) : []
   return data.series.map(series => series.values.map((value, index) => value === null
     ? chart.options?.invalidValueStrategy === 'zero' ? 0 : null
-    : percent ? totals[index] ? 100 * value / totals[index]! : 0 : value))
+    : percent ? totals[index] ? (value / scales[index]!) / totals[index]! * 100 : 0 : value))
 }

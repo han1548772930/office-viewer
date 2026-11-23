@@ -122,7 +122,7 @@ export async function parseOfficeFile(file: File, options: ImportOptions = {}): 
     throw new ParserError('WASM_MEMORY_LIMIT', '文件超过解析内存预算')
   }
   if (options.isCurrent && !options.isCurrent(context)) throw new ParserError('PARSE_STALE_RESULT', '导入上下文已失效')
-  terminate(new ParserError('SUPERSEDED', '已被新的解析任务替代'))
+  if (pending) terminate(new ParserError('SUPERSEDED', '已被新的解析任务替代'))
   return new Promise<ImportedOfficeModel>((resolve, reject) => {
     const task: Pending = {
       context, inputBytes: file.size, fileName: file.name, startedAt: performance.now(), options: { ...options }, resolve, reject,
@@ -136,7 +136,8 @@ export async function parseOfficeFile(file: File, options: ImportOptions = {}): 
     const start = async () => {
       try {
         task.options.onProgress?.({ stage: 'reading', message: '正在读取 ' + file.name })
-        if (!isCurrent(task)) return
+        if (pending !== task) return
+        if (!isCurrent(task)) { terminate(new ParserError('PARSE_STALE_RESULT', '导入上下文已变化'), task); return }
         const bytes = await file.arrayBuffer()
         if (pending !== task) return
         if (!isCurrent(task)) { terminate(new ParserError('PARSE_STALE_RESULT', '导入上下文已变化'), task); return }

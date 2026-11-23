@@ -12,7 +12,7 @@ import {
   type WorkbookModel,
 } from '@office-studio/office-studio'
 import { studio, officeAPI } from './runtime'
-import { createWorkspaceFileOperations, workspaceFileNameError, type ExportTask, type FileAction, type NoticeType, type WorkspaceKind } from './workspace-file-operations'
+import { createWorkspaceFileOperations, workspaceFileNameError, type ExportTask, type FileAction, type FileSnapshot, type NoticeType, type WorkspaceKind } from './workspace-file-operations'
 import { createWorkspaceHistoryOperations } from './workspace-history-operations'
 
 export function useWorkspaceController() {
@@ -53,14 +53,29 @@ export function useWorkspaceController() {
   })
   const undoContent = contentHistory.undo, redoContent = contentHistory.redo
 
+  function fileSnapshotCurrent(snapshot: FileSnapshot<WorkbookModel | DocumentModel>): boolean {
+    const id = snapshot.savepoint.unitId
+    const model = snapshot.kind === 'workbook' ? studio.getWorkbookModel(id) : studio.getDocumentModel(id)
+    const revision = snapshot.kind === 'workbook' ? studio.getWorkbookRevision(id) : studio.getDocumentRevision(id)
+    return !!model && model.id === snapshot.model.id && revision === snapshot.modelRevision
+      && editor.history.units[id]?.generation === snapshot.savepoint.generation
+  }
+
   const files = createWorkspaceFileOperations<WorkbookModel | DocumentModel, File>({
     importFile: (file) => editor.importFile(file),
     cancelImport: () => editor.parser.cancel(),
     capture: (kind = editor.state.activeKind) => {
       const model = cloneModel(kind === 'workbook' ? editor.state.workbook : editor.state.document)
-      return { kind, model, fileName: officeDownloadName(model, kind), savepoint: editor.captureSavepoint(kind) }
+      const modelRevision = kind === 'workbook' ? studio.getWorkbookRevision(model.id!) : studio.getDocumentRevision(model.id!)
+      return { kind, model, modelRevision, fileName: officeDownloadName(model, kind), savepoint: editor.captureSavepoint(kind) }
     },
-    write: (snapshot, options) => exportOfficeModel(snapshot.kind, snapshot.model, options),
+    isCurrent: fileSnapshotCurrent,
+    write: (snapshot, options) => exportOfficeModel(snapshot.kind, snapshot.model, {
+      ...options,
+      modelRevision: snapshot.modelRevision,
+      isCurrent: context => context.unitId === snapshot.savepoint.unitId && context.baseRevision === snapshot.modelRevision
+        && fileSnapshotCurrent(snapshot),
+    }),
     download: (bytes, snapshot) => downloadOfficeBytes(bytes, snapshot.fileName, snapshot.kind),
     markSaved: (savepoint) => editor.markSaved(savepoint),
     onExportTask: (task) => { exportTask.value = task },

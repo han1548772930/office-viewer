@@ -1,10 +1,15 @@
 import { ComputeError, normalizeComputeError } from './errors.ts'
-import { progressUnits } from './guards.ts'
-import { COMPUTE_PROTOCOL_VERSION, isContext, isRecord } from './protocol.ts'
-import type { ComputeContext, ComputeOutput, ComputeTask, ComputeWorkerEvent, ComputeWorkerRequest, NumericStatistics } from './protocol.ts'
-import { estimateTaskMemory, validateTask } from './tasks.ts'
+import { isNumericStatistics, progressUnits } from './guards.ts'
+import { COMPUTE_PROTOCOL_VERSION, isRecord } from './protocol.ts'
+import type { ComputeOutput, ComputeTask, ComputeWorkerEvent, ComputeWorkerRequest } from './protocol.ts'
+import { estimateTaskMemory, taskViews, validateTask } from './tasks.ts'
 import { loadComputeWasm } from './wasm.worker.ts'
-import type { ComputeWasmModule, WasmStepper } from './wasm.worker.ts'
+import type { LoadedComputeWasm, WasmAggregate, WasmIndexResult, WasmStepper } from './wasm.worker.ts'
+import {
+  matchesWasmTaskControl, readBoundaryCopyStats, requireIndependentOutput, requireMatchingWasmResult,
+  requireWasmTaskControl, WasmProtocolError,
+} from '../platform/wasm/task-protocol.ts'
+import type { BoundaryCopyStats, WasmTaskControl } from '../platform/wasm/task-protocol.ts'
 
 interface WorkerScope {
   postMessage(message: ComputeWorkerEvent, transfer?: Transferable[]): void
@@ -14,115 +19,152 @@ const scope: WorkerScope = {
   postMessage: (message, transfer = []) => globalThis.postMessage(message, { transfer }),
   addEventListener: (type, callback) => globalThis.addEventListener(type, callback),
 }
-let wasm: ComputeWasmModule | null = null
-let active: string | null = null
+let wasm: LoadedComputeWasm | null = null
+let initializing = false
+let active: WasmTaskControl | null = null
 const cancelled = new Set<string>()
-const yieldToMessages = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-function checkCancellation(context: ComputeContext): void {
+function checkCancellation(context: WasmTaskControl): void {
   if (cancelled.has(context.requestId)) throw new ComputeError('COMPUTE_CANCELLED', '计算已取消')
 }
-
-function statistics(values: Float64Array): NumericStatistics {
-  if (values.length !== 13) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '统计结果槽位版本不匹配')
-  const count = (index: number) => values[index] ?? 0
-  const finite = (index: number) => Number.isFinite(values[index]) ? values[index]! : null
-  return { numericCount: count(0), nonEmptyCount: count(1), emptyCount: count(2), errorCount: count(3), invalidNumericCount: count(4), sum: finite(5), mean: finite(6), min: finite(7), max: finite(8), populationVariance: finite(9), sampleVariance: finite(10), sampleStandardDeviation: finite(11), overflowed: count(12) !== 0 }
+function isAggregate(value: unknown): value is WasmAggregate {
+  return isRecord(value) && ['step', 'progress', 'result', 'free'].every((key) => typeof value[key] === 'function')
 }
+function isStepper(value: unknown): value is WasmStepper {
+  return isRecord(value) && ['step', 'progress', 'finish', 'free'].every((key) => typeof value[key] === 'function')
+}
+function isIndexResult(value: unknown): value is WasmIndexResult {
+  return isRecord(value) && ['copy_indices', 'metadata', 'free'].every((key) => typeof value[key] === 'function')
+}
+interface Calculated { output: ComputeOutput; boundary: BoundaryCopyStats; buffer?: ArrayBuffer }
 
-async function calculate(module: ComputeWasmModule, task: ComputeTask, context: ComputeContext): Promise<ComputeOutput> {
+async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: WasmTaskControl): Promise<Calculated> {
+  const module = loaded.module
   let lastProgress = -Infinity
   const { total, unit } = progressUnits(task)
   const progress = (ratio: number, force = false) => {
+    if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', 'WASM 进度超出有效范围')
     const now = performance.now()
     if (force || now - lastProgress >= 32) {
-      scope.postMessage({ type: 'progress', ...context, phase: ratio >= 1 ? 'completed' : 'computing', ratio, total, unit, processed: Math.round(total * ratio) })
+      scope.postMessage({ type: 'progress', context, phase: ratio >= 1 ? 'completed' : 'computing',
+        ratio, total, unit, processed: Math.round(total * ratio) })
       lastProgress = now
     }
   }
   progress(0, true)
-  // Yield before a potentially large linear-memory allocation so a cancellation
-  // posted during module initialization can be observed before copying inputs.
-  await yieldToMessages(); checkCancellation(context)
+  // This calls the shared Rust Future/Promise + web-sys macro-task adapter.
+  // Large creation/copy steps remain cancellable by the client's kill/recreate.
+  await module.compute_yield()
+  checkCancellation(context)
   if (task.kind === 'aggregate') {
-    const accumulator = new module.NumericAggregator()
+    const accumulator: unknown = module.create_numeric_aggregate(task.values, task.states, context)
+    if (!isAggregate(accumulator)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '聚合任务缺少协议 2 步进接口')
     try {
-      const chunkSize = 65_536
-      for (let offset = 0; offset < task.values.length; offset += chunkSize) {
+      let done = false
+      while (!done) {
         checkCancellation(context)
-        const end = Math.min(offset + chunkSize, task.values.length)
-        accumulator.push(task.values.subarray(offset, end), task.states.subarray(offset, end))
-        progress(end / task.values.length)
-        await yieldToMessages()
+        done = accumulator.step(65_536)
+        progress(accumulator.progress())
+        await module.compute_yield()
       }
-      checkCancellation(context); progress(1, true)
-      return { kind: 'aggregate', statistics: statistics(accumulator.result()) }
+      checkCancellation(context)
+      const result = requireMatchingWasmResult(accumulator.result(), context)
+      if (!isNumericStatistics(result.statistics, task.values.length)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '聚合结果不是协议 2 统计 DTO')
+      progress(1, true)
+      return { output: { kind: 'aggregate', statistics: result.statistics }, boundary: readBoundaryCopyStats(result.transfer) }
     } finally { accumulator.free() }
   }
-  let stepper: WasmStepper
-  if (task.kind === 'sort') stepper = new module.NumericIndexSort(task.values, task.states, task.rowCount, task.directions, task.nullsLast)
-  else stepper = new module.NumericIndexFilter(task.values, task.states, task.rowCount, task.operators, task.lower, task.upper, task.match === 'all')
+  const candidate: unknown = task.kind === 'sort'
+    ? module.create_numeric_sort(task.values, task.states, { context, rowCount: task.rowCount,
+      directions: Array.from(task.directions), nullsLast: task.nullsLast })
+    : module.create_numeric_filter(task.values, task.states, { context, rowCount: task.rowCount,
+      operators: Array.from(task.operators), lower: Array.from(task.lower), upper: Array.from(task.upper), matchAll: task.match === 'all' })
+  if (!isStepper(candidate)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '索引任务缺少协议 2 步进接口')
   try {
     let done = false
     while (!done) {
       checkCancellation(context)
-      done = stepper.step(task.kind === 'sort' ? 32_768 : 16_384)
-      progress(stepper.progress())
-      await yieldToMessages()
+      done = candidate.step(task.kind === 'sort' ? 32_768 : 16_384)
+      progress(candidate.progress())
+      await module.compute_yield()
     }
-    checkCancellation(context); progress(1, true)
-    return { kind: task.kind, indices: stepper.finish() }
-  } finally { stepper.free() }
+    checkCancellation(context)
+    const result: unknown = candidate.finish()
+    if (!isIndexResult(result)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '索引结果缺少协议 2 所有权接口')
+    try {
+      const indices = result.copy_indices()
+      if (!(indices instanceof Uint32Array)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '索引结果必须是 Uint32Array')
+      const buffer = requireIndependentOutput(indices, loaded.memory)
+      const metadata = requireMatchingWasmResult(result.metadata(), context)
+      if (metadata.byteLength !== indices.byteLength) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '索引结果长度与元数据不匹配')
+      progress(1, true)
+      return { output: { kind: task.kind, indices }, boundary: readBoundaryCopyStats(metadata.transfer), buffer }
+    } finally { result.free() }
+  } finally { candidate.free() }
 }
 
 async function handle(request: ComputeWorkerRequest): Promise<void> {
   if (request.type === 'init') {
     try {
-      if (request.protocolVersion !== COMPUTE_PROTOCOL_VERSION) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '计算 Worker 协议版本不兼容')
+      if (request.protocolVersion !== COMPUTE_PROTOCOL_VERSION) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '计算 Worker 需要协议 2')
+      if (initializing || wasm || active) throw new ComputeError('COMPUTE_NOT_READY', '计算 Worker 已初始化或正在使用')
+      initializing = true
       wasm = await loadComputeWasm(request.moduleUrl)
-      scope.postMessage({ type: 'ready', protocolVersion: COMPUTE_PROTOCOL_VERSION, engineVersion: wasm.compute_version() })
+      scope.postMessage({ type: 'ready', protocolVersion: COMPUTE_PROTOCOL_VERSION, engineVersion: wasm.module.compute_version() })
     } catch (error) { scope.postMessage({ type: 'init-error', error: normalizeComputeError(error).toJSON() }) }
+    finally { initializing = false }
     return
   }
-  if (request.type === 'cancel') { if (active === request.requestId) cancelled.add(request.requestId); return }
-  const context: ComputeContext = { requestId: request.requestId, documentId: request.documentId, modelRevision: request.modelRevision }
-  if (active) { scope.postMessage({ type: 'error', ...context, error: { code: 'COMPUTE_NOT_READY', message: '计算 Worker 正在执行其他任务' } }); return }
-  active = context.requestId
+  if (request.type === 'cancel') {
+    if (active && matchesWasmTaskControl(request.context, active)) cancelled.add(active.requestId)
+    return
+  }
+  const context = request.context
+  if (active) {
+    scope.postMessage({ type: 'error', context, error: { code: 'COMPUTE_NOT_READY', message: '计算 Worker 正在执行其他任务' } })
+    return
+  }
+  active = context
   const started = performance.now()
   try {
     if (!wasm) throw new ComputeError('COMPUTE_NOT_READY', '计算 Worker 尚未就绪')
-    validateTask(request.task, request.memoryBudgetBytes)
-    const output = await calculate(wasm, request.task, context)
-    const transfer: ArrayBuffer[] = []
-    if (output.kind !== 'aggregate') {
-      if (!(output.indices.buffer instanceof ArrayBuffer)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '计算结果必须是独立 ArrayBuffer')
-      transfer.push(output.indices.buffer)
-    }
-    scope.postMessage({ type: 'result', ...context, engineVersion: wasm.compute_version(), output, metrics: { elapsedMs: performance.now() - started, ...estimateTaskMemory(request.task) } }, transfer)
+    validateTask(request.task, context.budget.maxWorkingBytes)
+    const memory = estimateTaskMemory(request.task)
+    const { output, boundary, buffer } = await calculate(wasm, request.task, context)
+    checkCancellation(context)
+    const outputBytes = output.kind === 'aggregate' ? 0 : output.indices.byteLength
+    scope.postMessage({ type: 'result', context, engineVersion: wasm.module.compute_version(), output, metrics: {
+      elapsedMs: performance.now() - started, ...memory, boundary,
+      transport: { inputTransfers: taskViews(request.task).length, inputBytes: memory.inputBytes,
+        outputTransfers: output.kind === 'aggregate' ? 0 : 1, outputBytes,
+        structuredResultMessages: output.kind === 'aggregate' ? 1 : 0 },
+    } }, buffer ? [buffer] : [])
   } catch (error) {
     const failure = normalizeComputeError(error)
-    if (failure.code === 'COMPUTE_CANCELLED') scope.postMessage({ type: 'cancelled', ...context })
-    else scope.postMessage({ type: 'error', ...context, error: failure.toJSON() })
+    if (failure.code === 'COMPUTE_CANCELLED') scope.postMessage({ type: 'cancelled', context })
+    else scope.postMessage({ type: 'error', context, error: failure.toJSON() })
   } finally { cancelled.delete(context.requestId); active = null }
 }
 
 scope.addEventListener('message', (event) => {
-  const request = event.data
-  if (!isRecord(request)) {
-    scope.postMessage({ type: 'init-error', error: { code: 'COMPUTE_PROTOCOL_MISMATCH', message: '计算请求必须是结构化对象' } }); return
-  }
-  if (request.type === 'init' && typeof request.moduleUrl === 'string' && typeof request.protocolVersion === 'number') {
-    void handle({ type: 'init', moduleUrl: request.moduleUrl, protocolVersion: request.protocolVersion })
-  } else if (request.type === 'cancel' && typeof request.requestId === 'string') {
-    void handle({ type: 'cancel', requestId: request.requestId })
-  } else if (request.type === 'run' && isContext(request)) {
-    const context: ComputeContext = { requestId: request.requestId, documentId: request.documentId, modelRevision: request.modelRevision }
-    try {
-      if (typeof request.memoryBudgetBytes !== 'number') throw new ComputeError('COMPUTE_INVALID_INPUT', '必须提供计算内存预算')
-      validateTask(request.task, request.memoryBudgetBytes)
-      void handle({ type: 'run', ...context, task: request.task, memoryBudgetBytes: request.memoryBudgetBytes })
-    } catch (error) { scope.postMessage({ type: 'error', ...context, error: normalizeComputeError(error).toJSON() }) }
-  } else {
-    scope.postMessage({ type: 'init-error', error: { code: 'COMPUTE_PROTOCOL_MISMATCH', message: '计算请求协议不合法' } })
+  const data = event.data
+  let context: WasmTaskControl | undefined
+  try {
+    if (!isRecord(data)) throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求必须是结构化对象')
+    if (data.type === 'init' && typeof data.moduleUrl === 'string' && data.moduleUrl.trim() && typeof data.protocolVersion === 'number') {
+      void handle({ type: 'init', moduleUrl: data.moduleUrl, protocolVersion: data.protocolVersion }); return
+    }
+    if (data.type !== 'run' && data.type !== 'cancel') throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求必须使用协议 2')
+    if (!isRecord(data.context) || (data.context.kind !== 'aggregate' && data.context.kind !== 'sort' && data.context.kind !== 'filter')) {
+      throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求的计算域无效')
+    }
+    context = requireWasmTaskControl(data.context, data.context.kind)
+    if (data.type === 'cancel') { void handle({ type: 'cancel', context }); return }
+    validateTask(data.task, context.budget.maxWorkingBytes)
+    if (data.task.kind !== context.kind) throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '任务上下文与计算参数不匹配')
+    void handle({ type: 'run', context, task: data.task })
+  } catch (error) {
+    const failure = normalizeComputeError(error).toJSON()
+    scope.postMessage(context ? { type: 'error', context, error: failure } : { type: 'init-error', error: failure })
   }
 })

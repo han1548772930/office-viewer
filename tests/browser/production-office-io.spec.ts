@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
+import { wasmTaskFixture } from './wasm-task-fixtures.ts'
+import type { NumericStatistics } from '../../packages/office-studio/src/compute/protocol.ts'
 
 type Resource = { path: string; status: number; contentType: string }
 
@@ -128,13 +130,14 @@ test('production DOCX import, Canvas edit, real file download and reimport retai
 
 test('production DOCX numbering roundtrip retains unchecked and checked checklist labels', async ({ page }) => {
   await page.goto('/')
-  const labels = await page.evaluate(async () => {
+  const labels = await page.evaluate(async ({ writeContext, parseContext }) => {
     const writerURL = new URL('/wasm-writer/office_writer.js', location.href).href
     const parserURL = new URL('/wasm/office_parser.js', location.href).href
     const writer = await import(writerURL)
     const parser = await import(parserURL)
     await writer.default()
     await parser.default()
+    if (writer.writer_protocol_version() !== 2 || parser.parser_protocol_version() !== 2) throw new Error('Office WASM protocol mismatch')
     const model = {
       kind: 'document',
       name: 'Checklist roundtrip',
@@ -143,12 +146,16 @@ test('production DOCX numbering roundtrip retains unchecked and checked checklis
         { id: 'checked', type: 'checklist', level: 0, checklist: { listId: 'tasks', checked: true }, runs: [{ text: 'Review changes' }] },
       ],
     }
-    const output = writer.write_office('document', JSON.stringify(model))
+    const output = await writer.write_office('document', JSON.stringify(model), writeContext)
     try {
-      const parsed = JSON.parse(parser.parse_document(output.bytes, 'checklist-roundtrip.docx'))
-      return parsed.payload.data.blocks.map((block: { details?: { listLabel?: string } }) => block.details?.listLabel)
+      const bytes = output.copy_bytes()
+      const metadata = output.metadata()
+      if (metadata.context.requestId !== writeContext.requestId) throw new Error('Writer returned a different task')
+      const parsed = await parser.parse_document(bytes, 'checklist-roundtrip.docx', parseContext)
+      if (parsed.context.requestId !== parseContext.requestId) throw new Error('Parser returned a different task')
+      return parsed.envelope.payload.data.blocks.map((block: { details?: { listLabel?: string } }) => block.details?.listLabel)
     } finally { output.free() }
-  })
+  }, { writeContext: wasmTaskFixture('export', 'checklist-write'), parseContext: wasmTaskFixture('parse', 'checklist-parse') })
   expect(labels).toEqual(['☐', '☑'])
 })
 
@@ -194,23 +201,36 @@ test('production XLSX import, pending formula-bar edit, save and reimport retain
 test('production computation assets initialize real Rust WASM in a browser worker', async ({ page }, testInfo) => {
   const resources = trackResources(page)
   await page.goto('/')
-  const result = await page.evaluate(async () => {
-    const code = 'self.onmessage = async ({ data }) => { let module; try { module = await import(data); await module.default(); const aggregate = new module.NumericAggregator(); try { aggregate.push(new Float64Array([4, 7, 9]), new Uint8Array([1, 1, 1])); self.postMessage({ version: module.compute_version(), values: Array.from(aggregate.result()) }); } finally { aggregate.free(); } } catch(error) { self.postMessage({ error: String(error) }); } }'
+  const context = wasmTaskFixture('aggregate', 'production-aggregate')
+  const result = await page.evaluate(async (context) => {
+    const code = `self.onmessage = async ({ data }) => {
+      try {
+        const module = await import(data.moduleURL);
+        await module.default();
+        if (module.compute_protocol_version() !== 2) throw new Error('Compute WASM protocol mismatch');
+        const aggregate = module.create_numeric_aggregate(new Float64Array([4, 7, 9]), new Uint8Array([1, 1, 1]), data.context);
+        try {
+          while (!aggregate.step(2)) await module.compute_yield();
+          self.postMessage({ version: module.compute_version(), ...aggregate.result() });
+        } finally { aggregate.free(); }
+      } catch (error) { self.postMessage({ error: String(error) }); }
+    }`
     const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))
     const worker = new Worker(url, { type: 'module' })
     try {
-      return await new Promise<{ version?: string; values?: number[]; error?: string }>((resolve, reject) => {
+      return await new Promise<{ version?: string; statistics?: NumericStatistics; context?: typeof context; error?: string }>((resolve, reject) => {
         const timeout = window.setTimeout(() => reject(new Error('Production compute worker timed out')), 20_000)
         worker.onmessage = ({ data }) => { window.clearTimeout(timeout); resolve(data) }
         worker.onerror = (event) => { window.clearTimeout(timeout); reject(new Error(event.message)) }
-        worker.postMessage(new URL('/compute/office_compute.js', location.origin).href)
+        worker.postMessage({ moduleURL: new URL('/compute/office_compute.js', location.origin).href, context })
       })
     } finally { worker.terminate(); URL.revokeObjectURL(url) }
-  })
+  }, context)
   expect(result.error).toBeUndefined()
   expect(result.version).toMatch(/^\d+\.\d+\.\d+/u)
-  expect(result.values?.[0]).toBe(3)
-  expect(result.values?.[5]).toBe(20)
+  expect(result.context).toEqual(context)
+  expect(result.statistics?.numericCount).toBe(3)
+  expect(result.statistics?.sum).toBe(20)
   for (const path of ['/compute/office_compute.js', '/compute/office_compute_bg.wasm']) expect(resources.some((resource) => resource.path === path && resource.status === 200), path).toBe(true)
   await attachEvidence(testInfo, { runtime: 'production preview / dedicated Worker / real public Rust WASM', result, resources, limitation: 'Confirms artifact serving and execution; does not measure large-file performance or prove every product computation uses this module.' })
 })

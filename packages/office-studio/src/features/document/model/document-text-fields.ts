@@ -1,4 +1,5 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
+import { cloneModel } from '../../../domain/serialization'
 import { documentId, runText, tableForBlock } from './document-model'
 import { isDocumentTextBoundary } from './document-story'
 
@@ -9,9 +10,11 @@ export interface DocumentTextField {
   field: string
   instruction?: string
   cachedResult?: string
-  /** Half-open UTF-16 result range in the paragraph containing this metadata. */
+  /** Half-open UTF-16 result start in the paragraph containing this metadata. */
   startOffset: number
+  /** UTF-16 result end in endBlockId, or in the owning paragraph when absent. */
   endOffset: number
+  endBlockId?: string
   locked?: boolean
   containsNestedFields?: boolean
   language?: string
@@ -27,14 +30,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function validateFields(fields: readonly DocumentTextField[], text: string): void {
+function validateFields(fields: readonly DocumentTextField[], text: string, blockId?: string): void {
   const ids = new Set<string>()
   for (const field of fields) {
     if (!isRecord(field) || typeof field.id !== 'string' || !field.id.trim() || ids.has(field.id)
       || typeof field.field !== 'string' || !field.field.trim()) throw new TypeError('正文字段标识或类型无效。')
     ids.add(field.id)
-    if (!isDocumentTextBoundary(text, field.startOffset) || !isDocumentTextBoundary(text, field.endOffset)
-      || field.endOffset < field.startOffset) throw new RangeError(`正文字段 ${field.id} 的 UTF-16 范围无效。`)
+    if (field.endBlockId !== undefined && (typeof field.endBlockId !== 'string' || !field.endBlockId.trim())) throw new TypeError(`正文字段 ${field.id} 的末段标识无效。`)
+    if (!isDocumentTextBoundary(text, field.startOffset) || !Number.isSafeInteger(field.endOffset) || field.endOffset < 0
+      || (field.endBlockId === undefined || field.endBlockId === blockId) && (!isDocumentTextBoundary(text, field.endOffset) || field.endOffset < field.startOffset)) {
+      throw new RangeError(`正文字段 ${field.id} 的 UTF-16 范围无效。`)
+    }
     for (const key of ['instruction', 'cachedResult', 'language'] as const) {
       if (field[key] !== undefined && typeof field[key] !== 'string') throw new TypeError(`正文字段 ${field.id} 的 ${key} 无效。`)
     }
@@ -43,7 +49,9 @@ function validateFields(fields: readonly DocumentTextField[], text: string): voi
     }
     if (field.metadata !== undefined && !isRecord(field.metadata)) throw new TypeError(`正文字段 ${field.id} 的来源无效。`)
   }
-  const sorted = [...fields].sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset)
+  // A paragraph alone cannot order endpoints in another paragraph. The model
+  // validator below checks those ranges together with ordinary local fields.
+  const sorted = fields.filter(field => field.endBlockId === undefined || field.endBlockId === blockId).sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset)
   const enclosing: DocumentTextField[] = []
   for (const field of sorted) {
     while (enclosing.length && enclosing.at(-1)!.endOffset <= field.startOffset) enclosing.pop()
@@ -59,12 +67,12 @@ export function documentTextFields(block: DocumentBlock): readonly DocumentTextF
   if (collection === undefined) return []
   if (!isRecord(collection) || collection.version !== 1 || !Array.isArray(collection.fields)) throw new TypeError('正文字段集合版本或结构无效。')
   const fields = collection.fields as DocumentTextField[]
-  validateFields(fields, runText(block.runs))
+  validateFields(fields, runText(block.runs), block.id)
   return fields
 }
 
 export function setDocumentTextFields(block: DocumentBlock, fields: readonly DocumentTextField[], projectedText = runText(block.runs)): void {
-  validateFields(fields, projectedText)
+  validateFields(fields, projectedText, block.id)
   if (!fields.length && block.metadata.documentTextFields === undefined) return
   const source = block.metadata.documentTextFields
   block.metadata = { ...block.metadata, documentTextFields: {
@@ -72,22 +80,88 @@ export function setDocumentTextFields(block: DocumentBlock, fields: readonly Doc
   } satisfies DocumentTextFieldCollection }
 }
 
-/** Includes text in nested table cells when the global refresh traverses the document. */
-export function documentTextFieldBlocks(model: Pick<DocumentModel, 'blocks'>): DocumentBlock[] {
-  const result: DocumentBlock[] = []
-  const visit = (blocks: readonly DocumentBlock[]) => {
-    for (const block of blocks) {
-      if (block.metadata.documentTextFields !== undefined) result.push(block)
+export interface DocumentTextFieldParagraph {
+  block: DocumentBlock
+  container: DocumentBlock[]
+  index: number
+  text: string
+  /** Computed positions include one synthetic newline between text paragraphs. */
+  absoluteStart: number
+  absoluteEnd: number
+}
+
+export interface DocumentTextFieldRange {
+  block: DocumentBlock
+  field: DocumentTextField
+  startParagraph: DocumentTextFieldParagraph
+  endParagraph: DocumentTextFieldParagraph
+  absoluteStart: number
+  absoluteEnd: number
+}
+
+const NON_TEXT_BLOCK_TYPES = new Set(['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'])
+
+/** Body order includes paragraphs in every nested table; stable IDs remain the stored contract. */
+export function documentTextFieldParagraphs(model: Pick<DocumentModel, 'blocks'>): DocumentTextFieldParagraph[] {
+  const paragraphs: DocumentTextFieldParagraph[] = []
+  let offset = 0
+  const visit = (blocks: DocumentBlock[]) => {
+    for (const [index, block] of blocks.entries()) {
+      if (!NON_TEXT_BLOCK_TYPES.has(block.type)) {
+        const text = runText(block.runs)
+        paragraphs.push({ block, container: blocks, index, text, absoluteStart: offset, absoluteEnd: offset + text.length })
+        offset += text.length + 1
+      } else if (block.metadata.documentTextFields !== undefined && documentTextFields(block).length) {
+        throw new TypeError(`正文字段起始位置必须属于文本段落：${block.id}`)
+      }
       for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) visit(cell.blocks)
     }
   }
   visit(model.blocks)
-  const ids = new Set<string>()
-  for (const block of result) for (const field of documentTextFields(block)) {
-    if (ids.has(field.id)) throw new TypeError(`正文字段标识重复：${field.id}`)
-    ids.add(field.id)
+  return paragraphs
+}
+
+function rangesForParagraphs(paragraphs: readonly DocumentTextFieldParagraph[], planned?: ReadonlyMap<string, readonly DocumentTextField[]>): DocumentTextFieldRange[] {
+  const byId = new Map<string, DocumentTextFieldParagraph>()
+  for (const paragraph of paragraphs) {
+    if (byId.has(paragraph.block.id)) throw new TypeError(`正文字段段落标识重复：${paragraph.block.id}`)
+    byId.set(paragraph.block.id, paragraph)
   }
-  return result
+  const ids = new Set<string>(), ranges: DocumentTextFieldRange[] = []
+  for (const paragraph of paragraphs) {
+    const fields = planned?.get(paragraph.block.id) ?? documentTextFields(paragraph.block)
+    validateFields(fields, paragraph.text, paragraph.block.id)
+    for (const field of fields) {
+      if (ids.has(field.id)) throw new TypeError(`正文字段标识重复：${field.id}`)
+      ids.add(field.id)
+      const end = field.endBlockId === undefined ? paragraph : byId.get(field.endBlockId)
+      if (!end) throw new RangeError(`正文字段 ${field.id} 的末段不存在：${field.endBlockId}`)
+      if (!isDocumentTextBoundary(end.text, field.endOffset)
+        || end.absoluteStart + field.endOffset < paragraph.absoluteStart + field.startOffset) throw new RangeError(`正文字段 ${field.id} 的跨段 UTF-16 范围无效。`)
+      ranges.push({ block: paragraph.block, field, startParagraph: paragraph, endParagraph: end,
+        absoluteStart: paragraph.absoluteStart + field.startOffset, absoluteEnd: end.absoluteStart + field.endOffset })
+    }
+  }
+  const enclosing: DocumentTextFieldRange[] = []
+  for (const range of [...ranges].sort((a, b) => a.absoluteStart - b.absoluteStart || b.absoluteEnd - a.absoluteEnd)) {
+    while (enclosing.length && enclosing.at(-1)!.absoluteEnd <= range.absoluteStart) enclosing.pop()
+    const parent = enclosing.at(-1)
+    if (parent && range.absoluteEnd > parent.absoluteEnd) throw new RangeError(`正文字段 ${range.field.id} 与 ${parent.field.id} 部分交叉。`)
+    enclosing.push(range)
+  }
+  return ranges
+}
+
+/** Validate the full result range rather than interpreting an end offset in the owning paragraph. */
+export function documentTextFieldRanges(model: Pick<DocumentModel, 'blocks'>): DocumentTextFieldRange[] {
+  return rangesForParagraphs(documentTextFieldParagraphs(model))
+}
+
+/** Includes empty collections and validates nested/cross-paragraph fields before a global refresh. */
+export function documentTextFieldBlocks(model: Pick<DocumentModel, 'blocks'>): DocumentBlock[] {
+  const paragraphs = documentTextFieldParagraphs(model)
+  rangesForParagraphs(paragraphs)
+  return paragraphs.filter(({ block }) => block.metadata.documentTextFields !== undefined).map(({ block }) => block)
 }
 
 type RefreshField = Pick<DocumentTextField, 'locked' | 'containsNestedFields' | 'metadata'>
@@ -101,14 +175,30 @@ function nativeFlag(field: RefreshField, key: 'locked' | 'containsNestedFields')
   return value === true || value === 1 || value === '1' || value === 'true'
 }
 
+export function documentFieldLocked(field: RefreshField): boolean {
+  return nativeFlag(field, 'locked')
+}
+
 export function documentFieldAutomaticRefreshBlocked(field: RefreshField): boolean {
-  return nativeFlag(field, 'locked') || nativeFlag(field, 'containsNestedFields')
+  return documentFieldLocked(field) || nativeFlag(field, 'containsNestedFields')
 }
 
 export function documentTextFieldContainsNestedRange(field: DocumentTextField, fields: readonly DocumentTextField[]): boolean {
-  return nativeFlag(field, 'containsNestedFields') || fields.some(inner => inner !== field
+  return nativeFlag(field, 'containsNestedFields') || fields.some(inner => inner !== field && field.endBlockId === inner.endBlockId
     && inner.startOffset >= field.startOffset && inner.endOffset <= field.endOffset
     && (inner.startOffset > field.startOffset || inner.endOffset < field.endOffset))
+}
+
+export function documentTextFieldRangeContainsNested(range: DocumentTextFieldRange, ranges: readonly DocumentTextFieldRange[]): boolean {
+  return nativeFlag(range.field, 'containsNestedFields') || ranges.some(inner => inner.field.id !== range.field.id
+    && inner.absoluteStart >= range.absoluteStart && inner.absoluteEnd <= range.absoluteEnd
+    && (inner.absoluteStart > range.absoluteStart || inner.absoluteEnd < range.absoluteEnd))
+}
+
+export function documentTextFieldRangeIntersects(range: DocumentTextFieldRange, start: number, end: number): boolean {
+  return start === end
+    ? start >= range.absoluteStart && (start < range.absoluteEnd || range.absoluteStart === range.absoluteEnd && start === range.absoluteStart)
+    : start < range.absoluteEnd && range.absoluteStart < end
 }
 
 export function documentTextFieldIntersects(field: DocumentTextField, start: number, end: number): boolean {
@@ -136,64 +226,97 @@ function editedRange(field: FieldRange & { id: string }, start: number, end: num
   }
 }
 
+function rebaseParagraphs(paragraphs: readonly DocumentTextFieldParagraph[]): DocumentTextFieldParagraph[] {
+  let offset = 0
+  return paragraphs.map(paragraph => {
+    const next = { ...paragraph, absoluteStart: offset, absoluteEnd: offset + paragraph.text.length }
+    offset += paragraph.text.length + 1
+    return next
+  })
+}
+
+function sameFieldEndpoints(before: readonly DocumentTextField[], after: readonly DocumentTextField[]): boolean {
+  return before.length === after.length && before.every((field, index) => {
+    const next = after[index]!
+    return field.id === next.id && field.startOffset === next.startOffset && field.endOffset === next.endOffset && field.endBlockId === next.endBlockId
+  })
+}
+
 /**
- * Move fields with a paragraph suffix or a merged range before changing runs.
- * All ranges are prepared first, so a paragraph split through an imported field
- * reports the unsupported cross-paragraph result without losing its metadata.
+ * Move both endpoints and the owning definition before changing paragraph runs.
+ * The full model finds fields which begin outside the edited paragraphs. All
+ * endpoint/containment plans are validated before any field collection changes.
  */
 export function transformDocumentTextFieldsForBlockRangeEdit(
   inputs: readonly DocumentBlock[], startOffset: number, endOffset: number, text: string,
   outputs: readonly DocumentBlock[] = inputs.slice(0, 1), preserveFieldId?: string,
+  model?: Pick<DocumentModel, 'blocks'>,
 ): void {
   if (!inputs.length || !outputs.length) throw new RangeError('正文字段编辑缺少段落。')
-  const sourceTexts = inputs.map(block => runText(block.runs))
-  const fields = inputs.flatMap(block => documentTextFields(block))
-  if (!fields.length) return
-  if (!isDocumentTextBoundary(sourceTexts[0]!, startOffset) || !isDocumentTextBoundary(sourceTexts.at(-1)!, endOffset)) throw new RangeError('正文字段编辑的 UTF-16 位置无效。')
-  const source = sourceTexts.join('\n')
-  const end = source.length - sourceTexts.at(-1)!.length + endOffset
-  if (end < startOffset) throw new RangeError('正文字段编辑范围倒置。')
-  const prefix = sourceTexts[0]!.slice(0, startOffset), suffix = sourceTexts.at(-1)!.slice(endOffset)
+  const inputParagraphs = documentTextFieldParagraphs({ blocks: [...inputs] })
+  if (!inputParagraphs.length) throw new RangeError('正文字段编辑缺少文本段落。')
+  const overrides = new Map(inputParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
+  const source = rebaseParagraphs(documentTextFieldParagraphs(model ?? { blocks: [...inputs] }).map(paragraph => {
+    const override = overrides.get(paragraph.block.id)
+    return override ? { ...paragraph, block: override.block, text: override.text } : paragraph
+  }))
+  const ranges = rangesForParagraphs(source)
+  if (!ranges.length) return
+  const first = source.findIndex(paragraph => paragraph.block.id === inputParagraphs[0]!.block.id)
+  const last = source.findIndex(paragraph => paragraph.block.id === inputParagraphs.at(-1)!.block.id)
+  if (first < 0 || last < first) throw new RangeError('正文字段编辑的段落映射无效。')
+  const firstParagraph = source[first]!, lastParagraph = source[last]!
+  if (!isDocumentTextBoundary(firstParagraph.text, startOffset) || !isDocumentTextBoundary(lastParagraph.text, endOffset)) throw new RangeError('正文字段编辑的 UTF-16 位置无效。')
+  const start = firstParagraph.absoluteStart + startOffset, end = lastParagraph.absoluteStart + endOffset
+  if (end < start) throw new RangeError('正文字段编辑范围倒置。')
+  const prefix = firstParagraph.text.slice(0, startOffset), suffix = lastParagraph.text.slice(endOffset)
   const parts = text.split('\n')
-  const projected = outputs.length === 1 ? [prefix + text + suffix] : parts.map((part, index) =>
+  const projectedTexts = outputs.length === 1 ? [prefix + text + suffix] : parts.map((part, index) =>
     `${index === 0 ? prefix : ''}${part}${index === parts.length - 1 ? suffix : ''}`)
-  if (projected.length !== outputs.length) throw new RangeError('正文字段编辑的段落映射无效。')
-  const plans = outputs.map(() => [] as DocumentTextField[])
-  const outputOffsets: number[] = []
-  let cursor = 0
-  for (const part of projected) { outputOffsets.push(cursor); cursor += part.length + 1 }
-  const ids = new Set<string>()
-  cursor = 0
-  for (const [index, block] of inputs.entries()) {
-    for (const field of documentTextFields(block)) {
-      if (ids.has(field.id)) throw new TypeError(`正文字段标识重复：${field.id}`)
-      ids.add(field.id)
-      const range = editedRange({ ...field, startOffset: cursor + field.startOffset, endOffset: cursor + field.endOffset },
-        startOffset, end, text.length, preserveFieldId)
-      if (!range) continue
-      const destination = projected.findIndex((part, output) => range.startOffset >= outputOffsets[output]!
-        && range.endOffset <= outputOffsets[output]! + part.length)
-      if (destination < 0) throw new RangeError(`段落拆分穿过字段 ${field.id}；此字段定义已保留，请在字段结果之外换段。`)
-      plans[destination]!.push({ ...field, startOffset: range.startOffset - outputOffsets[destination]!, endOffset: range.endOffset - outputOffsets[destination]! })
-    }
-    cursor += sourceTexts[index]!.length + 1
+  if (projectedTexts.length !== outputs.length) throw new RangeError('正文字段编辑的段落映射无效。')
+  const projected = rebaseParagraphs([...source.slice(0, first), ...outputs.map((block, index) => ({
+    block, container: [...outputs], index, text: projectedTexts[index]!, absoluteStart: 0, absoluteEnd: 0,
+  })), ...source.slice(last + 1)])
+  const plans = new Map(projected.map(paragraph => [paragraph.block.id, [] as DocumentTextField[]]))
+  for (const { field, absoluteStart, absoluteEnd } of ranges) {
+    const edited = editedRange({ id: field.id, startOffset: absoluteStart, endOffset: absoluteEnd }, start, end, text.length, preserveFieldId)
+    if (!edited) continue
+    const from = projected.find(paragraph => edited.startOffset >= paragraph.absoluteStart && edited.startOffset <= paragraph.absoluteEnd)
+    const to = projected.find(paragraph => edited.endOffset >= paragraph.absoluteStart && edited.endOffset <= paragraph.absoluteEnd)
+    if (!from || !to) throw new RangeError(`正文字段 ${field.id} 的编辑后端点无法映射。`)
+    const { endBlockId: _endBlockId, ...definition } = field
+    plans.get(from.block.id)!.push({ ...definition,
+      startOffset: edited.startOffset - from.absoluteStart, endOffset: edited.endOffset - to.absoluteStart,
+      ...(from.block.id === to.block.id ? {} : { endBlockId: to.block.id }),
+    })
   }
-  for (const [index, plan] of plans.entries()) validateFields(plan, projected[index]!)
-  for (const [index, block] of outputs.entries()) setDocumentTextFields(block, plans[index]!, projected[index]!)
+  rangesForParagraphs(projected, plans)
+  const before = new Map(source.map(paragraph => [paragraph.block.id, documentTextFields(paragraph.block)]))
+  const outputIds = new Set(outputs.map(block => block.id))
+  for (const paragraph of projected) {
+    const plan = plans.get(paragraph.block.id)!
+    if (outputIds.has(paragraph.block.id) || !sameFieldEndpoints(before.get(paragraph.block.id) ?? [], plan)) setDocumentTextFields(paragraph.block, plan, paragraph.text)
+  }
 }
 
-export function transformDocumentTextFieldsForBlockEdit(block: DocumentBlock, start: number, end: number, text: string, preserveFieldId?: string): void {
-  transformDocumentTextFieldsForBlockRangeEdit([block], start, end, text, [block], preserveFieldId)
+export function transformDocumentTextFieldsForBlockEdit(block: DocumentBlock, start: number, end: number, text: string, preserveFieldId?: string, model?: Pick<DocumentModel, 'blocks'>): void {
+  transformDocumentTextFieldsForBlockRangeEdit([block], start, end, text, [block], preserveFieldId, model)
 }
 
-export function remapDocumentTextFieldIds(block: DocumentBlock): void {
+export function remapDocumentTextFieldIds(block: DocumentBlock, blockIds?: ReadonlyMap<string, string>): void {
   const fields = documentTextFields(block)
-  if (fields.length) setDocumentTextFields(block, fields.map(field => ({ ...field, id: documentId('field') })))
+  if (fields.length) setDocumentTextFields(block, fields.map(field => {
+    const { endBlockId, ...definition } = field
+    const end = endBlockId === undefined ? undefined : blockIds ? blockIds.get(endBlockId) : endBlockId
+    if (endBlockId !== undefined && end === undefined) throw new RangeError(`复制范围不包含字段 ${field.id} 的末段。`)
+    return { ...definition, id: documentId('field'), ...(end === undefined || end === block.id ? {} : { endBlockId: end }) }
+  }))
 }
 
 export function insertDocumentTextFields(block: DocumentBlock, fields: readonly DocumentTextField[], offset: number): void {
   if (!fields.length) return
   setDocumentTextFields(block, [...documentTextFields(block), ...fields.map(field => ({
-    ...field, startOffset: offset + field.startOffset, endOffset: offset + field.endOffset,
+    ...cloneModel(field), startOffset: offset + field.startOffset,
+    endOffset: field.endBlockId !== undefined && field.endBlockId !== block.id ? field.endOffset : offset + field.endOffset,
   }))])
 }

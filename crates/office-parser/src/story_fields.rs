@@ -70,6 +70,23 @@ pub struct StoryField {
     /// Keep every cached run; the result is one input object, not one style.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cached_runs: Vec<StoryRun>,
+    pub locked: bool,
+    pub contains_nested_fields: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nested_fields: Vec<StoryNestedField>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryNestedField {
+    pub field: String,
+    pub instruction: String,
+    pub start_offset: usize,
+    pub end_offset: usize,
+    pub locked: bool,
+    pub contains_nested_fields: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nested_fields: Vec<StoryNestedField>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,11 +118,15 @@ pub fn read_story(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str, sheet: &P
 }
 
 #[derive(Default)]
-struct Pending { instruction: String, cached: Vec<StoryRun>, text_style: Option<TextStyle>, source_format: Option<StorySourceFormat> }
+struct Pending {
+    instruction: String, cached: Vec<StoryRun>, text_style: Option<TextStyle>, source_format: Option<StorySourceFormat>,
+    separated: bool, locked: bool, contains_nested_fields: bool, nested_fields: Vec<StoryNestedField>,
+}
 
 struct StoryReader<'a> {
     story: StoryText,
     pending: Option<Pending>,
+    parents: Vec<Pending>,
     literal_offset: usize,
     buffer_offset: usize,
     xml: &'a str,
@@ -134,7 +155,10 @@ impl StoryReader<'_> {
 
     fn append(&mut self, text: &str, style: Option<TextStyle>, link: Option<String>, source_format: Option<StorySourceFormat>) {
         let run = StoryRun { text: text.to_owned(), style, link, source_format };
-        if let Some(pending) = &mut self.pending { pending.cached.push(run); return; }
+        if let Some(pending) = &mut self.pending {
+            if pending.separated { pending.cached.push(run); }
+            return;
+        }
         let length = text.encode_utf16().count();
         self.literal_offset += length;
         self.buffer_offset += length;
@@ -146,10 +170,23 @@ impl StoryReader<'_> {
         let instruction = pending.instruction.trim();
         let name = instruction.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
         let cached_result = pending.cached.iter().map(|run| run.text.as_str()).collect::<String>();
+        if let Some(mut parent) = self.parents.pop() {
+            parent.contains_nested_fields = true;
+            if parent.separated {
+                let start_offset = parent.cached.iter().map(|run| run.text.encode_utf16().count()).sum::<usize>();
+                parent.nested_fields.push(StoryNestedField { field: name, instruction: instruction.to_owned(), start_offset,
+                    end_offset: start_offset + cached_result.encode_utf16().count(), locked: pending.locked,
+                    contains_nested_fields: pending.contains_nested_fields, nested_fields: pending.nested_fields });
+                parent.cached.extend(pending.cached);
+            } else { self.unsupported("nestedFieldCodes"); }
+            self.pending = Some(parent);
+            return;
+        }
         if matches!(name.as_str(), "PAGE" | "NUMPAGES" | "DATE" | "TIME") {
             self.story.fields.push(StoryField { field: name, offset: self.literal_offset, instruction: instruction.to_owned(), cached_result,
                 text_style: pending.cached.first().and_then(|run| run.style.clone()).or(pending.text_style).or_else(|| self.context.styles().default_run_style.clone()),
-                source_format: pending.cached.first().and_then(|run| run.source_format.clone()).or(pending.source_format), cached_runs: pending.cached });
+                source_format: pending.cached.first().and_then(|run| run.source_format.clone()).or(pending.source_format), cached_runs: pending.cached,
+                locked: pending.locked, contains_nested_fields: pending.contains_nested_fields, nested_fields: pending.nested_fields });
             self.buffer_offset += 1;
         } else {
             self.unsupported("unknownFields");
@@ -238,8 +275,16 @@ impl StoryReader<'_> {
                         "br" | "cr" => self.append("\u{2028}", style.clone(), link.clone(), Some(source_format.clone())),
                         "instrText" => self.pending.as_mut().ok_or("A story has an instruction outside a field.")?.instruction.push_str(&child.text),
                         "fldChar" => match child.attribute("fldCharType") {
-                            Some("begin") if self.pending.is_none() => self.pending = Some(Pending { text_style: style.clone(), source_format: Some(source_format.clone()), ..Default::default() }),
-                            Some("begin") => return Err("Nested story fields are not supported by the text adapter.".into()),
+                            Some("begin") => {
+                                if let Some(mut parent) = self.pending.take() { parent.contains_nested_fields = true; self.parents.push(parent); }
+                                self.pending = Some(Pending { text_style: style.clone(), source_format: Some(source_format.clone()),
+                                    locked: child.attribute("fldLock").is_some_and(|value| !matches!(value, "0" | "off" | "false")), ..Default::default() });
+                            },
+                            Some("separate") => {
+                                let pending = self.pending.as_mut().ok_or("A story field separator has no beginning.")?;
+                                if pending.separated { return Err("A story field has two result separators.".into()); }
+                                pending.separated = true;
+                            },
                             Some("end") => { let pending = self.pending.take().ok_or("A story field has no beginning.")?; self.finish_field(pending); },
                             _ => {},
                         },
@@ -249,9 +294,10 @@ impl StoryReader<'_> {
                 }
             }
             "fldSimple" => {
-                if self.pending.is_some() { return Err("Nested story fields are not supported by the text adapter.".into()); }
+                if let Some(mut parent) = self.pending.take() { parent.contains_nested_fields = true; self.parents.push(parent); }
                 self.pending = Some(Pending { instruction: node.attribute("instr").ok_or("A simple story field has no instruction.")?.to_owned(),
-                    text_style: parse_run_style("<w:r/>", &self.context, paragraph_style), source_format: Some(self.source_format(None, paragraph_style, &scope)), ..Default::default() });
+                    text_style: parse_run_style("<w:r/>", &self.context, paragraph_style), source_format: Some(self.source_format(None, paragraph_style, &scope)),
+                    separated: true, locked: node.attribute("fldLock").is_some_and(|value| !matches!(value, "0" | "off" | "false")), ..Default::default() });
                 for child in &node.children { self.visit_inline(child, paragraph_style, link.clone(), &scope)?; }
                 let pending = self.pending.take().ok_or("A simple story field has an invalid nested delimiter.")?;
                 self.finish_field(pending);
@@ -292,7 +338,7 @@ fn parse_story_with_styles(xml: &str, sheet: &ParsedStyleSheet, relationships: H
     let parts = HashMap::new();
     let assets = HashMap::new();
     let context = ParseContext { relationships, content_types: ContentTypeLookup::default(), parts: &parts, binary_assets: &assets, style_sheet: sheet, warnings: RefCell::new(Vec::new()) };
-    let mut reader = StoryReader { story: StoryText { source_xml: xml.to_owned(), ..Default::default() }, pending: None, literal_offset: 0, buffer_offset: 0, xml: &canonical, context };
+    let mut reader = StoryReader { story: StoryText { source_xml: xml.to_owned(), ..Default::default() }, pending: None, parents: Vec::new(), literal_offset: 0, buffer_offset: 0, xml: &canonical, context };
     let scope = namespace_scope(&root, &BTreeMap::new());
     for node in &root.children { reader.visit_block(node, &scope)?; }
     if reader.pending.is_some() { return Err("A story field is not closed.".into()); }

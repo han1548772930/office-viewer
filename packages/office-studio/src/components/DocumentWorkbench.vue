@@ -46,6 +46,7 @@ import { DOCUMENT_PASTE_OPTIONS, documentPasteCommand, documentPasteSpecialComma
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock, sectionStoryLinkedToPrevious, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField, type StoryLocation } from '../features/document/services/story-editor'
 import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, documentBodySelectionHasField, documentStoryRangeHasField } from '../features/document/services/document-story-fields'
+import { reserveDocumentFieldOpenRefresh } from '../features/document/services/document-field-open-refresh'
 import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeaderFooterAction } from './document/document-header-footer-capabilities'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { selectedDocumentContentControl } from '../features/document/services/content-controls'
@@ -448,6 +449,7 @@ onActivated(() => {
   storyActionVersion.value++
   const api = props.documentApi
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
+  refreshDocumentFieldsOnOpen()
 })
 onUnmounted(() => { inputStateActive = false; inputStateEpoch++; storyActionVersion.value++; document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); imageRequest++; clipboardRequest++ })
 onDeactivated(() => {
@@ -508,6 +510,13 @@ watch(() => props.modelValue, (value) => {
   paperSize.value = documentPaperSize(next.page)
   orientation.value = next.page.width > next.page.height ? 'landscape' : 'portrait'
 }, { immediate: true })
+watch([() => props.documentApi, () => model.value.id, canRefreshFields], () => refreshDocumentFieldsOnOpen(), { immediate: true, flush: 'post' })
+function refreshDocumentFieldsOnOpen() {
+  const api = props.documentApi
+  if (!inputStateActive || !api || api.id !== model.value.id || !canRefreshFields.value || documentInputComposing.value) return
+  if (!reserveDocumentFieldOpenRefresh(api.regionalSettings, api.id, api.getHistoryGeneration())) return
+  execute({ id: 'doc.command.refresh-header-footer-fields', locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now(), onOpen: true }, false)
+}
 function clearInputMarks() {
   standalonePendingMarks.value = {}
   const api = props.documentApi

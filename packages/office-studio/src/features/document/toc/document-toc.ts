@@ -1,6 +1,13 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
+import { cloneModel } from '../../../domain/serialization'
 import type { DocumentSelection } from '../model/document-model'
-import { createParagraph, createRun, documentId, orderedSelection, runText, sameTarget, sliceRuns, textTargets, type DocumentRun } from '../model/document-model'
+import { blockAtPoint, createParagraph, createRun, documentId, orderedSelection, runText, sameTarget, sliceRuns, textTargets, type DocumentPoint, type DocumentRun } from '../model/document-model'
+import { documentDefaultStyle } from '../model/document-default-style'
+import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
+import { isDocumentTextBoundary, remapDocumentStoryFieldRuns } from '../model/document-story'
+import { documentFieldLocked, documentTextFieldParagraphs, documentTextFieldRangeContainsNested, documentTextFieldRangeIntersects, documentTextFieldRanges, documentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, type DocumentTextFieldParagraph, type DocumentTextFieldRange } from '../model/document-text-fields'
+import { transformContentControlsForBlockEdit } from '../services/content-controls'
+import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 
 export type DocumentTocFormat = 'fromTemplate' | 'classic' | 'modern' | 'simple'
 export type DocumentTocTabLeader = 'none' | 'dots' | 'dashes' | 'underline'
@@ -29,6 +36,14 @@ export interface DocumentTocHeading {
 }
 
 export type DocumentTocPageNumbers = Readonly<Record<string, number | undefined>>
+
+export interface DocumentTocPageNumberUpdatePlan {
+  blocks: DocumentModel['blocks']
+  contentControls?: DocumentModel['contentControls']
+  comments?: DocumentModel['comments']
+  selection?: DocumentSelection
+  changed: boolean
+}
 
 interface DocumentTocMetadata {
   id: string
@@ -149,28 +164,9 @@ export function updateDocumentToc(
   if (!tocBlocks.length) return false
 
   if (mode === 'pageNumbersOnly') {
-    const replacements: Array<{ block: DocumentBlock; metadata: DocumentTocMetadata; pageNumber: number; runs: DocumentRun[] }> = []
-    for (const block of tocBlocks) {
-      const metadata = tocMetadata(block)
-      if (metadata?.role !== 'entry' || !metadata.headingId || !metadata.options) continue
-      if (!metadata.options.showPageNumbers) continue
-      const pageNumber = pageNumbers[metadata.headingId]
-      if (pageNumber == null || !Number.isInteger(pageNumber) || pageNumber < 1) return false
-      const text = runText(block.runs)
-      const pageText = String(pageNumber)
-      const separator = metadata.options.rightAlignPageNumbers ? '\t' : ' '
-      const separatorIndex = metadata.pageNumber == null ? -1 : text.lastIndexOf(separator)
-      const prefixEnd = separatorIndex >= 0 ? separatorIndex + 1 : text.length
-      if (separatorIndex >= 0 && metadata.pageNumber === pageNumber && text.slice(prefixEnd) === pageText) continue
-      const prefix = sliceRuns(block.runs as DocumentRun[], 0, prefixEnd)
-      const pageRun = { ...(block.runs.at(-1) ?? createRun()), id: documentId('run'), text: pageText }
-      if (separatorIndex < 0) prefix.push({ ...pageRun, id: documentId('run'), text: separator })
-      replacements.push({ block, metadata, pageNumber, runs: [...prefix, pageRun] })
-    }
-    for (const { block, metadata, pageNumber, runs } of replacements) {
-      block.runs = runs
-      block.metadata[TOC_METADATA_KEY] = { ...metadata, pageNumber }
-    }
+    const plan = prepareDocumentTocPageNumberUpdate(model, tocId, pageNumbers)
+    if (!plan) return false
+    applyDocumentTocPageNumberUpdate(model, plan)
     return true
   }
 
@@ -185,6 +181,119 @@ export function updateDocumentToc(
   model.blocks = model.blocks.filter((block) => tocMetadata(block)?.id !== tocId)
   model.blocks.splice(firstIndex, 0, ...replacement)
   return true
+}
+
+function fieldResultText(range: DocumentTextFieldRange, paragraphs: readonly DocumentTextFieldParagraph[]): string {
+  return paragraphs.filter(paragraph => paragraph.absoluteStart >= range.startParagraph.absoluteStart
+    && paragraph.absoluteStart <= range.endParagraph.absoluteStart).map(paragraph => paragraph.text.slice(
+    paragraph.block.id === range.block.id ? range.field.startOffset : 0,
+    paragraph.block.id === range.endParagraph.block.id ? range.field.endOffset : undefined,
+  )).join('\n')
+}
+
+function mapTocPagePoint(point: DocumentPoint, blockId: string, start: number, end: number, length: number): DocumentPoint {
+  if ((point.cellBlockId ?? point.blockId) !== blockId || point.offset <= start) return point
+  return { ...point, offset: point.offset >= end ? point.offset + length - (end - start) : start + Math.min(point.offset - start, length) }
+}
+
+/** Resolve every page before publishing, preserving native field definitions and ordinary anchors. */
+export function prepareDocumentTocPageNumberUpdate(
+  model: DocumentModel,
+  tocId: string,
+  pageNumbers: DocumentTocPageNumbers = {},
+  selection?: DocumentSelection,
+  timestamp = Date.now(),
+): DocumentTocPageNumberUpdatePlan | undefined {
+  if (typeof timestamp !== 'number' || !Number.isFinite(new Date(timestamp).getTime())) throw new TypeError('目录更新时间无效。')
+  const tocBlocks = model.blocks.filter(block => tocMetadata(block)?.id === tocId)
+  if (!tocBlocks.length) return undefined
+  if (selection) for (const point of [selection.anchor, selection.focus]) {
+    const block = blockAtPoint(model, point)
+    if (!block || !isDocumentTextBoundary(runText(block.runs), point.offset)) throw new RangeError('目录更新选区的 UTF-16 位置无效。')
+  }
+  const paragraphs = documentTextFieldParagraphs(model), ranges = documentTextFieldRanges(model)
+  const tocIds = new Set(tocBlocks.map(block => block.id))
+  const outerFields = ranges.filter(range => range.field.field.toUpperCase() === 'TOC'
+    && paragraphs.some(paragraph => tocIds.has(paragraph.block.id) && paragraph.absoluteStart >= range.startParagraph.absoluteStart
+      && paragraph.absoluteStart <= range.endParagraph.absoluteStart))
+  if (outerFields.some(range => documentFieldLocked(range.field))) return undefined
+  const replacements: Array<{ blockId: string; metadata: DocumentTocMetadata; pageNumber: number; start: number; end: number; text: string; fieldId?: string }> = []
+  for (const block of tocBlocks) {
+    const metadata = tocMetadata(block)
+    if (metadata?.role !== 'entry' || !metadata.headingId || !metadata.options?.showPageNumbers) continue
+    const pageFields = ranges.filter(range => range.block.id === block.id && range.field.field.toUpperCase() === 'PAGEREF')
+    // Multiple or cross-paragraph references need a target mapping beyond a single local TOC row.
+    if (pageFields.length > 1) continue
+    const pageField = pageFields[0]
+    if (pageField && (documentFieldLocked(pageField.field) || documentTextFieldRangeContainsNested(pageField, ranges)
+      || pageField.endParagraph.block.id !== block.id)) continue
+    const text = runText(block.runs), separator = metadata.options.rightAlignPageNumbers ? '\t' : ' '
+    const separatorIndex = metadata.pageNumber == null ? -1 : text.lastIndexOf(separator)
+    const start = pageField?.field.startOffset ?? (separatorIndex >= 0 ? separatorIndex + 1 : text.length)
+    const end = pageField?.field.endOffset ?? text.length
+    const paragraph = paragraphs.find(paragraph => paragraph.block.id === block.id)
+    if (!paragraph) throw new TypeError('目录页码必须属于文本段落。')
+    const absoluteStart = paragraph.absoluteStart + start, absoluteEnd = paragraph.absoluteStart + end
+    const overlapping = ranges.filter(range => documentTextFieldRangeIntersects(range, absoluteStart, absoluteEnd))
+    if (overlapping.some(range => documentFieldLocked(range.field)
+      || range.field.field.toUpperCase() !== 'TOC' && range.field.id !== pageField?.field.id)) continue
+    const pageNumber = pageNumbers[metadata.headingId]
+    if (pageNumber == null || !Number.isSafeInteger(pageNumber) || pageNumber < 1) return undefined
+    const pageText = String(pageNumber), result = !pageField && separatorIndex < 0 ? `${separator}${pageText}` : pageText
+    if (text.slice(start, end) === result && metadata.pageNumber === pageNumber
+      && (!pageField || pageField.field.cachedResult === pageText)) continue
+    replacements.push({ blockId: block.id, metadata, pageNumber, start, end, text: result, fieldId: pageField?.field.id })
+  }
+  const repairsOuterCache = outerFields.some(range => range.field.cachedResult !== fieldResultText(range, paragraphs))
+  if (!replacements.length && !repairsOuterCache) return { blocks: model.blocks, changed: false, ...(selection ? { selection } : {}) }
+  const candidate: DocumentModel = { ...model, blocks: cloneModel(model.blocks),
+    contentControls: model.contentControls && cloneModel(model.contentControls), comments: model.comments && cloneModel(model.comments) }
+  let nextSelection = selection && cloneModel(selection)
+  for (const replacement of replacements) {
+    const block = candidate.blocks.find(block => block.id === replacement.blockId)!
+    const textChanged = runText(block.runs).slice(replacement.start, replacement.end) !== replacement.text
+    if (textChanged) {
+      const runs = block.runs as DocumentRun[], split = splitDocumentRunRange(runs, replacement.start, replacement.end)
+      const cache = sliceRuns(runs, replacement.start, replacement.end)
+      const inherited = documentRunStyleAt(runs, replacement.start, replacement.end) ?? documentDefaultStyle(candidate).text
+      const result = remapDocumentStoryFieldRuns(cache.length ? cache : [createRun('', inherited)], replacement.text, documentDefaultStyle(candidate).text)
+      transformContentControlsForBlockEdit(candidate, block.id, replacement.start, replacement.end, replacement.text.length, undefined, true)
+      transformDocumentTextFieldsForBlockEdit(block, replacement.start, replacement.end, replacement.text, replacement.fieldId, candidate)
+      block.runs = [...split.before, ...result, ...split.after]
+      delete block.metadata.html
+      transformDocumentCommentAnchorsForTextEdit(candidate, block.id, replacement.start, replacement.end, replacement.text, timestamp)
+      if (nextSelection) nextSelection = {
+        anchor: mapTocPagePoint(nextSelection.anchor, block.id, replacement.start, replacement.end, replacement.text.length),
+        focus: mapTocPagePoint(nextSelection.focus, block.id, replacement.start, replacement.end, replacement.text.length),
+      }
+    }
+    block.metadata[TOC_METADATA_KEY] = { ...replacement.metadata, pageNumber: replacement.pageNumber }
+    if (replacement.fieldId) setDocumentTextFields(block, documentTextFields(block).map(field => field.id === replacement.fieldId
+      ? { ...field, cachedResult: String(replacement.pageNumber) } : field))
+  }
+  const currentParagraphs = documentTextFieldParagraphs(candidate)
+  for (const outer of outerFields) {
+    const range = documentTextFieldRanges(candidate).find(range => range.field.id === outer.field.id)!
+    const cachedResult = fieldResultText(range, currentParagraphs)
+    if (range.field.cachedResult !== cachedResult) setDocumentTextFields(range.block, documentTextFields(range.block).map(field => field.id === range.field.id
+      ? { ...field, cachedResult } : field))
+  }
+  documentTextFieldRanges(candidate)
+  return { blocks: candidate.blocks, contentControls: candidate.contentControls, comments: candidate.comments, changed: true,
+    ...(nextSelection ? { selection: nextSelection } : {}) }
+}
+
+/** Apply an already validated plan; unchanged run objects stay intact for cache-only repairs. */
+export function applyDocumentTocPageNumberUpdate(model: DocumentModel, plan: DocumentTocPageNumberUpdatePlan): void {
+  if (!plan.changed) return
+  const prepared = new Map(plan.blocks.map(block => [block.id, block]))
+  for (const block of model.blocks) {
+    const next = prepared.get(block.id)!
+    if (JSON.stringify(block.runs) !== JSON.stringify(next.runs)) block.runs = next.runs
+    if (JSON.stringify(block.metadata) !== JSON.stringify(next.metadata)) block.metadata = next.metadata
+  }
+  if (JSON.stringify(model.contentControls) !== JSON.stringify(plan.contentControls)) model.contentControls = plan.contentControls
+  if (JSON.stringify(model.comments) !== JSON.stringify(plan.comments)) model.comments = plan.comments
 }
 
 export function deleteDocumentToc(model: DocumentModel, tocId: string): boolean {

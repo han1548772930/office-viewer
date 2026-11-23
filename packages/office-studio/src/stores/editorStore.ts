@@ -8,6 +8,7 @@ import { useWorkbookStore } from './workbookStore'
 import { useDocumentStore } from './documentStore'
 import { useParserStore } from './parserStore'
 import { useHistoryStore, type HistorySavepoint } from './historyStore'
+import { createDocumentSnapshotHistory } from '../features/document/services/document-history-cache.ts'
 
 export interface EditorSavepoint extends HistorySavepoint { readonly kind: OfficeKind }
 
@@ -80,7 +81,8 @@ export const useEditorStore = defineStore('editor-session', () => {
     after.id = before.id
     if (equivalentModelData(before, after, ['modified'])) return false
     after.modified = true
-    history.execute(before.id!, '编辑文档', () => document.replace(after), () => document.replace(before))
+    const callbacks = createDocumentSnapshotHistory(before, after, value => document.replace(value))
+    history.execute(before.id!, '编辑文档', callbacks.redo, callbacks.undo)
     refreshDirty()
     return true
   }
@@ -99,7 +101,8 @@ export const useEditorStore = defineStore('editor-session', () => {
       if (document.model.name === name) return
       const before = cloneModel(document.model)
       const after = { ...before, name, modified: true }
-      history.execute(before.id!, '重命名文档', () => document.replace(after), () => document.replace(before))
+      const callbacks = createDocumentSnapshotHistory(before, after, value => document.replace(value))
+      history.execute(before.id!, '重命名文档', callbacks.redo, callbacks.undo)
     }
     refreshDirty()
   }

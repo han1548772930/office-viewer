@@ -3,6 +3,10 @@ import type {
   ChartAxisOptions,
   ChartLegendOptions,
   ChartModel,
+  ChartSemanticOptions,
+  ChartSeriesOptions,
+  ChartTrendlineOptions,
+  ChartErrorBarOptions,
   ChartSource,
   ChartSourceOrientation,
   ChartType,
@@ -35,6 +39,8 @@ import type {
 } from '../domain/model'
 import { createBlankSheet, createCell } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { cloneChartOptions, mergeChartOptions } from '../features/charts/chart-options'
+import { chartTypeSelectOptions, resolveChartType } from '../features/charts/chart-catalog'
 import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
 import {
   getCommonDocumentTextStyle,
@@ -69,7 +75,8 @@ import { SHEET_AXIS_VISIBILITY_COMMANDS } from '../features/sheet-workbench/shee
 import { SET_SHEET_CONDITIONAL_FORMATS_COMMAND } from '../features/conditional-formatting/conditional-format-command.ts'
 import { sheetRowHeight, sheetColumnWidth, sheetRowIsAutoHeight } from '../domain/sheet-axis.ts'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
-import type { DocumentSelection, RunPatch } from '../features/document/model/document-model.ts'
+import { textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
+import type { DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
 import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
@@ -486,6 +493,7 @@ export class FWorksheet {
     const pivot = getPivotTableAtCell(this.workbook(), this.id, row, col)
     return pivot ? new FPivotTable(this.api, this.unitId, pivot.id) : null
   }
+  getChartTypes(): ReturnType<typeof chartTypeSelectOptions> { return chartTypeSelectOptions() }
   newChart(type: ChartType): ChartConfigBuilder { return new ChartConfigBuilder(type) }
   async insertChart(info: ChartInfo): Promise<FChart> {
     const chartId = randomId('chart')
@@ -824,8 +832,10 @@ export class ChartConfigBuilder {
   private value: ChartConfig
 
   constructor(type: ChartType) {
+    resolveChartType(type)
     this.value = { type, source: { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 }, orientation: 'columns' }, position: { x: 0, y: 0 }, size: { width: 480, height: 300 } }
   }
+  setType(type: ChartType): this { resolveChartType(type); this.value = { ...this.value, type }; return this }
   setSource(range: string | ChartSource, orientation: ChartSourceOrientation = 'columns'): this {
     const source = typeof range === 'string' ? { range: parseChartA1Range(range), orientation } : range
     this.value = { ...this.value, source: { ...source, range: { ...source.range } } }
@@ -851,9 +861,23 @@ export class ChartConfigBuilder {
     return this
   }
   setTitle(title: string): this { this.value = { ...this.value, title }; return this }
+  setSubtitle(subtitle: string): this { this.value = { ...this.value, subtitle }; return this }
+  setPalette(palette: readonly string[]): this { this.value = { ...this.value, palette: [...palette] }; return this }
+  setOptions(options: ChartSemanticOptions): this { this.value = { ...this.value, options: mergeChartOptions(this.value.options, options) }; return this }
+  setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): this { return this.setOptions(chartOptionPatch(key, value)) }
+  setMapping(mapping: ChartSemanticOptions['mapping']): this { return this.setOption('mapping', mapping) }
+  setAllSeriesStyle(style: ChartSeriesOptions | undefined): this { return this.setOption('allSeriesStyle', style) }
+  setSeries(field: number, style: ChartSeriesOptions | undefined): this {
+    validateChartSeriesField(field)
+    return this.setOption('series', chartSeriesPatch(this.value.options?.series, field, style))
+  }
+  setTrendlines(trendlines: readonly ChartTrendlineOptions[]): this { return this.setOption('trendlines', [...trendlines]) }
+  setErrorBars(errorBars: readonly ChartErrorBarOptions[]): this { return this.setOption('errorBars', [...errorBars]) }
+  setThreeD(threeD: ChartSemanticOptions['threeD']): this { return this.setOption('threeD', threeD) }
+  setRightYAxis(axis: ChartAxisOptions | undefined): this { return this.setOption('rightYAxis', axis) }
   setLegend(legend: Partial<ChartLegendOptions>): this { this.value = { ...this.value, legend: { ...this.value.legend, ...legend } }; return this }
-  setXAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: { ...this.value.xAxis, ...axis } }; return this }
-  setYAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, yAxis: { ...this.value.yAxis, ...axis } }; return this }
+  setXAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: chartAxisPatch(this.value.xAxis, axis) }; return this }
+  setYAxis(axis: Partial<ChartAxisOptions>): this { this.value = { ...this.value, yAxis: chartAxisPatch(this.value.yAxis, axis) }; return this }
   build(): ChartInfo { return cloneModel(this.value) }
 }
 
@@ -863,23 +887,72 @@ export class FChart {
   readonly id: string
   constructor(api: OfficeStudio, unitId: string, id: string) { this.api = api; this.unitId = unitId; this.id = id }
   getChartId(): string { return this.id }
+  getType(): ChartType { return this.model().type }
   getInfo(): ChartModel { return cloneModel(this.model()) }
-  getData(): ReturnType<typeof readChartData> { return readChartData(this.workbook(), this.model()) }
-  getLayout(): ReturnType<typeof chartLayout> { return chartLayout(this.workbook(), this.model()) }
-  getRenderCommands(): ReturnType<typeof chartRenderCommands> { return chartRenderCommands(this.workbook(), this.model()) }
-  async update(info: ChartPatch): Promise<this> { await this.api.executeCommand('sheet.command.update-chart', { unitId: this.unitId, chartId: this.id, patch: info }); return this }
+  getOptions(): ChartSemanticOptions { return cloneChartOptions(this.model().options) ?? {} }
+  getDataSource(): ChartSource { return cloneModel(this.model().source) }
+  getData(): ReturnType<typeof readChartData> { const model = this.model(); this.assertCanReadSource(model); return readChartData(this.workbook(), model) }
+  getLayout(): ReturnType<typeof chartLayout> { const model = this.model(); this.assertCanReadSource(model); return chartLayout(this.workbook(), model) }
+  getRenderCommands(): ReturnType<typeof chartRenderCommands> { const model = this.model(); this.assertCanReadSource(model); return chartRenderCommands(this.workbook(), model) }
+  async update(info: ChartPatch): Promise<this> {
+    this.model()
+    const committed = await this.api.executeCommand<boolean>('sheet.command.update-chart', { unitId: this.unitId, chartId: this.id, patch: info })
+    if (!committed) throw new Error('图表设置未能提交。')
+    return this
+  }
   async setDataSource(source: ChartSource): Promise<this> { return this.update({ source }) }
+  async setType(type: ChartType): Promise<this> { resolveChartType(type); return this.update({ type }) }
+  async setTitle(title: string | undefined): Promise<this> { return this.update({ title }) }
+  async setSubtitle(subtitle: string | undefined): Promise<this> { return this.update({ subtitle }) }
+  async setPalette(palette: readonly string[]): Promise<this> { return this.update({ palette: [...palette] }) }
+  async setOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
+  async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.setOptions(chartOptionPatch(key, value)) }
+  async setMapping(mapping: ChartSemanticOptions['mapping']): Promise<this> { return this.setOption('mapping', mapping) }
+  async setAllSeriesStyle(style: ChartSeriesOptions | undefined): Promise<this> { return this.setOption('allSeriesStyle', style) }
+  async setSeries(field: number, style: ChartSeriesOptions | undefined): Promise<this> {
+    validateChartSeriesField(field)
+    return this.setOption('series', chartSeriesPatch(this.model().options?.series, field, style))
+  }
+  async setTrendlines(trendlines: readonly ChartTrendlineOptions[]): Promise<this> { return this.setOption('trendlines', [...trendlines]) }
+  async setErrorBars(errorBars: readonly ChartErrorBarOptions[]): Promise<this> { return this.setOption('errorBars', [...errorBars]) }
+  async setRightYAxis(axis: ChartAxisOptions | undefined): Promise<this> { return this.setOption('rightYAxis', axis) }
+  async setLegend(legend: Partial<ChartLegendOptions>): Promise<this> { return this.update({ legend: { ...this.model().legend, ...legend } }) }
+  async setXAxis(axis: Partial<ChartAxisOptions>): Promise<this> { return this.update({ xAxis: chartAxisPatch(this.model().xAxis, axis) }) }
+  async setYAxis(axis: Partial<ChartAxisOptions>): Promise<this> { return this.update({ yAxis: chartAxisPatch(this.model().yAxis, axis) }) }
+  async setAbsolutePosition(x: number, y: number): Promise<this> { return this.update({ position: { x, y } }) }
+  async setSize(width: number, height: number): Promise<this> { return this.update({ size: { width, height } }) }
   async remove(): Promise<boolean> { return this.api.executeCommand('sheet.command.remove-chart', { unitId: this.unitId, chartId: this.id }) }
   private model(): ChartModel {
     const chart = this.workbook().charts?.find((item) => item.id === this.id)
     if (!chart) throw new Error(`Chart not found: ${this.id}`)
+    this.api.assertCanViewWorksheet(this.unitId, chart.sheetId)
     return chart
+  }
+  private assertCanReadSource(chart: ChartModel): void {
+    const sourceSheetId = chart.pivotTableId ? this.workbook().pivotTables?.find(pivot => pivot.id === chart.pivotTableId)?.source.subUnitId : chart.source.sheetId ?? chart.sheetId
+    if (sourceSheetId) this.api.assertCanViewWorksheet(this.unitId, sourceSheetId)
   }
   private workbook(): WorkbookModel {
     const workbook = this.api.getWorkbookModel(this.unitId)
     if (!workbook) throw new Error(`Workbook not found: ${this.unitId}`)
     return workbook
   }
+}
+
+function chartOptionPatch<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): ChartSemanticOptions {
+  const patch: ChartSemanticOptions = {}
+  Object.assign(patch, { [key]: value })
+  return cloneChartOptions(patch)!
+}
+function validateChartSeriesField(field: number): void { if (!Number.isSafeInteger(field) || field < 0) throw new RangeError('图表系列字段须为非负安全整数。') }
+function chartSeriesPatch(current: ChartSemanticOptions['series'], field: number, style: ChartSeriesOptions | undefined): NonNullable<ChartSemanticOptions['series']> {
+  const series = cloneChartOptions({ series: current })?.series ?? {}
+  if (style === undefined) delete series[field]
+  else series[field] = mergeChartOptions({ allSeriesStyle: series[field] }, { allSeriesStyle: style })!.allSeriesStyle!
+  return series
+}
+function chartAxisPatch(current: Partial<ChartAxisOptions> | undefined, patch: Partial<ChartAxisOptions>): ChartAxisOptions {
+  return mergeChartOptions({ rightYAxis: { scaleType: 'linear', ...current } }, { rightYAxis: { scaleType: current?.scaleType ?? 'linear', ...patch } })!.rightYAxis!
 }
 
 export class FRange {
@@ -1305,6 +1378,7 @@ export class FDocument {
   /** Pending input overrides; clearing color/highlight preserves an own undefined property. */
   getInputMarks(selection?: DocumentSelection, story?: DocumentStoryRange): RunPatch { return this.api.getDocumentInputMarks(this.id, selection, story) }
   getModelRevision(): number { return this.api.getDocumentRevision(this.id) }
+  getHistoryGeneration(): number { return this.api.editor.history.captureSavepoint(this.id).generation }
   getInputState() { return this.api.getDocumentInputState(this.id) }
   onInputStateChanged(listener: (event: ApiEventMap['DocumentInputStateChanged']) => void): Disposable {
     return this.api.events.addEvent('DocumentInputStateChanged', event => { if (event.unitId === this.id) listener(event) })
@@ -1314,6 +1388,22 @@ export class FDocument {
   advanceInputMarks(selection: DocumentSelection, story?: DocumentStoryRange): boolean { return this.api.advanceDocumentInputMarks(this.id, selection, story) }
   clearFormatting(selection: DocumentSelection, story?: DocumentStoryRange): DocumentEditorCommandResult {
     return this.executeCommand({ id: 'doc.command.clear-formatting', ...(story ? { story } : {}) }, selection)
+  }
+  refreshFields(options: Partial<Omit<DocumentStoryFieldRefreshRequest, 'stories' | 'bodySelection'>> & { selection?: DocumentSelection } = {}): DocumentEditorCommandResult {
+    const state = this.getInputState(), target = textTargets(this.model())[0]
+    const selection = options.selection ?? (state?.location.kind === 'body' ? state.location.selection : undefined)
+      ?? (target ? { anchor: { ...target, offset: 0 }, focus: { ...target, offset: 0 } } : undefined)
+    if (!selection) throw new Error('文档没有可定位的字段更新范围。')
+    return this.executeCommand({ id: 'doc.command.refresh-header-footer-fields',
+      locale: options.locale ?? this.regionalSettings.locale.value.replaceAll('_', '-'), timestamp: options.timestamp ?? Date.now(),
+      ...(options.onOpen === undefined ? {} : { onOpen: options.onOpen }) }, selection)
+  }
+  updateSelectedFields(selection: DocumentSelection, options: Partial<DocumentStoryFieldRefreshRequest> = {}): DocumentEditorCommandResult {
+    return this.executeCommand({ id: 'doc.command.update-selected-fields',
+      locale: options.locale ?? this.regionalSettings.locale.value.replaceAll('_', '-'), timestamp: options.timestamp ?? Date.now(),
+      ...(options.stories === undefined ? {} : { stories: options.stories }),
+      ...(options.bodySelection === undefined ? {} : { bodySelection: options.bodySelection }),
+      ...(options.onOpen === undefined ? {} : { onOpen: options.onOpen }) }, selection)
   }
   getPermissionRules(): DocumentModel['permissionRules'] { return cloneModel(this.model().permissionRules ?? []) }
   setPermissionRules(rules: NonNullable<DocumentModel['permissionRules']>): this {

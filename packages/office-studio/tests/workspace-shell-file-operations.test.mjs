@@ -18,9 +18,11 @@ function fixture(overrides = {}) {
     capture: (kind = current.kind) => ({
       kind,
       model: { text: current.text },
+      modelRevision: current.revision,
       fileName: current.name,
       savepoint: { kind, unitId: current.id, revision: current.revision, generation: current.generation },
     }),
+    isCurrent: () => true,
     write: async (snapshot, options) => {
       calls.writes.push({ snapshot, options })
       return { bytes: new Uint8Array([0x50, 0x4b]), warnings: [] }
@@ -69,6 +71,33 @@ test('exporting a copy does not change the document savepoint', async () => {
   assert.equal(app.calls.downloads.length, 1)
   assert.equal(app.calls.savepoints.length, 0)
   assert.match(app.calls.notices.at(-1).message, /导出文件已下载/)
+})
+
+test('an edited or replaced model cannot download or acknowledge a stale export', async () => {
+  for (const change of ['revision', 'generation']) {
+    const writer = deferred()
+    let current = true
+    const app = fixture({ write: () => writer.promise, isCurrent: () => current })
+    const pending = app.files.exportFile('save')
+    app.setCurrent({ [change]: 3 })
+    current = false
+    writer.resolve({ bytes: new Uint8Array([1]), warnings: [] })
+    assert.equal(await pending, false)
+    assert.equal(app.calls.downloads.length, 0)
+    assert.equal(app.calls.savepoints.length, 0)
+    assert.match(app.calls.notices.at(-1).message, /旧导出结果已丢弃/)
+  }
+})
+
+test('task-state observers cannot cause an obsolete snapshot to be written', async () => {
+  let current = true
+  const app = fixture({
+    isCurrent: () => current,
+    onExportTask: task => { if (task) current = false },
+  })
+  assert.equal(await app.files.exportFile(), false)
+  assert.equal(app.calls.writes.length, 0)
+  assert.equal(app.calls.downloads.length, 0)
 })
 
 test('download failure leaves the savepoint intact and clears the task state', async () => {

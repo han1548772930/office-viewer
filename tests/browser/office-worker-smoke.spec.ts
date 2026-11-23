@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { inflateRawSync } from 'node:zlib'
 import { writeFile } from 'node:fs/promises'
+import { wasmTaskFixture } from './wasm-task-fixtures.ts'
 
 function officeXml(bytes: Buffer, name: string): string {
   let end = bytes.length - 22
@@ -30,24 +31,29 @@ function officeXml(bytes: Buffer, name: string): string {
 /** This uses the shipped JS/WASM inside real module Workers, without a mock or editor UI. */
 test('production Office WASM writes DOCX and XLSX without requiring a host clock', async ({ page }) => {
   await page.goto('/')
-  const results = await page.evaluate(async () => {
+  const results = await page.evaluate(async (context) => {
     const moduleURL = new URL('/wasm-writer/office_writer.js', location.href).href
     const source = `
       try {
         const writer = await import(${JSON.stringify(moduleURL)});
-        await writer.default();
+        const initialized = await writer.default();
+        if (writer.writer_protocol_version() !== 2) throw new Error('Writer WASM protocol mismatch');
+        const context = ${JSON.stringify(context)};
         const outputs = [];
         for (const [kind, model] of [
           ['document', { kind: 'document', name: 'Worker DOCX', blocks: [{ type: 'paragraph', runs: [{ text: 'Browser WASM DOCX' }] }] }],
           ['workbook', { kind: 'workbook', name: 'Worker XLSX', sheets: [{ id: 'data', name: 'Data', cells: { '0:0': { row: 0, col: 0, value: 'Browser WASM XLSX' } } }] }],
         ]) {
-          const first = writer.write_office(kind, JSON.stringify(model));
-          const second = writer.write_office(kind, JSON.stringify(model));
+          const first = await writer.write_office(kind, JSON.stringify(model), { ...context, requestId: kind + '-first' });
+          let second;
           try {
-            const a = first.bytes;
-            const b = second.bytes;
-            outputs.push({ kind, size: a.byteLength, signature: Array.from(a.slice(0, 4)), deterministic: a.length === b.length && a.every((value, index) => value === b[index]), warnings: JSON.parse(first.warnings) });
-          } finally { first.free(); second.free(); }
+            second = await writer.write_office(kind, JSON.stringify(model), { ...context, requestId: kind + '-second' });
+            const a = first.copy_bytes();
+            const b = second.copy_bytes();
+            const metadata = first.metadata();
+            if (a.buffer === initialized.memory.buffer || a.byteOffset !== 0 || a.byteLength !== a.buffer.byteLength) throw new Error('Writer returned aliased bytes');
+            outputs.push({ kind, size: a.byteLength, signature: Array.from(a.slice(0, 4)), deterministic: a.length === b.length && a.every((value, index) => value === b[index]), warnings: metadata.warnings });
+          } finally { first.free(); second?.free(); }
         }
         postMessage({ ok: true, outputs });
       } catch (error) { postMessage({ ok: false, error: String(error) }); }
@@ -61,7 +67,7 @@ test('production Office WASM writes DOCX and XLSX without requiring a host clock
         worker.onerror = (error) => { clearTimeout(timeout); reject(new Error(error.message)) }
       })
     } finally { worker.terminate(); URL.revokeObjectURL(url) }
-  })
+  }, wasmTaskFixture('export', 'worker-deterministic'))
   expect(results.ok, results.error).toBe(true)
   expect(results.outputs?.map((output) => output.kind)).toEqual(['document', 'workbook'])
   for (const output of results.outputs ?? []) {
@@ -74,7 +80,7 @@ test('production Office WASM writes DOCX and XLSX without requiring a host clock
 
 test('production XLSX Worker preserves AutoFilter criteria and both filter/manual hidden rows', async ({ page }, testInfo) => {
   await page.goto('/')
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async (context) => {
     const moduleURL = new URL('/wasm-writer/office_writer.js', location.href).href
     const model = { kind: 'workbook', name: 'AutoFilter', sheets: [{ id: 'filtered', name: 'Data', cells: {
       B3: { value: 'Region' }, D3: { value: 'Revenue' }, B4: { value: 'East' }, D4: { value: 150 },
@@ -88,9 +94,15 @@ test('production XLSX Worker preserves AutoFilter criteria and both filter/manua
       onmessage = async ({ data }) => {
         try {
           const writer = await import(${JSON.stringify(moduleURL)});
-          await writer.default();
-          const result = writer.write_office('workbook', JSON.stringify(data));
-          try { const bytes = result.bytes; postMessage({ bytes, warnings: JSON.parse(result.warnings) }, [bytes.buffer]); }
+          const initialized = await writer.default();
+          if (writer.writer_protocol_version() !== 2) throw new Error('Writer WASM protocol mismatch');
+          const result = await writer.write_office('workbook', JSON.stringify(data), ${JSON.stringify(context)});
+          try {
+            const bytes = result.copy_bytes();
+            const metadata = result.metadata();
+            if (bytes.buffer === initialized.memory.buffer || bytes.byteOffset !== 0 || bytes.byteLength !== bytes.buffer.byteLength) throw new Error('Writer returned aliased bytes');
+            postMessage({ bytes, warnings: metadata.warnings }, [bytes.buffer]);
+          }
           finally { result.free(); }
         } catch (error) { postMessage({ error: String(error) }); }
       };
@@ -105,7 +117,7 @@ test('production XLSX Worker preserves AutoFilter criteria and both filter/manua
         worker.postMessage(model)
       })
     } finally { worker.terminate(); URL.revokeObjectURL(url) }
-  })
+  }, wasmTaskFixture('export', 'worker-auto-filter'))
   expect(result.error).toBeUndefined()
   expect(result.warnings).toEqual([])
   const bytes = Buffer.from(result.bytes!)

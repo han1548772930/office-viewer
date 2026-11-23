@@ -2,6 +2,7 @@ import type { DocumentBlock, DocumentModel, DocumentNote } from '../../../domain
 import { blockAtPoint, collapsedSelection, createRun, documentId, marksAtPoint, orderedSelection, runText, runsForTarget, setTargetRuns, sliceRuns, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
 import { transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
+import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
 
 export type DocumentNoteKind = 'footnote' | 'endnote'
 
@@ -94,7 +95,7 @@ function renumberNotes(model: DocumentModel, kind: DocumentNoteKind): void {
         const result = String(++index)
         if (result !== run.text) {
           const end = offset + run.text.length
-          transformDocumentTextFieldsForBlockEdit(block, offset, end, result)
+          transformDocumentTextFieldsForBlockEdit(block, offset, end, result, undefined, model)
           remapNoteContentControlOffsets(model, block.id, offset, end, result.length)
           run.text = result
           transformDocumentCommentAnchorsForTextEdit(model, block.id, offset, end, result)
@@ -121,8 +122,10 @@ export function insertDocumentNote(model: DocumentModel, selection: DocumentSele
   const reference = createRun('1', { ...marks, verticalAlign: 'superscript', metadata: { ...marks.metadata, note: { type: kind, noteId } } })
   const prefix = sliceRuns(runs, 0, start.offset)
   const suffix = sliceRuns(runs, end.offset)
-  transformDocumentTextFieldsForBlockEdit(blockAtPoint(model, start)!, start.offset, end.offset, reference.text)
-  remapNoteContentControlOffsets(model, referenceBlockId, start.offset, end.offset, reference.text.length)
+  const controlPlan = { ...model, contentControls: model.contentControls && getDocumentContentControls(model) }
+  transformContentControlsForBlockEdit(controlPlan, referenceBlockId, start.offset, end.offset, reference.text.length)
+  transformDocumentTextFieldsForBlockEdit(blockAtPoint(model, start)!, start.offset, end.offset, reference.text, undefined, model)
+  model.contentControls = controlPlan.contentControls
   setTargetRuns(model, start, [...prefix, reference, ...suffix])
   transformDocumentCommentAnchorsForTextEdit(model, referenceBlockId, start.offset, end.offset, reference.text)
   const persistedReference = runsForTarget(model, start).find((run) => run.metadata?.note && typeof run.metadata.note === 'object' && 'noteId' in run.metadata.note && run.metadata.note.noteId === noteId)
@@ -147,8 +150,10 @@ export function deleteDocumentNote(model: DocumentModel, kind: DocumentNoteKind,
   const runIndex = paragraph?.runs.findIndex((run) => isReferenceRun(run, note, kind)) ?? -1
   if (paragraph && runIndex >= 0) {
     const offset = paragraph.runs.slice(0, runIndex).reduce((total, run) => total + run.text.length, 0), length = paragraph.runs[runIndex]!.text.length
-    transformDocumentTextFieldsForBlockEdit(paragraph, offset, offset + length, '')
-    remapNoteContentControlOffsets(model, paragraph.id, offset, offset + length, 0)
+    const controlPlan = { ...model, contentControls: model.contentControls && getDocumentContentControls(model) }
+    transformContentControlsForBlockEdit(controlPlan, paragraph.id, offset, offset + length, 0)
+    transformDocumentTextFieldsForBlockEdit(paragraph, offset, offset + length, '', undefined, model)
+    model.contentControls = controlPlan.contentControls
     paragraph.runs.splice(runIndex, 1)
     if (!paragraph.runs.length) paragraph.runs.push({ id: documentId('run'), text: '', bold: false, italic: false, underline: false, strike: false, color: '#1f2937', fontFamily: 'Arial', fontSize: 11 })
     transformDocumentCommentAnchorsForTextEdit(model, paragraph.id, offset, offset + length, '')

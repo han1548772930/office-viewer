@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { inflateRawSync } from 'node:zlib'
+import { wasmTaskFixture } from './wasm-task-fixtures.ts'
 
 interface ParsedDocument {
   blocks: Array<{ content: string; details: { inlines: Array<{ text?: string; style?: { fontFamilyAscii?: string; fontFamilyEastAsia?: string; fontSizePt?: number; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; color?: string; highlight?: string; backgroundColor?: string; verticalAlign?: string } }>; officeNumberingMarker?: { text: string } } }>
@@ -14,18 +15,26 @@ interface WorkerResult { bytes?: number[]; data?: ParsedDocument; warnings?: Arr
 
 /** Fixture creation and independent reparse use real public WASM in a dedicated Worker. */
 async function officeWorker(page: Page, request: { action: 'write'; model: string } | { action: 'parse'; bytes: number[] }): Promise<WorkerResult> {
-  return page.evaluate(async (request) => {
+  return page.evaluate(async ({ request, context }) => {
     const code = `self.onmessage = async ({ data }) => {
       try {
         const module = await import(data.moduleURL);
-        await module.default();
+        const initialized = await module.default();
         if (data.action === 'write') {
-          const result = module.write_office('document', data.model);
-          try { const bytes = result.bytes; self.postMessage({ bytes: bytes.buffer, warnings: JSON.parse(result.warnings) }, [bytes.buffer]); }
+          if (module.writer_protocol_version() !== 2) throw new Error('Writer WASM protocol mismatch');
+          const result = await module.write_office('document', data.model, data.context);
+          try {
+            const bytes = result.copy_bytes();
+            const metadata = result.metadata();
+            if (bytes.buffer === initialized.memory.buffer || bytes.byteOffset !== 0 || bytes.byteLength !== bytes.buffer.byteLength) throw new Error('Writer returned aliased bytes');
+            self.postMessage({ bytes: bytes.buffer, warnings: metadata.warnings }, [bytes.buffer]);
+          }
           finally { result.free(); }
         } else {
-          const envelope = JSON.parse(module.parse_document(new Uint8Array(data.bytes), 'numbering-roundtrip.docx'));
-          self.postMessage({ envelope });
+          if (module.parser_protocol_version() !== 2) throw new Error('Parser WASM protocol mismatch');
+          const result = await module.parse_document(new Uint8Array(data.bytes), 'numbering-roundtrip.docx', data.context);
+          if (result.context.requestId !== data.context.requestId) throw new Error('Parser returned a different task');
+          self.postMessage({ envelope: result.envelope });
         }
       } catch (error) { self.postMessage({ error: String(error) }); }
     }`
@@ -40,10 +49,10 @@ async function officeWorker(page: Page, request: { action: 'write'; model: strin
           if (data.error) reject(new Error(data.error))
           else resolve({ bytes: data.bytes ? Array.from(new Uint8Array(data.bytes)) : undefined, warnings: data.warnings, data: data.envelope?.payload.data })
         }
-        worker.postMessage({ ...request, moduleURL: new URL(request.action === 'write' ? '/wasm-writer/office_writer.js' : '/wasm/office_parser.js', location.origin).href })
+        worker.postMessage({ ...request, context, moduleURL: new URL(request.action === 'write' ? '/wasm-writer/office_writer.js' : '/wasm/office_parser.js', location.origin).href })
       })
     } finally { window.clearTimeout(timeout); worker.terminate(); URL.revokeObjectURL(url) }
-  }, request)
+  }, { request, context: wasmTaskFixture(request.action === 'write' ? 'export' : 'parse', 'numbering-' + request.action) })
 }
 
 function sourceModel(): Record<string, unknown> {

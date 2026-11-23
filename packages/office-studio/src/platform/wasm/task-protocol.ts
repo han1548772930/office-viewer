@@ -111,6 +111,7 @@ export function isWasmTaskMetrics(value: unknown): value is WasmTaskMetrics {
   const transport = value.transport
   return ['inputTransfers', 'inputBytes', 'outputTransfers', 'outputBytes', 'structuredResultMessages']
     .every((key) => isUnsignedCount(transport[key]))
+    && (value.totalMs === undefined || (typeof value.totalMs === 'number' && Number.isFinite(value.totalMs) && value.totalMs >= 0))
 }
 export function isWasmErrorData(value: unknown): value is WasmErrorData {
   return isWasmRecord(value) && typeof value.code === 'string' && value.code.trim().length > 0

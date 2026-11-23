@@ -14,6 +14,9 @@ mod document_format_roundtrip_tests;
 #[cfg(test)]
 mod document_story_roundtrip_tests;
 mod story_fields;
+mod document_text_fields;
+#[cfg(test)]
+mod document_text_fields_roundtrip_tests;
 mod validation_sidecar;
 #[cfg(test)]
 mod sheet_validation_roundtrip_tests;

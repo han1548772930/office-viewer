@@ -1,10 +1,12 @@
 import { ComputeError, isErrorData, normalizeComputeError } from './errors.ts'
 import { progressUnits, readProgress, readResult } from './guards.ts'
-import { COMPUTE_LIMITS, COMPUTE_PROTOCOL_VERSION, isContext, isRecord } from './protocol.ts'
+import { COMPUTE_LIMITS, COMPUTE_PROTOCOL_VERSION, isRecord } from './protocol.ts'
 import type { ComputeContext, ComputeProgress, ComputeResult, ComputeTask } from './protocol.ts'
-import { cloneTask, estimateTaskMemory, transferTaskBuffers, validateTask } from './tasks.ts'
+import { cloneTask, estimateTaskMemory, taskViews, transferTaskBuffers, validateTask } from './tasks.ts'
+import { createWasmTaskControl, matchesWasmTaskControl } from '../platform/wasm/task-protocol.ts'
+import type { WasmTaskControl } from '../platform/wasm/task-protocol.ts'
 
-export type ComputeWorkerPort = Pick<Worker, 'postMessage' | 'terminate' | 'onmessage' | 'onerror'>
+export type ComputeWorkerPort = Pick<Worker, 'postMessage' | 'terminate' | 'onmessage' | 'onerror'> & Partial<Pick<Worker, 'onmessageerror'>>
 export interface ComputeClientOptions {
   workerFactory?: () => ComputeWorkerPort
   wasmModuleUrl?: string
@@ -27,6 +29,7 @@ export interface SubmitComputeOptions {
 }
 export interface ComputeJob { requestId: string; promise: Promise<ComputeResult>; cancel(): void }
 interface PendingJob extends ComputeContext {
+  control: WasmTaskControl
   task: ComputeTask; options: SubmitComputeOptions
   memory: ReturnType<typeof estimateTaskMemory>
   inputLength: number; progressUnits: ReturnType<typeof progressUnits>
@@ -58,7 +61,8 @@ export class OfficeComputeClient {
     this.options = { ...options }
     this.memoryBudget = options.memoryBudgetBytes ?? COMPUTE_LIMITS.defaultMemoryBudget
     this.maxPending = options.maxPendingTasks ?? COMPUTE_LIMITS.maxPendingTasks
-    if (!Number.isSafeInteger(this.memoryBudget) || this.memoryBudget <= 0 || !Number.isSafeInteger(this.maxPending) || this.maxPending <= 0
+    if (!Number.isSafeInteger(this.memoryBudget) || this.memoryBudget <= 0 || this.memoryBudget > 0xffff_ffff
+      || !Number.isSafeInteger(this.maxPending) || this.maxPending <= 0
       || !validDuration(options.initializationTimeoutMs ?? 15_000) || !validDuration(options.cancellationGraceMs ?? 250)) {
       throw new ComputeError('COMPUTE_INVALID_INPUT', '计算服务内存、队列及超时配置不合法')
     }
@@ -117,7 +121,10 @@ export class OfficeComputeClient {
       if (current !== undefined && options.modelRevision < current) throw new ComputeError('COMPUTE_STALE_RESULT', '不能提交旧模型版本的计算')
       // Take ownership immediately, even while the job is waiting for the Worker.
       const ownedTask = options.ownership === 'copy' ? cloneTask(task) : structuredClone(task, { transfer: transferTaskBuffers(task) })
-      const job: PendingJob = { requestId, documentId: options.documentId, modelRevision: options.modelRevision, task: ownedTask,
+      const control = createWasmTaskControl(ownedTask.kind, requestId, options.documentId, options.modelRevision, {
+        maxInputBytes: this.memoryBudget, maxOutputBytes: this.memoryBudget, maxWorkingBytes: this.memoryBudget,
+      })
+      const job: PendingJob = { requestId, documentId: options.documentId, modelRevision: options.modelRevision, control, task: ownedTask,
         options: { ...options }, resolve, reject, settled: false, memory, inputLength: ownedTask.values.length,
         progressUnits: progressUnits(ownedTask), submittedAt }
       this.setDocumentRevision(options.documentId, options.modelRevision)
@@ -158,6 +165,7 @@ export class OfficeComputeClient {
       this.worker = worker
       worker.onmessage = (event: MessageEvent<unknown>) => { if (this.worker === worker) this.onMessage(event.data) }
       worker.onerror = (event: ErrorEvent) => { if (this.worker === worker) this.failWorker(new ComputeError('COMPUTE_WORKER_FAILED', '计算 Worker 运行失败', event.message)) }
+      worker.onmessageerror = () => { if (this.worker === worker) this.failWorker(new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '计算 Worker 消息无法传输')) }
       const moduleUrl = this.options.wasmModuleUrl ?? new URL(`${import.meta.env?.BASE_URL ?? '/'}compute/office_compute.js`, location.href).href
       this.initTimer = setTimeout(() => {
         if (this.worker === worker) this.failWorker(new ComputeError('COMPUTE_WASM_LOAD_FAILED', '计算模块初始化超时'))
@@ -174,8 +182,7 @@ export class OfficeComputeClient {
     this.active = job
     job.dispatchedAt = performance.now()
     try {
-      this.worker.postMessage({ type: 'run', requestId: job.requestId, documentId: job.documentId, modelRevision: job.modelRevision,
-        task: job.task, memoryBudgetBytes: this.memoryBudget }, transferTaskBuffers(job.task))
+      this.worker.postMessage({ type: 'run', context: job.control, task: job.task }, transferTaskBuffers(job.task))
     } catch (error) { this.failWorker(normalizeComputeError(error, 'COMPUTE_WORKER_FAILED')) }
   }
 
@@ -190,8 +197,8 @@ export class OfficeComputeClient {
     const job = this.active
     if (!job) return
     // Late events from an already completed request cannot complete the active job.
-    if (typeof data.requestId === 'string' && data.requestId !== job.requestId) return
-    if (!isContext(data) || data.documentId !== job.documentId || data.modelRevision !== job.modelRevision) { protocolFailure(); return }
+    if (isRecord(data.context) && typeof data.context.requestId === 'string' && data.context.requestId !== job.requestId) return
+    if (!matchesWasmTaskControl(data.context, job.control)) { protocolFailure(); return }
     if (data.type === 'progress') {
       const progress = readProgress(data, job, job.progressUnits)
       if (!progress) { protocolFailure(); return }
@@ -210,12 +217,15 @@ export class OfficeComputeClient {
       return
     }
     if (data.type !== 'result') { protocolFailure(); return }
-    const result = readResult(data, job, job.task, job.memory, job.inputLength)
+    const result = readResult(data, job, job.control, job.task, job.memory, job.inputLength)
     if (!result) { protocolFailure(); return }
     if (!this.isCurrent(job)) this.rejectJob(job, new ComputeError('COMPUTE_STALE_RESULT', '旧计算结果已丢弃'))
     else if (!job.settled) {
       result.metrics.queueMs = (job.dispatchedAt ?? performance.now()) - job.submittedAt
       result.metrics.totalMs = performance.now() - job.submittedAt
+      result.metrics.preparedInputCopies = job.options.ownership === 'copy' ? taskViews(job.task).length : 0
+      result.metrics.preparedInputBytes = job.options.ownership === 'copy' ? job.memory.inputBytes : 0
+      result.metrics.ownershipTransfers = job.options.ownership === 'transfer' ? taskViews(job.task).length : 0
       job.settled = true; this.cleanupJob(job); job.resolve(result)
     }
     this.finishActive()
@@ -233,7 +243,7 @@ export class OfficeComputeClient {
       this.ensureWorker(); this.dispatch()
     }
     this.cancellationTimer = setTimeout(reset, this.options.cancellationGraceMs ?? 250)
-    try { this.worker?.postMessage({ type: 'cancel', requestId }) }
+    try { this.worker?.postMessage({ type: 'cancel', context: job.control }) }
     catch { reset() }
   }
 
@@ -248,7 +258,7 @@ export class OfficeComputeClient {
     clearTimeout(this.initTimer); clearTimeout(this.cancellationTimer)
     const worker = this.worker
     this.worker = null; this.ready = false
-    if (worker) { worker.onmessage = null; worker.onerror = null; worker.terminate() }
+    if (worker) { worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null; worker.terminate() }
   }
   private failWorker(error: ComputeError): void {
     if (this.active) this.rejectJob(this.active, error)

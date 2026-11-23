@@ -2,6 +2,7 @@ import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
 import type { DrawCommand } from '../../../rendering/contracts.ts'
 import type { DocumentPoint, DocumentRun, DocumentSelection } from '../model/document-model.ts'
 import { createParagraph, createRun, orderedSelection, runsForTarget, sameTarget, setTargetRuns, sliceRuns } from '../model/document-model.ts'
+import { transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 
 export type LatexFormulaMode = 'inline' | 'block'
 export interface LatexFormula { latex: string; mode: LatexFormulaMode; version: 1 }
@@ -245,7 +246,7 @@ export function insertLatexFormula(model: DocumentModel, selection: DocumentSele
   const after = sliceRuns(runsForTarget(model, start), end.offset)
   if (mode === 'inline') {
     const formula = createLatexFormulaRun(latex, mode)
-    transformDocumentTextFieldsForBlockEdit(block, start.offset, end.offset, formula.text)
+    transformDocumentTextFieldsForBlockEdit(block, start.offset, end.offset, formula.text, undefined, model)
     setTargetRuns(model, start, [...before, formula, ...after])
     return { ...start, offset: start.offset + formula.text.length }
   }
@@ -254,9 +255,8 @@ export function insertLatexFormula(model: DocumentModel, selection: DocumentSele
   const trailing = createParagraph()
   trailing.style = { ...block.style }
   trailing.runs = after.length ? after : [createRun()]
-  transformDocumentTextFieldsForBlockRangeEdit([block], start.offset, end.offset, '\n', [block, trailing])
+  transformDocumentTextFieldsForBlockRangeEdit([block], start.offset, end.offset, '\n', [block, trailing], undefined, model)
   block.runs = before.length ? before : [createRun()]
   model.blocks.splice(index + 1, 0, equation, trailing)
   return { blockId: equation.id, offset: OBJECT_REPLACEMENT.length }
 }
-import { transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'

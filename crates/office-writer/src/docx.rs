@@ -15,6 +15,9 @@ mod default_style;
 use default_style::RunDefaultEffects;
 #[path = "docx_story.rs"]
 mod story_writer;
+#[path = "docx_text_fields.rs"]
+mod text_fields;
+use text_fields::TextFieldPlan;
 
 #[path = "docx_numbering.rs"]
 mod numbering;
@@ -207,6 +210,7 @@ struct WriteContext<'a> {
     story_defaults: Value,
     next_story_control: u32,
     source_styles: source_styles::SourceStyles,
+    text_fields: TextFieldPlan,
 }
 
 impl<'a> WriteContext<'a> {
@@ -286,7 +290,7 @@ impl<'a> WriteContext<'a> {
                 formula_mode.filter(|mode| mode == "inline" || mode == "block"),
             ) {
                 let source_run = run_with_text(run, &source);
-                let fragments = run_xml_with_defaults(&source_run, &source, self.run_defaults);
+                let fragments = self.text_run_xml(&source_run, &source)?;
                 let tag = xml_attribute(&format!("office-latex:v1:{mode}"));
                 result.push_str(&format!("<w:sdt><w:sdtPr><w:tag w:val=\"{tag}\"/><w:text/></w:sdtPr><w:sdtContent>{fragments}</w:sdtContent></w:sdt>"));
                 self.warn(
@@ -315,15 +319,15 @@ impl<'a> WriteContext<'a> {
                         "DOCX_NOTE_MISSING",
                         format!("A {0} reference to note {source_id:?} has no matching note body; its marker text was preserved.", kind.collection().trim_end_matches('s')),
                     );
-                    (run_xml_with_defaults(run, &text, self.run_defaults), false)
+                    (self.text_run_xml(run, &text)?, false)
                 }
             } else {
-                (run_xml_with_defaults(run, &text, self.run_defaults), false)
+                (self.text_run_xml(run, &text)?, false)
             };
             if has_note_reference {
                 result.push_str(&fragments);
                 if !text.is_empty() {
-                    result.push_str(&run_xml_with_defaults(run, &text, self.run_defaults));
+                    result.push_str(&self.text_run_xml(run, &text)?);
                 }
                 continue;
             }
@@ -359,9 +363,40 @@ impl<'a> WriteContext<'a> {
         Ok(result)
     }
 
+    fn text_run_xml(&mut self, run: &Value, text: &str) -> Result<String, ExportError> {
+        let generated = run_properties_xml_with_defaults(run, self.run_defaults);
+        let mut provenance = run.clone();
+        if let Some(baseline) = get(get(run, "metadata"), "officeTextStyleBaseline").as_object() {
+            if get(get(&provenance, "metadata"), "officeStoryStyleBaseline").is_null() {
+                provenance["metadata"]["officeStoryStyleBaseline"] = Value::Object(baseline.clone());
+            }
+        }
+        let properties = self.source_styles.story_run_properties(&generated, run, &provenance).map_err(ExportError::invalid)?;
+        let mut properties = source_xml::parse_xml(&properties, false).map_err(ExportError::invalid)?;
+        if let Some(language) = get(get(run, "metadata"), "officeFieldResultLanguage").as_str() {
+            let mut element = properties.child("lang").cloned().unwrap_or_else(|| source_xml::Element::word("lang"));
+            element.set_word_attribute("val", language);
+            properties.content.retain(|content| !matches!(content, source_xml::Content::Element(element) if element.is_word("lang")));
+            properties.content.push(source_xml::Content::Element(element));
+        }
+        let properties = properties.render(None);
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\u{2028}', "\n");
+        let mut content = String::new();
+        for (line, text) in normalized.split('\n').enumerate() {
+            if line > 0 { content.push_str("<w:br/>"); }
+            for (column, text) in text.split('\t').enumerate() {
+                if column > 0 { content.push_str("<w:tab/>"); }
+                content.push_str(&format!("<w:t xml:space=\"preserve\">{}</w:t>", xml_text(text)));
+            }
+        }
+        Ok(format!("<w:r>{properties}{content}</w:r>"))
+    }
+
     fn runs_with_comments(&mut self, block: &Value, runs: &[Value], preserved: Option<&PreservedParagraph>) -> Result<String, ExportError> {
         let prefix_length = preserved.map_or(0, |paragraph| paragraph.prefix_length);
         let block_id = string(get(block, "id")).unwrap_or_default();
+        let annotated = self.text_fields.annotate(&block_id, runs, prefix_length)?;
+        let runs = annotated.as_deref().unwrap_or(runs);
         let marks = self.comment_anchors.get(&block_id).cloned().unwrap_or_default();
         let mut controls = self.controls_by_block.get(&block_id).cloned().unwrap_or_default();
         for control in &mut controls {
@@ -370,19 +405,25 @@ impl<'a> WriteContext<'a> {
         }
         let body_length = runs.iter().map(|run| string(get(run, "text")).unwrap_or_default().encode_utf16().count()).sum::<usize>();
         let total = prefix_length + body_length;
-        let mut events = Vec::<(usize, u8, u32, String)>::new();
+        let mut events = Vec::<(usize, u8, i64, String)>::new();
+        for event in self.text_fields.take_boundaries(&block_id) {
+            if event.offset < prefix_length {
+                return Err(ExportError::invalid("正文字段结果与原始编号域重叠；不能重复写出两个权威字段。"));
+            }
+            events.push((event.offset, event.priority, event.order, event.xml));
+        }
         for mark in marks {
             if mark.start > mark.end || mark.end > total {
                 self.warn("DOCX_COMMENT_RANGE_INVALID", format!("Comment range for comment {} exceeds paragraph {block_id:?} and was omitted.", mark.id));
                 continue;
             }
             if mark.starts_here {
-                events.push((mark.start, 2, mark.id, format!("<w:commentRangeStart w:id=\"{}\"/>", mark.id)));
+                events.push((mark.start, 2, i64::from(mark.id), format!("<w:commentRangeStart w:id=\"{}\"/>", mark.id)));
             }
             if mark.ends_here {
                 let collapsed = mark.starts_here && mark.start == mark.end;
-                events.push((mark.end, if collapsed { 3 } else { 0 }, mark.id, format!("<w:commentRangeEnd w:id=\"{}\"/>", mark.id)));
-                events.push((mark.end, if collapsed { 4 } else { 1 }, mark.id, format!("<w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id)));
+                events.push((mark.end, if collapsed { 3 } else { 0 }, i64::from(mark.id), format!("<w:commentRangeEnd w:id=\"{}\"/>", mark.id)));
+                events.push((mark.end, if collapsed { 4 } else { 1 }, i64::from(mark.id), format!("<w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id)));
             }
         }
         if get(get(block, "metadata"), "codeBlock").get("source").is_some() {
@@ -396,8 +437,8 @@ impl<'a> WriteContext<'a> {
                     let id = self.sequences.next_bookmark;
                     self.sequences.next_bookmark = id.checked_add(1).ok_or_else(|| ExportError::invalid("Too many paragraph bookmarks."))?;
                     let name = format!("office_code_plain_v1_{}_{}", offset - prefix_length, offset - prefix_length + length);
-                    events.push((offset, 2, id, format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}\"/>")));
-                    events.push((offset + length, 0, id, format!("<w:bookmarkEnd w:id=\"{id}\"/>")));
+                    events.push((offset, 2, i64::from(id), format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}\"/>")));
+                    events.push((offset + length, 0, i64::from(id), format!("<w:bookmarkEnd w:id=\"{id}\"/>")));
                 }
                 offset += length;
             }
@@ -1757,6 +1798,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         story_defaults: story_writer::default_style(&model),
         next_story_control: 1_073_741_824,
         source_styles: source_styles::SourceStyles::new(&model, generated_styles)?,
+        text_fields: TextFieldPlan::default(),
     };
     if let Some(bytes) = legacy_source {
         use office_io_common::document_legacy_source::{LEGACY_SOURCE_CONTENT_TYPE, LEGACY_SOURCE_PART, LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET};
@@ -1770,20 +1812,24 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     context.numbering = numbering;
     let numbering_xml = write_numbering_xml(&context.numbering, context.package, &mut context.warnings)?;
     context.preserved_markers = prepare_preserved_markers(blocks, &context.controls_by_block, &mut context.source_styles)?;
-    context.package.add_xml("word/styles.xml", STYLES_CONTENT_TYPE, context.source_styles.styles_xml())?;
-    if let Some(theme) = context.source_styles.theme_xml().map(str::to_owned) {
-        context.package.add_xml("word/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
-        context.relationship(REL_THEME, "theme/theme1.xml", false)?;
-    }
     context.warnings.append(&mut context.preserved_markers.warnings);
     context.sequences = prepare_sequences(blocks, &context.list_ids, &context.numbering, &numbering_xml, &context.preserved_markers)?;
     context.warnings.append(&mut context.sequences.warnings);
+    context.text_fields = TextFieldPlan::prepare(&mut context, blocks)?;
     context
         .package
         .add_xml("word/numbering.xml", NUMBERING_CONTENT_TYPE, numbering_xml)?;
     let mut body = String::new();
     for block in blocks {
         body.push_str(&context.block(block)?);
+    }
+    let fields = std::mem::take(&mut context.text_fields);
+    fields.write_identities(&mut context)?;
+    let has_body_fields = fields.has_fields;
+    context.package.add_xml("word/styles.xml", STYLES_CONTENT_TYPE, context.source_styles.styles_xml())?;
+    if let Some(theme) = context.source_styles.theme_xml().map(str::to_owned) {
+        context.package.add_xml("word/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
+        context.relationship(REL_THEME, "theme/theme1.xml", false)?;
     }
     if let Some(mapping) = context.sequences.mapping_xml.take() {
         context.package.add_xml("customXml/office-numbering.xml", "application/xml", mapping)?;
@@ -1860,7 +1906,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         .package
         .add_xml("word/document.xml", DOCUMENT_CONTENT_TYPE, document_xml)?;
     let has_story_fields = section_header_footers.as_object().is_some_and(|sections| sections.values().any(|s| s["pageFields"].as_array().is_some_and(|fields| !fields.is_empty())));
-    if has_different_odd_even || has_story_fields {
+    if has_different_odd_even || has_story_fields || has_body_fields {
         context
             .package
             .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml(has_different_odd_even))?;

@@ -1,5 +1,7 @@
 import type { CellRange, ChartModel, CellScalar, SpreadsheetCell, WorkbookModel } from '../domain/model'
 import { createCell, defaultCellStyle } from '../domain/model'
+import { cloneModel } from '../domain/serialization'
+import { cloneChartOptions } from '../features/charts/chart-options'
 import type { ExcelCellView, ExcelWorkbookView } from '../services/excelViewAdapter'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, SpreadsheetGeometry, type GridRange, type SpreadsheetRenderSheet } from '../rendering/spreadsheet/layout'
 
@@ -15,10 +17,11 @@ export function toChartWorkbook(view: ExcelWorkbookChartView): WorkbookModel {
     kind: 'workbook',
     name: view.name,
     activeSheetId: view.activeSheetId ?? view.sheets[0]?.id ?? '',
-    date1904: false,
+    date1904: view.date1904 ?? false,
     modified: false,
-    id: 'chart-overlay-workbook',
+    id: view.id ?? 'chart-overlay-workbook',
     charts: view.charts?.map((chart) => cloneChart(chart)),
+    tables: view.tables?.map(table => cloneModel(table)),
     pivotTables: view.pivotTables?.map((pivot) => ({ ...pivot, source: { ...pivot.source, range: { ...pivot.source.range } }, anchor: { ...pivot.anchor }, fields: pivot.fields.map((field) => ({ ...field })), options: { ...pivot.options } })),
     sheets: view.sheets.map((source) => ({
       id: source.id,
@@ -42,6 +45,8 @@ export function toChartWorkbook(view: ExcelWorkbookChartView): WorkbookModel {
       showGridlines: source.showGridlines ?? true,
       hiddenRows: [...(source.hiddenRows ?? [])],
       hiddenColumns: [...(source.hiddenColumns ?? [])],
+      autoFilter: source.autoFilter ? cloneModel(source.autoFilter) : undefined,
+      outline: source.outline ? cloneModel(source.outline) : undefined,
       rowHiddenSpans: source.rowHiddenSpans?.map(span => ({ ...span })), columnHiddenSpans: source.columnHiddenSpans?.map(span => ({ ...span })),
       rowHeightSpans: source.rowHeightSpans?.map(span => ({ ...span })), columnWidthSpans: source.columnWidthSpans?.map(span => ({ ...span })),
       rowAutoHeightSpans: source.rowAutoHeightSpans?.map(span => ({ ...span })), rowAutoHeights: { ...source.rowAutoHeights },
@@ -60,9 +65,11 @@ export function cloneChart(chart: ChartModel): ChartModel {
     source: { ...chart.source, range: { ...chart.source.range } },
     position: { ...chart.position },
     size: { ...chart.size },
-    legend: { ...chart.legend },
-    xAxis: { ...chart.xAxis },
-    yAxis: { ...chart.yAxis },
+    legend: cloneModel(chart.legend),
+    xAxis: cloneModel(chart.xAxis),
+    yAxis: cloneModel(chart.yAxis),
+    palette: chart.palette ? [...chart.palette] : undefined,
+    options: cloneChartOptions(chart.options),
     valueFields: [...chart.valueFields],
     seriesToCategory: chart.seriesToCategory ? Object.fromEntries(Object.entries(chart.seriesToCategory).map(([field, categories]) => [field, [...categories]])) : undefined,
   }

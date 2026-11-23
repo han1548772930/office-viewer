@@ -77,14 +77,14 @@ export const useDocumentInputStore = defineStore('document-input', () => {
     return true
   }
   /** Restore a checked refresh session, mapping body offsets while retaining typing marks. */
-  function completeUnchangedSelection(unitId: string, source: DocumentInputSession, modelRevision: number, location: DocumentInputLocation = source.location): boolean {
+  function completeUnchangedSelection(unitId: string, source: DocumentInputSession, modelRevision: number, location: DocumentInputLocation = source.location, allowBodyTargetRelocation = false): boolean {
     const previous = read(unitId)
     if (!source.valid || !previous || previous.valid || modelRevision !== source.modelRevision + 1
       || previous.modelRevision !== source.modelRevision || previous.generation !== source.generation
       || location.kind !== source.location.kind
       || !sameDocumentInputLocation(previous.location, source.location) || !sameDocumentInputMarks(previous.marks, source.marks)) return false
     if (location.kind === 'story' && source.location.kind === 'story' && !sameDocumentInputLocation(location, source.location)) return false
-    if (location.kind === 'body' && source.location.kind === 'body'
+    if (!allowBodyTargetRelocation && location.kind === 'body' && source.location.kind === 'body'
       && (!sameTarget(location.selection.anchor, source.location.selection.anchor) || !sameTarget(location.selection.focus, source.location.selection.focus))) return false
     advances.delete(unitId)
     units.value = { ...units.value, [unitId]: { ...previous, location: cloneDocumentInputLocation(location),

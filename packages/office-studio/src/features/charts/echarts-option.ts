@@ -36,8 +36,8 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   const source = readChartData(workbook, chart), derived = deriveChartData(source, chart, computed), data = derived.data
   const descriptor = resolveChartType(chart.type), color = chart.options?.appearance?.font?.color ?? theme.textColor ?? '#334155'
   const axisColor = theme.axisColor ?? '#94a3b8', splitLineColor = theme.splitLineColor ?? '#e2e8f0', palette = chartPalette(chart, theme.palette)
-  const officeChartKey = JSON.stringify([chart, theme])
   const localChart = { ...chart, position: { x: 0, y: 0 } }
+  const officeChartKey = JSON.stringify([localChart, theme])
   const frame = chartPlotFrame(localChart), grid = {
     left: frame.plot.x, right: Math.max(0, chart.size.width - frame.plot.x - frame.plot.width),
     top: frame.plot.y, bottom: Math.max(0, chart.size.height - frame.plot.y - frame.plot.height), containLabel: true,
@@ -117,7 +117,7 @@ export function chartGraphics(commands: DrawCommand[], chartId: string): NonNull
     else if (command.kind === 'text') element = { ...common, type: 'text', x: command.x, y: command.y, rotation: -(command.rotation ?? 0) * Math.PI / 180,
       style: { text: command.text, font: command.font, fill: command.color, align: command.align ?? 'left', verticalAlign: command.baseline === 'middle' ? 'middle' : command.baseline === 'bottom' ? 'bottom' : 'top',
         ...(command.maxWidth === undefined ? {} : { width: command.maxWidth, overflow: 'truncate' as const }) } }
-    else element = { ...common, type: 'image', style: { image: command.source, x: command.x, y: command.y, width: command.width, height: command.height, opacity: command.opacity ?? 1 } }
+    else throw new TypeError('图表几何不能携带位图，请使用图表位图适配层。')
     return command.clip ? { type: 'group', id: `${id}-clip`, silent: true, children: [element],
       clipPath: { type: 'rect', shape: { x: command.clip.x, y: command.clip.y, width: command.clip.width, height: command.clip.height } } } : element
   })
@@ -188,7 +188,7 @@ function scatterSeries(data: ChartData, chart: ChartModel, context: ChartECharts
     const axis: ChartAxisOptions = style.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
     return { type: 'scatter', name, xAxisIndex: 0, yAxisIndex: style.rightAxis ? 1 : 0, symbol: bubble ? 'circle' : style.point?.shape ?? 'circle', symbolSize: style.point?.size ?? 8,
       itemStyle: chartEChartsItemStyle(style), label: chartEChartsLabel(style.label, context.color),
-      data: source.values.flatMap((value, index) => {
+      data: source.values.flatMap<NonNullable<ScatterSeriesOption['data']>[number]>((value, index) => {
         const x = source.xValues?.[index], size = source.sizeValues?.[index]
         if (value === null || x == null || !Number.isFinite(value) || !Number.isFinite(x) || chart.xAxis.scaleType === 'log' && x <= 0 || axis.scaleType === 'log' && value <= 0 || bubble && (size == null || size <= 0)) return []
         const pointStyle = chartPointStyle(style, index)

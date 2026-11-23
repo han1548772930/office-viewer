@@ -4,6 +4,7 @@ import { Alert, Button, theme } from 'antdv-next'
 import type { ChartModel } from '../domain/model'
 import { chartEChartsOption } from '../features/charts/echarts-option'
 import { EChartsCanvasRenderer } from '../features/charts/echarts-renderer'
+import type { ChartComputedStatistics } from '../features/charts/chart-derived'
 import type { DrawCommand } from '../rendering/contracts'
 import type { ExcelWorkbookChartView } from './chart-overlay-model'
 import { cloneChart, toChartWorkbook } from './chart-overlay-model'
@@ -12,6 +13,7 @@ const props = withDefaults(defineProps<{
   workbook: ExcelWorkbookChartView
   activeSheetId: string
   zoom: number
+  computedStatistics?: Readonly<Record<string, ChartComputedStatistics>>
 }>(), { zoom: 100 })
 
 const emit = defineEmits<{
@@ -60,6 +62,7 @@ const displayCharts = computed<ChartDisplay[]>(() => sheetCharts.value.map((char
 }))
 
 const chartTheme = computed(() => ({
+  backgroundColor: token.value.colorBgContainer,
   textColor: token.value.colorText,
   axisColor: token.value.colorTextSecondary,
   splitLineColor: token.value.colorBorderSecondary,
@@ -82,7 +85,7 @@ function renderCommands(): DrawCommand[] {
     try {
       const draft = drafts.value[item.chart.id]
       const model = draft ? { ...cloneChart(item.chart), position: { ...item.position }, size: { ...item.size } } : item.chart
-      const option = { ...chartEChartsOption(domainWorkbook.value, model, chartTheme.value), backgroundColor: token.value.colorBgContainer }
+      const option = chartEChartsOption(domainWorkbook.value, model, chartTheme.value, props.computedStatistics?.[model.id])
       const frame = chartRenderer.render(item.chart.id, option, {
         width: Math.max(1, item.size.width),
         height: Math.max(1, item.size.height),
@@ -199,7 +202,7 @@ function fontsChanged(): void {
   publishOverlayCommands()
 }
 
-watch([domainWorkbook, displayCharts, chartTheme, () => token.value.colorBgContainer, () => props.zoom], publishOverlayCommands, { deep: true, flush: 'post' })
+watch([domainWorkbook, displayCharts, chartTheme, () => props.computedStatistics, () => props.zoom], publishOverlayCommands, { deep: true, flush: 'post' })
 watch(() => props.activeSheetId, () => {
   selectedId.value = null
   drag.value = null

@@ -20,6 +20,8 @@ export interface FileSavepoint {
 export interface FileSnapshot<Model> {
   kind: WorkspaceKind
   model: Model
+  /** Monotonic model version, separate from the content-history savepoint. */
+  modelRevision: number
   fileName: string
   savepoint: FileSavepoint
 }
@@ -39,6 +41,7 @@ export interface WorkspaceFileServices<Model, FileInput extends { name: string }
   importFile: (file: FileInput) => Promise<boolean>
   cancelImport: () => void
   capture: (kind?: WorkspaceKind) => FileSnapshot<Model>
+  isCurrent: (snapshot: FileSnapshot<Model>) => boolean
   write: (snapshot: FileSnapshot<Model>, options: {
     signal: AbortSignal
     onProgress: (progress: { message: string }) => void
@@ -84,6 +87,7 @@ export function createWorkspaceFileOperations<Model, FileInput extends { name: s
     try {
       const snapshot = services.capture(kind)
       services.onExportTask({ action, fileName: snapshot.fileName, message: '正在准备文件' })
+      if (!services.isCurrent(snapshot)) throw new Error('文档版本已变化，请重新导出')
       const result = await services.write(snapshot, {
         signal: controller.signal,
         onProgress: ({ message }) => {
@@ -91,6 +95,7 @@ export function createWorkspaceFileOperations<Model, FileInput extends { name: s
         },
       })
       if (disposed || controller.signal.aborted || generation !== exportGeneration) return false
+      if (!services.isCurrent(snapshot)) throw new Error('文档已变化，旧导出结果已丢弃')
       services.download(result.bytes, snapshot)
       // A lossy Office export must not clear the original document's dirty state.
       if (action === 'save' && result.warnings.length === 0) services.markSaved(snapshot.savepoint)
