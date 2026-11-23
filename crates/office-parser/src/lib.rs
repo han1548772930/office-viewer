@@ -15,6 +15,8 @@ mod document_format_roundtrip_tests;
 mod document_story_roundtrip_tests;
 mod story_fields;
 mod validation_sidecar;
+#[cfg(test)]
+mod sheet_validation_roundtrip_tests;
 mod sparkline_sidecar;
 mod pivot_sidecar;
 mod conditional_format_sidecar;

@@ -7,6 +7,20 @@ const editorSubtypes: Partial<Record<SheetConditionalFormatRule['type'], SheetCo
   duplicateValues: 'duplicateValues', uniqueValues: 'uniqueValues',
 }
 
+const averageOperators = [
+  ['greaterThanAverage', 'greaterThan'], ['greaterThanOrEqualAverage', 'greaterThanOrEqual'],
+  ['lessThanAverage', 'lessThan'], ['lessThanOrEqualAverage', 'lessThanOrEqual'],
+  ['equalAverage', 'equal'], ['notEqualAverage', 'notEqual'],
+] as const
+
+export function conditionalFormatAverageEditorOperator(operator: string): string | undefined {
+  return averageOperators.find(([, value]) => value === operator)?.[0]
+}
+
+export function conditionalFormatAverageRuleOperator(operator: string): string | undefined {
+  return averageOperators.find(([value]) => value === operator)?.[1]
+}
+
 /** Preserve the exact imported formula when the editor has not changed its expression. */
 export function conditionalFormatEditorFormula(value: string, previous?: string): string {
   const normalized = value.trim().replace(/^=/, '').trim()
@@ -15,7 +29,8 @@ export function conditionalFormatEditorFormula(value: string, previous?: string)
 
 /** Office stores the matching literal separately from its generated predicate. */
 export function conditionalFormatEditorText(value: string, previous?: SheetConditionalFormatRule): Pick<SheetConditionalFormatRule, 'formula1' | 'value'> {
-  return previous && String(previous.value ?? previous.formula1) === value
+  const text = previous && (previous.subType === 'text' || ['containsText', 'notContainsText', 'beginsWith', 'endsWith'].includes(previous.type))
+  return previous && text && String(previous.value ?? previous.formula1) === value
     ? { formula1: previous.formula1, value: previous.value }
     : { formula1: value, value }
 }

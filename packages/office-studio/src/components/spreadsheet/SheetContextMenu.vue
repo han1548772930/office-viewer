@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Button, Menu, theme } from 'antdv-next'
+import { Button, Menu, Tooltip, theme } from 'antdv-next'
 import type { MenuItemType, MenuRef } from 'antdv-next'
 import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Grid2X2, Hash, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
 import type { GridHit, GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { createSheetContextMenuItems, type SheetContextMenuItem } from './sheet-context-menu.ts'
 import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
+import type { SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 
 const props = defineProps<{
   hit: GridHit | null
@@ -30,6 +31,7 @@ const props = defineProps<{
   canStructureColumns?: boolean
   canVisibilityRows?: boolean
   canVisibilityColumns?: boolean
+  clipboardCapabilities?: SheetClipboardCapabilities
 }>()
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -42,6 +44,7 @@ const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) =
 const direction = inject(OfficeDirectionKey, ref<'ltr' | 'rtl'>('ltr'))
 function translateItems(source: SheetContextMenuItem[]): SheetContextMenuItem[] {
   return source.flatMap(item => {
+    if (item.hidden) return []
     const entries: SheetContextMenuItem[] = []
     if (item.separatorBefore) entries.push({ id: `${item.id}-separator`, label: '', commandId: '', type: 'divider' })
     entries.push({ ...item, separatorBefore: false })
@@ -117,8 +120,10 @@ function toMenuItem(item: (typeof items.value)[number]): MenuItemType {
   const Icon = iconComponent(item)
   return {
     key: item.id,
-    label: item.label,
-    title: item.label,
+    label: item.disabled && item.disabledReason
+      ? h(Tooltip, { title: `${item.label}：${item.disabledReason}`, zIndex: 3002 }, {
+        default: () => h('span', { 'aria-description': item.disabledReason }, item.label),
+      }) : item.label,
     disabled: item.disabled,
     icon: Icon ? h(Icon, { size: 16 }) : undefined,
     children: item.children ? toMenuItems(item.children) : undefined,
@@ -137,7 +142,7 @@ function toMenuItems(source: typeof items.value): MenuItemType[] {
 function close() { emit('update:open', false) }
 function execute(item: (typeof items.value)[number] | undefined) {
   if (!item || item.children?.length) return
-  if (item.disabled) return
+  if (item.hidden || item.disabled) return
   close()
   emit('command', item.commandId, item.params)
 }
@@ -178,20 +183,27 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <div v-if="open && items.length" ref="panel" class="sheet-context-menu" :dir="direction" :style="position">
       <div v-if="quickItems.length" class="sheet-context-menu__quick" role="group" aria-label="快捷操作">
-        <Button
+        <Tooltip
           v-for="item in quickItems"
           :key="item.id"
-          type="text"
-          size="small"
-          class="sheet-context-menu__quick-item"
-          :title="item.label"
-          :aria-label="item.label"
-          :disabled="item.disabled"
-          @click="execute(item)"
+          :title="item.disabled && item.disabledReason ? `${item.label}：${item.disabledReason}` : item.label"
+          :z-index="3002"
         >
-          <component :is="iconComponent(item)" v-if="iconComponent(item)" :size="16" />
-          <span>{{ item.label }}</span>
-        </Button>
+          <span class="sheet-context-menu__quick-trigger">
+            <Button
+              type="text"
+              size="small"
+              class="sheet-context-menu__quick-item"
+              :aria-label="item.label"
+              :aria-description="item.disabledReason"
+              :disabled="item.disabled"
+              @click="execute(item)"
+            >
+              <component :is="iconComponent(item)" v-if="iconComponent(item)" :size="16" />
+              <span>{{ item.label }}</span>
+            </Button>
+          </span>
+        </Tooltip>
       </div>
       <Menu v-if="menuItems.length" ref="menuRef" mode="vertical" :aria-label="translate('sheet.context-menu.aria-label', '单元格上下文菜单')" :items="menuItems" :selectable="false" @click="({ key }) => execute(itemById.get(String(key)))" />
     </div>
@@ -201,6 +213,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .sheet-context-menu { position: fixed; z-index: 3000; box-sizing: border-box; width: 208px; max-width: calc(100vw - 8px); max-height: min(520px, calc(100vh - 8px)); overflow: auto; border: 1px solid var(--context-border); border-radius: 6px; background: var(--context-background); box-shadow: var(--context-shadow); color: var(--context-text); padding: 4px 8px; }
 .sheet-context-menu__quick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; gap: 6px; padding: 4px 0; }
+.sheet-context-menu__quick-trigger { display: block; min-width: 0; }
 .sheet-context-menu :deep(.sheet-context-menu__quick-item) { display: flex; min-width: 0; width: 100%; height: 48px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; border-radius: 6px; padding: 4px; color: inherit; line-height: normal; }
 .sheet-context-menu :deep(.sheet-context-menu__quick-item:not(:disabled):hover) { background: var(--context-hover); }
 .sheet-context-menu :deep(.sheet-context-menu__quick-item:focus-visible) { outline: 2px solid var(--context-focus); outline-offset: -2px; }

@@ -546,3 +546,138 @@ test('editing a heading through Canvas updates its outline label and undo restor
   await bridge.press('Control+Y')
   await expect(heading).toHaveText('更新后的标题')
 })
+
+interface WorkspaceHistoryDraftProbe {
+  unitId: string
+  cancel: boolean
+  navigate: boolean
+  before: number
+  completed: number
+  dispose: () => void
+}
+type WorkspaceHistoryDraftWindow = Window & { workspaceHistoryDraft?: WorkspaceHistoryDraftProbe }
+
+// Production App/Ribbon/shortcut drafts, 2026-11-22 Asia/Shanghai.
+// These cases have not been run; all alignment validation remains deferred.
+async function installWorkspaceHistoryDraft(page: Page, kind: 'workbook' | 'document', direction: 'undo' | 'redo') {
+  await page.evaluate(async ({ kind, direction }) => {
+    const runtimePath = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { studio, officeAPI } = await import(runtimePath) as RuntimeModule
+    const book = officeAPI.getActiveWorkbook(), doc = officeAPI.getActiveDocument(), range = book?.getActiveSheet()?.getRange('A1')
+    if (!book || !doc || !range) throw new Error('History draft could not find both active models')
+    range.setInputText('sheet saved')
+    doc.insertText(0, 'doc saved')
+    // Establish synthetic fixture savepoints without invoking a file writer.
+    studio.markSaved('workbook', book.id)
+    studio.markSaved('document', doc.id)
+    range.setInputText('sheet changed')
+    doc.insertText(3, ' changed')
+    studio.setActiveKind(kind)
+    const unitId = kind === 'workbook' ? book.id : doc.id
+    if (direction === 'redo') studio.undo(kind, unitId)
+    if (kind === 'document') {
+      const blockId = doc.getModel().blocks[0]?.id
+      if (!blockId) throw new Error('History draft has no text paragraph')
+      const selection = { anchor: { blockId, offset: 1 }, focus: { blockId, offset: 1 } }
+      doc.setInputSelection(selection)
+      doc.executeCommand({ id: 'doc.command.format-text', patch: { fontSize: 27, color: undefined } }, selection)
+    }
+    const probe: WorkspaceHistoryDraftProbe = { unitId, cancel: true, navigate: false, before: 0, completed: 0, dispose: () => {} }
+    const before = officeAPI.addEvent(direction === 'undo' ? officeAPI.Event.BeforeUndo : officeAPI.Event.BeforeRedo, event => {
+      if (event.unitId !== unitId) return
+      probe.before++
+      if (probe.cancel) event.cancel = true
+      else if (probe.navigate) studio.setActiveKind(kind === 'workbook' ? 'document' : 'workbook')
+    })
+    const completed = officeAPI.addEvent(direction === 'undo' ? officeAPI.Event.Undo : officeAPI.Event.Redo, event => {
+      if (event.unitId === unitId) probe.completed++
+    })
+    probe.dispose = () => { before.dispose(); completed.dispose() }
+    ;(window as WorkspaceHistoryDraftWindow).workspaceHistoryDraft = probe
+  }, { kind, direction })
+  await expect(page.locator(kind === 'workbook' ? '.excel-workbench' : '.document-workbench')).toBeVisible()
+}
+
+async function workspaceHistoryDraftSnapshot(page: Page) {
+  return page.evaluate(async () => {
+    const runtimePath = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { studio, officeAPI } = await import(runtimePath) as RuntimeModule
+    const workbook = studio.getWorkbookModel(studio.activeWorkbookId), documentModel = studio.getDocumentModel(studio.activeDocumentId)
+    const probe = (window as WorkspaceHistoryDraftWindow).workspaceHistoryDraft
+    if (!workbook?.id || !documentModel?.id || !probe) throw new Error('History draft lost its models or observations')
+    const input = studio.getDocumentInputState(documentModel.id)
+    const histories = [workbook.id, documentModel.id].map(unitId => {
+      const unit = studio.editor.history.units[unitId]
+      if (!unit) throw new Error('History draft lost a unit stack')
+      return { unitId, undo: unit.undo.length, redo: unit.redo.length, revision: unit.revision,
+        generation: unit.generation, savedRevision: unit.savedRevision, dirty: studio.editor.history.isDirty(unitId) }
+    })
+    const state: { workbook: WorkbookModel; document: DocumentModel; histories: typeof histories;
+      input: { state?: typeof input; clearedColor: boolean } } = JSON.parse(JSON.stringify({ workbook, document: documentModel, histories,
+        input: { state: input, clearedColor: Boolean(input && Object.hasOwn(input.marks, 'color') && input.marks.color === undefined) } }))
+    return {
+      state,
+      activeKind: studio.editor.state.activeKind, before: probe.before, completed: probe.completed,
+      workbookText: officeAPI.getActiveWorkbook()?.getActiveSheet()?.getRange('A1').getValue(),
+      documentText: officeAPI.getActiveDocument()?.getText(),
+    }
+  })
+}
+
+async function invokeWorkspaceHistoryDraft(page: Page, direction: 'undo' | 'redo', entry: 'ribbon' | 'global') {
+  if (entry === 'ribbon') {
+    const button = visibleRibbonButton(page, direction === 'undo' ? '撤销' : '重做')
+    await expect(button).toBeEnabled()
+    await button.click()
+  } else {
+    // Force the production shell shortcut path, outside native text editors.
+    await page.evaluate(() => { document.body.tabIndex = -1; document.body.focus() })
+    await page.keyboard.press(direction === 'undo' ? 'Control+z' : 'Control+y')
+  }
+}
+
+for (const kind of ['workbook', 'document'] as const) for (const direction of ['undo', 'redo'] as const) for (const entry of ['ribbon', 'global'] as const) {
+  test(`production ${kind} ${entry} ${direction} retains canceled content and a Before listener navigation`, async ({ page }) => {
+    await installWorkspaceHistoryDraft(page, kind, direction)
+    const before = await workspaceHistoryDraftSnapshot(page)
+    await invokeWorkspaceHistoryDraft(page, direction, entry)
+    await expect.poll(async () => (await workspaceHistoryDraftSnapshot(page)).before).toBe(1)
+    const canceled = await workspaceHistoryDraftSnapshot(page)
+    expect(canceled.state).toEqual(before.state)
+    expect(canceled.activeKind).toBe(kind)
+    expect(canceled.completed).toBe(0)
+
+    await page.evaluate(() => {
+      const probe = (window as WorkspaceHistoryDraftWindow).workspaceHistoryDraft
+      if (!probe) throw new Error('History draft observations are unavailable')
+      probe.cancel = false; probe.navigate = true
+    })
+    await invokeWorkspaceHistoryDraft(page, direction, entry)
+    await expect.poll(async () => (await workspaceHistoryDraftSnapshot(page)).before).toBe(2)
+    const navigated = await workspaceHistoryDraftSnapshot(page)
+    expect(navigated.activeKind).toBe(kind === 'workbook' ? 'document' : 'workbook')
+    expect({ ...navigated.state, input: undefined }).toEqual({ ...before.state, input: undefined })
+    expect(navigated.completed).toBe(0)
+
+    await page.evaluate(async kind => {
+      const runtimePath = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+      const { studio } = await import(runtimePath) as RuntimeModule
+      const probe = (window as WorkspaceHistoryDraftWindow).workspaceHistoryDraft
+      if (!probe) throw new Error('History draft observations are unavailable')
+      probe.navigate = false
+      studio.setActiveKind(kind)
+    }, kind)
+    await expect(page.locator(kind === 'workbook' ? '.excel-workbench' : '.document-workbench')).toBeVisible()
+    await invokeWorkspaceHistoryDraft(page, direction, entry)
+    await expect.poll(async () => (await workspaceHistoryDraftSnapshot(page)).completed).toBe(1)
+    const completed = await workspaceHistoryDraftSnapshot(page)
+    expect(completed.before).toBe(3)
+    expect(completed.activeKind).toBe(kind)
+    expect(completed.workbookText).toBe(kind === 'workbook' && direction === 'undo' ? 'sheet saved' : 'sheet changed')
+    expect(completed.documentText).toBe(kind === 'document' && direction === 'undo' ? 'doc saved' : 'doc changed saved')
+    const targetIndex = kind === 'workbook' ? 0 : 1, neighborIndex = 1 - targetIndex
+    expect(completed.state.histories[targetIndex].dirty).toBe(direction === 'redo')
+    expect(completed.state.histories[neighborIndex]).toEqual(before.state.histories[neighborIndex])
+    await page.evaluate(() => (window as WorkspaceHistoryDraftWindow).workspaceHistoryDraft?.dispose())
+  })
+}

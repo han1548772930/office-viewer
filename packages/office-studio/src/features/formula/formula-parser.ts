@@ -1,7 +1,8 @@
 import type { FormulaNode, FormulaRangeReference, FormulaReference } from './formula-types.ts'
+import { readFormulaReferenceArea } from './formula-reference-areas.ts'
 
-type TokenKind = 'number' | 'string' | 'reference' | 'identifier' | 'operator' | 'leftParen' | 'rightParen' | 'separator' | 'colon' | 'bang' | 'percent' | 'error' | 'eof'
-interface Token { kind: TokenKind; text: string; reference?: FormulaReference; sheetName?: string }
+type TokenKind = 'number' | 'string' | 'reference' | 'range' | 'identifier' | 'operator' | 'leftParen' | 'rightParen' | 'separator' | 'colon' | 'bang' | 'percent' | 'error' | 'eof'
+interface Token { kind: TokenKind; text: string; reference?: FormulaReference; range?: FormulaRangeReference; sheetName?: string }
 
 export class FormulaSyntaxError extends Error {
   readonly code: string
@@ -36,6 +37,25 @@ function tokenize(source: string): PositionedToken[] {
     const character = source[index]!
     if (/\s/.test(character)) { index += 1; continue }
     const start = index
+    const axisSpan = readFormulaReferenceArea(source, start)
+    if (axisSpan?.area.kind === 'wholeRow' || axisSpan?.area.kind === 'wholeColumn') {
+      const area = axisSpan.area
+      if (area.external || area.threeDimensional) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'This workbook has no resolved external or three-dimensional formula source', start)
+      if (area.sheetName && area.endSheetName && area.sheetName.toLocaleLowerCase() !== area.endSheetName.toLocaleLowerCase()) {
+        throw new FormulaSyntaxError('FORMULA_RANGE', 'A range cannot span different sheets', start)
+      }
+      const sheetName = area.sheetName ?? area.endSheetName
+      const range: FormulaRangeReference = {
+        kind: 'range', sheetName,
+        start: { kind: 'cell', sheetName, row: area.startRow, column: area.startColumn,
+          absoluteRow: area.kind === 'wholeColumn' || area.absoluteStartRow, absoluteColumn: area.kind === 'wholeRow' || area.absoluteStartColumn },
+        end: { kind: 'cell', sheetName, row: area.endRow, column: area.endColumn,
+          absoluteRow: area.kind === 'wholeColumn' || area.absoluteEndRow, absoluteColumn: area.kind === 'wholeRow' || area.absoluteEndColumn },
+      }
+      index = axisSpan.end
+      push('range', source.slice(start, index), start, { range })
+      continue
+    }
     if (character === '"') {
       index += 1
       let value = ''
@@ -218,6 +238,10 @@ class Parser {
     if (token.kind === 'number') return { kind: 'literal', value: Number(token.text) }
     if (token.kind === 'string') return { kind: 'literal', value: token.text }
     if (token.kind === 'error') return { kind: 'error', code: token.text }
+    if (token.kind === 'range') {
+      if (!token.range) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Invalid whole-axis reference', token.position)
+      return { kind: 'range', reference: token.range }
+    }
     if (token.kind === 'reference') {
       if (!token.reference) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Invalid cell reference', token.position)
       return { kind: 'reference', reference: { ...token.reference, sheetName: token.sheetName } }

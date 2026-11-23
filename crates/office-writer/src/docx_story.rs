@@ -163,15 +163,17 @@ fn field_cached_runs(field: &Value) -> Result<Option<&Vec<Value>>, ExportError> 
     Ok(Some(runs))
 }
 
-fn field_cache_style(field: &Value, run: &Value, defaults: &Value) -> Value {
+fn field_cache_style(field: &Value, run: &Value, defaults: &Value) -> Result<Value, ExportError> {
     let cleared = get(get(field, "metadata"), "officeStoryTextFormatCleared").as_bool() == Some(true);
     let declared = get(field, "textStyle");
-    if declared.is_null() && !cleared { return run.clone(); }
+    if declared.is_null() && !cleared { return Ok(run.clone()); }
     let style = if declared.is_null() { defaults } else { declared };
     let baseline = get(get(field, "metadata"), "officeStoryStyleBaseline");
     let mut result = run.clone();
     for key in ["bold", "italic", "underline", "strike", "color", "fontFamily", "eastAsiaFontFamily", "fontSize", "highlight", "verticalAlign"] {
-        if !cleared && !baseline.is_null() && get(style, key) == get(baseline, key) { continue; }
+        // A clear marker removes source rPr; the materialized cache can then
+        // receive local edits without becoming a new field-wide override.
+        if !baseline.is_null() && get(style, key) == get(baseline, key) { continue; }
         if let Some(value) = style.get(key) { result[key] = value.clone(); }
         else if let Some(object) = result.as_object_mut() { object.remove(key); }
         if key == "highlight" {
@@ -180,11 +182,11 @@ fn field_cache_style(field: &Value, run: &Value, defaults: &Value) -> Value {
     }
     if cleared {
         if get(&result, "metadata").is_null() { result["metadata"] = json!({}); }
-        let metadata = result["metadata"].as_object_mut().expect("validated field cache metadata");
+        let metadata = result["metadata"].as_object_mut().ok_or_else(|| ExportError::invalid("页眉页脚字段缓存来源格式无效。"))?;
         for key in ["bold", "italic", "underline", "strike", "color", "fontFamily", "eastAsiaFontFamily", "fontSize", "highlight", "verticalAlign"] { metadata.remove(key); }
         metadata.insert("officeStoryTextFormatCleared".into(), json!(true));
     }
-    result
+    Ok(result)
 }
 
 fn render_token(context: &mut WriteContext<'_>, path: &str, token: &Token<'_>, from: usize, to: usize, next_relation: &mut u32) -> Result<String, ExportError> {
@@ -195,7 +197,9 @@ fn render_token(context: &mut WriteContext<'_>, path: &str, token: &Token<'_>, f
         let cache = field_cached_runs(field)?;
         let mut runs = String::new();
         for run in cache.into_iter().flatten() {
-            let style = field_cache_style(field, run, token.style);
+            let style = field_cache_style(field, run, token.style)?;
+            // Clear source rPr on each cached range while retaining its link
+            // wrapper. The field instruction and object offset do not change.
             runs.push_str(&render_styled_text(context, path, &style, &style, get(run, "text").as_str().unwrap_or_default(), next_relation)?);
         }
         if runs.is_empty() { runs = render_styled_text(context, path, token.style, field, cached, next_relation)?; }

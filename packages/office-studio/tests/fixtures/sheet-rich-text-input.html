@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Sheets native rich text input fixture</title>
+  <style>body{margin:0}#app{height:100vh;min-width:0}</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { createBlankWorkbook, createBlankSheet, createCell } from '/packages/office-studio/src/domain/model'
+import { applyExcelWorkbookView, toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+const copy = value => JSON.parse(JSON.stringify(value))
+const original = createBlankWorkbook()
+original.id = 'rich-input-fixture'; original.name = '原生富文本输入'; original.calculationMode = 'manual'
+original.sheets = ['First', 'Second'].map((name, index) => ({ ...createBlankSheet(name), id: 'rich-input-sheet-' + index,
+  rowCount: 80, columnCount: 12, defaultColumnWidth: 110, defaultRowHeight: 28 }))
+original.activeSheetId = original.sheets[0].id
+const rich = [
+  { id: 'one', text: 'ab', font: { bold: true }, vendor: { keep: 1 } },
+  { id: 'marker', text: '', vendor: { keep: true } },
+  { id: 'two', text: 'ab', font: { italic: true } },
+  { id: 'three', text: 'ab', hyperlink: 'https://example.test', vendor: { keep: 3 } },
+]
+for (let column = 0; column < 3; column++) {
+  const cell = createCell(0, column, 'ababab'); cell.richText = copy(rich)
+  if (column === 1) cell.dataType = 'force_string'
+  if (column === 2) cell.style.numberFormat = '@'
+  original.sheets[0].cells['0:' + column] = cell
+}
+const emoji = createCell(0, 3, 'A🙂B')
+emoji.richText = [{ id: 'a', text: 'A' }, { id: 'emoji', text: '🙂', font: { italic: true } },
+  { id: 'b', text: 'B', hyperlink: 'https://example.test' }]
+original.sheets[0].cells['0:3'] = emoji
+const attempts = [], commands = [], notices = [], updates = []
+let canceled = false, remembered, base = copy(original)
+function connect(studio) {
+  studio.regionalSettings.setRegion('en-US')
+  studio.events.addEvent('BeforeCommandExecute', event => {
+    if (event.id === 'sheet.command.commit-cell-input') {
+      attempts.push(copy(event.params ?? {}))
+      if (canceled) event.cancel = true
+    }
+  })
+  studio.events.addEvent('CommandExecuted', event => commands.push(copy(event)))
+  return studio
+}
+const host = shallowRef(connect(new OfficeStudio({ workbook: original })))
+const standalone = new URLSearchParams(location.search).has('standalone')
+const view = ref(toExcelWorkbookView(host.value.editor.workbook.model)), dark = ref(false), variant = ref('classic')
+watch(() => host.value.editor.workbook.model, model => { if (!standalone) view.value = toExcelWorkbookView(model) }, { flush: 'sync' })
+const current = () => standalone ? base : host.value.editor.workbook.model
+const api = () => FOffice.newAPI(host.value)
+window.richInputFixture = {
+  snapshot: () => copy(current()), attempts: () => copy(attempts), commands: () => copy(commands), notifications: () => copy(notices),
+  history: () => { const studio = host.value, id = studio.activeWorkbookId, unit = studio.editor.history.units[id]
+    return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, updates: updates.length,
+      revision: studio.getWorkbookRevision(id), dirty: studio.editor.history.isDirty(id) } },
+  cancel: value => { canceled = value }, appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  switchSheet: index => api().getActiveWorkbook().getSheetBySheetId('rich-input-sheet-' + index).activate(),
+  mutateRich: () => {
+    const value = copy(current()); value.sheets[0].cells['0:0'].richText[1].vendor.keep = false
+    if (standalone) { base = value; view.value = toExcelWorkbookView(value) } else host.value.editor.workbook.replace(value)
+  },
+  validation: () => {
+    api().getActiveWorkbook().getActiveSheet().setDataValidation('A1', { type: 'list', formula1: '"ababab,choice"',
+      allowBlank: false, errorStyle: 'warning', errorTitle: '列表', error: '列表值' })
+    host.value.editor.history.clear(host.value.activeWorkbookId)
+  },
+  remember: () => { remembered = document.querySelector('.canvas-cell-input input, .canvas-cell-input textarea') },
+  oldInput: value => {
+    if (!remembered) return
+    remembered.setSelectionRange(0, remembered.value.length)
+    remembered.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: value }))
+    remembered.value = value; remembered.setSelectionRange(value.length, value.length)
+    remembered.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }))
+    remembered.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: value }))
+  },
+  replaceHost: async staleInput => {
+    const previous = host.value
+    host.value = connect(new OfficeStudio({ workbook: copy(current()) }))
+    view.value = toExcelWorkbookView(host.value.editor.workbook.model)
+    // The old control still belongs to the DOM until Vue flushes its props and keyed hosts.
+    if (staleInput !== undefined) window.richInputFixture.oldInput(staleInput)
+    await nextTick(); previous.dispose()
+  },
+  reopen: value => api().createWorkbook({ ...copy(value), id: 'rich-input-reopened' }),
+}
+createApp({ render: () => h(ConfigProvider, { theme: {
+  algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' },
+} }, { default: () => h(ExcelWorkbench, {
+  modelValue: view.value, studio: standalone ? undefined : host.value, ribbonVariant: variant.value,
+  canUndo: host.value.editor.canUndo, canRedo: host.value.editor.canRedo,
+  'onUpdate:modelValue': value => {
+    updates.push(copy(value))
+    if (standalone) { base = applyExcelWorkbookView(base, value, 'en-US'); view.value = value }
+    else host.value.editor.replaceWorkbookFromView(value, host.value.regionalSettings.region.value)
+  },
+  onUndo: source => api().getWorkbook(source?.workbookId ?? host.value.activeWorkbookId)?.undo(),
+  onRedo: source => api().getWorkbook(source?.workbookId ?? host.value.activeWorkbookId)?.redo(),
+  onNotify: value => notices.push(copy(value)),
+}) }) }).mount('#app')
+window.addEventListener('pagehide', () => host.value.dispose(), { once: true })
+</script>
+</body>
+</html>

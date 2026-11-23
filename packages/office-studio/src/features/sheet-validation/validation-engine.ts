@@ -9,10 +9,11 @@ import type {
   SpreadsheetSheet,
   WorkbookModel,
 } from '../../domain/model.ts'
+import { cloneModel } from '../../domain/serialization.ts'
 import { evaluateFormula } from '../formula/formula-engine.ts'
 import { parseFormula } from '../formula/formula-parser.ts'
 import { isFormulaError, type FormulaNode } from '../formula/formula-types.ts'
-import { translateFormulaReferences } from '../formula/formula-references.ts'
+import { reanchorSheetDataValidationRule, sheetValidationFormulaAt } from './validation-formulas.ts'
 import { parseTimelineDate } from '../slicer/timeline-date.ts'
 
 export interface SheetValidationPosition { row: number; column: number }
@@ -48,7 +49,7 @@ export interface SheetDataValidationOptions {
 export type SheetDataValidationDraft = Omit<SheetDataValidationRule, 'id' | 'ranges'> & { id?: string }
 
 const DATA_VALIDATION_TYPES: readonly SheetDataValidationType[] = [
-  'whole', 'decimal', 'textLength', 'date', 'time', 'checkbox', 'list', 'listMultiple', 'custom',
+  'any', 'whole', 'decimal', 'textLength', 'date', 'time', 'checkbox', 'list', 'listMultiple', 'custom',
 ]
 const DATA_VALIDATION_OPERATORS: readonly SheetDataValidationOperator[] = [
   'between', 'equal', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual', 'notBetween', 'notEqual',
@@ -62,10 +63,10 @@ export function createSheetDataValidationRule(
   if (!ranges.length || ranges.some(range => !isValidRange(range))) throw new RangeError('请选择有效的数据验证区域。')
   if (draft.operator !== undefined && !DATA_VALIDATION_OPERATORS.includes(draft.operator)) throw new TypeError('数据验证条件无效。')
   if (requiresFormula1(draft.type, draft.operator) && !draft.formula1?.trim()) throw new TypeError('此数据验证类型需要规则值。')
-  if (requiresFormula2(draft.operator) && !draft.formula2?.trim()) throw new TypeError('此比较条件需要第二个规则值。')
+  if (draft.type !== 'any' && requiresFormula2(draft.operator) && !draft.formula2?.trim()) throw new TypeError('此比较条件需要第二个规则值。')
   validateRuleSettings(draft)
   return {
-    ...draft,
+    ...cloneModel(draft),
     id: draft.id?.trim() || crypto.randomUUID(),
     ranges: mergeRanges(ranges),
     allowBlank: draft.allowBlank ?? true,
@@ -81,13 +82,13 @@ export function applySheetDataValidationRule(sheet: SpreadsheetSheet, rule: Shee
   const existingRules = sheet.dataValidations ?? []
   const sameRule = existingRules.find(existing => existing.id === rule.id)
   const retainedRanges = sameRule?.ranges.flatMap(range => subtractRanges(range, rule.ranges)) ?? []
-  const updatedRule = { ...rule, ranges: mergeRanges([...retainedRanges, ...rule.ranges]) }
+  const updatedRule = reanchorSheetDataValidationRule(rule, mergeRanges(rule.ranges))
   const next = existingRules.flatMap(existing => {
     if (existing.id === rule.id) {
-      return retainedRanges.length ? [{ ...existing, id: crypto.randomUUID(), ranges: retainedRanges }] : []
+      return retainedRanges.length ? [{ ...reanchorSheetDataValidationRule(existing, retainedRanges), id: crypto.randomUUID() }] : []
     }
     const ranges = existing.ranges.flatMap(range => subtractRanges(range, rule.ranges))
-    return ranges.length ? [{ ...existing, ranges }] : []
+    return ranges.length ? [reanchorSheetDataValidationRule(existing, ranges)] : []
   })
   sheet.dataValidations = [...next, updatedRule]
 }
@@ -126,7 +127,7 @@ function clearSheetDataValidation(
   sheet.dataValidations = (sheet.dataValidations ?? []).flatMap(rule => {
     if (types && !types.has(rule.type)) return [rule]
     const remaining = rule.ranges.flatMap(range => subtractRanges(range, ranges))
-    return remaining.length ? [{ ...rule, ranges: remaining }] : []
+    return remaining.length ? [reanchorSheetDataValidationRule(rule, remaining)] : []
   })
 }
 
@@ -186,6 +187,7 @@ function isValidValue(
   row: number,
   column: number,
 ): boolean {
+  if (rule.type === 'any') return true
   const actual = cell?.formula ? evaluateFormula(cell.formula, workbook, sheet.id) : cell?.value ?? null
   if (isBlank(actual)) return rule.allowBlank !== false
   if (isFormulaError(actual)) return false
@@ -203,7 +205,7 @@ function isValidValue(
   if (rule.type === 'custom') {
     const formula = rule.formula1?.trim()
     if (!formula) return false
-    const shifted = shiftFormulaForCell(formula, rule.ranges[0], row, column)
+    const shifted = sheetValidationFormulaAt(formula, rule, row, column)
     const result = evaluateFormula(shifted, workbook, sheet.id)
     return !isFormulaError(result) && (result === true || (typeof result === 'number' && result !== 0))
   }
@@ -211,8 +213,8 @@ function isValidValue(
   const typedValue = validationValue(rule.type, actual, workbook.date1904)
   if (typedValue === undefined) return false
   if (!rule.operator) return true
-  const first = evaluateOperand(rule.formula1 && shiftFormulaForCell(rule.formula1, rule.ranges[0], row, column), workbook, sheet.id, rule.type)
-  const second = evaluateOperand(rule.formula2 && shiftFormulaForCell(rule.formula2, rule.ranges[0], row, column), workbook, sheet.id, rule.type)
+  const first = evaluateOperand(rule.formula1 && sheetValidationFormulaAt(rule.formula1, rule, row, column), workbook, sheet.id, rule.type)
+  const second = evaluateOperand(rule.formula2 && sheetValidationFormulaAt(rule.formula2, rule, row, column), workbook, sheet.id, rule.type)
   if (first === undefined || (requiresFormula2(rule.operator) && second === undefined)) return false
   return compareByOperator(typedValue, first, second, rule.operator ?? 'between')
 }
@@ -271,6 +273,7 @@ function toIssue(rule: SheetDataValidationRule, value: CellScalar, position: She
 
 function defaultErrorMessage(type: SheetDataValidationType): string {
   const labels: Record<SheetDataValidationType, string> = {
+    any: '此单元格的内容违反了验证规则。',
     whole: '请输入符合整数条件的值。', decimal: '请输入符合数字条件的值。', textLength: '输入的文本长度不符合条件。',
     date: '请输入符合日期条件的值。', time: '请输入符合时间条件的值。', checkbox: '请输入复选框允许的值。',
     list: '请从列表中选择一个值。', listMultiple: '请从列表中选择允许的值。', custom: '输入值未通过自定义公式验证。',
@@ -280,11 +283,12 @@ function defaultErrorMessage(type: SheetDataValidationType): string {
 
 function isBlank(value: unknown): boolean { return value === null || value === undefined || value === '' }
 function isValidRange(range: CellRange): boolean {
-  return Number.isInteger(range.startRow) && Number.isInteger(range.startCol) && Number.isInteger(range.endRow) && Number.isInteger(range.endCol)
+  return !!range && Number.isSafeInteger(range.startRow) && Number.isSafeInteger(range.startCol) && Number.isSafeInteger(range.endRow) && Number.isSafeInteger(range.endCol)
     && range.startRow >= 0 && range.startCol >= 0 && range.endRow >= range.startRow && range.endCol >= range.startCol
+    && range.endRow < 1_048_576 && range.endCol < 16_384
 }
 function requiresFormula1(type: SheetDataValidationType, operator?: SheetDataValidationOperator): boolean {
-  return type === 'list' || type === 'listMultiple' || type === 'custom' || (type !== 'checkbox' && operator !== undefined)
+  return type === 'list' || type === 'listMultiple' || type === 'custom' || (type !== 'any' && type !== 'checkbox' && operator !== undefined)
 }
 function requiresFormula2(operator?: SheetDataValidationOperator): boolean { return operator === 'between' || operator === 'notBetween' }
 function contains(range: CellRange, row: number, column: number): boolean {
@@ -329,6 +333,20 @@ export function parseValidationListItems(value: string): string[] {
 }
 
 function validateRuleSettings(rule: SheetDataValidationDraft): void {
+  if (rule.id !== undefined && typeof rule.id !== 'string') throw new TypeError('数据验证标识必须是文本。')
+  for (const key of ['formula1', 'formula2', 'errorTitle', 'error', 'promptTitle', 'prompt'] as const) {
+    if (rule[key] !== undefined && typeof rule[key] !== 'string') throw new TypeError(`数据验证 ${key} 必须是文本。`)
+  }
+  for (const key of ['allowBlank', 'showDropDown', 'showErrorMessage', 'showInputMessage'] as const) {
+    if (rule[key] !== undefined && typeof rule[key] !== 'boolean') throw new TypeError(`数据验证 ${key} 必须是布尔值。`)
+  }
+  if (rule.errorStyle !== undefined && !['stop', 'warning', 'info'].includes(rule.errorStyle)) throw new TypeError('数据验证错误样式无效。')
+  if (rule.renderMode !== undefined && !['text', 'arrow', 'custom'].includes(rule.renderMode)) throw new TypeError('数据验证显示方式无效。')
+  if (rule.metadata !== undefined && (!rule.metadata || typeof rule.metadata !== 'object' || Array.isArray(rule.metadata))) throw new TypeError('数据验证扩展数据无效。')
+  if (rule.formulaAnchor !== undefined && (!rule.formulaAnchor || !Number.isSafeInteger(rule.formulaAnchor.row)
+    || !Number.isSafeInteger(rule.formulaAnchor.col) || rule.formulaAnchor.row < 0 || rule.formulaAnchor.row >= 1_048_576
+    || rule.formulaAnchor.col < 0 || rule.formulaAnchor.col >= 16_384)) throw new TypeError('数据验证公式起点无效。')
+  if (rule.type === 'any') return
   if (rule.type === 'checkbox' && rule.formula1 !== undefined && rule.formula2 !== undefined && rule.formula1 === rule.formula2) {
     throw new TypeError('复选框的勾选值和未勾选值必须不同。')
   }
@@ -385,11 +403,6 @@ function parseAddress(value: string): { row: number; column: number } | undefine
   for (const character of match[1]!.toUpperCase()) column = column * 26 + character.charCodeAt(0) - 64
   const row = Number(match[2]) - 1
   return row >= 0 ? { row, column: column - 1 } : undefined
-}
-
-function shiftFormulaForCell(formula: string, anchor: CellRange | undefined, row: number, column: number): string {
-  if (!anchor) return formula
-  return translateFormulaReferences(formula, row - anchor.startRow, column - anchor.startCol)
 }
 
 function subtractRanges(source: CellRange, cuts: readonly CellRange[]): CellRange[] {

@@ -34,6 +34,25 @@ fn rewrite(bytes: &[u8], edit: impl Fn(&str, String) -> (String, String)) -> Vec
     writer.finish().unwrap().into_inner()
 }
 
+fn edit_axis_state(xml: String, edit: impl Fn(&mut Value)) -> String {
+    let tag = xml.find("<ov:axisDimensions ").unwrap();
+    let start = tag + xml[tag..].find('>').unwrap() + 1;
+    let end = start + xml[start..].find("</ov:axisDimensions>").unwrap();
+    let decoded = quick_xml::escape::unescape(&xml[start..end]).unwrap();
+    let mut state: Value = serde_json::from_str(&decoded).unwrap();
+    edit(&mut state);
+    let state = state.to_string();
+    format!("{}{}{}", &xml[..start], quick_xml::escape::escape(&state), &xml[end..])
+}
+
+fn hidden_span_source() -> Value {
+    json!({ "id": "hidden-spans", "name": "Hidden axes", "axisUnit": "cssPixel", "rowCount": 40, "columnCount": 12,
+        "defaultRowHeight": 26, "defaultColumnWidth": 112, "hiddenRows": [10], "hiddenColumns": [8],
+        "rowHiddenSpans": [{ "start": 1, "end": 3, "value": true }],
+        "columnHiddenSpans": [{ "start": 2, "end": 4, "value": true }],
+        "cells": { "0:0": { "row": 0, "col": 0, "value": 1 } } })
+}
+
 #[test]
 fn exact_pixels_modes_zero_sizes_hidden_reasons_and_sparklines_survive_binary_roundtrip() {
     let source = json!({
@@ -123,4 +142,129 @@ fn relocated_worksheet_parts_and_explicit_visible_rows_under_zero_defaults_round
     assert_eq!(sheet["defaultRowHeight"], 0);
     assert_eq!(sheet["hiddenRows"], json!([3]));
     assert_eq!(sheet["rowHeights"], json!([{ "index": 2, "size": 30.5 }]));
+}
+
+#[test]
+fn hidden_spans_emit_standard_rows_columns_and_reopen_as_compact_manual_reasons() {
+    let bytes = export(hidden_span_source());
+    let xml = part(&bytes, "xl/worksheets/sheet1.xml");
+    for row in [2, 3, 4, 11] {
+        assert!(xml.contains(&format!("<row r=\"{row}\" hidden=\"1\">")));
+    }
+    assert!(xml.contains("<col min=\"3\" max=\"5\" width=\"16\" customWidth=\"1\" hidden=\"1\""));
+    let reopened = parsed(&bytes);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["rowHiddenSpans"], json!([{ "start": 1, "end": 3, "value": true }]));
+    assert_eq!(sheet["columnHiddenSpans"], json!([{ "start": 2, "end": 4, "value": true }]));
+    assert_eq!(sheet["hiddenRows"], json!([10]));
+    assert_eq!(sheet["hiddenColumns"], json!([8]));
+    assert_eq!(sheet["sourceAxisDimensions"]["projectAxisExtension"]["projectionMatched"], true);
+
+    let standard_only = rewrite(&bytes, |path, xml| {
+        let xml = if path == "xl/worksheets/sheet1.xml" {
+            let marker = format!("<ext uri=\"{}\">", office_io_common::SHEET_AXIS_EXTENSION_URI);
+            let start = xml.find(&marker).unwrap();
+            let end = start + xml[start..].find("</ext>").unwrap() + "</ext>".len();
+            format!("{}{}", &xml[..start], &xml[end..])
+        } else { xml };
+        (path.to_owned(), xml)
+    });
+    let reopened = parsed(&standard_only);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["hiddenRows"], json!([1, 2, 3, 10]));
+    assert_eq!(sheet["hiddenColumns"], json!([2, 3, 4, 8]));
+    assert_eq!(sheet["rowHiddenSpans"], json!([]));
+    assert_eq!(sheet["columnHiddenSpans"], json!([]));
+}
+
+#[test]
+fn older_axis_extensions_without_hidden_span_fields_still_restore_legacy_hidden_points() {
+    let bytes = export(json!({ "name": "Legacy hides", "axisUnit": "cssPixel", "rowCount": 40, "columnCount": 12,
+        "hiddenRows": [1, 3], "hiddenColumns": [2, 4] }));
+    let legacy = rewrite(&bytes, |path, xml| (path.to_owned(), if path == "xl/worksheets/sheet1.xml" {
+        edit_axis_state(xml, |state| {
+            state.as_object_mut().unwrap().remove("rowHiddenSpans");
+            state.as_object_mut().unwrap().remove("columnHiddenSpans");
+        })
+    } else { xml }));
+    let reopened = parsed(&legacy);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["hiddenRows"], json!([1, 3]));
+    assert_eq!(sheet["hiddenColumns"], json!([2, 4]));
+    assert_eq!(sheet["rowHiddenSpans"], json!([]));
+    assert_eq!(sheet["columnHiddenSpans"], json!([]));
+    assert_eq!(sheet["sourceAxisDimensions"]["projectAxisExtension"]["projectionMatched"], true);
+}
+
+#[test]
+fn external_unhide_takes_precedence_over_stale_project_hidden_spans() {
+    let bytes = export(hidden_span_source());
+    let edited = rewrite(&bytes, |path, xml| (path.to_owned(), if path == "xl/worksheets/sheet1.xml" {
+        xml.replace("<row r=\"2\" hidden=\"1\">", "<row r=\"2\" hidden=\"0\">")
+            .replace("<col min=\"3\" max=\"5\" width=\"16\" customWidth=\"1\" hidden=\"1\"",
+                "<col min=\"3\" max=\"5\" width=\"16\" customWidth=\"1\" hidden=\"0\"")
+    } else { xml }));
+    assert_ne!(part(&bytes, "xl/worksheets/sheet1.xml"), part(&edited, "xl/worksheets/sheet1.xml"));
+    let reopened = parsed(&edited);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["hiddenRows"], json!([2, 3, 10]));
+    assert_eq!(sheet["hiddenColumns"], json!([8]));
+    assert_eq!(sheet["rowHiddenSpans"], json!([]));
+    assert_eq!(sheet["columnHiddenSpans"], json!([]));
+    assert!(reopened["diagnostics"]["warnings"].as_array().unwrap().iter().any(|warning|
+        warning.as_str().is_some_and(|text| text.contains("changed outside"))));
+}
+
+#[test]
+fn manual_hidden_spans_and_filter_overlaps_remain_independent_even_after_external_resize() {
+    let mut source = hidden_span_source();
+    source["hiddenRows"] = json!([6]);
+    source["rowHiddenSpans"] = json!([{ "start": 3, "end": 4, "value": true }]);
+    source["rowHeights"] = json!({ "9": 32.5 });
+    source["autoFilter"] = json!({ "range": { "startRow": 0, "endRow": 7, "startCol": 0, "endCol": 0 },
+        "columns": { "0": { "kind": "values", "selectedItems": [1] } }, "filteredRows": [2, 3, 4, 5, 6, 7] });
+    for row in 1..=7 {
+        source["cells"][format!("{row}:0")] = json!({ "row": row, "col": 0, "value": row });
+    }
+    let bytes = export(source);
+    let reopened = parsed(&bytes);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["hiddenRows"], json!([6]));
+    assert_eq!(sheet["rowHiddenSpans"], json!([{ "start": 3, "end": 4, "value": true }]));
+    assert_eq!(sheet["autoFilter"]["filteredRows"], json!([2, 3, 4, 5, 6, 7]));
+    let resized = rewrite(&bytes, |path, xml| (path.to_owned(), if path == "xl/worksheets/sheet1.xml" {
+        xml.replace("ht=\"24.375\"", "ht=\"30\"")
+    } else { xml }));
+    let reopened = parsed(&resized);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["hiddenRows"], json!([3, 4, 6]));
+    assert_eq!(sheet["rowHiddenSpans"], json!([]));
+    assert_eq!(sheet["autoFilter"]["filteredRows"], json!([2, 3, 4, 5, 6, 7]));
+    assert_eq!(sheet["sourceAxisDimensions"]["projectAutoFilterExtension"]["restored"], true);
+    assert_eq!(sheet["sourceAxisDimensions"]["projectAutoFilterExtension"]["hiddenReasonsExact"], false);
+}
+
+#[test]
+fn hidden_records_outside_declared_axis_counts_are_refused_and_invalid_private_records_do_not_replace_standard_hides() {
+    for source in [
+        json!({ "rowCount": 40, "hiddenRows": [40] }),
+        json!({ "columnCount": 12, "hiddenColumns": [12] }),
+        json!({ "rowCount": 40, "rowHiddenSpans": [{ "start": 39, "end": 40, "value": true }] }),
+        json!({ "columnCount": 12, "columnHiddenSpans": [{ "start": 11, "end": 12, "value": true }] }),
+    ] {
+        let input = json!({ "kind": "workbook", "sheets": [source] }).to_string();
+        assert!(office_writer::export_xlsx_bytes(&input).is_err());
+    }
+    let bytes = export(hidden_span_source());
+    for hidden in [json!([40]), json!([1_048_576])] {
+        let invalid = rewrite(&bytes, |path, xml| (path.to_owned(), if path == "xl/worksheets/sheet1.xml" {
+            edit_axis_state(xml, |state| state["hiddenRows"] = hidden.clone())
+        } else { xml }));
+        let reopened = parsed(&invalid);
+        let sheet = &reopened["payload"]["data"]["sheets"][0];
+        assert_eq!(sheet["hiddenRows"], json!([1, 2, 3, 10]));
+        assert_eq!(sheet["rowHiddenSpans"], json!([]));
+        assert!(reopened["diagnostics"]["warnings"].as_array().unwrap().iter().any(|warning|
+            warning.as_str().is_some_and(|text| text.contains("hidden indices") && text.contains("limit"))));
+    }
 }

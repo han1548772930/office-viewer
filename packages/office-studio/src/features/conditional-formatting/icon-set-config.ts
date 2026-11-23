@@ -25,8 +25,9 @@ export function conditionalIconSequence(config: SheetConditionalFormatVisualConf
   })
 }
 
-export function validateConditionalThreshold(threshold: SheetConditionalFormatValueConfig): void {
+export function validateConditionalThreshold(threshold: SheetConditionalFormatValueConfig, allowAutomatic = false): void {
   if (threshold.type === 'min' || threshold.type === 'max') return
+  if (allowAutomatic && (threshold.type === 'autoMin' || threshold.type === 'autoMax')) return
   if (threshold.type === 'formula') {
     if (!String(threshold.value ?? '').trim().replace(/^=/, '').trim()) throw new TypeError('阈值公式不能为空。')
     return

@@ -18,6 +18,12 @@ pub(crate) use comments::restore_sdt_comment_targets;
 #[path = "document_default_style.rs"]
 mod default_style;
 pub(crate) use default_style::{canonical_resource, read_document_default_style, read_document_style_sheet};
+#[path = "document_legacy_default_style.rs"]
+mod legacy_default_style;
+pub(crate) use legacy_default_style::{read_doc_default_style, read_odt_default_style};
+#[path = "document_legacy_source_sidecar.rs"]
+mod legacy_source_sidecar;
+pub(crate) use legacy_source_sidecar::read_legacy_origins;
 
 #[derive(Default)]
 pub(crate) struct Element {
@@ -141,7 +147,7 @@ pub(crate) fn read_office_source(archive: &mut ZipArchive<Cursor<&[u8]>>) -> (Op
         Ok(part) => part,
         Err(error) => {
             warnings.push(format!("DOCX source style resources could not be located: {error}"));
-            return (Some(DocumentOfficeSourcePayload { version: 1, styles: None, theme: None, resource_errors: warnings.clone() }), warnings);
+            return (Some(DocumentOfficeSourcePayload { version: 1, styles: None, theme: None, resource_errors: warnings.clone(), origin: None, legacy_origins: Vec::new() }), warnings);
         },
     };
     let mut read = |kind: &str, suffix: &str, fallback: &str| {
@@ -165,7 +171,7 @@ pub(crate) fn read_office_source(archive: &mut ZipArchive<Cursor<&[u8]>>) -> (Op
     };
     let styles = read("styles", ".styles+xml", "word/styles.xml");
     let theme = read("theme", ".theme+xml", "word/theme/theme1.xml");
-    let source = Some(DocumentOfficeSourcePayload { version: 1, styles, theme, resource_errors: warnings.clone() });
+    let source = Some(DocumentOfficeSourcePayload { version: 1, styles, theme, resource_errors: warnings.clone(), origin: None, legacy_origins: Vec::new() });
     (source, warnings)
 }
 
@@ -275,7 +281,11 @@ impl ParagraphWordWrap {
 pub(crate) fn read_word_wrap(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<ParagraphWordWrap, String> {
     let part = part_for_type(archive, ".styles+xml", "word/styles.xml")?;
     let Some(text) = read_xml(archive, &part)? else { return Ok(ParagraphWordWrap::default()); };
-    let root = parse_xml(&text)?;
+    read_word_wrap_xml(&text)
+}
+
+pub(crate) fn read_word_wrap_xml(text: &str) -> Result<ParagraphWordWrap, String> {
+    let root = parse_xml(text)?;
     let mut result = ParagraphWordWrap {
         defaults: root.child("docDefaults").and_then(|node| node.child("pPrDefault")).and_then(|node| node.child("pPr")).and_then(|node| node.child("wordWrap")).map(Element::on_off),
         ..Default::default()

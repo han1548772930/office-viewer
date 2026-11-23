@@ -47,6 +47,9 @@ export function applyDocumentParagraphStylePatch(block: DocumentBlock, patch: Do
 }
 
 export function validateDocumentSectionSetupPatch(patch: DocumentSectionSetupPatch): void {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new TypeError('Section settings patch must be an object')
+  const fields = new Set(['marginHeader', 'marginFooter', 'width', 'height', 'orientation', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'columnCount', 'columnGap', 'columnSeparator', 'sectionStart', 'pageNumberStart'])
+  for (const key of Object.keys(patch)) if (!fields.has(key)) throw new TypeError(`Unsupported section setting: ${key}`)
   for (const value of [patch.marginHeader, patch.marginFooter]) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 200)) throw new RangeError('Header/footer distance must be between 0 and 200')
   }
@@ -71,15 +74,38 @@ export function applyDocumentSectionSetupPatch(model: DocumentModel, sectionId: 
     ? undefined
     : model.blocks.find(block => block.type === 'sectionBreak' && block.id === sectionId)
   if (sectionId !== DEFAULT_DOCUMENT_SECTION_ID && !section) throw new RangeError(`Unknown document section: ${sectionId}`)
+  if (Object.values(patch).every(value => value === undefined)) return
+  // Validate the effective geometry before publishing a mutation. The first
+  // section's legacy page fields are also the defaults used by later sections.
+  const prospectivePage = { ...model.page }
+  const prospectiveSetup = { ...model.sectionSetup }
+  if (sectionId === DEFAULT_DOCUMENT_SECTION_ID) {
+    for (const key of ['width', 'height', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) {
+      if (patch[key] !== undefined) {
+        prospectivePage[key] = patch[key]
+        delete prospectiveSetup[key]
+      }
+    }
+  }
+  const firstSectionPatch = { ...patch }
+  for (const key of ['width', 'height', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) delete firstSectionPatch[key]
+  const prospective = {
+    ...model,
+    page: prospectivePage,
+    sectionSetup: sectionId === DEFAULT_DOCUMENT_SECTION_ID ? { ...prospectiveSetup, ...firstSectionPatch } : model.sectionSetup,
+    blocks: sectionId === DEFAULT_DOCUMENT_SECTION_ID ? model.blocks : model.blocks.map(block => block !== section ? block : {
+      ...block,
+      sectionBreak: { ...block.sectionBreak!, setup: { ...block.sectionBreak?.setup, ...patch } },
+    }),
+  }
+  for (const id of sectionId === DEFAULT_DOCUMENT_SECTION_ID ? documentSectionIds(model) : [sectionId]) documentEffectiveSectionSetup(prospective, id)
   if (sectionId === DEFAULT_DOCUMENT_SECTION_ID) {
     const pagePatch: Partial<DocumentPageSetup> = {}
     for (const key of ['width', 'height', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) {
       if (patch[key] !== undefined) pagePatch[key] = patch[key]
     }
     model.page = { ...model.page, ...pagePatch }
-    const sectionPatch = { ...patch }
-    for (const key of ['width', 'height', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) delete sectionPatch[key]
-    model.sectionSetup = { ...model.sectionSetup, ...sectionPatch }
+    model.sectionSetup = { ...prospectiveSetup, ...firstSectionPatch }
     return
   }
   const block = section as DocumentBlock
@@ -93,7 +119,52 @@ export function applyDocumentSectionSetupPatch(model: DocumentModel, sectionId: 
 
 export function documentSectionSetup(model: DocumentModel, sectionId: string): DocumentSectionSetup {
   if (!documentSectionIds(model).includes(sectionId)) throw new RangeError(`Unknown document section: ${sectionId}`)
-  if (sectionId === DEFAULT_DOCUMENT_SECTION_ID) return { ...model.page, orientation: model.page.width > model.page.height ? 'landscape' : 'portrait', columnCount: 1, columnGap: 18, columnSeparator: 'none', pageNumberStart: 1, ...model.sectionSetup }
+  if (sectionId === DEFAULT_DOCUMENT_SECTION_ID) {
+    const setup: DocumentSectionSetup = { ...model.page, columnCount: 1, columnGap: 18, columnSeparator: 'none', pageNumberStart: 1, ...model.sectionSetup }
+    setup.orientation ??= (setup.width ?? model.page.width) > (setup.height ?? model.page.height) ? 'landscape' : 'portrait'
+    return setup
+  }
   const block = model.blocks.find(candidate => candidate.id === sectionId)
-  return { ...model.page, orientation: model.page.width > model.page.height ? 'landscape' : 'portrait', columnCount: 1, columnGap: 18, columnSeparator: 'none', sectionStart: block?.sectionBreak?.type, pageNumberStart: 1, ...block?.sectionBreak?.setup }
+  const setup: DocumentSectionSetup = { ...model.page, columnCount: 1, columnGap: 18, columnSeparator: 'none', sectionStart: block?.sectionBreak?.type, pageNumberStart: 1, ...block?.sectionBreak?.setup }
+  setup.orientation ??= (setup.width ?? model.page.width) > (setup.height ?? model.page.height) ? 'landscape' : 'portrait'
+  return setup
+}
+
+export interface EffectiveDocumentSectionSetup {
+  sectionId: string
+  page: DocumentPageSetup
+  orientation: 'portrait' | 'landscape'
+  columnCount: number
+  columnGap: number
+  columnSeparator: 'none' | 'line'
+  /** Only an explicitly persisted value restarts a later section's numbering. */
+  pageNumberStart?: number
+  marginHeader: number
+  marginFooter: number
+}
+
+/** Pure nominal geometry; missing section overrides use the legacy document defaults. */
+export function documentEffectiveSectionSetup(model: DocumentModel, sectionId: string): EffectiveDocumentSectionSetup {
+  const source = documentSectionSetup(model, sectionId)
+  validateDocumentSectionSetupPatch(source)
+  const page: DocumentPageSetup = {
+    width: source.width ?? model.page.width, height: source.height ?? model.page.height,
+    marginTop: source.marginTop ?? model.page.marginTop, marginBottom: source.marginBottom ?? model.page.marginBottom,
+    marginLeft: source.marginLeft ?? model.page.marginLeft, marginRight: source.marginRight ?? model.page.marginRight,
+  }
+  const contentWidth = page.width - page.marginLeft - page.marginRight
+  const contentHeight = page.height - page.marginTop - page.marginBottom
+  if (![page.width, page.height, contentWidth, contentHeight].every(value => Number.isFinite(value) && value > 0)) {
+    throw new RangeError('Section page size and margins must leave a positive finite content area')
+  }
+  const columnCount = source.columnCount ?? 1, columnGap = source.columnGap ?? 18
+  if (contentWidth - columnGap * (columnCount - 1) <= 0) throw new RangeError('Section columns and gaps must leave a positive content width')
+  const explicit = sectionId === DEFAULT_DOCUMENT_SECTION_ID ? model.sectionSetup
+    : model.blocks.find(block => block.id === sectionId)?.sectionBreak?.setup
+  return {
+    sectionId, page, orientation: source.orientation ?? (page.width > page.height ? 'landscape' : 'portrait'),
+    columnCount, columnGap, columnSeparator: source.columnSeparator ?? 'none',
+    ...(explicit?.pageNumberStart === undefined ? {} : { pageNumberStart: explicit.pageNumberStart }),
+    marginHeader: source.marginHeader ?? 48, marginFooter: source.marginFooter ?? 48,
+  }
 }

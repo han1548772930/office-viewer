@@ -57,7 +57,7 @@ export function toChartWorkbook(view: ExcelWorkbookChartView): WorkbookModel {
 export function cloneChart(chart: ChartModel): ChartModel {
   return {
     ...chart,
-    source: { range: { ...chart.source.range }, orientation: chart.source.orientation },
+    source: { ...chart.source, range: { ...chart.source.range } },
     position: { ...chart.position },
     size: { ...chart.size },
     legend: { ...chart.legend },

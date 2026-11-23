@@ -1,9 +1,24 @@
-import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
+import { cellKey, parseCellKey, type ExcelCellView } from '../../services/excelViewAdapter.ts'
 import { inferSheetCellValueType, isForcedSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { classifySheetNumberFormat, formatSheetValue, isSheetTextNumberFormat } from './sheet-number-format.ts'
 import { sheetCellNumberPattern, sheetCellNumberValue } from './sheet-number-presentation.ts'
 import { parseSheetNumberEdit, sheetNumberEditText } from './sheet-number-format-edit.ts'
 import { normalizeInputDigits } from './number-format-engine/number-input.ts'
+
+/** Visible merged primaries can differ from the cell that owns their persisted content. */
+export function sheetCellContentKey(sheet: { merges?: readonly string[] }, key: string): string {
+  const point = parseCellKey(key)
+  if (!point) return key
+  for (const merge of sheet.merges ?? []) {
+    const [first, last = first] = merge.split(':')
+    const start = parseCellKey(first ?? ''), end = parseCellKey(last ?? '')
+    if (!start || !end) continue
+    const startRow = Math.min(start.row, end.row), endRow = Math.max(start.row, end.row)
+    const startColumn = Math.min(start.col, end.col), endColumn = Math.max(start.col, end.col)
+    if (point.row >= startRow && point.row <= endRow && point.col >= startColumn && point.col <= endColumn) return cellKey(startRow, startColumn)
+  }
+  return cellKey(point.row, point.col)
+}
 
 export function sheetCellInputText(cell: ExcelCellView | undefined, date1904 = false, region = 'zh-CN'): string {
   if (!cell) return ''

@@ -60,7 +60,10 @@ export function assertDocumentStoryLocksPreserved(current: DocumentSectionHeader
 
 export function assertDocumentStoryFormattingEditable(content: DocumentStoryContent, buffer: string, start: number, end: number): void {
   validateDocumentStoryLocks(content.locks, buffer)
+  // The next paragraph's empty wrapper belongs to that paragraph. The final
+  // story endpoint remains part of its paragraph's protected formatting mark.
   const locked = content.locks?.find(lock => lock.lock !== 'sdtLocked'
-    && (start < lock.endOffset && lock.startOffset < end || lock.startOffset === lock.endOffset && lock.startOffset >= start && lock.startOffset <= end))
+    && (start < lock.endOffset && lock.startOffset < end || lock.startOffset === lock.endOffset && lock.startOffset >= start
+      && (lock.startOffset < end || end === buffer.length && lock.startOffset === end)))
   if (locked) throw new Error(`页眉页脚内容已锁定：${locked.id}`)
 }

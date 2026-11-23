@@ -1,8 +1,10 @@
 # SHEET-04 格式刷（含 SHEET-14 条件格式插件）
 
-记录日期：2026-11-23。验收状态：**未验收**。本批按续作约定只读取源码、实现及编写测试草稿，不执行测试、类型、构建、Rust/WASM、浏览器、基准或 `git diff --check`。下文的“已实现”仅指代码已落盘。
+记录日期：2026-11-22。验收状态：**未验收**。本批按续作约定只读取源码、实现及编写测试草稿，不执行测试、类型、构建、Rust/WASM、浏览器、基准或 `git diff --check`。下文的“已实现”仅指代码已落盘。
 
 执行依据：[项目标准](../../PROJECT_EXECUTION_STANDARD.md)、[源码规则](../UNIVER_REFERENCE_RULES.md)、[功能清单](../UNIVER_FEATURE_PARITY.md)、[渲染与计算标准](../RENDERING_AND_COMPUTE_STANDARD.md)。完整 Sheets / Docs 及全部 Pro 目标保持原范围；本页只记录格式刷切片。
+
+后续条件格式 Office 来源、dxf/theme、base/x14 合并、原生身份恢复、平均值与自动数据条阈值编辑，以及流式 CF/相关资源提取、UTF-8／整本模型预算、共享主题校验和失败接线见 [SHEET-14 Office 往返专项](SHEET-14-conditional-format-office-roundtrip.md)。该页区分历史新增 36 与本轮新增 54（流式/来源预算 46、整本接线 8），相关十一份文件当前共 112 个声明；仅为静态数量，均未运行。本页测试表保留格式刷与基准投影阶段的声明数量，不代表后续批次总数，所有新内容仍未验收。
 
 ## 1. 固定来源与入口清点
 
@@ -60,7 +62,7 @@ Univer **v1.6.0**，固定提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，�
 
 `crates/office-writer/src/xlsx_conditional_formula.rs` 将基准投影到标准 SpreadsheetML：存在安全基准时调整同一条规则的 `sqref` 分片顺序并平移普通 A1 公式；不存在安全基准时使用引用返回的 `INDEX` / `ROW` / `COLUMN` 表达式，让每个操作数独立产生有效引用或错误。越界下标显式产生 `#REF!`，避免 `INDEX` 的 0 下标被解释成整行/整列。规则不拆开，统计使用同一单元格并集；没有把自定义 `formulaAnchor` 属性写到标准 worksheet XML。
 
-Rust parser 按 `sqref` 第一项恢复非默认基准，并读取视觉阈值和显示标志。共享投影样本为 `tests/fixtures/conditional-formula-projection.json`；写出、解析重开及二次写出已有原生二进制合同草稿，均未执行。标准导入会重新生成规则 ID、规范化优先级；未知根/style/config 扩展的完整 Office 文件映射没有完成，内部 JSON 保真不能代替此项。
+Rust parser 按 `sqref` 第一项恢复非默认基准，并读取视觉阈值和显示标志。共享投影样本为 `tests/fixtures/conditional-formula-projection.json`；写出、解析重开及二次写出已有原生二进制合同草稿，均未执行。没有本项目扩展的标准 Office 来源从原生 UID/GUID 或稳定来源摘要生成本地身份；本地 native 写出则通过带来源指纹的私有投影恢复原 ID、公式表示、稀疏/相同优先级及未知 JSON。来源字段合并与未核实边界见 [Office 往返专项](SHEET-14-conditional-format-office-roundtrip.md)；完整未知扩展映射与实际文件验收仍未完成，内部 JSON 保真不能代替此项。
 
 ### 3.2 条件格式面板的真实提交闭环
 
@@ -94,7 +96,7 @@ API 在提交前检查版本、查看权限、工作表编辑权限和旧/新范
 
 ## 5. 测试草稿与剩余验收
 
-2026-11-23 用 `rg -c '^test\('` / Rust `#[test]` 静态重数。这里统计测试声明，不把循环内的样本当成独立测试，不执行 runner。父任务维护的渲染测试另计。
+2026-11-22 格式刷与基准投影阶段用 `rg -c '^test\('` / Rust `#[test]` 静态重数。这里保留该阶段测试声明，不把循环内的样本当成独立测试，不执行 runner；后续 Office 往返批次的当前声明总数单列在专项页。父任务维护的渲染测试另计。
 
 | 测试文件 | 声明数 | 本次状态 |
 | --- | ---: | --- |

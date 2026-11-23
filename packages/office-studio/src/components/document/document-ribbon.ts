@@ -22,6 +22,7 @@ import { DOCUMENT_DEFAULT_TEXT_COLOR, DOCUMENT_STANDARD_COLORS, documentColorIsA
 import { isListPreset, type ListKind } from '../../features/document/model/document-lists'
 import type { HeaderFooterRibbonState, HeaderFooterRibbonKind } from './DocumentHeaderFooterRibbonControl.vue'
 import DocumentHeaderFooterRibbonGroup from './DocumentHeaderFooterRibbonGroup.vue'
+import { headerFooterControlDisabled } from './document-header-footer-capabilities'
 
 export interface DocumentRibbonContext {
   fontList?: OfficeFontList
@@ -47,6 +48,8 @@ export interface DocumentRibbonContext {
   mode?: 'traditional' | 'modern'
   editingHeaderFooter?: boolean
   editingDisabled?: boolean
+  /** Character formatting can target an active story independently of body-only tools. */
+  textFormattingDisabled?: boolean
   headerFooter?: HeaderFooterRibbonState
   selectedContentControl?: {
     id: string
@@ -80,6 +83,7 @@ const action = (id: string, title: string, icon: Component | undefined, commandI
 
 export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
   const { state } = context
+  const textFormattingDisabled = context.textFormattingDisabled ?? context.editingDisabled
   const tocLabel = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
   const listControl = (kind: ListKind, icon: Component, title: string, row: number, column: number): RibbonItem => ({
     ...action(`doc-${kind}`, title, icon, 'doc.command.set-block-type', { type: kind }), type: 'split',
@@ -90,15 +94,15 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
   })
   const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => {
     const column = ['bold', 'italic', 'underline', 'strike'].indexOf(key) + 1
-    return action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { order: column - 1, disabled: context.editingDisabled, activated: state.marks[key] === true, tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title, gridLayout: { row: 2, column, width: 32, minWidth: 28 } })
+    return action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { order: column - 1, disabled: textFormattingDisabled, activated: state.marks[key] === true, tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title, gridLayout: { row: 2, column, width: 32, minWidth: 28 } })
   }
-  const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { order: value === 'subscript' ? 4 : 5, disabled: context.editingDisabled, activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title, gridLayout: { row: 2, column: value === 'subscript' ? 6 : 5, width: 32, minWidth: 28 } })
+  const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { order: value === 'subscript' ? 4 : 5, disabled: textFormattingDisabled, activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title, gridLayout: { row: 2, column: value === 'subscript' ? 6 : 5, width: 32, minWidth: 28 } })
   const alignments = [{ value: 'left', title: '左对齐', icon: AlignLeft }, { value: 'center', title: '居中', icon: AlignCenter }, { value: 'right', title: '右对齐', icon: AlignRight }, { value: 'justify', title: '两端对齐', icon: AlignJustify }]
   const palette = (id: string, title: string, key: 'color' | 'highlight', icon: Component): RibbonItem => {
     const defaultColor = key === 'color' ? context.defaultTextColor ?? DOCUMENT_DEFAULT_TEXT_COLOR : context.defaultHighlightColor ?? '#315bc2'
     const lastColor = (key === 'color' ? context.lastTextColor : context.lastHighlightColor) ?? defaultColor
     return {
-      id, type: 'split', title, icon, order: key === 'color' ? 8 : 9, disabled: context.editingDisabled,
+      id, type: 'split', title, icon, order: key === 'color' ? 8 : 9, disabled: textFormattingDisabled,
       commandId: 'doc.command.format-text', params: { patch: { [key]: lastColor } }, value: lastColor, swatch: documentColorPreview(key, lastColor, defaultColor),
       inlineComponent: DocumentColorControl, popupCommandId: 'doc.command.format-text', popupProps: {
         title: tocLabel(`items.${id}`, title), field: key, icon, defaultColor, lastColor,
@@ -133,8 +137,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
             return { label, value, preview: { fontSize: `${style.fontSize}px`, fontWeight: style.bold ? 700 : 400, color: style.color ? 'var(--ant-color-text-secondary, currentColor)' : undefined }, commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle } }
           }),
         ] },
-        { id: 'doc-font-family', type: 'select', edit: { kind: 'font' }, title: '字体', order: 7, disabled: context.editingDisabled, width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 3, columnSpan: 4, width: 140, minWidth: 124 }, options: ribbonFontOptions(state.marks.fontFamily, context.fontList), valueParams: (value) => ({ patch: { fontFamily: value } }) },
-        { id: 'doc-font-size', type: 'select', edit: { kind: 'number', min: 1, max: 400 }, title: '字号', order: 6, disabled: context.editingDisabled, width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: fontSizeOptions, valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
+        { id: 'doc-font-family', type: 'select', edit: { kind: 'font' }, title: '字体', order: 7, disabled: textFormattingDisabled, width: 112, value: state.marks.fontFamily ?? null, placeholder: '混合字体', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 3, columnSpan: 4, width: 140, minWidth: 124 }, options: ribbonFontOptions(state.marks.fontFamily, context.fontList), valueParams: (value) => ({ patch: { fontFamily: value } }) },
+        { id: 'doc-font-size', type: 'select', edit: { kind: 'number', min: 1, max: 400 }, title: '字号', order: 6, disabled: textFormattingDisabled, width: 60, value: state.marks.fontSize ?? null, placeholder: '混合', commandId: 'doc.command.format-text', gridLayout: { row: 1, column: 7, columnSpan: 2, width: 84, minWidth: 80 }, options: fontSizeOptions, valueParams: (value) => ({ patch: { fontSize: Number(value) } }) },
         format('doc-bold', '加粗', Bold, 'bold'), format('doc-italic', '斜体', Italic, 'italic'), format('doc-underline', '下划线', Underline, 'underline'), format('doc-strike', '删除线', Strikethrough, 'strike'),
         verticalFormat('doc-superscript', '上标', Superscript, 'superscript'), verticalFormat('doc-subscript', '下标', Subscript, 'subscript'),
         palette('doc-highlight', '文本高亮', 'highlight', PaintBucket), palette('doc-text-color', '字体颜色', 'color', Palette),
@@ -254,7 +258,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       title,
       icon,
       order,
-      disabled: headerFooter.disabled,
+      disabled: headerFooterControlDisabled(kind, headerFooter),
       inlineComponent: DocumentHeaderFooterRibbonGroup,
       popupProps: { kind, title, state: headerFooter },
       popupCommandId: 'doc.operation.header-footer-control',

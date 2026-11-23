@@ -1,5 +1,6 @@
 import type { DocumentSectionHeaderFooter } from '../../../domain/model'
 import { createRun, runText, sliceRuns, type DocumentRun } from '../model/document-model'
+import { resolveDocumentPageFieldResult } from '../model/document-page-field-result'
 import { documentStoryContent, documentStoryDefaultStyle, documentStoryFieldDisplayRuns, type DocumentStoryKey, type StoryDefaultsSource } from '../model/document-story'
 import { storyBuffer } from './story-editor'
 
@@ -22,7 +23,7 @@ export function documentStoryDisplay(section: DocumentSectionHeaderFooter, story
   for (let position = 0; position < buffer.value.length;) {
     const field = buffer.objects.get(position)
     if (field) {
-      const text = field.field === 'PAGE' ? String(page) : field.field === 'NUMPAGES' ? String(total) : field.cachedResult ?? ''
+      const text = resolveDocumentPageFieldResult(field, page, total)
       for (const run of documentStoryFieldDisplayRuns(field, text, defaults.text)) append(run, position, position + 1, true)
       position++
     } else if (buffer.literalOffsets[position] === buffer.literalOffsets[position + 1]) {

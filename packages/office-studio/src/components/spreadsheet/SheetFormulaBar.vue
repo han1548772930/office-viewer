@@ -4,11 +4,15 @@ import { Alert, Button, Input, Tooltip, theme } from 'antdv-next'
 import type { InputTextAreaRef } from 'antdv-next'
 import { Check, ChevronDown, ChevronUp, X } from 'lucide-vue-next'
 import { sheetCellInputActionForKey } from '../../features/sheet-workbench/sheet-cell-edit-input.ts'
+import { replaceSheetCellInputSelection } from '../../features/sheet-workbench/sheet-cell-edit-input.ts'
+import { createSheetCellNativeInputBridge, type SheetCellInputBridgeContext } from '../../features/sheet-workbench/sheet-cell-native-input.ts'
+import type { SheetCellNativeInputEvent } from '../../features/sheet-workbench/sheet-cell-input-trace.ts'
 
-const props = defineProps<{ address: string; value: string; editing: boolean; composing?: boolean; error?: string }>()
+const props = defineProps<{ address: string; value: string; editing: boolean; editSessionId?: string; inputContext?: () => SheetCellInputBridgeContext; composing?: boolean; error?: string }>()
 const emit = defineEmits<{
   (event: 'update:value', value: string): void
-  (event: 'begin'): void
+  (event: 'begin', selection?: { start: number; end: number }): void
+  (event: 'input-event', value: SheetCellNativeInputEvent): void
   (event: 'confirm', navigation?: { key: 'Enter' | 'Tab'; shift: boolean }): void
   (event: 'cancel'): void
   (event: 'navigate', address: string): void
@@ -19,7 +23,14 @@ const emit = defineEmits<{
 const addressDraft = ref(props.address)
 const addressComposing = ref(false), formulaComposing = ref(false)
 const expanded = ref(false)
+const root = ref<HTMLElement | null>(null)
 const editor = ref<InputTextAreaRef | null>(null)
+const nativeEditorKey = ref(0)
+// The synchronous callback also owns "no session" while Vue is still flushing the previous props.
+const inputSessionId = () => props.inputContext ? props.inputContext().sessionId : props.editSessionId
+const nativeInput = createSheetCellNativeInputBridge({ host: 'formula', sessionId: inputSessionId,
+  value: () => props.inputContext?.().value ?? props.value, contains: element => Boolean(root.value?.contains(element) && element.closest('.formula-input')),
+  emit: event => emit('input-event', event) })
 const { token } = theme.useToken()
 const colors = computed(() => ({
   '--formula-surface': token.value.colorBgContainer,
@@ -29,20 +40,48 @@ const colors = computed(() => ({
 }))
 watch(() => props.address, address => { addressDraft.value = address })
 watch(() => props.editing, editing => { if (!editing) changeFormulaComposition(false) })
+watch(() => props.editSessionId, (sessionId, previous) => {
+  // Preserve a pointer/IME-chosen caret while idle focus synchronously opens the first session.
+  if (previous || !sessionId) { nativeEditorKey.value++; changeFormulaComposition(false) }
+}, { flush: 'sync' })
 
 function changeFormulaComposition(composing: boolean): void {
   formulaComposing.value = composing
   emit('composition-change', composing)
 }
+function onFormulaComposition(event: CompositionEvent, composing: boolean): void {
+  const target = event.target
+  if (!(target instanceof HTMLTextAreaElement) || !target.closest('.formula-input')) return
+  nativeInput.capture(event, composing ? 'compositionstart' : 'compositionend')
+  changeFormulaComposition(composing)
+}
+function onFormulaFocus(event: FocusEvent): void {
+  const target = event.target
+  if (!(target instanceof HTMLTextAreaElement) || !root.value?.contains(target)) return
+  emit('begin', { start: target.selectionStart ?? target.value.length, end: target.selectionEnd ?? target.value.length })
+  nativeInput.capture(event, 'selection')
+}
+function onFormulaValue(value: string): void {
+  if (!inputSessionId()) emit('update:value', value)
+}
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.defaultPrevented) return
+  if (event.defaultPrevented || !(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
   const action = sheetCellInputActionForKey(event, formulaComposing.value || props.composing)
   if (action === 'cancel') {
     event.preventDefault()
     emit('cancel')
   } else if (action === 'commit') {
     event.preventDefault(); emit('confirm')
+  } else if (action === 'line-break' && event.target instanceof HTMLTextAreaElement) {
+    event.preventDefault()
+    const element = event.target, selection = { start: element.selectionStart, end: element.selectionEnd }
+    const replacement = inputSessionId() ? nativeInput.replace(element, '\n', selection, 'insertLineBreak', element.value)
+      : replaceSheetCellInputSelection(element.value, '\n', selection)
+    if (!replacement) return
+    if (!inputSessionId()) onFormulaValue(replacement.value)
+    const sessionId = inputSessionId()
+    void nextTick(() => { if (inputSessionId() === sessionId) focus(replacement.selection) })
   } else if (action !== 'native' && action !== 'line-break') {
     event.preventDefault()
     emit('confirm', { key: action === 'next-column' || action === 'previous-column' ? 'Tab' : 'Enter', shift: action === 'previous-column' || action === 'previous-row' })
@@ -62,27 +101,41 @@ function onAddressKeydown(event: KeyboardEvent): void {
 }
 
 function toggleExpanded() {
+  const sessionId = inputSessionId()
   expanded.value = !expanded.value
-  void nextTick(() => { if (props.editing) editor.value?.focus() })
+  void nextTick(() => { if (props.editing && inputSessionId() === sessionId) editor.value?.focus() })
 }
 
 function startFormula() {
+  const address = props.address
   emit('begin')
-  if (!props.value) emit('update:value', '=')
-  void nextTick(() => editor.value?.focus())
+  const sessionId = inputSessionId()
+  void nextTick(() => {
+    if (address !== props.address || !props.editing || inputSessionId() !== sessionId) return
+    const element = formulaElement()
+    if (!props.value && element) {
+      if (inputSessionId()) nativeInput.replace(element, '=', { start: 0, end: 0 }, 'insertText', '')
+      else emit('update:value', '=')
+    }
+    editor.value?.focus()
+  })
 }
 
-function focus(selection?: { start: number; end: number }) {
-  editor.value?.focus({ preventScroll: true })
+function formulaElement(): HTMLTextAreaElement | undefined {
   const native = editor.value?.nativeElement
   const element = native instanceof HTMLTextAreaElement ? native : native?.querySelector('textarea')
-  if (element instanceof HTMLTextAreaElement && selection && !formulaComposing.value && !props.composing) element.setSelectionRange(selection.start, selection.end)
+  return element instanceof HTMLTextAreaElement ? element : undefined
+}
+function focus(selection?: { start: number; end: number }) {
+  editor.value?.focus({ preventScroll: true })
+  const element = formulaElement()
+  if (element && selection && !formulaComposing.value && !props.composing) element.setSelectionRange(selection.start, selection.end)
 }
 defineExpose({ focus })
 </script>
 
 <template>
-  <div class="formula-toolbar" :class="{ expanded }" :style="colors" data-testid="sheet-formula-bar" @keydown.stop>
+  <div ref="root" class="formula-toolbar" :class="{ expanded }" :style="colors" data-testid="sheet-formula-bar" @keydown.stop @keydown.capture="nativeInput.capture($event, 'selection')" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="nativeInput.capture($event, 'input')" @compositionstart.capture="onFormulaComposition($event, true)" @compositionend.capture="onFormulaComposition($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')">
     <Input
       v-model:value="addressDraft"
       class="name-box"
@@ -102,6 +155,7 @@ defineExpose({ focus })
       <Tooltip title="编辑公式"><Button type="text" size="small" aria-label="编辑公式" @mousedown.prevent @click="startFormula"><span class="formula-symbol">fx</span></Button></Tooltip>
     </div>
     <Input.TextArea
+      :key="nativeEditorKey"
       ref="editor"
       class="formula-input"
       aria-label="公式编辑"
@@ -109,11 +163,9 @@ defineExpose({ focus })
       :change-on-composing="true"
       variant="borderless"
       spellcheck="false"
-      @focus="emit('begin')"
-      @update:value="emit('update:value', $event)"
+      @focus="onFormulaFocus"
+      @update:value="onFormulaValue"
       @keydown="onKeydown"
-      @compositionstart="changeFormulaComposition(true)"
-      @compositionend="changeFormulaComposition(false)"
       :value="value"
     />
     <Tooltip :title="expanded ? '折叠公式栏' : '展开公式栏'">

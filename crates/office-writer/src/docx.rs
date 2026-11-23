@@ -8,6 +8,8 @@ use crate::{opc::Package, xml, ExportError, ExportWarning};
 mod source_xml;
 #[path = "docx_source_styles.rs"]
 mod source_styles;
+#[path = "docx_legacy_source.rs"]
+mod legacy_source;
 #[path = "docx_default_style.rs"]
 mod default_style;
 use default_style::RunDefaultEffects;
@@ -1685,6 +1687,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     let blocks = field(&model, "blocks")
         .and_then(Value::as_array)
         .ok_or_else(|| ExportError::invalid("The document model is missing its blocks array."))?;
+    let legacy_source = legacy_source::prepare(&model)?;
     let generated_styles = default_style::styles_xml(&model, styles_xml())?;
     let run_defaults = RunDefaultEffects::for_model(&model);
     let notes = collect_notes(&model, blocks);
@@ -1755,6 +1758,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         next_story_control: 1_073_741_824,
         source_styles: source_styles::SourceStyles::new(&model, generated_styles)?,
     };
+    if let Some(bytes) = legacy_source {
+        use office_io_common::document_legacy_source::{LEGACY_SOURCE_CONTENT_TYPE, LEGACY_SOURCE_PART, LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET};
+        context.package.add_binary(LEGACY_SOURCE_PART, LEGACY_SOURCE_CONTENT_TYPE, bytes)?;
+        context.relationship(LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET, false)?;
+    }
     let has_different_odd_even =
         prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
     let (list_ids, numbering) = assign_lists(blocks);
@@ -1953,8 +1961,18 @@ fn prepare_section_header_footers(
     let mut next_part = 1usize;
     for (section_index, (section_id, setup)) in section_ids.iter().enumerate() {
         let value = get(sections, section_id);
-        let linked = section_index > 0
+        let legacy_linked = section_index > 0
             && (value.is_null() || get(value, "linkToPrevious").as_bool() == Some(true));
+        let story_links = get(value, "storyLinkToPrevious");
+        let story_names = ["header", "footer", "firstPageHeader", "firstPageFooter", "evenPageHeader", "evenPageFooter"];
+        if !story_links.is_null() && (story_links.as_object().is_none() || story_links.as_object().is_some_and(|links|
+            links.iter().any(|(key, linked)| !story_names.contains(&key.as_str()) || linked.as_bool().is_none()
+                || section_index == 0 && linked.as_bool() == Some(true)))) {
+            return Err(ExportError::invalid("Invalid per-story header/footer associations"));
+        }
+        if section_index == 0 && get(value, "linkToPrevious").as_bool() == Some(true) {
+            return Err(ExportError::invalid("The first section cannot link to a previous section"));
+        }
         let different_first_page = get(value, "differentFirstPage").as_bool() == Some(true);
         let different_odd_even = get(value, "differentOddEven").as_bool() == Some(true);
         has_different_odd_even |= different_odd_even;
@@ -1964,80 +1982,21 @@ fn prepare_section_header_footers(
             header_distance: twips(get(setup, "marginHeader").as_f64().unwrap_or(48.0)),
             footer_distance: twips(get(setup, "marginFooter").as_f64().unwrap_or(48.0)),
         };
-        if !linked {
-            for (story, page_type, field_name, relationship_type, content_type) in [
-                (
-                    "header",
-                    "default",
-                    "header",
-                    REL_HEADER,
-                    HEADER_CONTENT_TYPE,
-                ),
-                (
-                    "footer",
-                    "default",
-                    "footer",
-                    REL_FOOTER,
-                    FOOTER_CONTENT_TYPE,
-                ),
-            ] {
-                let name = string(get(value, field_name)).unwrap_or_default();
-                let page_fields = page_fields_for_story(value, field_name);
-                add_header_footer_part(
-                    context,
-                    &mut refs,
-                    &mut next_part,
-                    story,
-                    page_type,
-                    &name,
-                    &page_fields,
-                    get(get(value, "storyContent"), field_name),
-                    relationship_type,
-                    content_type,
-                )?;
-            }
-            if different_first_page {
-                for (story, field_name, relationship_type, content_type) in [
-                    ("header", "firstPageHeader", REL_HEADER, HEADER_CONTENT_TYPE),
-                    ("footer", "firstPageFooter", REL_FOOTER, FOOTER_CONTENT_TYPE),
-                ] {
-                    let text = string(get(value, field_name)).unwrap_or_default();
-                    let page_fields = page_fields_for_story(value, field_name);
-                    add_header_footer_part(
-                        context,
-                        &mut refs,
-                        &mut next_part,
-                        story,
-                        "first",
-                        &text,
-                        &page_fields,
-                        get(get(value, "storyContent"), field_name),
-                        relationship_type,
-                        content_type,
-                    )?;
-                }
-            }
-            if different_odd_even {
-                for (story, field_name, relationship_type, content_type) in [
-                    ("header", "evenPageHeader", REL_HEADER, HEADER_CONTENT_TYPE),
-                    ("footer", "evenPageFooter", REL_FOOTER, FOOTER_CONTENT_TYPE),
-                ] {
-                    let text = string(get(value, field_name)).unwrap_or_default();
-                    let page_fields = page_fields_for_story(value, field_name);
-                    add_header_footer_part(
-                        context,
-                        &mut refs,
-                        &mut next_part,
-                        story,
-                        "even",
-                        &text,
-                        &page_fields,
-                        get(get(value, "storyContent"), field_name),
-                        relationship_type,
-                        content_type,
-                    )?;
-                }
-            }
+        for (story, page_type, field_name, relationship_type, content_type) in [
+            ("header", "default", "header", REL_HEADER, HEADER_CONTENT_TYPE),
+            ("footer", "default", "footer", REL_FOOTER, FOOTER_CONTENT_TYPE),
+            ("header", "first", "firstPageHeader", REL_HEADER, HEADER_CONTENT_TYPE),
+            ("footer", "first", "firstPageFooter", REL_FOOTER, FOOTER_CONTENT_TYPE),
+            ("header", "even", "evenPageHeader", REL_HEADER, HEADER_CONTENT_TYPE),
+            ("footer", "even", "evenPageFooter", REL_FOOTER, FOOTER_CONTENT_TYPE),
+        ] {
+            let linked = section_index > 0 && get(story_links, field_name).as_bool().unwrap_or(legacy_linked);
+            if linked { continue; }
+            // Dormant first/even variants are native parts too; toggling their option must not discard content.
+            let text = string(get(value, field_name)).unwrap_or_default();
+            let page_fields = page_fields_for_story(value, field_name);
+            add_header_footer_part(context, &mut refs, &mut next_part, story, page_type, &text, &page_fields,
+                get(get(value, "storyContent"), field_name), relationship_type, content_type)?;
         }
         context
             .section_header_footer_refs
@@ -2446,7 +2405,11 @@ mod tests {
                 { "id": "body-3", "type": "paragraph", "runs": [{ "text": "Third" }] }
             ],
             "sectionHeaderFooters": {
-                "first": { "header": "A&B", "footer": "First footer" },
+                "first": {
+                    "header": "A&B", "footer": "First footer",
+                    "firstPageHeader": "Dormant cover header", "firstPageFooter": "Dormant cover footer",
+                    "evenPageHeader": "Dormant even header", "evenPageFooter": "Dormant even footer"
+                },
                 "section-2": {
                     "header": "Second header",
                     "footer": "Second footer",
@@ -2477,14 +2440,18 @@ mod tests {
         };
         let document = read_part(&mut archive, "word/document.xml");
         let first_header = read_part(&mut archive, "word/header1.xml");
-        let section_two_first_header = read_part(&mut archive, "word/header5.xml");
-        let even_header = read_part(&mut archive, "word/header7.xml");
+        let dormant_first_header = read_part(&mut archive, "word/header3.xml");
+        let dormant_even_header = read_part(&mut archive, "word/header5.xml");
+        let section_two_first_header = read_part(&mut archive, "word/header9.xml");
+        let even_header = read_part(&mut archive, "word/header11.xml");
         let relationships = read_part(&mut archive, "word/_rels/document.xml.rels");
         let settings = read_part(&mut archive, "word/settings.xml");
 
         assert!(first_header.contains("A&amp;B"));
         assert!(document.contains("w:header=\"383\" w:footer=\"0\""));
         assert!(first_header.starts_with("<?xml"));
+        assert!(dormant_first_header.contains("Dormant cover header"));
+        assert!(dormant_even_header.contains("Dormant even header"));
         assert!(section_two_first_header.contains("Cover header"));
         assert!(even_header.contains("Even header"));
         assert!(settings.contains("<w:evenAndOddHeaders/>"));
@@ -2493,6 +2460,8 @@ mod tests {
         assert!(document.contains("<w:headerReference w:type=\"default\""));
         assert!(document.contains("<w:headerReference w:type=\"first\""));
         assert!(document.contains("<w:headerReference w:type=\"even\""));
+        assert_eq!(document.matches("<w:headerReference w:type=\"first\"").count(), 2);
+        assert_eq!(document.matches("<w:headerReference w:type=\"even\"").count(), 2);
         assert_eq!(document.matches("<w:sectPr>").count(), 3);
     }
 

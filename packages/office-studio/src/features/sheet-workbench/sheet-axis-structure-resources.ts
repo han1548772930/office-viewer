@@ -2,6 +2,7 @@ import type { CellRange, ChartModel, SheetAutoFilter, SheetConditionalFormatRule
 import { sheetAxisEditSegments, sheetAxisInsertionEdit, sheetRangeAxisInterval, sheetRangeWithAxisInterval,
   transformSheetAxisRange, transformSheetAxisReferenceInterval, type SheetAxisEdit } from '../../domain/sheet-axis-structure.ts'
 import { conditionalFormatFormulaAnchor, mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
+import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from '../sheet-validation/validation-formulas.ts'
 import { transformFormulaReferenceAreasForAxisEdit, translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
 import { parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { formatProtectionRange } from '../sheet-protection/range-protection.ts'
@@ -66,28 +67,24 @@ function conditionalForEdit(rule: SheetConditionalFormatRule, owner: string, tar
 function validationForEdit(rule: SheetDataValidationRule, owner: string, target: string, edit: SheetAxisEdit, local: boolean): SheetDataValidationRule[] {
   const ranges = local ? rule.ranges.flatMap(range => transformSheetAxisRange(range, edit)) : rule.ranges.map(range => ({ ...range }))
   if (!ranges.length) return []
-  const first = rule.ranges[0], origin = first ? { row: first.startRow, col: first.startCol } : undefined
+  const origin = sheetValidationFormulaAnchor(rule)
   // Literal list entries and checkbox labels are data. Their range/formula
   // references still follow structural edits, without a per-cell rebase.
-  const relative = rule.type !== 'list' && rule.type !== 'listMultiple' && rule.type !== 'checkbox'
+  const relative = sheetValidationUsesRelativeAnchor(rule)
   const rebased = relative && local && origin ? mapOrigin(origin, ranges, edit) : undefined
   const transform = (formula: string | undefined) => formula === undefined ? undefined : rule.type === 'checkbox' ? formula
     : referenceFormula(rebased && origin ? translateFormulaReferenceAreas(formula, rebased.source.row - origin.row, rebased.source.col - origin.col) : formula, owner, target, edit)
-  let formula1 = transform(rule.formula1), formula2 = transform(rule.formula2)
-  if (rebased) {
-    const targetOrigin = ranges[0]!
-    const deltaRow = targetOrigin.startRow - rebased.target.row, deltaColumn = targetOrigin.startCol - rebased.target.col
-    if (formula1 !== undefined) formula1 = translateFormulaReferenceAreas(formula1, deltaRow, deltaColumn)
-    if (formula2 !== undefined) formula2 = translateFormulaReferenceAreas(formula2, deltaRow, deltaColumn)
-  }
-  const next = { ...rule, ranges, formula1, formula2 }, copy = local ? copiedRanges(rule.ranges, edit) : []
+  const formula1 = transform(rule.formula1), formula2 = transform(rule.formula2)
+  const next = { ...rule, ranges, formula1, formula2, ...(rebased ? { formulaAnchor: { ...rebased.target } } : {}) }, copy = local ? copiedRanges(rule.ranges, edit) : []
   if (!copy.length || edit.kind !== 'copy') return [next]
   const oldCopyIndex = edit.start + (edit.axis === 'row' ? copy[0]!.startRow : copy[0]!.startCol) - edit.destination
   const movedCopyIndex = axisMapper(edit)(oldCopyIndex)!
   const delta = (edit.axis === 'row' ? copy[0]!.startRow : copy[0]!.startCol) - movedCopyIndex
   const copyFormula = (formula: string | undefined) => formula === undefined || rule.type === 'checkbox' ? formula
     : translateFormulaReferenceAreas(formula, edit.axis === 'row' ? delta : 0, edit.axis === 'column' ? delta : 0)
-  return [next, { ...next, id: `dv-${crypto.randomUUID()}`, ranges: copy, formula1: copyFormula(formula1), formula2: copyFormula(formula2) }]
+  const copiedAnchor = relative && rebased ? { row: rebased.target.row + (edit.axis === 'row' ? delta : 0), col: rebased.target.col + (edit.axis === 'column' ? delta : 0) } : undefined
+  return [next, { ...next, id: `dv-${crypto.randomUUID()}`, ranges: copy, formula1: copyFormula(formula1), formula2: copyFormula(formula2),
+    ...(copiedAnchor ? { formulaAnchor: copiedAnchor } : {}) }]
 }
 
 export function transformSheetAutoFilterForAxisEdit(filter: SheetAutoFilter | undefined, edit: SheetAxisEdit): SheetAutoFilter | undefined {
@@ -216,7 +213,7 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
     return tables
   })
   workbook.charts = original.charts?.flatMap(chart => {
-    if (chart.sheetId !== target.id || chart.pivotTableId) return [structuredClone(chart)]
+    if ((chart.source.sheetId ?? chart.sheetId) !== target.id || chart.pivotTableId) return [structuredClone(chart)]
     const next = chartForEdit(chart, edit)
     return next ? [next] : []
   })

@@ -6,6 +6,38 @@ export interface RawParserError {
   details?: string | null
 }
 
+export interface DocumentOfficeXmlPartDto {
+  partName: string
+  xml: string
+}
+
+export type DocumentOfficeSourceResourceDto =
+  | { kind: 'xml'; partName: string; xml: string }
+  | { kind: 'binary'; streamName: string; offset: number; dataHex: string }
+
+export interface DocumentOfficeSourceOriginDto {
+  format: 'doc' | 'odt'
+  synthesized: boolean
+  resources: DocumentOfficeSourceResourceDto[]
+  /** Historical diagnostics do not replace the current Word default-style chain. */
+  resourceErrors?: string[]
+}
+
+export interface DocumentOfficeSourceDto {
+  version: 1
+  styles?: DocumentOfficeXmlPartDto | null
+  theme?: DocumentOfficeXmlPartDto | null
+  resourceErrors?: string[]
+  /** DOCX omits origin; non-OOXML resources never become Word styles implicitly. */
+  origin?: DocumentOfficeSourceOriginDto
+  /** DOC/ODT resources retained across DOCX export and reopening. */
+  legacyOrigins?: DocumentOfficeSourceOriginDto[]
+}
+
+export interface RawParserPayloadData extends Record<string, unknown> {
+  officeSource?: DocumentOfficeSourceDto | null
+}
+
 export interface ParseEnvelope {
   schemaVersion: 1
   parserVersion: string
@@ -13,7 +45,7 @@ export interface ParseEnvelope {
   fileName: string
   size: number
   model: 'spreadsheet' | 'document'
-  payload: { modelType: 'spreadsheet' | 'document'; data: Record<string, unknown> }
+  payload: { modelType: 'spreadsheet' | 'document'; data: RawParserPayloadData }
   diagnostics: {
     warnings: string[]
     errors: RawParserError[]

@@ -175,6 +175,57 @@ function rawValue(cell: ExcelCellView, original?: SpreadsheetCell): CellScalar {
   if (original && String(original.value ?? '') === cell.value) return original.value
   return parseSheetCellText(cell.value, cell.dataType ?? (isSheetTextNumberFormat(cell.rawNumberFormat) || cell.numberFormat === 'text' ? 'text' : undefined))
 }
+export interface ExcelCellViewMappingOptions {
+  date1904?: boolean
+  previousDate1904?: boolean
+  numberFormatLocale?: string
+}
+
+/** The same cell mapping serves a single input command and a complete workbook view update. */
+export function applyExcelCellView(position: { row: number; col: number }, cell: ExcelCellView, previous?: SpreadsheetCell,
+  options: ExcelCellViewMappingOptions = {}): SpreadsheetCell {
+  const { date1904, previousDate1904, numberFormatLocale } = options
+  const id = position.row + ':' + position.col
+  const numberFormat = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : previous?.style.numberFormat) ?? 'General'
+  const value = rawValue(cell, previous)
+  const formula = cell.formula ?? null
+  const sameContent = previous !== undefined && previous.formula === formula && Object.is(previous.value, value)
+  const dataType = sameContent ? cell.dataType ?? previous?.dataType : formula ? 'formula'
+    : normalizeSheetCellValueType(cell.dataType) === 'formula' ? inferSheetCellValueType(value) : cell.dataType ?? inferSheetCellValueType(value)
+  const cachedDataType = sameContent ? cell.cachedDataType === undefined ? previous?.cachedDataType : cell.cachedDataType
+    : formula ? cell.cachedDataType === undefined ? value === null ? null : inferSheetCellValueType(value) : cell.cachedDataType : null
+  const samePresentation = sameContent && previous?.style.numberFormat === numberFormat && date1904 === previousDate1904
+  const preservedDisplay = samePresentation ? cell.displayValue ?? (formula ? cell.cachedValue : undefined) ?? previous?.display : undefined
+  const display = preservedDisplay ?? (formula && value === null ? cell.displayValue ?? cell.cachedValue ?? (sameContent ? previous?.display : undefined) ?? formula
+    : formatSheetValue(value, numberFormat, date1904, numberFormatLocale)
+      ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value))
+  const metadata = cell.metadata === null ? undefined : cell.metadata ? structuredClone(cell.metadata) : previous?.metadata ? { ...previous.metadata } : undefined
+  if (metadata && (!sameContent || cell.richText === null)) delete metadata.formulaError
+  const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)
+  const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
+  return {
+    ...previous, id, ...position, value, formula, dataType, cachedDataType, metadata,
+    hyperlink: cell.hyperlink === undefined ? previous?.hyperlink ?? null : cell.hyperlink,
+    sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
+    richText: cell.richText === null ? undefined : cell.richText ? structuredClone(cell.richText) : sameContent ? previous?.richText : undefined,
+    display,
+    style: {
+      ...previous?.style,
+      font: {
+        family: cell.fontFamily ?? previous?.style.font.family ?? 'Aptos', size: cell.fontSize ?? previous?.style.font.size ?? 11,
+        bold: cell.bold ?? previous?.style.font.bold ?? false, italic: cell.italic ?? previous?.style.font.italic ?? false,
+        underline: cell.underline ?? previous?.style.font.underline ?? false, strike: cell.strike ?? previous?.style.font.strike ?? false,
+        color: cell.color === undefined ? previous?.style.font.color ?? null : cell.color,
+      },
+      fill: cell.background === undefined ? previous?.style.fill ?? null : cell.background,
+      horizontal: cell.align ?? previous?.style.horizontal ?? 'general', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
+      wrap: cell.wrap ?? previous?.style.wrap ?? false, wrapStrategy: cell.wrapStrategy ?? previous?.style.wrapStrategy, border: cell.border ?? previous?.style.border,
+      rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,
+      shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,
+      metadata: cell.styleMetadata === null ? undefined : cell.styleMetadata ?? previous?.style.metadata,
+    },
+  }
+}
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView, numberFormatLocale?: string): WorkbookModel {
   const date1904 = view.date1904 ?? workbook.date1904
   return {
@@ -193,45 +244,7 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
         if (!position) continue
         const id = position.row+':'+position.col
         const previous = original?.cells[id]
-        const numberFormat = cell.rawNumberFormat ?? (cell.numberFormat ? SHEET_NUMBER_FORMATS[cell.numberFormat] : previous?.style.numberFormat) ?? 'General'
-        const value = rawValue(cell, previous)
-        const formula = cell.formula ?? null
-        const sameContent = previous !== undefined && previous.formula === formula && Object.is(previous.value, value)
-        const dataType = sameContent ? cell.dataType ?? previous?.dataType : formula ? 'formula'
-          : normalizeSheetCellValueType(cell.dataType) === 'formula' ? inferSheetCellValueType(value) : cell.dataType ?? inferSheetCellValueType(value)
-        const cachedDataType = sameContent ? cell.cachedDataType === undefined ? previous?.cachedDataType : cell.cachedDataType
-          : formula ? cell.cachedDataType === undefined ? value === null ? null : inferSheetCellValueType(value) : cell.cachedDataType : null
-        const samePresentation = sameContent && previous?.style.numberFormat === numberFormat && date1904 === workbook.date1904
-        const preservedDisplay = samePresentation ? cell.displayValue ?? (formula ? cell.cachedValue : undefined) ?? previous?.display : undefined
-        const display = preservedDisplay ?? (formula && value === null ? cell.displayValue ?? cell.cachedValue ?? (sameContent ? previous?.display : undefined) ?? formula
-          : formatSheetValue(value, numberFormat, date1904, numberFormatLocale)
-            ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value))
-        const metadata = cell.metadata === null ? undefined : cell.metadata ? structuredClone(cell.metadata) : previous?.metadata ? { ...previous.metadata } : undefined
-        if (metadata && (!sameContent || cell.richText === null)) delete metadata.formulaError
-        const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)
-        const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
-        cells[id] = {
-          ...previous, id, ...position, value, formula, dataType, cachedDataType, metadata,
-          hyperlink: cell.hyperlink === undefined ? previous?.hyperlink ?? null : cell.hyperlink,
-          sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
-          richText: cell.richText === null ? undefined : cell.richText ? structuredClone(cell.richText) : sameContent ? previous?.richText : undefined,
-          display,
-          style: {
-            ...previous?.style,
-            font: {
-              family: cell.fontFamily ?? previous?.style.font.family ?? 'Aptos', size: cell.fontSize ?? previous?.style.font.size ?? 11,
-              bold: cell.bold ?? previous?.style.font.bold ?? false, italic: cell.italic ?? previous?.style.font.italic ?? false,
-              underline: cell.underline ?? previous?.style.font.underline ?? false, strike: cell.strike ?? previous?.style.font.strike ?? false,
-              color: cell.color === undefined ? previous?.style.font.color ?? null : cell.color,
-            },
-            fill: cell.background === undefined ? previous?.style.fill ?? null : cell.background,
-            horizontal: cell.align ?? previous?.style.horizontal ?? 'general', vertical: cell.vertical ?? previous?.style.vertical ?? 'middle',
-            wrap: cell.wrap ?? previous?.style.wrap ?? false, wrapStrategy: cell.wrapStrategy ?? previous?.style.wrapStrategy, border: cell.border ?? previous?.style.border,
-            rotation, rotationVertical, indent: cell.indent ?? previous?.style.indent,
-            shrinkToFit: cell.shrinkToFit ?? previous?.style.shrinkToFit, numberFormat,
-            metadata: cell.styleMetadata === null ? undefined : cell.styleMetadata ?? previous?.style.metadata,
-          },
-        }
+        cells[id] = applyExcelCellView(position, cell, previous, { date1904, previousDate1904: workbook.date1904, numberFormatLocale })
       }
       const next: WorkbookModel['sheets'][number] = {
         ...original, id: source.id, name: source.name, tabColor: source.tabColor ?? original?.tabColor, cells, visible: source.visible ?? original?.visible ?? true,
@@ -281,7 +294,7 @@ function cloneSheetTable(table: SheetTableModel): SheetTableModel {
 function cloneChartModel(chart: ChartModel): ChartModel {
   return {
     ...chart,
-    source: { range: { ...chart.source.range }, orientation: chart.source.orientation },
+    source: { ...chart.source, range: { ...chart.source.range } },
     position: { ...chart.position },
     size: { ...chart.size },
     legend: { ...chart.legend },

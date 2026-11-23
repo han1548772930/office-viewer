@@ -11,7 +11,7 @@ import { assertTextRangeEditable, getDocumentContentControls, transformContentCo
 import { flattenDocumentBody } from './document-facade'
 import { documentFormattingWordRange, documentPainterTarget } from './document-format-painter'
 import { DOCUMENT_STORY_KEYS, documentStoryContent, documentStoryDefaultStyle, documentStoryFieldCache, isDocumentTextBoundary, type DocumentStoryRange } from '../model/document-story'
-import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter } from './section-header-footer'
+import { applySectionHeaderFooter, documentSectionIds, resolveSectionHeaderFooter, sectionStoryLinkedToPrevious } from './section-header-footer'
 import { storyBuffer } from './story-editor'
 import { assertDocumentStoryFormattingEditable } from './document-story-locks'
 
@@ -71,7 +71,7 @@ export interface DocumentStoryClearFormattingPlan { range: DocumentStoryRange; p
 export function prepareDocumentStoryClearFormatting(model: DocumentModel, request: DocumentStoryRange, context: DocumentPermissionContext): DocumentStoryClearFormattingPlan | undefined {
   if (!request || !DOCUMENT_STORY_KEYS.includes(request.story) || !documentSectionIds(model).includes(request.sectionId)) throw new RangeError('页眉页脚片段不存在。')
   const section = resolveSectionHeaderFooter(model, request.sectionId)
-  if (section.linkToPrevious) throw new Error('请先取消与前节的链接，再清除此节页眉页脚格式。')
+  if (sectionStoryLinkedToPrevious(section, request.story)) throw new Error('请先取消此页眉页脚与前节的链接，再清除格式。')
   assertDocumentPermission(model.permissionRules ?? [], context, 'edit', [
     { scope: 'section', id: request.sectionId }, { scope: 'entity', id: `${request.sectionId}:${request.story}` },
     { scope: 'entity', id: `${request.sectionId}:${request.story.toLowerCase().includes('header') ? 'header' : 'footer'}` },

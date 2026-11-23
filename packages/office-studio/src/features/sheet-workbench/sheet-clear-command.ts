@@ -2,8 +2,8 @@ import { defaultCellStyle, type CellRange, type SpreadsheetCell, type Spreadshee
 import { parseCellKey, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
 import { formatSheetValue } from './sheet-number-format.ts'
-import { translateFormulaReferences } from '../formula/formula-references.ts'
-import type { SheetDataValidationRule, SheetConditionalFormatRule, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
+import { reanchorSheetDataValidationRule } from '../sheet-validation/validation-formulas.ts'
+import { reanchorConditionalFormatRule } from '../conditional-formatting/conditional-format-formulas.ts'
 import { assertSheetRangesEditable, sheetCommandRangesWithoutFilteredRows, sheetRangeContainsCell, sheetRangesIntersect,
   subtractSheetCommandRange, type SheetRangeCommandInput } from './sheet-range-command.ts'
 
@@ -67,32 +67,6 @@ function trimResourceRanges<T extends { ranges: CellRange[] }>(rules: T[] | unde
     return remaining.length ? [rebase ? rebase(rule, remaining) : { ...rule, ranges: remaining }] : []
   })
 }
-function formulaFromNewAnchor(formula: string | undefined, before: CellRange | undefined, after: CellRange | undefined): string | undefined {
-  if (!formula || !before || !after || before.startRow === after.startRow && before.startCol === after.startCol) return formula
-  return translateFormulaReferences(formula, after.startRow - before.startRow, after.startCol - before.startCol)
-}
-function rebaseValidation(rule: SheetDataValidationRule, ranges: CellRange[]): SheetDataValidationRule {
-  // List sources and checkbox labels are evaluated without a per-cell relative offset.
-  if (rule.type === 'list' || rule.type === 'listMultiple' || rule.type === 'checkbox') return { ...rule, ranges }
-  return { ...rule, ranges, formula1: formulaFromNewAnchor(rule.formula1, rule.ranges[0], ranges[0]),
-    formula2: formulaFromNewAnchor(rule.formula2, rule.ranges[0], ranges[0]) }
-}
-function rebaseConditional(rule: SheetConditionalFormatRule, ranges: CellRange[]): SheetConditionalFormatRule {
-  // Conditional rendering anchors to the first range by position, while validation preserves serialized range order.
-  const anchor = (items: readonly CellRange[]) => items.reduce<CellRange | undefined>((first, range) =>
-    !first || range.startRow < first.startRow || range.startRow === first.startRow && range.startCol < first.startCol ? range : first, undefined)
-  const before = anchor(rule.ranges), after = anchor(ranges)
-  const rebase = (config: SheetConditionalFormatValueConfig) => config.type === 'formula' && typeof config.value === 'string'
-    ? { ...config, value: formulaFromNewAnchor(config.value, before, after) } : { ...config }
-  const expression = rule.type === 'expression' || rule.subType === 'formula'
-  return { ...rule, ranges,
-    ...(expression ? { formula1: formulaFromNewAnchor(rule.formula1, before, after) ?? '',
-      ...(typeof rule.value === 'string' ? { value: formulaFromNewAnchor(rule.value, before, after) } : {}) } : {}),
-    ...(rule.config ? { config: { ...rule.config, min: rule.config.min ? rebase(rule.config.min) : undefined,
-      max: rule.config.max ? rebase(rule.config.max) : undefined,
-      thresholds: rule.config.thresholds?.map(item => ({ ...item, value: rebase(item.value) })),
-      icons: rule.config.icons?.map(item => ({ ...item, value: rebase(item.value) })) } } : {}) }
-}
 function clearViewFormat(cell: ExcelCellView): ExcelCellView {
   const display = cell.rawValue === undefined ? undefined : cell.formula && cell.rawValue === null ? cell.cachedValue ?? cell.displayValue
     : formatSheetValue(cell.rawValue, 'General')
@@ -138,8 +112,8 @@ export function applySheetClearCommand(
     changed = true
   }
   if (mode === 'all') {
-    const validation = trimResourceRanges(sheet.dataValidations, scope.visibleRanges, rebaseValidation)
-    const conditional = trimResourceRanges(sheet.conditionalFormats, scope.visibleRanges, rebaseConditional)
+    const validation = trimResourceRanges(sheet.dataValidations, scope.visibleRanges, reanchorSheetDataValidationRule)
+    const conditional = trimResourceRanges(sheet.conditionalFormats, scope.visibleRanges, reanchorConditionalFormatRule)
     if (JSON.stringify(validation) !== JSON.stringify(sheet.dataValidations)) { sheet.dataValidations = validation; changed = true }
     if (JSON.stringify(conditional) !== JSON.stringify(sheet.conditionalFormats)) { sheet.conditionalFormats = conditional; changed = true }
   }
@@ -164,7 +138,7 @@ export function applySheetViewClearCommand(
     changed = true
   }
   if (mode === 'all') {
-    const validation = trimResourceRanges(sheet.dataValidations, scope.visibleRanges, rebaseValidation), conditional = trimResourceRanges(sheet.conditionalFormats, scope.visibleRanges, rebaseConditional)
+    const validation = trimResourceRanges(sheet.dataValidations, scope.visibleRanges, reanchorSheetDataValidationRule), conditional = trimResourceRanges(sheet.conditionalFormats, scope.visibleRanges, reanchorConditionalFormatRule)
     if (JSON.stringify(validation) !== JSON.stringify(sheet.dataValidations)) { sheet.dataValidations = validation; changed = true }
     if (JSON.stringify(conditional) !== JSON.stringify(sheet.conditionalFormats)) { sheet.conditionalFormats = conditional; changed = true }
   }

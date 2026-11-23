@@ -2,6 +2,8 @@ import './style.css'
 export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon-fonts'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type WorkbookCommitOptions } from './api/office-studio'
+export { CONTENT_HISTORY_COMMANDS, CONTENT_HISTORY_COMMAND_IDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget,
+  type ContentHistoryCommandInput, type ContentHistoryDirection, type ContentHistoryTarget } from './api/content-history-commands.ts'
 export {
   FBlob,
   FDocument,
@@ -38,9 +40,21 @@ export {
   type PivotTableAnchorInfo,
   type SlicerInfo,
 } from './api/facade'
-export { FEventName, EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type Disposable } from './api/events'
+export { FEventName, EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type EventDeliveryError, type Disposable } from './api/events'
+export { SET_SHEET_SELECTIONS_OPERATION, SELECT_SHEET_RANGE_COMMAND, MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND,
+  type SheetSelectionOperationRequest, type SheetSelectionShortcutRequest } from './api/sheet-selection-commands.ts'
 export { normalizeSheetSelection, reconcileSheetSelection, resolveVisibleSheetSelection, type SheetSelectionState, type SheetSelectionRange,
   type SheetSelectionCell, type SheetSelectionOptions, type SheetSelectionSheet } from './features/sheet-workbench/sheet-selection.ts'
+export { nextSheetSelectionCell, planSheetSelectionShortcut, SheetSelectionDirections, type SheetSelectionDirection,
+  type SheetSelectionNavigationResult, type SheetSelectionNavigationSheet, type SheetSelectionShortcutKey,
+  type SheetSelectionShortcutPlan } from './features/sheet-workbench/sheet-selection-navigation.ts'
+export { COMMIT_SHEET_CELL_INPUT_COMMAND, planSheetCellInput, sheetCellInputCommandInput, sheetCellInputConflictMessage,
+  type SheetCellInputCommandInput, type SheetCellInputCommandResult, type SheetCellInputOptions,
+  type SheetCellInputPlan, type SheetCellInputDefaults } from './features/sheet-workbench/sheet-cell-input-command.ts'
+export { createSheetCellEditSession, getSheetCellEditConflict, resolveSheetDate1904,
+  type SheetCellEditSession, type SheetCellEditContext, type SheetCellEditConflict } from './features/sheet-workbench/sheet-cell-edit-session.ts'
+export { sheetCellContentKey, sheetCellInputText, createSheetCellEditorStart } from './features/sheet-workbench/sheet-cell-edit.ts'
+export { editSheetCellRichText } from './features/sheet-workbench/sheet-cell-rich-text-edit.ts'
 export { SHEET_CLEAR_COMMANDS, SHEET_CLEAR_COMMAND_ALIASES, type SheetClearOptions, type SheetClearMode,
   type SheetClearCommandInput } from './features/sheet-workbench/sheet-clear-command.ts'
 export { SHEET_MERGE_COMMANDS, SHEET_MERGE_COMMAND_ALIASES, type SheetMergeOptions, type SheetMergeMode,
@@ -74,8 +88,12 @@ export type { SheetFontFormatAction, SheetFontFormatCommandInput, SheetFontForma
 export { type ApiCellData, type ApiCellValue } from './api/model-utils'
 export type { DocumentEditorCommandRequest, DocumentEditorCommandResult } from './api/document-editor-commands.ts'
 export type { DocumentCommand } from './features/document/commands/document-commands.ts'
-export type { DocumentPoint, DocumentSelection } from './features/document/model/document-model.ts'
+export type { DocumentPoint, DocumentSelection, RunPatch, DocumentRunClearField } from './features/document/model/document-model.ts'
 export type { DocumentStoryRange } from './features/document/model/document-story.ts'
+export { SET_DOCUMENT_INPUT_SELECTION_OPERATION, CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION,
+  type DocumentInputLocation, type DocumentInputSession, type DocumentStoryInputCommit } from './features/document/model/document-input-session.ts'
+export type { DocumentInputSelectionRequest } from './api/document-input-commands.ts'
+export { useDocumentInputStore } from './features/document/stores/document-input-store.ts'
 export { prepareDocumentStoryClearFormatting, applyDocumentStoryClearFormatting,
   type DocumentStoryClearFormattingPlan } from './features/document/services/document-clear-formatting.ts'
 export { splitSheetA1Reference, parseSheetA1Range, type SheetA1Reference, type SheetA1Range } from './features/sheet-workbench/sheet-a1-reference.ts'
@@ -148,10 +166,13 @@ export { WORKBENCH_CHROME, WORKBENCH_ACCENTS, WORKBENCH_ZOOMS, WorkbenchDisplayK
 export type { WorkbenchChrome, WorkbenchAccent, WorkbenchZoom } from './platform/workbench-display'
 
 export {
+  applyExcelCellView,
   applyExcelWorkbookView,
   cellKey,
   parseCellKey,
   toExcelWorkbookView,
+  toExcelCellView,
+  type ExcelCellViewMappingOptions,
   type ExcelCellView,
   type ExcelSheetView,
   type ExcelWorkbookView,

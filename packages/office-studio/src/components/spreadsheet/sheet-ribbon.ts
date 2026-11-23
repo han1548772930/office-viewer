@@ -24,8 +24,10 @@ import { SHEET_NUMBER_FORMATS, sheetNumberFormatMenu } from '../../features/shee
 import { numberFormatCurrency, sheetCurrencySymbol } from '../../features/sheet-workbench/sheet-currency.ts'
 import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
+import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 
 export interface SheetRibbonState {
+  clipboardCapabilities?: SheetClipboardCapabilities
   fontList?: OfficeFontList
   fontEditable?: boolean
   painterActive?: boolean
@@ -101,6 +103,13 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const button = (id: string, title: string, extra: Partial<RibbonItem> = {}): RibbonItem => ({
     id, title, commandId: id, type: 'button', disabled: !state.hasSheet, ...extra,
   })
+  const clipboardButton = (id: string, title: string, extra: Partial<RibbonItem> = {}): RibbonItem => {
+    const entry = state.clipboardCapabilities && sheetClipboardCommandCapability(state.clipboardCapabilities, extra.commandId ?? id)
+    return button(id, title, { ...extra, ...(entry ? { hidden: entry.hidden, disabled: !state.hasSheet || entry.disabled, disabledReason: entry.reason } : {}) })
+  }
+  const pasteRoot = state.clipboardCapabilities?.ribbonPaste
+  // When the default write is unavailable, retain access to permitted special modes through the menu.
+  const pasteType = state.clipboardCapabilities?.paste.all.disabled && !pasteRoot?.disabled ? 'menu' : 'split'
   const quickDisabled = !state.dataValidationAvailable || state.quickValidationEditable === false
   const quick = (id: string, title: string, params: string, icon?: Component) => button(id, title, { commandId: 'sheet.operation.quick-data-validation', params, icon, disabled: quickDisabled })
   const tr: OfficeTranslator = translate ?? ((_key, fallback) => fallback)
@@ -144,13 +153,15 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.command.redo', '重做', { icon: Redo2, disabled: !state.canRedo, shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
           button('sheet.operation.format-painter', '格式刷', { icon: Brush, activated: Boolean(state.painterActive), disabled: !state.painterActive && (!state.hasSheet || state.painterUnavailable === true), subId: 'sheet.operation.continuous-format-painter', gridLayout: { row: 1, column: 2, showLabel: false } }),
           button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, gridLayout: { row: 2, column: 2, showLabel: false } }),
-          { ...button('sheet.command.paste', '粘贴', { icon: ClipboardPaste, shortcut: 'Ctrl+V', gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'split', children: [
-            button('sheet.menu.paste-all', '保留源格式粘贴', { commandId: 'sheet.command.paste' }),
-            button('sheet.menu.paste-values', '仅粘贴值', { commandId: 'sheet.command.paste-values' }),
-            button('sheet.menu.paste-formulas', '仅粘贴公式', { commandId: 'sheet.command.paste-formulas' }),
-            button('sheet.menu.paste-formats', '仅粘贴格式', { commandId: 'sheet.command.paste-formats' }),
-            button('sheet.menu.paste-column-widths', '仅粘贴列宽', { commandId: 'sheet.command.paste-column-widths' }),
-            button('sheet.menu.paste-except-borders', '保留目标边框粘贴', { commandId: 'sheet.command.paste-except-borders' }),
+          { ...button('sheet.command.paste', '粘贴', { icon: ClipboardPaste, shortcut: 'Ctrl+V',
+            ...(pasteRoot ? { hidden: pasteRoot.hidden, disabled: !state.hasSheet || pasteRoot.disabled, disabledReason: pasteRoot.reason } : {}),
+            gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: pasteType, children: [
+            clipboardButton('sheet.menu.paste-all', '保留源格式粘贴', { commandId: 'sheet.command.paste' }),
+            clipboardButton('sheet.menu.paste-values', '仅粘贴值', { commandId: 'sheet.command.paste-values' }),
+            clipboardButton('sheet.menu.paste-formulas', '仅粘贴公式', { commandId: 'sheet.command.paste-formulas' }),
+            clipboardButton('sheet.menu.paste-formats', '仅粘贴格式', { commandId: 'sheet.command.paste-formats' }),
+            clipboardButton('sheet.menu.paste-column-widths', '仅粘贴列宽', { commandId: 'sheet.command.paste-column-widths' }),
+            clipboardButton('sheet.menu.paste-except-borders', '保留目标边框粘贴', { commandId: 'sheet.command.paste-except-borders' }),
           ] },
         ] },
         { id: 'font', title: '字体', order: 10, items: [

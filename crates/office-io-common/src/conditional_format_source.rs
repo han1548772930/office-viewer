@@ -5,7 +5,58 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::conditional_format_xml::{Element, MAIN_NAMESPACE, MODEL_EXTENSION_URI, MODEL_NAMESPACE, X14_NAMESPACE};
+use std::io::{self, Write};
+
+use crate::conditional_format_xml::{Element, MAIN_NAMESPACE, MODEL_EXTENSION_URI, MODEL_NAMESPACE, X14_NAMESPACE, XML_FRAGMENT_BYTE_LIMIT};
+
+/// Version 1 retains five independently bounded XML fields.
+pub const SOURCE_XML_TOTAL_BYTE_LIMIT: usize = 5 * XML_FRAGMENT_BYTE_LIMIT;
+/// Sum of serialized conditional-format models, including duplicated provenance.
+pub const CONDITIONAL_MODEL_BYTE_LIMIT: usize = 256 * 1024 * 1024;
+pub const SOURCE_RESOURCE_BYTE_LIMIT: usize = 128 * 1024 * 1024;
+pub const SOURCE_RESOURCE_ELEMENT_LIMIT: usize = 2_097_152;
+
+struct JsonByteCounter { bytes: usize, limit: usize, exceeded: bool }
+impl Write for JsonByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(next) = self.bytes.checked_add(buffer.len()).filter(|next| *next <= self.limit) else {
+            self.exceeded = true; return Err(io::Error::other("conditional-format JSON exceeds its byte budget"))
+        };
+        self.bytes = next; Ok(buffer.len())
+    }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+/// Use serde's actual UTF-8/escape representation without allocating a JSON string.
+pub fn serialized_model_size<T: Serialize + ?Sized>(value: &T, limit: usize) -> Result<usize, String> {
+    let mut output = JsonByteCounter { bytes: 0, limit, exceeded: false };
+    if let Err(error) = serde_json::to_writer(&mut output, value) {
+        return Err(if output.exceeded { "CF_SOURCE_TOTAL_LIMIT: serialized conditional-format models exceed the byte budget".into() }
+            else { format!("CF_SOURCE_XML_INVALID: conditional-format model cannot be serialized: {error}") })
+    }
+    Ok(output.bytes)
+}
+
+pub struct ConditionalFormatModelBudget { used: usize, entries: usize, limit: usize }
+impl Default for ConditionalFormatModelBudget {
+    fn default() -> Self { Self::new(CONDITIONAL_MODEL_BYTE_LIMIT) }
+}
+impl ConditionalFormatModelBudget {
+    pub fn new(limit: usize) -> Self { Self { used: 2, entries: 0, limit } }
+    pub fn used(&self) -> usize { self.used }
+    pub fn reserve_bytes(&mut self, bytes: usize) -> Result<(), String> {
+        let next = self.used.checked_add(bytes).filter(|next| *next <= self.limit)
+            .ok_or("CF_SOURCE_TOTAL_LIMIT: serialized conditional-format models exceed the byte budget")?;
+        self.used = next; Ok(())
+    }
+    pub fn consume<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), String> {
+        let separator = usize::from(self.entries > 0);
+        let remaining = self.limit.checked_sub(self.used).and_then(|remaining| remaining.checked_sub(separator))
+            .ok_or("CF_SOURCE_TOTAL_LIMIT: serialized conditional-format models exceed the byte budget")?;
+        let bytes = serialized_model_size(value, remaining)?;
+        self.used += separator + bytes; self.entries += 1; Ok(())
+    }
+}
 
 pub const RULE_FIELDS: &[&str] = &["type", "subType", "ranges", "formulaAnchor", "operator", "formula1", "formula2",
     "value", "isBottom", "isPercent", "config", "style", "priority", "stopIfTrue"];
@@ -56,13 +107,17 @@ pub struct OfficeSource {
 impl OfficeSource {
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1 || self.format != "xlsx" || !matches!(self.storage.as_str(), "base" | "x14")
-            || self.original_id.trim().is_empty() || !self.baseline.is_object() || self.rule_xml.is_empty() {
-            return Err("Invalid or unsupported conditional-format Office provenance".into());
+            || self.original_id.trim().is_empty() || self.original_id.len() > 4096 || !valid_known_fields(&self.baseline) || self.rule_xml.trim().is_empty() {
+            return Err("CF_SOURCE_XML_INVALID: invalid or unsupported conditional-format Office provenance".into());
         }
+        let mut total_bytes = 0usize;
         for xml in std::iter::once(&self.rule_xml).chain(self.group_xml.iter()).chain(self.differential_format_xml.iter())
             .chain(self.x14_xml.iter()).chain(self.theme_xml.iter()) {
-            if xml.len() > 16 * 1024 * 1024 { return Err("Conditional-format source XML exceeds the fragment limit".into()); }
+            if xml.len() > XML_FRAGMENT_BYTE_LIMIT { return Err("CF_SOURCE_FRAGMENT_LIMIT: conditional-format source XML exceeds the fragment byte budget".into()); }
+            total_bytes = total_bytes.checked_add(xml.len()).ok_or("CF_SOURCE_TOTAL_LIMIT: conditional-format source XML byte counter overflow")?;
         }
+        if total_bytes > SOURCE_XML_TOTAL_BYTE_LIMIT { return Err("CF_SOURCE_TOTAL_LIMIT: conditional-format source XML exceeds its total byte budget".into()); }
+        serialized_model_size(self, CONDITIONAL_MODEL_BYTE_LIMIT)?;
         Ok(())
     }
 }
@@ -170,6 +225,7 @@ pub fn read_projection(rule: &Element) -> Option<Projection> {
 }
 
 pub fn attach_projection(rule: &mut Element, model: &Value, hashes: ProjectionHashes) -> Result<(), String> {
+    if !valid_saved_model(model) { return Err("Invalid conditional-format model snapshot".into()) }
     strip_projection(rule);
     let projection = Projection { hashes, model: without_source(model) };
     let mut payload = Element::prefixed(MODEL_NAMESPACE, "oscf", "model"); payload.set_attr("version", "1");
@@ -185,14 +241,130 @@ pub fn attach_projection(rule: &mut Element, model: &Value, hashes: ProjectionHa
 
 pub fn valid_saved_model(model: &Value) -> bool {
     let Some(id) = model.get("id").and_then(Value::as_str) else { return false };
+    if id.trim().is_empty() || id.len() > 4096 || !valid_known_fields(model) { return false }
+    let kind = model["type"].as_str().unwrap();
+    let subtype = model.get("subType").and_then(Value::as_str).unwrap_or("");
+    let operator = model.get("operator").and_then(Value::as_str).unwrap_or("");
+    if kind == "office" { return true }
+    let nonempty = |key: &str| model.get(key).and_then(Value::as_str).is_some_and(|value| !value.trim().trim_start_matches('=').trim().is_empty());
+    if kind == "expression" || subtype == "formula" {
+        if !nonempty("formula1") && !nonempty("value") { return false }
+    }
+    if kind == "cellIs" || kind == "highlightCell" && matches!(subtype, "" | "number") {
+        if !matches!(operator, "equal" | "notEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween")
+            || !nonempty("formula1") || matches!(operator, "between" | "notBetween") && !nonempty("formula2") { return false }
+    }
+    if kind == "average" || subtype == "average" {
+        if !matches!(operator, "equal" | "notEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual") { return false }
+    }
+    if kind == "timePeriod" || subtype == "timePeriod" {
+        if !matches!(operator, "today" | "yesterday" | "tomorrow" | "last7Days" | "thisWeek" | "lastWeek" | "nextWeek" | "thisMonth" | "lastMonth" | "nextMonth") { return false }
+    }
+    if kind == "top10" || subtype == "rank" {
+        if let Some(value) = model.get("value") {
+            let rank = value.as_u64().or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()));
+            let maximum = if model.get("isPercent").and_then(Value::as_bool).unwrap_or(false) { 100 } else { 1000 };
+            if rank.is_none_or(|rank| rank == 0 || rank > maximum) { return false }
+        }
+    }
+    let config = model.get("config").unwrap_or(&Value::Null);
+    if kind == "dataBar" {
+        for (key, automatic) in [("min", "autoMin"), ("max", "autoMax")] {
+            if let Some(value) = config.get(key) { if !valid_threshold(value, Some(automatic)) { return false } }
+        }
+    }
+    if kind == "colorScale" {
+        let Some(stops) = config.get("thresholds").and_then(Value::as_array) else { return false };
+        if !(2..=3).contains(&stops.len()) || stops.iter().any(|entry| !valid_threshold(&entry["value"], None)) { return false }
+    }
+    if kind == "iconSet" {
+        let Some(icons) = config.get("icons").and_then(Value::as_array) else { return false };
+        if !(3..=5).contains(&icons.len()) { return false }
+        let set = config.get("iconSet").and_then(Value::as_str).unwrap_or("3TrafficLights1");
+        if office_icon_type(set).is_none() && set != "_5Felling" { return false }
+        for icon in icons {
+            if !valid_threshold(&icon["value"], None) || icon.get("operator").is_some_and(|value| !matches!(value.as_str(), Some("greaterThan" | "greaterThanOrEqual"))) { return false }
+            let kind = icon.get("iconType").and_then(Value::as_str).unwrap_or(set);
+            if office_icon_type(kind).is_none() && kind != "_5Felling" { return false }
+            if let Some(value) = icon.get("iconId") {
+                if matches!(kind, "EMPTY_ICON_TYPE" | "NoIcons") && value.as_str() == Some("") { continue }
+                let id = value.as_u64().or_else(|| value.as_str().and_then(|value| value.parse().ok()));
+                if id.is_none_or(|id| if kind == "_5Felling" { id >= 5 } else { icon_index(kind, id as usize).is_none() }) { return false }
+            }
+        }
+    }
+    true
+}
+
+fn valid_color(value: &Value) -> bool {
+    value.as_str().and_then(|value| value.strip_prefix('#')).is_some_and(|value|
+        matches!(value.len(), 3 | 6 | 8) && value.bytes().all(|value| value.is_ascii_hexdigit()))
+}
+fn valid_scalar(value: &Value) -> bool { value.is_string() || value.as_f64().is_some_and(f64::is_finite) }
+fn threshold_shape(value: &Value) -> bool {
+    value.is_object() && value.get("type").is_some_and(Value::is_string) && value.get("value").is_none_or(valid_scalar)
+}
+fn valid_threshold(value: &Value, automatic: Option<&str>) -> bool {
+    if !threshold_shape(value) { return false }
+    let kind = value["type"].as_str().unwrap();
+    if matches!(kind, "min" | "max") { return true }
+    if matches!(kind, "autoMin" | "autoMax") { return automatic == Some(kind) }
+    if kind == "formula" { return value.get("value").and_then(Value::as_str).is_some_and(|value| !value.trim().trim_start_matches('=').trim().is_empty()) }
+    if !matches!(kind, "num" | "percent" | "percentile") { return false }
+    let numeric = value.get("value").and_then(|value| value.as_f64().or_else(|| value.as_str().and_then(|value| value.trim().parse().ok())));
+    numeric.is_some_and(|value| value.is_finite() && (!matches!(kind, "percent" | "percentile") || (0.0..=100.0).contains(&value)))
+}
+
+/// Primitive/shape validation is also used for provenance baselines. Semantic
+/// validation of a private model is stricter because it can replace parsed data.
+pub fn valid_known_fields(model: &Value) -> bool {
+    if !model.is_object() || !matches!(model.get("type").and_then(Value::as_str), Some("cellIs" | "highlightCell" | "top10" | "average"
+        | "duplicateValues" | "uniqueValues" | "timePeriod" | "containsText" | "notContainsText" | "beginsWith" | "endsWith"
+        | "expression" | "dataBar" | "colorScale" | "iconSet" | "office")) { return false }
     let Some(ranges) = model.get("ranges").and_then(Value::as_array) else { return false };
-    if id.trim().is_empty() || id.len() > 4096 || ranges.is_empty() || !model.get("type").is_some_and(Value::is_string)
-        || !model.get("style").is_some_and(Value::is_object) { return false }
+    if ranges.is_empty() || ranges.len() > 100_000 || !model.get("style").is_some_and(Value::is_object) { return false }
     for range in ranges {
         let (Some(sr), Some(sc), Some(er), Some(ec)) = (range["startRow"].as_u64(), range["startCol"].as_u64(), range["endRow"].as_u64(), range["endCol"].as_u64()) else { return false };
         if er < sr || ec < sc || er > 1_048_575 || ec > 16_383 { return false }
     }
-    model.get("priority").is_none_or(|value| value.as_u64().is_some_and(|value| value > 0 && value <= i32::MAX as u64))
+    if model.get("priority").is_some_and(|value| !value.as_u64().is_some_and(|value| value > 0 && value <= i32::MAX as u64)) { return false }
+    for key in ["operator", "formula1", "formula2"] { if model.get(key).is_some_and(|value| !value.is_string()) { return false } }
+    if model.get("subType").is_some_and(|value| !matches!(value.as_str(), Some("number" | "text" | "formula" | "timePeriod" | "rank" | "average" | "duplicateValues" | "uniqueValues"))) { return false }
+    if let Some(anchor) = model.get("formulaAnchor") {
+        if !anchor.is_object() || !anchor["row"].as_u64().is_some_and(|value| value <= 1_048_575)
+            || !anchor["col"].as_u64().is_some_and(|value| value <= 16_383) { return false }
+    }
+    for key in ["stopIfTrue", "isBottom", "isPercent"] { if model.get(key).is_some_and(|value| !value.is_boolean()) { return false } }
+    if model.get("value").is_some_and(|value| !valid_scalar(value) && !value.as_array().is_some_and(|values|
+        values.len() == 2 && values.iter().all(|value| value.as_f64().is_some_and(f64::is_finite)))) { return false }
+    let style = &model["style"];
+    for key in ["fill", "fontColor"] { if style.get(key).is_some_and(|value| !valid_color(value)) { return false } }
+    for key in ["bold", "italic", "underline", "strike"] { if style.get(key).is_some_and(|value| !value.is_boolean()) { return false } }
+    let Some(config) = model.get("config") else { return true };
+    if !config.is_object() { return false }
+    for key in ["isGradient", "isShowValue", "reverse", "border", "negativeBarColorSameAsPositive", "negativeBarBorderColorSameAsPositive"] {
+        if config.get(key).is_some_and(|value| !value.is_boolean()) { return false }
+    }
+    for key in ["positiveColor", "nativeColor", "borderColor", "negativeBorderColor", "axisColor"] {
+        if config.get(key).is_some_and(|value| !valid_color(value)) { return false }
+    }
+    for key in ["minLength", "maxLength"] { if config.get(key).is_some_and(|value| !value.as_u64().is_some_and(|value| value <= 100)) { return false } }
+    if config["minLength"].as_u64().unwrap_or(0) > config["maxLength"].as_u64().unwrap_or(100) { return false }
+    if config.get("direction").is_some_and(|value| !matches!(value.as_str(), Some("context" | "leftToRight" | "rightToLeft")))
+        || config.get("axisPosition").is_some_and(|value| !matches!(value.as_str(), Some("automatic" | "middle" | "none")))
+        || config.get("iconSet").is_some_and(|value| !value.is_string()) { return false }
+    for key in ["min", "max"] { if config.get(key).is_some_and(|value| !threshold_shape(value)) { return false } }
+    if let Some(stops) = config.get("thresholds") {
+        let Some(stops) = stops.as_array() else { return false };
+        if stops.len() > 100_000 || stops.iter().any(|entry| !entry.is_object() || !threshold_shape(&entry["value"]) || !valid_color(&entry["color"])) { return false }
+    }
+    if let Some(icons) = config.get("icons") {
+        let Some(icons) = icons.as_array() else { return false };
+        if icons.len() > 100_000 || icons.iter().any(|entry| !entry.is_object() || !threshold_shape(&entry["value"])
+            || ["operator", "iconType"].iter().any(|key| entry.get(*key).is_some_and(|value| !value.is_string()))
+            || entry.get("iconId").is_some_and(|value| !value.is_string() && value.as_u64().is_none())) { return false }
+    }
+    true
 }
 
 fn copy_unknown(output: &mut Value, source: &Value, known: &[&str]) {
@@ -269,5 +441,96 @@ mod tests {
         next["config"]["icons"][0]["iconId"] = json!("2"); next["config"]["icons"][0]["value"]["vendor"] = json!(9);
         assert_eq!(known_snapshot(&first), known_snapshot(&next));
         next["config"]["icons"][0]["value"]["value"] = json!(41); assert_ne!(known_snapshot(&first), known_snapshot(&next));
+    }
+
+    #[test]
+    fn invalid_private_known_fields_cannot_replace_valid_standard_xml_even_with_matching_hashes() {
+        let rule = parse(r#"<cfRule type="expression" priority="1"><formula>A1&gt;0</formula></cfRule>"#).unwrap();
+        let group = parse(r#"<conditionalFormatting sqref="A1"/>"#).unwrap();
+        let hashes = ProjectionHashes::of(&rule, &group, None, None, None);
+        for (key, value) in [("type", json!("futureCondition")), ("formula1", json!(2)), ("priority", json!(0)),
+            ("style", json!({ "bold": "false" })), ("formulaAnchor", json!({ "row": -1, "col": 0 })),
+            ("config", json!({ "minLength": 101 }))] {
+            let mut corrupt = model(); corrupt[key] = value;
+            let projection = Projection { hashes: hashes.clone(), model: corrupt.clone() };
+            let mut standard = model(); standard["formula1"] = json!("A1>9"); let before = standard.clone();
+            assert!(!restore_projection(&mut standard, &projection, &hashes)); assert_eq!(standard, before);
+            assert!(attach_projection(&mut rule.clone(), &corrupt, hashes.clone()).is_err());
+        }
+    }
+
+    #[test]
+    fn source_baselines_validate_known_fields_without_needing_local_identity_or_unknown_json() {
+        let mut source = OfficeSource { version: 1, format: "xlsx".into(), original_id: "local-id".into(), storage: "base".into(),
+            rule_xml: "<cfRule/>".into(), group_xml: None, differential_format_xml: None, x14_xml: None, theme_xml: None,
+            baseline: known_snapshot(&model()), extensions: Map::new() };
+        assert!(source.validate().is_ok()); assert!(source.baseline.get("id").is_none());
+        source.baseline["style"]["underline"] = json!("double"); assert!(source.validate().is_err());
+        source.baseline = known_snapshot(&model()); source.baseline["priority"] = json!(i32::MAX as u64 + 1); assert!(source.validate().is_err());
+    }
+
+    #[test]
+    fn automatic_thresholds_are_limited_to_corresponding_data_bar_boundaries() {
+        let mut bar = model(); bar["type"] = json!("dataBar");
+        bar["config"] = json!({ "min": { "type": "autoMin" }, "max": { "type": "autoMax" } });
+        assert!(valid_saved_model(&bar));
+        for (key, kind) in [("min", "autoMax"), ("max", "autoMin")] {
+            let mut invalid = bar.clone(); invalid["config"][key]["type"] = json!(kind);
+            assert!(!valid_saved_model(&invalid));
+        }
+        for kind in ["autoMin", "autoMax"] {
+            let mut scale = bar.clone(); scale["type"] = json!("colorScale");
+            scale["config"] = json!({ "thresholds": [{ "value": { "type": kind }, "color": "#112233" },
+                { "value": { "type": "max" }, "color": "#aabbcc" }] });
+            assert!(!valid_saved_model(&scale));
+            let mut icons = bar.clone(); icons["type"] = json!("iconSet");
+            icons["config"] = json!({ "iconSet": "3Arrows", "icons": [
+                { "value": { "type": kind }, "operator": "greaterThanOrEqual", "iconType": "3Arrows", "iconId": "0" },
+                { "value": { "type": "num", "value": 10 }, "operator": "greaterThan", "iconType": "3Arrows", "iconId": "1" },
+                { "value": { "type": "num", "value": 0 }, "iconType": "3Arrows", "iconId": "2" }] });
+            assert!(!valid_saved_model(&icons));
+        }
+    }
+
+    #[test]
+    fn icon_identity_mapping_is_involutive_for_stock_glyphs_and_no_icon_is_explicit() {
+        for set in ["3Arrows", "4Arrows", "5Arrows", "4Rating", "5Rating", "3Stars", "5Boxes"] {
+            for index in 0..icon_count(set).unwrap() { assert_eq!(icon_index(set, icon_index(set, index).unwrap()), Some(index)); }
+        }
+        assert_eq!(office_icon_type("EMPTY_ICON_TYPE"), Some("NoIcons")); assert_eq!(icon_index("NoIcons", 0), Some(0));
+        assert!(office_icon_type("_5Felling").is_none()); assert!(icon_index("3Arrows", 3).is_none());
+    }
+
+    #[test]
+    fn json_byte_budget_counts_actual_utf8_escapes_and_unknown_extensions() {
+        let value = json!({ "rule": model(), "vendor": { "text": "汉😀\n\\\"\u{1}", "copies": ["source", "source"] } });
+        let actual = serde_json::to_vec(&value).unwrap().len();
+        assert_eq!(serialized_model_size(&value, actual).unwrap(), actual);
+        assert!(serialized_model_size(&value, actual - 1).unwrap_err().starts_with("CF_SOURCE_TOTAL_LIMIT"));
+    }
+
+    #[test]
+    fn duplicated_rule_provenance_spends_the_cumulative_model_budget_atomically() {
+        let value = json!({ "rule": model(), "officeSource": { "ruleXml": "<cfRule>汉😀</cfRule>", "vendor": { "retained": true } } });
+        let bytes = serde_json::to_vec(&value).unwrap().len();
+        let mut exact = ConditionalFormatModelBudget::new(2 * bytes + 3);
+        exact.consume(&value).unwrap(); exact.consume(&value).unwrap(); assert_eq!(exact.used(), 2 * bytes + 3);
+        assert!(exact.reserve_bytes(1).unwrap_err().starts_with("CF_SOURCE_TOTAL_LIMIT")); assert_eq!(exact.used(), 2 * bytes + 3);
+        let mut short = ConditionalFormatModelBudget::new(2 * bytes + 2);
+        short.consume(&value).unwrap(); let before = short.used();
+        assert!(short.consume(&value).unwrap_err().starts_with("CF_SOURCE_TOTAL_LIMIT")); assert_eq!(short.used(), before);
+    }
+
+    #[test]
+    fn version_one_xml_fields_are_limited_by_utf8_bytes_and_never_truncated() {
+        let mut source = OfficeSource { version: 1, format: "xlsx".into(), original_id: "local-id".into(), storage: "base".into(),
+            rule_xml: "<cfRule/>".into(), group_xml: None, differential_format_xml: None, x14_xml: None, theme_xml: None,
+            baseline: known_snapshot(&model()), extensions: Map::new() };
+        source.rule_xml = "汉".repeat(XML_FRAGMENT_BYTE_LIMIT / 3 + 1);
+        let original_bytes = source.rule_xml.len();
+        assert!(source.validate().unwrap_err().starts_with("CF_SOURCE_FRAGMENT_LIMIT"));
+        assert_eq!(source.rule_xml.len(), original_bytes);
+        source.rule_xml = "<cfRule/>".into(); source.original_id = "汉".repeat(4096 / 3 + 1);
+        assert!(source.validate().unwrap_err().starts_with("CF_SOURCE_XML_INVALID"));
     }
 }

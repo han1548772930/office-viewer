@@ -12,27 +12,43 @@ import { applySheetLayoutFormatCommand, assertSheetLayoutFormatRanges, layoutFor
 import { applySheetBorderFormatCommand, borderFormatActionForCommand, createSheetBorderFormatState, SHEET_BORDER_FORMAT_COMMAND_IDS, sheetBorderFormatCommandInput, sheetBorderFormatInputRanges, type SheetBorderFormatCommandInput, type SheetBorderFormatState } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
-import { insertDocumentText, replaceDocumentRange } from '../features/document/services/document-facade'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
-import type { DocumentSelection } from '../features/document/model/document-model.ts'
-import { applyDocumentEditorCommand, assertDocumentEditorCommandRequest, DOCUMENT_EDITOR_COMMAND_LABELS,
+import { createParagraph, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
+import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
+import { useDocumentInputStore } from '../features/document/stores/document-input-store.ts'
+import { ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, SET_DOCUMENT_INPUT_SELECTION_OPERATION,
+  documentInputLocation, mergeDocumentInputMarks, sameDocumentInputLocation, type DocumentInputLocation,
+  type DocumentInputSession } from '../features/document/model/document-input-session.ts'
+import { cloneDocumentInputSession } from '../features/document/model/document-input-session.ts'
+import { parseDocumentInputSelectionRequest, prepareCollapsedDocumentInputFormat, prepareDocumentStoryInputAdvance, resolveDocumentInputLocation,
+  type DocumentInputSelectionRequest } from './document-input-commands.ts'
+import { documentSelectionAtBodyRange } from './document-indexed-input.ts'
+import { applyDocumentEditorCommand, assertDocumentEditorCommandRequest, DOCUMENT_EDITOR_COMMAND_LABELS, resolveDocumentEditorSelection,
   type DocumentEditorCommandRequest, type DocumentEditorCommandResult } from './document-editor-commands.ts'
 import type { DocumentImage } from '../features/document/model/document-model'
 import { useEditorStore } from '../stores/editorStore'
 import { applyCellValue, documentFromInput, workbookFromInput } from './model-utils'
 import { EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type Disposable } from './events'
 import { registerSheetRangeEditorCommands } from './sheet-range-editor-commands.ts'
+import { registerSheetCellInputCommands } from './sheet-cell-input-commands.ts'
+import { registerSheetClipboardCommands } from './sheet-clipboard-commands.ts'
+import { CONTENT_HISTORY_COMMAND_IDS, CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget } from './content-history-commands.ts'
+import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND, parseSheetSelectionOperation, parseSheetSelectionShortcut, SELECT_SHEET_RANGE_COMMAND, SET_SHEET_SELECTIONS_OPERATION } from './sheet-selection-commands.ts'
 import { registerSheetAxisDimensionCommands } from './sheet-axis-dimension-commands.ts'
 import { registerSheetAxisVisibilityCommands } from './sheet-axis-visibility-commands.ts'
 import { registerSheetAxisStructureCommands } from './sheet-axis-structure-commands.ts'
 import { registerSheetConditionalFormattingCommands } from './sheet-conditional-formatting-commands.ts'
+import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import { refreshWorkbookAutoRowHeights } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
 import type { SheetTextMeasure } from '../features/sheet-workbench/sheet-cell-text-layout.ts'
 import { measureSpreadsheetText } from '../rendering/spreadsheet/text-metrics.ts'
 import { registerSheetFormatPainterCommands } from './sheet-format-painter-commands.ts'
 import { useSheetFormatPainterStore } from '../features/sheet-workbench/sheet-format-painter-store.ts'
 import { useSheetSelectionStore } from '../features/sheet-workbench/sheet-selection-store.ts'
+import { useSheetClipboardStore } from '../features/sheet-workbench/sheet-clipboard-store.ts'
+import type { HistorySavepoint } from '../platform/history/history-types.ts'
 import { normalizeSheetSelection, resolveVisibleSheetSelection, type SheetSelectionOptions, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
+import { planSheetSelectionShortcut } from '../features/sheet-workbench/sheet-selection-navigation.ts'
 import {
   createPivotTable,
   refreshPivotTable,
@@ -97,8 +113,16 @@ export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
 
 export interface WorkbookCommitOptions {
   recalculate?: boolean
+  expectedRevision?: number
+  expectedHistoryGeneration?: number
+  /** A recent paste changes its exact top entry, keeping the first paste's undo. */
+  amend?: HistorySavepoint
+  /** Receives the committed entry even if a settled listener immediately makes another edit. */
+  onHistoryCommitted?: (savepoint: HistorySavepoint) => void
   selection?: { sheetId: string; before: ApiRange | null; after: ApiRange }
   selections?: { sheetId: string; before: ApiSheetSelection; after: ApiSheetSelection }
+  /** Prepare detached view data before the model and history become observable. */
+  prepareView?: (model: WorkbookModel) => void
 }
 
 export class OfficeStudio {
@@ -107,6 +131,8 @@ export class OfficeStudio {
   readonly editor: ReturnType<typeof useEditorStore>
   readonly sheetFormatPainter: ReturnType<typeof useSheetFormatPainterStore>
   readonly sheetSelections: ReturnType<typeof useSheetSelectionStore>
+  readonly sheetClipboard: ReturnType<typeof useSheetClipboardStore>
+  readonly documentInput: ReturnType<typeof useDocumentInputStore>
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
   readonly currentUserId: string
@@ -119,12 +145,17 @@ export class OfficeStudio {
   private _activeDocumentId: string
   private disposed = false
   private readonly workbookRevisions = new Map<string, number>()
+  private readonly documentRevisions = new Map<string, number>()
   private readonly borderFormatStates = new Map<string, Map<string, SheetBorderFormatState>>()
   private readonly computeClient: OfficeComputeClient
   private readonly ownsComputeClient: boolean
   private readonly stopModelSync: Array<() => void> = []
   private workbookSelectionPublicationDepth = 0
   private selectionPublication = 0
+  private pendingSheetSelection: { unitId: string; sheetId: string } | undefined
+  private readonly pendingDocumentInputPublications = new Set<string>()
+  private publishedSheetSelection: { unitId: string; sheetId: string; selection: ApiSheetSelection | null } | undefined
+  private readonly eventListenerErrors: ApiEventMap['EventListenerError'][] = []
 
   constructor(options: OfficeStudioOptions = {}) {
     this.regionalSettings = new OfficeRegionalSettings(options.locale, options.region)
@@ -132,12 +163,16 @@ export class OfficeStudio {
     this.editor = useEditorStore(this.pinia)
     this.sheetFormatPainter = useSheetFormatPainterStore(this.pinia)
     this.sheetSelections = useSheetSelectionStore(this.pinia)
+    this.sheetClipboard = useSheetClipboardStore(this.pinia)
+    this.documentInput = useDocumentInputStore(this.pinia)
     const workbook = workbookFromInput(options.workbook ?? this.editor.workbook.model)
     const document = documentFromInput(options.document ?? this.editor.document.model)
+    if (workbook.id === document.id) throw new TypeError('工作簿与文档必须使用不同标识，不能共用内容历史。')
     this._activeWorkbookId = workbook.id!
     this._activeDocumentId = document.id!
     this.currentUserId = options.currentUserId?.trim() || 'local-user'
     this.permissionAdminUserId = options.permissionAdminUserId?.trim() || this.currentUserId
+    workbook.activeSheetId = this.activeWorksheetIdForView(workbook)
     this.sheetTextMeasure = options.sheetTextMeasure ?? measureSpreadsheetText
     this.workbooks.set(workbook.id!, workbook)
     this.workbookRevisions.set(workbook.id!, 0)
@@ -146,18 +181,35 @@ export class OfficeStudio {
     this.numericIndexService = new NumericIndexService(this.computeClient, { minRows: options.numericIndexMinRows })
     this.numericIndexService.setDocumentRevision(workbook.id!, 0)
     this.documents.set(document.id!, document)
+    this.documentRevisions.set(document.id!, 0)
     this.editor.workbook.replace(workbook)
     this.editor.document.replace(document)
     this.editor.setActiveKind('workbook')
     this.editor.history.activate(workbook.id!)
-    this.sheetSelections.set(workbook.id!, workbook.activeSheetId,
-      this.selectionStateForSheet(workbook, workbook.activeSheetId,
-        normalizeSheetSelection([{ startRow: 0, startCol: 0, endRow: 0, endCol: 0 }], requireSheet(workbook, workbook.activeSheetId))))
+    const initialSheet = workbook.sheets.find(sheet => sheet.id === workbook.activeSheetId)
+    if (initialSheet && initialSheet.visible !== false && canViewWorksheetProtection(initialSheet, this.currentUserId)) {
+      this.sheetSelections.set(workbook.id!, workbook.activeSheetId,
+        this.selectionStateForSheet(workbook, workbook.activeSheetId,
+          normalizeSheetSelection([{ startRow: 0, startCol: 0, endRow: 0, endCol: 0 }], initialSheet)))
+    }
     this.registerBuiltinCommands()
     this.stopModelSync.push(
+      watch(() => this.editor.history.isApplying, applying => {
+        if (applying || this.disposed) return
+        const documentIds = [...this.pendingDocumentInputPublications]
+        this.pendingDocumentInputPublications.clear()
+        if (this.pendingSheetSelection) {
+          this.pendingSheetSelection = undefined
+          // History callbacks may switch the active unit or sheet. Publish after the stack settles.
+          const workbook = this.getWorkbookModel(this._activeWorkbookId)
+          if (workbook && this.editor.state.activeKind === 'workbook') this.publishSheetSelection(this._activeWorkbookId, workbook.activeSheetId)
+        }
+        for (const id of documentIds) if (this.getDocumentModel(id)) this.publishDocumentInputState(id)
+      }, { flush: 'sync' }),
       watch(() => this.editor.workbook.model, (next, previous) => {
         const id = next.id
         if (!id || this.disposed) return
+        next.activeSheetId = this.activeWorksheetIdForView(next)
         if (id !== this._activeWorkbookId) {
           this.workbooks.set(this._activeWorkbookId, cloneModel(previous))
           const created = !this.workbooks.has(id)
@@ -180,8 +232,15 @@ export class OfficeStudio {
           const created = !this.documents.has(id)
           this._activeDocumentId = id
           this.documents.set(id, next)
+          if (!this.documentRevisions.has(id)) this.documentRevisions.set(id, 0)
+          this.documentInput.clearMarks(previous.id ?? '')
+          this.documentInput.clearMarks(id)
           if (created) this.events.emit('DocCreated', { unitId: id, documentId: id })
         } else this.documents.set(id, next)
+        if (previous.id === id && !equivalentModelData(next, previous, ['modified'])) this.advanceDocumentRevision(id)
+      }, { flush: 'sync' }),
+      watch(() => this.editor.state.activeKind, (kind, previous) => {
+        if (kind !== previous && this.documentInput.clearMarks(this._activeDocumentId)) this.publishDocumentInputState(this._activeDocumentId)
       }, { flush: 'sync' }),
     )
     this.events.emit('LifeCycleChanged', { stage: 'ready' })
@@ -190,10 +249,53 @@ export class OfficeStudio {
   get activeWorkbookId(): string { return this._activeWorkbookId }
   get activeDocumentId(): string { return this._activeDocumentId }
   get isDisposed(): boolean { return this.disposed }
+  getEventListenerErrors(): ApiEventMap['EventListenerError'][] { return this.eventListenerErrors.map(failure => ({ ...failure })) }
+
+  /** Feature observations report subscriber failures without turning a completed edit into a failed command. */
+  publishObserverEvent<K extends keyof ApiEventMap>(eventName: K, payload: () => ApiEventMap[K], shouldContinue?: () => boolean): void {
+    const failures = this.events.emitSettled(eventName, payload, shouldContinue)
+    for (const failure of failures) {
+      this.eventListenerErrors.push(failure)
+      const reportingFailures = this.events.emitSettled('EventListenerError', () => ({ ...failure }))
+      this.eventListenerErrors.push(...reportingFailures)
+    }
+    if (this.eventListenerErrors.length > 50) this.eventListenerErrors.splice(0, this.eventListenerErrors.length - 50)
+  }
 
   getWorkbookRevision(id: string): number {
     if (!this.getWorkbookModel(id)) throw new Error(`Workbook not found: ${id}`)
     return this.workbookRevisions.get(id) ?? 0
+  }
+
+  getDocumentRevision(id: string): number {
+    if (!this.getDocumentModel(id)) throw new Error(`Document not found: ${id}`)
+    return this.documentRevisions.get(id) ?? 0
+  }
+
+  getDocumentInputMarks(unitId: string, selection?: DocumentSelection, story?: DocumentStoryRange): RunPatch {
+    if (!this.getDocumentModel(unitId)) return {}
+    const location = story ? { kind: 'story' as const, range: { ...story, start: Math.min(story.start, story.end), end: Math.max(story.start, story.end) } }
+      : selection ? documentInputLocation(selection) : undefined
+    return this.documentInput.getMarks(unitId, this.getDocumentRevision(unitId), location)
+  }
+
+  getDocumentInputState(unitId: string): DocumentInputSession | undefined {
+    if (!this.getDocumentModel(unitId)) return undefined
+    const state = this.documentInput.get(unitId)
+    return state ? { ...state, marks: this.getDocumentInputMarks(unitId) } : undefined
+  }
+
+  setDocumentInputSelection(unitId: string, selection: DocumentSelection, story?: DocumentStoryRange): boolean {
+    return this.executeCommandSync<DocumentInputSelectionRequest, boolean>(SET_DOCUMENT_INPUT_SELECTION_OPERATION, { unitId, selection, story })
+  }
+
+  clearDocumentInputMarks(unitId: string): boolean {
+    return this.executeCommandSync<{ unitId: string }, boolean>(CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, { unitId })
+  }
+
+  /** Consume a checked input commit once; navigation or a subsequent edit invalidates its caret and overrides. */
+  advanceDocumentInputMarks(unitId: string, selection: DocumentSelection, story?: DocumentStoryRange): boolean {
+    return this.executeCommandSync<DocumentInputSelectionRequest, boolean>(ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, { unitId, selection, story })
   }
 
   getWorkbookModel(id: string): WorkbookModel | undefined {
@@ -235,6 +337,8 @@ export class OfficeStudio {
     this.assertAlive()
     const model = workbookFromInput(input)
     if (this.workbooks.has(model.id!)) throw new Error(`Workbook id already exists: ${model.id}`)
+    this.assertContentUnitIdentity('workbook', model.id!)
+    model.activeSheetId = this.activeWorksheetIdForView(model)
     this.workbooks.set(model.id!, model)
     this.workbookRevisions.set(model.id!, 0)
     this.numericIndexService.setDocumentRevision(model.id!, 0)
@@ -247,7 +351,9 @@ export class OfficeStudio {
     this.assertAlive()
     const model = documentFromInput(input)
     if (this.documents.has(model.id!)) throw new Error(`Document id already exists: ${model.id}`)
+    this.assertContentUnitIdentity('document', model.id!)
     this.documents.set(model.id!, model)
+    this.documentRevisions.set(model.id!, 0)
     if (makeCurrent) this.activateDocument(model.id!)
     this.events.emit('DocCreated', { unitId: model.id!, documentId: model.id! })
     return model
@@ -255,8 +361,12 @@ export class OfficeStudio {
 
   activateWorkbook(id: string): void {
     this.assertAlive()
-    const model = this.getWorkbookModel(id)
-    if (!model) throw new Error(`Workbook not found: ${id}`)
+    this.assertContentUnitIdentity('workbook', id)
+    const current = this.getWorkbookModel(id)
+    if (!current) throw new Error(`Workbook not found: ${id}`)
+    if (this.editor.state.activeKind === 'document' && this.documentInput.clearMarks(this._activeDocumentId)) this.publishDocumentInputState(this._activeDocumentId)
+    const activeSheetId = this.activeWorksheetIdForView(current)
+    const model = current.activeSheetId === activeSheetId ? current : { ...current, activeSheetId }
     if (this._activeWorkbookId !== id && this.workbooks.has(this._activeWorkbookId)) this.workbooks.set(this._activeWorkbookId, this.editor.workbook.model)
     this._activeWorkbookId = id
     this.workbooks.set(id, model)
@@ -271,8 +381,13 @@ export class OfficeStudio {
 
   activateDocument(id: string): void {
     this.assertAlive()
+    this.assertContentUnitIdentity('document', id)
     const model = this.getDocumentModel(id)
     if (!model) throw new Error(`Document not found: ${id}`)
+    if (id !== this._activeDocumentId || this.editor.state.activeKind !== 'document') {
+      if (this.documentInput.clearMarks(this._activeDocumentId)) this.publishDocumentInputState(this._activeDocumentId)
+      if (id !== this._activeDocumentId && this.documentInput.clearMarks(id)) this.publishDocumentInputState(id)
+    }
     if (this._activeDocumentId !== id && this.documents.has(this._activeDocumentId)) this.documents.set(this._activeDocumentId, this.editor.document.model)
     this._activeDocumentId = id
     this.documents.set(id, model)
@@ -283,6 +398,7 @@ export class OfficeStudio {
 
   setActiveKind(kind: OfficeKind): void {
     this.assertAlive()
+    this.assertContentUnitIdentity(kind, kind === 'workbook' ? this._activeWorkbookId : this._activeDocumentId)
     this.editor.setActiveKind(kind)
     this.editor.history.activate(kind === 'workbook' ? this._activeWorkbookId : this._activeDocumentId)
     if (kind === 'workbook') this.publishSheetSelection(this._activeWorkbookId, this.editor.workbook.model.activeSheetId)
@@ -302,10 +418,12 @@ export class OfficeStudio {
   }
 
   getSelectionState(unitId = this._activeWorkbookId, sheetId?: string): ApiSheetSelection | null {
-    const workbook = this.getWorkbookModel(unitId), sheet = workbook?.sheets.find(item => item.id === (sheetId ?? workbook.activeSheetId))
-    if (!sheet || !canViewWorksheetProtection(sheet, this.currentUserId)) return null
+    const workbook = this.getWorkbookModel(unitId)
+    if (!workbook) return null
+    const sheet = workbook.sheets.find(item => item.id === (sheetId ?? workbook.activeSheetId))
+    if (!sheet || sheet.visible === false || !canViewWorksheetProtection(sheet, this.currentUserId)) return null
     const saved = this.sheetSelections.get(unitId, sheet.id)
-    const state = this.selectionStateForSheet(workbook!, sheet.id,
+    const state = this.selectionStateForSheet(workbook, sheet.id,
       saved ?? normalizeSheetSelection([{ startRow: 0, startCol: 0, endRow: 0, endCol: 0 }], sheet))
     return this.apiSheetSelection(unitId, sheet.id, state)
   }
@@ -327,15 +445,20 @@ export class OfficeStudio {
   }
 
   setSelection(unitId: string, sheetId: string, range: ApiRange): void {
-    this.setSelections(unitId, sheetId, [range])
+    this.executeCommandSync(SELECT_SHEET_RANGE_COMMAND, { unitId, sheetId, range })
   }
 
   setSelections(unitId: string, sheetId: string, ranges: readonly ApiRange[], options: SheetSelectionOptions = {}): void {
+    this.executeCommandSync(SET_SHEET_SELECTIONS_OPERATION, { unitId, sheetId, ranges, options })
+  }
+
+  private applySelections(unitId: string, sheetId: string, ranges: readonly ApiRange[], options: SheetSelectionOptions): boolean {
     this.assertAlive()
     const workbook = this.getWorkbookModel(unitId)
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
     if (!workbook.sheets.some((sheet) => sheet.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
     this.assertCanViewWorksheet(unitId, sheetId)
+    if (requireSheet(workbook, sheetId).visible === false) throw new Error('工作表已隐藏，请先取消隐藏再选择。')
     if (!Array.isArray(ranges)) throw new TypeError('选区必须是范围数组。')
     for (const range of ranges) if (!range || range.unitId !== undefined && range.unitId !== unitId || range.sheetId !== undefined && range.sheetId !== sheetId) {
       throw new Error('选区必须属于指定的工作簿和工作表。')
@@ -351,8 +474,10 @@ export class OfficeStudio {
       finally { this.workbookSelectionPublicationDepth-- }
     }
     const changed = this.sheetSelections.set(unitId, sheetId, next)
+    this.sheetSelections.setTabStart(unitId, sheetId)
     if (switched) this.activateWorkbook(unitId)
     else if (changed) this.publishSheetSelection(unitId, sheetId)
+    return changed || switched
   }
 
   private selectionStateForSheet(workbook: WorkbookModel, sheetId: string, state: SheetSelectionState): SheetSelectionState {
@@ -376,9 +501,22 @@ export class OfficeStudio {
       ...(state.primary ? { primary: { ...state.primary } } : {}) }
   }
 
+  private activeWorksheetIdForView(workbook: WorkbookModel): string {
+    const available = (sheet: WorkbookModel['sheets'][number]) => sheet.visible !== false && canViewWorksheetProtection(sheet, this.currentUserId)
+    return workbook.sheets.find(sheet => sheet.id === workbook.activeSheetId && available(sheet))?.id
+      ?? workbook.sheets.find(available)?.id ?? workbook.activeSheetId
+  }
+
   private publishSheetSelection(unitId: string, sheetId: string): void {
+    if (unitId !== this._activeWorkbookId || this.editor.state.activeKind !== 'workbook'
+      || this.getWorkbookModel(unitId)?.activeSheetId !== sheetId) return
+    if (this.editor.history.isApplying) { this.pendingSheetSelection = { unitId, sheetId }; return }
     const selection = this.getSelectionState(unitId, sheetId)
-    const range = selection?.ranges[selection.activeRangeIndex]
+    const notification = { unitId, sheetId, selection }
+    if (JSON.stringify(notification) === JSON.stringify(this.publishedSheetSelection)) return
+    const publication = ++this.selectionPublication
+    this.publishedSheetSelection = cloneModel(notification)
+    const range = selection ? selection.ranges[selection.activeRangeIndex] : undefined
     this.editor.setSelection({
       startRow: range?.startRow ?? 0,
       startCol: range?.startColumn ?? 0,
@@ -386,9 +524,12 @@ export class OfficeStudio {
       endCol: range?.endColumn ?? 0,
     })
     if (!selection) return
-    const publication = ++this.selectionPublication, legacyRange = range ? { ...range } : undefined
-    this.events.emit('SelectionsChanged', { workbookId: unitId, sheetId, selection })
-    if (legacyRange && publication === this.selectionPublication) this.events.emit('SelectionChanged', { workbookId: unitId, sheetId, range: legacyRange })
+    const legacyRange = range ? { ...range } : undefined
+    const current = () => publication === this.selectionPublication && unitId === this._activeWorkbookId
+      && this.editor.state.activeKind === 'workbook' && this.getWorkbookModel(unitId)?.activeSheetId === sheetId
+    this.publishObserverEvent('SelectionsChanged', () => ({ workbookId: unitId, sheetId, selection: cloneModel(selection) }), current)
+    if (legacyRange && current()) this.publishObserverEvent('SelectionChanged',
+      () => ({ workbookId: unitId, sheetId, range: { ...legacyRange } }), current)
   }
 
   mutateWorkbook(
@@ -411,7 +552,7 @@ export class OfficeStudio {
     const changed = commandId.includes('.operation.')
       ? this.applyWorkbookOperation(id, update)
       : this.commitWorkbook(id, label, update)
-    if (changed) this.events.emit('CommandExecuted', { id: commandId, params, unitId: id, kind: 'workbook' })
+    if (changed) this.publishObserverEvent('CommandExecuted', () => ({ id: commandId, params: cloneModel(params), unitId: id, kind: 'workbook' }))
     return changed
   }
 
@@ -431,17 +572,27 @@ export class OfficeStudio {
     this.events.emit('BeforeCommandExecute', event)
     if (event.cancel) throw new Error(`Command was canceled: ${commandId}`)
     const changed = this.commitDocument(id, label, update)
-    if (changed) this.events.emit('CommandExecuted', { id: commandId, params, unitId: id, kind: 'document' })
+    if (changed) this.publishObserverEvent('CommandExecuted', () => ({ id: commandId, params: cloneModel(params), unitId: id, kind: 'document' }))
     return changed
   }
 
   commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, options: boolean | WorkbookCommitOptions = false): boolean {
     this.assertAlive()
+    this.assertContentUnitIdentity('workbook', id)
     const current = this.getWorkbookModel(id)
     if (!current) throw new Error(`Workbook not found: ${id}`)
+    const baseRevision = this.getWorkbookRevision(id), baseSavepoint = this.editor.history.captureSavepoint(id)
+    if (typeof options !== 'boolean') {
+      if (options.expectedRevision !== undefined && (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0)) throw new TypeError('工作簿版本无效。')
+      if (options.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(options.expectedHistoryGeneration) || options.expectedHistoryGeneration <= 0)) throw new TypeError('工作簿历史版本无效。')
+      if (options.expectedRevision !== undefined && options.expectedRevision !== baseRevision
+        || options.expectedHistoryGeneration !== undefined && options.expectedHistoryGeneration !== baseSavepoint.generation) throw new Error('工作簿内容或历史已更改，请重新执行。')
+      if (options.amend && !this.editor.history.canAmend(id, options.amend)) return false
+    }
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
+    assertWorkbookConditionalFormatBudget(after.sheets)
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
     const explicitRecalculate = typeof options === 'boolean' ? options : options.recalculate === true
     if (!explicitRecalculate && JSON.stringify(before) === JSON.stringify(after)) return false
@@ -456,10 +607,21 @@ export class OfficeStudio {
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
     recalculated.modified = true
     const single = typeof options === 'boolean' ? undefined : options.selection
+    const currentSelection = this.getSelectionState(id, current.activeSheetId)
+    const selectedSheetId = current.activeSheetId
+    const defaultSelections = currentSelection && recalculated.sheets.some(sheet => sheet.id === selectedSheetId)
+      ? { sheetId: selectedSheetId, before: currentSelection, after: this.apiSheetSelection(id, selectedSheetId,
+        this.selectionStateForSheet(recalculated, selectedSheetId, {
+          ranges: currentSelection.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn,
+            endCol: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })),
+          activeRangeIndex: currentSelection.activeRangeIndex, primary: currentSelection.primary,
+        })) }
+      : undefined
     const historySelection = typeof options === 'boolean' ? undefined : options.selections ?? (single ? { sheetId: single.sheetId,
       before: { ranges: single.before ? [{ ...single.before }] : [], activeRangeIndex: single.before ? 0 : -1 },
       after: { ranges: [{ ...single.after }], activeRangeIndex: 0 } } : undefined)
-    const selectionSnapshot = historySelection ? cloneModel(historySelection) : undefined
+    const selectedHistory = historySelection ?? defaultSelections
+    const selectionSnapshot = selectedHistory ? cloneModel(selectedHistory) : undefined
     if (selectionSnapshot) {
       for (const [model, state] of [[before, selectionSnapshot.before], [recalculated, selectionSnapshot.after]] as const) {
         for (const range of state.ranges) if (range.unitId !== undefined && range.unitId !== id || range.sheetId !== undefined && range.sheetId !== selectionSnapshot.sheetId) {
@@ -479,15 +641,37 @@ export class OfficeStudio {
       }
       if (id === this._activeWorkbookId && model) this.publishSheetSelection(id, model.activeSheetId)
     }
+    if (typeof options !== 'boolean' && options.prepareView) options.prepareView(cloneModel(recalculated))
+    const latest = this.getWorkbookModel(id)
+    const latestSavepoint = this.editor.history.captureSavepoint(id)
+    if (!latest || !equivalentModelData(before, latest, ['modified', 'activeSheetId']) || this.getWorkbookRevision(id) !== baseRevision
+      || latestSavepoint.revision !== baseSavepoint.revision || latestSavepoint.generation !== baseSavepoint.generation) {
+      throw new Error('准备编辑期间工作簿内容已更改，请重新执行。')
+    }
+    if (recalculated.activeSheetId === before.activeSheetId) recalculated.activeSheetId = latest.activeSheetId
     let initial = true
-    this.editor.history.execute(id, label, () => {
+    const redo = (): void => {
       if (initial) { this.replaceWorkbookModel(id, recalculated, !selectionSnapshot); initial = false }
       else this.replaceWorkbookHistorySnapshot(id, recalculated, !selectionSnapshot)
       if (selectionSnapshot) restoreSelection(selectionSnapshot.after)
-    }, () => {
+    }
+    const undo = (): void => {
       this.replaceWorkbookHistorySnapshot(id, before, !selectionSnapshot)
       if (selectionSnapshot) restoreSelection(selectionSnapshot.before)
-    })
+    }
+    const amendment = typeof options === 'boolean' ? undefined : options.amend
+    const committed = amendment ? this.editor.history.amendWithReceipt(id, amendment, label, redo)
+      : this.editor.history.execute(id, label, redo, undo)
+    if (!committed) return false
+    if (typeof options !== 'boolean' && options.onHistoryCommitted) {
+      try { options.onHistoryCommitted(committed) }
+      catch (error) {
+        const failure: ApiEventMap['EventListenerError'] = { eventName: 'CommandExecuted', error }
+        this.eventListenerErrors.push(failure)
+        this.publishObserverEvent('EventListenerError', () => ({ ...failure }))
+        if (this.eventListenerErrors.length > 50) this.eventListenerErrors.splice(0, this.eventListenerErrors.length - 50)
+      }
+    }
     return true
   }
 
@@ -506,8 +690,10 @@ export class OfficeStudio {
 
   private commitDocumentTransaction(id: string, label: string, update: (draft: DocumentModel) => void, permissionAdminCommand: boolean): boolean {
     this.assertAlive()
+    this.assertContentUnitIdentity('document', id)
     const current = this.getDocumentModel(id)
     if (!current) throw new Error(`Document not found: ${id}`)
+    const revision = this.getDocumentRevision(id)
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
@@ -517,27 +703,19 @@ export class OfficeStudio {
     after.id = id
     if (JSON.stringify(before) === JSON.stringify(after)) return false
     after.modified = true
+    const latest = this.getDocumentModel(id)
+    if (!latest || this.getDocumentRevision(id) !== revision || !equivalentModelData(before, latest, ['modified'])) throw new Error('准备编辑期间文档内容已更改，请重新执行。')
     this.editor.history.execute(id, label, () => this.replaceDocumentModel(id, after), () => this.replaceDocumentModel(id, before))
     return true
-  }
-
-  private commitDocumentWithRangePermission(
-    id: string,
-    label: string,
-    startOffset: number,
-    endOffset: number,
-    update: (draft: DocumentModel) => void,
-  ): boolean {
-    const current = this.getDocumentModel(id)
-    if (!current) throw new Error(`Document not found: ${id}`)
-    assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', permissionTargetsForRange(current, startOffset, endOffset))
-    return this.commitDocument(id, label, update)
   }
 
   executeCommandSync<P, R>(id: string, params: P): R {
     this.assertAlive()
     const handler = this.commands.get(id)
     if (!handler) throw new Error(`Unknown command: ${id}`)
+    // Fixed Univer facade exposes history through its own BeforeUndo/Redo and
+    // Undo/Redo events, excluding these commands from generic command events.
+    if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P, R>)(params)
     const event: ApiEventMap['BeforeCommandExecute'] = {
       id,
       params,
@@ -547,7 +725,7 @@ export class OfficeStudio {
     this.events.emit('BeforeCommandExecute', event)
     if (event.cancel) throw new Error(`Command was canceled: ${id}`)
     const result = (handler as OfficeCommandHandler<P, R>)(params)
-    this.events.emit('CommandExecuted', { ...event })
+    this.publishObserverEvent('CommandExecuted', () => ({ ...event, ...(params === undefined ? {} : { params: cloneModel(params) }) }))
     return result
   }
 
@@ -562,7 +740,11 @@ export class OfficeStudio {
       return { changed, selection: { anchor: { ...selection.anchor }, focus: { ...selection.focus } } }
     }
     if (!Object.hasOwn(DOCUMENT_EDITOR_COMMAND_LABELS, command.id)) throw new Error(`Unknown document editor command: ${command.id}`)
-    return this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>(command.id, { unitId, command, selection })
+    const expectedRevision = this.getDocumentRevision(unitId), inputGeneration = this.documentInput.get(unitId)?.generation
+    const effective = command.id === 'doc.command.insert-text'
+      ? { ...command, marks: mergeDocumentInputMarks(this.getDocumentInputMarks(unitId, selection), command.marks ?? {}) } : command
+    return this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>(command.id,
+      { unitId, command: effective, selection, expectedRevision, inputGeneration })
   }
 
   registerCommand<P, R>(id: string, handler: OfficeCommandHandler<P, R>): Disposable {
@@ -574,33 +756,45 @@ export class OfficeStudio {
   }
 
   undo(kind: OfficeKind, id: string): boolean {
-    this.assertAlive()
-    if (kind === 'workbook') this.activateWorkbook(id)
-    else this.activateDocument(id)
-    const event: ApiEventMap['BeforeUndo'] = { unitId: id, kind }
-    this.events.emit('BeforeUndo', event)
-    if (event.cancel) throw new Error('Undo was canceled')
-    const label = this.editor.undo()
-    if (!label) return false
-    this.events.emit('Undo', { unitId: id, kind, label })
-    return true
+    return this.executeCommandSync(CONTENT_HISTORY_COMMANDS.undo, { kind, unitId: id })
   }
 
   redo(kind: OfficeKind, id: string): boolean {
+    return this.executeCommandSync(CONTENT_HISTORY_COMMANDS.redo, { kind, unitId: id })
+  }
+
+  private replayContentHistory(kind: OfficeKind, id: string, direction: 'undo' | 'redo'): boolean {
     this.assertAlive()
     if (kind === 'workbook') this.activateWorkbook(id)
     else this.activateDocument(id)
-    const event: ApiEventMap['BeforeRedo'] = { unitId: id, kind }
-    this.events.emit('BeforeRedo', event)
-    if (event.cancel) throw new Error('Redo was canceled')
-    const label = this.editor.redo()
+    const history = this.editor.history, stack = history.units[id], entry = stack?.[direction].at(-1)
+    const revision = kind === 'workbook' ? this.getWorkbookRevision(id) : this.getDocumentRevision(id)
+    const hostCurrent = () => !this.disposed && this.editor.state.activeKind === kind && history.activeUnit === id
+      && (kind === 'workbook' ? this._activeWorkbookId : this._activeDocumentId) === id
+    if (!hostCurrent()) return false
+    const savepoint = history.captureSavepoint(id)
+    const event: ApiEventMap['BeforeUndo'] = { unitId: id, kind }
+    this.events.emit(direction === 'undo' ? 'BeforeUndo' : 'BeforeRedo', event)
+    if (event.cancel) throw new ContentHistoryCanceledError(direction)
+    const model = kind === 'workbook' ? this.getWorkbookModel(id) : this.getDocumentModel(id)
+    if (!stack || !entry || !model || !hostCurrent() || history.units[id] !== stack || stack.revision !== savepoint.revision
+      || stack.generation !== savepoint.generation || stack[direction].at(-1) !== entry
+      || (kind === 'workbook' ? this.getWorkbookRevision(id) : this.getDocumentRevision(id)) !== revision) return false
+    const generation = this.documentInput.get(id)?.generation
+    const label = direction === 'undo' ? this.editor.undo() : this.editor.redo()
     if (!label) return false
-    this.events.emit('Redo', { unitId: id, kind, label })
+    if (kind === 'document' && this.getDocumentModel(id) && this.getDocumentRevision(id) === revision + 1
+      && this.documentInput.get(id)?.generation === generation) {
+      this.documentInput.clearMarks(id)
+      this.publishDocumentInputState(id)
+    }
+    this.publishObserverEvent(direction === 'undo' ? 'Undo' : 'Redo', () => ({ unitId: id, kind, label }))
     return true
   }
 
   markSaved(kind: OfficeKind, id: string): void {
     this.assertAlive()
+    this.assertContentUnitIdentity(kind, id)
     if (kind === 'workbook') {
       const model = this.getWorkbookModel(id)
       if (!model) throw new Error(`Workbook not found: ${id}`)
@@ -617,6 +811,7 @@ export class OfficeStudio {
   disposeUnit(id: string): boolean {
     this.assertAlive()
     if (this.workbooks.has(id)) {
+      this.sheetClipboard.clearUnit(id)
       this.sheetSelections.removeUnit(id)
       this.computeClient.forgetDocument(id)
       this.workbookRevisions.delete(id)
@@ -631,6 +826,9 @@ export class OfficeStudio {
       return true
     }
     if (this.documents.has(id)) {
+      this.documentInput.removeUnit(id)
+      this.pendingDocumentInputPublications.delete(id)
+      this.documentRevisions.delete(id)
       this.documents.delete(id)
       this.editor.history.clear(id)
       this.events.emit('DocDisposed', { unitId: id, documentId: id })
@@ -656,10 +854,18 @@ export class OfficeStudio {
     this.borderFormatStates.clear()
     this.sheetSelections.clear()
     this.sheetSelections.$dispose()
+    this.sheetClipboard.clear()
+    this.sheetClipboard.$dispose()
+    this.documentInput.clear()
+    this.pendingDocumentInputPublications.clear()
+    this.documentInput.$dispose()
+    this.documentRevisions.clear()
     this.documents.clear()
   }
 
   private replaceWorkbookModel(id: string, model: WorkbookModel, publishSelection = true): void {
+    const activeSheetId = this.activeWorksheetIdForView(model)
+    if (model.activeSheetId !== activeSheetId) model = { ...model, activeSheetId }
     this.workbooks.set(id, model)
     if (id === this._activeWorkbookId) {
       this.workbookSelectionPublicationDepth++
@@ -674,12 +880,17 @@ export class OfficeStudio {
 
   private applyWorkbookOperation(id: string, update: (draft: WorkbookModel) => void): boolean {
     this.assertAlive()
+    this.assertContentUnitIdentity('workbook', id)
     const current = this.getWorkbookModel(id)
     if (!current) throw new Error(`Workbook not found: ${id}`)
     const next = cloneModel(current)
     update(next)
+    assertWorkbookConditionalFormatBudget(next.sheets)
     assertWorksheetProtectionChanges(current, next, this.currentUserId)
-    if (next.activeSheetId && next.activeSheetId !== current.activeSheetId) this.assertCanViewWorksheet(id, next.activeSheetId)
+    if (next.activeSheetId && next.activeSheetId !== current.activeSheetId) {
+      this.assertCanViewWorksheet(id, next.activeSheetId)
+      if (requireSheet(next, next.activeSheetId).visible === false) throw new Error('工作表已隐藏，请先取消隐藏再激活。')
+    }
     next.id = id
     next.modified = current.modified
     if (JSON.stringify(current) === JSON.stringify(next)) return false
@@ -690,7 +901,9 @@ export class OfficeStudio {
   private replaceWorkbookHistorySnapshot(id: string, snapshot: WorkbookModel, publishSelection = true): void {
     const current = this.getWorkbookModel(id)
     const next = cloneModel(snapshot)
-    if (current && next.sheets.some((sheet) => sheet.id === current.activeSheetId)) next.activeSheetId = current.activeSheetId
+    if (current && next.sheets.some(sheet => sheet.id === current.activeSheetId && sheet.visible !== false
+      && canViewWorksheetProtection(sheet, this.currentUserId))) next.activeSheetId = current.activeSheetId
+    for (const sheet of next.sheets) this.sheetSelections.setTabStart(id, sheet.id)
     this.replaceWorkbookModel(id, next, publishSelection)
   }
 
@@ -701,23 +914,205 @@ export class OfficeStudio {
   }
 
   private replaceDocumentModel(id: string, model: DocumentModel): void {
+    const previous = this.getDocumentModel(id)
     this.documents.set(id, model)
     if (id === this._activeDocumentId) this.editor.document.replace(model)
+    else if (previous && !equivalentModelData(previous, model, ['modified'])) this.advanceDocumentRevision(id)
+  }
+
+  private advanceDocumentRevision(id: string): void {
+    this.documentRevisions.set(id, (this.documentRevisions.get(id) ?? 0) + 1)
+    if (this.documentInput.invalidate(id)) this.publishDocumentInputState(id)
+  }
+
+  private publishDocumentInputState(unitId: string): void {
+    if (this.editor.history.isApplying) { this.pendingDocumentInputPublications.add(unitId); return }
+    this.pendingDocumentInputPublications.delete(unitId)
+    const session = this.documentInput.get(unitId), revision = this.getDocumentModel(unitId) ? this.getDocumentRevision(unitId) : undefined
+    const snapshot: DocumentInputSession | undefined = session ? { ...session, marks: this.getDocumentInputMarks(unitId) } : undefined
+    this.publishObserverEvent('DocumentInputStateChanged', () => ({ unitId, ...(snapshot ? { state: cloneDocumentInputSession(snapshot) } : {}) }),
+      () => this.documentInput.get(unitId)?.generation === session?.generation
+        && this.documentInput.get(unitId)?.valid === session?.valid
+        && (!this.getDocumentModel(unitId) ? revision === undefined : this.getDocumentRevision(unitId) === revision))
   }
 
   private commitDocumentEditorCommand(commandId: string, request: DocumentEditorCommandRequest): DocumentEditorCommandResult {
     assertDocumentEditorCommandRequest(request, commandId)
     if (request.command.id === 'doc.command.set-document-permission-rules') throw new Error('Permission rules use their administrator command')
-    let selection = { anchor: { ...request.selection.anchor }, focus: { ...request.selection.focus } }
+    const current = this.getDocumentModel(request.unitId)
+    if (!current) throw new Error(`Document not found: ${request.unitId}`)
+    const revision = this.getDocumentRevision(request.unitId), session = this.documentInput.get(request.unitId)
+    const generation = session?.generation
+    if (request.expectedRevision !== undefined && request.expectedRevision !== revision) throw new Error('文档内容已更改，请重新执行编辑。')
+    const sourceCurrent = !Object.hasOwn(request, 'inputGeneration') || request.inputGeneration === generation
+    const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind
+    const hostCurrent = () => this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind
+    const context = { documentId: request.unitId, userId: this.currentUserId, permissionAdminUserId: this.permissionAdminUserId }
+    const prepared = prepareCollapsedDocumentInputFormat(current, request, context)
+    if (prepared) {
+      if (!sourceCurrent) throw new Error('输入选区已更改，请重新设置格式。')
+      if (this.getDocumentRevision(request.unitId) !== revision) throw new Error('文档内容已更改，请重新设置输入格式。')
+      const inputChanged = this.documentInput.format(request.unitId, prepared.location, prepared.patch, revision)
+      const expectedGeneration = inputChanged ? (generation ?? 0) + 1 : generation
+      if (inputChanged) this.publishDocumentInputState(request.unitId)
+      const latest = this.documentInput.get(request.unitId)
+      const selectionCurrent = !!this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === revision
+        && hostCurrent() && latest?.valid === true && latest.generation === expectedGeneration
+        && sameDocumentInputLocation(latest.location, prepared.location)
+      return { changed: false, selection: prepared.selection, inputChanged, selectionCurrent, modelRevision: revision }
+    }
+    const sourceSelection = resolveDocumentEditorSelection(current, request.selection)
+    const story = request.command.id === 'doc.command.set-section-header-footer' ? request.command.input?.range
+      : request.command.id === 'doc.command.format-text' || request.command.id === 'doc.command.clear-formatting' ? request.command.story : undefined
+    const sourceLocation = documentInputLocation(sourceSelection, story)
+    const tracksSelection = sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
+    let input: RunPatch | undefined
+    let command = request.command
+    if (command.id === 'doc.command.insert-text') {
+      input = mergeDocumentInputMarks(sourceCurrent ? this.getDocumentInputMarks(request.unitId, sourceSelection) : {}, command.marks ?? {})
+      command = { ...command, marks: input }
+    }
+    const effective: DocumentEditorCommandRequest = { ...request, selection: sourceSelection, command }
+    let selection = sourceSelection, storyAdvance: DocumentInputLocation | undefined
     const changed = this.commitDocument(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
-      selection = applyDocumentEditorCommand(model, request, { documentId: request.unitId, userId: this.currentUserId, permissionAdminUserId: this.permissionAdminUserId })
+      selection = applyDocumentEditorCommand(model, effective, context)
+      if (request.command.id === 'doc.command.set-section-header-footer' && request.command.input) {
+        storyAdvance = prepareDocumentStoryInputAdvance(current, model, sourceSelection, request.command.sectionId,
+          request.command.input, session, revision, context)
+      }
     })
-    return { changed, selection }
+    let expectedGeneration = generation
+    const modelRevision = revision + (changed ? 1 : 0)
+    if (this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === modelRevision
+      && this.documentInput.get(request.unitId)?.generation === generation && hostCurrent()) {
+      if (storyAdvance && generation !== undefined) {
+        this.documentInput.allowAdvance(request.unitId, storyAdvance, modelRevision, generation)
+      } else if (changed && input && tracksSelection) {
+        const location = documentInputLocation(selection)
+        if (this.documentInput.completeInput(request.unitId, location, input, revision + 1, generation)) {
+          expectedGeneration = (generation ?? 0) + 1
+          this.publishDocumentInputState(request.unitId)
+        }
+      } else if (changed) {
+        this.documentInput.clearMarks(request.unitId)
+        expectedGeneration = generation === undefined ? undefined : generation + 1
+        this.publishDocumentInputState(request.unitId)
+      } else if (tracksSelection && sourceLocation.kind === 'body' && !sameDocumentInputLocation(sourceLocation, documentInputLocation(selection))) {
+        this.documentInput.select(request.unitId, documentInputLocation(selection), revision)
+        expectedGeneration = (generation ?? 0) + 1
+        this.publishDocumentInputState(request.unitId)
+      }
+    }
+    const selectionCurrent = tracksSelection && !!this.getDocumentModel(request.unitId) && hostCurrent()
+      && this.getDocumentRevision(request.unitId) === modelRevision && this.documentInput.get(request.unitId)?.generation === expectedGeneration
+    return { changed, selection, selectionCurrent, modelRevision }
+  }
+
+  private commitIndexedDocumentInput(unitId: string, startOffset: number, endOffset: number, text: string, expectedRevision?: number): boolean {
+    if (typeof unitId !== 'string' || !unitId.trim() || typeof text !== 'string') throw new TypeError('文档输入参数无效。')
+    const current = this.getDocumentModel(unitId)
+    if (!current) throw new Error(`Document not found: ${unitId}`)
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision !== this.getDocumentRevision(unitId))) {
+      throw new Error('文档内容已更改，请重新执行编辑。')
+    }
+    const selection = documentSelectionAtBodyRange(current, startOffset, endOffset)
+    assertDocumentPermission(current.permissionRules ?? [], { documentId: unitId, userId: this.currentUserId }, 'edit',
+      permissionTargetsForRange(current, startOffset, endOffset))
+    if (selection) return this.commitDocumentEditorCommand('doc.command.insert-text', {
+      unitId, selection, command: { id: 'doc.command.insert-text', text },
+    }).changed
+    if (!text) return false
+    return this.commitDocument(unitId, '输入文本', model => {
+      const paragraph = createParagraph('', model.defaultStyle?.text)
+      if (model.defaultStyle) paragraph.style = { ...model.defaultStyle.paragraph }
+      model.blocks.unshift(paragraph)
+      const point = { blockId: paragraph.id, offset: 0 }
+      applyDocumentEditorCommand(model, { unitId, selection: { anchor: point, focus: point }, command: { id: 'doc.command.insert-text', text } },
+        { documentId: unitId, userId: this.currentUserId })
+    })
   }
 
   private registerBuiltinCommands(): void {
+    for (const id of CONTENT_HISTORY_COMMAND_IDS) {
+      const action = contentHistoryCommandAction(id)
+      if (!action) throw new Error(`Unknown history command: ${id}`)
+      this.registerCommand<unknown, boolean>(id, params => {
+        const target = resolveContentHistoryTarget(id, params, {
+          kind: this.editor.state.activeKind, workbookId: this._activeWorkbookId, documentId: this._activeDocumentId,
+        }, (kind, unitId) => Boolean(kind === 'workbook' ? this.getWorkbookModel(unitId) : this.getDocumentModel(unitId)))
+        return this.replayContentHistory(target.kind, target.unitId, action.direction)
+      })
+    }
+    this.registerCommand<DocumentInputSelectionRequest, boolean>(SET_DOCUMENT_INPUT_SELECTION_OPERATION, params => {
+      const request = parseDocumentInputSelectionRequest(params), model = this.getDocumentModel(request.unitId)
+      if (!model) throw new Error(`Document not found: ${request.unitId}`)
+      const context = { documentId: request.unitId, userId: this.currentUserId }
+      resolveDocumentInputLocation(model, request.selection, request.story, context)
+      if (this._activeDocumentId !== request.unitId || this.editor.state.activeKind !== 'document') this.activateDocument(request.unitId)
+      if (this._activeDocumentId !== request.unitId || this.editor.state.activeKind !== 'document') return false
+      const current = this.getDocumentModel(request.unitId)
+      if (!current) return false
+      const { location } = resolveDocumentInputLocation(current, request.selection, request.story, context)
+      const changed = this.documentInput.select(request.unitId, location, this.getDocumentRevision(request.unitId))
+      this.publishDocumentInputState(request.unitId)
+      return changed
+    })
+    this.registerCommand<{ unitId: string }, boolean>(CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, request => {
+      if (!request || typeof request.unitId !== 'string' || !request.unitId.trim()) throw new TypeError('文档标识无效。')
+      if (!this.getDocumentModel(request.unitId)) throw new Error(`Document not found: ${request.unitId}`)
+      const changed = this.documentInput.clearMarks(request.unitId)
+      this.publishDocumentInputState(request.unitId)
+      return changed
+    })
+    this.registerCommand<DocumentInputSelectionRequest, boolean>(ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, params => {
+      const request = parseDocumentInputSelectionRequest(params), model = this.getDocumentModel(request.unitId)
+      if (!model) throw new Error(`Document not found: ${request.unitId}`)
+      if (this._activeDocumentId !== request.unitId || this.editor.state.activeKind !== 'document') return false
+      const { location } = resolveDocumentInputLocation(model, request.selection, request.story,
+        { documentId: request.unitId, userId: this.currentUserId }, 'edit')
+      const changed = this.documentInput.advance(request.unitId, location, this.getDocumentRevision(request.unitId))
+      if (changed) this.publishDocumentInputState(request.unitId)
+      return changed
+    })
+    this.registerCommand<unknown, boolean>(SET_SHEET_SELECTIONS_OPERATION, params => {
+      const request = parseSheetSelectionOperation(params)
+      return this.applySelections(request.unitId, request.sheetId, request.ranges, request.options)
+    })
+    this.registerCommand<unknown, boolean>(SELECT_SHEET_RANGE_COMMAND, params => {
+      const request = parseSheetSelectionOperation(params, true)
+      return this.executeCommandSync(SET_SHEET_SELECTIONS_OPERATION, request)
+    })
+    this.registerCommand<unknown, boolean>(MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND, params => {
+      const request = parseSheetSelectionShortcut(params, { unitId: this._activeWorkbookId, sheetId: this.editor.workbook.model.activeSheetId }, unitId => {
+        const workbook = this.getWorkbookModel(unitId)
+        if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+        return workbook.activeSheetId
+      })
+      const workbook = this.getWorkbookModel(request.unitId)
+      if (!workbook) throw new Error(`Workbook not found: ${request.unitId}`)
+      this.assertCanViewWorksheet(request.unitId, request.sheetId)
+      const sheet = requireSheet(workbook, request.sheetId), current = this.getSelectionState(request.unitId, request.sheetId)
+      if (!current) return false
+      const state = normalizeSheetSelection(current.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+        startCol: range.startColumn, endCol: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })), sheet, current)
+      const filtered = (workbook.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => table.autoFilter?.filteredRows ?? [])
+      const plan = planSheetSelectionShortcut(state, request.direction, request.key,
+        { ...sheet, rowCount: sheet.rowCount ?? 1_048_576, columnCount: sheet.columnCount ?? 16_384, filteredRows: sheet.autoFilter?.filteredRows },
+        this.sheetSelections.getTabStart(request.unitId, request.sheetId), filtered)
+      if (!plan) return false
+      const expected = this.apiSheetSelection(request.unitId, request.sheetId, plan.selection)
+      const changed = this.executeCommandSync<unknown, boolean>(SET_SHEET_SELECTIONS_OPERATION,
+        { unitId: request.unitId, sheetId: request.sheetId, ranges: expected.ranges, options: expected })
+      // A listener may select another cell while the operation publishes. Keep its newer selection authoritative.
+      if (JSON.stringify(this.getSelectionState(request.unitId, request.sheetId)) === JSON.stringify(expected)) {
+        this.sheetSelections.setTabStart(request.unitId, request.sheetId, plan.tabStart)
+      }
+      return changed
+    })
     registerSheetRangeEditorCommands(this)
-    registerSheetAxisDimensionCommands(this)
+    this.stopModelSync.push(registerSheetCellInputCommands(this).dispose)
+    this.stopModelSync.push(registerSheetClipboardCommands(this).dispose)
+    this.stopModelSync.push(registerSheetAxisDimensionCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisVisibilityCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisStructureCommands(this).dispose)
     this.stopModelSync.push(registerSheetConditionalFormattingCommands(this).dispose)
@@ -812,7 +1207,10 @@ export class OfficeStudio {
         if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
         const selected = this.getSelection()
         const sheetId = input?.sheetId ?? input?.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
-        const ranges = sheetFontFormatInputRanges(input) ?? this.commandSelectionRanges(unitId, sheetId)
+        const explicitRanges = sheetFontFormatInputRanges(input)
+        const ranges = explicitRanges ?? this.commandSelectionRanges(unitId, sheetId)
+        const selectedPrimary = !explicitRanges && selected?.unitId === unitId && selected.sheetId === sheetId ? this.getSelectionState()?.primary : undefined
+        const primary = input.primary ?? (selectedPrimary ? { row: selectedPrimary.row, col: selectedPrimary.column } : undefined)
         if (!ranges.length) return false
         assertSheetFontFormatRanges(ranges)
         this.assertCanEditWorksheet(unitId, sheetId)
@@ -825,7 +1223,7 @@ export class OfficeStudio {
         return this.commitWorkbook(unitId, label, model => {
           const sheet = requireSheet(model, sheetId)
           const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])]
-          applySheetFontFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, input.primary)
+          applySheetFontFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, primary)
         }, { recalculate: false })
       })
     }
@@ -1065,16 +1463,17 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId)))
     this.registerCommand<{ unitId: string; name: string }, boolean>('doc.command.set-name', ({ unitId, name }) => this.commitDocument(unitId, 'Rename document', (model) => { model.name = name }))
     this.registerCommand<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>('doc.command.set-document-permission-rules', ({ unitId, rules }) => this.commitDocumentPermissionRules(unitId, rules))
-    this.registerCommand<{ unitId: string; index: number; text: string } | DocumentEditorCommandRequest, boolean | DocumentEditorCommandResult>('doc.command.insert-text', input => {
+    this.registerCommand<{ unitId: string; index: number; text: string; expectedRevision?: number } | DocumentEditorCommandRequest, boolean | DocumentEditorCommandResult>('doc.command.insert-text', input => {
+      if (!input || typeof input !== 'object') throw new TypeError('文档输入参数无效。')
       if ('command' in input) return this.commitDocumentEditorCommand('doc.command.insert-text', input)
-      const { unitId, index, text } = input
-      return this.commitDocumentWithRangePermission(unitId, 'Insert text', index, index, model => Object.assign(model, insertDocumentText(model, index, text)))
+      const { unitId, index, text, expectedRevision } = input
+      return this.commitIndexedDocumentInput(unitId, index, index, text, expectedRevision)
     })
     for (const commandId of Object.keys(DOCUMENT_EDITOR_COMMAND_LABELS)) {
       if (commandId === 'doc.command.insert-text') continue
       this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
     }
-    this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '' }) => this.commitDocumentWithRangePermission(unitId, 'Edit text range', startOffset, endOffset, (model) => Object.assign(model, replaceDocumentRange(model, startOffset, endOffset, text))))
+    this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
     this.registerCommand<{ unitId: string; control: ContentControlInput }, boolean>('doc.command.add-content-control', ({ unitId, control }) => this.commitDocument(unitId, 'Add content control', (model) => {
       const created = createDocumentContentControl(model, control, control.id)
       if (created.type === 'repeatingSection') {
@@ -1186,6 +1585,12 @@ export class OfficeStudio {
     if (commandId.startsWith('doc.')) return 'document'
     if (commandId.startsWith('sheet.') || commandId.startsWith('workbook.')) return 'workbook'
     return undefined
+  }
+
+  private assertContentUnitIdentity(kind: OfficeKind, id: string): void {
+    const opposite = kind === 'workbook' ? this.documents.has(id) || this.editor.document.model.id === id
+      : this.workbooks.has(id) || this.editor.workbook.model.id === id
+    if (opposite) throw new TypeError('工作簿与文档必须使用不同标识，不能共用内容历史。')
   }
 
   private assertAlive(): void {

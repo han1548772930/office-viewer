@@ -13,7 +13,7 @@ use crate::validation_sidecar::ValidationSidecar;
 use crate::sparkline_sidecar::SparklineSidecar;
 use crate::pivot_sidecar::PivotSidecar;
 use crate::conditional_format_sidecar::ConditionalFormatSidecar;
-use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, extract_document_blocks, extract_document_review, parse_document_model};
+use duke_pages::{BlockDetails, BlockType, DocNode, DocumentBlock, StructuredDocument, build_doc_model, extract_document_blocks, extract_document_review, parse_doc, parse_document_model};
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use rxls::{Cell, Workbook};
@@ -58,12 +58,21 @@ fn parse_document_impl(
     file_name: &str,
     format: String,
 ) -> Result<ParseEnvelope, ParseFailure> {
-    let mut source_model = parse_document_model(bytes).map_err(ParseFailure::office_file)?;
-    let mut archive = if format == "docx" {
+    let is_docx = format == "docx";
+    // DOC defaults and content share one complete conversion. Reading defaults
+    // must not call parse_doc/parse_document_model a second time.
+    let doc_package = if format == "doc" {
+        Some(parse_doc(bytes).map_err(ParseFailure::office_file)?)
+    } else { None };
+    let mut source_model = match doc_package.as_ref() {
+        Some(package) => build_doc_model(package),
+        None => parse_document_model(bytes).map_err(ParseFailure::office_file)?,
+    };
+    let mut archive = if matches!(format.as_str(), "docx" | "odt") {
         Some(zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ParseFailure::office_file)?)
     } else { None };
     let mut format_warnings = Vec::new();
-    let mut numbering_restoration = if let Some(zip) = archive.as_mut() {
+    let mut numbering_restoration = if let Some(zip) = archive.as_mut().filter(|_| is_docx) {
         crate::document_format_sidecar::restore_numbering_with_extensions(&mut source_model, zip)
     } else {
         let mut restoration = crate::document_format_sidecar::NumberingRestoration::default();
@@ -71,7 +80,7 @@ fn parse_document_impl(
         restoration
     };
     format_warnings.append(&mut numbering_restoration.warnings);
-    let paragraph_wrap = if let Some(zip) = archive.as_mut() {
+    let mut paragraph_wrap = if let Some(zip) = archive.as_mut().filter(|_| is_docx) {
         match crate::document_format_sidecar::read_word_wrap(zip) {
             Ok(wrap) => wrap,
             Err(error) => {
@@ -80,24 +89,54 @@ fn parse_document_impl(
             }
         }
     } else { crate::document_format_sidecar::ParagraphWordWrap::default() };
-    let office_source = archive.as_mut().and_then(|zip| {
+    let mut office_source = archive.as_mut().filter(|_| is_docx).and_then(|zip| {
         let (resources, warnings) = crate::document_format_sidecar::read_office_source(zip);
         format_warnings.extend(warnings);
         resources
     });
-    let default_style = if archive.is_some() {
+    if let Some(zip) = archive.as_mut().filter(|_| is_docx) {
+        let legacy_origins = crate::document_format_sidecar::read_legacy_origins(zip)
+            .map_err(|error| ParseFailure::office_file(format!("DOCX declared legacy source could not be retained: {error}")))?;
+        for origin in &legacy_origins {
+            for error in &origin.resource_errors { format_warnings.push(format!("Historical {:?} source resource: {error}", origin.format)); }
+        }
+        if let Some(source) = &mut office_source { source.legacy_origins = legacy_origins; }
+    }
+    let mut default_style = if is_docx {
         match crate::document_format_sidecar::read_document_default_style(office_source.as_ref(), &paragraph_wrap) {
             Ok(style) => Some(style),
             Err(error) => { format_warnings.push(format!("DOCX document defaults could not be resolved: {error}")); None },
         }
     } else { None };
-    let story_style_sheet = match crate::document_format_sidecar::read_document_style_sheet(office_source.as_ref()) {
-        Ok(sheet) => sheet,
-        Err(error) => { format_warnings.push(format!("DOCX story styles could not be resolved: {error}")); duke_pages::parse::ParsedStyleSheet::empty() },
-    };
+    if let Some(package) = doc_package {
+        let defaults = crate::document_format_sidecar::read_doc_default_style(bytes, &package);
+        office_source = Some(defaults.source);
+        default_style = defaults.default_style;
+        paragraph_wrap = defaults.paragraph_wrap;
+        format_warnings.extend(defaults.warnings);
+    } else if format == "odt" {
+        if let Some(zip) = archive.as_mut() {
+            let defaults = crate::document_format_sidecar::read_odt_default_style(&source_model, zip);
+            office_source = Some(defaults.source);
+            default_style = defaults.default_style;
+            format_warnings.extend(defaults.warnings);
+        }
+    }
+    if let Some(origin) = office_source.as_ref().and_then(|source| source.origin.as_ref()) {
+        office_io_common::document_legacy_source::validate_origin(origin)
+            .map_err(|error| ParseFailure::office_file(format!("Original Office source exceeds its contract: {error}")))?;
+    }
+    let story_style_sheet = if is_docx {
+        match crate::document_format_sidecar::read_document_style_sheet(office_source.as_ref()) {
+            Ok(sheet) => sheet,
+            Err(error) => { format_warnings.push(format!("DOCX story styles could not be resolved: {error}")); duke_pages::parse::ParsedStyleSheet::empty() },
+        }
+    } else { duke_pages::parse::ParsedStyleSheet::empty() };
     let mut document = extract_document_blocks(&source_model);
-    if archive.is_some() {
+    if is_docx || format == "doc" {
         crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
+    }
+    if is_docx {
         crate::document_format_sidecar::restore_numbering_details(&mut document, &numbering_restoration);
     }
     document.warnings.extend(format_warnings);
@@ -114,7 +153,7 @@ fn parse_document_impl(
     if default_style.is_some() { diagnostics.capabilities.push("documentDefaultStyle".into()); }
     let mut stories = std::collections::HashMap::new();
     let mut story_reference = |part: &str, kind: &Option<String>, header| {
-        let story = stories.entry(part.to_owned()).or_insert_with(|| archive.as_mut().and_then(|zip| match crate::story_fields::read_story(zip, part, &story_style_sheet) {
+        let story = stories.entry(part.to_owned()).or_insert_with(|| archive.as_mut().filter(|_| is_docx).and_then(|zip| match crate::story_fields::read_story(zip, part, &story_style_sheet) {
             Ok(story) => story,
             Err(error) => { diagnostics.warnings.push(format!("DOCX story {part} could not be restored: {error}")); None },
         }));
@@ -525,6 +564,14 @@ fn parse_workbook(
     } else {
         ValidationSidecar::default()
     };
+    if let Some(details) = validation_sidecar.failure.as_deref() {
+        let resource_limit = details.starts_with("DV_SOURCE_MODEL_LIMIT") || details.starts_with("DV_SOURCE_FRAGMENT_LIMIT") || details.starts_with("DV_SOURCE_TOTAL_LIMIT");
+        return Err(ParseFailure::new(
+            if resource_limit { crate::model::ParseErrorCode::ParserFailure } else { crate::model::ParseErrorCode::InvalidOfficeFile },
+            if resource_limit { "Data validation exceeds the parser resource limit" } else { "Could not preserve data validation from the XLSX file" },
+            Some(details.to_owned()),
+        ));
+    }
     let mut sparkline_sidecar = if format == "xlsx" {
         SparklineSidecar::read(bytes)
     } else {
@@ -545,6 +592,23 @@ fn parse_workbook(
     } else {
         ConditionalFormatSidecar::default()
     };
+    if let Some(details) = conditional_format_sidecar.failure.as_deref() {
+        let resource_limit = details.starts_with("CF_SOURCE_FRAGMENT_LIMIT")
+            || details.starts_with("CF_SOURCE_TOTAL_LIMIT");
+        return Err(ParseFailure::new(
+            if resource_limit {
+                crate::model::ParseErrorCode::ParserFailure
+            } else {
+                crate::model::ParseErrorCode::InvalidOfficeFile
+            },
+            if resource_limit {
+                "Conditional formatting exceeds the parser resource limit"
+            } else {
+                "Could not preserve conditional formatting from the XLSX file"
+            },
+            Some(details.to_owned()),
+        ));
+    }
     let mut dimension_sidecar = if format == "xlsx" {
         crate::sheet_dimension_sidecar::SheetDimensionSidecar::read(bytes)
     } else {
@@ -557,10 +621,12 @@ fn parse_workbook(
         .map(|(index, sheet)| sheet_payload(sheet, index, &mut validation_sidecar, &mut sparkline_sidecar, &mut conditional_format_sidecar))
         .collect::<Vec<_>>();
     for sheet in &mut sheets {
+        validation_sidecar.restore(sheet);
         dimension_sidecar.restore(sheet);
         for chart in &mut sheet.charts {
             let chart_key = (sheet.name.clone(), chart.index);
             if let Some(settings) = pivot_sidecar.chart_settings.get(&chart_key) {
+                if let Some(kind) = settings.kind.as_ref() { chart.kind = kind.clone(); }
                 chart.x_axis = Some(settings.x_axis.clone());
                 chart.y_axis = Some(settings.y_axis.clone());
                 chart.legend_position = settings.legend_position.clone();
@@ -827,6 +893,7 @@ fn data_validation_payload(
             end_row,
             end_col: u32::from(end_col),
         }],
+        formula_anchor: supplement.as_ref().and_then(|value| value.formula_anchor).map(|(row, col)| crate::model::DataValidationFormulaAnchorPayload { row, col: u32::from(col) }),
         operator: match validation.operator {
             rxls::DvOp::Between => "between",
             rxls::DvOp::NotBetween => "notBetween",
@@ -849,6 +916,7 @@ fn data_validation_payload(
         show_input_message: validation.show_input_message,
         prompt_title,
         prompt,
+        extensions: serde_json::Map::new(),
     }
 }
 
@@ -1311,6 +1379,10 @@ mod tests {
                 "first": {
                     "header": "Main & header",
                     "footer": "Main footer",
+                    "firstPageHeader": "Dormant cover header",
+                    "firstPageFooter": "Dormant cover footer",
+                    "evenPageHeader": "Dormant even header",
+                    "evenPageFooter": "Dormant even footer",
                     "pageFields": [
                         { "story": "footer", "field": "PAGE" },
                         { "story": "footer", "field": "NUMPAGES" },
@@ -1349,6 +1421,13 @@ mod tests {
         assert_eq!(sections[2]["marginHeader"].as_f64(), Some(0.0));
         assert_eq!(sections[2]["marginFooter"].as_f64(), Some(200.0));
         assert_eq!(sections[0]["headerSections"][0]["referenceType"], "default");
+        assert_eq!(sections[0]["headerSections"].as_array().unwrap().len(), 3);
+        assert_eq!(sections[0]["footerSections"].as_array().unwrap().len(), 3);
+        assert_eq!(sections[0]["headerSections"][1]["referenceType"], "first");
+        assert_eq!(sections[0]["headerSections"][1]["storyText"]["text"], "Dormant cover header");
+        assert_eq!(sections[0]["headerSections"][2]["referenceType"], "even");
+        assert_eq!(sections[0]["headerSections"][2]["storyText"]["text"], "Dormant even header");
+        assert!(!sections[0]["sectionPropertiesXml"].as_str().unwrap().contains("titlePg"));
         let header = &sections[0]["headerSections"][0]["storyText"];
         assert_eq!(header["text"], "Main & header");
         let date = &header["fields"][0];
@@ -1631,7 +1710,7 @@ mod tests {
         let payload = serde_json::to_value(envelope).expect("parse envelope serializes");
         let sheet = &payload["payload"]["data"]["sheets"][0];
         let rule = &sheet["conditionalFormats"][0];
-        assert_eq!(rule["id"], "conditional-1-1");
+        assert_eq!(rule["id"], "high-score");
         assert_eq!(rule["type"], "cellIs");
         assert_eq!(rule["operator"], "between");
         assert_eq!(rule["formula1"], "80");

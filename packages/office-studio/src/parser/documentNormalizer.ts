@@ -6,8 +6,9 @@ import { normalizeDocumentNotes } from '../features/document/notes/document-note
 import { documentNumberingIndex } from './documentNumbering.ts'
 import { officeNumberingMarkerBaseline } from '../features/document/model/document-office-numbering-marker.ts'
 import { runText, sliceRuns, tableForBlock } from '../features/document/model/document-model.ts'
-import { documentStoryDefaultStyle, documentStoryFieldCache, documentStoryTextStyle, isDocumentTextBoundary, validateDocumentStoryContent, validateDocumentStoryLocks } from '../features/document/model/document-story.ts'
+import { DOCUMENT_STORY_KEYS, documentStoryDefaultStyle, documentStoryFieldCache, documentStoryTextStyle, isDocumentTextBoundary, validateDocumentStoryContent, validateDocumentStoryLocks } from '../features/document/model/document-story.ts'
 import { storyBuffer } from '../features/document/services/story-editor.ts'
+import { validateDocumentOfficeSource } from './documentOfficeSource.ts'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -81,8 +82,8 @@ function normalizeDefaultStyle(value: unknown): DocumentDefaultStyle | undefined
       bold: source.bold === true, italic: source.italic === true, underline: source.underline === true, strike: source.strike === true,
       ...(verticalAlign ? { verticalAlign } : {}), ...(highlight ? { highlight } : {}),
     },
-    // Declared empty pPrDefault means single spacing and no paragraph spacing.
-    // Absent defaults are already supplied by the Rust reader as Word's 1.15 / 8 pt.
+    // Empty Word/ODF paragraph defaults use compatibility single/zero spacing.
+    // The Rust Word reader supplies its separate absent-default fallback.
     paragraph: normalizeParagraphStyle({
       ...paragraph,
       spacing: { beforePt: 0, afterPt: 0, lineMultiplier: 1, ...record(paragraph.spacing) },
@@ -280,23 +281,10 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
         readStory(value, field, reference, storyText(text(reference.partName), 'footer'), model)
       }
     }
-    if (index > 0 && !value.linkToPrevious) {
-      let prior = index - 1
-      let previous = result[prior === 0 ? 'first' : sectionBreaks[prior - 1]?.id ?? '']
-      while (prior > 0 && previous?.linkToPrevious) {
-        prior--
-        previous = result[prior === 0 ? 'first' : sectionBreaks[prior - 1]?.id ?? '']
-      }
-      if (previous) {
-        for (const key of ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const) {
-          if (!defined.has(key)) {
-            value[key] = previous[key]
-            if (previous.storyContent?.[key]) value.storyContent = { ...value.storyContent, [key]: structuredClone(previous.storyContent[key]) }
-          }
-        }
-        value.pageFields = [...(previous.pageFields ?? []).filter(f => !defined.has(f.story)), ...(value.pageFields ?? [])]
-      }
-    }
+    // Each omitted native reference inherits that specific previous story.
+    // Keep its local override empty so later edits of the previous section remain observable.
+    value.storyLinkToPrevious = Object.fromEntries(DOCUMENT_STORY_KEYS.map(story => [story, index > 0 && !defined.has(story)]))
+    value.linkToPrevious = index > 0 && DOCUMENT_STORY_KEYS.every(story => value.storyLinkToPrevious![story])
     result[sectionId] = value
   }
   return result
@@ -459,6 +447,10 @@ function importedCommentMessage(raw: Record<string, unknown>, id: string): Docum
 
 export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   const data = envelope.payload.data
+  validateDocumentOfficeSource(data.officeSource, envelope.format)
+  if (data.defaultStyle !== undefined && data.officeSource?.resourceErrors?.length) {
+    throw new TypeError('文档默认样式含有未解决的源资源错误。')
+  }
   const result = createBlankDocument()
   const id = text(data.documentId, crypto.randomUUID())
   result.id = id

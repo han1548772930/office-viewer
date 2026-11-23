@@ -174,11 +174,11 @@ test('view restoration preserves a valid active cell, range anchor and zoom with
   assert.deepEqual(state, snapshot)
 })
 
-test('view restoration clamps axis deletions and removes overlapping selections', () => {
+test('view restoration clamps axis deletions and retains overlapping selections', () => {
   const restored = normalizeSheetViewState({ rowCount: 3, columnCount: 4 }, {
     key: 'Z100', anchor: 'Y90', ranges: [range(1, 1, 99, 25), range(1, 1, 2, 2)], zoom: 900,
   })
-  assert.deepEqual(restored, { key: 'D3', anchor: 'D3', ranges: [range(1, 1, 2, 3)], zoom: 400 })
+  assert.deepEqual(restored, { key: 'D3', anchor: 'D3', ranges: [range(1, 1, 2, 3), range(1, 1, 2, 2)], zoom: 400 })
 })
 
 test('view restoration repairs invalid sessions and keeps active cell and anchor inside the selection', () => {

@@ -1,6 +1,6 @@
 import type { CellRange, SheetConditionalFormatFormulaAnchor, SheetConditionalFormatRule, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
-import { formulaRelativeReferenceSignature, translateFormulaReferences } from '../formula/formula-references.ts'
+import { formulaRelativeReferenceSignature, translateFormulaReferenceAreas } from '../formula/formula-references.ts'
 
 export function conditionalFormatFormulaAnchor(rule: Pick<SheetConditionalFormatRule, 'ranges' | 'formulaAnchor'>): SheetConditionalFormatFormulaAnchor | undefined {
   if (rule.formulaAnchor) return { ...rule.formulaAnchor }
@@ -9,13 +9,21 @@ export function conditionalFormatFormulaAnchor(rule: Pick<SheetConditionalFormat
   return first ? { row: first.startRow, col: first.startCol } : undefined
 }
 
-/** Only formula-bearing operands are transformed; text conditions and unknown configuration remain data. */
+function hasStandardPredicate(rule: SheetConditionalFormatRule): boolean {
+  if (rule.type === 'office' || !rule.formula1.trim()) return false
+  const text = rule.subType === 'text' || ['containsText', 'notContainsText', 'beginsWith', 'endsWith'].includes(rule.type)
+  if (!text) return true
+  if (['containsBlanks', 'notContainsBlanks', 'containsErrors', 'notContainsErrors'].includes(rule.operator)) return true
+  return rule.value !== undefined && String(rule.value) !== rule.formula1
+}
+
+/** Standard predicates and formula operands move; matching literals and vendor data remain data. */
 export function mapConditionalFormatFormulas(rule: SheetConditionalFormatRule, transform: (formula: string) => string): SheetConditionalFormatRule {
   const result = cloneModel(rule)
   if (rule.type === 'office') return result
   const expression = rule.type === 'expression' || rule.subType === 'formula'
   const numeric = rule.type === 'cellIs' || rule.type === 'highlightCell' && (rule.subType === undefined || rule.subType === 'number')
-  if (expression || numeric) {
+  if (expression || numeric || hasStandardPredicate(rule)) {
     result.formula1 = rule.formula1 ? transform(rule.formula1) : rule.formula1
     if (rule.formula2 !== undefined) result.formula2 = rule.formula2 ? transform(rule.formula2) : rule.formula2
   }
@@ -48,7 +56,7 @@ export function reanchorConditionalFormatRule(rule: SheetConditionalFormatRule, 
   }
   if (!before || !after) return { ...cloneModel(rule), ranges: copiedRanges }
   const moved = before.row === after.row && before.col === after.col ? cloneModel(rule)
-    : mapConditionalFormatFormulas(rule, formula => translateFormulaReferences(formula, after.row - before.row, after.col - before.col))
+    : mapConditionalFormatFormulas(rule, formula => translateFormulaReferenceAreas(formula, after.row - before.row, after.col - before.col))
   if (formulaSignature(rule, before) !== formulaSignature(moved, after)) {
     return { ...cloneModel(rule), ranges: copiedRanges, formulaAnchor: { ...before } }
   }
@@ -58,5 +66,5 @@ export function reanchorConditionalFormatRule(rule: SheetConditionalFormatRule, 
 
 export function conditionalFormatFormulaAt(formula: string, rule: Pick<SheetConditionalFormatRule, 'ranges' | 'formulaAnchor'>, row: number, col: number): string | undefined {
   const origin = conditionalFormatFormulaAnchor(rule)
-  return origin ? translateFormulaReferences(formula, row - origin.row, col - origin.col) : undefined
+  return origin ? translateFormulaReferenceAreas(formula, row - origin.row, col - origin.col) : undefined
 }

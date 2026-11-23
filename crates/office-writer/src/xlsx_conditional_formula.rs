@@ -1,4 +1,4 @@
-//! Lossless projection of conditional formula origins into standard SpreadsheetML.
+//! Lossless projection of range-rule formula origins into standard SpreadsheetML.
 //! A safe sqref origin keeps ordinary A1 formulas. A rule with no such cell uses
 //! reference-returning INDEX expressions, preserving one rule's full statistical scope.
 
@@ -53,10 +53,11 @@ fn checked_range(range: &RangeInput) -> Result<Bounds, ExportError> {
 }
 
 fn formula_operands(rule: &ConditionalFormatInput) -> Vec<&str> {
+    if rule.rule_type == "office" { return Vec::new() }
     let expression = rule.rule_type == "expression" || rule.sub_type.as_deref() == Some("formula");
     let numeric = rule.rule_type == "cellIs" || rule.rule_type == "highlightCell" && rule.sub_type.as_deref().unwrap_or("number") == "number";
     let mut values = Vec::new();
-    if expression || numeric {
+    if expression || numeric || has_standard_predicate(rule) {
         values.push(rule.formula1.as_str());
         if let Some(second) = rule.formula2.as_deref() { values.push(second); }
     }
@@ -74,6 +75,15 @@ fn formula_operands(rule: &ConditionalFormatInput) -> Vec<&str> {
     values
 }
 
+fn has_standard_predicate(rule: &ConditionalFormatInput) -> bool {
+    if rule.rule_type == "office" || rule.formula1.trim().is_empty() { return false }
+    let text = matches!(rule.rule_type.as_str(), "containsText" | "notContainsText" | "beginsWith" | "endsWith")
+        || rule.sub_type.as_deref() == Some("text");
+    if !text { return true }
+    if matches!(rule.operator.as_str(), "containsBlanks" | "notContainsBlanks" | "containsErrors" | "notContainsErrors") { return true }
+    rule.value.as_ref().and_then(super::json_scalar_string).is_some_and(|literal| literal != rule.formula1)
+}
+
 fn formula_threshold(value: &Value) -> Option<&str> {
     (value.get("type").and_then(Value::as_str) == Some("formula")).then(|| value.get("value").and_then(Value::as_str)).flatten()
 }
@@ -83,6 +93,7 @@ pub(super) fn project_rule(rule: &ConditionalFormatInput) -> Result<ConditionalF
     let first = ranges.first().ok_or_else(|| ExportError::invalid("conditional format has no ranges"))?;
     let origin = rule.formula_anchor.unwrap_or_else(|| ranges.iter().min_by_key(|range| (range.start_row, range.start_col)).unwrap().origin());
     if origin.row > MAX_ROW || origin.col > MAX_COLUMN { return Err(ExportError::invalid("conditional formula origin is outside the worksheet")); }
+    if rule.rule_type == "office" { return Ok(rule.clone()) }
     let mut safe = Bounds { start_row: 0, start_col: 0, end_row: MAX_ROW, end_col: MAX_COLUMN };
     for formula in formula_operands(rule) {
         for reference in references(formula) {
@@ -107,7 +118,7 @@ pub(super) fn project_rule(rule: &ConditionalFormatInput) -> Result<ConditionalF
     } else { first.origin() };
     let expression = rule.rule_type == "expression" || rule.sub_type.as_deref() == Some("formula");
     let numeric = rule.rule_type == "cellIs" || rule.rule_type == "highlightCell" && rule.sub_type.as_deref().unwrap_or("number") == "number";
-    if expression || numeric {
+    if expression || numeric || has_standard_predicate(rule) {
         result.formula1 = project_formula(&rule.formula1, origin, target);
         result.formula2 = rule.formula2.as_ref().map(|value| project_formula(value, origin, target));
     }
@@ -136,9 +147,13 @@ fn project_threshold(value: &mut Value, origin: FormulaAnchor, target: FormulaAn
     value["value"] = Value::String(projected);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceKind { Cell, WholeRow, WholeColumn }
+
 #[derive(Debug, Clone)]
 struct Reference {
-    start: usize, end: usize, prefix: String, row: u32, col: u32, absolute_row: bool, absolute_col: bool,
+    start: usize, end: usize, prefix: String, kind: ReferenceKind,
+    row: u32, col: u32, absolute_row: bool, absolute_col: bool,
 }
 
 fn shifted(value: u32, absolute: bool, before: u32, after: u32, maximum: u32) -> Option<u32> {
@@ -146,7 +161,7 @@ fn shifted(value: u32, absolute: bool, before: u32, after: u32, maximum: u32) ->
     (next >= 0 && next <= i64::from(maximum)).then_some(next as u32)
 }
 
-fn project_formula(formula: &str, origin: FormulaAnchor, target: FormulaAnchor) -> String {
+pub(super) fn project_formula(formula: &str, origin: FormulaAnchor, target: FormulaAnchor) -> String {
     let spans = references(formula);
     let ordinary = spans.iter().all(|span| shifted(span.row, span.absolute_row, origin.row, target.row, MAX_ROW).is_some()
         && shifted(span.col, span.absolute_col, origin.col, target.col, MAX_COLUMN).is_some());
@@ -156,14 +171,16 @@ fn project_formula(formula: &str, origin: FormulaAnchor, target: FormulaAnchor) 
         output.push_str(&formula[cursor..span.start]);
         if ordinary {
             output.push_str(&span.prefix);
-            output.push_str(&address(shifted(span.row, span.absolute_row, origin.row, target.row, MAX_ROW).unwrap(),
-                shifted(span.col, span.absolute_col, origin.col, target.col, MAX_COLUMN).unwrap(), span.absolute_row, span.absolute_col));
+            output.push_str(&reference_address(span,
+                shifted(span.row, span.absolute_row, origin.row, target.row, MAX_ROW).unwrap(),
+                shifted(span.col, span.absolute_col, origin.col, target.col, MAX_COLUMN).unwrap()));
         } else {
             let prefix = if span.prefix.is_empty() && index > 0 && formula[spans[index - 1].end..span.start].trim() == ":" { &spans[index - 1].prefix } else { &span.prefix };
-            if span.absolute_row && span.absolute_col { output.push_str(&format!("{}{}", prefix, address(span.row, span.col, true, true))); }
+            if span.absolute_row && span.absolute_col { output.push_str(&format!("{}{}", prefix, reference_address(span, span.row, span.col))); }
             else {
                 output.push_str(&format!("INDEX({prefix}$A$1:$XFD$1048576,{},{})",
-                    index_axis(span.row, span.absolute_row, origin.row, true), index_axis(span.col, span.absolute_col, origin.col, false)));
+                    if span.kind == ReferenceKind::WholeColumn { "0".into() } else { index_axis(span.row, span.absolute_row, origin.row, true) },
+                    if span.kind == ReferenceKind::WholeRow { "0".into() } else { index_axis(span.col, span.absolute_col, origin.col, false) }));
             }
         }
         cursor = span.end;
@@ -185,6 +202,14 @@ fn address(row: u32, col: u32, absolute_row: bool, absolute_col: bool) -> String
     format!("{}{}{}{}", if absolute_col { "$" } else { "" }, super::column_name(col), if absolute_row { "$" } else { "" }, row + 1)
 }
 
+fn reference_address(reference: &Reference, row: u32, col: u32) -> String {
+    match reference.kind {
+        ReferenceKind::Cell => address(row, col, reference.absolute_row, reference.absolute_col),
+        ReferenceKind::WholeRow => format!("{}{}", if reference.absolute_row { "$" } else { "" }, row + 1),
+        ReferenceKind::WholeColumn => format!("{}{}", if reference.absolute_col { "$" } else { "" }, super::column_name(col)),
+    }
+}
+
 fn identifier(character: char) -> bool { character.is_alphanumeric() || matches!(character, '_' | '.' | '\\') }
 fn qualifier_end(source: &str, start: usize) -> Option<usize> {
     let first = source[start..].chars().next()?;
@@ -200,20 +225,27 @@ fn qualifier_end(source: &str, start: usize) -> Option<usize> {
 fn read_address(source: &str, start: usize) -> Option<Reference> {
     let mut cursor = start;
     let bytes = source.as_bytes();
-    let absolute_col = bytes.get(cursor) == Some(&b'$');
-    if absolute_col { cursor += 1; }
+    let absolute_first = bytes.get(cursor) == Some(&b'$');
+    if absolute_first { cursor += 1; }
     let letters = cursor;
     while bytes.get(cursor).is_some_and(u8::is_ascii_alphabetic) { cursor += 1; }
-    if cursor == letters || cursor - letters > 3 { return None }
-    let col = source[letters..cursor].bytes().fold(0u32, |value, letter| value * 26 + u32::from(letter.to_ascii_uppercase() - b'A') + 1).checked_sub(1)?;
-    let absolute_row = bytes.get(cursor) == Some(&b'$');
-    if absolute_row { cursor += 1; }
+    if cursor - letters > 3 { return None }
+    let has_column = cursor > letters;
+    let col = if has_column {
+        source[letters..cursor].bytes().fold(0u32, |value, letter| value * 26 + u32::from(letter.to_ascii_uppercase() - b'A') + 1).checked_sub(1)?
+    } else { 0 };
+    let absolute_row = if has_column { bytes.get(cursor) == Some(&b'$') } else { absolute_first };
+    if has_column && absolute_row { cursor += 1; }
     let digits = cursor;
     while bytes.get(cursor).is_some_and(u8::is_ascii_digit) { cursor += 1; }
-    if cursor == digits || source[cursor..].chars().next().is_some_and(identifier) || source[cursor..].trim_start().starts_with('(') { return None }
-    let row = source[digits..cursor].parse::<u32>().ok()?.checked_sub(1)?;
+    let has_row = cursor > digits;
+    if !has_row && (!has_column || absolute_row) { return None }
+    if source[cursor..].chars().next().is_some_and(identifier) || source[cursor..].trim_start().starts_with('(') { return None }
+    let row = if has_row { source[digits..cursor].parse::<u32>().ok()?.checked_sub(1)? } else { 0 };
     if row > MAX_ROW || col > MAX_COLUMN { return None }
-    Some(Reference { start, end: cursor, prefix: String::new(), row, col, absolute_row, absolute_col })
+    Some(Reference { start, end: cursor, prefix: String::new(),
+        kind: if !has_column { ReferenceKind::WholeRow } else if !has_row { ReferenceKind::WholeColumn } else { ReferenceKind::Cell },
+        row, col, absolute_row: !has_row || absolute_row, absolute_col: !has_column || absolute_first })
 }
 
 fn references(source: &str) -> Vec<Reference> {
@@ -272,7 +304,14 @@ fn references(source: &str) -> Vec<Reference> {
             reference.start = cursor; reference.prefix = source[cursor..address_start].to_owned(); cursor = reference.end; result.push(reference);
         } else { cursor += character.len_utf8(); }
     }
-    result
+    // A bare name or numeric literal is not an axis reference. Both endpoints
+    // must describe the same whole axis and be joined by the range operator.
+    let axis_ranges = result.iter().enumerate().map(|(index, reference)| {
+        reference.kind == ReferenceKind::Cell
+            || index > 0 && result[index - 1].kind == reference.kind && source[result[index - 1].end..reference.start].trim() == ":"
+            || index + 1 < result.len() && result[index + 1].kind == reference.kind && source[reference.end..result[index + 1].start].trim() == ":"
+    }).collect::<Vec<_>>();
+    result.into_iter().zip(axis_ranges).filter_map(|(reference, keep)| keep.then_some(reference)).collect()
 }
 
 #[cfg(test)]
@@ -338,5 +377,42 @@ mod tests {
         invalid.formula_anchor = None;
         invalid.ranges[0].end_row = Some(MAX_ROW + 1);
         assert_eq!(project_rule(&invalid).unwrap_err().code, "INVALID_MODEL");
+    }
+
+    #[test]
+    fn whole_axis_references_constrain_only_their_selected_axis() {
+        let mut original = rule(json!([{ "startRow": 0, "startCol": 0, "endRow": 3, "endCol": 0 }]), "=SUM(1:2)>0");
+        original.formula_anchor = Some(FormulaAnchor { row: 1, col: 100 });
+        let projected = project_rule(&original).unwrap();
+        assert_eq!(projected.formula_anchor, Some(FormulaAnchor { row: 1, col: 0 }));
+        assert_eq!(projected.formula1, original.formula1);
+        assert_eq!(projected.ranges.len(), 2);
+
+        original.formula1 = "=SUM(A:B)>0".into();
+        original.formula_anchor = Some(FormulaAnchor { row: 100, col: 0 });
+        let projected = project_rule(&original).unwrap();
+        assert_eq!(projected.formula_anchor, Some(FormulaAnchor { row: 0, col: 0 }));
+        assert_eq!(projected.formula1, original.formula1);
+        assert_eq!(projected.ranges.len(), 1);
+    }
+
+    #[test]
+    fn text_predicates_move_references_while_the_separate_matching_literal_remains_unchanged() {
+        let mut original = rule(json!([{ "startRow": 2, "startCol": 2, "endRow": 5, "endCol": 2 }]), "=ISNUMBER(SEARCH(\"A1\",B2))");
+        original.rule_type = "containsText".into(); original.sub_type = Some("text".into()); original.value = Some(json!("A1"));
+        original.formula_anchor = Some(FormulaAnchor { row: 1, col: 1 });
+        let projected = project_rule(&original).unwrap();
+        assert_eq!(projected.formula1, "=ISNUMBER(SEARCH(\"A1\",C3))"); assert_eq!(projected.value, Some(json!("A1")));
+        original.formula1 = "A1".into(); assert_eq!(project_rule(&original).unwrap().formula1, "A1");
+    }
+
+    #[test]
+    fn office_model_fields_never_enter_the_known_expression_or_threshold_projection_path() {
+        let mut original = rule(json!([{ "startRow": 2, "startCol": 2, "endRow": 5, "endCol": 2 }]), "=A1>0");
+        original.rule_type = "office".into(); original.sub_type = Some("formula".into());
+        original.config = Some(json!({ "min": { "type": "formula", "value": "=A1" }, "vendor": { "ref": "A1" } }));
+        let projected = project_rule(&original).unwrap();
+        assert_eq!(projected.formula1, original.formula1); assert_eq!(projected.config, original.config);
+        assert_eq!(projected.formula_anchor, original.formula_anchor); assert!(formula_operands(&original).is_empty());
     }
 }

@@ -283,7 +283,10 @@ impl SourceStyles {
         let root = parse_xml(&generated, true).map_err(ExportError::invalid)?;
         let used_ids = root.children().filter_map(|style| style.attribute("styleId")).map(|id| id.to_ascii_lowercase()).collect();
         let resources = get(get(get(model, "metadata"), "source"), "officeSource");
-        let (source, source_error) = if resources.is_null() { (None, None) } else { match read_source(resources) { Ok(source) => (Some(source), None), Err(error) => (None, Some(error)) } };
+        // Only the current ODT origin lacks a Word source-style context. A DOCX
+        // with historical ODT resources still has its own native Word parts.
+        let current_odt = get(get(resources, "origin"), "format").as_str() == Some("odt");
+        let (source, source_error) = if resources.is_null() || current_odt { (None, None) } else { match read_source(resources) { Ok(source) => (Some(source), None), Err(error) => (None, Some(error)) } };
         Ok(Self { generated, source, source_error, imported: BTreeMap::new(), remap: BTreeMap::new(), used_ids, next_id: 1, theme_used: false })
     }
 

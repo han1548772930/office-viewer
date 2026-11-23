@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Sheets clipboard UI fixture</title>
+  <style>body{margin:0}#app{height:100vh;min-width:0}</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, Form, FormItem, Input, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { createBlankWorkbook, createBlankSheet, createCell } from '/packages/office-studio/src/domain/model'
+import { sheetColumnWidth } from '/packages/office-studio/src/domain/sheet-axis'
+import { applyExcelWorkbookView, toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+const copy = value => JSON.parse(JSON.stringify(value))
+const original = createBlankWorkbook()
+original.id = 'clipboard-browser-fixture'; original.name = '剪贴板工作台'; original.calculationMode = 'manual'
+original.sheets = ['Source', 'Report'].map((name, index) => ({ ...createBlankSheet(name), id: 'clipboard-browser-sheet-' + index,
+  rowCount: 80, columnCount: 12, defaultColumnWidth: 110, defaultRowHeight: 28 }))
+original.activeSheetId = original.sheets[0].id
+const rich = createCell(0, 0, 'rich')
+rich.richText = [{ id: 'bold', text: 'ri', font: { bold: true }, vendor: { keep: 1 } }, { id: 'italic', text: 'ch', font: { italic: true } }]
+rich.hyperlink = 'https://example.test'; rich.metadata = { vendor: { keep: true } }; rich.style.fill = '#ffeeaa'
+original.sheets[0].cells['0:0'] = rich
+original.sheets[0].cells['0:1'] = { ...createCell(0, 1, 5), formula: '=A2+$A$2', dataType: 'formula', cachedDataType: 'number', display: '5' }
+original.sheets[0].cells['1:0'] = createCell(1, 0, 5)
+original.sheets[0].columnWidths = { 0: 123, 1: 156 }
+const standalone = new URLSearchParams(location.search).has('standalone')
+let base = copy(original), clipboard = { text: '', html: '' }, delayed = false, readCount = 0, canceled = false
+const pending = [], writes = [], nativeEvents = [], commands = [], notices = [], updates = []
+function items(content) {
+  if (content.media) return [{ types: ['image/png'], getType: async () => new Blob(['media'], { type: 'image/png' }) }]
+  if (!content.text && !content.html) return []
+  const values = { ...(content.text === undefined ? {} : { 'text/plain': content.text }), ...(content.html ? { 'text/html': content.html } : {}) }
+  return [{ types: Object.keys(values), getType: async type => new Blob([values[type]], { type }) }]
+}
+const browserClipboard = {
+  read: async () => { readCount++; return delayed ? new Promise(resolve => pending.push(content => resolve(items(content)))) : items(clipboard) },
+  readText: async () => clipboard.text ?? '',
+  write: async values => {
+    const entry = values[0], text = entry.types.includes('text/plain') ? await (await entry.getType('text/plain')).text() : ''
+    const html = entry.types.includes('text/html') ? await (await entry.getType('text/html')).text() : ''
+    clipboard = { text, html }; writes.push(copy(clipboard))
+  },
+  writeText: async text => { clipboard = { text, html: '' }; writes.push(copy(clipboard)) },
+}
+const readerAvailable = !new URLSearchParams(location.search).has('no-reader')
+Object.defineProperty(navigator, 'clipboard', { configurable: true, value: readerAvailable ? browserClipboard : {} })
+function connect(studio) {
+  studio.regionalSettings.setRegion('en-US')
+  studio.events.addEvent('BeforeCommandExecute', event => {
+    commands.push({ id: event.id, params: copy(event.params ?? {}) })
+    if (canceled && event.id.startsWith('sheet.command.paste')) event.cancel = true
+  })
+  return studio
+}
+const owner = shallowRef(standalone ? undefined : connect(new OfficeStudio({ workbook: original })))
+const view = ref(toExcelWorkbookView(owner.value ? owner.value.editor.workbook.model : base))
+if (standalone) delete view.value.id
+const dark = ref(false), variant = ref('classic'), outside = ref('native text')
+const hidePasteOptions = ref(false), clipboardContext = ref({}), clipboardPermission = shallowRef()
+const operationPermissions = ref({})
+watch(() => owner.value?.editor.workbook.model, model => { if (model) view.value = toExcelWorkbookView(model) }, { flush: 'sync' })
+const current = () => owner.value ? owner.value.editor.workbook.model : base
+const api = () => FOffice.newAPI(owner.value)
+function replace(value) {
+  if (owner.value) owner.value.editor.workbook.replace(value)
+  else { base = value; view.value = toExcelWorkbookView(value); delete view.value.id }
+}
+window.sheetClipboardFixture = {
+  snapshot: () => copy(current()), commands: () => copy(commands), notifications: () => copy(notices),
+  columnWidth: (column, sheet = 0) => sheetColumnWidth(current().sheets[sheet], column),
+  nativeEvents: () => copy(nativeEvents), board: () => copy(clipboard), writes: () => copy(writes), reads: () => readCount,
+  setBoard: content => { clipboard = copy(content) }, delay: value => { delayed = value; if (value) { readCount = 0; pending.length = 0 } },
+  resolveRead: (index, content) => { if (!pending[index]) throw new Error('No pending clipboard read'); pending[index](copy(content)) },
+  selection: () => owner.value ? copy(owner.value.getSelectionState()) : undefined,
+  history: () => { const studio = owner.value, unit = studio?.editor.history.units[studio.activeWorkbookId]
+    return { hasStudio: Boolean(studio), undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, updates: updates.length,
+      revision: studio?.getWorkbookRevision(studio.activeWorkbookId) } },
+  cancel: value => { canceled = value }, appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  hidePasteOptions: value => { hidePasteOptions.value = value },
+  clipboardContext: value => { clipboardContext.value = copy(value) },
+  permission: (point, allowed) => {
+    operationPermissions.value = { ...operationPermissions.value, [point]: allowed }
+    clipboardPermission.value = request => operationPermissions.value[request.point] !== false
+  },
+  activeRangeList: () => {
+    const sheet = api().getActiveWorkbook().getActiveSheet()
+    sheet.setActiveRangeList([sheet.getRange('A1'), sheet.getRange('F5:G6')], { activeRangeIndex: 0, primary: { row: 0, column: 0 } })
+  },
+  switchSheet: index => api().getActiveWorkbook().getSheetBySheetId('clipboard-browser-sheet-' + index).activate(),
+  switchUnit: () => api().createWorkbook({ ...copy(original), id: 'clipboard-browser-other' }),
+  edit: () => api().getActiveWorkbook().getActiveSheet().getRange('J12').setValue('new edit'),
+  reopenSameId: () => replace(copy(current())),
+  replaceHost: async () => {
+    const previous = owner.value; owner.value = connect(new OfficeStudio({ workbook: copy(current()) }))
+    view.value = toExcelWorkbookView(owner.value.editor.workbook.model); await nextTick(); previous.dispose()
+  },
+  validation: () => {
+    const value = copy(current()); value.sheets[0].dataValidations = [{ id: 'stop', type: 'whole', operator: 'between', formula1: '1', formula2: '2',
+      allowBlank: false, errorStyle: 'stop', errorTitle: '范围', error: '1 到 2', ranges: [{ startRow: 4, endRow: 4, startCol: 5, endCol: 5 }] }]
+    replace(value); owner.value?.editor.history.clear(owner.value.activeWorkbookId)
+  },
+  protection: () => {
+    const value = copy(current()); value.sheets[0].rangeProtectionRules = [{ id: 'locked', permissionId: 'locked-permission', ownerUserId: 'remote',
+      allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView', description: '', ranges: [{ startRow: 4, endRow: 4, startCol: 4, endCol: 5 }] }]
+    replace(value); owner.value?.editor.history.clear(owner.value.activeWorkbookId)
+  },
+  columnWidthProtection: () => {
+    const value = copy(current()); value.sheets[0].rangeProtectionRules = [{ id: 'width-protection', permissionId: 'width-permission', ownerUserId: 'local-user',
+      allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView', description: '', ranges: [{ startRow: 10, endRow: 10, startCol: 4, endCol: 4 }] }]
+    replace(value); owner.value?.editor.history.clear(owner.value.activeWorkbookId)
+  },
+  revokeColumnWidthPermission: () => {
+    const rule = current().sheets[0].rangeProtectionRules?.find(value => value.id === 'width-protection')
+    if (!rule) throw new Error('Missing column width protection fixture')
+    // Simulate an independent permission update without replacing content or its history generation.
+    rule.ownerUserId = 'remote-user'
+  },
+  tableAndChartSource: () => {
+    const value = copy(current()), sheetId = value.sheets[0].id, range = { startRow: 0, endRow: 1, startCol: 0, endCol: 1 }
+    value.sheets[0].cells['1:1'] = createCell(1, 1, 8)
+    value.tables = [{ id: 'table-browser', name: 'SourceTable', sheetId, range,
+      columns: [{ id: 'column-a', name: 'A' }, { id: 'column-b', name: 'B' }], showHeaderRow: true, showTotalsRow: false, styleName: 'TableStyleMedium2' }]
+    value.charts = [{ id: 'chart-browser', sheetId, type: 'bar', source: { range, orientation: 'columns' },
+      position: { x: 300, y: 200 }, size: { width: 400, height: 250 }, title: 'Reference',
+      legend: { visible: true, position: 'bottom' }, categoryField: 0, valueFields: [1],
+      xAxis: { scaleType: 'linear' }, yAxis: { scaleType: 'linear' }, revision: 0 }]
+    replace(value); owner.value?.editor.history.clear(owner.value.activeWorkbookId)
+  },
+  freeze: () => {
+    const value = copy(current()); value.sheets[0].freeze = { rows: 1, columns: 1 }; replace(value)
+  },
+  standaloneSame: () => {
+    const value = copy(current()); value.sheets[0].cells['0:0'] = createCell(0, 0, 'same')
+    value.sheets[0].cells['4:4'] = createCell(4, 4, 'same'); value.sheets[0].cells['4:4'].style.font.bold = true; replace(value)
+  },
+}
+createApp({ render: () => h(ConfigProvider, { theme: {
+  algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' },
+} }, { default: () => h('main', { style: { display: 'flex', flexDirection: 'column', height: '100%' } }, [
+  h(Form, { layout: 'inline', style: { padding: '4px 8px', flex: '0 0 auto' } }, { default: () => h(FormItem, { label: '外部文本' }, {
+    default: () => h(Input, { value: outside.value, 'aria-label': '外部文本', onChange: event => { outside.value = event.target.value } }),
+  }) }),
+  h(ExcelWorkbench, {
+    modelValue: view.value, studio: owner.value, ribbonVariant: variant.value,
+    hidePasteOptions: hidePasteOptions.value, clipboardContext: clipboardContext.value, clipboardPermission: clipboardPermission.value,
+    canUndo: owner.value?.editor.canUndo ?? false, canRedo: owner.value?.editor.canRedo ?? false,
+    'onUpdate:modelValue': value => {
+      updates.push(copy(value))
+      if (owner.value) owner.value.editor.replaceWorkbookFromView(value, owner.value.regionalSettings.region.value)
+      else { base = applyExcelWorkbookView(base, value, 'en-US'); view.value = value }
+    },
+    onUndo: source => api().getWorkbook(source?.workbookId ?? owner.value.activeWorkbookId)?.undo(),
+    onRedo: source => api().getWorkbook(source?.workbookId ?? owner.value.activeWorkbookId)?.redo(),
+    onNotify: value => notices.push(copy(value)),
+  }),
+]) }) }).mount('#app')
+const grid = document.querySelector('.spreadsheet-canvas')
+for (const kind of ['copy', 'cut', 'paste']) grid.addEventListener(kind, event => {
+  if (event.target instanceof Element && event.target.closest('input, textarea')) return
+  const content = { text: event.clipboardData?.getData('text/plain') ?? '', html: event.clipboardData?.getData('text/html') ?? '' }
+  nativeEvents.push({ kind, prevented: event.defaultPrevented, ...content })
+  if (kind !== 'paste' && event.defaultPrevented) clipboard = content
+})
+window.addEventListener('pagehide', () => owner.value?.dispose(), { once: true })
+</script>
+</body>
+</html>

@@ -34,6 +34,10 @@ export function sheetAxisVisibilityActionForCommand(id: string): SheetAxisVisibi
   return { axis: /(?:-row|-rows)(?:-|$)/.test(id) ? 'row' : 'column', visible: !id.includes('.hide-') && !id.endsWith('-hidden'),
     selectedOnly: id === SHEET_AXIS_VISIBILITY_COMMANDS.showSelectedRows || id === SHEET_AXIS_VISIBILITY_COMMANDS.showSelectedColumns }
 }
+function assertVisibilityScope(input: SheetAxisVisibilityCommandInput): void {
+  if (input.count !== undefined && input.index === undefined) throw new RangeError('指定行列数量时必须提供起始索引。')
+  if (input.all && (input.index !== undefined || input.count !== undefined)) throw new TypeError('全部行列与指定索引不能同时使用。')
+}
 export function sheetAxisVisibilityCommandInput(value?: unknown): SheetAxisVisibilityCommandInput {
   if (value === undefined) return {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('行列显示命令参数无效。')
@@ -44,6 +48,7 @@ export function sheetAxisVisibilityCommandInput(value?: unknown): SheetAxisVisib
     if (number !== undefined && (!Number.isSafeInteger(number) || number < 0 || key === 'count' && number === 0)) throw new RangeError('行列显示命令的索引、数量或版本无效。')
   }
   if (input.all !== undefined && typeof input.all !== 'boolean') throw new TypeError('显示全部选项必须是布尔值。')
+  assertVisibilityScope(input)
   return { ...input, ...(ranges === undefined ? {} : { ranges }) }
 }
 function counts(sheet: SheetAxisVisibilityState): { rows: number; columns: number } {
@@ -64,6 +69,7 @@ export function sheetAxisVisibilityTargetRanges(sheet: SheetAxisVisibilityState,
   assertSheetCommandRanges(ranges)
   if (input.index !== undefined && (!Number.isSafeInteger(input.index) || input.index < 0 || input.index >= count)
     || input.count !== undefined && (!Number.isSafeInteger(input.count) || input.count <= 0)) throw new RangeError('行列显示目标的索引或数量无效。')
+  assertVisibilityScope(input)
   if (input.all) return [axisRange(sheet, action.axis, { start: 0, end: count - 1 })]
   if (input.index !== undefined && input.count !== undefined) {
     if (input.index + input.count > count) throw new RangeError('目标行列超出工作表。')
@@ -91,6 +97,10 @@ function axisIndex(sheet: SheetAxisVisibilityState, axis: SheetAxis, hidden: rea
   return new SparseAxisIndex(axis === 'row' ? rows : columns, size.defaultSize, size.sizes,
     axis === 'row' ? [...(sheet.filteredRows ?? []), ...(sheet.autoFilter?.filteredRows ?? []), ...(sheet.outlineHiddenRows ?? []), ...filteredRows] : sheet.outlineHiddenColumns,
     size.spans, canonicalSheetAxisSpans([...hidden, ...collapsed]))
+}
+/** Recheck after recalculation/filter refresh, before publishing a hide transaction. */
+export function assertSheetAxisHasVisiblePosition(sheet: SheetAxisVisibilityState, axis: SheetAxis, filteredRows: readonly number[] = []): void {
+  if (axisIndex(sheet, axis, manualHidden(sheet, axis), filteredRows).nextVisible(0, 1) === undefined) throw new SheetAxisVisibilityError(axis)
 }
 function intersection(first: readonly SheetAxisInterval[], second: readonly SheetAxisInterval[]): SheetAxisInterval[] {
   const result: SheetAxisInterval[] = []; let left = 0, right = 0

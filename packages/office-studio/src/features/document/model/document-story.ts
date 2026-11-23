@@ -1,6 +1,8 @@
 import type { DocumentDefaultStyle, DocumentModel, DocumentPageField, DocumentSectionHeaderFooter, DocumentStoryContent, DocumentStoryLock, DocumentStoryParagraph } from '../../../domain/model'
+import { cloneModel } from '../../../domain/serialization'
 import { documentDefaultStyle } from './document-default-style'
 import { createRun, runText } from './document-model'
+import { documentRunStyleAt, splitDocumentRunRange } from './document-run-range'
 import type { DocumentRun, RunPatch } from './document-model'
 
 export const DOCUMENT_STORY_KEYS = ['header', 'footer', 'firstPageHeader', 'firstPageFooter', 'evenPageHeader', 'evenPageFooter'] as const
@@ -31,16 +33,17 @@ export function documentStoryFieldCache(field: DocumentPageField): DocumentStory
 /** Changing a field's modeled style overlays only the properties that changed. */
 export function documentStoryFieldDisplayRuns(field: DocumentPageField, text: string, defaults: DocumentDefaultStyle['text']): DocumentRun[] {
   const cache = documentStoryFieldCache(field)
-  if (!cache?.runs.length || text !== field.cachedResult) return [createRun(text, field.textStyle ?? defaults)]
+  if (!cache?.runs.length) return [createRun(text, field.textStyle ?? defaults)]
   const cleared = field.metadata?.officeStoryTextFormatCleared === true
   const style = field.textStyle ?? (cleared ? defaults : undefined)
-  if (!style) return cache.runs.map(run => ({ ...run }))
   const baseline = field.metadata?.officeStoryStyleBaseline
-  return cache.runs.map(run => {
+  const displayed = !style ? cache.runs : cache.runs.map(run => {
     const next = { ...run, metadata: { ...run.metadata } }
     for (const key of ['bold', 'italic', 'underline', 'strike', 'color', 'fontFamily', 'eastAsiaFontFamily', 'fontSize', 'highlight', 'verticalAlign'] as const) {
       const current = style[key]
-      if (!cleared && baseline && typeof baseline === 'object' && !Array.isArray(baseline) && current === Reflect.get(baseline, key)) continue
+      // A materialized cache already contains a clear. Later one-property edits
+      // retain its other ranges while the source-replay clear marker stays set.
+      if (baseline && typeof baseline === 'object' && !Array.isArray(baseline) && current === Reflect.get(baseline, key)) continue
       if (current === undefined) {
         if (key === 'eastAsiaFontFamily' || key === 'highlight' || key === 'verticalAlign') delete next[key]
       }
@@ -49,6 +52,41 @@ export function documentStoryFieldDisplayRuns(field: DocumentPageField, text: st
     }
     return next
   })
+  return remapDocumentStoryFieldRuns(displayed, text, defaults)
+}
+
+/** Preserve cached format spans while a live or refreshed field result changes. */
+export function remapDocumentStoryFieldRuns(runs: readonly DocumentRun[], text: string, defaults: DocumentDefaultStyle['text']): DocumentRun[] {
+  const previous = runText(runs)
+  if (text === previous) return cloneModel([...runs])
+  const edit = documentStoryTextEdit(previous, text)
+  const { before, after } = splitDocumentRunRange(runs, edit.start, edit.end)
+  const spans: Array<{ run: DocumentRun; length: number }> = []
+  let offset = 0
+  for (const run of runs) {
+    const from = offset, to = from + run.text.length
+    const length = Math.max(0, Math.min(to, edit.end) - Math.max(from, edit.start))
+    if (length || !run.text.length && from > edit.start && from < edit.end) spans.push({ run, length })
+    offset = to
+  }
+  if (!spans.some(span => span.length > 0)) {
+    const source = createRun('', documentRunStyleAt(runs, edit.start, edit.end) ?? defaults)
+    spans.push({ run: source, length: 0 })
+  }
+  let finalSpan = spans.length - 1
+  for (let index = spans.length - 1; index >= 0; index--) if (spans[index]!.length > 0) { finalSpan = index; break }
+  const changed: DocumentRun[] = []
+  let cursor = 0
+  for (const [index, span] of spans.entries()) {
+    let end = index === finalSpan ? edit.text.length : Math.min(edit.text.length, cursor + span.length)
+    while (end > cursor && !isDocumentTextBoundary(edit.text, end)) end--
+    const { id: _id, text: _text, ...style } = span.run
+    changed.push(createRun(edit.text.slice(cursor, end), style))
+    cursor = end
+  }
+  const result = [...before, ...changed, ...after]
+  if (runText(result) !== text) throw new RangeError('页眉页脚字段结果与格式范围不一致。')
+  return cloneModel(result)
 }
 
 /** Fixed Univer Docs uses 9 pt for header/footer defaults while keeping the document's family. */
@@ -69,6 +107,19 @@ export function isDocumentTextBoundary(text: string, offset: number): boolean {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > text.length) return false
   const previous = text.charCodeAt(offset - 1), next = text.charCodeAt(offset)
   return !(previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF)
+}
+
+/** UI restoration may follow an older snapshot; API and command ranges remain strict. */
+export function clampDocumentTextRange(text: string, range: { start: number; end: number }): { start: number; end: number } {
+  const clamp = (offset: number) => Math.max(0, Math.min(text.length, Number.isSafeInteger(offset) ? offset : 0))
+  let start = clamp(Math.min(range.start, range.end)), end = clamp(Math.max(range.start, range.end))
+  if (start === end) {
+    if (!isDocumentTextBoundary(text, start)) start--
+    return { start, end: start }
+  }
+  if (!isDocumentTextBoundary(text, start)) start--
+  if (!isDocumentTextBoundary(text, end)) end++
+  return { start, end }
 }
 
 export function validateDocumentStoryContent(content: DocumentStoryContent, text: string): void {
@@ -120,6 +171,27 @@ export function documentStoryTextEdit(before: string, after: string): { start: n
   while (start > 0 && (!isDocumentTextBoundary(before, start) || !isDocumentTextBoundary(after, start))) start--
   while (end < before.length && last < after.length && (!isDocumentTextBoundary(before, end) || !isDocumentTextBoundary(after, last))) { end++; last++ }
   return { start, end, text: after.slice(start, last) }
+}
+
+/** Resolve a native input against its captured selection rather than a repeated-text diff. */
+export function documentStoryInputEdit(before: string, after: string, range: Pick<DocumentStoryRange, 'start' | 'end'>, caret: number): { start: number; end: number; text: string } {
+  if (typeof before !== 'string' || typeof after !== 'string' || !range || !isDocumentTextBoundary(before, range.start)
+    || !isDocumentTextBoundary(before, range.end) || range.end < range.start || !isDocumentTextBoundary(after, caret)) {
+    throw new RangeError('页眉页脚输入的选区或光标位置无效。')
+  }
+  const delta = after.length - before.length
+  const splice = (start: number, end: number, length: number) => length >= 0 && caret === start + length
+    && after.slice(0, start) === before.slice(0, start) && after.slice(caret) === before.slice(end)
+    ? { start, end, text: after.slice(start, caret) } : undefined
+  const replacement = splice(range.start, range.end, delta + range.end - range.start)
+  if (replacement) return replacement
+  if (range.start === range.end && delta < 0) {
+    const backward = isDocumentTextBoundary(before, range.start + delta) ? splice(range.start + delta, range.start, 0) : undefined
+    if (backward) return backward
+    const forward = isDocumentTextBoundary(before, range.start - delta) ? splice(range.start, range.start - delta, 0) : undefined
+    if (forward) return forward
+  }
+  throw new RangeError('页眉页脚输入与提交前的选区不一致，请重新输入。')
 }
 
 /** Plan every lock before mutating text or anchors. Wrapper-only locks retain an empty wrapper. */

@@ -23,11 +23,11 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
-| COMMON-01 | 应用壳与工作台区域 | 公开源码：ui/workbench、parts | 文件操作、类型切换、Ribbon、产品 Header、编辑区、面板、单条产品 Footer 和统一浮层；无重复工具区 | 未验收；[工作台 Grid/Classic 切换验证](UNIVER_TOOLBAR_PARITY.md#1-当前装配与证据边界) |
-| COMMON-02 | 命令、菜单和插件 | 公开源码：core/command、ui/menu、presets | command/mutation/operation 分层；各入口同命令；按 feature 注册、排序、上下文显隐/禁用、正确销毁 | 未验收 |
-| COMMON-03 | 选择、输入、快捷键与剪贴板 | 公开源码：Sheets/Docs selection、editing、clipboard | 中文输入法、光标/选区保留、系统剪贴板；Docs 源格式/目标格式/纯文本粘贴及最近粘贴切换；工具栏和右键不破坏范围 | 未验收 |
+| COMMON-01 | 应用壳与工作台区域 | 公开源码：ui/workbench、parts | 文件操作、类型切换、Ribbon、产品 Header、编辑区、面板、单条产品 Footer 和统一浮层；无重复工具区 | 未验收；[工作台 Grid/Classic 切换验证](UNIVER_TOOLBAR_PARITY.md#1-当前装配与证据边界)、[生产历史接线及 Form/反馈迁移静态记录](feature-evidence/COMMON-03-input-selection-axis-history.md#7-ui-与性能边界) |
+| COMMON-02 | 命令、菜单和插件 | 公开源码：core/command、ui/menu、presets | command/mutation/operation 分层；各入口同命令；按 feature 注册、排序、上下文显隐/禁用、正确销毁 | 未验收；[共享输入/轴命令与历史静态接线](feature-evidence/COMMON-03-input-selection-axis-history.md) |
+| COMMON-03 | 选择、输入、快捷键与剪贴板 | 公开源码：Sheets/Docs selection、editing、clipboard | 中文输入法、光标/选区保留、系统剪贴板；Docs 源格式/目标格式/纯文本粘贴及最近粘贴切换；工具栏和右键不破坏范围 | 未验收；[完整选区、body/story 输入及未运行草稿](feature-evidence/COMMON-03-input-selection-axis-history.md) |
 | COMMON-04 | 主题、语言、字体与配置 | 公开源码 ui/config、examples/workbench-settings；[主题规格][shared-themes] | 中文默认、多语言资源、明暗主题、字体加载/度量、LTR/RTL、布局变体与配置保存；不污染文档内容 | 未验收 |
-| COMMON-05 | 统一快照、公开 API 与内部保存 | 公开源码 IWorkbookData、IDocumentData、Facade | 稳定模型版本、增量变更、公共 API 与事件；保存失败/dirty/savepoint 正确；重开保持模型 | 未验收；日期系统与编辑快照的实现及待验证边界见[数字格式输入](UNIVER_TOOLBAR_PARITY.md#sheet-number-input) |
+| COMMON-05 | 统一快照、公开 API 与内部保存 | 公开源码 IWorkbookData、IDocumentData、Facade | 稳定模型版本、增量变更、公共 API 与事件；保存失败/dirty/savepoint 正确；重开保持模型 | 未验收；[数字格式输入](UNIVER_TOOLBAR_PARITY.md#sheet-number-input)、[候选准备、事件重入与内容历史](feature-evidence/COMMON-03-input-selection-axis-history.md#5-历史观察事件与取消) |
 | COMMON-06 | 权限与只读 | 公开源码 permission；[公开规格][shared-permissions] | 单元、工作表/范围、段落等权限；查看/编辑/复制/评论/导出/打印分开；服务端与命令入口执行权限 | 未验收 |
 | COMMON-07 | 实时多人协作（Pro/Server 目标） | [协作规格][shared-collaboration]、[Sheets][sheet-collaboration]、[Docs][doc-collaboration] | 实际服务端、并发协议、用户与远端范围、确认/重试/去重、断线重连、离线队列与多用户一致性 | 未验收 |
 | COMMON-08 | 持久历史版本（Pro/Server 目标） | [共享历史][shared-history]、[Sheets][sheet-history]、[Docs][doc-history] | 版本列表、快照+变更日志、版本内容、对比、恢复和恢复后广播；重启后可查；区别于本地撤销 | 未验收 |
@@ -45,10 +45,10 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
 | SHEET-01 | 工作簿、工作表生命周期 | 公开源码 sheets、sheets-ui；[核心][sheet-core]、[API][sheet-api] | 新建/复制/删除/重命名/重排、颜色、隐藏/veryHidden、活动表、校验和可撤销事务 | 未验收 |
-| SHEET-02 | 范围、选区和网格编辑 | 公开源码 selection/editor；[范围规格][sheet-selection] | 单元格/区域/行列/全选/多选、拖选、填充、合并、F2/直接输入、Enter/Tab/Escape；双向视口处理 | 未验收；[合并、取消合并与分类清除](feature-evidence/SHEET-02-merge-clear.md) |
-| SHEET-03 | 行列结构与尺寸 | [行列规格][sheet-row-col]、公开源码 commands | 插删/移动/复制/隐藏/显示/自动适应、行高列宽；更新公式与所有范围资源 | 未验收 |
-| SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收；[字体与字号](feature-evidence/SHEET-04-font-family-size.md)、[颜色与重置](feature-evidence/SHEET-04-color-reset.md)、[边框](feature-evidence/SHEET-04-borders.md)、[旋转/竖排/缩小适应](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md)、[分类清除](feature-evidence/SHEET-02-merge-clear.md) |
-| SHEET-05 | 富文本 | [富文本规格][sheet-rich-text]、公开源码 docs/editor bridge | 单格多运行样式、部分文本选择和编辑、复制粘贴、链接与导出；不扁平化成一个字符串样式 | 未验收 |
+| SHEET-02 | 范围、选区和网格编辑 | 公开源码 selection/editor；[范围规格][sheet-selection] | 单元格/区域/行列/全选/多选、拖选、填充、合并、F2/直接输入、Enter/Tab/Escape；双向视口处理 | 未验收；[合并、取消合并与分类清除](feature-evidence/SHEET-02-merge-clear.md)、[完整选区与共享单格输入](feature-evidence/COMMON-03-input-selection-axis-history.md#2-sheets-的共享模型与事务) |
+| SHEET-03 | 行列结构与尺寸 | [行列规格][sheet-row-col]、公开源码 commands | 插删/移动/复制/隐藏/显示/自动适应、行高列宽；更新公式与所有范围资源 | 未验收；[轴命令、资源变换与宿主发布保护](feature-evidence/COMMON-03-input-selection-axis-history.md#3-行列命令与-ui) |
+| SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收；[字体与字号](feature-evidence/SHEET-04-font-family-size.md)、[颜色与重置](feature-evidence/SHEET-04-color-reset.md)、[边框](feature-evidence/SHEET-04-borders.md)、[旋转/竖排/缩小适应](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md)、[分类清除](feature-evidence/SHEET-02-merge-clear.md)、[格式刷与规则模型](feature-evidence/SHEET-04-format-painter.md) |
+| SHEET-05 | 富文本 | [富文本规格][sheet-rich-text]、公开源码 docs/editor bridge | 单格多运行样式、部分文本选择和编辑、复制粘贴、链接与导出；不扁平化成一个字符串样式 | 未验收；[F2 运行保留、覆盖输入与重复文字边界](feature-evidence/COMMON-03-input-selection-axis-history.md#2-sheets-的共享模型与事务) |
 | SHEET-06 | 数字格式与日期系统 | [数字格式][sheet-numfmt]、公开源码 sheets-numfmt | 数字/货币/会计/百分比/日期/自定义、小数位、locale、1900/1904；原始值与显示值分离 | 未验收；[入口、编辑语义与待统一验证](UNIVER_TOOLBAR_PARITY.md#sheet-number-input) |
 | SHEET-07 | 冻结、网格线、视口和缩放 | [冻结][sheet-freeze]、[网格线][sheet-gridlines]、公开源码 render | 多分区真实冻结、坐标命中/编辑一致、每表视口保存、组合底栏缩放 | 未验收 |
 | SHEET-08 | 复制粘贴与选择性粘贴 | [剪贴板][sheet-clipboard]、公开源码 clipboard | 值/公式/格式/列宽/排除边框、剪切移动、外部 HTML/TSV、引用调整、合并冲突与权限 | 未验收 |
@@ -57,7 +57,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-11 | 筛选 | [筛选][sheet-filter]、公开源码 filter | 值/文本/数值/日期/颜色等公开条件、筛选结果与可见行、恢复、结构编辑后的范围变换；不删除源数据 | 未验收；现有入口、实现与遗留验证见[顶部功能对照](UNIVER_TOOLBAR_PARITY.md#3-sheets-顶部功能逐项映射) |
 | SHEET-12 | 排序 | [排序][sheet-sort]、公开源码 sort | 多关键字、类型/locale 比较、范围与整表、关联单元格/样式/引用、撤销；不只排序显示字符串 | 未验收；现有入口、实现与遗留验证见[顶部功能对照](UNIVER_TOOLBAR_PARITY.md#3-sheets-顶部功能逐项映射) |
 | SHEET-13 | 数据验证 | [验证][sheet-validation]、公开源码 data-validation | 全部公开规则、范围/公式依赖、下拉、提示与无效状态；键入/粘贴/填充/API 均受验证 | 未验收；[数据验证切片证据](feature-evidence/SHEET-13-data-validation.md) |
-| SHEET-14 | 条件格式 | [条件格式][sheet-conditional]、公开源码 conditional-formatting | 规则/范围/优先级、公式、高亮/色阶/数据条/图标集、动态重算、样式叠加；不直接写死底色 | 未验收 |
+| SHEET-14 | 条件格式 | [条件格式][sheet-conditional]、公开源码 conditional-formatting | 规则/范围/优先级、公式、高亮/色阶/数据条/图标集、动态重算、样式叠加；不直接写死底色 | 未验收；[规则编辑与格式刷](feature-evidence/SHEET-04-format-painter.md)、[Office 来源、整本预算与往返草稿](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md) |
 | SHEET-15 | 查找替换 | [查找替换][sheet-find]、公开源码 find-replace | 值/公式/格式化文本等公开作用域与选项、结果定位、全部替换与历史；大文件可取消 | 未验收 |
 | SHEET-16 | 超链接 | [超链接][sheet-links]、公开源码 hyper-link | 普通/富文本链接、URL/内部范围/工作表目标、编辑/删除、引用变换和安全跳转 | 未验收 |
 | SHEET-17 | 批注与线程评论 | [批注][sheet-notes]、[评论][sheet-comments]、公开源码 note/thread-comment | 普通 Note 与 ThreadComment 分模型；锚点随行列变化、回复/解决、用户与持久同步 | 未验收 |
@@ -72,7 +72,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-26 | 迷你图（Pro 目标） | [公开规格][sheet-sparkline] | 公开图型、源范围、分组/比例/空值/负值样式、源更新与复制移动引用、导出 | 未验收 |
 | SHEET-27 | 大纲分组（Pro 目标） | [分组规格][sheet-outline] | 行列嵌套组、层级、折叠/展开、汇总方向；与筛选/手动隐藏原因组合，不互相覆盖 | 未验收 |
 | SHEET-28 | 打印和 PDF（Pro 目标） | [打印规格][sheet-print] | 纸张/方向/边距/打印区域/缩放适页、分页预览、重复标题、页眉页脚、网格与隐藏处理、真实输出 | 未验收 |
-| SHEET-29 | 导入和 Office 导出（Pro/Server 对齐目标） | [导入导出规格][sheet-io]、duke-pages/rxls 的实际契约 | XLS/XLSX/CSV/TSV 对齐公开规格；保留已有 XLSB/ODS 读取；真实 XLSX/CSV/TSV 写出及重导入 | 未验收 |
+| SHEET-29 | 导入和 Office 导出（Pro/Server 对齐目标） | [导入导出规格][sheet-io]、duke-pages/rxls 的实际契约 | XLS/XLSX/CSV/TSV 对齐公开规格；保留已有 XLSB/ODS 读取；真实 XLSX/CSV/TSV 写出及重导入 | 未验收；[条件格式来源与资源预算、Office 往返草稿](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md) |
 | SHEET-30 | 工作簿/工作表/范围保护 | [权限规格][sheet-permission]、公开源码 permission | 保护粒度、可执行操作、只读反馈与撤销/协作边界；服务端验证，不能仅隐藏菜单 | 未验收 |
 
 每个模块的“全部公开”指固定基线对应的具体行为/函数/图型目录，不代表可以用一条笼统说明代替细项。开发前把目录展开为可测试子项；未核实的子项记录为待核实，不能自行选择一小部分后将整个模块标完成。
@@ -83,8 +83,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
-| DOC-01 | 文档模型、运行与排版 | [核心][doc-core]、[API][doc-api]、公开源码 docs/engine-render | 文本运行/段落/节、样式/主题、页面尺寸边距、换行/自动分页、光标与布局映射；传统/现代 flavor 分开 | 未验收 |
-| DOC-02 | 字符和段落格式 | 核心 API、公开源码 docs-ui/menu | 字体/字号/颜色/高亮/上下标/字符样式、标题级别、对齐/缩进/行距/段前后、混合选区；格式与模型一致 | 未验收；[上下标实现切片](feature-evidence/DOC-02-vertical-align.md) |
+| DOC-01 | 文档模型、运行与排版 | [核心][doc-core]、[API][doc-api]、公开源码 docs/engine-render | 文本运行/段落/节、样式/主题、页面尺寸边距、换行/自动分页、光标与布局映射；传统/现代 flavor 分开 | 未验收；[body/story 输入会话与 Facade 索引桥](feature-evidence/COMMON-03-input-selection-axis-history.md#4-docs-的输入会话) |
+| DOC-02 | 字符和段落格式 | 核心 API、公开源码 docs-ui/menu | 字体/字号/颜色/高亮/上下标/字符样式、标题级别、对齐/缩进/行距/段前后、混合选区；格式与模型一致 | 未验收；[上下标](feature-evidence/DOC-02-vertical-align.md)、[局部格式、清除与来源保留](feature-evidence/DOC-02-clear-formatting.md)、[输入偏好与取消/历史](feature-evidence/COMMON-03-input-selection-axis-history.md) |
 | DOC-03 | 分页、分栏、分节与页眉页脚 | 公开源码 header-footer、insert-break、布局引擎 | 连续/下一页/奇偶页等公开分节语义、节级布局、首页/奇偶页、与前节关联、页码与字段更新 | 未验收；[分节符切片证据](feature-evidence/DOC-03-section-breaks.md) |
 | DOC-04 | 左侧大纲、标题折叠和正文目录 | [目录规格][doc-toc]、公开源码 DocSideMenu/docs-toc/doc-heading-collapse/docs-toc-ui | 大纲导航；现代标题折叠保留子状态、隐藏选区迁回可见标题、历史/保存/同步；正文目录支持整体/页码更新与删除 | 未验收；[正文目录源码对照与本地差异](feature-evidence/DOC-04-table-of-contents.md) |
 | DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收；[清单列表切片证据](feature-evidence/DOC-05-checklist.md) |
@@ -104,7 +104,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | DOC-19 | 文档图表（Pro 目标） | [共享图表规格][shared-charts]及官方 Docs 图表 API | 复用可编辑图表模型、内嵌数据/源引用、尺寸/环绕/分页、属性编辑及 Office 图表关系 | 未验收 |
 | DOC-20 | 水印 | [水印规格][doc-watermark]、公开源码 watermark | 文本/图片、样式/透明度/定位、页面范围、打印与导出保留 | 未验收 |
 | DOC-21 | 打印和 PDF（Pro 目标） | [打印规格][doc-print] | 使用真实排版、页范围/纸张/方向/边距、分页/页眉页脚/图表/脚注正确；真实打印/PDF 输出 | 未验收 |
-| DOC-22 | 导入与 DOCX 写出（Pro/Server 对齐目标） | [导入导出规格][doc-io]、本项目 duke-pages 适配 | DOC/DOCX 导入、DOCX 真正写出；保留已有 ODT 读取；样式/节/列表/表格/对象/关系重开验证 | 未验收 |
+| DOC-22 | 导入与 DOCX 写出（Pro/Server 对齐目标） | [导入导出规格][doc-io]、本项目 duke-pages 适配 | DOC/DOCX 导入、DOCX 真正写出；保留已有 ODT 读取；样式/节/列表/表格/对象/关系重开验证 | 未验收；[默认样式、字段缓存与 DOC/ODT 历史来源](feature-evidence/DOC-02-clear-formatting.md) |
 | DOC-23 | 文档统计与排版状态 | 公开源码 DocFooter/DocStatistics/DocLayoutProgress | 文档/选区统计、页信息、缩放、排版任务真实进度；与内容历史、保存状态分开 | 未验收 |
 
 传统分页和现代连续模式中，上游标明尚未支持/计划中的行为，应记录真实成熟度；用户完整目标仍保留。不能将未知细节写成“已经完整实现”，也不能将单个模式限制扩大为全部文档能力限制。

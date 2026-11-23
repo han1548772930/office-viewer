@@ -2,6 +2,7 @@ export const sheetsZhCN: Record<string, string> = {
   'items.sheet.command.reset-text-color': '重置文字颜色', 'items.sheet.command.reset-background-color': '无填充',
   'items.sheet.menu.data-validation': '数据验证', 'items.sheet.operation.add-data-validation': '添加规则',
   'sheet.validation.canvas-selection': '画布选区', 'sheet.validation.use-selection': '使用选区',
+  'sheet.validation.type.any': '任意值',
   'sheet.validation.preset.yes': '是', 'sheet.validation.preset.no': '否',
   'sheet.validation.preset.notStarted': '未开始', 'sheet.validation.preset.inProgress': '进行中', 'sheet.validation.preset.completed': '已完成',
   'sheet.validation.preset.option1': '选项 1', 'sheet.validation.preset.option2': '选项 2',

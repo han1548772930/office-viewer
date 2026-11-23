@@ -72,3 +72,39 @@ test('absent blank cells and explicitly styled blanks share a baseline while emp
   assert.equal(getSheetCellEditConflict(session, { ...state, cell: { value: '', rawValue: '', dataType: 'text' } }), 'content')
   assert.equal(getSheetCellEditConflict(session, { ...state, cell: { value: '', rawNumberFormat: '@' } }), 'number-format')
 })
+
+test('each editing session has an independent identity and captures rich-run data by value', () => {
+  const richText = [{ id: 'one', text: 'ab', font: { bold: true }, vendor: { keep: true } }, { id: 'marker', text: '' }]
+  const state = context({ value: 'ab', rawValue: 'ab', dataType: 'text', richText })
+  const session = start(state), next = start(state)
+  assert.equal(typeof session.sessionId, 'string'); assert.notEqual(session.sessionId, next.sessionId)
+  richText[0].vendor.keep = false
+  assert.equal(session.source.richText[0].vendor.keep, true)
+  assert.equal(getSheetCellEditConflict(session, state), 'rich-text')
+})
+
+test('same-text run IDs, styles, links, markers and extensions conflict without rejecting unrelated cell visuals', () => {
+  const cell = { value: 'ab', rawValue: 'ab', dataType: 'text', richText: [
+    { id: 'one', text: 'ab', font: { bold: true }, hyperlink: 'https://example.test', vendor: { kind: 1 } },
+    { id: 'marker', text: '', vendor: { keep: true } },
+  ] }
+  const state = context(cell), session = start(state)
+  for (const change of [runs => { runs[0].id = 'new' }, runs => { runs[0].font.bold = false },
+    runs => { runs[0].hyperlink = 'https://other.test' }, runs => { runs[0].vendor.kind = 2 },
+    runs => { runs[1].vendor.keep = false }, runs => { runs.pop() }]) {
+    const richText = JSON.parse(JSON.stringify(cell.richText)); change(richText)
+    assert.equal(getSheetCellEditConflict(session, { ...state, cell: { ...cell, richText } }), 'rich-text')
+  }
+  assert.equal(getSheetCellEditConflict(session, { ...state, cell: { ...cell, background: '#334455', bold: false } }), undefined)
+})
+
+test('legacy sessions without a rich snapshot retain the prior compatibility conflict contract', () => {
+  const cell = { value: 'ab', rawValue: 'ab', dataType: 'text', richText: [{ id: 'one', text: 'ab', font: { bold: true } }] }
+  const state = context(cell), current = start(state)
+  const { sessionId: _id, ...legacy } = current
+  const { richText: _rich, ...source } = current.source
+  legacy.source = source
+  cell.richText[0].font.bold = false
+  assert.equal(getSheetCellEditConflict(legacy, state), undefined)
+  assert.equal(getSheetCellEditConflict(current, state), 'rich-text')
+})

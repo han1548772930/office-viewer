@@ -2,7 +2,9 @@ import type { DocumentBlock, DocumentModel, DocumentPermissionAction, DocumentPe
 import type { DocumentSelection, TextTarget } from '../model/document-model'
 import { orderedSelection, textTargets } from '../model/document-model'
 import { flattenDocumentBody } from '../services/document-facade'
-import { sectionIdForBlock } from '../services/section-header-footer'
+import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock } from '../services/section-header-footer'
+import { DOCUMENT_STORY_KEYS } from '../model/document-story'
+import { sameSectionStory, sectionStoryLinkedToPrevious } from '../model/document-section-stories'
 
 export interface DocumentPermissionTarget {
   scope: Exclude<DocumentPermissionScope, 'document'>
@@ -149,6 +151,27 @@ export function permissionTargetsForChangedBlocks(before: DocumentModel, after: 
   for (const id of changedIds) {
     addBlockPermissionTargets(before, id, result)
     addBlockPermissionTargets(after, id, result)
+  }
+  for (const target of permissionTargetsForChangedStories(before, after)) result.set(`${target.scope}:${target.id}`, target)
+  if (JSON.stringify(before.sectionSetup) !== JSON.stringify(after.sectionSetup)) result.set('section:first', { scope: 'section', id: 'first' })
+  return [...result.values()]
+}
+
+/** Inheritance is resolved before checking actual story changes; canonical empty overrides are not separate edits. */
+export function permissionTargetsForChangedStories(before: DocumentModel, after: DocumentModel): DocumentPermissionTarget[] {
+  const result = new Map<string, DocumentPermissionTarget>()
+  for (const sectionId of new Set([...documentSectionIds(before), ...documentSectionIds(after)])) {
+    const previous = resolveSectionHeaderFooter(before, sectionId), next = resolveSectionHeaderFooter(after, sectionId)
+    const firstChanged = previous.differentFirstPage !== next.differentFirstPage, evenChanged = previous.differentOddEven !== next.differentOddEven
+    for (const story of DOCUMENT_STORY_KEYS) {
+      const optionsChanged = firstChanged && (story.startsWith('firstPage') || story === 'header' || story === 'footer')
+        || evenChanged && (story.startsWith('evenPage') || story === 'header' || story === 'footer')
+      if (sameSectionStory(previous, next, story) && sectionStoryLinkedToPrevious(previous, story) === sectionStoryLinkedToPrevious(next, story) && !optionsChanged) continue
+      result.set(`section:${sectionId}`, { scope: 'section', id: sectionId })
+      result.set(`entity:${sectionId}:${story}`, { scope: 'entity', id: `${sectionId}:${story}` })
+      const area = story.toLowerCase().includes('header') ? 'header' : 'footer'
+      result.set(`entity:${sectionId}:${area}`, { scope: 'entity', id: `${sectionId}:${area}` })
+    }
   }
   return [...result.values()]
 }

@@ -1,5 +1,7 @@
 import type { OfficeStudio } from './office-studio.ts'
 import type { ApiSheetSelection, Disposable } from './events.ts'
+import { cloneModel } from '../domain/serialization.ts'
+import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
 import { resolveSheetRangeCommandTarget } from './sheet-range-editor-commands.ts'
 import { planWorkbookAxisStructureCommand, SHEET_AXIS_STRUCTURE_COMMAND_IDS, sheetAxisStructureActionForCommand,
   sheetAxisStructureCommandInput, sheetAxisStructureEdits } from '../features/sheet-workbench/sheet-axis-structure-command.ts'
@@ -18,20 +20,20 @@ export function registerSheetAxisStructureCommands(api: OfficeStudio): Disposabl
     const after = input.direction === 'after' || input.direction === 'down' || input.direction === 'right'
       || input.direction === 1 || input.direction === 2 || input.direction === undefined && action.position === 'after'
     const plan = planWorkbookAxisStructureCommand(target.workbook, target.sheetId, edits, api.currentUserId, after ? 'after' : 'before')
-    const currentSelection = api.getSelectionState(), active = currentSelection?.ranges[currentSelection.activeRangeIndex]
-    const selected = active?.unitId === target.unitId && active.sheetId === target.sheetId
+    const currentSelection = api.getSelectionState(target.unitId, target.sheetId)
     const selection: ApiSheetSelection = { ranges: [{ unitId: target.unitId, sheetId: target.sheetId, startRow: plan.selection.startRow, endRow: plan.selection.endRow,
       startColumn: plan.selection.startCol, endColumn: plan.selection.endCol, rangeType: action.axis === 'row' ? 1 : 2 }], activeRangeIndex: 0,
       primary: { row: plan.selection.startRow, column: plan.selection.startCol } }
     const label = `${action.kind === 'insert' ? '插入' : action.kind === 'delete' ? '删除' : action.kind === 'move' ? '移动' : '复制'}${action.axis === 'row' ? '行' : '列'}`
     const changed = api.commitWorkbook(target.unitId, label, model => Object.assign(model, plan.workbook), {
-      ...(selected && currentSelection ? { selections: { sheetId: target.sheetId, before: currentSelection, after: selection } } : {}),
+      ...(currentSelection ? { selections: { sheetId: target.sheetId, before: currentSelection, after: selection } } : {}),
+      prepareView: model => { toExcelWorkbookView(model) },
     })
     if (changed) {
-      api.events.emit('SheetStructureChanged', { workbookId: target.unitId, sheetId: target.sheetId, edits: plan.edits })
-      api.events.emit('SheetValueChanged', { workbookId: target.unitId, sheetId: target.sheetId, ranges: plan.affected.map(range => ({
+      api.publishObserverEvent('SheetStructureChanged', () => ({ workbookId: target.unitId, sheetId: target.sheetId, edits: cloneModel(plan.edits) }))
+      api.publishObserverEvent('SheetValueChanged', () => ({ workbookId: target.unitId, sheetId: target.sheetId, ranges: plan.affected.map(range => ({
         unitId: target.unitId, sheetId: target.sheetId, startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol,
-      })) })
+      })) }))
     }
     return changed
   }))

@@ -75,9 +75,9 @@ pub(super) fn prepare(sheet: &SheetInput) -> Result<WorksheetAxisPlan, ExportErr
     let valid_size = |value: &f64| value.is_finite() && *value >= 0.0;
     if sheet.row_count.is_some_and(|count| count == 0 || count > MAX_ROW_INDEX + 1)
         || sheet.column_count.is_some_and(|count| count == 0 || count > MAX_COLUMN_INDEX + 1)
-        || sheet.hidden_rows.iter().any(|row| *row > MAX_ROW_INDEX)
-        || sheet.hidden_columns.iter().any(|column| *column > MAX_COLUMN_INDEX) {
-        return Err(ExportError::invalid("worksheet axis counts or hidden indices exceed the XLSX limit"));
+        || sheet.hidden_rows.iter().any(|row| *row > MAX_ROW_INDEX || sheet.row_count.is_some_and(|count| *row >= count))
+        || sheet.hidden_columns.iter().any(|column| *column > MAX_COLUMN_INDEX || sheet.column_count.is_some_and(|count| *column >= count)) {
+        return Err(ExportError::invalid("worksheet axis counts or hidden indices exceed the worksheet or XLSX limit"));
     }
     check_spans(&sheet.row_height_spans, MAX_ROW_INDEX, valid_size)?;
     check_spans(&sheet.column_width_spans, MAX_COLUMN_INDEX, valid_size)?;

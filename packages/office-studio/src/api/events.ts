@@ -3,6 +3,7 @@ import type { SheetMergeConfirmationRequest } from '../features/sheet-workbench/
 import type { SheetFormatPainterConfirmationRequest, SheetFormatPainterState } from '../features/sheet-workbench/sheet-format-painter-session.ts'
 import type { SheetAxisEdit } from '../domain/sheet-axis-structure.ts'
 import type { SheetSelectionCell } from '../features/sheet-workbench/sheet-selection.ts'
+import type { DocumentInputSession } from '../features/document/model/document-input-session.ts'
 
 export interface Disposable {
   dispose(): void
@@ -11,6 +12,7 @@ export interface Disposable {
 export interface ApiEventMap {
   LifeCycleChanged: { stage: 'ready' | 'disposed' }
   CommandExecuted: { id: string; params?: unknown; unitId?: string; kind?: 'workbook' | 'document' }
+  EventListenerError: { eventName: keyof ApiEventMap; error: unknown }
   BeforeCommandExecute: { id: string; params?: unknown; unitId?: string; kind?: 'workbook' | 'document'; cancel?: boolean }
   BeforeUndo: { unitId: string; kind: 'workbook' | 'document'; cancel?: boolean }
   Undo: { unitId: string; kind: 'workbook' | 'document'; label?: string }
@@ -20,6 +22,7 @@ export interface ApiEventMap {
   WorkbookDisposed: { workbookId: string }
   DocCreated: { unitId: string; documentId: string }
   DocDisposed: { unitId: string; documentId: string }
+  DocumentInputStateChanged: { unitId: string; state?: DocumentInputSession }
   BeforeSheetNameChange: { workbookId: string; sheetId: string; oldName: string; newName: string; cancel?: boolean }
   SheetNameChanged: { workbookId: string; sheetId: string; oldName: string; newName: string }
   SheetValueChanged: { workbookId: string; sheetId: string; ranges: ApiRange[] }
@@ -45,6 +48,7 @@ export class FEventName {
   readonly LifeCycleChanged = 'LifeCycleChanged'
   readonly BeforeCommandExecute = 'BeforeCommandExecute'
   readonly CommandExecuted = 'CommandExecuted'
+  readonly EventListenerError = 'EventListenerError'
   readonly BeforeUndo = 'BeforeUndo'
   readonly Undo = 'Undo'
   readonly BeforeRedo = 'BeforeRedo'
@@ -53,6 +57,7 @@ export class FEventName {
   readonly WorkbookDisposed = 'WorkbookDisposed'
   readonly DocCreated = 'DocCreated'
   readonly DocDisposed = 'DocDisposed'
+  readonly DocumentInputStateChanged = 'DocumentInputStateChanged'
   readonly BeforeSheetNameChange = 'BeforeSheetNameChange'
   readonly SheetNameChanged = 'SheetNameChanged'
   readonly SheetValueChanged = 'SheetValueChanged'
@@ -91,6 +96,7 @@ export interface ApiSheetSelection {
 }
 
 type Listener<T> = (event: T) => void
+export interface EventDeliveryError<K extends PropertyKey = PropertyKey> { eventName: K; error: unknown }
 
 export class EventHub<TEvents extends object> {
   private readonly listeners = new Map<keyof TEvents, Set<Listener<never>>>()
@@ -114,6 +120,19 @@ export class EventHub<TEvents extends object> {
     const listeners = this.listeners.get(event)
     if (!listeners) return
     for (const listener of [...listeners]) (listener as Listener<TEvents[K]>)(payload)
+  }
+
+  /** Observations receive their own payload and return failures; cancellable Before events still use emit(). */
+  emitSettled<K extends keyof TEvents>(event: K, createPayload: () => TEvents[K], shouldContinue?: () => boolean): EventDeliveryError<K>[] {
+    const errors: EventDeliveryError<K>[] = []
+    const listeners = this.listeners.get(event)
+    if (!listeners) return errors
+    for (const listener of [...listeners]) {
+      if (shouldContinue && !shouldContinue()) break
+      try { (listener as Listener<TEvents[K]>)(createPayload()) }
+      catch (error) { errors.push({ eventName: event, error }) }
+    }
+    return errors
   }
 
   clear(): void {

@@ -27,7 +27,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     commands.push({ kind: 'rect', ...rect({ ...page, x: page.x + 3, y: page.y + 4 }), fill: '#dce1e8' })
     commands.push({ kind: 'rect', ...rect(page), fill: '#ffffff', stroke: '#d9dfe7', strokeWidth: 1 })
     const headerFooter = layout.pageHeaderFooters?.[page.index]
-    if (headerFooter) {
+    if (headerFooter && !headerFooter.isParityBlank) {
       const append = (lines: readonly LayoutStoryLine[], area: 'header' | 'footer') => {
         const active = options.story?.location.page === page.index && options.story.location.area === area
         const selectedStart = active ? Math.min(options.story!.selection.start, options.story!.selection.end) : 0
@@ -67,6 +67,10 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     }
     for (const divider of content.dividers) {
       if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: '#b3bdca', width: Math.max(1, scale) })
+    }
+    for (const separator of content.columnSeparators) {
+      if (visible(separator)) commands.push({ kind: 'line', x1: x(separator.x), y1: y(separator.y), x2: x(separator.x), y2: y(separator.y + separator.height),
+        color: '#b3bdca', width: Math.max(1, scale), clip: rect(layout.pages[pageIndex]!) })
     }
     for (const image of content.images) {
       if (!visible(image)) continue

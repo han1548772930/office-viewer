@@ -119,7 +119,7 @@ export interface SheetAutoFilter {
   filteredRows: number[]
 }
 
-export type SheetDataValidationType = 'whole' | 'decimal' | 'textLength' | 'date' | 'time' | 'checkbox' | 'list' | 'listMultiple' | 'custom'
+export type SheetDataValidationType = 'any' | 'whole' | 'decimal' | 'textLength' | 'date' | 'time' | 'checkbox' | 'list' | 'listMultiple' | 'custom'
 export type SheetDataValidationOperator = 'between' | 'equal' | 'greaterThan' | 'greaterThanOrEqual' |
   'lessThan' | 'lessThanOrEqual' | 'notBetween' | 'notEqual'
 export type SheetDataValidationErrorStyle = 'stop' | 'warning' | 'info'
@@ -129,6 +129,8 @@ export interface SheetDataValidationRule {
   id: string
   type: SheetDataValidationType
   ranges: CellRange[]
+  /** Retains relative formula operands when rebasing the first range would lose references. */
+  formulaAnchor?: { row: number; col: number }
   operator?: SheetDataValidationOperator
   formula1?: string
   formula2?: string
@@ -328,6 +330,8 @@ export type ChartAxisScaleType = 'linear' | 'log'
 export interface ChartSource {
   range: CellRange
   orientation: ChartSourceOrientation
+  /** Data source worksheet, independent of the host. Older snapshots default to ChartModel.sheetId. */
+  sheetId?: string
 }
 
 export interface ChartAxisOptions {
@@ -614,6 +618,9 @@ export interface DocumentSectionHeaderFooter {
   storyContent?: Partial<Record<DocumentPageField['story'], DocumentStoryContent>>
   differentFirstPage: boolean
   differentOddEven: boolean
+  /** Per-story association; omitted keys fall back to the legacy whole-section flag. */
+  storyLinkToPrevious?: Partial<Record<DocumentPageField['story'], boolean>>
+  /** Legacy whole-section association; mixed per-story state aggregates to false. */
   linkToPrevious: boolean
 }
 

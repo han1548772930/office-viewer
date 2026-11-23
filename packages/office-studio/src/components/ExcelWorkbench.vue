@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import { FOffice } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
+import type { ApiSheetSelection } from '../api/events.ts'
+import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND } from '../api/sheet-selection-commands.ts'
+import { COMMIT_SHEET_CELL_INPUT_COMMAND, planSheetCellInput, sheetCellInputConflictMessage, type SheetCellInputCommandInput,
+  type SheetCellInputCommandResult } from '../features/sheet-workbench/sheet-cell-input-command.ts'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
-import { applyExcelWorkbookView, toExcelWorkbookView } from '../services/excelViewAdapter'
+import { applyExcelWorkbookView, toExcelCellView, toExcelWorkbookView } from '../services/excelViewAdapter'
 import { createBlankWorkbook } from '../domain/model'
 import type { ChartModel, ChartSourceOrientation, ChartType } from '../domain/model'
 import type { SlicerModel } from '../domain/model'
@@ -23,6 +27,8 @@ import SheetFormulaBar from './spreadsheet/SheetFormulaBar.vue'
 import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
 import { calculateSelectionStatistics, createUniqueSheetName, frozenPaneCountsForSelection, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
+import { normalizeSheetSelection, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
+import { planSheetSelectionShortcut, SheetSelectionDirections, type SheetSelectionShortcutKey } from '../features/sheet-workbench/sheet-selection-navigation.ts'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
 import { type SheetBorderOptions } from '../features/sheet-workbench/sheet-toolbar-format'
 import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS } from '../features/sheet-workbench/sheet-number-format'
@@ -31,9 +37,10 @@ import { applySheetViewFontFormatCommand, fontFormatActionForCommand, sheetFontF
 import { applySheetViewBorderFormatCommand, borderFormatActionForCommand, createSheetBorderFormatState, SHEET_BORDER_FORMAT_COMMAND_IDS, SHEET_BORDER_FORMAT_COMMANDS, sheetBorderFormatCommandInput, sheetBorderFormatOptions, type SheetBorderFormatCommandInput, type SheetBorderFormatState } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { rememberSheetColor, sheetBorderColor, sheetOpaqueColorHex, type SheetColorField, type SheetColorMemory } from '../features/sheet-workbench/sheet-colors.ts'
 import { sheetCellNumberPattern, sheetCellNumberValue } from '../features/sheet-workbench/sheet-number-presentation.ts'
-import { createSheetCellEditorStart, editSheetCellText, sheetCellInputText } from '../features/sheet-workbench/sheet-cell-edit.ts'
-import { replaceSheetCellInputSelection, sheetCellInputActionForKey } from '../features/sheet-workbench/sheet-cell-edit-input.ts'
+import { createSheetCellEditorStart, editSheetCellText, sheetCellContentKey, sheetCellInputText } from '../features/sheet-workbench/sheet-cell-edit.ts'
+import { sheetCellInputActionForKey } from '../features/sheet-workbench/sheet-cell-edit-input.ts'
 import { createSheetCellEditSession, getSheetCellEditConflict, resolveSheetDate1904, type SheetCellEditSession } from '../features/sheet-workbench/sheet-cell-edit-session.ts'
+import { SheetCellInputEditRecorder, type SheetCellInputEditTrace, type SheetCellNativeInputEvent } from '../features/sheet-workbench/sheet-cell-input-trace.ts'
 import { applySheetViewLayoutFormatCommand, getSheetViewLayoutFormatState, layoutFormatActionForCommand, SHEET_LAYOUT_FORMAT_COMMAND_IDS, type SheetLayoutFormatCommandInput } from '../features/sheet-workbench/sheet-layout-format-command.ts'
 import { clearModeForCommand, SHEET_CLEAR_COMMAND_IDS, SHEET_CLEAR_COMMANDS } from '../features/sheet-workbench/sheet-clear-command.ts'
 import { SHEET_MERGE_COMMAND_IDS } from '../features/sheet-workbench/sheet-merge-command.ts'
@@ -55,7 +62,9 @@ import { findVisibleSheetRow, findVisibleSheetColumn } from '../features/sheet-w
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { planQuickValidation } from '../features/sheet-validation/quick-validation.ts'
 import { formatValidationRange } from '../features/sheet-validation/validation-panel-state.ts'
-import { createSheetPastePlan, type SheetPasteMode } from '../features/sheet-workbench/sheet-paste.ts'
+import { resolveSheetClipboardCommand } from '../features/sheet-workbench/sheet-clipboard.ts'
+import { useSheetClipboard } from './spreadsheet/use-sheet-clipboard.ts'
+import type { SheetClipboardCapabilitiesInput, SheetClipboardPermissionEvaluator } from '../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
 import { SHEET_FORMAT_PAINTER_COMMAND_IDS } from '../features/sheet-workbench/sheet-format-painter-session.ts'
@@ -86,7 +95,9 @@ export type ExcelCell = ExcelCellView
 export type ExcelSheet = SpreadsheetRenderSheet
 export type ExcelWorkbook = Omit<DomainExcelWorkbookView, 'sheets'> & { sheets: ExcelSheet[]; charts?: ChartModel[] }
 
-const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean; studio?: OfficeStudio; ribbonVariant?: RibbonVariant }>(), {
+const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean; studio?: OfficeStudio; ribbonVariant?: RibbonVariant;
+  hidePasteOptions?: boolean; clipboardPermission?: SheetClipboardPermissionEvaluator;
+  clipboardContext?: Pick<SheetClipboardCapabilitiesInput, 'exclusiveRange' | 'shapeTextEditing'> }>(), {
   modelValue: undefined,
   model: undefined,
   canUndo: undefined,
@@ -94,6 +105,7 @@ const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: Exc
   showHeader: false,
   studio: undefined,
   ribbonVariant: 'classic',
+  hidePasteOptions: false,
 })
 const { locale: officeLocale, region: officeRegion, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.studio?.regionalSettings)
 
@@ -105,8 +117,8 @@ const emit = defineEmits<{
   (event: 'import', file: File): void
   (event: 'save', value: ExcelWorkbook): void
   (event: 'export', value: ExcelWorkbook): void
-  (event: 'undo'): void
-  (event: 'redo'): void
+  (event: 'undo', source?: { workbookId: string }): void
+  (event: 'redo', source?: { workbookId: string }): void
   (event: 'notify', payload: { type: 'info' | 'success' | 'warning' | 'error'; message: string }): void
 }>()
 
@@ -169,19 +181,27 @@ let autoHeightBaseline = cloneWorkbook(workbook.value)
 const userId = computed(() => props.studio?.currentUserId ?? 'local-user')
 const availableSheets = computed(() => workbook.value.sheets.filter(sheet => canViewWorksheetProtection(sheet, userId.value)))
 const activeSheetId = ref(availableSheets.value.find(sheet => sheet.id === workbook.value.activeSheetId && sheet.visible !== false)?.id ?? availableSheets.value.find(sheet => sheet.visible !== false)?.id ?? '')
-const selectedKey = ref('A2')
-const selectionAnchor = ref('A2')
+const selectedKey = ref('A1')
+const selectionAnchor = ref('A1')
 let headerSelectionAnchor: { axis: 'row' | 'column'; index: number } | undefined
 let headerSelectionBase: GridRange[] = []
 let applyingHeaderSelection = false
 let applyingApiSelection = false
-const selectedRanges = ref<GridRange[]>([{ startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }])
+let syncingUiSelection = false
+let applyingShortcutSelection = false
+let standaloneSelectionTabStart: SheetSelectionState | undefined
+const selectedRanges = ref<GridRange[]>([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }])
+const activeSelectionIndex = ref(-1)
 const emptyCellSelection: string[] = []
 const editingKey = ref<string | null>(null)
 const editValue = ref('')
 const editSession = shallowRef<SheetCellEditSession | null>(null)
+let editRecorder: SheetCellInputEditRecorder | undefined
+let editSessionStudio: OfficeStudio | undefined
+const cellInputContext = () => ({ sessionId: editSession.value?.sessionId, value: editRecorder?.value ?? editValue.value })
 const cellEditorComposing = ref(false), formulaEditorComposing = ref(false)
 const editComposing = computed(() => cellEditorComposing.value || formulaEditorComposing.value)
+watch(() => props.studio, () => { cancelEdit() }, { flush: 'sync' })
 const selecting = ref(false)
 const formulaInput = ref<InstanceType<typeof SheetFormulaBar> | null>(null)
 const spreadsheetCanvas = ref<InstanceType<typeof SpreadsheetCanvas> | null>(null)
@@ -211,8 +231,6 @@ watch(() => displayPreference?.value.zoom, value => {
   for (const [id, session] of viewSessions) viewSessions.set(id, { ...session, zoom: value })
   zoom.value = value
 })
-const copiedCells = ref<Array<Array<ExcelCell | undefined>> | null>(null)
-const copiedFormulaCells = ref<Array<Array<ExcelCell | undefined>> | null>(null)
 const chartCommands = ref<DrawCommand[]>([])
 const chartEditorOpen = ref(false)
 const focusedChartId = ref<string | null>(null)
@@ -290,10 +308,6 @@ const worksheetProtectionSheetId = ref<string | null>(null)
 const protectionStartNew = ref(false)
 const cellMoveConfirmOpen = ref(false)
 const pendingCellMove = ref<{ direction: SheetCellMoveDirection; range: GridRange; sheetId: string } | null>(null)
-const copiedRange = ref<GridRange | null>(null)
-const copiedFormulaRange = ref<GridRange | null>(null)
-const copiedColumnWidths = ref<Record<number, number> | undefined>()
-const copiedDefaultColumnWidth = ref<number>()
 const sparklinePanelOpen = ref(false)
 const sparklineTargetRange = ref('A1')
 const customNumberFormatOpen = ref(false)
@@ -341,9 +355,12 @@ const activeRenderSheet = computed(() => activeSheet.value
   ? { ...activeSheet.value, date1904: activeDate1904.value } : undefined)
 const translate = computed(() => createOfficeTranslator(officeLocale.value))
 function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
-const activeCell = computed(() => activeSheet.value?.cells[selectedKey.value] ?? { value: '' })
+const activeCell = computed(() => {
+  const sheet = activeSheet.value
+  return sheet ? sheet.cells[sheetCellContentKey(sheet, selectedKey.value)] ?? { value: '' } : { value: '' }
+})
 const numberFormatSource = computed(() => {
-  const range = selectedRanges.value[0]
+  const range = selectedRanges.value[activeSelectionIndex.value] ?? selectedRanges.value.at(-1)
   const key = range ? `${columnName(range.startColumn)}${range.startRow + 1}` : selectedKey.value
   const cell = activeSheet.value?.cells[key]
   return { key, pattern: sheetCellNumberPattern(cell), sample: sheetCellNumberValue(cell) }
@@ -418,7 +435,8 @@ const { pending: axisSizePending, axisSizeError, openAxisSizeDialog, runAxisDime
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
   ranges: selectedModelRanges, userId: () => userId.value, region: () => officeRegion.value,
   active: () => workbenchActive.value, finishEdit,
-  applyView: value => { workbook.value = value }, changed: commitHistory,
+  prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
+  changed: options => { clearPainterSession(); commitHistory({ ...options, prepared: true }) },
   focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value) spreadsheetCanvas.value?.focus() },
 })
 const axisSizeRequest = computed(() => axisSizePending.value?.request ?? null)
@@ -427,14 +445,14 @@ const { runAxisStructureCommand } = useSheetAxisStructure({
   ranges: selectedModelRanges, userId: () => userId.value, region: () => officeRegion.value,
   active: () => workbenchActive.value, finishEdit,
   prepareView: prepareAxisWorkbookView,
-  applyView: value => { workbook.value = value },
+  applyView: applyExternalWorkbook,
   selection: range => {
     selectedRanges.value = [{ startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol }]
     selectedKey.value = `${columnName(range.startCol)}${range.startRow + 1}`
     selectionAnchor.value = selectedKey.value
     syncApiSelection()
   },
-  changed: () => { clearPainterSession(); commitHistory({ prepared: true }) },
+  changed: options => { clearPainterSession(); commitHistory({ ...options, prepared: true }) },
 })
 function prepareAxisWorkbookView(view: DomainExcelWorkbookView, previous: DomainExcelWorkbookView): DomainExcelWorkbookView {
   const next = view.calculationMode === 'manual' ? view
@@ -446,7 +464,7 @@ const { runAxisVisibilityCommand } = useSheetAxisVisibility({
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
   ranges: selectedModelRanges, userId: () => userId.value, region: () => officeRegion.value,
   active: () => workbenchActive.value, finishEdit, prepareView: prepareAxisWorkbookView,
-  applyView: value => { workbook.value = value },
+  applyView: applyExternalWorkbook,
   selection: (ranges, primary) => {
     const key = primary ? `${columnName(primary.column)}${primary.row + 1}` : selectedKey.value
     const next = normalizeSheetViewState(activeSheet.value ?? { rowCount: 0, columnCount: 0 }, { key, anchor: key,
@@ -454,7 +472,39 @@ const { runAxisVisibilityCommand } = useSheetAxisVisibility({
     selectedRanges.value = next.ranges; selectedKey.value = next.key; selectionAnchor.value = next.anchor
     syncApiSelection()
   },
-  changed: () => { clearPainterSession(); commitHistory({ prepared: true }) },
+  changed: options => { clearPainterSession(); commitHistory({ ...options, prepared: true }) },
+})
+const { capabilities: clipboardCapabilities, copyRange: clipboardCopyRange, pasteOptions: clipboardPasteOptions,
+  pasteOptionsCapabilities: clipboardPasteOptionsCapabilities, runClipboardCommand,
+  handleCopy: handleSheetCopy, handlePaste: handleSheetPaste, handleClipboardKeydown } = useSheetClipboard({
+  studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
+  range: () => {
+    const range = selectedRanges.value[activeSelectionIndex.value] ?? selectedRanges.value.at(-1)
+    return range ? { startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn } : undefined
+  },
+  userId: () => userId.value, region: () => officeRegion.value,
+  capabilitySelection: () => ({ ranges: selectedModelRanges(), activeRangeIndex: activeSelectionIndex.value }),
+  hidePasteOptions: () => props.hidePasteOptions,
+  exclusiveRange: () => props.clipboardContext?.exclusiveRange ?? false,
+  shapeTextEditing: () => props.clipboardContext?.shapeTextEditing ?? false,
+  get permission() { return props.clipboardPermission },
+  active: () => workbenchActive.value, editing: () => Boolean(editingKey.value), finishEdit,
+  prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
+  selection: ranges => {
+    const range = ranges.at(-1)
+    if (!range) return
+    selectedRanges.value = ranges.map(item => ({ startRow: item.startRow, endRow: item.endRow, startColumn: item.startCol, endColumn: item.endCol }))
+    selectedKey.value = `${columnName(range.startCol)}${range.startRow + 1}`
+    selectionAnchor.value = selectedKey.value
+    syncApiSelection()
+  },
+  changed: options => {
+    if (!options.current()) return
+    clearPainterSession()
+    if (options.current()) commitHistory({ ...options, prepared: true })
+  },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value) spreadsheetCanvas.value?.focus() },
+  notify: value => emit('notify', value),
 })
 const canEditValidationSelection = computed(() => Boolean(props.studio && workbook.value.id && activeSheet.value && selectedRanges.value.length
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)))
@@ -532,6 +582,7 @@ const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, 
   notify: message => emit('notify', { type: 'error', message }),
 })
 const ribbonTabs = computed(() => createSheetRibbon({
+  clipboardCapabilities: clipboardCapabilities.value,
   region: officeRegion.value,
   fontList: officeFonts?.value, fontEditable: canFormatSelection.value,
   painterActive: painterActive.value, painterUnavailable: painterUnavailable.value,
@@ -596,15 +647,20 @@ function applyExternalWorkbook(value: ExcelWorkbook) {
   activeSheetId.value = nextSheetId
   for (const id of viewSessions.keys()) if (!value.sheets.some(sheet => sheet.id === id)) viewSessions.delete(id)
   const sheet = activeSheet.value
-  const next = normalizeSheetViewState(sheet ?? { rowCount: 0, columnCount: 0 }, session)
+  const apiSelection = value.id ? props.studio?.getSelectionState(value.id, nextSheetId) : undefined
+  const next = normalizeSheetViewState(sheet ?? { rowCount: 0, columnCount: 0 }, apiSelection
+    ? { ...session, ...sheetSelectionViewState(apiSelection), anchor: session?.anchor ?? sheetSelectionViewState(apiSelection).key }
+    : session)
   selectedKey.value = next.key
   selectedRanges.value = next.ranges
   selectionAnchor.value = next.anchor
+  activeSelectionIndex.value = next.activeRangeIndex ?? -1
   zoom.value = session?.zoom ?? displayPreference?.value.zoom ?? next.zoom
   if (nextSheetId !== previousSheetId || (editingKey.value && !parseSheetAddress(editingKey.value, sheet ?? { rowCount: 0, columnCount: 0 }))) cancelEdit()
 }
 
-function commitHistory(options: { prepared?: boolean } = {}) {
+function commitHistory(options: { prepared?: boolean; syncSelection?: boolean; current?: () => boolean } = {}) {
+  if (options.current && !options.current()) return
   workbook.value.activeSheetId = activeSheetId.value
   if (!options.prepared) refreshWorkbookViewAutoRowHeights(workbook.value, autoHeightBaseline, {
     measure: props.studio?.sheetTextMeasure ?? measureSpreadsheetText, region: officeRegion.value,
@@ -613,9 +669,11 @@ function commitHistory(options: { prepared?: boolean } = {}) {
   // The emitted snapshot is separate from the mutable view and doubles as the next measurement baseline.
   autoHeightBaseline = snapshot
   emit('update:modelValue', snapshot)
+  if (options.current && !options.current()) return
   emit('update:model', snapshot)
+  if (options.current && !options.current()) return
   emit('change', snapshot)
-  syncApiSelection()
+  if ((!options.current || options.current()) && options.syncSelection !== false) syncApiSelection(true)
 }
 
 function validateIncomingValues(entries: readonly { key: string; value: string }[], region = officeRegion.value, date1904 = activeDate1904.value, currentYear?: number): boolean {
@@ -653,42 +711,95 @@ function validateIncomingValues(entries: readonly { key: string; value: string }
   return true
 }
 
-function syncApiSelection() {
+function syncApiSelection(preserveTabStart = false) {
   const studio = props.studio
   const id = workbook.value.id
   if (applyingApiSelection || !studio || !id || !studio.getWorkbookModel(id)?.sheets.some(sheet => sheet.id === activeSheetId.value)) return
   const sheet = activeSheet.value, [column, row] = splitKey(selectedKey.value)
   const primary = containsCell(selectedRanges.value, row - 1, column) ? { row: row - 1, column } : undefined
-  studio.setSelections(id, activeSheetId.value, selectedRanges.value.map(range => ({ ...range,
-    rangeType: range.startRow === 0 && range.endRow === (sheet?.rowCount ?? 0) - 1 && range.startColumn === 0 && range.endColumn === (sheet?.columnCount ?? 0) - 1 ? 3
+  const active = selectedRanges.value[activeSelectionIndex.value]
+  const activeRangeIndex = active && primary && containsCell([active], primary.row, primary.column) ? activeSelectionIndex.value : undefined
+  const ranges: ApiSheetSelection['ranges'] = selectedRanges.value.map(range => ({ ...range,
+    rangeType: range.rangeType ?? (range.startRow === 0 && range.endRow === (sheet?.rowCount ?? 0) - 1 && range.startColumn === 0 && range.endColumn === (sheet?.columnCount ?? 0) - 1 ? 3
       : range.startColumn === 0 && range.endColumn === (sheet?.columnCount ?? 0) - 1 ? 1
-        : range.startRow === 0 && range.endRow === (sheet?.rowCount ?? 0) - 1 ? 2 : 0,
-  })), { primary })
+        : range.startRow === 0 && range.endRow === (sheet?.rowCount ?? 0) - 1 ? 2 : 0),
+  }))
+  syncingUiSelection = true
+  try {
+    const requested = normalizeSheetSelection(ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+      startCol: range.startColumn, endCol: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })),
+      sheet ?? {}, { primary, activeRangeIndex })
+    const saved = studio.getSelectionState(id, activeSheetId.value)
+    const same = saved && requested.activeRangeIndex === saved.activeRangeIndex
+      && requested.primary?.row === saved.primary?.row && requested.primary?.column === saved.primary?.column
+      && saved.ranges.length === ranges.length && saved.ranges.every((range, index) => {
+        const next = ranges[index]!
+        return range.startRow === next.startRow && range.endRow === next.endRow && range.startColumn === next.startColumn
+          && range.endColumn === next.endColumn && range.rangeType === next.rangeType
+      })
+    if (preserveTabStart && saved && same && studio.activeWorkbookId === id && studio.editor.state.activeKind === 'workbook'
+      && studio.getWorkbookModel(id)?.activeSheetId === activeSheetId.value) {
+      activeSelectionIndex.value = saved.activeRangeIndex
+      return
+    }
+    studio.setSelections(id, activeSheetId.value, ranges, { primary, activeRangeIndex: requested.activeRangeIndex })
+  }
+  catch (error) {
+    const saved = studio.getSelectionState(id, activeSheetId.value)
+    if (saved) {
+      const previous = sheetSelectionViewState(saved)
+      applyingApiSelection = true
+      try {
+        selectedRanges.value = previous.ranges; selectedKey.value = previous.key; selectionAnchor.value = previous.key
+        activeSelectionIndex.value = previous.activeRangeIndex ?? -1
+      } finally { applyingApiSelection = false }
+    }
+    selecting.value = false; resetHeaderSelection()
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法设置选区。' })
+  } finally { syncingUiSelection = false }
+  activeSelectionIndex.value = studio.getSelectionState(id, activeSheetId.value)?.activeRangeIndex ?? -1
+}
+
+function sheetSelectionViewState(selection: ApiSheetSelection): Pick<SheetViewState, 'key' | 'ranges' | 'activeRangeIndex'> {
+  const primary = selection.primary
+  return { key: primary ? `${columnName(primary.column)}${primary.row + 1}` : 'A1', activeRangeIndex: selection.activeRangeIndex,
+    ranges: selection.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn,
+      endColumn: range.endColumn, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })) }
 }
 
 watch(() => props.studio, (studio, _previous, onCleanup) => {
   if (!studio) return
-  const listener = studio.events.addEvent('SelectionsChanged', event => {
-    if (!workbenchActive.value || event.workbookId !== workbook.value.id) return
-    const ranges = event.selection.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
-      startColumn: range.startColumn, endColumn: range.endColumn }))
-    const primary = event.selection.primary, key = primary ? `${columnName(primary.column)}${primary.row + 1}` : 'A1'
-    if (event.sheetId === activeSheetId.value && selectedKey.value === key && JSON.stringify(ranges) === JSON.stringify(selectedRanges.value)) return
-    const model = studio.getWorkbookModel(event.workbookId)
+  const apply = (unitId: string, sheetId: string, selection: ApiSheetSelection) => {
+    if (!workbenchActive.value || unitId !== workbook.value.id) return
+    const { key, ranges, activeRangeIndex } = sheetSelectionViewState(selection)
+    const sameCoordinates = ranges.length === selectedRanges.value.length && ranges.every((range, index) => {
+      const current = selectedRanges.value[index]!
+      return range.startRow === current.startRow && range.endRow === current.endRow && range.startColumn === current.startColumn && range.endColumn === current.endColumn
+    })
+    // Acknowledging the current header gesture must keep its drag/Shift anchor alive.
+    if (syncingUiSelection && sheetId === activeSheetId.value && sameCoordinates) {
+      if (selectedKey.value !== key) { selectedKey.value = key; selectionAnchor.value = key }
+      activeSelectionIndex.value = activeRangeIndex ?? -1
+      return
+    }
+    if (sheetId === activeSheetId.value && activeSelectionIndex.value === activeRangeIndex && selectedKey.value === key
+      && JSON.stringify(ranges) === JSON.stringify(selectedRanges.value)) return
+    const model = studio.getWorkbookModel(unitId)
     if (!model) return
     applyingApiSelection = true
     try {
       applyExternalWorkbook(toExcelWorkbookView(model))
-      activeSheetId.value = event.sheetId
-      if (!ranges.length) { selectedRanges.value = []; selectedKey.value = key; selectionAnchor.value = key }
-      else {
-        const next = normalizeSheetViewState(activeSheet.value ?? { rowCount: 0, columnCount: 0 }, { key, anchor: key, ranges, zoom: zoom.value })
-        selectedRanges.value = next.ranges; selectedKey.value = next.key; selectionAnchor.value = next.anchor
-      }
+      activeSheetId.value = sheetId
+      selectedRanges.value = ranges; selectedKey.value = key; selectionAnchor.value = key
+      activeSelectionIndex.value = activeRangeIndex ?? -1
       saveViewSession()
     } finally { applyingApiSelection = false }
-  })
+  }
+  const listener = studio.events.addEvent('SelectionsChanged', event => apply(event.workbookId, event.sheetId, event.selection))
   onCleanup(() => listener.dispose())
+  const current = workbook.value.id ? studio.getSelectionState(workbook.value.id) : undefined
+  const sheetId = workbook.value.id ? studio.getWorkbookModel(workbook.value.id)?.activeSheetId : undefined
+  if (current && sheetId && workbook.value.id) apply(workbook.value.id, sheetId, current)
 }, { immediate: true, flush: 'sync' })
 
 function rangeNotation(range: GridRange): string {
@@ -972,29 +1083,64 @@ async function removeChart(chartId: string) {
   if (chart) await chart.remove()
 }
 
-function setCellValue(key: string, value: string, region = officeRegion.value, date1904 = activeDate1904.value, currentYear?: number): boolean {
+function setCellValue(key: string, value: string, region = officeRegion.value, date1904 = activeDate1904.value,
+  currentYear = new Date().getFullYear(), session?: SheetCellEditSession, editTrace?: SheetCellInputEditTrace): boolean {
   const sheet = activeSheet.value
   if (!sheet) return false
-  const previous = sheet.cells[key]
-  const current = previous ?? { value: '' }
-  if (sheetCellInputText(current, date1904, region) === value) return true
-  if (!canEditWorksheetProtection(sheet, props.studio?.currentUserId ?? 'local-user')) {
-    emit('notify', { type: 'warning', message: '此工作表受保护，当前用户没有编辑权限。' })
-    return false
-  }
-  if (!validateIncomingValues([{ key, value }], region, date1904, currentYear)) return false
-  sheet.cells[key] = editSheetCellText(current, value, date1904, region, currentYear)
+  const unitId = workbook.value.id, [column, row] = splitKey(key)
+  const input: SheetCellInputCommandInput = { unitId: unitId ?? 'standalone-input', sheetId: sheet.id,
+    row: row - 1, column, input: value, region, date1904, currentYear, ...(session ? { session } : {}), ...(editTrace ? { editTrace } : {}) }
+  const studio = props.studio
+  const sameTarget = () => props.studio === studio && workbook.value.id === unitId && activeSheetId.value === sheet.id
+    && workbenchActive.value && (!studio || !unitId || studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook'
+      && studio.getWorkbookModel(unitId)?.activeSheetId === sheet.id)
   try {
-    recalculateFormulas()
+    let result: SheetCellInputCommandResult
+    if (studio && unitId) {
+      result = studio.executeCommandSync(COMMIT_SHEET_CELL_INPUT_COMMAND, input)
+      if (!result.accepted) {
+        emit('notify', { type: result.reason === 'conflict' ? 'warning' : 'error', message: result.message ?? '单元格编辑未能提交。' })
+        return false
+      }
+      // Observers may have switched units or started another edit after the committed transaction.
+      if (!sameTarget()) return true
+      const model = studio.getWorkbookModel(unitId)
+      if (!model) return false
+      applyExternalWorkbook(toExcelWorkbookView(model))
+    } else {
+      const before = applyExcelWorkbookView(createBlankWorkbook(), workbook.value, region)
+      const plan = planSheetCellInput({ ...before, date1904 }, input, { region, currentYear, userId: userId.value })
+      result = plan.result
+      if (!result.accepted) {
+        emit('notify', { type: result.reason === 'conflict' ? 'warning' : 'error', message: result.message ?? '单元格编辑未能提交。' })
+        return false
+      }
+      if (result.changed && plan.cell) {
+        let next = cloneWorkbook(workbook.value)
+        const target = next.sheets.find(item => item.id === sheet.id)!
+        target.cells[`${columnName(plan.position.column)}${plan.position.row + 1}`] = toExcelCellView(plan.cell)
+        if (before.calculationMode !== 'manual') next = recalculateSheetViewFormulas(next, undefined, { numberFormatLocale: region }).workbook
+        refreshWorkbookViewAutoRowHeights(next, autoHeightBaseline, { measure: props.studio?.sheetTextMeasure ?? measureSpreadsheetText, region })
+        applyExternalWorkbook(next)
+      }
+    }
+    const publishedView = workbook.value, revision = studio && unitId ? studio.getWorkbookRevision(unitId) : undefined
+    const current = () => sameTarget() && workbook.value === publishedView
+      && (!studio || !unitId || studio.getWorkbookRevision(unitId) === revision)
+    if (result.issues.length) {
+      const issue = result.issues[0]!
+      emit('notify', { type: issue.severity === 'warning' ? 'warning' : 'info', message: `${issue.title}：${issue.message}` })
+    }
+    if (result.changed && current() && activeSheet.value) {
+      const contentKey = sheetCellContentKey(activeSheet.value, key), cell = activeSheet.value.cells[contentKey]
+      if (cell) emit('edit-cell', { sheetId: sheet.id, key: contentKey, cell: structuredClone(toRaw(cell)) })
+      commitHistory({ prepared: true, syncSelection: !studio || !unitId, current })
+    }
+    return true
   } catch (error) {
-    if (previous) sheet.cells[key] = previous
-    else delete sheet.cells[key]
     emit('notify', { type: 'error', message: error instanceof Error ? error.message : '单元格编辑未能提交' })
     return false
   }
-  emit('edit-cell', { sheetId: sheet.id, key, cell: activeSheet.value?.cells[key] ?? sheet.cells[key]! })
-  commitHistory()
-  return true
 }
 
 function recalculateFormulas() {
@@ -1033,6 +1179,7 @@ function getCell(key: string): ExcelCell {
 }
 
 function selectCell(key: string, extend = false, keepHidden = false) {
+  standaloneSelectionTabStart = undefined
   const [requestedColumn, requestedRow] = splitKey(key)
   const visibleRow = keepHidden ? requestedRow - 1 : activeSheet.value ? findVisibleSheetRow(activeSheet.value, requestedRow - 1, 1) : undefined
   const column = keepHidden ? requestedColumn : activeSheet.value ? findVisibleSheetColumn(activeSheet.value, requestedColumn, 1) : undefined
@@ -1052,19 +1199,35 @@ function selectCell(key: string, extend = false, keepHidden = false) {
 
 function beginEdit(key = selectedKey.value, initialValue?: string, target: 'cell' | 'formula' = 'cell', focusEditor = true) {
   const sheet = activeSheet.value
+  const unitId = workbook.value.id
   const address = sheet ? parseSheetAddress(key, sheet) : undefined
   if (!sheet || !address) return
-  key = address.anchor
-  if (editingKey.value === key && initialValue === undefined) {
-    if (focusEditor) nextTick(() => target === 'cell' ? spreadsheetCanvas.value?.focusEditor() : formulaInput.value?.focus())
+  key = sheetCellContentKey(sheet, address.anchor)
+  if (editingKey.value === key && editSession.value?.documentId === unitId && editSession.value.sheetId === sheet.id && initialValue === undefined) {
+    const session = editSession.value
+    if (focusEditor) nextTick(() => {
+      if (editSession.value !== session || !workbenchActive.value) return
+      target === 'cell' ? spreadsheetCanvas.value?.focusEditor() : formulaInput.value?.focus()
+    })
     return
   }
   if (editingKey.value && !finishEdit()) return
   const currentSheet = activeSheet.value
-  if (!currentSheet) return
+  if (!currentSheet || currentSheet.id !== sheet.id || workbook.value.id !== unitId || !workbenchActive.value
+    || props.studio && unitId && (props.studio.activeWorkbookId !== unitId || props.studio.editor.state.activeKind !== 'workbook')) return
+  key = sheetCellContentKey(currentSheet, key)
   const session = createSheetCellEditSession({ documentId: workbook.value.id, sheetId: currentSheet.id, key, date1904: activeDate1904.value, cell: currentSheet.cells[key] },
-    { region: officeRegion.value, currentYear: new Date().getFullYear() })
+    { region: officeRegion.value, currentYear: new Date().getFullYear(), mode: initialValue === undefined ? 'edit' : 'overwrite' })
   const start = createSheetCellEditorStart(currentSheet.cells[key], initialValue, session.date1904, session.region)
+  const source = sheetCellInputText(currentSheet.cells[key], session.date1904, session.region)
+  editRecorder = new SheetCellInputEditRecorder(session.sessionId!, source)
+  if (initialValue !== undefined) {
+    const event = { sessionId: session.sessionId!, hostId: `initial-${session.sessionId}`, host: 'cell' as const,
+      value: source, start: 0, end: source.length }
+    editRecorder.handle({ ...event, phase: 'bind' })
+    editRecorder.handle({ ...event, phase: 'replace', text: start.value, inputType: 'insertText' })
+  }
+  editSessionStudio = props.studio
   cellEditorComposing.value = false
   formulaEditorComposing.value = false
   editSession.value = session
@@ -1082,10 +1245,23 @@ function beginFormulaEdit() {
   if (!editingKey.value) beginEdit(selectedKey.value, undefined, 'formula', false)
 }
 
+function handleCellNativeInput(event: SheetCellNativeInputEvent): void {
+  const session = editSession.value, recorder = editRecorder
+  if (!session || !recorder || event.sessionId !== session.sessionId || props.studio !== editSessionStudio
+    || editingKey.value !== session.key || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId
+    || !workbenchActive.value || props.studio && session.documentId && (props.studio.activeWorkbookId !== session.documentId
+      || props.studio.editor.state.activeKind !== 'workbook')) return
+  if (!recorder.handle(event)) return
+  editValue.value = recorder.value
+  cellEditorComposing.value = recorder.compositionHost === 'cell'
+  formulaEditorComposing.value = recorder.compositionHost === 'formula'
+}
+
 function finishFormulaEdit(navigation?: { key: 'Enter' | 'Tab'; shift: boolean }) {
   if (!finishEdit()) return
-  if (navigation) moveSelection(navigation.key === 'Enter' ? (navigation.shift ? -1 : 1) : 0, navigation.key === 'Tab' ? (navigation.shift ? -1 : 1) : 0)
-  spreadsheetCanvas.value?.focus()
+  if (navigation) moveSelectionForShortcut(navigation.key, navigation.shift)
+  if (workbenchActive.value && (!props.studio || props.studio.activeWorkbookId === workbook.value.id
+    && props.studio.editor.state.activeKind === 'workbook')) spreadsheetCanvas.value?.focus()
 }
 
 function cancelFormulaEdit() { cancelEdit(); spreadsheetCanvas.value?.focus() }
@@ -1106,6 +1282,14 @@ function navigateToAddress(input: string) {
   spreadsheetCanvas.value?.focus()
 }
 
+function inputNavigationState(): string {
+  const studio = props.studio, unitId = workbook.value.id, sheetId = activeSheetId.value
+  return JSON.stringify({ unitId, sheetId, active: workbenchActive.value,
+    activeUnit: studio?.activeWorkbookId, activeKind: studio?.editor.state.activeKind,
+    selection: studio && unitId ? studio.getSelectionState(unitId, sheetId)
+      : { key: selectedKey.value, ranges: selectedRanges.value, activeRangeIndex: activeSelectionIndex.value } })
+}
+
 function finishEdit(): boolean {
   if (!editingKey.value) return true
   if (editComposing.value) return false
@@ -1114,19 +1298,27 @@ function finishEdit(): boolean {
   const conflict = session && sheet ? getSheetCellEditConflict(session, { documentId: workbook.value.id, sheetId: sheet.id,
     key: editingKey.value, date1904: activeDate1904.value, cell: sheet.cells[editingKey.value] }) : 'cell'
   if (conflict) {
-    emit('notify', { type: 'warning', message: conflict === 'date-system' ? '编辑期间日期系统已更改，草稿已保留。请取消后重新编辑。'
-      : conflict === 'number-format' ? '编辑期间数字格式已更改，草稿已保留。请取消后重新编辑。'
-        : '编辑目标的内容已更改，草稿已保留。请取消后重新编辑。' })
+    emit('notify', { type: 'warning', message: sheetCellInputConflictMessage(conflict) })
     return false
   }
-  if (!session || !setCellValue(editingKey.value, editValue.value, session.region, session.date1904, session.currentYear)) return false
+  const navigation = inputNavigationState()
+  if (!session || !setCellValue(editingKey.value, editValue.value, session.region, session.date1904, session.currentYear, session, editRecorder?.trace)) return false
+  if (editSession.value !== session || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId) return false
+  const continueAction = navigation === inputNavigationState()
   cancelEdit()
-  return true
+  if (!continueAction) void nextTick(() => {
+    if (editSession.value || !workbenchActive.value || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId
+      || props.studio && (props.studio.activeWorkbookId !== session.documentId || props.studio.editor.state.activeKind !== 'workbook')) return
+    if (document.activeElement === document.body) spreadsheetCanvas.value?.focus()
+  })
+  return continueAction
 }
 
 function cancelEdit() {
   editingKey.value = null
   editSession.value = null
+  editRecorder = undefined
+  editSessionStudio = undefined
   cellEditorComposing.value = false
   formulaEditorComposing.value = false
 }
@@ -1139,8 +1331,43 @@ function moveSelection(rowOffset: number, columnOffset: number, extend = false) 
   selectCell(`${columnName(nextColumn)}${nextRow + 1}`, extend)
 }
 
+function moveSelectionForShortcut(key: SheetSelectionShortcutKey, shift = false): void {
+  const sheet = activeSheet.value
+  if (!sheet || !selectedRanges.value.length) return
+  const direction = key === 'Tab' ? shift ? SheetSelectionDirections.LEFT : SheetSelectionDirections.RIGHT
+    : shift ? SheetSelectionDirections.UP : SheetSelectionDirections.DOWN
+  try {
+    const studio = props.studio, unitId = workbook.value.id
+    if (studio && unitId) {
+      studio.executeCommandSync(MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND, { unitId, sheetId: sheet.id, direction, key })
+      return
+    }
+    const [column, row] = splitKey(selectedKey.value)
+    const state = normalizeSheetSelection(selectedModelRanges().map((range, index) => ({ ...range,
+      ...(selectedRanges.value[index]!.rangeType === undefined ? {} : { rangeType: selectedRanges.value[index]!.rangeType }) })), sheet,
+      { primary: { row: row - 1, column }, ...(activeSelectionIndex.value < 0 ? {} : { activeRangeIndex: activeSelectionIndex.value }) })
+    const mergedRanges = (sheet.merges ?? []).flatMap(value => {
+      const parsed = parseSheetAddress(value, sheet)?.range
+      return parsed ? [{ startRow: parsed.startRow, endRow: parsed.endRow, startCol: parsed.startColumn, endCol: parsed.endColumn }] : []
+    })
+    const plan = planSheetSelectionShortcut(state, direction, key, { ...sheet, mergedRanges }, standaloneSelectionTabStart)
+    if (!plan?.selection.primary) return
+    applyingShortcutSelection = true
+    try {
+      selectedRanges.value = plan.selection.ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+        startColumn: range.startCol, endColumn: range.endCol, ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) }))
+      selectedKey.value = `${columnName(plan.selection.primary.column)}${plan.selection.primary.row + 1}`
+      selectionAnchor.value = selectedKey.value
+      activeSelectionIndex.value = plan.selection.activeRangeIndex
+      standaloneSelectionTabStart = plan.tabStart
+    } finally { applyingShortcutSelection = false }
+  } catch (error) {
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法移动选区。' })
+  }
+}
+
 function handleGridKeydown(event: KeyboardEvent) {
-  if (event.isComposing || event.keyCode === 229) return
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   const target = event.target as HTMLElement | null
   if (!target?.closest('.spreadsheet-canvas')) return
   if (target?.matches('input, textarea, select')
@@ -1154,24 +1381,19 @@ function handleGridKeydown(event: KeyboardEvent) {
     const action = sheetCellInputActionForKey(event, editComposing.value)
     if (action === 'line-break') {
       event.preventDefault()
-      const native = event.target
-      const value = native instanceof HTMLInputElement || native instanceof HTMLTextAreaElement ? native.value : editValue.value
-      const selection = native instanceof HTMLInputElement || native instanceof HTMLTextAreaElement
-        ? { start: native.selectionStart ?? value.length, end: native.selectionEnd ?? value.length } : undefined
-      const replacement = replaceSheetCellInputSelection(value, '\n', selection)
-      editValue.value = replacement.value
-      spreadsheetCanvas.value?.focusEditor(replacement.selection)
+      spreadsheetCanvas.value?.insertEditorText('\n')
     } else if (action === 'cancel') {
       event.preventDefault(); cancelEdit(); spreadsheetCanvas.value?.focus()
     } else if (action !== 'native') {
       event.preventDefault()
       if (!finishEdit()) return
-      if (action !== 'commit') moveSelection(action === 'next-row' ? 1 : action === 'previous-row' ? -1 : 0,
-        action === 'next-column' ? 1 : action === 'previous-column' ? -1 : 0)
+      if (action !== 'commit') moveSelectionForShortcut(action === 'next-column' || action === 'previous-column' ? 'Tab' : 'Enter',
+        action === 'previous-column' || action === 'previous-row')
       spreadsheetCanvas.value?.focus()
     }
     return
   }
+  if (handleClipboardKeydown(event)) return
   const fontCommand = sheetFontFormatCommandForShortcut(event)
   if (fontCommand) {
     event.preventDefault()
@@ -1183,14 +1405,19 @@ function handleGridKeydown(event: KeyboardEvent) {
     void executeRibbon('sheet.operation.insert-hyperlink')
     return
   }
-  if (event.key === 'Enter' && activeCell.value.hyperlink) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && activeCell.value.hyperlink) {
     event.preventDefault()
     openCellHyperlink(selectedKey.value)
     return
   }
-  if (event.key === 'Enter' || event.key === 'F2') {
+  if (event.key === 'F2') {
     event.preventDefault()
     beginEdit()
+    return
+  }
+  if ((event.key === 'Enter' || event.key === 'Tab') && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault()
+    moveSelectionForShortcut(event.key, event.shiftKey)
     return
   }
   if (event.key === 'ArrowDown') {
@@ -1202,21 +1429,12 @@ function handleGridKeydown(event: KeyboardEvent) {
   } else if (event.key === 'ArrowLeft') {
     event.preventDefault()
     moveSelection(0, -1, event.shiftKey)
-  } else if (event.key === 'ArrowRight' || event.key === 'Tab') {
+  } else if (event.key === 'ArrowRight') {
     event.preventDefault()
-    moveSelection(0, event.key === 'Tab' && event.shiftKey ? -1 : 1, event.key === 'ArrowRight' && event.shiftKey)
+    moveSelection(0, 1, event.shiftKey)
   } else if (event.key === 'Delete' || event.key === 'Backspace') {
     event.preventDefault()
     void executeRibbon(SHEET_CLEAR_COMMANDS.content)
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
-    event.preventDefault()
-    copySelection()
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
-    event.preventDefault()
-    pasteSelection()
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x') {
-    event.preventDefault()
-    cutSelection()
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault()
     if (event.shiftKey) redo(); else undo()
@@ -1249,99 +1467,6 @@ function applyToSelection(action: (key: string) => void): boolean {
 function selectedExistingKeys(): string[] {
   return Object.keys(sheetCells.value).filter(key => { const [column, row] = splitKey(key); return containsCell(selectedRanges.value, row - 1, column) })
 }
-function copySelection(formulaOnly = false): boolean {
-  const bounds = selectionBounds(selectedRanges.value)
-  if (!activeSheet.value || !bounds || !checkDirectSelection(selectionCount([bounds]))) return false
-  if (formulaOnly) copiedFormulaRange.value = { ...bounds }
-  else copiedRange.value = { ...bounds }
-  if (!formulaOnly) {
-    copiedColumnWidths.value = Object.fromEntries(Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, offset) => {
-      const column = bounds.startColumn + offset
-      return [column, activeSheet.value?.columnWidths?.[column] ?? activeSheet.value?.defaultColumnWidth ?? 96]
-    }))
-    copiedDefaultColumnWidth.value = activeSheet.value.defaultColumnWidth ?? 96
-  }
-  const copiedRangeCells = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
-    Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, columnOffset) => ({ ...getCell(`${columnName(bounds.startColumn + columnOffset)}${bounds.startRow + rowOffset + 1}`) })),
-  )
-  copiedFormulaCells.value = copiedRangeCells.map(row => row.map(cell => cell.formula ? { ...cell } : undefined))
-  if (!formulaOnly) copiedCells.value = copiedRangeCells
-  const text = formulaOnly
-    ? copiedFormulaCells.value.map(row => row.map(cell => cell?.formula ?? '').join('\t')).join('\n')
-    : copiedRangeCells.map(row => row.map(cell => cell.formula ?? cell.value).join('\t')).join('\n')
-  if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).catch(() => emit('notify', { type: 'info', message: '系统剪贴板不可用，内容已保留在工作台内，可继续粘贴。' }))
-  return true
-}
-
-function cutSelection() {
-  if (!copySelection()) return
-  if (!activeSheet.value) return
-  selectedExistingKeys().forEach((key) => delete activeSheet.value?.cells[key])
-  recalculateFormulas()
-  commitHistory()
-}
-
-function applyPasteText(text: string) {
-  if (!text || !activeSheet.value) return
-  const [startColumn, startRow] = splitKey(selectedKey.value)
-  const entries: Array<{ key: string; value: string }> = []
-  text.replace(/\r/g, '').split('\n').forEach((rowText, rowOffset) => {
-    rowText.split('\t').forEach((value, columnOffset) => {
-      const column = startColumn + columnOffset
-      const row = startRow + rowOffset
-      if (column >= (activeSheet.value?.columnCount ?? columnCount) || row > totalRows.value) return
-      const key = `${columnName(column)}${row}`
-      entries.push({ key, value })
-    })
-  })
-  if (!checkDirectSelection(entries.length) || !validateIncomingValues(entries)) return
-  entries.forEach(({ key, value }) => {
-    activeSheet.value!.cells[key] = editSheetCellText(activeSheet.value?.cells[key], value, activeDate1904.value, officeRegion.value)
-  })
-  recalculateFormulas()
-  commitHistory()
-}
-
-function pasteInternal(mode: SheetPasteMode) {
-  const sheet = activeSheet.value
-  const source = mode === 'formulas' ? copiedFormulaCells.value : copiedCells.value
-  const sourceRange = mode === 'formulas' ? copiedFormulaRange.value : copiedRange.value
-  const targetRange = selectionBounds(selectedRanges.value)
-  if (!sheet || !source || !sourceRange || !targetRange) {
-    if (mode === 'all' || mode === 'values') void pasteSelection()
-    return
-  }
-  const targetCells = source.map((row, rowOffset) => row.map((_, columnOffset) => {
-    const rowIndex = targetRange.startRow + rowOffset
-    const columnIndex = targetRange.startColumn + columnOffset
-    return sheet.cells[`${columnName(columnIndex)}${rowIndex + 1}`] ?? { value: '' }
-  }))
-  const plan = createSheetPastePlan({
-    mode,
-    sourceCells: source,
-    targetCells,
-    sourceStartRow: sourceRange.startRow,
-    sourceStartColumn: sourceRange.startColumn,
-    targetStartRow: targetRange.startRow,
-    targetStartColumn: targetRange.startColumn,
-    sourceColumnWidths: copiedColumnWidths.value,
-    sourceDefaultColumnWidth: copiedDefaultColumnWidth.value,
-  })
-  const patches = plan.cellPatches.map(({ rowOffset, columnOffset, cell }) => ({
-    key: `${columnName(targetRange.startColumn + columnOffset)}${targetRange.startRow + rowOffset + 1}`,
-    cell,
-  }))
-  if (!patches.length && !plan.columnWidthPatches.length) return
-  if (!checkDirectSelection(patches.length) || !validateIncomingValues(patches.map(({ key, cell }) => ({ key, value: cell.formula ?? cell.value })))) return
-  patches.forEach(({ key, cell }) => { sheet.cells[key] = cell })
-  if (plan.columnWidthPatches.length) {
-    sheet.columnWidths ??= {}
-    plan.columnWidthPatches.forEach(({ column, width }) => { sheet.columnWidths![column] = width })
-  }
-  recalculateFormulas()
-  commitHistory()
-}
-
 function fillSelection(source: GridRange, target: { row: number; column: number }, applyType: SheetFillApplyType = 'SERIES') {
   const sheet = activeSheet.value
   if (!sheet) return
@@ -1391,31 +1516,12 @@ function fillSelection(source: GridRange, target: { row: number; column: number 
   }
 }
 
-function handlePaste(event: ClipboardEvent) {
-  const text = event.clipboardData?.getData('text/plain')
-  if (text) {
-    event.preventDefault()
-    applyPasteText(text)
-  }
-}
-
-async function pasteSelection() {
-  let text = ''
-  try {
-    text = (await navigator.clipboard?.readText()) ?? ''
-  } catch {
-    text = ''
-  }
-  if (!text && copiedCells.value) text = copiedCells.value.map((row) => row.map((cell) => cell?.formula ?? cell?.value ?? '').join('\t')).join('\n')
-  applyPasteText(text)
-}
-
 function undo() {
-  emit('undo')
+  emit('undo', workbook.value.id ? { workbookId: workbook.value.id } : undefined)
 }
 
 function redo() {
-  emit('redo')
+  emit('redo', workbook.value.id ? { workbookId: workbook.value.id } : undefined)
 }
 
 function runFontFormatCommand(commandId: string, params?: unknown): boolean {
@@ -1630,7 +1736,9 @@ function convertSelectedTextCells() {
 }
 
 function saveViewSession() {
-  if (activeSheetId.value) viewSessions.set(activeSheetId.value, { key: selectedKey.value, anchor: selectionAnchor.value, ranges: selectedRanges.value.map(range => ({ ...range })), zoom: zoom.value })
+  if (activeSheetId.value) viewSessions.set(activeSheetId.value, { key: selectedKey.value, anchor: selectionAnchor.value,
+    ranges: selectedRanges.value.map(range => ({ ...range })), zoom: zoom.value,
+    ...(activeSelectionIndex.value < 0 && selectedRanges.value.length ? {} : { activeRangeIndex: activeSelectionIndex.value }) })
 }
 
 function activateSheet(id: string) {
@@ -1651,6 +1759,7 @@ function activateSheet(id: string) {
   selectedKey.value = next.key
   selectionAnchor.value = next.anchor
   selectedRanges.value = next.ranges
+  activeSelectionIndex.value = next.activeRangeIndex ?? -1
   zoom.value = session?.zoom ?? displayPreference?.value.zoom ?? next.zoom
   if (props.studio && workbook.value.id && props.studio.getWorkbookModel(workbook.value.id)?.sheets.some(candidate => candidate.id === id)) {
     FOffice.newAPI(props.studio).getWorkbook(workbook.value.id)?.setActiveSheet(id)
@@ -2227,16 +2336,10 @@ function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 's
 }
 
 async function executeRibbon(commandId: string, params?: unknown) {
+  if (resolveSheetClipboardCommand(commandId)) { await runClipboardCommand(commandId, params); return }
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo' && !finishEdit()) return
   const commands: Record<string, () => void | Promise<void>> = {
     'sheet.command.undo': undo, 'sheet.command.redo': redo,
-    'sheet.command.copy': () => { copySelection() }, 'sheet.command.copy-formulas': () => { copySelection(true) }, 'sheet.command.cut': cutSelection,
-    'sheet.command.paste': () => pasteInternal('all'),
-    'sheet.command.paste-formulas': () => pasteInternal('formulas'),
-    'sheet.command.paste-values': () => pasteInternal('values'),
-    'sheet.command.paste-formats': () => pasteInternal('formats'),
-    'sheet.command.paste-column-widths': () => pasteInternal('columnWidths'),
-    'sheet.command.paste-except-borders': () => pasteInternal('exceptBorders'),
     'sheet.command.set-calculation-mode': () => {
       if ((params !== 'automatic' && params !== 'manual') || !props.studio || !workbook.value.id) return
       const book = FOffice.newAPI(props.studio).getWorkbook(workbook.value.id)
@@ -2401,8 +2504,15 @@ function onWindowKeydown(event: KeyboardEvent) {
   }
 }
 
-watch(selectedKey, () => { nameError.value = ''; void nextTick(scrollToSelected) })
-watch(selectedRanges, () => { if (!applyingHeaderSelection) resetHeaderSelection() }, { flush: 'sync' })
+watch(selectedKey, () => {
+  if (!applyingShortcutSelection) standaloneSelectionTabStart = undefined
+  nameError.value = ''; void nextTick(scrollToSelected)
+}, { flush: 'sync' })
+watch(selectedRanges, (next, previous) => {
+  if (!applyingShortcutSelection && JSON.stringify(next) !== JSON.stringify(previous)) standaloneSelectionTabStart = undefined
+  if (!applyingApiSelection && !applyingShortcutSelection) activeSelectionIndex.value = -1
+  if (!applyingHeaderSelection) resetHeaderSelection()
+}, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId, () => activeSheet.value?.rowCount, () => activeSheet.value?.columnCount], resetHeaderSelection, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], cancelEdit, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], () => { validationPanelOpen.value = false })
@@ -2472,7 +2582,7 @@ onActivated(() => { workbenchActive.value = true })
     </header>
 
     <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :tabs="ribbonTabs" :variant="props.ribbonVariant" @execute="executeRibbon" />
-    <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :composing="editComposing" :error="nameError" @update:value="editValue = $event" @composition-change="formulaEditorComposing = $event" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
+    <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
       <div class="find-input-row">
@@ -2497,15 +2607,17 @@ onActivated(() => { workbenchActive.value = true })
 
     <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" orientation="horizontal" @resize="resizeSheetSidebar">
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
-    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" v-model:edit-value="editValue"
+    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext"
       :sheet="activeRenderSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
       :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview"
+      :copy-range="clipboardCopyRange" :paste-options="clipboardPasteOptions" :clipboard-capabilities="clipboardCapabilities"
+      :paste-options-capabilities="clipboardPasteOptionsCapabilities"
       :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId"
       @select-cell="startCellSelection" @extend-selection="extendCellSelection" @extend-header-selection="extendHeaderSelection"
       @selection-end="finishCanvasSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit"
-      @composition-change="cellEditorComposing = $event" @editor-keydown="handleGridKeydown" @paste="handlePaste" @resize-axis="resizeAxis"
+      @input-event="handleCellNativeInput" @editor-keydown="handleGridKeydown" @copy="handleSheetCopy" @cut="event => handleSheetCopy(event, true)" @paste="handleSheetPaste" @resize-axis="resizeAxis"
       @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event"
       @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo"
       @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings"

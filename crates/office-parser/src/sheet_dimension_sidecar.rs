@@ -317,9 +317,9 @@ fn validate_state(state: &AxisState) -> Result<(), String> {
     }
     if state.row_count.is_some_and(|count| count == 0 || count > MAX_ROW_INDEX + 1)
         || state.column_count.is_some_and(|count| count == 0 || count > MAX_COLUMN_INDEX + 1)
-        || state.hidden_rows.iter().any(|index| *index > MAX_ROW_INDEX)
-        || state.hidden_columns.iter().any(|index| *index > MAX_COLUMN_INDEX) {
-        return Err("pixel-dimension counts or hidden indices exceed the Office limit".into());
+        || state.hidden_rows.iter().any(|index| *index > MAX_ROW_INDEX || state.row_count.is_some_and(|count| *index >= count))
+        || state.hidden_columns.iter().any(|index| *index > MAX_COLUMN_INDEX || state.column_count.is_some_and(|count| *index >= count)) {
+        return Err("pixel-dimension counts or hidden indices exceed the worksheet or Office limit".into());
     }
     Ok(())
 }

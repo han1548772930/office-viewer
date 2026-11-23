@@ -1,10 +1,12 @@
 import type { OfficeStudio } from './office-studio.ts'
+import type { Disposable } from './events.ts'
+import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
 import { resolveSheetRangeCommandTarget } from './sheet-range-editor-commands.ts'
 import { applySheetAxisDimensionCommand, SHEET_AXIS_DIMENSION_COMMAND_IDS, sheetAxisDimensionActionForCommand,
   sheetAxisDimensionCommandInput, sheetAxisDimensionTargetRanges } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
 
-export function registerSheetAxisDimensionCommands(api: OfficeStudio): void {
-  for (const id of SHEET_AXIS_DIMENSION_COMMAND_IDS) api.registerCommand<unknown, boolean>(id, params => {
+export function registerSheetAxisDimensionCommands(api: OfficeStudio): Disposable {
+  const registrations = SHEET_AXIS_DIMENSION_COMMAND_IDS.map(id => api.registerCommand<unknown, boolean>(id, params => {
     const input = sheetAxisDimensionCommandInput(params), action = sheetAxisDimensionActionForCommand(id)
     if (!action) return false
     const target = resolveSheetRangeCommandTarget(api, input)
@@ -19,10 +21,11 @@ export function registerSheetAxisDimensionCommands(api: OfficeStudio): void {
       const sheet = model.sheets.find(item => item.id === target.sheetId)!
       applySheetAxisDimensionCommand(sheet, ranges, action, input,
         api.currentUserId, { measure: api.sheetTextMeasure, region: api.regionalSettings.region.value }, model.date1904)
-    }, { recalculate: false })
-    if (changed) api.events.emit('SheetDimensionsChanged', { workbookId: target.unitId, sheetId: target.sheetId,
+    }, { recalculate: false, prepareView: model => { toExcelWorkbookView(model) } })
+    if (changed) api.publishObserverEvent('SheetDimensionsChanged', () => ({ workbookId: target.unitId, sheetId: target.sheetId,
       axis: action.axis, automatic: action.kind === 'auto', ranges: ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
-        startColumn: range.startCol, endColumn: range.endCol, unitId: target.unitId, sheetId: target.sheetId })) })
+        startColumn: range.startCol, endColumn: range.endCol, unitId: target.unitId, sheetId: target.sheetId })) }))
     return changed
-  })
+  }))
+  return { dispose: () => registrations.forEach(registration => registration.dispose()) }
 }

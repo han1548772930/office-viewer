@@ -1,10 +1,12 @@
-import { defaultCellStyle, type CellScalar, type ChartModel, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel, type SheetDataValidationRule } from '../domain/model.ts'
+import { defaultCellStyle, type CellScalar, type ChartModel, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../domain/model.ts'
 import { conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from '../features/conditional-formatting/conditional-format-office-source.ts'
+import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import type { ParseEnvelope } from './contracts.ts'
 import { cloneModel } from '../domain/serialization.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 import { normalizeWorkbookAxisDimensions } from './workbookAxisDimensions.ts'
 import { normalizeWorkbookAutoFilter } from './workbookAutoFilter.ts'
+import { normalizeWorkbookDataValidations } from './workbookDataValidation.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 
 function normalizeCell(value: unknown): SpreadsheetCell {
@@ -81,52 +83,13 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
   }
   const dimensions = record(raw.dimensions)
   const frozen = record(raw.freezePanes)
-  const dataValidations = array(raw.dataValidations).flatMap((value): SheetDataValidationRule[] => {
-    const wrapped = record(value)
-    const item = record(wrapped.rule) ? record(wrapped.rule) : wrapped
-    const typeNames: Record<string, SheetDataValidationRule['type']> = {
-      whole: 'whole', integer: 'whole', decimal: 'decimal', textlength: 'textLength', date: 'date', time: 'time',
-      checkbox: 'checkbox', list: 'list', listmultiple: 'listMultiple', custom: 'custom',
-    }
-    const sourceType = typeof item.type === 'string' ? item.type.toLowerCase() : ''
-    const type = typeNames[sourceType]
-    const idValue = typeof item.uid === 'string' ? item.uid : typeof item.id === 'string' ? item.id : ''
-    if (!type || !idValue) return []
-    const ranges = array(item.ranges).flatMap(rangeValue => {
-      const range = record(rangeValue)
-      const startRow = finite(range.startRow ?? range.firstRow, -1)
-      const startCol = finite(range.startColumn ?? range.startCol ?? range.firstColumn ?? range.firstCol, -1)
-      const endRow = finite(range.endRow ?? range.lastRow, startRow)
-      const endCol = finite(range.endColumn ?? range.endCol ?? range.lastColumn ?? range.lastCol, startCol)
-      return startRow >= 0 && startCol >= 0 && endRow >= startRow && endCol >= startCol
-        ? [{ startRow, startCol, endRow, endCol }]
-        : []
-    })
-    if (!ranges.length) return []
-    const operatorNames: Record<string, NonNullable<SheetDataValidationRule['operator']>> = {
-      between: 'between', equal: 'equal', greaterthan: 'greaterThan', greaterthanorequal: 'greaterThanOrEqual',
-      lessthan: 'lessThan', lessthanorequal: 'lessThanOrEqual', notbetween: 'notBetween', notequal: 'notEqual',
-    }
-    const errorStyle = typeof item.errorStyle === 'string' ? ({ stop: 'stop', warning: 'warning', info: 'info' } as const)[item.errorStyle.toLowerCase() as 'stop' | 'warning' | 'info'] : undefined
-    return [{
-      id: idValue, type, ranges,
-      formula1: typeof item.formula1 === 'string' ? item.formula1 : undefined,
-      formula2: typeof item.formula2 === 'string' ? item.formula2 : undefined,
-      operator: typeof item.operator === 'string' ? operatorNames[item.operator.toLowerCase()] : undefined,
-      allowBlank: typeof item.allowBlank === 'boolean' ? item.allowBlank : undefined,
-      showDropDown: typeof item.showDropDown === 'boolean' ? item.showDropDown : undefined,
-      showErrorMessage: typeof item.showErrorMessage === 'boolean' ? item.showErrorMessage : undefined,
-      error: typeof item.error === 'string' ? item.error : undefined,
-      errorTitle: typeof item.errorTitle === 'string' ? item.errorTitle : undefined,
-      errorStyle,
-      showInputMessage: typeof item.showInputMessage === 'boolean' ? item.showInputMessage : undefined,
-      prompt: typeof item.prompt === 'string' ? item.prompt : undefined,
-      promptTitle: typeof item.promptTitle === 'string' ? item.promptTitle : undefined,
-      renderMode: typeof item.renderMode === 'string' && ['text', 'arrow', 'custom'].includes(item.renderMode.toLowerCase())
-        ? item.renderMode.toLowerCase() as SheetDataValidationRule['renderMode'] : undefined,
-    }]
-  })
-  const conditionalFormats = array(raw.conditionalFormats).flatMap((value): SheetConditionalFormatRule[] => {
+  const dataValidations = normalizeWorkbookDataValidations(raw.dataValidations)
+  // The workbook guard has counted this exact property representation before
+  // any clone. Materialize it before projecting fields so pure toJSON keys do
+  // not change when an individual rule or extension is cloned at another root.
+  const conditionalInput: unknown[] = Array.isArray(raw.conditionalFormats)
+    ? cloneModel({ conditionalFormats: raw.conditionalFormats }).conditionalFormats : []
+  const conditionalFormats = conditionalInput.flatMap((value): SheetConditionalFormatRule[] => {
     const item = record(value)
     if (typeof item.id !== 'string' || typeof item.type !== 'string') return []
     if (!conditionalFormatRuleTypes.includes(item.type as SheetConditionalFormatRule['type'])) return []
@@ -307,20 +270,19 @@ function normalizePivotCharts(rawSheets: unknown, sheets: SpreadsheetSheet[], pi
       const pivotTableId = typeof raw.pivotTableId === 'string' ? raw.pivotTableId : ''
       const pivot = pivots.find(candidate => candidate.id === pivotTableId)
       if (!pivot || !pivot.outputRange) return []
-      const type = raw.kind
-      if (type !== 'bar' && type !== 'line' && type !== 'area' && type !== 'pie' && type !== 'doughnut' && type !== 'stacked-column') return []
+      const type = normalizeChartKind(raw.kind)
+      if (!type) return []
       const drawing = record(raw.drawing)
       const fromOffset = Array.isArray(drawing.fromOffsetEmu) ? drawing.fromOffsetEmu : []
       const sizeEmu = Array.isArray(drawing.absoluteSizeEmu) ? drawing.absoluteSizeEmu : []
       return [{
         id: `pivot-chart-${sheetIndex + 1}-${chartIndex + 1}`, sheetId, type,
-        source: { range: { ...pivot.outputRange }, orientation: 'columns' },
+        source: { range: { ...pivot.outputRange }, orientation: 'columns', sheetId: pivot.anchor.subUnitId },
         position: { x: Math.max(0, finite(fromOffset[0]) / 9525), y: Math.max(0, finite(fromOffset[1]) / 9525) },
         size: { width: Math.max(1, finite(sizeEmu[0], 480 * 9525) / 9525), height: Math.max(1, finite(sizeEmu[1], 320 * 9525) / 9525) },
         ...(typeof raw.title === 'string' ? { title: raw.title } : {}),
-        legend: { visible: raw.legend !== false, position: 'bottom' }, categoryField: 0, valueFields: [], pivotTableId,
-        xAxis: { title: typeof raw.xAxisTitle === 'string' ? raw.xAxisTitle : undefined, scaleType: 'linear' },
-        yAxis: { title: typeof raw.yAxisTitle === 'string' ? raw.yAxisTitle : undefined, scaleType: 'linear' }, revision: 0,
+        legend: { visible: raw.legend !== false, position: normalizeChartLegendPosition(raw.legendPosition) }, categoryField: 0, valueFields: [], pivotTableId,
+        xAxis: normalizeChartAxis(raw.xAxis, raw.xAxisTitle), yAxis: normalizeChartAxis(raw.yAxis, raw.yAxisTitle), revision: 0,
       }]
     })
   })
@@ -332,19 +294,20 @@ function normalizeRangeCharts(rawSheets: unknown, sheets: SpreadsheetSheet[]): C
     if (!sheet) return []
     return array(record(sheetValue).charts).flatMap((chartValue, chartIndex): ChartModel[] => {
       const raw = record(chartValue)
-      const type = raw.kind
-      if ((type !== 'scatter' && type !== 'radar') || raw.pivotTableId) return []
+      const type = normalizeChartKind(raw.kind)
+      if (!type || raw.pivotTableId) return []
       const vectors = array(raw.series).map((value) => {
         const series = record(value)
         return {
-          x: parseChartVector(series.categories, sheet.name),
-          y: parseChartVector(series.values, sheet.name),
+          x: parseChartVector(series.categories, sheets, sheet),
+          y: parseChartVector(series.values, sheets, sheet),
         }
       })
       if (!vectors.length || vectors.some((vector) => !vector.x || !vector.y)) return []
       const first = vectors[0]!.x!
       const orientation = first.startRow === first.endRow ? 'rows' : 'columns'
       const ranges = vectors.flatMap((vector) => [vector.x!, vector.y!])
+      if (ranges.some(range => range.sheetId !== first.sheetId)) return []
       const aligned = orientation === 'columns'
         ? ranges.every((range) => range.startCol === range.endCol && range.startRow === first.startRow && range.endRow === first.endRow)
         : ranges.every((range) => range.startRow === range.endRow && range.startCol === first.startCol && range.endCol === first.endCol)
@@ -356,25 +319,33 @@ function normalizeRangeCharts(rawSheets: unknown, sheets: SpreadsheetSheet[]): C
         endCol: Math.max(...ranges.map((value) => value.endCol)),
       }
       const field = (vector: NonNullable<ReturnType<typeof parseChartVector>>) => orientation === 'columns' ? vector.startCol - range.startCol : vector.startRow - range.startRow
-      if (type === 'radar' && vectors.some(vector => field(vector.x!) !== field(first))) return []
+      if (type !== 'scatter' && vectors.some(vector => field(vector.x!) !== field(first))) return []
       const drawing = record(raw.drawing)
       const offset = array(drawing.fromOffsetEmu), size = array(drawing.absoluteSizeEmu)
-      const legendPosition = raw.legendPosition
       return [{
         id: `${type}-chart-${sheetIndex + 1}-${chartIndex + 1}`, sheetId: sheet.id, type,
-        source: { range, orientation }, categoryField: field(first), valueFields: vectors.map((vector) => field(vector.y!)),
+        source: { range, orientation, sheetId: first.sheetId }, categoryField: field(first), valueFields: vectors.map((vector) => field(vector.y!)),
         ...(type === 'scatter' ? { seriesToCategory: Object.fromEntries(vectors.map((vector) => [field(vector.y!), [field(vector.x!)]])) } : {}),
         position: { x: Math.max(0, finite(offset[0]) / 9525), y: Math.max(0, finite(offset[1]) / 9525) },
         size: { width: Math.max(1, finite(size[0], 480 * 9525) / 9525), height: Math.max(1, finite(size[1], 300 * 9525) / 9525) },
         ...(typeof raw.title === 'string' ? { title: raw.title } : {}),
         legend: {
           visible: raw.legend !== false,
-          position: legendPosition === 'top' || legendPosition === 'right' || legendPosition === 'left' ? legendPosition : 'bottom',
+          position: normalizeChartLegendPosition(raw.legendPosition),
         },
         xAxis: normalizeChartAxis(raw.xAxis, raw.xAxisTitle), yAxis: normalizeChartAxis(raw.yAxis, raw.yAxisTitle), revision: 0,
       }]
     })
   })
+}
+
+function normalizeChartKind(value: unknown): ChartModel['type'] | undefined {
+  return value === 'bar' || value === 'line' || value === 'area' || value === 'pie' || value === 'doughnut'
+    || value === 'stacked-column' || value === 'scatter' || value === 'radar' ? value : undefined
+}
+
+function normalizeChartLegendPosition(value: unknown): ChartModel['legend']['position'] {
+  return value === 'top' || value === 'right' || value === 'left' ? value : 'bottom'
 }
 
 function normalizeChartAxis(value: unknown, title: unknown): ChartModel['xAxis'] {
@@ -386,13 +357,18 @@ function normalizeChartAxis(value: unknown, title: unknown): ChartModel['xAxis']
   }
 }
 
-function parseChartVector(value: unknown, sheetName: string): { startRow: number; startCol: number; endRow: number; endCol: number } | undefined {
+function parseChartVector(value: unknown, sheets: readonly SpreadsheetSheet[], host: SpreadsheetSheet):
+  { sheetId: string; startRow: number; startCol: number; endRow: number; endCol: number } | undefined {
   if (typeof value !== 'string') return undefined
-  const match = /^(?:'((?:[^']|'')+)'|([^!]+))!\$?([A-Z]+)\$?([1-9]\d*)(?::\$?([A-Z]+)\$?([1-9]\d*))?$/i.exec(value)
-  if (!match || (match[1]?.replaceAll("''", "'") ?? match[2]) !== sheetName) return undefined
+  const match = /^(?:(?:'((?:[^']|'')+)'|([^!]+))!)?\$?([A-Z]+)\$?([1-9]\d*)(?::\$?([A-Z]+)\$?([1-9]\d*))?$/i.exec(value.trim().replace(/^=/, ''))
+  if (!match) return undefined
+  const sheetName = match[1]?.replaceAll("''", "'") ?? match[2]
+  const source = sheetName === undefined ? host : sheets.find(sheet => sheet.name.toLowerCase() === sheetName.toLowerCase())
+  if (!source) return undefined
   const column = (label: string) => [...label.toUpperCase()].reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1
-  const range = { startRow: Number(match[4]) - 1, startCol: column(match[3]!), endRow: Number(match[6] ?? match[4]) - 1, endCol: column(match[5] ?? match[3]!) }
-  return range.startRow <= range.endRow && range.startCol <= range.endCol ? range : undefined
+  const range = { sheetId: source.id, startRow: Number(match[4]) - 1, startCol: column(match[3]!), endRow: Number(match[6] ?? match[4]) - 1, endCol: column(match[5] ?? match[3]!) }
+  return [range.startRow, range.startCol, range.endRow, range.endCol].every(Number.isSafeInteger)
+    && range.startRow <= range.endRow && range.startCol <= range.endCol && range.endRow < 1_048_576 && range.endCol < 16_384 ? range : undefined
 }
 
 function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId: string): PivotTableModel[] {
@@ -474,8 +450,10 @@ function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTable
 
 export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   const data = envelope.payload.data
+  assertWorkbookConditionalFormatBudget(data.sheets)
   const id = crypto.randomUUID()
   const sheets = array(data.sheets).map((sheet, index) => normalizeSheet(sheet, index, id))
+  assertWorkbookConditionalFormatBudget(sheets)
   const pivotTables = normalizePivotTables(data.pivotTables, sheets, id)
   if (!sheets.length) throw new Error('解析结果不包含工作表，未用空白工作簿替代原文件')
   return {

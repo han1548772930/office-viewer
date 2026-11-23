@@ -1,5 +1,6 @@
 import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
-import { translateFormulaReferences } from '../formula/formula-references.ts'
+import { translateFormulaReferenceAreas } from '../formula/formula-references.ts'
+import { cloneModel } from '../../domain/serialization.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
 import { inferSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { sheetCellNumberValue, sheetCellStoredValueType } from './sheet-number-presentation.ts'
@@ -68,14 +69,15 @@ export function createSheetPastePlan(request: SheetPasteRequest): SheetPastePlan
       cellPatches.push({
         rowOffset,
         columnOffset,
-        cell: pasteCell(source, target, mode, request.targetStartRow - request.sourceStartRow, request.targetStartColumn - request.sourceStartColumn),
+        cell: pasteSheetCell(source, target, mode, request.targetStartRow - request.sourceStartRow, request.targetStartColumn - request.sourceStartColumn),
       })
     }
   }
   return { cellPatches, columnWidthPatches: [] }
 }
 
-function pasteCell(
+/** Content and style paste share this mapping with the sparse clipboard command planner. */
+export function pasteSheetCell(
   source: ExcelCellView | undefined,
   target: ExcelCellView,
   mode: Exclude<SheetPasteMode, 'columnWidths'>,
@@ -85,21 +87,22 @@ function pasteCell(
   if (mode === 'formulas') {
     if (!source?.formula) return target
     return {
-      ...target,
+      ...cloneModel(target),
       value: '',
-      formula: translateFormulaReferences(source.formula, rowDelta, columnDelta),
+      formula: translateFormulaReferenceAreas(source.formula, rowDelta, columnDelta),
       cachedValue: undefined,
       rawValue: null,
       dataType: 'formula',
       cachedDataType: null,
       displayValue: undefined,
+      richText: null,
     }
   }
   if (mode === 'values') return pasteValue(source, target)
   if (mode === 'formats') return pasteFormat(source, target)
-  const copied = source ? cloneCell(source) : clearSheetCellFormat({ value: '' })
+  const copied = source ? cloneModel(source) : clearSheetCellFormat({ value: '' })
   if (copied.formula) {
-    copied.formula = translateFormulaReferences(copied.formula, rowDelta, columnDelta)
+    copied.formula = translateFormulaReferenceAreas(copied.formula, rowDelta, columnDelta)
     copied.value = ''
     copied.cachedValue = undefined
     copied.rawValue = null
@@ -115,7 +118,7 @@ function pasteValue(source: ExcelCellView | undefined, target: ExcelCellView): E
   const value = sheetCellNumberValue(source) ?? null
   const pastedValue = value === null ? '' : String(value)
   const { formula: _formula, cachedValue: _cachedValue, rawValue: _rawValue, displayValue: _displayValue,
-    dataType: _dataType, cachedDataType: _cachedDataType, ...preserved } = target
+    dataType: _dataType, cachedDataType: _cachedDataType, richText: _richText, ...preserved } = cloneModel(target)
   return {
     ...preserved,
     value: pastedValue,
@@ -123,6 +126,7 @@ function pasteValue(source: ExcelCellView | undefined, target: ExcelCellView): E
     dataType: value === null ? 'blank' : sheetCellStoredValueType(source) ?? inferSheetCellValueType(value),
     cachedDataType: null,
     displayValue: undefined,
+    richText: source?.formula ? null : source?.richText ? cloneModel(source.richText) : null,
   }
 }
 
@@ -142,25 +146,14 @@ function pasteFormat(source: ExcelCellView | undefined, target: ExcelCellView): 
   formatted.wrap = formatted.wrapStrategy === 'wrap'
   if (formatted.wrap) formatted.shrinkToFit = false
   return {
+    ...cloneModel(target),
     ...formatted,
     value: target.value,
-    formula: target.formula,
-    cachedValue: target.cachedValue,
-    rawValue: target.rawValue,
-    displayValue: target.displayValue,
-    dataType: target.dataType,
-    cachedDataType: target.cachedDataType,
+    styleMetadata: sourceStyle.styleMetadata ? cloneModel(sourceStyle.styleMetadata) : null,
   }
-}
-
-function cloneCell(cell: ExcelCellView): ExcelCellView {
-  return { ...cell, border: cloneBorder(cell.border) }
 }
 
 function cloneBorder(border: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!border) return undefined
-  return Object.fromEntries(Object.entries(border).map(([side, value]) => [
-    side,
-    typeof value === 'object' && value !== null ? { ...value } : value,
-  ]))
+  return cloneModel(border)
 }

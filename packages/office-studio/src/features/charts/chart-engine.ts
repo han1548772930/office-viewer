@@ -64,7 +64,7 @@ const DEFAULT_AXIS: ChartAxisOptions = { scaleType: 'linear' }
 export function createChart(workbook: WorkbookModel, sheetId: string, config: ChartConfig, id = randomId('chart')): ChartModel {
   const sheet = requireSheet(workbook, sheetId)
   const source = normalizeSource(config.source)
-  if (!config.pivotTableId) validateSourceInSheet(source.range, sheet)
+  if (!config.pivotTableId) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
   const type = config.type
   validateChartType(type)
   const position = normalizeSize(config.position, 'chart position', true)
@@ -113,7 +113,7 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
     revision: chart.revision + 1,
   }
   const sheet = requireSheet(workbook, chart.sheetId)
-  if (!next.pivotTableId) validateSourceInSheet(next.source.range, sheet)
+  if (!next.pivotTableId) validateSourceInSheet(next.source.range, next.source.sheetId ? requireSheet(workbook, next.source.sheetId) : sheet)
   validateChartType(next.type)
   next.categoryField = normalizeField(next.categoryField, 'categoryField')
   next.valueFields = next.valueFields.map((field) => normalizeField(field, 'valueField'))
@@ -135,7 +135,7 @@ export function readChartData(workbook: WorkbookModel, chart: ChartModel): Chart
     }
     return data
   }
-  const sheet = requireSheet(workbook, chart.sheetId)
+  const sheet = requireSheet(workbook, chart.source.sheetId ?? chart.sheetId)
   const range = chart.source.range
   const matrix = readMatrix(sheet, range)
   if (matrix.length < 2 || matrix[0]!.length < 2) throw new RangeError('Chart source must contain a header and at least one data value')
@@ -522,7 +522,8 @@ export function normalizeSource(source: ChartSource): ChartSource {
   if (!source || !source.range) throw new TypeError('Chart source is required')
   const range = normalizeRange(source.range)
   if (source.orientation !== 'columns' && source.orientation !== 'rows') throw new TypeError(`Invalid chart source orientation: ${source.orientation}`)
-  return { range, orientation: source.orientation }
+  if (source.sheetId !== undefined && (typeof source.sheetId !== 'string' || !source.sheetId.trim())) throw new TypeError('Invalid chart source worksheet')
+  return { range, orientation: source.orientation, ...(source.sheetId === undefined ? {} : { sheetId: source.sheetId }) }
 }
 
 function validateChartType(type: ChartType): void {

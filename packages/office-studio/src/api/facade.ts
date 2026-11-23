@@ -35,6 +35,7 @@ import type {
 } from '../domain/model'
 import { createBlankSheet, createCell } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
 import {
   getCommonDocumentTextStyle,
   getDocumentParagraphStyle,
@@ -60,13 +61,15 @@ import {
   type ContentControlPatch,
 } from '../features/document/services/content-controls'
 import type { OfficeStudio } from './office-studio'
+import { COMMIT_SHEET_CELL_INPUT_COMMAND, type SheetCellInputCommandResult,
+  type SheetCellInputOptions } from '../features/sheet-workbench/sheet-cell-input-command.ts'
 import { SHEET_AXIS_DIMENSION_COMMANDS } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
 import type { SheetAxisStructureCommandInput } from '../features/sheet-workbench/sheet-axis-structure-command.ts'
 import { SHEET_AXIS_VISIBILITY_COMMANDS } from '../features/sheet-workbench/sheet-axis-visibility.ts'
 import { SET_SHEET_CONDITIONAL_FORMATS_COMMAND } from '../features/conditional-formatting/conditional-format-command.ts'
 import { sheetRowHeight, sheetColumnWidth, sheetRowIsAutoHeight } from '../domain/sheet-axis.ts'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
-import type { DocumentSelection } from '../features/document/model/document-model.ts'
+import type { DocumentSelection, RunPatch } from '../features/document/model/document-model.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
 import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
@@ -83,6 +86,7 @@ import { SHEET_MERGE_COMMANDS, type SheetMergeMode, type SheetMergeOptions } fro
 import { SHEET_CLEAR_COMMANDS, type SheetClearOptions } from '../features/sheet-workbench/sheet-clear-command.ts'
 import { sheetRangesEqual, sheetRangesIntersect } from '../features/sheet-workbench/sheet-range-command.ts'
 import type { SheetSelectionOptions } from '../features/sheet-workbench/sheet-selection.ts'
+import { nextSheetSelectionCell, SheetSelectionDirections, type SheetSelectionDirection } from '../features/sheet-workbench/sheet-selection-navigation.ts'
 import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
 
 export type {
@@ -138,7 +142,7 @@ export type DocumentContentControlPatch = ContentControlPatch
  */
 export class FOffice {
   readonly Event = new FEventName()
-  readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes })
+  readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections })
   readonly studio: OfficeStudio
 
   private constructor(studio: OfficeStudio) {
@@ -204,6 +208,14 @@ export class FOffice {
   registerCommand<P, R>(id: string, handler: (params: P) => R): Disposable { return this.studio.registerCommand(id, handler) }
   executeCommand<P = Record<string, unknown>, R = boolean>(id: string, params?: P): Promise<R> { return this.studio.executeCommand(id, params) }
   executeCommandSync<P, R>(id: string, params: P): R { return this.studio.executeCommandSync(id, params) }
+  undo(): Promise<boolean> { return this.replayFocusedHistory('undo') }
+  redo(): Promise<boolean> { return this.replayFocusedHistory('redo') }
+  private replayFocusedHistory(direction: ContentHistoryDirection): Promise<boolean> {
+    return this.studio.executeCommand(CONTENT_HISTORY_COMMANDS[direction]).catch((error: unknown) => {
+      if (error instanceof ContentHistoryCanceledError) return false
+      throw error
+    })
+  }
   setActiveKind(kind: 'workbook' | 'document'): void { this.studio.setActiveKind(kind) }
   getCurrentLifecycleStage(): 'ready' | 'disposed' { return this.studio.isDisposed ? 'disposed' : 'ready' }
   dispose(): void { this.studio.dispose() }
@@ -681,11 +693,12 @@ export class FWorksheet {
     const main = Boolean(merge && primary.row === merge.startRow && primary.column === merge.startCol)
     return { startRow: merge?.startRow ?? primary.row, endRow: merge?.endRow ?? primary.row,
       startColumn: merge?.startCol ?? primary.column, endColumn: merge?.endCol ?? primary.column,
-      actualRow: primary.row, actualColumn: primary.column, isMerged: Boolean(merge) && !main, isMergedMainCell: main }
+      actualRow: primary.row, actualColumn: primary.column, rangeType: 0, isMerged: Boolean(merge), isMergedMainCell: main }
   }
   getActiveCell(): FRange | null {
     const primary = this.getPrimaryCell()
-    return primary ? this.getRange(primary.actualRow, primary.actualColumn) : null
+    return primary ? this.getRange({ startRow: primary.startRow, endRow: primary.endRow,
+      startColumn: primary.startColumn, endColumn: primary.endColumn, rangeType: 0 }) : null
   }
   setActiveRange(range: FRange): this {
     this.ownedRange(range)
@@ -698,7 +711,22 @@ export class FWorksheet {
     this.api.setSelections(this.unitId, this.id, ranges.map(range => range.getRange()), options)
     return this
   }
-  getSelection(): FSelection { return new FSelection(this) }
+  getSelection(): FSelection {
+    const active = this.api.getSelection()
+    const index = active?.unitId === this.unitId && active.sheetId === this.id ? this.api.getSelectionState()?.activeRangeIndex : -1
+    return new FSelection(this, index)
+  }
+  /** @internal Resolve a captured Facade selection against the current sheet geometry. */
+  nextSelectionRange(ranges: readonly FRange[], active: FRange | null, primary: FSelectionCell | null, direction: SheetSelectionDirection): FRange | null {
+    if (!active || !primary) return null
+    const sheet = this.sheet(), workbook = this.workbook()
+    const filtered = (workbook.tables ?? []).filter(table => table.sheetId === this.id).flatMap(table => table.autoFilter?.filteredRows ?? [])
+    const next = nextSheetSelectionCell({ ranges: ranges.map(range => ({ ...toCellRange(range.getRange()), rangeType: range.getRange().rangeType })),
+      activeRangeIndex: ranges.indexOf(active), primary: { row: primary.actualRow, column: primary.actualColumn } }, direction,
+      { ...sheet, rowCount: sheet.rowCount ?? 1_048_576, columnCount: sheet.columnCount ?? 16_384, filteredRows: sheet.autoFilter?.filteredRows }, filtered)
+    return next ? this.getRange({ startRow: next.range.startRow, endRow: next.range.endRow, startColumn: next.range.startCol,
+      endColumn: next.range.endCol, rangeType: 0 }) : null
+  }
   setFrozenRows(rows: number): this {
     validateIndex(rows, 'rows', true)
     this.api.mutateWorkbook(this.unitId, 'sheet.command.set-freeze', 'Freeze worksheet rows', (model) => { this.sheet(model).frozenRows = rows })
@@ -728,7 +756,7 @@ export class FWorksheet {
     return this
   }
   getHiddenGridlines(): boolean { return !this.sheet().showGridlines }
-  activate(): this { this.api.activateWorkbook(this.unitId); return this }
+  activate(): this { new FWorkbook(this.api, this.unitId).setActiveSheet(this); return this }
 
   /** Sheet-scoped commands must keep the identity resolved by the A1/FRange boundary. */
   private ownedRange(value: FRange | FRangeCoordinates | string): CellRange {
@@ -752,15 +780,44 @@ export class FWorksheet {
 
 export class FSelection {
   private readonly worksheet: FWorksheet
+  private readonly ranges: FRange[]
+  private readonly active: FRange | null
+  private readonly primary: FSelectionCell | null
 
-  constructor(worksheet: FWorksheet) {
+  constructor(worksheet: FWorksheet, activeRangeIndex?: number) {
     this.worksheet = worksheet
+    this.ranges = worksheet.getActiveRangeList()
+    const active = worksheet.getActiveRange()?.getRange()
+    this.active = activeRangeIndex === undefined ? this.ranges.find(range => {
+      const value = range.getRange()
+      return active && value.startRow === active.startRow && value.endRow === active.endRow
+        && value.startColumn === active.startColumn && value.endColumn === active.endColumn
+    }) ?? null : this.ranges[activeRangeIndex] ?? null
+    this.primary = worksheet.getPrimaryCell()
   }
-  getActiveRange(): FRange | null { return this.worksheet.getActiveRange() }
-  getCurrentCell(): FSelectionCell | null { return this.worksheet.getPrimaryCell() }
-  getCurrentCellRange(): FRange | null { return this.worksheet.getActiveCell() }
-  getActiveRangeList(): FRange[] { return this.worksheet.getActiveRangeList() }
+  getActiveRange(): FRange | null { return this.active }
+  getCurrentCell(): FSelectionCell | null { return this.primary ? { ...this.primary } : null }
+  getCurrentCellRange(): FRange | null { return this.primary ? this.worksheet.getRange({ startRow: this.primary.startRow, endRow: this.primary.endRow,
+    startColumn: this.primary.startColumn, endColumn: this.primary.endColumn, rangeType: 0 }) : null }
+  getActiveRangeList(): FRange[] { return [...this.ranges] }
   getActiveSheet(): FWorksheet { return this.worksheet }
+  updatePrimaryCell(cell: FRange): FSelection {
+    if (cell.getUnitId() !== this.worksheet.getUnitId() || cell.getSheetId() !== this.worksheet.getSheetId()) throw new Error('活动单元格必须属于当前工作表。')
+    const next = cell.getRange()
+    let index = -1
+    for (let candidate = this.ranges.length - 1; candidate >= 0; candidate--) {
+      const range = this.ranges[candidate]!.getRange()
+      if (next.startRow >= range.startRow && next.endRow <= range.endRow && next.startColumn >= range.startColumn && next.endColumn <= range.endColumn) {
+        index = candidate; break
+      }
+    }
+    this.worksheet.setActiveRangeList(index < 0 ? [cell] : this.ranges,
+      { activeRangeIndex: index < 0 ? 0 : index, primary: { row: next.startRow, column: next.startColumn } })
+    return this.worksheet.getSelection()
+  }
+  getNextDataRange(direction: SheetSelectionDirection): FRange | null {
+    return this.worksheet.nextSelectionRange(this.ranges, this.active, this.primary, direction)
+  }
 }
 
 export class ChartConfigBuilder {
@@ -771,7 +828,7 @@ export class ChartConfigBuilder {
   }
   setSource(range: string | ChartSource, orientation: ChartSourceOrientation = 'columns'): this {
     const source = typeof range === 'string' ? { range: parseChartA1Range(range), orientation } : range
-    this.value = { ...this.value, source: { range: { ...source.range }, orientation: source.orientation } }
+    this.value = { ...this.value, source: { ...source, range: { ...source.range } } }
     return this
   }
   setPosition(cell: string): this {
@@ -894,6 +951,16 @@ export class FRange {
   }
   getCellData(): SpreadsheetCell | null { const cell = this.cellAt(this.range.startRow, this.range.startColumn); return cell ? cloneModel(cell) : null }
   getCellDatas(): (SpreadsheetCell | null)[][] { return this.mapCells((cell) => cell ? cloneModel(cell) : null) }
+  /** Explicit editor-text interpretation; setValue/setValues retain their scalar/DTO API semantics. */
+  setInputText(input: string, options: SheetCellInputOptions = {}): SheetCellInputCommandResult {
+    if (this.getHeight() !== 1 || this.getWidth() !== 1) {
+      const merge = this.sheet().mergedRanges.find(item => item.startRow === this.range.startRow && item.endRow === this.range.endRow
+        && item.startCol === this.range.startColumn && item.endCol === this.range.endColumn)
+      if (!merge) throw new RangeError('编辑文本需要单个单元格或完整合并区。')
+    }
+    return this.api.executeCommandSync(COMMIT_SHEET_CELL_INPUT_COMMAND, { ...options, unitId: this.unitId, sheetId: this.sheetId,
+      row: this.range.startRow, column: this.range.startColumn, input })
+  }
   setValue(value: ApiCellValue): this { return this.setValues(this.fill(value)) }
   setValues(values: ApiCellValue[][]): this {
     assertMatrixSize(values, this.getHeight(), this.getWidth())
@@ -1220,7 +1287,7 @@ export class FDocument {
     return new FDocumentTextRange(this, range.startOffset, range.endOffset)
   }
   insertText(index: number, text: string): boolean {
-    return this.api.executeCommandSync('doc.command.insert-text', { unitId: this.id, index, text })
+    return this.api.executeCommandSync('doc.command.insert-text', { unitId: this.id, index, text, expectedRevision: this.getModelRevision() })
   }
   getParagraphs(): FDocumentParagraph[] { return findDocumentParagraphs(this.model(), {}).map((item) => new FDocumentParagraph(this, item)) }
   findParagraphs(query: string | { text?: string; paragraphId?: string; blockId?: string }): FDocumentParagraph[] {
@@ -1235,6 +1302,16 @@ export class FDocument {
   executeCommand(command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
     return this.api.executeDocumentEditorCommand(this.id, command, selection)
   }
+  /** Pending input overrides; clearing color/highlight preserves an own undefined property. */
+  getInputMarks(selection?: DocumentSelection, story?: DocumentStoryRange): RunPatch { return this.api.getDocumentInputMarks(this.id, selection, story) }
+  getModelRevision(): number { return this.api.getDocumentRevision(this.id) }
+  getInputState() { return this.api.getDocumentInputState(this.id) }
+  onInputStateChanged(listener: (event: ApiEventMap['DocumentInputStateChanged']) => void): Disposable {
+    return this.api.events.addEvent('DocumentInputStateChanged', event => { if (event.unitId === this.id) listener(event) })
+  }
+  setInputSelection(selection: DocumentSelection, story?: DocumentStoryRange): boolean { return this.api.setDocumentInputSelection(this.id, selection, story) }
+  clearInputMarks(): boolean { return this.api.clearDocumentInputMarks(this.id) }
+  advanceInputMarks(selection: DocumentSelection, story?: DocumentStoryRange): boolean { return this.api.advanceDocumentInputMarks(this.id, selection, story) }
   clearFormatting(selection: DocumentSelection, story?: DocumentStoryRange): DocumentEditorCommandResult {
     return this.executeCommand({ id: 'doc.command.clear-formatting', ...(story ? { story } : {}) }, selection)
   }
@@ -1255,7 +1332,7 @@ export class FDocument {
     return new FDocumentContentControl(this, id)
   }
   replaceRange(startOffset: number, endOffset: number, text: string): boolean {
-    return this.api.executeCommandSync('doc.command.replace-range', { unitId: this.id, startOffset, endOffset, text })
+    return this.api.executeCommandSync('doc.command.replace-range', { unitId: this.id, startOffset, endOffset, text, expectedRevision: this.getModelRevision() })
   }
   mutate(label: string, commandId: string, update: (model: DocumentModel) => void): boolean {
     return this.api.mutateDocument(this.id, commandId, label, update)

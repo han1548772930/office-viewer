@@ -72,6 +72,16 @@ export function canViewWorksheetProtection(
     (rule.editState === 'designedUserCanEdit' && rule.allowedUserIds.includes(userId))
 }
 
+export function canViewProtectedRanges(
+  sheet: Pick<SpreadsheetSheet, 'rangeProtectionRules'>,
+  ranges: readonly CellRange[],
+  userId: string,
+): boolean {
+  return (sheet.rangeProtectionRules ?? []).every(rule => rule.viewState !== 'noOneElseCanView'
+    || !rule.ranges.some(protectedRange => ranges.some(range => rangesIntersect(protectedRange, range)))
+    || rule.ownerUserId === userId || (rule.editState === 'designedUserCanEdit' && rule.allowedUserIds.includes(userId)))
+}
+
 export function createWorksheetProtectionRule(
   input: Omit<SheetWorksheetProtectionRule, 'id' | 'permissionId' | 'unitType' | 'ownerUserId'>,
   ownerUserId: string,

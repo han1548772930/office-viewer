@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Sheets selection and shared input fixture</title>
+  <style>body{margin:0}#app{height:100vh;min-width:0}</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApp, h, ref, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { createBlankWorkbook, createBlankSheet, createCell } from '/packages/office-studio/src/domain/model'
+import { applyExcelWorkbookView, toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import { SpreadsheetGeometry } from '/packages/office-studio/src/rendering/spreadsheet/layout'
+const copy = value => JSON.parse(JSON.stringify(value))
+const original = createBlankWorkbook()
+original.id = 'selection-input-fixture'; original.name = '选择与输入'; original.calculationMode = 'manual'
+original.sheets = ['First', 'Second'].map((name, index) => ({
+  ...createBlankSheet(name), id: 'selection-input-sheet-' + index, rowCount: 250, columnCount: 26,
+  defaultColumnWidth: 90, defaultRowHeight: 26,
+}))
+original.activeSheetId = original.sheets[0].id
+original.sheets[0].cells['0:0'] = createCell(0, 0, 'abcdef')
+original.sheets[0].cells['0:0'].richText = [
+  { id: 'first-run', text: 'ab', font: { bold: true } },
+  { id: 'empty-marker', text: '', vendor: { keep: true } },
+  { id: 'second-run', text: 'cd', font: { italic: true } },
+  { id: 'last-run', text: 'ef', hyperlink: 'https://example.test' },
+]
+original.sheets[0].cells['0:1'] = createCell(0, 1, 4)
+const studio = new OfficeStudio({ workbook: original }), api = FOffice.newAPI(studio)
+studio.regionalSettings.setRegion('en-US')
+const standalone = new URLSearchParams(location.search).has('standalone')
+let base = copy(original)
+const view = ref(toExcelWorkbookView(studio.editor.workbook.model))
+const dark = ref(false), variant = ref('classic'), commands = [], notices = [], emitted = []
+let canceled = false, observerMode = undefined
+watch(() => studio.editor.workbook.model, model => {
+  if (!standalone) view.value = toExcelWorkbookView(model)
+}, { flush: 'sync' })
+const current = () => standalone ? base : studio.editor.workbook.model
+studio.events.addEvent('BeforeCommandExecute', event => {
+  if (canceled && event.id === 'sheet.command.commit-cell-input') event.cancel = true
+})
+studio.events.addEvent('CommandExecuted', event => commands.push(copy(event)))
+studio.events.addEvent('SheetValueChanged', event => {
+  const mode = observerMode
+  observerMode = undefined
+  if (mode === 'reselect') api.getWorkbook(event.workbookId).getSheetBySheetId(event.sheetId).getRange('E5').activate()
+  else if (mode === 'switch') {
+    const model = copy(original); model.id = 'selection-input-neighbor'
+    api.createWorkbook(model).getActiveSheet().getRange('D4').activate()
+  } else if (mode === 'throw') throw new Error('input observation failed')
+})
+window.selectionInputFixture = {
+  snapshot: (id) => copy(id ? studio.getWorkbookModel(id) : current()),
+  selection: () => copy(studio.getSelectionState()),
+  tabOrigin: () => copy(studio.sheetSelections.getTabStart(studio.activeWorkbookId, current().activeSheetId) ?? null),
+  history: (id = studio.activeWorkbookId) => {
+    const unit = studio.editor.history.units[id]
+    return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, emits: emitted.length,
+      revision: studio.getWorkbookRevision(id), dirty: studio.editor.history.isDirty(id) }
+  },
+  commands: () => copy(commands), notifications: () => copy(notices),
+  errors: () => studio.getEventListenerErrors().map(item => ({ name: item.eventName, error: String(item.error) })),
+  appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  cancel: value => { canceled = value }, observer: mode => { observerMode = mode },
+  select: (addresses, options = {}) => {
+    const sheet = api.getActiveWorkbook().getActiveSheet()
+    sheet.setActiveRangeList(addresses.map(address => sheet.getRange(address)), options)
+  },
+  switchSheet: id => { api.getActiveWorkbook().getSheetBySheetId(id).activate() },
+  seed: ({ entries = [], merges = [], hiddenRows = [], hiddenColumns = [], rowHiddenSpans, columnHiddenSpans, freeze } = {}) => {
+    const next = copy(current()), sheet = next.sheets.find(item => item.id === next.activeSheetId)
+    sheet.cells = {}
+    for (const { row = 0, column = 0, value, richText, pattern = 'General' } of entries) {
+      const cell = createCell(row, column, value)
+      cell.style.numberFormat = pattern
+      if (richText) cell.richText = copy(richText)
+      sheet.cells[row + ':' + column] = cell
+    }
+    sheet.mergedRanges = merges; sheet.hiddenRows = hiddenRows; sheet.hiddenColumns = hiddenColumns
+    sheet.rowHiddenSpans = rowHiddenSpans; sheet.columnHiddenSpans = columnHiddenSpans
+    sheet.frozenRows = freeze?.rows ?? 0; sheet.frozenCols = freeze?.columns ?? 0
+    sheet.dataValidations = undefined
+    if (standalone) { base = next; view.value = toExcelWorkbookView(next) }
+    else { studio.editor.workbook.replace(next); studio.editor.history.clear(studio.activeWorkbookId) }
+    emitted.length = 0; notices.length = 0; commands.length = 0
+  },
+  validation: errorStyle => {
+    const book = api.getActiveWorkbook(), sheet = book.getActiveSheet()
+    sheet.setDataValidation('A1', { type: 'whole', operator: 'between', formula1: '1', formula2: '20',
+      allowBlank: false, errorStyle, errorTitle: '整数范围', error: '请输入 1 到 20。' })
+    studio.editor.history.clear(book.getId())
+  },
+  reopen: value => { api.createWorkbook({ ...copy(value), id: 'selection-input-reopened' }) },
+  rect: (row, column, merged = true) => {
+    const element = document.querySelector('.spreadsheet-canvas'), scroll = element.querySelector('.canvas-scroll')
+    const bounds = element.getBoundingClientRect(), sheet = view.value.sheets.find(item => item.id === view.value.activeSheetId)
+    const rect = new SpreadsheetGeometry(sheet).cellRect(row, column, {
+      width: bounds.width, height: bounds.height, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, zoom: 1,
+    }, merged)
+    return { x: bounds.left + rect.x, y: bounds.top + rect.y, width: rect.width, height: rect.height }
+  },
+}
+createApp({ render: () => h(ConfigProvider, {
+  theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' } },
+}, { default: () => h(ExcelWorkbench, {
+  modelValue: view.value, studio: standalone ? undefined : studio, ribbonVariant: variant.value,
+  canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
+  'onUpdate:modelValue': value => {
+    emitted.push(copy(value))
+    if (standalone) { base = applyExcelWorkbookView(base, value, 'en-US'); view.value = value }
+    else studio.editor.replaceWorkbookFromView(value, studio.regionalSettings.region.value)
+  },
+  onUndo: () => api.getActiveWorkbook().undo(), onRedo: () => api.getActiveWorkbook().redo(),
+  onNotify: value => notices.push(copy(value)),
+}) }) }).mount('#app')
+window.addEventListener('pagehide', () => studio.dispose(), { once: true })
+</script>
+</body>
+</html>

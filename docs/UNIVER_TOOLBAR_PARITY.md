@@ -69,8 +69,8 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | 功能 ID | 上游依据 / 入口 | 本地入口与真实行为 | 缺口与验收边界 |
 | --- | --- | --- | --- |
 | COMMON-01、COMMON-03 | [Workbench/UIParts][workbench]；[Ribbon][ribbon]；[菜单类型][menu]；[菜单注册与分组][menu-manager] | classic 分类及工具组居中，36px/40px；工作台示例的 grid 使用 32px/69px 双行布局，支持网格占位/跨行、密度压缩和整组溢出 | 两种布局共享命令；simple/collapsed、完整插件生命周期和所有产品上下文仍未验收 |
-| COMMON-03 | [ToolbarItem → ICommandService][toolbar-item] | 格式选择器由当前选区反推；混合值独立表示；相同 item 在原工具行与更多菜单派发相同 ID/参数；禁用按钮/选项不能派发；下拉 Escape 归还触发器焦点 | 功能命令权限不能由控件禁用代替；所有跨入口语义仍须核验 |
-| COMMON-02、COMMON-05 | 命令/历史服务与各产品 schema | 顶部撤销/重做依赖文档历史状态；模型由当前应用服务保存 | 完整 Facade 兼容、协作 mutation/逆 mutation、跨文档会话和 savepoint 回归未整体验收 |
+| COMMON-03 | [ToolbarItem → ICommandService][toolbar-item]；Sheets/Docs selection/editor | 格式选择器反映实际范围；Sheets 完整多选区与 Tab 起点进入共享 store/operation，Canvas/公式栏和 Facade 复用单格输入命令；Docs caret marks 按文档隔离，body/story 校验 revision/generation，成功输入才推进范围 | [共享输入/选区/历史证据](feature-evidence/COMMON-03-input-selection-axis-history.md)记录静态接线和未运行草稿；真实系统 IME、全部快捷键/剪贴板、主题/焦点与所有跨入口语义仍未验收 |
+| COMMON-02、COMMON-05 | 命令/历史服务、`core/facade/f-univer.ts` 与各产品 schema | 顶部/全局键盘/Facade 通过共享历史命令注册与文档隔离的 Pinia 内容历史；生产适配器检查来源 unit；FOffice 全局异步取消返回 false，同步 unit API 保留既有返回/取消契约；输入/选区通知延后到栈/revision 提交；同 unit 历史重入拒绝；BeforeUndo/Redo 改变目标/内容/历史后停止旧请求；保存点包含 history generation | [共享事务证据](feature-evidence/COMMON-03-input-selection-axis-history.md#5-历史观察事件与取消)含别名、生产 App、取消与观察者重入草稿，尚未运行；完整 Facade 兼容、协作 mutation/逆 mutation、持久历史、跨模块 savepoint 和大文件快照内存仍未整体验收 |
 | COMMON-04 | 共享主题/locale/方向公开规格 | Ribbon 有方向参数、RTL 键盘支持；中文可访问名称 | 完整主题/暗色/语言切换、所有弹层与编辑器主题同步未验收 |
 | COMMON-06、COMMON-07 | 权限、协作公开规格；产品权限菜单 | 目前未发现满足服务端持久权限/多人协作验收的顶部工作流 | 不能把隐藏按钮、只读 UI 或本地通信记为完整能力 |
 | COMMON-08、COMMON-09 | 持久历史、版本对比/恢复公开规格 | 撤销/重做与持久历史分开，当前顶部尚无完整版本服务面板 | 版本列表、语义对比、恢复后广播、服务重启后可查仍待实现/验证 |
@@ -85,13 +85,13 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | 功能 ID | 上游菜单 / 命令依据 | 本地 item / 真实行为 | 尚缺行为或验证 |
 | --- | --- | --- | --- |
 | SHEET-01 | [Sheets schema][sheet-schema] 的 `CopySheetCommand`、`RenameSheetOperation`、`SetWorksheetHideCommand`、`SetTabColorCommand` 及 SheetBar | 工作表新增、激活、重命名、删除、隐藏/恢复主要位于组合底栏；不另在顶部重复一套 | 复制/重排/标签颜色、veryHidden 与所有关联引用事务仍未整体验收 |
-| SHEET-02 | [Sheets schema][sheet-schema] 的合并/取消合并与编辑/选区控制器 | 全部/水平/垂直合并、跨多个选区取消合并、分类清除已接共享命令和 Facade；保留首项非空内容，确认捕获原目标/范围/版本，检查完整受影响合并的权限和数据验证；Canvas 范围选择、名称框与公式栏继续保留 | [合并/清除证据](feature-evidence/SHEET-02-merge-clear.md)含源码差异与未运行用例；完整输入/填充、旧模型诊断、XLSX 独立重开和大范围内存未验收 |
-| SHEET-03 | `InsertRowBeforeCommand`、`InsertColBeforeCommand`、`RemoveRowConfirmCommand`、`RemoveColConfirmCommand`、行列尺寸与显隐菜单 | 插入页：`sheet.command.insert-row` / `insert-column` / `delete-row` / `delete-column` 可修改真实模型 | 移动/复制、隐藏/显示、手动尺寸/自适应与所有引用资源变换仍不完整 |
+| SHEET-02 | [Sheets schema][sheet-schema] 的合并/取消合并与编辑/选区控制器 | 全部/水平/垂直合并、分类清除共享命令/Facade；完整多选区、活动范围与可见 primary 保留到历史；单元格/公式栏/FRange 输入共用 `sheet.command.commit-cell-input`，合并 owner、typed input、源冲突、验证和一次历史 | [合并/清除](feature-evidence/SHEET-02-merge-clear.md)与[共享输入/选区](feature-evidence/COMMON-03-input-selection-axis-history.md)记录差异和未运行用例；全部填充/快捷键/公式引用选区、旧模型诊断、XLSX 独立重开和大范围内存未验收 |
+| SHEET-03 | 插删/移动/复制命令；`set-row-visible` / `set-col-visible`；行列尺寸与显隐菜单 | 结构、显隐、手动/自动尺寸与拖拽增量通过公共 API 注册；三个轴 controller 完成编辑后捕获目标，detached 准备失败不发布；结构 planner 联动可识别资源，隐藏采用 spans 并保留过滤/折叠/零尺寸原因；观察者导航/重入后停止旧宿主投影 | [轴命令与事务证据](feature-evidence/COMMON-03-input-selection-axis-history.md#3-行列命令与-ui)中的草稿未运行；全部资源/复杂公式变换、字形度量、Office 单位/独立重开和真实大样本仍未验收 |
 | SHEET-04 字体 | `sheet.command.set-range-font-family` / `set-range-fontsize` / `set-range-bold` / `set-range-italic` / `set-range-underline` | 字体、字号、字号增减和字符属性进入共享 feature 命令、Facade、选区权限及内容历史；字号增减按活动格 ±1，控件读混合态；删除线及下划线按实际文字度量绘制 | [字体证据](feature-evidence/SHEET-04-font-family-size.md)中的契约/浏览器用例尚未运行；完整默认/主题继承、富文本范围格式及 Office 独立往返仍未验收 |
 | SHEET-04 颜色 | `sheet.command.set-range-text-color`、`sheet.command.set-background-color` 及重置子项 | `SheetColorControl` 使用 antdv-next 色板、自定义、最近颜色和独立文字/填充重置，共享命令与 Facade 保存显式颜色/清除标记 | [颜色证据](feature-evidence/SHEET-04-color-reset.md)记录默认/重置差异；主题继承、范围主题、系统 IME/焦点和全部 Office 色彩字段仍未验收 |
 | SHEET-04 对齐/样式 | `sheet.command.set-horizontal-text-align` / `set-vertical-text-align` / `set-text-wrap` / `set-shrink-to-fit` / `set-text-rotation` | 方向菜单含水平、左右斜 45°、竖排、左右转 90°；wrap 与 shrink-to-fit 互斥；统一减小字号和整块文字旋转进入共享布局命令、view/model、Canvas2D/WebGPU scene 与历史 | [旋转/缩小适应证据](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md)保留未验收；编辑输入桥不随文字方向旋转，复杂 shaping/富文本、主题、IME、真实 XLSX 重开和大样本均待统一验证 |
 | SHEET-04 边框 | `sheet.command.set-border-basic` 与 `border.menu.ts` | 15 个位置项、12 个线型、颜色/最近颜色、主按钮重用上次样式，模型、Facade、权限、历史和 Canvas 共用边框 feature | [边框证据](feature-evidence/SHEET-04-borders.md)记录用例与文件边界；隐藏轴空洞、完整导入样本及大范围 Worker/内存仍未验收 |
-| SHEET-05 | 富文本/Docs 编辑桥 | 当前工具栏作用于单元格样式 | 单格多运行、部分文字格式、富文本复制/链接及 Office 往返未验收 |
+| SHEET-05 | 富文本/Docs 编辑桥 | F2 单格输入保留未受影响的运行、空标记、链接和扩展字段，直接覆盖输入清除旧运行；通过共享单格命令进入模型与历史 | [输入证据](feature-evidence/COMMON-03-input-selection-axis-history.md#2-sheets-的共享模型与事务)明确当前最终字符串推断的重复文字/多次编辑边界；局部格式、富剪贴板、渲染/选择和 Office 往返仍未验收 |
 | SHEET-06 | [数字格式 schema][numfmt-schema]、`number-format-options.ts:MENU_OPTIONS`：格式菜单与百分比/货币/增减小数位共 5 个根项 | 格式菜单为 13 个格式项、4 个分隔、1 个“更多格式”；面板另有 6 类。当前已接精确格式码、地区货币、负值/小数位预览、自定义历史及完整编辑文本；地区和 1900/1904 进入解析及渲染，值与格式一次历史事务 | 入口与编辑来源、实现差异和待验证用例见[数字格式输入](#sheet-number-input)；全部地区、真实系统 IME、权限/焦点/主题、稀疏大范围格式与 Office 往返仍未整体验收 |
 | SHEET-07 | 冻结工具菜单、`ToggleGridlinesCommand`、`ZOOM_RATIO_MENU_ID` | `toggle-gridlines`；冻结选区/首行/首列/取消；放大/缩小/100%；各表选区与缩放会话 | 全部冻结分区/编辑/图形/打印组合仍待浏览器与文件样本验收；不由基础命中测试推断全部通过 |
 | SHEET-08 | [Sheets schema][sheet-schema]：`PASTE_RIBBON_MENU_ID` 与 PasteValue/Format/ColWidth/BesidesBorder；[公式 schema][formula-schema] 的公式粘贴 | `sheet.command.copy` / `cut` / `paste` 有真实模型操作 | 仅值/仅公式/仅格式/列宽/排除边框等选择性粘贴、HTML/TSV/引用与权限闭环未全部连通 |
@@ -100,7 +100,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | SHEET-11 | [筛选 schema][filter-schema]：`sheet.command.smart-toggle-filter` / `clear-filter-criteria` / `re-calc-filter` | 数据页筛选面板：按值多选、搜索分页、15 种条件、明确比较值类型、多列 AND、清列/清全部/移除；一次命令历史，Canvas/命中/键盘/统计使用独立 filteredRows | 列头下拉、颜色/完整日期规则、结构变换/权限/大样本与完整 XLSX 重开仍未验收 |
 | SHEET-12 | [排序 schema][sort-schema]：`sheet.menu.sheets-sort` → `sheet.command.sort-range-{asc,asc-ext,desc,desc-ext,custom}` | 数据页升降序及自定义多关键字面板，复用 `FWorksheet.sortRange`；标题行/比较语言/取消进度/过期结果，单次历史；降序空白末尾，引用转换失败不部分写回 | 扩展选区交互、全部比较/locale/关联资源变换、统一权限和大样本仍未整体验收 |
 | SHEET-13 | [验证 schema][validation-schema]：`sheet.menu.data-validation` / `quick-dropdown` / `quick-date`、`data-validation.operation.open-validation-panel` | 数据页新增“数据验证”实际规则面板；模型/命令/API、键入/TSV 粘贴/Facade 写入校验、错误级别反馈、内联下拉输入提示、XLSX writer 和 parser 规则读回已接入；[进度记录](feature-evidence/SHEET-13-data-validation.md) | 日期快捷选择、复选框控件绘制、列表搜索/彩色标签及完整公式覆盖未接；parser 目前以本地 XLSX fixture 验证，第三方 Office 往返尚未验收；SHEET-13 仍未验收 |
-| SHEET-14 | [条件格式 schema][cf-schema]：`sheet.operation.open.conditional.formatting.panel`、AddDataBarConditionalRule / AddIconSetConditionalRule | 当前无对应本地顶部 item | 规则管理、优先级/公式、色阶/数据条/图标集、动态渲染和保存待实现/验收 |
+| SHEET-14 | [条件格式 schema][cf-schema]：DATA 管理、INSERT 数据条/图标集快插与 selector 子项 | 数据 / 规则中的 `sheet.operation.open-conditional-formatting` 打开 antdv-next 真实规则面板，`sheet.command.set-conditional-formats` 原子提交；模型/priority/公式基准、平均值六种比较与自动数据条边界接入计算和来源读写预算 | [格式刷/规则编辑](feature-evidence/SHEET-04-format-painter.md)及[Office 来源往返](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md)记录实际接口；完整 selector/快插、所有公式/vendor 条件、Office 独立互操作、资源/峰值内存和浏览器草稿仍未验收 |
 | SHEET-15 | 查找替换插件 schema | `sheet.operation.find`：真实匹配/定位 | 当前主要为查找；替换、作用域/完整选项、取消和大样本尚缺 |
 | SHEET-16 | sheets-hyper-link-ui schema 与插入/编辑弹层 | 当前无完整本地超链接顶部工具 | URL/内部范围/富文本链接、编辑/移除、引用变换和安全跳转未验收 |
 | SHEET-17 | sheets-note-ui、sheets-thread-comment-ui | 当前无已验收顶部批注/持久线程评论流程 | Note/ThreadComment 分模型、锚点/权限/回复/解决/服务同步未验收 |
@@ -115,7 +115,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | SHEET-26（Pro） | 公开迷你图规格；商业菜单 ID 未核实 | 当前无对应本地顶部 item | 完整图型、空值/负值/比例、分组、引用更新和 Office 往返待实现/验收 |
 | SHEET-27（Pro） | 公开分组规格；商业菜单 ID 未核实 | 当前无对应本地顶部 item | 行列嵌套层级、折叠展开、汇总方向与隐藏原因合并未验收 |
 | SHEET-28（Pro） | 公开打印/PDF 规格；商业菜单 ID 未核实 | 当前没有完整 Sheets 页面设置/分页预览/输出工作流 | 打印区域、适页、重复标题、页眉页脚、图形和隐藏处理、实际输出待实现/验收 |
-| SHEET-29 | 本项目 Office parser/writer 与公开导入导出规格 | 应用壳负责打开/保存/导出；真实 XLSX writer 已接入，JSON 不冒充 Office 输出 | XLS/XLSX/CSV/TSV 公开契约、保留 XLSB/ODS 读取、全部资源/样式/公式独立重开仍未验收 |
+| SHEET-29 | 本项目 Office parser/writer 与公开导入导出规格 | 应用壳负责打开/保存/导出真实 XLSX；条件格式来源、dxf/theme、base/linked x14 与整本模型/输出资源预算接入本地读写链路 | [条件格式 Office 专项](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md)的本轮草稿未执行；XLS/XLSX/CSV/TSV 公开契约、保留 XLSB/ODS 读取、全部资源/样式/公式独立重开仍未验收 |
 | SHEET-30 | [Sheets schema][sheet-schema]：`AddRangeProtectionFromToolbarCommand` 等保护菜单 | 当前无完整顶部权限流程 | 服务端工作簿/表/范围权限、可执行操作、失败原子性/协作及恢复待验收 |
 
 ## 4. Docs 顶部功能逐项映射
@@ -125,7 +125,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | 功能 ID | 上游菜单 / 命令依据 | 本地 item / 真实行为 | 尚缺行为或验证 |
 | --- | --- | --- | --- |
 | DOC-01 | 文档模型/排版与 [Docs schema][doc-schema] | 传统分页 Canvas、现有段落/文字运行模型；工具栏不以 HTML 作为权威源 | 节、复杂自动排版/跨页对象、所有模式差异与大文档性能未整体验收 |
-| DOC-02 字符 | 上游 `SetInlineFormat*Command`，包括 `doc.command.set-inline-format-subscript` / `superscript` | 样式/字体/字号、bold/italic/underline/strike、颜色/高亮/上下标及清除字符格式；上下标有独立 run 属性、命令历史、Canvas 字号/基线、DOM 语义 HTML 和 DOCX `w:vertAlign` 写出 | 上下标实现切片见 [DOC-02](feature-evidence/DOC-02-vertical-align.md)；完整字符样式/主题/继承及生产 WASM/Office 往返仍未验收 |
+| DOC-02 字符 | 上游 `SetInlineFormat*Command`、`SetInlineFormatCommand`，包括 subscript / superscript | 字符格式改实际 run 范围；caret 格式保留共享待输入 marks，body/story 成功后受 revision/generation 保护；CJK 字体槽、明确清色、高亮、混合缓存运行与来源清除标记进入服务/写出；成功撤销清旧偏好，取消保留 | [上下标](feature-evidence/DOC-02-vertical-align.md)、[局部字符/清除格式](feature-evidence/DOC-02-clear-formatting.md)和[共享输入](feature-evidence/COMMON-03-input-selection-axis-history.md)记录草稿；系统 IME、全部字符样式/主题/继承、复杂字段/锁与生产 WASM/Office 独立往返仍未验收 |
 | DOC-02 段落 | `SetParagraphNamedStyleCommand`、`AlignOperationCommand`、段落设置面板 | 正文/H1–H6、四对齐、缩进/列表、行距；`doc.command.format-paragraph` | 段前/后间距面板正在补充；Title/Subtitle 独立命名样式、混合/全段落语义及 Office 往返未完整验收 |
 | DOC-03 | `doc.menu.breaks`；`doc.menu.section-break.{next-page,continuous,next-column,even-page,odd-page}`；`docs.operation.insert-column-break` / `insert-section-break` | 当前普通 `doc.command.insert-page-break`；布局纸张 A4/Letter、纵横方向；边距设置正在补充 | 分节各类型、节级分栏、列断点均未接顶部；普通分页符不能代替分节 |
 | DOC-03 页眉页脚 | `doc.command.open-header-footer-panel`；[headerFooter schema][header-footer]：`docs-ui.ribbon.header-footer`、`DocHeaderFooterRibbonControl.{insertion,navigation,options,position}`、`doc.command.close-header-footer` | 当前无已实现本地页眉页脚上下文分类 | segment 切换、节关联、首页/奇偶页、页码/字段、距离、导航和结束编辑全部未验收 |
@@ -148,7 +148,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | DOC-19（Pro） | 共享/Docs 图表公开规格；商业菜单 ID 未核实 | 当前没有 Docs 图表顶部/属性面板 | 共享可编辑图表模型、内嵌数据、环绕/分页、属性与 Office 关系待实现/验收 |
 | DOC-20 | watermark 插件与公开规格 | 当前无已验收水印顶部流程 | 文本/图片、透明度/定位/页范围、打印与 Office 输出未验收 |
 | DOC-21（Pro） | 打印/PDF 公开规格；商业菜单 ID 未核实 | `doc.command.print` 当前通过 `documentHtml` 单 section 与 CSS 打印文档内容；不是应用壳截图，也不是 Canvas 逐页布局输出 | 真实分页布局与页范围、字体/对象/页眉页脚/脚注一致性、打印/PDF 独立文件仍未完成，不能记为 Pro 打印已达标 |
-| DOC-22 | 本项目 duke-pages parser / DOCX writer | 应用壳打开/保存/导出真实 DOCX；本地 JSON 快照与 Office 输出分开 | DOC/DOCX/ODT 格式/节/列表/表格/图形资源的独立重开与完整保真未验收 |
+| DOC-22 | 本项目 duke-pages parser / DOCX writer | 应用壳打开/保存/导出真实 DOCX；DOC/ODT 从真实全局定义取默认格式，原样式资源经专用 legacy-sources part 保存；DOCX 当前 Word 资源与历史来源分开；清除后缓存的局部混合格式接入 writer | [默认样式/历史来源/字段缓存证据](feature-evidence/DOC-02-clear-formatting.md)记录未运行内部/原生两次重开草稿；应用专用 part 在独立 Office 另存中的保留、原格式全部语义/关系及完整 DOC/DOCX/ODT 保真仍未验收 |
 | DOC-23 | DocFooter/DocStatistics/DocLayoutProgress | 组合底栏：当前/总页、字符/选区字素统计、缩放、内容修改状态；不把 UI 状态伪称云保存成功 | 全部上游统计口径、真实布局任务进度、大文档与模式差异未完整验收 |
 
 公开基础插入项的符号/emoji 选择器现已接入，支持保留选区插入、分类/最近使用与自定义 Unicode。剪贴板新增剪切、源格式/纯文本粘贴，顶部与原生 paste 共用归一化，并拒绝过期异步结果；copy/cut 当前写出纯文本。完整富文本/媒体剪贴板、目标格式及最近粘贴模式切换仍未完成，目标继续保留。

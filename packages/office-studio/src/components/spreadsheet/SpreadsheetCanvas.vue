@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Alert, AutoComplete, Button, Input, theme } from 'antdv-next'
+import { computed, h, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, useId, watch, type VNode } from 'vue'
+import { Alert, AutoComplete, Button, Dropdown, Input, Tooltip, theme } from 'antdv-next'
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
-import type { TimelineLevel } from '../../domain/model'
+import type { CellRange, TimelineLevel } from '../../domain/model'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell, sheetNumberFormatPreviewPatternAt } from '../../rendering/spreadsheet/scene'
 import type { SheetNumberFormatPreview } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout } from '../../rendering/spreadsheet/editor-layout'
-import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../../rendering/spreadsheet/selection'
+import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH, sheetRangeDashedOutlineCommands } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
 import type { SheetFormatPainterCanvasState } from '../../features/sheet-workbench/sheet-format-painter.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
@@ -20,20 +20,25 @@ import { sheetHeaderAxisIndexAt, sheetHeaderDragCommands } from '../../rendering
 import { convertTextToNumber } from '../../features/sheet-workbench/text-to-number.ts'
 import { sheetCellTextAlignment } from '../../features/sheet-workbench/sheet-cell-alignment.ts'
 import { replaceSheetCellInputSelection, sheetCellInputActionForKey, sheetCellNeedsMultilineEditor } from '../../features/sheet-workbench/sheet-cell-edit-input.ts'
+import { createSheetCellNativeInputBridge, type SheetCellInputBridgeContext } from '../../features/sheet-workbench/sheet-cell-native-input.ts'
+import type { SheetCellNativeInputEvent } from '../../features/sheet-workbench/sheet-cell-input-trace.ts'
 import { sheetCellWrapStrategy } from '../../features/sheet-workbench/sheet-cell-layout.ts'
 import { layoutSheetCellText, sheetCellTextFont } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
 import { measureSpreadsheetText } from '../../rendering/spreadsheet/text-metrics.ts'
-import { Minus, Plus } from 'lucide-vue-next'
+import { ChevronDown, ClipboardPaste, Minus, Plus } from 'lucide-vue-next'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
 import { sheetContextStructureTarget } from './sheet-context-menu.ts'
 import { sheetAxisVisibilityTargetHasHidden } from '../../features/sheet-workbench/sheet-axis-visibility.ts'
-import { useOfficeRegion } from '../../i18n/office-i18n'
+import { OfficeTranslatorKey, useOfficeRegion } from '../../i18n/office-i18n'
+import { SHEET_CLIPBOARD_COMMANDS } from '../../features/sheet-workbench/sheet-clipboard.ts'
+import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
+import { SHEET_CLIPBOARD_PASTE_OPTIONS, sheetClipboardGridRange, sheetClipboardOverlayPosition, type SheetClipboardPasteOptionsView } from './sheet-clipboard-overlay.ts'
 
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; inputContext?: () => SheetCellInputBridgeContext; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -43,9 +48,12 @@ const emit = defineEmits<{
   (event: 'extend-header-selection', axis: 'row' | 'column', index: number): void
   (event: 'edit-cell', key: string): void
   (event: 'update:editValue', value: string): void
+  (event: 'input-event', value: SheetCellNativeInputEvent): void
   (event: 'finish-edit'): void
   (event: 'composition-change', composing: boolean): void
   (event: 'editor-keydown', eventValue: KeyboardEvent): void
+  (event: 'copy', eventValue: ClipboardEvent): void
+  (event: 'cut', eventValue: ClipboardEvent): void
   (event: 'paste', eventValue: ClipboardEvent): void
   (event: 'resize-axis', axis: 'row' | 'column', index: number, size: number): void
   (event: 'context-command', commandId: string, params?: unknown): void
@@ -62,6 +70,11 @@ const emit = defineEmits<{
   (event: 'slicer-resize', payload: { slicerId: string; width: number; height: number }): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: () => void } | null>(null)
+// The synchronous callback also owns "no session" while Vue is still flushing the previous props.
+const inputSessionId = () => props.inputContext ? props.inputContext().sessionId : props.editSessionId
+const nativeInput = createSheetCellNativeInputBridge({ host: 'cell', sessionId: inputSessionId,
+  value: () => props.inputContext?.().value ?? props.editValue, contains: element => Boolean(root.value?.contains(element) && element.closest('.canvas-cell-input')),
+  emit: event => emit('input-event', event) })
 const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
 const fillPreview = ref<GridRange>()
 const headerDrag = ref<(SheetAxisHeaderMoveSource & { pointerStart: number; moved: boolean; copy: boolean; destination?: number; allowed: boolean; revision?: number })>()
@@ -81,6 +94,9 @@ const scene = computed(() => {
     axis: drag.axis, source: drag.interval, destination: drag.destination, allowed: drag.allowed,
   } : undefined, { source: token.value.colorFillSecondary, preview: token.value.colorFillTertiary,
     target: token.value.colorPrimary, invalid: token.value.colorError }))
+  if (props.copyRange && !props.editingKey) result.commands.push(...sheetRangeDashedOutlineCommands(
+    geometry.value, sheetClipboardGridRange(props.copyRange), viewport.value, token.value.colorPrimary,
+  ))
   return result
 })
 const selectedCellText = computed(() => {
@@ -120,6 +136,87 @@ const editLayout = computed(() => {
   return createCellEditorLayout(geometry.value, props.editingKey, viewport.value, { contentHeight: layout.height + 6 * viewport.value.zoom })
 })
 const { token } = theme.useToken()
+const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
+const pasteOptionsOpen = ref(false)
+const pasteOptionsOwner = useId().replace(/:/g, '-')
+const pasteOptionsPopupClass = `sheet-paste-options-popup-${pasteOptionsOwner}`
+let pasteOptionsFocusRequest = 0, pasteOptionsFocusFrame = 0
+const pasteOptionsPosition = computed(() => props.editingKey ? undefined : sheetClipboardOverlayPosition(geometry.value, viewport.value, props.pasteOptions?.range))
+const pasteOptionsStyle = computed(() => pasteOptionsPosition.value
+  ? { left: `${pasteOptionsPosition.value.left}px`, top: `${pasteOptionsPosition.value.top}px` } : undefined)
+const pasteOptionsMenu = computed(() => ({
+  items: SHEET_CLIPBOARD_PASTE_OPTIONS.flatMap(option => {
+    const entry = props.pasteOptionsCapabilities && sheetClipboardCommandCapability(props.pasteOptionsCapabilities, SHEET_CLIPBOARD_COMMANDS.optionalPaste, option.mode)
+    if (entry?.hidden) return []
+    const label = translate(option.translationKey, option.label)
+    const reason = entry?.disabled ? entry.reason : undefined
+    return [{ key: option.mode, disabled: entry?.disabled, label: reason
+      ? h(Tooltip, { title: `${label}：${reason}` }, { default: () => h('span', { 'aria-description': reason }, label) }) : label }]
+  }),
+  selectedKeys: props.pasteOptions ? [props.pasteOptions.mode] : [],
+  onClick: ({ key }: { key: string | number }) => {
+    const option = SHEET_CLIPBOARD_PASTE_OPTIONS.find(candidate => candidate.mode === key)
+    if (!option || !props.pasteOptions) return
+    const entry = props.pasteOptionsCapabilities && sheetClipboardCommandCapability(props.pasteOptionsCapabilities, SHEET_CLIPBOARD_COMMANDS.optionalPaste, option.mode)
+    if (entry?.hidden || entry?.disabled) return
+    pasteOptionsOpen.value = false
+    emit('context-command', SHEET_CLIPBOARD_COMMANDS.optionalPaste, { mode: option.mode })
+  },
+}))
+function ownsPasteOptions(element: Element): boolean {
+  return element.closest('.sheet-paste-options')?.getAttribute('data-sheet-paste-options-owner') === pasteOptionsOwner
+    || !!element.closest(`.${pasteOptionsPopupClass}`)
+}
+function focusPasteOptions(): void {
+  const request = ++pasteOptionsFocusRequest, sheet = props.sheet, revision = props.workbookRevision
+  const options = props.pasteOptions, selection = JSON.stringify(props.selectedRanges), host = root.value
+  cancelAnimationFrame(pasteOptionsFocusFrame)
+  void nextTick(() => {
+    if (request !== pasteOptionsFocusRequest || !pasteOptionsOpen.value) return
+    const attempt = (remaining: number): void => {
+      pasteOptionsFocusFrame = 0
+      if (request !== pasteOptionsFocusRequest || !pasteOptionsOpen.value || disposed || !active || props.editingKey
+        || root.value !== host || props.sheet !== sheet || props.workbookRevision !== revision
+        || props.pasteOptions !== options || JSON.stringify(props.selectedRanges) !== selection) return
+      const focused = document.activeElement
+      if (focused !== host && (!(focused instanceof Element) || !ownsPasteOptions(focused))) return
+      const menu = document.querySelector<HTMLElement>(`.${pasteOptionsPopupClass} [role="menu"]`)
+      if (menu && menu.getClientRects().length) menu.focus({ preventScroll: true })
+      else if (remaining > 0) pasteOptionsFocusFrame = requestAnimationFrame(() => attempt(remaining - 1))
+    }
+    pasteOptionsFocusFrame = requestAnimationFrame(() => attempt(2))
+  })
+}
+function onPasteOptionsKeydown(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.key === 'Escape' && pasteOptionsOpen.value) {
+    event.preventDefault(); event.stopPropagation(); onPasteOptionsOpenChange(false)
+  } else if (event.key === 'ArrowDown' && !pasteOptionsOpen.value) {
+    event.preventDefault(); event.stopPropagation(); onPasteOptionsOpenChange(true)
+  }
+}
+const pasteOptionsPopup = (node: VNode) => h('div', { onKeydownCapture: onPasteOptionsKeydown }, [node])
+function onPasteOptionsFocusIn(event: FocusEvent): void {
+  if (pasteOptionsOpen.value && event.target instanceof Element && !ownsPasteOptions(event.target)) pasteOptionsOpen.value = false
+}
+function onPasteOptionsOpenChange(open: boolean): void {
+  pasteOptionsOpen.value = open
+  if (open) { focusPasteOptions(); return }
+  const focused = document.activeElement, sheet = props.sheet, revision = props.workbookRevision, host = root.value
+  const options = props.pasteOptions, selection = JSON.stringify(props.selectedRanges), request = pasteOptionsFocusRequest
+  if (!(focused instanceof Element) || !ownsPasteOptions(focused)) return
+  void nextTick(() => {
+    if (pasteOptionsOpen.value || request !== pasteOptionsFocusRequest || disposed || !active || props.editingKey
+      || root.value !== host || props.sheet !== sheet || props.workbookRevision !== revision
+      || props.pasteOptions !== options || JSON.stringify(props.selectedRanges) !== selection) return
+    const actual = document.activeElement
+    if (actual === document.body || actual instanceof Element && ownsPasteOptions(actual)) focus()
+  })
+}
+watch(pasteOptionsOpen, open => {
+  if (open) return
+  pasteOptionsFocusRequest++; cancelAnimationFrame(pasteOptionsFocusFrame); pasteOptionsFocusFrame = 0
+}, { flush: 'sync' })
 const themeStyle = computed(() => ({
   '--sheet-canvas-background': token.value.colorBgContainer,
   '--sheet-canvas-text': token.value.colorText,
@@ -587,15 +684,19 @@ function changeInputComposition(value: boolean): void {
   emit('composition-change', value)
 }
 function onInputKeydown(event: KeyboardEvent) {
+  if (!(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
   if (!event.defaultPrevented && !composing.value && !event.isComposing && event.keyCode !== 229) emit('editor-keydown', event)
 }
 function onEditorKeydownCapture(event: KeyboardEvent): void {
   if (!(event.target as HTMLElement).closest('.canvas-cell-input')) return
+  nativeInput.capture(event, 'selection')
   // Capture before AutoComplete's option list can interpret an IME Enter or Alt+Enter as a choice.
   if (composing.value || event.isComposing || event.keyCode === 229) { event.stopPropagation(); return }
   if (sheetCellInputActionForKey(event) === 'line-break') { event.stopPropagation(); emit('editor-keydown', event) }
 }
 function onEditValueChange(value: unknown): void {
+  // Native events are captured before AutoComplete/Input emits change. Only the old isolated bridge uses value-only updates.
+  if (inputSessionId()) return
   const draft = String(value ?? '')
   if (/[\r\n]/u.test(draft)) retainedMultiline.value = true
   emit('update:editValue', draft)
@@ -603,28 +704,60 @@ function onEditValueChange(value: unknown): void {
 function onTextAreaChange(event: Event): void {
   if (event.target instanceof HTMLTextAreaElement) onEditValueChange(event.target.value)
 }
+function onNativeInputCapture(event: Event): void {
+  const target = event.target
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    if (target.closest('.canvas-cell-input') && /[\r\n]/u.test(target.value)) retainedMultiline.value = true
+  }
+  nativeInput.capture(event, 'input')
+}
+function onCompositionCapture(event: CompositionEvent, value: boolean): void {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
+  nativeInput.capture(event, value ? 'compositionstart' : 'compositionend')
+  changeInputComposition(value)
+}
+function onAutoCompleteSelect(value: unknown): void {
+  if (!inputSessionId()) { onEditValueChange(value); return }
+  const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    nativeInput.replace(element, String(value ?? ''), undefined, 'insertReplacementText')
+  }
+}
 function onEditorPasteCapture(event: ClipboardEvent): void {
   const target = event.target
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
+  nativeInput.capture(event, 'selection')
   const text = event.clipboardData?.getData('text/plain')
   if (!text || !/[\r\n]/u.test(text) || composing.value) return
   event.preventDefault(); event.stopPropagation()
-  const replacement = replaceSheetCellInputSelection(target.value, text, { start: target.selectionStart ?? target.value.length, end: target.selectionEnd ?? target.value.length })
-  onEditValueChange(replacement.value)
+  const selection = { start: target.selectionStart ?? target.value.length, end: target.selectionEnd ?? target.value.length }
+  const replacement = inputSessionId() ? nativeInput.replace(target, text, selection, 'insertFromPaste', target.value)
+    : replaceSheetCellInputSelection(target.value, text, selection)
+  if (!replacement) return
+  if (!inputSessionId()) onEditValueChange(replacement.value)
+  retainedMultiline.value = true
   focusEditor(replacement.selection)
 }
 function onEditorBlur(event: FocusEvent): void {
+  if (!(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
   const next = event.relatedTarget
   if (next instanceof HTMLElement && next.closest('.canvas-cell-input, .formula-toolbar')) return
-  const key = props.editingKey
+  const key = props.editingKey, sessionId = inputSessionId()
   void nextTick(() => {
-    if (!key || props.editingKey !== key || composing.value || swappingEditor) return
+    if (!key || props.editingKey !== key || inputSessionId() !== sessionId || composing.value || swappingEditor) return
     const focused = document.activeElement
     if (focused instanceof HTMLElement && focused.closest('.canvas-cell-input, .formula-toolbar')) return
     emit('finish-edit')
   })
 }
-function onPaste(event: ClipboardEvent) { if (!(event.target as HTMLElement).closest('input, textarea')) emit('paste', event) }
+function onClipboard(event: ClipboardEvent, kind: 'copy' | 'cut' | 'paste'): void {
+  if (event.defaultPrevented || !active || disposed || !(event.target instanceof Element)
+    || event.target.closest('input, textarea, [contenteditable]:not([contenteditable="false"])')) return
+  if (kind === 'copy') emit('copy', event)
+  else if (kind === 'cut') emit('cut', event)
+  else emit('paste', event)
+}
 function onWheel(event: WheelEvent) {
   if ((event.target as HTMLElement).closest('input, textarea')) return
   const position = point(event)
@@ -709,10 +842,10 @@ function onKeydown(event: KeyboardEvent) {
   event.preventDefault(); event.stopPropagation(); queueRender()
 }
 function focusEditor(selection?: { start: number; end: number }) {
-  const key = props.editingKey, request = ++editorFocusRequest
+  const key = props.editingKey, sessionId = inputSessionId(), request = ++editorFocusRequest
   editorHasPendingFocus = true
   void nextTick(() => {
-    if (!key || props.editingKey !== key || request !== editorFocusRequest || !active || disposed) return
+    if (!key || props.editingKey !== key || inputSessionId() !== sessionId || request !== editorFocusRequest || !active || disposed) return
     editorHasPendingFocus = false
     input.value?.focus()
     // AutoComplete exposes focus but no selection API. Both native elements are owned by antdv-next.
@@ -723,6 +856,17 @@ function focusEditor(selection?: { start: number; end: number }) {
     }
   })
 }
+function insertEditorText(text: string): void {
+  const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
+  if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) return
+  const selection = { start: element.selectionStart ?? element.value.length, end: element.selectionEnd ?? element.value.length }
+  const replacement = inputSessionId() ? nativeInput.replace(element, text, selection, 'insertLineBreak', element.value)
+    : replaceSheetCellInputSelection(element.value, text, selection)
+  if (!replacement) return
+  if (!inputSessionId()) onEditValueChange(replacement.value)
+  if (/[\r\n]/u.test(replacement.value)) retainedMultiline.value = true
+  focusEditor(replacement.selection)
+}
 function ensureVisible(address: string) {
   const cell = parseAddress(address), scroll = scroller.value
   if (!cell || !scroll) return
@@ -731,11 +875,11 @@ function ensureVisible(address: string) {
   onScroll()
 }
 function focus() { root.value?.focus({ preventScroll: true }) }
-defineExpose({ focusEditor, ensureVisible, focus, getBackend: () => surface?.backend })
+defineExpose({ focusEditor, insertEditorText, ensureVisible, focus, getBackend: () => surface?.backend })
 watch(scene, queueRender)
 watch(fullSize, () => { void nextTick(resize) })
 watch(() => props.zoom, () => { viewport.value = { ...viewport.value, zoom: props.zoom / 100 }; void nextTick(() => { resize(); ensureVisible(props.selectedKey) }) })
-watch(() => props.editingKey, key => {
+watch([() => props.editingKey, () => props.editSessionId], ([key]) => {
   changeInputComposition(false); retainedMultiline.value = false; editorHasPendingFocus = false; editorFocusRequest++
   if (key) ensureVisible(key)
 }, { flush: 'sync' })
@@ -746,21 +890,24 @@ watch(useMultilineEditor, () => {
   const focused = element === document.activeElement
   const selection = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
     ? { start: element.selectionStart ?? element.value.length, end: element.selectionEnd ?? element.value.length } : undefined
-  const key = props.editingKey, request = ++editorSwapRequest
+  const key = props.editingKey, sessionId = inputSessionId(), request = ++editorSwapRequest
   const focusRequest = editorFocusRequest, preserveSelection = !editorHasPendingFocus
   swappingEditor = true
   void nextTick(() => {
-    if (key === props.editingKey && focused && preserveSelection && focusRequest === editorFocusRequest) focusEditor(selection)
+    if (key === props.editingKey && sessionId === inputSessionId() && focused && preserveSelection && focusRequest === editorFocusRequest) focusEditor(selection)
     void nextTick(() => { if (request === editorSwapRequest) swappingEditor = false })
   })
 })
 watch(() => props.sheet.id, () => {
+  pasteOptionsOpen.value = false
   clearPointerGesture()
   void nextTick(restoreViewport)
 }, { flush: 'sync' })
 watch([() => props.sheet, () => props.workbookRevision, () => props.editingKey], clearPointerGesture, { flush: 'sync' })
+watch([pasteOptionsPosition, () => props.pasteOptions], () => { pasteOptionsOpen.value = false })
 onMounted(async () => {
   if (!canvasHost.value) return
+  document.addEventListener('focusin', onPasteOptionsFocusIn, true)
   // Layout and navigation must be ready while the GPU adapter/pipeline is
   // still loading. Otherwise early name-box/keyboard navigation uses a 1px
   // viewport and silently fails to scroll to the selected cell.
@@ -777,19 +924,27 @@ onMounted(async () => {
 })
 onActivated(() => { active = true; void nextTick(restoreViewport) })
 onDeactivated(() => {
+  pasteOptionsOpen.value = false
   sheetViews.set(props.sheet.id, { left: viewport.value.scrollLeft, top: viewport.value.scrollTop })
   active = false
   cancelAnimationFrame(frame); frame = 0
   clearPointerGesture()
   surface?.resize(0, 0, window.devicePixelRatio || 1)
 })
-onUnmounted(() => { disposed = true; clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
+onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.removeEventListener('focusin', onPasteOptionsFocusIn, true); clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" :class="{ 'format-painter-active': Boolean(formatPainter) }" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @paste.capture="onEditorPasteCapture" @paste="onPaste" @wheel="onWheel">
+  <div ref="root" class="spreadsheet-canvas" :class="{ 'format-painter-active': Boolean(formatPainter) }" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="onNativeInputCapture" @compositionstart.capture="onCompositionCapture($event, true)" @compositionend.capture="onCompositionCapture($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @copy="event => onClipboard(event, 'copy')" @cut="event => onClipboard(event, 'cut')" @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
+    <Dropdown v-if="pasteOptionsPosition && pasteOptions" :open="pasteOptionsOpen" :trigger="['click']" :menu="pasteOptionsMenu" :popup-render="pasteOptionsPopup" :classes="{ root: `sheet-paste-options-popup ${pasteOptionsPopupClass}` }" :auto-focus="false" :auto-adjust-overflow="true" :destroy-on-hidden="true" placement="bottomLeft" @open-change="onPasteOptionsOpenChange">
+      <Tooltip :title="translate('sheet.paste-options', '粘贴选项')" :open="pasteOptionsOpen ? false : undefined">
+        <Button class="sheet-paste-options" :data-sheet-paste-options-owner="pasteOptionsOwner" :style="pasteOptionsStyle" size="small" :aria-label="translate('sheet.paste-options', '粘贴选项')" :aria-expanded="pasteOptionsOpen" aria-haspopup="menu" @pointerdown.stop @keydown.stop="onPasteOptionsKeydown" @dblclick.stop @contextmenu.stop>
+          <ClipboardPaste :size="14" aria-hidden="true" /><ChevronDown :size="10" aria-hidden="true" />
+        </Button>
+      </Tooltip>
+    </Dropdown>
     <Button
       v-for="control in outlineToggleRects"
       :key="`outline-${control.axis}-${control.groupId}`"
@@ -816,7 +971,7 @@ onUnmounted(() => { disposed = true; clearPointerGesture(); cancelAnimationFrame
       @pointerdown.stop
       @click.stop="emit('context-command', 'sheet.operation.outline-set-level', { axis: control.axis, level: control.level })"
     >{{ control.level }}</Button>
-    <AutoComplete v-if="editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="onEditValueChange" @blur="onEditorBlur" @keydown.stop="onInputKeydown" @compositionstart="changeInputComposition(true)" @compositionend="changeInputComposition(false)">
+    <AutoComplete v-if="editingKey" :key="editSessionId ?? editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="onEditValueChange" @select="onAutoCompleteSelect" @blur="onEditorBlur" @keydown.stop="onInputKeydown">
       <Input.TextArea v-if="useMultilineEditor" :rows="1" :auto-size="false" :change-on-composing="true" :styles="editTextAreaStyles" :wrap="sheetCellWrapStrategy(editedCell) === 'wrap' ? 'soft' : 'off'" variant="borderless" spellcheck="false" aria-label="单元格编辑" @change="onTextAreaChange" />
     </AutoComplete>
     <span v-if="editingKey && editLayout && !formatPainter" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
@@ -836,6 +991,7 @@ onUnmounted(() => { disposed = true; clearPointerGesture(); cancelAnimationFrame
       :can-convert-text="canConvertSelectedText"
       :has-hyperlink="hasContextHyperlink"
       :can-format="canFormat"
+      :clipboard-capabilities="clipboardCapabilities"
       :can-shift-horizontally="canShiftHorizontally"
       :can-shift-vertically="canShiftVertically"
       :selected-ranges="selectedRanges"
@@ -856,6 +1012,8 @@ onUnmounted(() => { disposed = true; clearPointerGesture(); cancelAnimationFrame
 .spreadsheet-canvas.format-painter-active { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M2 1v18l4-4 3 7 3-2-3-6h6z' fill='white' stroke='black'/%3E%3Cpath d='m17 13 8-10 2 2-8 10z' fill='white' stroke='black'/%3E%3Cpath d='M17 14c-4 0-2 5-6 6 5 2 10-1 8-5z' fill='black' stroke='white'/%3E%3C/svg%3E") 2 1, crosshair !important; }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.sheet-paste-options { position: absolute; z-index: 4; display: inline-flex; align-items: center; justify-content: center; gap: 2px; width: 44px; height: 24px; padding: 0 4px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); border-color: var(--sheet-canvas-border); }
+.sheet-paste-options:focus-visible { outline: 2px solid var(--sheet-canvas-primary); outline-offset: 1px; }
 .outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; min-width: 12px; min-height: 12px; margin: 0; padding: 0; border: 1px solid var(--sheet-canvas-border); border-radius: 1px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); box-shadow: none; line-height: 10px; }
 .outline-control :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
 .outline-level { font-size: 8px; }

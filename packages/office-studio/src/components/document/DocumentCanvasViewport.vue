@@ -6,7 +6,7 @@ import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, documentTabCommand, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
 import { caretRect, createTextMeasurer, documentStoryCaretRect, documentStoryLayoutLines, emptyLayout, hitTestChecklist, hitTestDocument, hitTestDocumentStory, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
-import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../../features/document/model/document-model'
+import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch, type TextTarget } from '../../features/document/model/document-model'
 import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
 import { documentPasteCommand } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
@@ -15,18 +15,21 @@ import { codeBlockData } from '../../features/document/code-blocks/code-blocks.t
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
 import type { StoryLocation } from '../../features/document/services/story-editor'
 import { documentFormattingWordRange } from '../../features/document/services/document-format-painter'
+import type { DocumentInputSession, DocumentStoryInputCommit } from '../../features/document/model/document-input-session'
+import { documentInputLocation, sameDocumentInputLocation } from '../../features/document/model/document-input-session'
+import type { DocumentStoryRange } from '../../features/document/model/document-story'
 import { useDocumentStoryInput } from './use-document-story-input'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
   'open-story': [location: StoryLocation]
   'close-story': []
-  'edit-story': [value: string, caret: number]
-  'update:story-selection': [range: { start: number; end: number }]
+  'edit-story': [value: string, caret: number, marks?: RunPatch, input?: DocumentStoryInputCommit, sourceRange?: { start: number; end: number }]
+  'update:story-selection': [range: { start: number; end: number }, preserveInputStyle?: boolean]
   'story-composing': [value: boolean]
   'code-block-exit': [blockId: string]
-  'toggle-format': [field: 'bold' | 'italic' | 'underline']
+  'toggle-format': [field: 'bold' | 'italic' | 'underline', source?: DocumentModel, story?: DocumentStoryRange]
   'update:selection': [selection: DocumentSelection]
   'selection-committed': []
   'navigate-to-heading': [headingId: string]
@@ -64,6 +67,17 @@ function storyKeys(event: KeyboardEvent) {
   if (key === 'escape') emit('close-story')
   else if (mod && key === 's') emit('save')
   else if (mod && (key === 'z' || key === 'y')) { if (key === 'y' || event.shiftKey) emit('redo'); else emit('undo') }
+  else if (mod && ['b', 'i', 'u'].includes(key)) {
+    event.preventDefault(); event.stopPropagation()
+    if (props.storyReadonly || storyComposing.value) return
+    const source = props.model, location = props.story, page = location && layout.value.pageHeaderFooters[location.page]
+    const storyKey = location?.area === 'header' ? page?.headerStory : page?.footerStory, range = storyRange()
+    if (!page || page.isParityBlank || !storyKey) return
+    syncStorySelection(event)
+    if (!storyEventIsCurrent(event) || source !== props.model) return
+    emit('toggle-format', key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline', source, { sectionId: page.sectionId, story: storyKey, ...range })
+    return
+  }
   else return
   event.preventDefault(); event.stopPropagation()
 }
@@ -91,6 +105,8 @@ let pendingText = ''
 let compositionModel: DocumentModel | undefined
 let compositionRange: DocumentSelection | undefined
 let compositionInput: HTMLTextAreaElement | null | undefined
+let compositionMarks: RunPatch = {}
+let compositionSession: DocumentInputSession | undefined
 let blockedBodyInput: HTMLTextAreaElement | null | undefined
 let disposed = false
 let active = true
@@ -98,15 +114,26 @@ const measurer = createTextMeasurer()
 const { inputValue: storyInputValue, composing: storyComposing, bridgeVersion: storyBridgeVersion, storyRange, storyEventIsCurrent, syncStorySelection, focusStory, storyInputChanged,
   captureStoryInput, storyCompositionStart, storyCompositionEnd, storyFocused, cancelStoryInput } = useDocumentStoryInput(props, {
   element: storyElement, layout: () => layout.value, active: () => active && !disposed,
-  edit: (value, caret) => emit('edit-story', value, caret), select: range => emit('update:story-selection', range),
+  edit: (value, caret, marks, input, sourceRange) => emit('edit-story', value, caret, marks, input, sourceRange), select: (range, preserveInputStyle) => emit('update:story-selection', range, preserveInputStyle),
   composing: value => emit('story-composing', value), preview: model => { preview.value = model; relayout() },
   draw: () => { caretVisible.value = true; requestDraw() }, notify: message => emit('notify', message),
 })
+function bodyFocusChanged(event: FocusEvent) {
+  if (!bodyEventIsCurrent(event)) return
+  focused.value = event.type === 'focus'
+  requestDraw()
+}
+function storyFocusChanged(event: FocusEvent) {
+  if (!storyEventIsCurrent(event)) return
+  focused.value = event.type === 'focus'
+  if (focused.value) storyFocused(event)
+  else requestDraw()
+}
 const displayModel = computed(() => preview.value ?? props.model)
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
 const storyStyle = computed(() => {
   const target = props.story, entry = target && layout.value.pageHeaderFooters[target.page]
-  if (!entry || !target) return { display: 'none' }
+  if (!entry || entry.isParityBlank || !target) return { display: 'none' }
   const k = props.zoom / 100, off = sceneOffset(layout.value, viewport.value)
   const caret = documentStoryCaretRect(documentStoryLayoutLines(layout.value, target), props.storySelection?.end ?? 0)
   return { left: `${off.x + (caret?.x ?? entry.x) * k}px`, top: `${off.y + (caret?.y ?? (target.area === 'header' ? entry.headerTop : entry.footerBottom)) * k}px`, fontSize: `${Math.max(12, (caret?.height ?? 12) * k)}px` }
@@ -125,6 +152,9 @@ const inputStyle = computed(() => {
 watch(() => props.model, () => { if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(); if (!composing.value && !storyComposing.value) preview.value = null; relayout() }, { deep: false })
 watch(() => props.story, story => { if (story && composing.value) cancelBodyComposition(); requestDraw() })
 watch(() => props.selection, () => { if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(); caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible) }, { deep: true })
+watch(() => props.captureInputSession?.(), () => {
+  if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(false)
+}, { flush: 'sync' })
 watch(() => props.searchMatches, requestDraw, { deep: true })
 watch(() => props.zoom, (zoom) => {
   const offset = zoomedDocumentScrollOffset(layout.value, viewport.value, zoom)
@@ -296,7 +326,7 @@ function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | und
   if (!pos || !props.storiesEnabled) return
   const page = layout.value.pages.find(p => pos.x >= p.x && pos.x <= p.x + p.width && pos.y >= p.y && pos.y <= p.y + p.height)
   const entry = page && layout.value.pageHeaderFooters[page.index]
-  if (!page || !entry) return
+  if (!page || !entry || page.isParityBlank) return
   if (pos.y < page.content.y || entry.headerLayoutLines.some(line => pos.y >= line.y && pos.y < line.y + line.height)) return { page: page.index, area: 'header' }
   if (pos.y >= page.content.y + page.content.height || entry.footerLayoutLines.some(line => pos.y >= line.y && pos.y < line.y + line.height)) return { page: page.index, area: 'footer' }
 }
@@ -443,6 +473,15 @@ function inputFallback(event: Event) {
 
 function compositionStart(event: CompositionEvent) {
   if (!bodyEventIsCurrent(event)) return
+  compositionSession = props.captureInputSession?.(props.model)
+  if ((props.captureInputSession && !compositionSession?.valid) || !bodyInputSessionCurrent()) {
+    compositionSession = undefined
+    const input = inputElement()
+    if (input) input.value = ''
+    blockedBodyInput = input
+    bodyBridgeVersion.value++
+    return
+  }
   composing.value = true
   suppressCompositionInput = false
   pendingText = ''
@@ -450,6 +489,7 @@ function compositionStart(event: CompositionEvent) {
   compositionRange = compositionSelection.value
   compositionModel = props.model
   compositionInput = inputElement()
+  compositionMarks = { ...props.typingMarks }
 }
 
 function bodyCompositionCurrent() {
@@ -457,15 +497,29 @@ function bodyCompositionCurrent() {
     && compositionInput === inputElement()
     && sameTarget(compositionRange.anchor, props.selection.anchor) && compositionRange.anchor.offset === props.selection.anchor.offset
     && sameTarget(compositionRange.focus, props.selection.focus) && compositionRange.focus.offset === props.selection.focus.offset
+    && bodyInputSessionCurrent()
 }
 
-function cancelBodyComposition() {
+function bodyInputSessionCurrent() {
+  if (!props.captureInputSession) return true
+  const current = props.captureInputSession()
+  // A public draft starts only after its current Canvas model has captured a
+  // session. The standalone editor has no public-session callback.
+  return compositionSession?.valid === true && current?.valid === true
+    && compositionSession.modelRevision === current.modelRevision && compositionSession.generation === current.generation
+    && current.location.kind === 'body' && sameDocumentInputLocation(current.location, compositionSession.location)
+    && sameDocumentInputLocation(current.location, documentInputLocation(props.selection))
+}
+
+function cancelBodyComposition(refocus = true) {
   const hadComposition = composing.value
   composing.value = false
   compositionSelection.value = null
   compositionRange = undefined
   compositionModel = undefined
   compositionInput = undefined
+  compositionMarks = {}
+  compositionSession = undefined
   pendingText = ''
   suppressCompositionInput = false
   if (hadComposition) { preview.value = null; if (active && !disposed) relayout() }
@@ -474,7 +528,7 @@ function cancelBodyComposition() {
   if (hadComposition) {
     blockedBodyInput = input
     bodyBridgeVersion.value++
-    void nextTick(() => { if (active && !disposed && !props.story) inputRef.value?.focus({ preventScroll: true }) })
+    if (refocus) void nextTick(() => { if (active && !disposed && !props.story) inputRef.value?.focus({ preventScroll: true }) })
   }
 }
 
@@ -484,7 +538,7 @@ function compositionUpdate(event: CompositionEvent) {
   if (!bodyCompositionCurrent() || !compositionRange) { cancelBodyComposition(); return }
   pendingText = event.data
   const model = cloneDocument(props.model)
-  const selection = executeDocumentCommand(model, compositionRange, { id: 'doc.command.insert-text', text: pendingText })
+  const selection = executeDocumentCommand(model, compositionRange, { id: 'doc.command.insert-text', text: pendingText, marks: compositionMarks })
   preview.value = model
   compositionSelection.value = selection
   relayout()
@@ -494,15 +548,18 @@ function compositionEnd(event: CompositionEvent) {
   if (!bodyEventIsCurrent(event)) return
   if (!composing.value || !bodyCompositionCurrent()) { cancelBodyComposition(); return }
   const text = event.data || pendingText
+  const marks = compositionMarks
   composing.value = false
   compositionRange = undefined
   compositionModel = undefined
   compositionInput = undefined
+  compositionMarks = {}
+  compositionSession = undefined
   compositionSelection.value = null
   preview.value = null
   const input = inputElement()
   if (input) input.value = ''
-  if (text) emit('command', { id: 'doc.command.insert-text', text })
+  if (text) emit('command', { id: 'doc.command.insert-text', text, marks })
   pendingText = ''
   suppressCompositionInput = true
   queueMicrotask(() => { suppressCompositionInput = false })
@@ -627,12 +684,13 @@ function scrollToBlock(id: string) {
 }
 function revealStory(target: StoryLocation) {
   const entry = layout.value.pageHeaderFooters[target.page], el = scrollRef.value
-  if (!entry || !el) return
+  if (!entry || entry.isParityBlank || !el) return
   const y = (target.area === 'header' ? entry.headerTop : entry.footerBottom) * props.zoom / 100
   if (y < el.scrollTop + 30 || y > el.scrollTop + el.clientHeight - 30) el.scrollTop = Math.max(0, y - el.clientHeight / 2)
   focusStory()
 }
-defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value })
+function cancelInput(refocus = true) { cancelBodyComposition(refocus); cancelStoryInput(refocus) }
+defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value })
 </script>
 
 <template>
@@ -641,8 +699,8 @@ defineExpose({ focus, focusStory, revealStory, storyRange, scrollToPage, scrollT
     <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
-    <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="focused = true; requestDraw()" @blur="focused = false; requestDraw()" @copy="copy" @cut="cut" @paste="paste" />
-    <Input.TextArea v-if="story" :key="`${model.id}:${story.page}:${story.area}:${storyBridgeVersion}`" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyInputValue" :readonly="storyReadonly" :rows="1" :change-on-composing="true" variant="borderless" @keydown="storyKeys" @keyup="syncStorySelection" @select="syncStorySelection" @beforeinput="storyBeforeInput" @compositionstart="storyCompositionStart" @compositionend="storyCompositionEnd" @change="storyInputChanged" @focus="focused = true; storyFocused()" @blur="focused = false; requestDraw()" />
+    <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="bodyFocusChanged" @blur="bodyFocusChanged" @copy="copy" @cut="cut" @paste="paste" />
+    <Input.TextArea v-if="story" :key="`${model.id}:${story.page}:${story.area}:${storyBridgeVersion}`" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyInputValue" :readonly="storyReadonly" :rows="1" :change-on-composing="true" variant="borderless" @keydown="storyKeys" @keyup="syncStorySelection" @select="syncStorySelection" @beforeinput="storyBeforeInput" @compositionstart="storyCompositionStart" @compositionend="storyCompositionEnd" @change="storyInputChanged" @focus="storyFocusChanged" @blur="storyFocusChanged" />
     <Alert v-if="error" class="canvas-error" type="error" show-icon :message="error" role="alert" />
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
   </div>

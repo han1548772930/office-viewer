@@ -120,7 +120,7 @@ export function validationRuleFromPanel(
     }
   } else if (settings.type === 'custom') {
     draft.formula1 = settings.formula1.trim()
-  } else if (settings.operator) {
+  } else if (validationUsesOperator(settings.type) && settings.operator) {
     draft.operator = settings.operator
     draft.formula1 = settings.formula1.trim()
     if (validationUsesTwoFormulas(settings.type, settings.operator)) draft.formula2 = settings.formula2.trim()

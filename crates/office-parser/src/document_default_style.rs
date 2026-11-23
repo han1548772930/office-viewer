@@ -97,7 +97,7 @@ mod tests {
     fn defaults_resolve_based_on_and_theme_fonts_without_changing_source_xml() {
         let styles = format!(r#"<s:styles xmlns:s="{WORD}"><s:docDefaults><s:rPrDefault><s:rPr><s:rFonts s:asciiTheme="minorHAnsi" s:eastAsiaTheme="minorEastAsia"/><s:sz s:val="30"/></s:rPr></s:rPrDefault><s:pPrDefault><s:pPr><s:spacing s:line="288" s:after="180"/></s:pPr></s:pPrDefault></s:docDefaults><s:style s:type="paragraph" s:styleId="Base"><s:rPr><s:i/></s:rPr><s:pPr><s:jc s:val="right"/></s:pPr></s:style><s:style s:type="paragraph" s:default="1" s:styleId="Normal"><s:basedOn s:val="Base"/><s:rPr><s:sz s:val="32"/></s:rPr></s:style></s:styles>"#);
         let theme = format!(r#"<t:theme xmlns:t="{DRAWING}"><t:themeElements><t:fontScheme><t:minorFont><t:latin typeface="Georgia"/><t:ea typeface="宋体"/></t:minorFont></t:fontScheme></t:themeElements></t:theme>"#);
-        let source = DocumentOfficeSourcePayload { version: 1, styles: Some(DocumentOfficeXmlPartPayload { part_name: "custom/styles.xml".into(), xml: styles.clone() }), theme: Some(DocumentOfficeXmlPartPayload { part_name: "custom/theme.xml".into(), xml: theme }), resource_errors: Vec::new() };
+        let source = DocumentOfficeSourcePayload { version: 1, styles: Some(DocumentOfficeXmlPartPayload { part_name: "custom/styles.xml".into(), xml: styles.clone() }), theme: Some(DocumentOfficeXmlPartPayload { part_name: "custom/theme.xml".into(), xml: theme }), resource_errors: Vec::new(), origin: None, legacy_origins: Vec::new() };
         let defaults = read_document_default_style(Some(&source), &ParagraphWordWrap::default()).unwrap();
         let text = defaults.text.unwrap();
         assert_eq!(text.font_size_pt, Some(16.0));
@@ -112,7 +112,7 @@ mod tests {
     fn absent_and_declared_empty_defaults_keep_the_readers_word_defaults() {
         let absent = read_document_default_style(None, &ParagraphWordWrap::default()).unwrap();
         assert_eq!(absent.text.unwrap().font_size_pt, Some(12.0));
-        let source = DocumentOfficeSourcePayload { version: 1, styles: Some(DocumentOfficeXmlPartPayload { part_name: "word/styles.xml".into(), xml: format!(r#"<w:styles xmlns:w="{WORD}"><w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault><w:pPrDefault><w:pPr/></w:pPrDefault></w:docDefaults></w:styles>"#) }), theme: None, resource_errors: Vec::new() };
+        let source = DocumentOfficeSourcePayload { version: 1, styles: Some(DocumentOfficeXmlPartPayload { part_name: "word/styles.xml".into(), xml: format!(r#"<w:styles xmlns:w="{WORD}"><w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault><w:pPrDefault><w:pPr/></w:pPrDefault></w:docDefaults></w:styles>"#) }), theme: None, resource_errors: Vec::new(), origin: None, legacy_origins: Vec::new() };
         let declared = read_document_default_style(Some(&source), &ParagraphWordWrap::default()).unwrap();
         assert_eq!(declared.text.unwrap().font_size_pt, Some(10.0));
         assert!(declared.paragraph.is_none());

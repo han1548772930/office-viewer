@@ -112,13 +112,15 @@ export function evaluateConditionalFormatRule(rule: SheetConditionalFormatRule, 
     return boundary !== undefined && (rule.isBottom ? value <= boundary : value >= boundary)
   }
   if (rule.type === 'average' || rule.subType === 'average') {
-    if (typeof value !== 'number' || !scopeValues.length) return false
+    if (typeof value !== 'number' || !Number.isFinite(value) || !scopeValues.length) return false
     const numeric = scopeValues.filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
     if (!numeric.length) return false
     const average = numeric.reduce((sum, item) => sum + item, 0) / numeric.length
+    if (!Number.isFinite(average)) return false
     if (rule.operator === 'lessThanOrEqual') return value <= average
     if (rule.operator === 'greaterThanOrEqual') return value >= average
     if (rule.operator === 'equal') return value === average
+    if (rule.operator === 'notEqual') return value !== average
     return rule.operator === 'lessThan' ? value < average : value > average
   }
   if (rule.type === 'expression' || rule.subType === 'formula') return expressionMatches?.(rule.formula1 || String(rule.value ?? '')) ?? false
@@ -169,7 +171,7 @@ export function conditionalFormatStyleAt(
     if (!rule.ranges.some(range => contains(range, row, column))) continue
     const scopedValues = scopeValues.filter(item => rule.ranges.some(range => contains(range, item.row, item.column))).map(item => item.value)
     const numericValues = scopeValues.length ? scopedValues.filter((item): item is number => typeof item === 'number' && Number.isFinite(item)) : values
-    const threshold = (config: { type: string; value?: number | string } | undefined) => resolveThreshold(config, numericValues, typeof value === 'number' ? value : 0, formula => formulaValue?.(formula, rule))
+    const threshold = (config: { type: string; value?: number | string } | undefined, allowAutomatic = false) => resolveThreshold(config, numericValues, typeof value === 'number' ? value : 0, formula => formulaValue?.(formula, rule), allowAutomatic)
     if (rule.type === 'duplicateValues' || rule.subType === 'duplicateValues') {
       if (valueKey(value) === undefined) continue
       const count = scopedValues.filter(item => valueKey(item) === valueKey(value)).length
@@ -188,8 +190,8 @@ export function conditionalFormatStyleAt(
     }
     if (rule.type === 'dataBar' && typeof value === 'number' && Number.isFinite(value)) {
       if (output.dataBar) continue
-      const min = threshold(rule.config?.min ?? { type: 'min' })
-      const max = threshold(rule.config?.max ?? { type: 'max' })
+      const min = threshold(rule.config?.min ?? { type: 'min' }, true)
+      const max = threshold(rule.config?.max ?? { type: 'max' }, true)
       if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min || value < min) continue
       const start = min < 0 ? max <= 0 ? 1 : -min / (max - min) : 0
       const negative = value < 0
@@ -252,11 +254,14 @@ function extreme(values: readonly number[], fallback: number, select: typeof Mat
   return values.reduce((current, value) => select(current, value), fallback)
 }
 
-function resolveThreshold(config: { type: string; value?: number | string } | undefined, values: readonly number[], fallback: number, formulaValue?: (formula: string) => unknown): number {
+function resolveThreshold(config: { type: string; value?: number | string } | undefined, values: readonly number[], fallback: number, formulaValue?: (formula: string) => unknown, allowAutomatic = false): number {
   const minimum = values.length ? extreme(values, Number.POSITIVE_INFINITY, Math.min) : fallback
   const maximum = values.length ? extreme(values, Number.NEGATIVE_INFINITY, Math.max) : fallback
   if (!config || config.type === 'min') return minimum
   if (config.type === 'max') return maximum
+  // MS-XLSX ST_CfvoType includes zero only for the automatic data-bar boundaries.
+  if (config.type === 'autoMin') return allowAutomatic ? Math.min(0, minimum) : Number.NaN
+  if (config.type === 'autoMax') return allowAutomatic ? Math.max(0, maximum) : Number.NaN
   if (config.type === 'num' || config.type === 'formula') {
     const result = config.type === 'formula' ? formulaValue?.(String(config.value ?? '')) : config.value
     const number = typeof result === 'number' || typeof result === 'string' && result.trim() ? Number(result) : Number.NaN

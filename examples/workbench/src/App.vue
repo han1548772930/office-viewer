@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { Button, ConfigProvider, Input, Modal, theme, Upload } from 'antdv-next'
-import { X } from 'lucide-vue-next'
+import { Button, ConfigProvider, Form, FormItem, Input, Modal, theme, Upload } from 'antdv-next'
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { DocumentWorkbench, ExcelWorkbench, OfficeDirectionKey, OfficeLocaleKey, OfficeRegionKey, OfficeTranslatorKey, WORKBENCH_ACCENTS, WorkbenchDisplayKey, type OfficeLocale } from '@office-studio/office-studio'
 import { useDisplayPreferences } from './display-preferences'
 import WorkspaceHeader, { type WorkspaceHeaderAction } from './WorkspaceHeader.vue'
+import WorkspaceFeedback from './WorkspaceFeedback.vue'
+import WorkspaceDiagnostics from './WorkspaceDiagnostics.vue'
 import { useWorkspaceController } from './useWorkspaceController'
 import type { FileAction } from './workspace-file-operations'
 
 const {
   editor, studio, notice, activeFileName, excelView, documentApi, modified,
   exportTask, diagnosticsOpen, renameOpen, renameValue, renameError, pendingNewKind,
-  files, showNotice, cancelImport, switchWorkspace, requestNew, createNew,
+  files, showNotice, undoContent, redoContent, cancelImport, switchWorkspace, requestNew, createNew,
   requestRename, renameFile, onExcelChange, onDocumentChange, saveWorkbook,
   saveDocument, onDragOver, onDrop,
 } = useWorkspaceController()
@@ -81,8 +82,8 @@ function onGlobalKeydown(event: KeyboardEvent): void {
   if (key === 'o') { event.preventDefault(); requestImport(); return }
   if (key === 's') { event.preventDefault(); requestExport(); return }
   if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
-  if (key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo() }
-  else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); editor.redo() }
+  if (key === 'z' && !event.shiftKey) { event.preventDefault(); undoContent() }
+  else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); redoContent() }
 }
 
 onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
@@ -103,48 +104,36 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
     <Upload accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
 
     <main :id="editor.state.activeKind === 'workbook' ? 'workbook-workspace' : 'document-workspace'" class="workspace" role="tabpanel" :aria-labelledby="editor.state.activeKind === 'workbook' ? 'workbook-tab' : 'document-tab'" :aria-label="editor.state.activeKind === 'workbook' ? t('workspace.workbook-area') : t('workspace.document-area')">
-      <div v-if="editor.state.parserStatus === 'loading'" class="workspace-task-strip" role="status" aria-live="polite">
-        <span class="workspace-task-spinner" aria-hidden="true" /><span>{{ editor.state.parserMessage }}</span>
-        <Button size="small" @click="cancelImport">{{ t('workspace.cancel-import') }}</Button>
-      </div>
-      <div v-if="editor.state.parserStatus === 'error'" class="parser-error" role="alert">
-        <span>{{ editor.state.parserMessage }}</span>
-        <Button type="text" size="small" :aria-label="t('workspace.close-error')" @click="editor.state.parserStatus = 'idle'"><X :size="16" /></Button>
-      </div>
+      <WorkspaceFeedback :parser-status="editor.state.parserStatus" :parser-message="editor.state.parserMessage" :notice="notice" @cancel-import="cancelImport" @dismiss-parser-error="editor.state.parserStatus = 'idle'" />
       <KeepAlive :max="2">
         <ExcelWorkbench
           v-if="editor.state.activeKind === 'workbook'" :key="'workbook:' + editor.state.workbook.id" ref="workbookRef"
           :model-value="excelView" :ribbon-variant="ribbonVariant" :studio="studio" :show-header="false" :can-undo="editor.canUndo" :can-redo="editor.canRedo" class="workbench"
           @update:model-value="onExcelChange" @import="files.importFile" @save="(view) => saveWorkbook(view, requestedAction)" @export="(view) => saveWorkbook(view, 'export')"
-          @undo="editor.undo" @redo="editor.redo" @notify="(payload) => showNotice(payload.type, payload.message)"
+          @undo="undoContent('workbook', $event?.workbookId)" @redo="redoContent('workbook', $event?.workbookId)" @notify="(payload) => showNotice(payload.type, payload.message)"
         />
         <DocumentWorkbench
           v-else :key="'document:' + editor.state.document.id" ref="documentRef"
           :model-value="editor.state.document" :ribbon-variant="ribbonVariant" :file-name="editor.state.document.name" :document-api="documentApi" :show-header="false"
           :can-undo="editor.canUndo" :can-redo="editor.canRedo" class="workbench"
           @update:model-value="onDocumentChange" @import-file="files.importFile" @save="(payload) => saveDocument(payload, requestedAction)"
-          @undo="editor.undo" @redo="editor.redo" @notify="(message) => showNotice('info', message)"
+          @undo="undoContent('document', $event)" @redo="redoContent('document', $event)" @notify="(message) => showNotice('info', message)"
         />
       </KeepAlive>
     </main>
 
-    <div v-if="notice" :class="['notice', notice.type]" :role="notice.type === 'error' ? 'alert' : 'status'">{{ notice.message }}</div>
-
     <Modal v-model:open="renameOpen" :title="t('workspace.rename-title')" :ok-text="t('workspace.confirm')" :cancel-text="t('workspace.cancel')" @ok="renameFile">
-      <Input v-model:value="renameValue" :aria-label="t('workspace.file-name')" :maxlength="255" :status="renameError ? 'error' : undefined" @press-enter="renameFile" />
-      <p v-if="renameError" class="workspace-dialog-error" role="alert">{{ renameError }}</p>
+      <Form :model="{ name: renameValue }" layout="vertical" @finish="renameFile">
+        <FormItem name="name" :label="t('workspace.file-name')" :validate-status="renameError ? 'error' : undefined" :help="renameError || undefined">
+          <Input v-model:value="renameValue" :aria-label="t('workspace.file-name')" :maxlength="255" />
+        </FormItem>
+      </Form>
     </Modal>
     <Modal :open="pendingNewKind !== null" :title="pendingNewKind === 'workbook' ? t('workspace.new-workbook') : t('workspace.new-document')" :ok-text="t('workspace.continue-create')" :cancel-text="t('workspace.return-editing')" @ok="pendingNewKind && createNew(pendingNewKind)" @cancel="pendingNewKind = null">
       <p>{{ t('workspace.pending-new', { kind: t(pendingNewKind === 'workbook' ? 'workspace.pending-workbook' : 'workspace.pending-document') }) }}</p>
     </Modal>
     <Modal v-model:open="diagnosticsOpen" :title="t('workspace.diagnostics-title')" :footer="null">
-      <p v-if="!editor.state.diagnostics.length" class="workspace-diagnostics-empty">{{ t('workspace.no-diagnostics') }}</p>
-      <ul v-else class="workspace-diagnostics">
-        <li v-for="(diagnostic, index) in editor.state.diagnostics" :key="diagnostic.code + ':' + index" :data-severity="diagnostic.severity">
-          <strong>{{ t(`workspace.severity-${diagnostic.severity}`) }} · {{ diagnostic.code }}</strong>
-          <p>{{ diagnostic.message }}</p><details v-if="diagnostic.details"><summary>{{ t('workspace.details') }}</summary><pre>{{ diagnostic.details }}</pre></details>
-        </li>
-      </ul>
+      <WorkspaceDiagnostics :diagnostics="editor.state.diagnostics" />
     </Modal>
   </div>
   </ConfigProvider>

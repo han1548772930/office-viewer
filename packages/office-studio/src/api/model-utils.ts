@@ -16,6 +16,7 @@ import { inferSheetCellValueType, isForcedSheetCellValueType, normalizeSheetCell
 import { normalizeDocument } from '../features/document/model/document-model.ts'
 import { setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
+import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 
 export type ApiCellData = {
   v?: CellScalar
@@ -31,6 +32,7 @@ export function clone<T>(value: T): T {
 }
 
 export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
+  assertWorkbookConditionalFormatBudget(model.sheets)
   const next = clone(model)
   next.id ??= randomId('workbook')
   next.sheets = next.sheets.length ? next.sheets : [createBlankSheet()]
@@ -62,6 +64,7 @@ export function ensureDocumentId(model: DocumentModel): DocumentModel {
 
 export function workbookFromInput(input: Partial<WorkbookModel> & Record<string, unknown> = {}): WorkbookModel {
   if (input.kind === 'workbook' && Array.isArray(input.sheets)) return ensureWorkbookId(input as WorkbookModel)
+  assertWorkbookConditionalFormatBudget(input.sheets)
   const base = createBlankWorkbook()
   base.id = typeof input.id === 'string' ? input.id : randomId('workbook')
   base.name = typeof input.name === 'string' ? input.name : typeof input.title === 'string' ? input.title : base.name
@@ -104,6 +107,7 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
   const sheet = createBlankSheet(typeof input.name === 'string' ? input.name : 'Sheet1')
   sheet.id = typeof input.id === 'string' ? input.id : randomId('sheet')
   sheet.name = typeof input.name === 'string' ? input.name : sheet.name
+  if (Array.isArray(input.conditionalFormats)) sheet.conditionalFormats = clone({ conditionalFormats: input.conditionalFormats }).conditionalFormats
   if (Array.isArray(input.dataValidations)) sheet.dataValidations = clone(input.dataValidations)
   if (Array.isArray(input.rangeProtectionRules)) sheet.rangeProtectionRules = clone(input.rangeProtectionRules)
   if (input.worksheetProtection && typeof input.worksheetProtection === 'object') {

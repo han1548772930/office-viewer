@@ -7,15 +7,18 @@ import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationRenderMode, SheetDataValidationType } from '../../domain/model'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { createSheetDataValidationRule } from '../../features/sheet-validation/validation-engine.ts'
-import { parseValidationRanges, validationPickedAddress, type ValidationRangeTarget } from '../../features/sheet-validation/validation-panel-state.ts'
+import { parseValidationRanges, validationPickedAddress, validationUsesOperator, validationUsesTwoFormulas, type ValidationRangeTarget } from '../../features/sheet-validation/validation-panel-state.ts'
 
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType; initialRuleId?: string; canvasRanges?: CellRange[]; canAdd?: boolean; selectedRange?: { target: ValidationRangeTarget; value: string } }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; applied: []; add: []; 'request-range-selection': [payload: { target: ValidationRangeTarget; active: boolean }] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 
 const types = computed<Array<{ label: string; value: SheetDataValidationType }>>(() =>
-  (['whole', 'decimal', 'date', 'time', 'textLength', 'list', 'listMultiple', 'checkbox', 'custom'] as const)
-    .map(value => ({ value, label: t(`sheet.validation.type.${value}`, value) })))
+  (['any', 'whole', 'decimal', 'date', 'time', 'textLength', 'list', 'listMultiple', 'checkbox', 'custom'] as const)
+    .map(value => ({ value, label: t(`sheet.validation.type.${value}`, {
+      any: '任意值', whole: '整数', decimal: '小数', date: '日期', time: '时间', textLength: '文本长度',
+      list: '下拉列表', listMultiple: '下拉多选', checkbox: '复选框', custom: '自定义公式',
+    }[value]) })))
 const operators = computed<Array<{ label: string; value: SheetDataValidationOperator }>>(() =>
   (['between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual'] as const)
     .map(value => ({ value, label: t(`sheet.validation.operator.${value}`, value) })))
@@ -56,8 +59,8 @@ const panel = ref<HTMLElement>()
 const { token } = theme.useToken()
 const busy = ref(false)
 const message = ref('')
-const needsFormula = computed(() => type.value === 'list' || type.value === 'listMultiple' || type.value === 'custom' || type.value !== 'checkbox' && operator.value !== '')
-const needsSecondFormula = computed(() => operator.value === 'between' || operator.value === 'notBetween')
+const needsFormula = computed(() => type.value === 'list' || type.value === 'listMultiple' || type.value === 'custom' || validationUsesOperator(type.value) && operator.value !== '')
+const needsSecondFormula = computed(() => validationUsesTwoFormulas(type.value, operator.value))
 const isList = computed(() => type.value === 'list' || type.value === 'listMultiple')
 const title = computed(() => detailOpen.value
   ? t(rule.value ? 'sheet.validation.edit-title' : 'sheet.validation.title', rule.value ? '编辑数据验证' : '数据验证')
@@ -121,7 +124,7 @@ function loadRule(current: DataValidationRule | null, initialType?: SheetDataVal
   rule.value = current
   rangeValue.value = current ? rangeLabel(current) : props.sourceRange
   type.value = current?.type ?? initialType ?? 'whole'
-  operator.value = current ? current.operator ?? '' : 'between'
+  operator.value = current ? current.operator ?? '' : validationUsesOperator(type.value) ? 'between' : ''
   formula1.value = current?.formula1 ?? (type.value === 'checkbox' ? 'TRUE' : '1')
   formula2.value = current?.formula2 ?? (type.value === 'checkbox' ? 'FALSE' : '10')
   listValues.value = current?.formula1?.replace(/^"|"$/g, '').replace(/""/g, '"') ?? ''
@@ -172,7 +175,9 @@ function apply(): void {
       ...(rule.value ? { id: rule.value.id, metadata: rule.value.metadata ? structuredClone(rule.value.metadata) : undefined } : {}), type: type.value,
       ...(type.value === 'checkbox' ? checkboxCustomValues.value ? { formula1: formula1.value.trim(), formula2: formula2.value.trim() } : {} : needsFormula.value ? { formula1: nextFormula1 } : {}),
       ...(needsSecondFormula.value ? { formula2: formula2.value.trim() } : {}),
-      ...(type.value !== 'checkbox' && type.value !== 'list' && type.value !== 'listMultiple' && type.value !== 'custom' && operator.value ? { operator: operator.value } : {}),
+      ...(validationUsesOperator(type.value) && operator.value ? { operator: operator.value } : {}),
+      ...(rule.value?.formulaAnchor && rule.value.type === type.value && nextFormula1 === rule.value.formula1
+        && (!needsSecondFormula.value || formula2.value.trim() === rule.value.formula2) ? { formulaAnchor: { ...rule.value.formulaAnchor } } : {}),
       allowBlank: allowBlank.value, showDropDown: showDropDown.value, showErrorMessage: showErrorMessage.value,
       errorStyle: errorStyle.value, errorTitle: errorTitle.value, error: error.value,
       showInputMessage: showInputMessage.value, promptTitle: promptTitle.value, prompt: prompt.value,

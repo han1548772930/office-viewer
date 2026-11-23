@@ -98,6 +98,34 @@ test('story clear cancellation, section permissions, surrogate boundaries and lo
   }
 })
 
+test('facade field clear retains cached run identities and hyperlinks through history and internal save', () => {
+  const model = sourceModel('field-cache-api'), defaults = storyModel.documentStoryDefaultStyle(model).text
+  const source = copy(model.sectionHeaderFooters.first.storyContent.header.runs[0].metadata.source)
+  const cache = [docModel.createRun('2026/', { fontFamily: 'Georgia', fontSize: 18, color: '#FF0000', bold: false }),
+    docModel.createRun('11/22', { fontFamily: 'Aptos', fontSize: 12, color: '#0000FF', bold: true, underline: true, href: 'https://example.org/cache' })]
+  for (const run of cache) run.metadata = { source: copy(source), officeStoryStyleBaseline: storyModel.documentStoryTextStyle(run, defaults) }
+  const textStyle = storyModel.documentStoryTextStyle(cache[0], defaults)
+  model.sectionHeaderFooters.first.pageFields = [{ story: 'header', field: 'DATE', offset: 3, instruction: 'DATE', cachedResult: '2026/11/22', textStyle,
+    metadata: { source, officeStoryStyleBaseline: { ...textStyle }, officeStoryFieldCache: { version: 1, runs: cache } } }]
+  const { studio, document, body } = open(model), before = copy(document.getModel()), request = { sectionId: 'first', story: 'header', start: 3, end: 4 }
+  assert.deepEqual(document.clearFormatting(body, request).selection, body)
+  const cleared = copy(document.getModel()), field = readSection(document).pageFields[0], runs = storyModel.documentStoryFieldCache(field).runs
+  assert.equal(field.field, 'DATE'); assert.equal(field.instruction, 'DATE'); assert.equal(field.offset, 3); assert.equal(field.cachedResult, '2026/11/22')
+  assert.deepEqual(runs.map(run => [run.id, run.text, run.bold, run.underline, run.fontSize]), cache.map(run => [run.id, run.text, false, false, 9]))
+  assert.equal(runs[1].href, 'https://example.org/cache')
+  assert.ok(runs.every(run => run.metadata.officeStoryTextFormatCleared === true))
+  assert.deepEqual(cleared.blocks, before.blocks)
+  assert.deepEqual(cleared.sectionHeaderFooters.first.storyContent.header.runs, before.sectionHeaderFooters.first.storyContent.header.runs)
+  assert.equal(document.clearFormatting(body, request).changed, false)
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  document.undo(); assert.deepEqual(document.getModel(), before)
+  document.redo(); assert.deepEqual(document.getModel(), cleared)
+  const saved = copy(document.save()), reopened = open(saved), reopenedCache = storyModel.documentStoryFieldCache(readSection(reopened.document).pageFields[0]).runs
+  assert.deepEqual(reopenedCache, saved.sectionHeaderFooters.first.pageFields[0].metadata.officeStoryFieldCache.runs)
+  assert.equal(reopenedCache[1].href, 'https://example.org/cache')
+  assert.deepEqual(history(reopened.studio, reopened.document.id), { undo: 0, redo: 0, dirty: false })
+})
+
 test('direct public story patches enforce content and wrapper locks through reversible edits', () => {
   const source = sourceModel('patch-lock'), content = source.sectionHeaderFooters.first.storyContent.header
   content.locks = [{ id: 'tail', startOffset: 10, endOffset: 14, lock: 'contentLocked' }]

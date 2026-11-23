@@ -1,5 +1,6 @@
 import type { DocumentModel, OfficeKind, WorkbookModel } from '../domain/model'
 import type { ExportOutcome, ExportProgress, ExportRequest, ExportResponse, ExportWarning } from '../parser/export-contracts'
+import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 
 interface PendingExport {
   resolve: (outcome: ExportOutcome) => void
@@ -55,6 +56,7 @@ export class OfficeExportError extends Error {
 export async function exportOfficeModel(kind: OfficeKind, model: WorkbookModel | DocumentModel, options: ExportOptions = {}): Promise<ExportOutcome> {
   if (model.kind !== kind) throw new Error('导出类型与当前模型不一致')
   if (options.signal?.aborted) throw new OfficeExportError('CANCELLED', 'Office 文件导出已取消')
+  if (model.kind === 'workbook') assertWorkbookConditionalFormatBudget(model.sheets)
   if (pending) fail(new OfficeExportError('CANCELLED', '已被新的导出任务替代'))
   const requestId = crypto.randomUUID()
   activeRequest = requestId

@@ -224,6 +224,8 @@ struct ChartSourceInput {
     range: RangeInput,
     #[serde(default = "default_chart_orientation")]
     orientation: String,
+    #[serde(default)]
+    sheet_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1044,8 +1046,10 @@ fn worksheet_xml(
         }
         out.push_str("</mergeCells>");
     }
-    out.push_str(&write_conditional_formats(sheet, registry, warnings)?);
-    out.push_str(&data_validation::write_xml(sheet, warnings)?);
+    let conditional = write_conditional_formats(sheet, registry, warnings)?;
+    out.push_str(&conditional.base);
+    let validation = data_validation::write_xml(sheet, warnings)?;
+    out.push_str(&validation);
     if !hyperlinks.is_empty() {
         out.push_str("<hyperlinks>");
         for (link_index, (reference, target)) in hyperlinks.iter().enumerate() {
@@ -1069,9 +1073,12 @@ fn worksheet_xml(
         out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
     }
     let axis_extension = axis.extension_xml(sheet, &out)?;
+    let validation_extension = data_validation::extension_xml(sheet, &validation)?;
     let mut extensions = sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?;
-    if extensions.is_empty() { extensions = format!("<extLst>{axis_extension}</extLst>"); }
-    else if let Some(position) = extensions.find("</extLst>") { extensions.insert_str(position, &axis_extension); }
+    let additions = format!("{}{axis_extension}{validation_extension}", conditional.extension);
+    if extensions.is_empty() { extensions = format!("<extLst>{additions}</extLst>"); }
+    else if let Some(position) = extensions.rfind("</extLst>") { extensions.insert_str(position, &additions); }
+    else { return Err(ExportError::invalid("worksheet extensions have no closing container")); }
     out.push_str(&extensions);
     out.push_str("</worksheet>");
     Ok((out, hyperlinks))
@@ -1590,13 +1597,18 @@ fn chart_xml(
     if chart.pivot_table_id.is_some() && pivot_table_name.is_none() {
         return Err(ExportError::unsupported(format!("XLSX pivot chart {} requires pivot chart parts that are not implemented", chart.id)));
     }
+    let pivot = chart.pivot_table_id.as_deref().and_then(|id| {
+        workbook.pivot_tables.as_deref().unwrap_or(&[]).iter().find(|pivot| pivot.id == id)
+    });
+    let source_sheet_id = pivot.map(|pivot| pivot.anchor.sub_unit_id.as_str())
+        .or(chart.source.sheet_id.as_deref()).unwrap_or(chart.sheet_id.as_str());
     let sheet = workbook
         .sheets
         .iter()
-        .find(|sheet| sheet.id == chart.sheet_id)
+        .find(|sheet| sheet.id == source_sheet_id)
         .ok_or_else(|| {
             ExportError::invalid(format!(
-                "chart {} references an unknown worksheet",
+                "chart {} references an unknown data source worksheet",
                 chart.id
             ))
         })?;
@@ -1606,11 +1618,12 @@ fn chart_xml(
             workbook
                 .sheets
                 .iter()
-                .position(|item| item.id == chart.sheet_id)
+                .position(|item| item.id == source_sheet_id)
                 .unwrap_or(0),
         )
         .unwrap_or_else(|| sheet.name.clone());
-    let bounds = range_bounds(&chart.source.range).ok_or_else(|| {
+    let source_range = pivot.and_then(|pivot| pivot.output_range.as_ref()).unwrap_or(&chart.source.range);
+    let bounds = range_bounds(source_range).ok_or_else(|| {
         ExportError::invalid(format!("chart {} source range is missing", chart.id))
     })?;
     if chart.source.orientation != "columns" && chart.source.orientation != "rows" {
@@ -2376,10 +2389,12 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             "worksheet coordinates exceed the XLSX row or column limit",
         ));
     }
+    let mut validation_budget = office_io_common::sheet_validation_source::ValidationSourceBudget::default();
     for sheet in &workbook.sheets {
         auto_filter::validate(sheet)?;
-        data_validation::validate(sheet)?;
+        data_validation::validate_with_budget(sheet, &mut validation_budget)?;
     }
+    let conditional_theme = conditional_source::theme_for_workbook(&workbook)?;
     let mut warnings = Vec::new();
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
@@ -2440,6 +2455,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         package.add_xml(&path, "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml", table::write(table, table_index + 1)?)?;
         table_exports.push((sheet_index, table_index, table.clone(), path));
     }
+    let mut conditional_source_bytes = 0usize;
+    let mut conditional_source_elements = 0usize;
     for (index, sheet) in workbook.sheets.iter().enumerate() {
         let sheet_charts = chart_index_by_sheet
             .get(&sheet.id)
@@ -2470,6 +2487,15 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             table_parts.push_str("</tableParts>");
             let insertion = content.find("<extLst").unwrap_or_else(|| content.find("</worksheet>").unwrap_or(content.len()));
             content.insert_str(insertion, &table_parts);
+        }
+        let (source_bytes, source_elements) = conditional_source::output_source_usage(&content)?;
+        conditional_source_bytes = conditional_source_bytes.checked_add(source_bytes)
+            .ok_or_else(|| ExportError::invalid("CF_SOURCE_TOTAL_LIMIT: conditional-format workbook output byte counter overflow"))?;
+        conditional_source_elements = conditional_source_elements.checked_add(source_elements)
+            .ok_or_else(|| ExportError::invalid("CF_SOURCE_TOTAL_LIMIT: conditional-format workbook output element counter overflow"))?;
+        if conditional_source_bytes > office_io_common::conditional_format_source::SOURCE_RESOURCE_BYTE_LIMIT
+            || conditional_source_elements > office_io_common::conditional_format_source::SOURCE_RESOURCE_ELEMENT_LIMIT {
+            return Err(ExportError::invalid("CF_SOURCE_TOTAL_LIMIT: conditional-format worksheet output resources exceed the workbook budget"));
         }
         let path = format!("xl/worksheets/sheet{}.xml", index + 1);
         package.add_xml(
@@ -2535,6 +2561,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             }
         }
     }
+    conditional_source::validate_output_resource_budget(
+        conditional_source_bytes, conditional_source_elements, &registry, conditional_theme.as_deref(),
+    )?;
     package.add_xml(
         "xl/styles.xml",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml",
@@ -2565,6 +2594,10 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         "styles.xml",
         false,
     )?;
+    if let Some(theme) = conditional_theme {
+        package.add_xml("xl/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
+        package.add_relationship(Some("xl/workbook.xml"), "rIdTheme", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme", "theme/theme1.xml", false)?;
+    }
     Ok(warnings)
 }
 
@@ -2683,12 +2716,25 @@ mod tests {
         std::io::Read::read_to_string(&mut archive.by_name("xl/worksheets/sheet1.xml").unwrap(), &mut worksheet).unwrap();
         std::io::Read::read_to_string(&mut archive.by_name("xl/styles.xml").unwrap(), &mut styles).unwrap();
 
-        assert!(worksheet.contains("sqref=\"A1:A5\"><cfRule type=\"cellIs\" priority=\"1\" dxfId=\"0\" operator=\"lessThan\"><formula>60</formula>"));
-        assert!(worksheet.contains("sqref=\"A1:A5 C1:C5\"><cfRule type=\"cellIs\" priority=\"2\" dxfId=\"1\" operator=\"greaterThanOrEqual\" stopIfTrue=\"1\"><formula>90</formula>"));
-        assert!(worksheet.contains("sqref=\"B3:B5\"><cfRule type=\"containsText\" priority=\"3\" dxfId=\"2\" operator=\"containsText\" text=\"A&quot;B\">") );
-        assert!(worksheet.contains("NOT(ISERROR(SEARCH(&quot;A&quot;&quot;B&quot;,B3)))"), "{worksheet}");
-        assert!(styles.contains("<dxfs count=\"3\"><dxf><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEE3344\"/>"));
-        assert!(styles.contains("<dxf><font><b/><color rgb=\"FFFFFFFF\"/></font><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF00AA55\"/>"));
+        let root = office_io_common::conditional_format_xml::parse(&worksheet).unwrap();
+        let groups = root.children.iter().filter(|node| node.is_main("conditionalFormatting")).collect::<Vec<_>>();
+        assert_eq!(groups.len(), 3);
+        for (index, (reference, operator, operand)) in [("A1:A5", "lessThan", "60"), ("A1:A5 C1:C5", "greaterThanOrEqual", "90")].into_iter().enumerate() {
+            let rule = groups[index].child("cfRule").unwrap();
+            assert_eq!(groups[index].attrs.get("sqref").map(String::as_str), Some(reference));
+            assert_eq!(rule.attrs.get("priority"), Some(&(index + 1).to_string())); assert_eq!(rule.attrs.get("dxfId"), Some(&index.to_string()));
+            assert_eq!(rule.attrs.get("operator").map(String::as_str), Some(operator)); assert_eq!(rule.child("formula").unwrap().text, operand);
+        }
+        assert_eq!(groups[1].child("cfRule").unwrap().attrs.get("stopIfTrue").map(String::as_str), Some("1"));
+        let text = groups[2].child("cfRule").unwrap();
+        assert_eq!(groups[2].attrs.get("sqref").map(String::as_str), Some("B3:B5"));
+        assert_eq!(text.attrs.get("type").map(String::as_str), Some("containsText")); assert_eq!(text.attrs.get("text").map(String::as_str), Some("A\"B"));
+        assert_eq!(text.child("formula").unwrap().text, "NOT(ISERROR(SEARCH(\"A\"\"B\",B3)))");
+        let root = office_io_common::conditional_format_xml::parse(&styles).unwrap(); let dxfs = root.child("dxfs").unwrap();
+        assert_eq!(dxfs.children.len(), 3);
+        assert_eq!(dxfs.children[0].child("fill").unwrap().child("patternFill").unwrap().child("fgColor").unwrap().attrs.get("rgb").map(String::as_str), Some("FFEE3344"));
+        let font = dxfs.children[1].child("font").unwrap(); assert!(font.child("b").is_some());
+        assert_eq!(font.child("color").unwrap().attrs.get("rgb").map(String::as_str), Some("FFFFFFFF"));
     }
 
     #[test]

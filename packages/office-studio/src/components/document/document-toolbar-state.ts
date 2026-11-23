@@ -2,14 +2,16 @@ import type { DocumentModel, DocumentParagraphStyle } from '../../domain/model'
 import { caretUsesEastAsianFont, hasEastAsianLetters } from '../../features/document/model/document-font'
 import { blockListPreset, type ListPreset } from '../../features/document/model/document-lists'
 import { blockAtPoint } from '../../features/document/commands/document-commands'
+import { documentStorySelectionFormatting } from '../../features/document/services/document-story-formatting'
+import type { DocumentStoryRange } from '../../features/document/model/document-story'
 import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
 import { DOCUMENT_PARAGRAPH_SETTING_FIELDS, documentParagraphSettingsStyle, type DocumentParagraphSettingField } from './document-paragraph-settings-state'
 import {
-  DOCUMENT_NAMED_PARAGRAPH_STYLES, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
+  DOCUMENT_NAMED_PARAGRAPH_STYLES, applyRunPatch, createRun, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
   selectionCollapsed, textTargets, type DocumentRun, type DocumentSelection, type RunPatch,
 } from '../../features/document/model/document-model'
 
-const markKeys = ['bold', 'italic', 'underline', 'strike', 'verticalAlign', 'fontFamily', 'fontSize', 'color', 'highlight', 'href'] as const
+const markKeys = ['bold', 'italic', 'underline', 'strike', 'verticalAlign', 'fontFamily', 'eastAsiaFontFamily', 'fontSize', 'color', 'highlight', 'href'] as const
 
 export interface DocumentToolbarState {
   marks: RunPatch
@@ -62,17 +64,11 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     }
   }
   if (collapsed || !marks.length) {
-    const mark = { ...marksAtPoint(model, selection.focus), ...pending }
+    const mark = applyRunPatch(createRun('', marksAtPoint(model, selection.focus)), pending)
     if (mark.eastAsiaFontFamily && caretUsesEastAsianFont(model, selection)) mark.fontFamily = mark.eastAsiaFontFamily
     marks.push(mark)
   }
-  const uniform: RunPatch = {}
-  const mixedMarks: (keyof RunPatch)[] = []
-  for (const key of markKeys) {
-    const firstValue = marks[0]?.[key]
-    if (marks.every((mark) => mark[key] === firstValue)) Object.assign(uniform, { [key]: firstValue })
-    else mixedMarks.push(key)
-  }
+  const { marks: uniform, mixedMarks } = documentToolbarMarks(marks)
   const paragraph: Partial<DocumentParagraphStyle> = {}
   const mixedParagraph: DocumentParagraphSettingField[] = []
   for (const key of DOCUMENT_PARAGRAPH_SETTING_FIELDS) {
@@ -85,6 +81,32 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     delete paragraph.lineHeight
   }
   return { marks: uniform, mixedMarks, paragraph, mixedParagraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
+}
+
+function documentToolbarMarks(styles: readonly RunPatch[]): Pick<DocumentToolbarState, 'marks' | 'mixedMarks'> {
+  const marks: RunPatch = {}, mixedMarks: (keyof RunPatch)[] = []
+  for (const key of markKeys) {
+    const value = styles[0]?.[key]
+    if (styles.every(style => style[key] === value)) Object.assign(marks, { [key]: value })
+    else mixedMarks.push(key)
+  }
+  return { marks, mixedMarks }
+}
+
+/** Shared character controls use the active header/footer input range and its field caches. */
+export function documentStoryToolbarState(model: DocumentModel, range: DocumentStoryRange, pending: RunPatch = {}): DocumentToolbarState {
+  const selected = documentStorySelectionFormatting(model, range, pending)
+  const paragraph: Partial<DocumentParagraphStyle> = {}, mixedParagraph: DocumentParagraphSettingField[] = []
+  const paragraphs = selected.paragraphs.map(documentParagraphSettingsStyle)
+  for (const key of DOCUMENT_PARAGRAPH_SETTING_FIELDS) {
+    const value = paragraphs[0]?.[key]
+    if (paragraphs.every(style => style[key] === value)) Object.assign(paragraph, { [key]: value })
+    else mixedParagraph.push(key)
+  }
+  if (mixedParagraph.includes('spacingRule') && !mixedParagraph.includes('lineHeight')) {
+    mixedParagraph.push('lineHeight'); delete paragraph.lineHeight
+  }
+  return { ...documentToolbarMarks(selected.styles), paragraph, mixedParagraph, hasSelection: selected.hasSelection }
 }
 
 /** Count displayed characters as grapheme clusters, including composed emoji only once. */

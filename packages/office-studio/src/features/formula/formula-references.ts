@@ -1,4 +1,5 @@
 import type { FormulaReference } from './formula-types.ts'
+import { formulaReferenceAreaSignature, translateFormulaReferenceAreas } from './formula-reference-areas.ts'
 export { mapFormulaReferenceAreas, translateFormulaReferenceAreas, transformFormulaReferenceAreasForAxisEdit,
   type FormulaReferenceArea } from './formula-reference-areas.ts'
 
@@ -9,18 +10,7 @@ interface ReferenceSpan { start: number; end: number; replacementStart: number; 
 interface TextPatch { start: number; end: number; replacement: string }
 /** Compare relative references without converting a recoverable offset into #REF! or changing literal text. */
 export function formulaRelativeReferenceSignature(formula: string, row: number, column: number): string {
-  if (typeof formula !== 'string' || !Number.isSafeInteger(row) || !Number.isSafeInteger(column)) throw new TypeError('Invalid formula reference origin')
-  const parts: Array<string | readonly [string, string, number, boolean, number, boolean]> = []
-  let cursor = 0
-  for (const span of findReferenceSpans(formula)) {
-    parts.push(formula.slice(cursor, span.replacementStart))
-    const reference = span.reference
-    parts.push(['reference', sheetPrefix(formula, span), reference.absoluteRow ? reference.row : reference.row - row,
-      Boolean(reference.absoluteRow), reference.absoluteColumn ? reference.column : reference.column - column, Boolean(reference.absoluteColumn)])
-    cursor = span.end
-  }
-  parts.push(formula.slice(cursor))
-  return JSON.stringify(parts)
+  return formulaReferenceAreaSignature(formula, row, column)
 }
 export interface FormulaStructureEdit {
   kind: 'insert' | 'delete'
@@ -39,32 +29,7 @@ export interface FormulaStructureEdit {
 export function translateFormulaReferences(formula: string, rowDelta: number, columnDelta: number): string {
   if (typeof formula !== 'string' || !formula.length) throw new TypeError('Formula must be a non-empty string')
   if (!Number.isSafeInteger(rowDelta) || !Number.isSafeInteger(columnDelta)) throw new TypeError('Formula reference offsets must be safe integers')
-  const references = findReferenceSpans(formula)
-  const patches: TextPatch[] = []
-  for (let index = 0; index < references.length; index += 1) {
-    const current = references[index]!
-    const next = references[index + 1]
-    if (next && formula.slice(current.end, next.start).match(/^\s*:\s*$/)) {
-      const first = shiftReference(current.reference, rowDelta, columnDelta)
-      const second = shiftReference(next.reference, rowDelta, columnDelta)
-      if (!first || !second) {
-        patches.push({ start: current.replacementStart, end: next.end, replacement: '#REF!' })
-        index += 1
-        continue
-      }
-      patches.push({ start: current.replacementStart, end: current.end, replacement: `${sheetPrefix(formula, current)}${formatReference(first)}` })
-      patches.push({ start: next.replacementStart, end: next.end, replacement: `${sheetPrefix(formula, next)}${formatReference(second)}` })
-      index += 1
-      continue
-    }
-    const moved = shiftReference(current.reference, rowDelta, columnDelta)
-    patches.push({ start: current.replacementStart, end: current.end, replacement: moved ? `${sheetPrefix(formula, current)}${formatReference(moved)}` : '#REF!' })
-  }
-  let result = formula
-  for (const patch of patches.sort((left, right) => right.start - left.start)) {
-    result = result.slice(0, patch.start) + patch.replacement + result.slice(patch.end)
-  }
-  return result
+  return translateFormulaReferenceAreas(formula, rowDelta, columnDelta)
 }
 
 /** Update references affected by inserting or deleting cells in one worksheet band. */
@@ -270,13 +235,6 @@ function readAddress(source: string, start: number): { reference: FormulaReferen
   const row = Number(digits) - 1
   if (column < 0 || column > MAX_COLUMN || row < 0 || row > MAX_ROW) return undefined
   return { reference: { kind: 'cell', row, column, absoluteRow, absoluteColumn }, end: cursor }
-}
-
-function shiftReference(reference: FormulaReference, rowDelta: number, columnDelta: number): FormulaReference | undefined {
-  const row = reference.absoluteRow ? reference.row : reference.row + rowDelta
-  const column = reference.absoluteColumn ? reference.column : reference.column + columnDelta
-  if (row < 0 || row > MAX_ROW || column < 0 || column > MAX_COLUMN) return undefined
-  return { ...reference, row, column }
 }
 
 function formatReference(reference: FormulaReference): string {

@@ -2,7 +2,9 @@
 
 This record covers the numeric `cellIs` slice of SHEET-14. It does not change the overall parity status in `UNIVER_FEATURE_PARITY.md`, which remains unaccepted.
 
-The 2026-11-23 continuation is recorded in [format painter and conditional-format editing](SHEET-04-format-painter.md). It adds formula origins, standard XLSX projection, rule-list commands and browser test drafts. Those changes have not been tested, type-checked or built. The verification results below are historical results for the 2026-11-21 slice and do not establish that the current working tree passes.
+The 2026-11-22 continuation is recorded in [format painter and conditional-format editing](SHEET-04-format-painter.md). It adds formula origins, standard XLSX projection, rule-list commands and browser test drafts. Those changes have not been tested, type-checked or built. The verification results below are historical results for the 2026-11-21 slice and do not establish that the current working tree passes.
+
+The later Office provenance, dxf/theme, automatic data-bar boundaries and base/x14 roundtrip work is recorded in [SHEET-14 Office roundtrip](SHEET-14-conditional-format-office-roundtrip.md). That page now also records streaming CF/resource extraction, UTF-8 and workbook-wide model budgets, shared theme-resource validation, and atomic failure wiring. It distinguishes the previous 36 additions from the current 54 additions (46 streaming/source-budget drafts and 8 workbook-boundary drafts); the eleven listed files currently contain 112 declarations in total. These are static counts, all continuation drafts remain unrun, and the complete feature remains unaccepted.
 
 ## Implemented
 

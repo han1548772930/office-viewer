@@ -71,11 +71,7 @@ export function reconcileSheetSelection(state: SheetSelectionState, extent: { ro
 
 export interface SheetSelectionSheet extends SheetRowVisibility, SheetColumnVisibility { outline?: SheetOutlineState }
 
-/** Keep API and Canvas on the same visible primary while retaining the other selected rectangles. */
-export function resolveVisibleSheetSelection(state: SheetSelectionState, sheet: SheetSelectionSheet,
-  filteredRows: readonly number[] = []): SheetSelectionState {
-  const next = reconcileSheetSelection(state, sheet)
-  if (!next.primary) return next
+export function createSheetSelectionAxisIndexes(sheet: SheetSelectionSheet, filteredRows: readonly number[] = []) {
   const collapsed = sheet.outline?.groups.filter(group => group.collapsed) ?? []
   const rowSizes = effectiveSheetRowSizes(sheet)
   const rows = new SparseAxisIndex(sheet.rowCount, sheet.defaultRowHeight ?? 26, rowSizes.sizes,
@@ -86,6 +82,15 @@ export function resolveVisibleSheetSelection(state: SheetSelectionState, sheet: 
   const columns = new SparseAxisIndex(sheet.columnCount, sheet.defaultColumnWidth ?? 112, columnSizes,
     [...hiddenSheetColumns(sheet)], sheet.columnWidthSpans,
     [...(sheet.columnHiddenSpans ?? []), ...collapsed.filter(group => group.axis === 'column').map(group => ({ start: group.start, end: group.end, value: true }))])
+  return { rows, columns }
+}
+
+/** Keep API and Canvas on the same visible primary while retaining the other selected rectangles. */
+export function resolveVisibleSheetSelection(state: SheetSelectionState, sheet: SheetSelectionSheet,
+  filteredRows: readonly number[] = []): SheetSelectionState {
+  const next = reconcileSheetSelection(state, sheet)
+  if (!next.primary) return next
+  const { rows, columns } = createSheetSelectionAxisIndexes(sheet, filteredRows)
   const point = next.primary
   if (rows.size(point.row) > 0 && columns.size(point.column) > 0) return next
   const within = (axis: SparseAxisIndex, start: number, end: number, preferred: number): number | undefined => {

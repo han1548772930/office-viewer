@@ -17,6 +17,7 @@ pub(crate) struct PivotSidecar {
 
 #[derive(Debug)]
 pub(crate) struct ChartSettings {
+    pub(crate) kind: Option<String>,
     pub(crate) x_axis: ChartAxisPayload,
     pub(crate) y_axis: ChartAxisPayload,
     pub(crate) legend_position: Option<String>,
@@ -140,6 +141,7 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
                     sidecar.chart_settings.insert(
                         (sheet_name.clone(), index),
                         ChartSettings {
+                            kind: chart_kind(&chart_xml),
                             x_axis: axis(&["b", "t"]),
                             y_axis: axis(&["l", "r"]),
                             legend_position,
@@ -242,6 +244,24 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
         }
     }
     Ok(sidecar)
+}
+
+fn chart_kind(chart: &Node) -> Option<String> {
+    let plots = ["barChart", "lineChart", "areaChart", "pieChart", "doughnutChart", "scatterChart", "radarChart"]
+        .into_iter().flat_map(|kind| chart.descendants(kind)).collect::<Vec<_>>();
+    if plots.len() != 1 { return None; }
+    let plot = plots[0];
+    Some(match plot.name.as_str() {
+        "barChart" if plot.children.iter().any(|child| child.name == "grouping" && child.attrs.get("val").is_some_and(|value| value == "stacked")) => "stacked-column",
+        "barChart" => "bar",
+        "lineChart" => "line",
+        "areaChart" => "area",
+        "pieChart" => "pie",
+        "doughnutChart" => "doughnut",
+        "scatterChart" => "scatter",
+        "radarChart" => "radar",
+        _ => return None,
+    }.to_owned())
 }
 
 fn canonical_fields(table: &Node, cache: &Node, source_start_col: u32) -> Vec<Value> {

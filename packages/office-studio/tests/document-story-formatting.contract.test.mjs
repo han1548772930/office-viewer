@@ -66,6 +66,22 @@ test('caret word expansion and reversed half-open story ranges leave the next pa
   assert.deepEqual(resolveSectionHeaderFooter(second, 'first').storyContent.header.paragraphs[1], originalNext)
 })
 
+test('an empty lock at the next paragraph boundary does not block the preceding paragraph, while the final paragraph mark stays protected', () => {
+  const model = storyModel('word\nnext'), content = model.sectionHeaderFooters.first.storyContent.header
+  content.locks = [{ id: 'next-paragraph', startOffset: 5, endOffset: 5, lock: 'contentLocked' }]
+  const next = copy(content.paragraphs[1])
+  assert.equal(documentClearFormattingState(model, bodyRange(model), context(model), { sectionId: 'first', story: 'header', start: 1, end: 3 }).available, true)
+  applyDocumentStoryClearFormatting(model, { sectionId: 'first', story: 'header', start: 1, end: 3 }, context(model))
+  assert.deepEqual(resolveSectionHeaderFooter(model, 'first').storyContent.header.paragraphs[1], next)
+  assert.deepEqual(resolveSectionHeaderFooter(model, 'first').storyContent.header.locks, content.locks)
+  const last = storyModel('word')
+  last.sectionHeaderFooters.first.storyContent.header.locks = [{ id: 'final-mark', startOffset: 4, endOffset: 4, lock: 'contentLocked' }]
+  const before = copy(last), request = { sectionId: 'first', story: 'header', start: 1, end: 3 }
+  assert.equal(documentClearFormattingState(last, bodyRange(last), context(last), request).available, false)
+  assert.throws(() => applyDocumentStoryClearFormatting(last, request, context(last)), /已锁定/)
+  assert.deepEqual(last, before)
+})
+
 test('permissions, linked sections, out-of-range offsets and outside-word content locks reject atomically', () => {
   for (const kind of ['entity', 'section', 'content-lock', 'invalid-surrogate', 'unknown-story', 'linked']) {
     const model = storyModel(), request = { sectionId: 'first', story: 'header', start: 4, end: 9 }

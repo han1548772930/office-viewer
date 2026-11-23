@@ -1,6 +1,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   cloneModel,
+  ContentHistoryCanceledError,
   downloadOfficeBytes,
   exportOfficeModel,
   officeDownloadName,
@@ -12,6 +13,7 @@ import {
 } from '@office-studio/office-studio'
 import { studio, officeAPI } from './runtime'
 import { createWorkspaceFileOperations, workspaceFileNameError, type ExportTask, type FileAction, type NoticeType, type WorkspaceKind } from './workspace-file-operations'
+import { createWorkspaceHistoryOperations } from './workspace-history-operations'
 
 export function useWorkspaceController() {
   const editor = useEditorStore(studio.pinia)
@@ -36,6 +38,20 @@ export function useWorkspaceController() {
     if (noticeTimer) clearTimeout(noticeTimer)
     noticeTimer = setTimeout(() => { notice.value = null }, type === 'error' ? 8000 : 5000)
   }
+
+  const contentHistory = createWorkspaceHistoryOperations({
+    captureTarget: () => {
+      const kind = editor.state.activeKind, unitId = activeModel.value.id
+      return unitId ? { kind, unitId } : undefined
+    },
+    replay: (direction, { kind, unitId }) => studio[direction](kind, unitId),
+    onError: (direction, error) => {
+      const action = direction === 'undo' ? '撤销' : '重做'
+      if (error instanceof ContentHistoryCanceledError) showNotice('info', `${action}已取消`)
+      else showNotice('error', error instanceof Error ? error.message : `${action}失败`)
+    },
+  })
+  const undoContent = contentHistory.undo, redoContent = contentHistory.redo
 
   const files = createWorkspaceFileOperations<WorkbookModel | DocumentModel, File>({
     importFile: (file) => editor.importFile(file),
@@ -153,7 +169,7 @@ export function useWorkspaceController() {
   return {
     editor, studio, notice, activeFileName, excelView, documentApi, modified,
     exportTask, diagnosticsOpen, renameOpen, renameValue, renameError, pendingNewKind,
-    files, showNotice, cancelImport, switchWorkspace, requestNew, createNew,
+    files, showNotice, undoContent, redoContent, cancelImport, switchWorkspace, requestNew, createNew,
     requestRename, renameFile, onExcelChange, onDocumentChange, saveWorkbook,
     saveDocument, onDragOver, onDrop,
   }

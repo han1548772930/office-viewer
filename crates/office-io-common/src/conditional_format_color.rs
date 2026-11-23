@@ -1,8 +1,39 @@
 //! Inspectable SpreadsheetML colors; authored color XML remains the authority.
-use crate::conditional_format_xml::Element;
+use crate::conditional_format_xml::{Element, MAIN_NAMESPACE, STRICT_MAIN_NAMESPACE, X14_NAMESPACE};
+
+const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const STRICT_DRAWING: &str = "http://purl.oclc.org/ooxml/drawingml/main";
+
+fn spreadsheet(node: &Element) -> bool {
+    matches!(node.namespace.as_str(), MAIN_NAMESPACE | STRICT_MAIN_NAMESPACE | X14_NAMESPACE | "")
+}
+
+fn theme_color_reference(node: &Element) -> bool {
+    spreadsheet(node) && node.attrs.contains_key("theme") && matches!(node.name.as_str(), "color" | "fgColor" | "bgColor"
+        | "fillColor" | "negativeFillColor" | "borderColor" | "negativeBorderColor" | "axisColor")
+}
+
+fn scheme_font(node: &Element) -> Option<&'static str> {
+    if !node.is_main("scheme") { return None }
+    match node.attrs.get("val").map(String::as_str) { Some("major") => Some("majorFont"), Some("minor") => Some("minorFont"), _ => None }
+}
 
 pub fn uses_theme(node: &Element) -> bool {
-    node.attrs.contains_key("theme") || node.is_main("scheme") || node.children.iter().any(uses_theme)
+    theme_color_reference(node) || scheme_font(node).is_some() || node.children.iter().any(uses_theme)
+}
+
+/// Import and export reject the same unavailable declared Office dependencies.
+pub fn validate_theme_references(node: &Element, theme: Option<&Element>) -> Result<(), String> {
+    if theme_color_reference(node) && color_value(node, theme).is_none() {
+        return Err("CF_SOURCE_REQUIRED_RESOURCE: conditional-format color cannot resolve its declared theme index or tint".into())
+    }
+    if let Some(font) = scheme_font(node) {
+        if theme.is_none_or(|theme| !theme.descendants(font).iter().any(|node| matches!(node.namespace.as_str(), DRAWING | STRICT_DRAWING))) {
+            return Err("CF_SOURCE_REQUIRED_RESOURCE: conditional-format font scheme has no preserved theme font".into())
+        }
+    }
+    for child in &node.children { validate_theme_references(child, theme)?; }
+    Ok(())
 }
 
 fn rgb(value: &str) -> Option<[u8; 3]> {
@@ -13,10 +44,11 @@ fn rgb(value: &str) -> Option<[u8; 3]> {
 }
 
 fn theme_color(theme: &Element, index: usize) -> Option<[u8; 3]> {
-    const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
-    let scheme = theme.descendants("clrScheme").into_iter().find(|node| node.namespace == DRAWING)?;
+    let drawing = |node: &Element| matches!(node.namespace.as_str(), DRAWING | STRICT_DRAWING);
+    let scheme = theme.descendants("clrScheme").into_iter().find(&drawing)?;
     let key = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"].get(index)?;
-    let color = scheme.children.iter().find(|node| node.namespace == DRAWING && node.name == *key)?.children.first()?;
+    let color = scheme.children.iter().find(|node| drawing(node) && node.name == *key)?.children.first()?;
+    if !drawing(color) || !matches!(color.name.as_str(), "sysClr" | "srgbClr") { return None }
     rgb(color.attrs.get(if color.name == "sysClr" { "lastClr" } else { "val" })?)
 }
 
@@ -64,5 +96,41 @@ mod tests {
         assert_eq!(color_value(&parse(r#"<color theme="1"/>"#).unwrap(), Some(&theme)).as_deref(), Some("#000000"));
         assert_eq!(color_value(&parse(r#"<color theme="4" tint="0.5"/>"#).unwrap(), Some(&theme)).as_deref(), Some("#FF8080"));
         assert_eq!(color_value(&parse(r#"<color indexed="10"/>"#).unwrap(), None).as_deref(), Some("#FF0000"));
+    }
+
+    #[test]
+    fn strict_theme_colors_are_inspectable_and_malformed_rgb_never_uses_utf8_byte_slices() {
+        let theme = parse(r#"<a:theme xmlns:a="http://purl.oclc.org/ooxml/drawingml/main"><a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="336699"/></a:accent1></a:clrScheme></a:themeElements></a:theme>"#).unwrap();
+        assert_eq!(color_value(&parse(r#"<color theme="4"/>"#).unwrap(), Some(&theme)).as_deref(), Some("#336699"));
+        for value in ["颜色", "ééé", "FFGG0000", "#12", "000000000"] {
+            let mut color = Element::new("", "color"); color.set_attr("rgb", value); assert!(color_value(&color, None).is_none());
+        }
+        assert!(color_value(&parse(r#"<color theme="4"/>"#).unwrap(), None).is_none());
+    }
+
+    #[test]
+    fn declared_theme_resources_validate_in_both_dialects_while_vendor_attributes_and_none_scheme_stay_independent() {
+        let dependency = parse(&format!(r#"<dxf xmlns="{MAIN_NAMESPACE}"><font><color theme="4" tint="0.5"/><scheme val="major"/></font></dxf>"#)).unwrap();
+        let vendor = parse(r#"<v:payload xmlns:v="urn:vendor" theme="brand-only"><v:scheme val="major"/></v:payload>"#).unwrap();
+        let empty_vendor = parse(r#"<payload xmlns="" theme="brand-only"/>"#).unwrap();
+        let none = parse(&format!(r#"<scheme xmlns="{MAIN_NAMESPACE}" val="none"/>"#)).unwrap();
+        assert!(uses_theme(&dependency)); assert!(!uses_theme(&vendor)); assert!(!uses_theme(&empty_vendor)); assert!(!uses_theme(&none));
+        validate_theme_references(&vendor, None).unwrap(); validate_theme_references(&empty_vendor, None).unwrap(); validate_theme_references(&none, None).unwrap();
+        assert!(validate_theme_references(&dependency, None).unwrap_err().starts_with("CF_SOURCE_REQUIRED_RESOURCE"));
+        for namespace in [DRAWING, STRICT_DRAWING] {
+            let theme = parse(&format!(r#"<a:theme xmlns:a="{namespace}"><a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="336699"/></a:accent1></a:clrScheme><a:fontScheme><a:majorFont/><a:minorFont/></a:fontScheme></a:themeElements></a:theme>"#)).unwrap();
+            validate_theme_references(&dependency, Some(&theme)).unwrap();
+            let x14 = parse(&format!(r#"<x:fillColor xmlns:x="{X14_NAMESPACE}" theme="4"/>"#)).unwrap();
+            validate_theme_references(&x14, Some(&theme)).unwrap();
+            for xml in [r#"<color theme="9"/>"#, r#"<color theme="4" tint="2"/>"#] {
+                assert!(validate_theme_references(&parse(xml).unwrap(), Some(&theme)).unwrap_err().starts_with("CF_SOURCE_REQUIRED_RESOURCE"));
+            }
+            let mut missing_font = theme.clone();
+            let font_scheme = missing_font.children.iter_mut().find(|node| node.is(namespace, "themeElements")).unwrap()
+                .children.iter_mut().find(|node| node.is(namespace, "fontScheme")).unwrap();
+            font_scheme.replace_children(|node| node.is(namespace, "majorFont"), Vec::new());
+            let error = validate_theme_references(&dependency, Some(&missing_font)).unwrap_err();
+            assert!(error.starts_with("CF_SOURCE_REQUIRED_RESOURCE")); assert!(error.contains("font scheme"));
+        }
     }
 }

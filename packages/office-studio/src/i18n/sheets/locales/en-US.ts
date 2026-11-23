@@ -2,6 +2,7 @@ export const sheetsEnUS: Record<string, string> = {
   'items.sheet.command.reset-text-color': 'Reset text color', 'items.sheet.command.reset-background-color': 'No fill',
   'items.sheet.menu.data-validation': 'Data Validation', 'items.sheet.operation.add-data-validation': 'Add Rule',
   'sheet.validation.canvas-selection': 'Canvas selection', 'sheet.validation.use-selection': 'Use selection',
+  'sheet.validation.type.any': 'Any value',
   'sheet.validation.preset.yes': 'Yes', 'sheet.validation.preset.no': 'No',
   'sheet.validation.preset.notStarted': 'Not started', 'sheet.validation.preset.inProgress': 'In progress', 'sheet.validation.preset.completed': 'Completed',
   'sheet.validation.preset.option1': 'Option 1', 'sheet.validation.preset.option2': 'Option 2',

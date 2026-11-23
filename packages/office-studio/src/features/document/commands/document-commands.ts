@@ -5,18 +5,23 @@ import { executeDocumentTableCommand, type DocumentTableCommand } from './table-
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
 import { deleteDocumentToc, updateDocumentToc, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
-import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedStories, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { cloneModel } from '../../../domain/serialization'
 import { documentTocIdAtBlock } from '../toc/document-toc'
 import { applyPainterParagraph, documentPainterTarget, type DocumentPainterFormat } from '../services/document-format-painter'
 import { applyDocumentClearFormatting, applyDocumentStoryClearFormatting, prepareDocumentClearFormatting } from '../services/document-clear-formatting'
 import type { DocumentStoryRange } from '../model/document-story'
+import type { DocumentStoryInputCommit } from '../model/document-input-session'
 import { selectionFontPatch } from '../model/document-font'
+import { documentRunStyleAt, formatDocumentRunRange, splitDocumentRunRange, validateDocumentRunPatch } from '../model/document-run-range'
+import { applyDocumentStoryTextFormatting } from '../services/document-story-formatting'
+import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
 export { blockAtPoint } from '../model/document-model'
 import {
-  applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
+  applyNamedParagraphStyle, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, createTable, documentId, documentRunFormatPatch,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets,
   type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
@@ -26,7 +31,7 @@ export type DocumentCommand =
   | DocumentTableCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
-  | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'> }
+  | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'>; story?: DocumentStoryRange }
   | { id: 'doc.command.apply-format-painter'; format: DocumentPainterFormat }
   | { id: 'doc.command.clear-formatting'; story?: DocumentStoryRange }
   | { id: 'doc.command.format-paragraph'; patch: Partial<DocumentParagraphStyle> }
@@ -46,7 +51,7 @@ export type DocumentCommand =
   | { id: 'doc.command.insert-divider' }
   | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[] }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
-  | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch }
+  | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch; input?: DocumentStoryInputCommit }
   | { id: 'doc.command.set-section-setup'; sectionId: string; patch: DocumentSectionSetupPatch }
   | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
@@ -281,7 +286,7 @@ export function executeDocumentCommand(
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
-  } else if (command.id !== 'doc.command.change-paragraph-indent' && !(command.id === 'doc.command.clear-formatting' && command.story)) {
+  } else if (command.id !== 'doc.command.change-paragraph-indent' && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   switch (command.id) {
@@ -292,7 +297,12 @@ export function executeDocumentCommand(
     case 'doc.command.table-delete': return executeDocumentTableCommand(model, selection, command)
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
     case 'doc.command.delete': return deleteContent(model, selection, command.direction)
-    case 'doc.command.format-text': formatText(model, selection, selectionFontPatch(model, selection, documentRunFormatPatch(command.patch, command.clearFields))); return selection
+    case 'doc.command.format-text': {
+      const patch = documentRunFormatPatch(command.patch, command.clearFields)
+      if (command.story) applyDocumentStoryTextFormatting(model, command.story, patch, context)
+      else formatText(model, selection, selectionFontPatch(model, selection, patch))
+      return selection
+    }
     case 'doc.command.clear-formatting': {
       if (command.story) { applyDocumentStoryClearFormatting(model, command.story, context); return selection }
       const plan = prepareDocumentClearFormatting(model, selection, context)
@@ -497,15 +507,23 @@ export function executeDocumentCommand(
       return insertBlocks(model, selection, blocks)
     }
     case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction)
-    case 'doc.command.set-section-header-footer':
-      applySectionHeaderFooter(model, command.sectionId, command.patch)
+    case 'doc.command.set-section-header-footer': {
+      const candidate = { ...model, sectionHeaderFooters: model.sectionHeaderFooters ? cloneModel(model.sectionHeaderFooters) : undefined }
+      applySectionHeaderFooter(candidate, command.sectionId, command.patch)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedStories(model, candidate))
+      model.sectionHeaderFooters = candidate.sectionHeaderFooters
       return selection
+    }
     case 'doc.command.set-section-setup':
       applyDocumentSectionSetupPatch(model, command.sectionId, command.patch)
       return selection
-    case 'doc.command.insert-page-field':
-      insertSectionPageField(model, command.sectionId, command.story, command.field, command)
+    case 'doc.command.insert-page-field': {
+      const candidate = { ...model, sectionHeaderFooters: model.sectionHeaderFooters ? cloneModel(model.sectionHeaderFooters) : undefined }
+      insertSectionPageField(candidate, command.sectionId, command.story, command.field, command)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedStories(model, candidate))
+      model.sectionHeaderFooters = candidate.sectionHeaderFooters
       return selection
+    }
     case 'doc.command.update-table-of-contents':
     case 'doc.command.delete-table-of-contents': {
       const tocBlocks = model.blocks.filter((block) => documentTocIdAtBlock(block) === command.tocId)
@@ -542,6 +560,8 @@ function targetsForSelection(model: DocumentModel, selection: DocumentSelection,
 }
 
 export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch): DocumentSelection {
+  if (marks) validateDocumentRunPatch(marks)
+  assertDocumentTextSelectionEditable(model, selection)
   const { start, end } = orderedSelection(model, selection)
   if (!text && sameTarget(start, end) && start.offset === end.offset) return selection
   const startTargetId = start.cellBlockId ?? start.blockId
@@ -553,14 +573,16 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
     const affectedControl = model.contentControls?.find((control) => affectedIds.has(control.blockId))
     if (affectedControl) throw new RangeError(`A text edit cannot span content control paragraphs: ${affectedControl.id}`)
   }
-  const before = sliceRuns(runsForTarget(model, start), 0, start.offset)
-  const after = sliceRuns(runsForTarget(model, end), end.offset)
+  const startRuns = runsForTarget(model, start), endRuns = runsForTarget(model, end)
+  const split = splitDocumentRunRange(startRuns, start.offset, sameTarget(start, end) ? end.offset : runText(startRuns).length)
+  const before = split.before
+  const after = sameTarget(start, end) ? split.after : end.offset === 0 ? [...endRuns] : splitDocumentRunRange(endRuns, 0, end.offset).after
   const startContainer = blockContainer(model, start)
   const endContainer = blockContainer(model, end)
   // Replacing a range inherits its first selected character. A caret still
   // inherits its left neighbor; otherwise typing after clear could revive the
   // unselected prefix's appearance at a run boundary.
-  const inherited = { ...marksAtPoint(model, { ...start, offset: start.offset + (selectionCollapsed(selection) ? 0 : 1) }), ...marks }
+  const inherited = { ...documentRunStyleAt(runsForTarget(model, start), start.offset, sameTarget(start, end) ? end.offset : start.offset + 1), ...marks }
   const startBlock = blockAtPoint(model, start)
   if (!startBlock) return selection
   const normalizedText = text.replace(/\r\n?/g, '\n')
@@ -581,7 +603,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
       copyBlockNumbering(startBlock, paragraph)
       if (startBlock.type === 'checklist') paragraph.checklist = { listId: startBlock.checklist?.listId ?? documentId('checklist'), checked: false }
     }
-    if (index === paragraphs.length - 2) paragraph.runs = compactRuns([...paragraph.runs as DocumentRun[], ...after])
+    if (index === paragraphs.length - 2) paragraph.runs = [...paragraph.runs, ...after]
     return paragraph
   })
   if (startTargetId === endTargetId) {
@@ -596,7 +618,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (startContainer !== endContainer) {
     const targets = targetsForSelection(model, selection, true)
     targets.forEach((target, index) => {
-      setTargetRuns(model, target, index === 0 ? [...before, createRun(text, inherited)] : index === targets.length - 1 ? after : [])
+      setEditingRuns(model, target, index === 0 ? [...before, createRun(text, inherited)] : index === targets.length - 1 ? after : [], inherited)
     })
     return collapsedSelection({ ...start, offset: start.offset + text.length })
   }
@@ -606,13 +628,13 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   const endIndex = startContainer.findIndex((block) => block.id === endBlock?.id)
   if (endIndex > startIndex) startContainer.splice(startIndex + 1, endIndex - startIndex)
   if (paragraphs.length === 1) {
-    setTargetRuns(model, start, [...before, createRun(text, inherited), ...after])
+    setEditingRuns(model, start, [...before, createRun(text, inherited), ...after], inherited)
     if (startTargetId === endTargetId) {
       transformDocumentCommentAnchorsForTextEdit(model, startTargetId, start.offset, end.offset, text)
     }
     return collapsedSelection({ ...start, offset: start.offset + text.length })
   }
-  setTargetRuns(model, start, [...before, createRun(paragraphs[0], inherited)])
+  setEditingRuns(model, start, [...before, createRun(paragraphs[0], inherited)], inherited)
   startContainer.splice(startIndex + 1, 0, ...additions)
   const last = additions.at(-1)!
   return collapsedSelection(pointForBlock(start, last, paragraphs.at(-1)!.length))
@@ -647,20 +669,40 @@ function deleteContent(model: DocumentModel, selection: DocumentSelection, direc
   return selection
 }
 
+function setEditingRuns(model: DocumentModel, target: TextTarget, runs: DocumentRun[], fallback: RunPatch): void {
+  const block = blockAtPoint(model, target)
+  if (!block) return
+  block.runs = runs.length ? runs : [createRun('', fallback)]
+  delete block.metadata.html
+  if (target.row !== undefined) {
+    const container = model.blocks.find(candidate => candidate.id === target.blockId)
+    if (container) delete container.metadata.html
+  }
+}
+
 function formatText(model: DocumentModel, selection: DocumentSelection, patch: RunPatch): void {
+  validateDocumentRunPatch(patch)
+  assertDocumentTextSelectionEditable(model, selection)
   const { start, end } = orderedSelection(model, selection)
   // Typing marks at a caret are session state; an empty range must not rewrite persistent run IDs.
   if (sameTarget(start, end) && start.offset === end.offset) return
-  selectedTargets(model, selection).forEach((target) => {
+  const updates = selectedTargets(model, selection).flatMap((target) => {
     const runs = runsForTarget(model, target)
     const from = sameTarget(target, start) ? start.offset : 0
     const to = sameTarget(target, end) ? end.offset : runText(runs).length
-    const selected = sliceRuns(runs, from, to)
-    if (!selected.length) return
-    const changed = selected.map((run) => applyRunPatch(run, patch))
-    if (selected.every((run, index) => JSON.stringify(run) === JSON.stringify(changed[index]))) return
-    setTargetRuns(model, target, [...sliceRuns(runs, 0, from), ...changed, ...sliceRuns(runs, to)])
+    const changed = formatDocumentRunRange(runs, from, to, patch)
+    if (JSON.stringify(runs) === JSON.stringify(changed)) return []
+    const block = blockAtPoint(model, target)
+    return block ? [{ block, target, runs: changed }] : []
   })
+  for (const update of updates) {
+    update.block.runs = update.runs
+    delete update.block.metadata.html
+    if (update.target.row !== undefined) {
+      const container = model.blocks.find(block => block.id === update.target.blockId)
+      if (container) delete container.metadata.html
+    }
+  }
 }
 
 function copyBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {

@@ -2,6 +2,7 @@ import type { GridHit, GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { mergeSheetAxisIntervals } from '../../domain/sheet-axis-structure.ts'
 import { sheetBorderLabels } from '../../features/sheet-workbench/sheet-cell-border.ts'
 import { SHEET_BORDER_FORMAT_COMMANDS } from '../../features/sheet-workbench/sheet-border-format-command.ts'
+import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 
 export interface SheetContextMenuItem {
   id: string
@@ -12,6 +13,8 @@ export interface SheetContextMenuItem {
   type?: 'divider'
   params?: unknown
   disabled?: boolean
+  hidden?: boolean
+  disabledReason?: string
   separatorBefore?: boolean
   quick?: boolean
   icon?: string
@@ -19,6 +22,7 @@ export interface SheetContextMenuItem {
 }
 
 export interface SheetContextMenuContext {
+  clipboardCapabilities?: SheetClipboardCapabilities
   sheetId: string
   canDeleteRow: boolean
   canDeleteColumn: boolean
@@ -64,7 +68,7 @@ export function sheetContextStructureTarget(hit: GridHit, options: Pick<SheetCon
 export function createSheetContextMenuItems(hit: GridHit, options: SheetContextMenuContext): SheetContextMenuItem[] {
   if (hit.kind !== 'cell' && hit.kind !== 'row' && hit.kind !== 'column' && hit.kind !== 'all') return []
 
-  const clipboard: SheetContextMenuItem[] = [
+  const clipboardItems: SheetContextMenuItem[] = [
     { id: 'copy', label: '复制', commandId: 'sheet.command.copy', quick: true, icon: 'CopyDoubleIcon' },
     { id: 'cut', label: '剪切', commandId: 'sheet.command.cut', quick: true, icon: 'CutIcon' },
     { id: 'paste', label: '粘贴', commandId: 'sheet.command.paste', quick: true, icon: 'PasteSpecialDoubleIcon' },
@@ -93,6 +97,14 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     },
     ...(options.canConvertText ? [{ id: 'text-to-number', label: '文本转数字', commandId: 'sheet.command.text-to-number', icon: 'ConvertToNumberIcon' }] : []),
   ]
+  function withClipboardCapability(item: SheetContextMenuItem): SheetContextMenuItem[] {
+    const menuId = item.id === 'copy-special' ? 'sheet.menu.copy-special' : item.id === 'paste-special' ? 'sheet.menu.paste-special' : item.commandId
+    const entry = options.clipboardCapabilities && sheetClipboardCommandCapability(options.clipboardCapabilities, menuId)
+    if (item.hidden || entry?.hidden) return []
+    return [{ ...item, ...(entry ? { disabled: entry.disabled, disabledReason: entry.reason } : {}),
+      ...(item.children ? { children: item.children.flatMap(withClipboardCapability) } : {}) }]
+  }
+  const clipboard = clipboardItems.flatMap(withClipboardCapability)
   const linkActions: SheetContextMenuItem[] = hit.kind === 'cell' && options.hasHyperlink
     ? [{ id: 'open-hyperlink', label: '打开超链接', commandId: 'sheet.operation.open-cell-hyperlink', params: { key: hit.key }, icon: 'LinkIcon', separatorBefore: true }]
     : []

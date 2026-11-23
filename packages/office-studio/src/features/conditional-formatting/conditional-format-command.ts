@@ -4,7 +4,8 @@ import { parseFormula } from '../formula/formula-parser.ts'
 import { canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { assertSheetCommandRanges, assertSheetRangesEditable } from '../sheet-workbench/sheet-range-command.ts'
 import { validateConditionalIconConfig, validateConditionalThreshold } from './icon-set-config.ts'
-import { conditionalFormatOfficeBaseline, conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from './conditional-format-office-source.ts'
+import { assertConditionalFormatKnownFields, conditionalFormatOfficeBaseline, conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from './conditional-format-office-source.ts'
+import { assertConditionalFormatModelBudget, conditionalFormatSerializedSize } from './conditional-format-source-budget.ts'
 
 export const SET_SHEET_CONDITIONAL_FORMATS_COMMAND = 'sheet.command.set-conditional-formats'
 
@@ -60,15 +61,18 @@ function assertFormula(formula: string, previous: string | undefined): void {
   }
 }
 
-function assertThreshold(value: SheetConditionalFormatValueConfig, previous?: SheetConditionalFormatValueConfig): void {
+function assertThreshold(value: SheetConditionalFormatValueConfig, previous?: SheetConditionalFormatValueConfig, automatic?: 'min' | 'max'): void {
   if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.type !== 'string') throw new TypeError('条件格式阈值无效。')
-  if (signature(value) !== signature(previous)) validateConditionalThreshold(value)
+  const isAutomatic = value.type === 'autoMin' || value.type === 'autoMax'
+  if (isAutomatic && value.type !== (automatic === 'min' ? 'autoMin' : automatic === 'max' ? 'autoMax' : undefined)) throw new TypeError('自动阈值只适用于相应的数据条边界。')
+  if (isAutomatic || signature(value) !== signature(previous)) validateConditionalThreshold(value, automatic !== undefined)
   if (value.type === 'formula') assertFormula(String(value.value ?? ''), previous?.type === 'formula' ? String(previous.value ?? '') : undefined)
 }
 
 /** Validate edited fields without stripping unedited parser/vendor configuration. */
 export function assertSheetConditionalFormatRuleSnapshot(rule: SheetConditionalFormatRule, previous?: SheetConditionalFormatRule): void {
   if (!rule || typeof rule !== 'object' || Array.isArray(rule) || typeof rule.id !== 'string' || !rule.id.trim()) throw new TypeError('条件格式规则标识无效。')
+  conditionalFormatSerializedSize(rule)
   if (!conditionalFormatRuleTypes.includes(rule.type)) throw new TypeError('条件格式规则类型无效。')
   if (rule.subType !== undefined && !subTypes.includes(rule.subType)) throw new TypeError('条件格式条件类型无效。')
   if (!Array.isArray(rule.ranges) || !rule.ranges.length) throw new RangeError('条件格式需要有效的应用范围。')
@@ -80,6 +84,7 @@ export function assertSheetConditionalFormatRuleSnapshot(rule: SheetConditionalF
   if (typeof rule.stopIfTrue !== 'boolean' || typeof rule.operator !== 'string' || typeof rule.formula1 !== 'string'
     || rule.formula2 !== undefined && typeof rule.formula2 !== 'string') throw new TypeError('条件格式规则参数无效。')
   if (!rule.style || typeof rule.style !== 'object' || Array.isArray(rule.style)) throw new TypeError('条件格式样式无效。')
+  assertConditionalFormatKnownFields(rule)
   for (const color of [rule.style.fill, rule.style.fontColor, rule.config?.positiveColor, rule.config?.nativeColor]) {
     if (color !== undefined && (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color))) throw new TypeError('条件格式颜色必须使用 #RRGGBB。')
   }
@@ -115,8 +120,8 @@ export function assertSheetConditionalFormatRuleSnapshot(rule: SheetConditionalF
   }
   if (rule.config !== undefined && (!rule.config || typeof rule.config !== 'object' || Array.isArray(rule.config))) throw new TypeError('条件格式配置无效。')
   const config = rule.config, previousConfig = previous?.config
-  if (config?.min !== undefined) assertThreshold(config.min, previousConfig?.min)
-  if (config?.max !== undefined) assertThreshold(config.max, previousConfig?.max)
+  if (config?.min !== undefined) assertThreshold(config.min, previousConfig?.min, rule.type === 'dataBar' ? 'min' : undefined)
+  if (config?.max !== undefined) assertThreshold(config.max, previousConfig?.max, rule.type === 'dataBar' ? 'max' : undefined)
   if (rule.type === 'colorScale' && (!Array.isArray(config?.thresholds) || config.thresholds.length < 2 || config.thresholds.length > 3)) throw new RangeError('色阶需要两个或三个停止点。')
   if (config?.thresholds !== undefined) {
     if (!Array.isArray(config.thresholds)) throw new TypeError('色阶停止点必须为数组。')
@@ -142,6 +147,7 @@ function orderedRules(rules: readonly SheetConditionalFormatRule[]): SheetCondit
 /** Changed rules touch both their old and new scope; tied priorities also retain stable stack order. */
 export function planSheetConditionalFormatsCommand(sheet: Pick<SpreadsheetSheet, 'conditionalFormats'>, rules: readonly SheetConditionalFormatRule[]): SheetConditionalFormatsPlan {
   if (!Array.isArray(rules)) throw new TypeError('条件格式规则必须为数组。')
+  assertConditionalFormatModelBudget(rules)
   const previous = orderedRules(sheet.conditionalFormats ?? []), previousById = new Map(previous.map(rule => [rule.id, rule]))
   const ids = new Set<string>()
   for (const rule of rules) {

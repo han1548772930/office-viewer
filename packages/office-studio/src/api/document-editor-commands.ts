@@ -8,8 +8,18 @@ export interface DocumentEditorCommandRequest {
   unitId: string
   command: DocumentCommand
   selection: DocumentSelection
+  /** Optional facade guard for content changes made by BeforeCommandExecute listeners. */
+  expectedRevision?: number
+  inputGeneration?: number
 }
-export interface DocumentEditorCommandResult { changed: boolean; selection: DocumentSelection }
+export interface DocumentEditorCommandResult {
+  changed: boolean
+  selection: DocumentSelection
+  inputChanged?: boolean
+  /** False when navigation or another edit has superseded the returned selection. */
+  selectionCurrent?: boolean
+  modelRevision?: number
+}
 
 export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'], 'doc.command.set-document-permission-rules'>, string> = {
   'doc.command.insert-text': '输入文本',
@@ -52,6 +62,10 @@ export function assertDocumentEditorCommandRequest(request: DocumentEditorComman
     || !request.selection || typeof request.selection !== 'object') throw new TypeError('文档命令参数无效。')
   assertPoint(request.selection.anchor)
   assertPoint(request.selection.focus)
+  if (request.expectedRevision !== undefined && (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0)
+    || request.inputGeneration !== undefined && (!Number.isSafeInteger(request.inputGeneration) || request.inputGeneration < 1)) {
+    throw new TypeError('文档输入版本无效。')
+  }
 }
 
 function assertPoint(point: DocumentPoint): void {
@@ -66,13 +80,21 @@ function modelPoint(model: DocumentModel, point: DocumentPoint): DocumentPoint {
   const normalized = clampPoint(model, point)
   if (normalized.blockId !== point.blockId || point.row !== undefined && normalized.row !== point.row
     || point.col !== undefined && normalized.col !== point.col
-    || point.cellBlockId !== undefined && normalized.cellBlockId !== point.cellBlockId) throw new RangeError('文档选区指向的内容已不存在。')
+    || point.cellBlockId !== undefined && normalized.cellBlockId !== point.cellBlockId
+    || normalized.offset !== point.offset) throw new RangeError('文档选区指向的内容或文字位置已不存在。')
   return normalized
+}
+
+export function resolveDocumentEditorSelection(model: DocumentModel, selection: DocumentSelection): DocumentSelection {
+  if (!selection || typeof selection !== 'object') throw new TypeError('文档选区无效。')
+  assertPoint(selection.anchor)
+  assertPoint(selection.focus)
+  return { anchor: modelPoint(model, selection.anchor), focus: modelPoint(model, selection.focus) }
 }
 
 /** Both UI and facade commands edit a transaction draft with the same logical selection. */
 export function applyDocumentEditorCommand(model: DocumentModel, request: DocumentEditorCommandRequest, permissionContext: DocumentPermissionContext): DocumentSelection {
-  const selection = { anchor: modelPoint(model, request.selection.anchor), focus: modelPoint(model, request.selection.focus) }
+  const selection = resolveDocumentEditorSelection(model, request.selection)
   let codeSelection: DocumentSelection | undefined
   if (request.command.id === 'doc.command.insert-text' || request.command.id === 'doc.command.delete') {
     assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForSelection(model, selection))

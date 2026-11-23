@@ -2,6 +2,12 @@ use duke_pages::StructuredDocument;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use office_io_common::document_legacy_source::{
+    DocumentOfficeSourceOrigin as DocumentOfficeSourceOriginPayload,
+    DocumentOfficeSourceOriginFormat,
+    DocumentOfficeSourceResource as DocumentOfficeSourceResourcePayload,
+};
+
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize)]
@@ -66,6 +72,14 @@ pub struct DocumentOfficeSourcePayload {
     /// A legal absent part differs from a declared part that could not be read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resource_errors: Vec<String>,
+    /// Original non-OOXML style resources remain separate from Word styles.
+    /// DOC's styles.xml is generated from its binary tables, not source XML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<DocumentOfficeSourceOriginPayload>,
+    /// A DOCX's native Word parts remain current. Historical DOC/ODT resources
+    /// read from the dedicated provenance part never become current origin.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub legacy_origins: Vec<DocumentOfficeSourceOriginPayload>,
 }
 
 #[derive(Debug, Serialize)]
@@ -380,13 +394,15 @@ pub struct SheetPayload {
     pub charts: Vec<ChartPayload>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataValidationPayload {
     pub id: String,
     #[serde(rename = "type")]
     pub validation_type: String,
     pub ranges: Vec<DataValidationRangePayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula_anchor: Option<DataValidationFormulaAnchorPayload>,
     pub operator: String,
     pub formula1: String,
     pub formula2: Option<String>,
@@ -399,9 +415,17 @@ pub struct DataValidationPayload {
     pub show_input_message: bool,
     pub prompt_title: Option<String>,
     pub prompt: Option<String>,
+    #[serde(flatten)]
+    pub extensions: serde_json::Map<String, Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
+pub struct DataValidationFormulaAnchorPayload {
+    pub row: u32,
+    pub col: u32,
+}
+
+#[derive(Debug, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataValidationRangePayload {
     pub start_row: u32,

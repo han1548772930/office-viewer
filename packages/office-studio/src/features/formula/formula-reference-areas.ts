@@ -21,6 +21,7 @@ export interface FormulaReferenceArea {
 interface Qualifier { text: string; sheetName: string; end: number; external: boolean; threeDimensional: boolean }
 interface Address { row: number; column: number; absoluteRow: boolean; absoluteColumn: boolean; end: number }
 interface AreaSpan { start: number; end: number; area: FormulaReferenceArea }
+export interface FormulaReferenceAreaMatch { end: number; area: FormulaReferenceArea }
 
 const identifier = (value: string | undefined): boolean => value !== undefined && /[\p{L}\p{N}_.\\]/u.test(value)
 const columnIndex = (letters: string): number => [...letters.toUpperCase()].reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0) - 1
@@ -125,6 +126,14 @@ function areaSpans(source: string): AreaSpan[] {
   }
   return spans
 }
+
+/** Shared lexical boundary for formula parsing and reference-only transformations. */
+export function readFormulaReferenceArea(source: string, start: number): FormulaReferenceAreaMatch | undefined {
+  if (!Number.isSafeInteger(start) || start < 0 || start >= source.length || identifier(source[start - 1])) return undefined
+  const span = readArea(source, start)
+  return span ? { end: span.end, area: { ...span.area } } : undefined
+}
+
 function formatArea(area: FormulaReferenceArea): string {
   const startRow = `${area.absoluteStartRow ? '$' : ''}${area.startRow + 1}`, endRow = `${area.absoluteEndRow ? '$' : ''}${area.endRow + 1}`
   const startColumn = `${area.absoluteStartColumn ? '$' : ''}${columnLabel(area.startColumn)}`, endColumn = `${area.absoluteEndColumn ? '$' : ''}${columnLabel(area.endColumn)}`
@@ -132,6 +141,26 @@ function formatArea(area: FormulaReferenceArea): string {
   if (area.kind === 'wholeColumn') return `${area.qualifier}${startColumn}:${area.endQualifier}${endColumn}`
   const first = `${area.qualifier}${startColumn}${startRow}`
   return area.kind === 'cell' ? first : `${first}:${area.endQualifier}${endColumn}${endRow}`
+}
+
+/** Signed offsets retain recoverable references, including complete rows/columns and qualified rectangles. */
+export function formulaReferenceAreaSignature(formula: string, row: number, column: number): string {
+  if (typeof formula !== 'string' || !Number.isSafeInteger(row) || !Number.isSafeInteger(column)) throw new TypeError('Invalid formula reference origin')
+  const parts: Array<string | FormulaReferenceArea> = []
+  let cursor = 0
+  for (const span of areaSpans(formula)) {
+    const area = span.area
+    parts.push(formula.slice(cursor, span.start), {
+      ...area,
+      startRow: area.kind === 'wholeColumn' || area.absoluteStartRow ? area.startRow : area.startRow - row,
+      endRow: area.kind === 'wholeColumn' || area.absoluteEndRow ? area.endRow : area.endRow - row,
+      startColumn: area.kind === 'wholeRow' || area.absoluteStartColumn ? area.startColumn : area.startColumn - column,
+      endColumn: area.kind === 'wholeRow' || area.absoluteEndColumn ? area.endColumn : area.endColumn - column,
+    })
+    cursor = span.end
+  }
+  parts.push(formula.slice(cursor))
+  return JSON.stringify(parts)
 }
 
 /** Strings, structured column identifiers and literal sheet qualifiers are never transformed. */

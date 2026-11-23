@@ -2,7 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use quick_xml::{XmlVersion, events::Event, name::ResolveResult, reader::NsReader};
+use quick_xml::{XmlVersion, events::{BytesStart, Event}, name::ResolveResult, reader::NsReader};
+
+#[path = "conditional_format_xml_selection.rs"]
+mod selection;
+pub use selection::{XmlName, XmlSelection, XmlSelectionLimits, extract};
 
 pub const MAIN_NAMESPACE: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 pub const STRICT_MAIN_NAMESPACE: &str = "http://purl.oclc.org/ooxml/spreadsheetml/main";
@@ -17,6 +21,9 @@ const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
 const XML_LIMIT: usize = 16 * 1024 * 1024;
 const DEPTH_LIMIT: usize = 128;
 const ELEMENT_LIMIT: usize = 262_144;
+pub const XML_FRAGMENT_BYTE_LIMIT: usize = XML_LIMIT;
+pub const XML_FRAGMENT_DEPTH_LIMIT: usize = DEPTH_LIMIT;
+pub const XML_FRAGMENT_ELEMENT_LIMIT: usize = ELEMENT_LIMIT;
 
 #[derive(Debug, Clone)]
 pub enum Content { Child(usize), Text(String), Comment(String), Instruction(String) }
@@ -68,6 +75,7 @@ impl Element {
     }
     pub fn child(&self, name: &str) -> Option<&Element> { self.children.iter().find(|child| child.is_main(name)) }
     pub fn child_mut(&mut self, name: &str) -> Option<&mut Element> { self.children.iter_mut().find(|child| child.is_main(name)) }
+    pub fn detached_child(&self, child: &Element) -> Element { selection::detach_child(self, child) }
 
     /// Replace selected children without losing mixed text or unrelated extension order.
     pub fn replace_children(&mut self, select: impl Fn(&Element) -> bool, replacement: Vec<Element>) {
@@ -117,41 +125,27 @@ impl Element {
     }
 
     pub fn render(&self) -> String {
-        fn render(node: &Element, inherited: &BTreeMap<String, String>, out: &mut String) {
-            let mut scope = inherited.clone();
-            let mut declarations = BTreeMap::new();
-            for (name, value) in &node.attrs {
-                if name == "xmlns" { scope.insert(String::new(), value.clone()); }
-                else if let Some(prefix) = name.strip_prefix("xmlns:") { scope.insert(prefix.into(), value.clone()); }
+        let mut out = String::new(); render_element(self, &BTreeMap::new(), &mut out); out
+    }
+
+    /// Count the same canonical bytes as render without allocating a second XML string.
+    pub fn rendered_size(&self) -> usize {
+        let mut out = XmlByteCount::default(); render_element(self, &BTreeMap::new(), &mut out); out.0
+    }
+
+    /// Check detached output before render allocates its full canonical XML string.
+    pub fn validate_fragment(&self) -> Result<(), String> {
+        fn visit(node: &Element, depth: usize, elements: &mut usize) -> Result<(), String> {
+            *elements = elements.saturating_add(1);
+            if depth > DEPTH_LIMIT || *elements > ELEMENT_LIMIT {
+                return Err("CF_SOURCE_FRAGMENT_LIMIT: conditional-format XML exceeds its element or depth budget".into())
             }
-            let mut bind = |name: &str, namespace: &str, attribute: bool| {
-                let prefix = name.split_once(':').map(|(prefix, _)| prefix).unwrap_or("");
-                if attribute && prefix.is_empty() || prefix == "xml" { return }
-                if scope.get(prefix).map(String::as_str).unwrap_or("") != namespace {
-                    declarations.insert(if prefix.is_empty() { "xmlns".into() } else { format!("xmlns:{prefix}") }, namespace.to_owned());
-                    scope.insert(prefix.to_owned(), namespace.to_owned());
-                }
-            };
-            bind(&node.qualified_name, &node.namespace, false);
-            for (name, namespace) in &node.attribute_namespaces { if namespace != XMLNS_NAMESPACE { bind(name, namespace, true); } }
-            out.push('<'); out.push_str(&node.qualified_name);
-            let mut attributes = node.attrs.clone(); attributes.extend(declarations);
-            for (name, value) in &attributes {
-                out.push(' '); out.push_str(name); out.push_str("=\""); out.push_str(&escape(value)); out.push('"');
-            }
-            if node.content.is_empty() { out.push_str("/>"); return }
-            out.push('>');
-            for content in &node.content {
-                match content {
-                    Content::Child(index) => { if let Some(child) = node.children.get(*index) { render(child, &scope, out); } }
-                    Content::Text(value) => out.push_str(&escape(value)),
-                    Content::Comment(value) => { out.push_str("<!--"); out.push_str(value); out.push_str("-->"); }
-                    Content::Instruction(value) => { out.push_str("<?"); out.push_str(value); out.push_str("?>"); }
-                }
-            }
-            out.push_str("</"); out.push_str(&node.qualified_name); out.push('>');
+            for child in &node.children { visit(child, depth + 1, elements)?; }
+            Ok(())
         }
-        let mut out = String::new(); render(self, &BTreeMap::new(), &mut out); out
+        visit(self, 1, &mut 0)?;
+        if self.rendered_size() > XML_LIMIT { return Err("CF_SOURCE_FRAGMENT_LIMIT: canonical conditional-format XML exceeds its byte budget".into()) }
+        Ok(())
     }
 
     /// Resolved names, attribute order and indentation do not invalidate an untouched projection.
@@ -185,11 +179,67 @@ impl Element {
     }
 }
 
+trait XmlOutput {
+    fn raw(&mut self, value: &str);
+    fn escaped(&mut self, value: &str);
+}
+impl XmlOutput for String {
+    fn raw(&mut self, value: &str) { self.push_str(value); }
+    fn escaped(&mut self, value: &str) { self.push_str(&escape(value)); }
+}
+#[derive(Default)]
+struct XmlByteCount(usize);
+impl XmlOutput for XmlByteCount {
+    fn raw(&mut self, value: &str) { self.0 = self.0.saturating_add(value.len()); }
+    fn escaped(&mut self, value: &str) {
+        for byte in value.bytes() { self.0 = self.0.saturating_add(match byte { b'&' => 5, b'<' | b'>' => 4, b'"' | b'\'' => 6, _ => 1 }); }
+    }
+}
+
+fn render_element(node: &Element, inherited: &BTreeMap<String, String>, out: &mut impl XmlOutput) {
+            let mut scope = inherited.clone();
+            let mut declarations = BTreeMap::new();
+            for (name, value) in &node.attrs {
+                if name == "xmlns" { scope.insert(String::new(), value.clone()); }
+                else if let Some(prefix) = name.strip_prefix("xmlns:") { scope.insert(prefix.into(), value.clone()); }
+            }
+            let mut bind = |name: &str, namespace: &str, attribute: bool| {
+                let prefix = name.split_once(':').map(|(prefix, _)| prefix).unwrap_or("");
+                if attribute && prefix.is_empty() || prefix == "xml" { return }
+                if scope.get(prefix).map(String::as_str).unwrap_or("") != namespace {
+                    declarations.insert(if prefix.is_empty() { "xmlns".into() } else { format!("xmlns:{prefix}") }, namespace.to_owned());
+                    scope.insert(prefix.to_owned(), namespace.to_owned());
+                }
+            };
+            bind(&node.qualified_name, &node.namespace, false);
+            for (name, namespace) in &node.attribute_namespaces { if namespace != XMLNS_NAMESPACE { bind(name, namespace, true); } }
+            out.raw("<"); out.raw(&node.qualified_name);
+            let mut attributes = node.attrs.clone(); attributes.extend(declarations);
+            for (name, value) in &attributes {
+                out.raw(" "); out.raw(name); out.raw("=\""); out.escaped(value); out.raw("\"");
+            }
+            if node.content.is_empty() { out.raw("/>"); return }
+            out.raw(">");
+            for content in &node.content {
+                match content {
+                    Content::Child(index) => { if let Some(child) = node.children.get(*index) { render_element(child, &scope, out); } }
+                    Content::Text(value) => out.escaped(value),
+                    Content::Comment(value) => { out.raw("<!--"); out.raw(value); out.raw("-->"); }
+                    Content::Instruction(value) => { out.raw("<?"); out.raw(value); out.raw("?>"); }
+                }
+            }
+            out.raw("</"); out.raw(&node.qualified_name); out.raw(">");
+}
+
 fn escape(value: &str) -> String { value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;") }
 fn valid_text(value: &str) -> bool { !value.chars().any(|value| value < '\u{20}' && !matches!(value, '\t' | '\n' | '\r') || matches!(value, '\u{fffe}' | '\u{ffff}')) }
 fn namespace(result: ResolveResult<'_>) -> Result<String, String> {
     match result {
-        ResolveResult::Bound(value) => String::from_utf8(value.as_ref().to_vec()).map_err(|error| error.to_string()),
+        ResolveResult::Bound(value) => {
+            let value = String::from_utf8(value.as_ref().to_vec()).map_err(|error| error.to_string())?;
+            let normalized = value.replace("\r\n", " ").replace(['\r', '\n', '\t'].as_slice(), " ");
+            quick_xml::escape::unescape(&normalized).map(|value| value.into_owned()).map_err(|error| error.to_string())
+        }
         ResolveResult::Unbound => Ok(String::new()),
         ResolveResult::Unknown(prefix) => Err(format!("Conditional-format XML uses undeclared prefix {}", String::from_utf8_lossy(&prefix))),
     }
@@ -200,6 +250,30 @@ fn push_text(stack: &mut [Element], value: String) -> Result<(), String> {
     if let Some(node) = stack.last_mut() { node.text.push_str(&value); node.content.push(Content::Text(value)); }
     else if !value.trim().is_empty() { return Err("Conditional-format XML has text outside its root".into()); }
     Ok(())
+}
+
+fn valid_namespace_declaration(name: &str, value: &str) -> bool {
+    !(name == "xmlns:xmlns" || name == "xmlns:xml" && value != XML_NAMESPACE || value == XMLNS_NAMESPACE
+        || value == XML_NAMESPACE && name != "xmlns:xml" || name != "xmlns" && value.is_empty())
+}
+
+fn node_from_tag<R>(reader: &NsReader<R>, tag: &BytesStart<'_>, resolved_namespace: String) -> Result<Element, String> {
+    let mut node = Element { name: String::from_utf8(tag.local_name().as_ref().to_vec()).map_err(|error| error.to_string())?,
+        qualified_name: String::from_utf8(tag.name().as_ref().to_vec()).map_err(|error| error.to_string())?, namespace: resolved_namespace, ..Element::default() };
+    let mut expanded = BTreeSet::new();
+    for attribute in tag.attributes() {
+        let attribute = attribute.map_err(|error| error.to_string())?;
+        let name = String::from_utf8(attribute.key.as_ref().to_vec()).map_err(|error| error.to_string())?;
+        let (resolved, local) = reader.resolver().resolve_attribute(attribute.key);
+        let declaration = name == "xmlns" || name.starts_with("xmlns:");
+        let namespace = if declaration { XMLNS_NAMESPACE.into() } else { namespace(resolved)? };
+        if !expanded.insert((namespace.clone(), local.as_ref().to_vec())) { return Err("Conditional-format XML has duplicate expanded attributes".into()); }
+        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
+        if !valid_text(&value) { return Err("Conditional-format XML has invalid characters".into()); }
+        if declaration && !valid_namespace_declaration(&name, &value) { return Err("Conditional-format XML has an invalid namespace declaration".into()); }
+        node.attribute_namespaces.insert(name.clone(), namespace); node.attrs.insert(name, value);
+    }
+    Ok(node)
 }
 
 pub fn parse(source: &str) -> Result<Element, String> {
@@ -213,21 +287,7 @@ pub fn parse(source: &str) -> Result<Element, String> {
             Event::Start(tag) | Event::Empty(tag) => {
                 elements += 1;
                 if elements > ELEMENT_LIMIT || stack.len() >= DEPTH_LIMIT { return Err("Conditional-format XML exceeds its element or depth limit".into()); }
-                let mut node = Element { name: String::from_utf8(tag.local_name().as_ref().to_vec()).map_err(|error| error.to_string())?,
-                    qualified_name: String::from_utf8(tag.name().as_ref().to_vec()).map_err(|error| error.to_string())?, namespace: namespace(resolved)?, ..Element::default() };
-                let mut expanded = BTreeSet::new();
-                for attribute in tag.attributes() {
-                    let attribute = attribute.map_err(|error| error.to_string())?;
-                    let name = String::from_utf8(attribute.key.as_ref().to_vec()).map_err(|error| error.to_string())?;
-                    let (resolved, local) = reader.resolver().resolve_attribute(attribute.key);
-                    let declaration = name == "xmlns" || name.starts_with("xmlns:");
-                    let namespace = if declaration { XMLNS_NAMESPACE.into() } else { namespace(resolved)? };
-                    if !expanded.insert((namespace.clone(), local.as_ref().to_vec())) { return Err("Conditional-format XML has duplicate expanded attributes".into()); }
-                    let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
-                    if !valid_text(&value) { return Err("Conditional-format XML has invalid characters".into()); }
-                    if declaration && (name == "xmlns:xmlns" || name == "xmlns:xml" && value != XML_NAMESPACE || value == XMLNS_NAMESPACE || value == XML_NAMESPACE && name != "xmlns:xml" || name != "xmlns" && value.is_empty()) { return Err("Conditional-format XML has an invalid namespace declaration".into()); }
-                    node.attribute_namespaces.insert(name.clone(), namespace); node.attrs.insert(name, value);
-                }
+                let node = node_from_tag(&reader, &tag, namespace(resolved)?)?;
                 if empty { if let Some(parent) = stack.last_mut() { parent.push(node); } else if root.replace(node).is_some() { return Err("Conditional-format XML has multiple roots".into()); } }
                 else { stack.push(node); }
             }
@@ -285,5 +345,21 @@ mod tests {
     #[test]
     fn source_fragments_reject_entities_unbound_names_duplicate_attributes_and_unclosed_elements() {
         for malformed in ["<!DOCTYPE cfRule [<!ENTITY value 'x'>]><cfRule/>", "<v:cfRule/>", "<cfRule type='a' type='b'/>", "<cfRule><formula>&vendor;</formula></cfRule>", "<cfRule>", "<cfRule/><cfRule/>"] { assert!(parse(malformed).is_err(), "{malformed}"); }
+    }
+
+    #[test]
+    fn canonical_byte_count_includes_utf8_escaping_inherited_namespaces_comments_and_instructions() {
+        let parent = parse(r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:v="urn:vendor"><conditionalFormatting sqref="A1"><cfRule v:tag="汉&amp;&quot;&apos;"><formula><![CDATA[A1<5&😀]]></formula><!--keep--><?vendor keep?></cfRule></conditionalFormatting></worksheet>"#).unwrap();
+        let group = parent.detached_child(&parent.children[0]); let rule = group.detached_child(&group.children[0]);
+        assert_eq!(rule.rendered_size(), rule.render().len());
+        assert!(rule.validate_fragment().is_ok());
+        assert_eq!(rule.attrs.get("xmlns:v").map(String::as_str), Some("urn:vendor"));
+    }
+
+    #[test]
+    fn composed_output_fragments_are_bounded_even_when_each_input_tree_was_shallow() {
+        let mut node = Element::new(MAIN_NAMESPACE, "payload");
+        for _ in 0..128 { let mut parent = Element::new(MAIN_NAMESPACE, "payload"); parent.push(node); node = parent; }
+        assert!(node.validate_fragment().unwrap_err().starts_with("CF_SOURCE_FRAGMENT_LIMIT"));
     }
 }

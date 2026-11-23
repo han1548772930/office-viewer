@@ -89,3 +89,18 @@ test('header/footer contextual ribbon is absent outside an active header/footer 
   })
   assert.equal(tabs.some(candidate => candidate.id === 'header-footer'), false)
 })
+
+// Deferred permission presentation matrix, 2026-11-22. Not executed.
+for (const [name, state, disabled] of [
+  ['story denied and section editable', { ...headerFooterState, disabled: true, sectionDisabled: false }, [true, false, true, false, false]],
+  ['story linked and section editable', { ...headerFooterState, contentDisabled: true, sectionDisabled: false }, [true, false, false, false, false]],
+  ['section denied', { ...headerFooterState, disabled: true, sectionDisabled: true }, [true, false, true, true, false]],
+]) test(`contextual ribbon exposes ${name} consistently to classic, grid and overflow presenters`, () => {
+  const tabs = createDocumentRibbon({
+    state: toolbarState, canUndo: true, canRedo: false, outline: false, focus: false, fullscreen: false,
+    paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true, mode: 'traditional', headerFooter: state,
+  })
+  const items = tabs.find(tab => tab.id === 'header-footer').groups.flatMap(group => group.items)
+  assert.deepEqual(items.map(item => Boolean(item.disabled)), disabled)
+  for (const item of items.slice(0, 4)) assert.equal(item.popupProps.state, state)
+})
