@@ -32,18 +32,21 @@ export function chartEChartsLineStyle(style: ChartSeriesOptions, gradient?: Char
 }
 
 export function chartEChartsLabel(label: ChartLabelOptions | undefined, color: string) {
-  return { show: label?.visible ?? false, position: label?.position ?? 'top', ...chartEChartsFont(label, color, 10) }
+  const position = label?.position === 'auto' ? 'top' : label?.position === 'insideBase' || label?.position === 'insideEnd' || label?.position === 'center' ? 'inside' : label?.position ?? 'top'
+  return { show: label?.visible ?? false, position, ...chartEChartsFont(label, color, 10) }
 }
 
-export function chartEChartsPointLabel(label: ChartLabelOptions | undefined, color: string, value: number, category: string, series: string, percentage?: number) {
-  return { ...chartEChartsLabel(label, color), formatter: chartLabelText(label, value, category, series, percentage) }
+export function chartEChartsPointLabel(label: ChartLabelOptions | undefined, color: string, value: number, category: string, series: string, percentage?: number, bubbleSize?: number) {
+  return { ...chartEChartsLabel(label, color), formatter: chartLabelText(label, value, category, series, percentage, bubbleSize) }
 }
 
 export function chartEChartsAxisStyle(axis: ChartAxisOptions, color: string, gridColor: string, numeric: boolean, inheritedFont?: ChartFontOptions) {
   const titleFont = { ...definedChartStyleFields(inheritedFont), ...definedChartStyleFields(axis.titleStyle) }
   return {
     inverse: axis.reverse,
-    name: axis.title, nameLocation: axis.titleAlignment === 'start' ? 'start' as const : axis.titleAlignment === 'end' ? 'end' as const : 'middle' as const,
+    // Titles use the shared physical-box graphic geometry, independently of
+    // ECharts nameLocation's value-axis direction and reverse behavior.
+    name: undefined, nameLocation: axis.titleAlignment === 'start' ? 'start' as const : axis.titleAlignment === 'end' ? 'end' as const : 'middle' as const,
     nameTextStyle: chartEChartsFont(titleFont, color, 11), nameGap: Math.max(28, (titleFont.fontSize ?? 11) + 17),
     axisLine: { show: axis.line?.visible ?? true, lineStyle: { color: axis.line?.color ?? color, width: axis.line?.width ?? 1, opacity: axis.line?.opacity ?? 1, type: axis.line?.dashType ?? 'solid' as const } },
     axisTick: { show: axis.tick?.visible ?? false, inside: axis.tick?.position === 'inside', length: axis.tick?.length ?? 4,

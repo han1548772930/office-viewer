@@ -14,7 +14,7 @@ export function layoutChartWaterfall(data: ChartData, chart: ChartModel, compute
   const sourceStyles = data.series.map((source, index) => chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name))
   const roles = data.series.map((source, index) => chartWaterfallRoleStyles(chart, source.field, index, palette, source.sourceName ?? source.name))
   const globalRoles = chartWaterfallRoleStyles(chart, undefined, 0, palette)
-  const visibleCount = computed.stackType === 'stacked' ? data.categories.length + Number(computed.useSubtotal)
+  const visibleCount = !data.categories.length ? 0 : computed.stackType === 'stacked' ? data.categories.length + Number(computed.useSubtotal)
     : data.series.length * (data.categories.length + Number(computed.useSubtotal))
   const categories = Array<string>(visibleCount)
   const primaryValues: number[] = [], rightValues: number[] = []

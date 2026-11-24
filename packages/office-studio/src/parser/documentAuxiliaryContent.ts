@@ -12,7 +12,13 @@ export function normalizeParsedDocumentBlockGroup(values: readonly unknown[], pr
     const raw = record(value), block = normalize(raw, index === 0 && firstFallbackId !== undefined ? firstFallbackId : `${prefix}-${index}`)
     return [block, ...(block.type === 'table' ? [] : array(raw.children)
       .filter(child => record(child).type === 'figure')
-      .map((child, childIndex) => normalize(child, `${block.id}-object-${childIndex}`)))]
+      .map((child, childIndex) => {
+        const object = normalize(child, `${block.id}-object-${childIndex}`)
+        // Source identity, rather than an editable target ID: a physical Word
+        // paragraph can project to an anchor plus several object blocks.
+        object.metadata.officeSourceParagraphId = typeof raw.id === 'string' ? raw.id : block.id
+        return object
+      }))]
   })
 }
 

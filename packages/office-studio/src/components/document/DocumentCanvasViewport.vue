@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { Alert, Input, theme } from 'antdv-next'
+import { Alert, Button, Input, Popover, theme } from 'antdv-next'
 import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
@@ -11,7 +11,7 @@ import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, 
 import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
 import { documentTableClipboardData, documentTablePasteCommand, type DocumentClipboardData } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
-import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
+import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
 import type { StoryLocation } from '../../features/document/services/story-editor'
@@ -30,16 +30,20 @@ import DocumentTableOverlay from './DocumentTableOverlay.vue'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../../features/document/model/document-block-host'
 import { documentModelForBlockHost } from '../../features/document/services/document-block-host'
 import { documentLayoutForBlockHost } from '../../features/document/layout/document-auxiliary-layout'
+import { layoutDocumentBlockHostInspection } from '../../features/document/layout/document-block-host-inspection'
 import DocumentContentControlOverlay from './DocumentContentControlOverlay.vue'
 import { documentContentControlGeometry } from '../../features/document/layout/content-control-geometry'
 import { appendDocumentContentControlScene } from '../../features/document/rendering/content-control-scene'
-import { selectedDocumentContentControl } from '../../features/document/services/content-controls'
+import { selectedDocumentContentControlForSelection } from '../../features/document/services/content-controls'
 import { contentControlValueCommandState } from '../../features/document/commands/content-control-command-state'
 import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../../features/document/commands/content-control-command-types'
 import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlFocusTokenMatchesRequest, type DocumentContentControlFocusToken } from '../../features/document/controllers/content-control-interaction'
-import { documentContentControlCommandIsTextInput, prepareDocumentContentControlTextInputSelection } from '../../features/document/services/content-control-editing'
+import { documentContentControlCommandIsTextInput, documentContentControlCommandUsesWholeCellInput, prepareDocumentContentControlTextInputSelection } from '../../features/document/services/content-control-editing'
+import { documentContentControlContainsSelection } from '../../features/document/model/content-control-table-rows'
+import { hitTestDocumentNoteDecoration, hitTestDocumentNoteGlyph, hitTestDocumentNoteRegion, type DocumentNoteGlyphHit } from '../../features/document/layout/document-note-hit'
+import { documentNoteCanvasRequestCurrent, documentNotePreview, type DocumentNoteCanvasNavigationRequest, type DocumentNotePreview } from '../../features/document/controllers/document-note-canvas'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
   operation: [id: string, params?: unknown]
@@ -56,6 +60,7 @@ const emit = defineEmits<{
   'content-control-selection': [request: DocumentContentControlSelectionRequest]
   'content-control-command': [request: DocumentContentControlCommandRequest]
   'navigate-to-heading': [headingId: string]
+  'note-navigation': [request: DocumentNoteCanvasNavigationRequest]
   'context-menu': [payload: { x: number; y: number; point: DocumentPoint; source?: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost }]
   layout: [layout: DocumentLayout, source: DocumentModel]
   'active-page': [page: number]
@@ -74,10 +79,13 @@ function inputElement(): HTMLTextAreaElement | null {
   return element instanceof HTMLTextAreaElement ? element : element?.querySelector('textarea') ?? null
 }
 const layout = shallowRef<DocumentLayout>(emptyLayout())
+const inspectionActive = computed(() => !!props.inspectionHost && sameDocumentBlockHost(props.inspectionHost, props.host))
 const tableOverlay = ref<{ cancelGesture: () => void; cancelInteraction: () => void; continueGesture: (pointer: DocumentTableDragPointer) => void }>()
 const contentControlOverlay = ref<{ cancelInteraction: () => void }>()
 const contentControlActive = ref(true)
 const hoverTable = shallowRef<DocumentTableHit>()
+const noteHover = shallowRef<{ source: DocumentModel; glyph: DocumentNoteGlyphHit; preview: DocumentNotePreview }>()
+let noteHoverHide: ReturnType<typeof setTimeout> | undefined
 const tablePreview = shallowRef<DocumentTableGesturePreview>()
 const storyRef = ref<{ $el: HTMLElement; focus: (options?: { preventScroll?: boolean }) => void }>()
 function storyElement() {
@@ -184,38 +192,27 @@ const displayEditingModel = computed(() => props.host ? documentModelForBlockHos
 const editingLayout = computed(() => documentLayoutForBlockHost(layout.value, props.host))
 const legacyStoryActive = computed(() => !!props.story && !props.host)
 function dispatchCommand(command: DocumentCommand) {
-  const input = documentContentControlCommandIsTextInput(command)
+  const input = documentContentControlCommandIsTextInput(command) && !documentContentControlCommandUsesWholeCellInput(command, props.selection)
     ? { ...command, activeContentControlId: command.activeContentControlId ?? explicitInputControlId() } : command
   emit('command', props.host ? { ...input, host: { ...props.host } } : input)
 }
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
 const contentControlGeometries = computed(() => documentContentControlGeometry(displayEditingModel.value, editingLayout.value))
 const activeContentControl = computed(() => {
-  const selection = displaySelection.value
-  if (selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) return undefined
-  const blockId = selection.focus.cellBlockId ?? selection.focus.blockId
-  const start = Math.min(selection.anchor.offset, selection.focus.offset), end = Math.max(selection.anchor.offset, selection.focus.offset)
-  const explicit = displayEditingModel.value.contentControls?.find(control => control.id === props.activeContentControlId
-    && control.blockId === blockId && start >= control.startOffset && end <= control.endOffset)
-  return explicit ?? selectedDocumentContentControl(displayEditingModel.value, blockId, start, end)
+  return selectedDocumentContentControlForSelection(displayEditingModel.value, displaySelection.value, props.activeContentControlId)
 })
 function explicitInputControlId(): string | undefined {
   const selection = props.selection
   if (selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) return undefined
   const control = editingModel.value.contentControls?.find(control => control.id === props.activeContentControlId)
-  if (!control || control.blockId !== (selection.focus.cellBlockId ?? selection.focus.blockId)
-    || Math.min(selection.anchor.offset, selection.focus.offset) < control.startOffset
-    || Math.max(selection.anchor.offset, selection.focus.offset) > control.endOffset) return undefined
+  if (!control || !documentContentControlContainsSelection(editingModel.value, control, selection)) return undefined
   return control.id
 }
 function contentControlRequestCurrent(request: DocumentContentControlSelectionRequest): boolean {
   if (!active || disposed || composing.value || storyComposing.value || legacyStoryActive.value
     || props.host?.kind === 'story' && props.storyReadonly || request.source !== props.model || !sameDocumentBlockHost(request.host, props.host)) return false
   const control = editingModel.value.contentControls?.find(control => control.id === request.controlId)
-  if (!control || !sameTarget(request.selection.anchor, request.selection.focus)
-    || (request.selection.focus.cellBlockId ?? request.selection.focus.blockId) !== control.blockId
-    || Math.min(request.selection.anchor.offset, request.selection.focus.offset) < control.startOffset
-    || Math.max(request.selection.anchor.offset, request.selection.focus.offset) > control.endOffset) return false
+  if (!control || !documentContentControlContainsSelection(editingModel.value, control, request.selection)) return false
   const captured = request.inputSession, current = captured && props.captureInputSession?.(request.source)
   return !captured || !!current && current.valid && captured.valid && captured.generation === current.generation
     && captured.modelRevision === current.modelRevision && sameDocumentInputLocation(captured.location, current.location)
@@ -236,6 +233,11 @@ function dispatchContentControlCommand(request: DocumentContentControlCommandReq
   // Read passively after the shared command has restored its checked selection.
   // Passing an old source model here must not renew a stale input session.
   pendingContentControlFocus = captureDocumentContentControlFocusToken(request, props.captureInputSession?.())
+}
+/** Ribbon value actions share the overlay's checked command and delayed focus path. */
+function executeContentControlCommand(request: DocumentContentControlCommandRequest) {
+  dispatchContentControlCommand(request)
+  void nextTick(() => focusContentControl(request))
 }
 function focusContentControl(request: DocumentContentControlSelectionRequest) {
   if (!active || disposed || composing.value || storyComposing.value || legacyStoryActive.value
@@ -267,11 +269,28 @@ const inputStyle = computed(() => {
     fontSize: `${Math.max(12, (caret?.height ?? 18) * props.zoom / 100)}px`,
   }
 })
+const noteHoverStyle = computed(() => {
+  const hover = noteHover.value
+  if (!hover) return { display: 'none' }
+  const offset = sceneOffset(layout.value, viewport.value), scale = props.zoom / 100
+  return { left: `${offset.x + hover.glyph.rect.x * scale}px`, top: `${offset.y + hover.glyph.rect.y * scale}px`,
+    width: `${Math.max(1, hover.glyph.rect.width * scale)}px`, height: `${Math.max(1, hover.glyph.rect.height * scale)}px` }
+})
 
-watch(() => props.model, () => { hoverTable.value = undefined; cancelSelectionDrag(); tableKeyboardCursor = undefined; if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(); if (!composing.value && !storyComposing.value) preview.value = null; relayout() }, { deep: false })
+watch(() => props.model, () => { clearNoteHover(); hoverTable.value = undefined; cancelSelectionDrag(); tableKeyboardCursor = undefined; if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(); if (!composing.value && !storyComposing.value) preview.value = null; relayout() }, { deep: false })
 watch(() => props.story, story => { if (story && composing.value) cancelBodyComposition(); hoverTable.value = undefined; cancelSelectionDrag(); tableKeyboardCursor = undefined; requestDraw() })
-watch(() => props.host, () => { cancelInput(false); preview.value = null; hoverTable.value = undefined; relayout(); void nextTick(focus) }, { deep: true })
+watch(() => [props.host, props.inspectionHost], () => {
+  clearNoteHover(); cancelInput(false); preview.value = null; hoverTable.value = undefined; relayout()
+  const source = props.model, host = props.host && { ...props.host }, session = props.captureInputSession?.()
+  void nextTick(() => {
+    const current = props.captureInputSession?.()
+    if (disposed || !active || source !== props.model || !sameDocumentBlockHost(host, props.host)
+      || session && (!current?.valid || current.generation !== session.generation || current.modelRevision !== session.modelRevision)) return
+    focus(); ensureCaretVisible()
+  })
+}, { deep: true })
 watch(() => props.selection, () => {
+  clearNoteHover()
   const view = props.selection.tableSelection, range = tableKeyboardCursor?.range
   if (tableKeyboardCursor && (!view || view.tableId !== tableKeyboardCursor.tableId || view.range.startRow !== range!.startRow
     || view.range.endRow !== range!.endRow || view.range.startColumn !== range!.startColumn || view.range.endColumn !== range!.endColumn)) tableKeyboardCursor = undefined
@@ -279,8 +298,10 @@ watch(() => props.selection, () => {
   caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible)
 }, { deep: true })
 watch(() => props.captureInputSession?.(), () => {
+  clearNoteHover()
   if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(false)
 }, { flush: 'sync' })
+watch([composing, storyComposing], ([body, story]) => { if (body || story) clearNoteHover() })
 watch(() => props.searchMatches, requestDraw, { deep: true })
 watch(() => token.value.colorPrimary, requestDraw)
 watch(() => [token.value.colorBorder, token.value.colorText], requestDraw)
@@ -290,6 +311,7 @@ watch(() => props.activeContentControlId, () => {
 }, { flush: 'sync' })
 watch(tablePreview, requestDraw)
 watch(() => props.zoom, (zoom) => {
+  clearNoteHover()
   cancelSelectionDrag()
   tableOverlay.value?.cancelInteraction()
   const offset = zoomedDocumentScrollOffset(layout.value, viewport.value, zoom)
@@ -306,6 +328,7 @@ watch(() => props.zoom, (zoom) => {
 onActivated(() => { active = true; contentControlActive.value = true; void nextTick(resize) })
 onDeactivated(() => {
   active = false
+  clearNoteHover()
   pendingContentControlFocus = undefined
   contentControlActive.value = false
   contentControlOverlay.value?.cancelInteraction()
@@ -348,6 +371,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true
+  clearNoteHover()
   pendingContentControlFocus = undefined
   cancelDragAutoscroll()
   cancelBodyComposition()
@@ -394,8 +418,10 @@ function onViewportResize() {
 
 function relayout() {
   if (disposed) return
-  layout.value = layoutDocument(props.host?.kind === 'note' ? displayEditingModel.value : displayModel.value, measurer)
-  const layoutImages = [...layout.value.images, ...(layout.value.auxiliaryContent ?? []).flatMap(content => content.images)]
+  layout.value = inspectionActive.value ? layoutDocumentBlockHostInspection(displayModel.value, props.inspectionHost!, measurer)
+    : layoutDocument(displayModel.value, measurer)
+  const layoutImages = [...layout.value.images, ...(layout.value.auxiliaryContent ?? []).flatMap(content => content.images),
+    ...(layout.value.noteDecorations ?? []).flatMap(content => content.images)]
   const sources = new Set(layoutImages.map((image) => image.src))
   for (const [src, image] of images) {
     if (sources.has(src)) continue
@@ -432,6 +458,7 @@ function requestDraw() {
 }
 
 function onScroll() {
+  clearNoteHover()
   syncViewport('scroll')
 }
 
@@ -443,7 +470,7 @@ function syncViewport(reason: NonNullable<DocumentViewportLocation['reason']>) {
 }
 
 function publishViewport(reason: NonNullable<DocumentViewportLocation['reason']>) {
-  if (!active || disposed) return
+  if (!active || disposed || layout.value.inspectionHost) return
   const location = documentViewportLocation(layout.value, viewport.value)
   if (location.pageIndex != null) emit('active-page', location.pageIndex)
   emit('viewport-change', { ...location, reason })
@@ -464,9 +491,8 @@ function pointFromEvent(event: Pick<MouseEvent, 'clientX' | 'clientY'>): Documen
 
 function select(selection: DocumentSelection) {
   emit('update:selection', selection)
-  if (!selection.tableSelection && sameTarget(selection.anchor, selection.focus) && !legacyStoryActive.value) {
-    const control = selectedDocumentContentControl(editingModel.value, selection.focus.cellBlockId ?? selection.focus.blockId,
-      Math.min(selection.anchor.offset, selection.focus.offset), Math.max(selection.anchor.offset, selection.focus.offset))
+  if (!legacyStoryActive.value) {
+    const control = selectedDocumentContentControlForSelection(editingModel.value, selection)
     if (control && !control.metadata?.officeStoryLockSource) emit('content-control-selection', { controlId: control.id, selection, source: props.model,
       host: props.host ? { ...props.host } : undefined, inputSession: props.captureInputSession?.(props.model) })
   }
@@ -474,10 +500,37 @@ function select(selection: DocumentSelection) {
   requestDraw()
 }
 
-function focus() { if (legacyStoryActive.value) { focusStory(); return }; inputRef.value?.focus({ preventScroll: true }); focused.value = true; requestDraw() }
+function focus() { if (!active || disposed) return; if (legacyStoryActive.value) { focusStory(); return }; inputRef.value?.focus({ preventScroll: true }); focused.value = true; requestDraw() }
+
+function keepNoteHover() { if (noteHoverHide) clearTimeout(noteHoverHide); noteHoverHide = undefined }
+function clearNoteHover() { keepNoteHover(); noteHover.value = undefined }
+function deferNoteHoverHide() { keepNoteHover(); noteHoverHide = setTimeout(clearNoteHover, 150) }
+function updateNoteHover(coordinates?: { x: number; y: number }) {
+  if (!active || disposed || composing.value || storyComposing.value || pointerId !== undefined) { clearNoteHover(); return }
+  const glyph = coordinates && hitTestDocumentNoteGlyph(layout.value, coordinates.x, coordinates.y)
+  if (!glyph || glyph.role !== 'reference') { if (noteHover.value) deferNoteHoverHide(); return }
+  keepNoteHover()
+  const source = props.model, content = documentNotePreview(source, glyph.noteKind, glyph.noteId, layout.value.noteLabels, props.permissionContext)
+  if (!content) { clearNoteHover(); return }
+  noteHover.value = { source, glyph, preview: content }
+}
+function navigateCanvasNote(target: Omit<Extract<DocumentNoteCanvasNavigationRequest, { type: 'note' }>, 'source' | 'originHost' | 'inputSession'>
+  | { type: 'body'; point: DocumentPoint }, source = props.model): boolean {
+  const request: DocumentNoteCanvasNavigationRequest = { ...target, source, originHost: props.host && { ...props.host },
+    inputSession: props.captureInputSession?.(source) }
+  if (!documentNoteCanvasRequestCurrent(request, { source: props.model, host: props.host, session: props.captureInputSession?.(),
+    requireSession: !!props.captureInputSession, disabled: !active || disposed || composing.value || storyComposing.value, permission: props.permissionContext })) return false
+  clearNoteHover(); emit('note-navigation', request)
+  return true
+}
+function navigateNotePreview() {
+  const hover = noteHover.value
+  if (hover) navigateCanvasNote({ type: 'note', kind: hover.preview.kind, noteId: hover.preview.noteId, toReference: false }, hover.source)
+}
+watch([() => props.permissionContext, () => props.model.permissionRules], clearNoteHover, { deep: true })
 
 function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | undefined {
-  if (!pos || !props.storiesEnabled || props.host?.kind === 'note') return
+  if (!pos || !props.storiesEnabled || inspectionActive.value || props.host?.kind === 'note') return
   const page = layout.value.pages.find(p => pos.x >= p.x && pos.x <= p.x + p.width && pos.y >= p.y && pos.y <= p.y + p.height)
   const entry = page && layout.value.pageHeaderFooters[page.index]
   if (!page || !entry || page.isParityBlank) return
@@ -488,9 +541,27 @@ function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | und
 }
 
 function pointerDown(event: PointerEvent) {
-  if (event.button !== 0 || composing.value || storyComposing.value) return
+  if (!active || disposed || event.button !== 0 || composing.value || storyComposing.value) return
   tableKeyboardCursor = undefined
   const coordinates = coordinatesFromEvent(event)
+  const noteGlyph = coordinates && hitTestDocumentNoteGlyph(layout.value, coordinates.x, coordinates.y)
+  if (noteGlyph) {
+    event.preventDefault()
+    navigateCanvasNote({ type: 'note', kind: noteGlyph.noteKind, noteId: noteGlyph.noteId, toReference: noteGlyph.role === 'bodyLabel' })
+    return
+  }
+  const noteRegion = coordinates && hitTestDocumentNoteRegion(layout.value, coordinates.x, coordinates.y)
+  if (noteRegion && !sameDocumentBlockHost(noteRegion.host, props.host)) {
+    event.preventDefault()
+    navigateCanvasNote({ type: 'note', kind: noteRegion.host.noteKind, noteId: noteRegion.host.noteId, toReference: false, point: noteRegion.point })
+    return
+  }
+  if (coordinates && hitTestDocumentNoteDecoration(layout.value, coordinates.x, coordinates.y)) { event.preventDefault(); return }
+  if (!inspectionActive.value && props.host?.kind === 'note' && !noteRegion) {
+    const point = coordinates && hitTestDocument(layout.value, coordinates.x, coordinates.y)
+    if (point) { event.preventDefault(); navigateCanvasNote({ type: 'body', point }) }
+    return
+  }
   const story = storyAt(coordinates)
   const storyPage = story && layout.value.pageHeaderFooters[story.page], activeStory = story && props.host?.kind === 'story'
     && props.host.sectionId === storyPage?.sectionId && props.host.story === (story.area === 'header' ? storyPage?.headerStory : storyPage?.footerStory)
@@ -507,7 +578,7 @@ function pointerDown(event: PointerEvent) {
     return
   }
   if (props.story && !props.host) emit('close-story')
-  if (props.host?.kind === 'story' && !story) { emit('close-story'); return }
+  if (!inspectionActive.value && props.host?.kind === 'story' && !story) { emit('close-story'); return }
   const tableHit = coordinates && hitTestDocumentTable(editingLayout.value, coordinates.x, coordinates.y)
   hoverTable.value = tableHit
   const point = pointFromEvent(event)
@@ -544,6 +615,22 @@ function pointerDown(event: PointerEvent) {
 function contextMenu(event: MouseEvent) {
   if (!active || disposed) return
   const source = props.model, coordinates = coordinatesFromEvent(event), location = legacyStoryActive.value ? props.story : undefined
+  const noteRegion = coordinates && hitTestDocumentNoteRegion(layout.value, coordinates.x, coordinates.y)
+  if (noteRegion && !sameDocumentBlockHost(noteRegion.host, props.host)) {
+    event.preventDefault()
+    if (noteRegion.point && navigateCanvasNote({ type: 'note', kind: noteRegion.host.noteKind, noteId: noteRegion.host.noteId,
+      toReference: false, point: noteRegion.point }, source)) {
+      emit('context-menu', { x: event.clientX, y: event.clientY, point: noteRegion.point, source, host: noteRegion.host })
+    }
+    return
+  }
+  if (coordinates && hitTestDocumentNoteDecoration(layout.value, coordinates.x, coordinates.y)) { event.preventDefault(); return }
+  if (!inspectionActive.value && props.host?.kind === 'note' && !noteRegion) {
+    event.preventDefault()
+    const point = coordinates && hitTestDocument(layout.value, coordinates.x, coordinates.y)
+    if (point && navigateCanvasNote({ type: 'body', point }, source)) emit('context-menu', { x: event.clientX, y: event.clientY, point, source })
+    return
+  }
   if (location) {
     event.preventDefault()
     const target = storyAt(coordinates), page = layout.value.pageHeaderFooters[location.page]
@@ -593,6 +680,7 @@ function contextMenu(event: MouseEvent) {
 
 function pointerMove(event: PointerEvent) {
   const coordinates = coordinatesFromEvent(event)
+  updateNoteHover(coordinates)
   const tableHit = coordinates && !legacyStoryActive.value ? hitTestDocumentTable(editingLayout.value, coordinates.x, coordinates.y) : undefined
   if (!composing.value && !storyComposing.value) hoverTable.value = tableHit
   if (pointerId !== event.pointerId) return
@@ -675,7 +763,20 @@ function pointerUp(event: PointerEvent) {
 }
 
 function doubleClick(event: MouseEvent) {
+  if (!active || disposed || composing.value || storyComposing.value) return
   const coordinates = coordinatesFromEvent(event), location = storyAt(coordinates)
+  if (coordinates && (hitTestDocumentNoteGlyph(layout.value, coordinates.x, coordinates.y)
+    || hitTestDocumentNoteDecoration(layout.value, coordinates.x, coordinates.y))) { event.preventDefault(); return }
+  const noteRegion = coordinates && hitTestDocumentNoteRegion(layout.value, coordinates.x, coordinates.y)
+  if (noteRegion && !sameDocumentBlockHost(noteRegion.host, props.host)) {
+    event.preventDefault(); navigateCanvasNote({ type: 'note', kind: noteRegion.host.noteKind, noteId: noteRegion.host.noteId,
+      toReference: false, point: noteRegion.point }); return
+  }
+  if (!inspectionActive.value && props.host?.kind === 'note' && !noteRegion) {
+    const point = coordinates && hitTestDocument(layout.value, coordinates.x, coordinates.y)
+    if (point) { event.preventDefault(); navigateCanvasNote({ type: 'body', point }) }
+    return
+  }
   const storyPage = location && layout.value.pageHeaderFooters[location.page], activeStory = location && props.host?.kind === 'story'
     && props.host.sectionId === storyPage?.sectionId && props.host.story === (location.area === 'header' ? storyPage?.headerStory : storyPage?.footerStory)
   if (location && coordinates && !activeStory) {
@@ -1009,6 +1110,16 @@ function scrollToBlock(id: string) {
   const line = editingLayout.value.lines.find((candidate) => (candidate.target.cellBlockId ?? candidate.target.blockId) === id)
   if (line && scrollRef.value) scrollRef.value.scrollTo({ top: Math.max(0, line.y * props.zoom / 100 - 28), behavior: 'smooth' })
 }
+function captureScrollOffset(): DocumentScrollOffset | undefined {
+  const element = scrollRef.value
+  return element ? { left: element.scrollLeft, top: element.scrollTop } : undefined
+}
+function restoreScrollOffset(offset: DocumentScrollOffset) {
+  const element = scrollRef.value
+  if (!element || !active || disposed || !Number.isFinite(offset.left) || !Number.isFinite(offset.top)) return
+  element.scrollLeft = Math.max(0, offset.left); element.scrollTop = Math.max(0, offset.top)
+  syncViewport('selection')
+}
 function revealStory(target: StoryLocation) {
   const entry = layout.value.pageHeaderFooters[target.page], el = scrollRef.value
   if (!entry || entry.isParityBlank || !el) return
@@ -1016,14 +1127,14 @@ function revealStory(target: StoryLocation) {
   if (y < el.scrollTop + 30 || y > el.scrollTop + el.clientHeight - 30) el.scrollTop = Math.max(0, y - el.clientHeight / 2)
   focus()
 }
-function cancelInput(refocus = true) { pendingContentControlFocus = undefined; tableOverlay.value?.cancelInteraction(); contentControlOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
-defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
+function cancelInput(refocus = true) { clearNoteHover(); pendingContentControlFocus = undefined; tableOverlay.value?.cancelInteraction(); contentControlOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
+defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, executeContentControlCommand, scrollToPage, scrollToBlock, captureScrollOffset, restoreScrollOffset, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
 </script>
 
 <template>
   <div class="document-canvas-viewport">
     <div ref="hostRef" class="document-surface" aria-hidden="true" />
-    <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerleave="hoverTable = undefined" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
+    <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerleave="() => { hoverTable = undefined; deferNoteHoverHide() }" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
     <DocumentTableOverlay ref="tableOverlay" :model="displayEditingModel" :layout="editingLayout" :selection="displaySelection" :viewport="viewport" :permission="permissionContext" :hover="hoverTable"
@@ -1032,6 +1143,16 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollTo
       :selection="displaySelection" :viewport="viewport" :active-control-id="activeContentControl?.id" :host="host" :permission="permissionContext"
       :capture-input-session="captureInputSession" :inactive="legacyStoryActive || !contentControlActive" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)"
       @selection="selectContentControl" @command="dispatchContentControlCommand" @focus="focusContentControl" @notify="message => emit('notify', message)" />
+    <Popover :open="!!noteHover" placement="bottomLeft" :title="noteHover ? `${noteHover.preview.kind === 'footnote' ? '脚注' : '尾注'} ${noteHover.preview.label}` : ''">
+      <template #content>
+        <div v-if="noteHover" class="document-note-preview" data-document-note-preview :style="{ color: token.colorText }" @pointerenter="keepNoteHover" @pointerleave="deferNoteHoverHide">
+          <p>{{ noteHover.preview.text || '空注释' }}</p>
+          <span v-if="noteHover.preview.truncated" :style="{ color: token.colorTextSecondary }">…</span>
+          <Button type="link" size="small" @click="navigateNotePreview">转到注释</Button>
+        </div>
+      </template>
+      <span class="document-note-preview-anchor" :style="noteHoverStyle" aria-hidden="true" />
+    </Popover>
     <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="bodyFocusChanged" @blur="bodyFocusChanged" @copy="copy" @cut="cut" @paste="paste" />
     <Input.TextArea v-if="legacyStoryActive && story" :key="`${model.id}:${story.page}:${story.area}:${storyBridgeVersion}`" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyInputValue" :readonly="storyReadonly" :rows="1" :change-on-composing="true" variant="borderless" @keydown="storyKeys" @keyup="syncStorySelection" @select="syncStorySelection" @beforeinput="storyBeforeInput" @compositionstart="storyCompositionStart" @compositionend="storyCompositionEnd" @change="storyInputChanged" @focus="storyFocusChanged" @blur="storyFocusChanged" />
     <Alert v-if="error" class="canvas-error" type="error" show-icon :message="error" role="alert" />
@@ -1044,6 +1165,9 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollTo
 .document-surface { position: absolute; inset: 0; pointer-events: none; }
 .document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; cursor: text; outline: none; }
 .document-scroll-spacer { pointer-events: none; }
+.document-note-preview-anchor { position: absolute; pointer-events: none; }
+.document-note-preview { max-width: 320px; }
+.document-note-preview p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; max-height: 9em; overflow: hidden; margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .document-story-bridge { position: absolute; z-index: 3; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; pointer-events: none; }
 .document-story-bridge :deep(textarea) { width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; pointer-events: none; }
 .document-input-bridge { position: absolute; z-index: 2; width: 1px; height: 1px; min-height: 1px; padding: 0; border: 0; outline: 0; opacity: 0.01; resize: none; overflow: hidden; caret-color: transparent; color: transparent; background: transparent; white-space: pre; }

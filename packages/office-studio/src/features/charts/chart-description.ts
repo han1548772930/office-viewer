@@ -166,7 +166,7 @@ function descriptionAxisBindings(config: ChartDescriptionConfig, active: readonl
   const family = resolveChartType(config.type).family
   // Radar axes are radial; an invented horizontal/vertical edge would be misleading.
   if (!AXIS_FAMILIES.includes(family)) return undefined
-  if (family === 'heatmap') return { category: { dimension: 'horizontal', position: 'bottom' }, secondaryCategory: { dimension: 'vertical', position: 'left' } }
+  if (family === 'heatmap') return { category: { dimension: 'vertical', position: 'left' }, secondaryCategory: { dimension: 'horizontal', position: 'bottom' } }
   const horizontal = family === 'bar'
   const bindings: ChartDescription['axisBindings'] = { category: { dimension: horizontal ? 'vertical' : 'horizontal', position: horizontal ? 'left' : 'bottom' },
     primaryValue: { dimension: horizontal ? 'horizontal' : 'vertical', position: horizontal ? 'bottom' : 'left' } }

@@ -38,23 +38,46 @@ test('normalized population moments and moving averages preserve extreme and sub
   assert.deepEqual(statistics.chartTrendline({ field: 1, name: 'Tiny', values: [Number.MIN_VALUE, Number.MIN_VALUE] }, { seriesIndex: 1, type: 'movingAvg', period: 2 }), { points: [[2, Number.MIN_VALUE]] })
 })
 
-test('constant histograms preserve authored count and strictly increasing finite boundaries', () => {
+test('constant count histograms retain one unpadded point interval, including finite extremes', () => {
   const ordinary = statistics.chartHistogram([5, 5, 5], { binning: { mode: 'count', count: 4 } })
-  assert.equal(ordinary.bins.length, 4)
-  assert.deepEqual(ordinary.bins.map(bin => bin.count), [3, 0, 0, 0])
+  assert.deepEqual(ordinary.bins, [{ kind: 'regular', lowerBound: 5, upperBound: 5, count: 3 }])
   const extreme = statistics.chartHistogram([Number.MAX_VALUE, Number.MAX_VALUE], { binning: { mode: 'count', count: 4 } })
-  assert.equal(extreme.bins.length, 4)
-  assert.equal(extreme.bins.at(-1).upperBound, Number.MAX_VALUE)
-  assert.equal(extreme.bins.reduce((total, bin) => total + bin.count, 0), 2)
-  for (const bin of [...ordinary.bins, ...extreme.bins]) assert.ok(Number.isFinite(bin.lowerBound) && Number.isFinite(bin.upperBound) && bin.lowerBound < bin.upperBound)
+  assert.deepEqual(extreme.bins, [{ kind: 'regular', lowerBound: Number.MAX_VALUE, upperBound: Number.MAX_VALUE, count: 2 }])
 })
 
 test('histogram thresholds and shared boundaries assign each finite sample once', () => {
-  const result = statistics.chartHistogram([-10, -5, 0, 5, 10, 15, NaN, Infinity], { underflowThreshold: 0, overflowThreshold: 10, binning: { mode: 'count', count: 2 } })
+  const result = statistics.chartHistogram([-10, -5, 0, 5, 10, 15, NaN, Infinity], { underflowThreshold: 0, overflowThreshold: 10, binning: { mode: 'count', count: 4 } })
   assert.equal(result.validSampleCount, 6)
   assert.deepEqual(result.bins.map(bin => [bin.kind, bin.count]), [['underflow', 3], ['regular', 1], ['regular', 1], ['overflow', 1]])
   const width = statistics.chartHistogram([1, 4, 7], { underflowThreshold: 0, overflowThreshold: 7, binning: { mode: 'width', width: 5 } })
   assert.deepEqual(width.bins.filter(bin => bin.kind === 'regular').map(bin => [bin.lowerBound, bin.upperBound, bin.count]), [[0, 5, 2], [5, 7, 1]])
+})
+
+test('boxplot reference keeps stable source identities for equal outliers instead of compacting empty slots', () => {
+  const values = [100, null, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0], before = [...values]
+  const result = statistics.chartBoxplot(values, { quartileMethod: 'inclusive', whiskerMethod: 'iqr' })
+  assert.deepEqual(result, { min: 0, q1: 0, median: 0, q3: 0, max: 0, outliers: [100, 100], outlierSourceIndices: [0, 4] })
+  assert.deepEqual(values, before)
+  const data = { categories: values.map((_value, index) => String(index)), series: [{ field: 1, name: 'Samples', values }] }
+  assert.deepEqual(derived.deriveChartData(data, chart({ boxplot: { quartileMethod: 'inclusive', whiskerMethod: 'iqr' } }, 'boxplot')).boxes[0].statistics.outlierSourceIndices, [0, 4])
+})
+
+test('fixed boxplot defaults use each half median and every finite sample as the whisker range', () => {
+  assert.deepEqual(statistics.chartBoxplot([4, 2, 1, 3]), { min: 1, q1: 1.5, median: 2.5, q3: 3.5, max: 4, outliers: [], outlierSourceIndices: [] })
+  assert.deepEqual(statistics.chartBoxplot([100, null, 3, 2, 4, 1]), { min: 1, q1: 1.5, median: 3, q3: 52, max: 100, outliers: [], outlierSourceIndices: [] })
+  assert.deepEqual(statistics.chartBoxplot([100, 5, 4, 3, 2, 1]), { min: 1, q1: 2, median: 3.5, q3: 5, max: 100, outliers: [], outlierSourceIndices: [] })
+  assert.equal(statistics.chartBoxplot([null, 7]), undefined)
+  assert.equal(statistics.chartBoxplot([]), undefined)
+  assert.deepEqual(statistics.chartBoxplot([7, 7]), { min: 7, q1: 7, median: 7, q3: 7, max: 7, outliers: [], outlierSourceIndices: [] })
+})
+
+test('legacy interpolated boxplot options retain IQR while an explicit full range overrides them', () => {
+  const legacy = statistics.chartBoxplot([1, 2, 3, 4, 100], { quartileMethod: 'inclusive' })
+  assert.deepEqual(legacy, { min: 1, q1: 2, median: 3, q3: 4, max: 4, outliers: [100], outlierSourceIndices: [4] })
+  const full = statistics.chartBoxplot([1, 2, 3, 4, 100], { quartileMethod: 'inclusive', whiskerMethod: 'range' })
+  assert.equal(full.max, 100); assert.deepEqual(full.outliers, [])
+  assert.equal(statistics.chartBoxplot([7], { quartileMethod: 'inclusive' }).median, 7)
+  assert.throws(() => statistics.chartBoxplot([1, 2], { whiskerMethod: 'other' }), RangeError)
 })
 
 test('linear fits and R² remain finite when subtracting an original X mean would overflow', () => {

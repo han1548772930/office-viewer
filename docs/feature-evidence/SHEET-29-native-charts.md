@@ -49,6 +49,26 @@
 
 ## 待统一验证的草稿
 
+### P14 渐变、纹理、原生差异与缓冲所有权
+
+- 固定 v1.6.0 `engine-chart/lib/types/types.d.ts`、`chart-ui/lib/es/index.js` 的 paint 配置与工作台入口依据见 [SHEET-22 审计](SHEET-22-chart-type-audit.md)。本批原生适配参考 DrawingML 的 `a:gradFill/a:lin/a:gsLst`、`a:pattFill` 和 `c:plotArea/c:layout/c:manualLayout`；没有将原始配置保存等同于 Office 视觉等价。
+- `chart_color.rs` 的 solid/linear-gradient 类型与 `chart_options.rs` 的 Series/Point paint 校验保留 2–256 个 stops、有限坐标、0–1 offset/opacity、CSS 颜色和未知字段拒绝。54 种 pattern preset 由共享枚举校验；`fillPattern` 缺省继承，显式 `null` 取消继承，两者分开读写。
+- `xlsx_chart_paint.rs` / `xlsx_chart_paint_tests.rs` 写线性渐变角度、按 offset 排序的 stops、逐 stop alpha、纹理及 plot manual layout；作者原顺序留在经 signature 校验的 manifest。automatic gradient 的派生 stops 不写回作者 options；负柱与主/次反向轴按实际 series paint 单独处理。
+- `native_chart.rs` / `native_chart_paint_tests.rs` 按 DrawingML namespace 识别渐变与布局，拒绝非法角度、非法 stops 和 namespace 碰撞。path/radial 渐变、无法等价的 fill bounds 和 patterned line stroke 保留源 XML并给出具体差异。当前诊断包括 `CHART_NATIVE_GRADIENT_GEOMETRY`、`CHART_NATIVE_GRADIENT_FILL_BOUNDS`、`CHART_NATIVE_AUTOMATIC_GRADIENT_UNMAPPED`、`CHART_NATIVE_PATTERNED_LINE_STROKE`。
+- `workbookCharts.ts` 每次按宿主重新生成 `metadata.officeChartDifferences[chartId] = { index, reasons }`，原因去重；无差异时移除旧记录。非数组/null、空洞/继承项、非字符串或空原因不会生成半条成功记录，而是进入 unresolved；原始 DTO/XML 仍保存在 `sheet.source.charts`。
+- `xlsx_chart.rs` 的 prepared numeric/date/category vectors 用 `Cow::Borrowed` 引用同一 ChartInput owner；直接数值读取只分配数值 vector，不再同时生成无用途的字符串数组。系列、统计和 string/number caches 直接追加到同一 chart part；默认 bubble size literal 用迭代器生成。XML escape 按字符串区间追加，避免全量 escaped cache/manifest 副本。所有 cache/series 追加检查 16 MiB 上界及 `try_reserve`，拒绝非有限 numeric cache；没有声称整个 writer 已零拷贝。
+- signature 校验临时追加 closing 后解析再 truncate，不复制整份 XML；`chart_xml.rs::parse_with_reserved_nodes` 预留 manifest 的 3 个节点，使 writer 与最终 parser 使用同一 300000 nodes / 128 depth 上界。最终 part 仍有 16 MiB 限额。
+- 增加 `xlsx_chart_buffer_tests.rs` 的 owner 指针、zero 策略源不变、Unicode/entities、共享 part 字节上界和 NaN/Inf 草稿；`native_chart_roundtrip_tests.rs` 增加 writer → 独立 parser 的显式/自动渐变、stop alpha、plot layout、pattern/null 继承草稿；`workbook-chart-io.contract.test.mjs` 增加 differences 成功/清理/拒绝草稿。全部未运行。
+- 当前仍存在作者 manifest 的 JSON Value/字符串及样式局部字符串、signature XML 树等分配；整条写出峰值、复制字节、真实 Office 重开及图内视觉/几何等价均未验收，不据静态借用路径宣称性能达标。
+
+### P15 瀑布图计算读取与权限边界
+
+- `chart-tasks.ts` / `chart-results.ts` 使用协议 2 的多系列 `waterfallLayout`。密集控制数组校验逐 own index 拒绝空洞/继承项；额外 series identity / total-column 控制字节计入预算，结果 tuples、buffers、counts 与输入身份均验证。累计布局由 Rust `office-compute/src/chart/waterfall.rs` 产生，TS 无第二份生产累计引擎。
+- 本地 `FChart.getComputedData/getComputedLayout/getComputedRenderCommands` 共用 Studio 的 `ChartStatisticsService`，多读复用一个任务，返回 clone，读取不写内容历史；这些是本地扩展，不增加固定上游 Facade 数量。
+- 异步 continuation 再检查 signal 取消、unit/chart 身份、user、workbook revision、chart signature，并重新判断宿主/源 worksheet 与 source range 查看权限；不改内容 revision 的 ACL 更新同样受约束。非空 waterfall 没有合法 computed cache 时同步 layout/render 返回 `COMPUTE_NOT_READY`。
+- `sheet.command.add-chart/update-chart/remove-chart` 在候选 mutator 中按真实图表宿主 `sheetId` 检查编辑权限，避免直接命令绕过 Facade 或只比较 worksheet 内容的保护路径。历史重放及其他批量对象入口继续按统一发布保护核对。
+- Root 草稿为 `chart-waterfall-compute-protocol.contract.test.mjs` 和 `chart-computed-facade.contract.test.mjs`：硬编码独立 tuple、transfer 后入站 detached、完整输出拒绝、共享任务/cache clone、取消/版本/ACL 的 resolve→continuation 窗口。图表侧草稿和 Nn 默认行为详见 [SHEET-22 审计](SHEET-22-chart-type-audit.md)。均未执行。
+
 - crates/office-writer/src/xlsx_chart_bindings.rs：grouped zero/raw errors/default size、当前行隐藏原因、多字段分类、主角色隐藏空图与刷新、ownership/reuse 和稀疏大源预算。
 - crates/office-writer/src/xlsx_chart_series.rs：名称覆盖后的组合/次轴、隐藏后重新生效的约束、空名、精确分组名称、配置重名和活动源歧义、显示别名及 stock 逻辑字段继承。
 - crates/office-writer/src/xlsx_chart_warnings.rs：未知顶层/嵌套控件保留、路径诊断和真实 native manifest 写出。
@@ -67,4 +87,5 @@
 - helper 的新增组、源可见性变化和数字分类的 Office 文本转换存在刷新/格式边界，返回 warning；仍需 Office 样本核验。
 - drawing behavior 已解析，领域图表仍以像素 position/size 编辑；轴结构变换和再次 native 写出 behavior 闭环尚未完整。
 - per-chart color map override、其他 DrawingML 色彩变换及原生类型专属完整参数还须补齐。
+- path/radial 渐变、非标准方向/部分图型的 fill bounds、patterned line stroke 的完整原生适配仍需补齐；配置/XML 保留和差异记录不能替代原生表现等价。
 - 无实测性能、复制/峰值内存和独立 Office 验证，保持未验收。

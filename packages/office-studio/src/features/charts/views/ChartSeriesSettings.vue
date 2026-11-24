@@ -1,25 +1,29 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Button, Collapse, CollapsePanel, FormItem, Select } from 'antdv-next'
+import { Button, Collapse, CollapsePanel, FormItem, InputNumber, Select } from 'antdv-next'
 import type { ChartConfig, ChartData } from '../chart-engine'
 import { chartColorControl, chartFillPatternControls, chartSeriesControls, colorControl, fieldControl, numberControl, selectControl, seriesStyleGroup, type ChartSettingControl } from '../chart-settings-controls'
 import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-settings-draft'
 import { patchChartSeriesOverride } from '../chart-cartesian-api'
 import { chartSeriesOverride } from '../chart-series-selector'
-import { chartSeriesSettingPoints, chartSeriesSettingTargets } from '../chart-series-settings'
+import { chartSeriesSettingPoint, chartSeriesSettingPoints, chartSeriesSettingSampleCount, chartSeriesSettingTargets, clearChartSeriesSettingPoint } from '../chart-series-settings'
 import { chartPointStyle } from '../chart-derived'
 import { chartPalette, chartSeriesStyle } from '../chart-options'
+import { CHART_POINT_SHAPE_CHOICES } from '../chart-markers'
 import ChartOptionFields from './ChartOptionFields.vue'
 
 const props = defineProps<{ config: ChartConfig; fields: ChartSettingsField[]; sourceFields: ChartSettingsField[]; categories: string[]; data?: ChartData; combination?: boolean; secondaryAxis?: boolean; horizontal?: boolean; scatter?: boolean; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
 const selectedTarget = ref<string>(), selectedPoint = ref<number>()
+const sampleError = ref<string>()
 const targets = computed(() => chartSeriesSettingTargets(props.config, props.fields, props.data))
 watch(targets, items => { if (!items.some(item => item.value === selectedTarget.value)) selectedTarget.value = items.find(item => !item.disabled)?.value }, { immediate: true })
-watch(selectedTarget, () => { selectedPoint.value = undefined })
+watch(selectedTarget, () => { selectedPoint.value = undefined; sampleError.value = undefined })
 const target = computed(() => targets.value.find(item => item.value === selectedTarget.value))
-const controls = computed(() => target.value === undefined ? [] : chartSeriesControls(target.value.selector, props.combination, props.secondaryAxis, props.horizontal, target.value.source))
-const pointOptions = computed(() => target.value === undefined ? [] : chartSeriesSettingPoints(props.config, target.value.selector, props.categories, props.fields, props.data))
+const controls = computed(() => target.value === undefined ? [] : chartSeriesControls(target.value.selector, props.combination, props.secondaryAxis, props.horizontal, target.value.source, props.config.type === 'bubble'))
+const pointOptions = computed(() => target.value === undefined ? [] : chartSeriesSettingPoints(props.config, target.value.selector, props.categories, props.fields, props.data, selectedPoint.value))
+const pointCount = computed(() => target.value === undefined ? 0 : props.config.type === 'boxplot'
+  ? chartSeriesSettingSampleCount(target.value.selector, props.data) : props.categories.length)
 watch(pointOptions, items => { if (selectedPoint.value !== undefined && !items.some(item => item.value === selectedPoint.value)) selectedPoint.value = undefined })
 const pointControls = computed<ChartSettingControl[]>(() => {
   const selector = target.value?.selector, index = selectedPoint.value
@@ -32,8 +36,10 @@ const pointControls = computed<ChartSettingControl[]>(() => {
     chartColorControl('point.color', '项目颜色', config => read(config)?.color, (config, value) => { const point = write(config); point.color = value; point.fillPattern = null }, 'dataPoint', config => effective(config)?.color),
     ...chartFillPatternControls('point', read, write, effective, '项目'),
     numberControl('point.fillOpacity', '项目填充不透明度', config => read(config)?.fillOpacity, (config, value) => { write(config).fillOpacity = value }, 0, 1),
-    numberControl('point.size', '项目标记大小', config => read(config)?.size, (config, value) => { write(config).size = value }, 0, 256),
-    selectControl('point.shape', '项目标记形状', [['circle', '圆形'], ['rect', '方形'], ['triangle', '三角形'], ['diamond', '菱形'], ['none', '无标记']], config => read(config)?.shape, (config, value) => { write(config).shape = value }),
+    { ...numberControl('point.size', '项目标记大小', config => read(config)?.size, (config, value) => { write(config).size = value }, 0, 256),
+      visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' },
+    { ...selectControl('point.shape', '项目标记形状', CHART_POINT_SHAPE_CHOICES, config => read(config)?.shape, (config, value) => { write(config).shape = value }),
+      visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' },
     colorControl('point.border.color', '项目边框颜色', config => read(config)?.border?.color, (config, value) => { (write(config).border ??= {}).color = value }),
     numberControl('point.border.width', '项目边框宽度', config => read(config)?.border?.width, (config, value) => { (write(config).border ??= {}).width = value }, 0, 30),
   ]
@@ -45,6 +51,17 @@ const scatterControl = computed(() => {
     (config, value) => { const mapping = config.seriesToCategory ??= {}; if (value === undefined) delete mapping[field]; else mapping[field] = [value] })]
 })
 function change(config: ChartConfig): void { emit('update:config', config) }
+function selectPointNumber(value: unknown): void {
+  sampleError.value = undefined
+  if (value === null || value === undefined || value === '') { selectedPoint.value = undefined; return }
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN, index = number - 1
+  if (!target.value || !chartSeriesSettingPoint(props.config, target.value.selector, props.categories, props.data, index)) {
+    selectedPoint.value = undefined
+    sampleError.value = props.config.type === 'boxplot' ? '请输入包含有限数值的原始样本序号。' : '请输入当前系列中的有效数据项目序号。'
+    return
+  }
+  selectedPoint.value = index
+}
 function resetSeries(): void {
   const config = cloneChartDraftConfig(props.config)
   if (target.value) config.options = { ...config.options, ...patchChartSeriesOverride(config.options, target.value.selector, undefined) }
@@ -53,8 +70,7 @@ function resetSeries(): void {
 function resetPoint(): void {
   const config = cloneChartDraftConfig(props.config)
   if (target.value && selectedPoint.value !== undefined) {
-    const points = chartSeriesOverride(config.options, target.value.selector)?.dataPoints
-    if (points) delete points[selectedPoint.value]
+    clearChartSeriesSettingPoint(config, target.value.selector, selectedPoint.value)
   }
   change(config)
 }
@@ -66,8 +82,9 @@ function resetPoint(): void {
   <ChartOptionFields :config="config" :controls="controls" :disabled="disabled || target?.ambiguous" @update:config="change" />
   <Button v-if="target" :disabled="disabled" @click="resetSeries">恢复该系列默认样式</Button>
   <Collapse class="chart-point-settings">
-    <CollapsePanel key="point" header="单个数据项目">
-      <FormItem label="选择数据项目"><Select v-model:value="selectedPoint" :options="pointOptions" show-search allow-clear aria-label="选择数据项目" :disabled="disabled || target?.ambiguous" /></FormItem>
+    <CollapsePanel key="point" :header="config.type === 'boxplot' ? '单个原始样本' : '单个数据项目'">
+      <FormItem label="选择数据项目" :extra="config.type === 'boxplot' ? '选择一个原始样本；成为异常点时显示所设样式。' : undefined"><Select v-model:value="selectedPoint" :options="pointOptions" show-search option-filter-prop="label" allow-clear aria-label="选择数据项目" :disabled="disabled || target?.ambiguous" @update:value="sampleError = undefined" /></FormItem>
+      <FormItem :label="config.type === 'boxplot' ? '原始样本序号' : '数据项目序号'" :extra="config.type === 'boxplot' ? '输入样本序号，可定位长列表中的原始样本。' : '输入项目序号，可定位长列表中的数据项目。'" :validate-status="sampleError ? 'error' : undefined" :help="sampleError"><InputNumber :value="selectedPoint === undefined ? undefined : selectedPoint + 1" :min="1" :max="pointCount || undefined" :precision="0" :aria-label="config.type === 'boxplot' ? '原始样本序号' : '数据项目序号'" :disabled="disabled || target?.ambiguous || pointCount === 0" @update:value="selectPointNumber" /></FormItem>
       <ChartOptionFields :config="config" :controls="pointControls" :disabled="disabled || target?.ambiguous" @update:config="change" />
       <Button v-if="selectedPoint !== undefined" :disabled="disabled || target?.ambiguous" @click="resetPoint">恢复项目默认样式</Button>
     </CollapsePanel>
@@ -76,4 +93,5 @@ function resetPoint(): void {
 
 <style scoped>
 .chart-point-settings { margin-top: 14px; }
+.chart-point-settings :deep(.ant-input-number) { width: 100%; }
 </style>

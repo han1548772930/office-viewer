@@ -46,6 +46,8 @@ export function toChartWorkbook(view: ExcelWorkbookChartView): WorkbookModel {
       hiddenRows: [...(source.hiddenRows ?? [])],
       hiddenColumns: [...(source.hiddenColumns ?? [])],
       autoFilter: source.autoFilter ? cloneModel(source.autoFilter) : undefined,
+      rangeProtectionRules: source.rangeProtectionRules ? cloneModel(source.rangeProtectionRules) : undefined,
+      worksheetProtection: source.worksheetProtection ? cloneModel(source.worksheetProtection) : undefined,
       outline: source.outline ? cloneModel(source.outline) : undefined,
       rowHiddenSpans: source.rowHiddenSpans?.map(span => ({ ...span })), columnHiddenSpans: source.columnHiddenSpans?.map(span => ({ ...span })),
       rowHeightSpans: source.rowHeightSpans?.map(span => ({ ...span })), columnWidthSpans: source.columnWidthSpans?.map(span => ({ ...span })),

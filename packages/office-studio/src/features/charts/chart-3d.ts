@@ -2,7 +2,7 @@ import type { ChartAxisOptions, ChartLineOptions, ChartModel, ChartSeriesFillPat
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
 import type { ChartData, ChartLayout, ChartPoint } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
-import { chartPalette, chartSeriesStyle } from './chart-options'
+import { chartPalette, chartSeriesStyle, definedChartStyleFields } from './chart-options'
 import { chartPointStyle } from './chart-derived'
 import {
   chartAxisExtent, chartAxisRatio, chartAxisTicks, chartColorOpacity, chartFont, chartLine, chartPolygon, chartShade, chartSymbol, formatChartNumber,
@@ -101,20 +101,20 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
       axisScene(chart.yAxis, layout.min, layout.max)
       if (data.series.some((source, index) => chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name).rightAxis)) axisScene(rightAxis, rightExtent.min, rightExtent.max, true)
       chartLine(commands, project(world(0, floorRatio, front)), project(world(1, floorRatio, front)), chart.xAxis.line, textColor, plot)
-      const categoryTicks = layout.dateAxis ? chartAxisTicks(layout.xMin!, layout.xMax!, chart.xAxis).map(value => ({
-        category: chartDateAxisLabel(value, chart.xAxis, layout.date1904, layout.xMax! - layout.xMin!), coordinate: chartAxisRatio(value, layout.xMin!, layout.xMax!, chart.xAxis) }))
+      const categoryTicks = layout.dateAxis ? (layout.dateTicks ?? []).map(tick => ({
+        category: chartDateAxisLabel(tick.serial, chart.xAxis, layout.date1904, (layout.dateSourceMax ?? 1) - (layout.dateSourceMin ?? 0)), coordinate: chartAxisRatio(tick.value, layout.xMin!, layout.xMax!, chart.xAxis) }))
         : data.categories.map((category, index) => ({ category, coordinate: categoryRatio(index) }))
       categoryTicks.forEach(({ category, coordinate }) => {
         if (!Number.isFinite(coordinate)) return
         const point = project(world(coordinate, floorRatio, front))
-        chartLine(commands, point, project(world(coordinate, floorRatio, back)), chart.xAxis.gridLine, '#cbd5e1', plot)
+        chartLine(commands, point, project(world(coordinate, floorRatio, back)), layout.dateAxis ? { visible: false, ...definedChartStyleFields(chart.xAxis.gridLine) } : chart.xAxis.gridLine, '#cbd5e1', plot)
         if (chart.xAxis.tick?.visible) {
           const length = (chart.xAxis.tick.length ?? 4) * (chart.xAxis.tick.position === 'inside' ? -1 : 1)
           chartLine(commands, point, { x: point.x + (horizontal ? -length : 0), y: point.y + (horizontal ? 0 : length) }, chart.xAxis.tick, textColor)
         }
         if (chart.xAxis.label?.visible !== false) commands.push({ kind: 'text', x: point.x + (horizontal ? -8 : 0), y: point.y + (horizontal ? 0 : 12), text: category,
           font: chartFont({ ...chart.options?.appearance?.font, ...chart.xAxis.label }, 10), color: chart.xAxis.label?.color ?? textColor, align: horizontal ? 'right' : 'center', baseline: 'middle', rotation: chart.xAxis.label?.rotate,
-          maxWidth: horizontal ? Math.max(12, plot.x - layout.frame.x - 12) : Math.max(12, plot.width / count), clip: layout.frame })
+          maxWidth: horizontal ? Math.max(12, plot.x - layout.frame.x - 12) : Math.max(12, plot.width / (layout.dateAxis ? Math.max(1, categoryTicks.length) : count)), clip: layout.frame })
       })
       const xTitleOffset = Math.max(32, (chartAxisTitleFont(chart, chart.xAxis).fontSize ?? 11) + 21)
       const xTitlePoint = (value: number): { x: number; y: number } => {
@@ -156,8 +156,10 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
       const depth = depthRatio(descriptor.stacked || grouped ? 0.35 : (seriesIndex + 0.5) / seriesCount)
       const band = gapRatio * (layout.categoryBandwidth === undefined ? 1 / count : layout.categoryBandwidth / (horizontal ? plot.height : plot.width))
       const width = grouped ? band / Math.max(1, seriesCount - (seriesCount - 1) * overlap) : band
-      let previous: { categoryIndex: number; end: number; base: number; category: number; value: number } | undefined
-      source.values.forEach((value, categoryIndex) => {
+      let previous: { sequenceIndex: number; end: number; base: number; category: number; value: number } | undefined
+      const order = layout.dateOrder ?? source.values.map((_value, categoryIndex) => categoryIndex)
+      order.forEach((categoryIndex, sequenceIndex) => {
+        const value = source.values[categoryIndex] ?? null
         if (value === null || !Number.isFinite(value) || !Number.isFinite(categoryRatio(categoryIndex)) || axis.scaleType === 'log' && value <= 0) { if (chart.options?.invalidValueStrategy !== 'link') previous = undefined; return }
         const stackKey = style.rightAxis ? 'right' : 'left', stacks = value >= 0 ? positive : negative
         const stack = descriptor.stacked ? stacks.get(stackKey) ?? Array(count).fill(0) as number[] : undefined
@@ -167,8 +169,8 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
         const center = categoryRatio(categoryIndex) + (grouped ? (seriesIndex - (seriesCount - 1) / 2) * width * (1 - overlap) : 0)
         const point = project(world(center, valueRatio(end), depth)), basePoint = project(world(center, valueRatio(base), depth))
         points[seriesIndex]!.push({ x: point.x, y: point.y, value, category: data.categories[categoryIndex] ?? '', categoryIndex, baseY: basePoint.y, baseX: basePoint.x, baseValue: base,
-          ...(layout.dateAxis ? { xValue: data.categoryDateValues?.[categoryIndex] ?? undefined } : {}) })
-        if (!emitCommands) { previous = { categoryIndex, end, base, category: center, value }; return }
+          ...(layout.dateAxis ? { xValue: data.categoryDateValues?.[categoryIndex] ?? undefined, sequenceIndex } : {}) })
+        if (!emitCommands) { previous = { sequenceIndex, end, base, category: center, value }; return }
         const pointStyle = chartPointStyle(style, categoryIndex, chart.type), color = chartColorOpacity(pointStyle.color ?? palette[seriesIndex % palette.length]!, pointStyle.fillOpacity ?? 1)
         const pattern = (shade = 1) => chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1, shade)
         let markBounds: RenderRect | undefined = plot
@@ -189,7 +191,7 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
           addFace([a, b, c, d], color, pointStyle.border, pattern(), gradient()); addFace([e, f, g, h], chartShade(color, 0.76), pointStyle.border, pattern(0.76), gradient(0.76))
           addFace([a, e, h, d], chartShade(color, 0.68), pointStyle.border, pattern(0.68), gradient(0.68)); addFace([b, f, g, c], chartShade(color, 0.88), pointStyle.border, pattern(0.88), gradient(0.88))
           addFace([d, c, g, h], chartShade(color, 1.18), pointStyle.border, pattern(1.18), gradient(1.18)); addFace([a, b, f, e], chartShade(color, 0.6), pointStyle.border, pattern(0.6), gradient(0.6))
-        } else if (previous && (chart.options?.invalidValueStrategy === 'link' || categoryIndex === previous.categoryIndex + 1)) {
+        } else if (previous && (chart.options?.invalidValueStrategy === 'link' || sequenceIndex === previous.sequenceIndex + 1)) {
           const a = world(previous.category, valueRatio(previous.end), depth - depthWidth / 2), b = world(center, valueRatio(end), depth - depthWidth / 2)
           const c = { ...b, z: depth + depthWidth / 2 }, d = { ...a, z: depth + depthWidth / 2 }
           addFace([a, b, c, d], color, pointStyle.border, pattern(), gradient())
@@ -211,7 +213,7 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
         if (descriptor.family === 'line') faces.push({ points: [point], color: chartColorOpacity(pointStyle.point?.color ?? pointStyle.color!, pointStyle.fillOpacity ?? 1), border: pointStyle.border, pattern: pattern(),
           gradient: createChartMarkGradient(chart, { ...pointStyle, color: isChartLinearGradient(pointStyle.color) ? pointStyle.color : pointStyle.point?.color ?? pointStyle.color }, 'line', { reverse: axis.reverse, symbol: true }, plot),
           marker: { size: pointStyle.point?.size ?? 5, shape: pointStyle.point?.shape ?? 'circle' } })
-        previous = { categoryIndex, end, base, category: center, value }
+        previous = { sequenceIndex, end, base, category: center, value }
       })
       if (descriptor.family === 'line' || descriptor.family === 'area') {
         const bounds = chartGradientPointBounds((function* (): Generator<ChartVector3> {

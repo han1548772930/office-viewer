@@ -1,9 +1,12 @@
 import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue'
-import { FOffice } from '../../../api/facade'
+import { FOffice, type FWorksheet } from '../../../api/facade'
 import type { OfficeStudio } from '../../../api/office-studio'
 import type { ChartModel } from '../../../domain/model'
 import type { ChartConfig, ChartData } from '../chart-engine'
+import type { ChartComputedStatistics } from '../chart-derived'
 import type { ChartSettingsSourceSheet } from '../chart-settings-draft'
+import type { ChartSettingsSourceLoader, ChartSettingsStatisticsLoader } from '../chart-settings-data'
+import { ComputeError } from '../../../compute/errors.ts'
 
 type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
 
@@ -28,8 +31,9 @@ interface ChartPanelTarget {
   setOpen: (open: boolean) => void
   closed: () => void
 }
-interface ChartInsertTarget extends ChartPanelTarget { config: ChartConfig; apply: (config: ChartConfig) => Promise<void> }
-interface ChartEditorTarget extends ChartPanelTarget { chartId: string; chart: ChartModel; apply: (patch: ChartPatch) => Promise<void> }
+interface ChartPanelReaders { loadSource: ChartSettingsSourceLoader; loadStatistics: ChartSettingsStatisticsLoader }
+interface ChartInsertTarget extends ChartPanelTarget, ChartPanelReaders { config: ChartConfig; apply: (config: ChartConfig) => Promise<void> }
+interface ChartEditorTarget extends ChartPanelTarget, ChartPanelReaders { chartId: string; chart: ChartModel; apply: (patch: ChartPatch) => Promise<void> }
 interface PivotChartTarget extends ChartPanelTarget { applied: () => void; setBusy: (busy: boolean) => void }
 
 /** Panel callbacks retain their originating unit, even after the workbench switches. */
@@ -80,12 +84,34 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
   }
   function canOpen(): boolean { return !chartInsertBusy.value && !chartEditorBusy.value && !pivotChartBusy.value && !disposed }
 
+  async function readSettings<T>(target: ChartPanelTarget, options: { signal: AbortSignal }, active: () => boolean, read: (sheet: FWorksheet) => Promise<T>): Promise<T> {
+    const assertCurrent = (): void => {
+      if (options.signal.aborted) throw new ComputeError('COMPUTE_CANCELLED', '图表设置数据读取已取消')
+      if (!current(target) || !active()) throw new ComputeError('COMPUTE_STALE_RESULT', '图表设置面板上下文已更新')
+    }
+    assertCurrent()
+    const sheet = FOffice.newAPI(target.studio).getWorkbook(target.unitId)?.getSheetBySheetId(target.sheetId)
+    if (!sheet) throw new Error('图表所属的工作簿或工作表已经关闭。')
+    const data = await read(sheet)
+    assertCurrent()
+    return data
+  }
+
+  function readSource(target: ChartPanelTarget, config: ChartConfig, options: { signal: AbortSignal }, active: () => boolean): Promise<ChartData> {
+    return readSettings(target, options, active, sheet => sheet.getChartSettingsData(config, options))
+  }
+  function readStatistics(target: ChartPanelTarget, config: ChartConfig, options: { signal: AbortSignal }, active: () => boolean): Promise<ChartComputedStatistics> {
+    return readSettings(target, options, active, sheet => sheet.getChartSettingsStatistics(config, options))
+  }
+
   function openInsertChart(config: ChartConfig): void {
     if (!canOpen()) return
     const captured = target()
     if (!captured) return
     closeChartPanels()
     const session: ChartInsertTarget = { ...captured, config,
+      loadSource: (config, options) => readSource(session, config, options, () => chartInsertContext.value === session && chartModalOpen.value),
+      loadStatistics: (config, options) => readStatistics(session, config, options, () => chartInsertContext.value === session && chartModalOpen.value),
       setOpen(open) {
         if (chartInsertContext.value === session && (open ? current(session) : !chartInsertBusy.value)) chartModalOpen.value = open
       },
@@ -125,6 +151,8 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
     if (!captured || chart.sheetId !== captured.sheetId) return
     closeChartPanels()
     const session: ChartEditorTarget = { ...captured, chartId: chart.id, chart,
+      loadSource: (config, options) => readSource(session, config, options, () => chartEditorContext.value === session && chartEditorOpen.value),
+      loadStatistics: (config, options) => readStatistics(session, config, options, () => chartEditorContext.value === session && chartEditorOpen.value),
       setOpen(open) {
         if (chartEditorContext.value === session && (open ? current(session) : !chartEditorBusy.value)) chartEditorOpen.value = open
       },
@@ -176,7 +204,7 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
     pivotChartPanelOpen.value = true
   }
 
-  const chartEditorPreview = computed<{ chart: ChartModel | null; data?: ChartData; error?: string }>(() => {
+  const chartEditorPreview = computed<{ chart: ChartModel | null; error?: string }>(() => {
     sourceRevision.value
     const session = chartEditorContext.value
     if (!session) return { chart: null }
@@ -184,14 +212,12 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
     try {
       const chart = FOffice.newAPI(session.studio).getWorkbook(session.unitId)?.getSheetBySheetId(session.sheetId)?.getChartById(session.chartId)
       if (!chart) throw new Error('图表所属的工作簿或图表已经关闭。')
-      const info = chart.getInfo()
-      try { return { chart: info, data: chart.getData() } }
-      catch (reason) { return { chart: info, error: reason instanceof Error ? reason.message : String(reason) } }
+      return { chart: chart.getInfo() }
     } catch (reason) { return { chart: null, error: reason instanceof Error ? reason.message : String(reason) } }
   })
   const chartEditorError = computed(() => editorError.value || chartEditorPreview.value.error || '')
   const chartEditorChart = computed(() => chartEditorPreview.value.chart)
-  const chartEditorData = computed(() => chartEditorPreview.value.data)
+  const chartSourceRevision = computed(() => sourceRevision.value)
   const chartEditorSheets = computed(() => {
     const session = chartEditorContext.value
     return session ? current(session) ? host.sheets() : session.sheets : []
@@ -221,6 +247,6 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
   onScopeDispose(() => { disposed = true; releaseChartPanelSessions() })
 
   return { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, chartEditorBusy, chartError, chartEditorError,
-    chartInsertContext, chartEditorContext, pivotChartContext, chartEditorChart, chartEditorData, chartEditorSheet, chartEditorSheets, chartInsertSheets,
+    chartInsertContext, chartEditorContext, pivotChartContext, chartEditorChart, chartSourceRevision, chartEditorSheet, chartEditorSheets, chartInsertSheets,
     openInsertChart, openChartEditor, openPivotChart }
 }

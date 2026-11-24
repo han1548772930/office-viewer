@@ -1,8 +1,8 @@
-import type { DocumentBlock } from '../../../domain/model'
+import { createDocumentDefaultStyle, type DocumentBlock } from '../../../domain/model'
 import { hasEastAsianLetters } from '../model/document-font'
 import type { DocumentRun, TextTarget } from '../model/document-model'
 import { getLatexFormula, layoutLatexFormula, type LatexLayout } from '../latex/latex-formula'
-import type { LayoutGlyph, LayoutLine, LayoutMeasurer, LayoutRightTabStop, LayoutTabGlyph, LayoutTabLeader } from './document-layout-types'
+import type { LayoutGlyph, LayoutLine, LayoutMeasurer, LayoutNoteGlyphDisplay, LayoutRightTabStop, LayoutTabGlyph, LayoutTabLeader } from './document-layout-types'
 
 export function paragraphLineHeight(fontHeight: number, style: DocumentBlock['style']): number {
   if (style.spacingRule === 'exact') return Math.max(1, style.lineHeight)
@@ -54,11 +54,33 @@ function tabLeaderGlyph(width: number, leader: LayoutTabLeader, font: string, me
 }
 
 export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: number) => number), measurer: LayoutMeasurer, wordWrap = false, minimumFontHeight = 14.67,
-  rightTabs?: readonly LayoutRightTabStop[] | ((line: number) => readonly LayoutRightTabStop[])): RawLine[] {
+  rightTabs?: readonly LayoutRightTabStop[] | ((line: number) => readonly LayoutRightTabStop[]),
+  display?: { references?: ReadonlyMap<string, LayoutNoteGlyphDisplay>; leading?: LayoutNoteGlyphDisplay }): RawLine[] {
   const tokens: RawGlyph[] = []
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
   let offset = 0
+  if (display?.leading) {
+    const label = display.leading, source = runs[0], defaults = createDocumentDefaultStyle().text
+    // A display label has a stable layout identity and only text marks. It must
+    // neither allocate content IDs nor inherit reference/field/control metadata.
+    const run: DocumentRun = { ...defaults, id: `layout:${label.noteKind}:${label.noteId}:label`, text: '',
+      fontFamily: source?.fontFamily ?? defaults.fontFamily, eastAsiaFontFamily: source?.eastAsiaFontFamily ?? defaults.eastAsiaFontFamily,
+      fontSize: source?.fontSize ?? 10, color: source?.color ?? defaults.color,
+      bold: source?.bold ?? false, italic: source?.italic ?? false, underline: source?.underline ?? false, strike: source?.strike ?? false,
+      verticalAlign: 'superscript', ...label.textStyle }
+    const font = runFont(run), gap = label.label ? measurer.measure(' ', font) : 0
+    tokens.push({ text: label.label, offset: 0, end: 0, width: measurer.measure(label.label, font) + gap, run, font,
+      note: { noteKind: label.noteKind, noteId: label.noteId, role: 'bodyLabel' } })
+  }
   for (const run of runs) {
+    const reference = display?.references?.get(run.id)
+    if (reference) {
+      const visualRun = { ...run, ...reference.textStyle }, font = runFont(visualRun)
+      tokens.push({ text: reference.label, offset, end: offset + run.text.length, width: measurer.measure(reference.label, font), run: visualRun, font,
+        note: { noteKind: reference.noteKind, noteId: reference.noteId, role: 'reference' } })
+      offset += run.text.length
+      continue
+    }
     const latinFont = runFont(run)
     const eastAsianFont = run.eastAsiaFontFamily && runFont(run, 1, run.eastAsiaFontFamily)
     for (const part of segmenter.segment(run.text)) {
@@ -88,7 +110,7 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
       .sort((a, b) => (a.right ?? availableWidth()) - (b.right ?? availableWidth()))
     return stops.find(stop => Math.min(stop.right ?? availableWidth(), availableWidth()) > lineWidth) ?? stops.at(-1)
   }
-  const joinsWord = (token: RawGlyph) => /^[\p{L}\p{M}\p{N}_]+$/u.test(token.text) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Bopomofo}]/u.test(token.text)
+  const joinsWord = (token: RawGlyph) => !token.note && /^[\p{L}\p{M}\p{N}_]+$/u.test(token.text) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Bopomofo}]/u.test(token.text)
   for (let index = 0; index < tokens.length;) {
     const token = tokens[index]!
     if (token.text === '\n' || token.text === '\u2028') { commit(token.offset); lineStart = token.end; index++; continue }

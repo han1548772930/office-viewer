@@ -1,13 +1,14 @@
 import type { CellScalar, ChartModel, SpreadsheetCell, WorkbookModel } from '../../domain/model'
-import type { ChartRecords } from './chart-data'
+import { chartNumber, type ChartRecords } from './chart-data'
 import { readPivotChartSource } from './chart-pivot-data'
 import { chartSourceVisibility } from './chart-visibility'
+import { formatSheetValue } from '../sheet-workbench/sheet-number-format'
 import { COMPUTE_LIMITS } from '../../compute/protocol.ts'
 import { ComputeError } from '../../compute/errors.ts'
 import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPreparation,
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 
-export type ChartRecordSource = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'>
+export type ChartRecordSource = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type'>>
 
 export function readChartRecordsAsync(workbook: WorkbookModel, chart: ChartRecordSource, context: ChartComputePreparationContext = {}): Promise<ChartRecords> {
   return consumeChartPreparation(readChartRecordSteps(workbook, chart, context), context)
@@ -18,8 +19,14 @@ export function readChartRecordsAsync(workbook: WorkbookModel, chart: ChartRecor
 export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecordSource, context: ChartComputePreparationContext = {}): Generator<void, ChartRecords, void> {
   if (chart.pivotTableId) {
     const source = readPivotChartSource(workbook, chart.pivotTableId)
+    const numericFields = new Set<number>()
+    let work = 0
+    for (const record of source.records) for (let field = 0; field < source.fields.length; field++) {
+      if (!numericFields.has(field) && chartNumber(record[field]) !== null) numericFields.add(field)
+      if (++work % CHART_PREPARATION_CHUNK === 0) yield
+    }
     return { fields: source.fields, records: source.records, date1904: workbook.date1904, sourceCategoryFields: source.categoryFields,
-      sourceValueFields: source.valueFields, ...(source.syntheticValues ? { syntheticValues: true } : {}) }
+      sourceValueFields: source.valueFields, sourceNumericFields: [...numericFields].sort((a, b) => a - b), ...(source.syntheticValues ? { syntheticValues: true } : {}) }
   }
   const sheet = workbook.sheets.find(candidate => candidate.id === (chart.source.sheetId ?? chart.sheetId))
   if (!sheet) throw new ComputeError('COMPUTE_INVALID_INPUT', '图表源工作表不存在')
@@ -40,11 +47,14 @@ export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecor
   }
   // Conservative JS reference/row/string allowance, separate from exact
   // TypedArray boundary bytes. Actual heap usage remains a benchmark metric.
-  let estimatedBytes = fieldCount * sampleCount * 24 + sampleCount * 48 + fieldCount * 64 + 8 * 1024 * 1024
+  const retainFormatting = chart.type === 'heatmap' || chart.type === 'treemap' || chart.type === 'sunburst'
+  let estimatedBytes = fieldCount * sampleCount * (retainFormatting ? 40 : 24) + sampleCount * (retainFormatting ? 96 : 48) + fieldCount * 64 + 8 * 1024 * 1024
   assertChartPreparationMemory(estimatedBytes, context)
   // Fixed v1.6.0 IChartContext declares true as the historical default.
   const visibility = chart.options?.plotVisibleOnly !== false ? chartSourceVisibility(workbook, sheet, range) : undefined
   const fields: string[] = [], records: CellScalar[][] = [], visibleFields: number[] = []
+  const numericFields = new Set<number>()
+  const formattedRecords: Array<Array<string | null>> | undefined = retainFormatting ? [] : undefined
   let work = 0
   for (let field = 0; field < fieldCount; field++) {
     const row = range.startRow + (byColumns ? 0 : field), column = range.startCol + (byColumns ? field : 0)
@@ -58,18 +68,28 @@ export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecor
     const position = (byColumns ? range.startRow : range.startCol) + sample + 1
     if (visibility && !(byColumns ? visibility.rowVisible(position) : visibility.columnVisible(position))) continue
     const record: CellScalar[] = []
+    const formattedRecord: Array<string | null> | undefined = formattedRecords ? [] : undefined
     for (let field = 0; field < fieldCount; field++) {
       const row = byColumns ? position : range.startRow + field, column = byColumns ? range.startCol + field : position
-      const value = scalarValue(sheet.cells[`${row}:${column}`])
+      const cell = sheet.cells[`${row}:${column}`], value = scalarValue(cell)
       record.push(value)
+      if (!numericFields.has(field) && chartNumber(value) !== null) numericFields.add(field)
       if (typeof value === 'string') estimatedBytes += value.length * 2
+      if (formattedRecord) {
+        const display = value === null ? null : formatSheetValue(value, cell?.style.numberFormat ?? 'General', workbook.date1904)
+          ?? cell?.display ?? String(value)
+        formattedRecord.push(display)
+        if (display !== null) estimatedBytes += 32 + display.length * 2
+      }
       if (++work % CHART_PREPARATION_CHUNK === 0) { assertChartPreparationMemory(estimatedBytes, context); yield }
     }
     records.push(record)
+    if (formattedRecord) formattedRecords!.push(formattedRecord)
     if (++work % CHART_PREPARATION_CHUNK === 0) { assertChartPreparationMemory(estimatedBytes, context); yield }
   }
   assertChartPreparationMemory(estimatedBytes, context)
-  return { fields, records, date1904: workbook.date1904, ...(visibility ? { visibleFields } : {}) }
+  return { fields, records, date1904: workbook.date1904, sourceNumericFields: [...numericFields].sort((a, b) => a - b),
+    ...(formattedRecords ? { formattedRecords } : {}), ...(visibility ? { visibleFields } : {}) }
 }
 
 function scalarValue(cell: SpreadsheetCell | undefined): CellScalar {

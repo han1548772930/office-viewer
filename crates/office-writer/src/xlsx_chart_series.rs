@@ -10,7 +10,7 @@ fn fields(context: &Context<'_>, chart: &ChartInput) -> Result<Vec<usize>, Expor
     if out.is_empty() {
         for field in 0..context.field_count {
             if field == chart.category_field || chart.chart_type == "scatter" && chart.series_to_category.values().any(|xs| xs.contains(&field)) { continue; }
-            let (_, values, _) = context.vector(chart, field)?;
+            let (_, values) = context.numeric_vector(chart, field)?;
             if values.iter().any(Option::is_some) { out.push(field); }
         }
     }

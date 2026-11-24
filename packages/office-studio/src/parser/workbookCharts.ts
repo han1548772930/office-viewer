@@ -48,9 +48,16 @@ export function normalizeWorkbookCharts(rawSheets: unknown, sheets: readonly Spr
         const authored = record(raw.authored)
         const chart = Object.keys(authored).length ? fromAuthored(authored, raw, host, sheets) : fromNative(raw, host, sheets, pivot)
         chart.id = `${pivot ? 'pivot-' : ''}chart-${sheetIndex + 1}-${index + 1}`
-        const reasons = array(raw.unsupportedReasons)
-        if (reasons.some(reason => typeof reason !== 'string' || reason.length === 0)) throw new TypeError('CHART_IMPORT_DIAGNOSTICS_INVALID')
-        const codes = reasons.filter((reason): reason is string => typeof reason === 'string')
+        const reasons = raw.unsupportedReasons ?? []
+        if (!Array.isArray(reasons) || raw.unsupportedReasons === null) throw new TypeError('CHART_IMPORT_DIAGNOSTICS_INVALID')
+        const codes: string[] = []
+        for (let position = 0; position < reasons.length; position++) {
+          const reason: unknown = reasons[position]
+          if (!Object.prototype.hasOwnProperty.call(reasons, position) || typeof reason !== 'string' || reason.length === 0) {
+            throw new TypeError('CHART_IMPORT_DIAGNOSTICS_INVALID')
+          }
+          codes.push(reason)
+        }
         if (pivot) {
           chart.pivotTableId = pivot.id
           chart.source = { range: { ...pivot.outputRange! }, orientation: 'columns', sheetId: pivot.anchor.subUnitId }

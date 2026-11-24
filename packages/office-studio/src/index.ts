@@ -3,6 +3,21 @@ export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon
 export { WORKBENCH_CONTROL_THEME } from './platform/workbench-theme'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type WorkbookCommitOptions } from './api/office-studio'
+export { SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, type DocumentCustomXmlPartsWriteOptions,
+  type DocumentCustomXmlPartsCommandInput } from './api/document-custom-xml-commands'
+export { DOCUMENT_NOTE_COMMANDS, DocumentNoteCommandRejectedError, type DocumentNoteCommandResult,
+  type DocumentNoteCommandContext, type DocumentNoteCommandParams } from './api/document-note-commands'
+export type { DocumentNoteMutationRequest, DocumentNoteInsertOptions, DocumentNoteKind, DocumentNotePatch } from './features/document/notes/document-note-types'
+export { decodeDocumentBody, encodeDocumentBody } from './api/document-body-codec'
+export type { UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources, DocumentBodyDecodeResult } from './api/document-body-codec'
+export type { DocumentNoteContentInput, PublicDocumentNoteInput, PublicDocumentNoteDecoration,
+  PublicDocumentFootnoteSettings, PublicDocumentEndnoteSettings } from './api/document-note-body'
+export { DocumentCustomXmlError, normalizeDocumentCustomXmlParts, canonicalDocumentCustomXmlPartName, isDocumentCustomXmlContentType,
+  documentCustomXmlPartKey, documentCustomXmlRelationshipPart, documentCustomXmlRelationshipOwner,
+  resolveDocumentCustomXmlTarget, documentCustomXmlUtf8Bytes, documentCustomXmlEncodedBytes, documentCustomXmlResourceByteLength,
+  DOCUMENT_CUSTOM_XML_MAX_PART_BYTES, DOCUMENT_CUSTOM_XML_MAX_TOTAL_BYTES, DOCUMENT_CUSTOM_XML_MAX_PARTS,
+  DOCUMENT_CUSTOM_XML_MAX_RELATED_PARTS, DOCUMENT_CUSTOM_XML_MAX_ELEMENTS, DOCUMENT_CUSTOM_XML_MAX_DEPTH,
+  DOCUMENT_CUSTOM_XML_MAX_XPATH_LENGTH } from './domain/document-custom-xml'
 export { CONTENT_HISTORY_COMMANDS, CONTENT_HISTORY_COMMAND_IDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget,
   type ContentHistoryCommandInput, type ContentHistoryDirection, type ContentHistoryTarget } from './api/content-history-commands.ts'
 export {
@@ -33,6 +48,7 @@ export {
   type DocumentContentControlCreateInfo,
   type DocumentContentControlInfo,
   type DocumentContentControlPatch,
+  type DocumentNoteInfo,
   type DocumentParagraphIdentity,
   type DocumentParagraphInfo,
   type DocumentParagraphQuery,
@@ -229,7 +245,18 @@ export { supportsChartExplicitGradient } from './features/charts/chart-gradient.
 export { ChartGaugeModes, ChartGaugePointerShapes, CHART_GAUGE_PRESETS, chartGaugePresetOptions,
   type ChartGaugePreset } from './features/charts/chart-gauge.ts'
 export { ChartRadarShapes } from './features/charts/chart-radar.ts'
-export { ChartWaterfallStyleTargets } from './features/charts/chart-waterfall.ts'
+export { ChartVisualMapTypes, type ChartHeatmapVisualMapType, type ChartHeatmapLabelOptions } from './features/charts/chart-heatmap-api.ts'
+export { ChartWaterfallStyleTargets, initializeChartWaterfallOptions } from './features/charts/chart-waterfall.ts'
+export { chartParetoValuePercentages } from './features/charts/chart-pareto.ts'
+export { CHART_POINT_SHAPE_CHOICES, CHART_POINT_SHAPES, isChartPointShape, chartMarkerShape, chartMarkerPoints,
+  chartMarkerRequiresSharedGeometry, chartNativeMarkerSymbol, type ChartMarkerShape, type ChartMarkerVector } from './features/charts/chart-markers.ts'
+export { CHART_LABEL_CONTENT_CHOICES, CHART_LABEL_POSITION_CHOICES, chartLabelContentMask, chartLabelContentValues,
+  chartLabelContentFromValues, chartPointLabelAnchor, type ChartLabelContent, type ChartPointLabelAnchor,
+  type ChartPointLabelLocation } from './features/charts/chart-labels.ts'
+export { layoutChartWaterfall } from './features/charts/chart-waterfall-layout.ts'
+export { CHART_WATERFALL_POINT_CHOICE_LIMIT, chartWaterfallLayoutControls, chartWaterfallPointRole, chartWaterfallPointRoleControls,
+  chartWaterfallStylePointIsActive, chartWaterfallStylePoints, chartWaterfallStyleGroup, chartWaterfallStyleControls,
+  chartWaterfallPointControls, chartWaterfallConnectorControls } from './features/charts/chart-waterfall-settings-controls.ts'
 export { ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, ChartAllSeriesStyleTargets,
   chartAxisPointerValues, clearChartAxisPointer,
   type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget, type ChartAllSeriesStyleTarget } from './features/charts/chart-cartesian-api.ts'

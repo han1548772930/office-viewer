@@ -132,14 +132,15 @@ fn read_label(node: Option<&Node>, theme: &HashMap<String, String>) -> Option<La
     })
 }
 
-fn read_axis(node: Option<&Node>, theme: &HashMap<String, String>, percentage: bool) -> Axis {
-    let Some(node) = node else { return Axis::default(); };
+fn read_axis(node: Option<&Node>, theme: &HashMap<String, String>, percentage: bool) -> Result<Axis, String> {
+    let Some(node) = node else { return Ok(Axis::default()); };
     let scaling = node.child("scaling");
     let log_base = scaling.and_then(|scaling| property(scaling, "logBase"));
     let limits = |name: &str| scaling.and_then(|scaling| property(scaling, name)).map(|value| if percentage { value * 100.0 } else { value });
     let label_visible = node.value("tickLblPos").map(|value| value != "none").unwrap_or(true) && boolean(node.value("delete")) != Some(true);
     let tick = node.value("majorTickMark");
-    Axis {
+    let major_unit = node.value("majorUnit").map(|value| value.parse::<f64>().map_err(|_| "chart major tick interval is not a number".to_owned())).transpose()?;
+    let axis = Axis {
         title: node.child("title").map(plain_text).filter(|text| !text.is_empty()),
         title_style: read_font(node.child("title"), theme),
         // Native paragraph alignment is not an along-axis title position.
@@ -147,13 +148,18 @@ fn read_axis(node: Option<&Node>, theme: &HashMap<String, String>, percentage: b
         title_alignment: None,
         scale_type: if log_base.is_some() { "log" } else { "linear" }.into(), log_base,
         min: limits("min"), max: limits("max"), reverse: scaling.and_then(|scaling| scaling.value("orientation")).map(|value| value == "maxMin"),
+        base_time_unit: (node.name == "dateAx").then(|| node.value("baseTimeUnit").map(str::to_owned)).flatten(),
+        major_time_unit: (node.name == "dateAx").then(|| node.value("majorTimeUnit").map(str::to_owned)).flatten(),
+        major_unit: major_unit.map(|value| if percentage { value * 100.0 } else { value }),
         line: node.child("spPr").and_then(|shape| read_line(shape.child("ln"), theme)),
         label: Some(AxisLabel { font: read_font(node.child("txPr"), theme).unwrap_or_default(), visible: Some(label_visible),
             rotate: node.child("txPr").and_then(|text| text.child("bodyPr")).and_then(|body| number(body.attrs.get("rot").map(String::as_str))).map(|rotation| rotation / 60_000.0) }),
         grid_line: Some(node.child("majorGridlines").map(|grid| read_line(grid.child("spPr").and_then(|shape| shape.child("ln")), theme).unwrap_or(Line { visible: Some(true), ..Default::default() })).unwrap_or(Line { visible: Some(false), ..Default::default() })),
         tick: tick.map(|position| AxisTick { line: Line { visible: Some(position != "none"), ..Default::default() }, length: None, position: Some(if position == "in" { "inside" } else { "outside" }.into()) }),
         format: node.child("numFmt").and_then(|format| format.attrs.get("formatCode")).cloned(),
-    }
+    };
+    axis.validate_intervals(node.name == "dateAx")?;
+    Ok(axis)
 }
 
 fn plain_text(node: &Node) -> String {
@@ -277,12 +283,12 @@ pub(crate) fn read(index: usize, source: &str, theme: &HashMap<String, String>) 
     if x.is_some_and(|axis| axis.name == "dateAx") {
         options.mapping = Some(config::Mapping { use_date_axis: Some(true), ..Default::default() });
     }
-    if let Some(depth) = axes.iter().find(|axis| axis.name == "serAx") { options.depth_axis = Some(config::DepthAxis::from_axis(read_axis(Some(depth), theme, false))); }
+    if let Some(depth) = axes.iter().find(|axis| axis.name == "serAx") { options.depth_axis = Some(config::DepthAxis::from_axis(read_axis(Some(depth), theme, false)?)); }
     let mut raw_series = Vec::new();
     for plot in &plots {
         let (_, plot_y) = plot_axes(plot);
         let secondary = plot_y.and_then(|axis| axis.value("axId")) != y.and_then(|axis| axis.value("axId"));
-        if secondary { options.right_y_axis = Some(read_axis(plot_y, theme, plot.value("grouping") == Some("percentStacked"))); }
+        if secondary { options.right_y_axis = Some(read_axis(plot_y, theme, plot.value("grouping") == Some("percentStacked"))?); }
         for series in plot.children_named("ser") { raw_series.push((property(series, "order").unwrap_or(raw_series.len() as f64), series, *plot, secondary)); }
     }
     raw_series.sort_by(|left, right| left.0.total_cmp(&right.0));
@@ -305,7 +311,7 @@ pub(crate) fn read(index: usize, source: &str, theme: &HashMap<String, String>) 
         legend: legend.is_some(), legend_position: legend.and_then(|legend| legend.value("legendPos")).and_then(|position| match position { "t" => Some("top"), "b" => Some("bottom"), "l" => Some("left"), "r" => Some("right"), _ => None }).map(str::to_owned),
         legend_font: read_font(legend.and_then(|legend| legend.child("txPr")), theme), data_labels: series.iter().any(|series| series.options.as_ref().and_then(|series| series.label.as_ref()).is_some_and(|label| label.visible == Some(true))),
         x_axis_title: x.and_then(|axis| axis.child("title")).map(plain_text).filter(|text| !text.is_empty()), y_axis_title: y.and_then(|axis| axis.child("title")).map(plain_text).filter(|text| !text.is_empty()),
-        x_axis: Some(read_axis(x, theme, false)), y_axis: Some(read_axis(y, theme, percentage)), series, options: Some(options), authored, unsupported_reasons, office_source: Some(source.into()),
+        x_axis: Some(read_axis(x, theme, false)?), y_axis: Some(read_axis(y, theme, percentage)?), series, options: Some(options), authored, unsupported_reasons, office_source: Some(source.into()),
         from: AnchorCellPayload::default(), to: AnchorCellPayload::default(), drawing: None, pivot_table_id: None };
     let pivot_source_name = root.child("pivotSource").and_then(|pivot| pivot.child("name")).map(|name| name.text.clone());
     Ok(NativeChart { payload, pivot_source_name })

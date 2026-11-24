@@ -17,6 +17,7 @@ import { normalizeDocument } from '../features/document/model/document-model.ts'
 import { setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
+import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
 
 export type ApiCellData = {
   v?: CellScalar
@@ -57,7 +58,9 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
 }
 
 export function ensureDocumentId(model: DocumentModel): DocumentModel {
+  const customXmlParts = model.customXmlParts === undefined ? undefined : normalizeDocumentCustomXmlParts(model.customXmlParts)
   const next = clone(model)
+  if (customXmlParts !== undefined) next.customXmlParts = customXmlParts
   next.id ??= randomId('document')
   return next
 }

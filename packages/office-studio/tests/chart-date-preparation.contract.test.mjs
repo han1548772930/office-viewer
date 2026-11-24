@@ -71,7 +71,7 @@ test('source projection carries the workbook date system and its raw dates in bo
     workbook.date1904 = true
     const sheet = workbook.sheets[0]
     sheet.id = 'data'; sheet.rowCount = matrix.length; sheet.columnCount = matrix[0].length
-    sheet.cells = Object.fromEntries(matrix.flatMap((row, r) => row.map((value, c) => [r + ':' + c, createCell(value)])))
+    sheet.cells = Object.fromEntries(matrix.flatMap((row, r) => row.map((value, c) => [r + ':' + c, createCell(r, c, value)])))
     const model = chart()
     model.source = { orientation, range: { startRow: 0, startCol: 0, endRow: matrix.length - 1, endCol: matrix[0].length - 1 } }
     const records = await readChartRecordsAsync(workbook, model)

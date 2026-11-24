@@ -174,6 +174,12 @@ pub struct Axis {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_time_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub major_time_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub major_unit: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reverse: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<Line>,
@@ -190,7 +196,27 @@ pub struct Axis {
 impl Default for Axis {
     fn default() -> Self {
         Self { title: None, title_style: None, title_alignment: None, scale_type: "linear".into(), log_base: None, min: None, max: None,
+            base_time_unit: None, major_time_unit: None, major_unit: None,
             reverse: None, line: None, label: None, grid_line: None, tick: None, format: None }
+    }
+}
+
+impl Axis {
+    /// Shared by native Office import and export. Retained calendar authoring
+    /// units stay validated while dormant; calendar arithmetic only applies
+    /// to an active date axis, so numeric intervals may remain fractional.
+    pub fn validate_intervals(&self, date_axis: bool) -> Result<(), String> {
+        for unit in [self.base_time_unit.as_deref(), self.major_time_unit.as_deref()].into_iter().flatten() {
+            if !matches!(unit, "days" | "months" | "years") { return Err("chart calendar axis unit must be days, months or years".into()); }
+        }
+        if let Some(interval) = self.major_unit {
+            if !interval.is_finite() || interval <= 0.0 { return Err("chart major tick interval must be finite and positive".into()); }
+            let unit = self.major_time_unit.as_deref().or(self.base_time_unit.as_deref()).unwrap_or("days");
+            if date_axis && unit != "days" && (interval.fract() != 0.0 || interval > 9_007_199_254_740_991.0) {
+                return Err("chart month/year tick interval must be a positive safe integer".into());
+            }
+        }
+        Ok(())
     }
 }
 

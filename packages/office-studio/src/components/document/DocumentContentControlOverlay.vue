@@ -9,6 +9,7 @@ import type { DocumentAuxiliaryBlockHost } from '../../features/document/model/d
 import { sameDocumentBlockHost } from '../../features/document/model/document-block-host'
 import type { DocumentInputSession } from '../../features/document/model/document-input-session'
 import { sameTarget, type DocumentSelection } from '../../features/document/model/document-model'
+import { sameDocumentTableViewSelection } from '../../features/document/model/document-table-selection'
 import type { DocumentLayout } from '../../features/document/layout/document-layout-types'
 import { contentControlFragmentVisibleRect, contentControlSelectionAtFragment, type DocumentContentControlGeometry, type LayoutContentControlFragment } from '../../features/document/layout/content-control-geometry'
 import { sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
@@ -107,6 +108,8 @@ function requestCurrent(request: DocumentContentControlSelectionRequest) {
 function requestSelectionCurrent(selection: DocumentSelection) {
   return sameTarget(props.selection.anchor, selection.anchor) && sameTarget(props.selection.focus, selection.focus)
     && props.selection.anchor.offset === selection.anchor.offset && props.selection.focus.offset === selection.focus.offset
+    && props.selection.anchor.pageAffinity === selection.anchor.pageAffinity && props.selection.focus.pageAffinity === selection.focus.pageAffinity
+    && sameDocumentTableViewSelection(props.selection.tableSelection, selection.tableSelection)
 }
 function selectControl(geometry: DocumentContentControlGeometry, fragment: LayoutContentControlFragment) {
   if (props.inactive || props.disabled) return
@@ -187,10 +190,9 @@ watch(() => props.source, cancelInteraction)
 watch(() => props.host, cancelInteraction, { deep: true })
 watch(() => props.permission, () => { if (editor.value && !state(editor.value.control).available) cancelInteraction() }, { deep: true })
 watch(() => [props.disabled, props.inactive], ([disabled, inactive]) => { if (disabled || inactive) cancelInteraction() })
-watch(() => props.selection, selection => {
+watch(() => props.selection, () => {
   const current = editor.value
-  if (current && (!sameTarget(selection.anchor, current.request.selection.anchor) || !sameTarget(selection.focus, current.request.selection.focus)
-    || selection.anchor.offset !== current.request.selection.anchor.offset || selection.focus.offset !== current.request.selection.focus.offset)) cancelInteraction()
+  if (current && !requestSelectionCurrent(current.request.selection)) cancelInteraction()
 }, { deep: true })
 watch(anchors, anchors => { if (editor.value && !anchors.some(anchor => anchor.key === editor.value!.anchorKey)) cancelInteraction() })
 onBeforeUnmount(cancelInteraction)

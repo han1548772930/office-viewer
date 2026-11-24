@@ -1,11 +1,15 @@
 import type { DocumentBlock, DocumentContentControl, DocumentModel } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import { documentBlockHostId, documentEditingBlockHost, documentStoredBlockHosts, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
-import { applyRunPatch, documentBlockAncestry, sameTarget, sliceRuns, type DocumentRun, type DocumentSelection } from '../model/document-model'
+import { documentNoteDecorationContent, setDocumentNoteDecorationContent } from '../model/document-note-decoration-host'
+import { applyRunPatch, documentBlockAncestry, runText, runsForTarget, sameTarget, sliceRuns, textTargets, type DocumentRun, type DocumentSelection } from '../model/document-model'
 import { documentTextFieldParagraphs } from '../model/document-text-fields'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { projectDocumentStoryBlocks, type DocumentStoryBlockProjection } from '../model/document-story-blocks'
 import { contentControlCheckboxGlyph, formatContentControlDate, parseContentControlDateText, validContentControlIsoDate } from './content-control-presentation'
+import { documentContentControlContainsSelection, documentContentControlTableRowContentSignature } from '../model/content-control-table-rows'
+import { documentContentControlBlockContentSignature, documentContentControlBlocksSelection, documentContentControlBlockTextTargets } from '../model/content-control-block-range'
+import { documentContentControlGroupEditAllowed } from '../model/content-control-group-lock'
 
 /** Derived caches, property changes and formatting never use the ordinary input finalizer. */
 export const DOCUMENT_CONTENT_CONTROL_TEXT_INPUT_COMMAND_IDS = [
@@ -19,12 +23,21 @@ export function documentContentControlCommandIsTextInput(command: string | { id:
   return (DOCUMENT_CONTENT_CONTROL_TEXT_INPUT_COMMAND_IDS as readonly string[]).includes(id)
 }
 
+/** Whole-cell targets use their table planner, independently of a text control at the UI caret. */
+export function documentContentControlCommandUsesWholeCellInput(command: string | { id: string }, selection: DocumentSelection): boolean {
+  const id = typeof command === 'string' ? command : command.id
+  return id === 'doc.command.table-set-cell-text' || id === 'doc.command.table-set-range-text'
+    || !!selection.tableSelection && (id === 'doc.command.insert-text' || id === 'doc.command.delete')
+}
+
 export const CONTENT_CONTROL_LAST_KNOWN_DATE_METADATA = 'contentControlLastKnownDate'
 
 export interface DocumentContentControlEditOptions {
   origin: 'text-input' | 'control-value'
   /** The explicit value command's target; its stored list value remains authoritative. */
   controlId?: string
+  /** Explicit reset prompt, including a valid empty fallback; it is not a saved date/list value. */
+  placeholderText?: string
   /** Prepared source selection, before text/range mutation. Required for empty-range insertion. */
   selection?: DocumentSelection
   /** Explicitly identifies insertion inside a nonempty control at its start/end boundary. */
@@ -75,13 +88,22 @@ function wrapperLocked(control: DocumentContentControl): boolean {
   return ['controlLocked', 'sdtLocked', 'sdtContentLocked'].includes(control.lock ?? '')
 }
 
-function assertContentEditable(control: DocumentContentControl, controls: Map<string, DocumentContentControl>): void {
+function assertContentEditable(control: DocumentContentControl, controls: Map<string, DocumentContentControl>, before: DocumentModel, draft: DocumentModel,
+  source: Map<string, ControlParagraph>, destination: Map<string, ControlParagraph>, options: DocumentContentControlEditOptions): void {
   const seen = new Set<string>()
   let current: DocumentContentControl | undefined = control
   while (current) {
     if (seen.has(current.id)) throw new RangeError('内容控件父级关系循环：' + current.id)
     seen.add(current.id)
-    if (current.lock === 'contentLocked' || current.lock === 'sdtContentLocked') throw new Error('内容控件内容已锁定：' + current.id)
+    if (current.lock === 'contentLocked' || current.lock === 'sdtContentLocked') {
+      const from = source.get(current.blockId), mapped = draft.contentControls?.find(control => control.id === current!.id)
+      const to = destination.get(mapped?.blockId ?? current.blockId)
+      if (!from || !to || from.scopeId !== to.scopeId || !documentContentControlGroupEditAllowed(
+        { ...before, blocks: from.blocks }, { ...draft, blocks: to.blocks }, current,
+        { selection: options.selection, activeControlId: options.activeControlId ?? options.controlId })) {
+        throw new Error('内容控件内容已锁定：' + current.id)
+      }
+    }
     current = current.parentId ? controls.get(current.parentId) : undefined
   }
 }
@@ -103,18 +125,26 @@ export function resolveDocumentContentControlTextInputId(
   if (activeControlId !== undefined && (typeof activeControlId !== 'string' || !activeControlId.trim())) throw new TypeError('内容控件输入标识无效。')
   const controls = model.contentControls ?? [], index = new Map(controls.map(control => [control.id, control]))
   const sameParagraph = !selection.tableSelection && sameTarget(selection.anchor, selection.focus)
-  const blockId = selection.focus.cellBlockId ?? selection.focus.blockId
   const start = Math.min(selection.anchor.offset, selection.focus.offset), end = Math.max(selection.anchor.offset, selection.focus.offset)
-  const contains = (control: DocumentContentControl) => sameParagraph && control.blockId === blockId && !control.metadata?.officeStoryLockSource
-    && start >= control.startOffset && end <= control.endOffset
+  if (sameParagraph) {
+    const target = textTargets(model).find(target => sameTarget(target, selection.focus)), text = target && runText(runsForTarget(model, target))
+    if (!target || text === undefined || !isDocumentTextBoundary(text, start) || !isDocumentTextBoundary(text, end)) {
+      if (activeControlId !== undefined) throw new RangeError('内容控件输入身份与当前文字选区不一致。')
+      return undefined
+    }
+  }
+  const contains = (control: DocumentContentControl) => !control.metadata?.officeStoryLockSource
+    && documentContentControlContainsSelection(model, control, selection)
   if (activeControlId !== undefined) {
     const active = index.get(activeControlId)
     if (!active || !contains(active)) throw new RangeError('内容控件输入身份与当前文字选区不一致。')
     return active.id
   }
-  return controls.filter(control => contains(control) && (start !== end || control.showingPlaceholder
+  return controls.filter(control => contains(control) && (control.blockRange || control.tableRowRange || !sameParagraph || start !== end || control.showingPlaceholder
     || control.startOffset === control.endOffset || start > control.startOffset && start < control.endOffset))
-    .sort((left, right) => left.endOffset - left.startOffset - (right.endOffset - right.startOffset) || depth(right, index) - depth(left, index))[0]?.id
+    .sort((left, right) => depth(right, index) - depth(left, index)
+      || (left.blockRange || left.tableRowRange ? 1 : 0) - (right.blockRange || right.tableRowRange ? 1 : 0)
+      || left.endOffset - left.startOffset - (right.endOffset - right.startOffset))[0]?.id
 }
 
 /** A placeholder edit replaces its prompt once; this only prepares a logical source selection. */
@@ -122,7 +152,11 @@ export function prepareDocumentContentControlTextInputSelection(
   model: DocumentModel, selection: DocumentSelection, options: { controlId?: string } = {},
 ): DocumentSelection {
   const result = cloneModel(selection)
-  if (selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) return result
+  if (selection.tableSelection) return result
+  const structural = (model.contentControls ?? []).find(control => control.blockRange && control.showingPlaceholder
+    && (!options.controlId || control.id === options.controlId) && documentContentControlContainsSelection(model, control, selection))
+  if (structural?.blockRange) return documentContentControlBlocksSelection(model, structural.blockRange)
+  if (!sameTarget(selection.anchor, selection.focus)) return result
   const blockId = selection.focus.cellBlockId ?? selection.focus.blockId
   const from = Math.min(selection.anchor.offset, selection.focus.offset), to = Math.max(selection.anchor.offset, selection.focus.offset)
   const controls = model.contentControls ?? [], index = new Map(controls.map(control => [control.id, control]))
@@ -150,7 +184,7 @@ function repairInsideInsertion(
     || !sameTarget(selection.anchor, selection.focus) || selection.anchor.offset !== selection.focus.offset) return
   const blockId = selection.focus.cellBlockId ?? selection.focus.blockId, offset = selection.focus.offset
   const original = before.contentControls ?? [], index = new Map(original.map(control => [control.id, control]))
-  const selected = original.filter(control => control.blockId === blockId && !control.metadata?.officeStoryLockSource
+  const selected = original.filter(control => !control.blockRange && !control.tableRowRange && control.blockId === blockId && !control.metadata?.officeStoryLockSource
     && (options.activeControlId ? control.id === options.activeControlId && offset >= control.startOffset && offset <= control.endOffset
       : control.startOffset === offset && control.endOffset === offset))
     .sort((left, right) => depth(right, index) - depth(left, index))[0]
@@ -164,9 +198,12 @@ function repairInsideInsertion(
   while (current && !seen.has(current.id)) {
     seen.add(current.id)
     const mapped = controls.find(control => control.id === current!.id)
-    if (!mapped || mapped.blockId !== blockId || current.startOffset > offset || current.endOffset < offset) break
-    mapped.startOffset = current.startOffset
-    mapped.endOffset = current.endOffset + added
+    if (!mapped) break
+    if (!mapped.blockRange && !mapped.tableRowRange) {
+      if (mapped.blockId !== blockId || current.startOffset > offset || current.endOffset < offset) break
+      mapped.startOffset = current.startOffset
+      mapped.endOffset = current.endOffset + added
+    }
     current = current.parentId ? index.get(current.parentId) : undefined
   }
 }
@@ -191,6 +228,7 @@ export function unwrapDocumentContentControlShells(controls: readonly DocumentCo
 function explicitValueChanged(before: DocumentContentControl, after: DocumentContentControl, options: DocumentContentControlEditOptions): boolean {
   if (options.origin !== 'control-value' || options.controlId !== after.id) return false
   if (before.showingPlaceholder && !after.showingPlaceholder) return true
+  if (options.placeholderText !== undefined && !!before.showingPlaceholder !== !!after.showingPlaceholder) return true
   return before.value !== after.value || before.dateValue !== after.dateValue
     || (before.checked ?? before.checkbox?.checked) !== (after.checked ?? after.checkbox?.checked)
 }
@@ -223,7 +261,8 @@ function hostFontPlans(model: DocumentModel, destinations: Map<string, ControlPa
   return documentStoredBlockHosts(model).filter(entry => scopes.has(documentBlockHostId(entry.host))).map(entry => {
     const host = entry.host
     const content = host.kind === 'story' ? model.sectionHeaderFooters?.[host.sectionId]?.storyContent?.[host.story]
-      : (host.noteKind === 'footnote' ? model.footnotes : model.endnotes)?.[host.noteId]?.content
+      : host.kind === 'note' ? (host.noteKind === 'footnote' ? model.footnotes : model.endnotes)?.[host.noteId]?.content
+        : documentNoteDecorationContent(model, host)
     if (!content?.blocks) throw new RangeError('内容控件字体的内容区块树不存在：' + documentBlockHostId(host))
     const staged = cloneModel(content)
     for (const paragraph of documentTextFieldParagraphs({ blocks: staged.blocks! })) {
@@ -245,10 +284,10 @@ function publishHostFontPlans(model: DocumentModel, plans: readonly ControlHostF
       section.storyContent = { ...section.storyContent, [host.story]: content }
       section.pageFields = [...(section.pageFields ?? []).filter(field => field.story !== host.story),
         ...projection.pageFields.map(field => ({ ...field, story: host.story }))]
-    } else {
+    } else if (host.kind === 'note') {
       const note = (host.noteKind === 'footnote' ? model.footnotes : model.endnotes)![host.noteId]!
       note.content = content; note.text = projection.text
-    }
+    } else setDocumentNoteDecorationContent(model, host, content)
   }
 }
 
@@ -259,19 +298,22 @@ function publishHostFontPlans(model: DocumentModel, plans: readonly ControlHostF
 export function synchronizeDocumentContentControlsAfterEdit(
   before: DocumentModel, draft: DocumentModel, options: DocumentContentControlEditOptions,
 ): DocumentContentControlEditResult {
+  if (options.placeholderText !== undefined && (typeof options.placeholderText !== 'string' || options.origin !== 'control-value' || !options.controlId)) {
+    throw new TypeError('占位恢复必须提供显式控件 ID 和文本候选。')
+  }
   const result: DocumentContentControlEditResult = { changedControlIds: [], removedTemporaryControlIds: [], retainedLockedTemporaryControlIds: [] }
   if (!before.contentControls?.length) return result
+  const source = paragraphs(before), destination = paragraphs(draft)
   const retained = new Set((draft.contentControls ?? []).map(control => control.id))
   const original = new Map(before.contentControls.map(control => [control.id, control]))
   for (const control of before.contentControls) {
     if (!control.temporary || retained.has(control.id) || control.metadata?.officeStoryLockSource) continue
     if (wrapperLocked(control)) throw new Error('正文输入不能删除已锁定的临时控件外壳：' + control.id)
-    assertContentEditable(control, original)
+    assertContentEditable(control, original, before, draft, source, destination, options)
     result.changedControlIds.push(control.id)
     result.removedTemporaryControlIds.push(control.id)
   }
   if (!draft.contentControls?.length) return result
-  const source = paragraphs(before), destination = paragraphs(draft)
   const planned = cloneModel(draft.contentControls)
   repairInsideInsertion(before, planned, source, destination, options)
   const remove = new Set<string>(), fontPlans = new Map<DocumentBlock, DocumentRun[]>()
@@ -282,11 +324,47 @@ export function synchronizeDocumentContentControlsAfterEdit(
     const from = source.get(previous.blockId), to = destination.get(control.blockId)
     if (!from && !to && previous.blockId === control.blockId && previous.startOffset === control.startOffset && previous.endOffset === control.endOffset) continue
     if (!from || !to || from.scopeId !== to.scopeId) throw new RangeError('正文输入不能把内容控件移到其他内容区：' + control.id)
-    const oldText = rangeText(from, previous), text = rangeText(to, control)
-    if (oldText === text && !explicitValueChanged(previous, control, options)) continue
-    assertContentEditable(previous, original)
+    if (previous.tableRowRange || control.tableRowRange) {
+      if (!previous.tableRowRange || !control.tableRowRange) throw new RangeError('正文输入不能改变内容控件的持久行范围类型：' + control.id)
+      rangeText(from, previous); rangeText(to, control)
+      const oldContent = documentContentControlTableRowContentSignature({ ...before, blocks: from.blocks }, previous.tableRowRange)
+      const newContent = documentContentControlTableRowContentSignature({ ...draft, blocks: to.blocks }, control.tableRowRange)
+      if (oldContent === newContent) continue
+      assertContentEditable(previous, original, before, draft, source, destination, options)
+      control.showingPlaceholder = false
+      if (control.dataBinding) control.dataBinding.dirty = true
+      result.changedControlIds.push(control.id)
+      if (control.temporary) {
+        if (wrapperLocked(control)) result.retainedLockedTemporaryControlIds.push(control.id)
+        else { remove.add(control.id); result.removedTemporaryControlIds.push(control.id) }
+      }
+      continue
+    }
+    let oldText: string, text: string, structureChanged = false
+    if (previous.blockRange || control.blockRange) {
+      if (!previous.blockRange || !control.blockRange) throw new RangeError('正文输入不能改变完整块内容控件的范围类型：' + control.id)
+      rangeText(from, previous); rangeText(to, control)
+      const fromModel = { ...before, blocks: from.blocks }, toModel = { ...draft, blocks: to.blocks }
+      structureChanged = documentContentControlBlockContentSignature(fromModel, previous.blockRange) !== documentContentControlBlockContentSignature(toModel, control.blockRange)
+      oldText = documentContentControlBlockTextTargets(fromModel, previous.blockRange).map(target => runText(runsForTarget(fromModel, target))).join('\n')
+      text = documentContentControlBlockTextTargets(toModel, control.blockRange).map(target => runText(runsForTarget(toModel, target))).join('\n')
+    } else { oldText = rangeText(from, previous); text = rangeText(to, control) }
+    if (!structureChanged && oldText === text && !explicitValueChanged(previous, control, options)) continue
+    assertContentEditable(previous, original, before, draft, source, destination, options)
     const explicit = options.origin === 'control-value' && options.controlId === control.id
-    if (control.type === 'dropDownList') {
+    const placeholder = explicit && options.placeholderText !== undefined
+    if (placeholder) {
+      if (control.showingPlaceholder !== true || control.value !== options.placeholderText || text !== options.placeholderText) {
+        throw new RangeError('内容控件占位标记、提示值与正文不一致：' + control.id)
+      }
+      if (!['text', 'richText', 'date', 'dropDownList', 'comboBox', 'picture'].includes(control.type)) {
+        throw new TypeError('此内容控件不支持占位恢复：' + control.id)
+      }
+      if (control.type === 'date') {
+        if (previous.dateValue && validContentControlIsoDate(previous.dateValue)) control.metadata = { ...control.metadata, [CONTENT_CONTROL_LAST_KNOWN_DATE_METADATA]: previous.dateValue }
+        delete control.dateValue
+      }
+    } else if (control.type === 'dropDownList') {
       if (!explicit) throw new Error('下拉列表内容不能直接输入，请选择列表项：' + control.id)
       const item = control.items?.find(item => item.value === control.value)
       if (!item || text !== (item.displayText ?? item.value)) throw new RangeError('下拉列表保存值与显示内容不一致：' + control.id)
@@ -333,7 +411,7 @@ export function synchronizeDocumentContentControlsAfterEdit(
         if (display !== text) throw new RangeError('组合框保存值与显示内容不一致：' + control.id)
       }
     } else if (control.type === 'picture' && !explicit) throw new Error('图片内容控件请使用图片替换命令：' + control.id)
-    control.showingPlaceholder = false
+    control.showingPlaceholder = placeholder
     if (control.dataBinding) control.dataBinding.dirty = true
     result.changedControlIds.push(control.id)
     if (control.temporary) {

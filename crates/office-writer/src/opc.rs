@@ -1,6 +1,6 @@
 use crate::error::ExportError;
 use crate::xml;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Cursor;
 use zip::write::FileOptions;
 
@@ -15,7 +15,10 @@ struct Relationship {
 #[derive(Debug, Default)]
 pub(crate) struct Package {
     parts: BTreeMap<String, (String, Vec<u8>)>,
+    part_keys: BTreeSet<String>,
+    part_names: BTreeMap<String, String>,
     relationships: HashMap<Option<String>, Vec<Relationship>>,
+    preserved_relationships: HashMap<Option<String>, BTreeSet<String>>,
 }
 
 impl Package {
@@ -24,12 +27,14 @@ impl Package {
     }
 
     pub(crate) fn contains_part(&self, path: &str) -> bool {
-        self.parts.contains_key(path.trim_start_matches('/'))
+        office_io_common::document_custom_xml::part_name_key(path.trim_start_matches('/')).is_ok_and(|key| self.part_keys.contains(&key))
     }
 
     pub(crate) fn contains_relationship(&self, source: Option<&str>, id: &str) -> bool {
-        let source = source.map(|source| source.trim_start_matches('/').to_owned());
+        let source = source.map(|source| office_io_common::document_custom_xml::part_name_key(source.trim_start_matches('/'))).transpose();
+        let Ok(source) = source else { return false; };
         self.relationships.get(&source).is_some_and(|entries| entries.iter().any(|entry| entry.id == id))
+            || self.preserved_relationships.get(&source).is_some_and(|ids| ids.contains(id))
     }
 
     pub(crate) fn add_xml(
@@ -56,24 +61,47 @@ impl Package {
         content_type: &str,
         content: Vec<u8>,
     ) -> Result<(), ExportError> {
-        let normalized = path.trim_start_matches('/').to_string();
-        if normalized.is_empty()
-            || normalized.starts_with("_rels/")
-            || normalized.ends_with(".rels")
+        let normalized = office_io_common::document_custom_xml::canonical_part_name(path.trim_start_matches('/')).map_err(ExportError::invalid)?;
+        let key = normalized.to_ascii_lowercase();
+        if !office_io_common::document_custom_xml::valid_content_type(content_type) { return Err(ExportError::invalid("invalid OPC MIME content type")); }
+        if key.starts_with("_rels/")
+            || key.ends_with(".rels")
+            || key == "%5bcontent_types%5d.xml"
         {
             return Err(ExportError::invalid(format!(
                 "invalid OPC part path: {path}"
             )));
         }
-        if self
-            .parts
-            .insert(normalized.clone(), (content_type.to_string(), content))
-            .is_some()
-        {
+        if self.part_keys.contains(&key) {
             return Err(ExportError::invalid(format!(
                 "duplicate OPC part: {normalized}"
             )));
         }
+        self.part_names.insert(key.clone(), normalized.clone());
+        self.part_keys.insert(key);
+        self.parts.insert(normalized, (content_type.to_string(), content));
+        Ok(())
+    }
+
+    /// Preserve a relationship owner's actual XML only when no generated owner
+    /// exists. Later additions are rejected instead of silently replacing it.
+    pub(crate) fn add_preserved_relationships(&mut self, source: &str, bytes: Vec<u8>) -> Result<(), ExportError> {
+        use office_io_common::document_custom_xml::{canonical_part_name, decode_xml, relationship_part, relationships, RELATIONSHIP_CONTENT_TYPE};
+        let source = canonical_part_name(source).map_err(ExportError::invalid)?;
+        let source_key = source.to_ascii_lowercase();
+        if !self.part_keys.contains(&source_key) { return Err(ExportError::invalid("DOCX_CUSTOM_XML_MISSING_PART: preserved relationship owner does not exist")); }
+        let key = Some(source_key);
+        let path = relationship_part(&source);
+        let path_key = path.to_ascii_lowercase();
+        if self.relationships.contains_key(&key) || self.preserved_relationships.contains_key(&key) || self.part_keys.contains(&path_key) {
+            return Err(ExportError::invalid("DOCX_CUSTOM_XML_RELATIONSHIP_CONFLICT: relationship owner already exists"));
+        }
+        let (xml, _, _) = decode_xml(&bytes).map_err(ExportError::invalid)?;
+        let ids = relationships(&xml).map_err(ExportError::invalid)?.into_iter().map(|relationship| relationship.id).collect();
+        self.part_names.insert(path_key.clone(), path.clone());
+        self.part_keys.insert(path_key);
+        self.parts.insert(path, (RELATIONSHIP_CONTENT_TYPE.into(), bytes));
+        self.preserved_relationships.insert(key, ids);
         Ok(())
     }
 
@@ -90,7 +118,10 @@ impl Package {
                 "relationship id, type and target are required",
             ));
         }
-        let source = source.map(|value| value.trim_start_matches('/').to_string());
+        let source = source.map(|value| office_io_common::document_custom_xml::part_name_key(value.trim_start_matches('/'))).transpose().map_err(ExportError::invalid)?;
+        if self.preserved_relationships.contains_key(&source) {
+            return Err(ExportError::invalid("A preserved OPC relationship owner cannot receive generated relationships."));
+        }
         let entries = self.relationships.entry(source).or_default();
         if entries.iter().any(|entry| entry.id == id) {
             return Err(ExportError::invalid(format!(
@@ -115,8 +146,16 @@ impl Package {
         );
         let relationships = std::mem::take(&mut package.relationships);
         for (source, entries) in relationships {
-            let path = relationship_path(source.as_deref());
+            let source_name = source.as_ref().map(|key| package.part_names.get(key)
+                .ok_or_else(|| ExportError::invalid(format!("missing OPC relationship owner: {key}")))).transpose()?;
+            let path = relationship_path(source_name.map(String::as_str));
+            for entry in entries.iter().filter(|entry| !entry.external) {
+                let target = office_io_common::document_custom_xml::resolve_target(source_name.map_or("", String::as_str), &entry.target).map_err(ExportError::invalid)?;
+                if !package.contains_part(&target) { return Err(ExportError::invalid(format!("missing OPC relationship target: {target}"))); }
+            }
             let body = relationship_xml(&entries);
+            if package.part_keys.contains(&path.to_ascii_lowercase()) { return Err(ExportError::invalid(format!("duplicate OPC relationship part: {path}"))); }
+            package.part_keys.insert(path.to_ascii_lowercase());
             package.parts.insert(
                 path,
                 (
@@ -130,8 +169,9 @@ impl Package {
             FileOptions::<()>::default().compression_method(zip::CompressionMethod::Deflated);
         let mut archive = zip::ZipWriter::new(&mut output);
         for (path, (_, bytes)) in package.parts {
+            let zip_name = office_io_common::document_custom_xml::zip_part_name(&path).map_err(ExportError::invalid)?;
             archive
-                .start_file(path, options)
+                .start_file(zip_name, options)
                 .map_err(|error| ExportError::package(error.to_string()))?;
             std::io::Write::write_all(&mut archive, &bytes)
                 .map_err(|error| ExportError::package(error.to_string()))?;
@@ -297,7 +337,7 @@ mod tests {
             )
             .unwrap();
         package
-            .add_relationship(None, "rId1", "type", "workbook.xml", false)
+            .add_relationship(None, "rId1", "type", "xl/workbook.xml", false)
             .unwrap();
         let bytes = package.finish().unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();

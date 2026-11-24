@@ -3,7 +3,7 @@ import type {
   DocumentContentControl,
   DocumentModel,
 } from '../../../domain/model'
-import { documentTextFieldParagraphs, documentTextFields, insertDocumentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit, type DocumentTextFieldParagraph } from '../model/document-text-fields'
+import { documentFieldLocked, documentTextFieldParagraphs, documentTextFieldRanges, documentTextFields, insertDocumentTextFields, setDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit, type DocumentTextFieldParagraph } from '../model/document-text-fields'
 import {
   compactRuns,
   createParagraph,
@@ -17,6 +17,7 @@ import {
   tableForBlock,
   textTargets,
   type DocumentRun,
+  type DocumentSelection,
   type RunPatch,
   type TextTarget,
 } from '../model/document-model'
@@ -33,6 +34,25 @@ import { validateContentControlPropertyPatch } from './content-control-propertie
 import { synchronizeDocumentContentControlsAfterEdit, unwrapDocumentContentControlShells } from './content-control-editing'
 import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
+import { documentContentControlContains, documentContentControlContainsBlockRange, documentContentControlContainsSelection,
+  documentContentControlOwnedRowBlockIds, documentContentControlTableRowBlockIds, reanchorDocumentContentControlTableRows,
+  reconcileDocumentContentControlTableRows, resolveDocumentContentControlTableRows } from '../model/content-control-table-rows'
+import { assertDocumentRepeatingContentControlRowsEditable, prepareDocumentRepeatingContentControlRowsMutation } from './repeating-content-control-rows'
+import { documentContentControlBlockTextTargets, documentContentControlOwnedBlockIds, reanchorDocumentBlockContentControl,
+  resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
+import { assertDocumentRepeatingContentControlBlocksEditable, prepareDocumentRepeatingContentControlBlocksMutation } from './repeating-content-control-blocks'
+import { assertDocumentRepeatingNoteContentRemovable, copyDocumentRepeatingContentControlComments, copyDocumentRepeatingContentControlNoteControls, copyDocumentRepeatingContentControlNotes,
+  createDocumentRepeatingContentControlCopyIds, documentRepeatingContentControlInlineCopySource, indexDocumentRepeatingContentControlCopies,
+  remapDocumentRepeatingContentControlMetadata, removeDeletedDocumentRepeatingNoteScopes, visitDocumentRepeatingContentControlBlocks,
+  type DocumentRepeatingContentControlCopyIds } from './repeating-content-control-copy'
+import { assertDocumentPermission, permissionTargetsForChangedBlocks, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { documentContentControlPermissionTargets } from '../permissions/content-control-permissions'
+import { copyDocumentBlocksForPaste } from './document-block-paste'
+import { reconcileDocumentContentControlBlockEdits } from '../model/content-control-block-edits'
+import { reconcileDocumentTableAnchors } from './document-table-anchors'
+import { replaceDocumentBlockContentControlImage, replaceDocumentBlockContentControlText } from './content-control-block-value'
+import { finalizeDocumentContentControlHostResources } from './content-control-host-resources'
+import { documentContentControlGroupEditAllowed } from '../model/content-control-group-lock'
 
 export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: string }
 
@@ -47,14 +67,14 @@ function insideControlEditChain(model: DocumentModel, blockId: string, startOffs
   if (!activeControlId) return result
   const index = new Map((model.contentControls ?? []).map(control => [control.id, control]))
   let current = index.get(activeControlId)
-  if (!current || current.metadata?.officeStoryLockSource || current.blockId !== blockId
+  if (!current || current.metadata?.officeStoryLockSource
     || !Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset)
-    || startOffset < current.startOffset || endOffset > current.endOffset || startOffset > endOffset) {
+    || !documentContentControlContainsBlockRange(model, current, blockId, startOffset, endOffset)) {
     throw new RangeError('内容控件内部编辑上下文已失效：' + activeControlId)
   }
   while (current) {
     if (result.has(current.id)) throw new RangeError('内容控件内部编辑遇到循环父级：' + current.id)
-    if (current.blockId !== blockId || startOffset < current.startOffset || endOffset > current.endOffset) {
+    if (!documentContentControlContainsBlockRange(model, current, blockId, startOffset, endOffset)) {
       throw new RangeError('内容控件内部编辑不属于其父级范围：' + current.id)
     }
     result.add(current.id)
@@ -75,18 +95,25 @@ function assertControlAcceptsParagraphBreak(control: DocumentContentControl): vo
     && !(control.type === 'text' && control.multiLine === true)) throw new RangeError(`此类型内容控件不接受段落换行：${control.id}`)
 }
 
-function editHostedControl<T>(model: DocumentModel, blockId: string, edit: (scoped: DocumentModel) => T, requestedHost?: DocumentAuxiliaryBlockHost): { value: T } | undefined {
+function editHostedControl<T>(model: DocumentModel, blockId: string, edit: (scoped: DocumentModel) => T, requestedHost?: DocumentAuxiliaryBlockHost,
+  complete?: (before: DocumentModel, candidate: DocumentModel) => void): { value: T } | undefined {
   const host = requestedHost ?? documentBlockHostForId(model, blockId)
   if (!host) return undefined
   const candidate = cloneModel(model), scoped = documentModelForBlockHost(candidate, host, true), value = edit(scoped)
   applyDocumentBlockHostModel(candidate, host, scoped)
+  if (complete) complete(model, candidate)
+  else if (JSON.stringify(documentModelForBlockHost(model, host).blocks) !== JSON.stringify(scoped.blocks)) {
+    finalizeDocumentContentControlHostResources(model, candidate)
+  }
+  validateDocumentContentControlRanges(candidate)
   if (host.kind === 'story') assertDocumentStoryLocksPreserved(resolveSectionHeaderFooter(model, host.sectionId), resolveSectionHeaderFooter(candidate, host.sectionId), host.story, model)
   Object.assign(model, candidate)
   return { value }
 }
 
 function hostedControlBlock(model: DocumentModel, id: string): string | undefined {
-  return model.contentControls?.find(control => control.id === id)?.blockId
+  const control = model.contentControls?.find(control => control.id === id)
+  return control?.blockRange?.blockIds[0] ?? control?.tableRowRange?.tableId ?? control?.blockId
 }
 
 /** A paragraph split maps the suffix of a linear replacement into its new paragraph. */
@@ -106,15 +133,23 @@ export function getDocumentContentControl(model: DocumentModel, id: string): Doc
 }
 
 export function selectedDocumentContentControl(model: DocumentModel, blockId: string, startOffset: number, endOffset = startOffset): DocumentContentControl | undefined {
+  const target = textTargets(model).find(target => (target.cellBlockId ?? target.blockId) === blockId)
+  return target && selectedDocumentContentControlForSelection(model, { anchor: { ...target, offset: startOffset }, focus: { ...target, offset: endOffset } })
+}
+
+export function selectedDocumentContentControlForSelection(model: DocumentModel, selection: DocumentSelection, activeId?: string): DocumentContentControl | undefined {
   const controls = model.contentControls ?? []
-  return controls.filter(control => control.blockId === blockId
-    && startOffset >= control.startOffset && endOffset <= control.endOffset)
+  const explicit = controls.find(control => control.id === activeId && !control.metadata?.officeStoryLockSource
+    && documentContentControlContainsSelection(model, control, selection))
+  return explicit ?? controls.filter(control => !control.metadata?.officeStoryLockSource && documentContentControlContainsSelection(model, control, selection))
     .sort((left, right) => {
-      const lengthDifference = (left.endOffset - left.startOffset) - (right.endOffset - right.startOffset)
-      if (lengthDifference) return lengthDifference
       if (hasAncestor(controls, left, right.id)) return -1
       if (hasAncestor(controls, right, left.id)) return 1
-      return 0
+      if (documentContentControlContains(model, left, right)) return 1
+      if (documentContentControlContains(model, right, left)) return -1
+      return (left.blockRange?.blockIds.length ?? 0) - (right.blockRange?.blockIds.length ?? 0)
+        || (left.tableRowRange?.rowIds.length ?? 0) - (right.tableRowRange?.rowIds.length ?? 0)
+        || (left.endOffset - left.startOffset) - (right.endOffset - right.startOffset)
     })[0]
 }
 
@@ -126,7 +161,7 @@ export function createDocumentContentControl(
 ): DocumentContentControl {
   if (typeof id !== 'string' || !id.trim()) throw new TypeError('Content control id must not be empty')
   if (model.contentControls?.some((control) => control.id === id)) throw new Error(`Content control already exists: ${id}`)
-  const hosted = editHostedControl(model, input.blockId, scoped => createDocumentContentControl(scoped, input, id), host)
+  const hosted = editHostedControl(model, input.blockRange?.blockIds[0] ?? input.tableRowRange?.tableId ?? input.blockId, scoped => createDocumentContentControl(scoped, input, id), host)
   if (hosted) return hosted.value
   const { id: _inputId, blockId: _blockId, startOffset: _start, endOffset: _end, value: _value, checked: _checked, dateValue: _dateValue, ...properties } = input
   validateContentControlPropertyPatch(properties)
@@ -139,9 +174,19 @@ export function createDocumentContentControl(
     lock: input.lock ?? 'unlocked',
     showingPlaceholder: input.showingPlaceholder ?? false,
   })
-  validateControl(candidate, control)
   const controls = candidate.contentControls ?? (candidate.contentControls = [])
-  assertNoPartialOverlap(controls, control)
+  if ((control.tableRowRange || control.blockRange) && ['group', 'repeatingSection', 'repeatingSectionItem'].includes(control.type)) {
+    if (!control.parentId) control.parentId = controls.filter(parent => ['group', 'repeatingSection', 'repeatingSectionItem'].includes(parent.type)
+      && findBlock(candidate, parent.blockRange?.blockIds[0] ?? parent.tableRowRange?.tableId ?? parent.blockId) && documentContentControlContains(candidate, parent, control))
+      .sort((left, right) => hasAncestor(controls, left, right.id) ? -1 : hasAncestor(controls, right, left.id) ? 1
+        : (left.blockRange?.blockIds.length ?? 0) - (right.blockRange?.blockIds.length ?? 0)
+          || (left.tableRowRange?.rowIds.length ?? 0) - (right.tableRowRange?.rowIds.length ?? 0))[0]?.id
+    for (const child of controls) if (child.id !== control.parentId && child.parentId === control.parentId
+      && findBlock(candidate, child.blockRange?.blockIds[0] ?? child.tableRowRange?.tableId ?? child.blockId) && documentContentControlContains(candidate, control, child)) child.parentId = control.id
+  }
+  validateControl(candidate, control)
+  if (control.blockRange) reanchorDocumentBlockContentControl(candidate, control)
+  assertNoPartialOverlap(candidate, controls, control)
   controls.push(control)
   controls.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
   if (control.type === 'checkbox') {
@@ -173,7 +218,7 @@ export function updateDocumentContentControl(model: DocumentModel, id: string, p
   })
   validateControl(candidate, next)
   const controls = candidate.contentControls!
-  assertNoPartialOverlap(controls.filter((candidate) => candidate.id !== id), next)
+  assertNoPartialOverlap(candidate, controls.filter((candidate) => candidate.id !== id), next)
   controls[controls.findIndex(control => control.id === id)] = next
   let display: { text: string; marks?: RunPatch } | undefined
   const changed = (key: keyof ContentControlPatch) => Object.hasOwn(patch, key) && JSON.stringify(control[key]) !== JSON.stringify(next[key])
@@ -264,11 +309,28 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
   if (blockId && editHostedControl(model, blockId, scoped => resetDocumentContentControlPlaceholder(scoped, id, useDefaultPlaceholder))) return
   const control = requireControl(model, id)
   const placeholder = useDefaultPlaceholder ? documentContentControlPlaceholderText(control) : control.placeholder
-  if (!placeholder) throw new Error(`Content control has no placeholder: ${id}`)
+  if (placeholder === undefined || !useDefaultPlaceholder && !placeholder) throw new Error(`Content control has no placeholder: ${id}`)
   if (control.showingPlaceholder) return
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
+  const candidate = cloneModel(model), next = requireControl(candidate, id)
+  resetContentControlPlaceholderCandidate(candidate, next, placeholder)
+  synchronizeDocumentContentControlsAfterEdit(model, candidate, { origin: 'control-value', controlId: id, placeholderText: placeholder })
+  Object.assign(model, candidate)
+}
+
+/** Picture/field restoration can fail after structural work; callers publish this candidate only. */
+function resetContentControlPlaceholderCandidate(model: DocumentModel, control: DocumentContentControl, placeholder: string): void {
+  const id = control.id
   if (control.type === 'picture') {
+    if (control.blockRange) {
+      // Replace the real owned image tree before clearing its pointers; no stale paragraph merge.
+      replaceControlText(model, control, placeholder)
+      const { pictureBlockId: _pictureBlockId, pictureAnchorBlockId: _anchorBlockId, pictureTailBlockId: _tailBlockId, pictureImage: _pictureImage, ...metadata } = control.metadata ?? {}
+      control.metadata = metadata
+      control.value = placeholder; control.showingPlaceholder = true
+      return
+    }
     const pictureId = typeof control.metadata?.pictureBlockId === 'string' ? control.metadata.pictureBlockId : undefined
     const picture = pictureId ? findBlock(model, pictureId) : undefined
     const anchorId = typeof control.metadata?.pictureAnchorBlockId === 'string' ? control.metadata.pictureAnchorBlockId : undefined
@@ -322,15 +384,40 @@ export function documentContentControlPlaceholderText(control: DocumentContentCo
 export function replacePictureContentControlImage(model: DocumentModel, id: string, image: DocumentImage): string {
   const blockId = hostedControlBlock(model, id), hosted = blockId && editHostedControl(model, blockId, scoped => replacePictureContentControlImage(scoped, id, image))
   if (hosted) return hosted.value
+  const candidate = cloneModel(model), pictureId = replacePictureContentControlImageInModel(candidate, id, image)
+  synchronizeDocumentContentControlsAfterEdit(model, candidate, { origin: 'control-value', controlId: id })
+  if (!candidate.contentControls?.some(control => control.id === id)) {
+    const picture = findBlock(candidate, pictureId)
+    if (picture?.metadata.contentControlId === id) delete picture.metadata.contentControlId
+  }
+  validateDocumentContentControlRanges(candidate)
+  Object.assign(model, candidate)
+  return pictureId
+}
+
+function replacePictureContentControlImageInModel(model: DocumentModel, id: string, image: DocumentImage): string {
   const control = requireControl(model, id)
   if (control.type !== 'picture') throw new TypeError(`Content control ${id} is not a picture control`)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
+  if (control.blockRange) {
+    const pictureId = replaceDocumentBlockContentControlImage(model, control, image)
+    control.value = undefined; control.showingPlaceholder = false
+    return pictureId
+  }
+  const pointer = control.metadata?.pictureBlockId
+  if (pointer !== undefined && (typeof pointer !== 'string' || !pointer)) throw new TypeError('图片内容控件的对象身份无效：' + id)
   const existingPictureId = typeof control.metadata?.pictureBlockId === 'string' ? control.metadata.pictureBlockId : undefined
   const existingPicture = existingPictureId ? findBlock(model, existingPictureId) : undefined
+  if (existingPictureId && (!existingPicture || existingPicture.type !== 'image')) throw new RangeError('图片内容控件的对象不是实际图片：' + id)
   if (existingPicture?.type === 'image') {
-    existingPicture.metadata = { ...existingPicture.metadata, image: { ...image } }
+    for (const other of model.contentControls ?? []) if (other.id !== id && other.type === 'picture' && other.metadata?.pictureBlockId === existingPicture.id) {
+      if (isContentLocked(other)) throw new RangeError('图片替换不能改变锁定子控件所引用的图片：' + other.id)
+      throw new RangeError('图片对象不能被多个图片内容控件同时拥有：' + existingPicture.id)
+    }
+    existingPicture.metadata = { ...existingPicture.metadata, image: { ...image }, pictureInputAnchor: true }
     control.metadata = { ...control.metadata, pictureImage: { ...image } }
+    control.value = undefined; control.showingPlaceholder = false
     return existingPicture.id
   }
   const target = targetForControl(model, control)
@@ -372,7 +459,7 @@ export function replacePictureContentControlImage(model: DocumentModel, id: stri
   const picture = createParagraph()
   picture.type = 'image'
   picture.runs = []
-  picture.metadata = { image: { ...image }, contentControlId: control.id, anchorBlockId: block.id, anchorOffset: startOffset, tailBlockId: tail.id }
+  picture.metadata = { image: { ...image }, contentControlId: control.id, pictureInputAnchor: true, anchorBlockId: block.id, anchorOffset: startOffset, tailBlockId: tail.id }
   const pictureId = picture.id
   container.splice(index + 1, 0, picture, tail)
   for (const candidate of model.contentControls ?? []) {
@@ -397,42 +484,134 @@ export function replacePictureContentControlImage(model: DocumentModel, id: stri
   return pictureId
 }
 
-export function duplicateRepeatingSectionItem(model: DocumentModel, id: string): DocumentContentControl {
-  const blockId = hostedControlBlock(model, id), hosted = blockId && editHostedControl(model, blockId, scoped => duplicateRepeatingSectionItem(scoped, id))
-  if (hosted) return hosted.value
-  const item = requireControl(model, id)
+/** The toolbar and mutations share the same placement, range and nested-lock rules. */
+export function assertDocumentRepeatingSectionItemEditable(model: DocumentModel, id: string, action: 'duplicate' | 'delete'): void {
+  const item = requireControl(model, id), host = documentBlockHostForId(model, item.blockRange?.blockIds[0] ?? item.tableRowRange?.tableId ?? item.blockId)
+  if (host) { assertDocumentRepeatingSectionItemEditable(documentModelForBlockHost(model, host, true), id, action); return }
+  if (item.placement === 'row') { assertDocumentRepeatingContentControlRowsEditable(model, id, action); return }
+  if (item.blockRange) { assertDocumentRepeatingContentControlBlocksEditable(model, id, action); return }
   if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
-  if (['row', 'cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be duplicated')
-  const section = repeatingSectionAncestor(model.contentControls ?? [], item)
+  if ((action === 'duplicate' ? ['row', 'cell', 'table'] : ['cell', 'table']).includes(item.placement ?? '')) {
+    throw new TypeError(`This repeating-section placement cannot be ${action === 'duplicate' ? 'duplicated' : 'deleted'}`)
+  }
+  const controls = model.contentControls ?? [], section = repeatingSectionAncestor(controls, item)
   if (!section) throw new Error(`Repeating-section parent is missing: ${id}`)
   if (section.repeatingSection?.doNotAllowInsertDelete) throw new Error(`Repeating-section items cannot be changed: ${section.id}`)
-  if (isControlLocked(item) || isContentLocked(item) || isContentLocked(section)) throw new Error(`Repeating-section item is locked: ${id}`)
+  const locked = action === 'duplicate' ? isControlLocked(item) || isContentLocked(item) || isContentLocked(section)
+    : repeatingSectionItemControls(controls, item).some(control => isControlLocked(control) || isContentLocked(control))
+  if (locked) throw new Error(`Repeating-section item is locked: ${id}`)
   assertAncestorContentEditable(model, item)
+  const target = targetForControl(model, item)
+  if (!target) throw new Error(`Content control paragraph not found: ${item.blockId}`)
+  const text = runText(runsForTarget(model, target))
+  if (item.startOffset > item.endOffset || !isDocumentTextBoundary(text, item.startOffset) || !isDocumentTextBoundary(text, item.endOffset)) {
+    throw new RangeError(`Repeating-section item range is invalid: ${id}`)
+  }
+  if (action === 'delete') for (const control of controls) {
+    if (control.id === item.id || control.blockId !== item.blockId || control.endOffset <= item.startOffset || control.startOffset >= item.endOffset) continue
+    if (hasAncestor(controls, item, control.id) || control.startOffset >= item.startOffset && control.endOffset <= item.endOffset) continue
+    throw new RangeError(`Repeating-section deletion cannot split another content control: ${control.id}`)
+  }
+  const paragraph = documentTextFieldParagraphs(model).find(paragraph => paragraph.block.id === item.blockId)!
+  const start = paragraph.absoluteStart + item.startOffset, end = paragraph.absoluteStart + item.endOffset
+  for (const field of documentTextFieldRanges(model)) {
+    const touches = field.absoluteStart === field.absoluteEnd ? field.absoluteStart > start && field.absoluteEnd < end
+      : field.absoluteStart < end && start < field.absoluteEnd
+    if (!touches) continue
+    if (action === 'duplicate' && (field.absoluteStart < start || field.absoluteEnd > end)) throw new RangeError('复制重复项目不能切开跨项目字段：' + field.field.id)
+    if (action === 'delete' && documentFieldLocked(field.field)) throw new RangeError('删除重复项目不能改变锁定字段：' + field.field.id)
+  }
+  const source = documentRepeatingContentControlInlineCopySource(paragraph.block, item.startOffset, item.endOffset)
+  if (action === 'duplicate' && text.length + item.endOffset - item.startOffset > 16 * 1024 * 1024) throw new RangeError('重复项目复制超过段落文字预算。')
+  const runIds = new Set(source.runs.map(run => run.id))
+  if (action === 'delete') for (const kind of ['footnotes', 'endnotes'] as const) for (const note of Object.values(model[kind] ?? {})) {
+    if (note.referenceBlockId === item.blockId && runIds.has(note.referenceRunId)) assertDocumentRepeatingNoteContentRemovable(model, note)
+  }
+  if (action === 'duplicate' && repeatingSectionItemControls(controls, item).some(control => control.type === 'picture'
+    && typeof control.metadata?.pictureBlockId === 'string' && findBlock(model, control.metadata.pictureBlockId))) {
+    throw new RangeError('此旧行内重复项目的图片位于文字范围之外，需要先归一化为完整块范围。')
+  }
+}
 
+function repeatingSectionItemControls(controls: readonly DocumentContentControl[], item: DocumentContentControl): DocumentContentControl[] {
+  return controls.filter(control => control.blockId === item.blockId && control.startOffset >= item.startOffset && control.endOffset <= item.endOffset
+    && (control.id === item.id || hasAncestor(controls, control, item.id)))
+}
+
+export function duplicateRepeatingSectionItem(model: DocumentModel, id: string, permission?: DocumentPermissionContext,
+  identityMap?: DocumentRepeatingContentControlCopyIds): DocumentContentControl {
+  const blockId = hostedControlBlock(model, id), host = blockId && documentBlockHostForId(model, blockId)
+  if (host) {
+    const item = requireControl(model, id), ids = createDocumentRepeatingContentControlCopyIds(), scoped = documentModelForBlockHost(model, host, true)
+    if (permission) {
+      const targets = documentContentControlPermissionTargets(scoped, item, model)
+      assertDocumentPermission(model.permissionRules ?? [], permission, 'edit', targets)
+      assertDocumentPermission(model.permissionRules ?? [], permission, 'copy', targets)
+    }
+    const inline = !item.blockRange && !item.tableRowRange ? { blockId: item.blockId, startOffset: item.startOffset, endOffset: item.endOffset, insertionOffset: item.endOffset } : undefined
+    const hosted = editHostedControl(model, blockId!, view => duplicateRepeatingSectionItem(view, id, permission, ids), host, (before, candidate) => {
+      finalizeDocumentContentControlHostResources(before, candidate, ids, inline)
+      if (permission) assertDocumentPermission(before.permissionRules ?? [], permission, 'edit', permissionTargetsForChangedBlocks(before, candidate))
+    })!
+    const result = cloneControl(requireControl(model, hosted.value.id))
+    if (identityMap) for (const key of Object.keys(identityMap) as Array<keyof DocumentRepeatingContentControlCopyIds>) {
+      for (const [oldId, newId] of ids[key]) identityMap[key].set(oldId, newId)
+    }
+    return result
+  }
+  const item = requireControl(model, id)
+  if (item.placement === 'row') {
+    const plan = prepareDocumentRepeatingContentControlRowsMutation(model, id, 'duplicate', permission)
+    const copy = plan.model.contentControls?.find(control => control.id === plan.controlId)
+    if (!copy) throw new RangeError('复制的重复行控件不存在。')
+    Object.assign(model, plan.model)
+    if (identityMap) for (const key of Object.keys(identityMap) as Array<keyof DocumentRepeatingContentControlCopyIds>) {
+      for (const [oldId, newId] of plan.identityMap[key]) identityMap[key].set(oldId, newId)
+    }
+    return cloneControl(copy)
+  }
+  if (item.blockRange) {
+    const plan = prepareDocumentRepeatingContentControlBlocksMutation(model, id, 'duplicate', permission)
+    const copy = plan.model.contentControls?.find(control => control.id === plan.controlId)
+    if (!copy) throw new RangeError('复制的重复块控件不存在。')
+    Object.assign(model, plan.model)
+    if (identityMap) for (const key of Object.keys(identityMap) as Array<keyof DocumentRepeatingContentControlCopyIds>) {
+      for (const [oldId, newId] of plan.identityMap[key]) identityMap[key].set(oldId, newId)
+    }
+    return cloneControl(copy)
+  }
+  assertDocumentRepeatingSectionItemEditable(model, id, 'duplicate')
+  const destination = model, before = model, ids = createDocumentRepeatingContentControlCopyIds()
+  if (permission) {
+    const targets = documentContentControlPermissionTargets(model, item)
+    assertDocumentPermission(model.permissionRules ?? [], permission, 'edit', targets)
+    assertDocumentPermission(model.permissionRules ?? [], permission, 'copy', targets)
+  }
+  model = cloneModel(model)
   const target = targetForControl(model, item)
   if (!target) throw new Error(`Content control paragraph not found: ${item.blockId}`)
   const runs = runsForTarget(model, target)
-  const text = sliceRuns(runs, item.startOffset, item.endOffset)
   const textLength = item.endOffset - item.startOffset
   const insertionOffset = item.endOffset
   const paragraph = findBlock(model, item.blockId)!
-  const copiedFields = documentTextFields(paragraph).filter(field => (field.endBlockId === undefined || field.endBlockId === paragraph.id) && field.startOffset >= item.startOffset && field.endOffset <= item.endOffset)
-    .map(field => ({ ...field, id: documentId('field'), startOffset: field.startOffset - item.startOffset, endOffset: field.endOffset - item.startOffset }))
-  transformDocumentTextFieldsForBlockEdit(paragraph, insertionOffset, insertionOffset, runText(text), undefined, model)
-  setTargetRuns(model, target, [
-    ...sliceRuns(runs, 0, insertionOffset),
-    ...text,
-    ...sliceRuns(runs, insertionOffset),
-  ])
-  insertDocumentTextFields(paragraph, copiedFields, insertionOffset)
-
+  const source = documentRepeatingContentControlInlineCopySource(paragraph, item.startOffset, item.endOffset), copied = copyDocumentBlocksForPaste([source])[0]!
+  indexDocumentRepeatingContentControlCopies([source], [copied], ids)
+  // The paragraph shell is borrowed, never inserted. The new runs belong to the existing real host.
+  ids.block.set(paragraph.id, paragraph.id)
+  const { before: prefix, after: suffix } = splitDocumentRunRange(runs, insertionOffset, insertionOffset)
+  transformDocumentTextFieldsForBlockEdit(paragraph, insertionOffset, insertionOffset, runText(copied.runs), undefined, model)
+  paragraph.runs = [...prefix, ...copied.runs, ...suffix]
+  refreshContentControlParagraphText(model, paragraph)
+  insertDocumentTextFields(paragraph, documentTextFields(copied), insertionOffset)
+  transformDocumentCommentAnchorsForTextEdit(model, paragraph.id, insertionOffset, insertionOffset, runText(copied.runs))
+  copyDocumentRepeatingContentControlNotes(before, model, ids)
   const controls = model.contentControls ?? []
-  const descendants = controls.filter((control) => control.blockId === item.blockId
-    && control.startOffset >= item.startOffset && control.endOffset <= item.endOffset
-    && (control.id === item.id || hasAncestor(controls, control, item.id)))
+  const itemControls = repeatingSectionItemControls(before.contentControls ?? [], item), itemIds = new Set(itemControls.map(control => control.id))
+  const descendants = itemControls.filter(control => !control.metadata?.officeStoryLockSource)
   const idMap = new Map(descendants.map((control) => [control.id, newContentControlId()]))
+  for (const [oldId, newId] of idMap) ids.control.set(oldId, newId)
   for (const control of controls) {
-    if (control.id === item.id || hasAncestor(controls, control, item.id)) continue
+    if (itemIds.has(control.id) || control.blockRange || control.tableRowRange) continue
     if (control.blockId !== item.blockId) continue
     if (control.startOffset >= insertionOffset) {
       control.startOffset += textLength
@@ -444,59 +623,105 @@ export function duplicateRepeatingSectionItem(model: DocumentModel, id: string):
   const copies = descendants.map((control) => ({
     ...cloneControl(control),
     id: idMap.get(control.id)!,
-    startOffset: insertionOffset + control.startOffset - item.startOffset,
-    endOffset: insertionOffset + control.endOffset - item.startOffset,
+    blockId: ids.block.get(control.blockId)!,
+    startOffset: control.blockId === item.blockId ? insertionOffset + control.startOffset - item.startOffset : control.startOffset,
+    endOffset: control.blockId === item.blockId ? insertionOffset + control.endOffset - item.startOffset : control.endOffset,
     parentId: control.id === item.id ? item.parentId : idMap.get(control.parentId ?? '') ?? control.parentId,
+    ...(control.blockRange ? { blockRange: { blockIds: control.blockRange.blockIds.map(id => ids.block.get(id)!) } } : {}),
+    ...(control.tableRowRange ? { tableRowRange: { tableId: ids.block.get(control.tableRowRange.tableId)!, rowIds: control.tableRowRange.rowIds.map(id => ids.row.get(id)!) } } : {}),
+    metadata: remapDocumentRepeatingContentControlMetadata(control.metadata, ids),
   }))
   controls.push(...copies)
-  controls.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
-  return cloneControl(copies.find((control) => control.type === 'repeatingSectionItem')!)
+  copyDocumentRepeatingContentControlNoteControls(before, model, ids)
+  model.contentControls!.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
+  const newBlockIds = new Set([...ids.block.values()].filter(blockId => blockId !== paragraph.id))
+  for (const kind of ['footnotes', 'endnotes'] as const) for (const note of Object.values(model[kind] ?? {})) if (note.content?.blocks) {
+    visitDocumentRepeatingContentControlBlocks(note.content.blocks, block => {
+      if (newBlockIds.has(block.id)) block.metadata = remapDocumentRepeatingContentControlMetadata(block.metadata, ids)!
+    })
+  }
+  copyDocumentRepeatingContentControlComments(before, model, ids, { blockId: paragraph.id, startOffset: item.startOffset, endOffset: item.endOffset, insertionOffset })
+  reconcileDocumentContentControlBlockEdits(before, model, { selection: { anchor: { ...target, offset: item.startOffset }, focus: { ...target, offset: item.endOffset } }, activeControlId: id, absorbAdjacentInsertions: false })
+  reconcileDocumentContentControlTableRows(before, model)
+  const live = requireControl(model, idMap.get(item.id)!), selection = { anchor: { ...target, offset: live.startOffset }, focus: { ...target, offset: live.endOffset } }
+  reconcileDocumentTableAnchors(before, model, selection, new Set(documentTextFieldRanges(before).map(range => range.field.id)))
+  assertRepeatingItemGroupLocksPreserved(before, model, item)
+  if (permission) assertDocumentPermission(before.permissionRules ?? [], permission, 'edit', permissionTargetsForChangedBlocks(before, model))
+  const result = cloneControl(requireControl(model, idMap.get(item.id)!))
+  Object.assign(destination, model)
+  if (identityMap) for (const key of Object.keys(identityMap) as Array<keyof DocumentRepeatingContentControlCopyIds>) {
+    for (const [oldId, newId] of ids[key]) identityMap[key].set(oldId, newId)
+  }
+  return result
 }
 
-export function deleteRepeatingSectionItem(model: DocumentModel, id: string): void {
+export function deleteRepeatingSectionItem(model: DocumentModel, id: string, permission?: DocumentPermissionContext): void {
   const blockId = hostedControlBlock(model, id)
-  if (blockId && editHostedControl(model, blockId, scoped => deleteRepeatingSectionItem(scoped, id))) return
+  const host = blockId && documentBlockHostForId(model, blockId)
+  if (host) {
+    if (permission) assertDocumentPermission(model.permissionRules ?? [], permission, 'edit',
+      documentContentControlPermissionTargets(documentModelForBlockHost(model, host, true), requireControl(model, id), model))
+    editHostedControl(model, blockId!, scoped => deleteRepeatingSectionItem(scoped, id, permission), host, (before, candidate) => {
+      finalizeDocumentContentControlHostResources(before, candidate)
+      if (permission) assertDocumentPermission(before.permissionRules ?? [], permission, 'edit', permissionTargetsForChangedBlocks(before, candidate))
+    })
+    return
+  }
   const item = requireControl(model, id)
-  if (item.type !== 'repeatingSectionItem') throw new TypeError(`Content control ${id} is not a repeating-section item`)
-  if (['cell', 'table'].includes(item.placement ?? '')) throw new TypeError('This repeating-section placement cannot be deleted')
-  const section = repeatingSectionAncestor(model.contentControls ?? [], item)
-  if (!section) throw new Error(`Repeating-section parent is missing: ${id}`)
-  if (section.repeatingSection?.doNotAllowInsertDelete) throw new Error(`Repeating-section items cannot be changed: ${section.id}`)
-  const removed = (model.contentControls ?? []).filter((control) => control.blockId === item.blockId
-    && control.startOffset >= item.startOffset && control.endOffset <= item.endOffset
-    && (control.id === item.id || hasAncestor(model.contentControls ?? [], control, item.id)))
-  if (removed.some((control) => isControlLocked(control) || isContentLocked(control))) throw new Error(`Repeating-section item is locked: ${id}`)
-  assertAncestorContentEditable(model, item)
+  if (item.placement === 'row') {
+    const plan = prepareDocumentRepeatingContentControlRowsMutation(model, id, 'delete', permission)
+    Object.assign(model, plan.model)
+    return
+  }
+  if (item.blockRange) {
+    const plan = prepareDocumentRepeatingContentControlBlocksMutation(model, id, 'delete', permission)
+    Object.assign(model, plan.model)
+    return
+  }
+  assertDocumentRepeatingSectionItemEditable(model, id, 'delete')
+  const destination = model, before = model
+  if (permission) assertDocumentPermission(model.permissionRules ?? [], permission, 'edit', documentContentControlPermissionTargets(model, item))
+  model = cloneModel(model)
+  const removed = repeatingSectionItemControls(model.contentControls ?? [], item)
   const target = targetForControl(model, item)
   if (!target) throw new Error(`Content control paragraph not found: ${item.blockId}`)
   const runs = runsForTarget(model, target)
   const startOffset = item.startOffset
   const endOffset = item.endOffset
   const textLength = item.endOffset - item.startOffset
-  for (const control of model.contentControls ?? []) {
-    if (control.id === item.id || control.blockId !== item.blockId || control.endOffset <= startOffset || control.startOffset >= endOffset) continue
-    if (hasAncestor(model.contentControls ?? [], item, control.id)) continue
-    if (control.startOffset >= startOffset && control.endOffset <= endOffset) continue
-    throw new RangeError(`Repeating-section deletion cannot split another content control: ${control.id}`)
-  }
   const paragraph = findBlock(model, item.blockId)!
-  const removedFields = new Set(documentTextFields(paragraph).filter(field => (field.endBlockId === undefined || field.endBlockId === paragraph.id) && field.startOffset >= startOffset && field.endOffset <= endOffset).map(field => field.id))
+  const removedFields = new Set(documentTextFields(documentRepeatingContentControlInlineCopySource(paragraph, startOffset, endOffset)).map(field => field.id))
+  const { before: prefix, after: suffix } = splitDocumentRunRange(runs, startOffset, endOffset)
   transformDocumentTextFieldsForBlockEdit(paragraph, startOffset, endOffset, '', undefined, model)
-  setTargetRuns(model, target, [
-    ...sliceRuns(runs, 0, startOffset),
-    ...sliceRuns(runs, endOffset),
-  ])
+  paragraph.runs = [...prefix, ...suffix]
+  if (!paragraph.runs.length) paragraph.runs = [createRun()]
+  refreshContentControlParagraphText(model, paragraph)
   setDocumentTextFields(paragraph, documentTextFields(paragraph).filter(field => !removedFields.has(field.id)))
+  transformDocumentCommentAnchorsForTextEdit(model, paragraph.id, startOffset, endOffset, '')
   const removedIds = new Set(removed.map((control) => control.id))
   model.contentControls = (model.contentControls ?? []).filter((control) => !removedIds.has(control.id))
   for (const control of model.contentControls) {
-    if (control.blockId !== item.blockId) continue
+    if (control.blockId !== item.blockId || control.blockRange || control.tableRowRange) continue
     if (control.startOffset >= endOffset) {
       control.startOffset -= textLength
       control.endOffset -= textLength
     } else if (control.startOffset <= startOffset && control.endOffset >= endOffset) {
       control.endOffset -= textLength
     }
+  }
+  removeDeletedDocumentRepeatingNoteScopes(before, model)
+  reconcileDocumentContentControlBlockEdits(before, model, { selection: { anchor: { ...target, offset: startOffset }, focus: { ...target, offset: endOffset } }, activeControlId: id, absorbAdjacentInsertions: false })
+  reconcileDocumentContentControlTableRows(before, model)
+  reconcileDocumentTableAnchors(before, model, { anchor: { ...target, offset: startOffset }, focus: { ...target, offset: startOffset } }, new Set(documentTextFieldRanges(before).map(range => range.field.id)))
+  assertRepeatingItemGroupLocksPreserved(before, model, item)
+  if (permission) assertDocumentPermission(before.permissionRules ?? [], permission, 'edit', permissionTargetsForChangedBlocks(before, model))
+  Object.assign(destination, model)
+}
+
+function assertRepeatingItemGroupLocksPreserved(before: DocumentModel, after: DocumentModel, item: DocumentContentControl): void {
+  for (const group of before.contentControls ?? []) if (group.type === 'group' && isContentLocked(group)
+    && hasAncestor(before.contentControls ?? [], item, group.id) && !documentContentControlGroupEditAllowed(before, after, group, { activeControlId: item.id })) {
+    throw new RangeError('重复项目编辑不能改变锁定分组的范围外内容。')
   }
 }
 
@@ -531,8 +756,14 @@ export function removeDocumentContentControl(model: DocumentModel, id: string): 
 }
 
 export function contentControlText(model: DocumentModel, control: DocumentContentControl): string {
-  const host = documentBlockHostForId(model, control.blockId)
+  const host = documentBlockHostForId(model, control.blockRange?.blockIds[0] ?? control.tableRowRange?.tableId ?? control.blockId)
   if (host) return contentControlText(documentModelForBlockHost(model, host), control)
+  if (control.blockRange) return documentContentControlBlockTextTargets(model, control.blockRange)
+    .map(target => runText(runsForTarget(model, target))).join('\n')
+  if (control.tableRowRange) {
+    const owned = documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, control.tableRowRange))
+    return textTargets(model).filter(target => owned.has(target.cellBlockId ?? target.blockId)).map(target => runText(runsForTarget(model, target))).join('\n')
+  }
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
   return runText(sliceRuns(runsForTarget(model, target), control.startOffset, control.endOffset))
@@ -544,7 +775,7 @@ export function contentControlRange(control: DocumentContentControl): { blockId:
 
 /** Shared capability check for Canvas controls and the actual value commands. */
 export function assertDocumentContentControlValueEditable(model: DocumentModel, id: string): void {
-  const control = requireControl(model, id), host = documentBlockHostForId(model, control.blockId)
+  const control = requireControl(model, id), host = documentBlockHostForId(model, control.blockRange?.blockIds[0] ?? control.tableRowRange?.tableId ?? control.blockId)
   if (host) { assertDocumentContentControlValueEditable(documentModelForBlockHost(model, host, true), id); return }
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
@@ -554,6 +785,22 @@ export function assertTextRangeEditable(model: DocumentModel, startOffset: numbe
   const body = flattenBodySegments(model)
   for (const control of model.contentControls ?? []) {
     if (!isContentLocked(control)) continue
+    if (control.tableRowRange || control.blockRange) {
+      if (!findBlock(model, control.blockRange?.blockIds[0] ?? control.tableRowRange!.tableId)) continue
+      const owned = control.blockRange ? documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(model, control.blockRange))
+        : documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, control.tableRowRange!))
+      for (const segment of body) {
+        const blockId = segment.cellBlockId ?? segment.blockId
+        if (!owned.has(blockId)) continue
+        const overlaps = startOffset === endOffset ? startOffset >= segment.startOffset && startOffset <= segment.endOffset
+          : startOffset < segment.endOffset && segment.startOffset < endOffset
+        if (overlaps && isStructuralContentControlLockedAtBlockEdit(model, control, blockId,
+          Math.max(0, startOffset - segment.startOffset), Math.min(segment.endOffset - segment.startOffset, endOffset - segment.startOffset))) {
+          throw new Error(`Content control row content is locked: ${control.id}`)
+        }
+      }
+      continue
+    }
     const segment = body.find((candidate) => (candidate.cellBlockId ?? candidate.blockId) === control.blockId)
     if (!segment) continue
     const controlStart = segment.startOffset + control.startOffset
@@ -583,7 +830,7 @@ export function transformContentControlsForTextEdit(
   const first = segments.indexOf(startSegment)
   const last = segments.indexOf(endSegment)
   const affectedIds = new Set(segments.slice(first, last + 1).map((segment) => segment.cellBlockId ?? segment.blockId))
-  const control = model.contentControls.find((candidate) => affectedIds.has(candidate.blockId)
+  const control = model.contentControls.find((candidate) => !candidate.tableRowRange && !candidate.blockRange && affectedIds.has(candidate.blockId)
     && !((startSegment.cellBlockId ?? startSegment.blockId) === candidate.blockId
       && candidate.endOffset <= startOffset - startSegment.startOffset))
   if (control) throw new RangeError(`A text edit cannot cross a content control paragraph: ${control.id}`)
@@ -610,6 +857,15 @@ export function transformContentControlsForBlockEdit(
   const inside = insideControlEditChain(model, blockId, startOffset, endOffset, options.activeControlId ?? emptyInsertionControl?.id)
   for (const control of next.contentControls!) {
     if (!next.contentControls!.some((candidate) => candidate.id === control.id)) continue
+    if (control.tableRowRange || control.blockRange) {
+      if (!documentContentControlContainsBlockRange(model, control, blockId, startOffset, endOffset)) continue
+      if (isStructuralContentControlLockedAtBlockEdit(model, control, blockId, startOffset, endOffset)) throw new Error(`Content control content is locked: ${control.id}`)
+      if (control.blockId === blockId) {
+        const target = targetForControl(model, control), length = target ? runText(runsForTarget(model, target)).length : 0
+        control.startOffset = 0; control.endOffset = split?.firstBreakOffset ?? Math.max(0, length + replacementLength - (endOffset - startOffset))
+      }
+      continue
+    }
     if (control.blockId !== blockId) continue
     const insertion = startOffset === endOffset
     const overlaps = insertion
@@ -661,7 +917,7 @@ export function transformContentControlsForBlockEdit(
     const unwrapping = new Set<string>()
     if (!preserveControlRanges) {
       for (const control of next.contentControls!) {
-        if (control.blockId !== blockId || control.endOffset <= split.firstBreakOffset
+        if (control.tableRowRange || control.blockRange || control.blockId !== blockId || control.endOffset <= split.firstBreakOffset
           || control.startOffset >= split.lastParagraphOffset || !control.temporary || isControlLocked(control)
           || control.metadata?.officeStoryLockSource) continue
         const previous = model.contentControls!.find(candidate => candidate.id === control.id)!
@@ -688,7 +944,7 @@ export function transformContentControlsForBlockEdit(
       }
       return true
     }
-    const moving = controls.filter((control) => control.blockId === blockId && movesToSuffix(control))
+    const moving = controls.filter((control) => !control.tableRowRange && !control.blockRange && control.blockId === blockId && movesToSuffix(control))
     for (const control of moving) {
       control.blockId = split.blockId
       control.startOffset -= split.lastParagraphOffset
@@ -699,7 +955,11 @@ export function transformContentControlsForBlockEdit(
 }
 
 export function assertContentControlBlockRemovable(model: DocumentModel, blockId: string): void {
-  const controls = model.contentControls?.filter((candidate) => candidate.blockId === blockId) ?? []
+  for (const control of model.contentControls ?? []) if (control.tableRowRange && control.blockId === blockId
+    && findBlock(model, control.tableRowRange.tableId)) reanchorDocumentContentControlTableRows(model, control)
+  for (const control of model.contentControls ?? []) if (control.blockRange && control.blockId === blockId
+    && findBlock(model, control.blockRange.blockIds[0]!)) reanchorDocumentBlockContentControl(model, control)
+  const controls = model.contentControls?.filter((candidate) => !candidate.blockRange && !candidate.tableRowRange && candidate.blockId === blockId) ?? []
   for (const control of controls) if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
   for (const control of controls) removeControlTreeFromModel(model, control)
 }
@@ -708,13 +968,13 @@ export function assertContentControlBlockRemovable(model: DocumentModel, blockId
 export function validateDocumentContentControlRanges(model: DocumentModel): void {
   const paragraphs = new Map(documentTextFieldParagraphs(model).map(paragraph => [paragraph.block.id, paragraph]))
   for (const control of model.contentControls ?? []) {
-    const host = documentBlockHostForId(model, control.blockId), scoped = host ? documentModelForBlockHost(model, host) : model
+    const host = documentBlockHostForId(model, control.blockRange?.blockIds[0] ?? control.tableRowRange?.tableId ?? control.blockId), scoped = host ? documentModelForBlockHost(model, host) : model
     validateControl(scoped, cloneControl(control))
     const paragraph = host ? documentTextFieldParagraphs(scoped).find(candidate => candidate.block.id === control.blockId) : paragraphs.get(control.blockId)
     if (paragraph && (!isDocumentTextBoundary(paragraph.text, control.startOffset) || !isDocumentTextBoundary(paragraph.text, control.endOffset))) {
       throw new RangeError(`Content control UTF-16 range splits a character: ${control.id}`)
     }
-    assertNoPartialOverlap(model.contentControls ?? [], control)
+    assertNoPartialOverlap(scoped, scoped.contentControls ?? [], control)
   }
 }
 
@@ -740,14 +1000,24 @@ export function transformContentControlsForBodyRangeEdit(
     .sort((left, right) => hasAncestor(model.contentControls ?? [], left, right.id) ? -1 : hasAncestor(model.contentControls ?? [], right, left.id) ? 1 : 0)[0] : undefined
   const inputControlId = options.activeControlId ?? emptyInputControl?.id
   const inputControl = inputControlId ? model.contentControls?.find(control => control.id === inputControlId) : undefined
-  const inputParagraph = inputControl && source.get(inputControl.blockId)
+  const inputParagraph = inputControl && (inputControl.tableRowRange || inputControl.blockRange
+    ? sourceParagraphs.find(paragraph => startOffset >= paragraph.absoluteStart && startOffset <= paragraph.absoluteEnd) : source.get(inputControl.blockId))
   if (inputControlId && (!inputControl || !inputParagraph)) throw new RangeError('内容控件内部编辑的源段落不存在：' + inputControlId)
   const inside = inputControl && inputParagraph
-    ? insideControlEditChain(model, inputControl.blockId, startOffset - inputParagraph.absoluteStart, endOffset - inputParagraph.absoluteStart, inputControlId)
+    ? insideControlEditChain(model, inputParagraph.block.id, startOffset - inputParagraph.absoluteStart, endOffset - inputParagraph.absoluteStart, inputControlId)
     : new Set<string>()
   const unwrapping = new Set<string>()
   for (const control of [...next.contentControls!]) {
     if (!next.contentControls!.some(candidate => candidate.id === control.id)) continue
+    // The complete source block tree is reconciled by the outer structural planner after mutation.
+    if (control.blockRange) continue
+    if (control.tableRowRange) {
+      reanchorDocumentContentControlTableRows(model, control)
+      const target = targetForControl(model, control)
+      if (!target) throw new RangeError(`Row content control has no surviving input target: ${control.id}`)
+      control.startOffset = 0; control.endOffset = runText(runsForTarget(model, target)).length
+      continue
+    }
     const paragraph = source.get(control.blockId)
     if (!paragraph) continue
     const from = paragraph.absoluteStart + control.startOffset, to = paragraph.absoluteStart + control.endOffset
@@ -795,6 +1065,7 @@ export function transformContentControlsForBodyRangeEdit(
 }
 
 function replaceControlText(model: DocumentModel, control: DocumentContentControl, value: string, marks: RunPatch = {}): void {
+  if (control.blockRange) { replaceDocumentBlockContentControlText(model, control, value, marks); return }
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
   const oldLength = control.endOffset - control.startOffset
@@ -848,6 +1119,12 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
 
 function targetForControl(model: DocumentModel, control: DocumentContentControl): TextTarget | undefined {
   return textTargets(model).find((target) => (target.cellBlockId ?? target.blockId) === control.blockId)
+}
+
+function refreshContentControlParagraphText(model: DocumentModel, block: DocumentBlock): void {
+  const code = block.metadata.codeBlock
+  if (code && typeof code === 'object' && !Array.isArray(code)) block.metadata.codeBlock = { ...code, source: runText(block.runs) }
+  for (const ancestor of documentBlockAncestry(model, block.id) ?? []) delete ancestor.metadata.html
 }
 
 function flattenBodySegments(model: DocumentModel): Array<{ blockId: string; cellBlockId?: string; startOffset: number; endOffset: number }> {
@@ -931,21 +1208,45 @@ function validateControl(model: DocumentModel, control: DocumentContentControl):
   if ((control.type === 'dropDownList' || control.type === 'comboBox') && (!control.items?.length || control.items.some((item) => !item.value))) throw new RangeError('List content controls require non-empty values')
   if (control.type === 'dropDownList' && !control.showingPlaceholder && control.value !== undefined && !control.items?.some((item) => item.value === control.value)) throw new RangeError(`Dropdown value is not present in its item list: ${control.value}`)
   if (control.type === 'checkbox' && control.checked === undefined) control.checked = false
+  if (control.placement === 'row') {
+    if (!control.tableRowRange) throw new RangeError(`Row content control requires a persisted table row range: ${control.id}`)
+    const rows = resolveDocumentContentControlTableRows(model, control.tableRowRange)
+    if (!documentContentControlTableRowBlockIds(rows).has(control.blockId)) throw new RangeError(`Row content control input fallback is outside its table rows: ${control.id}`)
+  } else if (control.tableRowRange) throw new RangeError(`Only row content controls can carry a table row range: ${control.id}`)
+  if (control.blockRange) {
+    if (control.tableRowRange || control.placement !== 'block') throw new RangeError(`Complete block content controls require block placement: ${control.id}`)
+    if (!documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(model, control.blockRange)).has(control.blockId)) {
+      throw new RangeError(`Block content control input fallback is outside its owned blocks: ${control.id}`)
+    }
+  }
   if (control.parentId) {
     if (control.parentId === control.id || hasAncestor(model.contentControls ?? [], control, control.id)) throw new RangeError('Content control parent relationships must not contain a cycle')
     const parent = model.contentControls?.find((candidate) => candidate.id === control.parentId)
     if (!parent || !['group', 'repeatingSection', 'repeatingSectionItem'].includes(parent.type)) throw new Error(`Invalid content control parent: ${control.parentId}`)
-    if (parent.blockId !== control.blockId || parent.startOffset > control.startOffset || parent.endOffset < control.endOffset) throw new RangeError(`Child content control must be within its parent: ${control.parentId}`)
+    if (!documentContentControlContains(model, parent, control)) throw new RangeError(`Child content control must be within its parent: ${control.parentId}`)
   }
 }
 
-function assertNoPartialOverlap(controls: DocumentContentControl[], next: DocumentContentControl): void {
+function assertNoPartialOverlap(model: DocumentModel, controls: DocumentContentControl[], next: DocumentContentControl): void {
   for (const current of controls) {
-    if (current.blockId !== next.blockId || current.id === next.id) continue
-    const overlaps = next.startOffset < current.endOffset && current.startOffset < next.endOffset
+    if (current.id === next.id || current.metadata?.officeStoryLockSource || next.metadata?.officeStoryLockSource) continue
+    if (!findBlock(model, current.blockRange?.blockIds[0] ?? current.tableRowRange?.tableId ?? current.blockId)) continue
+    let overlaps: boolean
+    if (current.blockRange || next.blockRange) {
+      const ids = (control: DocumentContentControl) => control.blockRange
+        ? documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(model, control.blockRange))
+        : control.tableRowRange ? documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, control.tableRowRange)) : new Set([control.blockId])
+      const left = ids(current), right = ids(next)
+      overlaps = [...left].some(id => right.has(id))
+    } else if (current.tableRowRange && next.tableRowRange && current.tableRowRange.tableId === next.tableRowRange.tableId) {
+      const left = resolveDocumentContentControlTableRows(model, current.tableRowRange), right = resolveDocumentContentControlTableRows(model, next.tableRowRange)
+      overlaps = left.startRow <= right.endRow && right.startRow <= left.endRow
+    } else if (current.tableRowRange || next.tableRowRange) {
+      overlaps = documentContentControlContains(model, current, next) || documentContentControlContains(model, next, current)
+    } else overlaps = current.blockId === next.blockId && next.startOffset < current.endOffset && current.startOffset < next.endOffset
     if (!overlaps) continue
-    const nextContains = next.startOffset <= current.startOffset && next.endOffset >= current.endOffset
-    const currentContains = current.startOffset <= next.startOffset && current.endOffset >= next.endOffset
+    const nextContains = documentContentControlContains(model, next, current)
+    const currentContains = documentContentControlContains(model, current, next)
     const parentTypes = ['group', 'repeatingSection', 'repeatingSectionItem']
     const validParent = (currentContains && hasAncestor(controls, next, current.id) && parentTypes.includes(current.type))
       || (nextContains && hasAncestor(controls, current, next.id) && parentTypes.includes(next.type))
@@ -963,7 +1264,17 @@ function isContentLocked(control: DocumentContentControl): boolean { return lock
 function isControlLocked(control: DocumentContentControl): boolean { return lockedControl.has(control.lock) }
 function assertAncestorContentEditable(model: DocumentModel, control: DocumentContentControl): void {
   for (const candidate of model.contentControls ?? []) {
-    if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
+    if (candidate.id === control.id) continue
+    if (candidate.tableRowRange || candidate.blockRange) {
+      if (findBlock(model, candidate.blockRange?.blockIds[0] ?? candidate.tableRowRange!.tableId) && documentContentControlContains(model, candidate, control)
+        && isContentLocked(candidate) && !(candidate.type === 'group' && (model.contentControls ?? []).some(child => child.parentId === candidate.id
+          && (child.id === control.id || documentContentControlContains(model, child, control))))) {
+        throw new Error(`Content control content is locked: ${candidate.id}`)
+      }
+      continue
+    }
+    if (control.blockRange || control.tableRowRange) continue
+    if (candidate.blockId !== control.blockId) continue
     if (isContentControlLockedAtEdit(model, candidate, control.startOffset, control.endOffset, control.startOffset === control.endOffset)) {
       throw new Error(`Content control content is locked: ${candidate.id}`)
     }
@@ -1029,7 +1340,8 @@ function isTextEditBlockedByControl(
   globalEnd = localEnd,
 ): boolean {
   if (control.type === 'group') {
-    const children = (model.contentControls ?? []).filter((candidate) => candidate.parentId === control.id)
+    const children = (model.contentControls ?? []).filter((candidate) => candidate.parentId === control.id
+      && !candidate.blockRange && !candidate.tableRowRange && candidate.blockId === control.blockId)
     const withinChild = children.some((child) => insertion
       ? localStart > child.startOffset && localStart < child.endOffset
       : localStart >= child.startOffset && localEnd <= child.endOffset)
@@ -1043,7 +1355,8 @@ function isTextEditBlockedByControl(
 function isContentControlLockedAtEdit(model: DocumentModel, control: DocumentContentControl, start: number, end: number, insertion: boolean): boolean {
   if (!isContentLocked(control)) return false
   if (control.type === 'group') {
-    const children = (model.contentControls ?? []).filter((candidate) => candidate.parentId === control.id)
+    const children = (model.contentControls ?? []).filter((candidate) => candidate.parentId === control.id
+      && !candidate.blockRange && !candidate.tableRowRange && candidate.blockId === control.blockId)
     if (children.some((child) => insertion
       ? start > child.startOffset && start < child.endOffset
       : start >= child.startOffset && end <= child.endOffset)) return false
@@ -1051,4 +1364,51 @@ function isContentControlLockedAtEdit(model: DocumentModel, control: DocumentCon
   return insertion
     ? start > control.startOffset && start < control.endOffset
     : start < control.endOffset && control.startOffset < end
+}
+
+function isStructuralContentControlLockedAtBlockEdit(model: DocumentModel, control: DocumentContentControl, blockId: string, start: number, end: number): boolean {
+  if (!isContentLocked(control)) return false
+  if (control.type === 'group' && (model.contentControls ?? []).some(child => child.parentId === control.id
+    && documentContentControlContainsBlockRange(model, child, blockId, start, end))) return false
+  return true
+}
+
+/** A whole-block operation cannot treat a partial inline child as ownership of its paragraph. */
+function fullChildBlockIds(model: DocumentModel, child: DocumentContentControl): Set<string> {
+  if (child.blockRange) return documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(model, child.blockRange))
+  if (child.tableRowRange) return documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, child.tableRowRange))
+  const paragraph = findBlock(model, child.blockId)
+  return paragraph && child.startOffset === 0 && child.endOffset === runText(paragraph.runs).length ? new Set([child.blockId]) : new Set()
+}
+
+function groupOwnsWholeBlockEdit(model: DocumentModel, group: DocumentContentControl, touched: readonly string[]): boolean {
+  return group.type === 'group' && (model.contentControls ?? []).some(child => {
+    if (child.parentId !== group.id || !documentContentControlContains(model, group, child)) return false
+    const owned = fullChildBlockIds(model, child)
+    return touched.every(id => owned.has(id))
+  })
+}
+
+/** Replacement may re-anchor a row fallback; removal of its table still respects the wrapper lock. */
+export function assertDocumentContentControlBlocksEditable(model: DocumentModel, blockIds: ReadonlySet<string>): void {
+  for (const control of model.contentControls ?? []) {
+    if (control.blockRange && findBlock(model, control.blockRange.blockIds[0]!)) {
+      const range = resolveDocumentContentControlBlocks(model, control.blockRange), owned = documentContentControlOwnedBlockIds(range)
+      const touched = [...owned].filter(id => blockIds.has(id))
+      if (!touched.length) continue
+      if (range.blockIds.every(id => blockIds.has(id)) && (isControlLocked(control) || isContentLocked(control))) {
+        throw new RangeError(`Cannot remove a locked complete block content control: ${control.id}`)
+      }
+      if (isContentLocked(control)) {
+        if (!groupOwnsWholeBlockEdit(model, control, touched)) throw new RangeError(`Complete block content control content is locked: ${control.id}`)
+      }
+      continue
+    }
+    if (!control.tableRowRange || !findBlock(model, control.tableRowRange.tableId)) continue
+    if (blockIds.has(control.tableRowRange.tableId) && (isControlLocked(control) || isContentLocked(control))) {
+      throw new RangeError(`Cannot remove a locked content control table row wrapper: ${control.id}`)
+    }
+    const touched = [...documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, control.tableRowRange))].filter(id => blockIds.has(id))
+    if (isContentLocked(control) && touched.length && !groupOwnsWholeBlockEdit(model, control, touched)) throw new RangeError(`Content control row content is locked: ${control.id}`)
+  }
 }

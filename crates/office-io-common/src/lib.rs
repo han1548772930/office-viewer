@@ -16,9 +16,11 @@ pub mod chart_kind;
 pub mod chart_options;
 pub mod chart_color;
 pub mod chart_xml;
+mod xml_namespaces;
 pub mod excel_date;
 pub mod document_table_source;
 pub mod document_numbering_source;
+pub mod document_note_source;
 
 pub const MAXIMUM_DIGIT_WIDTH_PIXELS: f64 = 7.0;
 pub const CSS_PIXELS_PER_POINT: f64 = 4.0 / 3.0;
@@ -150,3 +152,5 @@ mod tests {
         assert_ne!(worksheet_axis_fingerprint(invisible).unwrap(), worksheet_axis_fingerprint(&invisible.replace("ht=\"20\"", "ht=\"20\" hidden=\"0\"")).unwrap());
     }
 }
+pub mod document_custom_xml;
+pub mod document_content_controls;

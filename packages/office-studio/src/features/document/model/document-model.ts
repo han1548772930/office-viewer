@@ -4,6 +4,7 @@ import { documentTableTextMatrix, documentTableValuesToTsv } from './document-ta
 import { documentTableCellBlocks, documentTableCellContentContainers, documentTableContinuationEntries } from './document-table-continuations'
 import { documentTableGrid } from './document-table-grid'
 import { DOCUMENT_TABLE_BORDER_SIDES, DOCUMENT_TABLE_DEFAULT_MARGIN, documentTableCellBorders, documentTableCellFill, documentTableCellMargin, documentTableRowProperties } from './document-table-style'
+import { documentRunHasNoteReference } from './document-note-reference'
 
 export interface DocumentRun extends InlineRun { highlight?: string; href?: string }
 export interface TextTarget { blockId: string; row?: number; col?: number; cellBlockId?: string }
@@ -272,13 +273,15 @@ export function setTargetRuns(model: DocumentModel, target: TextTarget, runs: Do
 export function compactRuns(runs: DocumentRun[]): DocumentRun[] {
   const result: DocumentRun[] = []
   for (const source of runs) {
-    if (!source.text) continue
+    const entity = documentRunHasNoteReference(source) || source.metadata?.latexFormula !== undefined
+    if (!source.text && !entity) continue
     const normalized = source.verticalAlign === 'baseline' ? applyRunPatch(source, { verticalAlign: 'baseline' }) : source
     const last = result.at(-1)
     const { id: _id, text: _text, ...marks } = normalized
     if (last) {
       const { id: _lastId, text: _lastText, ...lastMarks } = last
-      if (JSON.stringify(marks) === JSON.stringify(lastMarks)) { last.text += normalized.text; continue }
+      if (!entity && !documentRunHasNoteReference(last) && last.metadata?.latexFormula === undefined
+        && JSON.stringify(marks) === JSON.stringify(lastMarks)) { last.text += normalized.text; continue }
     }
     result.push({ ...normalized })
   }
@@ -289,11 +292,16 @@ export function sliceRuns(runs: readonly DocumentRun[], start: number, end = Num
   const result: DocumentRun[] = []
   let offset = 0
   for (const run of runs) {
+    // Half-open ownership includes a zero-width reference in its suffix once.
+    if (!run.text && (documentRunHasNoteReference(run) || run.metadata?.latexFormula !== undefined)) {
+      if (offset >= start && offset < end) result.push({ ...run })
+      continue
+    }
     const from = Math.max(0, start - offset)
     const to = Math.min(run.text.length, end - offset)
     if (to > from) result.push({ ...run, id: from === 0 && to === run.text.length ? run.id : documentId('run'), text: run.text.slice(from, to) })
     offset += run.text.length
-    if (offset >= end) break
+    if (offset > end) break
   }
   return result
 }
@@ -329,6 +337,12 @@ export function marksAtPoint(model: DocumentModel, point: DocumentPoint): RunPat
   let offset = 0
   const run = runs.find((candidate) => { offset += candidate.text.length; return point.offset <= offset }) ?? runs.at(-1) ?? createRun()
   const { id: _id, text: _text, ...patch } = run
+  if (patch.metadata) {
+    const metadata = { ...patch.metadata }
+    for (const key of ['note', 'noteReference', 'latexFormula', 'officeStoryRunSourceId']) delete metadata[key]
+    if (Object.keys(metadata).length) patch.metadata = metadata
+    else delete patch.metadata
+  }
   return patch
 }
 

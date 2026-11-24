@@ -1,24 +1,61 @@
 import type { ChartData } from './chart-engine'
 import { resolveChartType, supportsChartStatistics } from './chart-catalog'
 import { chartBubbleMapping, chartCandlestickMapping, chartEdgeMapping, chartField, chartHierarchyValueField, chartNumber, chartValueField,
-  readSpecialChartData, type ChartDataBinding, type ChartRecords } from './chart-data'
+  readSpecialChartDataSteps, type ChartDataBinding, type ChartRecords } from './chart-data'
+import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPreparation, consumeChartPreparationSync,
+  type ChartComputePreparationContext } from './chart-compute-lifecycle'
+import { chartMapSteps, chartNumericFieldSteps, chartProjectionSourceBytes } from './chart-data-preparation'
+import { chartHierarchyChartDataSteps, chartHierarchyFields, chartHierarchyNumber, chartHierarchyResultAsync } from './chart-hierarchy-data'
+
+interface ChartRecordProjection {
+  source: ChartRecords; binding: ChartDataBinding; categories: number[]; fields: number[]; values: number[]
+  visible?: ReadonlySet<number>; empty?: ChartData
+}
 
 /** Source defaults are explicit for pivot output; ordinary sheets infer numeric columns. */
 export function projectChartRecords(source: ChartRecords, chart: ChartDataBinding, availableValueFields?: readonly number[]): ChartData {
+  return consumeChartPreparationSync(projectChartRecordSteps(source, chart, availableValueFields))
+}
+
+export async function projectChartRecordsAsync(source: ChartRecords, chart: ChartDataBinding,
+  context: ChartComputePreparationContext = {}): Promise<ChartData> {
+  const plan = await consumeChartPreparation(prepareChartRecordProjectionSteps(source, chart, undefined, context), context)
+  if (plan.empty) return plan.empty
+  if (resolveChartType(chart.type).dataShape === 'hierarchy') {
+    const binding = { ...plan.binding, valueFields: plan.values }
+    const valueField = chartHierarchyValueField(plan.source, binding)
+    const result = await chartHierarchyResultAsync(plan.source, binding, context)
+    return consumeChartPreparation(chartHierarchyChartDataSteps(plan.source, result, valueField), context)
+  }
+  return consumeChartPreparation(projectPreparedChartRecordSteps(plan, context), context)
+}
+
+export function* projectChartRecordSteps(source: ChartRecords, chart: ChartDataBinding, availableValueFields?: readonly number[],
+  context: ChartComputePreparationContext = {}): Generator<void, ChartData, void> {
+  const plan = yield* prepareChartRecordProjectionSteps(source, chart, availableValueFields, context)
+  return yield* projectPreparedChartRecordSteps(plan, context)
+}
+
+function* prepareChartRecordProjectionSteps(source: ChartRecords, chart: ChartDataBinding, availableValueFields?: readonly number[],
+  context: ChartComputePreparationContext = {}): Generator<void, ChartRecordProjection, void> {
+  assertChartPreparationMemory(chartProjectionSourceBytes(source.records.length, source.fields.length), context)
   const descriptor = resolveChartType(chart.type), shape = descriptor.dataShape
+  const sourceNumericFields = shape === 'hierarchy' ? yield* chartNumericFieldSteps(source.records, source.fields.length, chartHierarchyNumber)
+    : source.sourceNumericFields ?? (yield* chartNumericFieldSteps(source.records, source.fields.length, chartNumber))
+  source = { ...source, sourceNumericFields }
   const categories = chart.options?.mapping?.categoryIndexes
     ?? (chart.categoryField === 0 && source.sourceCategoryFields?.length ? source.sourceCategoryFields : [chart.categoryField])
   const visible = source.visibleFields === undefined ? undefined : new Set(source.visibleFields)
   const numericFields = availableValueFields !== undefined ? [...availableValueFields] : source.sourceValueFields !== undefined ? [...source.sourceValueFields]
-    : source.fields.map((_field, index) => index).filter(index => source.records.some(record => chartNumber(record[index]) !== null))
+    : [...sourceNumericFields]
   const defaults = numericFields.filter(field => {
     if (visible && !visible.has(field)) return false
     if (shape === 'distribution') return true
     if (shape === 'xy' || shape === 'bubble') return field !== chart.categoryField
-    return !categories.includes(field)
+    return !(shape === 'hierarchy' ? chartHierarchyFields(source, chart) : categories).includes(field)
   })
   const authoredFields = source.syntheticValues && chart.valueFields.includes(0) ? [] : chart.valueFields
-  const singleValue = ['pie', 'funnel', 'wordCloud', 'pareto', 'histogram'].includes(descriptor.family)
+  const singleValue = shape === 'hierarchy' || ['pie', 'funnel', 'wordCloud', 'pareto', 'histogram'].includes(descriptor.family)
   const fields = authoredFields.length ? authoredFields : singleValue ? defaults.slice(0, 1) : defaults
   for (const field of chart.valueFields) chartField(source, field, '数值字段')
   const binding: ChartDataBinding = shape === 'edge' ? chart : { ...chart, valueFields: fields,
@@ -32,21 +69,56 @@ export function projectChartRecords(source: ChartRecords, chart: ChartDataBindin
   const values = visible ? fields.filter(field => visible.has(field)) : fields
   // Keep raw records in the settings source. The plotted records hide auxiliary
   // fields as well, so custom errors cannot read a hidden column as zero.
-  const plotted = visible && visible.size < source.fields.length ? { ...source,
-    records: source.records.map(record => record.map((value, field) => visible.has(field) ? value : null)) } : source
+  let plotted = source
+  if (visible && visible.size < source.fields.length) {
+    const records: ChartRecords['records'] = []
+    let work = 0
+    for (const record of source.records) {
+      records.push(yield* chartMapSteps(record, (value, field) => visible.has(field) ? value : null))
+      work += record.length + 1
+      if (work >= CHART_PREPARATION_CHUNK) { work = 0; yield }
+    }
+    const formattedRecords: ChartRecords['formattedRecords'] = source.formattedRecords ? [] : undefined
+    if (formattedRecords) for (const record of source.formattedRecords!) {
+      formattedRecords.push(yield* chartMapSteps(record, (value, field) => visible.has(field) ? value : null))
+      work += record.length + 1
+      if (work >= CHART_PREPARATION_CHUNK) { work = 0; yield }
+    }
+    plotted = { ...source, records, ...(formattedRecords ? { formattedRecords } : {}) }
+  }
   const empty: ChartData = { ...plotted, categories: [], series: [] }
-  if (visible && roles.some(field => !visible.has(field))) return empty
-  if ((shape === 'distribution' || shape === 'category' || shape === 'heatmap') && !values.length) return empty
-  const special = readSpecialChartData(plotted, shape === 'edge' ? binding : { ...binding, valueFields: values })
+  const hidden = Boolean(visible && roles.some(field => !visible.has(field)))
+    || (shape === 'distribution' || shape === 'category' || shape === 'heatmap') && !values.length
+  return { source: plotted, binding, categories, fields, values, visible, ...(hidden ? { empty } : {}) }
+}
+
+function* projectPreparedChartRecordSteps(plan: ChartRecordProjection,
+  context: ChartComputePreparationContext): Generator<void, ChartData, void> {
+  if (plan.empty) return plan.empty
+  const { source: plotted, binding, fields, values, categories, visible } = plan
+  const source = plotted, shape = resolveChartType(binding.type).dataShape
+  const special = yield* readSpecialChartDataSteps(plotted, shape === 'edge' ? binding : { ...binding, valueFields: values }, context)
   if (special) return special
-  if (shape === 'xy') return scatterData(plotted, binding, fields, visible)
+  if (shape === 'xy') return yield* scatterDataSteps(plotted, binding, fields, visible)
   for (const field of categories) chartField(source, field, '分类字段')
   for (const field of values) chartField(source, field, '数值字段')
-  return { ...plotted,
-    categories: plotted.records.map(record => categories.map(field => String(record[field] ?? '')).join(' / ')),
-    categoryValues: plotted.records.map(record => categories.length === 1 ? record[categories[0]!] ?? null : categories.map(field => String(record[field] ?? '')).join(' / ')),
-    series: values.map(field => ({ field, name: source.fields[field] || `Series ${field + 1}`, values: plotted.records.map(record => chartNumber(record[field])) })),
+  const labels: string[] = [], categoryValues: NonNullable<ChartData['categoryValues']> = []
+  let work = 0
+  for (const record of plotted.records) {
+    const parts = yield* chartMapSteps(categories, field => String(record[field] ?? ''))
+    const label = parts.join(' / ')
+    labels.push(label); categoryValues.push(categories.length === 1 ? record[categories[0]!] ?? null : label)
+    if (++work % CHART_PREPARATION_CHUNK === 0) yield
   }
+  const series: ChartData['series'] = []
+  for (const field of values) {
+    const seriesValues = yield* chartMapSteps(plotted.records, record => chartNumber(record[field]))
+    const formattedValues = shape === 'heatmap' && plotted.formattedRecords
+      ? yield* chartMapSteps(plotted.formattedRecords, record => record[field] ?? null) : undefined
+    series.push({ field, name: source.fields[field] || `Series ${field + 1}`, values: seriesValues, ...(formattedValues ? { formattedValues } : {}) })
+    if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
+  return { ...plotted, categories: labels, categoryValues, series }
 }
 
 function primaryFields(source: ChartRecords, chart: ChartDataBinding, categories: number[]): number[] {
@@ -85,7 +157,7 @@ export function cloneChartSeriesCategories(mapping: Record<number, number[]>): R
   }))
 }
 
-function scatterData(source: ChartRecords, chart: ChartDataBinding, selectedFields: number[], visible?: ReadonlySet<number>): ChartData {
+function* scatterDataSteps(source: ChartRecords, chart: ChartDataBinding, selectedFields: number[], visible?: ReadonlySet<number>): Generator<void, ChartData, void> {
   chartValueField(source, chart.categoryField, 'X 字段')
   const mapping = cloneChartSeriesCategories(chart.seriesToCategory ?? {})
   const xFields = new Set([chart.categoryField, ...Object.values(mapping).flat()])
@@ -94,13 +166,15 @@ function scatterData(source: ChartRecords, chart: ChartDataBinding, selectedFiel
     chartValueField(source, Number(valueField), 'Y 字段'); chartValueField(source, xField[0]!, 'X 字段')
     if (!fields.includes(Number(valueField))) throw new RangeError('散点图的独立 X 字段须对应已选择的 Y 系列。')
   }
-  return { ...source,
-    categories: source.records.map(record => String(record[chart.categoryField] ?? '')),
-    series: fields.filter(field => !visible || visible.has(field) && visible.has(mapping[field]?.[0] ?? chart.categoryField)).map(field => {
-      chartValueField(source, field, 'Y 字段')
-      const xField = mapping[field]?.[0] ?? chart.categoryField
-      return { field, name: source.fields[field] || `Series ${field + 1}`,
-        values: source.records.map(record => chartNumber(record[field])), xValues: source.records.map(record => chartNumber(record[xField])) }
-    }),
+  const categories = yield* chartMapSteps(source.records, record => String(record[chart.categoryField] ?? ''))
+  const series: ChartData['series'] = []
+  for (const field of fields) {
+    if (visible && (!visible.has(field) || !visible.has(mapping[field]?.[0] ?? chart.categoryField))) continue
+    chartValueField(source, field, 'Y 字段')
+    const xField = mapping[field]?.[0] ?? chart.categoryField
+    const values = yield* chartMapSteps(source.records, record => chartNumber(record[field]))
+    const xValues = yield* chartMapSteps(source.records, record => chartNumber(record[xField]))
+    series.push({ field, name: source.fields[field] || `Series ${field + 1}`, values, xValues })
   }
+  return { ...source, categories, series }
 }

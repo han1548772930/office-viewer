@@ -2,6 +2,7 @@ import type {
   CellRange,
   CellScalar,
   ChartAxisOptions,
+  ChartCandlestickMappingOptions,
   ChartLegendOptions,
   ChartModel,
   ChartSemanticOptions,
@@ -16,16 +17,19 @@ import { randomId } from '../../api/model-utils'
 import { resolveChartType } from './chart-catalog'
 import { type ChartCandle, type ChartGraphData, type ChartHierarchyNode, type ChartRecords } from './chart-data'
 import { cloneChartSeriesCategories, projectChartRecords } from './chart-record-projection'
-import { cloneChartOptions, mergeChartOptions, chartSeriesStyle, validateChartPalette, validateChartAxis, validateChartFont } from './chart-options'
+import { cloneChartOptions, mergeChartOptions, validateChartPalette, validateChartAxis, validateChartFont } from './chart-options'
 import { validateChartNamedSeriesBindings } from './chart-series-selector'
-import { prepareChartDateSource } from './chart-date-axis'
-import { chartSeriesKind, type ChartComputedStatistics } from './chart-derived'
+import type { ChartComputedStatistics } from './chart-derived'
 import { convertChartType } from './chart-type-conversion'
 import { layoutChartData } from './chart-layout'
 import { drawChartData } from './chart-draw'
 import { readChartRecordSteps } from './chart-source-compute'
 import { chartCellPosition, chartPlacementGeometry } from './chart-placement'
 import { validateChartGradientAuthoring } from './chart-gradient'
+import { initializeChartWaterfallOptions } from './chart-waterfall'
+import type { ChartSankeyLayout } from './chart-sankey-layout'
+import type { ChartTreeRect } from './chart-special-layout'
+import { validateChartSourceData } from './chart-source-validation'
 
 export interface ChartConfig {
   type: ChartType
@@ -47,12 +51,16 @@ export interface ChartConfig {
   yAxis?: Partial<ChartAxisOptions>
 }
 
+export type ChartUpdatePatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
+
 export interface ChartSeriesData {
   field: number
   name: string
   /** Derived labels may change while named selectors keep the original source identity. */
   sourceName?: string
   values: Array<number | null>
+  /** Source number formatting aligned to values; statistics still consume values only. */
+  formattedValues?: Array<string | null>
   xValues?: Array<number | null>
   sizeValues?: Array<number | null>
 }
@@ -68,17 +76,24 @@ export interface ChartData {
   date1904?: boolean
   fields?: string[]
   records?: CellScalar[][]
+  formattedRecords?: Array<Array<string | null>>
   /** Source defaults stay independent of the chart's current authored selection. */
   sourceCategoryFields?: number[]
   sourceValueFields?: number[]
+  sourceNumericFields?: number[]
   visibleFields?: number[]
   syntheticValues?: boolean
   graph?: ChartGraphData
   hierarchy?: ChartHierarchyNode[]
+  hierarchyPaletteOrder?: string[]
+  hierarchyValueFieldName?: string
+  hierarchyDiagnostic?: string
   candles?: Array<ChartCandle | null>
+  /** Explicit source roles survive all-empty HLC/OHLC data and runtime filtering. */
+  candleFields?: ChartCandlestickMappingOptions
 }
 
-export interface ChartPoint { x: number; y: number; value: number; category: string; categoryIndex: number; baseY?: number; baseX?: number; baseValue?: number; xValue?: number; size?: number; rightAxis?: boolean; waterfallRole?: ChartWaterfallStyleTarget }
+export interface ChartPoint { x: number; y: number; value: number; category: string; categoryIndex: number; sequenceIndex?: number; baseY?: number; baseX?: number; baseValue?: number; xValue?: number; size?: number; rightAxis?: boolean; waterfallRole?: ChartWaterfallStyleTarget }
 export interface ChartWaterfallPointLayout extends ChartPoint {
   seriesPosition: number
   dataPointIndex: number
@@ -108,10 +123,20 @@ export interface ChartLayout {
   horizontal?: boolean
   dateAxis?: boolean
   date1904?: boolean
+  /** Calendar-axis coordinates and labels share one derived tick sequence. */
+  dateTicks?: Array<{ value: number; serial: number }>
+  /** Ordinary Cartesian sources use stable date order with separate duplicate
+   * observations; Pareto preserves its weight order. Indices retain source identity. */
+  dateOrder?: number[]
+  /** Source bounds stay in Excel serials even when xMin/xMax are calendar buckets. */
+  dateSourceMin?: number
+  dateSourceMax?: number
   categoryPositions?: Array<number | null>
   categoryBandwidth?: number
   categories: string[]
   series: ChartSeriesLayout[]
+  sankey?: ChartSankeyLayout
+  treemap?: ChartTreeRect[]
   waterfall?: {
     points: ChartWaterfallPointLayout[]
     connectors: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>
@@ -119,9 +144,12 @@ export interface ChartLayout {
 }
 
 const DEFAULT_LEGEND: ChartLegendOptions = { visible: true, position: 'bottom' }
+const defaultChartLegend = (type: ChartType): ChartLegendOptions => ({ ...DEFAULT_LEGEND, visible: !['histogram', 'candlestick', 'treemap'].includes(type) })
 const DEFAULT_AXIS: ChartAxisOptions = { scaleType: 'linear' }
 
-export function createChart(workbook: WorkbookModel, sheetId: string, config: ChartConfig, id = randomId('chart'), preloaded?: ChartRecords): ChartModel {
+/** Normalize authored configuration without reading its source. Read-only
+ * settings and asynchronous creation share this exact model contract. */
+export function createChartDefinition(workbook: WorkbookModel, sheetId: string, config: ChartConfig, id = randomId('chart')): ChartModel {
   const sheet = requireSheet(workbook, sheetId)
   const source = normalizeSource(config.source)
   if (!config.pivotTableId) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
@@ -146,7 +174,7 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
     subtitle: config.subtitle,
     palette: config.palette ? [...config.palette] : undefined,
     options: cloneChartOptions(config.options),
-    legend: cloneChartLegend({ ...DEFAULT_LEGEND, ...(config.legend ?? {}) }),
+    legend: cloneChartLegend({ ...defaultChartLegend(type), ...(config.legend ?? {}) }),
     categoryField,
     valueFields: valueFields ?? [],
     ...(config.seriesToCategory ? { seriesToCategory: cloneChartSeriesCategories(config.seriesToCategory) } : {}),
@@ -158,12 +186,21 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
   validateChartGradientAuthoring(model.type, model.options)
   validateAxis(model.xAxis, 'xAxis')
   validateAxis(model.yAxis, 'yAxis')
-  validateChartData(model, readChartData(workbook, model, preloaded), model.yAxis)
   if (model.pivotTableId && !workbook.pivotTables?.some((pivot) => pivot.id === model.pivotTableId)) throw new Error(`Pivot table not found: ${model.pivotTableId}`)
   return model
 }
 
-export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>, preloaded?: ChartRecords): void {
+export function createChart(workbook: WorkbookModel, sheetId: string, config: ChartConfig, id = randomId('chart'), preloaded?: ChartRecords): ChartModel {
+  const model = createChartDefinition(workbook, sheetId, config, id)
+  const data = readChartData(workbook, model, preloaded)
+  model.options = initializeChartWaterfallOptions(model, data.series)
+  validateChartSourceData(model, data)
+  return model
+}
+
+/** Normalize an edit independently of source I/O. A source-aware second pass
+ * supplies conversion defaults from the very same records used for projection. */
+export function updateChartDefinition(workbook: WorkbookModel, chart: ChartModel, patch: ChartUpdatePatch, records?: ChartRecords): ChartModel {
   const source = patch.source ? normalizeSource(patch.source) : chart.source
   const pivotTableId = Object.prototype.hasOwnProperty.call(patch, 'pivotTableId') ? patch.pivotTableId : chart.pivotTableId
   const sourceChart = { ...chart, source, pivotTableId, options: mergeChartOptions(chart.options, patch.options) }
@@ -171,7 +208,6 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
   const sheet = requireSheet(workbook, chart.sheetId)
   if (!pivotTableId) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
   validateChartType(patch.type ?? chart.type)
-  const records = preloaded ?? readChartRecords(workbook, sourceChart)
   const defaults = patch.type !== undefined && patch.type !== chart.type ? convertChartType(sourceChart, patch.type, records) : chart
   const next: ChartModel = {
     ...chart,
@@ -181,7 +217,7 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
     pivotTableId,
     position: patch.position ? normalizeSize(patch.position, 'chart position', true) : chart.position,
     size: patch.size ? normalizeSize(patch.size, 'chart size', false) : chart.size,
-    legend: cloneChartLegend({ ...DEFAULT_LEGEND, ...defaults.legend, ...patch.legend }),
+    legend: cloneChartLegend({ ...defaultChartLegend(patch.type ?? chart.type), ...defaults.legend, ...patch.legend }),
     xAxis: cloneChartAxis({ ...DEFAULT_AXIS, ...defaults.xAxis, ...patch.xAxis }),
     yAxis: cloneChartAxis({ ...DEFAULT_AXIS, ...defaults.yAxis, ...patch.yAxis }),
     valueFields: patch.valueFields ? [...patch.valueFields] : defaults.valueFields ? [...defaults.valueFields] : [],
@@ -198,12 +234,20 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
   if (new Set(next.valueFields).size !== next.valueFields.length) throw new RangeError('Chart value fields must be unique')
   validateAxis(next.xAxis, 'xAxis')
   validateAxis(next.yAxis, 'yAxis')
-  validateChartData(next, readChartData(workbook, next, records), next.yAxis)
+  if (pivotTableId && !workbook.pivotTables?.some(pivot => pivot.id === pivotTableId)) throw new Error(`Pivot table not found: ${pivotTableId}`)
+  return next
+}
+
+export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: ChartUpdatePatch, preloaded?: ChartRecords): void {
+  const seed = updateChartDefinition(workbook, chart, patch)
+  const records = preloaded ?? readChartRecords(workbook, seed)
+  const next = updateChartDefinition(workbook, chart, patch, records)
+  validateChartSourceData(next, readChartData(workbook, next, records))
   Object.assign(chart, next)
 }
 
 /** Read the current source without interpreting the chart's field roles. */
-export function readChartRecords(workbook: WorkbookModel, chart: Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'>): ChartRecords {
+export function readChartRecords(workbook: WorkbookModel, chart: Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type'>>): ChartRecords {
   const steps = readChartRecordSteps(workbook, chart)
   while (true) { const step = steps.next(); if (step.done) return step.value }
 }
@@ -233,35 +277,6 @@ export function normalizeSource(source: ChartSource): ChartSource {
 
 function validateChartType(type: ChartType): void {
   resolveChartType(type)
-}
-
-function validateChartData(chart: ChartModel, data: ChartData, axis: ChartAxisOptions): void {
-  data = prepareChartDateSource(data, chart)
-  const type = chart.type, descriptor = resolveChartType(type)
-  if (descriptor.stacked && axis.scaleType !== 'linear') throw new TypeError('堆积图须使用线性数值轴。')
-  data.series.forEach((series, index) => {
-    const style = chartSeriesStyle(chart, series.field, index, undefined, series.sourceName ?? series.name)
-    const valueAxis = style.rightAxis ? chart.options?.rightYAxis ?? DEFAULT_AXIS : axis
-    if (chartSeriesKind(chart, series.field, index, series.sourceName ?? series.name).stacked && valueAxis.scaleType !== 'linear') throw new TypeError('堆积系列须使用线性数值轴。')
-  })
-  if (type === 'radar' && axis.scaleType !== 'linear') throw new TypeError('Radar charts require a linear value axis')
-  if (data.visibleFields !== undefined && (!data.categories.length || !data.series.length)) return
-  if (!data.categories.length || !data.series.length) throw new RangeError('Chart source must contain at least one category and value series')
-  if (type === 'radar' && data.categories.length < 3) throw new RangeError('Radar charts require at least three categories')
-  if (data.series.some((series) => !series.values.length || series.values.length !== data.categories.length)) throw new RangeError('Chart series must have one value per category')
-  if ((type === 'scatter' || type === 'bubble') && data.series.some((series) => !series.xValues || series.xValues.length !== series.values.length)) throw new RangeError('Scatter series must have one X value per Y value')
-  if ((type === 'scatter' || type === 'bubble') && !data.series.some((series) => series.values.some((value, index) => value !== null && series.xValues?.[index] != null))) throw new RangeError('Scatter chart requires at least one numeric X/Y pair')
-  if (descriptor.family === 'pie') {
-    if (data.series.length !== 1) throw new RangeError(`${type} charts require exactly one value series`)
-    const values = data.series[0]!.values.filter((value): value is number => value !== null && Number.isFinite(value))
-    if (!values.length || values.some((value) => value < 0) || values.every((value) => value === 0)) throw new RangeError(`${type} charts require non-negative values with a positive total`)
-  }
-  if (type === 'bubble' && data.series.some(series => series.sizeValues?.some(value => value !== null && value < 0))) throw new RangeError('气泡大小不能为负数。')
-  if (type === 'candlestick' && !data.candles?.some(Boolean)) throw new RangeError('K 线须至少包含一条完整有效的 HLC 或 OHLC 数据。')
-  if (type === 'histogram' && data.series.length !== 1) throw new RangeError('直方图须选择一个数值样本字段。')
-  if (type === 'pareto' && data.series.length !== 1) throw new RangeError('帕累托图须选择一个数值权重字段。')
-  if ((type === 'funnel' || type === 'wordCloud') && data.series.length !== 1) throw new RangeError('漏斗和词云图须选择一个权重字段。')
-  if (type === 'wordCloud' && data.series.some(series => series.values.some(value => value !== null && value < 0))) throw new RangeError('此图表的权重不能为负数。')
 }
 
 function validateSourceInSheet(range: CellRange, sheet: SpreadsheetSheet): void {

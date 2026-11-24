@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{borrow::Cow, collections::{BTreeMap, BTreeSet}};
 
-use duke_pages::{CommentTarget, DocModel, DocNode, DocumentComment, FormFieldType, ParagraphChildNode, ParagraphNode, SourceRef, TableCellContentNode, TableNode};
+use duke_pages::{BlockDetails, CommentTarget, DocModel, DocNode, DocumentBlock, DocumentComment, FormFieldType, ParagraphChildNode, ParagraphNode, SourceRef, StructuredDocument, TableCellContentNode, TableNode};
 
 use super::{Element, parse_xml};
 
@@ -91,7 +91,33 @@ fn append_range(model: &DocModel, part: &str, paragraph: &str, active: &BTreeSet
 /// Duke aggregates typed SDTs into one FormField child, while its review walker
 /// counts their inner runs. Restore affected body anchors from visible XML only
 /// when that projection exactly matches the production model's paragraph text.
-pub(super) fn restore_sdt_comment_targets(model: &DocModel, comments: &mut [DocumentComment]) -> Vec<String> {
+#[cfg(test)]
+fn restore_sdt_comment_targets(model: &DocModel, comments: &mut [DocumentComment]) -> Vec<String> {
+    restore_targets(model, comments, None)
+}
+
+/// The production guard uses the same extracted rich text as native control
+/// ranges. Duke's restored scalar FormField.value can trim or synthesize glyphs;
+/// it is not the authoritative literal paragraph after SDT projection.
+pub(super) fn restore_sdt_comment_targets_from_document(model: &DocModel, comments: &mut [DocumentComment], document: &StructuredDocument) -> Vec<String> {
+    let part = model.metadata.source_part_names.as_ref().and_then(|parts| parts.get("document")).map_or("word/document.xml", String::as_str);
+    let mut text = BTreeMap::new();
+    fn collect<'a>(blocks: &'a [DocumentBlock], part: &str, text: &mut BTreeMap<&'a str, &'a str>) {
+        for block in blocks {
+            if matches!(&block.details, BlockDetails::Paragraph(_))
+                || matches!(&block.details, BlockDetails::Raw(details) if details["kind"].as_str() == Some("paragraph")) {
+                for reference in block.source_refs.iter().filter(|reference| reference.part_name == part && reference.story == "body") {
+                    text.insert(reference.node_id.as_str(), block.content.as_str());
+                }
+            }
+            collect(&block.children, part, text);
+        }
+    }
+    collect(&document.blocks, part, &mut text);
+    restore_targets(model, comments, Some(&text))
+}
+
+fn restore_targets(model: &DocModel, comments: &mut [DocumentComment], extracted: Option<&BTreeMap<&str, &str>>) -> Vec<String> {
     if comments.is_empty() { return Vec::new(); }
     let part = model.metadata.source_part_names.as_ref().and_then(|parts| parts.get("document")).map_or("word/document.xml", String::as_str);
     let root = format!("docx:{}/{part}/body", model.metadata.document_id.as_deref().unwrap_or("unsaved"));
@@ -104,7 +130,14 @@ pub(super) fn restore_sdt_comment_targets(model: &DocModel, comments: &mut [Docu
         let mut projection = Projection::default();
         let result = parse_xml(xml).and_then(|root| projection.visit(&root));
         if let Err(error) = result { return vec![format!("DOCX SDT comment projection for {id} could not be read: {error}; existing comment targets were retained.")]; }
-        if projection.text != visible_text(paragraph) { return vec![format!("DOCX SDT comment projection for {id} differs from visible paragraph text; existing comment targets were retained.")]; }
+        let expected = match extracted {
+            Some(text) => match text.get(id.as_str()) {
+                Some(text) => Cow::Borrowed(*text),
+                None => return vec![format!("DOCX SDT comment projection for {id} has no extracted paragraph; existing comment targets were retained.")],
+            },
+            None => Cow::Owned(visible_text(paragraph)),
+        };
+        if projection.text != expected.as_ref() { return vec![format!("DOCX SDT comment projection for {id} differs from visible paragraph text; existing comment targets were retained.")]; }
         projections.push((id, projection));
     }
     let mut active = BTreeSet::new();

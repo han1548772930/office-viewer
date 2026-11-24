@@ -8,6 +8,11 @@ export type DocumentContentControlValueCommand =
   | { id: 'doc.command.set-content-control-checked'; params: { controlId: string; checked: boolean } }
   | { id: 'doc.command.set-content-control-value'; params: { controlId: string; value: string } }
   | { id: 'doc.command.select-content-control-item'; params: { controlId: string; value: string } }
+  | { id: 'doc.command.reset-content-control-placeholder'; params: { controlId: string } }
+
+export type DocumentContentControlRepeatingItemCommand =
+  | { id: 'doc.command.duplicate-repeating-section-item'; params: { controlId: string } }
+  | { id: 'doc.command.delete-repeating-section-item'; params: { controlId: string } }
 
 export interface DocumentContentControlSelectionRequest {
   controlId: string

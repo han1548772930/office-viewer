@@ -194,7 +194,7 @@ test('axis bindings follow active secondary styles, horizontal bars, heatmap row
   assert.deepEqual(active.axisBindings.secondaryValue, { dimension: 'vertical', position: 'right' })
   const bar = describe(configuration('bar-horizontal', { series: { 2: { rightAxis: true } } }))
   assert.deepEqual(bar.axisBindings, { category: { dimension: 'vertical', position: 'left' }, primaryValue: { dimension: 'horizontal', position: 'bottom' }, secondaryValue: { dimension: 'horizontal', position: 'top' } })
-  assert.deepEqual(describe(configuration('heatmap')).axisBindings, { category: { dimension: 'horizontal', position: 'bottom' }, secondaryCategory: { dimension: 'vertical', position: 'left' } })
+  assert.deepEqual(describe(configuration('heatmap')).axisBindings, { category: { dimension: 'vertical', position: 'left' }, secondaryCategory: { dimension: 'horizontal', position: 'bottom' } })
   assert.deepEqual(describe(configuration('pareto')).axisBindings.secondaryValue, { dimension: 'vertical', position: 'right' })
   for (const type of ['radar', 'pie', 'doughnut', 'gauge', 'treemap', 'sankey']) assert.equal(describe(configuration(type)).axisBindings, undefined)
 })

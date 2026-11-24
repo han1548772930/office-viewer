@@ -90,7 +90,7 @@ test('Pareto keeps raw date identity through weight sorting and rejects conflict
 test('Bubble ISO dates become real X coordinates during candidate validation and invalid dates leave the model unchanged', () => {
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
   sheet.cells = Object.fromEntries([['Date', 'Y', 'Size'], ['1904-01-01', 4, 1], ['1904-01-03', 8, 2]]
-    .flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(value)])))
+    .flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(r, c, value)])))
   workbook.date1904 = true
   const model = createChart(workbook, sheet.id, { ...chart('bubble'), valueFields: [1, 2],
     source: { orientation: 'columns', range: { startRow: 0, startCol: 0, endRow: 2, endCol: 2 } },
@@ -103,13 +103,13 @@ test('Bubble ISO dates become real X coordinates during candidate validation and
   assert.deepEqual(model, before)
 })
 
-test('axis title fonts inherit defined fields and logical start/end follow reversal in rotated text', () => {
+test('axis title fonts inherit defined fields and physical start/end remain stable under axis reversal', () => {
   const model = chart('line', { options: { appearance: { font: { family: 'Courier New', fontSize: 24, bold: true, color: '#112233' } } } })
   const axis = { title: 'Axis', titleStyle: { fontSize: 18, bold: undefined, italic: true }, titleAlignment: 'start' }
   assert.deepEqual(chartAxisTitleFont(model, axis), { family: 'Courier New', fontSize: 18, bold: true, color: '#112233', italic: true })
   const start = { x: 20, y: 200 }, end = { x: 20, y: 30 }
   const command = chartAxisTitleCommand(model, axis, start, end, 'black', -90)
-  assert.deepEqual([command.x, command.y, command.align, command.maxWidth], [20, 200, 'left', 170])
+  assert.deepEqual([command.x, command.y, command.align, command.maxWidth], [20, 30, 'right', 170])
   assert.equal(command.font, 'italic 600 18px Courier New')
   const reversed = chartAxisTitleCommand(model, { ...axis, reverse: true }, start, end, 'black', -90)
   assert.deepEqual([reversed.x, reversed.y, reversed.align], [20, 30, 'right'])
@@ -129,8 +129,11 @@ test('title size changes the content margins and Canvas/native/3D paths consume 
   assert.ok(subtitle.y + 24 < frame.plot.y)
   assert.match(subtitle.font, /48px Georgia/)
   const native = chartEChartsOption({ sheets: [] }, model, {}, { preparedData: source })
-  assert.equal(native.yAxis.nameLocation, 'end')
+  assert.equal(native.yAxis.name, undefined)
   assert.deepEqual([native.yAxis.nameTextStyle.fontSize, native.yAxis.nameTextStyle.fontFamily, native.yAxis.nameTextStyle.fontWeight, native.yAxis.nameTextStyle.fontStyle], [32, 'Georgia', 'bold', 'italic'])
+  const title = native.graphic.elements.map(element => element.type === 'text' ? element : element.children?.[0]).find(element => element?.style.text === 'Y title')
+  assert.equal(title.y, frame.plot.y + frame.plot.height)
+  assert.match(title.style.font, /32px Georgia/)
   const threeD = chart('column3D', { ...model, type: 'column3D', xAxis: { scaleType: 'linear', title: 'Projected title', titleStyle: { family: 'Georgia', fontSize: 22 }, titleAlignment: 'start' } })
   assert.ok(drawDerivedChartData(geometry(source, threeD).derived, threeD).some(command => command.kind === 'text' && command.text === 'Projected title' && command.font.includes('22px Georgia')))
 })
@@ -168,12 +171,12 @@ test('date pointers snap to real dates including serial 60 and numeric pointers 
   assert.deepEqual(labels(chartAxisPointerCommands(numeric.pointer, { x: numeric.layout.plot.x + numeric.layout.plot.width / 2, y: numeric.layout.plot.y + numeric.layout.plot.height / 2 })), ['10', '10'])
 })
 
-test('horizontal and Heatmap pointers identify their actual categories and reversed series rows', () => {
+test('horizontal and Heatmap pointers identify their actual categories and reversed category rows', () => {
   const horizontal = geometry(ordinary(), chart('bar-horizontal', { xAxis: { scaleType: 'linear', reverse: true } }))
   assert.deepEqual(labels(chartAxisPointerCommands(horizontal.pointer, { x: horizontal.layout.plot.x + horizontal.layout.plot.width / 2, y: horizontal.layout.plot.y + horizontal.layout.plot.height / 6 })), ['C', '50'])
   const heatmap = ordinary(); heatmap.series.push({ field: 2, name: 'Other row', values: [4, 5, 6] })
   const result = geometry(heatmap, chart('heatmap', { yAxis: { scaleType: 'linear', reverse: true } }))
-  assert.deepEqual(labels(chartAxisPointerCommands(result.pointer, { x: result.layout.plot.x + result.layout.plot.width / 6, y: result.layout.plot.y + result.layout.plot.height / 4 })), ['A', 'Other row'])
+  assert.deepEqual(labels(chartAxisPointerCommands(result.pointer, { x: result.layout.plot.x + result.layout.plot.width / 6, y: result.layout.plot.y + result.layout.plot.height / 4 })), ['Units', 'A'])
 })
 
 test('Radar pointers follow the radial geometry and stop beyond the polygon or circle', () => {

@@ -1,5 +1,6 @@
 //! Native, editable DrawingML chart plots. Placement stays in the XLSX host.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use crate::{ExportError, xml};
 use office_io_common::chart_kind::{NativeChartKind, native_chart_kind};
@@ -114,38 +115,74 @@ impl Context<'_> {
         let (row, col) = self.coordinates(chart, field, None)?;
         Ok((chart_range_formula(&self.sheet_name, row, col, row, col), text(scalar(self.sheet, row, col))))
     }
-    fn vector(&self, chart: &ChartInput, field: usize) -> Result<(String, Vec<Option<f64>>, Vec<String>), ExportError> {
+    fn vector_formula(&self, chart: &ChartInput, field: usize) -> Result<String, ExportError> {
         let (first_row, first_col) = self.coordinates(chart, field, Some(0))?;
         let (last_row, last_col) = self.coordinates(chart, field, Some(self.point_count - 1))?;
-        let mut numbers = Vec::with_capacity(self.point_count);
-        let mut strings = Vec::with_capacity(self.point_count);
+        Ok(chart_range_formula(&self.sheet_name, first_row, first_col, last_row, last_col))
+    }
+    fn numeric_vector(&self, chart: &ChartInput, field: usize) -> Result<(String, Vec<Option<f64>>), ExportError> {
+        let formula = self.vector_formula(chart, field)?;
+        let mut numbers = Vec::new();
+        numbers.try_reserve_exact(self.point_count).map_err(|_| ExportError::invalid("CHART_XML_RESOURCE_LIMIT: chart numeric source allocation failed"))?;
         for point in 0..self.point_count {
             let (row, col) = self.coordinates(chart, field, Some(point))?;
-            let value = scalar(self.sheet, row, col);
-            numbers.push(numeric(value)); strings.push(text(value));
+            numbers.push(numeric(scalar(self.sheet, row, col)));
         }
-        Ok((chart_range_formula(&self.sheet_name, first_row, first_col, last_row, last_col), numbers, strings))
+        Ok((formula, numbers))
+    }
+    fn category_vector(&self, chart: &ChartInput, field: usize) -> Result<(String, Vec<String>), ExportError> {
+        let formula = self.vector_formula(chart, field)?;
+        let mut strings = Vec::new();
+        strings.try_reserve_exact(self.point_count).map_err(|_| ExportError::invalid("CHART_XML_RESOURCE_LIMIT: chart category source allocation failed"))?;
+        for point in 0..self.point_count {
+            let (row, col) = self.coordinates(chart, field, Some(point))?;
+            strings.push(text(scalar(self.sheet, row, col)));
+        }
+        Ok((formula, strings))
     }
 }
 
-fn string_cache(values: &[String]) -> String {
-    let mut out = format!("<c:strCache><c:ptCount val=\"{}\"/>", values.len());
-    for (index, value) in values.iter().enumerate() { out.push_str(&format!("<c:pt idx=\"{index}\"><c:v>{}</c:v></c:pt>", xml::escape(value))); }
-    out.push_str("</c:strCache>"); out
+fn append_chart_escaped(out: &mut String, value: &str) -> Result<(), ExportError> {
+    let mut start = 0;
+    for (offset, character) in value.char_indices() {
+        let entity = match character { '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", '"' => "&quot;", '\'' => "&apos;", _ => continue };
+        append_chart_xml(out, &value[start..offset])?;
+        append_chart_xml(out, entity)?;
+        start = offset + character.len_utf8();
+    }
+    append_chart_xml(out, &value[start..])
 }
 
-fn number_cache(values: &[Option<f64>]) -> String {
-    number_cache_format(values, "General")
+fn append_string_cache(out: &mut String, values: &[String]) -> Result<(), ExportError> {
+    append_chart_xml(out, &format!("<c:strCache><c:ptCount val=\"{}\"/>", values.len()))?;
+    for (index, value) in values.iter().enumerate() {
+        append_chart_xml(out, &format!("<c:pt idx=\"{index}\"><c:v>"))?;
+        append_chart_escaped(out, value)?;
+        append_chart_xml(out, "</c:v></c:pt>")?;
+    }
+    append_chart_xml(out, "</c:strCache>")
 }
 
-fn number_cache_format(values: &[Option<f64>], format: &str) -> String {
-    let mut out = format!("<c:numCache><c:formatCode>{}</c:formatCode><c:ptCount val=\"{}\"/>", xml::escape(format), values.len());
-    for (index, value) in values.iter().enumerate() { if let Some(value) = value { out.push_str(&format!("<c:pt idx=\"{index}\"><c:v>{value}</c:v></c:pt>")); } }
-    out.push_str("</c:numCache>"); out
+fn append_number_cache_contents(out: &mut String, length: usize, format: &str,
+    points: impl Iterator<Item = (usize, Option<f64>)>) -> Result<(), ExportError> {
+    append_chart_xml(out, "<c:formatCode>")?;
+    append_chart_escaped(out, format)?;
+    append_chart_xml(out, &format!("</c:formatCode><c:ptCount val=\"{length}\"/>"))?;
+    for (index, value) in points {
+        if let Some(value) = value {
+            if !value.is_finite() { return Err(ExportError::invalid("chart numeric cache contains a non-finite value")); }
+            append_chart_xml(out, &format!("<c:pt idx=\"{index}\"><c:v>{value}</c:v></c:pt>"))?;
+        }
+    }
+    Ok(())
 }
 
-fn number_reference(tag: &str, formula: &str, values: &[Option<f64>]) -> String {
-    format!("<c:{tag}><c:numRef><c:f>{}</c:f>{}</c:numRef></c:{tag}>", xml::escape(formula), number_cache(values))
+fn append_number_reference(out: &mut String, tag: &str, formula: &str, values: &[Option<f64>], format: &str) -> Result<(), ExportError> {
+    append_chart_xml(out, &format!("<c:{tag}><c:numRef><c:f>"))?;
+    append_chart_escaped(out, formula)?;
+    append_chart_xml(out, "</c:f><c:numCache>")?;
+    append_number_cache_contents(out, values.len(), format, values.iter().copied().enumerate())?;
+    append_chart_xml(out, &format!("</c:numCache></c:numRef></c:{tag}>"))
 }
 
 #[derive(Debug, Clone)]
@@ -160,28 +197,31 @@ struct SeriesSpec {
     source_name: Option<String>,
 }
 
-fn statistics(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec) -> Result<String, ExportError> {
+fn append_statistics(out: &mut String, context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec) -> Result<(), ExportError> {
     let trends = chart.options.trendlines.iter().filter(|trend| trend.series_index == spec.field);
     let errors = chart.options.error_bars.iter().filter(|error| error.series_index == spec.field);
-    let mut out = String::new();
     for trend in trends {
         if spec.kind.pie || spec.kind.three_d || spec.kind.plot == "radarChart" || matches!(spec.kind.grouping, Some("stacked" | "percentStacked")) { return Err(ExportError::unsupported("this native plot cannot represent the authored trendline")); }
         if !matches!(trend.kind.as_str(), "exp" | "linear" | "log" | "movingAvg" | "poly" | "pow") { return Err(ExportError::invalid("chart trendline type is invalid")); }
-        out.push_str("<c:trendline>");
-        if let Some(name) = &trend.name { out.push_str(&format!("<c:name>{}</c:name>", xml::escape(name))); }
-        out.push_str(&style::shape(None, None, Some(&trend.line), Some("#666666"))?);
-        out.push_str(&format!("<c:trendlineType val=\"{}\"/>", trend.kind));
+        append_chart_xml(out, "<c:trendline>")?;
+        if let Some(name) = &trend.name {
+            append_chart_xml(out, "<c:name>")?;
+            append_chart_escaped(out, name)?;
+            append_chart_xml(out, "</c:name>")?;
+        }
+        append_chart_xml(out, &style::shape(None, None, Some(&trend.line), Some("#666666"))?)?;
+        append_chart_xml(out, &format!("<c:trendlineType val=\"{}\"/>", trend.kind))?;
         if trend.kind == "poly" {
             let order = trend.order.unwrap_or(2);
             if !(2..=6).contains(&order) { return Err(ExportError::invalid("polynomial trendline order must be 2..6")); }
-            out.push_str(&format!("<c:order val=\"{order}\"/>"));
+            append_chart_xml(out, &format!("<c:order val=\"{order}\"/>"))?;
         }
         if trend.kind == "movingAvg" {
             let period = trend.period.unwrap_or(2);
             if !(2..=255).contains(&period) { return Err(ExportError::invalid("moving-average trendline period must be 2..255")); }
-            out.push_str(&format!("<c:period val=\"{period}\"/>"));
+            append_chart_xml(out, &format!("<c:period val=\"{period}\"/>"))?;
         }
-        out.push_str(&format!("<c:dispRSqr val=\"{}\"/><c:dispEq val=\"{}\"/></c:trendline>", u8::from(trend.show_r2.unwrap_or(false)), u8::from(trend.show_formula.unwrap_or(false))));
+        append_chart_xml(out, &format!("<c:dispRSqr val=\"{}\"/><c:dispEq val=\"{}\"/></c:trendline>", u8::from(trend.show_r2.unwrap_or(false)), u8::from(trend.show_formula.unwrap_or(false))))?;
     }
     let mut directions = BTreeSet::new();
     for error in errors {
@@ -189,26 +229,26 @@ fn statistics(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec) -> R
         if !matches!(error.direction.as_str(), "x" | "y") || error.direction == "x" && !matches!(spec.kind.plot, "scatterChart" | "bubbleChart") { return Err(ExportError::invalid("error bar direction is invalid for this native plot")); }
         if !directions.insert(error.direction.as_str()) { return Err(ExportError::invalid("each native series can contain one error bar per direction")); }
         if !matches!(error.kind.as_str(), "both" | "plus" | "minus") || !matches!(error.value_type.as_str(), "fixedVal" | "percentage" | "stdDev" | "stdErr" | "cust") { return Err(ExportError::invalid("chart error bar type is invalid")); }
-        out.push_str(&format!("<c:errBars><c:errDir val=\"{}\"/><c:errBarType val=\"{}\"/><c:errValType val=\"{}\"/><c:noEndCap val=\"{}\"/>", error.direction, error.kind, error.value_type, u8::from(error.no_end_cap.unwrap_or(false))));
+        append_chart_xml(out, &format!("<c:errBars><c:errDir val=\"{}\"/><c:errBarType val=\"{}\"/><c:errValType val=\"{}\"/><c:noEndCap val=\"{}\"/>", error.direction, error.kind, error.value_type, u8::from(error.no_end_cap.unwrap_or(false))))?;
         if error.value_type == "cust" {
             for (tag, field, required) in [("plus", error.plus_index, error.kind != "minus"), ("minus", error.minus_index, error.kind != "plus")] {
                 if !required { continue; }
                 let field = field.ok_or_else(|| ExportError::invalid("custom error bars require their source fields"))?;
                 let (formula, values) = bound_vector(context, chart, spec, field, false)?;
                 if values.iter().flatten().any(|value| *value < 0.0) { return Err(ExportError::invalid("custom error magnitudes must be non-negative")); }
-                out.push_str(&number_reference(tag, &formula, &values));
+                append_number_reference(out, tag, &formula, &values, "General")?;
             }
         } else if error.value_type != "stdErr" {
             let value = style::number(error.value.unwrap_or(1.0), 0.0, f64::MAX, "error value")?;
-            out.push_str(&format!("<c:val val=\"{value}\"/>"));
+            append_chart_xml(out, &format!("<c:val val=\"{value}\"/>"))?;
         }
-        out.push_str(&style::shape(None, None, error.line.as_ref(), Some("#666666"))?);
-        out.push_str("</c:errBars>");
+        append_chart_xml(out, &style::shape(None, None, error.line.as_ref(), Some("#666666"))?)?;
+        append_chart_xml(out, "</c:errBars>")?;
     }
-    Ok(out)
+    Ok(())
 }
 
-fn series(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, index: usize) -> Result<String, ExportError> {
+fn append_series(out: &mut String, context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, index: usize) -> Result<(), ExportError> {
     let (name_formula, name) = context.header(chart, spec.field)?;
     let (value_formula, values) = bound_vector(context, chart, spec, spec.field, chart.options.invalid_value_strategy.as_deref() == Some("zero"))?;
     if spec.kind.pie && (!values.iter().flatten().any(|value| *value > 0.0) || values.iter().flatten().any(|value| *value < 0.0)) { return Err(ExportError::invalid("pie values must be non-negative with a positive total")); }
@@ -216,16 +256,26 @@ fn series(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, index: u
     let fill_opacity = spec.style.fill_opacity.or_else(|| matches!(spec.kind.plot, "areaChart" | "area3DChart").then_some(0.28));
     let color = paint::series_color(chart, spec, &base_color, &spec.style, false)?;
     let representative = base_color.representative().map_err(ExportError::invalid)?;
-    let mut out = format!("<c:ser><c:idx val=\"{index}\"/><c:order val=\"{index}\"/>");
-    if let Some(name) = spec.style.name.as_deref() { out.push_str(&format!("<c:tx><c:v>{}</c:v></c:tx>", xml::escape(name))); }
-    else if let Some(group) = spec.group_index.and_then(|index| chart.native_bindings.as_ref()?.groups.get(index)) { out.push_str(&format!("<c:tx><c:v>{}</c:v></c:tx>", xml::escape(&group.name))); }
-    else { out.push_str(&format!("<c:tx><c:strRef><c:f>{}</c:f>{}</c:strRef></c:tx>", xml::escape(&name_formula), string_cache(&[name]))); }
-    out.push_str(&style::series_shape(&spec.style, &color, fill_opacity, matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart"))?);
+    append_chart_xml(out, &format!("<c:ser><c:idx val=\"{index}\"/><c:order val=\"{index}\"/>"))?;
+    let literal_name = spec.style.name.as_deref().or_else(|| spec.group_index.and_then(|index| chart.native_bindings.as_ref()?.groups.get(index)).map(|group| group.name.as_str()));
+    if let Some(name) = literal_name {
+        append_chart_xml(out, "<c:tx><c:v>")?;
+        append_chart_escaped(out, name)?;
+        append_chart_xml(out, "</c:v></c:tx>")?;
+    }
+    else {
+        append_chart_xml(out, "<c:tx><c:strRef><c:f>")?;
+        append_chart_escaped(out, &name_formula)?;
+        append_chart_xml(out, "</c:f>")?;
+        append_string_cache(out, &[name])?;
+        append_chart_xml(out, "</c:strRef></c:tx>")?;
+    }
+    append_chart_xml(out, &style::series_shape(&spec.style, &color, fill_opacity, matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart"))?)?;
     if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "radarChart" | "stockChart") {
-        out.push_str(&style::painted_marker(spec.style.point.as_ref(), Some(&color), fill_opacity, spec.style.fill_pattern.as_ref().and_then(Option::as_ref))?);
+        append_chart_xml(out, &style::painted_marker(spec.style.point.as_ref(), Some(&color), fill_opacity, spec.style.fill_pattern.as_ref().and_then(Option::as_ref))?)?;
     }
     if spec.kind.pie {
-        if let Some(explosion) = chart.options.pie.as_ref().and_then(|pie| pie.explosion) { out.push_str(&format!("<c:explosion val=\"{}\"/>", style::integer(explosion, 0.0, 100.0, "pie explosion")?)); }
+        if let Some(explosion) = chart.options.pie.as_ref().and_then(|pie| pie.explosion) { append_chart_xml(out, &format!("<c:explosion val=\"{}\"/>", style::integer(explosion, 0.0, 100.0, "pie explosion")?))?; }
     }
     let mut point_indexes = spec.style.data_points.keys().copied().collect::<BTreeSet<_>>();
     if paint::automatic_enabled(chart) && matches!(spec.kind.plot, "barChart" | "bar3DChart") {
@@ -245,34 +295,35 @@ fn series(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, index: u
         let point_style = Series { fill_opacity: point.fill_opacity.or(fill_opacity),
             fill_pattern: point.fill_pattern.clone().or_else(|| spec.style.fill_pattern.clone()), border: point.border.clone().or_else(|| spec.style.border.clone()), ..Default::default() };
         let point_color = paint::series_color(chart, spec, point_base, &point_style, values.get(*point_index).copied().flatten().is_some_and(|value| value < 0.0))?;
-        out.push_str(&format!("<c:dPt><c:idx val=\"{point_index}\"/>"));
+        append_chart_xml(out, &format!("<c:dPt><c:idx val=\"{point_index}\"/>"))?;
         if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "radarChart" | "stockChart") {
             let point_marker = office_io_common::chart_options::Marker { shape: point.shape.clone().or_else(|| spec.style.point.as_ref().and_then(|marker| marker.shape.clone())), size: point.size.or_else(|| spec.style.point.as_ref().and_then(|marker| marker.size)), color: point.color.as_ref().map(ChartColor::representative).transpose().map_err(ExportError::invalid)?.or_else(|| spec.style.point.as_ref().and_then(|marker| marker.color.clone())) };
-            out.push_str(&style::painted_marker(Some(&point_marker), Some(&point_color), point_style.fill_opacity, point_style.fill_pattern.as_ref().and_then(Option::as_ref))?);
+            append_chart_xml(out, &style::painted_marker(Some(&point_marker), Some(&point_color), point_style.fill_opacity, point_style.fill_pattern.as_ref().and_then(Option::as_ref))?)?;
         }
-        out.push_str(&style::painted_shape(&point_color, point_style.fill_opacity, point_style.fill_pattern.as_ref().and_then(Option::as_ref), point_style.border.as_ref(), Some(&representative))?);
-        out.push_str("</c:dPt>");
+        append_chart_xml(out, &style::painted_shape(&point_color, point_style.fill_opacity, point_style.fill_pattern.as_ref().and_then(Option::as_ref), point_style.border.as_ref(), Some(&representative))?)?;
+        append_chart_xml(out, "</c:dPt>")?;
     }
     let pie = chart.options.pie.as_ref();
     let label = if spec.kind.pie { style::overlay(spec.style.label.as_ref(), pie.and_then(|pie| pie.label.as_ref()))? } else { spec.style.label.clone().unwrap_or_default() };
-    out.push_str(&style::labels(Some(&label), pie.and_then(|pie| pie.show_label_line), spec.kind.pie)?);
-    out.push_str(&statistics(context, chart, spec)?);
+    append_chart_xml(out, &style::labels(Some(&label), pie.and_then(|pie| pie.show_label_line), spec.kind.pie)?)?;
+    append_statistics(out, context, chart, spec)?;
     if let Some(x_field) = spec.x_field {
         let (formula, numbers) = if dates::enabled(chart, spec.kind) { bound_date_vector(chart, spec, x_field)? }
             else { bound_vector(context, chart, spec, x_field, false)? };
-        out.push_str(&number_reference("xVal", &formula, &numbers));
-        out.push_str(&number_reference("yVal", &value_formula, &values));
+        append_number_reference(out, "xVal", &formula, &numbers, "General")?;
+        append_number_reference(out, "yVal", &value_formula, &values, "General")?;
         if spec.kind.plot == "bubbleChart" {
             if let Some(size_field) = spec.size_field {
                 let (formula, numbers) = bound_vector(context, chart, spec, size_field, false)?;
-                out.push_str(&number_reference("bubbleSize", &formula, &numbers));
+                append_number_reference(out, "bubbleSize", &formula, &numbers, "General")?;
             } else if let Some(vector) = chart.native_bindings.as_ref().and_then(|bindings| {
                 if let Some(index) = spec.group_index { bindings.groups.get(index)?.default_size.as_ref() } else { bindings.default_size.as_ref() }
             }) {
-                out.push_str(&number_reference("bubbleSize", &vector.formula, &vector.values));
+                append_number_reference(out, "bubbleSize", &vector.formula, &vector.values, "General")?;
             } else {
-                let values = vec![Some(1.0); values.len()];
-                out.push_str(&format!("<c:bubbleSize><c:numLit>{}</c:numLit></c:bubbleSize>", number_cache(&values).replace("<c:numCache>", "").replace("</c:numCache>", "")));
+                append_chart_xml(out, "<c:bubbleSize><c:numLit>")?;
+                append_number_cache_contents(out, values.len(), "General", (0..values.len()).map(|index| (index, Some(1.0))))?;
+                append_chart_xml(out, "</c:numLit></c:bubbleSize>")?;
             }
         }
     } else {
@@ -281,16 +332,24 @@ fn series(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, index: u
                 .ok_or_else(|| ExportError::invalid("date category formula bindings were not prepared"))?;
             let values = category.dates.as_ref().ok_or_else(|| ExportError::invalid("date categories are missing their numeric serials"))?;
             let format = chart.x_axis.as_ref().and_then(|axis| axis.format.as_deref()).unwrap_or("yyyy-mm-dd");
-            out.push_str(&format!("<c:cat><c:numRef><c:f>{}</c:f>{}</c:numRef></c:cat>", xml::escape(&category.formula), number_cache_format(values, format)));
+            append_number_reference(out, "cat", &category.formula, values, format)?;
         } else {
-            let (formula, categories) = if let Some(categories) = chart.native_bindings.as_ref().and_then(|bindings| bindings.category.as_ref()) { (categories.formula.clone(), categories.values.clone()) }
-                else { let (formula, _, categories) = context.vector(chart, chart.category_field)?; (formula, categories) };
-            out.push_str(&format!("<c:cat><c:strRef><c:f>{}</c:f>{}</c:strRef></c:cat>", xml::escape(&formula), string_cache(&categories)));
+            let (formula, categories): (Cow<'_, str>, Cow<'_, [String]>) = if let Some(categories) = chart.native_bindings.as_ref().and_then(|bindings| bindings.category.as_ref()) {
+                (Cow::Borrowed(categories.formula.as_str()), Cow::Borrowed(categories.values.as_slice()))
+            } else {
+                let (formula, categories) = context.category_vector(chart, chart.category_field)?;
+                (Cow::Owned(formula), Cow::Owned(categories))
+            };
+            append_chart_xml(out, "<c:cat><c:strRef><c:f>")?;
+            append_chart_escaped(out, &formula)?;
+            append_chart_xml(out, "</c:f>")?;
+            append_string_cache(out, &categories)?;
+            append_chart_xml(out, "</c:strRef></c:cat>")?;
         }
-        out.push_str(&number_reference("val", &value_formula, &values));
+        append_number_reference(out, "val", &value_formula, &values, "General")?;
     }
-    if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart") { out.push_str("<c:smooth val=\"0\"/>"); }
-    out.push_str("</c:ser>"); Ok(out)
+    if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart") { append_chart_xml(out, "<c:smooth val=\"0\"/>")?; }
+    append_chart_xml(out, "</c:ser>")
 }
 
 fn view(chart: &ChartInput, kind: NativeChartKind) -> Result<String, ExportError> {
@@ -416,8 +475,7 @@ pub(super) fn chart_xml(workbook: &WorkbookInput, chart: &ChartInput, chart_inde
     for (kind, secondary, indexes) in &groups {
         out.push_str(&plot_start(*kind, chart)?);
         for index in indexes {
-            let fragment = series(&context, chart, &specs[*index], *index)?;
-            append_chart_xml(&mut out, &fragment)?;
+            append_series(&mut out, &context, chart, &specs[*index], *index)?;
         }
         let base = axis_base + if *secondary { 2 } else { 0 };
         out.push_str(&plot_end(*kind, chart, indexes.len(), base, base + 1, axis_base + 4)?);
@@ -465,7 +523,9 @@ pub(super) fn chart_xml(workbook: &WorkbookInput, chart: &ChartInput, chart_inde
         "legend":chart.legend.as_ref().map(|legend| serde_json::json!({"visible":legend.visible,"position":legend.position,"font":legend.font})),
         "helperSheets":chart.native_bindings.as_ref().and_then(|bindings| bindings.helper.as_ref()).map(|helper| vec![serde_json::json!({"name":helper.sheet_name,"key":helper.key})]).unwrap_or_default()
     }});
-    append_chart_xml(&mut out, &format!("<c:extLst><c:ext uri=\"{}\"><ov:source xmlns:ov=\"{}\">{}</ov:source></c:ext></c:extLst></c:chartSpace>", office_io_common::chart_options::SOURCE_EXTENSION_URI, office_io_common::chart_options::SOURCE_EXTENSION_NS, xml::escape(&source.to_string())))?;
+    append_chart_xml(&mut out, &format!("<c:extLst><c:ext uri=\"{}\"><ov:source xmlns:ov=\"{}\">", office_io_common::chart_options::SOURCE_EXTENSION_URI, office_io_common::chart_options::SOURCE_EXTENSION_NS))?;
+    append_chart_escaped(&mut out, &source.to_string())?;
+    append_chart_xml(&mut out, "</ov:source></c:ext></c:extLst></c:chartSpace>")?;
     Ok(out)
 }
 
@@ -473,26 +533,33 @@ fn append_chart_xml(out: &mut String, fragment: &str) -> Result<(), ExportError>
     if out.len().checked_add(fragment.len()).is_none_or(|bytes| bytes > chart_xml::MAX_XML_BYTES) {
         return Err(ExportError::invalid("CHART_XML_RESOURCE_LIMIT: native chart part exceeds 16 MiB"));
     }
+    out.try_reserve(fragment.len()).map_err(|_| ExportError::invalid("CHART_XML_RESOURCE_LIMIT: chart XML allocation failed"))?;
     out.push_str(fragment);
     Ok(())
 }
 
-fn bound_vector(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, field: usize, as_zero: bool) -> Result<(String, Vec<Option<f64>>), ExportError> {
+fn bound_vector<'a>(context: &Context<'_>, chart: &'a ChartInput, spec: &SeriesSpec, field: usize, as_zero: bool) -> Result<(Cow<'a, str>, Cow<'a, [Option<f64>]>), ExportError> {
     if let Some(group_index) = spec.group_index {
         let vector = chart.native_bindings.as_ref().and_then(|bindings| bindings.groups.get(group_index)).and_then(|group| group.vectors.get(&(field, as_zero)))
             .ok_or_else(|| ExportError::invalid("native bubble group is missing its formula vector"))?;
-        return Ok((vector.formula.clone(), vector.values.clone()));
+        return Ok((Cow::Borrowed(vector.formula.as_str()), Cow::Borrowed(vector.values.as_slice())));
     }
-    if let Some(vector) = chart.native_bindings.as_ref().and_then(|bindings| bindings.vectors.get(&(field, as_zero))) { return Ok((vector.formula.clone(), vector.values.clone())); }
-    let (formula, mut values, _) = context.vector(chart, field)?;
+    if let Some(vector) = chart.native_bindings.as_ref().and_then(|bindings| bindings.vectors.get(&(field, as_zero))) {
+        return Ok((Cow::Borrowed(vector.formula.as_str()), Cow::Borrowed(vector.values.as_slice())));
+    }
+    let (formula, mut values) = context.numeric_vector(chart, field)?;
     if as_zero { for value in &mut values { if value.is_none() { *value = Some(0.0); } } }
-    Ok((formula, values))
+    Ok((Cow::Owned(formula), Cow::Owned(values)))
 }
 
-fn bound_date_vector(chart: &ChartInput, spec: &SeriesSpec, field: usize) -> Result<(String, Vec<Option<f64>>), ExportError> {
+fn bound_date_vector<'a>(chart: &'a ChartInput, spec: &SeriesSpec, field: usize) -> Result<(Cow<'a, str>, Cow<'a, [Option<f64>]>), ExportError> {
     let binding = chart.native_bindings.as_ref().ok_or_else(|| ExportError::invalid("date X formula bindings were not prepared"))?;
     let vector = if let Some(group) = spec.group_index {
         binding.groups.get(group).and_then(|group| group.date_vectors.get(&field))
     } else { binding.date_vectors.get(&field) }.ok_or_else(|| ExportError::invalid("date X formula binding is missing"))?;
-    Ok((vector.formula.clone(), vector.values.clone()))
+    Ok((Cow::Borrowed(vector.formula.as_str()), Cow::Borrowed(vector.values.as_slice())))
 }
+
+#[cfg(test)]
+#[path = "xlsx_chart_buffer_tests.rs"]
+mod buffer_tests;

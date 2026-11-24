@@ -4,10 +4,17 @@ import type { ChartData, ChartSeriesData } from './chart-engine'
 import { chartNumber } from './chart-data'
 import { chartFiniteProduct, chartFiniteSum, chartInterpolate, chartScaledMoments, finiteChartValue } from './chart-math'
 import { validateChartOptions } from './chart-options'
+import { chartBoxplotStatisticOptions } from './chart-boxplot-options'
+import { buildChartHistogram } from './chart-histogram'
 
 export interface HistogramBin { kind: 'underflow' | 'regular' | 'overflow'; lowerBound?: number; upperBound?: number; count: number }
 export interface HistogramData { validSampleCount: number; bins: HistogramBin[] }
-export interface BoxplotData { min: number; q1: number; median: number; q3: number; max: number; outliers: number[] }
+export interface BoxplotData {
+  min: number; q1: number; median: number; q3: number; max: number
+  outliers: number[]
+  /** Parallel identities in preparedData, including original empty sample slots. */
+  outlierSourceIndices: number[]
+}
 export interface ParetoData { categories: string[]; values: number[]; cumulativePercent: number[] }
 export interface WaterfallPoint { start: number; end: number; value: number; role: 'change' | 'total'; categoryIndex: number }
 export const CHART_WATERFALL_GLOBAL_SERIES = 0xffff_ffff
@@ -39,67 +46,38 @@ export interface ChartErrorInterval { categoryIndex: number; x: number; y: numbe
 /** Small-data reference contract. Worker/Rust must use the same boundaries and statistics. */
 export function chartHistogram(samples: readonly number[], options: ChartSemanticOptions['histogram'] = {}): HistogramData {
   validateChartOptions({ histogram: options })
-  const valid = samples.filter(Number.isFinite)
-  if (!valid.length) return { validSampleCount: 0, bins: [] }
-  const regular = valid.filter(value => (options.underflowThreshold === undefined || value > options.underflowThreshold)
-    && (options.overflowThreshold === undefined || value <= options.overflowThreshold))
-  const bins: HistogramBin[] = []
-  if (options.underflowThreshold !== undefined) bins.push({ kind: 'underflow', upperBound: options.underflowThreshold, count: valid.filter(value => value <= options.underflowThreshold!).length })
-  if (regular.length) {
-    let min = regular[0]!, max = min
-    for (const value of regular) { min = Math.min(min, value); max = Math.max(max, value) }
-    let lower = options.underflowThreshold ?? min, upper = options.overflowThreshold ?? max
-    if (lower === upper) {
-      const padding = options.binning?.mode === 'width' ? options.binning.width : Math.max(1, Math.abs(lower) * 0.1)
-      const after = upper + padding, before = lower - padding
-      if (options.overflowThreshold === undefined && Number.isFinite(after) && after > upper) upper = after
-      else if (Number.isFinite(before) && before < lower) lower = before
-      else throw new RangeError('直方图箱宽无法在当前数值精度内形成有效区间。')
-    }
-    const moments = chartScaledMoments(regular), scale = Math.max(Math.abs(lower), Math.abs(upper), moments.scale, options.binning?.mode === 'width' ? options.binning.width : 0)
-    const range = upper / scale - lower / scale
-    const scottWidth = 3.5 * Math.sqrt(moments.scaledVariance) * (moments.scale / scale) / Math.cbrt(regular.length)
-    const defaultCount = range === 0 ? 1 : Math.max(1, Math.ceil(range / (scottWidth > 0 ? scottWidth : range / Math.sqrt(regular.length))))
-    const count = options.binning?.mode === 'count' ? options.binning.count : options.binning?.mode === 'width' ? Math.max(1, Math.ceil(range / (options.binning.width / scale))) : min === max ? 1 : defaultCount
-    if (!Number.isSafeInteger(count) || count < 1 || count > 10_000) throw new RangeError('直方图分箱数量须位于 1 到 10000。')
-    const boundary = (index: number): number => {
-      if (index === 0) return lower
-      if (options.binning?.mode === 'width') {
-        if (index === count && options.overflowThreshold !== undefined) return upper
-        const normalized = lower / scale + index * (options.binning.width / scale)
-        return finiteChartValue(normalized * scale, '直方图箱边界')
-      }
-      return chartInterpolate(lower, upper, index / count)
-    }
-    const entries = Array.from({ length: count }, (_unused, index): HistogramBin => ({ kind: 'regular', lowerBound: boundary(index), upperBound: boundary(index + 1), count: 0 }))
-    if (entries.some(entry => entry.lowerBound! >= entry.upperBound!)) throw new RangeError('直方图箱数或箱宽无法在当前数值精度内形成有效区间。')
-    for (const value of regular) {
-      // The first interval includes its lower bound; later bins are (lower, upper].
-      let first = 0, last = count - 1
-      while (first < last) { const middle = Math.floor((first + last) / 2); if (value <= entries[middle]!.upperBound!) last = middle; else first = middle + 1 }
-      entries[first]!.count++
-    }
-    bins.push(...entries)
-  }
-  if (options.overflowThreshold !== undefined) bins.push({ kind: 'overflow', lowerBound: options.overflowThreshold, count: valid.filter(value => value > options.overflowThreshold!).length })
-  return { validSampleCount: valid.length, bins }
+  return buildChartHistogram(samples, options)
 }
 
-export function chartBoxplot(samples: readonly number[], options: ChartSemanticOptions['boxplot'] = {}): BoxplotData | undefined {
+export function chartBoxplot(samples: readonly (number | null)[], options: ChartSemanticOptions['boxplot'] = {}): BoxplotData | undefined {
   validateChartOptions({ boxplot: options })
-  const sorted = samples.filter(Number.isFinite).sort((a, b) => a - b)
+  const sorted = samples.flatMap((value, sourceIndex) => value !== null && Number.isFinite(value) ? [{ value, sourceIndex }] : [])
+    .sort((a, b) => a.value - b.value || a.sourceIndex - b.sourceIndex)
   if (!sorted.length) return undefined
+  const effective = chartBoxplotStatisticOptions(options)
+  // The fixed converter's empty halves yield NaN for a single sample, so it
+  // has no drawable box. Keep the finite protocol instead of emitting NaN.
+  if (effective.quartileMethod === 'medianOfHalves' && sorted.length < 2) return undefined
+  const halfMedian = (start: number, end: number): number => {
+    const length = end - start, middle = start + Math.floor(length / 2)
+    return length % 2 ? sorted[middle]!.value : chartInterpolate(sorted[middle - 1]!.value, sorted[middle]!.value, 0.5)
+  }
   const quartile = (p: number): number => {
-    const position = options.quartileMethod === 'exclusive' ? p * (sorted.length + 1) - 1 : p * (sorted.length - 1)
+    if (effective.quartileMethod === 'medianOfHalves') return p === 0.25 ? halfMedian(0, Math.floor(sorted.length / 2))
+      : p === 0.75 ? halfMedian(Math.ceil(sorted.length / 2), sorted.length) : halfMedian(0, sorted.length)
+    const position = effective.quartileMethod === 'exclusive' ? p * (sorted.length + 1) - 1 : p * (sorted.length - 1)
     const lower = Math.max(0, Math.min(sorted.length - 1, Math.floor(position))), upper = Math.max(0, Math.min(sorted.length - 1, Math.ceil(position)))
-    return chartInterpolate(sorted[lower]!, sorted[upper]!, Math.max(0, Math.min(1, position - Math.floor(position))))
+    return chartInterpolate(sorted[lower]!.value, sorted[upper]!.value, Math.max(0, Math.min(1, position - Math.floor(position))))
   }
   const q1 = quartile(0.25), q3 = quartile(0.75), median = quartile(0.5)
-  const scale = Math.max(Math.abs(q1), Math.abs(q3), ...[Math.abs(sorted[0]!), Math.abs(sorted.at(-1)!)]) || 1
-  const distance = (q3 / scale - q1 / scale) * (options.whiskerMultiplier ?? 1.5)
+  if (effective.whiskerMethod === 'range') return { min: sorted[0]!.value, q1, median, q3, max: sorted.at(-1)!.value,
+    outliers: [], outlierSourceIndices: [] }
+  const scale = Math.max(Math.abs(q1), Math.abs(q3), Math.abs(sorted[0]!.value), Math.abs(sorted.at(-1)!.value)) || 1
+  const distance = (q3 / scale - q1 / scale) * effective.whiskerMultiplier
   const isWithin = (value: number): boolean => value / scale >= q1 / scale - distance && value / scale <= q3 / scale + distance
-  const within = sorted.filter(isWithin)
-  return { min: within[0] ?? q1, q1, median, q3, max: within.at(-1) ?? q3, outliers: sorted.filter(value => !isWithin(value)) }
+  const within = sorted.filter(sample => isWithin(sample.value)), outliers = sorted.filter(sample => !isWithin(sample.value))
+  return { min: within[0]?.value ?? q1, q1, median, q3, max: within.at(-1)?.value ?? q3,
+    outliers: outliers.map(sample => sample.value), outlierSourceIndices: outliers.map(sample => sample.sourceIndex) }
 }
 
 export function chartPareto(categories: readonly string[], samples: readonly (number | null)[], includeZeroValues = false): ParetoData {
@@ -113,9 +91,18 @@ export function chartPareto(categories: readonly string[], samples: readonly (nu
   // includeZeroValues retains zero totals; negative totals are always excluded.
   const sorted = [...grouped].filter(([_name, group]) => group.value > 0 || includeZeroValues && group.value === 0).sort((a, b) => b[1].value - a[1].value || a[1].index - b[1].index)
   const scale = sorted[0]?.[1].value || 1
-  const total = sorted.reduce((sum, [_name, group]) => sum + group.value / scale, 0)
+  let rawTotal = 0, scaledTotal = 0
+  for (const [_name, group] of sorted) { rawTotal += group.value; scaledTotal += group.value / scale }
+  // Fixed OOe truncates percentages to two decimal places. Preserve its raw
+  // addition/division for finite totals: max-value normalization alone can
+  // turn an exact 60% for [6, 4] into 59.99%. Scaling only handles overflow.
+  const scaled = !Number.isFinite(rawTotal), total = scaled ? scaledTotal : rawTotal
   let cumulative = 0
-  return { categories: sorted.map(([name]) => name), values: sorted.map(([_name, group]) => group.value), cumulativePercent: sorted.map(([_name, group], index) => { cumulative += group.value / scale; return total ? index === sorted.length - 1 ? 100 : Math.min(100, cumulative / total * 100) : 0 }) }
+  return { categories: sorted.map(([name]) => name), values: sorted.map(([_name, group]) => group.value),
+    cumulativePercent: sorted.map(([_name, group], index) => {
+      cumulative += scaled ? group.value / scale : group.value
+      return total ? index === sorted.length - 1 ? 100 : Math.min(100, Math.floor(cumulative / total * 10_000) / 100) : 0
+    }) }
 }
 
 /** Legacy single-series projection, never a second accumulation engine. */

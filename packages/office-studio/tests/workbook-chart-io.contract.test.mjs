@@ -94,7 +94,7 @@ test('successful imports retain deduplicated native differences beside the edita
 })
 
 test('invalid diagnostics produce an unresolved import and never publish partial difference records', () => {
-  for (const reasons of [[''], [7], ['CHART_NATIVE_GRADIENT_PATH_UNMAPPED', null]]) {
+  for (const reasons of [null, 'CHART_NATIVE_GRADIENT_PATH_UNMAPPED', {}, new Array(1), [''], [7], ['CHART_NATIVE_GRADIENT_PATH_UNMAPPED', null]]) {
     const model = sheet(); model.metadata.officeChartDifferences = { old: { index: 0, reasons: ['STALE'] } }
     const result = imports.normalizeWorkbookCharts([{ charts: [{ index: 0, authored: authored(), unsupportedReasons: reasons }] }], [model], [])
     assert.deepEqual(result.charts, [])

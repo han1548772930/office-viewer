@@ -323,7 +323,7 @@ const slicerControls = computed(() => {
 
 const activeSheet = computed(() => availableSheets.value.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? availableSheets.value.find(sheet => sheet.visible !== false))
 const { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, chartEditorBusy, chartError, chartEditorError,
-  chartInsertContext, chartEditorContext, pivotChartContext, chartEditorChart, chartEditorData, chartEditorSheet, chartEditorSheets, chartInsertSheets,
+  chartInsertContext, chartEditorContext, pivotChartContext, chartEditorChart, chartSourceRevision, chartEditorSheet, chartEditorSheets, chartInsertSheets,
   openInsertChart, openChartEditor, openPivotChart } = useSheetChartPanels({
   studio: () => props.studio, unitId: () => workbook.value.id, sheetId: () => activeSheet.value?.id,
   sheets: () => availableSheets.value, active: () => workbenchActive.value,
@@ -2588,8 +2588,8 @@ onActivated(() => { workbenchActive.value = true })
       </SplitterPanel>
     </Splitter>
 
-    <ChartEditorPanel v-if="chartEditorContext" :key="chartEditorContext.key" :open="chartEditorOpen" :chart="chartEditorChart" :sheet="chartEditorSheet" :sheets="chartEditorSheets" :data="chartEditorData" :date1904="activeDate1904" :busy="chartEditorBusy" :error="chartEditorError" @update:open="chartEditorContext.setOpen" @apply="chartEditorContext.apply" @closed="chartEditorContext.closed" />
-    <ChartInsertDialog v-if="chartInsertContext" :key="chartInsertContext.key" :open="chartModalOpen" :config="chartInsertContext.config" :sheets="chartInsertSheets" :host-sheet-id="chartInsertContext.sheetId" :date1904="activeDate1904" :busy="chartInsertBusy" :error="chartError" @update:open="chartInsertContext.setOpen" @apply="chartInsertContext.apply" @closed="chartInsertContext.closed" />
+    <ChartEditorPanel v-if="chartEditorContext" :key="chartEditorContext.key" :open="chartEditorOpen" :chart="chartEditorChart" :sheet="chartEditorSheet" :sheets="chartEditorSheets" :source-revision="chartSourceRevision" :load-source="chartEditorContext.loadSource" :load-statistics="chartEditorContext.loadStatistics" :date1904="activeDate1904" :busy="chartEditorBusy" :error="chartEditorError" @update:open="chartEditorContext.setOpen" @apply="chartEditorContext.apply" @closed="chartEditorContext.closed" />
+    <ChartInsertDialog v-if="chartInsertContext" :key="chartInsertContext.key" :open="chartModalOpen" :config="chartInsertContext.config" :sheets="chartInsertSheets" :host-sheet-id="chartInsertContext.sheetId" :source-revision="chartSourceRevision" :load-source="chartInsertContext.loadSource" :load-statistics="chartInsertContext.loadStatistics" :date1904="activeDate1904" :busy="chartInsertBusy" :error="chartError" @update:open="chartInsertContext.setOpen" @apply="chartInsertContext.apply" @closed="chartInsertContext.closed" />
 
     <Modal v-model:open="hyperlinkDialogOpen" :title="editingHyperlink ? '编辑超链接' : '插入超链接'" ok-text="确定" cancel-text="取消" :width="440" @ok="confirmHyperlinkDialog">
       <Form layout="vertical" @submit.prevent>

@@ -1,4 +1,4 @@
-import type { DocumentLayout } from './document-layout-types'
+import type { DocumentLayout, LayoutRect, LayoutStoryLine } from './document-layout-types'
 import { PAGE_INSET } from './document-layout-types'
 
 /** Center mixed physical page sizes without changing their local content geometry. */
@@ -6,12 +6,28 @@ export function arrangeDocumentPages(layout: DocumentLayout): void {
   const maximumWidth = layout.pages.reduce((width, page) => Math.max(width, page.width), 0)
   layout.width = maximumWidth + PAGE_INSET * 2
   const shifts = layout.pages.map(page => (maximumWidth - page.width) / 2)
+  const moved = new Set<object>()
+  const shiftRect = (item: LayoutRect, dx: number): boolean => {
+    if (moved.has(item)) return false
+    moved.add(item); item.x += dx
+    return true
+  }
+  const shiftClipped = (item: LayoutRect & { clip?: LayoutRect }, dx: number) => {
+    shiftRect(item, dx)
+    if (item.clip) shiftRect(item.clip, dx)
+  }
+  const shiftLine = (line: LayoutStoryLine & { clip?: LayoutRect; markerStyle?: { x: number } }, dx: number) => {
+    if (!shiftRect(line, dx)) return
+    if (line.clip) shiftRect(line.clip, dx)
+    if (line.markerStyle && !moved.has(line.markerStyle)) { moved.add(line.markerStyle); line.markerStyle.x += dx }
+    for (const glyph of line.glyphs) shiftRect(glyph, dx)
+  }
   for (const page of layout.pages) {
     const dx = shifts[page.index]!
-    page.x += dx; page.content.x += dx
+    shiftRect(page, dx); shiftRect(page.content, dx)
     for (const section of page.sections) {
-      section.x += dx
-      for (const column of section.columns) column.x += dx
+      shiftRect(section, dx)
+      for (const column of section.columns) shiftRect(column, dx)
       const height = Math.min(section.height, section.usedHeight)
       if (section.columnSeparator !== 'line' || height <= 0) continue
       section.columns.slice(0, -1).forEach((column, index) => {
@@ -21,19 +37,25 @@ export function arrangeDocumentPages(layout: DocumentLayout): void {
       })
     }
   }
-  for (const line of layout.lines) {
-    const dx = shifts[line.page]!
-    line.x += dx
-    if (line.clip) line.clip.x += dx
-    if (line.markerStyle) line.markerStyle.x += dx
-    for (const glyph of line.glyphs) glyph.x += dx
-  }
+  for (const line of layout.lines) shiftLine(line, shifts[line.page]!)
   for (const item of [...layout.cells, ...layout.images, ...layout.dividers]) {
-    const dx = shifts[item.page]!
-    item.x += dx
-    if (item.clip) item.clip.x += dx
+    shiftClipped(item, shifts[item.page]!)
   }
-  for (const table of layout.tableFragments ?? []) table.x += shifts[table.page]!
+  for (const table of layout.tableFragments ?? []) shiftClipped(table, shifts[table.page]!)
+  for (const content of [...(layout.auxiliaryContent ?? []), ...(layout.noteDecorations ?? [])]) {
+    const dx = shifts[content.page]!
+    shiftRect(content, dx)
+    if ('columns' in content) for (const column of content.columns ?? []) shiftRect(column, dx)
+    for (const line of content.lines) shiftLine(line, dx)
+    for (const item of [...content.cells, ...content.images, ...content.dividers, ...content.tableFragments]) shiftClipped(item, dx)
+  }
+  // Block-story lines and headerLayoutLines share objects. Shift each geometry
+  // once, including their shared page clips, before publishing page indexes.
+  for (const story of layout.pageHeaderFooters) {
+    const dx = shifts[story.page]!
+    shiftRect(story, dx)
+    for (const line of [...story.headerLayoutLines, ...story.footerLayoutLines]) shiftLine(line, dx)
+  }
   const last = layout.pages.at(-1)
   layout.height = last ? last.y + last.height + PAGE_INSET : 0
   layout.pageContent = layout.pages.map(() => ({ lines: [], cells: [], images: [], dividers: [], columnSeparators: [] }))

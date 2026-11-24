@@ -1,13 +1,8 @@
 import type { DocumentModel } from '../../../domain/model'
 import type { DocumentPoint } from '../model/document-model'
-import { paragraphListMarkers } from '../model/document-lists'
-import { createRun, imageForBlock, sameTarget, targetKey } from '../model/document-model'
-import { DocumentSectionFlow } from './document-section-flow'
-import { balanceDocumentSection } from './document-column-balance'
-import { layoutDocumentParagraph } from './document-paragraph-layout'
-import { layoutDocumentTable } from './document-table-layout'
-import { arrangeDocumentPages } from './document-page-arrangement'
-import { layoutDocumentPageStories } from './document-page-stories'
+import { createRun, sameTarget, targetKey } from '../model/document-model'
+import { sameDocumentBlockHost } from '../model/document-block-host'
+import { layoutDocumentWithNotes } from './document-note-layout'
 import { intersectTableRect } from './document-table-measurement'
 import type { DocumentLayout, LayoutLine, LayoutMeasurer, LayoutRect, LayoutStoryLine } from './document-layout-types'
 
@@ -16,52 +11,7 @@ export { PAGE_GAP, PAGE_INSET, STORY_LINE_HEIGHT } from './document-layout-types
 export { createTextMeasurer, runFont } from './document-text-layout'
 
 export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): DocumentLayout {
-  const flow = new DocumentSectionFlow(model)
-  const result: DocumentLayout = { width: 0, height: 0, pages: flow.pages, pageContent: [], lines: [], cells: [],
-    images: [], dividers: [], columnSeparators: [], pageHeaderFooters: [], headings: [] }
-  const bodyMarkers = paragraphListMarkers(model.blocks)
-  for (const block of model.blocks) {
-    if (block.type === 'pageBreak') { flow.pageBreak(); continue }
-    if (block.type === 'columnBreak') { flow.nextColumn(true); continue }
-    if (block.type === 'sectionBreak') {
-      const type = block.sectionBreak?.type ?? 'nextPage'
-      if (type === 'continuous' && flow.columnsChange(block.id)) balanceDocumentSection(result, flow.section)
-      flow.startSection(block.id, type)
-      continue
-    }
-    flow.addSpace(block.style.spaceBefore)
-    if (block.type === 'table') layoutDocumentTable(block, bodyMarkers, flow, result, measurer)
-    else if (block.type === 'image') {
-      const image = imageForBlock(block)
-      if (!image) continue
-      const nativeWidth = Math.max(1, image.width || 320), nativeHeight = Math.max(1, image.height || nativeWidth * 0.625)
-      const size = () => {
-        const scale = Math.min(1, flow.column.width / nativeWidth, flow.page.content.height / nativeHeight)
-        return { width: nativeWidth * scale, height: nativeHeight * scale }
-      }
-      let prepared = size()
-      while (true) {
-        flow.ensureRoom(prepared.height)
-        const next = size()
-        if (Math.abs(next.width - prepared.width) < 1e-6 && Math.abs(next.height - prepared.height) < 1e-6) break
-        prepared = next
-      }
-      const shift = block.style.align === 'center' ? (flow.column.width - prepared.width) / 2
-        : block.style.align === 'right' ? flow.column.width - prepared.width : 0
-      result.images.push({ x: flow.column.x + shift, y: flow.cursor, ...prepared, blockId: block.id,
-        src: image.src, alt: image.alt, page: flow.page.index, ...flow.location })
-      flow.consume(prepared.height)
-    } else if (block.type === 'divider') {
-      flow.ensureRoom(18)
-      result.dividers.push({ x: flow.column.x, y: flow.cursor + 9, width: flow.column.width, height: 1, page: flow.page.index, ...flow.location })
-      flow.consume(18)
-    } else layoutDocumentParagraph(block, bodyMarkers.get(block.id), flow, result, measurer)
-    flow.addSpace(block.style.spaceAfter)
-  }
-  arrangeDocumentPages(result)
-  result.pageHeaderFooters = layoutDocumentPageStories(model, result.pages, flow.settings, measurer)
-  result.auxiliaryContent = result.pageHeaderFooters.flatMap(page => [page.headerBlockLayout, page.footerBlockLayout].filter((content): content is NonNullable<typeof content> => !!content))
-  return result
+  return layoutDocumentWithNotes(model, measurer)
 }
 
 export function lineForPoint(layout: DocumentLayout, point: DocumentPoint): LayoutLine | undefined {
@@ -118,14 +68,20 @@ export function hitTestDocumentStory(lines: readonly LayoutStoryLine[], x: numbe
 export function caretRect(layout: DocumentLayout, point: DocumentPoint): LayoutRect | undefined {
   const line = lineForPoint(layout, point)
   if (!line) return undefined
-  const glyph = line.glyphs.find((candidate) => point.offset <= candidate.offset)
-  const rawX = glyph?.x ?? (line.glyphs.at(-1) ? line.glyphs.at(-1)!.x + line.glyphs.at(-1)!.width : line.x)
-  const width = line.clip ? Math.min(1.3, Math.max(0, line.clip.width)) : 1.3
+  const sourceGlyphs = line.glyphs.filter(glyph => glyph.note?.role !== 'bodyLabel')
+  const glyph = sourceGlyphs.find((candidate) => point.offset <= candidate.offset)
+  const last = sourceGlyphs.at(-1), label = line.glyphs.find(glyph => glyph.note?.role === 'bodyLabel')
+  const rawX = glyph?.x ?? (last ? last.x + last.width : label ? label.x + label.width : line.x)
+  const image = line.pictureInputAnchorImageId ? layout.images.find(image => image.blockId === line.pictureInputAnchorImageId
+    && image.page === line.page && image.tableCellId === line.tableCellId && !!image.repeatedHeader === !!line.repeatedHeader) : undefined
+  const clip = image ? line.clip ? intersectTableRect(image, line.clip) : image : line.clip
+  const width = clip ? Math.min(1.3, Math.max(0, clip.width)) : 1.3
   // At an exact-width cell's trailing edge the caret still occupies a visible
   // pixel inside the content clip, rather than intersecting to zero width.
-  const x = line.clip ? Math.max(line.clip.x, Math.min(rawX, line.clip.x + line.clip.width - width)) : rawX
-  const caret = { x, y: line.y + 2, width, height: Math.max(12, line.height - 4) }
-  const clipped = line.clip ? intersectTableRect(caret, line.clip) : caret
+  const x = clip ? Math.max(clip.x, Math.min(rawX, clip.x + clip.width - width)) : rawX
+  const inset = Math.min(2, Math.max(0, line.height - 1) / 2)
+  const caret = { x, y: line.y + inset, width, height: Math.min(line.height - inset, Math.max(12, line.height - 4)) }
+  const clipped = clip ? intersectTableRect(caret, clip) : caret
   return clipped.width > 0 && clipped.height > 0 ? clipped : undefined
 }
 
@@ -142,6 +98,12 @@ export function hitTestDocument(layout: DocumentLayout, x: number, y: number): D
   const cellLines = cell?.cellId ? visibleLines.filter(line => line.tableCellId === cell.cellId) : []
   if (cell?.cellId && !cellLines.length) return undefined
   const columnLines = visibleLines.filter(line => {
+    const auxiliary = line.host && layout.auxiliaryContent?.find(content => content.page === line.page
+      && sameDocumentBlockHost(content.host, line.host) && content.lines.includes(line))
+    if (auxiliary) {
+      const column = auxiliary.columns?.find(column => column.index === (line.column ?? 0)) ?? auxiliary
+      return x >= column.x && x <= column.x + column.width
+    }
     const section = layout.pages[line.page]?.sections.find(section => section.fragment === line.sectionFragment)
     const column = section?.columns[line.column ?? 0]
     return column && x >= column.x && x <= column.x + column.width
@@ -162,7 +124,7 @@ export function hitTestDocument(layout: DocumentLayout, x: number, y: number): D
 /** Resolve a known visual line without re-entering page/cell hit routing. */
 export function hitTestDocumentLine(line: LayoutLine, x: number): DocumentPoint {
   const visibleX = line.clip ? Math.max(line.clip.x, Math.min(x, line.clip.x + line.clip.width)) : x
-  const glyph = line.glyphs.find(candidate => visibleX < candidate.x + candidate.width / 2)
+  const glyph = line.glyphs.find(candidate => candidate.note?.role !== 'bodyLabel' && visibleX < candidate.x + candidate.width / 2)
   return { ...line.target, offset: glyph?.offset ?? line.end, pageAffinity: line.page }
 }
 

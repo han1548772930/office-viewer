@@ -1,11 +1,13 @@
 import type { DocumentContentControl } from '../../../domain/model'
 import type { ContentControlPatch } from './content-controls'
 import { validateContentControlCheckboxState, validateContentControlDateProperties, validateContentControlListItems } from './content-control-presentation'
+import { assertDocumentContentControlTableRowRange } from '../model/content-control-table-rows'
+import { assertDocumentContentControlBlockRange } from '../model/content-control-block-range'
 
 const propertyKeys = [
   'type', 'placement', 'alias', 'title', 'tag', 'appearance', 'color', 'placeholder', 'placeholderDocPart', 'showingPlaceholder',
   'temporary', 'lock', 'checkbox', 'multiLine', 'dateFormat', 'dateLocale', 'dateCalendar', 'dateStorage', 'items', 'parentId',
-  'repeatingSection', 'docPart', 'dataBinding', 'rawSdtPr', 'rawSdtEndPr', 'metadata',
+  'repeatingSection', 'tableRowRange', 'blockRange', 'docPart', 'dataBinding', 'rawSdtPr', 'rawSdtEndPr', 'metadata',
 ] as const satisfies ReadonlyArray<keyof ContentControlPatch>
 
 const stringKeys = ['alias', 'title', 'tag', 'color', 'placeholder', 'dateFormat', 'dateLocale', 'dateCalendar', 'dateStorage', 'parentId', 'rawSdtPr', 'rawSdtEndPr'] as const
@@ -33,6 +35,13 @@ export function validateContentControlPropertyPatch(patch: ContentControlPatch, 
     }
   }
   if (patch.items !== undefined) validateContentControlListItems(patch.items)
+  if (patch.tableRowRange !== undefined) assertDocumentContentControlTableRowRange(patch.tableRowRange)
+  if (patch.blockRange !== undefined) assertDocumentContentControlBlockRange(patch.blockRange)
+  const rowRange = Object.hasOwn(patch, 'tableRowRange') ? patch.tableRowRange : current?.tableRowRange
+  const blockRange = Object.hasOwn(patch, 'blockRange') ? patch.blockRange : current?.blockRange
+  const placement = Object.hasOwn(patch, 'placement') ? patch.placement : current?.placement
+  if (rowRange && blockRange) throw new RangeError('内容控件不能同时包含完整块范围和表格行范围。')
+  if (blockRange && placement !== 'block') throw new RangeError('完整块范围必须使用块级内容控件位置。')
   const dates = ['dateFormat', 'dateLocale', 'dateCalendar'] as const
   if (dates.some(key => Object.hasOwn(patch, key))) validateContentControlDateProperties(
     Object.hasOwn(patch, 'dateFormat') ? patch.dateFormat : current?.dateFormat,
@@ -88,7 +97,9 @@ export function contentControlPropertyDraftPatch(baseline: DocumentContentContro
 
 export function assertContentControlPropertyDraftCurrent(baseline: DocumentContentControl, current: DocumentContentControl, patch: ContentControlPatch): void {
   if (current.id !== baseline.id || current.type !== baseline.type || current.blockId !== baseline.blockId
-    || current.startOffset !== baseline.startOffset || current.endOffset !== baseline.endOffset) throw new Error('内容控件位置或类型已变化，请重新打开属性。')
+    || current.startOffset !== baseline.startOffset || current.endOffset !== baseline.endOffset
+    || JSON.stringify(current.tableRowRange) !== JSON.stringify(baseline.tableRowRange)
+    || JSON.stringify(current.blockRange) !== JSON.stringify(baseline.blockRange)) throw new Error('内容控件位置或类型已变化，请重新打开属性。')
   for (const key of propertyKeys) {
     if (Object.hasOwn(patch, key) && JSON.stringify(current[key]) !== JSON.stringify(baseline[key])) throw new Error('内容控件属性已变化，请重新打开属性。')
   }

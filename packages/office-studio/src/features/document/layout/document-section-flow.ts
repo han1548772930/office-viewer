@@ -6,6 +6,27 @@ import { PAGE_GAP, PAGE_INSET, type LayoutColumn, type LayoutFlowLocation, type 
 const EPSILON = 1e-6
 const equal = (left: number, right: number) => Math.abs(left - right) < EPSILON
 
+export interface DocumentFlowPageFrame extends Pick<LayoutPage, 'index' | 'x' | 'y' | 'width' | 'height' | 'content' | 'orientation' | 'sectionId' | 'pageNumber' | 'pageNumberStart' | 'sectionPageIndex' | 'isParityBlank'> {
+  /** A partial first note column can defer an indivisible object to a full continuation page. */
+  maximumContentHeight?: number
+  columnCount?: number; columnGap?: number
+}
+
+export interface DocumentSectionFlowOptions {
+  reservedPageBottom?: ReadonlyMap<number, number>
+  pageFrame?: (localIndex: number) => DocumentFlowPageFrame
+  referencePageFloors?: ReadonlyMap<string, number>
+  beforePageOverflow?: (flow: DocumentSectionFlow) => void
+  onPageStart?: (flow: DocumentSectionFlow) => void
+}
+
+export interface DocumentAuxiliaryFlowSegment {
+  beforePageOverflow?: (flow: DocumentSectionFlow) => void
+  onPageStart?: (flow: DocumentSectionFlow) => void
+  reservedBottom?: (page: LayoutPage) => number
+  prefixHeight?: (page: LayoutPage) => number
+}
+
 /** Stateful layout cursor; all state belongs to the derived layout, never the document. */
 export class DocumentSectionFlow {
   readonly settings: Map<string, EffectiveDocumentSectionSetup>
@@ -22,8 +43,11 @@ export class DocumentSectionFlow {
   private readonly firstSectionPages = new Map<string, number>()
   private readonly oddEvenSections: Set<string>
   private readonly populatedPages = new Set<number>()
+  private readonly maximumHeights = new Map<number, number>()
+  private readonly frameColumns = new Map<number, { count: number; gap: number }>()
+  private auxiliarySegment?: DocumentAuxiliaryFlowSegment
 
-  constructor(model: DocumentModel) {
+  constructor(model: DocumentModel, private readonly options: DocumentSectionFlowOptions = {}) {
     const ids = documentSectionIds(model)
     this.settings = new Map(ids.map(id => [id, documentEffectiveSectionSetup(model, id)]))
     this.oddEvenSections = new Set(ids.filter(id => resolveSectionHeaderFooter(model, id).differentOddEven))
@@ -37,6 +61,38 @@ export class DocumentSectionFlow {
   get location(): LayoutFlowLocation {
     return { sectionId: this.config.sectionId, sectionFragment: this.section.fragment, column: this.column.index }
   }
+
+  get fullPageContentHeight(): number {
+    return Math.max(0, (this.maximumHeights.get(this.page.index) ?? this.page.content.height) - (this.auxiliarySegment?.reservedBottom?.(this.page) ?? 0)
+      - (this.auxiliarySegment?.prefixHeight?.(this.page) ?? 0))
+  }
+
+  referencePageFloor(runIds: readonly string[]): number {
+    return runIds.reduce((page, id) => Math.max(page, this.options.referencePageFloors?.get(id) ?? 0), 0)
+  }
+
+  /** Retain reference boundaries from earlier passes while recomputing their reservations. */
+  advanceToPage(index: number): void {
+    while (this.page.index < index) this.nextColumn()
+  }
+
+  /** Endnotes consume full-width flow after every populated column of a section. */
+  beginAuxiliarySegment(segment: DocumentAuxiliaryFlowSegment): void {
+    const top = this.section.y + this.section.usedHeight
+    this.auxiliarySegment = segment
+    this.config = { ...this.config, columnCount: 1, columnGap: 0, columnSeparator: 'none' }
+    this.activateSection(this.createSection(this.page, top))
+  }
+
+  endAuxiliarySegment(): void {
+    const top = this.section.y + this.section.usedHeight
+    this.auxiliarySegment = undefined
+    this.config = this.settings.get(this.config.sectionId)!
+    this.activateSection(this.createSection(this.page, top))
+  }
+
+  /** Append a real physical page for a note continuation beyond the body. */
+  appendAuxiliaryPage(): LayoutPage { this.newPage('overflow'); return this.page }
 
   addSpace(height: number): void {
     this.cursor += height
@@ -58,9 +114,11 @@ export class DocumentSectionFlow {
   /** An oversized indivisible row is placed once on a fresh full-height column. */
   ensureRoom(height: number): void {
     while (this.cursor + height > this.column.y + this.column.height + EPSILON) {
-      const freshFullColumn = this.cursor <= this.column.y + EPSILON && equal(this.column.y, this.page.content.y)
-        && equal(this.column.height, this.page.content.height)
-      if (freshFullColumn && height > this.column.height) return
+      if (this.column.height <= EPSILON) { this.nextColumn(); continue }
+      const prefix = this.auxiliarySegment?.prefixHeight?.(this.page) ?? 0
+      const freshFullColumn = this.cursor <= this.column.y + prefix + EPSILON && equal(this.column.y, this.page.content.y)
+        && equal(this.column.height - prefix, this.fullPageContentHeight)
+      if (freshFullColumn && height > this.column.height - prefix) return
       this.nextColumn()
     }
   }
@@ -70,6 +128,11 @@ export class DocumentSectionFlow {
     this.column.full = true
     const next = this.section.columns[this.column.index + 1]
     if (next) { this.column = next; this.cursor = next.y; return }
+    const previousPage = this.page
+    this.auxiliarySegment?.beforePageOverflow?.(this)
+    if (this.page !== previousPage) return
+    this.options.beforePageOverflow?.(this)
+    if (this.page !== previousPage) return
     this.newPage('overflow')
   }
 
@@ -84,6 +147,8 @@ export class DocumentSectionFlow {
     this.logicalPageNumber++
     this.activatePage(this.appendPage(this.logicalPageNumber, false))
     this.boundary = reason === 'page' ? 'page' : undefined
+    this.auxiliarySegment?.onPageStart?.(this)
+    this.options.onPageStart?.(this)
   }
 
   private compatiblePage(config: EffectiveDocumentSectionSetup, includeMargins: boolean): boolean {
@@ -148,15 +213,22 @@ export class DocumentSectionFlow {
   }
 
   private appendPage(pageNumber: number, isParityBlank: boolean): LayoutPage {
+    if (this.pages.length >= 40_000) throw new RangeError('文档排版超过单次物理页预算。')
     const setup = this.config.page, previous = this.pages.at(-1), index = this.pages.length
     const y = previous ? previous.y + previous.height + PAGE_GAP : PAGE_INSET
+    const frame = this.options.pageFrame?.(index)
     const page: LayoutPage = {
       index, x: PAGE_INSET, y, width: setup.width, height: setup.height, orientation: this.config.orientation,
       content: { x: PAGE_INSET + setup.marginLeft, y: y + setup.marginTop,
         width: setup.width - setup.marginLeft - setup.marginRight, height: setup.height - setup.marginTop - setup.marginBottom },
       sectionId: this.config.sectionId, pageNumber, pageNumberStart: this.numberingStart,
-      sectionPageIndex: index - (this.firstSectionPages.get(this.config.sectionId) ?? index), sections: [], isParityBlank,
+      sectionPageIndex: index - (this.firstSectionPages.get(this.config.sectionId) ?? index), isParityBlank,
+      ...(frame ? { ...frame, content: { ...frame.content } } : {}), sections: [],
     }
+    const reserved = this.options.reservedPageBottom?.get(page.index) ?? 0
+    if (!Number.isFinite(reserved) || reserved < 0 || reserved > page.content.height) throw new RangeError('脚注预留空间必须位于真实页面内容高度内。')
+    this.maximumHeights.set(page.index, frame?.maximumContentHeight ?? page.content.height - reserved)
+    if (frame?.columnCount !== undefined) this.frameColumns.set(page.index, { count: frame.columnCount, gap: frame.columnGap ?? 0 })
     this.pages.push(page)
     return page
   }
@@ -167,12 +239,15 @@ export class DocumentSectionFlow {
   }
 
   private createSection(page: LayoutPage, y: number): LayoutSection {
-    const available = page.content.width - this.config.columnGap * (this.config.columnCount - 1)
+    const frame = this.frameColumns.get(page.index), count = this.auxiliarySegment ? 1 : frame?.count ?? this.config.columnCount,
+      gap = this.auxiliarySegment ? 0 : frame?.gap ?? this.config.columnGap
+    const available = page.content.width - gap * (count - 1)
     if (available <= 0) throw new RangeError('Section columns and gaps must leave a positive content width')
-    const width = available / this.config.columnCount
-    const height = Math.max(0, page.content.y + page.content.height - y)
-    const columns = Array.from({ length: this.config.columnCount }, (_, index): LayoutColumn => ({
-      index, x: page.content.x + index * (width + this.config.columnGap), y, width, height, usedHeight: 0, full: false,
+    const width = available / count
+    const reserved = this.options.reservedPageBottom?.get(page.index) ?? 0
+    const height = Math.max(0, page.content.y + page.content.height - reserved - (this.auxiliarySegment?.reservedBottom?.(page) ?? 0) - y)
+    const columns = Array.from({ length: count }, (_, index): LayoutColumn => ({
+      index, x: page.content.x + index * (width + gap), y, width, height, usedHeight: 0, full: false,
     }))
     const section: LayoutSection = { fragment: this.fragment++, sectionId: this.config.sectionId,
       x: page.content.x, y, width: page.content.width, height, columns, usedHeight: 0,

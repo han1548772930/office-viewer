@@ -63,14 +63,14 @@ test('Radar nullable label patches detach inputs and restore appearance and valu
     yAxis: { scaleType: 'linear', format: '0.00', label: { family: undefined, fontSize: undefined, color: 'green' } } })
   assert.deepEqual(radar.chartRadarAxisLabel(model), { family: 'Georgia', fontSize: 16, color: 'green', italic: false, format: '0.00', visible: true, bold: true })
   model.options.radar = radar.patchChartRadarOptions(patched, { axisLabel: null })
-  assert.equal(radar.chartRadarAxisLabel(model).visible, false)
+  assert.equal(radar.chartRadarAxisLabel(model).visible, true)
   assert.equal(radar.chartRadarAxisLabel(model).family, 'Aptos')
   assert.equal(radar.chartRadarAxisLabel(model).fontSize, 16)
   assert.equal(radar.patchChartRadarOptions(current, undefined), undefined)
 })
 
 test('Radar controls show numeric-label format and font only while visible and constrain the radial scale to linear', () => {
-  const model = chart('radar', { options: { appearance: { font: { family: 'Georgia', fontSize: 16 } } } })
+  const model = chart('radar', { options: { appearance: { font: { family: 'Georgia', fontSize: 16 } }, radar: { axisLabel: { visible: false } } } })
   const hiddenFields = controls.chartRadarSettingsControls(model)
   assert.deepEqual(hiddenFields.map(field => field.key), ['radar.shape', 'radar.fill', 'radar.axisLabel.visible'])
   hiddenFields.find(field => field.key === 'radar.axisLabel.visible').write(model, true)
@@ -106,7 +106,7 @@ test('Radar uses one signed range and preserves category indices through missing
   const source = { categories: ['North', 'East', 'South', 'West'], series: [{ field: 1, name: 'Score', values: [-20, 30, null, 80] }] }
   const model = chart('radar', { yAxis: { scaleType: 'linear', min: -20, max: 80 } })
   const result = prepared(source, model), geometry = layout.layoutDerivedChartData(result, model), polar = radar.chartRadarGeometry(source, model, geometry.plot)
-  assert.deepEqual(polar.ticks, [-20, 5, 30, 55, 80])
+  assert.deepEqual(polar.ticks, [-20, 0, 20, 40, 60, 80])
   assert.deepEqual(geometry.series[0].points.map(point => point.categoryIndex), [0, 1, 3])
   near(geometry.series[0].points[0].x, polar.center.x)
   near(geometry.series[0].points[0].y, polar.center.y)
@@ -142,7 +142,7 @@ test('native Radar draws scale-label text and uses the same bounds, direction an
     const east = coordinate.dataToPoint(25, 1), expected = polar.point(1, 25)
     near(east[0], expected.x, 1e-4); near(east[1], expected.y, 1e-4)
     const display = native.getZr().storage.getDisplayList(), labels = display.filter(element => element.type === 'tspan')
-    assert.ok(labels.some(element => element.style.text === '25.0' && /Georgia/.test(element.style.font ?? '')))
+    assert.ok(labels.some(element => element.style.text === '20.0' && /Georgia/.test(element.style.font ?? '')))
     assert.ok(labels.some(element => element.style.text === '100.0'))
     assert.ok(display.some(element => element.type === 'circle' && Math.abs(element.shape.r - polar.radius) < 1e-4))
     assert.ok(!/NaN|Infinity/.test(native.renderToSVGString()))
@@ -166,9 +166,9 @@ test('Radar graphic rendering consumes category rotation, radial reversal and pe
 })
 
 test('Boxplot distributions use raw source-field identity and independent fill, border and outlier styles', () => {
-  const source = boxSource(), model = chart('boxplot', { valueFields: [9, 2], options: { allSeriesStyle: { color: 'gold', fillOpacity: 0.6,
+  const source = boxSource(), model = chart('boxplot', { valueFields: [9, 2], options: { boxplot: { quartileMethod: 'inclusive', whiskerMethod: 'iqr' }, allSeriesStyle: { color: 'gold', fillOpacity: 0.6,
     border: { color: 'navy', width: 3, opacity: 0.5 }, point: { shape: 'rect', size: 10, color: 'magenta' } },
-  series: { 9: { name: 'Authored first', color: 'red', border: { width: 5 }, dataPoints: { 0: { fillOpacity: 0.25, border: { opacity: 0.8 } } } } } } })
+  series: { 9: { name: 'Authored first', color: 'red', fillOpacity: 0.25, border: { width: 5, opacity: 0.8 } } } } })
   const result = prepared(source, model), geometry = layout.layoutDerivedChartData(result, model), value = option(source, model)
   assert.deepEqual(result.boxes.map(box => [box.field, box.name]), [[9, 'Authored first'], [2, 'Second samples']])
   assert.deepEqual(geometry.series.map(series => series.field), [9, 2])
@@ -226,7 +226,7 @@ test('Boxplot logarithmic projection retains original statistics and excludes on
     { field: 1, name: 'Crosses zero', values: [-10, -5, 0, 5, 10, 1000] },
     { field: 2, name: 'Positive whiskers', values: [1, 2, 3, 4, 5, -100] },
   ] }, original = structuredClone(source)
-  const model = chart('boxplot', { yAxis: { scaleType: 'log', logBase: 10 } }), result = prepared(source, model), originalStatistics = structuredClone(result.boxes)
+  const model = chart('boxplot', { yAxis: { scaleType: 'log', logBase: 10 }, options: { boxplot: { quartileMethod: 'inclusive', whiskerMethod: 'iqr' } } }), result = prepared(source, model), originalStatistics = structuredClone(result.boxes)
   const geometry = layout.layoutDerivedChartData(result, model), value = option(source, model)
   assert.equal(result.boxes[0].statistics.min, -10)
   assert.equal(result.boxes[0].statistics.median, 2.5)

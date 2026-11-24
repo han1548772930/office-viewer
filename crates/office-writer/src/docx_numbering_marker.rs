@@ -348,7 +348,7 @@ pub(super) fn prepare_preserved_marker_groups(groups: &[&[Value]], controls: &Ha
                 if array(get(baseline, "prefix")).iter().filter_map(|part| get(part, "text").as_str()).collect::<String>() != text { return Err("导入编号域的缓存基线不一致。".into()); }
                 let prefix = prefix_contract(block, text).ok_or("编号缓存前缀已编辑。")?;
                 let length = text.encode_utf16().count();
-                if controls.get(id).is_some_and(|controls| controls.iter().any(|control| control.start < length)) { return Err("编号缓存与内容控件范围重叠。".into()); }
+                if controls.get(id).is_some_and(|controls| controls.iter().any(|control| get(&control.value, "placement").as_str() != Some("block") && control.start < length)) { return Err("编号缓存与内容控件范围重叠。".into()); }
                 if get(baseline, "numbering") != &numbering_contract(block) {
                     plan.paragraphs.insert(block as *const Value as usize, PreservedParagraph { marker: None, prefix_length: length });
                     plan.warnings.push(ExportWarning::new("DOCX_NUMBERING_MARKER_REPLACED", format!("段落 {id:?} 已更换编号；原始域和未编辑的缓存标签按当前编号模型替换。")));

@@ -3,11 +3,12 @@ import { sliceRuns } from '../model/document-model'
 import { renderSectionStory, resolveSectionHeaderFooter } from '../services/section-header-footer'
 import type { EffectiveDocumentSectionSetup } from '../services/document-settings'
 import { documentStoryDisplay } from '../services/story-rendering'
-import type { LayoutMeasurer, LayoutPage, LayoutPageHeaderFooter, LayoutStoryLine } from './document-layout-types'
+import type { DocumentTextLayoutDisplay, LayoutMeasurer, LayoutPage, LayoutPageHeaderFooter, LayoutStoryLine } from './document-layout-types'
 import { paragraphLineHeight, positionLine, wrapRuns } from './document-text-layout'
 import { layoutDocumentAuxiliaryBlocks } from './document-auxiliary-layout'
 
-export function layoutDocumentPageStories(model: DocumentModel, pages: readonly LayoutPage[], settings: ReadonlyMap<string, EffectiveDocumentSectionSetup>, measurer: LayoutMeasurer): LayoutPageHeaderFooter[] {
+export function layoutDocumentPageStories(model: DocumentModel, pages: readonly LayoutPage[], settings: ReadonlyMap<string, EffectiveDocumentSectionSetup>, measurer: LayoutMeasurer,
+  noteDisplay?: DocumentTextLayoutDisplay): LayoutPageHeaderFooter[] {
   return pages.map(page => {
     const section = resolveSectionHeaderFooter(model, page.sectionId), setup = settings.get(page.sectionId)!
     const firstPage = section.differentFirstPage && page.sectionPageIndex === 0
@@ -30,7 +31,7 @@ export function layoutDocumentPageStories(model: DocumentModel, pages: readonly 
         const first = (style.indentFirstLine ?? 0) - (style.hanging ?? 0)
         const available = (index: number) => Math.max(1, page.content.width - left - right - (index === 0 ? first : 0))
         cursor += style.spaceBefore
-        const wrapped = wrapRuns(runs, available, measurer, style.wordWrap === true, 12)
+        const wrapped = wrapRuns(runs, available, measurer, style.wordWrap === true, 12, undefined, { references: noteDisplay?.references })
         wrapped.forEach((raw, index) => {
           const height = paragraphLineHeight(raw.fontHeight, style)
           const line = positionLine(raw, { blockId: '' }, page.content.x + left + (index === 0 ? first : 0), cursor,
@@ -52,9 +53,9 @@ export function layoutDocumentPageStories(model: DocumentModel, pages: readonly 
         glyphs: line.glyphs.map(glyph => ({ ...glyph, y: glyph.y + shift })) }))
     }
     const headerBlockLayout = section.storyContent?.[headerStory]?.blocks !== undefined ? layoutDocumentAuxiliaryBlocks(model, { kind: 'story', sectionId: page.sectionId, story: headerStory },
-      { x: page.content.x, y: headerTop, width: page.content.width, height: Math.max(1, page.height - setup.marginHeader - setup.marginFooter) }, page.index, page.pageNumber, pages.length, measurer) : undefined
+      { x: page.content.x, y: headerTop, width: page.content.width, height: Math.max(1, page.height - setup.marginHeader - setup.marginFooter) }, page.index, page.pageNumber, pages.length, measurer, false, noteDisplay) : undefined
     const footerBlockLayout = section.storyContent?.[footerStory]?.blocks !== undefined ? layoutDocumentAuxiliaryBlocks(model, { kind: 'story', sectionId: page.sectionId, story: footerStory },
-      { x: page.content.x, y: page.y + setup.marginHeader, width: page.content.width, height: Math.max(1, page.height - setup.marginHeader - setup.marginFooter) }, page.index, page.pageNumber, pages.length, measurer, true) : undefined
+      { x: page.content.x, y: page.y + setup.marginHeader, width: page.content.width, height: Math.max(1, page.height - setup.marginHeader - setup.marginFooter) }, page.index, page.pageNumber, pages.length, measurer, true, noteDisplay) : undefined
     const headerLayoutLines = headerBlockLayout?.lines ?? storyLines(headerStory, headerTop), footerLayoutLines = footerBlockLayout?.lines ?? storyLines(footerStory, footerBottom, true)
     return { ...base, header: renderSectionStory(section, headerStory, page.pageNumber, pages.length), footer: renderSectionStory(section, footerStory, page.pageNumber, pages.length),
       headerLines: headerLayoutLines.map(line => line.glyphs.map(glyph => glyph.text).join('')),

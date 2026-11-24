@@ -1,17 +1,22 @@
-import type { BoxplotSeriesOption, CandlestickSeriesOption, FunnelSeriesOption, GaugeSeriesOption, HeatmapSeriesOption, ScatterSeriesOption, SunburstSeriesOption, TreemapSeriesOption } from 'echarts/charts'
+import type { BoxplotSeriesOption, FunnelSeriesOption, GaugeSeriesOption, HeatmapSeriesOption, ScatterSeriesOption, SunburstSeriesOption } from 'echarts/charts'
 import type { ChartModel } from '../../domain/model'
 import type { ChartDateAxis } from './chart-date-axis'
 import type { ChartData } from './chart-engine'
 import type { ChartDerivedData } from './chart-derived'
 import type { ChartEChartsOption } from './echarts-option'
-import { chartCandlestickPointStyle, chartHeatmapExtent, chartHeatmapPointStyle, chartHierarchyPointStyle, chartPointStyle } from './chart-derived'
+import { chartHeatmapExtent, chartHeatmapPointStyle, chartHierarchyPointStyle, chartPointStyle } from './chart-derived'
 import { chartHierarchyItems, type ChartHierarchyNode } from './chart-data'
 import { chartSeriesStyle } from './chart-options'
-import { chartEChartsFont, chartEChartsItemStyle, chartEChartsMarkerStyle, chartEChartsPointLabel } from './echarts-style'
+import { chartEChartsAxisStyle, chartEChartsFont, chartEChartsItemStyle, chartEChartsMarkerStyle, chartEChartsPointLabel } from './echarts-style'
 import { chartColorOpacity, chartLabelText, formatChartNumber } from './chart-geometry'
 import { chartGaugeTiles } from './chart-pie-layout'
 import { chartGaugeAxisLabelRadius, chartGaugeColorStops, chartGaugeDetailText, chartGaugePointerIcon, chartGaugeRatio, chartGaugeSweep, resolveChartGaugeOptions } from './chart-gauge'
-import { chartBoxplotAxis, chartBoxplotEChartsStyle, chartBoxplotStyle, chartBoxplotSummaryDrawable, chartBoxplotValueDrawable } from './chart-boxplot'
+import { chartBoxplotAxis, chartBoxplotEChartsStyle, chartBoxplotOutliers, chartBoxplotOutlierStyle, chartBoxplotStyle, chartBoxplotSummaryDrawable, chartBoxplotValueDrawable } from './chart-boxplot'
+import { chartNativeMarkerSymbol } from './chart-markers'
+import { chartHeatmapCellRect, chartHeatmapFieldNames, chartHeatmapLabelAnchor, chartHeatmapLabelText, chartHeatmapValueVisible,
+  createChartHeatmapScale, resolveChartHeatmapLabel, type ChartHeatmapScale } from './chart-heatmap'
+import { createChartCandlestickEChartsSeries } from './echarts-candlestick-option'
+import { chartTreemapTooltip, createChartTreemapEChartsSeries } from './echarts-treemap-option'
 
 export interface ChartEChartsContext {
   palette: string[]
@@ -20,6 +25,7 @@ export interface ChartEChartsContext {
   splitLineColor: string
   backgroundColor?: string
   dateAxis?: ChartDateAxis
+  heatmapScale?: ChartHeatmapScale
   grid: { left: number; right: number; top: number; bottom: number; containLabel: boolean }
 }
 
@@ -30,7 +36,6 @@ interface HierarchyEChartsNode {
   children?: HierarchyEChartsNode[]
   itemStyle: ReturnType<typeof chartEChartsItemStyle> & { borderColor: string; borderWidth: number; gapWidth: number }
   label: ReturnType<typeof chartEChartsFont> & { show: boolean; formatter: string }
-  upperLabel?: ReturnType<typeof chartEChartsFont> & { show: boolean; formatter: string; position: 'inside' | 'insideTop'; height: number }
 }
 
 /** A one-value native Gauge still assigns overlap-progress z2 from its value. Split
@@ -48,10 +53,10 @@ function chartGaugeEChartsLayers(series: GaugeSeriesOption, id: string): GaugeSe
 }
 
 /** ECharts does not inherit Sunburst parent styles; explicitly style every source node. */
-function chartHierarchyEChartsData(data: ChartData, chart: ChartModel, context: ChartEChartsContext): HierarchyEChartsNode[] {
+function chartSunburstEChartsData(data: ChartData, chart: ChartModel, context: ChartEChartsContext): HierarchyEChartsNode[] {
   const hierarchy = data.hierarchy ?? [], items = new Map(chartHierarchyItems(hierarchy).map(item => [item.node, item])), source = data.series[0]!
   const scale = hierarchy.reduce((max, node) => Math.max(max, node.value), 0) || 1, total = hierarchy.reduce((sum, node) => sum + node.value / scale, 0)
-  const treemap = chart.type === 'treemap', options = treemap ? chart.options?.treemap?.label : chart.options?.sunburst?.label
+  const options = chart.options?.sunburst?.label
   function nodeOption(node: ChartHierarchyNode): HierarchyEChartsNode {
     const item = items.get(node)!, style = chartHierarchyPointStyle(chart, source.field, item, context.palette, source.sourceName ?? source.name)
     const label = { contentType: 'category' as const, ...style.label, ...options }
@@ -60,8 +65,6 @@ function chartHierarchyEChartsData(data: ChartData, chart: ChartModel, context: 
     return { id: `${chart.id}:node:${item.pointIndex}`, name: node.name, value: node.value,
       itemStyle: { ...chartEChartsItemStyle(style), borderColor: chartColorOpacity(style.border?.color ?? chart.options?.appearance?.background ?? 'transparent', style.border?.opacity ?? 1), borderWidth: style.border?.visible === false ? 0 : style.border?.width ?? 1, gapWidth: 2 },
       label: { ...font, show: label.visible !== false, formatter },
-      ...(treemap ? { upperLabel: { ...font, show: label.visible !== false && chart.options?.treemap?.parentLabelLayout !== 'none', formatter,
-        position: chart.options?.treemap?.parentLabelLayout === 'overlapping' ? 'inside' as const : 'insideTop' as const, height: 18 } } : {}),
       ...(node.children?.length ? { children: node.children.map(nodeOption) } : {}),
     }
   }
@@ -69,7 +72,9 @@ function chartHierarchyEChartsData(data: ChartData, chart: ChartModel, context: 
 }
 
 export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerivedData, chart: ChartModel, context: ChartEChartsContext): Partial<ChartEChartsOption> | undefined {
-  if (!data.categories.length || !data.series.length) return { xAxis: undefined, yAxis: undefined, grid: undefined, legend: { show: false }, series: [] }
+  if (!data.categories.length || !data.series.length) return { xAxis: undefined, yAxis: undefined, grid: undefined, legend: { show: false }, series: [],
+    ...(data.hierarchyDiagnostic ? { graphic: { elements: [{ type: 'text', x: chart.size.width / 2, y: chart.size.height / 2,
+      style: { text: data.hierarchyDiagnostic, fill: context.color, fontSize: 12, align: 'center', verticalAlign: 'middle' } }] } } : {}) }
   const { palette, color, grid } = context
   switch (chart.type) {
     case 'funnel': {
@@ -84,16 +89,37 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
       return { xAxis: undefined, yAxis: undefined, grid: undefined, series: [series] }
     }
     case 'heatmap': {
-      const options = chart.options?.heatmap, extent = chartHeatmapExtent(data, chart)
-      const series: HeatmapSeriesOption = { type: 'heatmap', name: data.series[0]?.name, data: data.series.flatMap((source, row) => source.values.flatMap((value, column) => {
-        if (value === null) return []
-        const style = chartHeatmapPointStyle(chart, source.field, row, column, value, extent, palette, source.sourceName ?? source.name), label = { ...style.label, ...options?.label }
-        return [{ value: [column, row, value], itemStyle: { ...chartEChartsItemStyle(style), color: chartColorOpacity(style.color!, style.fillOpacity ?? 1), opacity: 1 },
-          label: { show: label.visible ?? false, ...chartEChartsFont(label, color, 10), formatter: `${chartLabelText(label, value, data.categories[column]!, source.name)}${options?.unit ?? ''}` } }]
-      })), emphasis: { itemStyle: { borderColor: context.axisColor, borderWidth: 1 } } }
-      return { yAxis: { type: 'category', data: data.series.map((series, index) => chartSeriesStyle(chart, series.field, index, palette, series.sourceName ?? series.name).name ?? series.name), inverse: chart.yAxis.reverse !== true,
-        axisLabel: { ...chartEChartsFont(chart.yAxis.label, context.axisColor, 10), show: chart.yAxis.label?.visible !== false }, axisLine: { show: chart.yAxis.line?.visible !== false, lineStyle: { color: chart.yAxis.line?.color ?? context.axisColor } }, splitArea: { show: false } },
-      visualMap: { type: options?.visualMapType ?? 'continuous', min: extent.min, max: extent.max, calculable: false, show: false, inRange: { color: palette } }, series: [series] }
+      const options = chart.options?.heatmap, extent = chartHeatmapExtent(data, chart), scale = context.heatmapScale ?? createChartHeatmapScale(extent, palette, options?.visualMapType)
+      const plot = { x: grid.left, y: grid.top, width: Math.max(1, chart.size.width - grid.left - grid.right), height: Math.max(1, chart.size.height - grid.top - grid.bottom) }
+      const series: HeatmapSeriesOption = { type: 'heatmap', name: data.series[0]?.name, progressive: 1000,
+        data: data.series.flatMap((source, seriesPosition) => source.values.flatMap((value, categoryIndex) => {
+          if (value === null || !Number.isFinite(value) || categoryIndex >= data.categories.length) return []
+          const style = chartHeatmapPointStyle(chart, source.field, seriesPosition, categoryIndex, value, extent, palette, source.sourceName ?? source.name, scale)
+          const label = resolveChartHeatmapLabel(chart, style.label, color), visible = chartHeatmapValueVisible(scale, value)
+          const rect = chartHeatmapCellRect(data, chart, plot, seriesPosition, categoryIndex)!
+          return [{ value: [seriesPosition, categoryIndex, value], visualMap: false,
+            // ECharts visualSolution explicitly honors datum.visualMap=false.
+            // This keeps shared eight-piece colors and author overrides intact.
+            itemStyle: { ...chartEChartsItemStyle(style), color: chartColorOpacity(style.color!, style.fillOpacity ?? 1), opacity: visible ? 1 : 0 },
+            label: { show: label.visible && visible, ...chartEChartsFont(label, color, 12), position: chartHeatmapLabelAnchor(rect, label).nativePosition,
+              distance: 5, width: Math.max(1, rect.width - 4), overflow: 'truncate' as const, formatter: chartHeatmapLabelText(value, source.formattedValues?.[categoryIndex], label) } }]
+        })), emphasis: { itemStyle: { borderColor: color, borderWidth: 1 } } }
+      const inheritedFont = chart.options?.appearance?.font
+      const xStyle = chartEChartsAxisStyle(chart.xAxis, context.axisColor, context.splitLineColor, false, inheritedFont)
+      const yStyle = chartEChartsAxisStyle(chart.yAxis, context.axisColor, context.splitLineColor, false, inheritedFont)
+      return { xAxis: { type: 'category', data: chartHeatmapFieldNames(data, chart), boundaryGap: true,
+        ...xStyle, axisLabel: { ...xStyle.axisLabel, color: chart.xAxis.label?.color ?? color },
+        nameTextStyle: chartEChartsFont({ ...inheritedFont, ...chart.xAxis.titleStyle }, color, 11), inverse: chart.xAxis.reverse === true },
+      yAxis: { type: 'category', data: data.categories, boundaryGap: true,
+        ...yStyle, axisLabel: { ...yStyle.axisLabel, color: chart.yAxis.label?.color ?? color },
+        nameTextStyle: chartEChartsFont({ ...inheritedFont, ...chart.yAxis.titleStyle }, color, 11), inverse: chart.yAxis.reverse === true },
+      legend: { show: false },
+      // Visible color legend and hover forwarding use the shared Canvas scene.
+      // This component supplies the native heatmap's required visualMap model.
+      visualMap: { type: scale.type, min: extent.min, max: extent.max, dimension: 2, seriesIndex: 0, calculable: false, realtime: false,
+        selectedMode: false, hoverLink: false, show: false, inRange: { color: scale.palette },
+        ...(scale.type === 'piecewise' ? { splitNumber: 8, pieces: scale.pieces.map(piece => ({ ...(piece.lowerClosed ? { gte: piece.lower } : { gt: piece.lower }),
+          lte: piece.upper, color: piece.color, label: piece.text })) } : {}) }, series: [series] }
     }
     case 'boxplot': {
       const boxes = derived.boxes!, series: BoxplotSeriesOption = { type: 'boxplot', name: '样本分布', boxWidth: ['48%', '48%'], data: boxes.map((box, index) => {
@@ -103,36 +129,27 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
       const outliers: ScatterSeriesOption = { type: 'scatter', name: '异常值', data: boxes.flatMap((box, index) => {
         if (chart.options?.boxplot?.showOutliers === false) return []
         const style = chartBoxplotStyle(chart, box, index, palette), axis = chartBoxplotAxis(chart, style)
-        const markerStyle = chartBoxplotEChartsStyle({ ...style, color: style.point?.color ?? style.color, fillOpacity: style.fillOpacity ?? 1 })
-        return (box.statistics?.outliers ?? []).filter(value => chartBoxplotValueDrawable(value, axis)).map(value => ({ name: box.name, value: [index, value], itemStyle: markerStyle, symbol: style.point?.shape ?? 'circle', symbolSize: style.point?.size ?? 4 }))
+        const items: NonNullable<ScatterSeriesOption['data']> = []
+        for (const outlier of chartBoxplotOutliers(box)) {
+          const pointStyle = chartBoxplotOutlierStyle(style, outlier.sourceIndex), size = pointStyle.point?.size ?? 4, shape = pointStyle.point?.shape ?? 'circle'
+          if (!chartBoxplotValueDrawable(outlier.value, axis) || size <= 0 || shape === 'none') continue
+          const markerStyle = chartBoxplotEChartsStyle({ ...pointStyle, color: pointStyle.point?.color ?? pointStyle.color, fillOpacity: pointStyle.fillOpacity ?? 1 })
+          items.push({ id: `${chart.id}:box:${box.seriesPosition}:outlier:${outlier.sourceIndex}`, name: box.name, value: [index, outlier.value],
+            itemStyle: markerStyle, symbol: chartNativeMarkerSymbol(shape), symbolSize: size })
+        }
+        return items
       }), symbolSize: 4 }
       return { legend: { show: chart.legend.visible, data: ['样本分布', ...(chart.options?.boxplot?.showOutliers === false ? [] : ['异常值'])] }, series: [series, outliers] }
     }
     case 'candlestick': {
-      const options = chart.options?.candlestick, series: CandlestickSeriesOption = { type: 'candlestick', name: data.series[0]!.name,
-        data: (data.candles ?? []).map(candle => {
-          if (!candle || candle.open === undefined) return []
-          const rising = candle.close >= candle.open, style = chartCandlestickPointStyle(chart, data.series[0]!.field, candle.categoryIndex, rising, palette, data.series[0]!.sourceName ?? data.series[0]!.name)
-          const fill = chartColorOpacity(style.color!, style.fillOpacity ?? 1), border = chartColorOpacity(style.border?.color ?? style.color!, style.border?.opacity ?? 1)
-          return { value: [candle.open, candle.close, candle.low, candle.high], itemStyle: { ...chartEChartsItemStyle(style), opacity: 1,
-            color: options?.hollow && rising ? 'transparent' : fill, color0: fill, borderColor: border, borderColor0: border } }
-        }),
-        ...(options?.candleWidth === undefined ? {} : { barWidth: options.candleWidth }),
-        itemStyle: { color: options?.hollow ? 'transparent' : options?.risingColor ?? '#dc2626', color0: options?.fallingColor ?? '#059669', borderColor: options?.risingColor ?? '#dc2626', borderColor0: options?.fallingColor ?? '#059669' },
-      }
-      return { series: [series] }
+      return { series: [createChartCandlestickEChartsSeries(data, chart, context)] }
     }
     case 'treemap': {
-      const options = chart.options?.treemap, series: TreemapSeriesOption = { type: 'treemap', name: data.series[0]!.name, left: grid.left, right: grid.right, top: grid.top, bottom: grid.bottom,
-        data: chartHierarchyEChartsData(data, chart, context), roam: false, nodeClick: false, breadcrumb: { show: false },
-        label: { show: options?.label?.visible !== false, ...chartEChartsFont(options?.label, color, 10), formatter: options?.label?.contentType === 'value' ? '{c}' : '{b}' },
-        upperLabel: { show: options?.parentLabelLayout !== 'none', position: options?.parentLabelLayout === 'overlapping' ? 'inside' : 'insideTop', height: 18, ...chartEChartsFont(options?.label, color, 10) },
-        itemStyle: { borderWidth: 1, gapWidth: 2, borderColor: chart.options?.appearance?.background ?? 'transparent' },
-      }
-      return { xAxis: undefined, yAxis: undefined, grid: undefined, series: [series] }
+      return { xAxis: undefined, yAxis: undefined, grid: undefined, animation: false, legend: { show: false },
+        tooltip: chartTreemapTooltip(data), series: [createChartTreemapEChartsSeries(data, chart, context)] }
     }
     case 'sunburst': {
-      const options = chart.options?.sunburst, series: SunburstSeriesOption = { type: 'sunburst', name: data.series[0]!.name, data: chartHierarchyEChartsData(data, chart, context),
+      const options = chart.options?.sunburst, series: SunburstSeriesOption = { type: 'sunburst', name: data.series[0]!.name, data: chartSunburstEChartsData(data, chart, context),
         center: [(chart.size.width + grid.left - grid.right) / 2, (chart.size.height + grid.top - grid.bottom) / 2], radius: ['16%', '74%'], sort: null, nodeClick: false,
         label: { show: options?.label?.visible !== false, rotate: 'radial', ...chartEChartsFont(options?.label, color, 10), formatter: options?.label?.contentType === 'value' ? '{c}' : '{b}' },
         itemStyle: { borderWidth: 1, borderColor: chart.options?.appearance?.background ?? 'transparent' },

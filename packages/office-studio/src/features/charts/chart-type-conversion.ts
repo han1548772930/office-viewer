@@ -12,7 +12,7 @@ export function convertChartType(source: ChartConfig, type: ChartType, records?:
   const mapping = (next.options ??= {}).mapping ??= {}
   const valid = (field: number | undefined): field is number => field !== undefined && Number.isSafeInteger(field) && field >= 0
     && (!records || field < records.fields.length)
-  const numeric = records ? records.sourceValueFields ?? records.fields.map((_name, index) => index).filter(field => records.records.some(record => chartNumber(record[field]) !== null)) : []
+  const numeric = records ? records.sourceValueFields ?? records.sourceNumericFields ?? records.fields.map((_name, index) => index).filter(field => records.records.some(record => chartNumber(record[field]) !== null)) : []
   const choose = (preferred: Array<number | undefined>, excluded: number[] = []): number | undefined => [...preferred, ...numeric].find(field => valid(field)
     && !excluded.includes(field) && (!records || numeric.includes(field)))
   const labels = records?.fields.map((_name, index) => index).filter(index => !numeric.includes(index)) ?? []

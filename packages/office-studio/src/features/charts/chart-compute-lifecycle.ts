@@ -1,11 +1,15 @@
 import { ComputeError } from '../../compute/errors.ts'
 import { COMPUTE_LIMITS } from '../../compute/protocol.ts'
+import type { ChartStatisticsOutput, ChartStatisticsTask } from '../../compute/chart-protocol'
 
 export interface ChartComputePreparationContext {
   signal?: AbortSignal
   /** Recheck the captured unit, source/config revision and permission. */
   assertCurrent?: () => void
   memoryBudgetBytes?: number
+  /** The owning service supplies document/revision/cancellation and transferable
+   * scheduling; preparation retains only the string dictionaries on this side. */
+  runChartTask?: (task: ChartStatisticsTask) => Promise<ChartStatisticsOutput>
 }
 
 export const CHART_PREPARATION_CHUNK = 8192
@@ -51,4 +55,17 @@ export async function consumeChartPreparation<T>(steps: Generator<void, T, void>
     // Release a suspended generator's retained source on cancellation/error.
     owner.return?.()
   }
+}
+
+/** The synchronous small-source Facade consumes the same projection algorithm. */
+export function consumeChartPreparationSync<T>(steps: Generator<void, T, void>, context: ChartComputePreparationContext = {}): T {
+  const owner: Iterator<void, unknown, void> = steps
+  try {
+    chartPreparationBudget(context)
+    for (;;) {
+      assertChartPreparationCurrent(context)
+      const next = steps.next()
+      if (next.done) { assertChartPreparationCurrent(context); return next.value }
+    }
+  } finally { owner.return?.() }
 }

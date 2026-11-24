@@ -2,6 +2,8 @@ import type { ChartModel, ChartNullablePatch, ChartSemanticOptions, ChartSeriesO
 import { chartNullableValues, patchChartSeriesOverride } from './chart-cartesian-api'
 import { chartNamedSeriesStyle, chartSeriesOverride, validateChartSeriesSelector } from './chart-series-selector'
 import { chartSeriesColorIsAuthored, chartSeriesStyle, cloneChartOptions, definedChartStyleFields, mergeChartOptions } from './chart-options'
+import { CHART_PREPARATION_CHUNK, consumeChartPreparation, consumeChartPreparationSync,
+  type ChartComputePreparationContext } from './chart-compute-lifecycle'
 
 export const ChartWaterfallStyleTargets = Object.freeze({ Positive: 'positive', Negative: 'negative', Subtotal: 'subtotal' } as const)
 export const CHART_WATERFALL_ROLE_NAMES: Readonly<Record<ChartWaterfallStyleTarget, string>> = Object.freeze({ positive: '增加', negative: '减少', subtotal: '合计' })
@@ -38,6 +40,43 @@ export function chartWaterfallConnectorValues(value: boolean | ChartNullablePatc
   if (value === undefined || typeof value === 'boolean') return value
   const connector = chartNullableValues<ChartWaterfallConnectorOptions>(value)
   return cloneChartOptions({ waterfall: { connector } })!.waterfall!.connector
+}
+
+/** Fixed Nn/Rte configuration defaults, applied only at creation/replacement
+ * boundaries. Runtime reading/rendering must never write these defaults. A
+ * present pointRoles property (including an empty array) preserves authoring. */
+export function initializeChartWaterfallOptions(chart: Pick<ChartModel, 'type' | 'options'>,
+  sources: readonly { field: number; values: readonly (number | null)[] }[]): ChartSemanticOptions | undefined {
+  return consumeChartPreparationSync(chartWaterfallInitializationSteps(chart, sources))
+}
+
+export function initializeChartWaterfallOptionsAsync(chart: Pick<ChartModel, 'type' | 'options'>,
+  sources: readonly { field: number; values: readonly (number | null)[] }[],
+  context: ChartComputePreparationContext = {}): Promise<ChartSemanticOptions | undefined> {
+  return consumeChartPreparation(chartWaterfallInitializationSteps(chart, sources), context)
+}
+
+function* chartWaterfallInitializationSteps(chart: Pick<ChartModel, 'type' | 'options'>,
+  sources: readonly { field: number; values: readonly (number | null)[] }[]): Generator<void, ChartSemanticOptions | undefined, void> {
+  const options = cloneChartOptions(chart.options)
+  if (chart.type !== 'waterfall') return options
+  const waterfall = (options ?? {}).waterfall ?? {}
+  if (!Object.hasOwn(waterfall, 'pointRoles') && waterfall.stackType !== 'stacked') {
+    let work = 0
+    for (const source of sources) {
+      let dataPointIndex = -1
+      for (let index = 0; index < source.values.length; index++) {
+        const value = source.values[index]
+        if (typeof value === 'number' && Number.isFinite(value)) { dataPointIndex = index; break }
+        if (++work % CHART_PREPARATION_CHUNK === 0) yield
+      }
+      if (dataPointIndex < 0) continue
+      waterfall.pointRoles = [{ seriesIndex: source.field, dataPointIndex, role: 'total' }]
+      break
+    }
+  }
+  if (!Object.hasOwn(waterfall, 'connector')) waterfall.connector = true
+  return cloneChartOptions({ ...options, waterfall })
 }
 
 /** Runtime defaults: omission/false hides it; true and an object enable

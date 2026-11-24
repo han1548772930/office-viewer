@@ -1,5 +1,6 @@
 import type { CellScalar } from '../../domain/model'
 import type { ChartConfig, ChartData } from './chart-engine'
+import type { ChartComputedStatistics } from './chart-derived'
 import { chartNumber, type ChartRecords } from './chart-data'
 import { prepareChartDateSource, supportsChartDateAxis, type ChartDateAxisConfig } from './chart-date-axis'
 import { projectChartRecords } from './chart-record-projection'
@@ -7,32 +8,103 @@ import { chartColumnName, parseChartSourceRange, type ChartSettingsDraft, type C
 import { hiddenSheetColumns, hiddenSheetRows, isSheetColumnVisible, isSheetRowVisible } from '../sheet-workbench/sheet-row-visibility'
 
 export const CHART_SETTINGS_PREVIEW_MAX_CELLS = 65_536
-export interface ChartSettingsProjection { source?: ChartRecords; data?: ChartData; error?: string }
+export type ChartSettingsSourceRevision = number | string
+/** Only the draft-source service produces prepared-source data. Statistical
+ * bins, five-number rows and other derived render data cannot supply samples. */
+export interface ChartSettingsProvidedData {
+  kind: 'prepared-source' | 'derived'
+  data: ChartData
+  bindingKey: string
+  sourceRevision?: ChartSettingsSourceRevision
+  /** Statistics and preparedData are captured by the same draft read. */
+  statistics?: ChartComputedStatistics
+}
+export interface ChartSettingsSourceIdentity { hostSheetId?: string; sourceRevision?: ChartSettingsSourceRevision }
+export interface ChartSettingsProjection {
+  source?: ChartRecords
+  data?: ChartData
+  statistics?: ChartComputedStatistics
+  error?: string
+  needsPreparation?: boolean
+  prepared?: boolean
+}
+export type ChartSettingsSourceLoader = (config: ChartConfig, options: { signal: AbortSignal }) => Promise<ChartData>
+export type ChartSettingsStatisticsLoader = (config: ChartConfig, options: { signal: AbortSignal }) => Promise<ChartComputedStatistics>
 
-/** The settings preview shares the renderer's binding projection, with a bounded UI input. */
-export function projectChartSettings(draft: ChartSettingsDraft, sheet?: ChartSettingsSourceSheet, provided?: ChartData, date1904 = provided?.date1904): ChartSettingsProjection {
+/** Configuration affecting the settings read, excluding authored paint and
+ * Boxplot summaries. The workbook/session revision is separate. Pareto and
+ * Histogram classifications include their statistical author options. */
+export function chartSettingsBindingKey(draft: ChartSettingsDraft, hostSheetId?: string, date1904?: boolean): string {
+  const range = parseChartSourceRange(draft.sourceText)
+  if (!range) throw new RangeError('请输入有效的数据范围，例如 A1:C4。')
+  const config = draft.config, options = config.options
+  const dateAxis = options?.mapping?.useDateAxis ? {
+    scaleType: config.xAxis?.scaleType ?? 'linear', min: config.xAxis?.min, max: config.xAxis?.max,
+    baseTimeUnit: config.xAxis?.baseTimeUnit, majorTimeUnit: config.xAxis?.majorTimeUnit, majorUnit: config.xAxis?.majorUnit,
+  } : undefined
+  return JSON.stringify([config.type, hostSheetId, config.source.sheetId ?? hostSheetId, range, config.source.orientation, config.pivotTableId,
+    config.categoryField ?? 0, config.valueFields ?? [], config.seriesToCategory ?? {}, date1904,
+    options?.mapping, options?.plotVisibleOnly !== false, options?.invalidValueStrategy, options?.aggregation,
+    options?.trendlines?.map(item => item.seriesIndex),
+    options?.errorBars?.map(item => [item.seriesIndex, item.direction, item.type, item.valueType, item.plusIndex, item.minusIndex]),
+    options?.allSeriesStyle?.type, Object.entries(options?.series ?? {}).filter(([_field, style]) => style.type !== undefined).map(([field, style]) => [field, style.type]),
+    (options?.namedSeries ?? []).filter(item => item.style.type !== undefined).map(item => [item.name, item.style.type]), dateAxis,
+    config.type === 'pareto' ? options?.pareto?.includeZeroValues === true : undefined,
+    config.type === 'histogram' ? [options?.histogram?.binning, options?.histogram?.underflowThreshold, options?.histogram?.overflowThreshold] : undefined])
+}
+
+export function chartSettingsProvidedValue(provided?: ChartData | ChartSettingsProvidedData): ChartData | undefined {
+  return provided && 'kind' in provided ? provided.data : provided
+}
+
+export function chartSettingsPreparedData(draft: ChartSettingsDraft, data: ChartData, identity: ChartSettingsSourceIdentity = {}, date1904 = data.date1904): ChartSettingsProvidedData {
+  return { kind: 'prepared-source', data, bindingKey: chartSettingsBindingKey(draft, identity.hostSheetId, date1904), sourceRevision: identity.sourceRevision }
+}
+
+/** Preserve one read's prepared source and materialized statistical result.
+ * No normalization, aggregation or Pareto sorting runs in the settings UI. */
+export function chartSettingsPreparedStatistics(draft: ChartSettingsDraft, statistics: ChartComputedStatistics, identity: ChartSettingsSourceIdentity = {}, date1904 = statistics.preparedData?.date1904): ChartSettingsProvidedData {
+  if (!statistics.preparedData) throw new RangeError('图表设置统计读取未返回准备后的原始数据源。')
+  if (draft.config.type === 'pareto' && !statistics.pareto) throw new RangeError('图表设置统计读取未返回当前帕累托分类。')
+  if (draft.config.type === 'histogram' && !statistics.histogram) throw new RangeError('图表设置统计读取未返回当前直方图分箱。')
+  return { ...chartSettingsPreparedData(draft, statistics.preparedData, identity, date1904), statistics }
+}
+
+/** Bound service data bypasses the UI preview budget and is never reprojected.
+ * Unbound records still use the bounded projection for standalone consumers. */
+export function projectChartSettings(draft: ChartSettingsDraft, sheet?: ChartSettingsSourceSheet, provided?: ChartData | ChartSettingsProvidedData, date1904 = chartSettingsProvidedValue(provided)?.date1904, identity: ChartSettingsSourceIdentity = {}): ChartSettingsProjection {
   let source: ChartRecords
   try {
+    if (provided && 'kind' in provided) {
+      if (provided.kind !== 'prepared-source') return { needsPreparation: true, error: '图表统计结果不能作为原始数据源，请重新读取数据源。' }
+      const expectedKey = chartSettingsBindingKey(draft, identity.hostSheetId ?? sheet?.id, date1904)
+      if (provided.bindingKey !== expectedKey || provided.sourceRevision !== identity.sourceRevision) {
+        return { needsPreparation: true, error: '图表数据源或字段绑定已更新，请重新读取数据源。' }
+      }
+      const data = date1904 === undefined || date1904 === provided.data.date1904 ? provided.data : { ...provided.data, date1904 }
+      return { data, statistics: provided.statistics, prepared: true, ...(data.fields && data.records ? { source: settingsSourceRecords(data) } : {}) }
+    }
     if (draft.config.pivotTableId || !sheet) {
-      if (!provided?.fields || !provided.records) return provided ? { data: date1904 === undefined ? provided : { ...provided, date1904 } } : {}
+      if (!provided?.fields || !provided.records) return { needsPreparation: true,
+        ...(provided ? { error: '尚未取得与当前字段绑定一致的原始数据源，请重新读取数据源。' } : {}) }
       previewBudget(provided.fields.length, provided.records.length + 1)
-      source = { fields: provided.fields, records: provided.records,
-        sourceCategoryFields: provided.sourceCategoryFields, sourceValueFields: provided.sourceValueFields,
-        visibleFields: provided.visibleFields, syntheticValues: provided.syntheticValues }
+      source = settingsSourceRecords(provided)
     } else source = chartSettingsRecords(draft, sheet)
     if (date1904 !== undefined) source = { ...source, date1904 }
-  } catch (reason) { return { error: reason instanceof Error ? reason.message : String(reason) } }
+  } catch (reason) { return { error: reason instanceof Error ? reason.message : String(reason),
+    ...(reason instanceof ChartSettingsPreparationRequired ? { needsPreparation: true } : {}) } }
   try {
     return { source, data: projectChartRecords(source, { type: draft.config.type, categoryField: draft.config.categoryField ?? 0,
       valueFields: draft.config.valueFields ?? [], seriesToCategory: draft.config.seriesToCategory, options: draft.config.options }) }
   } catch (reason) { return { source, error: reason instanceof Error ? reason.message : String(reason) } }
 }
 
-/** Report real date/bounds errors in the bounded settings projection. Histogram dates come from final bins. */
-export function chartSettingsDateAxisError(config: ChartConfig, data?: ChartData, date1904 = data?.date1904): string | undefined {
+/** Large prepared sources use constant-size author-option preflight. Full
+ * source/derived date and final tick validation belongs to candidate apply. */
+export function chartSettingsDateAxisError(config: ChartConfig, data?: ChartData, date1904 = data?.date1904, validation: 'source' | 'options' = 'source'): string | undefined {
   if (!config.options?.mapping?.useDateAxis || !supportsChartDateAxis(config)) return undefined
   const chart: ChartDateAxisConfig = { type: config.type, options: config.options, xAxis: { scaleType: 'linear', ...config.xAxis } }
-  const current: ChartData = { ...(data ?? { categories: [], series: [] }), date1904 }
+  const current: ChartData = { ...(validation === 'options' ? { categories: [], series: [] } : data ?? { categories: [], series: [] }), date1904 }
   try { prepareChartDateSource(current, chart); return undefined }
   catch (reason) { return reason instanceof Error ? reason.message : String(reason) }
 }
@@ -78,6 +150,14 @@ export function chartSettingsRecords(draft: ChartSettingsDraft, sheet: ChartSett
 
 function previewBudget(fields: number, rows: number): void {
   if (fields * rows > CHART_SETTINGS_PREVIEW_MAX_CELLS) {
-    throw new RangeError(`数据源包含 ${fields * rows} 个数据位置，超过设置面板 ${CHART_SETTINGS_PREVIEW_MAX_CELLS} 个位置的预览预算；字段配置仍可编辑，完整图表计算须通过计算服务处理。`)
+    throw new ChartSettingsPreparationRequired('图表数据源较大，请读取完整数据源后编辑原始样本。')
   }
+}
+
+class ChartSettingsPreparationRequired extends RangeError {}
+
+function settingsSourceRecords(data: ChartData): ChartRecords {
+  return { fields: data.fields!, records: data.records!, date1904: data.date1904,
+    formattedRecords: data.formattedRecords, sourceCategoryFields: data.sourceCategoryFields, sourceValueFields: data.sourceValueFields, sourceNumericFields: data.sourceNumericFields,
+    visibleFields: data.visibleFields, syntheticValues: data.syntheticValues }
 }

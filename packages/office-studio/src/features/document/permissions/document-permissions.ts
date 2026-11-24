@@ -58,15 +58,15 @@ export function validateDocumentPermissionRules(rules: readonly DocumentPermissi
     } else if (!rule.targetId?.trim()) {
       throw new Error(`Permission rule ${rule.id} requires a target ID`)
     }
-    if (rule.scope !== 'document' && rule.action !== 'edit') {
-      throw new Error(`Scoped permission rule ${rule.id} only supports edit`)
+    if (rule.scope !== 'document' && rule.action !== 'view' && rule.action !== 'edit') {
+      throw new Error(`Scoped permission rule ${rule.id} only supports edit or view`)
     }
   }
 }
 
 /**
  * Resolves local UI/command permission. A document-level denial always wins.
- * For scoped edits, every target must remain editable and any matching deny
+ * For scoped view/edit actions, every target must allow access and any matching deny
  * overrides matching allows at that target.
  */
 export function resolveDocumentPermission(
@@ -78,14 +78,14 @@ export function resolveDocumentPermission(
   validateDocumentPermissionRules(rules)
   const documentRule = matchingRule(rules, context.userId, action, 'document')
   if (documentRule?.effect === 'deny') return { allowed: false, action, deniedBy: documentRule }
-  if (action !== 'edit' || targets.length === 0) {
+  if (action !== 'view' && action !== 'edit' || targets.length === 0) {
     return { allowed: documentRule?.effect === 'allow' || context.defaultAllow !== false, action }
   }
   const documentAllows = documentRule?.effect === 'allow' || context.defaultAllow !== false
 
   for (const target of targets) {
     const scopedRules = rules.filter(rule =>
-      rule.scope === target.scope && rule.targetId === target.id && rule.action === 'edit' && appliesToUser(rule, context.userId),
+      rule.scope === target.scope && rule.targetId === target.id && rule.action === action && appliesToUser(rule, context.userId),
     )
     const denial = scopedRules.find(rule => rule.effect === 'deny')
     if (denial) return { allowed: false, action, deniedBy: denial }
@@ -149,6 +149,11 @@ function addBlockPermissionTargets(model: DocumentModel, blockId: string, result
   if (!block) return
   const sectionId = host ? permissionSectionIdForHost(model, host) : sectionIdForBlock(model, ancestry![0]!.id)
   result.set(`section:${sectionId}`, { scope: 'section', id: sectionId })
+  if (host?.kind === 'noteDecoration') {
+    const sourceIds = model.metadata?.documentEditingSectionIds
+    const sections = Array.isArray(sourceIds) && sourceIds.every(id => typeof id === 'string') ? sourceIds as string[] : documentSectionIds(model)
+    for (const id of sections) result.set(`section:${id}`, { scope: 'section', id })
+  }
   if (host) {
     const id = documentBlockHostId(host)
     result.set(`entity:${id}`, { scope: 'entity', id })
@@ -167,6 +172,7 @@ function permissionSectionIdForHost(model: DocumentModel, host: DocumentAuxiliar
   if (host.kind === 'story') return host.sectionId
   const scoped = model.metadata?.documentEditingSectionId
   if (typeof scoped === 'string') return scoped
+  if (host.kind === 'noteDecoration') return 'first'
   const note = (host.noteKind === 'footnote' ? model.footnotes : model.endnotes)?.[host.noteId]
   const reference = note && documentBlockAncestry(model, note.referenceBlockId)
   return sectionIdForBlock(model, reference?.[0]?.id ?? note?.referenceBlockId ?? '')
@@ -209,6 +215,23 @@ export function permissionTargetsForChangedBlocks(before: DocumentModel, after: 
   for (const id of changedIds) {
     addBlockPermissionTargets(before, id, result)
     addBlockPermissionTargets(after, id, result)
+  }
+  // Binding properties and backing XML can change without changing a paragraph's
+  // displayed text. Publish/undo/redo must protect those same block scopes.
+  const controls = new Map((before.contentControls ?? []).map(control => [control.id, control]))
+  const nextControls = new Map((after.contentControls ?? []).map(control => [control.id, control]))
+  for (const id of new Set([...controls.keys(), ...nextControls.keys()])) {
+    const previous = controls.get(id), next = nextControls.get(id)
+    if (JSON.stringify(previous) === JSON.stringify(next)) continue
+    if (previous) addBlockPermissionTargets(before, previous.blockId, result)
+    if (next) addBlockPermissionTargets(after, next.blockId, result)
+  }
+  const xmlStores = new Map((before.customXmlParts ?? []).filter(part => part.storeItemID).map(part => [part.storeItemID!.toLowerCase(), part]))
+  const nextXmlStores = new Map((after.customXmlParts ?? []).filter(part => part.storeItemID).map(part => [part.storeItemID!.toLowerCase(), part]))
+  const changedStores = new Set([...new Set([...xmlStores.keys(), ...nextXmlStores.keys()])]
+    .filter(store => JSON.stringify(xmlStores.get(store)) !== JSON.stringify(nextXmlStores.get(store))))
+  for (const model of [before, after]) for (const control of model.contentControls ?? []) {
+    if (control.dataBinding?.storeItemID && changedStores.has(control.dataBinding.storeItemID.toLowerCase())) addBlockPermissionTargets(model, control.blockId, result)
   }
   for (const target of permissionTargetsForChangedStories(before, after)) result.set(`${target.scope}:${target.id}`, target)
   for (const noteKind of ['footnote', 'endnote'] as const) {

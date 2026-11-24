@@ -86,6 +86,12 @@ fn remove_anchors(blocks: &mut [DocumentBlock], names: &HashSet<String>) {
 }
 
 pub(crate) fn extract(source: &mut DocModel) -> StructuredDocument {
+    extract_with_resources(source, None, &duke_pages::parse::ParsedStyleSheet::empty())
+}
+
+pub(crate) fn extract_with_resources(source: &mut DocModel, package: Option<&duke_pages::OoxmlPackage>,
+    styles: &duke_pages::parse::ParsedStyleSheet) -> StructuredDocument {
+    let (sdt_nodes, warnings) = crate::document_sdt_projection::project(source, package, styles);
     let mut used = HashSet::new();
     collect_names(&source.nodes, &mut used);
     // Extraction returns other stories too. Their real bookmarks must never
@@ -119,6 +125,8 @@ pub(crate) fn extract(source: &mut DocModel) -> StructuredDocument {
         paragraph.bookmarks.retain(|bookmark| !names.contains(&bookmark.name));
     }));
     remove_anchors(&mut document.blocks, &names);
+    crate::document_sdt_projection::restore(source, sdt_nodes);
+    document.warnings.extend(warnings);
     document
 }
 

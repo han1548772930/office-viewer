@@ -7,11 +7,16 @@ import type { GraphicComponentOption } from 'echarts/components'
 import { chartGraphics, type ChartEChartsTheme } from './echarts-option'
 import { chartAxisPointerCommands, type ChartAxisPointerRuntime } from './chart-axis-pointer'
 import type { ChartVector } from './chart-geometry'
+import { moveChartSankeyScene, type ChartSankeyScene } from './chart-sankey-draw'
+import { chartSankeyFocusedCommands, chartSankeyTrajectory, createChartSankeyHitIndex, hitChartSankey,
+  type ChartSankeyHit, type ChartSankeyPointerRuntime } from './chart-sankey-interaction'
+import { registerChartTreemapLayout } from './echarts-treemap-layout'
 
 echarts.use([
   BarChart, BoxplotChart, CandlestickChart, FunnelChart, GaugeChart, GraphChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart, SunburstChart, TreemapChart,
   AxisPointerComponent, GraphicComponent, GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent, VisualMapComponent, CanvasRenderer,
 ])
+registerChartTreemapLayout()
 
 export interface EChartsCanvasSize {
   width: number
@@ -24,6 +29,18 @@ export interface EChartsCanvasFrame {
   sourceVersion: number
 }
 
+export interface EChartsCanvasContentDragStart {
+  kind: 'sankey-node'
+  nodeIndex: number
+  frame?: EChartsCanvasFrame
+}
+
+interface SankeyContentDrag {
+  nodeIndex: number
+  offset: ChartVector
+  originalScene: ChartSankeyScene
+}
+
 interface ChartEntry {
   instance: ECharts
   canvas: HTMLCanvasElement
@@ -32,15 +49,16 @@ interface ChartEntry {
   devicePixelRatio: number
   width: number
   height: number
-  pointer?: ChartAxisPointerRuntime
+  pointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime
   pointerSignature: string
+  contentDrag?: SankeyContentDrag
 }
 
 /** Owns the raster surfaces used by spreadsheet chart draw commands. */
 export class EChartsCanvasRenderer {
   private readonly charts = new Map<string, ChartEntry>()
 
-  render(chartId: string, option: EChartsOption & { officeChartKey?: string; officeChartPointer?: ChartAxisPointerRuntime }, size: EChartsCanvasSize, theme: ChartEChartsTheme = {}): EChartsCanvasFrame {
+  render(chartId: string, option: EChartsOption & { officeChartKey?: string; officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime }, size: EChartsCanvasSize, theme: ChartEChartsTheme = {}): EChartsCanvasFrame {
     if (![size.width, size.height, size.devicePixelRatio].every(value => Number.isFinite(value) && value > 0)) {
       throw new RangeError('图表尺寸和像素比例必须为有效正数。')
     }
@@ -48,7 +66,9 @@ export class EChartsCanvasRenderer {
     const signature = JSON.stringify([officeChartKey, renderOption, size.width, size.height, size.devicePixelRatio, theme])
     let entry = this.charts.get(chartId)
     if (entry?.signature === signature) {
-      entry.pointer = officeChartPointer
+      // The retained Sankey scene owns view-only node positions. Preparing the
+      // same authored option again must not replace it with the automatic seed.
+      if (entry.pointer?.mode !== 'sankey' || officeChartPointer?.mode !== 'sankey') entry.pointer = officeChartPointer
       return { source: entry.canvas, sourceVersion: entry.sourceVersion }
     }
     const previousVersion = entry?.sourceVersion ?? 0
@@ -91,6 +111,7 @@ export class EChartsCanvasRenderer {
       entry.height = size.height
       entry.pointer = officeChartPointer
       entry.pointerSignature = ''
+      entry.contentDrag = undefined
     } catch (error) {
       entry.instance.dispose()
       entry.canvas.width = 1
@@ -106,6 +127,11 @@ export class EChartsCanvasRenderer {
     const entry = this.charts.get(chartId), pointer = entry?.pointer
     if (!entry || !pointer) return undefined
     const finitePoint = point && Number.isFinite(point.x) && Number.isFinite(point.y) ? point : undefined
+    if (pointer.mode === 'sankey') {
+      const hit: ChartSankeyHit | undefined = entry.contentDrag ? { kind: 'node', index: entry.contentDrag.nodeIndex }
+        : hitChartSankey(pointer.hitIndex, finitePoint)
+      return this.updateSankeyGraphic(entry, pointer, hit)
+    }
     const commands = pointer.mode === 'graphic' ? chartAxisPointerCommands(pointer.geometry, finitePoint) : []
     const visible = pointer.mode === 'graphic' ? commands.length > 0
       : Boolean(finitePoint && entry.instance.containPixel({ gridIndex: 0 }, [finitePoint.x, finitePoint.y]))
@@ -119,6 +145,56 @@ export class EChartsCanvasRenderer {
         : { id, $action: 'remove' }
       entry.instance.setOption({ graphic: { elements: [element] } }, { notMerge: false, lazyUpdate: false, silent: true })
     }
+    entry.instance.getZr().refreshImmediately()
+    entry.pointerSignature = signature
+    entry.sourceVersion += 1
+    return { source: entry.canvas, sourceVersion: entry.sourceVersion }
+  }
+
+  /** Editor-host coordinates are local CSS pixels, matching updatePointer. */
+  getContentHit(chartId: string, point?: ChartVector): ChartSankeyHit | undefined {
+    const pointer = this.charts.get(chartId)?.pointer
+    return pointer?.mode === 'sankey' ? hitChartSankey(pointer.hitIndex, point) : undefined
+  }
+
+  beginContentDrag(chartId: string, point: ChartVector): EChartsCanvasContentDragStart | undefined {
+    const entry = this.charts.get(chartId), pointer = entry?.pointer
+    if (!entry || pointer?.mode !== 'sankey' || entry.contentDrag) return undefined
+    const hit = hitChartSankey(pointer.hitIndex, point)
+    if (hit?.kind !== 'node') return undefined
+    const node = pointer.scene.layout.nodes[hit.index]!
+    entry.contentDrag = { nodeIndex: hit.index, offset: { x: point.x - node.x, y: point.y - node.y }, originalScene: pointer.scene }
+    const frame = this.updateSankeyGraphic(entry, pointer, hit)
+    return { kind: 'sankey-node', nodeIndex: hit.index, ...(frame ? { frame } : {}) }
+  }
+
+  updateContentDrag(chartId: string, point: ChartVector): EChartsCanvasFrame | undefined {
+    const entry = this.charts.get(chartId), pointer = entry?.pointer, drag = entry?.contentDrag
+    if (!entry || pointer?.mode !== 'sankey' || !drag || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return undefined
+    const scene = moveChartSankeyScene(drag.originalScene, drag.nodeIndex, { x: point.x - drag.offset.x, y: point.y - drag.offset.y })
+    const before = pointer.scene.layout.nodes[drag.nodeIndex]!, after = scene.layout.nodes[drag.nodeIndex]!
+    if (before.x === after.x && before.y === after.y) return undefined
+    pointer.scene = scene; pointer.hitIndex = createChartSankeyHitIndex(scene.layout)
+    return this.updateSankeyGraphic(entry, pointer, { kind: 'node', index: drag.nodeIndex }, true)
+  }
+
+  /** Commit retains positions only in this surface owner. Cancel restores
+   * the exact pre-drag scene; neither path changes chart data or content history. */
+  endContentDrag(chartId: string, cancelled = false): EChartsCanvasFrame | undefined {
+    const entry = this.charts.get(chartId), pointer = entry?.pointer, drag = entry?.contentDrag
+    if (!entry || pointer?.mode !== 'sankey' || !drag) return undefined
+    if (cancelled) { pointer.scene = drag.originalScene; pointer.hitIndex = createChartSankeyHitIndex(pointer.scene.layout) }
+    entry.contentDrag = undefined
+    return this.updateSankeyGraphic(entry, pointer, undefined, true)
+  }
+
+  private updateSankeyGraphic(entry: ChartEntry, pointer: ChartSankeyPointerRuntime, hit?: ChartSankeyHit, force = false): EChartsCanvasFrame | undefined {
+    const signature = hit ? `${hit.kind}:${hit.index}` : ''
+    if (!force && signature === entry.pointerSignature) return undefined
+    const commands = chartSankeyFocusedCommands(pointer.scene, chartSankeyTrajectory(pointer.topology, hit), hit)
+    const element: NonNullable<GraphicComponentOption['elements']>[number] = { type: 'group', id: pointer.groupId,
+      $action: 'replace', silent: true, children: chartGraphics(commands, pointer.groupId, pointer.zOffset) }
+    entry.instance.setOption({ graphic: { elements: [element] } }, { notMerge: false, lazyUpdate: false, silent: true })
     entry.instance.getZr().refreshImmediately()
     entry.pointerSignature = signature
     entry.sourceVersion += 1

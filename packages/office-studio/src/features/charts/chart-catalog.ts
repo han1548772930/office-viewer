@@ -102,11 +102,11 @@ export function chartDataHint(type: ChartType): string {
     case 'xy': return '选择数值 X 与 Y 字段；每个系列可以使用独立 X 字段。'
     case 'bubble': return '选择数值 X、Y 和气泡大小字段，可另选标签及系列分组字段。'
     case 'edge': return '选择来源与目标字段；权重字段可选，缺省按关系出现次数计数。'
-    case 'hierarchy': return '按从根到叶顺序选择层级字段，再选择非负权重字段。'
+    case 'hierarchy': return '按从根到叶顺序选择层级字段，再选择一个数值权重字段；同一路径合并后仅显示正的层级。'
     case 'ohlc': return '选择最高、最低和收盘字段；开盘字段可选，缺省保留三字段 HLC 语义。'
     case 'distribution': return type === 'histogram' ? '选择一个数值样本字段；分箱使用 Scott 自动规则、箱数或箱宽。' : '每个数值字段作为一组样本，显示四分位、须线和异常点。'
     case 'gauge': return '选择仪表数值和可选标签字段；刻度和进度在图表设置中调整。'
-    case 'heatmap': return '分类字段定义列，所选数值系列定义行和各格权重。'
+    case 'heatmap': return '分类字段定义纵轴行，所选数值字段名定义横轴列，各字段数值决定单元格色阶。'
     default: return type === 'pareto' ? '选择一个分类字段和一个数值权重字段；同名分类先合并，再按合计降序排列并生成累计百分比。负合计排除，零合计可选保留。'
       : resolveChartType(type).family === 'pie' ? '选择一个非负数值系列，合计须大于零。' : '首行或首列为字段名，分类字段与数值系列独立配置。'
   }

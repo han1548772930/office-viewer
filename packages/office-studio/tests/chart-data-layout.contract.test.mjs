@@ -23,9 +23,9 @@ function chart(type = 'line', overrides = {}) {
     position: { x: 0, y: 0 }, size: { width: 480, height: 300 }, categoryField: 0, valueFields: [1],
     legend: { visible: false, position: 'bottom' }, xAxis: { scaleType: 'linear' }, yAxis: { scaleType: 'linear' }, revision: 0, ...overrides }
 }
-function prepared(source, model) { return derived.deriveChartData(source, model, { preparedData: source }) }
-function commands(source, model) { return draw.drawDerivedChartData(prepared(source, model), model) }
-function option(source, model) { return echarts.chartEChartsOption({ sheets: [] }, model, {}, { preparedData: source }) }
+function prepared(source, model, computed = { preparedData: source }) { return derived.deriveChartData(source, model, computed) }
+function commands(source, model, computed) { return draw.drawDerivedChartData(prepared(source, model, computed), model) }
+function option(source, model, computed = { preparedData: source }) { return echarts.chartEChartsOption({ sheets: [] }, model, {}, computed) }
 function near(actual, expected) { assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} ≈ ${expected}`) }
 function nearNative(actual, expected) { assert.ok(Math.abs(actual - expected) < 1e-4, `${actual} ≈ ${expected}`) }
 function finiteCommands(scene) {
@@ -235,16 +235,24 @@ test('radar point overrides and positioned value labels use the shared scene in 
 test('large boxplot outlier and waterfall result collections retain their complete axis extents', () => {
   const count = 140_000, boxModel = chart('boxplot')
   const box = { data: { categories: ['Samples'], series: [{ field: 1, name: 'Samples', values: [0] }] }, trends: [], errors: [],
-    boxes: [{ field: 1, seriesPosition: 0, name: 'Samples', statistics: { min: 0, q1: 0, median: 0, q3: 0, max: 0, outliers: Array(count).fill(10) } }] }
+    boxes: [{ field: 1, seriesPosition: 0, name: 'Samples', statistics: { min: 0, q1: 0, median: 0, q3: 0, max: 0, outliers: Array(count).fill(10), outlierSourceIndices: Array.from({ length: count }, (_value, index) => index) } }] }
   assert.equal(layout.layoutDerivedChartData(box, boxModel).max, 10)
   assert.equal(layout.layoutDerivedChartData(box, { ...boxModel, options: { boxplot: { showOutliers: false } } }).max, 1)
   const categories = Array.from({ length: count }, (_value, index) => String(index))
-  const waterfall = { data: { categories, series: [{ field: 1, name: 'Changes', values: Array(count).fill(1) }] }, trends: [], errors: [],
-    waterfalls: [categories.map((_category, categoryIndex) => ({ categoryIndex, start: categoryIndex, end: categoryIndex + 1, value: 1, role: 'change' }))] }
-  const geometry = layout.layoutDerivedChartData(waterfall, chart('waterfall'))
+  // Fixed zero-change prefix and one final 140000 change. No test-side
+  // accumulation is used to generate the authoritative result fixture.
+  const values = Array(count).fill(0); values[count - 1] = 140_000
+  const points = categories.map((_category, categoryIndex) => ({ seriesPosition: 0, dataPointIndex: categoryIndex,
+    categoryIndex, start: 0, end: 0, value: 0, role: 'change', synthetic: false }))
+  Object.assign(points[count - 1], { end: 140_000, value: 140_000 })
+  const waterfall = { data: { categories, series: [{ field: 1, name: 'Changes', values }] }, trends: [], errors: [],
+    waterfallLayout: { stackType: 'arrangement', useSubtotal: false, sourceCategoryCount: count, seriesFields: [1], cumulative: 140_000,
+      points, connectors: categories.slice(1).map((_category, index) => ({ from: { categoryIndex: index, value: 0 }, to: { categoryIndex: index + 1, value: 0 } })) } }
+  const geometry = layout.layoutDerivedChartData(waterfall, chart('waterfall', { options: { waterfall: { useSubtotal: false } } }))
   assert.equal(geometry.max, count)
   assert.equal(geometry.series[0].points.length, count)
-  assert.equal(geometry.series[0].points.at(-1).baseValue, count - 1)
+  assert.equal(geometry.series[0].points.at(-1).baseValue, 0)
+  assert.equal(geometry.series[0].points.at(-1).value, 140_000)
 })
 
 test('horizontal bar secondary series use a separate numeric X axis with matching Canvas labels and extents', () => {
@@ -328,21 +336,24 @@ test('precomputed grouped statistics bind by config slot and source position in 
   assert.throws(() => derived.deriveChartData(source, model, { ...computed, errorBars: [] }), /配置和系列位置/)
 })
 
-test('boxplot and waterfall results with repeated fields retain their source positions independently of output order', () => {
+test('boxplot output order and waterfall source identities keep repeated fields distinct', () => {
   const source = { categories: ['One'], series: [{ field: 1, name: 'A', values: [1] }, { field: 1, name: 'B', values: [10] }] }
-  const first = { min: 1, q1: 1, median: 1, q3: 1, max: 1, outliers: [] }, second = { min: 10, q1: 10, median: 10, q3: 10, max: 10, outliers: [] }
+  const first = { min: 1, q1: 1, median: 1, q3: 1, max: 1, outliers: [], outlierSourceIndices: [] }, second = { min: 10, q1: 10, median: 10, q3: 10, max: 10, outliers: [], outlierSourceIndices: [] }
   const box = derived.deriveChartData(source, chart('boxplot'), { preparedData: source, boxplots: [
     { field: 1, seriesPosition: 1, statistics: second }, { field: 1, seriesPosition: 0, statistics: first },
   ] })
   assert.deepEqual(box.boxes.map(item => item.seriesPosition), [0, 1])
   assert.equal(box.boxes[0].statistics, first)
   assert.equal(box.boxes[1].statistics, second)
-  const firstPoints = [{ categoryIndex: 0, start: 0, end: 1, value: 1, role: 'change' }], secondPoints = [{ categoryIndex: 0, start: 0, end: 10, value: 10, role: 'change' }]
-  const waterfall = derived.deriveChartData(source, chart('waterfall'), { preparedData: source, waterfalls: [
-    { field: 1, seriesPosition: 1, points: secondPoints }, { field: 1, seriesPosition: 0, points: firstPoints },
-  ] })
-  assert.equal(waterfall.waterfalls[0], firstPoints)
-  assert.equal(waterfall.waterfalls[1], secondPoints)
+  const firstPoint = { seriesPosition: 0, dataPointIndex: 0, categoryIndex: 0, start: 0, end: 1, value: 1, role: 'change', synthetic: false }
+  const secondPoint = { seriesPosition: 1, dataPointIndex: 0, categoryIndex: 1, start: 1, end: 11, value: 10, role: 'change', synthetic: false }
+  const waterfallLayout = { stackType: 'arrangement', useSubtotal: false, sourceCategoryCount: 1, seriesFields: [1, 1], cumulative: 11,
+    points: [firstPoint, secondPoint], connectors: [{ from: { categoryIndex: 0, value: 1 }, to: { categoryIndex: 1, value: 1 } }] }
+  const waterfall = derived.deriveChartData(source, chart('waterfall', { options: { waterfall: { useSubtotal: false } } }), { preparedData: source, waterfallLayout })
+  assert.equal(waterfall.waterfallLayout, waterfallLayout)
+  assert.equal(waterfall.waterfalls[0][0], firstPoint)
+  assert.equal(waterfall.waterfalls[1][0], secondPoint)
+  assert.equal(waterfall.waterfalls[1][0].start, 1)
 })
 
 test('public compound-pie anchors use actual sectors and secondary bar centers, including the aggregate item', () => {
@@ -738,7 +749,9 @@ test('horizontal series controls bind the top value axis and retain its authored
   const field = controls.chartSeriesControls(undefined, false, true, true).find(control => control.key === 'allSeriesStyle.rightAxis')
   assert.equal(field.label, '使用顶部数值轴')
   field.write(model, true)
-  assert.equal(option(ordinary(), model).xAxis[1].name, 'Top values')
+  const native = option(ordinary(), model)
+  assert.equal(native.xAxis[1].name, undefined)
+  assert.ok(native.graphic.elements.some(element => (element.type === 'text' ? element : element.children?.[0])?.style.text === 'Top values'))
   const geometry = layout.layoutDerivedChartData(prepared(ordinary(), model), model)
   assert.equal(geometry.series[0].rightAxis, true)
   assert.ok(commands(ordinary(), model).some(command => command.kind === 'text' && command.text === 'Top values'))
@@ -749,7 +762,8 @@ test('heatmap color ramps remain finite at extreme bounds and both adapters cons
   const model = chart('heatmap', { palette: ['black', 'white'], options: { series: { 1: { dataPoints: { 1: { color: 'magenta', fillOpacity: 0.4, border: { width: 3, color: 'navy' } } } } }, heatmap: { min: -Number.MAX_VALUE, max: Number.MAX_VALUE, label: { visible: true } } } })
   const extent = derived.chartHeatmapExtent(source, model)
   assert.equal(color.normalizeChartColor(derived.chartHeatmapPointStyle(model, 1, 0, 0, -Number.MAX_VALUE, extent, model.palette).color), 'rgba(0, 0, 0, 1)')
-  const native = option(source, model).series[0].data[1]
+  assert.equal(option(source, model).series, undefined, 'extreme color extent uses the shared finite graphic scene')
+  const native = option(source, { ...model, options: { ...model.options, heatmap: { ...model.options.heatmap, min: -10, max: 10 } } }).series[0].data[1]
   assert.equal(native.itemStyle.color, 'rgba(255, 0, 255, 0.4)')
   assert.equal(native.itemStyle.borderWidth, 3)
   const scene = commands(source, model)
@@ -757,13 +771,16 @@ test('heatmap color ramps remain finite at extreme bounds and both adapters cons
   assert.ok(scene.some(command => command.kind === 'rect' && command.fill === native.itemStyle.color && command.strokeWidth === 3))
 })
 
-test('heatmap public points and row labels follow both reversed categorical axes', () => {
+test('heatmap public points, field headers and category row labels follow both reversed categorical axes', () => {
   const source = { categories: ['A', 'B'], series: [{ field: 1, name: 'First', values: [1, 2] }, { field: 2, name: 'Second', values: [3, 4] }] }
   const model = chart('heatmap', { xAxis: { scaleType: 'linear', reverse: true }, yAxis: { scaleType: 'linear', reverse: true } }), geometry = layout.layoutDerivedChartData(prepared(source, model), model)
   near(geometry.series[0].points[0].x, geometry.plot.x + geometry.plot.width * 0.75)
-  near(geometry.series[0].points[0].y, geometry.plot.y + geometry.plot.height * 0.75)
+  near(geometry.series[0].points[0].y, geometry.plot.y + geometry.plot.height * 0.25)
   const label = commands(source, model).find(command => command.kind === 'text' && command.text === 'First')
-  near(label.y, geometry.series[0].points[0].y)
+  near(label.x, geometry.series[0].points[0].x)
+  assert.ok(label.y > geometry.plot.y + geometry.plot.height)
+  const category = commands(source, model).find(command => command.kind === 'text' && command.text === 'A')
+  near(category.y, geometry.series[0].points[0].y)
 })
 
 test('Pareto exposes and draws its cumulative series with a matching Canvas legend entry', () => {
@@ -778,13 +795,32 @@ test('Pareto exposes and draws its cumulative series with a matching Canvas lege
 test('waterfall right-axis values use their own extent and reversed connectors respect bar spacing', () => {
   const source = { categories: ['A', 'B', 'C'], series: [{ field: 1, name: 'Small', values: [10, -5, 20] }, { field: 2, name: 'Large', values: [100, -50, 200] }] }
   const model = chart('waterfall', { valueFields: [1, 2], xAxis: { scaleType: 'linear', reverse: true }, yAxis: { scaleType: 'linear', min: 0, max: 30 },
-    options: { rightYAxis: { scaleType: 'linear', min: 0, max: 300 }, series: { 2: { rightAxis: true } }, bar: { gapWidth: 0 } } })
-  const result = prepared(source, model), geometry = layout.layoutDerivedChartData(result, model)
-  for (let index = 0; index < 3; index++) near(geometry.series[0].points[index].y, geometry.series[1].points[index].y)
-  const wide = draw.drawDerivedChartData(result, model), narrow = commands(source, { ...model, options: { ...model.options, bar: { gapWidth: 500 } } })
+    options: { rightYAxis: { scaleType: 'linear', min: 0, max: 300 }, series: { 2: { rightAxis: true } }, bar: { gapWidth: 0 },
+      waterfall: { useSubtotal: false, connector: { color: '#fedcba', dashType: 'solid' } } } })
+  const computed = { preparedData: source, waterfallLayout: { stackType: 'arrangement', useSubtotal: false, sourceCategoryCount: 3, seriesFields: [1, 2], cumulative: 275,
+    points: [
+      { seriesPosition: 0, dataPointIndex: 0, categoryIndex: 0, start: 0, end: 10, value: 10, role: 'change', synthetic: false },
+      { seriesPosition: 0, dataPointIndex: 1, categoryIndex: 1, start: 10, end: 5, value: -5, role: 'change', synthetic: false },
+      { seriesPosition: 0, dataPointIndex: 2, categoryIndex: 2, start: 5, end: 25, value: 20, role: 'change', synthetic: false },
+      { seriesPosition: 1, dataPointIndex: 0, categoryIndex: 3, start: 25, end: 125, value: 100, role: 'change', synthetic: false },
+      { seriesPosition: 1, dataPointIndex: 1, categoryIndex: 4, start: 125, end: 75, value: -50, role: 'change', synthetic: false },
+      { seriesPosition: 1, dataPointIndex: 2, categoryIndex: 5, start: 75, end: 275, value: 200, role: 'change', synthetic: false },
+    ], connectors: [
+      { from: { categoryIndex: 0, value: 10 }, to: { categoryIndex: 1, value: 10 } },
+      { from: { categoryIndex: 1, value: 5 }, to: { categoryIndex: 2, value: 5 } },
+      { from: { categoryIndex: 2, value: 25 }, to: { categoryIndex: 3, value: 25 } },
+      { from: { categoryIndex: 3, value: 125 }, to: { categoryIndex: 4, value: 125 } },
+      { from: { categoryIndex: 4, value: 75 }, to: { categoryIndex: 5, value: 75 } },
+    ] } }
+  const result = prepared(source, model, computed), geometry = layout.layoutDerivedChartData(result, model)
+  assert.equal(geometry.series[1].points[0].baseValue, 25)
+  near(geometry.series[0].points[2].y, geometry.plot.y + geometry.plot.height / 6)
+  near(geometry.series[1].points[0].y, geometry.plot.y + geometry.plot.height * 7 / 12)
+  assert.equal(geometry.rightMax, 300)
+  const wide = draw.drawDerivedChartData(result, model), narrow = commands(source, { ...model, options: { ...model.options, bar: { gapWidth: 500 } } }, computed)
   const widths = scene => scene.filter(command => command.kind === 'rect' && command.clip).map(command => command.width)
   assert.ok(widths(wide)[0] > widths(narrow)[0])
-  assert.ok(wide.some(command => command.kind === 'line' && command.x2 < command.x1))
+  assert.ok(wide.some(command => command.kind === 'line' && command.color === 'rgba(254, 220, 186, 1)' && command.x2 < command.x1))
 })
 
 test('large independent weights produce finite pie, hierarchy and directed-link geometries', () => {

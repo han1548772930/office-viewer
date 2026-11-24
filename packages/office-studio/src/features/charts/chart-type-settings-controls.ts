@@ -1,25 +1,34 @@
 import type { ChartSemanticOptions } from '../../domain/model'
-import type { ChartConfig } from './chart-engine'
+import type { ChartConfig, ChartData } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { chartLabelControls, colorControl, fieldControl, fieldsControl, numberControl, optionGroup, selectControl, switchControl, textControl, type ChartSettingControl } from './chart-settings-controls'
 import { chartGaugeSettingsControls, chartGaugeSettingsMapping } from './chart-gauge-settings-controls'
 import { chartRadarSettingsControls } from './chart-radar-settings-controls'
+import { chartHeatmapSettingsControls } from './chart-heatmap-settings-controls'
+import { chartBoxplotStatisticOptions } from './chart-boxplot-options'
+import { chartHistogramStyleControls } from './chart-histogram-settings-controls'
+import { chartCandlestickSettingsMapping } from './chart-candlestick'
 
 type Mapping = NonNullable<ChartSemanticOptions['mapping']>
+function resetBoxplotField(control: ChartSettingControl, field: keyof NonNullable<ChartSemanticOptions['boxplot']>): ChartSettingControl {
+  return { ...control, canReset: config => config.options?.boxplot?.[field] !== undefined,
+    reset: config => { if (config.options?.boxplot) config.options.boxplot[field] = undefined } }
+}
 function mapping(config: ChartConfig): Mapping { return (config.options ??= {}).mapping ??= {} }
 function bubble(config: ChartConfig): NonNullable<Mapping['bubble']> { return mapping(config).bubble ??= { xIndex: config.categoryField ?? 0, yIndex: config.valueFields?.[0] ?? 1, sizeIndex: config.valueFields?.[1] } }
 function edge(config: ChartConfig, fieldCount: number): NonNullable<Mapping['edge']> { return mapping(config).edge ??= { sourceIndex: config.categoryField ?? 0, targetIndex: config.valueFields?.[0] ?? 1, valueIndex: config.valueFields?.[1] ?? (fieldCount > 2 ? 2 : undefined) } }
-function candle(config: ChartConfig): NonNullable<Mapping['candlestick']> {
-  const fields = config.valueFields?.length ? config.valueFields : [1, 2, 3]
-  return mapping(config).candlestick ??= fields.length >= 4 ? { openIndex: fields[0], highIndex: fields[1]!, lowIndex: fields[2]!, closeIndex: fields[3]! } : { highIndex: fields[0]!, lowIndex: fields[1]!, closeIndex: fields[2]! }
+function candle(config: ChartConfig, fallback: NonNullable<Mapping['candlestick']>): NonNullable<Mapping['candlestick']> {
+  return mapping(config).candlestick ??= { ...fallback }
 }
 function gaugeMapping(config: ChartConfig, fieldCount: number): NonNullable<Mapping['gauge']> { return mapping(config).gauge ??= chartGaugeSettingsMapping(config, fieldCount) }
 function secondary(config: ChartConfig): NonNullable<NonNullable<ChartSemanticOptions['pie']>['secondaryPlot']> { return optionGroup(config, 'pie').secondaryPlot ??= {} }
 function split(config: ChartConfig): NonNullable<NonNullable<NonNullable<ChartSemanticOptions['pie']>['secondaryPlot']>['split']> { return secondary(config).split ??= { type: 'auto' } }
 
-export function chartDataMappingControls(config: ChartConfig, fieldCount: number): ChartSettingControl[] {
-  const descriptor = resolveChartType(config.type), category = fieldControl('categoryField', descriptor.dataShape === 'xy' ? '共享 X 字段' : '分类字段', item => item.categoryField, (item, value) => { item.categoryField = value ?? 0 })
-  const values = fieldsControl('valueFields', descriptor.dataShape === 'distribution' ? '样本字段' : descriptor.dataShape === 'xy' ? 'Y 系列字段' : '数值系列字段', item => item.valueFields, (item, value) => { item.valueFields = value })
+export function chartDataMappingControls(config: ChartConfig, fieldCount: number, data?: ChartData): ChartSettingControl[] {
+  const descriptor = resolveChartType(config.type), category = fieldControl('categoryField', descriptor.dataShape === 'xy' ? '共享 X 字段' : descriptor.dataShape === 'heatmap' ? '纵轴分类字段' : '分类字段', item => item.categoryField, (item, value) => { item.categoryField = value ?? 0 })
+  const values = fieldsControl('valueFields', descriptor.dataShape === 'distribution' ? '样本字段' : descriptor.dataShape === 'xy' ? 'Y 系列字段' : descriptor.dataShape === 'heatmap' ? '横轴数值字段' : '数值系列字段', item => item.valueFields, (item, value) => { item.valueFields = value })
+  if (config.type === 'histogram') return [fieldControl('valueFields.histogram', '样本字段', item => item.valueFields?.[0],
+    (item, value) => { item.valueFields = value === undefined ? [] : [value] })]
   if (descriptor.dataShape === 'bubble') return [
     fieldControl('mapping.bubble.xIndex', 'X 数值字段', item => item.options?.mapping?.bubble?.xIndex ?? item.categoryField ?? 0, (item, value) => { bubble(item).xIndex = value ?? 0 }),
     fieldControl('mapping.bubble.yIndex', 'Y 数值字段', item => item.options?.mapping?.bubble?.yIndex ?? item.valueFields?.[0] ?? 1, (item, value) => { bubble(item).yIndex = value ?? 1 }),
@@ -32,12 +41,16 @@ export function chartDataMappingControls(config: ChartConfig, fieldCount: number
     fieldControl('mapping.edge.targetIndex', '目标字段', item => item.options?.mapping?.edge?.targetIndex ?? item.valueFields?.[0] ?? 1, (item, value) => { edge(item, fieldCount).targetIndex = value ?? 1 }),
     fieldControl('mapping.edge.valueIndex', '权重字段', item => item.options?.mapping?.edge?.valueIndex, (item, value) => { edge(item, fieldCount).valueIndex = value }),
   ]
-  if (descriptor.dataShape === 'ohlc') return [category,
-    fieldControl('mapping.candlestick.openIndex', '开盘字段（可选）', item => item.options?.mapping?.candlestick?.openIndex ?? (item.valueFields && item.valueFields.length >= 4 ? item.valueFields[0] : undefined), (item, value) => { candle(item).openIndex = value }),
-    fieldControl('mapping.candlestick.highIndex', '最高字段', item => item.options?.mapping?.candlestick?.highIndex ?? candle({ ...item, options: undefined }).highIndex, (item, value) => { if (value !== undefined) candle(item).highIndex = value }),
-    fieldControl('mapping.candlestick.lowIndex', '最低字段', item => item.options?.mapping?.candlestick?.lowIndex ?? candle({ ...item, options: undefined }).lowIndex, (item, value) => { if (value !== undefined) candle(item).lowIndex = value }),
-    fieldControl('mapping.candlestick.closeIndex', '收盘字段', item => item.options?.mapping?.candlestick?.closeIndex ?? candle({ ...item, options: undefined }).closeIndex, (item, value) => { if (value !== undefined) candle(item).closeIndex = value }),
-  ]
+  if (descriptor.dataShape === 'ohlc') {
+    const read = (item: ChartConfig) => item.options?.mapping?.candlestick ?? data?.candleFields
+      ?? chartCandlestickSettingsMapping(item, fieldCount, data?.sourceValueFields)
+    return [category,
+      fieldControl('mapping.candlestick.openIndex', '开盘字段（可选）', item => read(item).openIndex, (item, value) => { candle(item, read(item)).openIndex = value }),
+      fieldControl('mapping.candlestick.highIndex', '最高字段', item => read(item).highIndex, (item, value) => { if (value !== undefined) candle(item, read(item)).highIndex = value }),
+      fieldControl('mapping.candlestick.lowIndex', '最低字段', item => read(item).lowIndex, (item, value) => { if (value !== undefined) candle(item, read(item)).lowIndex = value }),
+      fieldControl('mapping.candlestick.closeIndex', '收盘字段', item => read(item).closeIndex, (item, value) => { if (value !== undefined) candle(item, read(item)).closeIndex = value }),
+    ]
+  }
   if (descriptor.dataShape === 'gauge') return [
     fieldControl('mapping.gauge.valueIndex', '仪表数值字段', item => chartGaugeSettingsMapping(item, fieldCount).valueIndex, (item, value) => {
       const field = value ?? (fieldCount > 1 ? 1 : 0)
@@ -121,38 +134,15 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
     colorControl('waterfall.totalColor', '合计颜色', item => item.options?.waterfall?.totalColor, (item, value) => { optionGroup(item, 'waterfall').totalColor = value }),
   )
   if (descriptor.family === 'pareto') controls.push(switchControl('pareto.includeZeroValues', '保留零权重分类', item => item.options?.pareto?.includeZeroValues, (item, value) => { optionGroup(item, 'pareto').includeZeroValues = value }))
-  if (descriptor.family === 'histogram') {
-    controls.push(selectControl('histogram.binning.mode', '分箱方式', [['auto', 'Scott 自动'], ['count', '按箱数'], ['width', '按箱宽']], item => item.options?.histogram?.binning?.mode ?? 'auto', (item, value) => { optionGroup(item, 'histogram').binning = value === 'count' ? { mode: 'count', count: 10 } : value === 'width' ? { mode: 'width', width: 1 } : undefined }, 'auto'))
-    if (config.options?.histogram?.binning?.mode === 'count') controls.push(numberControl('histogram.binning.count', '箱数', item => item.options?.histogram?.binning?.mode === 'count' ? item.options.histogram.binning.count : undefined, (item, value) => { if (value !== undefined) optionGroup(item, 'histogram').binning = { mode: 'count', count: value } }, 1, 10_000, 10))
-    if (config.options?.histogram?.binning?.mode === 'width') controls.push(numberControl('histogram.binning.width', '箱宽', item => item.options?.histogram?.binning?.mode === 'width' ? item.options.histogram.binning.width : undefined, (item, value) => { if (value !== undefined) optionGroup(item, 'histogram').binning = { mode: 'width', width: value } }, Number.MIN_VALUE))
-    controls.push(
-      numberControl('histogram.underflowThreshold', '下溢箱阈值（≤）', item => item.options?.histogram?.underflowThreshold, (item, value) => { optionGroup(item, 'histogram').underflowThreshold = value }),
-      numberControl('histogram.overflowThreshold', '上溢箱阈值（>）', item => item.options?.histogram?.overflowThreshold, (item, value) => { optionGroup(item, 'histogram').overflowThreshold = value }),
-      numberControl('histogram.binGap', '箱间隙比例', item => item.options?.histogram?.binGap, (item, value) => { optionGroup(item, 'histogram').binGap = value }, 0, 0.9, 0.05),
-    )
-  }
+  if (descriptor.family === 'histogram') controls.push(...chartHistogramStyleControls())
   if (descriptor.family === 'boxplot') controls.push(
-    selectControl('boxplot.quartileMethod', '四分位方法', [['inclusive', '包含中位数'], ['exclusive', '排除中位数']], item => item.options?.boxplot?.quartileMethod, (item, value) => { optionGroup(item, 'boxplot').quartileMethod = value }, 'inclusive'),
-    switchControl('boxplot.showOutliers', '显示异常点', item => item.options?.boxplot?.showOutliers, (item, value) => { optionGroup(item, 'boxplot').showOutliers = value }, true),
-    numberControl('boxplot.whiskerMultiplier', '须线 IQR 倍数', item => item.options?.boxplot?.whiskerMultiplier, (item, value) => { optionGroup(item, 'boxplot').whiskerMultiplier = value }, 0, 100, 1.5),
+    resetBoxplotField(selectControl('boxplot.quartileMethod', '四分位方法', [['medianOfHalves', '上下半组中位数'], ['inclusive', '包含中位数'], ['exclusive', '排除中位数']], item => item.options?.boxplot?.quartileMethod, (item, value) => { optionGroup(item, 'boxplot').quartileMethod = value }, 'medianOfHalves'), 'quartileMethod'),
+    resetBoxplotField(selectControl('boxplot.whiskerMethod', '须线范围', [['range', '全样本最小/最大'], ['iqr', 'IQR 范围']], item => chartBoxplotStatisticOptions(item.options?.boxplot).whiskerMethod, (item, value) => { optionGroup(item, 'boxplot').whiskerMethod = value }, 'range'), 'whiskerMethod'),
+    resetBoxplotField(switchControl('boxplot.showOutliers', '显示异常点', item => item.options?.boxplot?.showOutliers, (item, value) => { optionGroup(item, 'boxplot').showOutliers = value }, true), 'showOutliers'),
+    { ...resetBoxplotField(numberControl('boxplot.whiskerMultiplier', '须线 IQR 倍数', item => item.options?.boxplot?.whiskerMultiplier, (item, value) => { optionGroup(item, 'boxplot').whiskerMultiplier = value }, 0, 100, 1.5), 'whiskerMultiplier'),
+      visible: item => chartBoxplotStatisticOptions(item.options?.boxplot).whiskerMethod === 'iqr' },
   )
-  if (descriptor.family === 'candlestick') controls.push(
-    numberControl('candlestick.candleWidth', '蜡烛宽度', item => item.options?.candlestick?.candleWidth, (item, value) => { optionGroup(item, 'candlestick').candleWidth = value }, 1, 100),
-    colorControl('candlestick.risingColor', '上涨颜色', item => item.options?.candlestick?.risingColor, (item, value) => { optionGroup(item, 'candlestick').risingColor = value }),
-    colorControl('candlestick.fallingColor', '下跌颜色', item => item.options?.candlestick?.fallingColor, (item, value) => { optionGroup(item, 'candlestick').fallingColor = value }),
-    switchControl('candlestick.hollow', '上涨蜡烛空心', item => item.options?.candlestick?.hollow, (item, value) => { optionGroup(item, 'candlestick').hollow = value }),
-  )
-  if (descriptor.family === 'heatmap') controls.push(
-    selectControl('heatmap.visualMapType', '色阶类型', [['continuous', '连续'], ['piecewise', '分段']], item => item.options?.heatmap?.visualMapType, (item, value) => { optionGroup(item, 'heatmap').visualMapType = value }, 'continuous'),
-    numberControl('heatmap.min', '色阶最小值', item => item.options?.heatmap?.min, (item, value) => { optionGroup(item, 'heatmap').min = value }),
-    numberControl('heatmap.max', '色阶最大值', item => item.options?.heatmap?.max, (item, value) => { optionGroup(item, 'heatmap').max = value }),
-    textControl('heatmap.unit', '数值单位', item => item.options?.heatmap?.unit, (item, value) => { optionGroup(item, 'heatmap').unit = value }),
-    ...chartLabelControls('heatmap.label', item => item.options?.heatmap?.label, item => optionGroup(item, 'heatmap').label ??= {}),
-  )
-  if (descriptor.family === 'treemap') controls.push(
-    selectControl('treemap.parentLabelLayout', '父级标签布局', [['banner', '独立标题带'], ['overlapping', '叠放'], ['none', '隐藏']], item => item.options?.treemap?.parentLabelLayout, (item, value) => { optionGroup(item, 'treemap').parentLabelLayout = value }, 'banner'),
-    ...chartLabelControls('treemap.label', item => item.options?.treemap?.label, item => optionGroup(item, 'treemap').label ??= {}, true),
-  )
+  if (descriptor.family === 'heatmap') controls.push(...chartHeatmapSettingsControls())
   if (descriptor.family === 'sunburst') controls.push(
     switchControl('sunburst.centerLabel.visible', '显示中心标题', item => item.options?.sunburst?.centerLabel?.visible, (item, value) => { (optionGroup(item, 'sunburst').centerLabel ??= {}).visible = value }),
     ...chartLabelControls('sunburst.label', item => item.options?.sunburst?.label, item => optionGroup(item, 'sunburst').label ??= {}, true),

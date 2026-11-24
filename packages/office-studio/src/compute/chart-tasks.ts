@@ -27,19 +27,26 @@ function isJob(value: unknown): value is ChartStatisticsJob {
     case 'histogram': {
       if (!keys(value, [...common, 'binning', 'underflowThreshold', 'overflowThreshold'])
         || !optionalFinite(value.underflowThreshold) || !optionalFinite(value.overflowThreshold)) return false
-      if (value.underflowThreshold !== undefined && value.overflowThreshold !== undefined
-        && Number(value.underflowThreshold) >= Number(value.overflowThreshold)) return false
       if (value.binning === undefined) return true
       const bin = value.binning
       return isRecord(bin) && (bin.mode === 'count'
-        ? keys(bin, ['mode', 'count']) && index(bin.count, 10_000) && bin.count >= 1
-        : bin.mode === 'width' && keys(bin, ['mode', 'width']) && finite(bin.width) && bin.width > 0)
+        ? keys(bin, ['mode', 'count']) && finite(bin.count)
+        : bin.mode === 'width' && keys(bin, ['mode', 'width']) && finite(bin.width))
     }
     case 'boxplot':
-      return keys(value, [...common, 'quartileMethod', 'whiskerMultiplier']) && oneOf(value.quartileMethod, ['inclusive', 'exclusive'])
+      return keys(value, [...common, 'quartileMethod', 'whiskerMethod', 'whiskerMultiplier']) && oneOf(value.quartileMethod, ['medianOfHalves', 'inclusive', 'exclusive'])
+        && (value.whiskerMethod === undefined || oneOf(value.whiskerMethod, ['range', 'iqr']))
         && finite(value.whiskerMultiplier) && value.whiskerMultiplier >= 0 && value.whiskerMultiplier <= 100
     case 'pareto':
       return keys(value, [...common, 'includeZeroValues']) && typeof value.includeZeroValues === 'boolean'
+    case 'hierarchy':
+      return keys(value, [...common, 'hierarchyColumns', 'labelColumns', 'keyCount', 'labelCount'])
+        && isBoundedDenseArray(value.hierarchyColumns, CHART_COMPUTE_LIMITS.maxColumns,
+          (column): column is number => index(column), 1)
+        && isBoundedDenseArray(value.labelColumns, CHART_COMPUTE_LIMITS.maxColumns,
+          (column): column is number => index(column), 1)
+        && value.hierarchyColumns.length === value.labelColumns.length && index(value.keyCount, COMPUTE_LIMITS.maxElements)
+        && index(value.labelCount, COMPUTE_LIMITS.maxElements)
     case 'waterfall':
       return keys(value, [...common, 'totalColumn']) && optionalIndex(value.totalColumn)
     case 'waterfallLayout':
@@ -85,6 +92,11 @@ export function isChartStatisticsParams(value: unknown): value is ChartStatistic
       const points = value.rowCount === 0 ? 0 : sourcePoints + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)
       if (points > 0xffff_ffff) return false
     }
+    if (job.kind === 'hierarchy') {
+      const columns = [...job.hierarchyColumns, ...job.labelColumns, value.series[job.seriesIndex]!.column]
+      if (columns.some(column => column >= value.columnCount) || new Set(columns).size !== columns.length
+        || job.keyCount > value.rowCount * job.hierarchyColumns.length || job.labelCount > value.rowCount * job.hierarchyColumns.length) return false
+    }
     if (job.kind === 'errorBars') {
       if (job.direction === 'x' && value.series[job.seriesIndex]?.xColumn === undefined) return false
       if (job.valueType === 'cust') {
@@ -106,9 +118,13 @@ export function validateChartTask(value: unknown): asserts value is ChartStatist
 
 export function chartOutputCapacity(job: ChartStatisticsJob, rows: number): { values: number; indices: number; scratch: number } {
   switch (job.kind) {
-    case 'histogram': return { values: 10_002 * 2, indices: 10_002 * 2, scratch: rows * 8 + 10_001 * 12 }
-    case 'boxplot': return { values: rows + 5, indices: 0, scratch: rows * 8 }
+    case 'histogram': return { values: 1000 * 2, indices: 1000 * 2, scratch: rows * 8 + 1001 * 12 }
+    case 'boxplot': return { values: rows + 5, indices: rows, scratch: rows * 16 }
     case 'pareto': return { values: rows * 2, indices: rows, scratch: rows * 16 }
+    case 'hierarchy': {
+      const nodes = rows * job.hierarchyColumns.length
+      return { values: nodes * 2, indices: 2 + nodes * 4 + rows, scratch: nodes * 256 + (job.hierarchyColumns.length + 1) * 64 }
+    }
     case 'waterfall': return { values: rows * 3, indices: rows * 2, scratch: 0 }
     case 'waterfallLayout': {
       const points = rows === 0 ? 0 : rows * job.seriesIndices.length + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)
@@ -132,7 +148,8 @@ export function estimateChartTaskMemory(params: ChartStatisticsParams): {
   }
   const outputBytes = valueCapacity * 8 + indexCapacity * 4
   const controls = params.series.length * 32 + params.jobs.length * 512
-    + params.jobs.reduce((sum, job) => sum + (job.kind === 'waterfallLayout' ? job.seriesIndices.length * 4 + (job.totalColumns?.length ?? 0) * 8 : 0), 0)
+    + params.jobs.reduce((sum, job) => sum + (job.kind === 'waterfallLayout' ? job.seriesIndices.length * 4 + (job.totalColumns?.length ?? 0) * 8
+      : job.kind === 'hierarchy' ? job.hierarchyColumns.length * 8 : 0), 0)
   return { inputBytes, outputBytes, valueCapacity, indexCapacity,
     estimatedPeakBytes: inputBytes * 2 + outputBytes * 2 + scratch + CHART_COMPUTE_LIMITS.scratchAllowance
       + controls + CHART_COMPUTE_LIMITS.runtimeAllowance }

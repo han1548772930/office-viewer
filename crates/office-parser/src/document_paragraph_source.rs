@@ -4,7 +4,6 @@
 use std::{collections::{BTreeMap, HashMap}, io::Cursor};
 
 use duke_pages::{BlockDetails, DocModel, DocumentBlock, StructuredDocument};
-use quick_xml::{Reader, events::Event};
 use serde_json::{Value, json};
 use zip::ZipArchive;
 
@@ -17,37 +16,9 @@ fn scope(node: &Element, inherited: &BTreeMap<String, String>) -> BTreeMap<Strin
     result
 }
 
-fn canonical_scope(source: &DocModel) -> Result<BTreeMap<String, String>, String> {
-    let mut result = BTreeMap::new();
-    if let Some(xml) = source.metadata.document_open_tag.as_deref() {
-        let mut reader = Reader::from_str(xml);
-        loop {
-            match reader.read_event().map_err(|error| error.to_string())? {
-                Event::Start(tag) => {
-                    let name = String::from_utf8_lossy(tag.name().as_ref()).into_owned();
-                    let end = reader.buffer_position() as usize;
-                    result.extend(parse_xml(&format!("{}</{name}>", &xml[..end]))?.namespaces);
-                    break;
-                }
-                Event::Empty(_) => { result.extend(parse_xml(xml)?.namespaces); break; }
-                Event::Eof => return Err("Document namespace context has no root.".into()),
-                Event::DocType(_) => return Err("Document namespace context declares a document type.".into()),
-                _ => {}
-            }
-        }
-    }
-    for (prefix, namespace) in [
-        ("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main"),
-        ("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"),
-        ("wp", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"),
-        ("a", "http://schemas.openxmlformats.org/drawingml/2006/main"),
-        ("pic", "http://schemas.openxmlformats.org/drawingml/2006/picture"),
-        ("w14", "http://schemas.microsoft.com/office/word/2010/wordml"),
-        ("w15", "http://schemas.microsoft.com/office/word/2012/wordml"),
-        ("mc", "http://schemas.openxmlformats.org/markup-compatibility/2006"),
-        ("v", "urn:schemas-microsoft-com:vml"), ("o", "urn:schemas-microsoft-com:office:office"),
-        ("w10", "urn:schemas-microsoft-com:office:word"), ("m", "http://schemas.openxmlformats.org/officeDocument/2006/math"),
-    ] { result.entry(prefix.into()).or_insert_with(|| namespace.into()); }
+pub(crate) fn canonical_scope(source: &DocModel) -> Result<BTreeMap<String, String>, String> {
+    let mut result = source.metadata.document_open_tag.as_deref().map(crate::document_native_xml::opening_namespaces).transpose()?.unwrap_or_default();
+    for (prefix, namespace) in crate::document_native_xml::standard_word_namespaces() { result.entry(prefix).or_insert(namespace); }
     Ok(result)
 }
 

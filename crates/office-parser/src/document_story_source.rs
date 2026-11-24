@@ -115,3 +115,25 @@ pub(crate) fn visit_nodes_mut(source: &mut DocModel, visit: &mut impl FnMut(&mut
     }
     for comment in source.metadata.comments.iter_mut().flatten() { if let Some(nodes) = &mut comment.nodes { visit(nodes); } }
 }
+
+/// Physical copies keep their real OPC owner while a temporary projection
+/// resolves hyperlinks/media. Section-local copies use the same relationships
+/// as the corresponding shared header/footer, never the body's rId table.
+pub(crate) fn visit_parts_mut(source: &mut DocModel, visit: &mut impl FnMut(&str, &mut [DocNode])) {
+    let names = source.metadata.source_part_names.clone().unwrap_or_default();
+    let owner = |key: &str, fallback: &str| names.get(key).cloned().unwrap_or_else(|| fallback.into());
+    visit(&owner("document", "word/document.xml"), &mut source.nodes);
+    for header in &mut source.metadata.header_sections { visit(&owner(&header.part_name, &header.part_name), &mut header.nodes); }
+    for footer in &mut source.metadata.footer_sections { visit(&owner(&footer.part_name, &footer.part_name), &mut footer.nodes); }
+    for section in source.metadata.sections.iter_mut().flatten() {
+        for header in &mut section.header_sections { visit(&owner(&header.part_name, &header.part_name), &mut header.nodes); }
+        for footer in &mut section.footer_sections { visit(&owner(&footer.part_name, &footer.part_name), &mut footer.nodes); }
+    }
+    for (key, fallback, notes) in [("footnotes", "word/footnotes.xml", &mut source.metadata.footnotes),
+        ("endnotes", "word/endnotes.xml", &mut source.metadata.endnotes)] {
+        for note in notes.iter_mut().flatten() { if let Some(nodes) = &mut note.nodes { visit(&owner(key, fallback), nodes); } }
+    }
+    for comment in source.metadata.comments.iter_mut().flatten() {
+        if let Some(nodes) = &mut comment.nodes { visit(&owner("comments", "word/comments.xml"), nodes); }
+    }
+}

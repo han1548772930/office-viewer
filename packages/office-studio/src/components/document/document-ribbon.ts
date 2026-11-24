@@ -1,9 +1,9 @@
 import type { Component } from 'vue'
 import {
-  AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, BookMarked, Brush, CalendarDays, ChevronDown,
+  AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, Brush, CalendarDays, ChevronDown,
   ClipboardPaste, CodeXml, Columns3, Copy, Expand, FileCog, Grid2X2, ImagePlus,
   IndentDecrease, IndentIncrease, Italic, Layers2, Link, List, ListOrdered, ListTodo, ListTree, LockKeyhole, MessageSquarePlus,
-  Minimize, NotebookPen, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
+  Minimize, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
   PaintBucket, SeparatorHorizontal, ShieldCheck, Sigma, Smile, SquareCheckBig, Strikethrough, Subscript, Superscript,
   TextCursorInput, Trash2, Underline, Undo2, X,
 } from 'lucide-vue-next'
@@ -27,10 +27,12 @@ import type { DocumentTocActionState } from '../../features/document/toc/documen
 import { createDocumentTableRibbon, type DocumentTableRibbonContext } from './document-table-ribbon'
 import { documentTableCommandFromRibbon } from './document-table-command-parser'
 import { isDocumentTableCommand } from '../../features/document/commands/table-command-types'
+import { createDocumentNoteRibbon, type DocumentNoteRibbonContext } from './document-note-ribbon'
 
 export interface DocumentTocContextActionStates { update: DocumentTocActionState; delete: DocumentTocActionState }
 
 export interface DocumentRibbonContext {
+  notes?: DocumentNoteRibbonContext
   table?: DocumentTableRibbonContext
   fontList?: OfficeFontList
   painterActive?: boolean
@@ -74,8 +76,13 @@ export interface DocumentRibbonContext {
     canSelectParent?: boolean
     placement?: string
     canResetPlaceholder?: boolean
+    resetPlaceholderDisabledReason?: string
+    canReplacePicture?: boolean
+    replacePictureDisabledReason?: string
     canDuplicateItem?: boolean
+    duplicateItemDisabledReason?: string
     canDeleteItem?: boolean
+    deleteItemDisabledReason?: string
   }
   commentsPanelOpen?: boolean
   canCreateComment?: boolean
@@ -247,11 +254,6 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       { id: 'doc-insert-extensions', title: '更多', order: 3, items: [
       action('doc-comment-toggle', '评论', MessageSquarePlus, 'docs.operation.toggle-comment-panel', undefined, { activated: context.commentsPanelOpen, gridLayout: { row: 1, column: 1, showLabel: true } }),
       action('doc-comment-add', '添加评论', MessageSquarePlus, 'docs.operation.start-add-comment', undefined, { disabled: !context.canCreateComment, disabledReason: '选择文本后可添加评论', gridLayout: { row: 2, column: 1, showLabel: true } }),
-      { ...action('doc-footnote', '脚注', Superscript, 'doc.operation.insert-footnote', undefined, { showLabel: true, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }), type: 'split', children: [
-        action('doc-footnote-insert', '插入脚注', Superscript, 'doc.operation.insert-footnote'),
-        action('doc-endnote-insert', '插入尾注', BookMarked, 'doc.operation.insert-endnote'),
-        action('doc-notes-manage', '管理脚注和尾注', NotebookPen, 'doc.operation.open-notes'),
-      ] },
       ] },
     ] },
     { id: 'view', title: '视图', order: 2, groups: [
@@ -339,6 +341,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       })
     }
     if (control.type === 'picture') values.push(action('doc-controls-change-picture', '更换图片', ImagePlus, 'doc.command.change-selected-sdt-picture', undefined, {
+      disabled: control.canReplacePicture === false, disabledReason: control.replacePictureDisabledReason,
       gridLayout: { row: 1, column: 1, showLabel: true },
     }))
     if (control.type === 'date') values.push({
@@ -348,7 +351,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       valueParams: value => ({ value }),
     })
     if (control.placeholder) values.push(action('doc-controls-reset-placeholder', '恢复占位符', TextCursorInput, 'doc.command.reset-selected-sdt-placeholder', undefined, {
-      disabled: !control.canResetPlaceholder, gridLayout: { row: 1, column: 2, showLabel: true },
+      disabled: !control.canResetPlaceholder, disabledReason: control.resetPlaceholderDisabledReason, gridLayout: { row: 1, column: 2, showLabel: true },
     }))
     if (control.type === 'text') values.push(action('doc-controls-multiline', '允许换行', TextCursorInput, 'doc.command.toggle-selected-sdt-multiline', undefined, {
       activated: control.multiLine, gridLayout: { row: 1, column: 1, showLabel: true },
@@ -378,13 +381,15 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       action('doc-controls-select-parent', '选择上层控件', ArrowUp, 'doc.operation.select-parent-sdt', undefined, {
         disabled: !control.canSelectParent, gridLayout: { row: 1, column: 2, showLabel: true },
       }),
-      ...(control.type === 'repeatingSectionItem' && control.canDuplicateItem ? [
+      ...(control.type === 'repeatingSectionItem' && !['cell', 'table'].includes(control.placement ?? '') ? [
         action('doc-controls-duplicate-item', '复制', Copy, 'doc.command.duplicate-selected-repeating-sdt-item', undefined, {
+          disabled: control.canDuplicateItem === false, disabledReason: control.duplicateItemDisabledReason,
           gridLayout: { row: 1, column: 1, showLabel: true },
         }),
       ] : []),
-      ...(control.type === 'repeatingSectionItem' && control.canDeleteItem ? [
+      ...(control.type === 'repeatingSectionItem' && !['cell', 'table'].includes(control.placement ?? '') ? [
         action('doc-controls-delete-item', '删除项目', Trash2, 'doc.command.delete-selected-repeating-sdt-item', undefined, {
+          disabled: control.canDeleteItem === false, disabledReason: control.deleteItemDisabledReason,
           gridLayout: { row: 2, column: 1, showLabel: true },
         }),
       ] : []),
@@ -400,6 +405,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
   }
   const tableTab = context.table && createDocumentTableRibbon(context.table)
   if (tableTab) tabs.push(tableTab)
+  const noteTab = context.notes && createDocumentNoteRibbon(context.notes)
+  if (noteTab) tabs.push(noteTab)
   return translate ? localizeRibbon(tabs, 'doc', translate) : tabs
 }
 

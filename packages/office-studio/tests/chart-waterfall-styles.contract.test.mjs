@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { chartLinearGradient } from '../src/features/charts/chart-color.ts'
+import { chartLinearGradient, normalizeChartColor } from '../src/features/charts/chart-color.ts'
 import { chartPointStyle, deriveChartData } from '../src/features/charts/chart-derived.ts'
 import { drawChartData } from '../src/features/charts/chart-draw.ts'
 import { chartManualPlotFrame, chartPlotAreaFromFrame } from '../src/features/charts/chart-plot-area.ts'
@@ -12,6 +12,7 @@ import { assertChartWaterfallType, chartWaterfallAuthoredStyles, chartWaterfallC
   chartWaterfallRole, chartWaterfallRoleStyle, chartWaterfallStyleValues, chartWaterfallUsesSecondaryAxis, patchChartWaterfallStyle } from '../src/features/charts/chart-waterfall.ts'
 import { chartWaterfallConnectorControls, chartWaterfallPointControls, chartWaterfallStyleControls } from '../src/features/charts/chart-waterfall-settings-controls.ts'
 import { validateChartGradientAuthoring } from '../src/features/charts/chart-gradient.ts'
+import { waterfallComputedFixture } from './fixtures/chart-waterfall-fixtures.mjs'
 
 // Authoring/rendering drafts only. No runner, WASM, browser or benchmark has run.
 const palette = ['#112233', '#223344', '#334455', '#445566']
@@ -27,6 +28,17 @@ function model(options = {}) {
 const totalRole = { seriesIndex: 1, dataPointIndex: 2, role: 'total' }
 function marks(commands) { return commands.filter(command => command.kind === 'rect' && command.clip && command.width > 10 && command.height > 0) }
 function gradient() { return chartLinearGradient({ start: { x: 0, y: 0 }, end: { x: 1, y: 1 }, stops: [{ offset: 0, color: 'red', opacity: 0.4 }, { offset: 1, color: 'blue' }] }) }
+function computed(name = 'style-changes') { return waterfallComputedFixture(source, name) }
+function render(chart, name = 'style-changes') { return drawChartData(source, chart, {}, computed(name)) }
+function geometry(chart, name = 'style-changes') { return layoutDerivedChartData(deriveChartData(source, chart, computed(name)), chart, palette) }
+function pointPolygons(commands, point, layout) {
+  const halfBand = layout.plot.width / layout.categories.length / 2
+  return commands.filter(command => command.kind === 'polygon' && command.clip
+    && command.points.every(vertex => vertex.x >= point.x - halfBand - 1e-8 && vertex.x <= point.x + halfBand + 1e-8
+      && vertex.y >= Math.min(point.y, point.baseY) - 1e-8 && vertex.y <= Math.max(point.y, point.baseY) + 1e-8))
+}
+function area(points) { return Math.abs(points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y }, 0)) / 2 }
+const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-7, `${actual} ≈ ${expected}`)
 
 test('Waterfall style targets classify negative/positive changes separately from a signed total', () => {
   assert.equal(chartWaterfallRole('change', 0), 'positive')
@@ -81,7 +93,7 @@ test('clearing a role and clearing one nullable field resume inheritance without
   assert.equal(chartWaterfallRoleStyle(model(reset), 1, 0, 'positive', palette, 'Delta').border.width, 1)
   assert.equal(reset.series[1].waterfallStyles.negative.color, 'red')
   const allReset = { ...current, ...patchChartSeriesOverride(current, 1, clearChartSeriesStyle(current.series[1], ChartSeriesClearTargets.WaterfallStyles)) }
-  assert.equal(chartWaterfallRoleStyle(model(allReset), 1, 0, 'negative', palette, 'Delta').color, '#dc2626')
+  assert.equal(chartWaterfallRoleStyle(model(allReset), 1, 0, 'negative', palette, 'Delta').color, palette[1])
 })
 
 test('role merge order is base, global role, all-series role, field role, exact-name role and point', () => {
@@ -108,18 +120,22 @@ test('explicit patterns and role-point solid opt-out retain independent paint co
   const point = chartPointStyle(role, 0, 'waterfall')
   assert.equal(point.fillPattern, null)
   assert.equal(point.color, 'cyan')
-  const commands = drawChartData(source, chart)
-  assert.equal(marks(commands)[0].fillPattern, undefined)
+  const commands = render(chart), layout = geometry(chart)
+  assert.equal(marks(commands)[0].fill, normalizeChartColor('cyan'))
+  assert.equal(pointPolygons(commands, layout.waterfall.points[0], layout).length, 0)
+  const patterned = pointPolygons(commands, layout.waterfall.points[2], layout)
+  assert.ok(patterned.some(command => command.fill === normalizeChartColor(pattern.foregroundColor)))
+  assert.ok(patterned.some(command => command.fill === normalizeChartColor(pattern.backgroundColor)))
 })
 
 test('positive/negative/subtotal colors, role labels and names alter the real Canvas scene', () => {
-  const chart = model({ waterfall: { pointRoles: [totalRole], styles: {
+  const chart = model({ waterfall: { useSubtotal: false, pointRoles: [totalRole], styles: {
     positive: { color: '#010203', label: { visible: true, contentType: 'series' }, name: 'Revenue' },
     negative: { color: '#040506', border: { visible: true, color: '#ffffff', width: 3 }, label: { visible: true, contentType: 'series' }, name: 'Costs' },
     subtotal: { color: '#070809', label: { visible: true, contentType: 'series' }, name: 'Profit' } } } })
-  const commands = drawChartData(source, chart), bars = marks(commands)
-  assert.deepEqual(bars.map(mark => mark.fill), ['#010203', '#040506', '#070809'])
-  assert.equal(bars[1].stroke, '#ffffff')
+  const commands = render(chart, 'style-total-no-subtotal'), bars = marks(commands)
+  assert.deepEqual(bars.map(mark => mark.fill), ['#010203', '#040506', '#070809'].map(normalizeChartColor))
+  assert.equal(bars[1].stroke, normalizeChartColor('#ffffff'))
   assert.equal(bars[1].strokeWidth, 3)
   const labels = commands.filter(command => command.kind === 'text').map(command => command.text)
   for (const label of ['Revenue', 'Costs', 'Profit']) assert.equal(labels.filter(value => value === label).length, 2)
@@ -127,8 +143,11 @@ test('positive/negative/subtotal colors, role labels and names alter the real Ca
 
 test('new explicit role gradients are painted and unsupported type authoring remains atomic', () => {
   const author = gradient(), chart = model({ series: { 1: { waterfallStyles: { positive: { color: author } } } } })
-  const commands = drawChartData(source, chart)
-  assert.ok(marks(commands)[0].gradient)
+  const commands = render(chart), layout = geometry(chart), first = layout.waterfall.points[0]
+  const painted = pointPolygons(commands, first, layout)
+  assert.ok(painted.length > 2 && new Set(painted.map(command => command.fill)).size > 2)
+  const width = layout.plot.width / layout.categories.length / 2.5 - 1
+  near(painted.reduce((sum, command) => sum + area(command.points), 0), width * Math.abs(first.y - first.baseY))
   assert.throws(() => validateChartGradientAuthoring('radar', chart.options), /纯色/)
   assert.equal(validateChartGradientAuthoring('radar', chart.options, structuredClone(chart.options)), undefined)
   assert.deepEqual(chart.options.series[1].waterfallStyles.positive.color, author)
@@ -137,12 +156,12 @@ test('new explicit role gradients are painted and unsupported type authoring rem
 test('role axis assignment changes point coordinates, axis extent and automatic plot margins together', () => {
   const chart = model({ rightYAxis: { scaleType: 'linear', min: -10, max: 10 },
     waterfall: { pointRoles: [totalRole], styles: { negative: { rightAxis: true } } } })
-  const derived = deriveChartData(source, chart), layout = layoutDerivedChartData(derived, chart, palette)
+  const derived = deriveChartData(source, chart, computed('style-total')), layout = layoutDerivedChartData(derived, chart, palette)
   assert.equal(layout.series[0].points[0].rightAxis, false)
   assert.equal(layout.series[0].points[1].rightAxis, true)
   assert.equal(layout.rightMin, -10)
   assert.equal(layout.rightMax, 10)
-  assert.equal(layout.series[0].points[1].y, layout.plot.y + 0.3 * layout.plot.height)
+  near(layout.series[0].points[1].y, layout.plot.y + 0.3 * layout.plot.height)
   assert.equal(chartWaterfallUsesSecondaryAxis(chart, source.series), true)
   const ordinary = chartPlotFrame(model(), source.series)
   assert.ok(chartPlotFrame(chart, source.series).plot.width < ordinary.plot.width)
@@ -151,12 +170,19 @@ test('role axis assignment changes point coordinates, axis extent and automatic 
 })
 
 test('omitted connectors produce no lines and authored width/opacity/dashes survive scene generation', () => {
-  const without = drawChartData(source, model())
-  const connected = drawChartData(source, model({ waterfall: { connector: { color: '#fedcba', width: 3, opacity: 0.5, dashType: 'dotted' } } }))
+  const without = render(model())
+  const connected = render(model({ waterfall: { connector: { color: '#fedcba', width: 3, opacity: 0.5, dashType: 'dotted' } } }))
   const links = connected.filter(command => command.kind === 'line' && command.color === 'rgba(254, 220, 186, 0.5)')
-  assert.equal(links.length, 2)
-  assert.ok(links.every(link => link.width === 3 && link.dash.length === 2))
-  assert.equal(without.filter(command => command.kind === 'line').length + 2, connected.filter(command => command.kind === 'line').length)
+  assert.ok(links.length > 2)
+  assert.ok(links.every(link => link.width === 3 && Math.hypot(link.x2 - link.x1, link.y2 - link.y1) <= 3 + 1e-8))
+  const levels = [...new Set(links.map(link => link.y1))]
+  assert.equal(levels.length, 2)
+  for (const level of levels) {
+    const fragments = links.filter(link => link.y1 === level)
+    assert.ok(fragments.length > 1)
+    for (let index = 1; index < fragments.length; index++) near(fragments[index].x1 - fragments[index - 1].x2, 6)
+  }
+  assert.equal(without.filter(command => command.kind === 'line').length + links.length, connected.filter(command => command.kind === 'line').length)
 })
 
 test('role descriptions detach authored data, keep inactive/named overrides and omit renderer defaults', () => {

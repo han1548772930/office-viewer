@@ -6,6 +6,7 @@ import { transformDocumentCommentAnchorsForParagraphEdits, type DocumentCommentP
 import { blockAtPoint, documentBlockAncestry, runText, type DocumentSelection } from '../model/document-model'
 import { reconcileDocumentTocFieldParents } from '../toc/document-toc-edit'
 import { reconcileDocumentNotesAfterStructure } from '../notes/document-notes'
+import { reconcileDocumentContentControlBlockEdits } from '../model/content-control-block-edits'
 
 /**
  * Cell structure can move paragraphs without changing their identities. Keep
@@ -79,6 +80,7 @@ export function planDocumentTableFieldAnchors(before: DocumentModel, destination
 }
 
 export function reconcileDocumentTableAnchors(before: DocumentModel, after: DocumentModel, selection: DocumentSelection, transformedFieldIds: ReadonlySet<string> = new Set()): void {
+  reconcileDocumentContentControlBlockEdits(before, after, { absorbAdjacentInsertions: false })
   const source = documentTextFieldParagraphs(before), destination = documentTextFieldParagraphs(after)
   const sourceById = new Map(source.map(paragraph => [paragraph.block.id, { paragraph }]))
   const destinationById = new Map(destination.map(paragraph => [paragraph.block.id, { paragraph }]))

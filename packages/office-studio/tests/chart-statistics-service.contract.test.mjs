@@ -12,15 +12,15 @@ const services = new Set()
 afterEach(() => { for (const service of services) service.dispose(); services.clear(); vi.useRealTimers() })
 function fixture() {
   const workbook = { ...createBlankWorkbook(), id: 'chart-book' }, sheet = workbook.sheets[0]
-  sheet.cells = { '0:0': createCell('Label'), '0:1': createCell('Value') }
+  sheet.cells = { '0:0': createCell(0, 0, 'Label'), '0:1': createCell(0, 1, 'Value') }
   for (let row = 0; row < 5; row++) {
-    sheet.cells[(row + 1) + ':0'] = createCell(String(row))
-    sheet.cells[(row + 1) + ':1'] = createCell(row)
+    sheet.cells[(row + 1) + ':0'] = createCell(row + 1, 0, String(row))
+    sheet.cells[(row + 1) + ':1'] = createCell(row + 1, 1, row)
   }
   const chart = createChart(workbook, sheet.id, { type: 'histogram',
     source: { orientation: 'columns', range: { startRow: 0, startCol: 0, endRow: 5, endCol: 1 } },
     position: { x: 20, y: 20 }, size: { width: 360, height: 240 }, categoryField: 0, valueFields: [1],
-    options: { histogram: { binning: { mode: 'count', count: 2 }, underflowThreshold: 1, overflowThreshold: 3 } },
+    options: { histogram: { binning: { mode: 'count', count: 4 }, underflowThreshold: 1, overflowThreshold: 3 } },
   }, 'chart-one')
   workbook.charts = [chart]
   return { workbook, chart, sheet }
@@ -31,7 +31,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 function output() {
-  return { kind: 'chartStatistics', values: new Float64Array([0, 1, 1, 2, 2, 3, 3, 0]),
+  return { kind: 'chartStatistics', values: new Float64Array([0, 1, 2, 2.5, 2.5, 3, 3, 0]),
     indices: new Uint32Array([0, 2, 1, 1, 1, 1, 2, 1]),
     segments: [{ kind: 'histogram', jobIndex: 0, field: 1, seriesPosition: 0, slot: 0, valueOffset: 0, valueLength: 8,
       indexOffset: 0, indexLength: 8, validSampleCount: 5, available: true }] }
@@ -76,6 +76,56 @@ function serviceFor(client, options) {
   return service
 }
 const context = extra => ({ documentId: 'chart-book', modelRevision: 7, ...extra })
+
+test('a detached candidate shares the bounded scheduler without replacing the published chart cache', async () => {
+  const source = fixture(), compute = client(), service = serviceFor(compute), notices = []
+  service.subscribe(event => notices.push(event))
+  const published = service.request(source.workbook, source.chart, context())
+  ;(await compute.waitForCall(0)).complete()
+  const cached = await published.promise
+  const candidate = structuredClone(source.workbook), candidateChart = candidate.charts[0]
+  candidateChart.options.mapping = { useDateAxis: true }
+  const request = service.requestCandidate(candidate, candidateChart, context())
+  const call = await compute.waitForCall(1)
+  assert.equal(service.getCached(source.chart, context()), cached)
+  assert.equal(notices.length, 0)
+  call.complete(); await request.promise
+  assert.equal(service.getCached(source.chart, context()), cached)
+  assert.equal(service.getCached(candidateChart, context()), undefined)
+  assert.equal(notices.length, 0)
+})
+
+test('final invalid date bins reject only the candidate while a published cache remains usable', async () => {
+  const source = fixture(), compute = client(), service = serviceFor(compute)
+  const published = service.request(source.workbook, source.chart, context())
+  ;(await compute.waitForCall(0)).complete()
+  const cached = await published.promise
+  const candidate = structuredClone(source.workbook), candidateChart = candidate.charts[0]
+  candidateChart.options = { mapping: { useDateAxis: true },
+    histogram: { binning: { mode: 'count', count: 2 }, underflowThreshold: -1, overflowThreshold: 1 } }
+  for (let row = 0; row < 5; row++) candidate.sheets[0].cells[(row + 1) + ':1'] = createCell(row + 1, 1, row - 2)
+  const request = service.requestCandidate(candidate, candidateChart, context())
+  const rejection = assert.rejects(request.promise, /日期|date|分类/)
+  const call = await compute.waitForCall(1), invalid = output()
+  invalid.values = new Float64Array([0, -1, -1, 0, 0, 1, 1, 0])
+  call.complete(invalid); await rejection
+  assert.equal(service.getCached(source.chart, context()), cached)
+  assert.equal(source.workbook.sheets[0].cells['1:1'].value, 0)
+})
+
+test('cancelling a queued candidate immediately frees its shared admission slot', async () => {
+  const source = fixture(), compute = client(), service = serviceFor(compute, { maxPendingCharts: 2 })
+  const published = service.request(source.workbook, source.chart, context()), active = await compute.waitForCall(0)
+  const candidate = structuredClone(source.workbook)
+  const queued = service.requestCandidate(candidate, candidate.charts[0], context())
+  const rejection = assert.rejects(queued.promise, error => error.code === 'COMPUTE_CANCELLED')
+  assert.throws(() => service.requestCandidate(candidate, candidate.charts[0], context()), error => error.code === 'COMPUTE_MEMORY_LIMIT')
+  queued.cancel(); await rejection
+  const replacement = service.requestCandidate(candidate, candidate.charts[0], context())
+  active.complete(); await published.promise
+  ;(await compute.waitForCall(1)).complete(); await replacement.promise
+  assert.equal(compute.calls.length, 2)
+})
 
 test('two views share one calculation; cancelling one keeps the other and its owned result alive', async () => {
   const source = fixture(), compute = client(), service = serviceFor(compute)

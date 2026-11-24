@@ -10,6 +10,7 @@ import {
   DOCUMENT_TABLE_DEFAULT_BORDER, documentTableCellMargin, documentTableColumnWidths, documentTableRowProperties,
 } from '../features/document/model/document-table-style'
 import { array, record, text } from './validation'
+import { normalizeParsedDocumentBlockGroup } from './documentAuxiliaryContent'
 
 type NormalizeBlock = (raw: unknown, id: string) => DocumentBlock
 const sides = ['top', 'right', 'bottom', 'left'] as const
@@ -219,11 +220,7 @@ function authoredTypes(value: unknown, count: number): Record<number, DocumentTa
 
 function cellBlocks(source: Record<string, unknown>, cellId: string, property: Record<string, unknown> | undefined,
   normalizeBlock: NormalizeBlock): DocumentBlock[] {
-  let blocks = array(source.children).flatMap((child, index) => {
-    const block = normalizeBlock(child, `${cellId}-block-${index}`)
-    return [block, ...array(record(child).children).filter(child => record(child).type === 'figure')
-      .map((child, index) => normalizeBlock(child, `${block.id}-object-${index}`))]
-  })
+  let blocks = normalizeParsedDocumentBlockGroup(array(source.children), `${cellId}-block`, normalizeBlock)
   const lastSource = record(array(source.children).at(-1)), lastBlock = blocks.at(-1)
   if (property?.syntheticTail === true && lastBlock?.type === 'paragraph' && lastBlock.runs.every(run => !run.text)
     && !array(lastSource.children).length && array(record(lastSource.details).inlines).every(inline => record(inline).type === 'text' && !text(record(inline).text))) blocks = blocks.slice(0, -1)

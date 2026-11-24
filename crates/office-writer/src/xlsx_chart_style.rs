@@ -176,6 +176,7 @@ pub(super) fn labels(value: Option<&Label>, leader_lines: Option<bool>, pie: boo
 pub(super) fn axis(axis: Option<&Axis>, id: u32, cross: u32, position: &str, kind: &str, percentage: bool, secondary: bool) -> Result<String, ExportError> {
     let default = Axis::default();
     let axis = axis.unwrap_or(&default);
+    axis.validate_intervals(kind == "dateAx").map_err(ExportError::invalid)?;
     if axis.title_alignment.as_deref().is_some_and(|alignment| !matches!(alignment, "start" | "center" | "end")) {
         return Err(ExportError::invalid("chart axis title alignment is invalid"));
     }
@@ -213,8 +214,21 @@ pub(super) fn axis(axis: Option<&Axis>, id: u32, cross: u32, position: &str, kin
     out.push_str(&text_properties(axis.label.as_ref().map(|label| &label.font), axis.label.as_ref().and_then(|label| label.rotate))?);
     out.push_str(&format!("<c:crossAx val=\"{cross}\"/><c:crosses val=\"{}\"/>", if secondary { "max" } else { "autoZero" }));
     if kind == "catAx" { out.push_str("<c:auto val=\"1\"/><c:lblAlgn val=\"ctr\"/><c:lblOffset val=\"100\"/>"); }
-    if kind == "dateAx" { out.push_str("<c:auto val=\"0\"/><c:lblOffset val=\"100\"/><c:baseTimeUnit val=\"days\"/>"); }
-    if kind == "valAx" { out.push_str("<c:crossBetween val=\"between\"/>"); }
+    if kind == "dateAx" {
+        let base = axis.base_time_unit.as_deref().unwrap_or("days");
+        out.push_str(&format!("<c:auto val=\"0\"/><c:lblOffset val=\"100\"/><c:baseTimeUnit val=\"{base}\"/>"));
+        if let Some(interval) = axis.major_unit { out.push_str(&format!("<c:majorUnit val=\"{interval}\"/>")); }
+        // Office's omitted majorTimeUnit need not inherit baseTimeUnit. Emit
+        // the effective unit whenever the author supplies an explicit interval.
+        if axis.major_time_unit.is_some() || axis.major_unit.is_some() {
+            let unit = axis.major_time_unit.as_deref().unwrap_or(base);
+            out.push_str(&format!("<c:majorTimeUnit val=\"{unit}\"/>"));
+        }
+    }
+    if kind == "valAx" {
+        out.push_str("<c:crossBetween val=\"between\"/>");
+        if let Some(interval) = axis.major_unit { out.push_str(&format!("<c:majorUnit val=\"{}\"/>", native_value(interval))); }
+    }
     out.push_str(&format!("</c:{kind}>"));
     Ok(out)
 }

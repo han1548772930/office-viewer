@@ -16,7 +16,7 @@ import type { DocumentCommand } from '../features/document/commands/document-com
 import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshPlan, type DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
 import { applyDocumentFieldRefreshPlan, createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase } from '../features/document/services/document-history-cache.ts'
 import type { DocumentFieldCacheAdapter, DocumentFieldCacheState } from '../features/document/services/document-field-open-refresh.ts'
-import { createParagraph, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
+import { createParagraph, runText, runsForTarget, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
 import { cloneDocumentSelection } from '../features/document/model/document-table-selection.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host.ts'
@@ -74,21 +74,30 @@ import {
   type PivotTableAnchorInput,
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
-import { createChart, updateChart, type ChartConfig } from '../features/charts/chart-engine'
+import { createChartDefinition, updateChartDefinition, type ChartConfig, type ChartUpdatePatch } from '../features/charts/chart-engine'
 import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
 import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, updateSlicerPresentation, type SlicerCreateInput, type SlicerPresentationPatch } from '../features/slicer/slicer-engine'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
 import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortRange, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type ConfigureSheetFilterInput } from '../features/sheet-sort-filter/sheet-data-panel-state'
 import { OfficeComputeClient } from '../compute/client.ts'
+import { ComputeError } from '../compute/errors.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
-import { ChartStatisticsService, type ChartStatisticsServiceOptions } from '../features/charts/services/chart-statistics-service.ts'
+import { assertChartReadPermission, ChartStatisticsService, type ChartAuthoringPlan, type ChartStatisticsServiceOptions } from '../features/charts/services/chart-statistics-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
 import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineUpdate, type ChangeSheetOutlineInput } from '../features/sheet-outline/sheet-outline.ts'
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
-import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
+import { assertDocumentPermission, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import { registerDocumentContentControlCommands } from './document-content-control-commands'
+import { registerDocumentCustomXmlCommands } from './document-custom-xml-commands'
+import { documentNoteCommandId, DocumentNoteCommandRejectedError, mapDocumentNoteLocation, registerDocumentNoteCommands,
+  type DocumentNoteCommandContext, type DocumentNoteCommandParams, type DocumentNoteCommandResult } from './document-note-commands'
+import { prepareDocumentNoteMutation, type DocumentNoteMutationRequest } from '../features/document/notes/document-note-mutations'
+import { documentNoteMutationPermissionTargets } from '../features/document/permissions/document-note-permissions'
+import { DocumentPermissionError } from '../features/document/permissions/document-permissions'
+import { prepareDocumentCustomXmlCandidate } from '../features/document/services/document-custom-xml-candidate'
+import { assertDocumentCustomXmlBindings, validateDocumentCustomXmlParts } from '../features/document/services/document-custom-xml-validation'
 
 export interface OfficeStudioOptions {
   locale?: string
@@ -121,6 +130,13 @@ export interface WorkbookCommitOptions {
   prepareView?: (model: WorkbookModel) => void
 }
 
+interface PreparedWorkbookChange {
+  candidate: WorkbookModel
+  baseRevision: number
+  assertCurrent(): void
+  publish(): boolean
+}
+
 export class OfficeStudio {
   readonly regionalSettings: OfficeRegionalSettings
   readonly pinia: Pinia
@@ -138,6 +154,7 @@ export class OfficeStudio {
   private readonly workbooks = new Map<string, WorkbookModel>()
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
+  private readonly asynchronousCommands = new Set<string>()
   private _activeWorkbookId: string
   private _activeDocumentId: string
   private disposed = false
@@ -165,6 +182,8 @@ export class OfficeStudio {
     this.documentInput = useDocumentInputStore(this.pinia)
     const workbook = workbookFromInput(options.workbook ?? this.editor.workbook.model)
     const document = documentFromInput(options.document ?? this.editor.document.model)
+    if (document.customXmlParts !== undefined) document.customXmlParts = validateDocumentCustomXmlParts(document.customXmlParts)
+    assertDocumentCustomXmlBindings(document)
     if (workbook.id === document.id) throw new TypeError('工作簿与文档必须使用不同标识，不能共用内容历史。')
     this._activeWorkbookId = workbook.id!
     this._activeDocumentId = document.id!
@@ -403,6 +422,8 @@ export class OfficeStudio {
     const model = documentFromInput(input)
     if (this.documents.has(model.id!)) throw new Error(`Document id already exists: ${model.id}`)
     this.assertContentUnitIdentity('document', model.id!)
+    if (model.customXmlParts !== undefined) model.customXmlParts = validateDocumentCustomXmlParts(model.customXmlParts)
+    assertDocumentCustomXmlBindings(model)
     this.documents.set(model.id!, model)
     this.documentRevisions.set(model.id!, 0)
     if (makeCurrent) this.activateDocument(model.id!)
@@ -628,6 +649,56 @@ export class OfficeStudio {
   }
 
   commitWorkbook(id: string, label: string, update: (draft: WorkbookModel) => void, options: boolean | WorkbookCommitOptions = false): boolean {
+    return this.prepareWorkbookChange(id, label, update, options)?.publish() ?? false
+  }
+
+  private async commitChartChange(id: string, label: string, chartId: string, update: (draft: WorkbookModel) => void,
+    authoring: ChartAuthoringPlan): Promise<boolean> {
+    this.assertAlive()
+    this.assertContentUnitIdentity('workbook', id)
+    const userId = this.currentUserId, savepoint = this.editor.history.captureSavepoint(id)
+    // Prepare source-free configuration and the normal formula/filter candidate
+    // first. No chart source arrays are allocated by this synchronous mutator.
+    const plan = this.prepareWorkbookChange(id, label, update, false)
+    if (!plan) return false
+    const seed = requireChart(plan.candidate, chartId)
+    const assertCurrent = (): void => {
+      this.assertAlive()
+      const current = this.getWorkbookModel(id), latestSavepoint = this.editor.history.captureSavepoint(id)
+      if (!current || this.currentUserId !== userId || this.getWorkbookRevision(id) !== plan.baseRevision
+        || latestSavepoint.revision !== savepoint.revision || latestSavepoint.generation !== savepoint.generation) {
+        throw new ComputeError('COMPUTE_STALE_RESULT', '图表准备期间工作簿、用户或内容历史已更新')
+      }
+      this.assertCanEditWorksheet(id, seed.sheetId)
+      assertChartReadPermission(current, seed, userId)
+    }
+    assertCurrent()
+    const chart = await this.chartStatisticsService.requestAuthoredCandidate(plan.candidate, seed,
+      { documentId: id, modelRevision: plan.baseRevision, userId, priority: 'interactive', assertCurrent }, authoring).promise
+    assertCurrent()
+    // Check complete content equivalence once at publication, rather than
+    // serializing the whole workbook at each cooperative preparation boundary.
+    plan.assertCurrent()
+    if (chart.id !== seed.id || chart.sheetId !== seed.sheetId || chart.revision !== seed.revision) {
+      throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '图表准备结果与候选身份不匹配')
+    }
+    Object.assign(seed, cloneModel(chart))
+    return plan.publish()
+  }
+
+  async commitWorkbookWithValidation(id: string, label: string, update: (draft: WorkbookModel) => void,
+    validate: (candidate: WorkbookModel, context: { baseRevision: number; assertCurrent(): void }) => Promise<void>,
+    options: boolean | WorkbookCommitOptions = false): Promise<boolean> {
+    const plan = this.prepareWorkbookChange(id, label, update, options)
+    if (!plan) return false
+    const candidateSignature = JSON.stringify(plan.candidate)
+    await validate(plan.candidate, { baseRevision: plan.baseRevision, assertCurrent: () => plan.assertCurrent() })
+    if (JSON.stringify(plan.candidate) !== candidateSignature) throw new Error('异步校验修改了工作簿候选，请重新准备编辑。')
+    return plan.publish()
+  }
+
+  private prepareWorkbookChange(id: string, label: string, update: (draft: WorkbookModel) => void,
+    options: boolean | WorkbookCommitOptions): PreparedWorkbookChange | undefined {
     this.assertAlive()
     this.assertContentUnitIdentity('workbook', id)
     const current = this.getWorkbookModel(id)
@@ -638,15 +709,16 @@ export class OfficeStudio {
       if (options.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(options.expectedHistoryGeneration) || options.expectedHistoryGeneration <= 0)) throw new TypeError('工作簿历史版本无效。')
       if (options.expectedRevision !== undefined && options.expectedRevision !== baseRevision
         || options.expectedHistoryGeneration !== undefined && options.expectedHistoryGeneration !== baseSavepoint.generation) throw new Error('工作簿内容或历史已更改，请重新执行。')
-      if (options.amend && !this.editor.history.canAmend(id, options.amend)) return false
+      if (options.amend && !this.editor.history.canAmend(id, options.amend)) return undefined
     }
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
     assertWorkbookConditionalFormatBudget(after.sheets)
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
+    this.assertChartHostChanges(before, after)
     const explicitRecalculate = typeof options === 'boolean' ? options : options.recalculate === true
-    if (!explicitRecalculate && JSON.stringify(before) === JSON.stringify(after)) return false
+    if (!explicitRecalculate && JSON.stringify(before) === JSON.stringify(after)) return undefined
     const automatic = before.calculationMode !== 'manual' || after.calculationMode !== 'manual'
     const shouldRecalculate = typeof options === 'boolean' ? options || automatic : options.recalculate ?? automatic
     const recalculated = shouldRecalculate
@@ -655,7 +727,7 @@ export class OfficeStudio {
     for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
     refreshWorkbookAutoRowHeights(recalculated, before, { measure: this.sheetTextMeasure, region: this.regionalSettings.region.value })
     recalculated.id = id
-    if (JSON.stringify(before) === JSON.stringify(recalculated)) return false
+    if (JSON.stringify(before) === JSON.stringify(recalculated)) return undefined
     recalculated.modified = true
     const single = typeof options === 'boolean' ? undefined : options.selection
     const currentSelection = this.getSelectionState(id, current.activeSheetId)
@@ -693,37 +765,49 @@ export class OfficeStudio {
       if (id === this._activeWorkbookId && model) this.publishSheetSelection(id, model.activeSheetId)
     }
     if (typeof options !== 'boolean' && options.prepareView) options.prepareView(cloneModel(recalculated))
-    const latest = this.getWorkbookModel(id)
-    const latestSavepoint = this.editor.history.captureSavepoint(id)
-    if (!latest || !equivalentModelData(before, latest, ['modified', 'activeSheetId']) || this.getWorkbookRevision(id) !== baseRevision
-      || latestSavepoint.revision !== baseSavepoint.revision || latestSavepoint.generation !== baseSavepoint.generation) {
-      throw new Error('准备编辑期间工作簿内容已更改，请重新执行。')
-    }
-    if (recalculated.activeSheetId === before.activeSheetId) recalculated.activeSheetId = latest.activeSheetId
-    let initial = true
-    const redo = (): void => {
-      if (initial) { this.replaceWorkbookModel(id, recalculated, !selectionSnapshot); initial = false }
-      else this.replaceWorkbookHistorySnapshot(id, recalculated, !selectionSnapshot)
-      if (selectionSnapshot) restoreSelection(selectionSnapshot.after)
-    }
-    const undo = (): void => {
-      this.replaceWorkbookHistorySnapshot(id, before, !selectionSnapshot)
-      if (selectionSnapshot) restoreSelection(selectionSnapshot.before)
-    }
-    const amendment = typeof options === 'boolean' ? undefined : options.amend
-    const committed = amendment ? this.editor.history.amendWithReceipt(id, amendment, label, redo)
-      : this.editor.history.execute(id, label, redo, undo)
-    if (!committed) return false
-    if (typeof options !== 'boolean' && options.onHistoryCommitted) {
-      try { options.onHistoryCommitted(committed) }
-      catch (error) {
-        const failure: ApiEventMap['EventListenerError'] = { eventName: 'CommandExecuted', error }
-        this.eventListenerErrors.push(failure)
-        this.publishObserverEvent('EventListenerError', () => ({ ...failure }))
-        if (this.eventListenerErrors.length > 50) this.eventListenerErrors.splice(0, this.eventListenerErrors.length - 50)
+    const assertCurrent = (): void => {
+      this.assertAlive()
+      const latest = this.getWorkbookModel(id)
+      const latestSavepoint = this.editor.history.captureSavepoint(id)
+      if (!latest || !equivalentModelData(before, latest, ['modified', 'activeSheetId']) || this.getWorkbookRevision(id) !== baseRevision
+        || latestSavepoint.revision !== baseSavepoint.revision || latestSavepoint.generation !== baseSavepoint.generation) {
+        throw new Error('准备编辑期间工作簿内容已更改，请重新执行。')
       }
     }
-    return true
+    return { candidate: recalculated, baseRevision, assertCurrent, publish: () => {
+      assertCurrent()
+      const latest = this.getWorkbookModel(id)!
+      if (recalculated.activeSheetId === before.activeSheetId) recalculated.activeSheetId = latest.activeSheetId
+      let initial = true
+      const redo = (): void => {
+        if (initial) {
+          const latest = this.getWorkbookModel(id)
+          if (!latest) throw new Error(`Workbook not found: ${id}`)
+          this.assertChartHostChanges(latest, recalculated)
+          this.replaceWorkbookModel(id, cloneModel(recalculated), !selectionSnapshot); initial = false
+        }
+        else this.replaceWorkbookHistorySnapshot(id, recalculated, !selectionSnapshot)
+        if (selectionSnapshot) restoreSelection(selectionSnapshot.after)
+      }
+      const undo = (): void => {
+        this.replaceWorkbookHistorySnapshot(id, before, !selectionSnapshot)
+        if (selectionSnapshot) restoreSelection(selectionSnapshot.before)
+      }
+      const amendment = typeof options === 'boolean' ? undefined : options.amend
+      const committed = amendment ? this.editor.history.amendWithReceipt(id, amendment, label, redo)
+        : this.editor.history.execute(id, label, redo, undo)
+      if (!committed) return false
+      if (typeof options !== 'boolean' && options.onHistoryCommitted) {
+        try { options.onHistoryCommitted(committed) }
+        catch (error) {
+          const failure: ApiEventMap['EventListenerError'] = { eventName: 'CommandExecuted', error }
+          this.eventListenerErrors.push(failure)
+          this.publishObserverEvent('EventListenerError', () => ({ ...failure }))
+          if (this.eventListenerErrors.length > 50) this.eventListenerErrors.splice(0, this.eventListenerErrors.length - 50)
+        }
+      }
+      return true
+    } }
   }
 
   commitDocument(id: string, label: string, update: (draft: DocumentModel) => void): boolean {
@@ -745,18 +829,24 @@ export class OfficeStudio {
     const current = this.getDocumentModel(id)
     if (!current) throw new Error(`Document not found: ${id}`)
     const revision = this.getDocumentRevision(id)
+    const userId = this.currentUserId, savepoint = this.editor.history.captureSavepoint(id), historyUnit = this.editor.history.units[id]
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
+    prepareDocumentCustomXmlCandidate(before, after, { documentId: id, userId })
     if (!permissionAdminCommand) {
-      assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', permissionTargetsForChangedBlocks(before, after))
+      if (JSON.stringify(before.permissionRules ?? []) !== JSON.stringify(after.permissionRules ?? [])) throw new Error('请通过文档权限命令修改权限规则。')
+      assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId }, 'edit', documentNoteMutationPermissionTargets(before, after))
     }
     after.id = id
     if (JSON.stringify(before) === JSON.stringify(after)) return false
     after.modified = true
     const latest = this.getDocumentModel(id)
-    if (!latest || this.getDocumentRevision(id) !== revision || !equivalentModelData(before, latest, ['modified'])) throw new Error('准备编辑期间文档内容已更改，请重新执行。')
-    const callbacks = createDocumentSnapshotHistory(before, after, model => this.replaceDocumentModel(id, model))
+    const latestSavepoint = this.editor.history.captureSavepoint(id)
+    if (!latest || this.getDocumentRevision(id) !== revision || this.currentUserId !== userId || this.editor.history.units[id] !== historyUnit
+      || latestSavepoint.generation !== savepoint.generation || latestSavepoint.revision !== savepoint.revision
+      || !equivalentModelData(before, latest, ['modified'])) throw new Error('准备编辑期间文档内容、用户或历史已更改，请重新执行。')
+    const callbacks = createDocumentSnapshotHistory(before, after, model => this.replaceDocumentHistorySnapshot(id, model, permissionAdminCommand))
     this.editor.history.execute(id, label, callbacks.redo, callbacks.undo)
     return true
   }
@@ -798,6 +888,7 @@ export class OfficeStudio {
     this.assertAlive()
     const handler = this.commands.get(id)
     if (!handler) throw new Error(`Unknown command: ${id}`)
+    if (this.asynchronousCommands.has(id)) throw new Error(`命令 ${id} 必须通过 executeCommand 异步执行。`)
     // Fixed Univer facade exposes history through its own BeforeUndo/Redo and
     // Undo/Redo events, excluding these commands from generic command events.
     if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P, R>)(params)
@@ -815,7 +906,18 @@ export class OfficeStudio {
   }
 
   executeCommand<P = Record<string, unknown>, R = boolean>(id: string, params?: P): Promise<R> {
-    return Promise.resolve().then(() => this.executeCommandSync<P | undefined, R>(id, params))
+    return Promise.resolve().then(async () => {
+      this.assertAlive()
+      const handler = this.commands.get(id)
+      if (!handler) throw new Error(`Unknown command: ${id}`)
+      if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P | undefined, R | Promise<R>>)(params)
+      const event: ApiEventMap['BeforeCommandExecute'] = { id, params, unitId: commandUnitId(params), kind: this.commandKind(id, params) }
+      this.events.emit('BeforeCommandExecute', event)
+      if (event.cancel) throw new Error(`Command was canceled: ${id}`)
+      const result = await (handler as OfficeCommandHandler<P | undefined, R | Promise<R>>)(params)
+      this.publishObserverEvent('CommandExecuted', () => ({ ...event, ...(params === undefined ? {} : { params: cloneModel(params) }) }))
+      return result
+    })
   }
 
   executeDocumentEditorCommand(unitId: string, command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
@@ -833,12 +935,99 @@ export class OfficeStudio {
       { unitId, command: effective, selection, expectedRevision, expectedHistoryGeneration, inputGeneration })
   }
 
-  registerCommand<P, R>(id: string, handler: OfficeCommandHandler<P, R>): Disposable {
+  executeDocumentNoteCommand(unitId: string, request: DocumentNoteMutationRequest): DocumentNoteCommandResult {
+    this.assertAlive()
+    const session = this.documentInput.get(unitId), expectedRevision = this.getDocumentRevision(unitId)
+    const expectedHistoryGeneration = this.editor.history.captureSavepoint(unitId).generation
+    const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind, userId = this.currentUserId
+    const params: DocumentNoteCommandParams = { ...request, unitId, expectedRevision, expectedHistoryGeneration,
+      inputGeneration: session?.generation, ...(session?.location.kind === 'body' ? { host: session.location.host } : {}), feedback: true }
+    const result = this.executeCommandSync<DocumentNoteCommandParams, DocumentNoteCommandResult>(documentNoteCommandId(request), params)
+    const latest = this.documentInput.get(unitId)
+    // Generic CommandExecuted observers run after the handler; recheck before any controller restores focus.
+    const selectionCurrent = result.selectionCurrent && !this.disposed && !!this.getDocumentModel(unitId)
+      && this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind && this.currentUserId === userId
+      && this.getDocumentRevision(unitId) === result.modelRevision && this.editor.history.captureSavepoint(unitId).generation === expectedHistoryGeneration
+      && latest?.generation === result.inputGeneration
+      && (!result.selection || latest?.valid === true && sameDocumentInputLocation(latest.location, documentInputLocation(result.selection, undefined, result.host)))
+    return { ...result, selectionCurrent }
+  }
+
+  /** The ten note commands share one candidate, content-history entry and checked input publication. */
+  commitDocumentNoteMutation(input: DocumentNoteCommandContext, request: DocumentNoteMutationRequest): DocumentNoteCommandResult {
+    this.assertAlive()
+    const current = this.getDocumentModel(input.unitId)
+    if (!current) throw new DocumentNoteCommandRejectedError('注释所属文档已关闭。')
+    const revision = this.getDocumentRevision(input.unitId), savepoint = this.editor.history.captureSavepoint(input.unitId)
+    const session = this.documentInput.get(input.unitId), generation = session?.generation
+    for (const [name, value, expected] of [
+      ['expectedRevision', input.expectedRevision, revision], ['expectedHistoryGeneration', input.expectedHistoryGeneration, savepoint.generation],
+      ['inputGeneration', input.inputGeneration, generation],
+    ] as const) {
+      if (Object.hasOwn(input, name) && (value !== undefined && (!Number.isSafeInteger(value) || value < 0) || value !== expected)) {
+        throw new DocumentNoteCommandRejectedError('注释所属文档、历史或输入位置已更改，请重新执行。')
+      }
+    }
+    if (Object.hasOwn(input, 'host') && session?.valid && (session.location.kind !== 'body' || !sameDocumentBlockHost(session.location.host, input.host))) {
+      throw new DocumentNoteCommandRejectedError('注释命令的输入内容区已更改。')
+    }
+    const activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind, userId = this.currentUserId
+    let plan: ReturnType<typeof prepareDocumentNoteMutation>
+    try { plan = prepareDocumentNoteMutation(current, request, { documentId: input.unitId, userId }) }
+    catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError || error instanceof DocumentPermissionError) {
+        throw new DocumentNoteCommandRejectedError(error.message, error)
+      }
+      throw error
+    }
+    const sourceLocation = session?.valid && session.modelRevision === revision ? session.location : undefined
+    const usesPlanSelection = request.type === 'insert'
+      ? !sourceLocation || sourceLocation.kind === 'body' && !sourceLocation.host && sameDocumentInputLocation(sourceLocation, documentInputLocation(request.selection))
+      : request.type === 'delete' && (!sourceLocation || sourceLocation.kind === 'body' && sourceLocation.host?.kind === 'note'
+        && sourceLocation.host.noteKind === request.kind && sourceLocation.host.noteId === request.noteId)
+    const changed = plan.changed && this.commitDocument(input.unitId, request.type === 'insert' ? '插入注释' : request.type === 'delete' ? '删除注释'
+      : request.type === 'settings' ? '设置注释格式' : '修改注释', model => {
+        for (const key of Object.keys(model)) if (!Object.hasOwn(plan.model, key)) Reflect.deleteProperty(model, key)
+        Object.assign(model, plan.model)
+        model.wordCount = textTargets(model).reduce((count, target) => count + runText(runsForTarget(model, target)).replace(/\s/g, '').length, 0)
+      })
+    const modelRevision = revision + (changed ? 1 : 0)
+    let selection: DocumentSelection | undefined, host: DocumentAuxiliaryBlockHost | undefined, expectedGeneration = generation
+    const currentContext = () => !this.disposed && !!this.getDocumentModel(input.unitId) && this.currentUserId === userId
+      && this.getDocumentRevision(input.unitId) === modelRevision && this._activeDocumentId === activeId && this.editor.state.activeKind === activeKind
+      && this.editor.history.captureSavepoint(input.unitId).generation === savepoint.generation
+      && this.documentInput.get(input.unitId)?.generation === expectedGeneration
+    if (changed && currentContext() && activeKind === 'document' && activeId === input.unitId) {
+      if (usesPlanSelection && plan.selection) {
+        selection = cloneDocumentSelection(plan.selection); host = plan.host
+        this.documentInput.select(input.unitId, documentInputLocation(selection, undefined, host), modelRevision)
+        expectedGeneration = (generation ?? 0) + 1
+        this.publishDocumentInputState(input.unitId)
+      } else if (sourceLocation?.kind === 'body' && session) {
+        try {
+          const location = mapDocumentNoteLocation(current, this.getDocumentModel(input.unitId)!, sourceLocation.selection, sourceLocation.host)
+          selection = location.selection; host = location.host
+        }
+        catch (error) { if (!(error instanceof RangeError)) throw error }
+        if (selection && this.documentInput.completeUnchangedSelection(input.unitId, session, modelRevision, documentInputLocation(selection, undefined, host), true)) {
+          expectedGeneration = (generation ?? 0) + 1
+          this.publishDocumentInputState(input.unitId)
+        } else { selection = undefined; host = undefined }
+      }
+    } else if (!changed && sourceLocation?.kind === 'body') {
+      selection = cloneDocumentSelection(sourceLocation.selection); host = sourceLocation.host
+    }
+    return { changed, selectionCurrent: !!selection && currentContext(), modelRevision, inputGeneration: expectedGeneration,
+      ...(selection ? { selection } : {}), ...(host ? { host: { ...host } } : {}), ...(plan.noteId ? { noteId: plan.noteId } : {}) }
+  }
+
+  registerCommand<P, R>(id: string, handler: OfficeCommandHandler<P, R>, options: { asynchronous?: boolean } = {}): Disposable {
     this.assertAlive()
     if (!id || this.commands.has(id)) throw new Error(`Command already registered: ${id}`)
     this.commands.set(id, handler as OfficeCommandHandler<never, unknown>)
+    if (options.asynchronous) this.asynchronousCommands.add(id)
     let active = true
-    return { dispose: () => { if (active) { active = false; this.commands.delete(id) } } }
+    return { dispose: () => { if (active) { active = false; this.commands.delete(id); this.asynchronousCommands.delete(id) } } }
   }
 
   undo(kind: OfficeKind, id: string): boolean {
@@ -939,6 +1128,7 @@ export class OfficeStudio {
     this.events.emit('LifeCycleChanged', { stage: 'disposed' })
     this.events.clear()
     this.commands.clear()
+    this.asynchronousCommands.clear()
     this.workbooks.clear()
     this.borderFormatStates.clear()
     this.sheetSelections.clear()
@@ -977,6 +1167,7 @@ export class OfficeStudio {
     update(next)
     assertWorkbookConditionalFormatBudget(next.sheets)
     assertWorksheetProtectionChanges(current, next, this.currentUserId)
+    this.assertChartHostChanges(current, next)
     if (next.activeSheetId && next.activeSheetId !== current.activeSheetId) {
       this.assertCanViewWorksheet(id, next.activeSheetId)
       if (requireSheet(next, next.activeSheetId).visible === false) throw new Error('工作表已隐藏，请先取消隐藏再激活。')
@@ -989,12 +1180,36 @@ export class OfficeStudio {
   }
 
   private replaceWorkbookHistorySnapshot(id: string, snapshot: WorkbookModel, publishSelection = true): void {
+    this.assertAlive()
+    this.assertContentUnitIdentity('workbook', id)
     const current = this.getWorkbookModel(id)
     const next = cloneModel(snapshot)
+    if (!current) throw new Error(`Workbook not found: ${id}`)
+    this.assertChartHostChanges(current, next)
     if (current && next.sheets.some(sheet => sheet.id === current.activeSheetId && sheet.visible !== false
       && canViewWorksheetProtection(sheet, this.currentUserId))) next.activeSheetId = current.activeSheetId
     for (const sheet of next.sheets) this.sheetSelections.setTabStart(id, sheet.id)
     this.replaceWorkbookModel(id, next, publishSelection)
+  }
+
+  /** Chart mutations and history share actual old/new host-sheet authorization. */
+  private assertChartHostChanges(before: WorkbookModel, after: WorkbookModel): void {
+    if (JSON.stringify(before.charts ?? []) === JSON.stringify(after.charts ?? [])) return
+    const previous = new Map((before.charts ?? []).map(chart => [chart.id, chart])), next = new Map((after.charts ?? []).map(chart => [chart.id, chart]))
+    if (previous.size !== (before.charts?.length ?? 0) || next.size !== (after.charts?.length ?? 0)) throw new Error('图表 ID 必须唯一。')
+    const changed = new Set([...new Set([...previous.keys(), ...next.keys()])]
+      .filter(id => JSON.stringify(previous.get(id)) !== JSON.stringify(next.get(id))))
+    for (const sheetId of new Set([...(before.charts ?? []).map(chart => chart.sheetId), ...(after.charts ?? []).map(chart => chart.sheetId)])) {
+      const previousOrder = (before.charts ?? []).filter(chart => chart.sheetId === sheetId && next.get(chart.id)?.sheetId === sheetId).map(chart => chart.id)
+      const nextOrder = (after.charts ?? []).filter(chart => chart.sheetId === sheetId && previous.get(chart.id)?.sheetId === sheetId).map(chart => chart.id)
+      if (JSON.stringify(previousOrder) !== JSON.stringify(nextOrder)) for (const id of previousOrder) changed.add(id)
+    }
+    for (const id of changed) for (const chart of [previous.get(id), next.get(id)]) {
+      if (!chart) continue
+      const hosts = [before.sheets.find(sheet => sheet.id === chart.sheetId), after.sheets.find(sheet => sheet.id === chart.sheetId)].filter((sheet): sheet is SpreadsheetSheet => !!sheet)
+      if (!hosts.length) throw new Error('图表宿主工作表不存在：' + chart.sheetId)
+      if (hosts.some(sheet => !canEditWorksheetProtection(sheet, this.currentUserId))) throw new Error('图表宿主工作表受保护，当前用户没有编辑权限。')
+    }
   }
 
   private advanceWorkbookRevision(id: string): void {
@@ -1010,6 +1225,21 @@ export class OfficeStudio {
     if (id === this._activeDocumentId) this.editor.document.replace(model)
     else if (previous && !equivalentModelData(previous, model, ['modified'])) this.advanceDocumentRevision(id)
     if (this.documentInput.revalidateModel(id, model, previous)) this.publishDocumentInputState(id)
+  }
+
+  private replaceDocumentHistorySnapshot(id: string, snapshot: DocumentModel, permissionAdminCommand: boolean): void {
+    this.assertAlive()
+    this.assertContentUnitIdentity('document', id)
+    const current = this.getDocumentModel(id)
+    if (!current) throw new Error(`Document not found: ${id}`)
+    const next = cloneModel(snapshot)
+    if (permissionAdminCommand) {
+      if (this.currentUserId !== this.permissionAdminUserId) throw new Error('只有文档权限管理员可以撤销或重做权限规则。')
+    } else {
+      if (JSON.stringify(current.permissionRules ?? []) !== JSON.stringify(next.permissionRules ?? [])) throw new Error('内容历史不能覆盖当前的文档权限规则。')
+      assertDocumentPermission(current.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'edit', documentNoteMutationPermissionTargets(current, next))
+    }
+    this.replaceDocumentModel(id, next)
   }
 
   private advanceDocumentRevision(id: string): void {
@@ -1525,19 +1755,27 @@ export class OfficeStudio {
         }
       })
     })
-    this.registerCommand<{ unitId: string; sheetId: string; chartId: string; chart: ChartConfig }, boolean>('sheet.command.add-chart', ({ unitId, sheetId, chartId, chart }) => this.commitWorkbook(unitId, 'Insert chart', (model) => {
+    this.registerCommand<{ unitId: string; sheetId: string; chartId: string; chart: ChartConfig }, Promise<boolean>>('sheet.command.add-chart', ({ unitId, sheetId, chartId, chart }) => this.commitChartChange(unitId, 'Insert chart', chartId, (model) => {
+      this.assertCanEditWorksheet(unitId, sheetId)
       if (!model.sheets.some((item) => item.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
       if (model.charts?.some((item) => item.id === chartId)) throw new Error(`Chart already exists: ${chartId}`)
-      const created = createChart(model, sheetId, chart, chartId)
+      const created = createChartDefinition(model, sheetId, chart, chartId)
       model.charts ??= []
       model.charts.push(created)
-    }))
-    this.registerCommand<{ unitId: string; chartId: string; patch: Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>> }, boolean>('sheet.command.update-chart', ({ unitId, chartId, patch }) => this.commitWorkbook(unitId, 'Update chart', (model) => {
-      updateChart(model, requireChart(model, chartId), patch)
-    }))
+    }, { initializeDefaults: true }), { asynchronous: true })
+    this.registerCommand<{ unitId: string; chartId: string; patch: ChartUpdatePatch }, Promise<boolean>>('sheet.command.update-chart', ({ unitId, chartId, patch }) => {
+      const authoring: ChartAuthoringPlan = { patch: cloneModel(patch) }
+      return this.commitChartChange(unitId, 'Update chart', chartId, model => {
+        const chart = requireChart(model, chartId)
+        this.assertCanEditWorksheet(unitId, chart.sheetId)
+        authoring.previous = cloneModel(chart)
+        Object.assign(chart, updateChartDefinition(model, chart, authoring.patch!))
+      }, authoring)
+    }, { asynchronous: true })
     this.registerCommand<{ unitId: string; chartId: string }, boolean>('sheet.command.remove-chart', ({ unitId, chartId }) => this.commitWorkbook(unitId, 'Remove chart', (model) => {
-      if (!model.charts?.some((item) => item.id === chartId)) throw new Error(`Chart not found: ${chartId}`)
-      model.charts = model.charts.filter((item) => item.id !== chartId)
+      const chart = requireChart(model, chartId)
+      this.assertCanEditWorksheet(unitId, chart.sheetId)
+      model.charts = model.charts?.filter((item) => item.id !== chartId)
     }))
     this.registerCommand<{ unitId: string; pivotTableId: string; source: PivotTableSourceInput; anchor: PivotTableAnchorInput }, boolean>('sheet.command.add-pivot-table', ({ unitId, pivotTableId, source, anchor }) => this.commitPivotChange(unitId, pivotTableId, anchor.subUnitId, 'sheet.command.add-pivot-table', 'Add pivot table', (model) => {
       if (model.pivotTables?.some((pivot) => pivot.id === pivotTableId)) throw new Error(`Pivot table already exists: ${pivotTableId}`)
@@ -1631,6 +1869,8 @@ export class OfficeStudio {
     }
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
     registerDocumentContentControlCommands(this)
+    registerDocumentCustomXmlCommands(this)
+    registerDocumentNoteCommands(this)
   }
 
   private commitPivotChange(

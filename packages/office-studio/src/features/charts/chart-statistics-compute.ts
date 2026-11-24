@@ -9,13 +9,15 @@ import type { ChartData } from './chart-engine'
 import type { ChartComputedStatistics } from './chart-derived'
 import { supportsChartErrorDirection, supportsChartStatistics } from './chart-catalog'
 import { chartNumber } from './chart-data'
+import { chartBoxplotStatisticOptions } from './chart-boxplot-options'
 import { validateChartOptions } from './chart-options'
 import { validateChartNamedSeriesBindings } from './chart-series-selector'
-import { formatChartTrendlineEquation, type HistogramBin, type ChartErrorInterval, type WaterfallPoint } from './chart-statistics'
+import { formatChartTrendlineEquation, type ChartErrorInterval, type WaterfallPoint } from './chart-statistics'
 import { assertChartPreparationCurrent, assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPreparation,
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 import { estimateChartDecodedMemory } from './chart-compute-memory'
 import { decodeChartWaterfallLayoutSteps } from './chart-waterfall-compute'
+import { decodeChartHistogramSteps } from './chart-histogram-compute'
 
 export interface ChartStatisticsPlan {
   task: ChartStatisticsTask | null
@@ -96,7 +98,7 @@ function* chartStatisticsTaskSteps(data: ChartData, chart: ChartModel, context: 
       : { kind: 'pareto', seriesIndex, slot: 0, includeZeroValues: chart.options?.pareto?.includeZeroValues ?? false })
   } else if (chart.type === 'boxplot') {
     for (let position = 0; position < data.series.length; position++) addJob({ kind: 'boxplot', seriesIndex: addSeries(position), slot: position,
-      quartileMethod: chart.options?.boxplot?.quartileMethod ?? 'inclusive', whiskerMultiplier: chart.options?.boxplot?.whiskerMultiplier ?? 1.5 })
+      ...chartBoxplotStatisticOptions(chart.options?.boxplot) })
   } else if (chart.type === 'waterfall') {
     const roles = new Map<number, Map<number, 'change' | 'total'>>()
     for (const role of chart.options?.waterfall?.pointRoles ?? []) {
@@ -196,45 +198,41 @@ function* decodeChartStatisticsSteps(plan: ChartStatisticsPlan, raw: unknown, co
   for (const segment of output.segments) {
     const job = plan.task.params.jobs[segment.jobIndex]!, start = segment.valueOffset, indexStart = segment.indexOffset
     switch (job.kind) {
+      case 'hierarchy': throw protocolError('层级任务须通过保存来源字典的专属解码器解码')
       case 'histogram': {
-        const bins: HistogramBin[] = []
-        let count = 0, previousUpper: number | undefined
-        for (let offset = 0; offset < segment.valueLength; offset += 2) {
-          const lower = number(start + offset), upper = number(start + offset + 1), kind = output.indices[indexStart + offset]!, samples = output.indices[indexStart + offset + 1]!
-          count += samples
-          if (samples > segment.validSampleCount || count > segment.validSampleCount) throw protocolError('直方图分箱计数超出样本数量')
-          if (kind === 0) {
-            if (offset !== 0 || job.underflowThreshold === undefined || lower !== 0 || upper !== job.underflowThreshold) throw protocolError('直方图下溢边界无效')
-            bins.push({ kind: 'underflow', upperBound: upper, count: samples }); previousUpper = upper
-          } else if (kind === 1) {
-            if (lower >= upper || previousUpper !== undefined && lower !== previousUpper) throw protocolError('直方图普通分箱边界不连续')
-            bins.push({ kind: 'regular', lowerBound: lower, upperBound: upper, count: samples }); previousUpper = upper
-          } else if (kind === 2) {
-            if (offset + 2 !== segment.valueLength || job.overflowThreshold === undefined || lower !== job.overflowThreshold || upper !== 0
-              || previousUpper !== undefined && previousUpper > lower) throw protocolError('直方图上溢边界无效')
-            bins.push({ kind: 'overflow', lowerBound: lower, count: samples })
-          } else throw protocolError('直方图分箱类型无效')
-          if (++work % CHART_PREPARATION_CHUNK === 0) yield
-        }
-        if (count !== segment.validSampleCount || segment.available && (job.underflowThreshold !== undefined && bins[0]?.kind !== 'underflow'
-          || job.overflowThreshold !== undefined && bins.at(-1)?.kind !== 'overflow')) throw protocolError('直方图分箱没有覆盖有效样本')
-        result.histogram = { validSampleCount: count, bins }
+        result.histogram = yield* decodeChartHistogramSteps(plan, output, segment, job)
         break
       }
       case 'boxplot': {
         let statistics: NonNullable<ChartComputedStatistics['boxplots']>[number]['statistics']
+        const sourceSeries = plan.preparedData.series[segment.seriesPosition]
+        if (!sourceSeries || sourceSeries.field !== segment.field) throw protocolError('箱线图来源系列身份无效')
+        let sampleCount = 0, sourceMin = Infinity, sourceMax = -Infinity
+        for (const value of sourceSeries.values) {
+          if (value !== null && Number.isFinite(value)) { sampleCount++; sourceMin = Math.min(sourceMin, value); sourceMax = Math.max(sourceMax, value) }
+          if (++work % CHART_PREPARATION_CHUNK === 0) yield
+        }
+        if (sampleCount !== segment.validSampleCount || job.quartileMethod === 'medianOfHalves' && sampleCount < 2 && segment.available)
+          throw protocolError('箱线图有效样本数量或可用状态无效')
         if (segment.available) {
-          const min = number(start), q1 = number(start + 1), median = number(start + 2), q3 = number(start + 3), max = number(start + 4), outliers: number[] = []
-          if (q1 > median || median > q3 || min > max) throw protocolError('箱线图四分位或须线顺序无效')
+          const min = number(start), q1 = number(start + 1), median = number(start + 2), q3 = number(start + 3), max = number(start + 4), outliers: number[] = [], outlierSourceIndices: number[] = []
+          const seen = new Set<number>()
+          if (q1 > median || median > q3 || min > max
+            || job.whiskerMethod === 'range' && (min !== sourceMin || max !== sourceMax || min > q1 || q3 > max || segment.valueLength !== 5))
+            throw protocolError('箱线图四分位或须线顺序无效')
           for (let offset = 5; offset < segment.valueLength; offset++) {
             const value = number(start + offset)
-            if (outliers.length && outliers.at(-1)! > value || value >= min && value <= max) throw protocolError('箱线图异常点范围或顺序无效')
-            outliers.push(value)
+            const sourceIndex = output.indices[indexStart + offset - 5]!
+            if (sourceIndex >= sourceSeries.values.length || seen.has(sourceIndex) || sourceSeries.values[sourceIndex] !== value
+              || outliers.length && (outliers.at(-1)! > value || outliers.at(-1) === value && outlierSourceIndices.at(-1)! >= sourceIndex)
+              || value >= min && value <= max) throw protocolError('箱线图异常点来源、范围或稳定顺序无效')
+            seen.add(sourceIndex); outliers.push(value); outlierSourceIndices.push(sourceIndex)
             if (++work % CHART_PREPARATION_CHUNK === 0) yield
           }
           if (outliers.length > segment.validSampleCount) throw protocolError('箱线图异常点数量无效')
-          statistics = { min, q1, median, q3, max, outliers }
-        }
+          statistics = { min, q1, median, q3, max, outliers, outlierSourceIndices }
+        } else if (segment.validSampleCount > 0 && !(job.quartileMethod === 'medianOfHalves' && segment.validSampleCount === 1))
+          throw protocolError('箱线图有效样本缺少统计结果')
         ;(result.boxplots ??= []).push({ field: segment.field, seriesPosition: segment.seriesPosition, statistics })
         break
       }

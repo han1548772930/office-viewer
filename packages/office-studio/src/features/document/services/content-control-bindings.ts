@@ -1,16 +1,23 @@
 import type { DocumentContentControl, DocumentModel } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import { documentBlockHostForId, documentEditingBlockHost, sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
-import { runText, runsForTarget, sameTarget, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
+import { findDocumentBlock, runText, runsForTarget, sameTarget, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection } from '../model/document-model'
+import { documentTableGrid } from '../model/document-table-grid'
 import { cloneDocumentSelection } from '../model/document-table-selection'
+import { documentTableCellBlocks } from '../model/document-table-continuations'
+import { documentTableTextOriginCells } from '../model/document-table-text-origin'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { documentTextFieldParagraphs } from '../model/document-text-fields'
-import { assertDocumentPermission, permissionTargetsForBlock, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { assertDocumentPermission, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { documentContentControlPermissionTargets } from '../permissions/content-control-permissions'
+import { documentContentControlBlocksSelection, documentContentControlBlockTextTargets, documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
+import { documentContentControlBlocksValueMutationRange } from '../model/content-control-block-mutations'
 import type { DocumentContentControlEditResult } from './content-control-editing'
 import { contentControlCheckboxGlyph, formatContentControlDate, parseContentControlDateText } from './content-control-presentation'
 import { assertDocumentContentControlValueEditable, contentControlText, documentContentControlPlaceholderText,
   resetDocumentContentControlPlaceholder, setDocumentContentControlChecked, setDocumentContentControlValue } from './content-controls'
 import { documentModelForBlockHost } from './document-block-host'
+import { createDocumentCustomXmlBindingSession, type DocumentCustomXmlControlBinding } from './document-custom-xml-bindings'
 
 const scalarTypes = new Set<DocumentContentControl['type']>(['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox'])
 
@@ -21,6 +28,8 @@ export interface DocumentContentControlBindingTextEdit {
   endOffset: number
   text: string
   host?: DocumentAuxiliaryBlockHost
+  /** A real block splice maps replaced paragraph/table IDs to the resulting logical range. */
+  blockRangeEdit?: { sourceBlockIds: string[]; sourceSelection: DocumentSelection; selection: DocumentSelection }
 }
 
 /** Exact UTF-16 ranges in the flattened source host, captured by the originating text planner. */
@@ -28,6 +37,15 @@ export interface DocumentContentControlBindingOriginTextEdit {
   startOffset: number
   endOffset: number
   text: string
+  /** Exact cell identity and semantic value keep structural delimiters out of temporary scalars. */
+  tableCell?: {
+    tableId: string
+    cellId: string
+    row: number
+    column: number
+    order: number
+    value: string
+  }
 }
 
 export interface DocumentContentControlBindingOptions {
@@ -43,6 +61,8 @@ export interface DocumentContentControlBindingOptions {
   /** Explicit value/reset commands can supply the scalar after their temporary source has disappeared. */
   sourceControlId?: string
   sourceValue?: string
+  /** A custom-XML command replaces the data source; existing UI text must not overwrite it. */
+  refreshCustomXml?: boolean
   permissionContext?: DocumentPermissionContext
 }
 
@@ -76,7 +96,7 @@ function scopedModel(model: DocumentModel, host?: DocumentAuxiliaryBlockHost): D
 }
 
 function hostForControl(model: DocumentModel, control: DocumentContentControl): DocumentAuxiliaryBlockHost | undefined {
-  return documentBlockHostForId(model, control.blockId) ?? documentEditingBlockHost(model)
+  return documentBlockHostForId(model, control.blockRange?.blockIds[0] ?? control.tableRowRange?.tableId ?? control.blockId) ?? documentEditingBlockHost(model)
 }
 
 function absolutePoint(model: DocumentModel, point: DocumentPoint): number | undefined {
@@ -84,7 +104,10 @@ function absolutePoint(model: DocumentModel, point: DocumentPoint): number | und
   return paragraph && isDocumentTextBoundary(paragraph.text, point.offset) ? paragraph.absoluteStart + point.offset : undefined
 }
 
-interface OriginTextEdit { start: number; end: number; text: string; source: string; destination: string }
+interface OriginTextEdit {
+  start: number; end: number; text: string; source: string; destination: string
+  cell?: { tableId: string; cellId: string; order: number; value: string; blockIds: Set<string> }
+}
 
 function plannedOriginTextEdits(before: DocumentModel, after: DocumentModel,
   options: DocumentContentControlBindingOptions): OriginTextEdit[] | undefined {
@@ -92,21 +115,50 @@ function plannedOriginTextEdits(before: DocumentModel, after: DocumentModel,
     const edit = originTextEdit(before, after, options)
     return edit ? [edit] : undefined
   }
-  const source = documentTextFieldParagraphs(scopedModel(before, options.host)).map(paragraph => paragraph.text).join('\n')
-  const destination = documentTextFieldParagraphs(scopedModel(after, options.host)).map(paragraph => paragraph.text).join('\n')
+  const sourceModel = scopedModel(before, options.host), destinationModel = scopedModel(after, options.host)
+  const paragraphs = documentTextFieldParagraphs(sourceModel), source = paragraphs.map(paragraph => paragraph.text).join('\n')
+  const destination = documentTextFieldParagraphs(destinationModel).map(paragraph => paragraph.text).join('\n')
+  const origins = options.originTextEdits.some(edit => edit.tableCell) ? documentTableTextOriginCells(sourceModel, paragraphs) : []
+  const lastEmptyOrder = options.originTextEdits.reduce((maximum, edit) => Math.max(maximum, edit.tableCell?.order ?? -1), -1)
   const edits = options.originTextEdits.map(edit => {
     if (!Number.isSafeInteger(edit.startOffset) || !Number.isSafeInteger(edit.endOffset) || edit.startOffset < 0
       || edit.endOffset < edit.startOffset || typeof edit.text !== 'string'
       || !isDocumentTextBoundary(source, edit.startOffset) || !isDocumentTextBoundary(source, edit.endOffset)) {
       throw new RangeError('绑定源编辑范围不是有效的 UTF-16 区间。')
     }
-    return { start: edit.startOffset, end: edit.endOffset, text: edit.text.replace(/\r\n?/g, '\n'), source, destination }
-  }).sort((left, right) => right.start - left.start || right.end - left.end)
-  let expected = source, followingStart = source.length + 1
+    const normalized = edit.text.replace(/\r\n?/g, '\n'), recorded = edit.tableCell
+    let cell: OriginTextEdit['cell']
+    if (recorded) {
+      if (typeof recorded.tableId !== 'string' || !recorded.tableId || typeof recorded.cellId !== 'string' || !recorded.cellId
+        || !Number.isSafeInteger(recorded.row) || recorded.row < 0 || !Number.isSafeInteger(recorded.column) || recorded.column < 0
+        || !Number.isSafeInteger(recorded.order) || recorded.order < 0 || typeof recorded.value !== 'string') throw new RangeError('绑定源单元格身份或实际值无效。')
+      const sourceBlock = findDocumentBlock(sourceModel, recorded.tableId), targetBlock = findDocumentBlock(destinationModel, recorded.tableId)
+      const sourceTable = sourceBlock && tableForBlock(sourceBlock), targetTable = targetBlock && tableForBlock(targetBlock)
+      if (!sourceTable || !targetTable) throw new RangeError('绑定源单元格的表格不存在。')
+      const owner = documentTableGrid(sourceTable).cellAt(recorded.row, recorded.column), target = documentTableGrid(targetTable).cellAt(recorded.row, recorded.column)
+      const origin = owner && origins.find(origin => origin.tableId === recorded.tableId && origin.cell === owner.cell)
+      if (!owner || owner.cell.id !== recorded.cellId || owner.row !== recorded.row || owner.column !== recorded.column
+        || !target || target.cell.id !== recorded.cellId || target.row !== recorded.row || target.column !== recorded.column
+        || !origin || origin.order !== recorded.order) throw new RangeError('绑定源单元格的原始身份或结构顺序不一致。')
+      const inputIds = new Set(documentTextFieldParagraphs({ blocks: documentTableCellBlocks(owner.cell) }).map(paragraph => paragraph.block.id))
+      const inputs = paragraphs.filter(paragraph => inputIds.has(paragraph.block.id)), first = inputs[0], last = inputs.at(-1)
+      const value = recorded.value.replace(/\r\n?/g, '\n'), outputs = documentTextFieldParagraphs({ blocks: documentTableCellBlocks(target.cell) })
+      if (outputs.map(paragraph => paragraph.text).join('\n') !== value || outputs.length !== value.split('\n').length) throw new RangeError('绑定源单元格的实际值与候选内容不一致。')
+      const following = paragraphs[origin.paragraphIndex], previous = paragraphs.at(-1), start = first?.absoluteStart ?? following?.absoluteStart ?? previous?.absoluteEnd ?? 0
+      const end = last?.absoluteEnd ?? start, text = first && last ? value : following ? value + '\n' : previous ? '\n' + value
+        : value + (recorded.order === lastEmptyOrder ? '' : '\n')
+      if (edit.startOffset !== start || edit.endOffset !== end || normalized !== text) throw new RangeError('绑定源单元格的文字坐标或分隔符计划不一致。')
+      cell = { tableId: recorded.tableId, cellId: recorded.cellId, order: recorded.order, value, blockIds: inputIds }
+    }
+    return { start: edit.startOffset, end: edit.endOffset, text: normalized, source, destination, ...(cell ? { cell } : {}) }
+  }).sort((left, right) => right.start - left.start || right.end - left.end || (right.cell?.order ?? -1) - (left.cell?.order ?? -1))
+  let expected = source, following: OriginTextEdit | undefined
   for (const edit of edits) {
-    if (edit.end > followingStart || edit.start === followingStart) throw new RangeError('绑定源编辑范围重叠。')
+    if (following && (edit.end > following.start || edit.start === following.start && (edit.start !== edit.end
+      || !edit.cell || !following.cell || edit.cell.order >= following.cell.order
+      || edit.cell.tableId === following.cell.tableId && edit.cell.cellId === following.cell.cellId))) throw new RangeError('绑定源编辑范围重叠。')
     expected = expected.slice(0, edit.start) + edit.text + expected.slice(edit.end)
-    followingStart = edit.start
+    following = edit
   }
   if (expected !== destination) throw new RangeError('绑定源编辑计划与实际候选文字不一致。')
   return edits
@@ -152,13 +204,23 @@ function removedSourceValue(before: DocumentModel, after: DocumentModel, control
   const active = inActiveChain(before, control, options.activeControlId)
   if (!active && !options.originTextEdits) return undefined
   const edits = originEdits()
-  const paragraph = documentTextFieldParagraphs(scopedModel(before, options.host)).find(paragraph => paragraph.block.id === control.blockId)
+  const cell = edits?.find(edit => edit.cell?.blockIds.has(control.blockId))?.cell
+  if (cell) {
+    const value = removedInputScalar(control, cell.value)
+    return !control.showingPlaceholder && documentContentControlBindingValue(before, control) === value ? undefined : value
+  }
+  const sourceModel = scopedModel(before, options.host), paragraphs = documentTextFieldParagraphs(sourceModel)
+  const paragraph = paragraphs.find(paragraph => paragraph.block.id === control.blockId)
   if (!paragraph) {
     if (active) throw new RangeError('已卸壳绑定控件的源内容区不存在：' + control.id)
     return undefined
   }
   if (!edits) throw new RangeError('无法保留已卸壳绑定控件的实际输入值：' + control.id)
-  let start = paragraph.absoluteStart + control.startOffset, end = paragraph.absoluteStart + control.endOffset, changed = false
+  const blockTargets = control.blockRange ? documentContentControlBlockTextTargets(sourceModel, control.blockRange) : []
+  const first = blockTargets.length ? paragraphs.find(paragraph => paragraph.block.id === (blockTargets[0]!.cellBlockId ?? blockTargets[0]!.blockId)) : undefined
+  const last = blockTargets.length ? paragraphs.find(paragraph => paragraph.block.id === (blockTargets.at(-1)!.cellBlockId ?? blockTargets.at(-1)!.blockId)) : undefined
+  let start = first?.absoluteStart ?? paragraph.absoluteStart + control.startOffset
+  let end = last?.absoluteEnd ?? paragraph.absoluteStart + control.endOffset, changed = false
   for (const edit of edits) {
     const insertion = edit.start === edit.end, delta = edit.text.length - (edit.end - edit.start)
     const insideInsertion = insertion && (edit.start > start && edit.start < end
@@ -181,7 +243,11 @@ function removedSourceValue(before: DocumentModel, after: DocumentModel, control
   if (!isDocumentTextBoundary(destination, start) || !isDocumentTextBoundary(destination, end)) {
     throw new RangeError('已卸壳绑定控件无法映射到候选文字：' + control.id)
   }
-  const text = destination.slice(start, end)
+  return removedInputScalar(control, destination.slice(start, end))
+}
+
+/** The originating planner supplies actual input, independent of structural paragraph delimiters. */
+function removedInputScalar(control: DocumentContentControl, text: string): string {
   if (control.type === 'text' && control.multiLine !== true && /[\r\n]/.test(text)) throw new RangeError('此纯文本控件未启用多行输入：' + control.id)
   if (control.type === 'comboBox' && /[\r\n]/.test(text)) throw new RangeError('组合框内容不能包含段落换行：' + control.id)
   if (control.type === 'checkbox') {
@@ -197,17 +263,24 @@ function removedSourceValue(before: DocumentModel, after: DocumentModel, control
   return text
 }
 
-interface BindingSource { control: DocumentContentControl; key: string; value: string }
+/** Detached source snapshots for the originating candidate; collecting never publishes changes. */
+export interface DocumentContentControlBindingSource {
+  readonly control: DocumentContentControl
+  readonly key: string
+  readonly value: string
+}
 interface BindingGroup { value: string; sourceIds: Set<string> }
 
-function bindingSources(before: DocumentModel, after: DocumentModel, options: DocumentContentControlBindingOptions): BindingSource[] {
+export function documentContentControlBindingSources(before: DocumentModel, after: DocumentModel,
+  options: DocumentContentControlBindingOptions = {}): readonly DocumentContentControlBindingSource[] {
   const next = new Map((after.contentControls ?? []).map(control => [control.id, control]))
-  const result: BindingSource[] = []
+  const result: DocumentContentControlBindingSource[] = []
   let preparedEdits: OriginTextEdit[] | undefined, originPrepared = false
   const originEdits = () => {
     if (!originPrepared) { preparedEdits = plannedOriginTextEdits(before, after, options); originPrepared = true }
     return preparedEdits
   }
+  if (options.originTextEdits) originEdits()
   for (const control of before.contentControls ?? []) {
     const key = documentContentControlBindingKey(control)
     if (!key || !scalarTypes.has(control.type) || control.metadata?.officeStoryLockSource) continue
@@ -217,7 +290,7 @@ function bindingSources(before: DocumentModel, after: DocumentModel, options: Do
     const value = current ? documentContentControlBindingValue(after, current)
       : control.temporary ? removedSourceValue(before, after, control, options, originEdits) : undefined
     if (value === undefined || current && oldValue === value && control.showingPlaceholder === current.showingPlaceholder) continue
-    result.push({ control: current ?? control, key, value })
+    result.push({ control: cloneModel(current ?? control), key, value })
   }
   return result
 }
@@ -248,6 +321,17 @@ export function mapDocumentContentControlBindingSelection(selection: DocumentSel
   host?: DocumentAuxiliaryBlockHost): DocumentSelection {
   const result = cloneDocumentSelection(selection)
   if (!sameDocumentBlockHost(host, edit.host)) return result
+  if (edit.blockRangeEdit) {
+    const structure = edit.blockRangeEdit, owned = new Set(structure.sourceBlockIds)
+    const map = (point: DocumentPoint): DocumentPoint => {
+      if (!owned.has(point.cellBlockId ?? point.blockId)) return point
+      const start = structure.sourceSelection.anchor
+      const destination = sameTarget(point, start) && point.offset <= start.offset ? structure.selection.anchor : structure.selection.focus
+      return { ...destination }
+    }
+    if (result.tableSelection && owned.has(result.tableSelection.tableId)) delete result.tableSelection
+    return { ...result, anchor: map(result.anchor), focus: map(result.focus) }
+  }
   const map = (point: DocumentPoint): DocumentPoint => {
     if ((point.cellBlockId ?? point.blockId) !== edit.blockId) return point
     const offset = point.offset, delta = edit.text.length - (edit.endOffset - edit.startOffset)
@@ -260,6 +344,15 @@ export function mapDocumentContentControlBindingSelection(selection: DocumentSel
 
 function scalarTextEdit(before: DocumentModel, after: DocumentModel, control: DocumentContentControl): DocumentContentControlBindingTextEdit | undefined {
   const host = hostForControl(before, control), source = scopedModel(before, host), destination = scopedModel(after, host)
+  if (control.blockRange) {
+    const replacement = documentContentControlBlocksValueMutationRange(source, destination, control.id)
+    if (!replacement) throw new RangeError('绑定控件完整块替换后的逻辑范围不存在：' + control.id)
+    const text = documentContentControlBlockTextTargets(destination, { blockIds: replacement.blockIds }).map(target => runText(runsForTarget(destination, target))).join('\n')
+    if (text === contentControlText(source, control) && JSON.stringify(replacement.blockIds) === JSON.stringify(control.blockRange.blockIds)) return undefined
+    return { controlId: control.id, blockId: control.blockId, startOffset: control.startOffset, endOffset: control.endOffset, text,
+      blockRangeEdit: { sourceBlockIds: [...documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(source, control.blockRange))],
+        sourceSelection: documentContentControlBlocksSelection(source, control.blockRange), selection: replacement.selection }, ...(host ? { host: { ...host } } : {}) }
+  }
   const from = documentTextFieldParagraphs(source).find(paragraph => paragraph.block.id === control.blockId)
   const to = documentTextFieldParagraphs(destination).find(paragraph => paragraph.block.id === control.blockId)
   if (!from || !to) throw new RangeError('绑定控件修改后的文字宿主不存在：' + control.id)
@@ -274,75 +367,119 @@ function scalarTextEdit(before: DocumentModel, after: DocumentModel, control: Do
 
 function assertControlPermission(model: DocumentModel, control: DocumentContentControl, context?: DocumentPermissionContext): void {
   assertDocumentContentControlValueEditable(model, control.id)
-  if (context) assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForBlock(model, control.blockId))
+  if (context) assertDocumentPermission(model.permissionRules ?? [], context, 'edit', documentContentControlPermissionTargets(scopedModel(model, hostForControl(model, control)), control, model))
 }
 
 /**
- * Compose scalar peers into a caller-owned originating candidate. XML/XPath evaluation and
- * custom-XML part writes are separate IO responsibilities; dirty/cachedResult are not an XML write.
+ * Compose scalar peers and custom-XML writes into a caller-owned originating candidate.
+ * The platform session owns detached XML handles; legacy snapshots retain raw-key peer matching.
  */
 export function synchronizeDocumentContentControlBindings(before: DocumentModel, draft: DocumentModel,
   options: DocumentContentControlBindingOptions = {}): DocumentContentControlBindingResult {
   const result: DocumentContentControlBindingResult = { changedControlIds: [], textEdits: [],
     ...(options.selection ? { selection: cloneDocumentSelection(options.selection) } : {}) }
-  const sources = bindingSources(before, draft, options)
-  if (!sources.length) return result
+  const sources = options.refreshCustomXml ? [] : documentContentControlBindingSources(before, draft, options)
+  if (!sources.length && !options.refreshCustomXml) return result
   const candidate = cloneModel(draft), groups = new Map<string, BindingGroup>()
-  const addSources = (changes: BindingSource[], initial = false) => {
+  const session = createDocumentCustomXmlBindingSession(candidate)
+  const pending: string[] = [], queued = new Set<string>()
+  let xmlBindings = new Map<string, DocumentCustomXmlControlBinding>()
+  const enqueue = (key: string) => { if (!queued.has(key)) { queued.add(key); pending.push(key) } }
+  const addSources = (changes: readonly DocumentContentControlBindingSource[], initial = false) => {
     for (const source of changes) {
       const group = groups.get(source.key)
-      if (group && group.value !== source.value && (initial || !equivalentScalar(source.control, source.value, group.value))) {
+      if (!session && group && group.value !== source.value && (initial || !equivalentScalar(source.control, source.value, group.value))) {
         throw new RangeError('同一编辑事务产生了冲突的绑定标量：' + source.control.id)
       }
-      if (group) group.sourceIds.add(source.control.id)
+      if (group) { group.sourceIds.add(source.control.id); if (session) group.value = source.value }
       else groups.set(source.key, { value: source.value, sourceIds: new Set([source.control.id]) })
+      enqueue(source.key)
     }
   }
-  addSources(sources, true)
-  const updated = new Set<string>()
-  for (const [key, group] of groups) {
-    const ids = (candidate.contentControls ?? []).filter(control => documentContentControlBindingKey(control) === key && scalarTypes.has(control.type)
-      && !control.metadata?.officeStoryLockSource).map(control => control.id)
-    for (const id of ids) {
-      const control = candidate.contentControls?.find(control => control.id === id)
-      if (!control || group.sourceIds.has(id) || !peerNeedsUpdate(candidate, control, group.value)) continue
-      if (updated.has(id)) throw new RangeError('绑定同步重复改变同一个内容控件：' + id)
-      assertControlPermission(candidate, control, options.permissionContext)
-      const stepBefore = cloneModel(candidate), previous = cloneModel(control)
-      setBindingScalar(candidate, control, group.value)
-      const edit = scalarTextEdit(stepBefore, candidate, previous)
-      if (edit) {
-        result.textEdits.push(edit)
-        if (result.selection) result.selection = mapDocumentContentControlBindingSelection(result.selection, edit, options.host ?? documentEditingBlockHost(draft))
+  const addXmlBindings = (values: readonly DocumentCustomXmlControlBinding[]) => {
+    xmlBindings = new Map(values.map(binding => [binding.controlId, binding]))
+    for (const binding of values) {
+      const group = groups.get(binding.key)
+      if (group) group.value = binding.value
+      else groups.set(binding.key, { value: binding.value, sourceIds: new Set() })
+      enqueue(binding.key)
+    }
+  }
+  try {
+    if (options.refreshCustomXml) { if (session) addXmlBindings(session.refresh()) }
+    else {
+      addSources(session ? session.applySources(sources) : sources, true)
+      if (session) addXmlBindings(session.bindings())
+    }
+    const updated = new Set<string>()
+    for (let cursor = 0; cursor < pending.length; cursor++) {
+      const key = pending[cursor]!, group = groups.get(key)!
+      queued.delete(key)
+      const ids = session ? [...xmlBindings.values()].filter(binding => binding.key === key).map(binding => binding.controlId)
+        : (candidate.contentControls ?? []).filter(control => documentContentControlBindingKey(control) === key && scalarTypes.has(control.type)
+          && !control.metadata?.officeStoryLockSource).map(control => control.id)
+      for (const id of ids) {
+        const control = candidate.contentControls?.find(control => control.id === id)
+        if (!control || (session ? xmlBindings.get(id)?.key !== key : group.sourceIds.has(id)) || !peerNeedsUpdate(candidate, control, group.value)) continue
+        if (updated.has(id)) throw new RangeError('绑定同步重复改变同一个内容控件：' + id)
+        assertControlPermission(candidate, control, options.permissionContext)
+        const stepBefore = cloneModel(candidate), previous = cloneModel(control), value = group.value
+        setBindingScalar(candidate, control, value)
+        const edit = scalarTextEdit(stepBefore, candidate, previous)
+        if (edit) {
+          result.textEdits.push(edit)
+          if (result.selection) result.selection = mapDocumentContentControlBindingSelection(result.selection, edit, options.host ?? documentEditingBlockHost(draft))
+        }
+        updated.add(id); result.changedControlIds.push(id)
+        const target = candidate.contentControls?.find(control => control.id === id)
+        if (!session && target?.dataBinding) target.dataBinding = { ...target.dataBinding, cachedResult: value, dirty: true }
+        const host = hostForControl(stepBefore, previous), source = scopedModel(stepBefore, host)
+        const targetPoint = textTargets(source).find(point => (point.cellBlockId ?? point.blockId) === previous.blockId)
+        const sourceSelection = previous.blockRange ? documentContentControlBlocksSelection(source, previous.blockRange)
+          : targetPoint ? { anchor: { ...targetPoint, offset: previous.startOffset }, focus: { ...targetPoint, offset: previous.endOffset } } : undefined
+        const destinationPoint = edit?.blockRangeEdit?.selection.focus
+        const selection = destinationPoint ? { anchor: { ...destinationPoint }, focus: { ...destinationPoint } }
+          : targetPoint ? { anchor: { ...targetPoint, offset: previous.startOffset + (edit?.text.length ?? previous.endOffset - previous.startOffset) },
+            focus: { ...targetPoint, offset: previous.startOffset + (edit?.text.length ?? previous.endOffset - previous.startOffset) } } : undefined
+        let cascades = documentContentControlBindingSources(stepBefore, candidate, { sourceControlId: id, sourceValue: value, activeControlId: id, host,
+          ...(sourceSelection && selection ? { sourceSelection, selection } : {}) })
+        // This peer already reflects its XML node. Only other changed controls may write a cascade.
+        // In particular, a source value predicate can now select another node without rewriting it.
+        if (session) cascades = cascades.filter(source => source.control.id !== id)
+        addSources(session ? session.applySources(cascades) : cascades)
+        if (session) addXmlBindings(session.bindings())
       }
-      updated.add(id); result.changedControlIds.push(id)
-      const target = candidate.contentControls?.find(control => control.id === id)
-      if (target?.dataBinding) target.dataBinding = { ...target.dataBinding, cachedResult: group.value, dirty: true }
-      const host = hostForControl(stepBefore, previous), source = scopedModel(stepBefore, host)
-      const targetPoint = textTargets(source).find(point => (point.cellBlockId ?? point.blockId) === previous.blockId)
-      addSources(bindingSources(stepBefore, candidate, { sourceControlId: id, sourceValue: group.value, activeControlId: id, host,
-        ...(targetPoint ? { sourceSelection: { anchor: { ...targetPoint, offset: previous.startOffset }, focus: { ...targetPoint, offset: previous.endOffset } },
-          selection: { anchor: { ...targetPoint, offset: previous.startOffset + (edit?.text.length ?? previous.endOffset - previous.startOffset) },
-            focus: { ...targetPoint, offset: previous.startOffset + (edit?.text.length ?? previous.endOffset - previous.startOffset) } } } : {}) }))
     }
-  }
-  for (const source of sources) {
-    if (options.permissionContext) assertDocumentPermission(before.permissionRules ?? [], options.permissionContext, 'edit', permissionTargetsForBlock(before, source.control.blockId))
-  }
-  for (const group of groups.values()) for (const id of group.sourceIds) {
-    const control = candidate.contentControls?.find(control => control.id === id)
-    if (control?.dataBinding) control.dataBinding = { ...control.dataBinding, cachedResult: group.value, dirty: true }
-  }
-  if (result.selection) {
-    const scoped = scopedModel(candidate, options.host ?? documentEditingBlockHost(candidate))
-    for (const point of [result.selection.anchor, result.selection.focus]) {
-      const target = textTargets(scoped).find(target => sameTarget(target, point))
-      if (!target || !isDocumentTextBoundary(runText(runsForTarget(scoped, target)), point.offset)) throw new RangeError('绑定同步后的选区不再是有效的文字位置。')
+    for (const source of sources) {
+      const original = before.contentControls?.find(control => control.id === source.control.id) ?? source.control
+      if (options.permissionContext) assertDocumentPermission(before.permissionRules ?? [], options.permissionContext, 'edit', documentContentControlPermissionTargets(scopedModel(before, hostForControl(before, original)), original, before))
     }
+    if (session) {
+      // Session publication also updates caches of unchanged XML peers; those metadata writes
+      // must obey the same document/paragraph/story permissions as visible scalar updates.
+      for (const binding of session.bindings()) {
+        const control = candidate.contentControls?.find(control => control.id === binding.controlId)
+        if (control?.dataBinding && (control.dataBinding.cachedResult !== binding.value || control.dataBinding.dirty !== false)
+          && options.permissionContext) assertDocumentPermission(before.permissionRules ?? [], options.permissionContext, 'edit', documentContentControlPermissionTargets(scopedModel(candidate, hostForControl(candidate, control)), control, candidate))
+      }
+    } else for (const group of groups.values()) for (const id of group.sourceIds) {
+      const control = candidate.contentControls?.find(control => control.id === id)
+      if (control?.dataBinding) control.dataBinding = { ...control.dataBinding, cachedResult: group.value, dirty: true }
+    }
+    if (result.selection) {
+      const scoped = scopedModel(candidate, options.host ?? documentEditingBlockHost(candidate))
+      for (const point of [result.selection.anchor, result.selection.focus]) {
+        const target = textTargets(scoped).find(target => sameTarget(target, point))
+        if (!target || !isDocumentTextBoundary(runText(runsForTarget(scoped, target)), point.offset)) throw new RangeError('绑定同步后的选区不再是有效的文字位置。')
+      }
+    }
+    candidate.wordCount = textTargets(candidate).reduce((count, target) => count + runText(runsForTarget(candidate, target)).replace(/\s/g, '').length, 0)
+    session?.commit()
+    Object.assign(draft, candidate)
+    return result
+  } finally {
+    session?.dispose()
   }
-  candidate.wordCount = textTargets(candidate).reduce((count, target) => count + runText(runsForTarget(candidate, target)).replace(/\s/g, '').length, 0)
-  Object.assign(draft, candidate)
-  return result
 }
 
 function scalarDisplay(control: DocumentContentControl, value: string, peer: boolean): string {
@@ -353,9 +490,9 @@ function scalarDisplay(control: DocumentContentControl, value: string, peer: boo
   return value.replace(/\r\n?/g, '\n')
 }
 
-/** Verify and map an explicit temporary value edit, including disjoint same-paragraph peers. */
+/** Verify an explicit temporary value edit using actual surviving peer ranges, including XML aliases. */
 export function documentContentControlTemporaryBindingCaret(before: DocumentModel, after: DocumentModel,
-  controlId: string, value: string, host?: DocumentAuxiliaryBlockHost): DocumentSelection | undefined {
+  controlId: string, value: string, host?: DocumentAuxiliaryBlockHost, sourceText?: string): DocumentSelection | undefined {
   const source = scopedModel(before, host), destination = scopedModel(after, host)
   const control = source.contentControls?.find(control => control.id === controlId), key = control && documentContentControlBindingKey(control)
   if (!control || !key || !control.temporary || destination.contentControls?.some(candidate => candidate.id === controlId)) return undefined
@@ -363,24 +500,53 @@ export function documentContentControlTemporaryBindingCaret(before: DocumentMode
   const to = documentTextFieldParagraphs(destination).find(paragraph => paragraph.block.id === control.blockId)
   const target = textTargets(destination).find(target => (target.cellBlockId ?? target.blockId) === control.blockId)
   if (!from || !to || !target) return undefined
+  const retained = new Map((destination.contentControls ?? []).map(peer => [peer.id, peer]))
   const edits: DocumentContentControlBindingTextEdit[] = []
+  const observed: { edit: DocumentContentControlBindingTextEdit; control: DocumentContentControl }[] = []
   for (const peer of source.contentControls ?? []) {
-    if (peer.blockId !== control.blockId || documentContentControlBindingKey(peer) !== key || !scalarTypes.has(peer.type)) continue
-    if (peer.id !== controlId && !peerNeedsUpdate(source, peer, value)) continue
-    const text = scalarDisplay(peer, value, peer.id !== controlId)
-    if (!isDocumentTextBoundary(from.text, peer.startOffset) || !isDocumentTextBoundary(from.text, peer.endOffset)) return undefined
+    const peerKey = documentContentControlBindingKey(peer), current = retained.get(peer.id)
+    if (peer.blockId !== control.blockId || !peerKey || !scalarTypes.has(peer.type) || peer.metadata?.officeStoryLockSource) continue
+    if (peer.startOffset > peer.endOffset || !isDocumentTextBoundary(from.text, peer.startOffset)
+      || !isDocumentTextBoundary(from.text, peer.endOffset)) return undefined
+    let text: string
+    if (peer.id === controlId) text = sourceText ?? scalarDisplay(peer, value, false)
+    else if (current) {
+      if (current.type !== peer.type || current.blockId !== peer.blockId || documentContentControlBindingKey(current) !== peerKey
+        || current.startOffset > current.endOffset || !isDocumentTextBoundary(to.text, current.startOffset)
+        || !isDocumentTextBoundary(to.text, current.endOffset)) return undefined
+      // Use the committed display, not the source scalar: a predicate may now select
+      // another XML node, or an independent binding in the touched store may refresh.
+      text = to.text.slice(current.startOffset, current.endOffset)
+      if (text === from.text.slice(peer.startOffset, peer.endOffset)) continue
+    } else {
+      // A removed peer has no final anchor. Only the existing raw-key contract
+      // supplies its scalar; other removed aliases still require an exact edit trace.
+      if (!peer.temporary || peerKey !== key || !peerNeedsUpdate(source, peer, value)) continue
+      text = scalarDisplay(peer, value, true)
+    }
     const duplicate = edits.find(edit => edit.startOffset === peer.startOffset && edit.endOffset === peer.endOffset)
-    if (duplicate) { if (duplicate.text !== text) return undefined; continue }
+    if (duplicate) {
+      if (duplicate.text !== text) return undefined
+      if (current) observed.push({ edit: duplicate, control: current })
+      continue
+    }
     if (edits.some(edit => edit.startOffset < peer.endOffset && peer.startOffset < edit.endOffset)) return undefined
-    edits.push({ controlId: peer.id, blockId: control.blockId, startOffset: peer.startOffset, endOffset: peer.endOffset, text })
+    const edit = { controlId: peer.id, blockId: control.blockId, startOffset: peer.startOffset, endOffset: peer.endOffset, text }
+    edits.push(edit)
+    if (current) observed.push({ edit, control: current })
   }
   const primary = edits.find(edit => edit.controlId === controlId) ?? edits.find(edit => edit.startOffset === control.startOffset && edit.endOffset === control.endOffset)
   if (!primary) return undefined
   let expected = from.text, offset = control.startOffset + primary.text.length
-  for (const edit of [...edits].sort((left, right) => right.startOffset - left.startOffset)) {
+  for (const edit of [...edits].sort((left, right) => right.startOffset - left.startOffset || right.endOffset - left.endOffset)) {
     expected = expected.slice(0, edit.startOffset) + edit.text + expected.slice(edit.endOffset)
     if (edit !== primary && edit.endOffset <= control.startOffset) offset += edit.text.length - (edit.endOffset - edit.startOffset)
   }
   if (expected !== to.text || !isDocumentTextBoundary(to.text, offset)) return undefined
+  for (const { edit, control: current } of observed) {
+    const start = edits.reduce((at, other) => other !== edit && other.endOffset <= edit.startOffset
+      ? at + other.text.length - (other.endOffset - other.startOffset) : at, edit.startOffset)
+    if (current.startOffset !== start || current.endOffset !== start + edit.text.length) return undefined
+  }
   return { anchor: { ...target, offset }, focus: { ...target, offset } }
 }

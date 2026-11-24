@@ -1,10 +1,12 @@
-import type { ChartAxisOptions, ChartColor, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSeriesFillPattern } from '../../domain/model'
+import type { ChartAxisOptions, ChartColor, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartPointShape, ChartSeriesFillPattern } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
 import { chartColorChannels, chartColorRepresentative, normalizeChartColor } from './chart-color'
 import { chartInterpolate, chartLinearRatio, finiteChartValue } from './chart-math'
 import { appendChartFillPattern } from './chart-fill-pattern-geometry'
 import type { ChartAutomaticGradient } from './chart-auto-gradient'
 import { appendChartGradient, appendChartGradientLine } from './chart-gradient-geometry'
+import { chartLabelContentValues } from './chart-labels'
+import { chartMarkerPoints, chartMarkerShape } from './chart-markers'
 
 export interface ChartVector { x: number; y: number }
 export interface ChartVector3 extends ChartVector { z: number }
@@ -50,14 +52,17 @@ export function formatChartNumber(value: number, format?: string): string {
   return `${prefix}${currency}${prefix ? numeric.replace(/^-/, '') : numeric}${percent ? '%' : ''}${suffix}`
 }
 
-export function chartLabelText(label: ChartLabelOptions | undefined, value: number, category: string, series: string, percentage?: number): string {
-  switch (label?.contentType) {
-    case 'category': return category
-    case 'series': return series
-    case 'percentage': return label.format?.includes('%') ? formatChartNumber((percentage ?? 0) / 100, label.format)
-      : `${formatChartNumber(percentage ?? 0, label.format)}%`
-    default: return formatChartNumber(value, label?.format)
+export function chartLabelText(label: ChartLabelOptions | undefined, value: number, category: string, series: string, percentage?: number, bubbleSize?: number): string {
+  const parts: string[] = []
+  for (const content of chartLabelContentValues(label?.contentType)) {
+    if (content === 'series') parts.push(series)
+    else if (content === 'category') parts.push(category)
+    else if (content === 'value') parts.push(formatChartNumber(value, label?.format))
+    else if (content === 'percentage') parts.push(label?.format?.includes('%') ? formatChartNumber((percentage ?? 0) / 100, label.format)
+      : `${formatChartNumber(percentage ?? 0, label?.format)}%`)
+    else if (bubbleSize !== undefined) parts.push(formatChartNumber(bubbleSize, label?.format))
   }
+  return parts.join(',')
 }
 
 export function chartAxisExtent(values: Iterable<number>, axis: ChartAxisOptions): { min: number; max: number } {
@@ -115,7 +120,29 @@ export function chartAxisRatio(value: number, min: number, max: number, axis: Ch
   return axis.reverse ? 1 - ratio : ratio
 }
 
+export const CHART_NUMERIC_TICK_LIMIT = 3000
+
 export function chartAxisTicks(min: number, max: number, axis: ChartAxisOptions): number[] {
+  if (axis.majorUnit !== undefined) {
+    const interval = finiteChartValue(axis.majorUnit, '主刻度间隔')
+    if (interval <= 0) throw new RangeError('主刻度间隔须为正数。')
+    const logarithmic = axis.scaleType === 'log', base = axis.logBase ?? 10
+    const lower = logarithmic ? Math.log(min) / Math.log(base) : min
+    const upper = logarithmic ? Math.log(max) / Math.log(base) : max
+    const count = Math.floor((upper - lower) / interval)
+    // Tick density is a rendering concern. Keep authoring intact and sample
+    // every n-th exact interval when drawing a physically dense scale.
+    if (!Number.isFinite(count)) return [min, max]
+    const stride = Math.max(1, Math.ceil((count + 1) / (CHART_NUMERIC_TICK_LIMIT - 2)))
+    const ticks: number[] = [min]
+    for (let index = stride; index <= count; index += stride) {
+      const raw = logarithmic ? Math.pow(base, lower + index * interval) : min + index * interval
+      const value = Number.isFinite(raw) ? Number(raw.toPrecision(15)) : raw
+      if (Number.isFinite(value) && value > ticks.at(-1)! && value < max) ticks.push(value)
+    }
+    if (max > ticks.at(-1)!) ticks.push(max)
+    return ticks
+  }
   return Array.from({ length: 5 }, (_unused, index) => index === 0 ? min : index === 4 ? max : axis.scaleType === 'log'
     ? Math.exp(Math.log(min) + (Math.log(max) - Math.log(min)) * index / 4)
     : chartInterpolate(min, max, index / 4))
@@ -214,16 +241,13 @@ export function chartBezier(start: ChartVector, first: ChartVector, second: Char
   })
 }
 
-export function chartSymbol(commands: DrawCommand[], point: ChartVector, size: number, color: string, shape = 'rect', border?: ChartPaintLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
-  if (shape === 'none' || size <= 0) return
-  const radius = size / 2
-  if (shape === 'circle') return chartCircle(commands, point, radius, color, border, clip, pattern, gradient)
-  if (shape === 'diamond' || shape === 'triangle') {
-    const points = shape === 'diamond' ? [{ x: point.x, y: point.y - radius }, { x: point.x + radius, y: point.y }, { x: point.x, y: point.y + radius }, { x: point.x - radius, y: point.y }]
-      : [{ x: point.x, y: point.y - radius }, { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }]
-    chartPolygon(commands, points, color, border, clip, pattern, gradient); return
-  }
-  if (pattern || gradient) return chartPolygon(commands, [{ x: point.x - radius, y: point.y - radius }, { x: point.x + radius, y: point.y - radius },
-    { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }], color, border, clip, pattern, gradient)
-  chartRect(commands, { x: point.x - radius, y: point.y - radius, width: size, height: size }, color, border, clip)
+export function chartSymbol(commands: DrawCommand[], point: ChartVector, size: number, color: string, shape: ChartPointShape = 'rect', border?: ChartPaintLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
+  const marker = chartMarkerShape(shape), points = chartMarkerPoints(point, size, shape)
+  if (!points.length) return
+  if (marker.hollow) {
+    const outline = { color, width: 1, ...border }
+    points.forEach((current, index) => chartLine(commands, current, points[(index + 1) % points.length]!, outline, color, clip))
+  } else if (marker.base === 'rect') {
+    chartRect(commands, { x: point.x - size / 2, y: point.y - size / 2, width: size, height: size }, color, border, clip, pattern, gradient)
+  } else chartPolygon(commands, points, color, border, clip, pattern, gradient)
 }

@@ -7,9 +7,31 @@ import { chartSeriesStyle } from './chart-options'
 
 export type ChartBoxplotDistribution = NonNullable<ChartDerivedData['boxes']>[number]
 
-/** Each raw numeric field owns one distribution, even when its header or output order changes. */
-export function chartBoxplotStyle(chart: ChartModel, box: ChartBoxplotDistribution, categoryIndex: number, palette: readonly string[]): ChartSeriesOptions {
-  return chartPointStyle(chartSeriesStyle(chart, box.field, box.seriesPosition, palette, box.sourceName), categoryIndex, chart.type)
+/** Each raw numeric field owns one distribution. Sample dataPoints never style its summary. */
+export function chartBoxplotStyle(chart: ChartModel, box: ChartBoxplotDistribution, _categoryIndex: number, palette: readonly string[]): ChartSeriesOptions {
+  return chartSeriesStyle(chart, box.field, box.seriesPosition, palette, box.sourceName)
+}
+
+export interface ChartBoxplotOutlier { value: number; sourceIndex: number; outlierIndex: number }
+
+/** Statistics already own the sort and sample identities; rendering only zips them. */
+export function* chartBoxplotOutliers(box: ChartBoxplotDistribution): IterableIterator<ChartBoxplotOutlier> {
+  const statistics = box.statistics
+  if (!statistics) return
+  if (!Array.isArray(statistics.outlierSourceIndices) || statistics.outlierSourceIndices.length !== statistics.outliers.length) {
+    throw new RangeError('箱线图异常点与原始样本索引不匹配。')
+  }
+  for (let outlierIndex = 0; outlierIndex < statistics.outliers.length; outlierIndex++) {
+    const sourceIndex = statistics.outlierSourceIndices[outlierIndex]!
+    if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) throw new RangeError('箱线图异常点需要有效的原始样本索引。')
+    yield { value: statistics.outliers[outlierIndex]!, sourceIndex, outlierIndex }
+  }
+}
+
+/** Resolve the distribution once and share its inherited point dictionary across outliers. */
+export function chartBoxplotOutlierStyle(distributionStyle: ChartSeriesOptions, sourceIndex: number): ChartSeriesOptions {
+  if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) throw new RangeError('箱线图异常点需要有效的原始样本索引。')
+  return chartPointStyle(distributionStyle, sourceIndex, 'boxplot')
 }
 
 export function chartBoxplotAxis(chart: ChartModel, style: ChartSeriesOptions): ChartAxisOptions {

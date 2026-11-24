@@ -21,6 +21,7 @@ function numericValue(control: ChartSettingControl): number | undefined {
   return control.read(props.config) ?? (control.kind === 'number' ? control.fallback : undefined)
 }
 function textValue(control: ChartSettingControl): string | undefined { return control.kind === 'text' || control.kind === 'color' || control.kind === 'select' ? control.read(props.config) : undefined }
+function selectionValue(control: ChartSettingControl): string[] { return control.kind === 'multiselect' ? control.read(props.config) ?? control.fallback ?? [] : [] }
 function fieldList(control: ChartSettingControl): number[] { return control.kind === 'fields' || control.kind === 'points' ? control.read(props.config) ?? [] : [] }
 function setValue(control: ChartSettingControl, value: unknown): void {
   error.value = ''
@@ -31,6 +32,9 @@ function setValue(control: ChartSettingControl, value: unknown): void {
       const parsed = value === null || value === undefined || value === '' ? undefined : typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
       if (parsed !== undefined && !Number.isFinite(parsed)) { error.value = '请输入有限数值。'; return }
       control.write(config, parsed)
+    } else if (control.kind === 'multiselect') {
+      if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) { error.value = '请选择有效的图表选项。'; return }
+      control.write(config, value)
     } else if (control.kind === 'fields' || control.kind === 'points') {
       const entries: unknown[] = Array.isArray(value) ? value : [], values: number[] = []
       for (const entry of entries) {
@@ -68,11 +72,12 @@ function resetValue(control: ChartSettingControl): void {
   <div class="chart-option-fields">
     <FormItem v-for="control in visibleControls" :key="control.key" :label="control.label" :extra="control.extra" :class="{ 'chart-option-color-field': control.kind === 'chart-color' }">
       <Switch v-if="control.kind === 'switch'" :checked="control.read(config) ?? control.fallback ?? false" :aria-label="control.label" :disabled="disabled" @update:checked="setValue(control, $event)" />
-      <InputNumber v-else-if="control.kind === 'number'" :value="numericValue(control)" :min="control.min" :max="control.max" :step="control.step ?? (control.max === 1 ? 0.05 : 1)" :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
+      <InputNumber v-else-if="control.kind === 'number'" :value="numericValue(control)" :min="control.min" :max="control.max" :step="control.step ?? (control.max === 1 ? 0.05 : 1)" :precision="control.precision" :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <ColorPicker v-else-if="control.kind === 'color'" :value="textValue(control)" format="hex" value-format="rgb" allow-clear show-text :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" @clear="setValue(control, undefined)" />
       <ChartColorInput v-else-if="control.kind === 'chart-color'" :value="control.read(config)" :fallback="control.fallback?.(config)" :label="control.label" :gradient-allowed="supportsChartExplicitGradient(config.type, control.target)" :disabled="disabled" @update:value="setValue(control, $event)" />
       <Input v-else-if="control.kind === 'text'" :value="textValue(control)" allow-clear :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <Select v-else-if="control.kind === 'select'" :value="textValue(control) ?? control.fallback" :options="control.choices" allow-clear :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
+      <Select v-else-if="control.kind === 'multiselect'" :value="selectionValue(control)" :options="control.choices" mode="multiple" allow-clear :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <Select v-else-if="control.kind === 'field' && choices(control).length" :value="numericValue(control)" :options="choices(control)" allow-clear show-search :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <InputNumber v-else-if="control.kind === 'field'" :value="numericValue(control) === undefined ? undefined : numericValue(control)! + 1" :min="1" :max="fieldCount" :precision="0" :aria-label="control.label" placeholder="字段序号，从 1 开始" :disabled="disabled" @update:value="setIndex(control, $event)" />
       <Select v-else-if="choices(control).length" :value="fieldList(control)" :options="choices(control)" mode="multiple" show-search :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />

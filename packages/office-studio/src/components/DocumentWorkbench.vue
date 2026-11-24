@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
-import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
+import { Alert, Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { CSSProperties } from 'vue'
@@ -20,6 +20,7 @@ import DocumentHeaderFooterPanel from './document/DocumentHeaderFooterPanel.vue'
 import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
 import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
 import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
+import DocumentNoteSettingsDialog from './document/DocumentNoteSettingsDialog.vue'
 import DocumentPermissionPanel from './document/DocumentPermissionPanel.vue'
 import DocumentParagraphSettingsPanel from './document/DocumentParagraphSettingsPanel.vue'
 import DocumentSectionSettingsPanel from './document/DocumentSectionSettingsPanel.vue'
@@ -45,7 +46,7 @@ import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumb
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
 import { findDocumentStoryPage } from '../features/document/layout/document-story-navigation'
 import { createDocumentNumericPageField } from '../features/document/model/document-page-field-result'
-import type { DocumentViewportLocation } from '../features/document/layout/document-viewport'
+import type { DocumentScrollOffset, DocumentViewportLocation } from '../features/document/layout/document-viewport'
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { DOCUMENT_DEFAULT_TEXT_COLOR, rememberDocumentColors, type DocumentColorMemory } from '../features/document/services/document-colors'
 import { printDocumentModel } from '../features/document/services/document-print'
@@ -56,15 +57,24 @@ import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, do
 import { releaseDocumentFieldOpenRefresh, reserveDocumentFieldOpenRefresh, type DocumentFieldCacheAdapter } from '../features/document/services/document-field-open-refresh'
 import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeaderFooterAction } from './document/document-header-footer-capabilities'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
-import { selectedDocumentContentControl } from '../features/document/services/content-controls'
-import { CONTENT_CONTROL_CHECKBOX_STYLES, CONTENT_CONTROL_DATE_FORMATS, contentControlCheckboxStyle } from '../features/document/services/content-control-presentation'
-import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
-import { contentControlValueCommandState } from '../features/document/commands/content-control-command-state'
-import { documentContentControlInteractionCurrent, documentContentControlSelectionAfterValueEdit } from '../features/document/controllers/content-control-interaction'
-import { documentContentControlCommandIsTextInput, resolveDocumentContentControlTextInputId } from '../features/document/services/content-control-editing'
+import { selectedDocumentContentControlForSelection } from '../features/document/services/content-controls'
+import { contentControlCheckboxStyle } from '../features/document/services/content-control-presentation'
+import type { DocumentContentControlCommandRequest, DocumentContentControlRepeatingItemCommand, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
+import { contentControlPictureCommandState, contentControlRepeatingItemCommandState, contentControlValueCommandState } from '../features/document/commands/content-control-command-state'
+import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlInteractionCurrent, documentContentControlParentSelection, documentContentControlSelectionAfterRepeatingItemEdit, documentContentControlSelectionAfterValueEdit, documentContentControlSelectionForId, type DocumentContentControlFocusToken } from '../features/document/controllers/content-control-interaction'
+import { documentContentControlInputForSelection, documentContentControlSelectionAfterInsertion } from '../features/document/controllers/content-control-insertion'
+import { documentContentControlCommandIsTextInput, documentContentControlCommandUsesWholeCellInput, resolveDocumentContentControlTextInputId } from '../features/document/services/content-control-editing'
 import { codeBlockData, exitCodeBlock, insertCodeBlock, updateCodeBlock, updateCodeBlockWithSelection, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
-import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
+import { documentSupportsNotes } from '../features/document/notes/document-note-editing'
+import { prepareDocumentNoteMutation } from '../features/document/notes/document-note-mutations'
+import type { DocumentNoteKind, DocumentNoteMutationRequest } from '../features/document/notes/document-note-types'
+import { mapDocumentNoteSelection } from '../api/document-note-commands'
+import { documentNoteInsertState, documentNoteSettingsState } from '../features/document/commands/document-note-command-state'
+import { adjacentDocumentNote, DocumentNoteNavigationMemory, documentNoteNavigationPosition, type DocumentNoteNavigationPosition } from '../features/document/controllers/document-note-navigation'
+import { documentNoteReturnContextItem } from './document/document-note-ribbon'
+import { documentNoteCanvasRequestCurrent, type DocumentNoteCanvasNavigationRequest } from '../features/document/controllers/document-note-canvas'
+import { documentNoteReferenceLocation } from '../features/document/notes/document-note-references'
 import { createDocumentThreadComment, documentCommentAnchorsForSelection, documentCommentTableSelection, deleteDocumentCommentMessage, deleteDocumentThreadComment, editDocumentCommentMessage, replyToDocumentThreadComment, setDocumentThreadCommentResolved } from '../features/document/comments/thread-comments.ts'
 import { canManageDocumentPermissions, permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
 import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
@@ -114,8 +124,22 @@ const layout = shallowRef<DocumentLayout>(emptyLayout())
 const layoutSource = shallowRef<DocumentModel>()
 const editingHost = shallowRef<DocumentAuxiliaryBlockHost>()
 const returnBodySelection = shallowRef<DocumentSelection>()
+interface DocumentBlockHostInspectionState {
+  host: DocumentAuxiliaryBlockHost; documentId: string | undefined; scroll?: DocumentScrollOffset; zoom: number
+}
+const blockHostInspection = shallowRef<DocumentBlockHostInspectionState>()
+const inspectionLayout = shallowRef<DocumentLayout>(emptyLayout())
+const inspectionLayoutSource = shallowRef<DocumentModel>()
+const inspectionCaption = computed(() => {
+  const host = blockHostInspection.value?.host
+  if (!host) return ''
+  if (host.kind === 'story') return host.story.toLowerCase().includes('header') ? '页眉内容' : '页脚内容'
+  const kind = host.noteKind === 'footnote' ? '脚注' : '尾注'
+  return host.kind === 'note' ? `${kind}内容` : `${kind}${({ separator: '分隔符', continuationSeparator: '续页分隔符', continuationNotice: '续页提示' })[host.decoration]}`
+})
 const editingModel = computed(() => editingHost.value ? documentModelForBlockHost(model.value, editingHost.value) : model.value)
-const editingLayout = computed(() => documentLayoutForBlockHost(layout.value, editingHost.value))
+const editingLayout = computed(() => documentLayoutForBlockHost(blockHostInspection.value ? inspectionLayout.value : layout.value, editingHost.value))
+const editingLayoutSource = computed(() => blockHostInspection.value ? inspectionLayoutSource.value : layoutSource.value)
 const canvasRef = ref<InstanceType<typeof DocumentCanvasViewport> | null>(null)
 const activeTab = ref('home')
 const { token: themeToken } = theme.useToken()
@@ -193,17 +217,11 @@ const notice = ref('')
 const documentContextMenu = shallowRef<{ left: number; top: number; fieldRequest?: { source: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost; bodySelection?: DocumentSelection; requestScope: number } }>()
 const contentControlPanelOpen = ref(false)
 const activeContentControlId = ref<string>()
-const pictureReplacementControlId = ref<string>()
+type DocumentPictureReplacementRequest = DocumentContentControlSelectionRequest & { api: FDocument }
+const pictureReplacementRequest = shallowRef<DocumentPictureReplacementRequest>()
+let pendingPictureFocus: DocumentContentControlFocusToken | undefined
 const selectedContentControlId = computed(() => {
-  if (selection.value.tableSelection) return undefined
-  if (activeContentControlId.value && model.value.contentControls?.some(control => control.id === activeContentControlId.value)) return activeContentControlId.value
-  const anchor = selection.value.anchor
-  const focus = selection.value.focus
-  const blockId = focus.cellBlockId ?? focus.blockId
-  if ((anchor.cellBlockId ?? anchor.blockId) !== blockId) return undefined
-  const start = Math.min(anchor.offset, focus.offset)
-  const end = Math.max(anchor.offset, focus.offset)
-  return selectedDocumentContentControl(editingModel.value, blockId, start, end)?.id
+  return selectedDocumentContentControlForSelection(editingModel.value, selection.value, activeContentControlId.value)?.id
 })
 const selectedContentControl = computed(() => selectedContentControlId.value
   ? model.value.contentControls?.find(control => control.id === selectedContentControlId.value)
@@ -248,6 +266,11 @@ const pageMode = computed<DocumentPageMode>(() => documentOutlineEnabled(model.v
 const codeBlockPanelOpen = ref(false)
 const latexPanelOpen = ref(false)
 const notesPanelOpen = ref(false)
+const notesError = ref('')
+const noteSettings = shallowRef<{ open: boolean; kind: DocumentNoteKind; source: DocumentModel; selection: DocumentSelection; sectionId: string }>()
+const noteNavigationMemory = new DocumentNoteNavigationMemory()
+let noteUiVersion = 0
+watch([notesPanelOpen, noteSettings], () => { noteUiVersion++ }, { flush: 'sync' })
 const permissionPanelOpen = ref(false)
 const commentsPanelOpen = ref(false)
 const documentDockWidth = ref(384)
@@ -266,6 +289,20 @@ const permissionTargets = computed(() => documentPermissionTargetOptions(model.v
 const canManagePermissionRules = computed(() => canManageDocumentPermissions(permissionContext.value))
 const canComment = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment').allowed)
 const documentInputComposing = computed(() => storyComposing.value || canvasRef.value?.isBodyComposing() === true)
+const noteInsertState = computed(() => documentNoteInsertState(model.value, selection.value, {
+  permission: permissionContext.value, host: editingHost.value,
+  disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
+}))
+const noteAdjacent = computed(() => {
+  const position = { selection: selection.value, host: editingHost.value }
+  return Object.fromEntries((['footnote', 'endnote'] as const).map(kind => [kind, {
+    previous: adjacentDocumentNote(model.value, kind, 'previous', position, noteNavigationMemory),
+    next: adjacentDocumentNote(model.value, kind, 'next', position, noteNavigationMemory),
+  }])) as Record<DocumentNoteKind, { previous?: string; next?: string }>
+})
+watch([model, selection, editingHost], () => {
+  if (!legacyStoryActive.value) noteNavigationMemory.observe(model.value, { selection: selection.value, host: editingHost.value })
+}, { immediate: true, flush: 'sync' })
 const canRefreshFields = computed(() => !documentInputComposing.value && canRefreshDocumentStoryFields(model.value, permissionContext.value))
 const fieldCacheState = computed(() => props.fieldCacheAdapter?.getState())
 const fieldOpenHistoryGeneration = computed(() => props.documentApi
@@ -439,7 +476,10 @@ const contextMenuActions = computed(() => {
     commandId: 'doc.command.update-selected-fields', params: undefined,
     disabled: documentInputComposing.value || !canRefreshSelectedDocumentBodyFields(editingModel.value, selection.value, permissionContext.value), group: 'format' as const,
   }] : []
-  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...layoutActions, ...tocActions, ...tableActions]
+  const noteActions = editingHost.value?.kind === 'note'
+    ? [{ ...documentNoteReturnContextItem(editingHost.value.noteKind, editingHost.value.noteId, documentInputComposing.value), group: 'layout' as const }]
+    : []
+  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...layoutActions, ...tocActions, ...tableActions, ...noteActions]
 })
 const documentContextMenuItems = computed<MenuItemType[]>(() => {
   const quickItems = contextMenuActions.value.filter(item => item.group === 'quick')
@@ -470,10 +510,33 @@ function tableContextMenuItem(item: RibbonItem): MenuItemType {
 const currentMarks = computed(() => toolbarState.value.marks)
 const officeFonts = inject(OfficeFontListKey, undefined)
 const painter = shallowRef<{ format: DocumentPainterFormat; continuous: boolean }>()
-const modalTitle = computed(() => ({ image: '插入图片', link: '插入链接' })[modalKind.value])
+const modalTitle = computed(() => pictureReplacementRequest.value ? '更换图片' : ({ image: '插入图片', link: '插入链接' })[modalKind.value])
+const pictureReplacementState = computed(() => {
+  const request = pictureReplacementRequest.value
+  return request ? contentControlPictureCommandState(model.value, request.controlId, {
+    host: editingHost.value, permission: permissionContext.value, disabled: !pictureRequestCurrent(request),
+  }) : { available: true }
+})
 const ribbonTabs = computed(() => {
   const control = selectedContentControl.value
+  const resetPlaceholder = control && contentControlValueCommandState(model.value,
+    { id: 'doc.command.reset-content-control-placeholder', params: { controlId: control.id } },
+    { host: editingHost.value, permission: permissionContext.value,
+      disabled: !props.documentApi || !inputStateActive || documentInputComposing.value || legacyStoryActive.value })
+  const parentSelection = control && documentContentControlParentSelection(model.value, control.id, editingHost.value)
+  const pictureReplacement = control && contentControlPictureCommandState(model.value, control.id,
+    { host: editingHost.value, permission: permissionContext.value,
+      disabled: !props.documentApi || !inputStateActive || documentInputComposing.value || legacyStoryActive.value })
+  const repeatingOptions = { host: editingHost.value, permission: permissionContext.value,
+    disabled: !props.documentApi || !inputStateActive || documentInputComposing.value || legacyStoryActive.value }
+  const duplicateItem = control && contentControlRepeatingItemCommandState(model.value,
+    { id: 'doc.command.duplicate-repeating-section-item', params: { controlId: control.id } }, repeatingOptions)
+  const deleteItem = control && contentControlRepeatingItemCommandState(model.value,
+    { id: 'doc.command.delete-repeating-section-item', params: { controlId: control.id } }, repeatingOptions)
   return createDocumentRibbon({
+    notes: { visible: documentSupportsNotes(model.value), insert: noteInsertState.value,
+      settings: documentNoteSettingsState(model.value, { permission: permissionContext.value, disabled: !inputStateActive || documentInputComposing.value }),
+      adjacent: noteAdjacent.value, disabled: !inputStateActive || documentInputComposing.value },
     table: !legacyStoryActive.value ? tableRibbonContext.value : undefined,
     fontList: officeFonts?.value,
     lastTextColor: colorMemory.value.color, lastHighlightColor: colorMemory.value.highlight,
@@ -519,12 +582,16 @@ const ribbonTabs = computed(() => {
       dateFormat: control.dateFormat,
       parentId: control.parentId,
       placement: control.placement,
-      canSelectParent: !!control.parentId && !!model.value.contentControls?.some(candidate => candidate.id === control.parentId),
-      canResetPlaceholder: !!control.placeholder && !control.showingPlaceholder && !['contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''),
-      canDuplicateItem: control.type === 'repeatingSectionItem'
-        && !['row', 'cell', 'table'].includes(control.placement ?? ''),
-      canDeleteItem: control.type === 'repeatingSectionItem'
-        && !['cell', 'table'].includes(control.placement ?? ''),
+      canSelectParent: !!parentSelection && !!props.documentApi && inputStateActive
+        && !documentInputComposing.value && !legacyStoryActive.value,
+      canResetPlaceholder: resetPlaceholder?.available ?? false,
+      resetPlaceholderDisabledReason: resetPlaceholder?.reason,
+      canReplacePicture: pictureReplacement?.available ?? false,
+      replacePictureDisabledReason: pictureReplacement?.reason,
+      canDuplicateItem: duplicateItem?.available ?? false,
+      duplicateItemDisabledReason: duplicateItem?.reason,
+      canDeleteItem: deleteItem?.available ?? false,
+      deleteItemDisabledReason: deleteItem?.reason,
     } : undefined,
     commentsPanelOpen: commentsPanelOpen.value,
     canCreateComment: canCreateComment.value,
@@ -551,7 +618,7 @@ onActivated(() => {
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
   refreshDocumentFieldsOnOpen()
 })
-onUnmounted(() => { inputStateActive = false; inputStateEpoch++; storyActionVersion.value++; document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); imageRequest++; clipboardRequest++ })
+onUnmounted(() => { inputStateActive = false; inputStateEpoch++; storyActionVersion.value++; noteNavigationMemory.clear(); document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); imageRequest++; clipboardRequest++ })
 onDeactivated(() => {
   inputStateActive = false
   inputStateEpoch++
@@ -568,6 +635,8 @@ onDeactivated(() => {
   sectionSettingsPanelOpen.value = false
   commentsPanelOpen.value = false
   latexPanelOpen.value = false
+  notesPanelOpen.value = false
+  noteSettings.value = undefined
   showFind.value = false
   if (document.fullscreenElement === workbenchRef.value) {
     void document.exitFullscreen().catch((error: unknown) => notify(error instanceof Error ? error.message : '无法退出全屏'))
@@ -582,6 +651,11 @@ watch(selectedContentControlId, (id) => {
   if (id) activeTab.value = 'content-control'
   else if (activeTab.value === 'content-control') activeTab.value = 'home'
 })
+watch([() => props.documentApi, () => model.value, () => selection.value, () => editingHost.value,
+  () => permissionContext.value, () => documentInputComposing.value, () => legacyStoryActive.value], () => {
+  const request = pictureReplacementRequest.value
+  if (modalOpen.value && request && !pictureRequestCurrent(request)) { imageRequest++; modalOpen.value = false }
+}, { flush: 'post' })
 
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.documentApi, (next, previous, onCleanup) => {
@@ -609,7 +683,7 @@ watch(() => props.modelValue, (value) => {
   modelReceived = true
   if (typeof value === 'string' || next.id !== model.value.id) painter.value = undefined
   const sameDocument = next.id === model.value.id
-  if (!sameDocument) { canvasRef.value?.cancelInput(false); editingHost.value = undefined; storyLocation.value = undefined; returnBodySelection.value = undefined }
+  if (!sameDocument) { canvasRef.value?.cancelInput(false); blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined; editingHost.value = undefined; storyLocation.value = undefined; returnBodySelection.value = undefined; notesPanelOpen.value = false; noteSettings.value = undefined; notesError.value = '' }
   model.value = normalizeDocument(next)
   documentTitle.value = next.name
   if (editingHost.value) {
@@ -666,6 +740,7 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
       const range = state.location.selection, host = state.location.host
       if (!sameDocumentBlockHost(host, editingHost.value) || legacyStoryActive.value || JSON.stringify(selection.value) !== JSON.stringify(range)) canvasRef.value?.cancelInput(false)
       if (host && !editingHost.value && !returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
+      updateBlockHostInspection(next, host)
       editingHost.value = host ? { ...host } : undefined
       if (host?.kind === 'story') {
         const area = host.story.toLowerCase().includes('header') ? 'header' : 'footer'
@@ -697,6 +772,7 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
       if (!storyLocation.value) previousStoryTab.value = activeTab.value
       if (!returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
       editingHost.value = undefined
+      blockHostInspection.value = undefined
       selection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
       storyLocation.value = { page, area }
       storySelection.value = { start: range.start, end: range.end }
@@ -814,7 +890,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
       return refreshStandaloneDocumentFieldCaches(command.locale, command.timestamp, feedback)
     }
     const textInput = documentContentControlCommandIsTextInput(command)
-    if (textInput) {
+    if (textInput && !documentContentControlCommandUsesWholeCellInput(command, selection.value)) {
       const controlId = resolveDocumentContentControlTextInputId(editingModel.value, selection.value,
         command.activeContentControlId ?? activeContentControlId.value)
       command = { ...command, activeContentControlId: controlId }
@@ -934,63 +1010,172 @@ function applyLatexFormula(data: { latex: string; mode: LatexFormulaMode }) {
   }
 }
 function insertNote(kind: DocumentNoteKind) {
-  if (documentInputComposing.value || storyLocation.value || editingHost.value || selection.value.tableSelection) { notify('请先在正文或单元格文字中定位脚注或尾注位置'); return }
-  if (!canDocumentPermission('edit', permissionTargetsForSelection(model.value, selection.value))) return
-  const next = cloneDocument(model.value)
+  if (!noteInsertState.value.available) { notify(noteInsertState.value.reason ?? '当前不能插入注释。'); return }
+  executeNoteMutation({ type: 'insert', kind, selection: cloneDocumentSelection(selection.value) })
+}
+/** API feedback protects observer re-entry; standalone editing uses the same candidate planner. */
+function executeNoteMutation(request: DocumentNoteMutationRequest, source = model.value): boolean {
+  if (!inputStateActive || documentInputComposing.value || source !== model.value) { notesError.value = '文档或输入位置已变化，请重新执行注释操作。'; return false }
+  const api = props.documentApi, previousHost = editingHost.value && { ...editingHost.value }, previousSelection = cloneDocumentSelection(selection.value)
+  const previousStory = storyLocation.value && { ...storyLocation.value }, dialog = noteSettings.value, uiVersion = noteUiVersion
+  const savedBody = !previousHost && !legacyStoryActive.value ? sanitizeDocumentInputSelection(source, previousSelection) : returnBodySelection.value
+  if (api && api.id !== source.id) { notesError.value = '文档切换尚未完成，请稍后重试。'; return false }
+  notesError.value = ''
   try {
-    selection.value = insertDocumentNote(next, selection.value, kind).selection
-    publish(next)
-    void nextTick(() => canvasRef.value?.focus())
-  } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+    if (api) {
+      const result = api.executeNoteCommand(request)
+      const inputCurrent = () => {
+        const state = api.getInputState()
+        return result.selectionCurrent && api === props.documentApi && api.id === model.value.id && inputStateActive
+          && !documentInputComposing.value && state?.valid === true && state.modelRevision === result.modelRevision
+          && api.getModelRevision() === result.modelRevision && state.generation === result.inputGeneration
+          && state.location.kind === 'body' && sameDocumentBlockHost(state.location.host, result.host)
+          && (!result.selection || JSON.stringify(state.location.selection) === JSON.stringify(result.selection))
+      }
+      if (!inputCurrent()) { syncCurrentInput(api); return false }
+      const next = api.getModel()
+      if (result.selection) {
+        canvasRef.value?.cancelInput(false)
+        updateBlockHostInspection(next, result.host)
+        editingHost.value = result.host ? { ...result.host } : undefined
+        selection.value = cloneDocumentSelection(result.selection)
+        storyLocation.value = undefined
+        if (result.host) returnBodySelection.value = savedBody
+        else if (!result.host) returnBodySelection.value = undefined
+      }
+      if (result.changed) {
+        model.value = next; documentTitle.value = next.name; emit('update:modelValue', next)
+        if (!inputCurrent()) { syncCurrentInput(api); return false }
+        emit('document-change', next)
+      }
+      if (!inputCurrent()) { syncCurrentInput(api); return false }
+      const epoch = inputStateEpoch, generation = result.inputGeneration, revision = result.modelRevision
+      scheduleInputFocus(() => {
+        const latest = api.getInputState()
+        if (epoch === inputStateEpoch && latest?.valid && latest.generation === generation && latest.modelRevision === revision
+          && api.getModelRevision() === revision && sameDocumentBlockHost(result.host, editingHost.value)) canvasRef.value?.focus()
+      })
+    } else {
+      const plan = prepareDocumentNoteMutation(source, request, permissionContext.value)
+      if (!plan.changed) return true
+      const deletedActive = request.type === 'delete' && previousHost?.kind === 'note' && previousHost.noteKind === request.kind && previousHost.noteId === request.noteId
+      const usePlannedSelection = request.type === 'insert' || deletedActive
+      const nextSelection = usePlannedSelection && plan.selection ? plan.selection : mapDocumentNoteSelection(source, plan.model, previousSelection, previousHost)
+      const host = usePlannedSelection ? plan.host : previousHost
+      canvasRef.value?.cancelInput(false)
+      if (source !== model.value || api !== props.documentApi || !inputStateActive) return false
+      clearInputMarks()
+      updateBlockHostInspection(plan.model, host)
+      editingHost.value = host ? { ...host } : undefined; storyLocation.value = request.type === 'settings' ? previousStory : undefined
+      selection.value = cloneDocumentSelection(nextSelection)
+      returnBodySelection.value = host || request.type === 'settings' && previousStory ? savedBody : undefined
+      const epoch = inputStateEpoch
+      publish(plan.model)
+      if (epoch !== inputStateEpoch || api !== props.documentApi || !inputStateActive || documentInputComposing.value
+        || model.value !== plan.model || !sameDocumentBlockHost(host, editingHost.value)
+        || JSON.stringify(nextSelection) !== JSON.stringify(selection.value)) return false
+      scheduleInputFocus(() => canvasRef.value?.focus())
+    }
+    if (request.type === 'insert' && noteUiVersion === uiVersion) {
+      notesPanelOpen.value = false
+      if (noteSettings.value === dialog) noteSettings.value = undefined
+    }
+    return true
+  } catch (error) { notesError.value = error instanceof Error ? error.message : String(error); notify(notesError.value); return false }
 }
 function applyNotes(kind: DocumentNoteKind, values: Record<string, string>) {
-  const next = cloneDocument(model.value)
-  const notes = kind === 'footnote' ? next.footnotes ?? {} : next.endnotes ?? {}
-  let changed = false
-  try {
-    for (const [id, text] of Object.entries(values)) if (notes[id] && notes[id].text !== text) {
-      const host: DocumentAuxiliaryBlockHost = { kind: 'note', noteKind: kind, noteId: id }
-      const target = textTargets(documentModelForBlockHost(next, host))[0]
-      if (!target || !canDocumentPermission('edit', permissionTargetsForSelection(documentModelForBlockHost(next, host), collapsedSelection({ ...target, offset: 0 })))) return
-      updateDocumentNote(next, kind, id, text); changed = true
-    }
-    if (changed) publish(next)
-  } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+  executeNoteMutation({ type: 'update-text', kind, values })
 }
 function removeNote(kind: DocumentNoteKind, id: string) {
-  if (!canDocumentPermission('edit', [{ scope: 'entity', id: `${kind}:${id}` }])) return
-  const next = cloneDocument(model.value)
-  if (!deleteDocumentNote(next, kind, id)) return
-  if (editingHost.value?.kind === 'note' && editingHost.value.noteKind === kind && editingHost.value.noteId === id) closeStory(false)
-  publish(next)
+  executeNoteMutation({ type: 'delete', kind, noteId: id })
 }
 function navigateToNote(kind: DocumentNoteKind, id: string) {
-  const note = (kind === 'footnote' ? model.value.footnotes : model.value.endnotes)?.[id]
-  const point = note && noteReferencePoint(model.value, note)
-  if (!point) return
-  closeStory(false)
-  onSelection(collapsedSelection(point))
-  void nextTick(() => canvasRef.value?.focus())
+  navigateNote(kind, id, true)
 }
 function openNoteCanvas(kind: DocumentNoteKind, id: string) {
-  if (documentInputComposing.value) return
-  const host: DocumentAuxiliaryBlockHost = { kind: 'note', noteKind: kind, noteId: id }
+  navigateNote(kind, id, false)
+}
+function onNoteCanvasNavigation(request: DocumentNoteCanvasNavigationRequest) {
+  if (!documentNoteCanvasRequestCurrent(request, { source: model.value, host: editingHost.value, session: captureInputSession(),
+    requireSession: !!props.documentApi, disabled: !inputStateActive || documentInputComposing.value, permission: permissionContext.value })) return
+  if (request.type === 'body') { activateNotePosition({ selection: collapsedSelection(request.point) }); return }
+  if (!request.toReference && request.point) {
+    activateNotePosition({ host: { kind: 'note', noteKind: request.kind, noteId: request.noteId }, selection: collapsedSelection(request.point) })
+  } else navigateNote(request.kind, request.noteId, request.toReference)
+}
+function navigateNote(kind: DocumentNoteKind, id: string, toReference: boolean) {
+  if (!inputStateActive || documentInputComposing.value) return
   try {
-    const scoped = documentModelForBlockHost(model.value, host), target = textTargets(scoped)[0]
-    if (!target) throw new RangeError('注释没有可编辑段落。')
-    canvasRef.value?.cancelInput(false)
-    if (!returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
-    if (!editingHost.value && !storyLocation.value) previousStoryTab.value = activeTab.value
-    clearInputMarks(); clipboardRequest++; imageRequest++
-    storyLocation.value = undefined
-    editingHost.value = host
-    selection.value = collapsedSelection({ ...target, offset: 0 })
-    notesPanelOpen.value = false
-    activeTab.value = 'home'
-    searchScopeSelection.value = undefined; searchInSelection.value = false
-    props.documentApi?.setInputSelection(selection.value, undefined, host)
-    scheduleInputFocus(() => canvasRef.value?.focus())
+    const position = documentNoteNavigationPosition(model.value, kind, id, toReference)
+    if (!position) throw new RangeError('注释没有可导航的引用或内容。')
+    activateNotePosition(position)
   } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+}
+function updateBlockHostInspection(source: DocumentModel, host?: DocumentAuxiliaryBlockHost, force = false) {
+  const required = !!host && (force || blockHostInspection.value?.documentId === source.id && sameDocumentBlockHost(blockHostInspection.value.host, host) || host.kind === 'noteDecoration'
+    || host.kind === 'note' && !documentNoteReferenceLocation(source, host.noteKind, host.noteId))
+  if (!required || !host) { blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined; return }
+  if (blockHostInspection.value?.documentId === source.id && sameDocumentBlockHost(blockHostInspection.value.host, host)) return
+  blockHostInspection.value = { host: { ...host }, documentId: source.id,
+    scroll: blockHostInspection.value?.scroll ?? canvasRef.value?.captureScrollOffset(), zoom: blockHostInspection.value?.zoom ?? zoom.value }
+  inspectionLayout.value = emptyLayout(); inspectionLayoutSource.value = undefined
+}
+function openBlockHostInspection(source: DocumentModel, host: DocumentAuxiliaryBlockHost) {
+  if (source !== model.value || !inputStateActive || documentInputComposing.value) return
+  try {
+    const scoped = documentModelForBlockHost(source, host), target = textTargets(scoped)[0]
+    if (!target) throw new RangeError('此内容区没有可输入段落，请先保留原始内容并补齐其输入锚点。')
+    activateNotePosition({ host: { ...host }, selection: collapsedSelection({ ...target, offset: 0 }) }, true)
+    if (noteSettings.value?.source === source && sameDocumentBlockHost(editingHost.value, host)) noteSettings.value = undefined
+  } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+}
+function activateNotePosition(position: DocumentNoteNavigationPosition, inspect = false) {
+  const source = model.value, api = props.documentApi
+  const body = !editingHost.value && !legacyStoryActive.value ? sanitizeDocumentInputSelection(source, selection.value) : returnBodySelection.value
+  const scoped = position.host ? documentModelForBlockHost(source, position.host) : source
+  if (!resolveDocumentPermission(source.permissionRules ?? [], permissionContext.value, 'view', permissionTargetsForSelection(scoped, position.selection)).allowed) {
+    notify('当前内容区没有查看权限。'); return
+  }
+  noteNavigationMemory.observe(source, { selection: selection.value, host: editingHost.value })
+  canvasRef.value?.cancelInput(false); clearInputMarks()
+  if (source !== model.value || api !== props.documentApi || !inputStateActive) return
+  if (!editingHost.value && !storyLocation.value) previousStoryTab.value = activeTab.value
+  clipboardRequest++; imageRequest++; inputStateEpoch++
+  updateBlockHostInspection(source, position.host, inspect)
+  editingHost.value = position.host ? { ...position.host } : undefined; storyLocation.value = undefined
+  returnBodySelection.value = position.host ? body ?? sanitizeDocumentInputSelection(source, selection.value) : undefined
+  selection.value = cloneDocumentSelection(position.selection); activeContentControlId.value = undefined
+  notesPanelOpen.value = false; documentContextMenu.value = undefined; activeTab.value = 'references'
+  searchScopeSelection.value = undefined; searchInSelection.value = false
+  api?.setInputSelection(position.selection, undefined, position.host)
+  const session = api?.getInputState(), epoch = inputStateEpoch
+  scheduleInputFocus(() => {
+    const current = api?.getInputState()
+    if (epoch === inputStateEpoch && api === props.documentApi && inputStateActive && !documentInputComposing.value
+      && (api ? api.id === model.value.id && current?.valid && current.generation === session?.generation
+        && current.modelRevision === session?.modelRevision && api.getModelRevision() === session?.modelRevision : source === model.value)
+      && sameDocumentBlockHost(position.host, editingHost.value) && JSON.stringify(position.selection) === JSON.stringify(selection.value)) canvasRef.value?.focus()
+  })
+}
+function adjacentNote(kind: DocumentNoteKind, direction: 'previous' | 'next') {
+  const id = adjacentDocumentNote(model.value, kind, direction, { selection: selection.value, host: editingHost.value }, noteNavigationMemory)
+  if (id) openNoteCanvas(kind, id)
+}
+function returnFromNote() {
+  const host = editingHost.value
+  if (host?.kind === 'note') navigateToNote(host.noteKind, host.noteId)
+}
+function openNoteSettings(kind: DocumentNoteKind) {
+  if (!inputStateActive || documentInputComposing.value || !documentSupportsNotes(model.value)) return
+  const host = editingHost.value, reference = host?.kind === 'note' ? documentNoteReferenceLocation(model.value, host.noteKind, host.noteId) : undefined
+  const sectionId = editingHost.value?.kind === 'story' ? editingHost.value.sectionId
+    : reference?.sectionId ?? currentStoryRange.value?.sectionId ?? sectionIdForBlock(model.value, returnBodySelection.value?.focus.blockId ?? selection.value.focus.blockId)
+  notesError.value = ''
+  noteSettings.value = { open: true, kind, sectionId, source: model.value, selection: cloneDocumentSelection(selection.value) }
+}
+function applyNoteSettings(source: DocumentModel, request: DocumentNoteMutationRequest) {
+  const dialog = noteSettings.value
+  if (dialog && dialog.source === source && executeNoteMutation(request, source) && noteSettings.value === dialog) noteSettings.value = undefined
 }
 function leaveCodeBlock(blockId: string) {
   if (!canDocumentPermission('edit', permissionTargetsForSelection(editingModel.value, selection.value))) return
@@ -1123,50 +1308,40 @@ function selectSection(sectionId: string) {
 function insertContentControl(type: DocumentContentControlType) {
   if (!props.documentApi) return
   if (legacyStoryActive.value) activateStoryBlockEditing()
-  if (!canEditContextSelection.value || documentInputComposing.value) return
-  if (selection.value.tableSelection) { notify('请先在单元格正文中选择内容控件的插入范围'); return }
-  const anchor = selection.value.anchor
-  const focus = selection.value.focus
-  const blockId = focus.cellBlockId ?? focus.blockId
-  if ((anchor.cellBlockId ?? anchor.blockId) !== blockId) {
-    notify('内容控件必须位于同一段落或单元格内')
-    return
-  }
+  if (!inputStateActive || !canEditContextSelection.value || documentInputComposing.value) return
+  const api = props.documentApi, source = model.value, host = editingHost.value && { ...editingHost.value }
+  const selected = cloneDocumentSelection(selection.value), inputSession = captureInputSession(source)
+  if (!inputSession?.valid || api !== props.documentApi || source !== model.value || inputSession.location.kind !== 'body'
+    || !sameDocumentBlockHost(inputSession.location.host, host) || JSON.stringify(inputSession.location.selection) !== JSON.stringify(selected)) return
   try {
-    const text = '在此处输入'
-    const typeDefaults: Partial<Record<DocumentContentControlType, Record<string, unknown>>> = {
-      richText: { placeholder: text, showingPlaceholder: true },
-      text: { placeholder: text, showingPlaceholder: true, multiLine: false },
-      checkbox: { checked: false, checkbox: { checked: false, ...CONTENT_CONTROL_CHECKBOX_STYLES.Cross }, metadata: { checkboxStyle: 'Cross' } },
-      date: { placeholder: '选择日期', showingPlaceholder: true, dateFormat: CONTENT_CONTROL_DATE_FORMATS[0], dateCalendar: 'gregorian', dateStorage: 'dateTime' },
-      dropDownList: { placeholder: '选择一项', showingPlaceholder: true, items: [{ displayText: '选择一项', value: '选择一项' }] },
-      comboBox: { placeholder: '选择或输入一项', showingPlaceholder: true, items: [{ displayText: '选择一项', value: '选择一项' }] },
-      picture: { placeholder: '选择图片', showingPlaceholder: true },
-      repeatingSection: { placement: 'block', repeatingSection: { doNotAllowInsertDelete: false } },
-      group: {},
-      docPartObj: { docPart: { gallery: 'Quick Parts', category: 'General', unique: false } },
-    }
-    if (type === 'repeatingSectionItem') {
-      notify('重复节项由重复节控件生成，不能单独插入')
-      return
-    }
-    const insertedControl = props.documentApi.addContentControl({
-      ...(typeDefaults[type] as Partial<DocumentContentControl>),
-      type,
-      blockId,
-      startOffset: Math.min(anchor.offset, focus.offset),
-      endOffset: Math.max(anchor.offset, focus.offset),
-      placement: type === 'repeatingSection' ? 'block' : focus.cellBlockId ? 'cell' : 'inline',
-    })
-    activeContentControlId.value = insertedControl.getId()
-    if (type === 'repeatingSection') {
-      const section = insertedControl.getInfo()
-      activeContentControlId.value = model.value.contentControls?.find(control => control.type === 'repeatingSectionItem'
-        && control.parentId === section.id)?.id
-    }
+    const input = documentContentControlInputForSelection(editingModel.value, type, selected)
+    const changed = api.executeContentControlCommand('doc.command.add-content-control', { control: input, host,
+      expectedRevision: inputSession.modelRevision, inputGeneration: inputSession.generation })
+    const latest = api.getInputState()
+    if (!changed || !inputStateActive || documentInputComposing.value || legacyStoryActive.value || api !== props.documentApi
+      || source.id !== model.value.id || !sameDocumentBlockHost(host, editingHost.value)
+      || api.getModelRevision() !== inputSession.modelRevision + 1 || latest?.generation !== inputSession.generation
+      || latest.location.kind !== 'body' || !sameDocumentBlockHost(latest.location.host, host)) return
+    const current = api.getModel(), result = documentContentControlSelectionAfterInsertion(source, current, input, host)
+    if (!result) return
+    model.value = current; onSelection(result.selection)
+    const restored = captureInputSession()
+    if (!inputStateActive || documentInputComposing.value || legacyStoryActive.value || api !== props.documentApi || model.value !== current
+      || !sameDocumentBlockHost(host, editingHost.value) || !restored?.valid || restored.modelRevision !== inputSession.modelRevision + 1
+      || restored.generation !== inputSession.generation + 1 || restored.location.kind !== 'body'
+      || !sameDocumentBlockHost(restored.location.host, host) || JSON.stringify(restored.location.selection) !== JSON.stringify(result.selection)) return
+    activeContentControlId.value = result.controlId
     contentControlPanelOpen.value = false
     activeTab.value = 'content-control'
-    void nextTick(() => canvasRef.value?.focus())
+    canvasRef.value?.scrollToBlock(result.selection.focus.blockId)
+    const request = { source, controlId: result.controlId, selection: selected, host, inputSession }
+    const token = captureDocumentContentControlFocusToken(request, restored), epoch = inputStateEpoch
+    if (token) void nextTick(() => {
+      if (api === props.documentApi && epoch === inputStateEpoch && documentContentControlFocusCurrent(token, {
+        source: model.value, host: editingHost.value, session: captureInputSession(), selection: selection.value,
+        disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
+      })) canvasRef.value?.focus()
+    })
   } catch (error) {
     notify(error instanceof Error ? error.message : String(error))
   }
@@ -1278,6 +1453,7 @@ function selectComment(commentId: string) {
   if (!sameDocumentBlockHost(host, editingHost.value)) {
     if (!host) closeStory(false)
     else if (host.kind === 'note') openNoteCanvas(host.noteKind, host.noteId)
+    else if (host.kind === 'noteDecoration') openBlockHostInspection(model.value, host)
     else {
       const area = host.story.toLowerCase().includes('header') ? 'header' : 'footer'
       const page = findDocumentStoryPage(layout.value, { area, sectionId: host.sectionId, story: host.story, preferredPage: activePageIndex.value })
@@ -1310,13 +1486,24 @@ function selectComment(commentId: string) {
 }
 function importFile(file: File): false { emit('import-file', file); return false }
 function movePage(direction: -1 | 1) { setActivePage(Math.max(0, Math.min(pages.value.length - 1, activePageIndex.value + direction))) }
-function setActivePage(index: number) { activePageIndex.value = index; canvasRef.value?.scrollToPage(index) }
+function setActivePage(index: number) {
+  activePageIndex.value = index
+  if (blockHostInspection.value) { closeStory(false); scheduleInputFocus(() => canvasRef.value?.scrollToPage(index)) }
+  else canvasRef.value?.scrollToPage(index)
+}
 function jumpToHeading(id: string) { closeStory(false); const point = { blockId: id, offset: 0 }; outlineNavigationTarget.value = id; onSelection(collapsedSelection(point)); canvasRef.value?.scrollToBlock(id); canvasRef.value?.focus() }
 function onDocumentLayout(value: DocumentLayout, source: DocumentModel) {
+  if (value.inspectionHost) {
+    if (blockHostInspection.value?.documentId === source.id && sameDocumentBlockHost(value.inspectionHost, blockHostInspection.value.host)) {
+      inspectionLayout.value = value; inspectionLayoutSource.value = source
+    }
+    return
+  }
   layout.value = value
   layoutSource.value = source
 }
 function onViewportChange(location: DocumentViewportLocation) {
+  if (blockHostInspection.value) return
   const target = outlineNavigationTarget.value
   if (target) {
     const heading = layout.value.headings.find((candidate) => candidate.id === target)
@@ -1454,55 +1641,151 @@ function onWorkbenchKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus() }
   else if (event.key === 'Escape' && editingHost.value?.kind === 'note' && !event.isComposing) { event.preventDefault(); closeStory() }
 }
-function insertImage() { pictureReplacementControlId.value = undefined; modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
-function insertLink() { modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
+function insertImage() { imageRequest++; pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
+function insertLink() { imageRequest++; pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
+function pictureRequestCurrent(request: DocumentPictureReplacementRequest): boolean {
+  return request === pictureReplacementRequest.value && request.api === props.documentApi && contentControlRequestCurrent(request, true)
+    && contentControlPictureCommandState(model.value, request.controlId, { host: editingHost.value, permission: permissionContext.value }).available
+}
+function openSelectedPictureReplacement() {
+  const control = selectedContentControl.value, source = model.value, api = props.documentApi
+  if (control?.type !== 'picture' || !api) return
+  const inputSession = captureInputSession(source)
+  if (!inputSession?.valid || api !== props.documentApi) return
+  const request: DocumentPictureReplacementRequest = { api, source, controlId: control.id, selection: cloneDocumentSelection(selection.value),
+    host: editingHost.value && { ...editingHost.value }, inputSession }
+  if (!contentControlRequestCurrent(request, true)) return
+  const state = contentControlPictureCommandState(source, control.id, { host: request.host, permission: permissionContext.value })
+  if (!state.available) { notify(state.reason ?? '无法更换此内容控件的图片。'); return }
+  imageRequest++; pendingPictureFocus = undefined; pictureReplacementRequest.value = request
+  modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true
+}
+function executeSelectedRepeatingItem(id: DocumentContentControlRepeatingItemCommand['id']) {
+  const control = selectedContentControl.value, source = model.value, api = props.documentApi
+  if (control?.type !== 'repeatingSectionItem' || !api) return
+  const inputSession = captureInputSession(source), host = editingHost.value && { ...editingHost.value }
+  if (!inputSession?.valid || api !== props.documentApi) return
+  const command: DocumentContentControlRepeatingItemCommand = { id, params: { controlId: control.id } }
+  const request = { source, controlId: control.id, selection: cloneDocumentSelection(selection.value), host, inputSession, command }
+  if (!contentControlRequestCurrent(request, true)) return
+  const state = contentControlRepeatingItemCommandState(source, command, { host, permission: permissionContext.value })
+  if (!state.available) { notify(state.reason ?? '无法修改此重复项目。'); return }
+  try {
+    const changed = api.executeContentControlCommand(id, { ...command.params, host,
+      expectedRevision: inputSession.modelRevision, inputGeneration: inputSession.generation })
+    const latest = api.getInputState()
+    if (!changed || !inputStateActive || documentInputComposing.value || legacyStoryActive.value || api !== props.documentApi
+      || source.id !== model.value.id || !sameDocumentBlockHost(host, editingHost.value)
+      || api.getModelRevision() !== inputSession.modelRevision + 1 || latest?.generation !== inputSession.generation
+      || latest.location.kind !== 'body' || !sameDocumentBlockHost(latest.location.host, host)) return
+    const current = api.getModel(), result = documentContentControlSelectionAfterRepeatingItemEdit(request, current)
+    if (!result) return
+    model.value = current; onSelection(result.selection)
+    const selected = captureInputSession()
+    if (!inputStateActive || documentInputComposing.value || legacyStoryActive.value || api !== props.documentApi || model.value !== current
+      || !sameDocumentBlockHost(host, editingHost.value) || !selected?.valid || selected.modelRevision !== inputSession.modelRevision + 1
+      || selected.generation !== inputSession.generation + 1 || selected.location.kind !== 'body'
+      || !sameDocumentBlockHost(selected.location.host, host) || JSON.stringify(selected.location.selection) !== JSON.stringify(result.selection)) return
+    activeContentControlId.value = result.controlId
+    canvasRef.value?.scrollToBlock(result.selection.focus.blockId)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+  } finally {
+    const token = api === props.documentApi && captureDocumentContentControlFocusToken(request, captureInputSession()), epoch = inputStateEpoch
+    if (token) void nextTick(() => {
+      if (api === props.documentApi && epoch === inputStateEpoch && documentContentControlFocusCurrent(token, {
+        source: model.value, host: editingHost.value, session: captureInputSession(), selection: selection.value,
+        disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
+      })) canvasRef.value?.focus()
+    })
+  }
+}
+function onInsertModalClosed() {
+  if (modalOpen.value) return
+  const request = pictureReplacementRequest.value
+  const token = pendingPictureFocus ?? (request && captureDocumentContentControlFocusToken(request, captureInputSession()))
+  imageRequest++; pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined
+  if (!token || !request || request.api !== props.documentApi) return
+  void nextTick(() => {
+    if (request.api === props.documentApi && documentContentControlFocusCurrent(token, { source: model.value, host: editingHost.value,
+      session: captureInputSession(), selection: selection.value,
+      disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value })) canvasRef.value?.focus()
+  })
+}
 function confirmModal() {
+  if (!modalOpen.value || !pictureReplacementState.value.available) return
   const value = safeUrl(modalValue.value)
   if (!value) { modalError.value = '请输入有效的 http 或 https 地址'; return }
   if (modalKind.value === 'link') execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })
-  else if (pictureReplacementControlId.value) replaceSelectedPicture({ src: value, width: 320, height: 0, alt: 'Image' })
+  else if (pictureReplacementRequest.value) { if (!replaceSelectedPicture({ src: value, width: 320, height: 0, alt: 'Image' })) return }
   else execute({ id: 'doc.command.insert-image', image: { src: value, width: 320, height: 0, alt: '图片' } })
   modalOpen.value = false
 }
 function beforeImageUpload(file: File): false { void onImageFile(file); return false }
 async function onImageFile(file: File) {
+  if (!modalOpen.value || modalKind.value !== 'image' || !pictureReplacementState.value.available) return
   const request = ++imageRequest
   const base = model.value
   const host = editingHost.value && { ...editingHost.value }
   const range = cloneDocumentSelection(selection.value)
+  const replacement = pictureReplacementRequest.value
+  const api = props.documentApi, input = api ? captureInputSession() : undefined
+  if (replacement && !pictureRequestCurrent(replacement) || api && !input?.valid) return
+  const current = () => {
+    if (request !== imageRequest || !modalOpen.value || modalKind.value !== 'image' || model.value !== base || api !== props.documentApi
+      || !sameDocumentBlockHost(host, editingHost.value) || JSON.stringify(range) !== JSON.stringify(selection.value)
+      || replacement && !pictureRequestCurrent(replacement)) return false
+    const latest = input && captureInputSession()
+    return !input || latest?.valid === true && latest.generation === input.generation && latest.modelRevision === input.modelRevision
+  }
   const source = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) }).catch(() => '')
-  if (request !== imageRequest || !modalOpen.value || modalKind.value !== 'image') return
+  if (!current()) return
   if (!source) { notify('读取图片失败'); return }
   const image = new Image()
   image.onload = () => {
-    if (request !== imageRequest || !modalOpen.value || modalKind.value !== 'image') return
-    if (model.value !== base || !sameDocumentBlockHost(host, editingHost.value)) { notify('文档或内容区已更新，请重新插入图片'); return }
+    if (!current()) return
     if (!image.naturalWidth || !image.naturalHeight) { notify('图片尺寸无效'); return }
-    selection.value = range
     const imageInfo = { src: source, alt: file.name, width: Math.min(500, image.naturalWidth), height: Math.min(500, image.naturalWidth) * image.naturalHeight / image.naturalWidth }
-    if (pictureReplacementControlId.value) replaceSelectedPicture(imageInfo)
+    if (replacement) { if (!replaceSelectedPicture(imageInfo)) return }
     else execute({ id: 'doc.command.insert-image', image: imageInfo })
     modalOpen.value = false
   }
-  image.onerror = () => { if (request === imageRequest && modalOpen.value && modalKind.value === 'image') notify('无法读取该图片') }
+  image.onerror = () => { if (current()) notify('无法读取该图片') }
   image.src = source
 }
-function replaceSelectedPicture(image: { src: string; alt: string; width: number; height: number }) {
-  const controlId = pictureReplacementControlId.value
-  const control = controlId && props.documentApi?.getContentControl(controlId)
-  if (!control || control.getType() !== 'picture') return
+function replaceSelectedPicture(image: { src: string; alt: string; width: number; height: number }): boolean {
+  const request = pictureReplacementRequest.value, api = props.documentApi
+  if (!request || !api || !pictureRequestCurrent(request) || !request.inputSession?.valid) return false
+  const input = request.inputSession, host = request.host, controlId = request.controlId
   try {
-    control.replacePicture(image)
-    const updated = control.getInfo()
-    const target = textTargets(editingModel.value).find(target => (target.cellBlockId ?? target.blockId) === updated.blockId)
-    if (target) onSelection({ anchor: { ...target, offset: updated.startOffset }, focus: { ...target, offset: updated.endOffset } })
-    const pictureBlockId = updated.metadata?.pictureBlockId
-    if (typeof pictureBlockId === 'string') canvasRef.value?.scrollToBlock(pictureBlockId)
+    const changed = api.executeContentControlCommand('doc.command.replace-picture-content-control-image', {
+      controlId, image, host, expectedRevision: input.modelRevision, inputGeneration: input.generation,
+    })
+    const latest = api.getInputState()
+    if (changed && inputStateActive && !documentInputComposing.value && !legacyStoryActive.value && api === props.documentApi && request.source.id === model.value.id
+      && sameDocumentBlockHost(host, editingHost.value) && api.getModelRevision() === input.modelRevision + 1
+      && latest?.generation === input.generation && latest.location.kind === 'body' && sameDocumentBlockHost(latest.location.host, host)) {
+      const current = api.getModel(), nextSelection = documentContentControlSelectionForId(current, controlId, host)
+      if (nextSelection) {
+        model.value = current; onSelection(nextSelection)
+        const selected = captureInputSession()
+        if (inputStateActive && api === props.documentApi && request === pictureReplacementRequest.value && model.value === current
+          && !documentInputComposing.value && !legacyStoryActive.value && sameDocumentBlockHost(host, editingHost.value)
+          && selected?.valid && selected.modelRevision === input.modelRevision + 1 && selected.generation === input.generation + 1
+          && selected.location.kind === 'body' && sameDocumentBlockHost(selected.location.host, host)
+          && JSON.stringify(selected.location.selection) === JSON.stringify(nextSelection)) {
+          activeContentControlId.value = controlId
+          const pictureBlockId = current.contentControls?.find(control => control.id === controlId)?.metadata?.pictureBlockId
+          canvasRef.value?.scrollToBlock(typeof pictureBlockId === 'string' ? pictureBlockId : nextSelection.focus.blockId)
+        }
+      }
+    }
+    pendingPictureFocus = api === props.documentApi ? captureDocumentContentControlFocusToken(request, captureInputSession()) : undefined
+    return true
   } catch (error) {
-    notify(error instanceof Error ? error.message : String(error))
+    modalError.value = error instanceof Error ? error.message : String(error)
+    return false
   }
-  activeContentControlId.value = controlId
-  pictureReplacementControlId.value = undefined
 }
 function currentSearchMatchIndex() {
   return searchMatches.value.findIndex((match) => JSON.stringify(pointForMatch(match)) === JSON.stringify(selection.value))
@@ -1687,6 +1970,7 @@ function openStory(location: StoryLocation, point?: DocumentPoint) {
   if (!returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
   if (storyLocation.value?.page !== location.page || storyLocation.value?.area !== location.area) storySelection.value = { start: 0, end: 0 }
   clearInputMarks()
+  blockHostInspection.value = undefined
   editingHost.value = undefined
   selection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
   storyLocation.value = location
@@ -1700,9 +1984,11 @@ function openStory(location: StoryLocation, point?: DocumentPoint) {
   })
 }
 function closeStory(refocus = true) {
-  if (!storyLocation.value && !editingHost.value) return
+  if (!storyLocation.value && !editingHost.value && !blockHostInspection.value) return
   const restore = returnBodySelection.value
+  const inspection = blockHostInspection.value
   clearInputMarks()
+  blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined
   storyLocation.value = undefined
   editingHost.value = undefined
   returnBodySelection.value = undefined
@@ -1714,7 +2000,14 @@ function closeStory(refocus = true) {
   if (activeTab.value === 'header-footer' || activeTab.value === 'table' || activeTab.value === 'content-control') activeTab.value = previousStoryTab.value
   const api = props.documentApi
   if (inputStateActive && api?.getInputState()) api.setInputSelection(selection.value)
-  if (refocus) scheduleInputFocus(() => { if (!storyLocation.value) canvasRef.value?.focus() })
+  if (refocus) scheduleInputFocus(() => {
+    if (storyLocation.value || editingHost.value) return
+    canvasRef.value?.focus()
+    if (inspection?.documentId === model.value.id && inspection.scroll) {
+      const ratio = zoom.value / inspection.zoom
+      canvasRef.value?.restoreScrollOffset({ left: inspection.scroll.left * ratio, top: inspection.scroll.top * ratio })
+    }
+  })
 }
 function restoreStoryAfterOptions(location: StoryLocation, sectionId: string, range: { start: number; end: number }, modelRevision?: number) {
   const epoch = ++inputStateEpoch, documentId = model.value.id, source = model.value, api = props.documentApi
@@ -2009,9 +2302,28 @@ function onRibbonExecute(id: string, params?: unknown) {
       break
     case 'docs.operation.toggle-comment-panel': toggleCommentsPanel(); break
     case 'docs.operation.start-add-comment': startAddComment(); break
+    case 'docs.operation.insert-footnote':
     case 'doc.operation.insert-footnote': insertNote('footnote'); break
+    case 'docs.operation.insert-endnote':
     case 'doc.operation.insert-endnote': insertNote('endnote'); break
-    case 'doc.operation.open-notes': notesPanelOpen.value = true; break
+    case 'docs.operation.open-footnote-settings':
+    case 'doc.operation.open-footnote-settings': openNoteSettings('footnote'); break
+    case 'docs.operation.open-endnote-settings':
+    case 'doc.operation.open-endnote-settings': openNoteSettings('endnote'); break
+    case 'docs.operation.previous-footnote': adjacentNote('footnote', 'previous'); break
+    case 'docs.operation.next-footnote': adjacentNote('footnote', 'next'); break
+    case 'docs.operation.previous-endnote': adjacentNote('endnote', 'previous'); break
+    case 'docs.operation.next-endnote': adjacentNote('endnote', 'next'); break
+    case 'docs.operation.navigate-footnote': {
+      const input = params && typeof params === 'object' ? params : undefined
+      const host = editingHost.value
+      const kind = input && 'kind' in input && (input.kind === 'footnote' || input.kind === 'endnote') ? input.kind : host?.kind === 'note' ? host.noteKind : undefined
+      const noteId = input && 'noteId' in input && typeof input.noteId === 'string' ? input.noteId : host?.kind === 'note' ? host.noteId : undefined
+      const toReference = input && 'toReference' in input ? input.toReference === true : !input || !('noteId' in input)
+      if (kind && noteId) navigateNote(kind, noteId, toReference)
+      break
+    }
+    case 'doc.operation.open-notes': notesError.value = ''; notesPanelOpen.value = true; break
     case 'doc.operation.open-permissions': permissionPanelOpen.value = true; break
     case 'doc.operation.insert-code-block': openCodeBlockPanel(); break
     case 'doc.operation.open-latex': latexPanelOpen.value = true; break
@@ -2038,57 +2350,49 @@ function onRibbonExecute(id: string, params?: unknown) {
       if (selectedContentControlId.value) contentControlPanelOpen.value = true
       break
     case 'doc.operation.select-parent-sdt': {
-      const parentId = selectedContentControl.value?.parentId
-      const parent = parentId && model.value.contentControls?.find(control => control.id === parentId)
-      if (parent) {
-        activeContentControlId.value = parent.id
-        onSelection({ anchor: { blockId: parent.blockId, offset: parent.startOffset }, focus: { blockId: parent.blockId, offset: parent.endOffset } })
-        activeContentControlId.value = parent.id
-        canvasRef.value?.scrollToBlock(parent.blockId)
+      const control = selectedContentControl.value, source = model.value, api = props.documentApi
+      const host = editingHost.value && { ...editingHost.value }
+      const parent = control && documentContentControlParentSelection(source, control.id, host)
+      if (!parent || !api || !inputStateActive || documentInputComposing.value || legacyStoryActive.value) break
+      const input = captureInputSession(source)
+      if (!input?.valid || input.location.kind !== 'body' || !sameDocumentBlockHost(input.location.host, host)) break
+      try {
+        onSelection(cloneDocumentSelection(parent.selection))
+        const current = captureInputSession()
+        if (!inputStateActive || documentInputComposing.value || legacyStoryActive.value
+          || api !== props.documentApi || source !== model.value || !sameDocumentBlockHost(host, editingHost.value)
+          || !current?.valid || current.modelRevision !== input.modelRevision || current.generation !== input.generation + 1
+          || current.location.kind !== 'body' || !sameDocumentBlockHost(current.location.host, host)
+          || JSON.stringify(current.location.selection) !== JSON.stringify(parent.selection)) break
+        activeContentControlId.value = parent.controlId
+        canvasRef.value?.scrollToBlock(parent.selection.focus.blockId)
+        // The shared input-state listener restores focus after checking the
+        // current revision, generation and host; do not renew an observer's state.
+      } catch (error) {
+        syncCurrentInput(api)
+        notify(error instanceof Error ? error.message : String(error))
       }
       break
     }
-    case 'doc.command.reset-selected-sdt-placeholder':
-      if (selectedContentControl.value && props.documentApi) {
-        try { props.documentApi.getContentControl(selectedContentControl.value.id)?.resetPlaceholder() }
-        catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+    case 'doc.command.reset-selected-sdt-placeholder': {
+      const control = selectedContentControl.value, source = model.value
+      if (control && props.documentApi) {
+        const inputSession = captureInputSession(source)
+        if (inputSession?.valid) canvasRef.value?.executeContentControlCommand({ source, controlId: control.id,
+          selection: cloneDocumentSelection(selection.value), host: editingHost.value && { ...editingHost.value }, inputSession,
+          command: { id: 'doc.command.reset-content-control-placeholder', params: { controlId: control.id } } })
       }
       break
+    }
     case 'doc.command.change-selected-sdt-picture':
-      if (selectedContentControl.value?.type === 'picture') {
-        pictureReplacementControlId.value = selectedContentControl.value.id
-        modalKind.value = 'image'
-        modalValue.value = ''
-        modalError.value = ''
-        modalOpen.value = true
-      }
+      openSelectedPictureReplacement()
       break
     case 'doc.command.duplicate-selected-repeating-sdt-item': {
-      const item = selectedContentControl.value
-      if (item?.type === 'repeatingSectionItem' && props.documentApi) {
-        const start = item.endOffset
-        try {
-          if (props.documentApi.getContentControl(item.id)?.duplicateRepeatingItem()) {
-            const duplicate = model.value.contentControls?.find(control => control.type === 'repeatingSectionItem'
-              && control.parentId === item.parentId && control.blockId === item.blockId && control.startOffset === start)
-            if (duplicate) {
-              activeContentControlId.value = duplicate.id
-              onSelection({ anchor: { blockId: duplicate.blockId, offset: duplicate.startOffset }, focus: { blockId: duplicate.blockId, offset: duplicate.endOffset } })
-              activeContentControlId.value = duplicate.id
-            }
-          }
-        } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
-      }
+      executeSelectedRepeatingItem('doc.command.duplicate-repeating-section-item')
       break
     }
     case 'doc.command.delete-selected-repeating-sdt-item': {
-      const item = selectedContentControl.value
-      if (item?.type === 'repeatingSectionItem' && props.documentApi) {
-        try {
-          props.documentApi.getContentControl(item.id)?.deleteRepeatingItem()
-          onSelection({ anchor: { blockId: item.blockId, offset: item.startOffset }, focus: { blockId: item.blockId, offset: item.startOffset } })
-        } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
-      }
+      executeSelectedRepeatingItem('doc.command.delete-repeating-section-item')
       break
     }
     case 'doc.command.remove-selected-sdt':
@@ -2193,16 +2497,21 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         </div>
       </template>
     </WorkbenchRibbon>
-    <div v-if="editingHost?.kind === 'note'" class="document-note-editing" data-document-note-canvas>
+    <div v-if="blockHostInspection" class="document-note-editing" data-document-content-inspection :data-document-inspection-host="documentBlockHostId(blockHostInspection.host)">
+      <span>独立内容检查 · {{ inspectionCaption }}；正文分页将在返回后更新。</span>
+      <Button size="small" :disabled="documentInputComposing" @click="closeStory()">返回正文</Button>
+    </div>
+    <div v-else-if="editingHost?.kind === 'note'" class="document-note-editing" data-document-note-canvas>
       <span>{{ createRibbonTranslator(officeLocale, 'doc')(editingHost.noteKind === 'footnote' ? 'doc.notes.footnote-content' : 'doc.notes.endnote-content', editingHost.noteKind === 'footnote' ? '脚注内容' : '尾注内容') }}</span>
-      <Button size="small" @click="closeStory()">{{ createRibbonTranslator(officeLocale, 'doc')('doc.notes.finish-editing', '返回正文') }}</Button>
+      <Button size="small" :disabled="documentInputComposing" @click="returnFromNote">{{ createRibbonTranslator(officeLocale, 'doc')('doc.notes.finish-editing', '返回引用') }}</Button>
     </div>
     <main class="editor-workspace">
-      <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode && editingHost?.kind !== 'note'" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
+      <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode && !blockHostInspection && editingHost?.kind !== 'note'" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
       <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
-          <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
+          <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :inspection-host="blockHostInspection?.host" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
             :active-content-control-id="activeContentControlId" @content-control-selection="onContentControlSelection" @content-control-command="onContentControlCommand"
+            @note-navigation="onNoteCanvasNavigation"
             :permission-context="permissionContext" :table-floating-toolbar="tableFloatingToolbarOpen" @operation="onRibbonExecute"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
@@ -2241,27 +2550,32 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <div v-if="documentContextMenu" class="document-context-menu" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.menu-label', 'Document context menu')" :style="{ left: `${documentContextMenu.left}px`, top: `${documentContextMenu.top}px` }">
       <Menu mode="vertical" :selectable="false" :items="documentContextMenuItems" @click="selectDocumentContextMenuItem" />
     </div>
-    <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden @ok="confirmModal">
-      <Form layout="vertical" class="insert-form" @submit.prevent>
-        <FormItem :label="modalKind === 'image' ? '图片地址' : '链接地址'"><Input v-model:value="modalValue" placeholder="https://" allow-clear @press-enter="confirmModal" /></FormItem>
-        <Upload v-if="modalKind === 'image'" accept="image/png,image/jpeg,image/gif,image/webp" :show-upload-list="false" :before-upload="beforeImageUpload">
-          <Button type="primary"><FileUp :size="15" />选择本地图片</Button>
+    <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden
+      :focus-trigger-after-close="!pictureReplacementRequest" :after-close="onInsertModalClosed"
+      :ok-button-props="{ disabled: !pictureReplacementState.available }" @ok="confirmModal">
+      <Form layout="vertical" class="insert-form" :disabled="!pictureReplacementState.available" @submit.prevent>
+        <FormItem :label="modalKind === 'image' ? '图片地址' : '链接地址'"><Input v-model:value="modalValue" placeholder="https://" allow-clear :disabled="!pictureReplacementState.available" @press-enter="confirmModal" /></FormItem>
+        <Upload v-if="modalKind === 'image'" accept="image/png,image/jpeg,image/gif,image/webp" :show-upload-list="false" :before-upload="beforeImageUpload" :disabled="!pictureReplacementState.available">
+          <Button type="primary" :disabled="!pictureReplacementState.available"><FileUp :size="15" />选择本地图片</Button>
         </Upload>
       </Form>
-      <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
+      <Alert v-if="modalError" type="error" show-icon :message="modalError" role="alert" class="insert-error" />
     </Modal>
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" :read-only="!canEditContextSelection || legacyStoryActive" @error="notify" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="insertTableFromDialog" />
     <DocumentTablePropertiesDialog v-if="tableProperties" :open="tableProperties.open" :model="editingModel" :selection="selection" :permission="permissionContext"
       :table-id="tableProperties.tableId" :range="tableProperties.range" :kind="tableProperties.kind" :type="tableProperties.type" :composing="documentInputComposing"
-      :layout="layoutSource === model ? editingLayout : undefined"
+      :layout="editingLayoutSource === model ? editingLayout : undefined"
       @update:open="open => { if (tableProperties) tableProperties = { ...tableProperties, open } }" @submit="applyTableProperties" @closed="closeTableProperties" />
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :read-only="!canEditHeaderFooterSection" :editable-stories="editableHeaderFooterStories" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
-    <DocumentNotesPanel v-model:open="notesPanelOpen" :footnotes="model.footnotes ?? {}" :endnotes="model.endnotes ?? {}" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" @edit="openNoteCanvas" />
+    <DocumentNotesPanel v-model:open="notesPanelOpen" :model="model" :labels="layoutSource === model ? layout.noteLabels : undefined" :permission="permissionContext" :disabled="documentInputComposing" :error="notesError" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" @edit="openNoteCanvas" />
+    <DocumentNoteSettingsDialog v-if="noteSettings" :open="noteSettings.open" :model="model" :kind="noteSettings.kind" :section-id="noteSettings.sectionId" :selection="noteSettings.selection"
+      :permission="permissionContext" :disabled="documentInputComposing" :insert-disabled="!!editingHost || legacyStoryActive" :error="notesError"
+      @update:open="open => { if (noteSettings) noteSettings = { ...noteSettings, open } }" @submit="applyNoteSettings" @inspect="openBlockHostInspection" @closed="scheduleInputFocus(() => canvasRef?.focus())" />
     <DocumentPermissionPanel :open="permissionPanelOpen" :rules="model.permissionRules ?? []" :targets="permissionTargets" :read-only="!canManagePermissionRules" @update:open="permissionPanelOpen = $event" @save="savePermissionRules" />
     <DocumentTableOfContentsDialog
       v-model:open="tocDialog.open"
@@ -2303,7 +2617,6 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 .document-note-editing { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px; border-block-end: 1px solid var(--document-border); color: var(--document-text); background: var(--document-surface); }
 .insert-form { display: flex; flex-direction: column; gap: 16px; padding: 12px 0; }
 .insert-form :deep(.ant-form-item) { margin-bottom: 0; }
-.insert-error { color: var(--document-error); }
 @media (max-width: 650px) { .find-replace-toolbar { inset-inline-end: 4px; width: calc(100vw - 16px); } .replace-row { flex-wrap: wrap; } .replace-row :deep(.ant-input) { flex: 1 1 100px; } .document-header { padding: 0 6px; } }
 @media print { .document-header, .document-ribbon, .document-notice, :deep(.document-outline), :deep(.document-statusbar) { display: none !important; } .document-workbench, .editor-workspace { height: auto; overflow: visible; background: #fff; } }
 </style>

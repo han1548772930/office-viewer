@@ -1,7 +1,8 @@
 //! Bounded, namespace-aware native-chart XML and authored-source freshness.
 
 use std::collections::BTreeMap;
-use quick_xml::{NsReader, XmlVersion, events::{BytesStart, Event}, name::ResolveResult};
+use quick_xml::{Reader, XmlVersion, encoding::Decoder, events::{BytesStart, Event}};
+use crate::xml_namespaces::{XmlNamespaces, xml_character, validate_declaration, validate_pi_target};
 use crate::chart_options::{SOURCE_EXTENSION_NS, SOURCE_EXTENSION_URI};
 
 pub const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
@@ -9,6 +10,7 @@ pub const DRAWING_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/m
 pub const MAX_XML_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NODES: usize = 300_000;
 const MAX_DEPTH: usize = 128;
+const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Default, Clone)]
 pub struct Node {
@@ -40,7 +42,14 @@ impl Node {
     }
 }
 
-fn element(reader: &NsReader<&[u8]>, value: &BytesStart<'_>, namespace: Option<String>) -> Result<Node, String> {
+fn charge_retained(bytes: &mut usize, amount: usize, limit: usize) -> Result<(), String> {
+    *bytes = bytes.checked_add(amount).filter(|bytes| *bytes <= limit)
+        .ok_or("CHART_XML_RESOURCE_LIMIT: retained XML tree exceeds its memory admission budget")?;
+    Ok(())
+}
+
+fn element(decoder: Decoder, namespaces: &XmlNamespaces, value: &BytesStart<'_>, namespace: Option<&str>, retained: &mut usize, retained_limit: usize) -> Result<Node, String> {
+    charge_retained(retained, std::mem::size_of::<Node>() + value.local_name().as_ref().len() + namespace.map_or(0, str::len), retained_limit)?;
     let name = String::from_utf8_lossy(value.local_name().as_ref()).into_owned();
     let mut attrs = BTreeMap::new();
     let mut attr_namespaces = BTreeMap::new();
@@ -48,15 +57,16 @@ fn element(reader: &NsReader<&[u8]>, value: &BytesStart<'_>, namespace: Option<S
     for attr in value.attributes() {
         let attr = attr.map_err(|error| error.to_string())?;
         if attr.key.as_ref() == b"xmlns" || attr.key.as_ref().starts_with(b"xmlns:") { continue; }
+        if attr.value.as_ref().contains(&b'<') { return Err("invalid unescaped native XML attribute character".into()); }
         let key = String::from_utf8_lossy(attr.key.local_name().as_ref()).into_owned();
-        let (resolved, _) = reader.resolver().resolve_attribute(attr.key);
-        let attr_namespace = match resolved {
-            ResolveResult::Bound(value) => Some(String::from_utf8_lossy(value.as_ref()).into_owned()),
-            ResolveResult::Unbound => None,
-            ResolveResult::Unknown(value) => return Err(format!("unbound native XML attribute prefix {}", String::from_utf8_lossy(&value))),
-        };
-        let decoded = attr.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity)
+        let attr_namespace = namespaces.namespace(attr.key, true)?;
+        let decoded = attr.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, decoder, 1, quick_xml::escape::resolve_xml_entity)
             .map_err(|error| error.to_string())?.into_owned();
+        if !decoded.chars().all(xml_character) { return Err("invalid native XML attribute character".into()); }
+        // Expanded attributes and the compatibility lookup retain separate keys/values.
+        // Repeating a long ancestor namespace therefore consumes a real tree budget.
+        charge_retained(retained, 128 + 2 * (key.len() + decoded.len() + attr_namespace.map_or(0, str::len)), retained_limit)?;
+        let attr_namespace = attr_namespace.map(str::to_owned);
         if expanded_attrs.entry(attr_namespace.clone().unwrap_or_default()).or_default().insert(key.clone(), decoded.clone()).is_some() {
             return Err("duplicate native XML attribute expanded name".into());
         }
@@ -71,7 +81,7 @@ fn element(reader: &NsReader<&[u8]>, value: &BytesStart<'_>, namespace: Option<S
             attrs.insert(key, decoded);
         }
     }
-    Ok(Node { name, namespace, attrs, attr_namespaces, expanded_attrs, ..Node::default() })
+    Ok(Node { name, namespace: namespace.map(str::to_owned), attrs, attr_namespaces, expanded_attrs, ..Node::default() })
 }
 
 pub fn parse(source: &str) -> Result<Node, String> {
@@ -81,50 +91,80 @@ pub fn parse(source: &str) -> Result<Node, String> {
 /// A writer can reserve the three manifest element nodes before computing a
 /// signature, so its final XML stays within the reader's identical tree budget.
 pub fn parse_with_reserved_nodes(source: &str, reserved_nodes: usize) -> Result<Node, String> {
+    parse_with_limits(source, reserved_nodes, MAX_RETAINED_BYTES)
+}
+
+fn parse_with_limits(source: &str, reserved_nodes: usize, retained_limit: usize) -> Result<Node, String> {
     let node_limit = MAX_NODES.checked_sub(reserved_nodes).ok_or("CHART_XML_RESOURCE_LIMIT: reserved chart nodes exceed the tree budget")?;
     if source.len() > MAX_XML_BYTES { return Err("CHART_XML_RESOURCE_LIMIT: native chart part exceeds 16 MiB".into()); }
-    let mut reader = NsReader::from_str(source);
+    if !source.chars().all(xml_character) { return Err("invalid native XML character".into()); }
+    let mut reader = Reader::from_str(source);
+    reader.config_mut().enable_all_checks(true);
+    let mut namespaces = XmlNamespaces::default();
     let mut stack = vec![Node::default()];
     let mut count = 0usize;
+    let mut retained = 0usize;
+    charge_retained(&mut retained, reserved_nodes.checked_mul(std::mem::size_of::<Node>()).ok_or("CHART_XML_RESOURCE_LIMIT: reserved tree allocation overflow")?, retained_limit)?;
+    let mut declaration_seen = false;
     loop {
-        let (namespace, event) = reader.read_resolved_event().map_err(|error| error.to_string())?;
-        let namespace = match namespace {
-            ResolveResult::Bound(value) => Some(String::from_utf8_lossy(value.as_ref()).into_owned()),
-            ResolveResult::Unbound => None,
-            ResolveResult::Unknown(value) => return Err(format!("unbound chart XML prefix {}", String::from_utf8_lossy(&value))),
-        };
+        let position = reader.buffer_position();
+        let event = reader.read_event().map_err(|error| error.to_string())?;
         match event {
             Event::Start(value) => {
                 count += 1;
                 if count > node_limit || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
-                let node = element(&reader, &value, namespace)?;
+                namespaces.push(&value, reader.decoder())?;
+                let namespace = namespaces.namespace(value.name(), false)?;
+                let node = element(reader.decoder(), &namespaces, &value, namespace, &mut retained, retained_limit)?;
                 stack.push(node);
             }
             Event::Empty(value) => {
                 count += 1;
                 if count > node_limit || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
-                let node = element(&reader, &value, namespace)?;
+                namespaces.push(&value, reader.decoder())?;
+                let namespace = namespaces.namespace(value.name(), false)?;
+                let node = element(reader.decoder(), &namespaces, &value, namespace, &mut retained, retained_limit)?;
+                namespaces.pop();
                 stack.last_mut().ok_or_else(|| "empty chart XML root".to_owned())?.children.push(node);
             }
             Event::Text(value) => {
-                if let Some(node) = stack.last_mut() { node.text.push_str(&value.decode().map_err(|error| error.to_string())?); }
+                let decoded = value.decode().map_err(|error| error.to_string())?;
+                if decoded.contains("]]>") || stack.len() == 1 && !decoded.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) { return Err("invalid native XML text outside its root or CDATA terminator".into()); }
+                charge_retained(&mut retained, decoded.len(), retained_limit)?;
+                if let Some(node) = stack.last_mut() { node.text.push_str(&decoded); }
             }
             Event::CData(value) => {
-                if let Some(node) = stack.last_mut() { node.text.push_str(&value.decode().map_err(|error| error.to_string())?); }
+                if stack.len() == 1 { return Err("native XML CDATA must be inside the root".into()); }
+                let decoded = value.decode().map_err(|error| error.to_string())?;
+                charge_retained(&mut retained, decoded.len(), retained_limit)?;
+                if let Some(node) = stack.last_mut() { node.text.push_str(&decoded); }
             }
             Event::GeneralRef(value) => {
+                if stack.len() == 1 { return Err("native XML entity must be inside the root".into()); }
                 let decoded = value.decode().map_err(|error| error.to_string())?;
                 let resolved = value.resolve_char_ref().map_err(|error| error.to_string())?.map(|value| value.to_string())
                     .or_else(|| quick_xml::escape::resolve_xml_entity(&decoded).map(str::to_owned))
                     .ok_or_else(|| format!("unknown chart XML entity &{decoded};"))?;
+                if !resolved.chars().all(xml_character) { return Err("invalid native XML character reference".into()); }
+                charge_retained(&mut retained, resolved.len(), retained_limit)?;
                 if let Some(node) = stack.last_mut() { node.text.push_str(&resolved); }
             }
             Event::End(_) => {
                 if stack.len() <= 1 { return Err("unbalanced chart XML tree".into()); }
                 let node = stack.pop().ok_or_else(|| "empty chart XML stack".to_owned())?;
+                namespaces.pop();
                 stack.last_mut().ok_or_else(|| "empty chart XML root".to_owned())?.children.push(node);
             }
             Event::DocType(_) => return Err("chart XML must not declare a DTD".into()),
+            Event::Decl(declaration) => {
+                if declaration_seen || position > 3 || !source.trim_start_matches('\u{feff}').starts_with("<?xml") { return Err("misplaced or repeated native XML declaration".into()); }
+                validate_declaration(declaration.as_ref())?;
+                declaration_seen = true;
+            }
+            Event::PI(instruction) => {
+                validate_pi_target(instruction.target())?;
+                if !instruction.content().is_empty() && !instruction.content()[0].is_ascii_whitespace() { return Err("invalid native XML processing-instruction separator".into()); }
+            }
             Event::Eof => break,
             _ => {}
         }
@@ -208,5 +248,37 @@ mod tests {
         let changed = parse(&format!("<c:chartSpace xmlns:c=\"{CHART_NS}\" xmlns:a=\"urn:first\" xmlns:b=\"urn:second\" a:val=\"1\" b:val=\"3\"/>")).unwrap();
         assert_eq!(signature(&first), signature(&renamed));
         assert_ne!(signature(&first), signature(&changed));
+    }
+
+    // Draft writer/reader admission boundary; no large synthetic tree is needed
+    // to prove that reserved manifest nodes count against the same final limit.
+    #[test]
+    fn reserved_manifest_nodes_share_the_final_reader_node_budget() {
+        let source = "<root><child/></root>";
+        assert!(parse_with_reserved_nodes(source, MAX_NODES - 2).is_ok());
+        assert!(parse_with_reserved_nodes(source, MAX_NODES - 1).unwrap_err().contains("CHART_XML_RESOURCE_LIMIT"));
+        assert!(parse_with_reserved_nodes(source, MAX_NODES + 1).unwrap_err().contains("CHART_XML_RESOURCE_LIMIT"));
+        let plain = parse(source).unwrap();
+        let reserved = parse_with_reserved_nodes(source, 3).unwrap();
+        assert_eq!(signature(&plain), signature(&reserved));
+    }
+
+    #[test]
+    fn inherited_namespace_text_is_charged_for_every_retained_element() {
+        let namespace = format!("urn:{}", "x".repeat(2048));
+        let source = format!("<root xmlns=\"{namespace}\"><a/><b/><c/><d/><e/><f/></root>");
+        assert!(source.len() < 4096);
+        assert!(parse(&source).is_ok());
+        assert!(parse_with_limits(&source, 0, 10_000).unwrap_err().contains("CHART_XML_RESOURCE_LIMIT"));
+    }
+
+    #[test]
+    fn malformed_declarations_external_text_and_invalid_character_refs_are_rejected() {
+        for source in [" <?xml version='1.0'?><root/>", "<?xml version='1.1'?><root/>", "<?XML x?><root/>",
+            "<root/>outside", "&#32;<root/>", "<![CDATA[]]><root/>", "<root>]]></root>",
+            "<root val='<raw'/>", "<root>&#0;</root>"] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+        assert!(parse("<?xml version='1.0' encoding='UTF-8'?><!-- <!DOCTYPE literal> --><root><![CDATA[<!DOCTYPE literal>]]><?keep x?></root>").is_ok());
     }
 }

@@ -19,35 +19,140 @@ fn close(actual: f64, expected: f64) {
 #[test]
 fn histogram_thresholds_and_right_closed_intervals() {
     let result = run(vec![0.0, 1.0, 2.0, 3.0, 4.0], 5, 1, None, vec![0, 1, 2, 3, 4], 5,
-        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Count { count: 2 }),
+        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Count { count: 4.0 }),
             underflow_threshold: Some(1.0), overflow_threshold: Some(3.0) }]);
-    assert_eq!(result.values, vec![0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 0.0]);
+    assert_eq!(result.values, vec![0.0, 1.0, 2.0, 2.5, 2.5, 3.0, 3.0, 0.0]);
     assert_eq!(result.indices, vec![0, 2, 1, 1, 1, 1, 2, 1]);
     assert_eq!(result.segments[0].valid_sample_count, 5);
 }
 
 #[test]
-fn constant_histogram_retains_authored_count_and_finite_extreme_bounds() {
+fn constant_histogram_retains_one_point_interval_and_finite_extreme_bounds() {
     let result = run(vec![7.0; 3], 3, 1, None, vec![0, 1, 2], 3,
-        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Count { count: 3 }),
+        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Count { count: 3.0 }),
             underflow_threshold: None, overflow_threshold: None }]);
-    assert_eq!(result.indices, vec![1, 3, 1, 0, 1, 0]);
-    assert_eq!(result.values[0], 7.0);
-    assert_eq!(result.values[5], 8.0);
+    assert_eq!(result.indices, vec![1, 3]);
+    assert_eq!(result.values, vec![7.0, 7.0]);
     let result = run(vec![f64::MAX], 1, 1, None, vec![0], 1,
         vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: None,
             underflow_threshold: None, overflow_threshold: None }]);
-    assert!(result.values[0] < result.values[1]);
-    assert_eq!(result.values[1], f64::MAX);
+    assert_eq!(result.values, vec![f64::MAX, f64::MAX]);
+    assert_eq!(result.indices, vec![1, 1]);
+}
+
+#[test]
+fn histogram_scott_uses_sample_deviation_and_ineffective_finite_counts_fall_back() {
+    let automatic = run(vec![0.0, 1.0, 2.0], 3, 1, None, vec![0, 1, 2], 3,
+        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: None,
+            underflow_threshold: None, overflow_threshold: None }]);
+    // Sample SD = 1 gives Scott width > 2, hence one ordinary bin.
+    assert_eq!(automatic.values, vec![0.0, 2.0]);
+    assert_eq!(automatic.indices, vec![1, 3]);
+    for count in [-1.0, 0.0, 1.5, 1001.0] {
+        let result = run(vec![0.0, 1.0, 2.0], 3, 1, None, vec![0, 1, 2], 3,
+            vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Count { count }),
+                underflow_threshold: Some(10.0), overflow_threshold: Some(0.0) }]);
+        assert_eq!(result.values, automatic.values);
+        assert_eq!(result.indices, automatic.indices);
+    }
+}
+
+#[test]
+fn histogram_total_bin_capacity_includes_enabled_edges() {
+    let result = run(vec![0.0, 2.0, 3.0, 4.0], 4, 1, None, vec![0, 1, 2, 3], 4,
+        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Count { count: 1000.0 }),
+            underflow_threshold: Some(1.0), overflow_threshold: Some(3.0) }]);
+    assert_eq!(result.values.len(), 2000);
+    assert_eq!(result.indices.len(), 2000);
+    assert_eq!(&result.indices[..2], &[0, 1]);
+    assert_eq!(&result.indices[1998..], &[2, 1]);
+    assert_eq!(result.indices.chunks_exact(2).map(|bin| bin[1]).sum::<u32>(), 4);
+}
+
+#[test]
+fn histogram_width_uses_threshold_origin_and_truncates_the_final_bin() {
+    let result = run(vec![1.0, 4.0, 7.0], 3, 1, None, vec![0, 1, 2], 3,
+        vec![ChartJob::Histogram { series_index: 0, slot: 0, binning: Some(HistogramBinning::Width { width: 5.0 }),
+            underflow_threshold: Some(0.0), overflow_threshold: Some(7.0) }]);
+    assert_eq!(result.values, vec![0.0, 0.0, 0.0, 5.0, 5.0, 7.0, 7.0, 0.0]);
+    assert_eq!(result.indices, vec![0, 0, 1, 2, 1, 1, 2, 0]);
+}
+
+#[test]
+fn histogram_without_regular_samples_omits_empty_edges_after_an_earlier_job() {
+    for (samples, bounds, expected) in [
+        (vec![1.0, 2.0, 3.0], vec![0.0, 5.0], vec![0, 3]),
+        (vec![20.0, 30.0, 40.0], vec![10.0, 0.0], vec![2, 3]),
+    ] {
+        let result = run(samples, 3, 1, None, vec![0, 1, 2], 3,
+            vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: false },
+                ChartJob::Histogram { series_index: 0, slot: 1, binning: None,
+                    underflow_threshold: Some(5.0), overflow_threshold: Some(10.0) }]);
+        let histogram = &result.segments[1];
+        assert_eq!(histogram.value_length, 2);
+        assert_eq!(histogram.index_length, 2);
+        assert_eq!(&result.values[histogram.value_offset as usize..], bounds.as_slice());
+        assert_eq!(&result.indices[histogram.index_offset as usize..], expected.as_slice());
+    }
 }
 
 #[test]
 fn boxplot_quartile_methods_and_outliers() {
     let result = run(vec![1.0, 2.0, 3.0, 4.0], 4, 1, None, vec![0, 1, 2, 3], 4,
-        vec![ChartJob::Boxplot { series_index: 0, slot: 0, quartile_method: QuartileMethod::Exclusive, whisker_multiplier: 1.5 },
-            ChartJob::Boxplot { series_index: 0, slot: 1, quartile_method: QuartileMethod::Inclusive, whisker_multiplier: 0.0 }]);
+        vec![ChartJob::Boxplot { series_index: 0, slot: 0, quartile_method: QuartileMethod::Exclusive, whisker_method: WhiskerMethod::Iqr, whisker_multiplier: 1.5 },
+            ChartJob::Boxplot { series_index: 0, slot: 1, quartile_method: QuartileMethod::Inclusive, whisker_method: WhiskerMethod::Iqr, whisker_multiplier: 0.0 }]);
     assert_eq!(&result.values[..5], &[1.0, 1.25, 2.5, 3.75, 4.0]);
     assert_eq!(&result.values[5..], &[2.0, 1.75, 2.5, 3.25, 3.0, 1.0, 4.0]);
+    assert_eq!(result.indices, vec![0, 3]);
+    assert_eq!(result.segments[0].index_length, 0);
+    assert_eq!(result.segments[1].index_length, 2);
+}
+
+#[test]
+fn fixed_boxplot_half_medians_retain_full_sample_whiskers() {
+    for (values, expected) in [
+        (vec![4.0, 2.0, 1.0, 3.0], vec![1.0, 1.5, 2.5, 3.5, 4.0]),
+        (vec![100.0, 3.0, 2.0, 4.0, 1.0], vec![1.0, 1.5, 3.0, 52.0, 100.0]),
+        (vec![100.0, 5.0, 4.0, 3.0, 2.0, 1.0], vec![1.0, 2.0, 3.5, 5.0, 100.0]),
+    ] {
+        let rows = values.len() as u32;
+        let result = run(values, rows, 1, None, (0..rows).collect(), rows,
+            vec![ChartJob::Boxplot { series_index: 0, slot: 0, quartile_method: QuartileMethod::MedianOfHalves,
+                whisker_method: WhiskerMethod::Range, whisker_multiplier: 1.5 }]);
+        assert_eq!(result.values, expected);
+        assert!(result.indices.is_empty());
+    }
+    let result = run(vec![7.0], 1, 1, None, vec![0], 1,
+        vec![ChartJob::Boxplot { series_index: 0, slot: 0, quartile_method: QuartileMethod::MedianOfHalves,
+            whisker_method: WhiskerMethod::Range, whisker_multiplier: 1.5 }]);
+    assert!(result.values.is_empty());
+    assert!(!result.segments[0].available);
+    assert_eq!(result.segments[0].valid_sample_count, 1);
+}
+
+#[test]
+fn boxplot_packet_preserves_legacy_iqr_and_accepts_explicit_fixed_modes() {
+    let legacy: ChartJob = serde_json::from_str(r#"{"kind":"boxplot","seriesIndex":0,"slot":0,"quartileMethod":"inclusive","whiskerMultiplier":1.5}"#).unwrap();
+    assert!(matches!(legacy, ChartJob::Boxplot { whisker_method: WhiskerMethod::Iqr, .. }));
+    let fixed: ChartJob = serde_json::from_str(r#"{"kind":"boxplot","seriesIndex":0,"slot":0,"quartileMethod":"medianOfHalves","whiskerMethod":"range","whiskerMultiplier":1.5}"#).unwrap();
+    assert!(matches!(fixed, ChartJob::Boxplot { quartile_method: QuartileMethod::MedianOfHalves, whisker_method: WhiskerMethod::Range, .. }));
+}
+
+#[test]
+fn equal_boxplot_outliers_keep_original_rows_across_empty_samples() {
+    let params = ChartStatisticsParams { row_count: 12, column_count: 1, category_count: 12,
+        series: vec![ChartSeries { field: 1, series_position: 0, column: 0, x_column: None }],
+        jobs: vec![ChartJob::Boxplot { series_index: 0, slot: 0, quartile_method: QuartileMethod::Inclusive, whisker_method: WhiskerMethod::Iqr, whisker_multiplier: 1.5 }] };
+    let estimate = params.memory_estimate().unwrap();
+    assert_eq!(estimate.index_capacity, 12);
+    let mut states = vec![1; 12]; states[1] = 0;
+    let mut task = ChartStatistics::new(vec![100.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        states, (0..12).collect(), params, usize::MAX).unwrap();
+    assert!(task.step(1).unwrap());
+    let result = task.take_result().unwrap();
+    assert_eq!(result.values, vec![0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 100.0]);
+    assert_eq!(result.indices, vec![0, 4]);
+    assert_eq!(result.segments[0].valid_sample_count, 11);
 }
 
 #[test]
@@ -56,6 +161,45 @@ fn pareto_groups_duplicate_categories_and_orders_ties_by_first_source_row() {
         vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: true }]);
     assert_eq!(result.indices, vec![0, 1, 2]);
     assert_eq!(result.values, vec![3.0, 50.0, 3.0, 100.0, 0.0, 100.0]);
+}
+
+#[test]
+fn pareto_truncates_percentages_without_scaling_representable_totals() {
+    let result = run(vec![6.0, 4.0], 2, 1, None, vec![0, 1], 2,
+        vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: false }]);
+    assert_eq!(result.values, vec![6.0, 60.0, 4.0, 100.0]);
+    let result = run(vec![9.0, 3.0, 3.0, 3.0], 4, 1, None, vec![0, 1, 2, 3], 4,
+        vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: false }]);
+    assert_eq!(result.indices, vec![0, 1, 2, 3]);
+    assert_eq!(result.values, vec![9.0, 50.0, 3.0, 66.66, 3.0, 83.33, 3.0, 100.0]);
+}
+
+#[test]
+fn pareto_aggregates_signed_rows_before_filtering_and_retains_zero_tie_order() {
+    let values = vec![7.0, -2.0, 5.0, -1.0, 1.0, 0.0, -4.0];
+    let categories = vec![0, 0, 1, 2, 2, 3, 4];
+    let result = run(values.clone(), 7, 1, None, categories.clone(), 5,
+        vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: true }]);
+    assert_eq!(result.indices, vec![0, 1, 2, 3]);
+    assert_eq!(result.values, vec![5.0, 50.0, 5.0, 100.0, 0.0, 100.0, 0.0, 100.0]);
+    assert_eq!(result.segments[0].valid_sample_count, 7);
+    let result = run(values, 7, 1, None, categories, 5,
+        vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: false }]);
+    assert_eq!(result.indices, vec![0, 1]);
+    assert_eq!(result.values, vec![5.0, 50.0, 5.0, 100.0]);
+}
+
+#[test]
+fn pareto_scales_only_an_overflowing_total_and_rejects_overflowing_category_sums() {
+    let result = run(vec![f64::MAX, f64::MAX], 2, 1, None, vec![0, 1], 2,
+        vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: false }]);
+    assert_eq!(result.values, vec![f64::MAX, 50.0, f64::MAX, 100.0]);
+    let params = ChartStatisticsParams { row_count: 2, column_count: 1, category_count: 1,
+        series: vec![ChartSeries { field: 1, series_position: 0, column: 0, x_column: None }],
+        jobs: vec![ChartJob::Pareto { series_index: 0, slot: 0, include_zero_values: false }] };
+    let mut task = ChartStatistics::new(vec![f64::MAX, f64::MAX], vec![1, 1], vec![0, 0], params, usize::MAX).unwrap();
+    assert!(task.step(1).is_err());
+    assert!(task.take_result().is_err());
 }
 
 #[test]

@@ -26,7 +26,7 @@ function model(type = 'column', options = {}) {
 }
 function fixture(type, options = {}) {
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
-  sheet.cells = Object.fromEntries([['X', 'Units'], [1, 10], [2, 20], [3, 30]].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(value)])))
+  sheet.cells = Object.fromEntries([['X', 'Units'], [1, 10], [2, 20], [3, 30]].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(r, c, value)])))
   const chart = createChart(workbook, sheet.id, model(type, options))
   return { workbook, chart, data: readChartData(workbook, chart) }
 }

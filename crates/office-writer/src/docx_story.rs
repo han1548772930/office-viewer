@@ -243,8 +243,7 @@ pub(super) fn write_story(context: &mut WriteContext<'_>, path: &str, content_ty
     if let Some(blocks) = super::block_hosts::content_blocks(supplied)? {
         source_guard::validate(supplied, root)?;
         return context.with_relationship_owner(path, |context| {
-            let mut body = String::new();
-            for block in blocks { body.push_str(&context.block(block)?); }
+            let mut body = context.blocks(blocks, None)?;
             if blocks.is_empty() { body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>"); }
             context.package.add_xml(path, content_type, format!("{}<w:{root} {}>{body}</w:{root}>", xml::DECL, super::CONTENT_NAMESPACES))
         });

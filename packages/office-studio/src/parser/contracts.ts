@@ -1,4 +1,4 @@
-import type { DocumentModel, ParserDiagnostic, WorkbookModel } from '../domain/model.ts'
+import type { DocumentCustomXmlPart, DocumentModel, ParserDiagnostic, WorkbookModel } from '../domain/model.ts'
 import type { WasmTaskControl, WasmTaskMetrics } from '../platform/wasm/task-protocol.ts'
 
 export interface RawParserError {
@@ -49,6 +49,24 @@ export interface DocumentOfficeSourceDto {
 
 export interface RawParserPayloadData extends Record<string, unknown> {
   officeSource?: DocumentOfficeSourceDto | null
+  customXmlParts?: DocumentCustomXmlPart[]
+  nativeContentControls?: NativeDocumentContentControlDto[]
+}
+
+/** Native parser addresses precede stable domain table/row ID normalization. */
+export interface NativeDocumentContentControlDto {
+  id: string
+  parentId?: string
+  properties: Record<string, unknown>
+  textRanges: Array<{ blockId: string; startOffset: number; endOffset: number; startNoteReferenceCount?: number; endNoteReferenceCount?: number }>
+  hasObjectContent?: boolean
+  objectContentCount?: number
+  blockIds?: string[]
+  tableRowRange?: { tableBlockId: string; rowIndexes: number[] }
+  partName: string
+  story: string
+  noteId?: number
+  sourceXml: string
 }
 
 export interface ParseEnvelope {

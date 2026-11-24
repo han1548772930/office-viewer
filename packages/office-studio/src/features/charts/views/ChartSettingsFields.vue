@@ -6,7 +6,7 @@ import { chartDataHint, chartTypeSelectOptions, isChartType, resolveChartType, s
 import { chartAxisControls, chartAxisPointerControls, chartCommonControls, chartDateAxisControls, chartFontControls, chartLegendFont, chartLineControls, chartSeriesControls, optionGroup } from '../chart-settings-controls'
 import { chartAggregationControls, chartDataMappingControls, chartTypeSettingsControls } from '../chart-type-settings-controls'
 import { chartDraftFieldCount, chartDraftFields, cloneChartDraftConfig, type ChartSettingsDraft, type ChartSettingsField, type ChartSettingsSourceSheet } from '../chart-settings-draft'
-import { chartSettingsDateAxisError, projectChartSettings } from '../chart-settings-data'
+import { chartSettingsDateAxisError, projectChartSettings, type ChartSettingsProjection } from '../chart-settings-data'
 import { supportsChartDateAxis } from '../chart-date-axis'
 import { supportsChartAxisPointer } from '../chart-axis-pointer'
 import { chartHierarchyItems, chartNumber } from '../chart-data'
@@ -16,6 +16,8 @@ import { convertChartType } from '../chart-type-conversion'
 import { chartSeriesStyle } from '../chart-options'
 import { validateChartNamedSeriesBindings } from '../chart-series-selector'
 import { chartParetoSettingsCategories } from '../chart-pareto'
+import { chartHistogramCategories } from '../chart-histogram'
+import { chartHistogramDataControls } from '../chart-histogram-settings-controls'
 import { chartWaterfallUsesSecondaryAxis } from '../chart-waterfall'
 import { chartAutoGradientControls, chartPlotAreaControls } from '../chart-plot-area-controls'
 import { supportsChartPlotArea, validateChartPlotArea } from '../chart-plot-area'
@@ -23,17 +25,21 @@ import ChartOptionFields from './ChartOptionFields.vue'
 import ChartSeriesSettings from './ChartSeriesSettings.vue'
 import ChartParetoSettings from './ChartParetoSettings.vue'
 import ChartWaterfallSettings from './ChartWaterfallSettings.vue'
+import ChartCandlestickSettings from './ChartCandlestickSettings.vue'
+import ChartTreemapSettings from './ChartTreemapSettings.vue'
 import ChartStatisticsSettings from './ChartStatisticsSettings.vue'
 import ChartCollectionSettings from './ChartCollectionSettings.vue'
 
-const props = defineProps<{ draft: ChartSettingsDraft; sheets?: ChartSettingsSourceSheet[]; hostSheetId?: string; data?: ChartData; date1904?: boolean; lockedSource?: boolean; disabled?: boolean }>()
+const props = defineProps<{ draft: ChartSettingsDraft; sheets?: ChartSettingsSourceSheet[]; hostSheetId?: string; data?: ChartData; projection?: ChartSettingsProjection; date1904?: boolean; lockedSource?: boolean; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:draft': [value: ChartSettingsDraft] }>()
 const config = computed(() => props.draft.config), descriptor = computed(() => resolveChartType(config.value.type))
 const sourceSheetId = computed(() => config.value.source.sheetId ?? props.hostSheetId)
 const sourceSheet = computed(() => props.sheets?.find(sheet => sheet.id === sourceSheetId.value))
 const sourceLocked = computed(() => props.lockedSource || Boolean(config.value.pivotTableId))
-const projection = computed(() => projectChartSettings(props.draft, sourceSheet.value, props.data, props.date1904 ?? props.data?.date1904))
-const dateAxisError = computed(() => chartSettingsDateAxisError(config.value, projection.value.data, props.date1904 ?? props.data?.date1904))
+const projection = computed(() => props.projection ?? projectChartSettings(props.draft, sourceSheet.value, props.data, props.date1904 ?? props.data?.date1904,
+  { hostSheetId: props.hostSheetId }))
+const dateAxisError = computed(() => chartSettingsDateAxisError(config.value, projection.value.data,
+  props.date1904 ?? projection.value.data?.date1904 ?? props.data?.date1904, projection.value.prepared ? 'options' : 'source'))
 const namedBindingError = computed(() => {
   try { validateChartNamedSeriesBindings(config.value.options, projection.value.data?.series ?? []); return undefined }
   catch (reason) { return reason instanceof Error ? reason.message : String(reason) }
@@ -43,21 +49,30 @@ const plotAreaError = computed(() => {
   catch (reason) { return reason instanceof Error ? reason.message : String(reason) }
 })
 const plotAreaControls = computed(() => chartPlotAreaControls(projection.value.data?.series))
-const fieldCount = computed(() => projection.value.source?.fields.length ?? (sourceLocked.value || !sourceSheet.value ? props.data?.fields?.length : undefined) ?? chartDraftFieldCount(props.draft))
+const fieldCount = computed(() => projection.value.data?.fields?.length ?? projection.value.source?.fields.length ?? (sourceLocked.value || !sourceSheet.value ? props.data?.fields?.length : undefined) ?? chartDraftFieldCount(props.draft))
 const fields = computed<ChartSettingsField[]>(() => {
-  const sourceFields = projection.value.source?.fields ?? (sourceLocked.value || !sourceSheet.value ? props.data?.fields : undefined)
+  const sourceFields = projection.value.data?.fields ?? projection.value.source?.fields ?? (sourceLocked.value || !sourceSheet.value ? props.data?.fields : undefined)
   return sourceFields ? sourceFields.map((label, value) => ({ label: label || `字段 ${value + 1}`, value })) : chartDraftFields(props.draft, sourceSheet.value)
 })
 const categories = computed(() => projection.value.data?.categories ?? [])
 const pointCategories = computed(() => {
+  if (descriptor.value.family === 'histogram') return chartHistogramCategories(projection.value.statistics?.histogram)
   if (descriptor.value.family === 'pareto') {
-    try { return chartParetoSettingsCategories(projection.value.data, config.value.options?.pareto?.includeZeroValues, config.value) }
-    catch { return [] }
+    return chartParetoSettingsCategories(projection.value.statistics)
   }
   return descriptor.value.family === 'boxplot' ? projection.value.data?.series.map(series => series.name) ?? [] : projection.value.data?.hierarchy
     ? chartHierarchyItems(projection.value.data.hierarchy).map(item => item.path.join(' / ')) : categories.value
 })
-const numericFields = computed(() => fields.value.filter(field => projection.value.source?.records.some(record => chartNumber(record[field.value]) !== null)))
+const numericFields = computed(() => {
+  const numeric = projection.value.data?.sourceValueFields ?? projection.value.data?.sourceNumericFields
+    ?? projection.value.source?.sourceValueFields ?? projection.value.source?.sourceNumericFields
+  if (numeric) { const values = new Set(numeric); return fields.value.filter(field => values.has(field.value)) }
+  if (projection.value.prepared) {
+    const values = new Set(projection.value.data?.series.map(series => series.field) ?? [])
+    return fields.value.filter(field => values.has(field.value))
+  }
+  return fields.value.filter(field => projection.value.source?.records.some(record => chartNumber(record[field.value]) !== null))
+})
 const seriesFields = computed<ChartSettingsField[]>(() => {
   if (projection.value.data?.series.length) {
     const values = new Set(projection.value.data.series.map(series => series.field))
@@ -111,36 +126,39 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
         <FormItem v-if="sheets?.length" label="数据所在工作表"><Select :value="sourceSheetId" :options="sheets.map(sheet => ({ value: sheet.id, label: sheet.name }))" aria-label="图表数据工作表" :disabled="sourceLocked || disabled" @update:value="sourceSheetChange" /></FormItem>
         <FormItem label="数据区域"><Input :value="draft.sourceText" placeholder="A1:C4" aria-label="图表数据区域" :disabled="sourceLocked || disabled" @update:value="sourceText" /></FormItem>
         <FormItem label="系列方向"><Select :value="config.source.orientation" :options="[{ value: 'columns', label: '按列，首行为字段名' }, { value: 'rows', label: '按行，首列为字段名' }]" aria-label="图表系列方向" :disabled="sourceLocked || disabled" @update:value="orientation" /></FormItem>
-        <ChartOptionFields :config="config" :controls="chartDataMappingControls(config, fieldCount)" :fields="fields" :field-count="fieldCount" :disabled="disabled" @update:config="change" />
+        <ChartOptionFields :config="config" :controls="chartDataMappingControls(config, fieldCount, projection.data)" :fields="fields" :field-count="fieldCount" :disabled="disabled" @update:config="change" />
+        <ChartOptionFields v-if="config.type === 'histogram'" :config="config" :controls="chartHistogramDataControls(config)" :disabled="disabled" @update:config="change" />
         <Alert v-if="sourceLocked" type="info" message="数据区域由关联的数据透视表管理，字段与样式在此编辑。" />
       </CollapsePanel>
-      <CollapsePanel key="common" header="标题、图例与外观"><ChartOptionFields :config="config" :controls="chartCommonControls()" :disabled="disabled" @update:config="change" /></CollapsePanel>
+      <CollapsePanel key="common" header="标题、图例与外观"><ChartOptionFields :config="config" :controls="chartCommonControls(config)" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel key="fonts" header="字体与边框">
         <Collapse>
           <CollapsePanel key="text" header="图表字体"><ChartOptionFields :config="config" :controls="textFontControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="title" header="标题字体"><ChartOptionFields :config="config" :controls="titleControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="subtitle" header="副标题字体"><ChartOptionFields :config="config" :controls="subtitleControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
-          <CollapsePanel key="legend" header="图例字体"><ChartOptionFields :config="config" :controls="legendControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
+          <CollapsePanel v-if="config.type !== 'treemap'" key="legend" header="图例字体"><ChartOptionFields :config="config" :controls="legendControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="border" header="图表边框"><ChartOptionFields :config="config" :controls="borderControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
         </Collapse>
       </CollapsePanel>
       <CollapsePanel key="type" header="图型专属设置">
         <ChartOptionFields :config="config" :controls="chartAutoGradientControls()" :disabled="disabled" @update:config="change" />
         <ChartOptionFields :config="config" :controls="chartTypeSettingsControls(config, fieldCount, projection.data?.series[0]?.sourceName ?? projection.data?.series[0]?.name)" :categories="categories" :disabled="disabled" @update:config="change" />
-        <ChartParetoSettings v-if="config.type === 'pareto'" :config="config" :data="projection.data" :disabled="disabled" @update:config="change" />
+        <ChartParetoSettings v-if="config.type === 'pareto'" :config="config" :data="projection.data" :statistics="projection.statistics" :disabled="disabled" @update:config="change" />
         <ChartWaterfallSettings v-if="config.type === 'waterfall'" :config="config" :fields="seriesFields" :categories="categories" :data="projection.data" :disabled="disabled" @update:config="change" />
+        <ChartCandlestickSettings v-if="config.type === 'candlestick'" :config="config" :data="projection.data" :disabled="disabled" @update:config="change" />
+        <ChartTreemapSettings v-if="config.type === 'treemap'" :config="config" :disabled="disabled" @update:config="change" />
       </CollapsePanel>
       <CollapsePanel v-if="supportsChartPlotArea(config.type)" key="plot-area" header="绘图区"><ChartOptionFields :config="config" :controls="plotAreaControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel key="series" header="系列、标记与数据标签">
         <Collapse>
-          <CollapsePanel key="all" header="所有系列"><ChartOptionFields :config="config" :controls="chartSeriesControls(undefined, descriptor.family === 'combination', secondaryAxis, descriptor.family === 'bar')" :disabled="disabled" @update:config="change" /></CollapsePanel>
+          <CollapsePanel key="all" header="所有系列"><ChartOptionFields :config="config" :controls="chartSeriesControls(undefined, descriptor.family === 'combination', secondaryAxis, descriptor.family === 'bar', undefined, config.type === 'bubble')" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="one" header="单独设置系列"><ChartSeriesSettings :config="config" :fields="seriesFields" :source-fields="fields" :categories="pointCategories" :data="projection.data" :combination="descriptor.family === 'combination'" :secondary-axis="secondaryAxis" :horizontal="descriptor.family === 'bar'" :scatter="descriptor.family === 'scatter'" :disabled="disabled" @update:config="change" /></CollapsePanel>
         </Collapse>
       </CollapsePanel>
       <CollapsePanel v-if="hasAxes" key="axes" header="坐标轴">
         <Collapse>
-          <CollapsePanel key="x" :header="descriptor.family === 'radar' ? '指标轴 / 分类标签' : 'X 轴 / 分类轴'"><ChartOptionFields :config="config" :controls="descriptor.family === 'radar' ? chartRadarCategoryAxisControls() : xAxisControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
-          <CollapsePanel key="y" :header="descriptor.family === 'radar' ? '径向数值轴' : 'Y 轴 / 数值轴'"><ChartOptionFields :config="config" :controls="descriptor.family === 'radar' ? chartRadarValueAxisControls() : chartAxisControls('yAxis')" :disabled="disabled" @update:config="change" /></CollapsePanel>
+          <CollapsePanel key="x" :header="descriptor.family === 'radar' ? '指标轴 / 分类标签' : descriptor.family === 'heatmap' ? 'X 轴 / 数值字段名' : 'X 轴 / 分类轴'"><ChartOptionFields :config="config" :controls="descriptor.family === 'radar' ? chartRadarCategoryAxisControls() : xAxisControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
+          <CollapsePanel key="y" :header="descriptor.family === 'radar' ? '径向数值轴' : descriptor.family === 'heatmap' ? 'Y 轴 / 分类标签' : 'Y 轴 / 数值轴'"><ChartOptionFields :config="config" :controls="descriptor.family === 'radar' ? chartRadarValueAxisControls() : chartAxisControls('yAxis', descriptor.family !== 'heatmap')" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel v-if="hasRightAxis" key="right" :header="secondaryAxisTitle"><ChartOptionFields :config="config" :controls="chartAxisControls('rightYAxis')" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel v-if="descriptor.threeD" key="depth" header="系列深度轴"><ChartOptionFields :config="config" :controls="chartAxisControls('depthAxis', false)" :disabled="disabled" @update:config="change" /></CollapsePanel>
         </Collapse>

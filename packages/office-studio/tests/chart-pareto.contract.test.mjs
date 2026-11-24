@@ -33,7 +33,7 @@ const source = (categories = ['A', 'B', 'A'], values = [2, 5, 3]) => ({ categori
 const optionForData = (data, chart) => chartEChartsOption(createBlankWorkbook(), chart, {}, { preparedData: data })
 function fixture(rows, options = {}) {
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
-  sheet.cells = Object.fromEntries([['Cause', 'Count'], ...rows].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(value)])))
+  sheet.cells = Object.fromEntries([['Cause', 'Count'], ...rows].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(r, c, value)])))
   const config = model(options)
   config.source.range.endRow = rows.length
   return { workbook, sheet, chart: createChart(workbook, sheet.id, config) }
@@ -42,18 +42,42 @@ function collectGraphic(elements) {
   return elements.flatMap(element => element.type === 'group' ? collectGraphic(element.children ?? []) : [element])
 }
 
-test('signed rows aggregate before filtering, while equal totals retain first-category order and scaled percentages', () => {
+test('signed rows aggregate before filtering, while equal totals retain first-category order and truncated percentages', () => {
   const categories = ['A', 'B', 'A', 'negative', 'zero', 'zero', 'E', 'F', 'missing', 'invalid'], values = [-5, 9, 8, -4, 2, -2, 3, 3, null, NaN]
   const before = structuredClone({ categories, values }), ordinary = chartPareto(categories, values), included = chartPareto(categories, values, true)
   assert.deepEqual(ordinary.categories, ['B', 'A', 'E', 'F'])
   assert.deepEqual(ordinary.values, [9, 3, 3, 3])
-  ordinary.cumulativePercent.forEach((value, index) => near(value, [50, 200 / 3, 250 / 3, 100][index]))
+  assert.deepEqual(ordinary.cumulativePercent, [50, 66.66, 83.33, 100])
   assert.deepEqual(included.categories, ['B', 'A', 'E', 'F', 'zero'])
   assert.deepEqual(included.values, [9, 3, 3, 3, 0])
   assert.equal(included.cumulativePercent.at(-1), 100)
   assert.deepEqual({ categories, values }, before)
   assert.deepEqual(chartPareto(['A', 'B'], [Number.MAX_VALUE, Number.MAX_VALUE]).cumulativePercent, [50, 100])
   assert.throws(() => chartPareto(['A', 'A'], [Number.MAX_VALUE, Number.MAX_VALUE]), RangeError)
+})
+
+test('fixed OOe cumulative values truncate without a max-normalization rounding change and overflow uses a finite fallback', () => {
+  const cases = [
+    { categories: ['A', 'B'], values: [6, 4], expected: [60, 100] },
+    { categories: ['A', 'B', 'C'], values: [4, 4, 4], expected: [33.33, 66.66, 100] },
+    { categories: ['A', 'B'], values: [7, 5], expected: [58.33, 100] },
+    { categories: ['A', 'B'], values: [101, 99], expected: [50.5, 100] },
+    { categories: ['A', 'B', 'zero'], values: [6, 4, 0], expected: [60, 100, 100] },
+    { categories: ['A', 'B', 'C'], values: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE], expected: [33.33, 66.66, 100] },
+  ]
+  for (const fixture of cases) {
+    const input = structuredClone(fixture), result = chartPareto(fixture.categories, fixture.values, true)
+    assert.deepEqual(result.cumulativePercent, fixture.expected)
+    assert.deepEqual(fixture, input)
+  }
+})
+
+test('Canvas layout and native Pareto data retain the fixed truncated cumulative tuples', () => {
+  const data = source(['A', 'B', 'C'], [4, 4, 4]), chart = model()
+  const derived = deriveChartData(data, chart), layout = layoutDerivedChartData(derived, chart), option = optionForData(data, chart)
+  assert.deepEqual(derived.pareto.cumulativePercent, [33.33, 66.66, 100])
+  assert.deepEqual(layout.series.at(-1).points.map(point => point.value), [33.33, 66.66, 100])
+  assert.deepEqual(option.series.at(-1).data.map(point => typeof point === 'number' ? point : point.value), [33.33, 66.66, 100])
 })
 
 test('zero totals are opt-in, negative totals never return, and all-zero input has a finite zero cumulative line', () => {
@@ -92,10 +116,10 @@ test('the engine accepts signed source rows and projects exactly one selected bu
   assert.deepEqual(raw.series[0].values, [-5, 9, 8, 0, -1])
   assert.deepEqual(derived.pareto.categories, ['B', 'A'])
   assert.deepEqual(derived.data.series[0].values, [9, 3])
-  assert.deepEqual(chartParetoSettingsCategories(raw, true), ['B', 'A', 'zero'])
+  assert.deepEqual(chartParetoSettingsCategories({ pareto: chartPareto(raw.categories, raw.series[0].values, true) }), ['B', 'A', 'zero'])
   assert.equal(chartDataHint('pareto').includes('合并'), true)
-  sheet.cells['0:2'] = createCell('Other count')
-  for (let row = 1; row <= 5; row++) sheet.cells[`${row}:2`] = createCell(row)
+  sheet.cells['0:2'] = createCell(0, 2, 'Other count')
+  for (let row = 1; row <= 5; row++) sheet.cells[`${row}:2`] = createCell(row, 2, row)
   const before = structuredClone(chart)
   assert.throws(() => updateChart(workbook, chart, { source: { ...chart.source, range: { ...chart.source.range, endCol: 2 } }, valueFields: [1, 2] }), RangeError)
   assert.deepEqual(chart, before)
@@ -287,10 +311,10 @@ test('materialized point indexes share aggregation/TopN preparation and keep pos
   const aggregated = source(['A', 'A', 'B', 'C'], [6, -1, 4, 2]), original = structuredClone(aggregated)
   const limited = model({ aggregation: { aggregate: true, topN: { count: 1, includeOthers: true, othersLabel: '其他' } }, pareto: { includeZeroValues: true } })
   assert.deepEqual(deriveChartData(aggregated, limited).data.categories, ['其他', 'A'])
-  assert.deepEqual(chartParetoSettingsCategories(aggregated, true, createChartSettingsDraft(limited).config), ['其他', 'A'])
+  assert.deepEqual(chartParetoSettingsCategories(deriveChartData(aggregated, limited)), ['其他', 'A'])
   assert.deepEqual(aggregated, original)
   const nullable = source(['missing', 'A'], [null, 3]), zeroed = model({ invalidValueStrategy: 'zero', pareto: { includeZeroValues: true } })
-  assert.deepEqual(chartParetoSettingsCategories(nullable, true, createChartSettingsDraft(zeroed).config), ['A', 'missing'])
+  assert.deepEqual(chartParetoSettingsCategories(deriveChartData(nullable, zeroed)), ['A', 'missing'])
   assert.deepEqual(deriveChartData(nullable, zeroed).data.categories, ['A', 'missing'])
 })
 

@@ -1,11 +1,10 @@
 import type { ChartModel, ChartNullablePatch, ChartParetoBarStyleOptions, ChartParetoLineStyleOptions, ChartSeriesOptions, ChartType } from '../../domain/model'
-import type { ChartConfig, ChartData } from './chart-engine'
 import { chartNullableValues } from './chart-cartesian-api'
 import { chartSeriesStyle, cloneChartOptions, definedChartStyleFields } from './chart-options'
-import { chartComputeInputs, chartPointStyle } from './chart-derived'
-import { chartPareto } from './chart-statistics'
+import { chartPointStyle, type ChartComputedStatistics } from './chart-derived'
 import { chartColorRepresentative } from './chart-color'
 import { chartAxisExtent } from './chart-geometry'
+import { chartMarkerShape } from './chart-markers'
 
 export const CHART_PARETO_CUMULATIVE_NAME = '累计百分比'
 export function assertChartParetoType(type: ChartType): void {
@@ -68,15 +67,27 @@ export function chartParetoCumulativeMarkerStyle(style: ChartSeriesOptions, inde
   const color = current.point?.color ?? chartColorRepresentative(current.color ?? '#d97706')
   const border = index === undefined ? undefined : style.dataPoints?.[index]?.border
   return { ...current, color, border: border ? { ...definedChartStyleFields(border), color: border.color ?? color,
-    width: border.width ?? 1, opacity: border.opacity ?? current.fillOpacity ?? 1 } : { visible: false, width: 0 } }
+    width: border.width ?? 1, opacity: border.opacity ?? current.fillOpacity ?? 1 }
+    : chartMarkerShape(current.point?.shape ?? 'circle').hollow ? { color, width: 1, opacity: current.fillOpacity ?? 1 } : { visible: false, width: 0 } }
 }
 
-/** Editor selectors use materialized categories, rather than raw source rows.
- * A draft consumes the renderer's same aggregation/TopN/value preparation. */
-export function chartParetoSettingsCategories(data: ChartData | undefined, includeZeroValues?: boolean,
-  config?: Pick<ChartConfig, 'options' | 'xAxis'>): string[] {
-  if (!data?.series.length) return []
-  const prepared = config ? chartComputeInputs(data, { type: 'pareto', options: config.options,
-    xAxis: { scaleType: 'linear', ...config.xAxis } }) : data
-  return chartPareto(prepared.categories, prepared.series[0]!.values, includeZeroValues).categories
+/** Label percentages project the materialized nonnegative business values.
+ * They are independent of the fixed line's two-decimal truncation: equal
+ * thirds remain equal thirds rather than 33.33, 33.33 and 33.34 percent. */
+export function chartParetoValuePercentages(values: readonly number[]): number[] {
+  let rawTotal = 0, scale = 0
+  for (const value of values) {
+    if (!Number.isFinite(value) || value < 0) throw new RangeError('帕累托业务占比须使用有限非负分类合计。')
+    rawTotal += value; scale = Math.max(scale, value)
+  }
+  if (!scale) return values.map(() => 0)
+  if (Number.isFinite(rawTotal)) return values.map(value => value / rawTotal * 100)
+  const total = values.reduce((sum, value) => sum + value / scale, 0)
+  return values.map(value => (value / scale) / total * 100)
+}
+
+/** Settings consume the current draft's Rust statistics result directly.
+ * Its prepared source has already passed aggregation, Top N and normalization. */
+export function chartParetoSettingsCategories(statistics?: Pick<ChartComputedStatistics, 'pareto'>): string[] {
+  return statistics?.pareto?.categories ?? []
 }

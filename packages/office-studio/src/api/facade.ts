@@ -5,6 +5,8 @@ import type {
   ChartLegendOptions,
   ChartModel,
   ChartPlotAreaOptions,
+  ChartParetoBarStyleOptions,
+  ChartParetoLineStyleOptions,
   ChartSemanticOptions,
   ChartSeriesOptions,
   ChartSeriesSelector,
@@ -12,6 +14,12 @@ import type {
   ChartWaterfallSeriesStyle,
   ChartWaterfallStackType,
   ChartBubbleMappingOptions,
+  ChartCandlestickCloseMarkerOptions,
+  ChartCandlestickHighLowLineOptions,
+  ChartCandlestickMappingOptions,
+  ChartCandlestickStateStyleOptions,
+  ChartTreemapOptions,
+  ChartTreemapLabelOptions,
   ChartTrendlineOptions,
   ChartErrorBarOptions,
   ChartGaugeOptions,
@@ -40,6 +48,9 @@ import type {
   CellRange,
   DocumentContentControl,
   DocumentContentControlType,
+  DocumentCustomXmlPart,
+  DocumentFootnoteSettings,
+  DocumentEndnoteSettings,
   DocumentModel,
   DocumentParagraphStyle,
   PivotAggregation,
@@ -66,13 +77,24 @@ import type {
 } from '../domain/model'
 import { createBlankSheet, createCell } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
+import { SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, type DocumentCustomXmlPartsWriteOptions } from './document-custom-xml-commands'
+import { assertDocumentPermission } from '../features/document/permissions/document-permissions'
 import { cloneChartOptions, mergeChartOptions } from '../features/charts/chart-options'
 import { chartTypeSelectOptions, resolveChartType } from '../features/charts/chart-catalog'
 import { convertChartType } from '../features/charts/chart-type-conversion'
 import { chartGaugeNullableValues, chartGaugeRangesOptions, chartGaugeTicksOptions, patchChartGaugeOptions } from '../features/charts/chart-gauge-api'
+import { assertChartCandlestickType, chartCandleWidth, chartCandlestickFields, chartCandlestickStateStyleValues,
+  chartCandlestickHighLowLineValues, chartCandlestickCloseMarkerValues } from '../features/charts/chart-candlestick-api'
+import { assertChartHistogramType, isChartHistogramAuthoredNumber } from '../features/charts/chart-histogram-api'
+import { assertChartTreemapType, chartTreemapHierarchyFields, chartTreemapValueField, chartTreemapParentLabelLayout,
+  chartTreemapLabelValues } from '../features/charts/chart-treemap-api'
 import { ChartGaugeModes, ChartGaugePointerShapes, chartGaugePresetOptions, type ChartGaugePreset } from '../features/charts/chart-gauge'
 import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/chart-radar'
 import { assertChartWaterfallType, chartWaterfallConnectorValues, patchChartWaterfallStyle } from '../features/charts/chart-waterfall'
+import { assertChartParetoType, chartParetoBarStyleValues, chartParetoLineStyleValues } from '../features/charts/chart-pareto'
+import { ChartVisualMapTypes, assertChartHeatmapType, chartHeatmapVisualMapType, chartHeatmapValueRange, chartHeatmapCellLabelValues, chartHeatmapValueUnit,
+  type ChartHeatmapVisualMapType, type ChartHeatmapLabelOptions } from '../features/charts/chart-heatmap-api'
 import { ChartAllSeriesStyleTargets, ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, chartCartesianAxisPatch, chartAxisPointerValues, chartSeriesStyleValues, clearChartAllSeriesStyle, clearChartAxis, clearChartAxisPointer, clearChartSeriesStyle, patchChartSeriesOverride,
   type ChartAllSeriesStyleTarget, type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget } from '../features/charts/chart-cartesian-api'
 import { chartSeriesOverride, validateChartSeriesSelector } from '../features/charts/chart-series-selector'
@@ -80,6 +102,7 @@ import { validateChartPlotArea } from '../features/charts/chart-plot-area'
 import { validateChartGradientAuthoring, validateChartGradientSeriesPatch } from '../features/charts/chart-gradient'
 import { describeChartConfiguration, type ChartDescription, type ChartDescriptionContext } from '../features/charts/chart-description'
 import { chartDescriptionSourceContext } from './chart-description-host'
+import type { ChartComputedStatistics } from '../features/charts/chart-derived'
 import { assertChartReadPermission, chartStatisticsSignature, type ChartStatisticsRequestContext } from '../features/charts/services/chart-statistics-service'
 import { ComputeError } from '../compute/errors'
 import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
@@ -88,8 +111,6 @@ import {
   getDocumentParagraphStyle,
   getDocumentTextStyleRuns,
   documentBodyText,
-  findDocumentParagraphs,
-  readDocumentRange,
   saveDocumentSnapshot,
   setDocumentParagraphStyle,
   setDocumentTextStyle,
@@ -127,6 +148,20 @@ import { FDocumentTable, getDocumentTables, findDocumentTables, getDocumentTable
 import type { DocumentTableInsertOptions } from '../features/document/commands/table-command-types.ts'
 import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
+import { DocumentNoteCommandRejectedError, type DocumentNoteCommandResult } from './document-note-commands'
+import { assertDocumentPublicRange, documentPublicBodyIndex, documentPublicOffsetAtFlat, documentPublicParagraphs, documentPublicRangeToFlat,
+  documentSelectionAtPublicBodyRange, type DocumentPublicBodyIndex } from './document-public-body'
+import type { UniverDocumentBody, UniverDocumentBodyData } from './document-body-types'
+import type { DocumentNoteKind, DocumentNoteMutationRequest } from '../features/document/notes/document-note-types'
+import { getDocumentNotesInReferenceOrder } from '../features/document/notes/document-note-references'
+import { getDocumentNoteSettings } from '../features/document/notes/document-note-settings'
+import { documentNotePermissionTargets } from '../features/document/permissions/document-note-permissions'
+import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../features/document/services/document-block-host'
+import { documentNoteInputFromPublic, documentNoteSettingsFromPublic, documentNoteSettingsToPublic, documentNoteToPublic,
+  type DocumentNoteContentInput, type DocumentNoteInfo, type DocumentNoteSettingsInput, type PublicDocumentFootnoteSettings,
+  type PublicDocumentEndnoteSettings } from './document-note-body'
+export type { DocumentNoteInfo, DocumentNoteContentInput, PublicDocumentNoteInput, PublicDocumentNoteDecoration,
+  PublicDocumentFootnoteSettings, PublicDocumentEndnoteSettings } from './document-note-body'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
 import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
 import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
@@ -166,7 +201,9 @@ import {
 import {
   chartLayout,
   chartRenderCommands,
+  createChartDefinition,
   readChartData,
+  type ChartData,
   type ChartConfig,
 } from '../features/charts/chart-engine'
 import { getSlicer, getSlicerItems, type SlicerCreateInput } from '../features/slicer/slicer-engine'
@@ -201,6 +238,7 @@ export class FOffice {
   readonly Event = new FEventName()
   readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
     ChartGaugeMode: ChartGaugeModes, ChartGaugePointerShape: ChartGaugePointerShapes, ChartRadarShape: ChartRadarShapes,
+    ChartVisualMapType: ChartVisualMapTypes,
     ChartAxisTarget: ChartAxisTargets, ChartSeriesClearTarget: ChartSeriesClearTargets, ChartAllSeriesStyleTarget: ChartAllSeriesStyleTargets,
     ChartAxisPointerTarget: ChartAxisPointerTargets, AxisAlignEnum: ChartAxisTitleAlignments,
     DocsTableSelectionKind: DocsTableSelectionKinds, DocsTableRowInsertPosition: DocsTableRowInsertPositions,
@@ -552,16 +590,51 @@ export class FWorksheet {
   }
   getChartTypes(): ReturnType<typeof chartTypeSelectOptions> { return chartTypeSelectOptions() }
   newChart(type: ChartType): ChartConfigBuilder { return new ChartConfigBuilder(type) }
+  /** Local draft-source read; it never inserts a chart or changes content history. */
+  async getChartSettingsData(config: ChartConfig, options: ChartComputationReadOptions = {}): Promise<ChartData> {
+    const { workbook, chart, context } = this.chartSettingsReadContext(config, options)
+    const data = await this.api.chartStatisticsService.requestSourceData(workbook, chart, context).promise
+    context.assertCurrent?.()
+    // This request owns its ephemeral data; no cache or other consumer shares it.
+    return data
+  }
+  /** Local read of materialized statistical identities for an unpublished draft. */
+  async getChartSettingsStatistics(config: ChartConfig, options: ChartComputationReadOptions = {}): Promise<ChartComputedStatistics> {
+    const { workbook, chart, context } = this.chartSettingsReadContext(config, options)
+    const snapshot = await this.api.chartStatisticsService.requestSettingsStatistics(workbook, chart, context).promise
+    context.assertCurrent?.()
+    return snapshot.statistics
+  }
+  private chartSettingsReadContext(config: ChartConfig, options: ChartComputationReadOptions): {
+    workbook: WorkbookModel; chart: ChartModel; context: ChartStatisticsRequestContext
+  } {
+    const workbook = this.workbook(), sheet = this.sheet(), userId = this.api.currentUserId
+    const modelRevision = this.api.getWorkbookRevision(this.unitId)
+    const chart = createChartDefinition(workbook, this.id, config, randomId('chart-source-read'))
+    const context: ChartStatisticsRequestContext = { ...options, documentId: this.unitId, modelRevision, userId,
+      priority: options.priority ?? 'interactive', assertCurrent: () => {
+        if (options.signal?.aborted) throw new ComputeError('COMPUTE_CANCELLED', '图表设置数据读取已取消')
+        const current = this.api.getWorkbookModel(this.unitId)
+        if (current !== workbook || current.sheets.find(candidate => candidate.id === this.id) !== sheet
+          || this.api.currentUserId !== userId || this.api.getWorkbookRevision(this.unitId) !== modelRevision) {
+          throw new ComputeError('COMPUTE_STALE_RESULT', '图表设置来源已在数据准备期间更新')
+        }
+        this.api.assertCanViewWorksheet(this.unitId, this.id)
+        assertChartReadPermission(current, chart, userId)
+      } }
+    context.assertCurrent?.()
+    return { workbook, chart, context }
+  }
   async insertChart(info: ChartInfo): Promise<FChart> {
     const chartId = randomId('chart')
-    this.api.executeCommandSync('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
+    await this.api.executeCommand('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
     return new FChart(this.api, this.unitId, chartId)
   }
   async insertPivotChart(info: ChartInfo & { pivotTableId: string }): Promise<FChart> {
     if (!info.pivotTableId) throw new TypeError('Pivot chart requires a pivot table id')
     if (!this.workbook().pivotTables?.some((pivot) => pivot.id === info.pivotTableId)) throw new Error(`Pivot table not found: ${info.pivotTableId}`)
     const chartId = randomId('pivot-chart')
-    this.api.executeCommandSync('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
+    await this.api.executeCommand('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
     return new FChart(this.api, this.unitId, chartId)
   }
   getCharts(): FChart[] { return (this.workbook().charts ?? []).filter((chart) => chart.sheetId === this.id).map((chart) => new FChart(this.api, this.unitId, chart.id)) }
@@ -950,6 +1023,37 @@ export class ChartConfigBuilder {
   clearAxisPointer(target?: ChartAxisPointerTarget): this { return this.setOption('axisPointer', clearChartAxisPointer(this.value.options?.axisPointer, target)) }
   setBubbleMapping(mapping: ChartBubbleMappingOptions): this { assertChartBubbleType(this.value.type); return this.setOption('mapping', { bubble: mapping }) }
   clearBubbleMapping(): this { assertChartBubbleType(this.value.type); return this.setOption('mapping', { bubble: undefined }) }
+  setHistogramField(index: number): this { assertChartHistogramType(this.value.type); validateChartSeriesField(index); return this.setValueFields([index]) }
+  clearHistogramField(): this { assertChartHistogramType(this.value.type); return this.setValueFields([]) }
+  setBinCount(count: number): this { assertChartHistogramType(this.value.type); return isChartHistogramAuthoredNumber(count) ? this.setOption('histogram', { binning: { mode: 'count', count } }) : this }
+  setBinWidth(width: number): this { assertChartHistogramType(this.value.type); return isChartHistogramAuthoredNumber(width) ? this.setOption('histogram', { binning: { mode: 'width', width } }) : this }
+  resetBinning(): this { assertChartHistogramType(this.value.type); return this.setOption('histogram', { binning: undefined }) }
+  setUnderflowThreshold(value: number): this { assertChartHistogramType(this.value.type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { underflowThreshold: value }) : this }
+  clearUnderflowThreshold(): this { assertChartHistogramType(this.value.type); return this.setOption('histogram', { underflowThreshold: undefined }) }
+  setOverflowThreshold(value: number): this { assertChartHistogramType(this.value.type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { overflowThreshold: value }) : this }
+  clearOverflowThreshold(): this { assertChartHistogramType(this.value.type); return this.setOption('histogram', { overflowThreshold: undefined }) }
+  setBinGap(value: number): this { assertChartHistogramType(this.value.type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { binGap: value }) : this }
+  resetBinGap(): this { assertChartHistogramType(this.value.type); return this.setOption('histogram', { binGap: undefined }) }
+  setHierarchyFields(indexes: readonly number[]): this { assertChartTreemapType(this.value.type); return this.setOption('mapping', { hierarchyIndexes: chartTreemapHierarchyFields(indexes) }) }
+  setValueField(index: number): this { assertChartTreemapType(this.value.type); return this.setValueFields([chartTreemapValueField(index)]) }
+  setParentLabelLayout(layout: NonNullable<ChartTreemapOptions['parentLabelLayout']>): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { parentLabelLayout: chartTreemapParentLabelLayout(layout) }) }
+  resetParentLabelLayout(): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { parentLabelLayout: undefined }) }
+  setTreemapLabel(label: ChartNullablePatch<ChartTreemapLabelOptions>): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { label: chartTreemapLabelValues(label) }) }
+  resetTreemapLabel(): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { label: undefined }) }
+  setCandlestickFields(fields: ChartCandlestickMappingOptions): this { assertChartCandlestickType(this.value.type); return this.setOption('mapping', { candlestick: chartCandlestickFields(fields) }) }
+  clearCandlestickFields(): this { assertChartCandlestickType(this.value.type); return this.setOption('mapping', { candlestick: undefined }) }
+  setRisingStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { rising: chartCandlestickStateStyleValues(style) }) }
+  clearRisingStyle(): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { rising: undefined }) }
+  setFallingStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { falling: chartCandlestickStateStyleValues(style) }) }
+  clearFallingStyle(): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { falling: undefined }) }
+  setDojiStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { doji: chartCandlestickStateStyleValues(style) }) }
+  clearDojiStyle(): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { doji: undefined }) }
+  setCandleWidth(width: number): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { candleWidth: chartCandleWidth(width) }) }
+  resetCandleWidth(): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { candleWidth: undefined }) }
+  setHighLowLineStyle(style: ChartNullablePatch<ChartCandlestickHighLowLineOptions>): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { highLowLine: chartCandlestickHighLowLineValues(style) }) }
+  clearHighLowLineStyle(): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { highLowLine: undefined }) }
+  setCloseMarkerStyle(style: ChartNullablePatch<ChartCandlestickCloseMarkerOptions>): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { closeMarker: chartCandlestickCloseMarkerValues(style) }) }
+  clearCloseMarkerStyle(): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { closeMarker: undefined }) }
   setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): this {
     const next = chartSeriesStyleValues(style)
     validateChartGradientSeriesPatch(this.value.type, next, '所有系列')
@@ -1005,6 +1109,42 @@ export class ChartConfigBuilder {
     return this.setOption('waterfall', { useSubtotal: value })
   }
   resetUseSubtotal(): this { assertChartWaterfallType(this.value.type); return this.setOption('waterfall', { useSubtotal: undefined }) }
+  setBarStyle(value: ChartNullablePatch<ChartParetoBarStyleOptions>): this {
+    assertChartParetoType(this.value.type)
+    return this.setOption('pareto', { barStyle: chartParetoBarStyleValues(value) })
+  }
+  clearBarStyle(): this { assertChartParetoType(this.value.type); return this.setOption('pareto', { barStyle: undefined }) }
+  setCumulativeLineStyle(value: ChartNullablePatch<ChartParetoLineStyleOptions>): this {
+    assertChartParetoType(this.value.type)
+    return this.setOption('pareto', { cumulativeLineStyle: chartParetoLineStyleValues(value) })
+  }
+  clearCumulativeLineStyle(): this { assertChartParetoType(this.value.type); return this.setOption('pareto', { cumulativeLineStyle: undefined }) }
+  setIncludeZeroValues(value: boolean): this {
+    assertChartParetoType(this.value.type)
+    if (typeof value !== 'boolean') throw new TypeError('是否包含零合计必须是布尔值。')
+    return this.setOption('pareto', { includeZeroValues: value })
+  }
+  resetIncludeZeroValues(): this { assertChartParetoType(this.value.type); return this.setOption('pareto', { includeZeroValues: undefined }) }
+  setVisualMapType(value: ChartHeatmapVisualMapType): this {
+    assertChartHeatmapType(this.value.type)
+    return this.setOption('heatmap', { visualMapType: chartHeatmapVisualMapType(value) })
+  }
+  resetVisualMapType(): this { assertChartHeatmapType(this.value.type); return this.setOption('heatmap', { visualMapType: undefined }) }
+  setValueRange(min: number, max: number): this {
+    assertChartHeatmapType(this.value.type)
+    return this.setOption('heatmap', chartHeatmapValueRange(min, max))
+  }
+  clearValueRange(): this { assertChartHeatmapType(this.value.type); return this.setOption('heatmap', { min: undefined, max: undefined }) }
+  setCellLabel(value: ChartNullablePatch<ChartHeatmapLabelOptions>): this {
+    assertChartHeatmapType(this.value.type)
+    return this.setOption('heatmap', { label: chartHeatmapCellLabelValues(value) })
+  }
+  clearCellLabel(): this { assertChartHeatmapType(this.value.type); return this.setOption('heatmap', { label: undefined }) }
+  setValueUnit(value: string): this {
+    assertChartHeatmapType(this.value.type)
+    return this.setOption('heatmap', { unit: chartHeatmapValueUnit(value) })
+  }
+  clearValueUnit(): this { assertChartHeatmapType(this.value.type); return this.setOption('heatmap', { unit: undefined }) }
   setTrendlines(trendlines: readonly ChartTrendlineOptions[]): this { return this.setOption('trendlines', [...trendlines]) }
   setErrorBars(errorBars: readonly ChartErrorBarOptions[]): this { return this.setOption('errorBars', [...errorBars]) }
   setThreeD(threeD: ChartSemanticOptions['threeD']): this { return this.setOption('threeD', threeD) }
@@ -1118,7 +1258,7 @@ export class FChart {
   }
   async update(info: ChartPatch): Promise<this> {
     this.model()
-    const committed = await this.api.executeCommand<boolean>('sheet.command.update-chart', { unitId: this.unitId, chartId: this.id, patch: info })
+    const committed = await this.api.executeCommand('sheet.command.update-chart', { unitId: this.unitId, chartId: this.id, patch: info })
     if (!committed) throw new Error('图表设置未能提交。')
     return this
   }
@@ -1140,6 +1280,37 @@ export class FChart {
   async clearAxisPointer(target?: ChartAxisPointerTarget): Promise<this> { return this.setOption('axisPointer', clearChartAxisPointer(this.model().options?.axisPointer, target)) }
   async setBubbleMapping(mapping: ChartBubbleMappingOptions): Promise<this> { assertChartBubbleType(this.model().type); return this.setOption('mapping', { bubble: mapping }) }
   async clearBubbleMapping(): Promise<this> { assertChartBubbleType(this.model().type); return this.setOption('mapping', { bubble: undefined }) }
+  async setHistogramField(index: number): Promise<this> { assertChartHistogramType(this.model().type); validateChartSeriesField(index); return this.setValueFields([index]) }
+  async clearHistogramField(): Promise<this> { assertChartHistogramType(this.model().type); return this.setValueFields([]) }
+  async setBinCount(count: number): Promise<this> { assertChartHistogramType(this.model().type); return isChartHistogramAuthoredNumber(count) ? this.setOption('histogram', { binning: { mode: 'count', count } }) : this }
+  async setBinWidth(width: number): Promise<this> { assertChartHistogramType(this.model().type); return isChartHistogramAuthoredNumber(width) ? this.setOption('histogram', { binning: { mode: 'width', width } }) : this }
+  async resetBinning(): Promise<this> { assertChartHistogramType(this.model().type); return this.setOption('histogram', { binning: undefined }) }
+  async setUnderflowThreshold(value: number): Promise<this> { assertChartHistogramType(this.model().type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { underflowThreshold: value }) : this }
+  async clearUnderflowThreshold(): Promise<this> { assertChartHistogramType(this.model().type); return this.setOption('histogram', { underflowThreshold: undefined }) }
+  async setOverflowThreshold(value: number): Promise<this> { assertChartHistogramType(this.model().type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { overflowThreshold: value }) : this }
+  async clearOverflowThreshold(): Promise<this> { assertChartHistogramType(this.model().type); return this.setOption('histogram', { overflowThreshold: undefined }) }
+  async setBinGap(value: number): Promise<this> { assertChartHistogramType(this.model().type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { binGap: value }) : this }
+  async resetBinGap(): Promise<this> { assertChartHistogramType(this.model().type); return this.setOption('histogram', { binGap: undefined }) }
+  async setHierarchyFields(indexes: readonly number[]): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('mapping', { hierarchyIndexes: chartTreemapHierarchyFields(indexes) }) }
+  async setValueField(index: number): Promise<this> { assertChartTreemapType(this.model().type); return this.setValueFields([chartTreemapValueField(index)]) }
+  async setParentLabelLayout(layout: NonNullable<ChartTreemapOptions['parentLabelLayout']>): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { parentLabelLayout: chartTreemapParentLabelLayout(layout) }) }
+  async resetParentLabelLayout(): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { parentLabelLayout: undefined }) }
+  async setTreemapLabel(label: ChartNullablePatch<ChartTreemapLabelOptions>): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { label: chartTreemapLabelValues(label) }) }
+  async resetTreemapLabel(): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { label: undefined }) }
+  async setCandlestickFields(fields: ChartCandlestickMappingOptions): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('mapping', { candlestick: chartCandlestickFields(fields) }) }
+  async clearCandlestickFields(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('mapping', { candlestick: undefined }) }
+  async setRisingStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { rising: chartCandlestickStateStyleValues(style) }) }
+  async clearRisingStyle(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { rising: undefined }) }
+  async setFallingStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { falling: chartCandlestickStateStyleValues(style) }) }
+  async clearFallingStyle(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { falling: undefined }) }
+  async setDojiStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { doji: chartCandlestickStateStyleValues(style) }) }
+  async clearDojiStyle(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { doji: undefined }) }
+  async setCandleWidth(width: number): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { candleWidth: chartCandleWidth(width) }) }
+  async resetCandleWidth(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { candleWidth: undefined }) }
+  async setHighLowLineStyle(style: ChartNullablePatch<ChartCandlestickHighLowLineOptions>): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { highLowLine: chartCandlestickHighLowLineValues(style) }) }
+  async clearHighLowLineStyle(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { highLowLine: undefined }) }
+  async setCloseMarkerStyle(style: ChartNullablePatch<ChartCandlestickCloseMarkerOptions>): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { closeMarker: chartCandlestickCloseMarkerValues(style) }) }
+  async clearCloseMarkerStyle(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { closeMarker: undefined }) }
   async setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> {
     const next = chartSeriesStyleValues(style)
     validateChartGradientSeriesPatch(this.model().type, next, '所有系列')
@@ -1195,6 +1366,42 @@ export class FChart {
     return this.setOption('waterfall', { useSubtotal: value })
   }
   async resetUseSubtotal(): Promise<this> { assertChartWaterfallType(this.model().type); return this.setOption('waterfall', { useSubtotal: undefined }) }
+  async setBarStyle(value: ChartNullablePatch<ChartParetoBarStyleOptions>): Promise<this> {
+    assertChartParetoType(this.model().type)
+    return this.setOption('pareto', { barStyle: chartParetoBarStyleValues(value) })
+  }
+  async clearBarStyle(): Promise<this> { assertChartParetoType(this.model().type); return this.setOption('pareto', { barStyle: undefined }) }
+  async setCumulativeLineStyle(value: ChartNullablePatch<ChartParetoLineStyleOptions>): Promise<this> {
+    assertChartParetoType(this.model().type)
+    return this.setOption('pareto', { cumulativeLineStyle: chartParetoLineStyleValues(value) })
+  }
+  async clearCumulativeLineStyle(): Promise<this> { assertChartParetoType(this.model().type); return this.setOption('pareto', { cumulativeLineStyle: undefined }) }
+  async setIncludeZeroValues(value: boolean): Promise<this> {
+    assertChartParetoType(this.model().type)
+    if (typeof value !== 'boolean') throw new TypeError('是否包含零合计必须是布尔值。')
+    return this.setOption('pareto', { includeZeroValues: value })
+  }
+  async resetIncludeZeroValues(): Promise<this> { assertChartParetoType(this.model().type); return this.setOption('pareto', { includeZeroValues: undefined }) }
+  async setVisualMapType(value: ChartHeatmapVisualMapType): Promise<this> {
+    assertChartHeatmapType(this.model().type)
+    return this.setOption('heatmap', { visualMapType: chartHeatmapVisualMapType(value) })
+  }
+  async resetVisualMapType(): Promise<this> { assertChartHeatmapType(this.model().type); return this.setOption('heatmap', { visualMapType: undefined }) }
+  async setValueRange(min: number, max: number): Promise<this> {
+    assertChartHeatmapType(this.model().type)
+    return this.setOption('heatmap', chartHeatmapValueRange(min, max))
+  }
+  async clearValueRange(): Promise<this> { assertChartHeatmapType(this.model().type); return this.setOption('heatmap', { min: undefined, max: undefined }) }
+  async setCellLabel(value: ChartNullablePatch<ChartHeatmapLabelOptions>): Promise<this> {
+    assertChartHeatmapType(this.model().type)
+    return this.setOption('heatmap', { label: chartHeatmapCellLabelValues(value) })
+  }
+  async clearCellLabel(): Promise<this> { assertChartHeatmapType(this.model().type); return this.setOption('heatmap', { label: undefined }) }
+  async setValueUnit(value: string): Promise<this> {
+    assertChartHeatmapType(this.model().type)
+    return this.setOption('heatmap', { unit: chartHeatmapValueUnit(value) })
+  }
+  async clearValueUnit(): Promise<this> { assertChartHeatmapType(this.model().type); return this.setOption('heatmap', { unit: undefined }) }
   async setTrendlines(trendlines: readonly ChartTrendlineOptions[]): Promise<this> { return this.setOption('trendlines', [...trendlines]) }
   async setErrorBars(errorBars: readonly ChartErrorBarOptions[]): Promise<this> { return this.setOption('errorBars', [...errorBars]) }
   async setRightYAxis(axis: ChartNullablePatch<ChartAxisOptions> | undefined): Promise<this> { return this.setOption('rightYAxis', axis === undefined ? undefined : chartAxisPatch(this.model().options?.rightYAxis, axis)) }
@@ -1706,21 +1913,38 @@ export class FDocument {
   undo(): boolean { return this.api.undo('document', this.id) }
   redo(): boolean { return this.api.redo('document', this.id) }
   getText(): string { return documentBodyText(this.model()) }
-  getTextRange(startOffset: number, endOffset: number): FDocumentTextRange {
-    const range = readDocumentRange(this.model(), startOffset, endOffset)
-    return new FDocumentTextRange(this, range.startOffset, range.endOffset)
+  getBody(segmentId = ''): UniverDocumentBody { return this.getBodyData(segmentId).body }
+  getBodyData(segmentId = ''): UniverDocumentBodyData { return this.getPublicBodyIndex(segmentId).data }
+  getPublicBodyIndex(segmentId = ''): DocumentPublicBodyIndex {
+    this.getSegmentModel(segmentId)
+    return documentPublicBodyIndex(this.model(), segmentId ? this.noteSegmentHost(segmentId) : undefined)
   }
-  insertText(index: number, text: string): boolean {
-    return this.api.executeCommandSync('doc.command.insert-text', { unitId: this.id, index, text, expectedRevision: this.getModelRevision() })
+  getTextRange(startOffset: number, endOffset: number, segmentId = ''): FDocumentTextRange {
+    assertDocumentPublicRange(this.getPublicBodyIndex(segmentId), startOffset, endOffset)
+    return new FDocumentTextRange(this, startOffset, endOffset, segmentId)
   }
-  getParagraphs(): FDocumentParagraph[] { return findDocumentParagraphs(this.model(), {}).map((item) => new FDocumentParagraph(this, item)) }
-  findParagraphs(query: string | { text?: string; paragraphId?: string; blockId?: string }): FDocumentParagraph[] {
-    return findDocumentParagraphs(this.model(), query).map((item) => new FDocumentParagraph(this, item))
+  insertText(index: number, text: string, segmentId = ''): boolean {
+    const host = segmentId ? this.noteSegmentHost(segmentId) : undefined
+    this.getSegmentModel(segmentId)
+    const selection = documentSelectionAtPublicBodyRange(this.model(), index, index, host)
+    if (!selection && !segmentId && index === 0 && !textTargets(this.model()).length) {
+      return this.api.executeCommandSync('doc.command.insert-text', { unitId: this.id, index, text, expectedRevision: this.getModelRevision() })
+    }
+    return !!selection && this.executeCommand({ id: 'doc.command.insert-text', text, ...(host ? { host } : {}) }, selection).changed
   }
-  appendParagraph(text = ''): FDocumentParagraph {
-    const start = this.getText().length
-    this.insertText(start, `${start ? '\n' : ''}${text}`)
-    return this.getParagraphs().at(-1)!
+  getParagraphInfos(segmentId = ''): DocumentParagraphInfo[] { return documentPublicParagraphs(this.getPublicBodyIndex(segmentId)) }
+  getParagraphs(segmentId = ''): FDocumentParagraph[] { return this.getParagraphInfos(segmentId).map((item) => new FDocumentParagraph(this, item, segmentId)) }
+  getParagraph(paragraphId: string, segmentId = ''): FDocumentParagraph | null { return this.findParagraphs({ paragraphId }, segmentId)[0] ?? null }
+  findParagraphs(query: string | { text?: string; paragraphId?: string; blockId?: string }, segmentId = ''): FDocumentParagraph[] {
+    const match = typeof query === 'string' ? { text: query } : query
+    return this.getParagraphInfos(segmentId).filter(info => (!match.text || info.text.includes(match.text))
+      && (!match.paragraphId || info.paragraphId === match.paragraphId) && (!match.blockId || info.blockId === match.blockId))
+      .map(info => new FDocumentParagraph(this, info, segmentId))
+  }
+  appendParagraph(text = '', segmentId = ''): FDocumentParagraph {
+    const paragraphs = this.getParagraphInfos(segmentId), last = paragraphs.at(-1)
+    this.insertText(last?.endOffset ?? 0, `${last && (last.text.length || paragraphs.length > 1) ? '\n' : ''}${text}`, segmentId)
+    return this.getParagraphs(segmentId).at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
   getTables(segmentId = ''): FDocumentTable[] { return getDocumentTables(this, segmentId) }
@@ -1742,6 +1966,21 @@ export class FDocument {
   }
   executeCommand(command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
     return this.api.executeDocumentEditorCommand(this.id, command, selection)
+  }
+  executeNoteCommand(request: DocumentNoteMutationRequest): DocumentNoteCommandResult { return this.api.executeDocumentNoteCommand(this.id, request) }
+  insertFootnote(offset: number, content?: DocumentNoteContentInput): string | null { return this.insertNote('footnote', offset, content) }
+  insertEndnote(offset: number, content?: DocumentNoteContentInput): string | null { return this.insertNote('endnote', offset, content) }
+  getFootnotes(): DocumentNoteInfo[] { return this.getNotes('footnote') }
+  getEndnotes(): DocumentNoteInfo[] { return this.getNotes('endnote') }
+  deleteFootnote(noteId: string): boolean { return this.tryNoteMutation({ type: 'delete', kind: 'footnote', noteId })?.changed ?? false }
+  deleteEndnote(noteId: string): boolean { return this.tryNoteMutation({ type: 'delete', kind: 'endnote', noteId })?.changed ?? false }
+  getFootnoteSettings(sectionId?: string): PublicDocumentFootnoteSettings | undefined { return this.readNoteSettings('footnote', sectionId) as PublicDocumentFootnoteSettings | undefined }
+  getEndnoteSettings(sectionId?: string): PublicDocumentEndnoteSettings | undefined { return this.readNoteSettings('endnote', sectionId) as PublicDocumentEndnoteSettings | undefined }
+  setFootnoteSettings(settings: DocumentFootnoteSettings | PublicDocumentFootnoteSettings | null, sectionId?: string): boolean {
+    return this.setNoteSettings('footnote', settings, sectionId)
+  }
+  setEndnoteSettings(settings: DocumentEndnoteSettings | PublicDocumentEndnoteSettings | null, sectionId?: string, suppressEndnotes?: boolean): boolean {
+    return this.setNoteSettings('endnote', settings, sectionId, suppressEndnotes)
   }
   /** Pending input overrides; clearing color/highlight preserves an own undefined property. */
   getInputMarks(selection?: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): RunPatch { return this.api.getDocumentInputMarks(this.id, selection, story, host) }
@@ -1779,6 +2018,19 @@ export class FDocument {
     this.api.executeCommandSync('doc.command.set-document-permission-rules', { unitId: this.id, rules })
     return this
   }
+  /** Local source API. Returned resources are detached from the live document. */
+  getCustomXmlParts(): DocumentCustomXmlPart[] {
+    const model = this.model()
+    assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view')
+    return normalizeDocumentCustomXmlParts(model.customXmlParts)
+  }
+  /** Replace sources and refresh mapped controls in one guarded content-history transaction. */
+  setCustomXmlParts(parts: readonly DocumentCustomXmlPart[], options: DocumentCustomXmlPartsWriteOptions = {}): this {
+    this.api.executeCommandSync(SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, {
+      expectedRevision: this.getModelRevision(), expectedHistoryGeneration: this.getHistoryGeneration(), ...options, unitId: this.id, parts,
+    })
+    return this
+  }
   getContentControls(): FDocumentContentControl[] {
     return getDocumentContentControls(this.model()).map((control) => new FDocumentContentControl(this, control.id))
   }
@@ -1790,14 +2042,76 @@ export class FDocument {
     this.api.executeCommandSync('doc.command.add-content-control', { unitId: this.id, control: { ...info, id } })
     return new FDocumentContentControl(this, id)
   }
-  replaceRange(startOffset: number, endOffset: number, text: string): boolean {
-    return this.api.executeCommandSync('doc.command.replace-range', { unitId: this.id, startOffset, endOffset, text, expectedRevision: this.getModelRevision() })
+  replaceRange(startOffset: number, endOffset: number, text: string, segmentId = ''): boolean {
+    const host = segmentId ? this.noteSegmentHost(segmentId) : undefined
+    this.getSegmentModel(segmentId)
+    const selection = documentSelectionAtPublicBodyRange(this.model(), startOffset, endOffset, host)
+    return !!selection && this.executeCommand({ id: 'doc.command.insert-text', text, ...(host ? { host } : {}) }, selection).changed
   }
   mutate(label: string, commandId: string, update: (model: DocumentModel) => void): boolean {
     return this.api.mutateDocument(this.id, commandId, label, update)
   }
+  getSegmentModel(segmentId = ''): DocumentModel {
+    if (!segmentId) {
+      const model = this.model()
+      assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view')
+      return model
+    }
+    const model = this.model(), host = this.noteSegmentHost(segmentId)
+    assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view', documentNotePermissionTargets(model, host.noteKind, host.noteId))
+    return documentModelForBlockHost(model, host)
+  }
+  mutateSegment(label: string, commandId: string, update: (model: DocumentModel) => void, segmentId = ''): boolean {
+    if (!segmentId) return this.mutate(label, commandId, update)
+    const host = this.noteSegmentHost(segmentId)
+    return this.mutate(label, commandId, model => {
+      const scoped = documentModelForBlockHost(model, host, true)
+      update(scoped); applyDocumentBlockHostModel(model, host, scoped)
+    })
+  }
   executeContentControlCommand<P extends Record<string, unknown>>(commandId: string, params: P): boolean {
     return this.api.executeCommandSync(commandId, { ...params, unitId: this.id })
+  }
+
+  private noteSegmentHost(noteId: string): Extract<DocumentAuxiliaryBlockHost, { kind: 'note' }> {
+    const model = this.model(), kinds = (['footnote', 'endnote'] as const).filter(kind => !!(kind === 'footnote' ? model.footnotes : model.endnotes)?.[noteId])
+    if (kinds.length !== 1) throw new RangeError('注释内容区不存在或标识不唯一：' + noteId)
+    return { kind: 'note', noteKind: kinds[0]!, noteId }
+  }
+  private insertNote(kind: DocumentNoteKind, offset: number, input?: DocumentNoteContentInput): string | null {
+    let selection: DocumentSelection | undefined, options: ReturnType<typeof documentNoteInputFromPublic>
+    try {
+      selection = documentSelectionAtPublicBodyRange(this.model(), offset, offset)
+      options = documentNoteInputFromPublic(this.model(), input)
+    } catch (error) { if (error instanceof TypeError || error instanceof RangeError) return null; throw error }
+    if (!selection) return null
+    const result = this.tryNoteMutation({ type: 'insert', kind, selection, ...(options === undefined ? {} : { options }) })
+    return result?.changed ? result.noteId ?? null : null
+  }
+  private tryNoteMutation(request: DocumentNoteMutationRequest): DocumentNoteCommandResult | undefined {
+    try { return this.executeNoteCommand(request) }
+    catch (error) { if (error instanceof DocumentNoteCommandRejectedError) return undefined; throw error }
+  }
+  private getNotes(kind: DocumentNoteKind): DocumentNoteInfo[] {
+    const model = this.model(), permission = { documentId: this.id, userId: this.getCurrentUserId() }
+    assertDocumentPermission(model.permissionRules ?? [], permission, 'view')
+    return getDocumentNotesInReferenceOrder(model, kind).map(note => {
+      assertDocumentPermission(model.permissionRules ?? [], permission, 'view', documentNotePermissionTargets(model, kind, note.id))
+      return documentNoteToPublic(model, note, kind)
+    })
+  }
+  private setNoteSettings(kind: DocumentNoteKind, input: DocumentNoteSettingsInput | null, sectionId?: string, suppressEndnotes?: boolean): boolean {
+    let normalized: ReturnType<typeof documentNoteSettingsFromPublic>
+    try { normalized = documentNoteSettingsFromPublic(this.model(), input) }
+    catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error }
+    return this.tryNoteMutation({ type: 'settings', kind, ...normalized, ...(sectionId === undefined ? {} : { sectionId }),
+      ...(suppressEndnotes === undefined ? {} : { suppressEndnotes }) })?.changed ?? false
+  }
+  private readNoteSettings(kind: DocumentNoteKind, sectionId?: string): PublicDocumentFootnoteSettings | PublicDocumentEndnoteSettings | undefined {
+    const model = this.model()
+    assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view', sectionId === undefined ? [] : [{ scope: 'section', id: sectionId }])
+    const settings = getDocumentNoteSettings(model, kind, sectionId)
+    return settings === undefined ? undefined : documentNoteSettingsToPublic(model, settings)
   }
 
   private model(): DocumentModel {
@@ -1839,60 +2153,73 @@ export class FDocumentTextRange {
   private readonly document: FDocument
   readonly startOffset: number
   readonly endOffset: number
+  readonly segmentId: string
 
-  constructor(document: FDocument, startOffset: number, endOffset: number) {
+  constructor(document: FDocument, startOffset: number, endOffset: number, segmentId = '') {
     this.document = document
     this.startOffset = startOffset
     this.endOffset = endOffset
+    this.segmentId = segmentId
   }
   getRange(): { startOffset: number; endOffset: number } { return { startOffset: this.startOffset, endOffset: this.endOffset } }
-  getText(): string { return readDocumentRange(this.document.getModel(), this.startOffset, this.endOffset).text }
-  setText(text: string): boolean { return this.document.replaceRange(this.startOffset, this.endOffset, text) }
+  getText(): string {
+    const index = this.document.getPublicBodyIndex(this.segmentId)
+    assertDocumentPublicRange(index, this.startOffset, this.endOffset)
+    return index.data.body.dataStream.slice(this.startOffset, this.endOffset)
+  }
+  setText(text: string): boolean { return this.document.replaceRange(this.startOffset, this.endOffset, text, this.segmentId) }
   getTextStyleRuns(): DocumentTextStyleRun[] {
-    return getDocumentTextStyleRuns(this.document.getModel(), this.startOffset, this.endOffset)
+    const index = this.document.getPublicBodyIndex(this.segmentId), range = documentPublicRangeToFlat(index, this.startOffset, this.endOffset)
+    return getDocumentTextStyleRuns(index.model, range.startOffset, range.endOffset).map(run => ({ ...run,
+      startOffset: Math.max(this.startOffset, documentPublicOffsetAtFlat(index, run.startOffset)),
+      endOffset: Math.min(this.endOffset, documentPublicOffsetAtFlat(index, run.endOffset, 'end')) }))
   }
   getTextStyle(): DocumentTextStyle {
-    return getCommonDocumentTextStyle(this.document.getModel(), this.startOffset, this.endOffset)
+    const index = this.document.getPublicBodyIndex(this.segmentId), range = documentPublicRangeToFlat(index, this.startOffset, this.endOffset)
+    return getCommonDocumentTextStyle(index.model, range.startOffset, range.endOffset)
   }
   setTextStyle(style: DocumentTextStylePatch): boolean {
-    return this.document.mutate('Set document text style', 'doc.command.set-text-style', (model) => {
-      setDocumentTextStyle(model, this.startOffset, this.endOffset, style)
-    })
+    const range = documentPublicRangeToFlat(this.document.getPublicBodyIndex(this.segmentId), this.startOffset, this.endOffset)
+    return this.document.mutateSegment('Set document text style', 'doc.command.set-text-style', (model) => {
+      setDocumentTextStyle(model, range.startOffset, range.endOffset, style)
+    }, this.segmentId)
   }
 }
 
 export class FDocumentParagraph {
   private readonly document: FDocument
   private readonly info: DocumentParagraphInfo
+  readonly segmentId: string
 
-  constructor(document: FDocument, info: DocumentParagraphInfo) {
+  constructor(document: FDocument, info: DocumentParagraphInfo, segmentId = '') {
     this.document = document
     this.info = info
+    this.segmentId = segmentId
   }
   getId(): string { return this.info.paragraphId }
   getInfo(): DocumentParagraphInfo {
-    const current = findDocumentParagraphs(this.document.getModel(), { paragraphId: this.info.paragraphId })[0]
+    const current = this.document.getParagraphInfos(this.segmentId).find(info => info.paragraphId === this.info.paragraphId)
     if (!current) throw new Error(`Document paragraph with id ${this.info.paragraphId} not found`)
     return { ...current }
   }
   getText(): string { return this.getInfo().text }
   getTextRange(): FDocumentTextRange {
     const info = this.getInfo()
-    return this.document.getTextRange(info.startOffset, info.endOffset)
+    return this.document.getTextRange(info.startOffset, info.endOffset, this.segmentId)
   }
   setText(text: string): boolean { return this.getTextRange().setText(text) }
-  appendText(text: string): boolean { return this.document.insertText(this.getInfo().endOffset, text) }
+  appendText(text: string): boolean { return this.document.insertText(this.getInfo().endOffset, text, this.segmentId) }
   getTextStyle(): DocumentTextStyle { return this.getTextRange().getTextStyle() }
   setTextStyle(style: DocumentTextStylePatch): boolean { return this.getTextRange().setTextStyle(style) }
   getParagraphStyle(): DocumentParagraphStyle {
-    const style = getDocumentParagraphStyle(this.document.getModel(), this.identity())
+    const style = getDocumentParagraphStyle(this.document.getSegmentModel(this.segmentId), this.identity())
     if (!style) throw new Error(`Document paragraph with id ${this.info.paragraphId} not found`)
     return style
   }
   setParagraphStyle(style: Partial<DocumentParagraphStyle>): boolean {
-    return this.document.mutate('Set paragraph style', 'doc.command.set-paragraph-style', (model) => {
+    return this.document.mutateSegment('Set paragraph style', 'doc.command.set-paragraph-style', (model) => {
       setDocumentParagraphStyle(model, this.identity(), style)
-    })
+    }, this.segmentId)
   }
 
   private identity(): DocumentParagraphIdentity {

@@ -4,17 +4,17 @@ import { imageForBlock, tableForBlock, type DocumentRun } from '../model/documen
 import { documentTableGrid } from '../model/document-table-grid'
 import { documentTableCellMargin, documentTableColumnWidths } from '../model/document-table-style'
 import type { ParagraphListMarker } from '../model/document-lists'
-import type { LayoutMeasurer } from './document-layout-types'
+import type { DocumentTextLayoutDisplay, LayoutMeasurer } from './document-layout-types'
 import { paragraphGeometry } from './document-paragraph-layout'
 import { wrapRuns } from './document-text-layout'
 
 export interface DocumentTableIntrinsicWidth { minimum: number; preferred: number }
 
 /** Uses the same glyph/inline-object metrics as paragraph layout; no model width is rewritten. */
-function paragraphWidth(block: DocumentBlock, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer): DocumentTableIntrinsicWidth {
+function paragraphWidth(block: DocumentBlock, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer, display?: DocumentTextLayoutDisplay): DocumentTableIntrinsicWidth {
   const nested = tableForBlock(block)
   if (nested) {
-    const columns = intrinsicDocumentTableColumns(block, markers, measurer)
+    const columns = intrinsicDocumentTableColumns(block, markers, measurer, display)
     const offset = Math.max(0, nested.style?.indent ?? 0)
     if (nested.style?.layout !== 'auto' && nested.columnWidths?.length) {
       const fixed = nested.columnWidths.reduce((sum, width) => sum + width, 0) + offset
@@ -27,7 +27,8 @@ function paragraphWidth(block: DocumentBlock, markers: Map<string, ParagraphList
   if (image) { const width = Math.max(1, image.width || 320); return { minimum: width, preferred: width } }
   if (['divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) return { minimum: 1, preferred: 1 }
   const geometry = paragraphGeometry(block, markers.get(block.id), 1_000_000, measurer)
-  const lines = wrapRuns(block.runs as DocumentRun[], Number.POSITIVE_INFINITY, measurer, block.style.wordWrap === true)
+  const lines = wrapRuns(block.runs as DocumentRun[], Number.POSITIVE_INFINITY, measurer, block.style.wordWrap === true, undefined, undefined,
+    { references: display?.references, leading: display?.leadingLabels?.get(block.id) })
   let minimum = 1, preferred = 1
   for (const [index, line] of lines.entries()) {
     const indent = Math.max(0, index === 0 ? geometry.firstIndent : geometry.indent) + Math.max(0, geometry.rightIndent)
@@ -39,7 +40,7 @@ function paragraphWidth(block: DocumentBlock, markers: Map<string, ParagraphList
   return { minimum, preferred: Math.max(minimum, preferred) }
 }
 
-export function intrinsicDocumentTableColumns(block: DocumentBlock, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer): DocumentTableIntrinsicWidth[] {
+export function intrinsicDocumentTableColumns(block: DocumentBlock, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer, display?: DocumentTextLayoutDisplay): DocumentTableIntrinsicWidth[] {
   const table = tableForBlock(block)
   if (!table) throw new RangeError('表格模型不存在')
   const grid = documentTableGrid(table), columns = Array.from({ length: grid.columnCount }, () => ({ minimum: 1, preferred: 1 }))
@@ -47,7 +48,7 @@ export function intrinsicDocumentTableColumns(block: DocumentBlock, markers: Map
     const margin = documentTableCellMargin(table, owner.cell)
     let minimum = 1, preferred = 1
     for (const child of documentTableCellBlocks(owner.cell)) {
-      const width = paragraphWidth(child, markers, measurer)
+      const width = paragraphWidth(child, markers, measurer, display)
       minimum = Math.max(minimum, width.minimum); preferred = Math.max(preferred, width.preferred)
     }
     return { owner, minimum: minimum + margin.left + margin.right, preferred: preferred + margin.left + margin.right }
@@ -66,12 +67,12 @@ export function intrinsicDocumentTableColumns(block: DocumentBlock, markers: Map
 }
 
 /** Auto layout honors content and colSpan constraints within the requested/page width. */
-export function measureDocumentTableColumnWidths(block: DocumentBlock, available: number, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer): number[] {
+export function measureDocumentTableColumnWidths(block: DocumentBlock, available: number, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer, display?: DocumentTextLayoutDisplay): number[] {
   const table = tableForBlock(block)
   if (!table) throw new RangeError('表格模型不存在')
   const grid = documentTableGrid(table), fixed = documentTableColumnWidths(table, grid.columnCount, available)
   if (table.style?.layout !== 'auto') return fixed
-  const columns = intrinsicDocumentTableColumns(block, markers, measurer)
+  const columns = intrinsicDocumentTableColumns(block, markers, measurer, display)
   const minimum = columns.reduce((sum, column) => sum + column.minimum, 0), preferred = columns.reduce((sum, column) => sum + column.preferred, 0)
   const requested = table.style.width ?? preferred
   if (!Number.isFinite(requested) || requested <= 0) throw new RangeError('表格宽度必须大于零')

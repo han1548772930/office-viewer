@@ -2,18 +2,22 @@ import { createBlankDocument, type DocumentBlock, type DocumentCommentMessage, t
 import type { ParseEnvelope } from './contracts.ts'
 import { array, finite, positive, record, text } from './validation.ts'
 import { normalizeDocumentHighlight } from '../features/document/model/document-highlight.ts'
-import { normalizeDocumentNotes } from '../features/document/notes/document-notes.ts'
+import { renumberDocumentNotes } from '../features/document/notes/document-notes.ts'
 import { documentNumberingIndex } from './documentNumbering.ts'
 import { officeNumberingMarkerBaseline } from '../features/document/model/document-office-numbering-marker.ts'
 import { runText, sliceRuns, tableForBlock } from '../features/document/model/document-model.ts'
 import { DOCUMENT_STORY_KEYS, documentStoryDefaultStyle, documentStoryFieldCache, documentStoryTextStyle, isDocumentTextBoundary, validateDocumentStoryContent, validateDocumentStoryLocks } from '../features/document/model/document-story.ts'
 import { storyBuffer } from '../features/document/services/story-editor.ts'
 import { validateDocumentOfficeSource } from './documentOfficeSource.ts'
-import { documentTextFields, documentTextFieldRanges } from '../features/document/model/document-text-fields.ts'
+import { documentTextFieldRanges } from '../features/document/model/document-text-fields.ts'
 import { hydrateDocumentTocsFromNativeFields } from '../features/document/toc/document-native-toc.ts'
 import { normalizeDocumentTable, normalizedDocumentTableId } from './documentTables'
 import { claimParsedDocumentStoryBlocks, normalizeParsedDocumentBlockGroup, parsedDocumentBlockOwnership } from './documentAuxiliaryContent'
 import { projectDocumentStoryBlocks } from '../features/document/model/document-story-blocks'
+import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
+import { normalizeNativeDocumentContentControls } from './documentContentControls'
+import { parsedDocumentTextProjection, projectParsedDocumentFieldRanges } from './documentTextProjection'
+import { normalizeParsedDocumentNotes, parsedDocumentSectionNoteSetup, projectParsedDocumentNoteStories } from './documentNotes'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -62,7 +66,7 @@ function normalizeRun(value: unknown, id: string): InlineRun {
     ...(highlight ? { highlight } : {}),
     ...(eastAsiaFontFamily ? { eastAsiaFontFamily } : {}),
     color: text(style.color, '#1f2937'), fontFamily: text(style.fontFamilyAscii) || text(style.resolvedFontFamilyAscii) || text(style.fontFamily, 'Aptos'), fontSize: positive(style.fontSizePt, 11),
-    metadata: { source: raw, link: raw.link, ...(highlight ? { highlight } : {}), noteReference: raw.noteReference },
+    metadata: { source: raw, link: raw.link, ...(highlight ? { highlight } : {}), noteReference: raw.noteReference, noteBodyMarker: raw.noteBodyMarker },
   }
   if (raw.sourceFormat !== undefined) {
     validateStorySourceFormat(raw.sourceFormat)
@@ -119,7 +123,11 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   const runs = array(details.inlines).filter((inline) => {
     const type = record(inline).type
     return type === 'text' || type === 'form_field'
-  }).map((inline, index) => normalizeRun(inline, id+'-run-'+index))
+  }).map((inline, index) => {
+    const run = normalizeRun(inline, id+'-run-'+index)
+    run.metadata = { ...run.metadata, officeParsedRunSource: { version: 1, index } }
+    return run
+  })
   if (!runs.length) runs.push(normalizeRun({ text: text(raw.content), sourceFormat: details.paragraphMarkSourceFormat }, id+'-run-0'))
   const level = Math.min(6, Math.max(0, finite(details.headingLevel, finite(style.headingLevel))))
   const numbering = record(details.numbering)
@@ -139,10 +147,10 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     style: normalizeParagraphStyle(style),
     metadata: { source: raw, sourceRefs: raw.sourceRefs, style, listLabel: details.listLabel, numbering, ...(titleStyle ? { namedStyleType: titleStyle } : {}) },
   }
-  const taggedFields = array(raw.children).map((child) => record(record(child).details).field).map(record)
+  const taggedFields = array(raw.children).map(child => ({ id: text(record(child).id), field: record(record(record(child).details).field) }))
   const codeBookmark = array(details.bookmarks).map((bookmark) => text(record(bookmark).name)).find((name) => name.startsWith('office_code_v1_'))
   const codeTag = codeBookmark?.replace(/^office_code_v1_/, 'office-code:v1:').replaceAll('_', ':')
-    ?? taggedFields.map((field) => text(field.tag)).find((tag) => tag.startsWith('office-code:v1:'))
+    ?? taggedFields.map(({ field }) => text(field.tag)).find((tag) => tag.startsWith('office-code:v1:'))
   if (codeTag) {
     const [, , languageValue, lineNumberValue] = codeTag.split(':')
     const languages = ['plain', 'javascript', 'typescript', 'json', 'css', 'html', 'python', 'sql', 'rust']
@@ -161,9 +169,10 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
       })
     }
   } else {
-    for (const [inlineIndex, inline] of array(details.inlines).entries()) {
+    for (const [inlineIndex, inline] of array(details.inlines).filter(inline => ['text', 'form_field'].includes(text(record(inline).type))).entries()) {
       if (record(inline).type !== 'form_field') continue
-      const field = taggedFields.find((candidate) => text(candidate.tag).startsWith('office-latex:v1:'))
+      const field = taggedFields.find(candidate => candidate.id === text(record(inline).blockId)
+        && text(candidate.field.tag).startsWith('office-latex:v1:'))?.field
       if (!field) continue
       const source = text(record(inline).text)
       const mode = text(field.tag).endsWith(':block') ? 'block' : 'inline'
@@ -177,7 +186,6 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
           block.style = { ...block.style, align: 'center', spaceBefore: 8, spaceAfter: 8 }
         }
       }
-      break
     }
   }
   const numberingId = numbering.numId
@@ -221,7 +229,6 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
   }
   if (details.documentTextFields !== undefined) {
     block.metadata.documentTextFields = details.documentTextFields
-    documentTextFields(block)
   }
   if (details.nativeFieldSource !== undefined) block.metadata.nativeFieldSource = details.nativeFieldSource
   if (details.sourceFormat !== undefined) {
@@ -355,6 +362,7 @@ function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageFiel
   if (rawStory && Array.isArray(rawStory.children)) {
     const previous = section.storyContent?.[story], oldBuffer = storyBuffer(section, story).value
     const parsed = normalizeParsedDocumentBlockGroup(rawStory.children, `${sectionId}-${story}`, (raw, id) => normalizeBlock(raw, id, lists))
+    projectParsedDocumentFieldRanges(parsed)
     const owned = claimParsedDocumentStoryBlocks(parsed, claimed)
     const projection = projectDocumentStoryBlocks({ ...previous, blocks: owned.blocks, runs: previous?.runs ?? [], paragraphs: previous?.paragraphs ?? [],
       metadata: { ...previous?.metadata, officeStoryBlockSource: { version: 1, partName: text(reference.partName), sourceRefs: rawStory.sourceRefs,
@@ -365,28 +373,6 @@ function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageFiel
     const buffer = storyBuffer(section, story).value
     if (previous?.locks?.length && buffer !== oldBuffer) throw new RangeError('页眉页脚块树与原始内容锁坐标不一致；不能将锁应用到其他文本。')
     validateDocumentStoryLocks(projection.content.locks, buffer)
-  }
-}
-
-function attachParsedNoteStories(model: DocumentModel, stories: Record<string, unknown[]>, lists: ReturnType<typeof documentNumberingIndex>, claimed: Set<string>): void {
-  for (const kind of ['footnote', 'endnote'] as const) {
-    const notes = kind === 'footnote' ? model.footnotes : model.endnotes
-    const byId = new Map<string, unknown[]>()
-    for (const raw of stories[kind] ?? []) {
-      const noteId = record(raw).noteId
-      if (typeof noteId !== 'number' || !Number.isSafeInteger(noteId)) throw new TypeError('注释内容区缺少有效的来源标识。')
-      const id = String(noteId), group = byId.get(id) ?? []
-      group.push(raw); byId.set(id, group)
-    }
-    for (const [id, raw] of byId) {
-      const note = notes?.[id]
-      if (!note) throw new TypeError(`注释内容区 ${kind}:${id} 缺少对应的注释记录。`)
-      const owned = claimParsedDocumentStoryBlocks(normalizeParsedDocumentBlockGroup(raw, `${kind}-${id}`, (raw, fallback) => normalizeBlock(raw, fallback, lists)), claimed)
-      note.content = projectDocumentStoryBlocks({ ...note.content, blocks: owned.blocks, runs: [], paragraphs: [],
-        metadata: { ...note.content?.metadata, officeStoryBlockSource: { version: 1, story: kind, noteId: id, sourceRefs: raw.flatMap(value => array(record(value).sourceRefs)),
-          ...(owned.copied ? { copiedSharedPart: true } : {}) } } }, 'display').content
-      note.text = runText(note.content.runs)
-    }
   }
 }
 
@@ -441,13 +427,16 @@ function normalizeDocumentComments(value: unknown, blocks: DocumentBlock[]): Rec
       const block = paragraphs.find(candidate => candidate.id === nodeId)
         ?? paragraphs.find(candidate => array(record(candidate.metadata.source).sourceRefs).some(ref => text(record(ref).nodeId) === nodeId))
       if (!block) return []
-      const startOffset = optionalNumber(target.start), end = optionalNumber(target.end)
-      if (startOffset === undefined || end === undefined || !Number.isSafeInteger(startOffset) || !Number.isSafeInteger(end) || startOffset < 0 || end < startOffset) return []
+      const sourceStart = optionalNumber(target.start), sourceEnd = optionalNumber(target.end)
+      if (sourceStart === undefined || sourceEnd === undefined || !Number.isSafeInteger(sourceStart) || !Number.isSafeInteger(sourceEnd) || sourceStart < 0 || sourceEnd < sourceStart) return []
+      const projection = parsedDocumentTextProjection(block)
+      const rank = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+      const startOffset = projection.mapBoundary(sourceStart, rank(target.startNoteReferenceCount)), endOffset = projection.mapBoundary(sourceEnd, rank(target.endNoteReferenceCount))
+      if (startOffset === undefined || endOffset === undefined) return []
       const sourceText = block.runs.map(run => run.text).join('')
-      const endOffset = Math.min(end, sourceText.length)
       if (startOffset > sourceText.length || !validBoundary(sourceText, startOffset) || !validBoundary(sourceText, endOffset)) return []
       const anchorText = sourceText.slice(startOffset, endOffset)
-      if (!anchorText && end !== startOffset) return []
+      if (!anchorText && endOffset !== startOffset) return []
       return [{ blockId: block.id, startOffset, endOffset: startOffset + anchorText.length, text: anchorText }]
     })
     const rootMessage = importedCommentMessage(raw, id)
@@ -487,6 +476,7 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
     throw new TypeError('文档默认样式含有未解决的源资源错误。')
   }
   const result = createBlankDocument()
+  if (data.customXmlParts !== undefined) result.customXmlParts = normalizeDocumentCustomXmlParts(data.customXmlParts)
   const id = text(data.documentId, crypto.randomUUID())
   result.id = id
   result.name = envelope.fileName
@@ -508,13 +498,10 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
     result.blocks.push(...normalizeParsedDocumentBlockGroup([raw], fallbackId, (raw, fallback) => normalizeBlock(raw, fallback, lists), fallbackId))
   }
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks
+  projectParsedDocumentFieldRanges(result.blocks)
   documentTextFieldRanges(result)
   const claimed = parsedDocumentBlockOwnership(result.blocks)
   result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks, result, lists, claimed)
-  const referenceBlocks = [...result.blocks, ...Object.values(result.sectionHeaderFooters).flatMap(section => Object.values(section.storyContent ?? {}).flatMap(content => content?.blocks ?? []))]
-  Object.assign(result, normalizeDocumentNotes(data, referenceBlocks))
-  attachParsedNoteStories(result, stories, lists, claimed)
-  result.comments = normalizeDocumentComments(data.comments, result.blocks)
   const breaks = result.blocks.filter(block => block.type === 'sectionBreak')
   array(data.sectionLayout).forEach((raw, index) => {
     const section = record(raw)
@@ -522,6 +509,7 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
     const setup = {
       ...(distance(section.marginHeader) ? { marginHeader: Number(section.marginHeader) } : {}),
       ...(distance(section.marginFooter) ? { marginFooter: Number(section.marginFooter) } : {}),
+      ...parsedDocumentSectionNoteSetup(section, index === 0 ? 'first' : breaks[index - 1]?.id ?? 'unresolved-section'),
     }
     if (!Object.keys(setup).length) return
     if (index === 0) result.sectionSetup = { ...result.sectionSetup, ...setup }
@@ -530,13 +518,26 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
       if (marker) marker.setup = { ...marker.setup, ...setup }
     }
   })
+  normalizeParsedDocumentNotes(result, data, stories, (raw, fallback) => normalizeBlock(raw, fallback, lists), claimed,
+    value => documentStoryTextStyle(normalizeRun({ text: '', style: value }, 'parsed-note-reference-style'), documentStoryDefaultStyle(result).text))
+  // Number only after every real host and section setting exists. Native ranges
+  // are then projected from their XML boundary order onto the final label text.
+  renumberDocumentNotes(result)
+  projectParsedDocumentFieldRanges(result.blocks)
+  projectParsedDocumentNoteStories(result)
+  documentTextFieldRanges(result)
+  result.comments = normalizeDocumentComments(data.comments, result.blocks)
   result.modified = false
   result.wordCount = result.blocks.reduce((count, block) => count+block.runs.reduce((sum, run) => sum+run.text.length, 0), 0)
+  const { customXmlParts: _customXmlParts, nativeContentControls: _nativeContentControls, ...source } = data
   result.metadata = {
-    source: data, stories, format: envelope.format, parserVersion: envelope.parserVersion,
+    // Real data-source parts have one authoritative owner, avoiding duplicate snapshot XML.
+    source, stories, format: envelope.format, parserVersion: envelope.parserVersion,
     geometryStatus: data.geometryStatus,
     geometryNote: 'StructuredDocument 目前未携带完整节/纸张几何；使用默认页面并保留原数据，待补齐解析契约。',
     nativeTocHydration: hydrateDocumentTocsFromNativeFields(result),
   }
+  const nativeControls = normalizeNativeDocumentContentControls(result, data.nativeContentControls)
+  if (nativeControls) result.metadata.nativeContentControlSource = nativeControls
   return result
 }

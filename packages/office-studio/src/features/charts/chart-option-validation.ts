@@ -2,6 +2,8 @@ import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOp
 import { chartColorChannels, validateChartColor } from './chart-color'
 import { isChartFillPatternPreset } from './chart-fill-pattern'
 import { validateChartPlotArea } from './chart-plot-area'
+import { CHART_POINT_SHAPES } from './chart-markers'
+import { CHART_LABEL_POSITION_CHOICES, chartLabelContentMask } from './chart-labels'
 
 export function validateChartPalette(palette: readonly string[] | undefined): void {
   if (palette === undefined) return
@@ -29,7 +31,7 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   }
   series(options.allSeriesStyle, '所有系列样式'); axis(options.rightYAxis, '右侧数值轴')
   if (options.depthAxis) {
-    for (const key of ['scaleType', 'logBase', 'min', 'max', 'format']) if (key in options.depthAxis) throw new TypeError(`分类深度轴不接受 ${key}。`)
+    for (const key of ['scaleType', 'logBase', 'min', 'max', 'format', 'baseTimeUnit', 'majorTimeUnit', 'majorUnit']) if (key in options.depthAxis) throw new TypeError(`分类深度轴不接受 ${key}。`)
     axis({ scaleType: 'linear', ...options.depthAxis }, '分类深度轴')
   }
   if (options.series !== undefined) {
@@ -124,10 +126,14 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   if (pareto) {
     optionalObject(pareto.barStyle, '帕累托柱形样式'); optionalObject(pareto.cumulativeLineStyle, '帕累托累计线样式')
     const bar = pareto.barStyle, cumulative = pareto.cumulativeLineStyle
-    if (bar) series({ color: bar.color, fillOpacity: bar.opacity, border: bar.border, label: bar.label, dataPoints: bar.dataPoints }, '帕累托柱形')
+    if (bar) {
+      series({ color: bar.color, fillOpacity: bar.opacity, border: bar.border, label: bar.label, dataPoints: bar.dataPoints }, '帕累托柱形')
+      chartLabelContentMask(bar.label?.contentType, false, '帕累托柱形标签内容')
+    }
     if (cumulative) {
       optionalNumber(cumulative.width, -Number.MAX_VALUE, 100, '帕累托累计线宽'); enumeration(cumulative.dashType, ['solid', 'dashed', 'dotted'], '帕累托累计线型')
       series({ color: cumulative.color, fillOpacity: cumulative.opacity, point: cumulative.point, label: cumulative.label, dataPoints: cumulative.dataPoints }, '帕累托累计线')
+      chartLabelContentMask(cumulative.label?.contentType, false, '帕累托累计线标签内容')
       if (cumulative.label?.position === 'outside') throw new TypeError('帕累托累计线标签不接受 outside 位置。')
     }
   }
@@ -136,19 +142,48 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
     optionalObject(histogram.binning, '直方图分箱')
     if (histogram.binning) {
       requiredEnum(histogram.binning.mode, ['count', 'width'], '直方图分箱方式')
-      if (histogram.binning.mode === 'count') integer(histogram.binning.count, 1, 10_000, '直方图箱数')
-      else number(histogram.binning.width, Number.MIN_VALUE, Number.MAX_VALUE, '直方图箱宽')
+      // Ineffective finite author values remain visible and persisted. Only
+      // the runtime binning resolver chooses Scott Auto for those values.
+      if (histogram.binning.mode === 'count') number(histogram.binning.count, -Number.MAX_VALUE, Number.MAX_VALUE, '直方图箱数')
+      else number(histogram.binning.width, -Number.MAX_VALUE, Number.MAX_VALUE, '直方图箱宽')
     }
-    optionalNumber(histogram.binGap, 0, 0.9, '直方图箱间距')
+    optionalNumber(histogram.binGap, -Number.MAX_VALUE, Number.MAX_VALUE, '直方图箱间距')
     optionalNumber(histogram.underflowThreshold, -Number.MAX_VALUE, Number.MAX_VALUE, '下溢阈值'); optionalNumber(histogram.overflowThreshold, -Number.MAX_VALUE, Number.MAX_VALUE, '上溢阈值')
-    if (histogram.underflowThreshold !== undefined && histogram.overflowThreshold !== undefined && histogram.underflowThreshold >= histogram.overflowThreshold) throw new RangeError('下溢阈值须小于上溢阈值。')
   }
-  enumeration(options.boxplot?.quartileMethod, ['inclusive', 'exclusive'], '四分位方法'); boolean(options.boxplot?.showOutliers, '箱线图异常点'); optionalNumber(options.boxplot?.whiskerMultiplier, 0, 100, '箱线图须线倍数')
-  optionalNumber(options.candlestick?.candleWidth, 1, 100, '蜡烛宽度'); color(options.candlestick?.risingColor, '上涨颜色'); color(options.candlestick?.fallingColor, '下跌颜色'); boolean(options.candlestick?.hollow, '上涨蜡烛空心')
+  enumeration(options.boxplot?.quartileMethod, ['medianOfHalves', 'inclusive', 'exclusive'], '四分位方法'); enumeration(options.boxplot?.whiskerMethod, ['range', 'iqr'], '箱线图须线方法'); boolean(options.boxplot?.showOutliers, '箱线图异常点'); optionalNumber(options.boxplot?.whiskerMultiplier, 0, 100, '箱线图须线倍数')
+  const candlestick = options.candlestick
+  if (candlestick) {
+    optionalNumber(candlestick.candleWidth, Number.MIN_VALUE, Number.MAX_VALUE, '蜡烛宽度')
+    color(candlestick.risingColor, '上涨颜色'); color(candlestick.fallingColor, '下跌颜色'); boolean(candlestick.hollow, '上涨蜡烛空心')
+    for (const [state, title] of [['rising', '上涨'], ['falling', '下跌'], ['doji', '十字线']] as const) {
+      const style = candlestick[state]
+      optionalObject(style, `${title}蜡烛样式`)
+      if (!style) continue
+      color(style.color, `${title}蜡烛颜色`); optionalNumber(style.fillOpacity, 0, 1, `${title}蜡烛填充不透明度`); boolean(style.hollow, `${title}蜡烛空心`)
+      optionalObject(style.border, `${title}蜡烛边框`)
+      if (style.border) {
+        color(style.border.color, `${title}蜡烛边框颜色`); optionalNumber(style.border.width, 0, Number.MAX_VALUE, `${title}蜡烛边框线宽`)
+        optionalNumber(style.border.opacity, 0, 1, `${title}蜡烛边框不透明度`)
+      }
+    }
+    optionalObject(candlestick.highLowLine, 'K 线高低线'); boolean(candlestick.highLowLine?.visible, 'K 线高低线显隐')
+    const highLowBorder = candlestick.highLowLine?.border
+    optionalObject(highLowBorder, 'K 线高低线样式')
+    if (highLowBorder) {
+      boolean(highLowBorder.visible, 'K 线高低线线条显隐'); color(highLowBorder.color, 'K 线高低线颜色')
+      optionalNumber(highLowBorder.width, 0, Number.MAX_VALUE, 'K 线高低线线宽'); optionalNumber(highLowBorder.opacity, 0, 1, 'K 线高低线不透明度')
+      enumeration(highLowBorder.dashType, ['solid', 'dashed', 'dotted'], 'K 线高低线线型')
+    }
+    optionalObject(candlestick.closeMarker, 'K 线收盘标记'); boolean(candlestick.closeMarker?.visible, 'K 线收盘标记显隐')
+    const closePoint = candlestick.closeMarker?.point
+    optionalObject(closePoint, 'K 线收盘标记样式')
+    enumeration(closePoint?.shape, CHART_POINT_SHAPES, 'K 线收盘标记形状'); optionalNumber(closePoint?.size, 0, 256, 'K 线收盘标记大小'); color(closePoint?.color, 'K 线收盘标记颜色')
+  }
   enumeration(options.heatmap?.visualMapType, ['continuous', 'piecewise'], '热力图色阶'); string(options.heatmap?.unit, '热力图单位'); label(options.heatmap?.label, '热力图标签')
   optionalNumber(options.heatmap?.min, -Number.MAX_VALUE, Number.MAX_VALUE, '热力图最小值'); optionalNumber(options.heatmap?.max, -Number.MAX_VALUE, Number.MAX_VALUE, '热力图最大值')
   if (options.heatmap?.min !== undefined && options.heatmap.max !== undefined && options.heatmap.min > options.heatmap.max) throw new RangeError('热力图最小值不能大于最大值。')
   enumeration(options.treemap?.parentLabelLayout, ['banner', 'overlapping', 'none'], '树图父级标签'); label(options.treemap?.label, '树图标签')
+  validateChartTreemapBackground(options.treemap?.label?.backgroundColor)
   label(options.sunburst?.label, '旭日图标签'); optionalObject(options.sunburst?.centerLabel, '旭日图中心标签'); boolean(options.sunburst?.centerLabel?.visible, '旭日图中心标签显隐'); font(options.sunburst?.centerLabel?.font, '旭日图中心字体')
   const gauge = options.gauge
   if (gauge) {
@@ -209,6 +244,17 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
 export function validateChartAxis(axisOptions: ChartAxisOptions | undefined, name: string): void { axis(axisOptions, name) }
 export function validateChartFont(fontOptions: ChartFontOptions | undefined, name: string): void { font(fontOptions, name) }
 
+/** Public label backgrounds retain gradients and imported pattern names. The
+ * renderer follows the fixed mean-color treatment for patterns. */
+export function validateChartTreemapBackground(value: unknown): void {
+  if (value === undefined) return
+  if (value && typeof value === 'object' && 'type' in value && value.type === 'pattern') {
+    plain(value, '树图标签背景图案')
+    if (typeof value.preset !== 'string' || !value.preset.trim() || value.preset.length > 128) throw new TypeError('树图标签背景图案需要有效预设名称。')
+    color(value.foregroundColor, '树图标签图案前景色', true); color(value.backgroundColor, '树图标签图案背景色', true)
+  } else validateChartColor(value, '树图标签背景')
+}
+
 function visitValues(options: unknown): void {
   let nodes = 0, characters = 0
   function visit(value: unknown, path: string, depth: number): void {
@@ -238,7 +284,7 @@ function line(value: ChartLineOptions | undefined, name: string): void {
 function label(value: ChartLabelOptions | undefined, name: string): void {
   font(value, name)
   if (!value) return
-  boolean(value.visible, `${name}显隐`); enumeration(value.position, ['inside', 'outside', 'top', 'bottom', 'left', 'right', 'center'], `${name}位置`); enumeration(value.contentType, ['value', 'category', 'series', 'percentage'], `${name}内容`); string(value.format, `${name}数字格式`)
+  boolean(value.visible, `${name}显隐`); enumeration(value.position, CHART_LABEL_POSITION_CHOICES.map(([position]) => position), `${name}位置`); chartLabelContentMask(value.contentType, true, `${name}内容`); string(value.format, `${name}数字格式`)
 }
 function axis(value: ChartAxisOptions | undefined, name: string): void {
   optionalObject(value, name)
@@ -247,6 +293,9 @@ function axis(value: ChartAxisOptions | undefined, name: string): void {
   font(value.titleStyle, `${name}标题字体`); enumeration(value.titleAlignment, ['start', 'center', 'end'], `${name}标题对齐`)
   optionalNumber(value.logBase, 2, 1000, `${name}对数底数`)
   optionalNumber(value.min, -Number.MAX_VALUE, Number.MAX_VALUE, `${name}最小刻度`); optionalNumber(value.max, -Number.MAX_VALUE, Number.MAX_VALUE, `${name}最大刻度`)
+  enumeration(value.baseTimeUnit, ['days', 'months', 'years'], `${name}日期基准单位`)
+  enumeration(value.majorTimeUnit, ['days', 'months', 'years'], `${name}日期刻度单位`)
+  optionalNumber(value.majorUnit, Number.MIN_VALUE, Number.MAX_VALUE, `${name}主刻度间隔`)
   if (value.scaleType === 'log' && (value.min !== undefined && value.min <= 0 || value.max !== undefined && value.max <= 0)) throw new RangeError(`${name}对数轴刻度须为正数。`)
   if (value.min !== undefined && value.max !== undefined && value.min >= value.max) throw new RangeError(`${name}最小刻度须小于最大刻度。`)
   line(value.line, `${name}轴线`); line(value.gridLine, `${name}网格线`); font(value.label, `${name}标签`); boolean(value.label?.visible, `${name}标签显隐`); optionalNumber(value.label?.rotate, -90, 90, `${name}标签旋转`)
@@ -260,7 +309,7 @@ function series(value: ChartSeriesOptions | undefined, name: string, allowWaterf
   string(value.name, `${name}名称`); enumeration(value.type, ['column', 'columnStacked', 'line', 'area', 'areaStacked'], `${name}图型`); seriesColor(value.color, `${name}颜色`); optionalNumber(value.fillOpacity, 0, 1, `${name}填充不透明度`); boolean(value.rightAxis, `${name}右轴`)
   fillPattern(value.fillPattern, `${name}填充纹理`)
   line(value.border, `${name}边框`); label(value.label, `${name}标签`); optionalObject(value.point, `${name}标记`)
-  enumeration(value.point?.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}标记形状`); optionalNumber(value.point?.size, 0, 256, `${name}标记大小`); color(value.point?.color, `${name}标记颜色`)
+  enumeration(value.point?.shape, CHART_POINT_SHAPES, `${name}标记形状`); optionalNumber(value.point?.size, 0, 256, `${name}标记大小`); color(value.point?.color, `${name}标记颜色`)
   if (value.dataPoints !== undefined) {
     plain(value.dataPoints, `${name}项目样式`)
     for (const [key, point] of Object.entries(value.dataPoints)) {
@@ -268,7 +317,7 @@ function series(value: ChartSeriesOptions | undefined, name: string, allowWaterf
       if (!point) continue
       seriesColor(point.color, `${name}项目颜色`); optionalNumber(point.fillOpacity, 0, 1, `${name}项目不透明度`); optionalNumber(point.size, 0, 256, `${name}项目大小`); line(point.border, `${name}项目边框`)
       fillPattern(point.fillPattern, `${name}项目填充纹理`)
-      enumeration(point.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}项目标记形状`)
+      enumeration(point.shape, CHART_POINT_SHAPES, `${name}项目标记形状`)
     }
   }
 }

@@ -2,7 +2,7 @@ import type { CellScalar } from '../../domain/model'
 import type { ChartData } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { finiteChartValue } from './chart-math'
-import { chartDateSerial, prepareChartDateData, type ChartDateAxisConfig } from './chart-date-axis'
+import { chartDateSerial, chartDateDataSteps, type ChartDateAxisConfig } from './chart-date-axis'
 import { CHART_PREPARATION_CHUNK, consumeChartPreparation, type ChartComputePreparationContext } from './chart-compute-lifecycle'
 
 interface CategoryEntry { category: string; indexes: number[]; values: Array<number | null>; weight?: number; synthetic?: boolean }
@@ -32,18 +32,20 @@ export function* chartComputeInputSteps(source: ChartData, chart: ChartDateAxisC
   const series: ChartData['series'] = []
   for (const input of data.series) {
     const values: Array<number | null> = []
+    const formattedValues: Array<string | null> | undefined = input.formattedValues ? [] : undefined
     for (let row = 0; row < input.values.length; row++) {
       const value = input.values[row]!
-      values.push(value === null ? chart.type !== 'gauge' && chart.options?.invalidValueStrategy === 'zero' ? 0 : null
+      values.push(value === null ? chart.type !== 'gauge' && chart.type !== 'histogram' && chart.options?.invalidValueStrategy === 'zero' ? 0 : null
         : percent ? totals[row] ? (value / scales[row]!) / totals[row]! * 100 : 0 : value)
+      if (formattedValues) formattedValues.push(Object.is(value, values[row]) ? input.formattedValues![row] ?? null : null)
       if (++work % CHART_PREPARATION_CHUNK === 0) yield
     }
-    series.push({ ...input, values })
+    series.push({ ...input, values, ...(formattedValues ? { formattedValues } : {}) })
   }
   const prepared = { ...data, series }
   // Statistical plots create their dates from the final bin centers or field
   // labels. Ordinary Cartesian statistics use the actual source serials.
-  return ['histogram', 'boxplot'].includes(chart.type) ? prepared : prepareChartDateData(prepared, chart)
+  return ['histogram', 'boxplot'].includes(chart.type) ? prepared : yield* chartDateDataSteps(prepared, chart)
 }
 
 export function prepareChartComputeInputs(source: ChartData, chart: ChartDateAxisConfig, context: ChartComputePreparationContext = {}): Promise<ChartData> {
@@ -149,7 +151,8 @@ function* aggregateCategorySteps(data: ChartData, chart: ChartDateAxisConfig): G
     series.push({ ...input, values, ...(xValues ? { xValues } : {}), ...(sizeValues ? { sizeValues } : {}) })
   }
   return { categories, fields: data.fields, date1904: data.date1904, sourceCategoryFields: data.sourceCategoryFields,
-    sourceValueFields: data.sourceValueFields, ...(categoryValues ? { categoryValues } : {}), ...(individualRecords ? { records } : {}), series }
+    sourceValueFields: data.sourceValueFields, sourceNumericFields: data.sourceNumericFields, visibleFields: data.visibleFields,
+    ...(categoryValues ? { categoryValues } : {}), ...(individualRecords ? { records } : {}), series }
 }
 
 /** A merged category has one coordinate only when all contributing rows agree.

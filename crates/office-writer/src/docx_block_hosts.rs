@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{Value, json};
 
-use super::{ContentControl, NoteBundle, NoteKind, WriteContext, get, slice_utf16, table_writer, text_fields};
+use super::{ContentControl, NoteBundle, NoteKind, WriteContext, get, note_writer, slice_utf16, table_writer, text_fields};
 use crate::ExportError;
 
 pub(super) struct AuxiliaryContent<'a> {
@@ -38,6 +38,12 @@ pub(super) fn auxiliary_contents<'a>(model: &'a Value, body: &[Value], notes: &'
             let content = get(&note.value, "content");
             if let Some(blocks) = content_blocks(content)? {
                 result.push(AuxiliaryContent { key: format!("{}:{}", kind.collection(), note.id), content, blocks, page_field_objects: false });
+            }
+        }
+        let name = if kind == NoteKind::Footnote { "footnote" } else { "endnote" };
+        for (index, (decoration, content)) in note_writer::decoration_contents(get(get(model, "noteSettings"), name), kind)?.into_iter().enumerate() {
+            if let Some(blocks) = content_blocks(content)? {
+                result.push(AuxiliaryContent { key: format!("{}:decoration:{decoration}:{index}", kind.collection()), content, blocks, page_field_objects: false });
             }
         }
     }

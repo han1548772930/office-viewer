@@ -22,7 +22,7 @@ import { sectionIdForBlock } from '../services/section-header-footer'
 import { planDocumentTableFieldAnchors, reconcileDocumentTableAnchors } from '../services/document-table-anchors'
 import { documentPointAtClampedBodyOffset, insertDocumentBlocksAtPoint } from '../services/document-block-insertion'
 import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
-import { assertTextRangeEditable, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit, validateDocumentContentControlRanges } from '../services/content-controls'
+import { assertDocumentContentControlBlocksEditable, assertTextRangeEditable, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit, validateDocumentContentControlRanges } from '../services/content-controls'
 import { documentFieldLocked, documentTextFieldParagraphs, documentTextFieldRanges, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 import { transformDocumentCommentAnchorsForBodyRangeEdit } from '../comments/document-comment-anchors'
 import { reconcileDocumentNotesAfterStructure } from '../notes/document-notes'
@@ -33,7 +33,11 @@ import { copyDocumentBlocksForPaste } from '../services/document-block-paste'
 import { applyDocumentPasteDestinationStyle, type DocumentPasteDestinationStyle } from '../services/document-clipboard'
 import { validateDocumentRunPatch } from '../model/document-run-range'
 import { documentTableCellBlocks, documentTableCellContentContainers, documentTableContinuationEntries, rebindDocumentTableContinuations } from '../model/document-table-continuations'
+import { documentTableTextOriginCells } from '../model/document-table-text-origin'
 import type { DocumentContentControlBindingOriginTextEdit } from '../services/content-control-bindings'
+import { deleteDocumentTableRows, rebuildDocumentTableRows } from '../model/document-table-row-structure'
+import { documentContentControlOwnedRowBlockIds, reconcileDocumentContentControlTableRows, resolveDocumentContentControlTableRows } from '../model/content-control-table-rows'
+import { reconcileDocumentContentControlBlockEdits } from '../model/content-control-block-edits'
 
 export interface DocumentTableMutationTarget { blockId: string; range: DocumentTableCellRange }
 export interface DocumentTableMutationPlan { model: DocumentModel; selection: DocumentSelection; changed: boolean }
@@ -55,16 +59,7 @@ function placements(grid: DocumentTableGrid): Placement[] {
   return grid.anchors.map(owner => ({ cell: owner.cell, row: owner.row, column: owner.column, rowSpan: owner.rowSpan, colSpan: owner.colSpan }))
 }
 function rebuild(table: DocumentTable, cells: Placement[], rows = table.rows): void {
-  table.rows = rows
-  for (const row of rows) row.cells = []
-  cells.sort((left, right) => left.row - right.row || left.column - right.column)
-  for (const owner of cells) {
-    owner.cell.columnIndex = owner.column
-    owner.cell.rowSpan = owner.rowSpan
-    owner.cell.colSpan = owner.colSpan
-    rows[owner.row]!.cells.push(owner.cell)
-    rebindDocumentTableContinuations(table, owner.cell, owner.row)
-  }
+  rebuildDocumentTableRows(table, cells, rows)
 }
 function blankCell(source: DocumentCell, column: number, colSpan = 1): DocumentCell {
   const paragraph = createParagraph()
@@ -183,19 +178,7 @@ function insertColumns(table: DocumentTable, grid: DocumentTableGrid, at: number
 }
 
 function deleteRows(table: DocumentTable, grid: DocumentTableGrid, start: number, end: number): void {
-  const amount = end - start + 1
-  const cells = placements(grid).flatMap(owner => {
-    const overlap = Math.max(0, Math.min(owner.row + owner.rowSpan, end + 1) - Math.max(owner.row, start))
-    if (overlap === owner.rowSpan) return []
-    return [{ ...owner, row: owner.row < start ? owner.row : owner.row > end ? owner.row - amount : start, rowSpan: owner.rowSpan - overlap }]
-  })
-  const header = table.headerRowCount ?? 0
-  table.headerRowCount = header - Math.max(0, Math.min(end + 1, header) - start)
-  if (start === 0) table.titleRow = false
-  if (table.rowStyles) table.rowStyles.splice(start, amount)
-  const rows = [...table.rows]
-  rows.splice(start, amount)
-  rebuild(table, cells, rows)
+  deleteDocumentTableRows(table, grid, start, end)
 }
 
 function deleteColumns(table: DocumentTable, grid: DocumentTableGrid, start: number, end: number): void {
@@ -426,7 +409,8 @@ function isTableCellTextNoop(cell: DocumentCell, paragraphs: readonly { text: st
 function assertCellTextEditable(model: DocumentModel, owner: DocumentTableGridCell, text: string): void {
   const ids = new Set(allBlocks(documentTableCellBlocks(owner.cell)).map(block => block.id)), inputs = documentTextFieldParagraphs(model).filter(paragraph => ids.has(paragraph.block.id))
   if (isTableCellTextNoop(owner.cell, inputs, text.replace(/\r\n?/g, '\n'))) return
-  if (model.contentControls?.some(control => ids.has(control.blockId) && ['controlLocked', 'sdtLocked', 'contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''))) throw new RangeError('单元格文本不能覆盖锁定内容控件')
+  assertDocumentContentControlBlocksEditable(model, ids)
+  if (model.contentControls?.some(control => !control.tableRowRange && ids.has(control.blockId) && ['controlLocked', 'sdtLocked', 'contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''))) throw new RangeError('单元格文本不能覆盖锁定内容控件')
   const first = inputs[0], last = inputs.at(-1)
   if (!first || !last) return
   assertTextRangeEditable(model, first.absoluteStart, last.absoluteEnd)
@@ -467,17 +451,29 @@ export function documentTableTextInputEdits(model: DocumentModel,
   target: DocumentTableMutationTarget): DocumentContentControlBindingOriginTextEdit[] {
   const block = findDocumentBlock(model, target.blockId), table = block && tableForBlock(block)
   if (!table) throw new RangeError('表格输入的实际目标不存在。')
-  const grid = documentTableGrid(table), paragraphs = documentTextFieldParagraphs(model)
+  const grid = documentTableGrid(table), paragraphs = documentTextFieldParagraphs(model), origins = documentTableTextOriginCells(model, paragraphs)
   const owner = command.id === 'doc.command.table-set-cell-text' ? grid.cellAt(command.row, command.column) : undefined
   const edits = command.id === 'doc.command.table-set-cell-text'
     ? owner ? [{ owner, text: command.text }] : [] : tableRangeTextEdits(grid, target.range, command)
   if (command.id === 'doc.command.table-set-cell-text' && !owner) throw new RangeError('表格输入的实际单元格不存在。')
-  return edits.flatMap(edit => {
+  const planned = edits.map(edit => {
+    if (typeof edit.text !== 'string') throw new TypeError('表格输入的实际值必须是文本。')
+    const origin = origins.find(origin => origin.tableId === target.blockId && origin.cell === edit.owner.cell)
+    if (!origin) throw new RangeError('表格输入的原始单元格身份不存在。')
     const ids = new Set(allBlocks(documentTableCellBlocks(edit.owner.cell)).map(block => block.id))
     const inputs = paragraphs.filter(paragraph => ids.has(paragraph.block.id)), first = inputs[0], last = inputs.at(-1)
-    if (!first || !last) return []
-    return [{ startOffset: first.absoluteStart, endOffset: last.absoluteEnd, text: edit.text.replace(/\r\n?/g, '\n') }]
+    const value = edit.text.replace(/\r\n?/g, '\n'), tableCell = { tableId: target.blockId, cellId: edit.owner.cell.id,
+      row: edit.owner.row, column: edit.owner.column, order: origin.order, value }
+    if (first && last) return { startOffset: first.absoluteStart, endOffset: last.absoluteEnd, text: value, tableCell }
+    const following = paragraphs[origin.paragraphIndex], previous = paragraphs.at(-1), at = following?.absoluteStart ?? previous?.absoluteEnd ?? 0
+    // A newly materialized paragraph contributes a delimiter absent from a non-text cell.
+    return { startOffset: at, endOffset: at, text: following ? value + '\n' : previous ? '\n' + value : value, tableCell }
   })
+  if (!paragraphs.length) {
+    const lastOrder = planned.reduce((maximum, edit) => Math.max(maximum, edit.tableCell.order), -1)
+    for (const edit of planned) if (edit.tableCell.order !== lastOrder) edit.text += '\n'
+  }
+  return planned
 }
 
 function setCellText(model: DocumentModel, blockId: string, grid: DocumentTableGrid, row: number, column: number, text: string, marks?: Extract<DocumentTableCommand, { id: 'doc.command.table-set-range-text' }>['marks']): DocumentSelection {
@@ -748,8 +744,12 @@ export function assertDocumentTableMutation(model: DocumentModel, _selection: Do
     const deleting = command.id === 'doc.command.table-delete' ? grid.anchors : grid.anchors.filter(owner => command.id === 'doc.command.table-delete-rows'
       ? owner.row >= range.startRow && owner.row + owner.rowSpan - 1 <= range.endRow
       : owner.column >= range.startColumn && owner.column + owner.colSpan - 1 <= range.endColumn)
-    const ids = new Set(deleting.flatMap(owner => allBlocks(documentTableCellBlocks(owner.cell)).map(child => child.id)))
-    if (model.contentControls?.some(control => ids.has(control.blockId) && ['controlLocked', 'sdtLocked', 'sdtContentLocked'].includes(control.lock ?? ''))) throw new RangeError('表格选区包含锁定内容控件')
+    const ids = command.id === 'doc.command.table-delete-rows' ? documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, {
+      tableId: block.id, rowIds: table.rows.slice(range.startRow, range.endRow + 1).map(row => row.id),
+    })) : new Set(deleting.flatMap(owner => allBlocks(documentTableCellBlocks(owner.cell)).map(child => child.id)))
+    // A surviving row shell can change its paragraph fallback; reconciliation checks the complete row identities/locks.
+    if (model.contentControls?.some(control => !control.tableRowRange && ids.has(control.blockId)
+      && ['controlLocked', 'sdtLocked', 'sdtContentLocked'].includes(control.lock ?? ''))) throw new RangeError('表格选区包含锁定内容控件')
   }
   const projection = tableFieldProjection(model, block, command, target)
   if (projection) planDocumentTableFieldAnchors(model, projection.paragraphs, projection.transformedFieldIds)
@@ -917,7 +917,11 @@ export function prepareDocumentTableMutation(before: DocumentModel, selection: D
   assertDocumentTableRange(sourceGrid, target.range)
   assertDocumentPermission(before.permissionRules ?? [], context, 'edit', documentTablePermissionTargets(before, sourceGrid, target, command))
   const model = cloneModel(before), result = applyMutation(model, selection, command, target)
-  if (result.structural) reconcileDocumentTableAnchors(before, model, result.selection, result.transformedFieldIds)
+  reconcileDocumentContentControlTableRows(before, model)
+  reconcileDocumentContentControlBlockEdits(before, model, { selection, absorbAdjacentInsertions: false })
+  if (result.structural) {
+    reconcileDocumentTableAnchors(before, model, result.selection, result.transformedFieldIds)
+  }
   const afterBlock = findDocumentBlock(model, target.blockId), afterGrid = afterBlock && tableForBlock(afterBlock) && documentTableGrid(tableForBlock(afterBlock)!)
   const afterTargets = afterGrid ? documentTablePermissionTargets(model, afterGrid, { blockId: target.blockId,
     range: selectedCellsOnly(command) ? target.range : documentTableWholeRange(afterGrid) }, command) : []
@@ -933,7 +937,8 @@ export function prepareDocumentTableMutation(before: DocumentModel, selection: D
 
 function assertCellContentReplaceEditable(model: DocumentModel, owner: DocumentTableGridCell): void {
   const ids = new Set(allBlocks(documentTableCellBlocks(owner.cell)).map(block => block.id))
-  if (model.contentControls?.some(control => ids.has(control.blockId)
+  assertDocumentContentControlBlocksEditable(model, ids)
+  if (model.contentControls?.some(control => !control.tableRowRange && !control.blockRange && ids.has(control.blockId)
     && ['controlLocked', 'sdtLocked', 'contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''))) {
     throw new RangeError('单元格粘贴不能覆盖锁定内容控件')
   }
@@ -1044,6 +1049,8 @@ export function prepareDocumentTablePasteMutation(before: DocumentModel, selecti
   }
   if (!textTargets(model).length) afterGrid.cellAt(range.startRow, range.startColumn)!.cell.blocks.push(createParagraph())
   const next = createDocumentTableViewSelection(model, view.tableId, range, singleCell ? 'cell' : 'range', undefined, selection)
+  reconcileDocumentContentControlTableRows(before, model)
+  reconcileDocumentContentControlBlockEdits(before, model, { selection, absorbAdjacentInsertions: false })
   reconcileDocumentTableAnchors(before, model, collapsedSelection(next.anchor))
   for (const ancestor of documentBlockAncestry(model, view.tableId) ?? []) delete ancestor.metadata.html
   const previousCells = new Map(grid.anchors.map(owner => [owner.cell.id, owner.cell]))

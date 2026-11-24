@@ -30,7 +30,7 @@ pub(super) struct TableWriteState {
 struct Anchor<'a> { cell: &'a Value, row: usize, column: usize, row_span: usize, col_span: usize, cell_index: usize }
 struct Grid<'a> { rows: Vec<Vec<Anchor<'a>>>, column_count: usize }
 
-pub(super) struct ContentGroup<'a> { pub blocks: &'a [Value] }
+pub(super) struct ContentGroup<'a> { pub blocks: &'a [Value], pub row_index: usize }
 
 fn integer(value: Option<&Value>, fallback: Option<usize>, label: &str) -> Result<usize, ExportError> {
     match value.filter(|value| !value.is_null()) {
@@ -145,7 +145,7 @@ pub(super) fn content_groups(table: &Value) -> Result<Vec<ContentGroup<'_>>, Exp
     for (row_index, cells) in grid.rows.iter().enumerate() {
         for owner in cells {
             let blocks = if owner.row == row_index { cell_blocks(owner.cell) } else { continuation_blocks(table, owner.cell, row_index) };
-            if !blocks.is_empty() { groups.push(ContentGroup { blocks }); }
+            if !blocks.is_empty() { groups.push(ContentGroup { blocks, row_index }); }
         }
     }
     Ok(groups)
@@ -245,8 +245,9 @@ pub(super) fn write(context: &mut WriteContext<'_>, block: &Value, available: Op
     let result = (|| {
         let properties = styles::table(context, table, width, &widths)?;
         let columns = widths.iter().map(|width| format!("<w:gridCol w:w=\"{width}\"/>")).collect::<String>();
-        let mut contents = String::new();
+        let mut row_contents = Vec::with_capacity(grid.rows.len());
         for (row_index, cells) in grid.rows.iter().enumerate() {
+            let mut contents = String::new();
             contents.push_str("<w:tr>");
                 contents.push_str(&styles::row(context, table, &rows[row_index], row_index, header_rows)?);
             for anchor in cells {
@@ -257,20 +258,16 @@ pub(super) fn write(context: &mut WriteContext<'_>, block: &Value, available: Op
                 let margins = styles::margins(table, Some(anchor.cell))?;
                 let inner_width = (width - ((margins[1] + margins[3]) * 15.0).round() as i64).max(1);
                 let blocks = if continuation { continuation_blocks(table, anchor.cell, row_index) } else { cell_blocks(anchor.cell) };
-                for block in blocks {
-                    match get(block, "type").as_str() {
-                        Some("table") => contents.push_str(&write(context, block, Some(inner_width))?),
-                        Some("sectionBreak") => return Err(ExportError::invalid("DOCX section breaks cannot be written inside a table cell")),
-                        _ => contents.push_str(&context.block(block)?),
-                    }
-                }
+                contents.push_str(&context.blocks(blocks, Some(inner_width))?);
                 // A native cell always ends in a paragraph. The marker lets
                 // import distinguish a format-required tail from authored text.
                 if blocks.is_empty() || blocks.last().is_some_and(|block| get(block, "type").as_str() == Some("table")) { contents.push_str("<w:p ov:tableEnd=\"1\"/>"); }
                 contents.push_str("</w:tc>");
             }
             contents.push_str("</w:tr>");
+            row_contents.push(contents);
         }
+        let contents = super::control_writer::wrap_rows(context, &id, rows, &row_contents)?;
         let result = format!("<w:tbl xmlns:w=\"{WORD_NAMESPACE}\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" xmlns:ov=\"{TABLE_SOURCE_NAMESPACE}\" mc:Ignorable=\"ov\" ov:key=\"{key}\">{properties}<w:tblGrid>{columns}</w:tblGrid>{contents}</w:tbl>");
         let identity = native_identity(&result).map_err(ExportError::invalid)?;
         let source_data = data(table, &id, &grid);

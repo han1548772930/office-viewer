@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
+import { waterfallComputedFixture } from './fixtures/chart-waterfall-fixtures.mjs'
 import { init as initNativeChart, use as useNativeChart } from 'echarts/core'
 import { ScatterChart } from 'echarts/charts'
 import { GridComponent, LegendComponent } from 'echarts/components'
@@ -163,7 +164,9 @@ test('Boxplot renamed labels retain source-name identities for distribution styl
   assert.equal(result.boxes[1].sourceName, 'Second samples'); assert.equal(result.boxes[1].name, 'Second display')
   assert.equal(scene.series[1].name, 'Second display'); assert.equal(scene.series[1].color, 'purple'); assert.equal(scene.series[1].rightAxis, true)
   assert.ok(draw.drawDerivedChartData(result, model).some(command => command.kind === 'text' && command.text === 'Second display'))
-  assert.deepEqual(settings.chartSeriesSettingPoints(model, { name: 'Second samples' }, data.series.map(series => series.name), [{ value: 9, label: 'First' }, { value: 2, label: 'Second' }], data).map(item => item.value), [1])
+  const sampleChoices = settings.chartSeriesSettingPoints(model, { name: 'Second samples' }, data.series.map(series => series.name), [{ value: 9, label: 'First' }, { value: 2, label: 'Second' }], data)
+  assert.deepEqual(sampleChoices.map(item => item.value), [0, 1, 2, 3, 4, 5])
+  assert.equal(sampleChoices.at(-1).label, '6 · F · 1000')
 })
 
 test('named combination types control stacking and statistical eligibility and convert with field-style axis rules', () => {
@@ -185,8 +188,8 @@ test('named solid colors survive specialized color transforms and Gauge controls
   assert.equal(derived.chartHierarchyPointStyle(hierarchy, 1, { pointIndex: 0, rootIndex: 0, depth: 3 }, palette, 'Weight').color, 'purple')
   assert.equal(derived.chartHeatmapPointStyle(heatmap, 1, 0, 0, 5, { min: 0, max: 10 }, palette, 'Weight').color, 'purple')
   assert.equal(derived.chartCandlestickPointStyle(candle, 1, 0, true, palette, 'Weight').color, 'purple')
-  const waterfall = chart('waterfall', authored), values = { categories: ['A', 'B', 'C'], series: [{ field: 1, name: 'Weight', values: [2, -1, 4] }] }
-  const waterfallScene = draw.drawDerivedChartData(prepared(values, waterfall), waterfall)
+  const waterfall = chart('waterfall', { ...authored, waterfall: { useSubtotal: false } }), values = { categories: ['A', 'B', 'C'], series: [{ field: 1, name: 'Weight', values: [2, -1, 4] }] }
+  const waterfallScene = draw.drawDerivedChartData(derived.deriveChartData(values, waterfall, waterfallComputedFixture(values, 'named-changes')), waterfall)
   assert.equal(waterfallScene.filter(command => command.kind === 'rect' && command.fill === 'rgba(128, 0, 128, 1)').length, 3)
   const gauge = chart('gauge', { appearance: { font: { family: 'Aptos', fontSize: 16 } }, series: { 1: { label: { color: 'blue' } } },
     namedSeries: [{ name: 'Weight', style: { label: { family: 'Georgia', fontSize: 22, color: 'purple' } } }] })

@@ -13,7 +13,8 @@ import { splitDocumentRunRange } from '../model/document-run-range'
 import { appendListMarker, paragraphGeometry } from './document-paragraph-layout'
 import { paragraphLineHeight, positionLine, wrapRuns } from './document-text-layout'
 import { intersectTableRect, measureDocumentTable, translateTableLine, translateTableRect } from './document-table-measurement'
-import type { DocumentLayout, LayoutAuxiliaryContent, LayoutLine, LayoutMeasurer, LayoutRect } from './document-layout-types'
+import type { DocumentLayout, DocumentTextLayoutDisplay, LayoutAuxiliaryContent, LayoutLine, LayoutMeasurer, LayoutRect } from './document-layout-types'
+import { documentPictureInputAnchors, layoutDocumentPictureInputAnchor } from './document-picture-input-anchor'
 
 interface FieldDisplayMap { sourceStart: number; sourceEnd: number; start: number; end: number }
 
@@ -62,17 +63,20 @@ function sourceLineOffsets(line: LayoutLine, offsets: ReadonlyMap<string, readon
 
 /** Header/footer blocks share the existing paragraph and nested-table measurement kernel. */
 export function layoutDocumentAuxiliaryBlocks(model: DocumentModel, host: DocumentAuxiliaryBlockHost, bounds: LayoutRect, page: number,
-  pageNumber: number, total: number, measurer: LayoutMeasurer, bottom = false): LayoutAuxiliaryContent {
+  pageNumber: number, total: number, measurer: LayoutMeasurer, bottom = false, noteDisplay?: DocumentTextLayoutDisplay): LayoutAuxiliaryContent {
   const view = resolveDocumentBlockHost(model, host), scoped = documentModelForBlockHost(model, host)
   const display = host.kind === 'story' ? storyPageDisplay(scoped, pageNumber, total) : { model: scoped, offsets: new Map<string, FieldDisplayMap[]>() }
   const markers = paragraphListMarkers(display.model.blocks)
   const output: LayoutAuxiliaryContent = { ...bounds, host: { ...host }, sourceHost: view.sourceHost, page,
     lines: [], cells: [], images: [], dividers: [], tableFragments: [] }
   let cursor = 0
+  const pictureAnchors = documentPictureInputAnchors(display.model.blocks), anchorIds = new Set([...pictureAnchors.values()].map(block => block.id))
   for (const block of display.model.blocks) {
-    cursor += block.style.spaceBefore
+    if (anchorIds.has(block.id)) continue
+    const inputAnchor = pictureAnchors.get(block.id), style = inputAnchor?.style ?? block.style
+    cursor += style.spaceBefore
     if (block.type === 'table') {
-      const measured = measureDocumentTable(block, bounds.width, markers, measurer, 0, bounds.height)
+      const measured = measureDocumentTable(block, bounds.width, markers, measurer, 0, bounds.height, noteDisplay)
       const table = tableForBlock(block)!, dx = documentTableHorizontalOffset(table, measured.width, bounds.width)
       cursor += Math.max(0, table.style?.offsetY ?? 0)
       output.lines.push(...measured.lines.map(line => translateTableLine(line, dx, cursor)))
@@ -86,17 +90,23 @@ export function layoutDocumentAuxiliaryBlocks(model: DocumentModel, host: Docume
     } else if (block.type === 'image') {
       const image = imageForBlock(block)
       if (image) {
-        const scale = Math.min(1, bounds.width / Math.max(1, image.width), bounds.height / Math.max(1, image.height))
+        const geometry = inputAnchor && paragraphGeometry(inputAnchor, markers.get(inputAnchor.id), bounds.width, measurer)
+        const available = geometry ? geometry.width(0) : bounds.width
+        const scale = Math.min(1, available / Math.max(1, image.width), bounds.height / Math.max(1, image.height))
         const width = Math.max(1, image.width) * scale, height = Math.max(1, image.height) * scale
-        const dx = block.style.align === 'right' ? bounds.width - width : block.style.align === 'center' ? (bounds.width - width) / 2 : 0
-        output.images.push({ blockId: block.id, src: image.src, alt: image.alt, x: dx, y: cursor, width, height, page })
+        const dx = (geometry?.firstIndent ?? 0) + (style.align === 'right' ? available - width : style.align === 'center' ? (available - width) / 2 : 0)
+        const positioned = { blockId: block.id, src: image.src, alt: image.alt, x: dx, y: cursor, width, height, page }
+        output.images.push(positioned)
+        if (inputAnchor) output.lines.push(layoutDocumentPictureInputAnchor(inputAnchor, positioned, { blockId: inputAnchor.id },
+          bounds.width, 0, measurer, output.images, markers.get(inputAnchor.id), noteDisplay))
         cursor += height
       }
     } else if (block.type === 'divider') {
       output.dividers.push({ x: 0, y: cursor + 9, width: bounds.width, height: 1, page }); cursor += 18
     } else if (!['pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) {
       const marker = markers.get(block.id), geometry = paragraphGeometry(block, marker, bounds.width, measurer)
-      const wrapped = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true)
+      const wrapped = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true, undefined, undefined,
+        { references: noteDisplay?.references, leading: noteDisplay?.leadingLabels?.get(block.id) })
       for (const [index, raw] of wrapped.entries()) {
         const height = paragraphLineHeight(Math.max(raw.fontHeight, index === 0 ? geometry.markerHeight : 0), block.style)
         const line = positionLine(raw, { blockId: block.id }, index === 0 ? geometry.firstIndent : geometry.indent, cursor,
@@ -105,7 +115,7 @@ export function layoutDocumentAuxiliaryBlocks(model: DocumentModel, host: Docume
         output.lines.push(line); cursor += height
       }
     }
-    cursor += block.style.spaceAfter
+    cursor += style.spaceAfter
   }
   const top = bottom ? bounds.y + bounds.height - cursor : bounds.y, clip = { ...bounds }
   output.y = top; output.height = cursor
@@ -126,11 +136,10 @@ export function layoutDocumentAuxiliaryBlocks(model: DocumentModel, host: Docume
 /** A view of the same physical pages for caret, cell hit-testing, and table overlays in one host. */
 export function documentLayoutForBlockHost(layout: DocumentLayout, host?: DocumentAuxiliaryBlockHost): DocumentLayout {
   if (!host) return layout
-  if (host.kind === 'note' && !layout.auxiliaryContent?.some(content => sameDocumentBlockHost(content.host, host))) return layout
   const content = (layout.auxiliaryContent ?? []).filter(content => sameDocumentBlockHost(content.host, host))
   const lines = content.flatMap(content => content.lines), cells = content.flatMap(content => content.cells), images = content.flatMap(content => content.images)
   const dividers = content.flatMap(content => content.dividers), tableFragments = content.flatMap(content => content.tableFragments)
-  return { ...layout, lines, cells, images, dividers, columnSeparators: [], tableFragments, headings: [],
+  return { ...layout, lines, cells, images, dividers, columnSeparators: [], tableFragments, headings: [], auxiliaryContent: content, noteDecorations: [],
     pageContent: layout.pages.map(page => ({ lines: lines.filter(line => line.page === page.index), cells: cells.filter(cell => cell.page === page.index),
       images: images.filter(image => image.page === page.index), dividers: dividers.filter(divider => divider.page === page.index), columnSeparators: [] })) }
 }

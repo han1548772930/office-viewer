@@ -47,18 +47,28 @@ export function readChartStatisticsOutput(value: unknown, params: ChartStatistic
     if (job.kind !== 'trendline' && (candidate.fit !== undefined || candidate.r2 !== undefined)) return null
     switch (job.kind) {
       case 'histogram':
-        if (candidate.valueLength % 2 || candidate.indexLength !== candidate.valueLength || candidate.valueLength > 10_002 * 2
+        if (candidate.valueLength % 2 || candidate.indexLength !== candidate.valueLength || candidate.valueLength > 1000 * 2
           || (candidate.available ? candidate.validSampleCount === 0 || candidate.valueLength === 0 : candidate.valueLength !== 0 || candidate.validSampleCount !== 0)) return null
         break
       case 'boxplot':
-        if (candidate.indexLength !== 0 || (candidate.available
+        if (candidate.available
           ? candidate.valueLength < 5 || candidate.valueLength > params.rowCount + 5 || candidate.validSampleCount === 0
-          : candidate.valueLength !== 0 || candidate.validSampleCount !== 0)) return null
+            || candidate.indexLength !== candidate.valueLength - 5 || candidate.indexLength > candidate.validSampleCount
+          : candidate.valueLength !== 0 || candidate.indexLength !== 0 || candidate.validSampleCount !== 0) return null
         break
       case 'pareto':
         if (candidate.valueLength !== candidate.indexLength * 2 || candidate.indexLength > params.rowCount
           || candidate.available !== (candidate.indexLength > 0)) return null
         break
+      case 'hierarchy': {
+        if (candidate.indexLength < 2 || candidate.valueLength % 2) return null
+        const nodes = value.indices[candidate.indexOffset], roots = value.indices[candidate.indexOffset + 1]
+        if (nodes === undefined || roots === undefined || nodes > candidate.validSampleCount * job.hierarchyColumns.length
+          || roots > Math.min(nodes, candidate.validSampleCount) || candidate.valueLength !== nodes * 2
+          || candidate.indexLength !== 2 + nodes * 4 + roots || candidate.available !== (roots > 0)
+          || (nodes === 0) !== (roots === 0)) return null
+        break
+      }
       case 'waterfall':
         if (candidate.valueLength !== params.rowCount * 3 || candidate.indexLength !== params.rowCount * 2
           || candidate.available !== (params.rowCount > 0)) return null

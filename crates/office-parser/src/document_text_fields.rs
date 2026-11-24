@@ -9,11 +9,11 @@ use zip::ZipArchive;
 use crate::document_format_sidecar::{Element, parse_xml, read_xml};
 
 #[derive(Clone, Copy, Debug)]
-struct Position { paragraph: usize, offset: usize }
+struct Position { paragraph: usize, offset: usize, note_reference_count: usize }
 
 struct Paragraph<'a> { source: &'a ParagraphNode, source_id: String, block_id: String, text: String }
 struct RunSpan { start: usize, end: usize, format: Value }
-struct Projection { text: String, offset: usize, spans: Vec<RunSpan> }
+struct Projection { text: String, offset: usize, spans: Vec<RunSpan>, note_reference_count: usize }
 
 struct Pending {
     id: String,
@@ -113,7 +113,7 @@ impl Reader {
         inherited: &BTreeMap<String, String>, paragraph_style: Option<&str>, properties: &str) -> Result<(), String> {
         let scope = namespaces(node, inherited);
         for field in &mut self.pending { field.namespaces.extend(scope.iter().map(|(key, value)| (key.clone(), value.clone()))); }
-        let at = Position { paragraph, offset: projection.offset };
+        let at = Position { paragraph, offset: projection.offset, note_reference_count: projection.note_reference_count };
         match node.name.as_str() {
             "pPr" | "rPr" | "sdtPr" | "sdtEndPr" | "del" | "moveFrom" | "drawing" | "pict" | "object" | "txbxContent" | "oMath" | "oMathPara" => return Ok(()),
             "bookmarkStart" => {
@@ -145,7 +145,7 @@ impl Reader {
                 }
                 self.begin(at, node.attribute("fldLock").is_some_and(on_off), Some(instruction));
                 for child in &node.children { self.visit(child, xml, paragraph, projection, &scope, paragraph_style, properties)?; }
-                self.end(Position { paragraph, offset: projection.offset })?;
+                self.end(Position { paragraph, offset: projection.offset, note_reference_count: projection.note_reference_count })?;
                 return Ok(());
             }
             "fldChar" => {
@@ -175,6 +175,9 @@ impl Reader {
             }
             "t" | "tab" | "br" | "cr" | "noBreakHyphen" | "softHyphen" | "sym" | "footnoteReference" | "endnoteReference" => {
                 self.code(&xml[node.start..node.end], properties, false);
+                if matches!(node.name.as_str(), "footnoteReference" | "endnoteReference") {
+                    projection.note_reference_count = projection.note_reference_count.checked_add(1).ok_or("Native note reference count overflow")?;
+                }
                 let wrapped = format!("<w:r>{}</w:r>", &xml[node.start..node.end]);
                 let value = duke_pages::parse::parse_run_text_tokens(&wrapped).into_iter().map(|token| token.text).collect::<String>();
                 let end = at.offset + value.encode_utf16().count();
@@ -256,7 +259,9 @@ fn field_value(field: Field, paragraphs: &[Paragraph<'_>]) -> Result<(String, Va
     let instruction = pending.instruction.trim().to_owned();
     let name = instruction.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
     let mut value = json!({ "id": pending.id, "field": name, "instruction": instruction, "cachedResult": cached,
-        "startOffset": start.offset, "endOffset": field.end.offset, "locked": pending.locked, "containsNestedFields": pending.nested,
+        "startOffset": start.offset, "endOffset": field.end.offset,
+        "startNoteReferenceCount": start.note_reference_count, "endNoteReferenceCount": field.end.note_reference_count,
+        "locked": pending.locked, "containsNestedFields": pending.nested,
         "metadata": { "source": { "format": "docx", "instruction": instruction, "instructionXml": pending.instruction_xml,
             "nestedInInstruction": pending.in_instruction, "parentFieldId": pending.parent_id, "beginSequence": pending.begin_sequence,
             "instructionNamespaces": pending.namespaces, "hasInstructionText": pending.has_instruction_text,
@@ -270,10 +275,17 @@ fn inline_sources(details: &mut Value, spans: &[RunSpan]) -> Result<(), String> 
     let Some(inlines) = details.get("inlines").and_then(Value::as_array) else { return Ok(()); };
     let mut result = Vec::new();
     for inline in inlines {
-        if inline["type"].as_str() != Some("text") { result.push(inline.clone()); continue; }
+        if !matches!(inline["type"].as_str(), Some("text" | "form_field")) { result.push(inline.clone()); continue; }
         let Some(start) = inline["start"].as_u64().and_then(|value| usize::try_from(value).ok()) else { result.push(inline.clone()); continue; };
         let Some(end) = inline["end"].as_u64().and_then(|value| usize::try_from(value).ok()) else { result.push(inline.clone()); continue; };
         let Some(text) = inline["text"].as_str() else { result.push(inline.clone()); continue; };
+        if inline["type"].as_str() == Some("form_field") {
+            let mut value = inline.clone();
+            // Internal formula/code/lock SDTs remain one typed field. Attach a
+            // proven whole-field run format without splitting its identity.
+            if let Some(span) = spans.iter().find(|span| span.start <= start && end <= span.end) { value["sourceFormat"] = span.format.clone(); }
+            result.push(value); continue;
+        }
         let mut boundaries = vec![start, end];
         for span in spans { if span.start > start && span.start < end { boundaries.push(span.start); } if span.end > start && span.end < end { boundaries.push(span.end); } }
         boundaries.sort_unstable(); boundaries.dedup();
@@ -301,7 +313,7 @@ pub(crate) fn restore_run_formats(details: &mut Value, xml: &str, text: &str, in
     let root = parse_xml(xml)?;
     let style = root.child("pPr").and_then(|properties| properties.child("pStyle")).and_then(|style| style.attribute("val"));
     let mut reader = Reader::default();
-    let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new() };
+    let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new(), note_reference_count: 0 };
     reader.visit(&root, xml, 0, &mut projection, inherited, style, "")?;
     if projection.text != text { return Err("Source run formatting does not match the extracted visible text.".into()); }
     inline_sources(details, &projection.spans)
@@ -347,7 +359,7 @@ fn restore_story(document: &mut StructuredDocument, story: &crate::document_stor
             let scope = BTreeMap::from([("w".into(), "http://schemas.openxmlformats.org/wordprocessingml/2006/main".into()),
                 ("r".into(), "http://schemas.openxmlformats.org/officeDocument/2006/relationships".into())]);
             let style = root.child("pPr").and_then(|properties| properties.child("pStyle")).and_then(|style| style.attribute("val"));
-            let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new() };
+            let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new(), note_reference_count: 0 };
             reader.tagged_identity = None;
             reader.visit(&root, xml, index, &mut projection, &scope, style, "")?;
             if projection.text != paragraph.text { return Err(format!("Native field visible-text projection differs from paragraph {:?}.", paragraph.block_id)); }
@@ -433,7 +445,7 @@ mod tests {
     fn field_reader_preserves_mapped_non_ascii_identity() {
         let mut reader = Reader { identities: HashMap::from([("office_field_v1_00000001".into(), "字段-α".into())]), ..Reader::default() };
         let xml = "<w:p><w:bookmarkStart w:name=\"office_field_v1_00000001\"/><w:fldSimple w:instr=\"DATE\"><w:r><w:t>2026</w:t></w:r></w:fldSimple></w:p>";
-        let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new() };
+        let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new(), note_reference_count: 0 };
         reader.visit(&parse_xml(xml).unwrap(), xml, 0, &mut projection, &BTreeMap::new(), None, "").unwrap();
         assert_eq!(reader.fields[0].pending.id, "字段-α");
         assert_eq!(projection.text, "2026");

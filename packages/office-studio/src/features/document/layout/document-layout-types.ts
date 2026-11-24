@@ -1,7 +1,9 @@
-import type { DocumentPageField } from '../../../domain/model'
+import type { DocumentDefaultStyle, DocumentPageField } from '../../../domain/model'
 import type { DocumentRun, DocumentTableBorder, DocumentTableBorderSide, TextTarget } from '../model/document-model'
 import type { LatexLayout } from '../latex/latex-formula'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import type { DocumentNoteLabel } from '../notes/document-note-numbering'
+import type { DocumentNoteKind } from '../notes/document-note-types'
 
 export interface LayoutRect { x: number; y: number; width: number; height: number }
 export interface LayoutFlowLocation { sectionId: string; sectionFragment: number; column: number }
@@ -9,11 +11,20 @@ export type LayoutTabLeader = 'none' | 'dots' | 'dashes' | 'underline' | 'middle
 /** A transient right tab in the wrapped text; right is CSS px from that line's text origin. */
 export interface LayoutRightTabStop { offset: number; right?: number; leader: LayoutTabLeader }
 export interface LayoutTabGlyph { leader: LayoutTabLeader; leaderText: string; leaderWidth: number }
-export interface LayoutGlyph extends LayoutRect { text: string; offset: number; end: number; run: DocumentRun; font: string; latex?: LatexLayout; tab?: LayoutTabGlyph }
+export interface LayoutNoteGlyphAddress { noteKind: DocumentNoteKind; noteId: string; role: 'reference' | 'bodyLabel' }
+export interface LayoutNoteGlyphDisplay { noteKind: DocumentNoteKind; noteId: string; label: string; textStyle?: DocumentDefaultStyle['text'] }
+/** Display replacements retain source run IDs and UTF-16 spans; leading labels have no source characters. */
+export interface DocumentTextLayoutDisplay {
+  references?: ReadonlyMap<string, LayoutNoteGlyphDisplay>
+  leadingLabels?: ReadonlyMap<string, LayoutNoteGlyphDisplay>
+}
+export interface LayoutGlyph extends LayoutRect { text: string; offset: number; end: number; run: DocumentRun; font: string; latex?: LatexLayout; tab?: LayoutTabGlyph; note?: LayoutNoteGlyphAddress }
 export interface LayoutLine extends LayoutRect, Partial<LayoutFlowLocation> {
   host?: DocumentAuxiliaryBlockHost
   target: TextTarget; start: number; end: number; baseline: number; glyphLineHeight?: number; glyphs: LayoutGlyph[]; page: number
   clip?: LayoutRect; tableCellId?: string; repeatedHeader?: boolean
+  /** A physical input line shares this image's bounds while retaining paragraph markers outside them. */
+  pictureInputAnchorImageId?: string
   marker?: string; markerStyle?: { x: number; font: string; color: string }
   checklist?: { blockId: string; checked: boolean }; codeBlock?: { language: string; lineNumber: number }
 }
@@ -36,7 +47,7 @@ export interface LayoutImage extends LayoutRect, Partial<LayoutFlowLocation> {
   host?: DocumentAuxiliaryBlockHost
   blockId: string; src: string; alt: string; page: number; clip?: LayoutRect; tableCellId?: string; repeatedHeader?: boolean
 }
-export interface LayoutDivider extends LayoutRect, Partial<LayoutFlowLocation> { page: number; clip?: LayoutRect; host?: DocumentAuxiliaryBlockHost }
+export interface LayoutDivider extends LayoutRect, Partial<LayoutFlowLocation> { page: number; clip?: LayoutRect; host?: DocumentAuxiliaryBlockHost; color?: string }
 export interface LayoutTableRowMetric { row: number; id: string; y: number; height: number; contentHeight?: number }
 /** A table can have several fragments on pages/columns; repeated headers share model IDs. */
 export interface LayoutTableFragment extends LayoutRect, Partial<LayoutFlowLocation> {
@@ -60,6 +71,14 @@ export interface LayoutPageHeaderFooter extends LayoutRect {
 export interface LayoutAuxiliaryContent extends LayoutRect {
   host: DocumentAuxiliaryBlockHost; sourceHost: DocumentAuxiliaryBlockHost; page: number
   lines: LayoutLine[]; cells: LayoutCell[]; images: LayoutImage[]; dividers: LayoutDivider[]; tableFragments: LayoutTableFragment[]
+  columns?: LayoutColumn[]
+  continuedBefore?: boolean; continuedAfter?: boolean
+}
+/** Separators are independent stories, with no ordinary note editing/hit host. */
+export interface LayoutNoteDecoration extends LayoutRect {
+  noteKind: DocumentNoteKind; kind: 'separator' | 'continuationSeparator' | 'continuationNotice'; page: number
+  lines: LayoutLine[]; cells: LayoutCell[]; images: LayoutImage[]; dividers: LayoutDivider[]; tableFragments: LayoutTableFragment[]
+  continuedBefore?: boolean; continuedAfter?: boolean
 }
 export interface DocumentLayout {
   width: number; height: number; pages: LayoutPage[]; pageContent: LayoutPageContent[]
@@ -67,6 +86,11 @@ export interface DocumentLayout {
   pageHeaderFooters: LayoutPageHeaderFooter[]; headings: Array<{ id: string; text: string; level: number; y: number; page: number }>
   tableFragments?: LayoutTableFragment[]
   auxiliaryContent?: LayoutAuxiliaryContent[]
+  noteDecorations?: LayoutNoteDecoration[]
+  noteLabels?: Map<string, DocumentNoteLabel>
+  diagnostics?: Array<{ code: string; message: string; noteKind?: DocumentNoteKind; noteId?: string }>
+  /** Explicit independent editing pages; never a replacement for the document's physical pagination. */
+  inspectionHost?: DocumentAuxiliaryBlockHost
 }
 export interface LayoutMeasurer { measure(text: string, font: string): number }
 export const PAGE_GAP = 24

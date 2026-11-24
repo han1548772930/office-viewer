@@ -82,11 +82,11 @@ pub fn native_identity(xml: &str) -> Result<NativeTableIdentity, String> {
     if key.as_deref().is_some_and(|key| !valid_key(key)) { return Err("Native table source key is invalid".into()); }
     let mut layout_rows = Vec::new();
     let mut topology_rows = Vec::new();
-    for row in root.children.iter().filter(|node| word(node, "tr")) {
+    for row in crate::document_content_controls::word_children(&root, "tr") {
         let row_properties = child(row, "trPr");
         let mut cell_layout = Vec::new();
         let mut cell_topology = Vec::new();
-        for cell in row.children.iter().filter(|node| word(node, "tc")) {
+        for cell in crate::document_content_controls::word_children(row, "tc") {
             let properties = child(cell, "tcPr");
             let span = integer_property(properties, "gridSpan", 1)?;
             if span == 0 { return Err("Native table grid span must be positive".into()); }

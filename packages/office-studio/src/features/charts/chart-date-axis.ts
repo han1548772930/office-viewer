@@ -6,11 +6,26 @@ import { chartSeriesStyle } from './chart-options'
 import { DateSystem } from '../sheet-workbench/number-format-engine/date-system'
 import { excelDateTimePartsToSerial, excelSerialToDateTimeParts, getDateSystemMaxSerial } from '../sheet-workbench/number-format-engine/serial-date'
 import { formatSheetValue } from '../sheet-workbench/sheet-number-format'
+import { chartDateCoordinate, chartDateTicks, validateChartDateCalendarOptions, type ChartDateAxisTick } from './chart-date-calendar'
+import { validateChartAxis } from './chart-option-validation'
+import { CHART_PREPARATION_CHUNK, consumeChartPreparationSync } from './chart-compute-lifecycle'
+export { chartDateAdvance, chartDateCoordinate, chartDateCoordinateSerial, chartDateTicks, CHART_DATE_AXIS_MAX_TICKS } from './chart-date-calendar'
+export type { ChartDateAxisTick } from './chart-date-calendar'
 
 export interface ChartDateAxis {
+  /** Original Excel serials, retaining each source row and repeated date. */
   values: Array<number | null>
   min: number
   max: number
+  sourceMin: number
+  sourceMax: number
+  coordinates: Array<number | null>
+  coordinateMin: number
+  coordinateMax: number
+  coordinateStep: number
+  /** Stable chronological order; indices continue to identify original rows. */
+  order: number[]
+  ticks: ChartDateAxisTick[]
   /** Smallest positive distance between observations, in Excel serial days. */
   step: number
   bandRatio: number
@@ -54,25 +69,46 @@ export function supportsChartDateAxis(chart: Pick<ChartModel, 'type'>): boolean 
 }
 
 export function prepareChartDateData(data: ChartData, chart: ChartDateAxisConfig): ChartData {
+  return consumeChartPreparationSync(chartDateDataSteps(data, chart))
+}
+
+export function* chartDateDataSteps(data: ChartData, chart: ChartDateAxisConfig): Generator<void, ChartData, void> {
   if (!chart.options?.mapping?.useDateAxis || !supportsChartDateAxis(chart)) return data
   validateDateAxisOptions(chart.xAxis, Boolean(data.date1904))
   const raw = data.categoryValues ?? data.categories
   if (raw.length !== data.categories.length) throw new RangeError('日期轴的分类值血缘与当前数据不匹配。')
-  const values = raw.map((value, index) => {
+  const values: Array<number | null> = []
+  let work = 0
+  for (let index = 0; index < raw.length; index++) {
+    const value = raw[index]
     const serial = chartDateSerial(value, data.date1904)
     if (serial === null && value !== null && value !== undefined && !(typeof value === 'string' && !value.trim())) {
       throw new RangeError(`第 ${index + 1} 个分类无法作为日期轴值：${String(value)}。请使用有效的 Excel 日期序号或 ISO 日期。`)
     }
-    return serial
-  })
-  const hasValue = data.series.some(series => series.values.some(value => value !== null && Number.isFinite(value)))
-  if (data.categories.length && hasValue && !values.some((date, index) => date !== null
-    && data.series.some(series => series.values[index] != null && Number.isFinite(series.values[index])))) {
+    values.push(serial)
+    if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
+  let hasValue = false, hasPair = false
+  for (const series of data.series) for (let index = 0; index < series.values.length; index++) {
+    const value = series.values[index]
+    if (value != null && Number.isFinite(value)) { hasValue = true; if (values[index] != null) hasPair = true }
+    if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
+  if (data.categories.length && hasValue && !hasPair) {
     throw new RangeError('日期轴至少需要一个与数值对应的有效日期。')
   }
   const bubble = resolveChartType(chart.type).family === 'bubble'
-  return { ...data, categoryDateValues: values, series: data.series.map(series => ({ ...series,
-    xValues: bubble ? values.map((value, index) => series.xValues?.[index] != null || series.values[index] != null ? value : null) : values })) }
+  const series: ChartData['series'] = []
+  for (const input of data.series) {
+    const xValues: Array<number | null> = bubble ? [] : values
+    if (bubble) for (let index = 0; index < values.length; index++) {
+      xValues.push(input.xValues?.[index] != null || input.values[index] != null ? values[index]! : null)
+      if (++work % CHART_PREPARATION_CHUNK === 0) yield
+    }
+    series.push({ ...input, xValues })
+    if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
+  return { ...data, categoryDateValues: values, series }
 }
 
 /** Candidate/API and form validation share the same raw-source semantics, before expensive statistics. */
@@ -120,7 +156,8 @@ export function chartDateAxis(data: ChartData, chart: ChartDateAxisConfig): Char
   const prepared = data.categoryDateValues ? data : prepareChartDateData(data, chart)
   const values = prepared.categoryDateValues ?? [], date1904 = Boolean(data.date1904)
   if (values.length !== data.categories.length) throw new RangeError('日期轴位置与当前分类数据不匹配。')
-  const unique = [...new Set(values.filter((value): value is number => value !== null))].sort((a, b) => a - b)
+  const order = values.flatMap((value, index) => value === null ? [] : [index]).sort((a, b) => values[a]! - values[b]! || a - b)
+  const unique = [...new Set(order.map(index => values[index]!))]
   if (!unique.length) return undefined
   if (unique.some(value => chartDateSerial(value, date1904) === null)) throw new RangeError('日期轴值超出工作簿日期系统的范围。')
   let step = unique.length === 1 ? 1 : Infinity
@@ -129,18 +166,36 @@ export function chartDateAxis(data: ChartData, chart: ChartDateAxisConfig): Char
   const min = chart.xAxis.min ?? Math.max(0, unique[0]! - step / 2)
   const max = chart.xAxis.max ?? Math.min(limit, unique.at(-1)! + step / 2)
   if (min >= max) throw new RangeError('日期轴最小值必须小于最大值。')
-  return { values, min, max, step, bandRatio: Math.min(1, step / (max - min)), date1904 }
+  const calendar = chart.xAxis.baseTimeUnit === 'months' || chart.xAxis.baseTimeUnit === 'years'
+  const coordinates = values.map(value => value === null ? null : chartDateCoordinate(value, chart.xAxis.baseTimeUnit, date1904) ?? null)
+  // A valid authored edge can clip every observation within the automatic
+  // padded range. The nearest visible edge still gives a valid tick anchor.
+  const sourceMin = chart.xAxis.min ?? Math.min(unique[0]!, max), sourceMax = chart.xAxis.max ?? Math.max(unique.at(-1)!, min)
+  const coordinateMin = calendar ? chartDateCoordinate(sourceMin, chart.xAxis.baseTimeUnit, date1904)! - 0.5 : min,
+    coordinateMax = calendar ? chartDateCoordinate(sourceMax, chart.xAxis.baseTimeUnit, date1904)! + 0.5 : max,
+    coordinateStep = calendar ? 1 : step
+  const ticks = chartDateTicks({ min: coordinateMin, max: coordinateMax, sourceMin, sourceMax, date1904 }, chart.xAxis)
+  return { values, min, max, sourceMin, sourceMax, step, coordinates, coordinateMin, coordinateMax, coordinateStep, order, ticks,
+    bandRatio: Math.min(1, coordinateStep / (coordinateMax - coordinateMin)), date1904 }
 }
 
 function validateDateAxisOptions(axis: ChartAxisOptions, date1904: boolean): void {
+  validateChartAxis(axis, '日期 X 轴')
+  validateChartDateCalendarOptions(axis)
   if (axis.scaleType === 'log') throw new TypeError('日期轴须使用线性时间刻度。')
   for (const bound of [axis.min, axis.max]) if (bound !== undefined && chartDateSerial(bound, date1904) === null) throw new RangeError('日期轴边界须为当前日期系统中的有效序号。')
   if (axis.min !== undefined && axis.max !== undefined && axis.min >= axis.max) throw new RangeError('日期轴最小值必须小于最大值。')
 }
 
+/** The Pareto converter keeps its computed weight order; chronological ordering
+ * applies to ordinary Cartesian source rows without changing their identities. */
+export function chartDateSeriesOrder(axis: ChartDateAxis, chart: Pick<ChartModel, 'type'>): number[] {
+  return chart.type === 'pareto' ? axis.values.flatMap((value, index) => value === null ? [] : [index]) : axis.order
+}
+
 export function chartDatePosition(axis: ChartDateAxis, options: ChartAxisOptions, index: number): number | undefined {
-  const value = axis.values[index]
-  return value == null ? undefined : chartAxisRatio(value, axis.min, axis.max, options)
+  const value = axis.coordinates[index]
+  return value == null ? undefined : chartAxisRatio(value, axis.coordinateMin, axis.coordinateMax, options)
 }
 
 export function chartDateAxisLabel(value: number, axis: Pick<ChartAxisOptions, 'format'>, date1904 = false, span = 1): string {

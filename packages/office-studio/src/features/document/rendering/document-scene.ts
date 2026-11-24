@@ -79,7 +79,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     }
   }
   for (const pageIndex of visiblePages) {
-    const body = layout.pageContent[pageIndex], auxiliary = (layout.auxiliaryContent ?? []).filter(content => content.page === pageIndex)
+    const body = layout.pageContent[pageIndex], auxiliary = [...(layout.auxiliaryContent ?? []), ...(layout.noteDecorations ?? [])].filter(content => content.page === pageIndex)
     if (!body && !auxiliary.length) continue
     const content = { cells: [...(body?.cells ?? []), ...auxiliary.flatMap(content => content.cells)], images: [...(body?.images ?? []), ...auxiliary.flatMap(content => content.images)],
       dividers: [...(body?.dividers ?? []), ...auxiliary.flatMap(content => content.dividers)], columnSeparators: body?.columnSeparators ?? [] }
@@ -92,7 +92,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       commands.push({ kind: 'rect', ...rect(cell), fill: `rgba(${primary}, ${options.focused ? 0.16 : 0.10})`, stroke: `rgba(${primary}, 0.65)`, strokeWidth: Math.max(1, scale), clip })
     }
     for (const divider of content.dividers) {
-      if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: '#b3bdca', width: Math.max(1, scale),
+      if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: divider.color ?? '#b3bdca', width: Math.max(1, scale),
         clip: divider.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(divider.clip)) : rect(layout.pages[pageIndex]!) })
     }
     for (const separator of content.columnSeparators) {
@@ -128,7 +128,8 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     matchesByTarget.set(key, matches)
   }
   for (const matches of matchesByTarget.values()) matches.sort((a, b) => a.start - b.start)
-  const visibleLines = [...visiblePages].flatMap((pageIndex) => [...(layout.pageContent[pageIndex]?.lines ?? []), ...(layout.auxiliaryContent ?? []).filter(content => content.page === pageIndex).flatMap(content => content.lines)])
+  const visibleLines = [...visiblePages].flatMap((pageIndex) => [...(layout.pageContent[pageIndex]?.lines ?? []),
+    ...[...(layout.auxiliaryContent ?? []), ...(layout.noteDecorations ?? [])].filter(content => content.page === pageIndex).flatMap(content => content.lines)])
   const codeBlocks = new Map(targets.flatMap(target => {
     const block = blockAtPoint(selectionModel, target), data = block && codeBlockData(block)
     return block && data ? [[block.id, data] as const] : []

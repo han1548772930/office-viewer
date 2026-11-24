@@ -7,8 +7,9 @@ export interface ChartStatisticsSeries { field: number; seriesPosition: number; 
 interface ChartJobKey { seriesIndex: number; slot: number }
 export type ChartStatisticsJob =
   | ChartJobKey & { kind: 'histogram'; binning?: { mode: 'count'; count: number } | { mode: 'width'; width: number }; underflowThreshold?: number; overflowThreshold?: number }
-  | ChartJobKey & { kind: 'boxplot'; quartileMethod: 'inclusive' | 'exclusive'; whiskerMultiplier: number }
+  | ChartJobKey & { kind: 'boxplot'; quartileMethod: 'medianOfHalves' | 'inclusive' | 'exclusive'; whiskerMethod?: 'range' | 'iqr'; whiskerMultiplier: number }
   | ChartJobKey & { kind: 'pareto'; includeZeroValues: boolean }
+  | ChartJobKey & { kind: 'hierarchy'; hierarchyColumns: number[]; labelColumns: number[]; keyCount: number; labelCount: number }
   | ChartJobKey & { kind: 'waterfall'; totalColumn?: number }
   | ChartJobKey & { kind: 'waterfallLayout'; seriesIndices: number[]; stackType: 'arrangement' | 'stacked'; useSubtotal: boolean; totalColumns?: Array<number | null> }
   | ChartJobKey & { kind: 'trendline'; type: 'exp' | 'linear' | 'log' | 'movingAvg' | 'poly' | 'pow'; order?: number; period?: number }
@@ -39,6 +40,8 @@ export interface ChartStatisticsSegment {
 /** Hist: values[lower,upper], indices[kind,count] (0=underflow,1=regular,2=overflow).
  * Box: values[min,q1,median,q3,max,...outliers].
  * Pareto: values[value,cumulativePercent], indices[dictionaryId].
+ * Hierarchy: values[value,selfValue]; indices[N,R,...N*(parent,key,label,sourceOrder),...R*(rootIndex)].
+ * The root parent is 0xffffffff; nodes use sorted preorder and rootIndex uses first-source order.
  * Waterfall: values[start,end,value], indices[categoryIndex,isTotal].
  * WaterfallLayout: values[finalCumulative,...N*(start,end,value),...C*(fromValue,toValue)];
  * indices[N,C,...N*(seriesPosition,dataPointIndex,visibleCategoryIndex,flags),...C*(fromCategory,toCategory)].

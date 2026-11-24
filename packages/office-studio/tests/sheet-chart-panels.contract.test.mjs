@@ -40,17 +40,32 @@ function fixture(handlers = {}) {
   }
   const firstStudio = makeStudio(), secondStudio = makeStudio()
   const studio = shallowRef(firstStudio), unitId = ref('unit-a'), sheetId = ref('sheet-a'), active = ref(true), canFocus = ref(true)
-  const calls = [], refreshes = [], notices = []
+  const calls = [], sourceCalls = [], statisticsCalls = [], refreshes = [], notices = []
   let focusCount = 0, dataReads = 0
   const spy = vi.spyOn(FOffice, 'newAPI').mockImplementation(owner => ({ getWorkbook(unit) {
     return { getSheetBySheetId(sheet) {
       return {
         insertChart(value) { calls.push({ kind: 'insert', owner, unit, sheet, value }); return handlers.insert?.({ owner, unit, sheet, value }) ?? Promise.resolve() },
+        getChartSettingsData(value, options) {
+          sourceCalls.push({ owner, unit, sheet, value, signal: options.signal })
+          if (handlers.readError) return Promise.reject(handlers.readError)
+          return handlers.source?.({ owner, unit, sheet, value, options }) ?? Promise.resolve({ fields: ['Category', 'Value'], records: [['A', 10]],
+            sourceNumericFields: [1], categories: ['A'], series: [{ field: 1, name: 'Value', values: [10] }] })
+        },
+        getChartSettingsStatistics(value, options) {
+          statisticsCalls.push({ owner, unit, sheet, value, signal: options.signal })
+          if (handlers.readError) return Promise.reject(handlers.readError)
+          return handlers.statistics?.({ owner, unit, sheet, value, options }) ?? Promise.resolve({
+            preparedData: { fields: ['Category', 'Value'], records: [['A', 10]], sourceNumericFields: [1],
+              categories: ['A'], series: [{ field: 1, name: 'Value', values: [10] }] },
+            pareto: { categories: ['A'], values: [10], cumulativePercent: [100] },
+          })
+        },
         getChartById(id) {
           return {
             update(patch) { calls.push({ kind: 'update', owner, unit, sheet, id, patch }); return handlers.update?.({ owner, unit, sheet, id, patch }) ?? Promise.resolve() },
             getInfo() { return model(sheet, id) },
-            getData() { dataReads++; if (handlers.readError) throw handlers.readError; return { fields: ['Category', 'Value'], records: [['A', 10]], categories: ['A'], series: [{ field: 1, name: 'Value', values: [10] }] } },
+            getData() { dataReads++; throw new Error('Settings panels must use the bounded draft-source service') },
           }
         },
       }
@@ -60,7 +75,7 @@ function fixture(handlers = {}) {
   const panels = scope.run(() => useSheetChartPanels({ studio: () => studio.value, unitId: () => unitId.value, sheetId: () => sheetId.value,
     sheets: () => [{ id: sheetId.value, name: sheetId.value, cells: {} }], active: () => active.value, canRestoreFocus: () => canFocus.value,
     refresh: (owner, unit) => refreshes.push({ owner, unit }), focus: () => { focusCount++ }, notify: message => notices.push(message) }))
-  return { panels, firstStudio, secondStudio, studio, unitId, sheetId, active, canFocus, calls, refreshes, notices,
+  return { panels, firstStudio, secondStudio, studio, unitId, sheetId, active, canFocus, calls, sourceCalls, statisticsCalls, refreshes, notices,
     focusCount: () => focusCount, dataReads: () => dataReads, dispose() { scope.stop(); spy.mockRestore() } }
 }
 
@@ -138,14 +153,13 @@ test('workbook disposal releases the current session and studio/scope changes di
   const f = fixture()
   try {
     f.panels.openChartEditor(model())
-    f.panels.chartEditorData.value
-    const before = f.dataReads()
+    f.panels.chartEditorChart.value
+    const before = f.panels.chartSourceRevision.value
     f.firstStudio.hub.emit('SheetValueChanged', { workbookId: 'another-unit' })
-    f.panels.chartEditorData.value
-    assert.equal(f.dataReads(), before)
+    assert.equal(f.panels.chartSourceRevision.value, before)
     f.firstStudio.hub.emit('SheetValueChanged', { workbookId: 'unit-a' })
-    f.panels.chartEditorData.value
-    assert.equal(f.dataReads(), before + 1)
+    assert.equal(f.panels.chartSourceRevision.value, before + 1)
+    assert.equal(f.dataReads(), 0)
     f.firstStudio.hub.emit('WorkbookDisposed', { workbookId: 'unit-a' })
     assert.equal(f.panels.chartEditorContext.value, undefined)
     assert.equal(f.panels.chartEditorOpen.value, false)
@@ -180,12 +194,128 @@ test('current-session failures remain reviewable and closing restores focus only
   } finally { f.dispose() }
 })
 
-test('preview source-read failures retain the chart model and become panel errors', () => {
+test('source loader failures retain the detached chart model and propagate to the shared panel source hook', async () => {
   const f = fixture({ readError: new Error('源工作表不可查看') })
   try {
     f.panels.openChartEditor(model())
     assert.equal(f.panels.chartEditorChart.value.id, 'chart-a')
-    assert.equal(f.panels.chartEditorData.value, undefined)
-    assert.equal(f.panels.chartEditorError.value, '源工作表不可查看')
+    await assert.rejects(f.panels.chartEditorContext.value.loadSource(config(), { signal: new AbortController().signal }), /源工作表不可查看/)
+    assert.equal(f.panels.chartEditorChart.value.id, 'chart-a')
+    assert.equal(f.panels.chartEditorError.value, '')
+    assert.equal(f.dataReads(), 0)
+  } finally { f.dispose() }
+})
+
+test('editor and insert drafts read their current candidate binding through the captured worksheet and signal', async () => {
+  const f = fixture()
+  try {
+    const controller = new AbortController(), candidate = { ...config(), valueFields: [0] }
+    f.panels.openChartEditor(model())
+    await f.panels.chartEditorContext.value.loadSource(candidate, { signal: controller.signal })
+    f.panels.openInsertChart(config())
+    await f.panels.chartInsertContext.value.loadSource(candidate, { signal: controller.signal })
+    assert.deepEqual(f.sourceCalls.map(call => [call.unit, call.sheet, call.value.valueFields]), [['unit-a', 'sheet-a', [0]], ['unit-a', 'sheet-a', [0]]])
+    assert.ok(f.sourceCalls.every(call => call.signal === controller.signal))
+    assert.equal(f.dataReads(), 0); assert.deepEqual(f.calls, [])
+  } finally { f.dispose() }
+})
+
+test('closed or replaced panel sessions cannot start reads in a newly active workbook', async () => {
+  const f = fixture()
+  try {
+    f.panels.openChartEditor(model())
+    const old = f.panels.chartEditorContext.value
+    f.unitId.value = 'unit-b'; f.panels.openChartEditor(model())
+    await assert.rejects(old.loadSource(config(), { signal: new AbortController().signal }), error => error.code === 'COMPUTE_STALE_RESULT')
+    assert.deepEqual(f.sourceCalls, [])
+    const current = f.panels.chartEditorContext.value
+    current.setOpen(false)
+    await assert.rejects(current.loadSource(config(), { signal: new AbortController().signal }), error => error.code === 'COMPUTE_STALE_RESULT')
+    assert.deepEqual(f.sourceCalls, [])
+  } finally { f.dispose() }
+})
+
+test('late source completion after switching worksheets is rejected without modifying another panel session', async () => {
+  const pending = deferred(), f = fixture({ source: () => pending.promise })
+  try {
+    f.panels.openChartEditor(model())
+    const old = f.panels.chartEditorContext.value
+    const read = old.loadSource(config(), { signal: new AbortController().signal })
+    f.sheetId.value = 'sheet-b'; f.panels.openChartEditor(model('sheet-b', 'chart-b'))
+    const current = f.panels.chartEditorContext.value
+    const rejected = assert.rejects(read, error => error.code === 'COMPUTE_STALE_RESULT')
+    pending.resolve({ categories: ['Old'], series: [{ field: 1, name: 'Old', values: [1] }] })
+    await rejected
+    assert.equal(f.panels.chartEditorContext.value, current)
+    assert.equal(f.panels.chartEditorError.value, ''); assert.equal(f.panels.chartEditorBusy.value, false)
+    assert.deepEqual(f.sourceCalls.map(call => [call.unit, call.sheet]), [['unit-a', 'sheet-a']])
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.refreshes, [])
+  } finally { f.dispose() }
+})
+
+test('aborted panel source reads are rejected before lookup or after a provider ignores cancellation', async () => {
+  const pending = deferred(), f = fixture({ source: () => pending.promise })
+  try {
+    f.panels.openInsertChart(config())
+    const session = f.panels.chartInsertContext.value, alreadyCancelled = new AbortController()
+    alreadyCancelled.abort()
+    await assert.rejects(session.loadSource(config(), { signal: alreadyCancelled.signal }), error => error.code === 'COMPUTE_CANCELLED')
+    assert.deepEqual(f.sourceCalls, [])
+    const controller = new AbortController(), read = session.loadSource(config(), { signal: controller.signal })
+    const rejected = assert.rejects(read, error => error.code === 'COMPUTE_CANCELLED')
+    controller.abort(); pending.resolve({ categories: [], series: [] }); await rejected
+    assert.equal(f.sourceCalls[0].signal.aborted, true)
+    assert.equal(f.panels.chartModalOpen.value, true); assert.equal(f.panels.chartError.value, '')
+    assert.deepEqual(f.calls, []); assert.equal(f.dataReads(), 0)
+  } finally { f.dispose() }
+})
+
+test('Pareto editor and insert statistical readers retain their captured host, candidate binding and AbortSignal', async () => {
+  const f = fixture()
+  try {
+    const controller = new AbortController(), candidate = { ...config(), type: 'pareto', options: { pareto: { includeZeroValues: true } } }
+    f.panels.openChartEditor({ ...model(), type: 'pareto' })
+    const editorStatistics = await f.panels.chartEditorContext.value.loadStatistics(candidate, { signal: controller.signal })
+    f.panels.openInsertChart(candidate)
+    const insertStatistics = await f.panels.chartInsertContext.value.loadStatistics(candidate, { signal: controller.signal })
+    assert.deepEqual(editorStatistics.pareto.categories, ['A']); assert.deepEqual(insertStatistics.pareto.categories, ['A'])
+    assert.deepEqual(f.statisticsCalls.map(call => [call.unit, call.sheet, call.value.options.pareto.includeZeroValues]),
+      [['unit-a', 'sheet-a', true], ['unit-a', 'sheet-a', true]])
+    assert.ok(f.statisticsCalls.every(call => call.signal === controller.signal))
+    assert.deepEqual(f.sourceCalls, []); assert.deepEqual(f.calls, []); assert.deepEqual(f.refreshes, []); assert.equal(f.dataReads(), 0)
+  } finally { f.dispose() }
+})
+
+test('a held statistical result from a closed editor cannot enter a replacement session with the same host IDs', async () => {
+  const pending = deferred(), f = fixture({ statistics: () => pending.promise })
+  try {
+    f.panels.openChartEditor({ ...model(), type: 'pareto' })
+    const old = f.panels.chartEditorContext.value, read = old.loadStatistics({ ...config(), type: 'pareto' }, { signal: new AbortController().signal })
+    const rejected = assert.rejects(read, error => error.code === 'COMPUTE_STALE_RESULT')
+    old.setOpen(false); old.closed(); f.panels.openChartEditor({ ...model(), type: 'pareto' })
+    const current = f.panels.chartEditorContext.value
+    pending.resolve({ preparedData: { categories: ['Old'], series: [] }, pareto: { categories: ['Old'], values: [1], cumulativePercent: [100] } })
+    await rejected
+    assert.notEqual(current.key, old.key); assert.equal(f.panels.chartEditorContext.value, current)
+    assert.equal(f.panels.chartEditorError.value, ''); assert.equal(f.panels.chartEditorBusy.value, false)
+    await assert.rejects(old.loadStatistics({ ...config(), type: 'pareto' }, { signal: new AbortController().signal }), error => error.code === 'COMPUTE_STALE_RESULT')
+    assert.equal(f.statisticsCalls.length, 1); assert.deepEqual(f.sourceCalls, []); assert.deepEqual(f.calls, [])
+  } finally { f.dispose() }
+})
+
+test('statistical readers check cancellation before lookup and after a provider returns despite abort', async () => {
+  const pending = deferred(), f = fixture({ statistics: () => pending.promise })
+  try {
+    f.panels.openInsertChart({ ...config(), type: 'pareto' })
+    const session = f.panels.chartInsertContext.value, cancelled = new AbortController()
+    cancelled.abort()
+    await assert.rejects(session.loadStatistics({ ...config(), type: 'pareto' }, { signal: cancelled.signal }), error => error.code === 'COMPUTE_CANCELLED')
+    assert.deepEqual(f.statisticsCalls, [])
+    const controller = new AbortController(), read = session.loadStatistics({ ...config(), type: 'pareto' }, { signal: controller.signal })
+    const rejected = assert.rejects(read, error => error.code === 'COMPUTE_CANCELLED')
+    controller.abort(); pending.resolve({ preparedData: { categories: [], series: [] }, pareto: { categories: [], values: [], cumulativePercent: [] } })
+    await rejected; assert.equal(f.statisticsCalls[0].signal.aborted, true)
+    assert.equal(f.panels.chartModalOpen.value, true); assert.equal(f.panels.chartError.value, '')
+    assert.deepEqual(f.sourceCalls, []); assert.deepEqual(f.calls, []); assert.equal(f.dataReads(), 0)
   } finally { f.dispose() }
 })

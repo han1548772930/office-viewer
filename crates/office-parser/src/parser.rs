@@ -2,7 +2,7 @@ use crate::model::{
     AnchorCellPayload, BorderPayload, CellPayload, ChartCachedPointPayload,
     ChartDrawingPayload, ChartPayload, ChartSeriesCachePayload, ChartSeriesPayload,
     ChartSeriesStylePayload, DataValidationPayload, DataValidationRangePayload, DimensionPayload,
-    DocumentCommentPayload, DocumentCommentTargetPayload, DocumentModel, DocumentNotePayload,
+    DocumentCommentPayload, DocumentCommentTargetPayload, DocumentModel,
     DocumentPayload, DocumentSectionLayoutPayload, DocumentStoryReferencePayload,
     FontPayload, FreezePanePayload, HyperlinkPayload, LocalDefinedNamePayload,
     ParseEnvelope, ParseFailure, ParserDiagnostics, ProtectionPayload, RangePayload,
@@ -64,7 +64,10 @@ fn parse_document_impl(
     let doc_package = if format == "doc" {
         Some(parse_doc(bytes).map_err(ParseFailure::office_file)?)
     } else { None };
-    let mut source_model = match doc_package.as_ref() {
+    // Keep the one native DOCX package through SDT projection, so nested runs
+    // resolve the owning story's links/media without parsing the file twice.
+    let docx_package = if is_docx { Some(duke_pages::parse_docx(bytes).map_err(ParseFailure::office_file)?) } else { None };
+    let mut source_model = match doc_package.as_ref().or(docx_package.as_ref()) {
         Some(package) => build_doc_model(package),
         None => parse_document_model(bytes).map_err(ParseFailure::office_file)?,
     };
@@ -72,6 +75,8 @@ fn parse_document_impl(
         Some(zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ParseFailure::office_file)?)
     } else { None };
     let mut format_warnings = Vec::new();
+    let custom_xml_parts = archive.as_mut().filter(|_| is_docx).map(crate::document_custom_xml::read).transpose()
+        .map_err(ParseFailure::office_file)?.flatten();
     let mut numbering_restoration = if let Some(zip) = archive.as_mut().filter(|_| is_docx) {
         crate::document_format_sidecar::restore_numbering_with_extensions(&mut source_model, zip)
     } else {
@@ -108,7 +113,7 @@ fn parse_document_impl(
             Err(error) => { format_warnings.push(format!("DOCX document defaults could not be resolved: {error}")); None },
         }
     } else { None };
-    if let Some(package) = doc_package {
+    if let Some(package) = doc_package.as_ref() {
         let defaults = crate::document_format_sidecar::read_doc_default_style(bytes, &package);
         office_source = Some(defaults.source);
         default_style = defaults.default_style;
@@ -132,7 +137,11 @@ fn parse_document_impl(
             Err(error) => { format_warnings.push(format!("DOCX story styles could not be resolved: {error}")); duke_pages::parse::ParsedStyleSheet::empty() },
         }
     } else { duke_pages::parse::ParsedStyleSheet::empty() };
-    let mut document = crate::document_block_extraction::extract(&mut source_model);
+    let mut native_notes = crate::document_notes::read(docx_package.as_ref().or(doc_package.as_ref()), &mut source_model, &story_style_sheet)
+        .map_err(|error| ParseFailure::office_file(format!("Native note settings and special stories could not be retained: {error}")))?;
+    let mut document = crate::document_block_extraction::extract_with_resources(&mut source_model, docx_package.as_ref().or(doc_package.as_ref()), &story_style_sheet);
+    drop(docx_package);
+    drop(doc_package);
     if is_docx || format == "doc" {
         let table_warnings = crate::document_table_sidecar::restore(&mut document, &source_model, archive.as_mut().filter(|_| is_docx))
             .map_err(|error| ParseFailure::office_file(format!("Native document tables could not be retained: {error}")))?;
@@ -153,11 +162,28 @@ fn parse_document_impl(
         document.warnings.extend(restoration.warnings);
         native_field_source = restoration.source;
     }
+    native_notes.restore_references(&mut document, &source_model, &story_style_sheet)
+        .map_err(|error| ParseFailure::office_file(format!("Native note references could not be retained: {error}")))?;
+    let native_content_controls = if let Some(zip) = archive.as_mut().filter(|_| is_docx) {
+        let restoration = crate::document_content_controls::restore(&document, &source_model, zip)
+            .map_err(|error| ParseFailure::office_file(format!("Native content controls could not be retained: {error}")))?;
+        document.warnings.extend(restoration.warnings);
+        (!restoration.controls.is_empty()).then_some(restoration.controls)
+    } else { None };
+    let note_scope = crate::document_paragraph_source::canonical_scope(&source_model).map_err(ParseFailure::office_file)?;
+    let body_part = source_model.metadata.source_part_names.as_ref().and_then(|names| names.get("document")).map(String::as_str).unwrap_or("word/document.xml");
+    let document_note_columns = native_notes.settings.footnote.as_ref().and_then(|settings| settings.properties.column_count);
+    let mut section_notes = source_model.metadata.sections.iter().flatten().map(|section|
+        crate::document_notes::read_section(section.section_properties_xml.as_deref(), &note_scope, body_part, document_note_columns)
+    ).collect::<Result<Vec<_>, _>>().map_err(ParseFailure::office_file)?;
+    for (_, _, warnings) in &mut section_notes { document.warnings.append(warnings); }
+    document.warnings.append(&mut native_notes.warnings);
     document.warnings.extend(format_warnings);
     insert_section_breaks(&mut document, &source_model);
     insert_paragraph_breaks(&mut document, &source_model);
     let mut review = extract_document_review(&source_model);
-    document.warnings.extend(crate::document_format_sidecar::restore_sdt_comment_targets(&source_model, &mut review.comments));
+    let comment_warnings = crate::document_format_sidecar::restore_sdt_comment_targets(&source_model, &mut review.comments, &document);
+    document.warnings.extend(comment_warnings);
     let mut diagnostics = ParserDiagnostics::document(&document);
     diagnostics.capabilities.extend([
         "pageBreaks".into(),
@@ -183,7 +209,8 @@ fn parse_document_impl(
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|section| {
+        .zip(section_notes)
+        .map(|(section, (note_properties, suppress_endnotes, _))| {
             let (margin_header, margin_footer) =
                 story_distances(section.section_properties_xml.as_deref().unwrap_or_default());
             DocumentSectionLayoutPayload {
@@ -193,6 +220,8 @@ fn parse_document_impl(
                 section_properties_xml: section.section_properties_xml.clone(),
                 header_sections: section.header_sections.iter().map(|r| story_reference(&r.part_name, &r.reference_type, true)).collect(),
                 footer_sections: section.footer_sections.iter().map(|r| story_reference(&r.part_name, &r.reference_type, false)).collect(),
+                note_properties,
+                suppress_endnotes,
             }
         })
         .collect();
@@ -202,15 +231,20 @@ fn parse_document_impl(
         .as_ref()
         .and_then(|settings| settings.even_and_odd_headers)
         .unwrap_or(false);
-    let footnotes = source_model.metadata.footnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
-    let endnotes = source_model.metadata.endnotes.as_ref().map(|notes| notes.iter().map(|note| DocumentNotePayload { id: note.id.to_string(), text: note.text.clone() }).collect());
-    let comments = review.comments.into_iter().map(|comment| {
+    let footnotes = source_model.metadata.footnotes.as_ref().map(|notes| notes.iter().filter(|note| !native_notes.is_decoration(office_io_common::document_note_source::DocumentNoteKind::Footnote, note.id))
+        .map(|note| native_notes.payload(office_io_common::document_note_source::DocumentNoteKind::Footnote, note)).collect());
+    let endnotes = source_model.metadata.endnotes.as_ref().map(|notes| notes.iter().filter(|note| !native_notes.is_decoration(office_io_common::document_note_source::DocumentNoteKind::Endnote, note.id))
+        .map(|note| native_notes.payload(office_io_common::document_note_source::DocumentNoteKind::Endnote, note)).collect());
+    let note_settings = native_notes.into_settings();
+    let mut comments = review.comments.into_iter().map(|comment| {
         let mut targets = comment.targets.into_iter().filter(|target| target.source.story == "body").map(|target| DocumentCommentTargetPayload {
             node_id: target.source.node_id,
             part_name: target.source.part_name,
             story: target.source.story,
             start: target.source.start,
             end: target.source.end,
+            start_note_reference_count: None,
+            end_note_reference_count: None,
             offset_encoding: target.source.offset_encoding,
         }).collect::<Vec<_>>();
         // A point comment has no text children for Duke to collect, but its
@@ -218,12 +252,15 @@ fn parse_document_impl(
         if targets.is_empty() {
             if let Some(reference) = comment.reference.filter(|reference| reference.story == "body" && reference.start.is_some() && reference.start == reference.end) {
                 targets.push(DocumentCommentTargetPayload { node_id: reference.node_id, part_name: reference.part_name, story: reference.story,
-                    start: reference.start, end: reference.end, offset_encoding: reference.offset_encoding });
+                    start: reference.start, end: reference.end, start_note_reference_count: None, end_note_reference_count: None, offset_encoding: reference.offset_encoding });
             }
         }
         DocumentCommentPayload { id: comment.id.to_string(), author: comment.author, date: comment.date, text: comment.text,
             parent_id: comment.parent_id.map(|id| id.to_string()), resolved: comment.resolved, targets }
     }).collect::<Vec<_>>();
+    let comment_note_warnings = crate::document_comment_notes::restore(&source_model, &document, &mut comments, &note_scope)
+        .map_err(ParseFailure::office_file)?;
+    diagnostics.warnings.extend(comment_note_warnings);
     let comments = (!comments.is_empty()).then_some(comments);
     Ok(ParseEnvelope {
         schema_version: SCHEMA_VERSION,
@@ -239,10 +276,13 @@ fn parse_document_impl(
             even_and_odd_headers,
             footnotes,
             endnotes,
+            note_settings,
             comments,
             office_source,
             default_style,
             native_field_source,
+            custom_xml_parts,
+            native_content_controls,
         }),
         diagnostics,
     })

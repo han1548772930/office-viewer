@@ -2,7 +2,7 @@ import type { DocumentBlock } from '../../../domain/model'
 import { createRun, runText, sliceRuns, type DocumentRun } from '../model/document-model'
 import type { ParagraphListMarker } from '../model/document-lists'
 import { codeBlockData } from '../code-blocks/code-blocks'
-import type { DocumentLayout, LayoutImage, LayoutLine, LayoutMeasurer } from './document-layout-types'
+import type { DocumentLayout, DocumentTextLayoutDisplay, LayoutImage, LayoutLine, LayoutMeasurer } from './document-layout-types'
 import type { DocumentSectionFlow } from './document-section-flow'
 import { paragraphLineHeight, positionLine, runFont, wrapRuns } from './document-text-layout'
 import { documentTocPageTab } from '../toc/document-toc-layout'
@@ -53,7 +53,8 @@ export function appendListMarker(line: LayoutLine, block: DocumentBlock, list: P
   } else if (geometry.markerFont) line.markerStyle = { x: left + geometry.markerIndent, font: geometry.markerFont, color: list.color }
 }
 
-export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphListMarker | undefined, flow: DocumentSectionFlow, result: DocumentLayout, measurer: LayoutMeasurer): void {
+export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphListMarker | undefined, flow: DocumentSectionFlow, result: DocumentLayout, measurer: LayoutMeasurer,
+  display?: DocumentTextLayoutDisplay): void {
   const codeData = codeBlockData(block), text = runText(block.runs)
   let available = flow.column.width, geometry = paragraphGeometry(block, list, available, measurer)
   let rawIndex = 0, lineIndex = 0, baseOffset = 0
@@ -62,10 +63,12 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
     offset: pageTab.offset - baseOffset,
     ...(stop.right === undefined ? {} : { right: Math.max(0, stop.right - (index + lineIndex === 0 ? geometry.firstIndent : geometry.indent)) }),
   }))
-  let lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined)
+  const textDisplay = () => ({ references: display?.references, leading: lineIndex === 0 && baseOffset === 0 ? display?.leadingLabels?.get(block.id) : undefined })
+  let lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined, textDisplay())
   while (rawIndex < lines.length) {
     const raw = lines[rawIndex]!
     const height = paragraphLineHeight(Math.max(raw.fontHeight, lineIndex === 0 ? geometry.markerHeight : 0), block.style)
+    flow.advanceToPage(flow.referencePageFloor(raw.glyphs.filter(glyph => glyph.note?.role === 'reference').map(glyph => glyph.run.id)))
     flow.ensureRoom(height)
     if (Math.abs(available - flow.column.width) > 1e-6) {
       // A continuous section can retain the old page's margins until overflow.
@@ -75,7 +78,7 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
       geometry = paragraphGeometry(block, list, available, measurer)
       const remaining = sliceRuns(block.runs as DocumentRun[], baseOffset, text.length)
       if (!remaining.length && block.runs.length) remaining.push({ ...block.runs.at(-1)!, text: '' })
-      lines = wrapRuns(remaining, index => geometry.width(index + lineIndex), measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined)
+      lines = wrapRuns(remaining, index => geometry.width(index + lineIndex), measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined, textDisplay())
       rawIndex = 0
       continue
     }
@@ -96,6 +99,13 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
     }
     if (lineIndex === 0 && block.type === 'checklist') line.checklist = { blockId: block.id, checked: block.checklist?.checked === true }
     result.lines.push(line)
+    if (lineIndex === 0 && block.metadata.noteSeparator && typeof block.metadata.noteSeparator === 'object') {
+      const separator = block.metadata.noteSeparator, fraction = Reflect.get(separator, 'widthFraction'), color = Reflect.get(separator, 'color')
+      if (Reflect.get(separator, 'version') === 1 && typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
+        result.dividers.push({ x: flow.column.x + indent, y: flow.cursor + Math.max(1, height - 2), width: geometry.width(lineIndex) * fraction,
+          height: 1, page: flow.page.index, ...flow.location, ...(typeof color === 'string' ? { color } : {}) })
+      }
+    }
     flow.consume(height)
     rawIndex++; lineIndex++
   }

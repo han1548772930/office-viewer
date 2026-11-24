@@ -25,9 +25,9 @@ function segment(job, extra = {}) {
     valueLength: 0, indexLength: 0, validSampleCount: 0, available: false, ...extra }
 }
 const histogramChart = () => chart({ type: 'histogram', options: { histogram: {
-  binning: { mode: 'count', count: 2 }, underflowThreshold: 1, overflowThreshold: 3 } } })
+  binning: { mode: 'count', count: 4 }, underflowThreshold: 1, overflowThreshold: 3 } } })
 const histogramOutput = () => ({ kind: 'chartStatistics',
-  values: new Float64Array([0, 1, 1, 2, 2, 3, 3, 0]), indices: new Uint32Array([0, 2, 1, 1, 1, 1, 2, 1]),
+  values: new Float64Array([0, 1, 2, 2.5, 2.5, 3, 3, 0]), indices: new Uint32Array([0, 2, 1, 1, 1, 1, 2, 1]),
   segments: [segment({ kind: 'histogram', slot: 0 }, { valueLength: 8, indexLength: 8, validSampleCount: 5, available: true })] })
 
 test('source preparation reads authoritative raw numbers in either orientation, including their original precision', async () => {
@@ -38,7 +38,7 @@ test('source preparation reads authoritative raw numbers in either orientation, 
     const workbook = { ...createBlankWorkbook(), id: 'book' }, sheet = workbook.sheets[0]
     sheet.id = 'sheet'; sheet.rowCount = matrix.length; sheet.columnCount = matrix[0].length
     sheet.cells = Object.fromEntries(matrix.flatMap((row, rowIndex) => row.map((value, column) => {
-      const cell = createCell(value)
+      const cell = createCell(rowIndex, column, value)
       if (value === number) cell.display = '1.23'
       return [rowIndex + ':' + column, cell]
     })))
@@ -109,8 +109,8 @@ test('histogram decoding enforces complete counts and threshold identities', asy
   const decoded = await decodeChartStatistics(plan, histogramOutput())
   assert.equal(decoded.preparedData, plan.preparedData)
   assert.deepEqual(decoded.histogram, { validSampleCount: 5, bins: [
-    { kind: 'underflow', upperBound: 1, count: 2 }, { kind: 'regular', lowerBound: 1, upperBound: 2, count: 1 },
-    { kind: 'regular', lowerBound: 2, upperBound: 3, count: 1 }, { kind: 'overflow', lowerBound: 3, count: 1 },
+    { kind: 'underflow', upperBound: 1, count: 2 }, { kind: 'regular', lowerBound: 2, upperBound: 2.5, count: 1 },
+    { kind: 'regular', lowerBound: 2.5, upperBound: 3, count: 1 }, { kind: 'overflow', lowerBound: 3, count: 1 },
   ] })
   for (const mutate of [output => { output.indices[1] = 6 }, output => { output.values[1] = 0.5 },
     output => { output.values[2] = NaN }, output => { output.segments[0].field = 2 }]) {
@@ -122,10 +122,44 @@ test('histogram decoding enforces complete counts and threshold identities', asy
 test('boxplot decoding accepts authored zero whisker multiplier where min is above Q1', async () => {
   const model = chart({ type: 'boxplot', options: { boxplot: { quartileMethod: 'inclusive', whiskerMultiplier: 0 } } })
   const plan = await prepareChartStatisticsTask(data([1, 2, 3, 4]), model)
-  const output = { kind: 'chartStatistics', values: new Float64Array([2, 1.75, 2.5, 3.25, 3, 1, 4]), indices: new Uint32Array(),
-    segments: [segment(plan.task.params.jobs[0], { valueLength: 7, validSampleCount: 4, available: true })] }
+  const output = { kind: 'chartStatistics', values: new Float64Array([2, 1.75, 2.5, 3.25, 3, 1, 4]), indices: new Uint32Array([0, 3]),
+    segments: [segment(plan.task.params.jobs[0], { valueLength: 7, indexLength: 2, validSampleCount: 4, available: true })] }
   const decoded = await decodeChartStatistics(plan, output)
-  assert.deepEqual(decoded.boxplots[0].statistics, { min: 2, q1: 1.75, median: 2.5, q3: 3.25, max: 3, outliers: [1, 4] })
+  assert.deepEqual(decoded.boxplots[0].statistics, { min: 2, q1: 1.75, median: 2.5, q3: 3.25, max: 3, outliers: [1, 4], outlierSourceIndices: [0, 3] })
+})
+
+test('boxplot source identities preserve missing slots and reject duplicate, swapped or mismatched outliers', async () => {
+  const values = [100, null, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0]
+  const plan = await prepareChartStatisticsTask(data(values), chart({ type: 'boxplot', options: { boxplot: { quartileMethod: 'inclusive', whiskerMethod: 'iqr' } } }))
+  const output = () => ({ kind: 'chartStatistics', values: new Float64Array([0, 0, 0, 0, 0, 100, 100]), indices: new Uint32Array([0, 4]),
+    segments: [segment(plan.task.params.jobs[0], { valueLength: 7, indexLength: 2, validSampleCount: 11, available: true })] })
+  assert.deepEqual((await decodeChartStatistics(plan, output())).boxplots[0].statistics.outlierSourceIndices, [0, 4])
+  for (const change of [result => { result.indices[1] = 0 }, result => { result.indices[0] = 4; result.indices[1] = 0 },
+    result => { result.indices[0] = 1 }, result => { result.indices[1] = values.length }, result => { result.values[6] = 99 }]) {
+    const result = output(); change(result)
+    await assert.rejects(() => decodeChartStatistics(plan, result), error => error.code === 'COMPUTE_PROTOCOL_MISMATCH')
+  }
+})
+
+test('fixed boxplot planner requests half medians and full range without materializing authored defaults', async () => {
+  const model = chart({ type: 'boxplot' }), source = data([100, null, 3, 2, 4, 1])
+  const plan = await prepareChartStatisticsTask(source, model)
+  assert.deepEqual(plan.task.params.jobs, [{ kind: 'boxplot', seriesIndex: 0, slot: 0,
+    quartileMethod: 'medianOfHalves', whiskerMethod: 'range', whiskerMultiplier: 1.5 }])
+  assert.equal(model.options, undefined)
+  const output = () => ({ kind: 'chartStatistics', values: new Float64Array([1, 1.5, 3, 52, 100]), indices: new Uint32Array(),
+    segments: [segment(plan.task.params.jobs[0], { valueLength: 5, validSampleCount: 5, available: true })] })
+  assert.deepEqual((await decodeChartStatistics(plan, output())).boxplots[0].statistics,
+    { min: 1, q1: 1.5, median: 3, q3: 52, max: 100, outliers: [], outlierSourceIndices: [] })
+  for (const change of [result => { result.values[4] = 99 }, result => { result.values[0] = 2 },
+    result => { result.segments[0].validSampleCount = 6 }]) {
+    const result = output(); change(result)
+    await assert.rejects(() => decodeChartStatistics(plan, result), error => error.code === 'COMPUTE_PROTOCOL_MISMATCH')
+  }
+  const singleton = await prepareChartStatisticsTask(data([null, 7]), model)
+  const unavailable = { kind: 'chartStatistics', values: new Float64Array(), indices: new Uint32Array(),
+    segments: [segment(singleton.task.params.jobs[0], { validSampleCount: 1 })] }
+  assert.equal((await decodeChartStatistics(singleton, unavailable)).boxplots[0].statistics, undefined)
 })
 
 test('an unavailable fit occupies its authored slot and is consumed without a synchronous fallback', async () => {

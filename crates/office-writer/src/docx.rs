@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::{opc::Package, xml, ExportError, ExportWarning};
 
@@ -22,6 +22,16 @@ use text_fields::TextFieldPlan;
 mod table_writer;
 #[path = "docx_block_hosts.rs"]
 mod block_hosts;
+#[path = "docx_notes.rs"]
+mod note_writer;
+#[path = "docx_custom_xml.rs"]
+mod custom_xml;
+#[path = "docx_content_controls.rs"]
+mod control_writer;
+#[path = "docx_content_control_ranges.rs"]
+mod control_ranges;
+#[path = "docx_content_control_pictures.rs"]
+mod control_pictures;
 
 #[path = "docx_numbering.rs"]
 mod numbering;
@@ -165,6 +175,7 @@ struct NoteBundle {
     endnotes: Vec<NoteEntry>,
     ids: HashMap<(NoteKind, String), i64>,
     orphaned: Vec<(NoteKind, String)>,
+    reference_properties: HashMap<(NoteKind, String), note_writer::ReferenceProperties>,
 }
 
 #[derive(Clone)]
@@ -193,6 +204,7 @@ struct SectionHeaderFooterRefs {
     different_first_page: bool,
     header_distance: u32,
     footer_distance: u32,
+    note_properties_xml: String,
 }
 
 struct WriteContext<'a> {
@@ -203,9 +215,11 @@ struct WriteContext<'a> {
     sequences: SequencePlan,
     preserved_markers: PreservedMarkerPlan,
     note_ids: HashMap<(NoteKind, String), i64>,
+    note_reference_properties: HashMap<(NoteKind, String), note_writer::ReferenceProperties>,
     comment_entries: Vec<CommentEntry>,
     comment_anchors: HashMap<String, Vec<CommentAnchor>>,
     controls_by_block: HashMap<String, Vec<ContentControl>>,
+    control_sources: control_writer::ControlWriteState,
     used_controls: BTreeSet<String>,
     next_relationship: u32,
     relationship_owner: String,
@@ -219,6 +233,7 @@ struct WriteContext<'a> {
     source_styles: source_styles::SourceStyles,
     text_fields: TextFieldPlan,
     tables: table_writer::TableWriteState,
+    custom_xml_stores: BTreeSet<String>,
 }
 
 impl<'a> WriteContext<'a> {
@@ -255,8 +270,9 @@ impl<'a> WriteContext<'a> {
         let alt = string(get(image, "alt"))
             .or_else(|| string(get(metadata, "alt")))
             .unwrap_or_default();
-        let (content_type, extension, bytes) = match decode_data_image(&src) {
-            Ok(image) => image,
+        let embedded = match decode_data_image(&src) {
+            Ok(image) => Some(image),
+            Err(_) if control_pictures::linked_image(&src) => None,
             Err(reason) => {
                 self.warn(
                     "DOCX_IMAGE_UNSUPPORTED",
@@ -283,13 +299,15 @@ impl<'a> WriteContext<'a> {
 
         let index = self.next_image;
         self.next_image += 1;
-        let path = format!("word/media/image{index}.{extension}");
-        self.package.add_binary(&path, content_type, bytes)?;
-        let target = format!("media/image{index}.{extension}");
-        let relationship = self.relationship(REL_IMAGE, &target, false)?;
+        let (relationship, reference, extension) = if let Some((content_type, extension, bytes)) = embedded {
+            let path = format!("word/media/image{index}.{extension}");
+            self.package.add_binary(&path, content_type, bytes)?;
+            let target = format!("media/image{index}.{extension}");
+            (self.relationship(REL_IMAGE, &target, false)?, "embed", extension)
+        } else { (self.relationship(REL_IMAGE, &src, true)?, "link", "linked") };
         let alt = xml_attribute(&alt);
         Ok(Some(format!(
-            "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"{width_emu}\" cy=\"{height_emu}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:docPr id=\"{index}\" name=\"Image {index}\" descr=\"{alt}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{index}\" name=\"Image {index}.{extension}\" descr=\"{alt}\"/><pic:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"{relationship}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width_emu}\" cy=\"{height_emu}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+            "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"{width_emu}\" cy=\"{height_emu}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:docPr id=\"{index}\" name=\"Image {index}\" descr=\"{alt}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{index}\" name=\"Image {index}.{extension}\" descr=\"{alt}\"/><pic:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip r:{reference}=\"{relationship}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width_emu}\" cy=\"{height_emu}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
         )))
     }
 
@@ -317,18 +335,9 @@ impl<'a> WriteContext<'a> {
             let (fragments, has_note_reference) = if let Some((kind, source_id)) =
                 note_reference(run)
             {
-                if let Some(id) = self.note_ids.get(&(kind, source_id.clone())) {
-                    let tag = kind.reference_tag();
-                    let style = match kind {
-                        NoteKind::Footnote => "FootnoteReference",
-                        NoteKind::Endnote => "EndnoteReference",
-                    };
-                    (
-                        format!(
-                            "<w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{tag} w:id=\"{id}\"/></w:r>"
-                        ),
-                        true,
-                    )
+                if let Some(id) = self.note_ids.get(&(kind, source_id.clone())).copied() {
+                    let properties = self.note_reference_properties.get(&(kind, source_id.clone())).cloned().unwrap_or_default();
+                    (note_writer::reference_run(self, run, kind, id, &properties)?, true)
                 } else {
                     self.warn(
                         "DOCX_NOTE_MISSING",
@@ -341,9 +350,6 @@ impl<'a> WriteContext<'a> {
             };
             if has_note_reference {
                 result.push_str(&fragments);
-                if !text.is_empty() {
-                    result.push_str(&self.text_run_xml(run, &text)?);
-                }
                 continue;
             }
             let href = run_link(run);
@@ -378,7 +384,7 @@ impl<'a> WriteContext<'a> {
         Ok(result)
     }
 
-    fn text_run_xml(&mut self, run: &Value, text: &str) -> Result<String, ExportError> {
+    fn run_properties(&mut self, run: &Value) -> Result<source_xml::Element, ExportError> {
         let generated = run_properties_xml_with_defaults(run, self.run_defaults);
         let mut provenance = run.clone();
         if let Some(baseline) = get(get(run, "metadata"), "officeTextStyleBaseline").as_object() {
@@ -394,7 +400,11 @@ impl<'a> WriteContext<'a> {
             properties.content.retain(|content| !matches!(content, source_xml::Content::Element(element) if element.is_word("lang")));
             properties.content.push(source_xml::Content::Element(element));
         }
-        let properties = properties.render(None);
+        Ok(properties)
+    }
+
+    fn text_run_xml(&mut self, run: &Value, text: &str) -> Result<String, ExportError> {
+        let properties = self.run_properties(run)?.render(None);
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\u{2028}', "\n");
         let mut content = String::new();
         for (line, text) in normalized.split('\n').enumerate() {
@@ -413,7 +423,8 @@ impl<'a> WriteContext<'a> {
         let annotated = self.text_fields.annotate(&block_id, runs, prefix_length)?;
         let runs = annotated.as_deref().unwrap_or(runs);
         let marks = self.comment_anchors.get(&block_id).cloned().unwrap_or_default();
-        let mut controls = self.controls_by_block.get(&block_id).cloned().unwrap_or_default();
+        let mut controls = self.controls_by_block.get(&block_id).cloned().unwrap_or_default().into_iter()
+            .filter(|control| get(&control.value, "placement").as_str() != Some("block") && get(&control.value, "blockRange").is_null()).collect::<Vec<_>>();
         for control in &mut controls {
             control.start = control.start.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("内容控件与重放编号域重叠。"))?;
             control.end = control.end.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("内容控件与重放编号域重叠。"))?;
@@ -496,7 +507,8 @@ impl<'a> WriteContext<'a> {
             .iter()
             .filter(|control| {
                 let candidate_parent = string(get(&control.value, "parentId"));
-                candidate_parent.as_deref() == parent_id
+                let local_parent = candidate_parent.as_deref().filter(|id| controls.iter().any(|candidate| candidate.id == *id));
+                local_parent == parent_id
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -532,27 +544,15 @@ impl<'a> WriteContext<'a> {
                 false,
                 comments,
             )?;
-            if let Some(wrapped) = content_control_xml(&control, &content) {
-                if get(&control.value, "rawSdtPr")
-                    .as_str()
-                    .is_some_and(|value| !value.is_empty())
-                    || get(&control.value, "rawSdtEndPr")
-                        .as_str()
-                        .is_some_and(|value| !value.is_empty())
-                {
-                    self.warn(
-                        "DOCX_SDT_RAW_PROPERTIES_UNSUPPORTED",
-                        format!("Content control {:?} contains preserved raw OOXML properties that this writer cannot safely merge into the generated SDT.", control.id),
-                    );
-                }
-                if !get(&control.value, "dataBinding").is_null() {
+            if let Some(wrapped) = content_control_xml(&control, &content)? {
+                if custom_xml::active_binding_store(get(&control.value, "dataBinding"))
+                    .is_some_and(|id| !self.custom_xml_stores.contains(&id.to_lowercase())) {
                     self.warn(
                         "DOCX_SDT_DATA_BINDING_UNSUPPORTED",
                         format!("Content control {:?} references a custom XML binding, but no matching custom XML store is present in the document model.", control.id),
                     );
                 }
-                result.push_str(&wrapped);
-                self.used_controls.insert(control.id);
+                result.push_str(&control_writer::record(self, &control, wrapped)?);
             } else {
                 self.warn(
                     "DOCX_CONTENT_CONTROL_TYPE_UNSUPPORTED",
@@ -644,6 +644,18 @@ impl<'a> WriteContext<'a> {
             }
         }
         if result.is_empty() { Ok(String::new()) } else { self.runs(&result) }
+    }
+
+    fn blocks(&mut self, blocks: &[Value], available: Option<i64>) -> Result<String, ExportError> {
+        let mut contents = blocks.iter().map(|block| {
+            if available.is_some() && get(block, "type").as_str() == Some("sectionBreak") {
+                return Err(ExportError::invalid("DOCX section breaks cannot be written inside a table cell"));
+            }
+            if get(block, "type").as_str() == Some("table") { table_writer::write(self, block, available) }
+            else { self.block(block) }
+        }).collect::<Result<Vec<_>, _>>()?;
+        control_pictures::merge_contents(blocks, &mut contents, &self.controls_by_block)?;
+        control_writer::wrap_blocks(self, blocks, &contents)
     }
 
     fn block(&mut self, block: &Value) -> Result<String, ExportError> {
@@ -833,16 +845,17 @@ fn note_reference(run: &Value) -> Option<(NoteKind, String)> {
             return Some((kind, source));
         }
     }
-    let note = get(metadata, "note");
-    let kind = match string(get(note, "type")).as_deref() {
-        Some("footnote") => NoteKind::Footnote,
-        Some("endnote") => NoteKind::Endnote,
-        _ => return None,
-    };
-    string(get(note, "noteId"))
-        .or_else(|| get(note, "noteId").as_i64().map(|id| id.to_string()))
-        .filter(|id| !id.trim().is_empty())
-        .map(|id| (kind, id))
+    for note in [get(metadata, "note"), get(metadata, "noteReference")] {
+        let kind = match get(note, "type").as_str().or_else(|| get(note, "kind").as_str()) {
+            Some("footnote") => NoteKind::Footnote,
+            Some("endnote") => NoteKind::Endnote,
+            _ => continue,
+        };
+        let id = string(get(note, "noteId")).or_else(|| get(note, "noteId").as_i64().map(|id| id.to_string()))
+            .or_else(|| string(get(note, "id"))).or_else(|| get(note, "id").as_i64().map(|id| id.to_string()));
+        if let Some(id) = id.filter(|id| !id.trim().is_empty()) { return Some((kind, id)); }
+    }
+    None
 }
 
 fn note_sources<'a>(model: &'a Value, kind: NoteKind) -> Option<&'a Value> {
@@ -897,20 +910,25 @@ fn collect_notes(model: &Value, blocks: &[Value]) -> Result<NoteBundle, ExportEr
     let mut notes: [Vec<NoteEntry>; 2] = [Vec::new(), Vec::new()];
     let mut ids = HashMap::new();
     let mut next_id = [1i64, 1i64];
+    let mut used_ids = [note_writer::reserved_ids(&model, NoteKind::Footnote)?, note_writer::reserved_ids(&model, NoteKind::Endnote)?];
+    let mut reference_properties = HashMap::new();
     for kind in [NoteKind::Footnote, NoteKind::Endnote] {
         let index = if kind == NoteKind::Endnote { 1 } else { 0 };
         for (source_id, value) in collect_note_entries(model, kind) {
             if ids.contains_key(&(kind, source_id.clone())) {
                 continue;
             }
-            let id = next_id[index];
-            next_id[index] += 1;
+            let preferred = get(get(get(&value, "metadata"), "officeNoteSource"), "nativeId").as_i64()
+                .filter(|id| *id > 0 && id.unsigned_abs() <= office_io_common::document_note_source::NOTE_SAFE_INTEGER && !used_ids[index].contains(id));
+            let id = if let Some(id) = preferred { used_ids[index].insert(id); id }
+                else { note_writer::allocate_id(&mut next_id[index], &mut used_ids[index])? };
             ids.insert((kind, source_id.clone()), id);
+            reference_properties.insert((kind, source_id), note_writer::ReferenceProperties::read(&value)?);
             notes[index].push(NoteEntry { id, value });
         }
     }
 
-    let mut bundle = NoteBundle { footnotes: std::mem::take(&mut notes[0]), endnotes: std::mem::take(&mut notes[1]), ids, orphaned: Vec::new() };
+    let mut bundle = NoteBundle { footnotes: std::mem::take(&mut notes[0]), endnotes: std::mem::take(&mut notes[1]), ids, orphaned: Vec::new(), reference_properties };
     let mut references = BTreeSet::new();
     collect_references(blocks, &mut references)?;
     for host in block_hosts::auxiliary_contents(model, blocks, &bundle)? { collect_references(host.blocks, &mut references)?; }
@@ -919,8 +937,7 @@ fn collect_notes(model: &Value, blocks: &[Value]) -> Result<NoteBundle, ExportEr
             continue;
         }
         let index = if kind == NoteKind::Endnote { 1 } else { 0 };
-        let id = next_id[index];
-        next_id[index] += 1;
+        let id = note_writer::allocate_id(&mut next_id[index], &mut used_ids[index])?;
         bundle.ids.insert((kind, source_id.clone()), id);
         let entries = if kind == NoteKind::Footnote { &mut bundle.footnotes } else { &mut bundle.endnotes };
         entries.push(NoteEntry {
@@ -940,12 +957,15 @@ fn collect_content_controls(
 }
 
 fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Result<HashMap<String, Vec<ContentControl>>, ExportError> {
-    let Some(items) = field(model, "contentControls").and_then(Value::as_array) else {
+    let Some(items) = field(model, "contentControls") else {
         return Ok(HashMap::new());
     };
+    let items = items.as_array().ok_or_else(|| ExportError::invalid("DOCX content controls must be an array"))?;
+    if items.len() > office_io_common::document_content_controls::MAX_CONTROL_COUNT { return Err(ExportError::invalid("DOCX_SDT_RESOURCE_LIMIT: too many content controls")); }
     let mut block_ids = BTreeSet::new();
     for blocks in groups { collect_block_ids(blocks, &mut block_ids)?; }
     let mut controls = HashMap::<String, Vec<ContentControl>>::new();
+    let mut identities = BTreeSet::new();
     for (index, value) in items.iter().enumerate() {
         let id = string(get(value, "id")).unwrap_or_default();
         let block_id = string(get(value, "blockId")).unwrap_or_default();
@@ -957,13 +977,23 @@ fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Re
             .as_u64()
             .and_then(|value| usize::try_from(value).ok());
         let (Some(start), Some(end)) = (start, end) else {
-            continue;
+            return Err(ExportError::invalid("DOCX content control requires nonnegative UTF-16 offsets"));
         };
-        if id.trim().is_empty() || block_id.trim().is_empty() || !block_ids.contains(&block_id) {
-            continue;
+        if id.trim().is_empty() || id.len() > 4096 || !identities.insert(id.clone()) || block_id.trim().is_empty() || !block_ids.contains(&block_id) || start > end {
+            return Err(ExportError::invalid("DOCX content control has an invalid/duplicate identity or input host"));
         }
-        let numeric_id = u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX);
-        controls.entry(block_id).or_default().push(ContentControl {
+        let numeric_id = u32::try_from(index + 1).map_err(|_| ExportError::invalid("DOCX native content-control ID capacity exceeded"))?;
+        let key = if get(value, "placement").as_str() == Some("row") {
+            if !get(value, "blockRange").is_null() { return Err(ExportError::invalid("DOCX row SDT cannot also own a block range")); }
+            let table_id = get(get(value, "tableRowRange"), "tableId").as_str().filter(|id| block_ids.contains(*id))
+                .ok_or_else(|| ExportError::invalid("DOCX row SDT requires an existing native table"))?;
+            table_id.to_owned()
+        } else if !get(value, "blockRange").is_null() {
+            if get(value, "placement").as_str() != Some("block") || !get(value, "tableRowRange").is_null() { return Err(ExportError::invalid("DOCX block SDT has conflicting structural ownership")); }
+            get(get(value, "blockRange"), "blockIds").as_array().and_then(|ids| ids.first()).and_then(Value::as_str)
+                .filter(|id| block_ids.contains(*id)).ok_or_else(|| ExportError::invalid("DOCX block SDT requires an existing first block"))?.to_owned()
+        } else { block_id };
+        controls.entry(key).or_default().push(ContentControl {
             id,
             kind,
             numeric_id,
@@ -971,6 +1001,16 @@ fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Re
             end,
             value: value.clone(),
         });
+    }
+    let by_id = controls.values().flatten().map(|control| (control.id.as_str(), control)).collect::<HashMap<_, _>>();
+    for control in by_id.values() {
+        let mut parent = get(&control.value, "parentId").as_str();
+        let mut chain = HashSet::from([control.id.as_str()]);
+        while let Some(id) = parent {
+            if !chain.insert(id) { return Err(ExportError::invalid("DOCX content controls contain a parent cycle")); }
+            let ancestor = by_id.get(id).ok_or_else(|| ExportError::invalid("DOCX content control has a missing parent"))?;
+            parent = get(&ancestor.value, "parentId").as_str();
+        }
     }
     for block_controls in controls.values_mut() {
         block_controls.sort_by_key(|control| {
@@ -981,6 +1021,7 @@ fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Re
             )
         });
     }
+    control_ranges::validate(groups, &controls)?;
     Ok(controls)
 }
 
@@ -1019,7 +1060,7 @@ fn slice_utf16(text: &str, start: usize, end: usize) -> Option<&str> {
     Some(&text[byte_at(start)?..byte_at(end)?])
 }
 
-fn content_control_xml(control: &ContentControl, content: &str) -> Option<String> {
+fn content_control_xml(control: &ContentControl, content: &str) -> Result<Option<String>, ExportError> {
     let value = &control.value;
     let title = string(get(value, "title")).or_else(|| string(get(value, "alias")));
     let tag = string(get(value, "tag"));
@@ -1039,6 +1080,11 @@ fn content_control_xml(control: &ContentControl, content: &str) -> Option<String
     }
     if let Some(lock) = lock {
         properties.push_str(&format!("<w:lock w:val=\"{lock}\"/>"));
+    }
+    let binding = get(value, "dataBinding");
+    if let (Some(xpath), Some(store)) = (get(binding, "xpath").as_str().filter(|value| !value.is_empty()), custom_xml::active_binding_store(binding)) {
+        properties.push_str(&format!("<w:dataBinding{}{}{} />", xml::attr("w:xpath", xpath), xml::attr("w:storeItemID", store),
+            get(binding, "prefixMappings").as_str().map(|value| xml::attr("w:prefixMappings", value)).unwrap_or_default()));
     }
     match control.kind.as_str() {
         "plainText" | "text" => {
@@ -1098,7 +1144,7 @@ fn content_control_xml(control: &ContentControl, content: &str) -> Option<String
                     .or_else(|| string(get(date_settings, "storage")))
                     .unwrap_or_else(|| "dateTime".to_owned());
                 properties.push_str(&format!(
-                    "<w:date w:fullDate=\"{}T00:00:00Z\"><w:dateFormat w:val=\"{}\"/><w:lid w:val=\"{}\"/>{}<w:storeMappedDataAs w:val=\"{}\"/></w:date>",
+                    "<w:date w:fullDate=\"{}\"><w:dateFormat w:val=\"{}\"/><w:lid w:val=\"{}\"/>{}<w:storeMappedDataAs w:val=\"{}\"/></w:date>",
                     xml_attribute(&full_date),
                     xml_attribute(&format),
                     xml_attribute(&locale),
@@ -1143,12 +1189,12 @@ fn content_control_xml(control: &ContentControl, content: &str) -> Option<String
             let title = string(get(section, "sectionTitle"));
             let lock_insert = get(section, "doNotAllowInsertDelete").as_bool() == Some(true);
             properties.push_str(&format!(
-                "<w15:repeatingSection{}{} />",
+                "<w15:repeatingSection>{}{}</w15:repeatingSection>",
                 title
-                    .map(|value| format!(" w15:sectionTitle=\"{}\"", xml_attribute(&value)))
+                    .map(|value| format!("<w15:sectionTitle w15:val=\"{}\"/>", xml_attribute(&value)))
                     .unwrap_or_default(),
                 if lock_insert {
-                    " w15:doNotAllowInsertDelete=\"1\""
+                    "<w15:doNotAllowInsertDelete/>"
                 } else {
                     ""
                 }
@@ -1174,16 +1220,16 @@ fn content_control_xml(control: &ContentControl, content: &str) -> Option<String
                 if unique { "<w:docPartUnique/>" } else { "" }
             ));
         }
-        _ => return None,
+        _ => return Ok(None),
     }
     if let Some(appearance) = string(get(value, "appearance")) {
         properties.push_str(&format!(
-            "<w:appearance w:val=\"{}\"/>",
+            "<w15:appearance w15:val=\"{}\"/>",
             xml_attribute(&appearance)
         ));
     }
     if let Some(color) = string(get(value, "color")).and_then(color) {
-        properties.push_str(&format!("<w:color w:val=\"{color}\"/>"));
+        properties.push_str(&format!("<w15:color w15:val=\"{color}\"/>"));
     }
     if get(value, "temporary").as_bool() == Some(true) {
         properties.push_str("<w:temporary/>");
@@ -1210,9 +1256,8 @@ fn content_control_xml(control: &ContentControl, content: &str) -> Option<String
     } else {
         content.to_owned()
     };
-    Some(format!(
-        "<w:sdt><w:sdtPr>{properties}</w:sdtPr><w:sdtContent>{content}</w:sdtContent></w:sdt>"
-    ))
+    let (properties, end_properties) = control_writer::merge_properties(control, &properties)?;
+    Ok(Some(format!("<w:sdt {CONTENT_NAMESPACES}>{properties}{end_properties}<w:sdtContent>{content}</w:sdtContent></w:sdt>")))
 }
 
 fn valid_iso_date(value: &str) -> bool {
@@ -1280,112 +1325,6 @@ fn note_text(value: &Value) -> Option<String> {
         }
     }
     None
-}
-
-fn note_runs(value: &Value) -> &[Value] {
-    for candidate in [get(value, "content"), value, get(value, "body")] {
-        if let Some(runs) = field(candidate, "runs").and_then(Value::as_array) {
-            return runs;
-        }
-        if let Some(blocks) = field(candidate, "blocks").and_then(Value::as_array) {
-            if let Some(runs) = blocks
-                .first()
-                .and_then(|block| field(block, "runs"))
-                .and_then(Value::as_array)
-            {
-                return runs;
-            }
-        }
-    }
-    &[]
-}
-
-fn note_body_xml(value: &Value, kind: NoteKind, id: i64, defaults: RunDefaultEffects) -> String {
-    let style = kind.style();
-    let reference = kind.body_reference_tag();
-    let mut paragraphs = String::new();
-    let runs = note_runs(value);
-    if !runs.is_empty() {
-        let content = runs
-            .iter()
-            .map(|run| {
-                let text = string(get(run, "text")).unwrap_or_default();
-                run_xml_with_defaults(run, &text, defaults)
-            })
-            .collect::<String>();
-        paragraphs.push_str(&format!(
-            "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{reference}/></w:r>{content}</w:p>"
-        ));
-    } else {
-        let text = note_text(value).unwrap_or_default();
-        let lines = text.split('\n').collect::<Vec<_>>();
-        for (index, line) in lines.iter().enumerate() {
-            if index == 0 {
-                paragraphs.push_str(&format!(
-                    "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{reference}/></w:r><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
-                    xml_text(line)
-                ));
-            } else {
-                paragraphs.push_str(&format!(
-                    "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
-                    xml_text(line)
-                ));
-            }
-        }
-    }
-    if paragraphs.is_empty() {
-        paragraphs.push_str(&format!(
-            "<w:p><w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr><w:r><w:rPr><w:rStyle w:val=\"{style}\"/></w:rPr><w:{reference}/></w:r></w:p>"
-        ));
-    }
-    format!(
-        "<w:{} w:id=\"{id}\">{paragraphs}</w:{}>",
-        kind.collection().trim_end_matches('s'),
-        kind.collection().trim_end_matches('s')
-    )
-}
-
-fn notes_xml(context: &mut WriteContext<'_>, kind: NoteKind, notes: &[NoteEntry]) -> Result<String, ExportError> {
-    let path = format!("word/{}.xml", kind.collection());
-    context.with_relationship_owner(&path, |context| {
-    let element = kind.collection().trim_end_matches('s');
-    let mut body = format!(
-        "<w:{element} w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:{element}><w:{element} w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{element}>"
-    );
-    for note in notes {
-        if let Some(blocks) = block_hosts::content_blocks(get(&note.value, "content"))? {
-            let reference = kind.body_reference_tag();
-            let reference_style = if kind == NoteKind::Footnote { "FootnoteReference" } else { "EndnoteReference" };
-            let marker = format!("<w:r><w:rPr><w:rStyle w:val=\"{reference_style}\"/></w:rPr><w:{reference}/></w:r>");
-            let mut paragraphs = String::new();
-            for (index, block) in blocks.iter().enumerate() {
-                let mut output = context.block(block)?;
-                if index == 0 {
-                    if output.starts_with("<w:p>") {
-                        let position = if output.starts_with("<w:p><w:pPr") {
-                            let opening = output.find('>').and_then(|first| output[first + 1..].find('>').map(|second| first + 1 + second))
-                                .ok_or_else(|| ExportError::invalid("注释首段的段落属性开头无效。"))?;
-                            if output.as_bytes().get(opening.saturating_sub(1)) == Some(&b'/') { opening + 1 }
-                            else { output.find("</w:pPr>").ok_or_else(|| ExportError::invalid("注释首段缺少段落属性结束标记。"))? + "</w:pPr>".len() }
-                        } else { "<w:p>".len() };
-                        output.insert_str(position, &marker);
-                    } else { paragraphs.push_str(&format!("<w:p>{marker}</w:p>")); }
-                }
-                paragraphs.push_str(&output);
-            }
-            if blocks.is_empty() { paragraphs.push_str(&format!("<w:p>{marker}</w:p>")); }
-            body.push_str(&format!("<w:{element} w:id=\"{}\">{paragraphs}</w:{element}>", note.id));
-        } else {
-            body.push_str(&note_body_xml(&note.value, kind, note.id, context.run_defaults));
-        }
-    }
-    Ok(format!(
-        "{}<w:{} {CONTENT_NAMESPACES}>{body}</w:{}>",
-        xml::DECL,
-        kind.collection(),
-        kind.collection()
-    ))
-    })
 }
 
 fn collect_comments(
@@ -1493,7 +1432,13 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     if !get(get(get(&model, "metadata"), "source"), "nativeFieldSource").is_null() {
         return Err(ExportError::invalid("正文包含尚未映射的原生字段段落；完整来源已保留，需补齐范围映射后才能写出 DOCX。"));
     }
+    let native_controls = get(get(&model, "metadata"), "nativeContentControlSource");
+    if !native_controls.is_null() {
+        let unmapped = get(native_controls, "unmapped").as_array().ok_or_else(|| ExportError::invalid("DOCX native content-control provenance has an invalid retained range list"))?;
+        if !unmapped.is_empty() { return Err(ExportError::invalid("DOCX_SDT_UNMAPPED: native content-control structure is retained; complete its editable range mapping before DOCX export")); }
+    }
     let legacy_source = legacy_source::prepare(&model)?;
+    let custom_xml = custom_xml::prepare(&model)?;
     let generated_styles = default_style::styles_xml(&model, styles_xml())?;
     let run_defaults = RunDefaultEffects::for_model(&model);
     let notes = collect_notes(&model, blocks)?;
@@ -1553,9 +1498,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         sequences: SequencePlan { next_bookmark: 1, ..Default::default() },
         preserved_markers: PreservedMarkerPlan::default(),
         note_ids: notes.ids.clone(),
+        note_reference_properties: notes.reference_properties.clone(),
         comment_entries,
         comment_anchors,
         controls_by_block,
+        control_sources: control_writer::ControlWriteState::default(),
         used_controls: BTreeSet::new(),
         next_relationship: 3,
         relationship_owner: "word/document.xml".to_owned(),
@@ -1569,7 +1516,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         source_styles: source_styles::SourceStyles::new(&model, generated_styles)?,
         text_fields: TextFieldPlan::default(),
         tables: table_writer::TableWriteState::default(),
+        custom_xml_stores: custom_xml.stores.clone(),
     };
+    custom_xml.write(&mut context)?;
     if let Some(bytes) = legacy_source {
         use office_io_common::document_legacy_source::{LEGACY_SOURCE_CONTENT_TYPE, LEGACY_SOURCE_PART, LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET};
         context.package.add_binary(LEGACY_SOURCE_PART, LEGACY_SOURCE_CONTENT_TYPE, bytes)?;
@@ -1590,11 +1539,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     context.text_fields = TextFieldPlan::prepare_groups(&mut context, &block_groups)?;
     let has_text_fields = context.text_fields.has_fields;
     let has_different_odd_even =
-        prepare_section_header_footers(&mut context, section_header_footers, get(&model, "sectionSetup"), blocks)?;
-    let mut body = String::new();
-    for block in blocks {
-        body.push_str(&context.block(block)?);
-    }
+        prepare_section_header_footers(&mut context, section_header_footers, get(&model, "sectionSetup"), get(&model, "noteSettings"), blocks)?;
+    let mut body = context.blocks(blocks, None)?;
     if let Some(mapping) = context.sequences.mapping_xml.take() {
         context.package.add_xml("customXml/office-numbering.xml", "application/xml", mapping)?;
         context.relationship("http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml", "../customXml/office-numbering.xml", false)?;
@@ -1619,8 +1565,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             ),
         );
     }
-    if !notes.footnotes.is_empty() {
-        let xml = notes_xml(&mut context, NoteKind::Footnote, &notes.footnotes)?;
+    if !notes.footnotes.is_empty() || !get(get(&model, "noteSettings"), "footnote").is_null() {
+        let xml = note_writer::notes_xml(&mut context, NoteKind::Footnote, &notes.footnotes, get(get(&model, "noteSettings"), "footnote"))?;
         context.package.add_xml(
             "word/footnotes.xml",
             FOOTNOTES_CONTENT_TYPE,
@@ -1628,8 +1574,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         )?;
         context.relationship(REL_FOOTNOTES, "footnotes.xml", false)?;
     }
-    if !notes.endnotes.is_empty() {
-        let xml = notes_xml(&mut context, NoteKind::Endnote, &notes.endnotes)?;
+    if !notes.endnotes.is_empty() || !get(get(&model, "noteSettings"), "endnote").is_null() {
+        let xml = note_writer::notes_xml(&mut context, NoteKind::Endnote, &notes.endnotes, get(get(&model, "noteSettings"), "endnote"))?;
         context.package.add_xml(
             "word/endnotes.xml",
             ENDNOTES_CONTENT_TYPE,
@@ -1653,13 +1599,14 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         context.relationship(REL_COMMENTS_EXTENDED, "commentsExtended.xml", false)?;
     }
     table_writer::write_sources(&mut context)?;
+    control_writer::write_sources(&mut context)?;
     let fields = std::mem::take(&mut context.text_fields);
     fields.write_identities(&mut context)?;
     let declared_control_ids = get(&model, "contentControls").as_array().into_iter().flatten()
         .filter_map(|control| get(control, "id").as_str()).collect::<BTreeSet<_>>();
     let written_controls = context.used_controls.iter().filter(|id| declared_control_ids.contains(id.as_str())).count();
     if written_controls < declared_control_count {
-        context.warn("DOCX_CONTENT_CONTROL_UNWRITTEN", format!("{} content control(s) could not be mapped to a supported inline DOCX control and were preserved as ordinary paragraph text.", declared_control_count - written_controls));
+        return Err(ExportError::invalid(format!("DOCX_CONTENT_CONTROL_UNWRITTEN: {} content control(s) have no complete native wrapper; export cannot discard their semantics", declared_control_count - written_controls)));
     }
     if blocks.is_empty() {
         body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>");
@@ -1671,10 +1618,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         .package
         .add_xml("word/document.xml", DOCUMENT_CONTENT_TYPE, document_xml)?;
     let has_story_fields = section_header_footers.as_object().is_some_and(|sections| sections.values().any(|s| s["pageFields"].as_array().is_some_and(|fields| !fields.is_empty())));
-    if has_different_odd_even || has_story_fields || has_text_fields {
+    if has_different_odd_even || has_story_fields || has_text_fields || !notes.footnotes.is_empty() || !notes.endnotes.is_empty() || !get(&model, "noteSettings").is_null() {
+        let notes_settings = note_writer::document_properties(get(&model, "noteSettings"), &notes)?;
         context
             .package
-            .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml(has_different_odd_even))?;
+            .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml(has_different_odd_even, &notes_settings))?;
         context.relationship(REL_SETTINGS, "settings.xml", false)?;
     }
     // Package global resources after body, tables, stories, notes and comments
@@ -1755,6 +1703,7 @@ fn section_properties_with_headers(
                 xml_attribute(relationship),
             ));
         }
+        header_footer.push_str(&section_refs.note_properties_xml);
     }
     let title_page = if header_footer_refs.is_some_and(|r| r.different_first_page) { "<w:titlePg/>" } else { "" };
     format!(
@@ -1768,6 +1717,7 @@ fn prepare_section_header_footers(
     context: &mut WriteContext<'_>,
     sections: &Value,
     first_setup: &Value,
+    note_settings: &Value,
     blocks: &[Value],
 ) -> Result<bool, ExportError> {
     let mut section_ids = vec![("first".to_owned(), first_setup)];
@@ -1801,6 +1751,7 @@ fn prepare_section_header_footers(
             different_first_page,
             header_distance: twips(get(setup, "marginHeader").as_f64().unwrap_or(48.0)),
             footer_distance: twips(get(setup, "marginFooter").as_f64().unwrap_or(48.0)),
+            note_properties_xml: note_writer::section_properties(setup, note_settings)?,
         };
         for (story, page_type, field_name, relationship_type, content_type) in [
             ("header", "default", "header", REL_HEADER, HEADER_CONTENT_TYPE),
@@ -1859,10 +1810,10 @@ fn page_fields_for_story<'a>(section: &'a Value, story: &str) -> Vec<&'a Value> 
     fields
 }
 
-fn settings_xml(different_odd_even: bool) -> String {
+fn settings_xml(different_odd_even: bool, note_properties: &str) -> String {
     let variants = if different_odd_even { "<w:evenAndOddHeaders/>" } else { "" };
     format!(
-        "{}<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{variants}<w:updateFields w:val=\"true\"/></w:settings>",
+        "{}<w:settings {CONTENT_NAMESPACES}>{variants}{note_properties}<w:updateFields w:val=\"true\"/></w:settings>",
         xml::DECL
     )
 }

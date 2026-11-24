@@ -1,11 +1,15 @@
 import type { ChartAxisOptions, ChartModel, ChartNullablePatch, ChartRadarAxisLabelOptions, ChartRadarOptions, ChartSemanticOptions } from '../../domain/model'
 import type { ChartData } from './chart-engine'
 import type { RenderRect } from '../../rendering/contracts'
-import { chartAxisExtent, chartAxisRatio, chartAxisTicks, chartPolar } from './chart-geometry'
+import { chartAxisExtent, chartAxisRatio, chartPolar } from './chart-geometry'
+import { chartInterpolate } from './chart-math'
 import { chartNullableValues } from './chart-cartesian-api'
 import { cloneChartOptions, definedChartStyleFields } from './chart-options'
 
 export const ChartRadarShapes = Object.freeze({ Polygon: 'polygon', Circle: 'circle' } as const)
+export const CHART_RADAR_DEFAULT_AXIS_LABEL_VISIBLE = true
+export const CHART_RADAR_DEFAULT_SPLIT_NUMBER = 5
+export const CHART_RADAR_DEFAULT_FONT_SIZE = 12
 
 export function patchChartRadarOptions(current: ChartRadarOptions | undefined, patch: ChartNullablePatch<ChartRadarOptions> | undefined): ChartRadarOptions | undefined {
   if (patch === undefined) return undefined
@@ -19,8 +23,8 @@ export function patchChartRadarOptions(current: ChartRadarOptions | undefined, p
 /** Dedicated scale-label fields inherit missing values from the shared value-axis appearance. */
 export function chartRadarAxisLabel(chart: { options?: ChartSemanticOptions; yAxis?: Partial<ChartAxisOptions> }): ChartRadarAxisLabelOptions {
   const font = chart.options?.appearance?.font, legacy = chart.yAxis?.label, authored = chart.options?.radar?.axisLabel
-  return { ...definedChartStyleFields(font), ...definedChartStyleFields(legacy), format: chart.yAxis?.format,
-    visible: legacy?.visible ?? false, ...definedChartStyleFields(authored) }
+  return { fontSize: CHART_RADAR_DEFAULT_FONT_SIZE, ...definedChartStyleFields(font), ...definedChartStyleFields(legacy), format: chart.yAxis?.format,
+    visible: legacy?.visible ?? CHART_RADAR_DEFAULT_AXIS_LABEL_VISIBLE, ...definedChartStyleFields(authored) }
 }
 
 export function chartRadarExtent(data: ChartData, axis: ChartAxisOptions = { scaleType: 'linear' }): { min: number; max: number } {
@@ -35,10 +39,14 @@ export function chartRadarAxisLine(chart: Pick<ChartModel, 'xAxis' | 'yAxis'>) {
   return line
 }
 
-/** Both adapters use the same radius, direction, fixed range and four radial intervals. */
-export function chartRadarGeometry(data: ChartData, chart: Pick<ChartModel, 'xAxis' | 'yAxis'>, plot: RenderRect) {
-  const center = { x: plot.x + plot.width / 2, y: plot.y + plot.height / 2 }, radius = Math.min(plot.width, plot.height) * 0.36
-  const extent = chartRadarExtent(data, chart.yAxis), ticks = chartAxisTicks(extent.min, extent.max, chart.yAxis)
+/** Fixed R/BOe use five intervals; bje's final converter uses the plot radius
+ * minus chart-font/chrome padding, or the full radius for an authored plot. */
+export function chartRadarGeometry(data: ChartData, chart: Pick<ChartModel, 'xAxis' | 'yAxis' | 'options'>, plot: RenderRect) {
+  const center = { x: plot.x + plot.width / 2, y: plot.y + plot.height / 2 }
+  const inset = chart.options?.plotArea ? 0 : (chart.options?.appearance?.font?.fontSize ?? CHART_RADAR_DEFAULT_FONT_SIZE) + 12
+  const radius = Math.max(0, Math.min(plot.width, plot.height) / 2 - inset)
+  const extent = chartRadarExtent(data, chart.yAxis), ticks = Array.from({ length: CHART_RADAR_DEFAULT_SPLIT_NUMBER + 1 },
+    (_unused, index) => chartInterpolate(extent.min, extent.max, index / CHART_RADAR_DEFAULT_SPLIT_NUMBER))
   const angle = (categoryIndex: number): number => -Math.PI / 2 + (chart.xAxis.reverse ? -1 : 1) * categoryIndex * Math.PI * 2 / Math.max(1, data.categories.length)
   const vertex = (categoryIndex: number, ratio: number) => chartPolar(center, radius * ratio, angle(categoryIndex))
   const point = (categoryIndex: number, value: number) => vertex(categoryIndex, chartAxisRatio(value, extent.min, extent.max, chart.yAxis))

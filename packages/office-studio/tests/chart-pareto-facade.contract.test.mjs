@@ -3,7 +3,7 @@ import { afterAll, beforeAll, test } from 'vitest'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
-// P17 integration drafts. The shared Facade owner wires the six Pareto operations.
+// P17/P19 integration drafts. The six Pareto operations are now wired.
 // No server or test runner has started; these fixtures await the validation phase.
 let server, api
 beforeAll(async () => {
@@ -26,8 +26,8 @@ function setup() {
 test('the six Pareto Builder operations chain, deep-merge detached styles and restore independent defaults', () => {
   const { studio, sheet } = setup()
   try {
-    const color = gradient(), point = { size: 11, shape: 'diamond' }, builder = sheet.newChart('pareto').setSource('A1:B6').setCategoryField(0).setValueFields([1])
-    assert.equal(builder.setBarStyle({ color, opacity: 0.7, border: { color: 'black', width: 3 }, label: { visible: true } }), builder)
+    const color = gradient(), point = { size: 11, shape: 'emptyTriangle' }, builder = sheet.newChart('pareto').setSource('A1:B6').setCategoryField(0).setValueFields([1])
+    assert.equal(builder.setBarStyle({ color, opacity: 0.7, border: { color: 'black', width: 3 }, label: { visible: true, contentType: 30, position: 'insideBase' } }), builder)
     assert.equal(builder.setCumulativeLineStyle({ color, width: 4, opacity: 0.5, point }), builder)
     assert.equal(builder.setIncludeZeroValues(true), builder)
     const initial = builder.build()
@@ -37,7 +37,8 @@ test('the six Pareto Builder operations chain, deep-merge detached styles and re
     builder.setBarStyle({ border: { opacity: 0.4 } }).setCumulativeLineStyle({ width: 0, point: { color: 'green' } })
     assert.deepEqual(builder.build().options.pareto.barStyle.border, { color: 'black', width: 3, opacity: 0.4 })
     assert.equal(builder.build().options.pareto.cumulativeLineStyle.width, 4)
-    assert.deepEqual(builder.build().options.pareto.cumulativeLineStyle.point, { size: 11, shape: 'diamond', color: 'green' })
+    assert.deepEqual(builder.build().options.pareto.cumulativeLineStyle.point, { size: 11, shape: 'emptyTriangle', color: 'green' })
+    assert.equal(builder.build().options.pareto.barStyle.label.contentType, 30)
     builder.setCumulativeLineStyle({ width: -1 }).setCumulativeLineStyle({ width: null, point: { size: null } })
     assert.equal(Object.hasOwn(builder.build().options.pareto.cumulativeLineStyle, 'width'), true)
     assert.equal(builder.build().options.pareto.cumulativeLineStyle.width, undefined)
@@ -55,6 +56,9 @@ test('the six Pareto Builder operations chain, deep-merge detached styles and re
     assert.equal(builder.build().options.pareto.includeZeroValues, undefined)
     const snapshot = builder.build()
     assert.throws(() => builder.setCumulativeLineStyle({ label: { position: 'outside' } }), TypeError)
+    assert.throws(() => builder.setBarStyle({ label: { contentType: 1 } }), TypeError)
+    assert.throws(() => builder.setCumulativeLineStyle({ label: { contentType: 32 } }), TypeError)
+    assert.throws(() => builder.setCumulativeLineStyle({ point: { shape: 'emptyDot' } }), TypeError)
     assert.throws(() => builder.setIncludeZeroValues('true'), TypeError)
     assert.deepEqual(builder.build(), snapshot)
     assert.throws(() => sheet.newChart('column').setBarStyle({ color: 'red' }), TypeError)
@@ -68,8 +72,8 @@ test('live Pareto style/zero resets participate in history and preserve signed s
     const palette = ['#112233', '#223344', '#334455', '#445566'], chart = await sheet.insertChart(sheet.newChart('pareto').setSource('A1:B6')
       .setCategoryField(0).setValueFields([1]).setPalette(palette).setIncludeZeroValues(true).build())
     assert.deepEqual(chart.getLayout().categories, ['B', 'A', 'zero'])
-    const bar = { color: gradient(), opacity: 0.6, label: { visible: true, contentType: 'percentage' } }
-    const line = { color: gradient(), width: 6, opacity: 0.4, point: { shape: 'diamond', size: 11 }, label: { visible: true, contentType: 'percentage' } }
+    const bar = { color: gradient(), opacity: 0.6, label: { visible: true, contentType: 18, position: 'insideEnd' } }
+    const line = { color: gradient(), width: 6, opacity: 0.4, point: { shape: 'emptyRoundRect', size: 11 }, label: { visible: true, contentType: 18, position: 'auto' } }
     await chart.setBarStyle(bar)
     await chart.setCumulativeLineStyle(line)
     await chart.setCumulativeLineStyle({ width: 0, point: { size: 12 } })
@@ -82,6 +86,9 @@ test('live Pareto style/zero resets participate in history and preserve signed s
     workbook.redo()
     assert.deepEqual(chart.getLayout().categories, ['B', 'A'])
     const options = chart.getOptions(), description = chart.getDescription(), paint = chart.getRenderCommands(), raw = chart.getData()
+    assert.equal(options.pareto.barStyle.label.contentType, 18)
+    assert.equal(options.pareto.cumulativeLineStyle.point.shape, 'emptyRoundRect')
+    for (const expected of ['B,75%', 'A,25%', 'A,100%']) assert.equal(paint.some(command => command.kind === 'text' && command.text === expected), true)
     assert.deepEqual(raw.series[0].values, [-5, 9, 8, 0, -1])
     bar.color.stops[0].color = 'lime'
     line.point.size = 1
@@ -128,6 +135,8 @@ test('invalid Pareto live operations reject atomically and wrong-type set/clear/
       .setBarStyle({ color: 'purple' }).setCumulativeLineStyle({ width: 4 }).build())
     const before = chart.getInfo(), contents = JSON.stringify(workbook.save())
     for (const operation of [() => chart.setBarStyle({ opacity: 2 }), () => chart.setCumulativeLineStyle({ label: { position: 'outside' } }),
+      () => chart.setBarStyle({ label: { contentType: 1 } }), () => chart.setCumulativeLineStyle({ label: { contentType: 32 } }),
+      () => chart.setCumulativeLineStyle({ point: { shape: 'emptyDot' } }),
       () => chart.setCumulativeLineStyle({ point: { color: gradient() } }), () => chart.setCumulativeLineStyle({ width: NaN }),
       () => chart.setIncludeZeroValues('true')]) await assert.rejects(async () => { await operation() }, error => error instanceof TypeError || error instanceof RangeError)
     assert.deepEqual(chart.getInfo(), before)

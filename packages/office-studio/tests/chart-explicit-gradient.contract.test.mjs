@@ -17,6 +17,7 @@ import { chartPlotFrame } from '../src/features/charts/chart-layout.ts'
 import { chartPieLayout, chartPieOuterRadius } from '../src/features/charts/chart-pie-layout.ts'
 import { chartEChartsOption, chartGraphics } from '../src/features/charts/echarts-option.ts'
 import { CHART_GRADIENT_COMMAND_BUDGET } from '../src/features/charts/chart-gradient-geometry.ts'
+import { waterfallComputedFixture } from './fixtures/chart-waterfall-fixtures.mjs'
 
 // P16 implementation drafts. No tests, rendering engines or benchmarks have run.
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-7, `${actual} ≈ ${expected}`)
@@ -47,8 +48,9 @@ function model(type = 'column', options = {}) {
 }
 function fixture(type, options = {}) {
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
-  sheet.cells = Object.fromEntries([['X', 'Units'], [1, 10], [2, 20], [3, 30]].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(value)])))
-  return { workbook, chart: createChart(workbook, sheet.id, model(type, options)) }
+  sheet.cells = Object.fromEntries([['X', 'Units'], [1, 10], [2, 20], [3, 30]].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(r, c, value)])))
+  const authored = type === 'waterfall' ? { ...options, waterfall: { useSubtotal: true, pointRoles: [{ seriesIndex: 1, dataPointIndex: 0, role: 'change' }] } } : options
+  return { workbook, chart: createChart(workbook, sheet.id, model(type, authored)) }
 }
 
 test('the constructor detaches plain authored data, retains stop order and accepts finite coordinates outside a mark', () => {
@@ -181,8 +183,9 @@ test('all fill-capable chart families actually paint explicit gradients with aut
     const { workbook, chart } = fixture(entry.value, { autoGradientFill: false, allSeriesStyle: { color: linear(), fillOpacity: 0.7, point: { shape: 'none' }, border: { width: 2 } } })
     const before = structuredClone(chart), data = readChartData(workbook, chart), solid = structuredClone(chart)
     updateChart(workbook, solid, { options: { allSeriesStyle: { color: 'red' } } })
-    assert.notDeepEqual(drawChartData(data, chart), drawChartData(data, solid), entry.id)
-    assert.notDeepEqual(chartEChartsOption(workbook, chart), chartEChartsOption(workbook, solid), entry.id)
+    const computed = entry.family === 'waterfall' ? waterfallComputedFixture(data, 'catalog-changes') : undefined
+    assert.notDeepEqual(drawChartData(data, chart, {}, computed), drawChartData(data, solid, {}, computed), entry.id)
+    assert.notDeepEqual(chartEChartsOption(workbook, chart, {}, computed), chartEChartsOption(workbook, solid, {}, computed), entry.id)
     assert.deepEqual(readChartData(workbook, solid), data)
     assert.deepEqual(chart, before)
   }
@@ -190,7 +193,7 @@ test('all fill-capable chart families actually paint explicit gradients with aut
 
 test('native positive/negative/reversed bars use the same authored vector and native item opacity is already consumed', () => {
   const color = linear(), { workbook, chart } = fixture('bar-horizontal', { autoGradientFill: false, allSeriesStyle: { color, fillOpacity: 0.4 } })
-  workbook.sheets[0].cells['2:1'] = createCell(-20)
+  workbook.sheets[0].cells['2:1'] = createCell(2, 1, -20)
   const first = chartEChartsOption(workbook, chart).series[0].data
   const reversed = structuredClone(chart)
   updateChart(workbook, reversed, { yAxis: { scaleType: 'linear', reverse: true } })

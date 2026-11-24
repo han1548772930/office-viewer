@@ -334,13 +334,15 @@ export type ChartSourceOrientation = 'columns' | 'rows'
 export type ChartLegendPosition = 'top' | 'right' | 'bottom' | 'left'
 export type ChartAxisScaleType = 'linear' | 'log'
 export type ChartAxisTitleAlignment = 'start' | 'center' | 'end'
+export type ChartAxisTimeUnit = 'days' | 'months' | 'years'
 
 export interface ChartFontOptions { color?: string; fontSize?: number; bold?: boolean; italic?: boolean; family?: string }
 export interface ChartLineOptions { visible?: boolean; color?: string; width?: number; opacity?: number; dashType?: 'solid' | 'dashed' | 'dotted' }
 export interface ChartLabelOptions extends ChartFontOptions {
   visible?: boolean
-  position?: 'inside' | 'outside' | 'top' | 'bottom' | 'left' | 'right' | 'center'
-  contentType?: 'value' | 'category' | 'series' | 'percentage'
+  position?: 'auto' | 'inside' | 'insideBase' | 'insideEnd' | 'outside' | 'top' | 'bottom' | 'left' | 'right' | 'center'
+  /** Numeric masks follow the fixed v1.6.0 public LabelContentType flags. */
+  contentType?: 'value' | 'category' | 'series' | 'percentage' | number
   format?: string
 }
 export type ChartFillPatternPreset = 'pct5' | 'pct10' | 'pct20' | 'pct25' | 'pct30' | 'pct40' | 'pct50' | 'pct60' | 'pct70' | 'pct75' | 'pct80' | 'pct90'
@@ -358,6 +360,21 @@ export interface ChartLinearGradient {
   stops: Array<{ offset: number; color: string; opacity?: number }>
 }
 export type ChartColor = string | ChartLinearGradient
+/** Label-local pattern follows the v1.6.0 Treemap label contract. */
+export interface ChartLabelPattern { type: 'pattern'; preset: string; foregroundColor: string; backgroundColor: string }
+export interface ChartTreemapLabelOptions extends ChartLabelOptions { backgroundColor?: ChartColor | ChartLabelPattern }
+export interface ChartTreemapOptions { parentLabelLayout?: 'banner' | 'overlapping' | 'none'; label?: ChartTreemapLabelOptions }
+export type ChartPointShape = 'dot' | 'dash' | 'circle' | 'square' | 'triangle' | 'diamond' | 'rect' | 'roundRect' | 'pin' | 'arrow' | 'none'
+  | 'emptyCircle' | 'emptySquare' | 'emptyTriangle' | 'emptyDiamond' | 'emptyRect' | 'emptyRoundRect' | 'emptyPin' | 'emptyArrow'
+export interface ChartPointOptions { shape?: ChartPointShape; size?: number; color?: string }
+export interface ChartDataPointOptions {
+  color?: ChartColor
+  fillOpacity?: number
+  fillPattern?: ChartSeriesFillPattern | null
+  size?: number
+  shape?: ChartPointShape
+  border?: ChartLineOptions
+}
 /** Public null patches reset authored fields, except fillPattern:null disables the inherited pattern. */
 export type ChartNullablePatch<T> = T extends ChartSeriesFillPattern | ChartLinearGradient ? T : T extends readonly unknown[] ? T : T extends object
   ? { [K in keyof T]?: ChartNullablePatch<T[K]> | null } : T
@@ -371,10 +388,10 @@ export interface ChartSeriesOptions {
   fillOpacity?: number
   fillPattern?: ChartSeriesFillPattern | null
   border?: ChartLineOptions
-  point?: { shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; size?: number; color?: string }
+  point?: ChartPointOptions
   rightAxis?: boolean
   label?: ChartLabelOptions
-  dataPoints?: Record<number, { color?: ChartColor; fillOpacity?: number; fillPattern?: ChartSeriesFillPattern | null; size?: number; shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; border?: ChartLineOptions }>
+  dataPoints?: Record<number, ChartDataPointOptions>
   waterfallStyles?: ChartWaterfallStyles
 }
 export type ChartWaterfallStyleTarget = 'positive' | 'negative' | 'subtotal'
@@ -447,6 +464,48 @@ export interface ChartGaugeOptions extends ChartGaugeScaleOptions, ChartGaugeAng
 }
 /** Fractions of the entire chart frame, independent of the renderer and axis labels. */
 export interface ChartPlotAreaOptions { left: number; top: number; width: number; height: number }
+export interface ChartParetoBarStyleOptions {
+  color?: ChartColor
+  opacity?: number
+  border?: ChartLineOptions
+  label?: ChartLabelOptions
+  dataPoints?: Record<number, ChartDataPointOptions>
+}
+export interface ChartParetoLineStyleOptions {
+  color?: ChartColor
+  opacity?: number
+  width?: number
+  dashType?: ChartLineOptions['dashType']
+  label?: ChartLabelOptions
+  dataPoints?: Record<number, ChartDataPointOptions>
+  point?: ChartPointOptions
+}
+export interface ChartParetoOptions {
+  barStyle?: ChartParetoBarStyleOptions
+  cumulativeLineStyle?: ChartParetoLineStyleOptions
+  includeZeroValues?: boolean
+}
+export interface ChartCandlestickStateStyleOptions {
+  color?: string
+  fillOpacity?: number
+  border?: Pick<ChartLineOptions, 'color' | 'width' | 'opacity'>
+  hollow?: boolean
+}
+export interface ChartCandlestickHighLowLineOptions { visible?: boolean; border?: ChartLineOptions }
+export interface ChartCandlestickCloseMarkerOptions { visible?: boolean; point?: ChartPointOptions }
+export interface ChartCandlestickMappingOptions { openIndex?: number; highIndex: number; lowIndex: number; closeIndex: number }
+export interface ChartCandlestickOptions {
+  candleWidth?: number
+  rising?: ChartCandlestickStateStyleOptions
+  falling?: ChartCandlestickStateStyleOptions
+  doji?: ChartCandlestickStateStyleOptions
+  highLowLine?: ChartCandlestickHighLowLineOptions
+  closeMarker?: ChartCandlestickCloseMarkerOptions
+  /** Earlier project snapshots retain these values; state groups take precedence. */
+  risingColor?: string
+  fallingColor?: string
+  hollow?: boolean
+}
 /** Renderer-independent authored configuration. Derived statistics and geometries are not saved here. */
 export interface ChartSemanticOptions {
   invalidValueStrategy?: 'zero' | 'break' | 'link'
@@ -474,7 +533,7 @@ export interface ChartSemanticOptions {
     hierarchyIndexes?: number[]
     bubble?: ChartBubbleMappingOptions
     edge?: { sourceIndex: number; targetIndex: number; valueIndex?: number }
-    candlestick?: { openIndex?: number; highIndex: number; lowIndex: number; closeIndex: number }
+    candlestick?: ChartCandlestickMappingOptions
     gauge?: { valueIndex: number; labelIndex?: number }
   }
   threeD?: { view?: { rotX?: number; rotY?: number; perspective?: number; rightAngleAxes?: boolean; heightPercent?: number; depthPercent?: number }; grouping?: 'standard' | 'clustered'; gapDepth?: number }
@@ -491,12 +550,12 @@ export interface ChartSemanticOptions {
   funnel?: { gap?: number; useAbsoluteValue?: boolean; sort?: 'ascending' | 'descending' | 'none' }
   relation?: { layout?: 'none' | 'circular' | 'force'; useValueAsSymbolSize?: boolean; force?: { repulsion?: number; gravity?: number; edgeLength?: number } }
   waterfall?: { pointRoles?: Array<{ seriesIndex: number; dataPointIndex: number; role: 'change' | 'total' }>; stackType?: ChartWaterfallStackType; useSubtotal?: boolean; connector?: boolean | ChartWaterfallConnectorOptions; styles?: ChartWaterfallStyles; positiveColor?: string; negativeColor?: string; totalColor?: string }
-  pareto?: { includeZeroValues?: boolean }
+  pareto?: ChartParetoOptions
   histogram?: { binning?: { mode: 'count'; count: number } | { mode: 'width'; width: number }; underflowThreshold?: number; overflowThreshold?: number; binGap?: number }
-  boxplot?: { quartileMethod?: 'inclusive' | 'exclusive'; showOutliers?: boolean; whiskerMultiplier?: number }
-  candlestick?: { candleWidth?: number; risingColor?: string; fallingColor?: string; hollow?: boolean }
+  boxplot?: { quartileMethod?: 'medianOfHalves' | 'inclusive' | 'exclusive'; whiskerMethod?: 'range' | 'iqr'; showOutliers?: boolean; whiskerMultiplier?: number }
+  candlestick?: ChartCandlestickOptions
   heatmap?: { visualMapType?: 'continuous' | 'piecewise'; min?: number; max?: number; unit?: string; label?: ChartLabelOptions }
-  treemap?: { parentLabelLayout?: 'banner' | 'overlapping' | 'none'; label?: ChartLabelOptions }
+  treemap?: ChartTreemapOptions
   sunburst?: { label?: ChartLabelOptions; centerLabel?: { visible?: boolean; font?: ChartFontOptions } }
   gauge?: ChartGaugeOptions
   chord?: { startAngle?: number; clockwise?: boolean; padAngle?: number; innerRadiusRatio?: number; outerRadiusRatio?: number; ribbonOpacity?: number; label?: ChartLabelOptions }
@@ -519,6 +578,12 @@ export interface ChartAxisOptions {
   logBase?: number
   min?: number
   max?: number
+  /** Imported date-axis granularity. Bounds and data retain Excel serials. */
+  baseTimeUnit?: ChartAxisTimeUnit
+  /** Tick calendar unit; absent inherits baseTimeUnit, then days. */
+  majorTimeUnit?: ChartAxisTimeUnit
+  /** Positive major-tick interval. Calendar month/year intervals are integers. */
+  majorUnit?: number
   reverse?: boolean
   line?: ChartLineOptions
   label?: ChartFontOptions & { visible?: boolean; rotate?: number }
@@ -533,7 +598,7 @@ export interface ChartLegendOptions {
   font?: ChartFontOptions
 }
 
-export type ChartDepthAxisOptions = Omit<ChartAxisOptions, 'scaleType' | 'logBase' | 'min' | 'max' | 'format'>
+export type ChartDepthAxisOptions = Omit<ChartAxisOptions, 'scaleType' | 'logBase' | 'min' | 'max' | 'format' | 'baseTimeUnit' | 'majorTimeUnit' | 'majorUnit'>
 
 export interface ChartModel {
   id: string
@@ -716,6 +781,8 @@ export interface DocumentSectionSetup {
   columnSeparator?: 'none' | 'line'
   sectionStart?: DocumentSectionBreakType
   pageNumberStart?: number
+  noteProperties?: { footnote?: DocumentFootnoteProperties; endnote?: DocumentEndnoteProperties }
+  suppressEndnotes?: boolean
 }
 
 export interface DocumentBlock {
@@ -748,6 +815,22 @@ export type DocumentContentControlPlacement = 'inline' | 'block' | 'table' | 'ro
 export interface DocumentContentControlListItem {
   displayText?: string
   value: string
+}
+
+/** A real OPC custom-XML data source, separate from office-studio's own sidecars. */
+export interface DocumentCustomXmlPart {
+  partName: string
+  xml: string
+  contentType?: string
+  storeItemID?: string
+  propertiesPartName?: string
+  propertiesXml?: string
+  relationshipsXml?: string
+  /** Exact related OPC resources, including their own relationship parts. */
+  relatedParts?: Array<{ partName: string; contentType: string; dataBase64: string }>
+  /** XML stays Unicode in the model; IO retains the source byte encoding. */
+  encoding?: 'utf8' | 'utf16le' | 'utf16be'
+  byteOrderMark?: boolean
 }
 
 /**
@@ -783,6 +866,10 @@ export interface DocumentContentControl {
   items?: DocumentContentControlListItem[]
   parentId?: string
   repeatingSection?: { sectionTitle?: string; doNotAllowInsertDelete?: boolean }
+  /** Row SDTs own an ordered contiguous range in one table. IDs survive edits and snapshot reopen. */
+  tableRowRange?: { tableId: string; rowIds: string[] }
+  /** Block SDTs own complete, ordered contiguous blocks in one body/story/cell container. */
+  blockRange?: { blockIds: string[] }
   docPart?: { gallery?: string; category?: string; unique?: boolean }
   dataBinding?: { prefixMappings?: string; xpath?: string; storeItemID?: string; cachedResult?: string; dirty?: boolean }
   rawSdtPr?: string
@@ -866,7 +953,39 @@ export interface DocumentNote {
   content?: DocumentStoryContent
   referenceBlockId: string
   referenceRunId: string
+  /** Custom marks do not consume an automatic footnote/endnote number. */
+  customMark?: string
+  referenceTextStyle?: DocumentDefaultStyle['text']
+  showBodyReference?: boolean
+  metadata?: Record<string, unknown>
 }
+
+export interface DocumentFootnoteProperties {
+  position?: 'pageBottom' | 'beneathText'
+  restart?: 'continuous' | 'eachSect' | 'eachPage'
+  startNumber?: number
+  /** OOXML/public format identity; unknown imported formats remain preserved. */
+  numberFormat?: string
+  columnCount?: number
+  metadata?: Record<string, unknown>
+}
+
+export interface DocumentEndnoteProperties {
+  position?: 'docEnd' | 'sectEnd'
+  restart?: 'continuous' | 'eachSect'
+  startNumber?: number
+  numberFormat?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface DocumentNoteDecorations {
+  separator?: DocumentStoryContent
+  continuationSeparator?: DocumentStoryContent
+  continuationNotice?: DocumentStoryContent
+}
+
+export interface DocumentFootnoteSettings extends DocumentFootnoteProperties, DocumentNoteDecorations {}
+export interface DocumentEndnoteSettings extends DocumentEndnoteProperties, DocumentNoteDecorations {}
 
 export interface DocumentCommentAnchorSegment {
   blockId: string
@@ -896,7 +1015,7 @@ export interface DocumentThreadComment {
   metadata?: Record<string, unknown>
 }
 
-export type DocumentPermissionAction = 'edit' | 'copy' | 'comment' | 'print' | 'export'
+export type DocumentPermissionAction = 'view' | 'edit' | 'copy' | 'comment' | 'print' | 'export'
 export type DocumentPermissionScope = 'document' | 'section' | 'paragraph' | 'entity'
 
 export interface DocumentPermissionRule {
@@ -918,10 +1037,12 @@ export interface DocumentModel {
   wordCount: number
   defaultStyle?: DocumentDefaultStyle
   contentControls?: DocumentContentControl[]
+  customXmlParts?: DocumentCustomXmlPart[]
   sectionHeaderFooters?: Record<string, DocumentSectionHeaderFooter>
   permissionRules?: DocumentPermissionRule[]
   footnotes?: Record<string, DocumentNote>
   endnotes?: Record<string, DocumentNote>
+  noteSettings?: { footnote?: DocumentFootnoteSettings; endnote?: DocumentEndnoteSettings }
   comments?: Record<string, DocumentThreadComment>
   id?: string
   metadata?: Record<string, unknown>

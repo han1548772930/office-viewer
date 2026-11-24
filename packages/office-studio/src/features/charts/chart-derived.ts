@@ -5,11 +5,15 @@ import { resolveChartType, supportsChartErrorDirection, supportsChartStatistics 
 import { chartComputeInputSteps } from './chart-input-preparation'
 import { chartSeriesColorIsAuthored, chartSeriesStyle, definedChartStyleFields } from './chart-options'
 import { validateChartNamedSeriesBindings } from './chart-series-selector'
-import { chartShade, formatChartNumber } from './chart-geometry'
-import { chartFiniteSum, chartInterpolate, chartLinearRatio, finiteChartValue } from './chart-math'
+import { chartShade } from './chart-geometry'
+import { chartFiniteSum, chartInterpolate, finiteChartValue } from './chart-math'
 import { chartParetoDateValues, prepareChartDateData, type ChartDateAxisConfig } from './chart-date-axis'
-import { chartColorChannels, chartColorRepresentative, isChartLinearGradient } from './chart-color'
+import { chartColorRepresentative, isChartLinearGradient } from './chart-color'
+import { chartHeatmapScaleColor, createChartHeatmapScale, type ChartHeatmapScale } from './chart-heatmap'
 import { supportsChartExplicitGradient } from './chart-gradient'
+import { chartHistogramCategories } from './chart-histogram'
+import { chartCandlestickStyle } from './chart-candlestick'
+import { chartTreemapShade } from './chart-treemap'
 import { ComputeError } from '../../compute/errors'
 import {
   chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, CHART_WATERFALL_GLOBAL_SERIES,
@@ -68,8 +72,7 @@ export function deriveChartData(source: ChartData, chart: ChartModel, computed?:
     const series = data.series[0]!
     const histogram = computed?.histogram ?? chartHistogram(series.values.filter((value): value is number => value !== null), chart.options?.histogram)
     result.histogram = histogram
-    data = { date1904: data.date1904, categories: histogram.bins.map((bin, index) => bin.kind === 'underflow' ? `≤ ${formatChartNumber(bin.upperBound!)}`
-      : bin.kind === 'overflow' ? `> ${formatChartNumber(bin.lowerBound!)}` : `${index === 0 && chart.options?.histogram?.underflowThreshold === undefined ? '[' : '('}${formatChartNumber(bin.lowerBound!)}, ${formatChartNumber(bin.upperBound!)}]`),
+    data = { date1904: data.date1904, categories: chartHistogramCategories(histogram),
     ...(chart.options?.mapping?.useDateAxis ? { categoryValues: histogram.bins.map(bin => bin.lowerBound === undefined ? bin.upperBound! : bin.upperBound === undefined ? bin.lowerBound : chartInterpolate(bin.lowerBound, bin.upperBound, 0.5)) } : {}),
     series: [{ ...series, values: histogram.bins.map(bin => bin.count) }] }
   } else if (chart.type === 'boxplot') {
@@ -78,7 +81,7 @@ export function deriveChartData(source: ChartData, chart: ChartModel, computed?:
       if (computed?.boxplots && !box) throw new RangeError('缺少与当前系列位置匹配的箱线统计结果。')
       const sourceName = series.sourceName ?? series.name
       return { field: series.field, seriesPosition, sourceName, name: chartSeriesStyle(chart, series.field, seriesPosition, undefined, sourceName).name ?? series.name, statistics: box ? box.statistics
-        : chartBoxplot(series.values.filter((value): value is number => value !== null), chart.options?.boxplot) }
+        : chartBoxplot(series.values, chart.options?.boxplot) }
     })
     data = { date1904: data.date1904, categories: result.boxes.map(box => box.name), categoryValues: result.boxes.map(box => box.name), series: [{ field: data.series[0]!.field, name: '样本分布',
       sourceName: data.series[0]!.sourceName ?? data.series[0]!.name, values: result.boxes.map(box => box.statistics?.median ?? null) }] }
@@ -172,37 +175,23 @@ export function chartBubblePointSize(style: ChartSeriesOptions, value: number, m
 export function chartHierarchyPointStyle(chart: ChartModel, field: number, item: Pick<ChartHierarchyItem, 'pointIndex' | 'rootIndex' | 'depth'>, palette: readonly string[], sourceName?: string): ChartSeriesOptions {
   const base = chartSeriesStyle(chart, field, item.rootIndex, palette, sourceName)
   if (!chartSeriesColorIsAuthored(chart, field, sourceName)) {
-    const step = chart.type === 'sunburst' ? 0.08 : 0.1
-    base.color = chartShade(base.color!, 1 - Math.min(0.4, item.depth * step))
+    base.color = chart.type === 'treemap' ? chartTreemapShade(base.color!, item.depth) : chartShade(base.color!, 1 - Math.min(0.4, item.depth * 0.08))
   }
   return chartPointStyle(base, item.pointIndex, chart.type)
 }
 
-export function chartHeatmapExtent(data: ChartData, chart: ChartModel): { min: number; max: number } {
-  let min = 0, max = 1
-  for (const series of data.series) for (const value of series.values) if (value !== null && Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value) }
-  return { min: chart.options?.heatmap?.min ?? min, max: chart.options?.heatmap?.max ?? max }
-}
+export { chartHeatmapExtent } from './chart-heatmap'
 
 /** Authored series and point colors override the same deterministic color scale
  * in both adapters; the scale itself never sums or spreads the full data set. */
-export function chartHeatmapPointStyle(chart: ChartModel, field: number, row: number, column: number, value: number, extent: { min: number; max: number }, palette: readonly string[], sourceName?: string): ChartSeriesOptions {
-  const base = chartSeriesStyle(chart, field, row, palette, sourceName)
-  if (!chartSeriesColorIsAuthored(chart, field, sourceName)) {
-    const ratio = Math.max(0, Math.min(1, chartLinearRatio(value, extent.min, extent.max)))
-    if (chart.options?.heatmap?.visualMapType === 'piecewise') base.color = palette[Math.min(palette.length - 1, Math.floor(ratio * palette.length))]!
-    else {
-      const position = ratio * (palette.length - 1), index = Math.floor(position), fraction = position - index
-      const first = chartColorChannels(palette[index]!), last = chartColorChannels(palette[Math.min(index + 1, palette.length - 1)]!)
-      const channels = first.map((channel, axis) => channel * (1 - fraction) + last[axis]! * fraction)
-      base.color = `rgba(${Math.round(channels[0]! * 255)}, ${Math.round(channels[1]! * 255)}, ${Math.round(channels[2]! * 255)}, ${channels[3]})`
-    }
-  }
-  return chartPointStyle(base, column, chart.type)
+export function chartHeatmapPointStyle(chart: ChartModel, field: number, seriesPosition: number, categoryIndex: number, value: number,
+  extent: { min: number; max: number }, palette: readonly string[], sourceName?: string,
+  preparedScale: ChartHeatmapScale = createChartHeatmapScale(extent, palette, chart.options?.heatmap?.visualMapType)): ChartSeriesOptions {
+  const base = chartSeriesStyle(chart, field, seriesPosition, palette, sourceName)
+  if (!chartSeriesColorIsAuthored(chart, field, sourceName)) base.color = chartHeatmapScaleColor(preparedScale, value)
+  return chartPointStyle(base, categoryIndex, chart.type)
 }
 
 export function chartCandlestickPointStyle(chart: ChartModel, field: number, index: number, rising: boolean, palette: readonly string[], sourceName?: string): ChartSeriesOptions {
-  const base = chartSeriesStyle(chart, field, 0, palette, sourceName)
-  if (!chartSeriesColorIsAuthored(chart, field, sourceName)) base.color = rising ? chart.options?.candlestick?.risingColor ?? '#dc2626' : chart.options?.candlestick?.fallingColor ?? '#059669'
-  return chartPointStyle(base, index, chart.type)
+  return chartCandlestickStyle(chart, field, index, rising ? 'rising' : 'falling', palette, sourceName)
 }

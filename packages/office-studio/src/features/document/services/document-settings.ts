@@ -1,5 +1,6 @@
 import type { DocumentBlock, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentSectionSetup } from '../../../domain/model.ts'
 import { DEFAULT_DOCUMENT_SECTION_ID, documentSectionIds } from './section-header-footer.ts'
+import { validateDocumentNoteSettings } from '../notes/document-note-settings'
 
 export type DocumentParagraphStylePatch = Partial<DocumentParagraphStyle>
 export type DocumentSectionSetupPatch = Partial<DocumentSectionSetup>
@@ -48,7 +49,7 @@ export function applyDocumentParagraphStylePatch(block: DocumentBlock, patch: Do
 
 export function validateDocumentSectionSetupPatch(patch: DocumentSectionSetupPatch): void {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new TypeError('Section settings patch must be an object')
-  const fields = new Set(['marginHeader', 'marginFooter', 'width', 'height', 'orientation', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'columnCount', 'columnGap', 'columnSeparator', 'sectionStart', 'pageNumberStart'])
+  const fields = new Set(['marginHeader', 'marginFooter', 'width', 'height', 'orientation', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'columnCount', 'columnGap', 'columnSeparator', 'sectionStart', 'pageNumberStart', 'noteProperties', 'suppressEndnotes'])
   for (const key of Object.keys(patch)) if (!fields.has(key)) throw new TypeError(`Unsupported section setting: ${key}`)
   for (const value of [patch.marginHeader, patch.marginFooter]) {
     if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 200)) throw new RangeError('Header/footer distance must be between 0 and 200')
@@ -65,6 +66,12 @@ export function validateDocumentSectionSetupPatch(patch: DocumentSectionSetupPat
   if (patch.pageNumberStart !== undefined && (!Number.isInteger(patch.pageNumberStart) || patch.pageNumberStart < 1)) throw new RangeError('Section page number start must be a positive integer')
   if (patch.columnCount !== undefined && (!Number.isInteger(patch.columnCount) || patch.columnCount < 1 || patch.columnCount > 12)) throw new RangeError('Section column count must be between 1 and 12')
   if (patch.columnGap !== undefined && patch.columnGap > 1000) throw new RangeError('Section column gap cannot exceed 1000 pixels')
+  if (patch.suppressEndnotes !== undefined && typeof patch.suppressEndnotes !== 'boolean') throw new TypeError('Section endnote suppression must be boolean')
+  if (patch.noteProperties !== undefined) {
+    if (!patch.noteProperties || typeof patch.noteProperties !== 'object' || Array.isArray(patch.noteProperties)) throw new TypeError('Section note properties must be an object')
+    for (const key of Object.keys(patch.noteProperties)) if (key !== 'footnote' && key !== 'endnote') throw new TypeError('Unsupported section note property: ' + key)
+    for (const kind of ['footnote', 'endnote'] as const) if (patch.noteProperties[kind] !== undefined) validateDocumentNoteSettings(patch.noteProperties[kind]!, kind, 'section-validation')
+  }
 }
 
 export function applyDocumentSectionSetupPatch(model: DocumentModel, sectionId: string, patch: DocumentSectionSetupPatch): void {

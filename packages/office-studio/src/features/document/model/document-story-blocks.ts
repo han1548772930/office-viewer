@@ -181,7 +181,7 @@ export function projectDocumentSectionStories(section: DocumentSectionHeaderFoot
 /** Legacy stories gain stable paragraph IDs and real cached-result field ranges on first block edit. */
 export function migrateDocumentStoryBlocks(content: DocumentStoryContent, fields: readonly DocumentPageField[], host: DocumentAuxiliaryBlockHost,
   defaults: DocumentDefaultStyle): DocumentStoryContent {
-  if (content.blocks !== undefined) return projectDocumentStoryBlocks(content, host.kind === 'note' ? 'display' : 'literal').content
+  if (content.blocks !== undefined) return projectDocumentStoryBlocks(content, host.kind === 'story' ? 'literal' : 'display').content
   const key = encodeURIComponent(documentBlockHostId(host)), text = runText(content.runs)
   const paragraphs = content.paragraphs.length ? content.paragraphs : [{ startOffset: 0, endOffset: text.length, style: defaults.paragraph }]
   const blocks = paragraphs.map((paragraph, index) => {
@@ -213,5 +213,5 @@ export function migrateDocumentStoryBlocks(content: DocumentStoryContent, fields
     setDocumentTextFields(block, definitions)
     return block
   })
-  return projectDocumentStoryBlocks({ ...content, blocks }, host.kind === 'note' ? 'display' : 'literal').content
+  return projectDocumentStoryBlocks({ ...content, blocks }, host.kind === 'story' ? 'literal' : 'display').content
 }

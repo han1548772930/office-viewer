@@ -18,7 +18,7 @@ mod numbering_extension;
 pub(crate) use numbering_extension::{NumberingRestoration, restore_numbering_with_extensions, restore_numbering_details};
 #[path = "document_comment_sidecar.rs"]
 mod comments;
-pub(crate) use comments::restore_sdt_comment_targets;
+pub(crate) use comments::restore_sdt_comment_targets_from_document as restore_sdt_comment_targets;
 #[path = "document_default_style.rs"]
 mod default_style;
 pub(crate) use default_style::{canonical_resource, read_document_default_style, read_document_style_sheet};
@@ -116,7 +116,7 @@ pub(crate) fn read_xml(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str) -> R
     Ok(Some(text))
 }
 
-fn part_for_type(archive: &mut ZipArchive<Cursor<&[u8]>>, suffix: &str, fallback: &str) -> Result<String, String> {
+pub(crate) fn part_for_type(archive: &mut ZipArchive<Cursor<&[u8]>>, suffix: &str, fallback: &str) -> Result<String, String> {
     let Some(text) = read_xml(archive, "[Content_Types].xml")? else { return Ok(fallback.to_owned()); };
     let root = parse_xml(&text)?;
     Ok(root.children.iter().find(|node| node.name == "Override" && node.attribute("ContentType").is_some_and(|kind| kind.ends_with(suffix)))

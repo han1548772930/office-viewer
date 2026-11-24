@@ -13,6 +13,7 @@ import { chartLine, chartPolygon, chartRect } from '../src/features/charts/chart
 import { CHART_GRADIENT_COMMAND_BUDGET } from '../src/features/charts/chart-gradient-geometry.ts'
 import { chartEChartsOption } from '../src/features/charts/echarts-option.ts'
 import { chartEChartsItemStyle, chartEChartsLineStyle } from '../src/features/charts/echarts-style.ts'
+import { waterfallComputedFixture } from './fixtures/chart-waterfall-fixtures.mjs'
 
 // P15 drafts for the unified validation phase. No test in this file has run.
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-7, `${actual} ≈ ${expected}`)
@@ -34,8 +35,9 @@ function model(type = 'column', options = {}) {
 }
 function fixture(type, options = {}) {
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
-  sheet.cells = Object.fromEntries([['X', 'Units'], [1, 10], [2, 20], [3, 30]].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(value)])))
-  return { workbook, chart: createChart(workbook, sheet.id, model(type, options)) }
+  sheet.cells = Object.fromEntries([['X', 'Units'], [1, 10], [2, 20], [3, 30]].flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(r, c, value)])))
+  const authored = type === 'waterfall' ? { ...options, waterfall: { useSubtotal: true, pointRoles: [{ seriesIndex: 1, dataPointIndex: 0, role: 'change' }] } } : options
+  return { workbook, chart: createChart(workbook, sheet.id, model(type, authored)) }
 }
 
 test('area-type defaults, explicit off and UI reset preserve author intent across all directory variants', () => {
@@ -144,8 +146,9 @@ test('every supported 2D/3D family actually changes paint while retaining bound 
     const { workbook, chart } = fixture(entry.value, { autoGradientFill: true }), before = structuredClone(chart), data = readChartData(workbook, chart)
     const off = structuredClone(chart)
     updateChart(workbook, off, { options: { autoGradientFill: false } })
-    assert.notDeepEqual(drawChartData(data, chart), drawChartData(data, off), entry.id)
-    assert.notDeepEqual(chartEChartsOption(workbook, chart), chartEChartsOption(workbook, off), entry.id)
+    const computed = entry.family === 'waterfall' ? waterfallComputedFixture(data, 'catalog-changes') : undefined
+    assert.notDeepEqual(drawChartData(data, chart, {}, computed), drawChartData(data, off, {}, computed), entry.id)
+    assert.notDeepEqual(chartEChartsOption(workbook, chart, {}, computed), chartEChartsOption(workbook, off, {}, computed), entry.id)
     assert.deepEqual(readChartData(workbook, off), data)
     assert.deepEqual(chart, before)
   }
@@ -154,7 +157,7 @@ test('every supported 2D/3D family actually changes paint while retaining bound 
 test('native sign overrides and per-segment authored paints follow the same effective options', () => {
   const { workbook, chart } = fixture('bar-horizontal', { autoGradientFill: true })
   const sheet = workbook.sheets[0]
-  sheet.cells['2:1'] = createCell(-20)
+  sheet.cells['2:1'] = createCell(2, 1, -20)
   const option = chartEChartsOption(workbook, chart), values = option.series[0].data
   assert.equal(values[0].itemStyle.color.x, 0)
   assert.equal(values[1].itemStyle.color.x, 1)

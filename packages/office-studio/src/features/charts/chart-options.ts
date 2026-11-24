@@ -19,6 +19,10 @@ export function mergeChartOptions(current: ChartSemanticOptions | undefined, pat
   for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'axisPointer', 'rightYAxis', 'depthAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) {
     if (current?.[key] && patch[key]) Object.assign(merged, { [key]: mergeOptionGroup(current[key], patch[key]) })
   }
+  // Count and Width are mutually exclusive authored variants. Changing the
+  // mode replaces its entire configuration rather than retaining the old arm.
+  if (patch.histogram && Object.hasOwn(patch.histogram, 'binning')) merged.histogram = { ...merged.histogram,
+    binning: patch.histogram.binning === undefined ? undefined : { ...patch.histogram.binning } }
   // Switching to stacked clears the arrangement-only authoring collection.
   // An explicitly supplied nonempty collection still fails validation, and
   // existing stacked charts cannot accept new roles through a partial patch.
@@ -37,7 +41,8 @@ export function cloneOptionValue(value: unknown): unknown {
 function mergeOptionGroup(current: unknown, patch: unknown): unknown {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch) || !current || typeof current !== 'object' || Array.isArray(current)) return cloneOptionValue(patch)
   const merged: Record<string, unknown> = { ...current, ...patch }
-  for (const [key, value] of Object.entries(patch)) if (key !== 'fillPattern' && value && typeof value === 'object' && !Array.isArray(value) && !isChartLinearGradient(value)) merged[key] = mergeOptionGroup(Reflect.get(current, key), value)
+  for (const [key, value] of Object.entries(patch)) if (key !== 'fillPattern' && key !== 'backgroundColor'
+    && value && typeof value === 'object' && !Array.isArray(value) && !isChartLinearGradient(value)) merged[key] = mergeOptionGroup(Reflect.get(current, key), value)
   return merged
 }
 

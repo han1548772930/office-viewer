@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Alert, Button, Spin, theme } from 'antdv-next'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { Alert, Button, Spin, Tooltip, theme } from 'antdv-next'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ChartModel } from '../domain/model'
 import { chartEChartsOption } from '../features/charts/echarts-option'
@@ -9,6 +9,7 @@ import { chartAxisPointerLocalPoint } from '../features/charts/chart-axis-pointe
 import type { ChartVector } from '../features/charts/chart-geometry'
 import type { ChartComputedStatistics } from '../features/charts/chart-derived'
 import { useChartStatistics } from '../features/charts/views/use-chart-statistics'
+import { canEditWorksheetProtection } from '../features/sheet-protection/range-protection'
 import type { DrawCommand } from '../rendering/contracts'
 import type { ExcelWorkbookChartView } from './chart-overlay-model'
 import { cloneChart, toChartWorkbook } from './chart-overlay-model'
@@ -34,7 +35,14 @@ interface ChartDisplay {
 }
 interface DragState {
   chartId: string
-  mode: 'move' | 'resize'
+  mode: 'move' | 'resize' | 'sankey-node'
+  pointerId: number
+  target: HTMLElement | null
+  workbookId?: string
+  studio?: OfficeStudio
+  sheetId: string
+  modelRevision?: number
+  chartSnapshot: string
   originX: number
   originY: number
   position: { x: number; y: number }
@@ -50,7 +58,7 @@ const renderError = ref('')
 const pointerError = ref('')
 const renderedFrames = ref<Record<string, { version: number; width: number; height: number }>>({})
 const drafts = ref<Record<string, Pick<ChartDisplay, 'position' | 'size'>>>({})
-const drag = ref<DragState | null>(null)
+const drag = shallowRef<DragState | null>(null)
 let scroller: HTMLElement | null = null
 let resizeObserver: ResizeObserver | undefined
 let frameRequest: number | undefined
@@ -59,6 +67,7 @@ let mounted = false
 let contentDirty = true
 let pointerDirty = false
 let desiredPointer: { chartId: string; point: ChartVector } | undefined
+let desiredContentDrag: { chartId: string; pointerId: number; point: ChartVector } | undefined
 let activePointerId: string | undefined
 let contentCommands: DrawCommand[] = []
 const commandIndexes = new Map<string, number>()
@@ -158,6 +167,11 @@ function chartStyle(item: ChartDisplay): Record<string, string> {
 }
 
 function selectChart(chartId: string): void { selectedId.value = chartId }
+function canEditChart(chart: ChartModel): boolean {
+  const workbook = props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : domainWorkbook.value
+  const sheet = workbook?.sheets.find(sheet => sheet.id === chart.sheetId)
+  return !!sheet && canEditWorksheetProtection(sheet, props.studio?.currentUserId ?? 'local-user')
+}
 function hoverChart(event: PointerEvent, item: ChartDisplay): void {
   if (!mounted || drag.value || !root.value || !commandIndexes.has(item.chart.id)) return
   desiredPointer = { chartId: item.chart.id, point: chartAxisPointerLocalPoint(pointerPoint(event), item.position,
@@ -196,32 +210,92 @@ function updatePointerFrames(): void {
 function removeChart(event: KeyboardEvent, chartId: string): void {
   if (event.key !== 'Delete' && event.key !== 'Backspace') return
   event.preventDefault(); event.stopPropagation()
+  const chart = sheetCharts.value.find(chart => chart.id === chartId)
+  if (!chart || !canEditChart(chart)) return
   emit('remove-chart', chartId)
   clearChartPointer(chartId)
   selectedId.value = null
 }
 
-function beginDrag(event: PointerEvent, item: ChartDisplay, mode: DragState['mode']): void {
-  if (event.button !== 0) return
+function beginDrag(event: PointerEvent, item: ChartDisplay, mode: 'move' | 'resize'): void {
+  if (event.button !== 0 || !mounted || drag.value) return
+  if (mode === 'resize' && !canEditChart(item.chart)) return
   event.preventDefault(); event.stopPropagation()
   clearChartPointer()
   selectedId.value = item.chart.id
   const point = pointerPoint(event)
+  const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  let dragMode: DragState['mode'] = mode
+  if (mode === 'move') {
+    try {
+      const content = chartRenderer.beginContentDrag(item.chart.id, chartAxisPointerLocalPoint(point, item.position,
+        { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }))
+      if (content) { dragMode = content.kind; updatePointerFrame(item.chart.id, content.frame); queueOverlayFrame() }
+    } catch (error) {
+      pointerError.value = error instanceof Error ? error.message : '图表内容拖动失败'
+      return
+    }
+  }
+  if (dragMode !== 'sankey-node' && !canEditChart(item.chart)) return
+  const workbookId = props.workbook.id
   drag.value = {
     chartId: item.chart.id,
-    mode,
+    mode: dragMode,
+    pointerId: event.pointerId,
+    target,
+    workbookId,
+    studio: props.studio,
+    sheetId: props.activeSheetId,
+    ...(props.studio && workbookId ? { modelRevision: props.studio.getWorkbookRevision(workbookId) } : {}),
+    chartSnapshot: JSON.stringify(item.chart),
     originX: point.x,
     originY: point.y,
     position: { ...item.position },
     size: { ...item.size },
   }
+  if (target && typeof target.setPointerCapture === 'function') {
+    try { target.setPointerCapture(event.pointerId) }
+    catch (error) {
+      onPointerCancel()
+      pointerError.value = error instanceof Error ? error.message : '图表拖动指针捕获失败'
+    }
+  }
+}
+
+function dragIsCurrent(active: DragState): boolean {
+  const chart = sheetCharts.value.find(chart => chart.id === active.chartId)
+  return active.studio === props.studio && active.workbookId === props.workbook.id && active.sheetId === props.activeSheetId
+    && (active.modelRevision === undefined || !props.studio || !active.workbookId || props.studio.getWorkbookRevision(active.workbookId) === active.modelRevision)
+    && JSON.stringify(chart) === active.chartSnapshot
+    && !!chart && (active.mode === 'sankey-node' || canEditChart(chart))
+}
+
+function releaseDragPointer(active: DragState): void {
+  if (!active.target?.hasPointerCapture?.(active.pointerId)) return
+  try { active.target.releasePointerCapture(active.pointerId) }
+  catch (error) { pointerError.value = error instanceof Error ? error.message : '图表拖动指针释放失败' }
+}
+
+function flushContentDrag(): void {
+  const desired = desiredContentDrag, active = drag.value
+  desiredContentDrag = undefined
+  if (!desired || !active || active.mode !== 'sankey-node' || desired.chartId !== active.chartId || desired.pointerId !== active.pointerId) return
+  if (!dragIsCurrent(active)) { onPointerCancel(); return }
+  updatePointerFrame(active.chartId, chartRenderer.updateContentDrag(active.chartId, desired.point))
 }
 
 function onPointerMove(event: PointerEvent): void {
   if (!mounted) return
   const active = drag.value
-  if (!active) return
+  if (!active || event.pointerId !== active.pointerId) return
+  if (!dragIsCurrent(active)) { onPointerCancel(); return }
   const point = pointerPoint(event)
+  if (active.mode === 'sankey-node') {
+    desiredContentDrag = { chartId: active.chartId, pointerId: active.pointerId, point: chartAxisPointerLocalPoint(point, active.position,
+      { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }) }
+    queueOverlayFrame()
+    return
+  }
   const scale = zoomScale()
   const dx = (point.x - active.originX) / scale
   const dy = (point.y - active.originY) / scale
@@ -234,30 +308,66 @@ function onPointerMove(event: PointerEvent): void {
   drafts.value = { ...drafts.value, [active.chartId]: { position, size } }
 }
 
-function onPointerUp(): void {
+function onPointerUp(event: PointerEvent): void {
   const active = drag.value
-  if (!active) return
+  if (!active || event.pointerId !== active.pointerId) return
+  if (!dragIsCurrent(active)) { onPointerCancel(); return }
+  if (active.mode === 'sankey-node') {
+    desiredContentDrag = { chartId: active.chartId, pointerId: active.pointerId, point: chartAxisPointerLocalPoint(pointerPoint(event), active.position,
+      { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }) }
+    try { flushContentDrag() }
+    catch (error) { onPointerCancel(); pointerError.value = error instanceof Error ? error.message : '图表内容拖动失败'; return }
+    if (drag.value !== active) return
+  } else onPointerMove(event)
   const draft = drafts.value[active.chartId]
-  if (draft) emit('update-chart', { chartId: active.chartId, patch: { position: draft.position, size: draft.size } })
   const next = { ...drafts.value }
   delete next[active.chartId]
   drafts.value = next
   drag.value = null
+  releaseDragPointer(active)
+  if (active.mode === 'sankey-node') {
+    try { updatePointerFrame(active.chartId, chartRenderer.endContentDrag(active.chartId)); queueOverlayFrame() }
+    catch (error) { pointerError.value = error instanceof Error ? error.message : '图表内容拖动结束失败' }
+  } else if (draft) emit('update-chart', { chartId: active.chartId, patch: { position: draft.position, size: draft.size } })
 }
 
-function onPointerCancel(): void {
-  clearChartPointer()
+function onPointerCancel(event?: Event): void {
   const active = drag.value
+  if (event instanceof PointerEvent && active && event.pointerId !== active.pointerId) return
+  desiredContentDrag = undefined
+  clearChartPointer()
   if (!active) return
   const next = { ...drafts.value }
   delete next[active.chartId]
   drafts.value = next
   drag.value = null
+  releaseDragPointer(active)
+  if (active.mode === 'sankey-node') {
+    try { updatePointerFrame(active.chartId, chartRenderer.endContentDrag(active.chartId, true)); queueOverlayFrame() }
+    catch (error) { pointerError.value = error instanceof Error ? error.message : '图表内容拖动取消失败' }
+  }
+}
+
+function onDragKeyDown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !drag.value) return
+  event.preventDefault(); event.stopPropagation()
+  onPointerCancel()
+}
+
+function resizeChartWithKeyboard(event: KeyboardEvent, item: ChartDisplay): void {
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+  event.preventDefault(); event.stopPropagation()
+  if (!canEditChart(item.chart)) return
+  if (drag.value) onPointerCancel()
+  const step = event.shiftKey ? 10 : 1
+  const width = Math.max(160, item.size.width + (event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0))
+  const height = Math.max(120, item.size.height + (event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0))
+  if (width !== item.chart.size.width || height !== item.chart.size.height) emit('update-chart', { chartId: item.chart.id, patch: { size: { width, height } } })
 }
 
 function onScroll(): void {
   if (!scroller) return
-  clearChartPointer()
+  onPointerCancel()
   scrollLeft.value = scroller.scrollLeft
   scrollTop.value = scroller.scrollTop
 }
@@ -275,6 +385,8 @@ function queueOverlayFrame(): void {
     const renderContent = contentDirty
     contentDirty = false
     if (renderContent) contentCommands = renderCommands()
+    try { flushContentDrag() }
+    catch (error) { onPointerCancel(); pointerError.value = error instanceof Error ? error.message : '图表内容拖动失败' }
     if (pointerDirty || renderContent) {
       pointerDirty = false
       try { updatePointerFrames() }
@@ -296,6 +408,7 @@ function watchPixelRatio(): void {
   publishOverlayCommands()
 }
 function fontsChanged(): void {
+  onPointerCancel()
   clearChartPointer()
   chartRenderer.invalidate()
   publishOverlayCommands()
@@ -303,8 +416,11 @@ function fontsChanged(): void {
 
 watch([displayCharts, chartTheme, () => props.zoom], publishOverlayCommands, { deep: true, flush: 'post' })
 watch(statistics, publishOverlayCommands, { flush: 'post' })
+watch([() => props.workbook, () => props.studio, () => props.zoom, chartTheme, statistics], () => {
+  if (drag.value) onPointerCancel()
+}, { deep: true, flush: 'sync' })
 watch(() => props.activeSheetId, () => {
-  clearChartPointer()
+  onPointerCancel()
   pointerError.value = ''
   selectedId.value = null
   drag.value = null
@@ -323,6 +439,7 @@ onMounted(() => {
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', onPointerUp)
   window.addEventListener('pointercancel', onPointerCancel)
+  window.addEventListener('keydown', onDragKeyDown)
   window.addEventListener('blur', onPointerCancel)
   window.addEventListener('resize', publishOverlayCommands)
   document.fonts?.addEventListener('loadingdone', fontsChanged)
@@ -339,6 +456,7 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
+  onPointerCancel()
   mounted = false
   if (frameRequest !== undefined) window.cancelAnimationFrame(frameRequest)
   frameRequest = undefined
@@ -358,6 +476,7 @@ onDeactivated(() => {
 })
 
 onUnmounted(() => {
+  onPointerCancel()
   mounted = false
   desiredPointer = undefined
   activePointerId = undefined
@@ -372,6 +491,7 @@ onUnmounted(() => {
   scroller?.removeEventListener('scroll', onScroll)
   window.removeEventListener('pointermove', onPointerMove); window.removeEventListener('pointerup', onPointerUp)
   window.removeEventListener('pointercancel', onPointerCancel); window.removeEventListener('blur', onPointerCancel)
+  window.removeEventListener('keydown', onDragKeyDown)
   emit('overlay-commands', [])
 })
 </script>
@@ -379,13 +499,16 @@ onUnmounted(() => {
 <template>
   <div ref="root" class="chart-overlay" :style="overlayStyle" aria-label="工作表图表图层">
     <Alert v-if="errorMessage" class="chart-render-error" type="error" show-icon :message="errorMessage" />
-    <Button
+    <div
       v-for="item in displayCharts"
       :key="item.chart.id"
+      class="chart-object"
+      :style="chartStyle(item)"
+    >
+      <Button
       type="text"
       class="chart-hitbox"
-      :class="{ selected: selectedId === item.chart.id }"
-      :style="chartStyle(item)"
+      :class="{ selected: selectedId === item.chart.id, 'chart-view-only': !canEditChart(item.chart) }"
       :aria-label="item.chart.title || '图表'"
       :aria-pressed="selectedId === item.chart.id"
       :data-rendered="renderedFrames[item.chart.id] ? 'true' : 'false'"
@@ -400,22 +523,32 @@ onUnmounted(() => {
       @pointermove="hoverChart($event, item)"
       @pointerleave="clearChartPointer(item.chart.id)"
       @blur="clearChartPointer(item.chart.id)"
+      @lostpointercapture="onPointerCancel"
       @click.stop="selectChart(item.chart.id)"
       @keydown.enter.prevent="selectChart(item.chart.id)"
       @keydown="removeChart($event, item.chart.id)"
     >
       <Spin v-if="pending[item.chart.id]" size="small" class="chart-compute-spinner" />
-      <span v-if="selectedId === item.chart.id" class="chart-resize-handle" aria-label="调整图表大小" @pointerdown="beginDrag($event, item, 'resize')" />
-    </Button>
+      </Button>
+      <Tooltip v-if="selectedId === item.chart.id" title="调整图表大小；方向键微调，Shift 加速">
+        <Button type="text" size="small" class="chart-resize-handle" aria-label="调整图表大小" :disabled="!canEditChart(item.chart)"
+        @pointerdown="beginDrag($event, item, 'resize')" @lostpointercapture="onPointerCancel"
+        @keydown="resizeChartWithKeyboard($event, item)" />
+      </Tooltip>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .chart-overlay { position: absolute; z-index: 2; inset: 0; overflow: hidden; clip-path: inset(26px 0 0 44px); pointer-events: none; }
-.chart-hitbox { position: absolute; display: block; box-sizing: border-box; margin: 0; border: 1px solid transparent; padding: 0; color: inherit; background: transparent; pointer-events: auto; cursor: move; outline: none; text-align: left; }
+.chart-object { position: absolute; pointer-events: none; }
+.chart-hitbox { position: absolute; inset: 0; width: 100%; height: 100%; display: block; box-sizing: border-box; margin: 0; border: 1px solid transparent; padding: 0; color: inherit; background: transparent; pointer-events: auto; cursor: move; outline: none; text-align: left; }
 .chart-hitbox:hover, .chart-hitbox:focus-visible { background: transparent; }
+.chart-hitbox.chart-view-only { cursor: default; }
 .chart-hitbox:hover, .chart-hitbox.selected { border-color: var(--chart-primary); box-shadow: 0 0 0 1px var(--chart-focus-ring); }
 .chart-render-error { position: absolute; z-index: 3; inset: 30px 4px auto 48px; pointer-events: auto; }
 .chart-compute-spinner { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); pointer-events: none; }
-.chart-resize-handle { position: absolute; right: -5px; bottom: -5px; width: 9px; height: 9px; border: 1px solid var(--chart-surface); border-radius: 2px; background: var(--chart-primary); cursor: nwse-resize; }
+.chart-resize-handle { position: absolute; right: -5px; bottom: -5px; width: 9px; min-width: 9px; height: 9px; padding: 0; border: 1px solid var(--chart-surface); border-radius: 2px; background: var(--chart-primary); pointer-events: auto; cursor: nwse-resize; }
+.chart-resize-handle:hover, .chart-resize-handle:focus-visible { background: var(--chart-primary); box-shadow: 0 0 0 2px var(--chart-focus-ring); }
+.chart-resize-handle:disabled { background: var(--chart-surface); border-color: var(--chart-focus-ring); cursor: default; }
 </style>

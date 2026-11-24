@@ -2,7 +2,7 @@ import type { DocumentBlock } from '../../../domain/model'
 import { tableForBlock } from '../model/document-model'
 import { documentTableHorizontalOffset } from '../model/document-table-style'
 import type { ParagraphListMarker } from '../model/document-lists'
-import type { DocumentLayout, LayoutMeasurer, LayoutRect } from './document-layout-types'
+import type { DocumentLayout, DocumentTextLayoutDisplay, LayoutMeasurer, LayoutRect } from './document-layout-types'
 import type { DocumentSectionFlow } from './document-section-flow'
 import { insertDocumentTablePageGap, intersectTableRect, measureDocumentTable, translateTableLine, translateTableRect,
   type DocumentTableMeasurement } from './document-table-measurement'
@@ -31,6 +31,7 @@ function appendSlice(measurement: DocumentTableMeasurement, start: number, end: 
     const visible = visiblePart(source)
     if (visible.width <= 0 || visible.height <= 0 || visible.y < start - EPSILON || visible.y + visible.height > end + EPSILON) continue
     const line = translateTableLine(source, dx, dy)
+    if (repeatedHeader) line.glyphs = line.glyphs.filter(glyph => glyph.note?.role !== 'bodyLabel')
     Object.assign(line, location)
     line.repeatedHeader = repeatedHeader
     line.clip = line.clip ? intersectTableRect(line.clip, band) : { ...band }
@@ -90,7 +91,7 @@ function tableCut(measurement: DocumentTableMeasurement, start: number, room: nu
 }
 
 export function layoutDocumentTable(block: DocumentBlock, markers: Map<string, ParagraphListMarker>, flow: DocumentSectionFlow,
-  result: DocumentLayout, measurer: LayoutMeasurer): void {
+  result: DocumentLayout, measurer: LayoutMeasurer, display?: DocumentTextLayoutDisplay): void {
   const table = tableForBlock(block)
   if (!table?.rows.length) return
   const offsetY = table.style?.offsetY ?? 0
@@ -99,19 +100,32 @@ export function layoutDocumentTable(block: DocumentBlock, markers: Map<string, P
   // this section column's top so it cannot paint into another physical page.
   flow.addSpace(Math.max(offsetY, flow.column.y - flow.cursor))
   let available = flow.column.width
-  let measurement = measureDocumentTable(block, available, markers, measurer, 0, flow.page.content.height)
+  let maximum = flow.fullPageContentHeight
+  let measurement = measureDocumentTable(block, available, markers, measurer, 0, maximum, display)
   // Before publishing the first fragment, remeasure if a continuous section
   // sends the beginning of the table to a column with different margins.
   while (true) {
     flow.ensureRoom(Math.min(measurement.rowHeights[0]!, Math.max(1, atomicRoom(measurement, 0))))
-    if (Math.abs(available - flow.column.width) <= EPSILON) break
+    if (Math.abs(available - flow.column.width) <= EPSILON
+      && (maximum === flow.fullPageContentHeight || Math.abs(maximum - flow.fullPageContentHeight) <= EPSILON)) break
     available = flow.column.width
-    measurement = measureDocumentTable(block, available, markers, measurer, 0, flow.page.content.height)
+    maximum = flow.fullPageContentHeight
+    measurement = measureDocumentTable(block, available, markers, measurer, 0, maximum, display)
   }
   let start = 0, continued = false
   while (start < measurement.height - EPSILON) {
     let room = flow.column.y + flow.column.height - flow.cursor
     if (room <= EPSILON) { flow.nextColumn(); continued = true; continue }
+    const futureReferences = measurement.lines.flatMap(line => {
+      if (line.y + line.height <= start + EPSILON || line.y >= start + room - EPSILON) return []
+      const floor = flow.referencePageFloor(line.glyphs.filter(glyph => glyph.note?.role === 'reference').map(glyph => glyph.run.id))
+      if (floor <= flow.page.index) return []
+      const row = measurement.indivisible.find(interval => interval.kind === 'row' && interval.start <= line.y + EPSILON && interval.end >= line.y + line.height - EPSILON)
+      return [{ at: row?.start ?? line.y, page: floor }]
+    }).sort((left, right) => left.at - right.at)
+    const future = futureReferences[0]
+    if (future && future.at <= start + EPSILON) { flow.advanceToPage(future.page); continued = start > EPSILON; continue }
+    if (future) room = Math.min(room, future.at - start)
     const header = measurement.headerHeight
     const fullRoom = flow.column.height
     // Oversized headers or large objects keep their full source content. Skip

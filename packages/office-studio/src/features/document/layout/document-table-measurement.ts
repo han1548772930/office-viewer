@@ -6,11 +6,12 @@ import { documentTableCellBorders, documentTableCellFill, documentTableCellMargi
 import type { ParagraphListMarker } from '../model/document-lists'
 import { codeBlockData } from '../code-blocks/code-blocks'
 import { documentTocPageTab } from '../toc/document-toc-layout'
-import type { LayoutCell, LayoutDivider, LayoutImage, LayoutLine, LayoutMeasurer, LayoutRect, LayoutTableRowMetric } from './document-layout-types'
+import type { DocumentTextLayoutDisplay, LayoutCell, LayoutDivider, LayoutImage, LayoutLine, LayoutMeasurer, LayoutRect, LayoutTableRowMetric } from './document-layout-types'
 import { appendListMarker, paragraphGeometry } from './document-paragraph-layout'
 import { paragraphLineHeight, positionLine, wrapRuns } from './document-text-layout'
 import { measureDocumentTableColumnWidths } from './document-table-intrinsic-widths'
-import { documentTableCellBlocks } from '../model/document-table-continuations'
+import { documentTableCellBlocks, documentTableCellContentContainers } from '../model/document-table-continuations'
+import { documentPictureInputAnchors, layoutDocumentPictureInputAnchor } from './document-picture-input-anchor'
 
 export interface TableVerticalInterval { start: number; end: number; kind: 'line' | 'image' | 'row' }
 export interface MeasuredDocumentTable extends LayoutRect {
@@ -60,19 +61,24 @@ function assertSpace(value: number): number {
 }
 
 /** Relative measurement is shared by pagination and table resize controls, without mutating the model. */
-export function measureDocumentTable(block: DocumentBlock, available: number, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer, depth = 0, maximumObjectHeight = Number.POSITIVE_INFINITY): DocumentTableMeasurement {
+export function measureDocumentTable(block: DocumentBlock, available: number, markers: Map<string, ParagraphListMarker>, measurer: LayoutMeasurer, depth = 0, maximumObjectHeight = Number.POSITIVE_INFINITY,
+  display?: DocumentTextLayoutDisplay): DocumentTableMeasurement {
   const table = tableForBlock(block)
   if (!table) throw new RangeError('表格模型不存在')
-  const grid = documentTableGrid(table), widths = measureDocumentTableColumnWidths(block, available, markers, measurer), columns = prefix(widths)
+  const grid = documentTableGrid(table), widths = measureDocumentTableColumnWidths(block, available, markers, measurer, display), columns = prefix(widths)
   const contents = grid.anchors.map((owner): CellContent => {
     const margin = documentTableCellMargin(table, owner.cell), width = columns[owner.column + owner.colSpan]! - columns[owner.column]!
     const contentWidth = Math.max(1, width - margin.left - margin.right)
     const content: CellContent = { owner, width, x: columns[owner.column]!, height: 0, lines: [], cells: [], images: [], dividers: [], tables: [], indivisible: [] }
     let cursor = 0
+    const pictureAnchors = new Map(documentTableCellContentContainers(owner.cell).flatMap(blocks => [...documentPictureInputAnchors(blocks)]))
+    const anchorIds = new Set([...pictureAnchors.values()].map(block => block.id))
     for (const paragraph of documentTableCellBlocks(owner.cell)) {
-      cursor += assertSpace(paragraph.style.spaceBefore)
+      if (anchorIds.has(paragraph.id)) continue
+      const inputAnchor = pictureAnchors.get(paragraph.id), style = inputAnchor?.style ?? paragraph.style
+      cursor += assertSpace(style.spaceBefore)
       if (paragraph.type === 'table') {
-        const nested = measureDocumentTable(paragraph, contentWidth, markers, measurer, depth + 1, maximumObjectHeight)
+        const nested = measureDocumentTable(paragraph, contentWidth, markers, measurer, depth + 1, maximumObjectHeight, display)
         const nestedTable = tableForBlock(paragraph)!, offset = documentTableHorizontalOffset(nestedTable, nested.width, contentWidth)
         const offsetY = nestedTable.style?.offsetY ?? 0
         if (!Number.isFinite(offsetY)) throw new RangeError('表格纵向偏移必须是有限 CSS px')
@@ -88,10 +94,15 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
         const image = imageForBlock(paragraph)
         if (image) {
           const nativeWidth = Math.max(1, image.width || 320), nativeHeight = Math.max(1, image.height || nativeWidth * 0.625)
-          const scale = Math.min(1, contentWidth / nativeWidth, Math.max(1, maximumObjectHeight - margin.top - margin.bottom) / nativeHeight)
+          const geometry = inputAnchor && paragraphGeometry(inputAnchor, markers.get(inputAnchor.id), contentWidth, measurer)
+          const available = geometry ? geometry.width(0) : contentWidth
+          const scale = Math.min(1, available / nativeWidth, Math.max(1, maximumObjectHeight - margin.top - margin.bottom) / nativeHeight)
           const width = nativeWidth * scale, height = nativeHeight * scale
-          const shift = paragraph.style.align === 'center' ? (contentWidth - width) / 2 : paragraph.style.align === 'right' ? contentWidth - width : 0
-          content.images.push({ blockId: paragraph.id, src: image.src, alt: image.alt, x: shift, y: cursor, width, height, page: 0, tableCellId: owner.cell.id })
+          const shift = (geometry?.firstIndent ?? 0) + (style.align === 'center' ? (available - width) / 2 : style.align === 'right' ? available - width : 0)
+          const positioned = { blockId: paragraph.id, src: image.src, alt: image.alt, x: shift, y: cursor, width, height, page: 0, tableCellId: owner.cell.id }
+          content.images.push(positioned)
+          if (inputAnchor) content.lines.push(layoutDocumentPictureInputAnchor(inputAnchor, positioned, documentTableCellTarget(block.id, owner, inputAnchor.id),
+            contentWidth, 0, measurer, content.images, markers.get(inputAnchor.id), display))
           cursor += height
         }
       } else if (paragraph.type === 'divider') {
@@ -101,7 +112,8 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
         const list = markers.get(paragraph.id), geometry = paragraphGeometry(paragraph, list, contentWidth, measurer), pageTab = documentTocPageTab(paragraph)
         const rightTabs = (index: number) => pageTab ? pageTab.stops.map(stop => ({ ...stop, offset: pageTab.offset,
           ...(stop.right === undefined ? {} : { right: Math.max(0, stop.right - (index === 0 ? geometry.firstIndent : geometry.indent)) }) })) : []
-        const rawLines = wrapRuns(paragraph.runs as DocumentRun[], geometry.width, measurer, paragraph.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined)
+        const rawLines = wrapRuns(paragraph.runs as DocumentRun[], geometry.width, measurer, paragraph.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined,
+          { references: display?.references, leading: display?.leadingLabels?.get(paragraph.id) })
         const code = codeBlockData(paragraph)
         for (const [index, raw] of rawLines.entries()) {
           const height = paragraphLineHeight(Math.max(raw.fontHeight, index === 0 ? geometry.markerHeight : 0), paragraph.style)
@@ -121,7 +133,7 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
           cursor += height
         }
       }
-      cursor += assertSpace(paragraph.style.spaceAfter)
+      cursor += assertSpace(style.spaceAfter)
     }
     content.height = cursor + margin.top + margin.bottom
     return content

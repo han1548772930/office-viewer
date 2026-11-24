@@ -1,4 +1,5 @@
 mod distribution;
+mod hierarchy;
 mod errors;
 mod math;
 mod trendline;
@@ -28,7 +29,14 @@ pub struct ChartSeries {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum QuartileMethod { Inclusive, Exclusive }
+pub enum QuartileMethod { MedianOfHalves, Inclusive, Exclusive }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhiskerMethod { Range, Iqr }
+
+// Packets written before the range mode was introduced used IQR whiskers.
+impl Default for WhiskerMethod { fn default() -> Self { Self::Iqr } }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,15 +60,17 @@ pub enum WaterfallStackType { Arrangement, Stacked }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
-pub enum HistogramBinning { Count { count: u32 }, Width { width: f64 } }
+pub enum HistogramBinning { Count { count: f64 }, Width { width: f64 } }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ChartJob {
     Histogram { series_index: u32, slot: u32, binning: Option<HistogramBinning>,
         underflow_threshold: Option<f64>, overflow_threshold: Option<f64> },
-    Boxplot { series_index: u32, slot: u32, quartile_method: QuartileMethod, whisker_multiplier: f64 },
+    Boxplot { series_index: u32, slot: u32, quartile_method: QuartileMethod,
+        #[serde(default)] whisker_method: WhiskerMethod, whisker_multiplier: f64 },
     Pareto { series_index: u32, slot: u32, include_zero_values: bool },
+    Hierarchy { series_index: u32, slot: u32, hierarchy_columns: Vec<u32>, label_columns: Vec<u32>, key_count: u32, label_count: u32 },
     /// Total/change flags share the columnar numeric input, avoiding a large
     /// per-point control DTO. Only exact 0/1 flags are accepted.
     Waterfall { series_index: u32, slot: u32, total_column: Option<u32> },
@@ -79,6 +89,7 @@ impl ChartJob {
             Self::Histogram { series_index, slot, .. } => ("histogram", *series_index, *slot),
             Self::Boxplot { series_index, slot, .. } => ("boxplot", *series_index, *slot),
             Self::Pareto { series_index, slot, .. } => ("pareto", *series_index, *slot),
+            Self::Hierarchy { series_index, slot, .. } => ("hierarchy", *series_index, *slot),
             Self::Waterfall { series_index, slot, .. } => ("waterfall", *series_index, *slot),
             Self::WaterfallLayout { series_index, slot, .. } => ("waterfallLayout", *series_index, *slot),
             Self::Trendline { series_index, slot, .. } => ("trendline", *series_index, *slot),
@@ -89,9 +100,14 @@ impl ChartJob {
     pub fn output_capacity(&self, rows: usize) -> Result<(usize, usize), ComputeError> {
         if rows > MAX_ROWS { return Err(ComputeError::memory()); }
         Ok(match self {
-            Self::Histogram { .. } => (10_002 * 2, 10_002 * 2),
-            Self::Boxplot { .. } => (rows + 5, 0),
+            Self::Histogram { .. } => (distribution::MAX_HISTOGRAM_BINS * 2, distribution::MAX_HISTOGRAM_BINS * 2),
+            Self::Boxplot { .. } => (rows + 5, rows),
             Self::Pareto { .. } => (rows * 2, rows),
+            Self::Hierarchy { hierarchy_columns, .. } => {
+                let nodes = rows.checked_mul(hierarchy_columns.len()).ok_or_else(ComputeError::memory)?;
+                (nodes.checked_mul(2).ok_or_else(ComputeError::memory)?,
+                    nodes.checked_mul(4).and_then(|size| size.checked_add(rows + 2)).ok_or_else(ComputeError::memory)?)
+            }
             Self::Waterfall { .. } => (rows * 3, rows * 2),
             Self::WaterfallLayout { series_indices, stack_type, use_subtotal, .. } => {
                 return waterfall::output_capacity(rows, series_indices.len(), *stack_type, *use_subtotal);
@@ -104,9 +120,10 @@ impl ChartJob {
 
     fn scratch_capacity(&self, rows: usize) -> usize {
         match self {
-            Self::Histogram { .. } => rows * 8 + 10_001 * 12,
-            Self::Boxplot { .. } => rows * 8,
+            Self::Histogram { .. } => rows * 8 + (distribution::MAX_HISTOGRAM_BINS + 1) * 12,
+            Self::Boxplot { .. } => rows * 16,
             Self::Pareto { .. } => rows * 16,
+            Self::Hierarchy { hierarchy_columns, .. } => rows * hierarchy_columns.len() * 256 + (hierarchy_columns.len() + 1) * 64,
             // Each of the two stacks reserves at most period nodes; a node is
             // <=56 bytes natively and <=48 on wasm32.
             Self::Trendline { trend_type: TrendType::MovingAvg, period, .. } =>
@@ -167,21 +184,29 @@ impl ChartStatisticsParams {
             match job {
                 ChartJob::Histogram { binning, underflow_threshold, overflow_threshold, .. } => {
                     match binning {
-                        Some(HistogramBinning::Count { count }) if !(1..=10_000).contains(count) =>
-                            return Err(ComputeError::invalid("Histogram count must be 1..10000")),
-                        Some(HistogramBinning::Width { width }) if !width.is_finite() || *width <= 0.0 =>
-                            return Err(ComputeError::invalid("Histogram width must be positive and finite")),
+                        Some(HistogramBinning::Count { count }) if !count.is_finite() =>
+                            return Err(ComputeError::invalid("Histogram count must be finite")),
+                        Some(HistogramBinning::Width { width }) if !width.is_finite() =>
+                            return Err(ComputeError::invalid("Histogram width must be finite")),
                         _ => {}
                     }
                     if underflow_threshold.is_some_and(|value| !value.is_finite())
-                        || overflow_threshold.is_some_and(|value| !value.is_finite())
-                        || underflow_threshold.zip(*overflow_threshold).is_some_and(|(lower, upper)| lower >= upper) {
-                        return Err(ComputeError::invalid("Histogram thresholds must be finite and increasing"));
+                        || overflow_threshold.is_some_and(|value| !value.is_finite()) {
+                        return Err(ComputeError::invalid("Histogram thresholds must be finite"));
                     }
                 }
                 ChartJob::Boxplot { whisker_multiplier, .. } => {
                     if !whisker_multiplier.is_finite() || !(0.0..=100.0).contains(whisker_multiplier) {
                         return Err(ComputeError::invalid("Boxplot whisker multiplier must be 0..100"));
+                    }
+                }
+                ChartJob::Hierarchy { hierarchy_columns, label_columns, key_count, label_count, .. } => {
+                    let mut selected = HashSet::new();
+                    if hierarchy_columns.is_empty() || hierarchy_columns.len() > MAX_CHART_COLUMNS || hierarchy_columns.len() != label_columns.len()
+                        || hierarchy_columns.iter().chain(label_columns.iter()).chain(std::iter::once(&self.series[series as usize].column))
+                            .any(|column| *column >= self.column_count || !selected.insert(*column))
+                        || *key_count as usize > rows * hierarchy_columns.len() || *label_count as usize > rows * hierarchy_columns.len() {
+                        return Err(ComputeError::invalid("Hierarchy key/label/value columns are missing, duplicated or out of range"));
                     }
                 }
                 ChartJob::Waterfall { total_column, .. } => {
@@ -258,6 +283,7 @@ impl ChartStatisticsParams {
             let extra = match job {
                 ChartJob::WaterfallLayout { series_indices, total_columns, .. } => series_indices.len().checked_mul(4)
                     .and_then(|size| size.checked_add(total_columns.as_ref().map_or(0, |columns| columns.len()).checked_mul(8)?)),
+                ChartJob::Hierarchy { hierarchy_columns, .. } => hierarchy_columns.len().checked_mul(8),
                 _ => Some(0),
             }.ok_or_else(ComputeError::memory)?;
             total.checked_add(extra).ok_or_else(ComputeError::memory)
@@ -393,10 +419,12 @@ impl ChartStatistics {
             let summary = match job {
                 ChartJob::Histogram { binning, underflow_threshold, overflow_threshold, .. } =>
                     distribution::histogram(&input, series, binning.as_ref(), *underflow_threshold, *overflow_threshold, result),
-                ChartJob::Boxplot { quartile_method, whisker_multiplier, .. } =>
-                    distribution::boxplot(&input, series, *quartile_method, *whisker_multiplier, result),
+                ChartJob::Boxplot { quartile_method, whisker_method, whisker_multiplier, .. } =>
+                    distribution::boxplot(&input, series, *quartile_method, *whisker_method, *whisker_multiplier, result),
                 ChartJob::Pareto { include_zero_values, .. } =>
                     distribution::pareto(&input, series, *include_zero_values, result),
+                ChartJob::Hierarchy { hierarchy_columns, label_columns, key_count, label_count, .. } =>
+                    hierarchy::build(&input, series, hierarchy_columns, label_columns, *key_count, *label_count, result),
                 ChartJob::Waterfall { total_column, .. } =>
                     distribution::waterfall(&input, series, *total_column, result),
                 ChartJob::WaterfallLayout { series_indices, stack_type, use_subtotal, total_columns, .. } =>

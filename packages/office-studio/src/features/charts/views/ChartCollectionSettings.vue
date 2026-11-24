@@ -4,6 +4,7 @@ import type { ChartConfig } from '../chart-engine'
 import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-settings-draft'
 import { chartPalette } from '../chart-options'
 import { optionGroup } from '../chart-settings-controls'
+import { chartCategorySettingPoint, chartCategorySettingPoints } from '../chart-series-settings'
 import { CHART_GAUGE_PRESETS, type ChartGaugePreset } from '../chart-gauge'
 import { applyChartGaugePreset, resetChartGaugeSettings } from '../chart-gauge-settings-controls'
 
@@ -24,6 +25,11 @@ function setGaugePreset(preset: ChartGaugePreset): void { mutate(config => { app
 function addRole(): void { mutate(config => { const roles = optionGroup(config, 'waterfall').pointRoles ??= [], seriesIndex = props.seriesFields[0]?.value ?? 1; let dataPointIndex = 0; while (roles.some(role => role.seriesIndex === seriesIndex && role.dataPointIndex === dataPointIndex)) dataPointIndex++; roles.push({ seriesIndex, dataPointIndex, role: 'total' }) }) }
 function roleNumber(index: number, key: 'seriesIndex' | 'dataPointIndex', value: unknown): void { if (typeof value === 'number' && Number.isSafeInteger(value)) mutate(config => { const role = config.options?.waterfall?.pointRoles?.[index]; if (role) role[key] = value }) }
 function roleType(index: number, value: unknown): void { if (value === 'total' || value === 'change') mutate(config => { const role = config.options?.waterfall?.pointRoles?.[index]; if (role) role.role = value }) }
+function rolePointNumber(index: number, value: unknown): void {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  const point = chartCategorySettingPoint(props.categories, number - 1)
+  if (point) roleNumber(index, 'dataPointIndex', point.value)
+}
 function removeRole(index: number): void { mutate(config => { config.options?.waterfall?.pointRoles?.splice(index, 1) }) }
 </script>
 
@@ -55,7 +61,8 @@ function removeRole(index: number): void { mutate(config => { config.options?.wa
       <FormItem label="累计与合计项目"><Button :disabled="disabled" @click="addRole">设置合计项目</Button></FormItem>
       <div v-for="(role, index) in config.options?.waterfall?.pointRoles ?? []" :key="`role-${index}`" class="chart-collection-row chart-role-row">
         <FormItem label="系列"><Select :value="role.seriesIndex" :options="seriesFields" aria-label="瀑布图项目系列" :disabled="disabled" @update:value="roleNumber(index, 'seriesIndex', $event)" /></FormItem>
-        <FormItem label="项目"><Select :value="role.dataPointIndex" :options="categories.map((label, value) => ({ value, label: `${value + 1} · ${label}` }))" aria-label="瀑布图项目" :disabled="disabled" @update:value="roleNumber(index, 'dataPointIndex', $event)" /></FormItem>
+        <FormItem label="项目"><Select :value="role.dataPointIndex" :options="chartCategorySettingPoints(categories, role.dataPointIndex)" aria-label="瀑布图项目" :disabled="disabled" @update:value="roleNumber(index, 'dataPointIndex', $event)" /></FormItem>
+        <FormItem label="项目序号"><InputNumber :value="role.dataPointIndex + 1" :min="1" :max="categories.length || undefined" :precision="0" aria-label="瀑布图项目序号" :disabled="disabled || !categories.length" @update:value="rolePointNumber(index, $event)" /></FormItem>
         <FormItem label="含义"><Select :value="role.role" :options="[{ value: 'change', label: '增减值' }, { value: 'total', label: '合计值' }]" aria-label="瀑布图项目含义" :disabled="disabled" @update:value="roleType(index, $event)" /></FormItem>
         <Button danger :disabled="disabled" @click="removeRole(index)">移除设置</Button>
       </div>

@@ -6,9 +6,11 @@ import { normalizeChartColor } from './chart-color'
 import { chartDateAxisLabel } from './chart-date-axis'
 import { chartFont, chartLine, chartPolar, formatChartNumber, type ChartVector } from './chart-geometry'
 import { chartInterpolate } from './chart-math'
-import { definedChartStyleFields } from './chart-options'
+import { chartPalette, definedChartStyleFields } from './chart-options'
 import { chartRadarGeometry } from './chart-radar'
 import type { ChartRenderTheme } from './chart-theme'
+import { createChartHeatmapPointerGeometry, chartHeatmapPointerCommands, type ChartHeatmapPointerGeometry } from './chart-heatmap-interaction'
+import { hitChartHeatmapCell } from './chart-heatmap'
 
 export interface ChartAxisPointerPresentation extends Required<ChartAxisPointerOptions> {
   font: ChartFontOptions
@@ -32,6 +34,7 @@ export interface ChartAxisPointerGeometry {
   presentation: ChartAxisPointerPresentation
   categories: PointerCategory[]
   radar?: RadarPointerGeometry
+  heatmap?: ChartHeatmapPointerGeometry
 }
 
 export type ChartAxisPointerRuntime = { mode: 'native' } | { mode: 'graphic'; geometry: ChartAxisPointerGeometry }
@@ -63,14 +66,17 @@ export function chartAxisPointerPresentation(chart: ChartModel, theme: ChartRend
 export function chartAxisPointerGeometry(data: ChartData, chart: ChartModel, layout: ChartLayout, theme: ChartRenderTheme = {}): ChartAxisPointerGeometry {
   const categories: PointerCategory[] = []
   if (layout.xMin === undefined || layout.dateAxis) {
-    for (let index = 0; index < layout.categories.length; index++) {
+    const count = chart.type === 'heatmap' ? data.series.length : layout.categories.length
+    for (let index = 0; index < count; index++) {
       const position = layout.dateAxis ? layout.categoryPositions?.[index]
-        : chart.xAxis.reverse ? 1 - (index + 0.5) / layout.categories.length : (index + 0.5) / layout.categories.length
+        : chart.xAxis.reverse ? 1 - (index + 0.5) / count : (index + 0.5) / count
       if (position != null && Number.isFinite(position) && position >= 0 && position <= 1) categories.push({ position, index })
     }
     categories.sort((a, b) => a.position - b.position || a.index - b.index)
   }
   const geometry: ChartAxisPointerGeometry = { chart, data, layout, categories, presentation: chartAxisPointerPresentation(chart, theme) }
+  if (chart.type === 'heatmap') geometry.heatmap = createChartHeatmapPointerGeometry(data, chart, layout, chartPalette(chart, theme.palette),
+    chart.options?.appearance?.font?.color ?? theme.textColor ?? '#334155')
   if (chart.type === 'radar') {
     const radar = chartRadarGeometry(data, chart, layout.plot), vertices = data.categories.map((_category, index) => radar.vertex(index, 1))
     const ring = chart.options?.radar?.shape === 'circle'
@@ -84,7 +90,9 @@ export function chartAxisPointerGeometry(data: ChartData, chart: ChartModel, lay
 export function chartAxisPointerCommands(geometry: ChartAxisPointerGeometry, pointer?: ChartVector): DrawCommand[] {
   const { chart, layout } = geometry
   if (!pointer || !Number.isFinite(pointer.x) || !Number.isFinite(pointer.y) || !supportsChartAxisPointer(chart)
-    || !geometry.data.categories.length || !geometry.data.series.length || !inside(pointer, layout.plot)) return []
+    || !geometry.data.categories.length || !geometry.data.series.length) return []
+  const heatmapCommands = geometry.heatmap ? chartHeatmapPointerCommands(geometry.heatmap, pointer) : []
+  if (!inside(pointer, layout.plot)) return heatmapCommands
   if (geometry.radar) return radarPointerCommands(geometry, pointer)
   const { plot } = layout, horizontal = Boolean(layout.horizontal), commands: DrawCommand[] = []
   const baseRatio = horizontal ? (pointer.y - plot.y) / plot.height : (pointer.x - plot.x) / plot.width
@@ -94,20 +102,20 @@ export function chartAxisPointerCommands(geometry: ChartAxisPointerGeometry, poi
     if (!category) return []
     basePosition = category.position
     const date = geometry.data.categoryDateValues?.[category.index]
-    baseText = layout.dateAxis && date != null
-      ? chartDateAxisLabel(date, chart.xAxis, layout.date1904, layout.xMax! - layout.xMin!) : layout.categories[category.index] ?? ''
+    baseText = geometry.heatmap ? geometry.heatmap.fieldNames[category.index] ?? '' : layout.dateAxis && date != null
+      ? chartDateAxisLabel(date, chart.xAxis, layout.date1904, (layout.dateSourceMax ?? 1) - (layout.dateSourceMin ?? 0)) : layout.categories[category.index] ?? ''
   } else baseText = formatChartNumber(axisValue(baseRatio, layout.xMin, layout.xMax!, chart.xAxis), chart.xAxis.format)
   const baseCoordinate = horizontal ? plot.y + basePosition * plot.height : plot.x + basePosition * plot.width
   guide(commands, horizontal ? { x: plot.x, y: baseCoordinate } : { x: baseCoordinate, y: plot.y },
     horizontal ? { x: plot.x + plot.width, y: baseCoordinate } : { x: baseCoordinate, y: plot.y + plot.height }, geometry)
   pointerLabel(commands, baseText, horizontal ? { x: plot.x, y: baseCoordinate } : { x: baseCoordinate, y: plot.y + plot.height }, horizontal ? 'left' : 'below', geometry)
   if (chart.type === 'heatmap') {
-    const rowRatio = (pointer.y - plot.y) / plot.height, count = geometry.data.series.length
-    const visibleRow = Math.min(count - 1, Math.floor(rowRatio * count)), row = chart.yAxis.reverse ? count - 1 - visibleRow : visibleRow
+    const cell = hitChartHeatmapCell(geometry.data, chart, plot, pointer)!
+    const count = geometry.data.categories.length, visibleRow = chart.yAxis.reverse ? cell.categoryIndex : count - cell.categoryIndex - 1
     const y = plot.y + (visibleRow + 0.5) * plot.height / count
     guide(commands, { x: plot.x, y }, { x: plot.x + plot.width, y }, geometry)
-    pointerLabel(commands, layout.series[row]?.name ?? geometry.data.series[row]!.name, { x: plot.x, y }, 'left', geometry)
-    return commands
+    pointerLabel(commands, geometry.data.categories[cell.categoryIndex] ?? '', { x: plot.x, y }, 'left', geometry)
+    return [...commands, ...heatmapCommands]
   }
   const valueRatio = horizontal ? (pointer.x - plot.x) / plot.width : 1 - (pointer.y - plot.y) / plot.height
   const coordinate = horizontal ? pointer.x : pointer.y, value = axisValue(valueRatio, layout.min, layout.max, chart.yAxis)
@@ -126,7 +134,7 @@ export function chartAxisPointerCommands(geometry: ChartAxisPointerGeometry, poi
 
 function radarPointerCommands(geometry: ChartAxisPointerGeometry, pointer: ChartVector): DrawCommand[] {
   const radar = geometry.radar!, { chart, layout, data } = geometry, count = radar.vertices.length
-  if (count < 3) return []
+  if (count < 3 || radar.radius <= 0) return []
   const dx = pointer.x - radar.center.x, dy = pointer.y - radar.center.y, distance = Math.hypot(dx, dy)
   const step = Math.PI * 2 / count, angle = Math.atan2(dy, dx), logical = ((angle + Math.PI / 2) * (chart.xAxis.reverse ? -1 : 1) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2)
   const boundary = chart.options?.radar?.shape === 'circle' ? radar.radius
@@ -143,10 +151,17 @@ function radarPointerCommands(geometry: ChartAxisPointerGeometry, pointer: Chart
 }
 
 function nearestCategory(categories: readonly PointerCategory[], position: number): PointerCategory | undefined {
-  let low = 0, high = categories.length
-  while (low < high) { const middle = (low + high) >>> 1; if (categories[middle]!.position < position) low = middle + 1; else high = middle }
+  const firstAt = (target: number): number => {
+    let low = 0, high = categories.length
+    while (low < high) { const middle = (low + high) >>> 1; if (categories[middle]!.position < target) low = middle + 1; else high = middle }
+    return low
+  }
+  const low = firstAt(position)
   const after = categories[low], before = categories[low - 1]
-  return !before ? after : !after || position - before.position <= after.position - position ? before : after
+  const nearest = !before ? after : !after || position - before.position <= after.position - position ? before : after
+  // A calendar bucket can hold several original dates. Stable source-index
+  // order resolves their shared coordinate from either side of the bucket.
+  return nearest ? categories[firstAt(nearest.position)] : undefined
 }
 
 function axisValue(position: number, min: number, max: number, axis: ChartAxisOptions): number {

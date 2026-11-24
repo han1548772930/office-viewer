@@ -100,6 +100,7 @@ export function clearChartAxis(current: Partial<ChartAxisOptions> | undefined, t
     return chartCartesianAxisPatch(current, patch)
   }
   return chartCartesianAxisPatch(current, { scaleType: 'linear', logBase: undefined, min: undefined, max: undefined,
+    baseTimeUnit: undefined, majorTimeUnit: undefined, majorUnit: undefined,
     title: undefined, titleStyle: undefined, titleAlignment: undefined, reverse: undefined, line: undefined, tick: undefined, format: undefined, label: undefined, gridLine: undefined })
 }
 

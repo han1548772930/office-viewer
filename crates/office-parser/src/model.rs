@@ -44,6 +44,8 @@ pub struct DocumentPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endnotes: Option<Vec<DocumentNotePayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_settings: Option<DocumentNoteSettingsPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub comments: Option<Vec<DocumentCommentPayload>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub office_source: Option<DocumentOfficeSourcePayload>,
@@ -51,6 +53,10 @@ pub struct DocumentPayload {
     pub default_style: Option<DocumentDefaultStylePayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_field_source: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_xml_parts: Option<Vec<office_io_common::document_custom_xml::DocumentCustomXmlPart>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_content_controls: Option<Vec<office_io_common::document_content_controls::NativeDocumentContentControl>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +104,45 @@ pub struct DocumentOfficeXmlPartPayload {
 pub struct DocumentNotePayload {
     pub id: String,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_mark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_text_style: Option<duke_pages::TextStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_body_reference: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentNoteSettingsPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footnote: Option<DocumentNoteSettingsKindPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endnote: Option<DocumentNoteSettingsKindPayload>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentNoteSettingsKindPayload {
+    #[serde(flatten)]
+    pub properties: office_io_common::document_note_source::DocumentNoteProperties,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub separator: Option<DocumentNoteDecorationPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_separator: Option<DocumentNoteDecorationPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_notice: Option<DocumentNoteDecorationPayload>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dormant_decorations: Vec<DocumentNoteDecorationPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentNoteDecorationPayload {
+    pub text: String,
+    pub decoration_source: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +165,10 @@ pub struct DocumentCommentTargetPayload {
     pub story: String,
     pub start: Option<usize>,
     pub end: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_note_reference_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_note_reference_count: Option<usize>,
     pub offset_encoding: String,
 }
 
@@ -132,6 +181,10 @@ pub struct DocumentSectionLayoutPayload {
     pub section_properties_xml: Option<String>,
     pub header_sections: Vec<DocumentStoryReferencePayload>,
     pub footer_sections: Vec<DocumentStoryReferencePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_properties: Option<office_io_common::document_note_source::DocumentSectionNoteProperties>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppress_endnotes: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

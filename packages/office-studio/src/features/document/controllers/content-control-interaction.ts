@@ -1,12 +1,17 @@
-import type { DocumentModel } from '../../../domain/model'
-import type { DocumentContentControlSelectionRequest, DocumentContentControlValueCommand } from '../commands/content-control-command-types'
+import type { DocumentContentControl, DocumentModel } from '../../../domain/model'
+import type { DocumentContentControlRepeatingItemCommand, DocumentContentControlSelectionRequest, DocumentContentControlValueCommand } from '../commands/content-control-command-types'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 import { cloneDocumentInputSession, documentInputLocation, sameDocumentInputLocation, type DocumentInputSession } from '../model/document-input-session'
-import { findDocumentBlock, runText, runsForTarget, sameTarget, textTargets, type DocumentSelection } from '../model/document-model'
-import { cloneDocumentSelection } from '../model/document-table-selection'
+import { runText, runsForTarget, sameTarget, textTargets, type DocumentSelection } from '../model/document-model'
+import { cloneDocumentSelection, createDocumentTableViewSelection, resolveDocumentTableViewSelection } from '../model/document-table-selection'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { documentModelForBlockHost } from '../services/document-block-host'
 import { documentContentControlTemporaryBindingCaret } from '../services/content-control-bindings'
+import { documentContentControlContains, documentContentControlContainsSelection, documentContentControlTableRowSelection,
+  documentContentControlTableRowsMutationSelection, resolveDocumentContentControlTableRows } from '../model/content-control-table-rows'
+import { documentContentControlBlocksSelection, documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
+import { documentContentControlBlocksMutationSelection, documentContentControlBlocksValueMutationRange } from '../model/content-control-block-mutations'
+import { documentContentControlInlineMutationNeedsNoteTrace, documentContentControlInlineMutationSelection } from '../model/content-control-inline-mutations'
 
 export interface DocumentContentControlInteractionContext {
   source: DocumentModel
@@ -25,6 +30,107 @@ export interface DocumentContentControlFocusContext extends DocumentContentContr
   selection: DocumentSelection
 }
 
+/** Resolve a control's logical text range in the requested host, including its real table coordinates. */
+export function documentContentControlSelectionForId(model: DocumentModel, controlId: string,
+  host?: DocumentAuxiliaryBlockHost): DocumentSelection | undefined {
+  const scoped = contentControlScopedModel(model, host)
+  return scoped && contentControlSelectionInModel(scoped, controlId)
+}
+
+/** Explicit parents are authoritative; older ranges without parent IDs can resolve strict containment. */
+export function documentContentControlParentSelection(model: DocumentModel, controlId: string,
+  host?: DocumentAuxiliaryBlockHost): { controlId: string; selection: DocumentSelection } | undefined {
+  const scoped = contentControlScopedModel(model, host)
+  const controls = scoped?.contentControls?.filter(control => !control.metadata?.officeStoryLockSource)
+  const child = controls?.find(control => control.id === controlId)
+  if (!scoped || !child || !contentControlSelectionInModel(scoped, child.id)) return undefined
+  const contains = (parent: DocumentContentControl) => documentContentControlContains(scoped, parent, child)
+  const strict = (parent: DocumentContentControl) => parent.blockRange
+    ? !child.blockRange || JSON.stringify(parent.blockRange) !== JSON.stringify(child.blockRange)
+    : parent.tableRowRange
+    ? !child.tableRowRange || JSON.stringify(parent.tableRowRange) !== JSON.stringify(child.tableRowRange)
+    : parent.startOffset < child.startOffset || parent.endOffset > child.endOffset
+  const span = (control: DocumentContentControl) => control.blockRange
+    ? documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(scoped, control.blockRange)).size * 1_000_000
+    : control.tableRowRange
+    ? resolveDocumentContentControlTableRows(scoped, control.tableRowRange).rowIds.length * 1_000_000
+    : control.endOffset - control.startOffset
+  try {
+    const parent = child.parentId ? controls?.find(control => control.id === child.parentId && contains(control))
+      : controls?.filter(control => contains(control) && strict(control)).sort((left, right) => span(left) - span(right))[0]
+    const selection = parent && contentControlSelectionInModel(scoped, parent.id)
+    return parent && selection ? { controlId: parent.id, selection } : undefined
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof RangeError) return undefined
+    throw error
+  }
+}
+
+function contentControlScopedModel(model: DocumentModel, host?: DocumentAuxiliaryBlockHost): DocumentModel | undefined {
+  if (!host) return model
+  try { return documentModelForBlockHost(model, host) }
+  catch (error) { if (error instanceof RangeError || error instanceof TypeError) return undefined; throw error }
+}
+
+function contentControlSelectionInModel(model: DocumentModel, controlId: string): DocumentSelection | undefined {
+  const control = model.contentControls?.find(control => control.id === controlId)
+  const target = control && textTargets(model).find(target => (target.cellBlockId ?? target.blockId) === control.blockId)
+  if (!control || control.metadata?.officeStoryLockSource || !target) return undefined
+  const text = runText(runsForTarget(model, target))
+  if (control.startOffset > control.endOffset || !isDocumentTextBoundary(text, control.startOffset)
+    || !isDocumentTextBoundary(text, control.endOffset)) return undefined
+  if (control.tableRowRange) {
+    try { return documentContentControlTableRowSelection(model, control.tableRowRange) }
+    catch (error) { if (error instanceof TypeError || error instanceof RangeError) return undefined; throw error }
+  }
+  if (control.blockRange) {
+    try { return documentContentControlBlocksSelection(model, control.blockRange) }
+    catch (error) { if (error instanceof TypeError || error instanceof RangeError) return undefined; throw error }
+  }
+  return { anchor: { ...target, offset: control.startOffset }, focus: { ...target, offset: control.endOffset } }
+}
+
+/** Resolve the exact new item ID or deletion caret from the committed paragraph, never an old block-only point. */
+export function documentContentControlSelectionAfterRepeatingItemEdit(
+  request: DocumentContentControlSelectionRequest & { command: DocumentContentControlRepeatingItemCommand },
+  current: DocumentModel,
+): { controlId?: string; selection: DocumentSelection } | undefined {
+  if (request.source.id !== current.id || request.command.params.controlId !== request.controlId) return undefined
+  const before = contentControlScopedModel(request.source, request.host), after = contentControlScopedModel(current, request.host)
+  const previous = before?.contentControls?.find(control => control.id === request.controlId)
+  if (!before || !after || previous?.type !== 'repeatingSectionItem') return undefined
+  if (previous.placement === 'row') return documentContentControlTableRowsMutationSelection(before, after, previous.id,
+    request.command.id === 'doc.command.duplicate-repeating-section-item' ? 'duplicate' : 'delete')
+  if (previous.blockRange) return documentContentControlBlocksMutationSelection(before, after, previous.id,
+    request.command.id === 'doc.command.duplicate-repeating-section-item' ? 'duplicate' : 'delete')
+  if (documentContentControlInlineMutationNeedsNoteTrace(before, request.source, previous.blockId)
+    || documentContentControlInlineMutationNeedsNoteTrace(after, current, previous.blockId)) {
+    return documentContentControlInlineMutationSelection(before, after, previous.id,
+      request.command.id === 'doc.command.duplicate-repeating-section-item' ? 'duplicate' : 'delete', request.source, current)
+  }
+  const previousRange = contentControlSelectionInModel(before, previous.id)
+  const target = previousRange && textTargets(after).find(target => sameTarget(target, previousRange.anchor))
+  if (!previousRange || !target) return undefined
+  const oldText = runText(runsForTarget(before, previousRange.anchor)), newText = runText(runsForTarget(after, target))
+  if (request.command.id === 'doc.command.delete-repeating-section-item') {
+    if (after.contentControls?.some(control => control.id === previous.id)
+      || newText !== oldText.slice(0, previous.startOffset) + oldText.slice(previous.endOffset)
+      || !isDocumentTextBoundary(newText, previous.startOffset)) return undefined
+    return { selection: { anchor: { ...target, offset: previous.startOffset }, focus: { ...target, offset: previous.startOffset } } }
+  }
+  const original = after.contentControls?.find(control => control.id === previous.id)
+  if (!original || original.type !== previous.type || original.parentId !== previous.parentId || original.blockId !== previous.blockId
+    || original.startOffset !== previous.startOffset || original.endOffset !== previous.endOffset
+    || newText !== oldText.slice(0, previous.endOffset) + oldText.slice(previous.startOffset, previous.endOffset) + oldText.slice(previous.endOffset)) return undefined
+  const oldIds = new Set(before.contentControls?.map(control => control.id))
+  const copies = after.contentControls?.filter(control => !oldIds.has(control.id) && control.type === 'repeatingSectionItem'
+    && control.parentId === previous.parentId && control.blockId === previous.blockId && control.startOffset === previous.endOffset
+    && control.endOffset === previous.endOffset + previous.endOffset - previous.startOffset) ?? []
+  if (copies.length !== 1) return undefined
+  const selection = contentControlSelectionInModel(after, copies[0]!.id)
+  return selection ? { controlId: copies[0]!.id, selection } : undefined
+}
+
 /** Value commands replace text within one paragraph; a temporary SDT leaves a collapsed end caret. */
 export function documentContentControlSelectionAfterValueEdit(request: DocumentContentControlSelectionRequest & { command?: DocumentContentControlValueCommand },
   current: DocumentModel): DocumentSelection | undefined {
@@ -37,18 +143,22 @@ export function documentContentControlSelectionAfterValueEdit(request: DocumentC
   const previous = before.contentControls?.find(control => control.id === request.controlId)
   if (!previous) return undefined
   const control = after.contentControls?.find(control => control.id === request.controlId)
-  const target = textTargets(after).find(target => (target.cellBlockId ?? target.blockId) === (control?.blockId ?? previous.blockId))
+  if (control) return contentControlSelectionInModel(after, control.id)
+  if (previous.blockRange) {
+    const replacement = documentContentControlBlocksValueMutationRange(before, after, previous.id)
+    const point = replacement?.selection.focus
+    return point ? { anchor: { ...point }, focus: { ...point } } : undefined
+  }
+  const target = textTargets(after).find(target => (target.cellBlockId ?? target.blockId) === previous.blockId)
   if (!target) return undefined
   const text = runText(runsForTarget(after, target))
-  if (control) {
-    if (!isDocumentTextBoundary(text, control.startOffset) || !isDocumentTextBoundary(text, control.endOffset)
-      || control.startOffset > control.endOffset) return undefined
-    return { anchor: { ...target, offset: control.startOffset }, focus: { ...target, offset: control.endOffset } }
-  }
   if (!previous.temporary || ['controlLocked', 'sdtLocked', 'sdtContentLocked'].includes(previous.lock ?? '')) return undefined
   if (request.command) {
-    const value = request.command.id === 'doc.command.set-content-control-checked' ? request.command.params.checked ? 'true' : 'false' : request.command.params.value
-    const mapped = documentContentControlTemporaryBindingCaret(request.source, current, request.controlId, value, request.host)
+    const command = request.command
+    const value = command.id === 'doc.command.reset-content-control-placeholder' ? ''
+      : command.id === 'doc.command.set-content-control-checked' ? command.params.checked ? 'true' : 'false' : command.params.value
+    const mapped = documentContentControlTemporaryBindingCaret(request.source, current, request.controlId, value, request.host,
+      command.id === 'doc.command.reset-content-control-placeholder' ? previous.placeholder : undefined)
     if (mapped) return mapped
   }
   const sourceTarget = textTargets(before).find(target => (target.cellBlockId ?? target.blockId) === previous.blockId)
@@ -96,14 +206,21 @@ export function documentContentControlFocusCurrent(token: DocumentContentControl
     || !captured.valid || !current?.valid || current.location.kind !== 'body'
     || captured.modelRevision !== current.modelRevision || captured.generation !== current.generation
     || !sameDocumentInputLocation(captured.location, current.location)
-    || !sameDocumentInputLocation(current.location, documentInputLocation(context.selection, undefined, context.host))
-    || context.selection.tableSelection) return false
+    || !sameDocumentInputLocation(current.location, documentInputLocation(context.selection, undefined, context.host))) return false
   let scoped = context.source
   if (context.host) {
     try { scoped = documentModelForBlockHost(context.source, context.host) }
     catch (error) { if (error instanceof RangeError || error instanceof TypeError) return false; throw error }
   }
   const targets = textTargets(scoped)
+  if (context.selection.tableSelection) {
+    try {
+      const view = resolveDocumentTableViewSelection(scoped, context.selection.tableSelection)
+      const canonical = createDocumentTableViewSelection(scoped, view.tableId, view.range, view.kind, view.pageAffinity, context.selection)
+      if (!sameTarget(canonical.anchor, context.selection.anchor) || canonical.anchor.offset !== context.selection.anchor.offset
+        || !sameTarget(canonical.focus, context.selection.focus) || canonical.focus.offset !== context.selection.focus.offset) return false
+    } catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error }
+  }
   return [context.selection.anchor, context.selection.focus].every(point => {
     const target = targets.find(target => sameTarget(target, point))
     return !!target && isDocumentTextBoundary(runText(runsForTarget(scoped, target)), point.offset)
@@ -115,7 +232,6 @@ export function documentContentControlInteractionCurrent(request: DocumentConten
   context: DocumentContentControlInteractionContext): boolean {
   if (context.disabled || request.source !== context.source || !sameDocumentBlockHost(request.host, context.host)) return false
   const { selection } = request
-  if (selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) return false
   let scoped = context.source
   if (context.host) {
     try { scoped = documentModelForBlockHost(context.source, context.host) }
@@ -126,20 +242,12 @@ export function documentContentControlInteractionCurrent(request: DocumentConten
     }
   }
   const control = scoped.contentControls?.find(control => control.id === request.controlId)
-  if (!control || (selection.focus.cellBlockId ?? selection.focus.blockId) !== control.blockId) return false
-  const start = Math.min(selection.anchor.offset, selection.focus.offset), end = Math.max(selection.anchor.offset, selection.focus.offset)
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < control.startOffset || end > control.endOffset) return false
+  if (!control || !documentContentControlContainsSelection(scoped, control, selection)) return false
   const session = request.inputSession, current = context.session
   if (context.requireSession && !session) return false
   if (session && (!session.valid || !current?.valid || session.modelRevision !== current.modelRevision
     || session.generation !== current.generation || !sameDocumentInputLocation(session.location, current.location))) return false
   // A root body request must never use a legacy header/footer text session.
   if (session && (session.location.kind !== 'body' || !sameDocumentBlockHost(session.location.host, request.host))) return false
-  const block = scoped.blocks.length ? findTargetText(scoped, control.blockId) : undefined
-  return block !== undefined && isDocumentTextBoundary(block, start) && isDocumentTextBoundary(block, end)
-}
-
-function findTargetText(model: DocumentModel, id: string): string | undefined {
-  const block = findDocumentBlock(model, id)
-  return block ? runText(block.runs) : undefined
+  return true
 }

@@ -1,5 +1,6 @@
 import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
-import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit, type ContentControlRangeEditOptions } from '../services/content-controls'
+import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit, validateDocumentContentControlRanges, type ContentControlRangeEditOptions } from '../services/content-controls'
+import { reconcileDocumentContentControlBlockEdits } from '../model/content-control-block-edits'
 import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { isDocumentTableCommand } from './table-command-types'
@@ -313,6 +314,26 @@ function applyListNestingLevel(block: DocumentBlock, level: number): void {
 
 /** Model mutation only. The application command bus owns the resulting history snapshot. */
 export function executeDocumentCommand(
+  model: DocumentModel,
+  selection: DocumentSelection,
+  command: DocumentCommand,
+  permissionContext?: DocumentPermissionContext,
+): DocumentSelection {
+  if (!(model.contentControls ?? []).some(control => control.blockRange)) return executeDocumentCommandMutation(model, selection, command, permissionContext)
+  const candidate = cloneModel(model)
+  const result = executeDocumentCommandMutation(candidate, selection, command, permissionContext)
+  reconcileDocumentContentControlBlockEdits(model, candidate, { selection, activeControlId: command.activeContentControlId,
+    absorbAdjacentInsertions: ['doc.command.insert-text', 'doc.command.paste-blocks', 'doc.command.insert-image',
+      'doc.command.insert-table', 'doc.command.insert-divider', 'doc.command.insert-page-break', 'doc.command.insert-column-break',
+      'doc.command.insert-section-break'].includes(command.id) })
+  validateDocumentContentControlRanges(candidate)
+  const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
+  assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+  Object.assign(model, candidate)
+  return result
+}
+
+function executeDocumentCommandMutation(
   model: DocumentModel,
   selection: DocumentSelection,
   command: DocumentCommand,

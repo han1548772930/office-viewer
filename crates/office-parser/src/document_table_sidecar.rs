@@ -78,13 +78,12 @@ fn native_properties(xml: &str) -> Result<Value, String> {
     if !word(&native, "tbl") { return Err("Native table properties require a Word table root".into()); }
     let namespaces = scope(&table, &BTreeMap::new());
     let mut rows = Vec::new();
-    for (row, native_row) in table.children.iter().zip(&native.children).filter(|(_, node)| word(node, "tr")) {
-        let row_scope = scope(row, &namespaces);
+    for (row, native_row, row_scope) in crate::document_native_xml::content_children(&table, &native, "tr", &namespaces) {
         let before = word_child(native_row, "trPr").and_then(|properties| word_child(properties, "gridBefore")).and_then(|value| word_attribute(value, "val")).unwrap_or("0")
             .parse::<usize>().map_err(|_| "Native table gridBefore is invalid")?;
         let mut column = before;
         let mut cells = Vec::new();
-        for (cell, native_cell) in row.children.iter().zip(&native_row.children).filter(|(_, node)| word(node, "tc")) {
+        for (cell, native_cell, cell_scope) in crate::document_native_xml::content_children(row, native_row, "tc", &row_scope) {
             let properties = source_child(cell, native_cell, "tcPr");
             let span = word_child(native_cell, "tcPr").and_then(|properties| word_child(properties, "gridSpan")).and_then(|span| word_attribute(span, "val")).unwrap_or("1")
                 .parse::<usize>().ok().filter(|span| *span > 0).ok_or("Native table gridSpan is invalid")?;
@@ -94,7 +93,7 @@ fn native_properties(xml: &str) -> Result<Value, String> {
                 .map(|merge| word_attribute(merge, "val").unwrap_or("continue"));
             cells.push(json!({"columnIndex":column,"columnSpan":span,"syntheticTail":synthetic_tail,
                 "horizontalMerge":merge("hMerge"),"verticalMerge":merge("vMerge"),
-                "nativeProperties":property(properties, "tcPr", xml, &scope(cell, &row_scope))}));
+                "nativeProperties":property(properties, "tcPr", xml, &cell_scope)}));
             column = column.checked_add(span).ok_or("Native table column index overflow")?;
         }
         rows.push(json!({"nativeProperties":property(source_child(row, native_row, "trPr"), "trPr", xml, &row_scope),"cells":cells}));

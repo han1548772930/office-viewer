@@ -4,10 +4,10 @@ import { chartColorControl, chartFillPatternControls, chartLabelControls, chartL
 import { chartPalette } from './chart-options'
 import { chartPointStyle } from './chart-derived'
 import { chartParetoBarStyle, chartParetoCumulativePointStyle, chartParetoCumulativeStyle } from './chart-pareto'
+import { CHART_POINT_SHAPE_CHOICES } from './chart-markers'
 
 export type ChartParetoStyleGroup = 'barStyle' | 'cumulativeLineStyle'
 type SourceSeries = ChartData['series'][number]
-const shapes = [['circle', '圆形'], ['rect', '方形'], ['triangle', '三角形'], ['diamond', '菱形'], ['none', '无标记']] as const
 const borderLabels = ['显示边框', '边框颜色', '边框线宽', '边框不透明度', '边框线型'] as const
 
 /** Fixed cc panel keeps authored label fields while their effective visibility
@@ -47,7 +47,7 @@ export function chartParetoLineControls(): ChartSettingControl[] {
     chartColorControl('pareto.cumulativeLineStyle.color', '帕累托累计线颜色', config => read(config)?.color, (config, value) => { write(config).color = value }, 'series', config => chartParetoCumulativeStyle(config, chartPalette(config)).color),
     numberControl('pareto.cumulativeLineStyle.opacity', '累计线不透明度', config => read(config)?.opacity, (config, value) => { write(config).opacity = value }, 0, 1, 1), width,
     selectControl('pareto.cumulativeLineStyle.dashType', '累计线型', [['solid', '实线'], ['dashed', '虚线'], ['dotted', '点线']], config => read(config)?.dashType, (config, value) => { write(config).dashType = value }, 'solid'),
-    selectControl('pareto.cumulativeLineStyle.point.shape', '累计线标记形状', shapes, config => read(config)?.point?.shape, (config, value) => { (write(config).point ??= {}).shape = value }, 'circle'),
+    selectControl('pareto.cumulativeLineStyle.point.shape', '累计线标记形状', CHART_POINT_SHAPE_CHOICES, config => read(config)?.point?.shape, (config, value) => { (write(config).point ??= {}).shape = value }, 'circle'),
     numberControl('pareto.cumulativeLineStyle.point.size', '累计线标记大小', config => read(config)?.point?.size, (config, value) => { (write(config).point ??= {}).size = value }, 0, 256, 7),
     colorControl('pareto.cumulativeLineStyle.point.color', '累计线标记颜色', config => read(config)?.point?.color, (config, value) => { (write(config).point ??= {}).color = value }), ...labels,
   ]
@@ -68,7 +68,7 @@ export function chartParetoDataPointControls(group: ChartParetoStyleGroup, index
     ...chartFillPatternControls(key, read, write, effective, `${title}`),
     ...(group === 'cumulativeLineStyle' ? [
       numberControl(`${key}.size`, `${title}标记大小`, config => read(config)?.size, (config, value) => { write(config).size = value }, 0, 256),
-      selectControl(`${key}.shape`, `${title}标记形状`, shapes, config => read(config)?.shape, (config, value) => { write(config).shape = value }),
+      selectControl(`${key}.shape`, `${title}标记形状`, CHART_POINT_SHAPE_CHOICES, config => read(config)?.shape, (config, value) => { write(config).shape = value }),
     ] : []), ...border,
   ]
 }

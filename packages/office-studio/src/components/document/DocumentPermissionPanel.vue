@@ -31,13 +31,14 @@ const selectedRule = computed(() => rules.value.find(rule => rule.id === selecte
 const scopedTargets = computed(() => props.targets.filter(target => target.scope === scope.value))
 const actionOptions = computed(() => scope.value === 'document'
   ? [
+      { value: 'view', label: t('doc.permissions.action.view', 'View') },
       { value: 'edit', label: t('doc.permissions.action.edit', 'Edit') },
       { value: 'copy', label: t('doc.permissions.action.copy', 'Copy') },
       { value: 'comment', label: t('doc.permissions.action.comment', 'Comment') },
       { value: 'print', label: t('doc.permissions.action.print', 'Print') },
       { value: 'export', label: t('doc.permissions.action.export', 'Export') },
     ]
-  : [{ value: 'edit', label: t('doc.permissions.action.edit', 'Edit') }])
+  : [{ value: 'view', label: t('doc.permissions.action.view', 'View') }, { value: 'edit', label: t('doc.permissions.action.edit', 'Edit') }])
 
 watch(() => [props.open, props.rules] as const, ([open, incoming]) => {
   if (!open) return
@@ -64,7 +65,7 @@ function beginNewRule() {
 function changeScope(value: DocumentPermissionScope) {
   scope.value = value
   targetId.value = ''
-  if (value !== 'document') action.value = 'edit'
+  if (value !== 'document' && action.value !== 'view' && action.value !== 'edit') action.value = 'edit'
 }
 
 function parseUserIds(value: string): string[] {

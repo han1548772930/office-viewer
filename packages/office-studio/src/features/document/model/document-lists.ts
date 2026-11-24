@@ -118,7 +118,7 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
       previous = id ? undefined : styleKey
       const consecutive = definition?.abstract.consecutiveNumbering === true
       const instanceKey = id ?? `legacy-${legacyId}`
-      const group = definition && consecutive ? consecutiveNumberingGroup(definition, instanceKey) : { id: instanceKey, primary: true }
+      const group = definition ? consecutiveNumberingGroup(definition, instanceKey) : { id: instanceKey, primary: true }
       const counterId = group.id
       const key = JSON.stringify([styleKey, counterId])
       const state: Sequence = sequences.get(key) ?? { counters: [], initialized: new Map<string, Set<number>>() }
@@ -133,7 +133,11 @@ export function paragraphListMarkers(blocks: readonly DocumentBlock[]): Map<stri
         const initialValue = typeof initial === 'number' && Number.isSafeInteger(initial) && initial >= 0 ? initial : starts(0, true)
         state.total = typeof restart === 'number' ? restart : state.total === undefined ? initialValue : state.total + 1
         state.counters[index] = state.total
-      } else state.counters[index] = state.counters[index] === undefined ? starts(index, !initialized.has(index)) : state.counters[index]! + 1
+      } else {
+        const restart = numberingRecord(definition?.instance.levelStartOverrides)[String(index)]
+        state.counters[index] = !initialized.has(index) && typeof restart === 'number' && Number.isSafeInteger(restart) && restart >= 0
+          ? restart : state.counters[index] === undefined ? starts(index, !initialized.has(index)) : state.counters[index]! + 1
+      }
       initialized.add(index)
       for (let slot = index + 1; slot < 9; slot++) {
         const restart = definition?.levels.find(candidate => candidate.ilvl === slot)?.lvlRestart

@@ -15,7 +15,15 @@ mod document_format_roundtrip_tests;
 mod document_story_roundtrip_tests;
 mod story_fields;
 mod document_text_fields;
+mod document_notes;
+mod document_comment_notes;
+mod document_custom_xml;
+mod document_native_xml;
+mod document_content_controls;
+#[cfg(test)]
+mod document_custom_xml_roundtrip_tests;
 mod document_block_extraction;
+mod document_sdt_projection;
 mod document_story_source;
 mod document_paragraph_source;
 mod document_table_sidecar;

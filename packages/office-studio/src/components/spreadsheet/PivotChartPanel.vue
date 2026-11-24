@@ -4,9 +4,9 @@ import { Alert, Button, Form, FormItem, Input, Modal, Select, theme } from 'antd
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import { createPivotChartDraft, pivotChartConfig, pivotChartPatch, type PivotChartDraft } from '../../features/pivot/services/pivot-chart-panel-state'
-import { readPivotChartSource } from '../../features/charts/chart-pivot-data'
 import { chartPlacementGeometry } from '../../features/charts/chart-placement'
-import type { ChartData } from '../../features/charts/chart-engine'
+import type { ChartSettingsSourceLoader, ChartSettingsStatisticsLoader } from '../../features/charts/chart-settings-data'
+import { useChartSettingsSource } from '../../features/charts/views/use-chart-settings-source'
 import { canViewWorksheetProtection } from '../../features/sheet-protection/range-protection'
 import ChartSettingsFields from '../../features/charts/views/ChartSettingsFields.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -33,20 +33,27 @@ const linkedCharts = computed(() => workbook.value?.charts?.filter(item => {
   const sheet = workbook.value?.sheets.find(sheet => sheet.id === item.sheetId)
   return item.pivotTableId === draft.value.pivotTableId && sheet && canViewWorksheetProtection(sheet, props.studio.currentUserId)
 }) ?? [])
-const preview = computed<{ data?: ChartData; error?: string }>(() => {
-  if (!props.open || !workbook.value || !draft.value.pivotTableId) return {}
-  try {
-    const pivot = workbook.value.pivotTables?.find(item => item.id === draft.value.pivotTableId)
-    if (!pivot) throw new Error('所选透视表已被删除。')
-    for (const sheetId of new Set([props.sheetId, chart.value?.sheetId ?? props.sheetId, pivot.source.subUnitId, pivot.anchor.subUnitId])) {
-      props.studio.assertCanViewWorksheet(props.workbookId, sheetId)
-    }
-    const source = readPivotChartSource(workbook.value, draft.value.pivotTableId)
-    return { data: { fields: source.fields, records: source.records,
-      sourceCategoryFields: source.categoryFields, sourceValueFields: source.valueFields, syntheticValues: source.syntheticValues,
-      categories: source.records.map(record => source.categoryFields.map(field => String(record[field] ?? '')).join(' / ')),
-      series: source.valueFields.map(field => ({ field, name: source.fields[field]!, values: source.records.map(record => { const value = record[field]; return typeof value === 'number' ? value : null }) })) } }
-  } catch (reason) { return { error: reason instanceof Error ? reason.message : String(reason) } }
+const sourceHostSheetId = computed(() => chart.value?.sheetId ?? props.sheetId)
+const loadSource = computed<ChartSettingsSourceLoader>(() => {
+  const studio = props.studio, unitId = props.workbookId, hostSheetId = sourceHostSheetId.value
+  return async (config, options) => {
+    const sheet = requireWorkbook(studio, unitId).getSheetBySheetId(hostSheetId)
+    if (!sheet) throw new Error('放置图表的工作表已被删除。')
+    return sheet.getChartSettingsData(config, options)
+  }
+})
+const loadStatistics = computed<ChartSettingsStatisticsLoader>(() => {
+  const studio = props.studio, unitId = props.workbookId, hostSheetId = sourceHostSheetId.value
+  return async (config, options) => {
+    const sheet = requireWorkbook(studio, unitId).getSheetBySheetId(hostSheetId)
+    if (!sheet) throw new Error('放置图表的工作表已被删除。')
+    return sheet.getChartSettingsStatistics(config, options)
+  }
+})
+const { projection: preview, loading: sourceLoading, assertReady, reload } = useChartSettingsSource({
+  active: () => props.open && Boolean(draft.value.pivotTableId), draft: () => draft.value.settings,
+  hostSheetId: () => sourceHostSheetId.value, date1904: () => workbook.value?.date1904,
+  sourceRevision: () => modelRevision.value, load: () => loadSource.value, loadStatistics: () => loadStatistics.value,
 })
 
 function load(): void {
@@ -111,6 +118,7 @@ async function apply(): Promise<void> {
   const active = (): boolean => !disposed && props.open && draft.value === current && props.studio === studio && props.workbookId === unitId && props.sheetId === sheetId
   busy.value = true; error.value = ''; status.value = ''
   try {
+    assertReady()
     const book = requireWorkbook(studio, unitId)
     if (!book.getPivotTables().some(item => item.getPivotTableId() === current.pivotTableId)) throw new Error(t('sheet.pivot-chart.error.pivot-missing', '所选透视表不存在。'))
     const targetSheet = book.getSheetBySheetId(hostSheetId)
@@ -165,14 +173,16 @@ function opened(value: boolean): void { if (!value && !props.open) emit('closed'
       <FormItem :label="t('sheet.pivot-chart.related-pivot', '关联透视表')"><Select :value="draft.pivotTableId" :options="pivotOptions" :aria-label="t('sheet.pivot-chart.related-pivot', '关联透视表')" :disabled="busy" @update:value="choosePivot" /></FormItem>
       <FormItem v-if="linkedCharts.length" :label="t('sheet.pivot-chart.edit-existing', '编辑已有透视图')"><Select :value="draft.chartId" :options="[{ label: t('sheet.pivot-chart.create-new', '新建透视图'), value: '' }, ...linkedCharts.map((item, index) => ({ label: item.title || `${t('sheet.pivot-chart.title', '透视图')} ${index + 1}`, value: item.id }))]" :aria-label="t('sheet.pivot-chart.edit-existing', '选择透视图')" :disabled="busy" @update:value="chooseChart" /></FormItem>
       <FormItem :label="t('sheet.pivot-chart.placement', '放置单元格')"><Input v-model:value="draft.position" :aria-label="t('sheet.pivot-chart.placement', '透视图放置单元格')" placeholder="F2" :disabled="busy" /></FormItem>
-      <ChartSettingsFields v-model:draft="draft.settings" :data="preview.data" :host-sheet-id="chart?.sheetId ?? sheetId" locked-source :disabled="busy" />
-      <Alert v-if="error || preview.error" type="error" :message="error || preview.error" show-icon />
+      <ChartSettingsFields v-model:draft="draft.settings" :projection="preview" :date1904="workbook?.date1904" :host-sheet-id="sourceHostSheetId" locked-source :disabled="busy" />
+      <Alert v-if="sourceLoading" type="info" message="正在读取图表数据源…" show-icon role="status" />
+      <Button v-if="preview.error" :disabled="busy || sourceLoading" @click="reload">重新读取数据源</Button>
+      <Alert v-if="error" type="error" :message="error" show-icon />
       <Alert v-if="status" type="success" :message="status" show-icon role="status" />
       <footer :style="{ borderColor: token.colorBorderSecondary }">
         <Button v-if="draft.chartId" danger :disabled="busy" @click="remove">{{ t('sheet.pivot-chart.remove', '移除透视图') }}</Button>
         <span />
         <Button :disabled="busy" @click="close">{{ t('sheet.pivot-chart.close', '关闭') }}</Button>
-        <Button type="primary" :loading="busy" :disabled="!pivotTables.length" @click="apply">{{ t(draft.chartId ? 'sheet.pivot-chart.update' : 'sheet.pivot-chart.create', draft.chartId ? '更新透视图' : '创建透视图') }}</Button>
+        <Button type="primary" :loading="busy" :disabled="!pivotTables.length || sourceLoading" @click="apply">{{ t(draft.chartId ? 'sheet.pivot-chart.update' : 'sheet.pivot-chart.create', draft.chartId ? '更新透视图' : '创建透视图') }}</Button>
       </footer>
     </Form>
   </Modal>

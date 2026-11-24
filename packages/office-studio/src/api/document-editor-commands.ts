@@ -9,7 +9,7 @@ import type { DocumentAuxiliaryBlockHost } from '../features/document/model/docu
 import { applyDocumentBlockHostModel, documentModelForBlockHost, validateDocumentBlockHost } from '../features/document/services/document-block-host.ts'
 import { cloneModel } from '../domain/serialization.ts'
 import { permissionTargetsForChangedBlocks } from '../features/document/permissions/document-permissions.ts'
-import { documentContentControlCommandIsTextInput, prepareDocumentContentControlTextInputSelection,
+import { documentContentControlCommandIsTextInput, documentContentControlCommandUsesWholeCellInput, prepareDocumentContentControlTextInputSelection,
   resolveDocumentContentControlTextInputId, synchronizeDocumentContentControlsAfterEdit } from '../features/document/services/content-control-editing.ts'
 import { synchronizeDocumentContentControlBindings } from '../features/document/services/content-control-bindings.ts'
 import { resolveDocumentTableCommandTarget, type DocumentTableCommand } from '../features/document/commands/table-commands.ts'
@@ -148,7 +148,8 @@ export function resolveDocumentEditorSelection(model: DocumentModel, selection: 
 function tableTextInputCommand(command: DocumentCommand, selection: DocumentSelection):
   Extract<DocumentTableCommand, { id: 'doc.command.table-set-cell-text' | 'doc.command.table-set-range-text' }> | undefined {
   if (command.id === 'doc.command.table-set-cell-text' || command.id === 'doc.command.table-set-range-text') return command
-  if (!selection.tableSelection || command.id !== 'doc.command.insert-text' && command.id !== 'doc.command.delete') return undefined
+  if (!selection.tableSelection || !documentContentControlCommandUsesWholeCellInput(command, selection)
+    || command.id !== 'doc.command.insert-text' && command.id !== 'doc.command.delete') return undefined
   return { id: 'doc.command.table-set-range-text', tableId: selection.tableSelection.tableId, range: selection.tableSelection.range,
     mode: command.id === 'doc.command.delete' || !command.text ? 'clear' : 'replace',
     ...(command.id === 'doc.command.insert-text' ? { text: command.text, marks: command.marks } : {}) }
