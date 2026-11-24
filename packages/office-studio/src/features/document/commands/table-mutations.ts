@@ -33,6 +33,7 @@ import { copyDocumentBlocksForPaste } from '../services/document-block-paste'
 import { applyDocumentPasteDestinationStyle, type DocumentPasteDestinationStyle } from '../services/document-clipboard'
 import { validateDocumentRunPatch } from '../model/document-run-range'
 import { documentTableCellBlocks, documentTableCellContentContainers, documentTableContinuationEntries, rebindDocumentTableContinuations } from '../model/document-table-continuations'
+import type { DocumentContentControlBindingOriginTextEdit } from '../services/content-control-bindings'
 
 export interface DocumentTableMutationTarget { blockId: string; range: DocumentTableCellRange }
 export interface DocumentTableMutationPlan { model: DocumentModel; selection: DocumentSelection; changed: boolean }
@@ -458,6 +459,25 @@ function tableRangeTextEdits(grid: DocumentTableGrid, range: DocumentTableCellRa
     edited.set(owner.cell.id, { owner, text })
   }
   return [...edited.values()]
+}
+
+/** Reuse the cell text planner's actual ranges; a facade/UI selection can address a different cell. */
+export function documentTableTextInputEdits(model: DocumentModel,
+  command: Extract<DocumentTableCommand, { id: 'doc.command.table-set-cell-text' | 'doc.command.table-set-range-text' }>,
+  target: DocumentTableMutationTarget): DocumentContentControlBindingOriginTextEdit[] {
+  const block = findDocumentBlock(model, target.blockId), table = block && tableForBlock(block)
+  if (!table) throw new RangeError('表格输入的实际目标不存在。')
+  const grid = documentTableGrid(table), paragraphs = documentTextFieldParagraphs(model)
+  const owner = command.id === 'doc.command.table-set-cell-text' ? grid.cellAt(command.row, command.column) : undefined
+  const edits = command.id === 'doc.command.table-set-cell-text'
+    ? owner ? [{ owner, text: command.text }] : [] : tableRangeTextEdits(grid, target.range, command)
+  if (command.id === 'doc.command.table-set-cell-text' && !owner) throw new RangeError('表格输入的实际单元格不存在。')
+  return edits.flatMap(edit => {
+    const ids = new Set(allBlocks(documentTableCellBlocks(edit.owner.cell)).map(block => block.id))
+    const inputs = paragraphs.filter(paragraph => ids.has(paragraph.block.id)), first = inputs[0], last = inputs.at(-1)
+    if (!first || !last) return []
+    return [{ startOffset: first.absoluteStart, endOffset: last.absoluteEnd, text: edit.text.replace(/\r\n?/g, '\n') }]
+  })
 }
 
 function setCellText(model: DocumentModel, blockId: string, grid: DocumentTableGrid, row: number, column: number, text: string, marks?: Extract<DocumentTableCommand, { id: 'doc.command.table-set-range-text' }>['marks']): DocumentSelection {

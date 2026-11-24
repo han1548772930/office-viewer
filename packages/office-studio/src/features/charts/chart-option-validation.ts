@@ -108,15 +108,15 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   }
   const waterfall = options.waterfall
   if (waterfall) {
-    boolean(waterfall.connector, '瀑布图连接线'); color(waterfall.positiveColor, '瀑布图增加颜色'); color(waterfall.negativeColor, '瀑布图减少颜色'); color(waterfall.totalColor, '瀑布图合计颜色')
+    enumeration(waterfall.stackType, ['arrangement', 'stacked'], '瀑布图排列方式'); boolean(waterfall.useSubtotal, '瀑布图自动合计')
+    if (waterfall.connector !== undefined && typeof waterfall.connector !== 'boolean') line(waterfall.connector, '瀑布图连接线')
+    color(waterfall.positiveColor, '瀑布图增加颜色'); color(waterfall.negativeColor, '瀑布图减少颜色'); color(waterfall.totalColor, '瀑布图合计颜色')
+    waterfallStyles(waterfall.styles, '瀑布图共享角色样式')
     optionalArray(waterfall.pointRoles, '瀑布图项目含义')
-    const roles = new Set<string>()
+    if (waterfall.stackType === 'stacked' && waterfall.pointRoles?.length) throw new TypeError('堆积瀑布图不能指定源项目含义。请先切换为排列瀑布图。')
     waterfall.pointRoles?.forEach(role => {
       plain(role, '瀑布图项目含义'); integer(role.seriesIndex, 0, 1_048_575, '瀑布图系列字段'); integer(role.dataPointIndex, 0, 1_048_575, '瀑布图项目索引')
       requiredEnum(role.role, ['change', 'total'], '瀑布图项目含义')
-      const key = `${role.seriesIndex}:${role.dataPointIndex}`
-      if (roles.has(key)) throw new RangeError('同一瀑布图项目不能重复配置含义。')
-      roles.add(key)
     })
   }
   const pareto = options.pareto
@@ -252,9 +252,11 @@ function axis(value: ChartAxisOptions | undefined, name: string): void {
   line(value.line, `${name}轴线`); line(value.gridLine, `${name}网格线`); font(value.label, `${name}标签`); boolean(value.label?.visible, `${name}标签显隐`); optionalNumber(value.label?.rotate, -90, 90, `${name}标签旋转`)
   line(value.tick, `${name}刻度线`); optionalNumber(value.tick?.length, 0, 50, `${name}刻度线长度`); enumeration(value.tick?.position, ['inside', 'outside'], `${name}刻度位置`)
 }
-function series(value: ChartSeriesOptions | undefined, name: string): void {
+function series(value: ChartSeriesOptions | undefined, name: string, allowWaterfallStyles = true): void {
   optionalObject(value, name)
   if (!value) return
+  if (!allowWaterfallStyles && Object.hasOwn(value, 'waterfallStyles')) throw new TypeError(`${name}不能嵌套 waterfallStyles。`)
+  if (allowWaterfallStyles) waterfallStyles(value.waterfallStyles, `${name}瀑布图角色样式`)
   string(value.name, `${name}名称`); enumeration(value.type, ['column', 'columnStacked', 'line', 'area', 'areaStacked'], `${name}图型`); seriesColor(value.color, `${name}颜色`); optionalNumber(value.fillOpacity, 0, 1, `${name}填充不透明度`); boolean(value.rightAxis, `${name}右轴`)
   fillPattern(value.fillPattern, `${name}填充纹理`)
   line(value.border, `${name}边框`); label(value.label, `${name}标签`); optionalObject(value.point, `${name}标记`)
@@ -268,6 +270,14 @@ function series(value: ChartSeriesOptions | undefined, name: string): void {
       fillPattern(point.fillPattern, `${name}项目填充纹理`)
       enumeration(point.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}项目标记形状`)
     }
+  }
+}
+function waterfallStyles(value: ChartSeriesOptions['waterfallStyles'], name: string): void {
+  optionalObject(value, name)
+  if (!value) return
+  for (const [target, style] of Object.entries(value)) {
+    requiredEnum(target, ['positive', 'negative', 'subtotal'], `${name}目标`)
+    series(style, `${name}.${target}`, false)
   }
 }
 function fillPattern(value: ChartSeriesFillPattern | null | undefined, name: string): void {

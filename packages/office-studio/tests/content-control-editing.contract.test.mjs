@@ -36,6 +36,7 @@ function input(model, sourceSelection, text, options = {}) {
   const prepared = editing.prepareDocumentContentControlTextInputSelection(before, sourceSelection,
     options.activeControlId ? { controlId: options.activeControlId } : {})
   const caret = commands.executeDocumentCommand(draft, prepared, { id: 'doc.command.insert-text', text,
+    ...(options.activeControlId ? { activeContentControlId: options.activeControlId } : {}),
     ...(options.host ? { host: options.host } : {}) })
   const result = editing.synchronizeDocumentContentControlsAfterEdit(before, draft, {
     origin: 'text-input', selection: prepared, ...(options.activeControlId ? { activeControlId: options.activeControlId } : {}),

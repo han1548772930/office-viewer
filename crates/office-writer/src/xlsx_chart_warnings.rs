@@ -2,7 +2,7 @@
 //! Retaining authored settings is not a claim that Office renders them.
 
 use crate::{ExportError, ExportWarning};
-use office_io_common::chart_options::{Axis, Label, Series};
+use office_io_common::chart_options::{Axis, ChartColor, Label, Series};
 use serde_json::{Map, Value};
 use super::{ChartInput, native_chart_kind};
 
@@ -50,6 +50,7 @@ pub(super) fn append(chart: &ChartInput, warnings: &mut Vec<ExportWarning>) -> R
     series_warnings(options.all_series_style.as_ref(), kind.pie, chart, warnings);
     for series in options.series.values() { series_warnings(Some(series), kind.pie, chart, warnings); }
     for entry in &options.named_series { series_warnings(Some(&entry.style), kind.pie, chart, warnings); }
+    paint_warnings(chart, kind, warnings);
     let unmapped = unmapped_paths(chart)?;
     if !unmapped.is_empty() {
         report(warnings, "CHART_NATIVE_UNMAPPED_SETTING", format!("native settings adapters have not mapped {}", unmapped.join(", ")));
@@ -61,6 +62,36 @@ pub(super) fn append(chart: &ChartInput, warnings: &mut Vec<ExportWarning>) -> R
     let mut seen = std::collections::BTreeSet::new();
     warnings.retain(|warning| seen.insert((warning.code, warning.message.clone())));
     Ok(())
+}
+
+fn paint_warnings(chart: &ChartInput, kind: office_io_common::chart_kind::NativeChartKind, warnings: &mut Vec<ExportWarning>) {
+    let styles = chart.options.all_series_style.iter().chain(chart.options.series.values()).chain(chart.options.named_series.iter().map(|entry| &entry.style));
+    let mut explicit = false;
+    let mut geometry = false;
+    let mut patterned_line = false;
+    for style in styles {
+        let is_line = style.kind.as_deref().unwrap_or(&chart.chart_type) == "line" || matches!(kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart");
+        patterned_line |= is_line && style.fill_pattern.as_ref().and_then(Option::as_ref).is_some();
+        for color in style.color.iter().chain(style.data_points.values().filter_map(|point| point.color.as_ref())) {
+            if let ChartColor::LinearGradient(gradient) = color {
+                explicit = true;
+                let horizontal = gradient.start.y == gradient.end.y && gradient.start.x.min(gradient.end.x) == 0.0 && gradient.start.x.max(gradient.end.x) == 1.0;
+                let vertical = gradient.start.x == gradient.end.x && gradient.start.y.min(gradient.end.y) == 0.0 && gradient.start.y.max(gradient.end.y) == 1.0;
+                geometry |= !horizontal && !vertical;
+            }
+        }
+        patterned_line |= is_line && style.data_points.values().any(|point| point.fill_pattern.as_ref().and_then(Option::as_ref).is_some());
+    }
+    let report = |warnings: &mut Vec<ExportWarning>, code, message| warnings.push(ExportWarning::new(code,
+        format!("Chart {}: {message}; exact authored paints remain in the signature-bound source manifest", chart.id)));
+    if geometry { report(warnings, "CHART_NATIVE_GRADIENT_GEOMETRY", "DrawingML uses a quantized linear angle and a native fill rectangle; diagonal or nonstandard editor vectors need independent visual verification"); }
+    if (explicit || super::paint::automatic_enabled(chart)) && (kind.pie || kind.three_d || matches!(kind.plot, "areaChart" | "area3DChart")) {
+        report(warnings, "CHART_NATIVE_GRADIENT_FILL_BOUNDS", "native pie, 3D and area fill bounds can differ from the editor's mark or plot bounds");
+    }
+    if chart.options.auto_gradient_fill == Some(true) && !matches!(kind.plot, "barChart" | "bar3DChart" | "areaChart" | "area3DChart" | "lineChart" | "line3DChart" | "pieChart" | "pie3DChart" | "doughnutChart" | "ofPieChart") {
+        report(warnings, "CHART_NATIVE_AUTOMATIC_GRADIENT_UNMAPPED", "this native plot has no automatic-gradient paint adapter yet");
+    }
+    if patterned_line { report(warnings, "CHART_NATIVE_PATTERNED_LINE_STROKE", "the editor texture setting paints fills and markers; a patterned native line stroke still requires its own adapter"); }
 }
 
 /// Compare retained source controls with the typed native surface. The raw

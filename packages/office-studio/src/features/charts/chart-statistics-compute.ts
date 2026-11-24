@@ -15,6 +15,7 @@ import { formatChartTrendlineEquation, type HistogramBin, type ChartErrorInterva
 import { assertChartPreparationCurrent, assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPreparation,
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 import { estimateChartDecodedMemory } from './chart-compute-memory'
+import { decodeChartWaterfallLayoutSteps } from './chart-waterfall-compute'
 
 export interface ChartStatisticsPlan {
   task: ChartStatisticsTask | null
@@ -23,6 +24,8 @@ export interface ChartStatisticsPlan {
   categoryDictionary: string[]
   trendlineCount: number
   errorBarCount: number
+  /** Retained authoring metadata; input TypedArrays may be detached after transfer. */
+  waterfallTotals?: ReadonlyMap<number, ReadonlySet<number>>
 }
 
 interface ColumnSource { at(row: number): number | null }
@@ -47,6 +50,7 @@ function* chartStatisticsTaskSteps(data: ChartData, chart: ChartModel, context: 
   if (!data.series.length || !rowCount) return { task: null, preparedData: data, categoryDictionary: [], trendlineCount, errorBarCount }
   const columns: ColumnSource[] = [], numericColumns = new Map<readonly (number | null)[], number>(), customColumns = new Map<number, number>()
   const series: ChartStatisticsParams['series'] = [], seriesIndexes = new Map<number, number>(), jobs: ChartStatisticsJob[] = []
+  let waterfallTotals: Map<number, Set<number>> | undefined
   let work = 0
   const addColumn = (source: ColumnSource): number => {
     if (columns.length >= CHART_COMPUTE_LIMITS.maxColumns) throw new ComputeError('COMPUTE_MEMORY_LIMIT', '图表统计输入列数量超出预算')
@@ -94,14 +98,25 @@ function* chartStatisticsTaskSteps(data: ChartData, chart: ChartModel, context: 
     for (let position = 0; position < data.series.length; position++) addJob({ kind: 'boxplot', seriesIndex: addSeries(position), slot: position,
       quartileMethod: chart.options?.boxplot?.quartileMethod ?? 'inclusive', whiskerMultiplier: chart.options?.boxplot?.whiskerMultiplier ?? 1.5 })
   } else if (chart.type === 'waterfall') {
+    const roles = new Map<number, Map<number, 'change' | 'total'>>()
+    for (const role of chart.options?.waterfall?.pointRoles ?? []) {
+      const group = roles.get(role.seriesIndex) ?? new Map<number, 'change' | 'total'>()
+      group.set(role.dataPointIndex, role.role); roles.set(role.seriesIndex, group)
+      if (++work % CHART_PREPARATION_CHUNK === 0) yield
+    }
+    waterfallTotals = new Map()
+    const requested: number[] = [], totalColumns: Array<number | null> = []
     for (let position = 0; position < data.series.length; position++) {
       const input = data.series[position]!, totals = new Set<number>()
-      for (const role of chart.options?.waterfall?.pointRoles ?? []) {
-        if (role.seriesIndex === input.field && role.role === 'total' && role.dataPointIndex < rowCount) totals.add(role.dataPointIndex)
-      }
-      const totalColumn = totals.size ? addColumn({ at: row => totals.has(row) ? 1 : 0 }) : undefined
-      addJob({ kind: 'waterfall', seriesIndex: addSeries(position), slot: position, ...(totalColumn === undefined ? {} : { totalColumn }) })
+      for (const [dataPointIndex, role] of roles.get(input.field) ?? []) if (role === 'total' && dataPointIndex < rowCount) totals.add(dataPointIndex)
+      waterfallTotals.set(position, totals)
+      requested.push(addSeries(position))
+      totalColumns.push(totals.size ? addColumn({ at: row => totals.has(row) ? 1 : 0 }) : null)
+      if (++work % CHART_PREPARATION_CHUNK === 0) yield
     }
+    addJob({ kind: 'waterfallLayout', seriesIndex: requested[0]!, seriesIndices: requested, slot: 0,
+      stackType: chart.options?.waterfall?.stackType ?? 'arrangement', useSubtotal: chart.options?.waterfall?.useSubtotal ?? true,
+      ...(totalColumns.some(column => column !== null) ? { totalColumns } : {}) })
   }
   for (const [slot, config] of (chart.options?.trendlines ?? []).entries()) {
     for (let position = 0; position < data.series.length; position++) {
@@ -123,7 +138,7 @@ function* chartStatisticsTaskSteps(data: ChartData, chart: ChartModel, context: 
         }) })
     }
   }
-  const plan: ChartStatisticsPlan = { task: null, preparedData: data, categoryDictionary: [], trendlineCount, errorBarCount }
+  const plan: ChartStatisticsPlan = { task: null, preparedData: data, categoryDictionary: [], trendlineCount, errorBarCount, waterfallTotals }
   if (!jobs.length) return plan
   const params: ChartStatisticsParams = { rowCount, columnCount: columns.length, categoryCount: rowCount ? 1 : 0, series, jobs }
   if (!isChartStatisticsParams(params)) throw new ComputeError('COMPUTE_INVALID_INPUT', '图表统计字段、配置或样本维度无效')
@@ -144,7 +159,7 @@ function* chartStatisticsTaskSteps(data: ChartData, chart: ChartModel, context: 
     const offset = column * rowCount
     for (let row = 0; row < rowCount; row++) {
       const value = columns[column]!.at(row)
-      if (value === null) states[offset + row] = CELL_STATE.empty
+      if (value === null || chart.type === 'waterfall' && !Number.isFinite(value)) states[offset + row] = CELL_STATE.empty
       else {
         if (!Number.isFinite(value)) throw new ComputeError('COMPUTE_INVALID_INPUT', '图表数值输入必须有限或为空')
         values[offset + row] = value; states[offset + row] = CELL_STATE.number
@@ -249,6 +264,10 @@ function* decodeChartStatisticsSteps(plan: ChartStatisticsPlan, raw: unknown, co
           if (++work % CHART_PREPARATION_CHUNK === 0) yield
         }
         ;(result.waterfalls ??= []).push({ field: segment.field, seriesPosition: segment.seriesPosition, points })
+        break
+      }
+      case 'waterfallLayout': {
+        result.waterfallLayout = yield* decodeChartWaterfallLayoutSteps(plan, output, segment, job)
         break
       }
       case 'trendline': {

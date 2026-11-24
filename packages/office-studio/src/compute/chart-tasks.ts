@@ -3,6 +3,7 @@ import { COMPUTE_LIMITS, isRecord } from './protocol.ts'
 import { CHART_COMPUTE_LIMITS } from './chart-protocol.ts'
 import type { ChartStatisticsJob, ChartStatisticsParams, ChartStatisticsSeries, ChartStatisticsTask } from './chart-protocol.ts'
 import { isUnsignedCount } from '../platform/wasm/task-protocol.ts'
+import { isBoundedDenseArray } from './array-shape.ts'
 
 const keys = (value: Record<string, unknown>, allowed: readonly string[]): boolean => Object.keys(value).every(key => allowed.includes(key))
 const index = (value: unknown, maximum = 0xffff_ffff): value is number => isUnsignedCount(value) && value <= maximum
@@ -41,6 +42,14 @@ function isJob(value: unknown): value is ChartStatisticsJob {
       return keys(value, [...common, 'includeZeroValues']) && typeof value.includeZeroValues === 'boolean'
     case 'waterfall':
       return keys(value, [...common, 'totalColumn']) && optionalIndex(value.totalColumn)
+    case 'waterfallLayout':
+      return keys(value, [...common, 'seriesIndices', 'stackType', 'useSubtotal', 'totalColumns'])
+        && isBoundedDenseArray(value.seriesIndices, CHART_COMPUTE_LIMITS.maxSeries,
+          (item): item is number => index(item, CHART_COMPUTE_LIMITS.maxSeries - 1), 1)
+        && new Set(value.seriesIndices).size === value.seriesIndices.length && value.seriesIndices[0] === value.seriesIndex
+        && oneOf(value.stackType, ['arrangement', 'stacked']) && typeof value.useSubtotal === 'boolean'
+        && (value.totalColumns === undefined || isBoundedDenseArray(value.totalColumns, CHART_COMPUTE_LIMITS.maxSeries,
+          (item): item is number | null => item === null || index(item)) && value.totalColumns.length === value.seriesIndices.length)
     case 'trendline':
       return keys(value, [...common, 'type', 'order', 'period']) && oneOf(value.type, ['exp', 'linear', 'log', 'movingAvg', 'poly', 'pow'])
         && optionalInteger(value.order, 2, 6) && optionalInteger(value.period, 2, 100_000)
@@ -56,8 +65,8 @@ export function isChartStatisticsParams(value: unknown): value is ChartStatistic
   if (!isRecord(value) || !keys(value, ['rowCount', 'columnCount', 'categoryCount', 'series', 'jobs'])
     || !index(value.rowCount, COMPUTE_LIMITS.maxRows) || !index(value.columnCount, CHART_COMPUTE_LIMITS.maxColumns) || value.columnCount === 0
     || !index(value.categoryCount, value.rowCount) || (value.rowCount === 0 ? value.categoryCount !== 0 : value.categoryCount === 0)
-    || !Array.isArray(value.series) || value.series.length > CHART_COMPUTE_LIMITS.maxSeries || !value.series.every(isSeries)
-    || !Array.isArray(value.jobs) || value.jobs.length > CHART_COMPUTE_LIMITS.maxJobs || !value.jobs.every(isJob)
+    || !isBoundedDenseArray(value.series, CHART_COMPUTE_LIMITS.maxSeries, isSeries)
+    || !isBoundedDenseArray(value.jobs, CHART_COMPUTE_LIMITS.maxJobs, isJob)
     || value.rowCount * value.columnCount > COMPUTE_LIMITS.maxElements) return false
   const positions = new Set<number>(), slots = new Set<string>()
   for (const series of value.series) {
@@ -69,6 +78,13 @@ export function isChartStatisticsParams(value: unknown): value is ChartStatistic
     if (slots.has(slot) || job.seriesIndex >= value.series.length) return false
     slots.add(slot)
     if (job.kind === 'waterfall' && job.totalColumn !== undefined && job.totalColumn >= value.columnCount) return false
+    if (job.kind === 'waterfallLayout' && (job.seriesIndices.some(item => item >= value.series.length)
+      || job.totalColumns?.some(column => column !== null && column >= value.columnCount))) return false
+    if (job.kind === 'waterfallLayout') {
+      const sourcePoints = value.rowCount * job.seriesIndices.length
+      const points = value.rowCount === 0 ? 0 : sourcePoints + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)
+      if (points > 0xffff_ffff) return false
+    }
     if (job.kind === 'errorBars') {
       if (job.direction === 'x' && value.series[job.seriesIndex]?.xColumn === undefined) return false
       if (job.valueType === 'cust') {
@@ -94,6 +110,11 @@ export function chartOutputCapacity(job: ChartStatisticsJob, rows: number): { va
     case 'boxplot': return { values: rows + 5, indices: 0, scratch: rows * 8 }
     case 'pareto': return { values: rows * 2, indices: rows, scratch: rows * 16 }
     case 'waterfall': return { values: rows * 3, indices: rows * 2, scratch: 0 }
+    case 'waterfallLayout': {
+      const points = rows === 0 ? 0 : rows * job.seriesIndices.length + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)
+      const connectors = Math.max(0, (job.stackType === 'stacked' ? rows : rows * job.seriesIndices.length) - 1)
+      return { values: 1 + points * 3 + connectors * 2, indices: 2 + points * 4 + connectors * 2, scratch: 0 }
+    }
     case 'trendline': return job.type === 'movingAvg'
       ? { values: rows * 2, indices: 0, scratch: Math.min(rows, job.period ?? 2) * 112 }
       : { values: 33 * 2, indices: 0, scratch: rows * 16 + 4096 }
@@ -111,6 +132,7 @@ export function estimateChartTaskMemory(params: ChartStatisticsParams): {
   }
   const outputBytes = valueCapacity * 8 + indexCapacity * 4
   const controls = params.series.length * 32 + params.jobs.length * 512
+    + params.jobs.reduce((sum, job) => sum + (job.kind === 'waterfallLayout' ? job.seriesIndices.length * 4 + (job.totalColumns?.length ?? 0) * 8 : 0), 0)
   return { inputBytes, outputBytes, valueCapacity, indexCapacity,
     estimatedPeakBytes: inputBytes * 2 + outputBytes * 2 + scratch + CHART_COMPUTE_LIMITS.scratchAllowance
       + controls + CHART_COMPUTE_LIMITS.runtimeAllowance }

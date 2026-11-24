@@ -9,6 +9,7 @@ import { selectionFontPatch } from '../features/document/model/document-font'
 import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import type { ApiEventMap } from '../api/events'
+import { applyDocumentEditorCommand } from '../api/document-editor-commands'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
 import DocumentContentControlPanel from './document/DocumentContentControlPanel.vue'
@@ -59,8 +60,9 @@ import { selectedDocumentContentControl } from '../features/document/services/co
 import { CONTENT_CONTROL_CHECKBOX_STYLES, CONTENT_CONTROL_DATE_FORMATS, contentControlCheckboxStyle } from '../features/document/services/content-control-presentation'
 import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
 import { contentControlValueCommandState } from '../features/document/commands/content-control-command-state'
-import { documentContentControlInteractionCurrent } from '../features/document/controllers/content-control-interaction'
-import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
+import { documentContentControlInteractionCurrent, documentContentControlSelectionAfterValueEdit } from '../features/document/controllers/content-control-interaction'
+import { documentContentControlCommandIsTextInput, resolveDocumentContentControlTextInputId } from '../features/document/services/content-control-editing'
+import { codeBlockData, exitCodeBlock, insertCodeBlock, updateCodeBlock, updateCodeBlockWithSelection, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
 import { createDocumentThreadComment, documentCommentAnchorsForSelection, documentCommentTableSelection, deleteDocumentCommentMessage, deleteDocumentThreadComment, editDocumentCommentMessage, replyToDocumentThreadComment, setDocumentThreadCommentResolved } from '../features/document/comments/thread-comments.ts'
@@ -73,8 +75,7 @@ import { createRibbonTranslator, provideWorkbenchRegionalSettings } from '../i18
 import { captureDocumentFormat, documentPainterTarget, type DocumentPainterFormat } from '../features/document/services/document-format-painter'
 import { documentClearFormattingState, prepareDocumentStoryClearFormatting } from '../features/document/services/document-clear-formatting'
 import { documentStoryTextFormattingState, prepareDocumentStoryTextFormatting } from '../features/document/services/document-story-formatting'
-import { assertDocumentTextSelectionEditable, documentTextFormattingState } from '../features/document/services/document-text-formatting'
-import { validateDocumentRunPatch } from '../features/document/model/document-run-range'
+import { documentTextFormattingState } from '../features/document/services/document-text-formatting'
 import { DOCUMENT_STORY_KEYS, clampDocumentTextRange, type DocumentStoryKey, type DocumentStoryRange } from '../features/document/model/document-story'
 import type { DocumentInputSession, DocumentStoryInputCommit } from '../features/document/model/document-input-session'
 import { sanitizeDocumentInputSelection } from '../features/document/model/document-input-session'
@@ -812,20 +813,11 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
       if (command.id !== 'doc.command.refresh-header-footer-fields') return false
       return refreshStandaloneDocumentFieldCaches(command.locale, command.timestamp, feedback)
     }
-    if (!documentApi && !selection.value.tableSelection && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.delete')) {
-      assertDocumentTextSelectionEditable(editingModel.value, selection.value)
-      const next = cloneDocument(model.value), scoped = editingCandidate(next)
-      const marks = command.id === 'doc.command.insert-text' ? { ...pendingMarks.value, ...command.marks } : undefined
-      if (marks) validateDocumentRunPatch(marks)
-      const codeSelection = command.id === 'doc.command.insert-text'
-        ? editCodeBlockText(scoped, selection.value, { text: command.text, marks })
-        : editCodeBlockText(scoped, selection.value, { deleteDirection: command.direction })
-      if (codeSelection) {
-        selection.value = codeSelection
-        if (JSON.stringify(scoped) !== JSON.stringify(editingModel.value) && !publishEditingCandidate(next, scoped, command.id === 'doc.command.insert-text')) return false
-        if (restoreFocus) scheduleInputFocus(() => canvasRef.value?.focus())
-        return true
-      }
+    const textInput = documentContentControlCommandIsTextInput(command)
+    if (textInput) {
+      const controlId = resolveDocumentContentControlTextInputId(editingModel.value, selection.value,
+        command.activeContentControlId ?? activeContentControlId.value)
+      command = { ...command, activeContentControlId: controlId }
     }
     const clearedStory = command.id === 'doc.command.clear-formatting' && command.story
       ? prepareDocumentStoryClearFormatting(model.value, command.story, permissionContext.value)?.range : undefined
@@ -861,8 +853,15 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
       }
     } else {
       const next = cloneDocument(model.value)
-      selection.value = executeDocumentCommand(next, selection.value, nextCommand, permissionContext.value)
+      selection.value = applyDocumentEditorCommand(next, { unitId: next.id ?? '', selection: selection.value, command: nextCommand }, permissionContext.value)
       if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next, command.id === 'doc.command.insert-text')
+    }
+    if (textInput) {
+      const control = editingModel.value.contentControls?.find(control => control.id === command.activeContentControlId)
+      activeContentControlId.value = control && !selection.value.tableSelection && sameTarget(selection.value.anchor, selection.value.focus)
+        && (selection.value.focus.cellBlockId ?? selection.value.focus.blockId) === control.blockId
+        && selection.value.anchor.offset >= control.startOffset && selection.value.anchor.offset <= control.endOffset
+        && selection.value.focus.offset >= control.startOffset && selection.value.focus.offset <= control.endOffset ? control.id : undefined
     }
     if (command.id === 'doc.command.clear-formatting') {
       clearInputMarks(); painter.value = undefined
@@ -893,11 +892,15 @@ function applyCodeBlock(data: DocumentCodeBlockData) {
   if (legacyStoryActive.value) activateStoryBlockEditing()
   if (!canEditContextSelection.value) return
   if (!canDocumentPermission('edit', permissionTargetsForSelection(editingModel.value, selection.value))) return
-  const next = cloneDocument(model.value), scoped = editingCandidate(next)
+  const next = cloneDocument(model.value)
+  let scoped = editingCandidate(next)
   try {
     const existing = blockAtPoint(scoped, selection.value.focus)
     if (existing && codeBlockData(existing)) {
-      updateCodeBlock(scoped, existing.id, data)
+      const result = updateCodeBlockWithSelection(next, existing.id, data, selection.value, permissionContext.value)
+      if (!result.changed) { codeBlockPanelOpen.value = false; return }
+      if (result.selection) selection.value = result.selection
+      scoped = editingCandidate(next)
     } else {
       const block = insertCodeBlock(scoped, selection.value.focus.cellBlockId ?? selection.value.focus.blockId, data.source, data.language)
       updateCodeBlock(scoped, block.id, data)
@@ -1035,11 +1038,11 @@ function onContentControlCommand(request: DocumentContentControlCommandRequest) 
     // General history publication invalidates the captured session without
     // changing its generation. An observer selection/edit must keep its caret.
     if (api.getModelRevision() !== session.modelRevision + (changed ? 1 : 0) || latest?.generation !== session.generation) return
-    const control = editingModel.value.contentControls?.find(control => control.id === request.controlId)
-    const target = control && textTargets(editingModel.value).find(target => (target.cellBlockId ?? target.blockId) === control.blockId)
-    if (control && target) {
-      onSelection({ anchor: { ...target, offset: control.startOffset }, focus: { ...target, offset: control.endOffset } })
-      activeContentControlId.value = control.id
+    const current = api.getModel(), nextSelection = documentContentControlSelectionAfterValueEdit(request, current)
+    if (nextSelection) {
+      model.value = current
+      onSelection(nextSelection)
+      activeContentControlId.value = current.contentControls?.some(control => control.id === request.controlId) ? request.controlId : undefined
     }
   } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
 }
@@ -1545,11 +1548,11 @@ function replaceCurrent() {
   if (!match) { findNext(); return }
   if (!canDocumentPermission('edit', searchPermissionTargets([match]))) return
   try {
-    const next = cloneDocument(model.value), scoped = editingCandidate(next)
-    const range = replaceDocumentMatches(scoped, [match], replaceText.value, permissionContext.value)
+    const next = cloneDocument(model.value)
+    const range = replaceDocumentMatches(next, [match], replaceText.value, permissionContext.value, editingHost.value)
     if (!range) return
     selection.value = range
-    if (!publishEditingCandidate(next, scoped)) return
+    if (!publishEditingCandidate(next, editingCandidate(next))) return
     searchInSelection.value = false
     void nextTick(() => canvasRef.value?.focus())
   } catch (error) {
@@ -1560,11 +1563,11 @@ function replaceAll() {
   const matches = searchMatches.value
   if (!matches.length || !canDocumentPermission('edit', searchPermissionTargets(matches))) return
   try {
-    const next = cloneDocument(model.value), scoped = editingCandidate(next)
-    const range = replaceDocumentMatches(scoped, matches, replaceText.value, permissionContext.value)
+    const next = cloneDocument(model.value)
+    const range = replaceDocumentMatches(next, matches, replaceText.value, permissionContext.value, editingHost.value)
     if (!range) return
     selection.value = range
-    if (!publishEditingCandidate(next, scoped)) return
+    if (!publishEditingCandidate(next, editingCandidate(next))) return
     searchInSelection.value = false
     void nextTick(() => canvasRef.value?.focus())
   } catch (error) {

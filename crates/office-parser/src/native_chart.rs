@@ -7,6 +7,9 @@ use office_io_common::chart_options::{self as config, Axis, AxisLabel, AxisTick,
 use office_io_common::chart_xml::{self, Node};
 use crate::model::{AnchorCellPayload, ChartErrorBarPayload, ChartPayload, ChartSeriesPayload};
 
+#[path = "native_chart_paint.rs"]
+mod paint;
+
 pub(crate) struct NativeChart {
     pub(crate) payload: ChartPayload,
     pub(crate) pivot_source_name: Option<String>,
@@ -18,7 +21,8 @@ fn property(node: &Node, name: &str) -> Option<f64> { number(node.value(name)) }
 
 fn color(node: Option<&Node>, theme: &HashMap<String, String>) -> Option<(String, f64)> {
     let fill = node?;
-    let value = fill.child("srgbClr").or_else(|| fill.child("schemeClr")).or_else(|| fill.child("sysClr"))?;
+    let drawing = |name: &str| fill.children.iter().find(|child| child.name == name && child.namespace.as_deref() == Some(chart_xml::DRAWING_NS));
+    let value = drawing("srgbClr").or_else(|| drawing("schemeClr")).or_else(|| drawing("sysClr"))?;
     let hex = if value.name == "schemeClr" { theme.get(value.attrs.get("val")?).map(String::as_str) }
         else if value.name == "sysClr" { value.attrs.get("lastClr").map(String::as_str) }
         else { value.attrs.get("val").map(String::as_str) }?;
@@ -28,6 +32,7 @@ fn color(node: Option<&Node>, theme: &HashMap<String, String>) -> Option<(String
     for (index, channel) in channels.iter_mut().enumerate() { *channel = f64::from(u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?) / 255.0; }
     let mut alpha = 1.0;
     for transform in &value.children {
+        if transform.namespace.as_deref() != Some(chart_xml::DRAWING_NS) { continue; }
         let amount = number(transform.attrs.get("val").map(String::as_str)).unwrap_or(0.0) / 100_000.0;
         match transform.name.as_str() {
             "alpha" => alpha = amount, "alphaMod" => alpha *= amount, "alphaOff" => alpha += amount,
@@ -163,27 +168,29 @@ fn formula(node: Option<&Node>) -> Option<String> {
 
 fn plot_kind(plot: &Node) -> Option<String> { model_chart_kind(&plot.name, plot.value("grouping"), plot.value("barDir"), plot.value("ofPieType")).map(str::to_owned) }
 
-fn series_options(series: &Node, plot: &Node, theme: &HashMap<String, String>, secondary: bool) -> Series {
+fn series_options(series: &Node, plot: &Node, theme: &HashMap<String, String>, secondary: bool) -> Result<Series, String> {
     let shape = series.child("spPr");
-    let fill = color(shape.and_then(|shape| shape.child("solidFill")), theme);
+    let fill = paint::read(shape, theme)?;
     let border = shape.and_then(|shape| read_line(shape.child("ln"), theme));
     let line = matches!(plot.name.as_str(), "lineChart" | "line3DChart" | "scatterChart" | "stockChart");
+    let stroke = paint::read(shape.and_then(|shape| shape.child("ln")), theme)?;
+    let effective = if line && stroke.color.is_some() { stroke } else { fill };
     let kind = plot_kind(plot).and_then(|kind| match kind.as_str() { "bar" => Some("column"), "stacked-column" => Some("columnStacked"), "line" => Some("line"), "area" => Some("area"), "areaStacked" => Some("areaStacked"), _ => None }).map(str::to_owned);
     let mut options = Series { name: series.child("tx").map(plain_text).filter(|name| !name.is_empty()), kind,
-        color: if line { border.as_ref().and_then(|line| line.color.clone()).or_else(|| fill.as_ref().map(|fill| fill.0.clone())) } else { fill.as_ref().map(|fill| fill.0.clone()) },
-        fill_opacity: fill.map(|fill| fill.1), border, point: read_marker(series.child("marker"), theme),
+        color: effective.color, fill_opacity: effective.opacity, fill_pattern: effective.pattern.map(Some), border, point: read_marker(series.child("marker"), theme),
         right_axis: Some(secondary), label: read_label(series.child("dLbls").or_else(|| plot.child("dLbls")), theme), ..Default::default() };
     for point in series.children_named("dPt") {
         let Some(index) = point.value("idx").and_then(|index| index.parse::<usize>().ok()) else { continue; };
-        let fill = color(point.child("spPr").and_then(|shape| shape.child("solidFill")), theme);
+        let mut fill = paint::read(point.child("spPr"), theme)?;
+        if fill.color.is_none() { fill = paint::read(point.child("marker").and_then(|marker| marker.child("spPr")), theme)?; }
         let marker = read_marker(point.child("marker"), theme);
-        options.data_points.insert(index, Point { color: fill.as_ref().map(|fill| fill.0.clone()).or_else(|| marker.as_ref().and_then(|marker| marker.color.clone())), fill_opacity: fill.map(|fill| fill.1),
+        options.data_points.insert(index, Point { color: fill.color.or_else(|| marker.as_ref().and_then(|marker| marker.color.clone()).map(config::ChartColor::from)), fill_opacity: fill.opacity, fill_pattern: fill.pattern.map(Some),
             size: marker.as_ref().and_then(|marker| marker.size), shape: marker.and_then(|marker| marker.shape), border: point.child("spPr").and_then(|shape| read_line(shape.child("ln"), theme)), ..Default::default() });
     }
-    options
+    Ok(options)
 }
 
-fn series_payload(index: usize, series: &Node, plot: &Node, theme: &HashMap<String, String>, secondary: bool) -> ChartSeriesPayload {
+fn series_payload(index: usize, series: &Node, plot: &Node, theme: &HashMap<String, String>, secondary: bool) -> Result<ChartSeriesPayload, String> {
     let mut trendlines = Vec::new();
     for trend in series.children_named("trendline") {
         trendlines.push(config::Trendline {
@@ -199,9 +206,9 @@ fn series_payload(index: usize, series: &Node, plot: &Node, theme: &HashMap<Stri
             value: property(error, "val"), no_end_cap: boolean(error.value("noEndCap")), line: read_line(error.child("spPr").and_then(|shape| shape.child("ln")), theme), plus_index: None, minus_index: None },
             plus_formula: formula(error.child("plus")), minus_formula: formula(error.child("minus")) });
     }
-    ChartSeriesPayload { name: series.child("tx").map(plain_text).filter(|name| !name.is_empty()),
+    Ok(ChartSeriesPayload { name: series.child("tx").map(plain_text).filter(|name| !name.is_empty()),
         categories: formula(series.child("xVal").or_else(|| series.child("cat"))), values: formula(series.child("yVal").or_else(|| series.child("val"))).unwrap_or_default(),
-        bubble_sizes: formula(series.child("bubbleSize")), native_kind: plot_kind(plot), options: Some(series_options(series, plot, theme, secondary)), trendlines, error_bars }
+        bubble_sizes: formula(series.child("bubbleSize")), native_kind: plot_kind(plot), options: Some(series_options(series, plot, theme, secondary)?), trendlines, error_bars })
 }
 
 fn global_options(root: &Node, chart: &Node, plot: &Node, theme: &HashMap<String, String>) -> Options {
@@ -210,6 +217,9 @@ fn global_options(root: &Node, chart: &Node, plot: &Node, theme: &HashMap<String
     let mut options = Options {
         invalid_value_strategy: chart.value("dispBlanksAs").and_then(|value| match value { "zero" => Some("zero"), "span" => Some("link"), "gap" => Some("break"), _ => None }).map(str::to_owned),
         plot_visible_only: Some(boolean(chart.value("plotVisOnly")).unwrap_or(true)),
+        // External native areas with a solid fill must not acquire the editor's
+        // default automatic gradient. Valid authored manifests restore defaults.
+        auto_gradient_fill: Some(false),
         appearance: Some(config::Appearance { background: css_color(color(appearance.and_then(|shape| shape.child("solidFill")), theme)), border: appearance.and_then(|shape| read_line(shape.child("ln"), theme)), font: read_font(root.child("txPr"), theme) }),
         title_style: read_font(title, theme), ..Default::default()
     };
@@ -263,6 +273,7 @@ pub(crate) fn read(index: usize, source: &str, theme: &HashMap<String, String>) 
     let (x, y) = plot_axes(primary);
     let percentage = primary.value("grouping") == Some("percentStacked");
     let mut options = global_options(&root, chart, primary, theme);
+    options.plot_area = paint::plot_area(plot_area)?;
     if x.is_some_and(|axis| axis.name == "dateAx") {
         options.mapping = Some(config::Mapping { use_date_axis: Some(true), ..Default::default() });
     }
@@ -275,11 +286,11 @@ pub(crate) fn read(index: usize, source: &str, theme: &HashMap<String, String>) 
         for series in plot.children_named("ser") { raw_series.push((property(series, "order").unwrap_or(raw_series.len() as f64), series, *plot, secondary)); }
     }
     raw_series.sort_by(|left, right| left.0.total_cmp(&right.0));
-    let series = raw_series.iter().enumerate().map(|(position, (_, series, plot, secondary))| series_payload(position, series, plot, theme, *secondary)).collect::<Vec<_>>();
+    let series = raw_series.iter().enumerate().map(|(position, (_, series, plot, secondary))| series_payload(position, series, plot, theme, *secondary)).collect::<Result<Vec<_>, String>>()?;
     let legend = chart.child("legend");
     let title = chart.child("title");
     let title_rows = title.map(|title| title.descendants("p").into_iter().map(plain_text).filter(|text| !text.is_empty()).collect::<Vec<_>>()).unwrap_or_default();
-    let mut unsupported_reasons = Vec::new();
+    let mut unsupported_reasons = paint::source_differences(&root, options.plot_area.is_some());
     if series.iter().any(|series| series.values.is_empty() || series.categories.is_none()) { unsupported_reasons.push("CHART_LITERAL_OR_UNBOUND_SERIES".into()); }
     let authored = root.descendants("source").into_iter().find(|node| node.namespace.as_deref() == Some(config::SOURCE_EXTENSION_NS))
         .and_then(|node| serde_json::from_str::<serde_json::Value>(&node.text).ok()).and_then(|manifest| {

@@ -75,6 +75,13 @@ fn element(reader: &NsReader<&[u8]>, value: &BytesStart<'_>, namespace: Option<S
 }
 
 pub fn parse(source: &str) -> Result<Node, String> {
+    parse_with_reserved_nodes(source, 0)
+}
+
+/// A writer can reserve the three manifest element nodes before computing a
+/// signature, so its final XML stays within the reader's identical tree budget.
+pub fn parse_with_reserved_nodes(source: &str, reserved_nodes: usize) -> Result<Node, String> {
+    let node_limit = MAX_NODES.checked_sub(reserved_nodes).ok_or("CHART_XML_RESOURCE_LIMIT: reserved chart nodes exceed the tree budget")?;
     if source.len() > MAX_XML_BYTES { return Err("CHART_XML_RESOURCE_LIMIT: native chart part exceeds 16 MiB".into()); }
     let mut reader = NsReader::from_str(source);
     let mut stack = vec![Node::default()];
@@ -89,13 +96,13 @@ pub fn parse(source: &str) -> Result<Node, String> {
         match event {
             Event::Start(value) => {
                 count += 1;
-                if count > MAX_NODES || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
+                if count > node_limit || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
                 let node = element(&reader, &value, namespace)?;
                 stack.push(node);
             }
             Event::Empty(value) => {
                 count += 1;
-                if count > MAX_NODES || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
+                if count > node_limit || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
                 let node = element(&reader, &value, namespace)?;
                 stack.last_mut().ok_or_else(|| "empty chart XML root".to_owned())?.children.push(node);
             }

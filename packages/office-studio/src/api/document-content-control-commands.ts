@@ -1,11 +1,15 @@
 import type { DocumentModel } from '../domain/model'
 import type { OfficeStudio } from './office-studio'
+import { cloneModel } from '../domain/serialization'
 import type { DocumentImage } from '../features/document/model/document-model'
 import { documentBlockHostForId, sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host'
 import { createDocumentContentControl, deleteRepeatingSectionItem, duplicateRepeatingSectionItem, getDocumentContentControl,
   removeDocumentContentControl, replacePictureContentControlImage, resetDocumentContentControlPlaceholder, selectDocumentContentControlItem,
   setDocumentContentControlChecked, setDocumentContentControlValue, updateDocumentContentControl,
   type ContentControlInput, type ContentControlPatch } from '../features/document/services/content-controls'
+import { synchronizeDocumentContentControlBindings } from '../features/document/services/content-control-bindings'
+import { assertDocumentPermission, permissionTargetsForBlock } from '../features/document/permissions/document-permissions'
+import { runText, runsForTarget, textTargets } from '../features/document/model/document-model'
 
 export interface DocumentContentControlExecutionContext {
   unitId: string
@@ -38,10 +42,23 @@ function assertExecutionContext(api: OfficeStudio, input: DocumentContentControl
 
 /** All UI, shortcuts and public control facades share the same guarded history transaction. */
 export function registerDocumentContentControlCommands(api: OfficeStudio): void {
-  const register = <P extends ControlInput>(id: string, label: string, mutate: (model: DocumentModel, input: P) => void) => {
+  const register = <P extends ControlInput>(id: string, label: string, mutate: (model: DocumentModel, input: P) => void,
+    scalar?: (input: P) => string | undefined) => {
     api.registerCommand<P, boolean>(id, input => {
       assertExecutionContext(api, input, input.controlId)
-      return api.commitDocument(input.unitId, label, model => mutate(model, input))
+      return api.commitDocument(input.unitId, label, model => {
+        const control = getDocumentContentControl(model, input.controlId)
+        if (!control) throw new RangeError('内容控件已删除。')
+        const permissionContext = { documentId: input.unitId, userId: api.currentUserId }
+        assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForBlock(model, control.blockId))
+        const before = scalar ? cloneModel(model) : undefined
+        mutate(model, input)
+        if (before) synchronizeDocumentContentControlBindings(before, model, { sourceControlId: input.controlId,
+          sourceValue: scalar?.(input), permissionContext })
+        if (before && JSON.stringify(before) !== JSON.stringify(model)) {
+          model.wordCount = textTargets(model).reduce((count, target) => count + runText(runsForTarget(model, target)).replace(/\s/g, '').length, 0)
+        }
+      })
     })
   }
   api.registerCommand<DocumentContentControlExecutionContext & { control: ContentControlInput }, boolean>('doc.command.add-content-control', input => {
@@ -56,13 +73,13 @@ export function registerDocumentContentControlCommands(api: OfficeStudio): void 
         startOffset: created.startOffset, endOffset: created.endOffset, placement: created.placement, parentId: created.id }, undefined, host)
     })
   })
-  register<ControlInput & { patch: ContentControlPatch }>('doc.command.update-content-control', 'Update content control', (model, input) => updateDocumentContentControl(model, input.controlId, input.patch))
-  register<ControlInput & { value: string }>('doc.command.set-content-control-value', 'Set content control value', (model, input) => setDocumentContentControlValue(model, input.controlId, input.value))
-  register<ControlInput & { checked: boolean }>('doc.command.set-content-control-checked', 'Set content control checkbox', (model, input) => setDocumentContentControlChecked(model, input.controlId, input.checked))
-  register<ControlInput>('doc.command.reset-content-control-placeholder', 'Reset content control placeholder', (model, input) => resetDocumentContentControlPlaceholder(model, input.controlId))
+  register<ControlInput & { patch: ContentControlPatch }>('doc.command.update-content-control', 'Update content control', (model, input) => updateDocumentContentControl(model, input.controlId, input.patch), () => undefined)
+  register<ControlInput & { value: string }>('doc.command.set-content-control-value', 'Set content control value', (model, input) => setDocumentContentControlValue(model, input.controlId, input.value), input => input.value)
+  register<ControlInput & { checked: boolean }>('doc.command.set-content-control-checked', 'Set content control checkbox', (model, input) => setDocumentContentControlChecked(model, input.controlId, input.checked), input => input.checked ? 'true' : 'false')
+  register<ControlInput>('doc.command.reset-content-control-placeholder', 'Reset content control placeholder', (model, input) => resetDocumentContentControlPlaceholder(model, input.controlId), () => '')
   register<ControlInput & { image: DocumentImage }>('doc.command.replace-picture-content-control-image', 'Replace picture content control image', (model, input) => replacePictureContentControlImage(model, input.controlId, input.image))
   register<ControlInput>('doc.command.duplicate-repeating-section-item', 'Duplicate repeating-section item', (model, input) => { duplicateRepeatingSectionItem(model, input.controlId) })
   register<ControlInput>('doc.command.delete-repeating-section-item', 'Delete repeating-section item', (model, input) => deleteRepeatingSectionItem(model, input.controlId))
-  register<ControlInput & { value: string }>('doc.command.select-content-control-item', 'Select content control item', (model, input) => selectDocumentContentControlItem(model, input.controlId, input.value))
+  register<ControlInput & { value: string }>('doc.command.select-content-control-item', 'Select content control item', (model, input) => selectDocumentContentControlItem(model, input.controlId, input.value), input => input.value)
   register<ControlInput>('doc.command.remove-content-control', 'Remove content control', (model, input) => removeDocumentContentControl(model, input.controlId))
 }

@@ -1,5 +1,5 @@
 import type { DocumentBlock, DocumentModel, DocumentPageField, DocumentParagraphStyle, DocumentPermissionRule, DocumentSectionBreakType } from '../../../domain/model'
-import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit } from '../services/content-controls'
+import { getDocumentContentControls, transformContentControlsForBlockEdit, transformContentControlsForBodyRangeEdit, type ContentControlRangeEditOptions } from '../services/content-controls'
 import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { isDocumentTableCommand } from './table-command-types'
@@ -77,7 +77,11 @@ export type DocumentBodyCommand =
   | { id: 'doc.command.delete-table-of-contents'; tocId: string; timestamp?: number }
 
 /** Menus, Canvas, keyboard and API carry the same explicit auxiliary-content address. */
-export type DocumentCommand = DocumentBodyCommand & { host?: DocumentAuxiliaryBlockHost }
+export type DocumentCommand = DocumentBodyCommand & {
+  host?: DocumentAuxiliaryBlockHost
+  /** Explicit inside-control affinity, captured with the source selection. */
+  activeContentControlId?: string
+}
 
 export function documentCommandSupportsBlockHost(command: Pick<DocumentCommand, 'id'>): boolean {
   return !['doc.command.set-document-permission-rules', 'doc.command.set-section-header-footer', 'doc.command.set-section-setup',
@@ -362,8 +366,8 @@ export function executeDocumentCommand(
     return plan.selection
   }
   switch (command.id) {
-    case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks)
-    case 'doc.command.delete': return deleteContent(model, selection, command.direction)
+    case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks, { activeControlId: command.activeContentControlId })
+    case 'doc.command.delete': return deleteContent(model, selection, command.direction, { activeControlId: command.activeContentControlId })
     case 'doc.command.format-text': {
       const patch = documentRunFormatPatch(command.patch, command.clearFields)
       if (command.story) applyDocumentStoryTextFormatting(model, command.story, patch, context)
@@ -588,13 +592,13 @@ export function executeDocumentCommand(
         const after = blockContainer(model, start) === blockContainer(model, end)
           ? splitDocumentRunRange(runsForTarget(model, end), sameTarget(start, end) ? start.offset : 0, end.offset).after : []
         const fields = documentTextFields(paragraph)
-        const next = replaceSelectionText(model, selection, text)
+        const next = replaceSelectionText(model, selection, text, undefined, { activeControlId: command.activeContentControlId })
         if (text) setEditingRuns(model, next.focus, [...before, ...paragraph.runs as DocumentRun[], ...after], {})
         const destination = blockAtPoint(model, next.focus)
         if (destination) insertDocumentTextFields(destination, fields, start.offset)
         return next
       }
-      return insertBlocks(model, selection, blocks)
+      return insertBlocks(model, selection, blocks, { activeControlId: command.activeContentControlId })
     }
     case 'doc.command.table-tab': return moveTableCell(model, selection, command.direction, context)
     case 'doc.command.set-section-header-footer': {
@@ -676,7 +680,7 @@ function targetsForSelection(model: DocumentModel, selection: DocumentSelection,
   return targets.slice(first, last + (excludesLast ? 0 : 1))
 }
 
-export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch): DocumentSelection {
+export function replaceSelectionText(model: DocumentModel, selection: DocumentSelection, text: string, marks?: RunPatch, controlEdit: ContentControlRangeEditOptions = {}): DocumentSelection {
   if (selection.tableSelection) throw new RangeError('表格结构选区需要通过表格内容命令编辑')
   if (marks) validateDocumentRunPatch(marks)
   assertDocumentTextSelectionEditable(model, selection)
@@ -727,7 +731,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
         blockId: additions.at(-1)!.id,
         firstBreakOffset: start.offset + normalizedText.indexOf('\n'),
         lastParagraphOffset: start.offset + normalizedText.lastIndexOf('\n') + 1,
-      } : undefined)
+      } : undefined, false, controlEdit)
   }
 
   if (startContainer !== endContainer) {
@@ -736,7 +740,8 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
       const block = blockAtPoint(model, target)
       if (block) {
         transformContentControlsForBlockEdit(model, block.id, index === 0 ? start.offset : 0,
-          index === targets.length - 1 ? end.offset : runText(block.runs).length, index === 0 ? normalizedText.length : 0)
+          index === targets.length - 1 ? end.offset : runText(block.runs).length, index === 0 ? normalizedText.length : 0,
+          undefined, false, index === 0 ? controlEdit : {})
         if (index === 0) transformDocumentTextFieldsForBlockEdit(block, start.offset, runText(block.runs).length, normalizedText, undefined, model)
         else if (index === targets.length - 1) transformDocumentTextFieldsForBlockEdit(block, 0, end.offset, '', undefined, model)
         else transformDocumentTextFieldsForBlockEdit(block, 0, runText(block.runs).length, '', undefined, model)
@@ -760,7 +765,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   if (paragraphs.length === 1) {
     setEditingRuns(model, start, [...before, createRun(normalizedText, inherited), ...after], inherited)
     if (startTargetId !== endTargetId) transformContentControlsForBodyRangeEdit(model, sourceParagraphs,
-      sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText.length, false)
+      sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText.length, false, controlEdit)
     transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
       sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText)
     return collapsedSelection({ ...start, offset: start.offset + normalizedText.length })
@@ -768,7 +773,7 @@ export function replaceSelectionText(model: DocumentModel, selection: DocumentSe
   setEditingRuns(model, start, [...before, createRun(paragraphs[0], inherited)], inherited)
   startContainer.splice(startIndex + 1, 0, ...additions)
   if (startTargetId !== endTargetId) transformContentControlsForBodyRangeEdit(model, sourceParagraphs,
-    sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText.length, false)
+    sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText.length, false, controlEdit)
   transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
     sourceStart.absoluteStart + start.offset, sourceEnd.absoluteStart + end.offset, normalizedText)
   const last = additions.at(-1)!
@@ -781,13 +786,18 @@ export function graphemeOffsets(text: string): number[] {
   return offsets
 }
 
-function deleteContent(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1): DocumentSelection {
-  if (!selectionCollapsed(selection)) return replaceSelectionText(model, selection, '')
+function deleteContent(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1, controlEdit: ContentControlRangeEditOptions = {}): DocumentSelection {
+  if (!selectionCollapsed(selection)) return replaceSelectionText(model, selection, '', undefined, controlEdit)
   const point = clampPoint(model, selection.focus)
   const text = runText(runsForTarget(model, point))
   const offsets = graphemeOffsets(text)
   const next = direction === -1 ? offsets.filter((offset) => offset < point.offset).at(-1) : offsets.find((offset) => offset > point.offset)
-  if (next != null) return replaceSelectionText(model, { anchor: point, focus: { ...point, offset: next } }, '')
+  if (next != null) {
+    const active = controlEdit.activeControlId && model.contentControls?.find(control => control.id === controlEdit.activeControlId)
+    const inside = active && active.blockId === (point.cellBlockId ?? point.blockId)
+      && Math.min(point.offset, next) >= active.startOffset && Math.max(point.offset, next) <= active.endOffset
+    return replaceSelectionText(model, { anchor: point, focus: { ...point, offset: next } }, '', undefined, inside ? controlEdit : {})
+  }
 
   const container = blockContainer(model, point)
   const block = blockAtPoint(model, point)
@@ -842,7 +852,7 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
   }
 }
 
-function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks: DocumentBlock[]): DocumentSelection {
+function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks: DocumentBlock[], controlEdit: ContentControlRangeEditOptions = {}): DocumentSelection {
   if (!blocks.length) return selection
   const { start, end } = orderedSelection(model, selection)
   const tail = createParagraph()
@@ -850,9 +860,9 @@ function insertBlocks(model: DocumentModel, selection: DocumentSelection, blocks
   if (sameTarget(start, end)) {
     transformContentControlsForBlockEdit(controlPlan, start.cellBlockId ?? start.blockId, start.offset, end.offset, 0, {
       blockId: tail.id, firstBreakOffset: start.offset, lastParagraphOffset: start.offset,
-    })
+    }, false, controlEdit)
   }
-  const collapsed = replaceSelectionText(model, selection, '')
+  const collapsed = replaceSelectionText(model, selection, '', undefined, controlEdit)
   const point = collapsed.focus
   const block = blockAtPoint(model, point)
   if (!block) return collapsed

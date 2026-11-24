@@ -9,6 +9,11 @@ import type { DocumentAuxiliaryBlockHost } from '../features/document/model/docu
 import { applyDocumentBlockHostModel, documentModelForBlockHost, validateDocumentBlockHost } from '../features/document/services/document-block-host.ts'
 import { cloneModel } from '../domain/serialization.ts'
 import { permissionTargetsForChangedBlocks } from '../features/document/permissions/document-permissions.ts'
+import { documentContentControlCommandIsTextInput, prepareDocumentContentControlTextInputSelection,
+  resolveDocumentContentControlTextInputId, synchronizeDocumentContentControlsAfterEdit } from '../features/document/services/content-control-editing.ts'
+import { synchronizeDocumentContentControlBindings } from '../features/document/services/content-control-bindings.ts'
+import { resolveDocumentTableCommandTarget, type DocumentTableCommand } from '../features/document/commands/table-commands.ts'
+import { documentTableTextInputEdits } from '../features/document/commands/table-mutations.ts'
 
 export interface DocumentEditorCommandRequest {
   unitId: string
@@ -103,6 +108,8 @@ export function assertDocumentEditorCommandRequest(request: DocumentEditorComman
   assertPoint(request.selection.anchor)
   assertPoint(request.selection.focus)
   if (request.command.host) validateDocumentBlockHost(request.command.host)
+  if (request.command.activeContentControlId !== undefined && (typeof request.command.activeContentControlId !== 'string'
+    || !request.command.activeContentControlId.trim())) throw new TypeError('内容控件输入标识无效。')
   if (request.selection.tableSelection !== undefined) assertDocumentTableViewSelectionShape(request.selection.tableSelection)
   if (request.expectedRevision !== undefined && (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0)
     || request.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(request.expectedHistoryGeneration) || request.expectedHistoryGeneration < 1)
@@ -138,16 +145,52 @@ export function resolveDocumentEditorSelection(model: DocumentModel, selection: 
     ...(selection.tableSelection ? { tableSelection: resolveDocumentTableViewSelection(model, selection.tableSelection) } : {}) }
 }
 
+function tableTextInputCommand(command: DocumentCommand, selection: DocumentSelection):
+  Extract<DocumentTableCommand, { id: 'doc.command.table-set-cell-text' | 'doc.command.table-set-range-text' }> | undefined {
+  if (command.id === 'doc.command.table-set-cell-text' || command.id === 'doc.command.table-set-range-text') return command
+  if (!selection.tableSelection || command.id !== 'doc.command.insert-text' && command.id !== 'doc.command.delete') return undefined
+  return { id: 'doc.command.table-set-range-text', tableId: selection.tableSelection.tableId, range: selection.tableSelection.range,
+    mode: command.id === 'doc.command.delete' || !command.text ? 'clear' : 'replace',
+    ...(command.id === 'doc.command.insert-text' ? { text: command.text, marks: command.marks } : {}) }
+}
+
 /** Both UI and facade commands edit a transaction draft with the same logical selection. */
 export function applyDocumentEditorCommand(model: DocumentModel, request: DocumentEditorCommandRequest, permissionContext: DocumentPermissionContext): DocumentSelection {
+  if (!documentContentControlCommandIsTextInput(request.command)
+    || !model.contentControls?.length && request.command.activeContentControlId === undefined) {
+    return applyDocumentEditorCommandMutation(model, request, permissionContext)
+  }
+  const before = cloneModel(model), candidate = cloneModel(model)
+  const scoped = request.command.host ? documentModelForBlockHost(candidate, request.command.host, true) : candidate
+  const source = resolveDocumentEditorSelection(scoped, request.selection)
+  const tableCommand = tableTextInputCommand(request.command, source)
+  if (tableCommand && request.command.activeContentControlId !== undefined) throw new RangeError('表格整格输入不能使用内容控件内部编辑身份。')
+  const inputControlId = tableCommand ? undefined : resolveDocumentContentControlTextInputId(scoped, source, request.command.activeContentControlId)
+  const originTextEdits = tableCommand ? documentTableTextInputEdits(scoped, tableCommand,
+    resolveDocumentTableCommandTarget(scoped, source, tableCommand)) : undefined
+  const emptyInput = request.command.id === 'doc.command.insert-text' && request.command.text === ''
+    && sameTarget(source.anchor, source.focus) && source.anchor.offset === source.focus.offset
+    || request.command.id === 'doc.command.paste-blocks' && request.command.blocks.length === 0
+  const selection = emptyInput || tableCommand ? source : prepareDocumentContentControlTextInputSelection(scoped, source, { controlId: inputControlId })
+  const nextSelection = applyDocumentEditorCommandMutation(candidate, { ...request, selection,
+    command: { ...request.command, activeContentControlId: inputControlId } }, permissionContext)
+  const editResult = synchronizeDocumentContentControlsAfterEdit(before, candidate, { origin: 'text-input', selection, activeControlId: inputControlId })
+  const bindings = synchronizeDocumentContentControlBindings(before, candidate, { sourceSelection: selection, selection: nextSelection,
+    host: request.command.host, activeControlId: inputControlId, originTextEdits, editResult, permissionContext })
+  assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+  Object.assign(model, candidate)
+  return bindings.selection ?? nextSelection
+}
+
+function applyDocumentEditorCommandMutation(model: DocumentModel, request: DocumentEditorCommandRequest, permissionContext: DocumentPermissionContext): DocumentSelection {
   const host = request.command.host, scoped = host ? documentModelForBlockHost(cloneModel(model), host, true) : model
   const selection = resolveDocumentEditorSelection(scoped, request.selection)
   let codeSelection: DocumentSelection | undefined
   if (!selection.tableSelection && (request.command.id === 'doc.command.insert-text' || request.command.id === 'doc.command.delete')) {
     assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForSelection(scoped, selection))
     codeSelection = request.command.id === 'doc.command.insert-text'
-      ? editCodeBlockText(scoped, selection, { text: request.command.text, marks: request.command.marks })
-      : editCodeBlockText(scoped, selection, { deleteDirection: request.command.direction })
+      ? editCodeBlockText(scoped, selection, { text: request.command.text, marks: request.command.marks }, { activeControlId: request.command.activeContentControlId })
+      : editCodeBlockText(scoped, selection, { deleteDirection: request.command.direction }, { activeControlId: request.command.activeContentControlId })
   }
   if (codeSelection && host) {
     const candidate = cloneModel(model)

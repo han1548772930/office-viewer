@@ -4,7 +4,8 @@ import { Alert, Input, theme } from 'antdv-next'
 import type { DocumentModel } from '../../domain/model'
 import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
-import { blockAtPoint, documentTabCommand, executeDocumentCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
+import { blockAtPoint, documentTabCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
+import { applyDocumentEditorCommand } from '../../api/document-editor-commands'
 import { caretRect, createTextMeasurer, documentStoryCaretRect, documentStoryLayoutLines, emptyLayout, hitTestDocument, hitTestDocumentLine, hitTestDocumentStory, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch, type TextTarget } from '../../features/document/model/document-model'
 import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
@@ -36,7 +37,7 @@ import { selectedDocumentContentControl } from '../../features/document/services
 import { contentControlValueCommandState } from '../../features/document/commands/content-control-command-state'
 import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../../features/document/commands/content-control-command-types'
 import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlFocusTokenMatchesRequest, type DocumentContentControlFocusToken } from '../../features/document/controllers/content-control-interaction'
-import { prepareDocumentContentControlTextInputSelection, synchronizeDocumentContentControlsAfterEdit } from '../../features/document/services/content-control-editing'
+import { documentContentControlCommandIsTextInput, prepareDocumentContentControlTextInputSelection } from '../../features/document/services/content-control-editing'
 
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
@@ -182,7 +183,11 @@ const editingModel = computed(() => props.host ? documentModelForBlockHost(props
 const displayEditingModel = computed(() => props.host ? documentModelForBlockHost(displayModel.value, props.host) : displayModel.value)
 const editingLayout = computed(() => documentLayoutForBlockHost(layout.value, props.host))
 const legacyStoryActive = computed(() => !!props.story && !props.host)
-function dispatchCommand(command: DocumentCommand) { emit('command', props.host ? { ...command, host: { ...props.host } } : command) }
+function dispatchCommand(command: DocumentCommand) {
+  const input = documentContentControlCommandIsTextInput(command)
+    ? { ...command, activeContentControlId: command.activeContentControlId ?? explicitInputControlId() } : command
+  emit('command', props.host ? { ...input, host: { ...props.host } } : input)
+}
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
 const contentControlGeometries = computed(() => documentContentControlGeometry(displayEditingModel.value, editingLayout.value))
 const activeContentControl = computed(() => {
@@ -826,9 +831,9 @@ function compositionUpdate(event: CompositionEvent) {
   }
   const model = cloneDocument(props.model)
   try {
-    const prepared = prepareDocumentContentControlTextInputSelection(editingModel.value, compositionRange, { controlId: compositionControlId })
-    const selection = executeDocumentCommand(model, prepared, { id: 'doc.command.insert-text', text: pendingText, marks: compositionMarks, host: props.host }, props.permissionContext)
-    synchronizeDocumentContentControlsAfterEdit(props.model, model, { origin: 'text-input', selection: prepared, activeControlId: compositionControlId })
+    const selection = applyDocumentEditorCommand(model, { unitId: props.model.id ?? '', selection: compositionRange,
+      command: { id: 'doc.command.insert-text', text: pendingText, marks: compositionMarks,
+        host: props.host, activeContentControlId: compositionControlId } }, props.permissionContext ?? { documentId: props.model.id ?? '', userId: 'local-user' })
     preview.value = model
     compositionSelection.value = selection
     relayout()

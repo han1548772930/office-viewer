@@ -1,7 +1,7 @@
 //! Native DrawingML appearance. All dimensions enter as editor CSS pixels.
 
 use crate::{ExportError, xml};
-use office_io_common::chart_options::{Axis, Font, Label, Line, Marker, Series};
+use office_io_common::chart_options::{Axis, ChartColor, FillPattern, Font, Label, Line, Marker, Series};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -68,6 +68,26 @@ pub(super) fn shape(fill: Option<&str>, opacity: Option<f64>, border: Option<&Li
     Ok(out)
 }
 
+pub(super) fn painted_shape(fill: &ChartColor, opacity: Option<f64>, pattern: Option<&FillPattern>, border: Option<&Line>, stroke_color: Option<&str>) -> Result<String, ExportError> {
+    Ok(format!("<c:spPr>{}{}</c:spPr>", super::paint::fill(fill, opacity, pattern)?, line(border, stroke_color)?))
+}
+
+fn painted_line(value: &Line, fallback: &ChartColor) -> Result<String, ExportError> {
+    let width = value.width.map(|width| number(width, 0.0, 100.0, "line width")).transpose()?;
+    let mut out = width.map(|width| format!("<a:ln w=\"{}\">", (width * 9525.0).round() as u32)).unwrap_or_else(|| "<a:ln>".into());
+    if value.visible == Some(false) || width == Some(0.0) { out.push_str("<a:noFill/>"); }
+    else {
+        let authored = value.color.as_deref().map(ChartColor::from);
+        out.push_str(&super::paint::fill(authored.as_ref().unwrap_or(fallback), value.opacity, None)?);
+    }
+    if let Some(dash) = value.dash_type.as_deref() {
+        let dash = match dash { "solid" => "solid", "dashed" => "dash", "dotted" => "dot", _ => return Err(ExportError::invalid("chart line dash type is invalid")) };
+        out.push_str(&format!("<a:prstDash val=\"{dash}\"/>"));
+    }
+    out.push_str("</a:ln>");
+    Ok(out)
+}
+
 fn font_run(font: &Font, tag: &str) -> Result<String, ExportError> {
     let mut out = format!("<{tag} lang=\"zh-CN\"");
     if let Some(size) = font.font_size { out.push_str(&format!(" sz=\"{}\"", integer(size * 75.0, 75.0, 19200.0, "font size")?)); }
@@ -102,6 +122,11 @@ pub(super) fn title(title: Option<&str>, subtitle: Option<&str>, title_font: Opt
 }
 
 pub(super) fn marker(value: Option<&Marker>, fallback_color: Option<&str>) -> Result<String, ExportError> {
+    let fallback = fallback_color.map(ChartColor::from);
+    painted_marker(value, fallback.as_ref(), None, None)
+}
+
+pub(super) fn painted_marker(value: Option<&Marker>, fallback_color: Option<&ChartColor>, opacity: Option<f64>, pattern: Option<&FillPattern>) -> Result<String, ExportError> {
     let Some(value) = value else { return Ok(String::new()); };
     let symbol = match value.shape.as_deref().unwrap_or("circle") {
         "circle" => "circle", "rect" => "square", "triangle" => "triangle", "diamond" => "diamond", "none" => "none",
@@ -115,7 +140,12 @@ pub(super) fn marker(value: Option<&Marker>, fallback_color: Option<&str>) -> Re
         // the source manifest; the export reports the native representation limit.
         out.push_str(&format!("<c:size val=\"{}\"/>", size.clamp(2, 72)));
     }
-    out.push_str(&shape(value.color.as_deref().or(fallback_color), None, None, None)?);
+    let authored = value.color.as_deref().map(ChartColor::from);
+    let color = match fallback_color {
+        Some(gradient @ ChartColor::LinearGradient(_)) => Some(gradient),
+        fallback => authored.as_ref().or(fallback),
+    };
+    if let Some(color) = color { out.push_str(&painted_shape(color, opacity, pattern, None, None)?); }
     out.push_str("</c:marker>");
     Ok(out)
 }
@@ -189,12 +219,15 @@ pub(super) fn axis(axis: Option<&Axis>, id: u32, cross: u32, position: &str, kin
     Ok(out)
 }
 
-pub(super) fn series_shape(series: &Series, color: &str, line_chart: bool) -> Result<String, ExportError> {
+pub(super) fn series_shape(series: &Series, color: &ChartColor, fill_opacity: Option<f64>, line_chart: bool) -> Result<String, ExportError> {
+    let representative = color.representative().map_err(ExportError::invalid)?;
     if line_chart {
         let mut line_style = series.border.clone().unwrap_or_default();
-        if line_style.color.is_none() { line_style.color = Some(color.into()); }
-        shape(None, None, Some(&line_style), Some(color))
-    } else { shape(Some(color), series.fill_opacity, series.border.as_ref(), Some(color)) }
+        // The editor's texture override disables a line gradient; it does not
+        // texture the line stroke. Filled series/markers use the pattern fill.
+        if line_style.color.is_none() && series.fill_pattern.as_ref().and_then(Option::as_ref).is_some() { line_style.color = Some(representative); }
+        Ok(format!("<c:spPr>{}</c:spPr>", painted_line(&line_style, color)?))
+    } else { painted_shape(color, fill_opacity, series.fill_pattern.as_ref().and_then(Option::as_ref), series.border.as_ref(), Some(&representative)) }
 }
 
 #[cfg(test)]

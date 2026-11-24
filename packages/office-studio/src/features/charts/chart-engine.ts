@@ -7,6 +7,7 @@ import type {
   ChartSemanticOptions,
   ChartSource,
   ChartType,
+  ChartWaterfallStyleTarget,
   SpreadsheetSheet,
   WorkbookModel,
 } from '../../domain/model'
@@ -77,7 +78,15 @@ export interface ChartData {
   candles?: Array<ChartCandle | null>
 }
 
-export interface ChartPoint { x: number; y: number; value: number; category: string; categoryIndex: number; baseY?: number; baseX?: number; baseValue?: number; xValue?: number; size?: number }
+export interface ChartPoint { x: number; y: number; value: number; category: string; categoryIndex: number; baseY?: number; baseX?: number; baseValue?: number; xValue?: number; size?: number; rightAxis?: boolean; waterfallRole?: ChartWaterfallStyleTarget }
+export interface ChartWaterfallPointLayout extends ChartPoint {
+  seriesPosition: number
+  dataPointIndex: number
+  synthetic: boolean
+  baseY: number
+  rightAxis: boolean
+  waterfallRole: ChartWaterfallStyleTarget
+}
 export interface ChartSeriesLayout {
   name: string
   color: string
@@ -103,6 +112,10 @@ export interface ChartLayout {
   categoryBandwidth?: number
   categories: string[]
   series: ChartSeriesLayout[]
+  waterfall?: {
+    points: ChartWaterfallPointLayout[]
+    connectors: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>
+  }
 }
 
 const DEFAULT_LEGEND: ChartLegendOptions = { visible: true, position: 'bottom' }

@@ -1,5 +1,6 @@
 import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartModel, ChartSeriesFillPattern, ChartSeriesOptions } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
+import { ComputeError } from '../../compute/errors'
 import type { ChartData, ChartLayout, ChartPoint } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { deriveChartData, chartBubblePointSize, chartCandlestickPointStyle, chartHeatmapExtent, chartHeatmapPointStyle, chartHierarchyPointStyle, chartPointStyle, type ChartComputedStatistics, type ChartDerivedData } from './chart-derived'
@@ -11,7 +12,7 @@ import {
   chartArc, chartAxisRatio, chartAxisTicks, chartBezier, chartCircle, chartColorOpacity, chartFilledMarkBorder, chartFont, chartLabelText, chartLine,
   chartPolar, chartPolygon, chartRect, chartSymbol, formatChartNumber, type ChartVector,
 } from './chart-geometry'
-import { chartPalette, chartSeriesColorIsAuthored, chartSeriesStyle, definedChartStyleFields } from './chart-options'
+import { chartPalette, chartSeriesStyle, definedChartStyleFields } from './chart-options'
 import { chart3DScene } from './chart-3d'
 import { chartFunnelLayout, chartGaugeTiles, chartPieLayout } from './chart-pie-layout'
 import { chartGaugeAxisLabelAlignment, chartGaugeAxisLabelRadius, chartGaugeColorStops, chartGaugeDetailText, chartGaugePointerPoints, chartGaugeRatio, chartGaugeSweep, resolveChartGaugeOptions } from './chart-gauge'
@@ -24,6 +25,8 @@ import type { ChartAutomaticGradient } from './chart-auto-gradient'
 import { chartSeriesGradientBounds, createChartMarkGradient } from './chart-gradient'
 import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativeMarkerStyle, chartParetoCumulativePointStyle, chartParetoCumulativeStyle } from './chart-pareto'
 import { chartChordLayout, chartRelationLayout, chartRibbon, chartSankeyLayout, chartSunburstLayout, chartTreemapLayout, chartWordCloudLayout } from './chart-special-layout'
+import { CHART_WATERFALL_GLOBAL_SERIES } from './chart-statistics'
+import { chartWaterfallConnector, chartWaterfallRoleStyles } from './chart-waterfall'
 import type { ChartRenderTheme } from './chart-theme'
 
 export function drawChartData(source: ChartData, chart: ChartModel, theme: ChartRenderTheme = {}, computed?: ChartComputedStatistics): DrawCommand[] {
@@ -65,14 +68,14 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
     drawAxes(commands, data, chart, layout, textColor, theme)
     if (descriptor.family === 'boxplot') drawBoxplot(commands, derived, chart, layout, textColor, palette)
     else if (descriptor.family === 'candlestick') drawCandlestick(commands, data, chart, layout, palette)
-    else if (descriptor.family === 'waterfall') drawWaterfall(commands, derived, chart, layout, palette)
+    else if (descriptor.family === 'waterfall') drawWaterfall(commands, data, chart, layout, textColor, palette)
     else if (descriptor.family === 'heatmap') drawHeatmap(commands, data, chart, layout, textColor, palette)
     else drawCartesian(commands, data, chart, layout, palette)
     if (derived.pareto) drawParetoCumulative(commands, chart, layout, textColor, palette)
-    if (descriptor.family !== 'boxplot') drawPointLabels(commands, data, chart, layout, textColor, palette, derived.pareto?.cumulativePercent)
+    if (descriptor.family !== 'boxplot' && descriptor.family !== 'waterfall') drawPointLabels(commands, data, chart, layout, textColor, palette, derived.pareto?.cumulativePercent)
     drawTrendlinesAndErrors(commands, derived, chart, layout, textColor, palette)
   }
-  drawLegend(commands, data, chart, layout, textColor, palette)
+  drawLegend(commands, derived, chart, layout, textColor, palette)
   return normalizeChartCommands(commands)
 }
 
@@ -257,7 +260,9 @@ function drawPointLabels(commands: DrawCommand[], data: ChartData, chart: ChartM
       : chartSeriesStyle(chart, source?.field ?? series.field ?? index, index, palette, source?.sourceName ?? source?.name)
     if (!style.label?.visible) continue
     series.points.forEach(point => {
-      const label = chartPointStyle(style, point.categoryIndex, chart.type).label, inside = label?.position === 'inside' || label?.position === 'center'
+      const current = chartPointStyle(style, point.categoryIndex, chart.type)
+      const label = current.label, inside = label?.position === 'inside' || label?.position === 'center'
+      if (!label?.visible) return
       const x = inside && layout.horizontal ? (point.x + (point.baseX ?? point.x)) / 2 : point.x + (label?.position === 'left' ? -9 : label?.position === 'right' ? 9 : 0)
       const y = inside && !layout.horizontal ? (point.y + (point.baseY ?? point.y)) / 2 : point.y + (inside || label?.position === 'left' || label?.position === 'right' ? 0 : label?.position === 'bottom' ? 10 : -9)
       const percentage = cumulativePercent ? cumulativePercent[point.categoryIndex]! - (point.categoryIndex ? cumulativePercent[point.categoryIndex - 1]! : 0) : undefined
@@ -472,21 +477,33 @@ function drawCandlestick(commands: DrawCommand[], data: ChartData, chart: ChartM
   }
 }
 
-function drawWaterfall(commands: DrawCommand[], derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, palette: string[]): void {
-  const { plot } = layout, step = plot.width / Math.max(1, layout.categories.length), groupWidth = step / (1 + (chart.options?.bar?.gapWidth ?? 150) / 100), overlap = (chart.options?.bar?.overlap ?? 0) / 100
-  const width = groupWidth / Math.max(1, layout.series.length - (layout.series.length - 1) * overlap), options = chart.options?.waterfall
-  layout.series.forEach((series, seriesIndex) => series.points.forEach((point, index) => {
-    const source = derived.data.series[seriesIndex]!, role = derived.waterfalls![seriesIndex]![index]!.role
-    const style = chartPointStyle(chartSeriesStyle(chart, source.field, seriesIndex, palette, source.sourceName ?? source.name), point.categoryIndex, chart.type)
-    const roleColor = role === 'total' ? options?.totalColor ?? palette[seriesIndex % palette.length]! : point.value >= 0 ? options?.positiveColor ?? '#059669' : options?.negativeColor ?? '#dc2626'
-    const color = style.dataPoints?.[point.categoryIndex]?.color ?? (chartSeriesColorIsAuthored(chart, source.field, source.sourceName ?? source.name) ? style.color! : roleColor)
-    const x = point.x - groupWidth / 2 + seriesIndex * width * (1 - overlap)
-    const axis = series.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
+function drawWaterfall(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, textColor: string, palette: string[]): void {
+  const scene = layout.waterfall
+  if (!scene) throw new ComputeError('COMPUTE_NOT_READY', '瀑布图绘制需要完整的计算布局。')
+  const { plot } = layout, step = plot.width / Math.max(1, layout.categories.length)
+  const width = Math.max(1, step / (1 + (chart.options?.bar?.gapWidth ?? 150) / 100) - 1), connector = chartWaterfallConnector(chart)
+  const roles = data.series.map((source, index) => chartWaterfallRoleStyles(chart, source.field, index, palette, source.sourceName ?? source.name))
+  const globalRoles = chartWaterfallRoleStyles(chart, undefined, 0, palette)
+  if (connector) for (const segment of scene.connectors) {
+    const direction = Math.sign(segment.to.x - segment.from.x), half = Math.min(width / 2, Math.abs(segment.to.x - segment.from.x) / 2)
+    chartLine(commands, { x: segment.from.x + direction * half, y: segment.from.y },
+      { x: segment.to.x - direction * half, y: segment.to.y }, connector, connector.color, plot)
+  }
+  for (const point of scene.points) {
+    const group = point.seriesPosition === CHART_WATERFALL_GLOBAL_SERIES ? globalRoles : roles[point.seriesPosition]!
+    const style = chartPointStyle(group[point.waterfallRole], point.dataPointIndex, chart.type), color = style.color!
+    const axis = point.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
     const gradient = createChartMarkGradient(chart, { ...style, color }, 'column', { negative: point.value < 0, reverse: axis.reverse })
-    chartRect(commands, { x, y: Math.min(point.y, point.baseY!), width: Math.max(1, width - 1), height: Math.abs(point.y - point.baseY!) }, chartColorOpacity(color, style.fillOpacity ?? 1), style.border, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
-    const next = series.points[index + 1]
-    if (next && options?.connector !== false) chartLine(commands, { x: x + (chart.xAxis.reverse ? 0 : width), y: point.y }, { x: next.x - groupWidth / 2 + seriesIndex * width * (1 - overlap) + (chart.xAxis.reverse ? width : 0), y: point.y }, { color: '#94a3b8', dashType: 'dashed', width: 1 }, '#94a3b8', plot)
-  }))
+    chartRect(commands, { x: point.x - width / 2, y: Math.min(point.y, point.baseY), width, height: Math.abs(point.y - point.baseY) },
+      chartColorOpacity(color, style.fillOpacity ?? 1), style.border, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
+    const label = style.label, inside = label?.position === 'inside' || label?.position === 'center'
+    if (!label?.visible) continue
+    const x = point.x + (label.position === 'left' ? -9 : label.position === 'right' ? 9 : 0)
+    const y = inside ? (point.y + point.baseY) / 2 : point.y + (label.position === 'left' || label.position === 'right' ? 0 : label.position === 'bottom' ? 10 : -9)
+    commands.push({ kind: 'text', x, y, text: chartLabelText(label, point.value, point.category, style.name ?? point.category),
+      font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label.color ?? textColor,
+      align: label.position === 'left' ? 'right' : label.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: plot })
+  }
 }
 
 function drawHeatmap(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
@@ -635,8 +652,26 @@ function drawFunnel(commands: DrawCommand[], data: ChartData, chart: ChartModel,
   }
 }
 
-function drawLegend(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
+function waterfallLegendItems(derived: ChartDerivedData, chart: ChartModel, palette: string[]) {
+  const computed = derived.waterfallLayout, explicitTotals = new Set<number>()
+  for (const point of computed?.points ?? []) if (point.role === 'total' && !point.synthetic) explicitTotals.add(point.seriesPosition)
+  const items = derived.data.series.flatMap((source, index) => {
+    const roles = chartWaterfallRoleStyles(chart, source.field, index, palette, source.sourceName ?? source.name)
+    const targets = computed?.stackType !== 'stacked' && (computed?.useSubtotal || explicitTotals.has(index))
+      ? ['positive', 'negative', 'subtotal'] as const : ['positive', 'negative'] as const
+    return targets.map(target => ({ name: roles[target].name ?? source.name, color: chartColorOpacity(roles[target].color!, roles[target].fillOpacity ?? 1),
+      pattern: chartFillPatternPaint(roles[target].fillPattern, roles[target].fillOpacity ?? 1) }))
+  })
+  if (computed?.stackType === 'stacked' && computed.useSubtotal) {
+    const style = chartWaterfallRoleStyles(chart, undefined, 0, palette).subtotal
+    items.push({ name: style.name ?? '合计', color: chartColorOpacity(style.color!, style.fillOpacity ?? 1), pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) })
+  }
+  return items
+}
+
+function drawLegend(commands: DrawCommand[], derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
   if (!chart.legend.visible) return
+  const data = derived.data
   const family = resolveChartType(chart.type).family
   const categoryLegend = ['pie', 'funnel', 'gauge', 'chord', 'relation', 'sankey', 'treemap', 'sunburst'].includes(family)
   const roots = data.hierarchy ? chartHierarchyItems(data.hierarchy).filter(item => item.depth === 0) : undefined
@@ -645,7 +680,7 @@ function drawLegend(commands: DrawCommand[], data: ChartData, chart: ChartModel,
     const style = roots?.[index] ? chartHierarchyPointStyle(chart, data.series[0]!.field, roots[index]!, palette, data.series[0]!.sourceName ?? data.series[0]!.name)
       : chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), index, chart.type)
     return [{ name, color: chartColorOpacity(family === 'relation' ? style.point?.color ?? style.color! : style.color!, style.fillOpacity ?? 1), pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) }]
-  }) : chart.type === 'boxplot' ? [{ name: '样本分布', color: layout.series[0]?.color ?? palette[0]!, pattern: chartFillPatternPaint(chartPointStyle(chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name), 0, chart.type).fillPattern, 0.45) }, ...(chart.options?.boxplot?.showOutliers === false ? [] : [{ name: '异常值', color: chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name).point?.color ?? layout.series[0]?.color ?? palette[0]!, pattern: undefined }])]
+  }) : chart.type === 'waterfall' ? waterfallLegendItems(derived, chart, palette) : chart.type === 'boxplot' ? [{ name: '样本分布', color: layout.series[0]?.color ?? palette[0]!, pattern: chartFillPatternPaint(chartPointStyle(chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name), 0, chart.type).fillPattern, 0.45) }, ...(chart.options?.boxplot?.showOutliers === false ? [] : [{ name: '异常值', color: chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name).point?.color ?? layout.series[0]?.color ?? palette[0]!, pattern: undefined }])]
     : layout.series.map((series, index) => {
       const source = data.series[index], style = source ? chart.type === 'pareto' ? chartParetoBarStyle(chart, source.field, index, palette, source.sourceName ?? source.name)
         : chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name) : chart.type === 'pareto' ? chartParetoCumulativeStyle(chart, palette) : undefined

@@ -36,6 +36,8 @@ export interface DocumentContentControlEditResult {
   /** Also includes temporary wrappers removed by the ordinary structural range transformer. */
   removedTemporaryControlIds: string[]
   retainedLockedTemporaryControlIds: string[]
+  /** Final scalar/range state, retained only by the caller's transaction while binding peers are prepared. */
+  removedTemporaryControls?: DocumentContentControl[]
 }
 
 interface ControlParagraph {
@@ -92,6 +94,27 @@ function depth(control: DocumentContentControl, controls: Map<string, DocumentCo
     parent = controls.get(parent)?.parentId
   }
   return value
+}
+
+/** An explicitly selected control supplies boundary affinity; a newly placed caret does not. */
+export function resolveDocumentContentControlTextInputId(
+  model: DocumentModel, selection: DocumentSelection, activeControlId?: string,
+): string | undefined {
+  if (activeControlId !== undefined && (typeof activeControlId !== 'string' || !activeControlId.trim())) throw new TypeError('内容控件输入标识无效。')
+  const controls = model.contentControls ?? [], index = new Map(controls.map(control => [control.id, control]))
+  const sameParagraph = !selection.tableSelection && sameTarget(selection.anchor, selection.focus)
+  const blockId = selection.focus.cellBlockId ?? selection.focus.blockId
+  const start = Math.min(selection.anchor.offset, selection.focus.offset), end = Math.max(selection.anchor.offset, selection.focus.offset)
+  const contains = (control: DocumentContentControl) => sameParagraph && control.blockId === blockId && !control.metadata?.officeStoryLockSource
+    && start >= control.startOffset && end <= control.endOffset
+  if (activeControlId !== undefined) {
+    const active = index.get(activeControlId)
+    if (!active || !contains(active)) throw new RangeError('内容控件输入身份与当前文字选区不一致。')
+    return active.id
+  }
+  return controls.filter(control => contains(control) && (start !== end || control.showingPlaceholder
+    || control.startOffset === control.endOffset || start > control.startOffset && start < control.endOffset))
+    .sort((left, right) => left.endOffset - left.startOffset - (right.endOffset - right.startOffset) || depth(right, index) - depth(left, index))[0]?.id
 }
 
 /** A placeholder edit replaces its prompt once; this only prepares a logical source selection. */
@@ -319,6 +342,7 @@ export function synchronizeDocumentContentControlsAfterEdit(
     }
   }
   if (!result.changedControlIds.length) return result
+  if (remove.size) result.removedTemporaryControls = planned.filter(control => remove.has(control.id)).map(control => cloneModel(control))
   const next = unwrapDocumentContentControlShells(planned, remove)
   const projections = hostFontPlans(draft, destination, fontPlans)
   draft.contentControls = next

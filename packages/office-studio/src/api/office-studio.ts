@@ -29,6 +29,7 @@ import { cloneDocumentInputSession } from '../features/document/model/document-i
 import { parseDocumentInputSelectionRequest, prepareCollapsedDocumentInputFormat, prepareDocumentStoryInputAdvance, resolveDocumentInputLocation,
   type DocumentInputSelectionRequest } from './document-input-commands.ts'
 import { documentSelectionAtBodyRange } from './document-indexed-input.ts'
+import { documentContentControlCommandIsTextInput } from '../features/document/services/content-control-editing.ts'
 import { applyDocumentEditorCommand, assertDocumentEditorCommandRequest, DOCUMENT_EDITOR_COMMAND_LABELS, resolveDocumentEditorSelection,
   type DocumentEditorCommandRequest, type DocumentEditorCommandResult } from './document-editor-commands.ts'
 import type { DocumentImage } from '../features/document/model/document-model'
@@ -1040,6 +1041,7 @@ export class OfficeStudio {
       throw new Error('文档历史或打开代数已更改，请重新执行编辑。')
     }
     const sourceCurrent = !Object.hasOwn(request, 'inputGeneration') || request.inputGeneration === generation
+    if (documentContentControlCommandIsTextInput(request.command) && !sourceCurrent) throw new Error('输入选区已更改，请重新执行编辑。')
     const fieldRefresh = request.command.id === 'doc.command.refresh-header-footer-fields' || request.command.id === 'doc.command.update-selected-fields' ? request.command : undefined
     const tocRefresh = request.command.id === 'doc.command.update-table-of-contents' || request.command.id === 'doc.command.delete-table-of-contents'
     if (fieldRefresh && !sourceCurrent) throw new Error('字段更新选区已更改，请重新执行。')

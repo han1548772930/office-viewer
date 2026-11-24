@@ -51,6 +51,11 @@ function* chartDataMemorySteps(data: ChartData): Generator<void, number, void> {
 export function estimateChartDecodedMemory(output: ChartStatisticsOutput): number {
   let bytes = 1024 + output.segments.length * 512
   for (const segment of output.segments) {
+    if (segment.kind === 'waterfallLayout') {
+      const points = output.indices[segment.indexOffset] ?? 0, connectors = output.indices[segment.indexOffset + 1] ?? 0
+      bytes += points * 192 + connectors * 128
+      continue
+    }
     const rows = segment.kind === 'histogram' || segment.kind === 'pareto' || segment.kind === 'trendline' ? segment.valueLength / 2
       : segment.kind === 'waterfall' ? segment.valueLength / 3 : segment.kind === 'errorBars' ? segment.valueLength / 4 : Math.max(0, segment.valueLength - 5)
     bytes += rows * 128

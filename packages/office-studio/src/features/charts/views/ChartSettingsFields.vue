@@ -16,11 +16,13 @@ import { convertChartType } from '../chart-type-conversion'
 import { chartSeriesStyle } from '../chart-options'
 import { validateChartNamedSeriesBindings } from '../chart-series-selector'
 import { chartParetoSettingsCategories } from '../chart-pareto'
+import { chartWaterfallUsesSecondaryAxis } from '../chart-waterfall'
 import { chartAutoGradientControls, chartPlotAreaControls } from '../chart-plot-area-controls'
 import { supportsChartPlotArea, validateChartPlotArea } from '../chart-plot-area'
 import ChartOptionFields from './ChartOptionFields.vue'
 import ChartSeriesSettings from './ChartSeriesSettings.vue'
 import ChartParetoSettings from './ChartParetoSettings.vue'
+import ChartWaterfallSettings from './ChartWaterfallSettings.vue'
 import ChartStatisticsSettings from './ChartStatisticsSettings.vue'
 import ChartCollectionSettings from './ChartCollectionSettings.vue'
 
@@ -74,7 +76,7 @@ const xAxisControls = computed(() => [...(dateAxis.value ? chartDateAxisControls
   ...chartAxisControls('xAxis', descriptor.value.dataShape === 'xy' || descriptor.value.dataShape === 'bubble' || usesDateAxis.value, usesDateAxis.value)])
 const indicator = computed(() => supportsChartAxisPointer(config.value))
 const secondaryAxis = computed(() => !descriptor.value.threeD && ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination', 'waterfall', 'boxplot'].includes(descriptor.value.family))
-const hasRightAxis = computed(() => descriptor.value.family === 'pareto' || secondaryAxis.value && (projection.value.data
+const hasRightAxis = computed(() => descriptor.value.family === 'pareto' || chartWaterfallUsesSecondaryAxis(config.value, projection.value.data?.series) || secondaryAxis.value && (projection.value.data
   ? projection.value.data.series.some((series, index) => chartSeriesStyle(config.value, series.field, index, undefined, series.sourceName ?? series.name).rightAxis)
   : config.value.options?.allSeriesStyle?.rightAxis || Object.values(config.value.options?.series ?? {}).some(style => style.rightAxis) || config.value.options?.namedSeries?.some(entry => entry.style.rightAxis)))
 const secondaryAxisTitle = computed(() => descriptor.value.family === 'bar' ? '顶部数值轴' : '右侧数值轴')
@@ -126,6 +128,7 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
         <ChartOptionFields :config="config" :controls="chartAutoGradientControls()" :disabled="disabled" @update:config="change" />
         <ChartOptionFields :config="config" :controls="chartTypeSettingsControls(config, fieldCount, projection.data?.series[0]?.sourceName ?? projection.data?.series[0]?.name)" :categories="categories" :disabled="disabled" @update:config="change" />
         <ChartParetoSettings v-if="config.type === 'pareto'" :config="config" :data="projection.data" :disabled="disabled" @update:config="change" />
+        <ChartWaterfallSettings v-if="config.type === 'waterfall'" :config="config" :fields="seriesFields" :categories="categories" :data="projection.data" :disabled="disabled" @update:config="change" />
       </CollapsePanel>
       <CollapsePanel v-if="supportsChartPlotArea(config.type)" key="plot-area" header="绘图区"><ChartOptionFields :config="config" :controls="plotAreaControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel key="series" header="系列、标记与数据标签">

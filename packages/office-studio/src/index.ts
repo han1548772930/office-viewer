@@ -24,6 +24,7 @@ export {
   type CreateUnitOptions,
   type ChartInfo,
   type ChartPatch,
+  type ChartComputationReadOptions,
   type DataValidationError,
   type DataValidationRule,
   type DataValidationRuleInput,
@@ -228,6 +229,7 @@ export { supportsChartExplicitGradient } from './features/charts/chart-gradient.
 export { ChartGaugeModes, ChartGaugePointerShapes, CHART_GAUGE_PRESETS, chartGaugePresetOptions,
   type ChartGaugePreset } from './features/charts/chart-gauge.ts'
 export { ChartRadarShapes } from './features/charts/chart-radar.ts'
+export { ChartWaterfallStyleTargets } from './features/charts/chart-waterfall.ts'
 export { ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, ChartAllSeriesStyleTargets,
   chartAxisPointerValues, clearChartAxisPointer,
   type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget, type ChartAllSeriesStyleTarget } from './features/charts/chart-cartesian-api.ts'

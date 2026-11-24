@@ -4,6 +4,47 @@
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+pub use crate::chart_color::ChartColor;
+
+pub const FILL_PATTERN_PRESETS: &[&str] = &[
+    "pct5", "pct10", "pct20", "pct25", "pct30", "pct40", "pct50", "pct60", "pct70", "pct75", "pct80", "pct90",
+    "horz", "vert", "ltHorz", "ltVert", "dkHorz", "dkVert", "narHorz", "narVert", "dashHorz", "dashVert", "cross",
+    "dnDiag", "upDiag", "ltDnDiag", "ltUpDiag", "dkDnDiag", "dkUpDiag", "wdDnDiag", "wdUpDiag", "dashDnDiag", "dashUpDiag", "diagCross",
+    "smCheck", "lgCheck", "smGrid", "lgGrid", "dotGrid", "smConfetti", "lgConfetti", "horzBrick", "diagBrick",
+    "solidDmnd", "openDmnd", "dotDmnd", "plaid", "sphere", "weave", "divot", "shingle", "wave", "trellis", "zigZag",
+];
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FillPattern { pub preset: String, pub foreground_color: String, pub background_color: String }
+
+impl FillPattern {
+    pub fn validate(&self) -> Result<(), String> {
+        if !FILL_PATTERN_PRESETS.contains(&self.preset.as_str()) { return Err("unsupported chart fill-pattern preset".into()); }
+        crate::chart_color::rgba(&self.foreground_color)?;
+        crate::chart_color::rgba(&self.background_color)?;
+        Ok(())
+    }
+}
+
+/// Outer None is inheritance; Some(None) is the authored explicit null reset.
+fn deserialize_fill_pattern<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<FillPattern>>, D::Error> {
+    Option::<FillPattern>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlotArea { pub left: f64, pub top: f64, pub width: f64, pub height: f64 }
+
+impl PlotArea {
+    pub fn validate(&self) -> Result<(), String> {
+        if ![self.left, self.top, self.width, self.height].iter().all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+            || self.width == 0.0 || self.height == 0.0 || self.left + self.width > 1.0 + 1e-12 || self.top + self.height > 1.0 + 1e-12 {
+            return Err("chart plot area must be a positive rectangle inside the chart frame".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -65,9 +106,11 @@ pub struct Marker {
 #[serde(default, rename_all = "camelCase")]
 pub struct Point {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
+    pub color: Option<ChartColor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_opacity: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_fill_pattern", skip_serializing_if = "Option::is_none")]
+    pub fill_pattern: Option<Option<FillPattern>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,9 +129,11 @@ pub struct Series {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
+    pub color: Option<ChartColor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_opacity: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_fill_pattern", skip_serializing_if = "Option::is_none")]
+    pub fill_pattern: Option<Option<FillPattern>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border: Option<Line>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,6 +483,10 @@ pub struct Options {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plot_visible_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_gradient_fill: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plot_area: Option<PlotArea>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_style: Option<Font>,
@@ -479,7 +528,30 @@ pub struct Options {
     pub extensions: Map<String, Value>,
 }
 
+impl Options {
+    /// Validate every authored paint, including inactive field/name overrides.
+    /// Activation and native plot-specific capabilities remain separate checks.
+    pub fn validate_paints(&self) -> Result<(), String> {
+        fn validate(color: Option<&ChartColor>, opacity: Option<f64>, pattern: Option<&Option<FillPattern>>) -> Result<(), String> {
+            if let Some(color) = color { color.validate()?; }
+            if opacity.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) { return Err("chart fill opacity must be between 0 and 1".into()); }
+            if let Some(Some(pattern)) = pattern { pattern.validate()?; }
+            Ok(())
+        }
+        if let Some(area) = &self.plot_area { area.validate()?; }
+        for series in self.all_series_style.iter().chain(self.series.values()).chain(self.named_series.iter().map(|entry| &entry.style)) {
+            validate(series.color.as_ref(), series.fill_opacity, series.fill_pattern.as_ref())?;
+            for point in series.data_points.values() { validate(point.color.as_ref(), point.fill_opacity, point.fill_pattern.as_ref())?; }
+        }
+        Ok(())
+    }
+}
+
 /// Source metadata supplements native formulas when helpers or aliases are used.
 /// The native chart remains the rendered and editable Office object.
 pub const SOURCE_EXTENSION_URI: &str = "{8E13DA70-6490-4C80-AE82-63A85BFD26D3}";
 pub const SOURCE_EXTENSION_NS: &str = "urn:office-studio:chart-source:1";
+
+#[cfg(test)]
+#[path = "chart_options_tests.rs"]
+mod tests;

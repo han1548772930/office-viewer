@@ -25,6 +25,7 @@ export function validateChartGradientSeriesPatch(type: ChartType, style: ChartSe
     if (point?.color !== undefined) validateChartColor(point.color, `${name}项目颜色`)
     if (isChartLinearGradient(point?.color) && !supportsChartExplicitGradient(type, 'dataPoint')) throw new TypeError('当前图型的数据点颜色只接受纯色。')
   }
+  for (const [target, role] of Object.entries(style.waterfallStyles ?? {})) validateChartGradientSeriesPatch(type, role, `${name}.${target}`)
 }
 
 /** Checks authoring changes against the prior model. Equal inactive gradients
@@ -38,11 +39,16 @@ export function validateChartGradientAuthoring(type: ChartType, options: ChartSe
     for (const [key, point] of Object.entries(style.dataPoints ?? {})) if (isChartLinearGradient(point?.color) && !sameGradient(point.color, before?.dataPoints?.[Number(key)]?.color)) {
       ;(patch.dataPoints ??= {})[Number(key)] = { color: point.color }
     }
+    for (const target of ['positive', 'negative', 'subtotal'] as const) if (style.waterfallStyles?.[target]) {
+      ;(patch.waterfallStyles ??= {})[target] = changed(style.waterfallStyles[target], before?.waterfallStyles?.[target])
+    }
     return patch
   }
   validateChartGradientSeriesPatch(type, changed(options?.allSeriesStyle, previous?.allSeriesStyle), '所有系列')
   for (const [key, style] of Object.entries(options?.series ?? {})) validateChartGradientSeriesPatch(type, changed(style, previous?.series?.[Number(key)]), `系列 ${key}`)
   for (const entry of options?.namedSeries ?? []) validateChartGradientSeriesPatch(type, changed(entry.style, previous?.namedSeries?.find(before => before.name === entry.name)?.style), `名称系列 ${entry.name}`)
+  for (const target of ['positive', 'negative', 'subtotal'] as const) validateChartGradientSeriesPatch(type,
+    changed(options?.waterfall?.styles?.[target], previous?.waterfall?.styles?.[target]), `瀑布图.${target}`)
 }
 
 function sameGradient(color: ChartLinearGradient, previous: ChartColor | undefined): boolean {

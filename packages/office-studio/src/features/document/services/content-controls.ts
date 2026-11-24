@@ -32,6 +32,7 @@ import { contentControlCheckboxGlyph, formatContentControlDate, validContentCont
 import { validateContentControlPropertyPatch } from './content-control-properties'
 import { synchronizeDocumentContentControlsAfterEdit, unwrapDocumentContentControlShells } from './content-control-editing'
 import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
+import { transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 
 export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: string }
 
@@ -258,11 +259,12 @@ export function setDocumentContentControlChecked(model: DocumentModel, id: strin
   Object.assign(model, candidate)
 }
 
-export function resetDocumentContentControlPlaceholder(model: DocumentModel, id: string): void {
+export function resetDocumentContentControlPlaceholder(model: DocumentModel, id: string, useDefaultPlaceholder = false): void {
   const blockId = hostedControlBlock(model, id)
-  if (blockId && editHostedControl(model, blockId, scoped => resetDocumentContentControlPlaceholder(scoped, id))) return
+  if (blockId && editHostedControl(model, blockId, scoped => resetDocumentContentControlPlaceholder(scoped, id, useDefaultPlaceholder))) return
   const control = requireControl(model, id)
-  if (!control.placeholder) throw new Error(`Content control has no placeholder: ${id}`)
+  const placeholder = useDefaultPlaceholder ? documentContentControlPlaceholderText(control) : control.placeholder
+  if (!placeholder) throw new Error(`Content control has no placeholder: ${id}`)
   if (control.showingPlaceholder) return
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
@@ -298,17 +300,23 @@ export function resetDocumentContentControlPlaceholder(model: DocumentModel, id:
     }
     const { pictureBlockId: _pictureBlockId, pictureAnchorBlockId: _anchorBlockId, pictureTailBlockId: _tailBlockId, pictureImage: _pictureImage, ...metadata } = control.metadata ?? {}
     control.metadata = metadata
-    replaceControlText(model, control, control.placeholder)
-    control.value = control.placeholder
+    replaceControlText(model, control, placeholder)
+    control.value = placeholder
     control.showingPlaceholder = true
     return
   }
   if (!['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
     throw new TypeError(`Content control ${id} does not accept text placeholders`)
   }
-  replaceControlText(model, control, control.placeholder)
-  control.value = control.placeholder
+  replaceControlText(model, control, placeholder)
+  control.value = placeholder
   control.showingPlaceholder = true
+}
+
+/** Public SDT fallback order; a document-part name is not the displayed prompt text. */
+export function documentContentControlPlaceholderText(control: DocumentContentControl): string {
+  return (control.placeholder === control.placeholderDocPart?.name ? undefined : control.placeholder)
+    ?? control.placeholderDocPart?.text ?? '\u200b'
 }
 
 export function replacePictureContentControlImage(model: DocumentModel, id: string, image: DocumentImage): string {
@@ -790,6 +798,7 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
   const oldLength = control.endOffset - control.startOffset
+  const editStart = control.startOffset, editEnd = control.endOffset
   for (const candidate of model.contentControls ?? []) {
     if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
     if (candidate.parentId === control.id || (candidate.startOffset >= control.startOffset && candidate.endOffset <= control.endOffset
@@ -810,6 +819,11 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
   const nextRuns = [...prefix, ...inserted, ...suffix]
   // The editor's shared range splitter keeps note/field entities at the boundaries exactly once.
   block.runs = nextRuns.length ? nextRuns : [createRun('', inherited)]
+  const code = block.metadata.codeBlock
+  if (code && typeof code === 'object' && !Array.isArray(code) && typeof Reflect.get(code, 'source') === 'string') {
+    block.metadata = { ...block.metadata, codeBlock: { ...code, source: runText(block.runs) } }
+  }
+  transformDocumentCommentAnchorsForTextEdit(model, block.id, editStart, editEnd, value)
   for (const ancestor of documentBlockAncestry(model, block.id) ?? []) delete ancestor.metadata.html
   const delta = value.length - oldLength
   if (delta === 0) return

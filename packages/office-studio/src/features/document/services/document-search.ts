@@ -3,6 +3,14 @@ import { executeDocumentCommand } from '../commands/document-commands.ts'
 import type { DocumentPermissionContext } from '../permissions/document-permissions'
 import { orderedSelection, runText, runsForTarget, sameTarget, targetKey, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../model/document-model.ts'
 import { documentTableSelectedTextTargets } from '../model/document-table-selection'
+import { cloneModel } from '../../../domain/serialization'
+import { resolveDocumentContentControlTextInputId, synchronizeDocumentContentControlsAfterEdit } from './content-control-editing'
+import { synchronizeDocumentContentControlBindings, type DocumentContentControlBindingOriginTextEdit } from './content-control-bindings'
+import { documentEditingBlockHost, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import { applyDocumentBlockHostModel, documentModelForBlockHost } from './document-block-host'
+import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForSelection } from '../permissions/document-permissions'
+import { documentTextFieldParagraphs } from '../model/document-text-fields'
+import { editCodeBlockText } from '../code-blocks/code-blocks'
 
 export interface DocumentSearchOptions {
   caseSensitive?: boolean
@@ -73,8 +81,13 @@ export function replaceDocumentMatches(
   matches: readonly DocumentSearchMatch[],
   replacement: string,
   permissionContext?: DocumentPermissionContext,
+  host?: DocumentAuxiliaryBlockHost,
 ): DocumentSelection | undefined {
-  const targets = textTargets(model)
+  if (!matches.length) return undefined
+  const candidate = cloneModel(model), scoped = host ? documentModelForBlockHost(candidate, host, true) : candidate
+  const targets = textTargets(scoped)
+  const paragraphs = new Map(documentTextFieldParagraphs(scoped).map(paragraph => [paragraph.block.id, paragraph]))
+  const originTextEdits: DocumentContentControlBindingOriginTextEdit[] = []
   const targetOrder = new Map(targets.map((target, index) => [targetKey(target), index]))
   const ordered = [...matches].sort((a, b) => {
     const targetDelta = (targetOrder.get(targetKey(b.target)) ?? -1) - (targetOrder.get(targetKey(a.target)) ?? -1)
@@ -84,12 +97,26 @@ export function replaceDocumentMatches(
   for (const match of ordered) {
     const target = targets.find((candidate) => sameTarget(candidate, match.target))
     if (!target) continue
-    selection = executeDocumentCommand(model, pointForMatch({ ...match, target }), {
+    const range = pointForMatch({ ...match, target })
+    const activeContentControlId = resolveDocumentContentControlTextInputId(scoped, range)
+    const paragraph = paragraphs.get(target.cellBlockId ?? target.blockId)
+    if (!paragraph) throw new RangeError('查找替换的源段落不存在。')
+    originTextEdits.push({ startOffset: paragraph.absoluteStart + match.start, endOffset: paragraph.absoluteStart + match.end,
+      text: replacement.replace(/\r\n?/g, '\n') })
+    if (permissionContext) assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForSelection(scoped, range))
+    selection = editCodeBlockText(scoped, range, { text: replacement }, { activeControlId: activeContentControlId }) ?? executeDocumentCommand(scoped, range, {
       id: 'doc.command.insert-text',
       text: replacement,
+      activeContentControlId,
     }, permissionContext)
   }
-  return selection
+  if (host) applyDocumentBlockHostModel(candidate, host, scoped)
+  const editResult = synchronizeDocumentContentControlsAfterEdit(model, candidate, { origin: 'text-input' })
+  const bindings = synchronizeDocumentContentControlBindings(model, candidate, { selection, host: host ?? documentEditingBlockHost(model),
+    originTextEdits, editResult, permissionContext })
+  if (permissionContext) assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+  Object.assign(model, candidate)
+  return bindings.selection ?? selection
 }
 
 function escapeRegExp(value: string): string {

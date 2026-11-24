@@ -4,9 +4,15 @@ import { blockAtPoint, collapsedSelection, createParagraph, createRun, findDocum
 import { replaceDocumentRunRange } from '../model/document-run-range'
 import { documentDefaultStyle } from '../model/document-default-style'
 import { isDocumentTextBoundary } from '../model/document-story'
-import { transformContentControlsForBlockEdit } from '../services/content-controls.ts'
+import { transformContentControlsForBlockEdit, type ContentControlRangeEditOptions } from '../services/content-controls.ts'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments.ts'
-import { transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
+import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
+import { cloneModel } from '../../../domain/serialization'
+import { resolveDocumentContentControlTextInputId, synchronizeDocumentContentControlsAfterEdit } from '../services/content-control-editing'
+import { mapDocumentContentControlBindingSelection, synchronizeDocumentContentControlBindings } from '../services/content-control-bindings'
+import { documentBlockHostForId, documentEditingBlockHost } from '../model/document-block-host'
+import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../services/document-block-host'
+import { assertDocumentPermission, permissionTargetsForChangedBlocks, type DocumentPermissionContext } from '../permissions/document-permissions'
 
 export type DocumentCodeLanguage = 'plain' | 'javascript' | 'typescript' | 'json' | 'css' | 'html' | 'python' | 'sql' | 'rust'
 export type CodeTokenKind = 'keyword' | 'string' | 'number' | 'comment' | 'operator' | 'punctuation' | 'plain'
@@ -54,16 +60,53 @@ export function codeBlocks(model: DocumentModel): DocumentBlock[] {
 }
 
 export function updateCodeBlock(model: DocumentModel, blockId: string, patch: Partial<DocumentCodeBlockData>): boolean {
-  const block = findDocumentBlock(model, blockId)
-  if (!block) return false
+  return updateCodeBlockWithSelection(model, blockId, patch).changed
+}
+
+/** Source edits and linked controls share the full document candidate, including auxiliary hosts. */
+export function updateCodeBlockWithSelection(model: DocumentModel, blockId: string, patch: Partial<DocumentCodeBlockData>,
+  sourceSelection?: DocumentSelection, permissionContext?: DocumentPermissionContext): { changed: boolean; selection?: DocumentSelection } {
+  const host = documentBlockHostForId(model, blockId), source = host ? documentModelForBlockHost(model, host, true) : model
+  const block = findDocumentBlock(source, blockId)
+  if (!block) return { changed: false }
   const current = codeBlockData(block)
-  if (!current) return false
+  if (!current) return { changed: false }
   const next: DocumentCodeBlockData = {
     source: patch.source === undefined ? current.source : normalizeCodeSource(patch.source),
     language: patch.language === undefined ? current.language : normalizeCodeLanguage(patch.language),
     lineNumbers: patch.lineNumbers === undefined ? current.lineNumbers : patch.lineNumbers === true,
   }
-  return applyCodeBlockUpdate(model, block, current, next)
+  if (host || permissionContext || current.source !== next.source && model.contentControls?.length) {
+    const candidate = cloneModel(model), scoped = host ? documentModelForBlockHost(candidate, host, true) : candidate
+    const change = codeSourceEdit(current.source, next.source)
+    const target = textTargets(source).find(target => (target.cellBlockId ?? target.blockId) === block.id)
+    if (!target) throw new RangeError('代码块文字目标不存在。')
+    const paragraph = documentTextFieldParagraphs(source).find(paragraph => paragraph.block.id === block.id)
+    if (!paragraph) throw new RangeError('代码块源段落不存在。')
+    const selection = { anchor: { ...target, offset: change.startOffset }, focus: { ...target, offset: change.endOffset } }
+    const textChanged = current.source !== next.source
+    const activeControlId = textChanged ? resolveDocumentContentControlTextInputId(source, selection) : undefined
+    const changed = applyCodeBlockUpdate(scoped, findDocumentBlock(scoped, block.id)!, current, next, change, {}, { activeControlId })
+    if (!changed) return { changed: false, ...(sourceSelection ? { selection: cloneModel(sourceSelection) } : {}) }
+    if (host) applyDocumentBlockHostModel(candidate, host, scoped)
+    const selectionHost = host ?? documentEditingBlockHost(model)
+    const mappedSelection = sourceSelection && textChanged ? mapDocumentContentControlBindingSelection(sourceSelection,
+      { controlId: activeControlId ?? '', blockId: block.id, startOffset: change.startOffset, endOffset: change.endOffset, text: change.text,
+        ...(selectionHost ? { host: selectionHost } : {}) }, selectionHost) : sourceSelection
+    const editResult = textChanged ? synchronizeDocumentContentControlsAfterEdit(model, candidate, { origin: 'text-input', selection, activeControlId }) : undefined
+    const bindings = textChanged ? synchronizeDocumentContentControlBindings(model, candidate, { sourceSelection: selection,
+      selection: mappedSelection ?? collapsedSelection({ ...target, offset: change.startOffset + change.text.length }), host: selectionHost,
+      originTextEdits: [{ startOffset: paragraph.absoluteStart + change.startOffset, endOffset: paragraph.absoluteStart + change.endOffset, text: change.text }],
+      activeControlId, editResult, permissionContext }) : undefined
+    if (permissionContext) assertDocumentPermission(model.permissionRules ?? [], permissionContext, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+    Object.assign(model, candidate)
+    return { changed, ...(sourceSelection ? { selection: bindings?.selection ?? mappedSelection } : {}) }
+  }
+  const changed = applyCodeBlockUpdate(model, block, current, next)
+  const change = current.source !== next.source ? codeSourceEdit(current.source, next.source) : undefined
+  const selection = sourceSelection && change ? mapDocumentContentControlBindingSelection(sourceSelection,
+    { controlId: '', blockId: block.id, ...change, ...(documentEditingBlockHost(model) ? { host: documentEditingBlockHost(model) } : {}) }, documentEditingBlockHost(model)) : sourceSelection
+  return { changed, ...(selection ? { selection: cloneModel(selection) } : {}) }
 }
 
 interface CodeSourceEdit { startOffset: number; endOffset: number; text: string }
@@ -79,7 +122,7 @@ function codeSourceEdit(before: string, after: string): CodeSourceEdit {
   return { startOffset, endOffset: before.length - suffix, text: after.slice(startOffset, after.length - suffix) }
 }
 
-function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}): boolean {
+function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}, controlEdit: ContentControlRangeEditOptions = {}): boolean {
   if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers) return false
   if (current.source !== next.source) {
     const change = edit ?? codeSourceEdit(current.source, next.source)
@@ -87,7 +130,7 @@ function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, curren
     if (!isDocumentTextBoundary(current.source, change.startOffset) || !isDocumentTextBoundary(current.source, change.endOffset)
       || change.endOffset < change.startOffset || current.source.slice(0, change.startOffset) + change.text + current.source.slice(change.endOffset) !== next.source) throw new RangeError('代码编辑范围无效。')
     const nextRuns = replaceDocumentRunRange(block.runs, change.startOffset, change.endOffset, change.text, documentDefaultStyle(model).text, marks)
-    transformContentControlsForBlockEdit(model, block.id, change.startOffset, change.endOffset, change.text.length)
+    transformContentControlsForBlockEdit(model, block.id, change.startOffset, change.endOffset, change.text.length, undefined, false, controlEdit)
     transformDocumentTextFieldsForBlockEdit(block, change.startOffset, change.endOffset, change.text, undefined, model)
     block.runs = nextRuns
     transformDocumentCommentAnchorsForTextEdit(model, block.id, change.startOffset, change.endOffset, change.text)
@@ -96,7 +139,7 @@ function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, curren
   return true
 }
 
-export function editCodeBlockText(model: DocumentModel, selection: DocumentSelection, edit: { text: string; marks?: RunPatch } | { deleteDirection: -1 | 1 }): DocumentSelection | undefined {
+export function editCodeBlockText(model: DocumentModel, selection: DocumentSelection, edit: { text: string; marks?: RunPatch } | { deleteDirection: -1 | 1 }, controlEdit: ContentControlRangeEditOptions = {}): DocumentSelection | undefined {
   if (selection.tableSelection) return undefined
   const { start, end } = orderedSelection(model, selection)
   if (!sameTarget(start, end)) return undefined
@@ -117,7 +160,10 @@ export function editCodeBlockText(model: DocumentModel, selection: DocumentSelec
     else endOffset = adjacent
   }
   const source = `${data.source.slice(0, startOffset)}${insertion}${data.source.slice(endOffset)}`
-  applyCodeBlockUpdate(model, block, data, { ...data, source }, { startOffset, endOffset, text: insertion }, 'text' in edit ? edit.marks : undefined)
+  const active = controlEdit.activeControlId && model.contentControls?.find(control => control.id === controlEdit.activeControlId)
+  const inside = active && active.blockId === block.id && startOffset >= active.startOffset && endOffset <= active.endOffset
+  applyCodeBlockUpdate(model, block, data, { ...data, source }, { startOffset, endOffset, text: insertion }, 'text' in edit ? edit.marks : undefined,
+    inside ? controlEdit : {})
   const caret = startOffset + insertion.length
   return collapsedSelection({ ...start, offset: caret })
 }

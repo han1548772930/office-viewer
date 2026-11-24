@@ -38,6 +38,7 @@ export function normalizeWorkbookCharts(rawSheets: unknown, sheets: readonly Spr
     const columnSizes = host.defaultColumnWidth === undefined && !sheetAxisSpanAt(host.columnWidthSpans, 0) ? { 0: 152, ...host.columnWidths } : host.columnWidths
     const columns = new SparseAxisIndex(16_384, host.defaultColumnWidth ?? 112, columnSizes,
       host.hiddenColumns, host.columnWidthSpans, host.columnHiddenSpans)
+    const differences: Record<string, { index: number; reasons: string[] }> = {}
     for (const [chartIndex, chartValue] of array(record(sheetValue).charts).entries()) {
       const raw = record(chartValue), index = Number.isSafeInteger(raw.index) ? Number(raw.index) : chartIndex
       try {
@@ -47,6 +48,9 @@ export function normalizeWorkbookCharts(rawSheets: unknown, sheets: readonly Spr
         const authored = record(raw.authored)
         const chart = Object.keys(authored).length ? fromAuthored(authored, raw, host, sheets) : fromNative(raw, host, sheets, pivot)
         chart.id = `${pivot ? 'pivot-' : ''}chart-${sheetIndex + 1}-${index + 1}`
+        const reasons = array(raw.unsupportedReasons)
+        if (reasons.some(reason => typeof reason !== 'string' || reason.length === 0)) throw new TypeError('CHART_IMPORT_DIAGNOSTICS_INVALID')
+        const codes = reasons.filter((reason): reason is string => typeof reason === 'string')
         if (pivot) {
           chart.pivotTableId = pivot.id
           chart.source = { range: { ...pivot.outputRange! }, orientation: 'columns', sheetId: pivot.anchor.subUnitId }
@@ -60,11 +64,14 @@ export function normalizeWorkbookCharts(rawSheets: unknown, sheets: readonly Spr
           source.rowCount = Math.max(source.rowCount, chart.source.range.endRow + 1)
           source.columnCount = Math.max(source.columnCount, chart.source.range.endCol + 1)
         }
+        if (codes.length) differences[chart.id] = { index, reasons: [...new Set(codes)] }
         charts.push(chart)
       } catch (error) {
         unresolved.push({ sheetId: host.id, index, reason: error instanceof Error ? error.message : 'CHART_IMPORT_INVALID' })
       }
     }
+    if (Object.keys(differences).length) host.metadata.officeChartDifferences = differences
+    else delete host.metadata.officeChartDifferences
   }
   return { charts, unresolved }
 }

@@ -19,6 +19,11 @@ export function mergeChartOptions(current: ChartSemanticOptions | undefined, pat
   for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'axisPointer', 'rightYAxis', 'depthAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) {
     if (current?.[key] && patch[key]) Object.assign(merged, { [key]: mergeOptionGroup(current[key], patch[key]) })
   }
+  // Switching to stacked clears the arrangement-only authoring collection.
+  // An explicitly supplied nonempty collection still fails validation, and
+  // existing stacked charts cannot accept new roles through a partial patch.
+  if (patch.waterfall?.stackType === 'stacked' && current?.waterfall?.stackType !== 'stacked'
+    && !Object.hasOwn(patch.waterfall, 'pointRoles')) delete merged.waterfall?.pointRoles
   return cloneChartOptions(merged)
 }
 
@@ -49,7 +54,23 @@ export function chartSeriesStyle(chart: Pick<ChartModel, 'options'>, field: numb
     point: { ...definedChartStyleFields(shared?.point), ...definedChartStyleFields(specific?.point), ...definedChartStyleFields(named?.point) },
     label: { ...definedChartStyleFields(shared?.label), ...definedChartStyleFields(specific?.label), ...definedChartStyleFields(named?.label) },
     dataPoints: mergeChartSeriesDataPoints(shared?.dataPoints, specific?.dataPoints, named?.dataPoints),
+    waterfallStyles: mergeChartWaterfallStyles(shared?.waterfallStyles, specific?.waterfallStyles, named?.waterfallStyles),
   }
+}
+
+function mergeChartWaterfallStyles(...groups: Array<ChartSeriesOptions['waterfallStyles']>): ChartSeriesOptions['waterfallStyles'] {
+  let result: ChartSeriesOptions['waterfallStyles']
+  for (const group of groups) for (const target of ['positive', 'negative', 'subtotal'] as const) {
+    const style = group?.[target]
+    if (style === undefined) continue
+    const previous = result?.[target]
+    ;(result ??= {})[target] = { ...definedChartStyleFields(previous), ...definedChartStyleFields(style),
+      border: { ...definedChartStyleFields(previous?.border), ...definedChartStyleFields(style.border) },
+      point: { ...definedChartStyleFields(previous?.point), ...definedChartStyleFields(style.point) },
+      label: { ...definedChartStyleFields(previous?.label), ...definedChartStyleFields(style.label) },
+      dataPoints: mergeChartSeriesDataPoints(previous?.dataPoints, style.dataPoints) }
+  }
+  return result
 }
 
 export function chartSeriesColorIsAuthored(chart: Pick<ChartModel, 'options'>, field: number, sourceName?: string): boolean {

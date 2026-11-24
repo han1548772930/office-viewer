@@ -375,7 +375,13 @@ export interface ChartSeriesOptions {
   rightAxis?: boolean
   label?: ChartLabelOptions
   dataPoints?: Record<number, { color?: ChartColor; fillOpacity?: number; fillPattern?: ChartSeriesFillPattern | null; size?: number; shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; border?: ChartLineOptions }>
+  waterfallStyles?: ChartWaterfallStyles
 }
+export type ChartWaterfallStyleTarget = 'positive' | 'negative' | 'subtotal'
+export type ChartWaterfallStackType = 'arrangement' | 'stacked'
+export type ChartWaterfallSeriesStyle = Omit<ChartSeriesOptions, 'waterfallStyles'>
+export type ChartWaterfallStyles = Partial<Record<ChartWaterfallStyleTarget, ChartWaterfallSeriesStyle>>
+export type ChartWaterfallConnectorOptions = Omit<ChartLineOptions, 'visible'>
 /** Numeric selectors keep the source-field contract; names match source identities exactly. */
 export type ChartSeriesSelector = number | { name: string }
 export interface ChartNamedSeriesOptions { name: string; style: ChartSeriesOptions }
@@ -484,7 +490,7 @@ export interface ChartSemanticOptions {
   bubble?: { scale?: number; sizeRepresents?: 'area' | 'width' }
   funnel?: { gap?: number; useAbsoluteValue?: boolean; sort?: 'ascending' | 'descending' | 'none' }
   relation?: { layout?: 'none' | 'circular' | 'force'; useValueAsSymbolSize?: boolean; force?: { repulsion?: number; gravity?: number; edgeLength?: number } }
-  waterfall?: { pointRoles?: Array<{ seriesIndex: number; dataPointIndex: number; role: 'change' | 'total' }>; connector?: boolean; positiveColor?: string; negativeColor?: string; totalColor?: string }
+  waterfall?: { pointRoles?: Array<{ seriesIndex: number; dataPointIndex: number; role: 'change' | 'total' }>; stackType?: ChartWaterfallStackType; useSubtotal?: boolean; connector?: boolean | ChartWaterfallConnectorOptions; styles?: ChartWaterfallStyles; positiveColor?: string; negativeColor?: string; totalColor?: string }
   pareto?: { includeZeroValues?: boolean }
   histogram?: { binning?: { mode: 'count'; count: number } | { mode: 'width'; width: number }; underflowThreshold?: number; overflowThreshold?: number; binGap?: number }
   boxplot?: { quartileMethod?: 'inclusive' | 'exclusive'; showOutliers?: boolean; whiskerMultiplier?: number }

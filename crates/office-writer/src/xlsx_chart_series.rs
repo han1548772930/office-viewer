@@ -26,6 +26,7 @@ fn fields(context: &Context<'_>, chart: &ChartInput) -> Result<Vec<usize>, Expor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use office_io_common::chart_options::ChartColor;
     use serde_json::{Map, Value, json};
     use super::super::{WorkbookInput, chart_xml, context, prepare_native_bindings};
     use office_io_common::chart_xml as native_xml;
@@ -61,8 +62,8 @@ mod tests {
         assert_eq!(specs[1].source_name.as_deref(), Some("Cost"));
         assert_eq!(specs[1].kind.plot, "lineChart");
         assert!(specs[1].secondary);
-        assert_eq!(specs[0].style.color.as_deref(), Some("#111111"));
-        assert_eq!(specs[1].style.color.as_deref(), Some("#ff0000"));
+        assert_eq!(specs[0].style.color.as_ref().and_then(ChartColor::as_solid), Some("#111111"));
+        assert_eq!(specs[1].style.color.as_ref().and_then(ChartColor::as_solid), Some("#ff0000"));
         assert_eq!(specs[1].style.border.as_ref().unwrap().width, Some(2.0));
         assert_eq!(specs[1].style.border.as_ref().unwrap().dash_type.as_deref(), Some("dotted"));
         assert_eq!(specs[1].style.label.as_ref().unwrap().font.font_size, Some(16.0));
@@ -99,7 +100,7 @@ mod tests {
         let chart = &book.charts.as_ref().unwrap()[0];
         let specs = specifications(&context(&book, chart).unwrap(), chart).unwrap();
         assert_eq!(specs.iter().map(|spec| spec.source_name.as_deref().unwrap()).collect::<Vec<_>>(), ["North","north"," north ",""]);
-        assert_eq!(specs.iter().map(|spec| spec.style.color.as_deref().unwrap()).collect::<Vec<_>>(), ["#ff0000","#22aa22","#abcdef","#112233"]);
+        assert_eq!(specs.iter().map(|spec| spec.style.color.as_ref().and_then(ChartColor::as_solid).unwrap()).collect::<Vec<_>>(), ["#ff0000","#22aa22","#abcdef","#112233"]);
         assert_eq!(specs.iter().map(|spec| spec.secondary).collect::<Vec<_>>(), [true,false,false,false]);
         assert!(specs.iter().all(|spec| spec.style.fill_opacity == Some(0.4) && spec.style.border.as_ref().unwrap().width == Some(2.0)));
         let root = native_xml::parse(&chart_xml(&book, chart, 0, None).unwrap()).unwrap();
@@ -136,11 +137,11 @@ mod tests {
             "namedSeries":[{"name":"","style":{"color":"#123456"}},{"name":"Series 2","style":{"color":"#ffffff"}}]}),
             &[vec![json!("X"),Value::Null],vec![json!(1),json!(2)]], &[1]);
         let chart = &book.charts.as_ref().unwrap()[0];
-        assert_eq!(specifications(&context(&book, chart).unwrap(), chart).unwrap()[0].style.color.as_deref(), Some("#123456"));
+        assert_eq!(specifications(&context(&book, chart).unwrap(), chart).unwrap()[0].style.color.as_ref().and_then(ChartColor::as_solid), Some("#123456"));
         let mut book = regular(json!({"namedSeries":[{"name":"Series 2","style":{"color":"#123456"}}]}));
         book.sheets[0].cells.get_mut("0:1").unwrap()["value"] = Value::Null;
         let chart = &book.charts.as_ref().unwrap()[0];
-        assert_eq!(specifications(&context(&book, chart).unwrap(), chart).unwrap()[0].style.color.as_deref(), Some("#123456"));
+        assert_eq!(specifications(&context(&book, chart).unwrap(), chart).unwrap()[0].style.color.as_ref().and_then(ChartColor::as_solid), Some("#123456"));
     }
 
     #[test]
@@ -166,7 +167,7 @@ mod tests {
         let chart = &book.charts.as_ref().unwrap()[0];
         let specs = specifications(&context(&book, chart).unwrap(), chart).unwrap();
         assert_eq!(specs.iter().map(|spec| spec.field).collect::<Vec<_>>(), [1,2,3]);
-        assert!(specs.iter().all(|spec| spec.style.color.as_deref() == Some("#223344") && spec.style.fill_opacity == Some(0.5)
+        assert!(specs.iter().all(|spec| spec.style.color.as_ref().and_then(ChartColor::as_solid) == Some("#223344") && spec.style.fill_opacity == Some(0.5)
             && spec.style.border.as_ref().unwrap().width == Some(2.0)));
     }
 }

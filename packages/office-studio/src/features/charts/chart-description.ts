@@ -4,6 +4,7 @@ import { chartAutoGradientFill } from './chart-auto-gradient'
 import { resolveChartType } from './chart-catalog'
 import { chartSeriesColorIsAuthored, chartSeriesStyle, cloneChartOptions, cloneOptionValue } from './chart-options'
 import { validateChartSeriesSelector } from './chart-series-selector'
+import { chartWaterfallAuthoredStyles } from './chart-waterfall'
 
 /** Description names use canonical catalog IDs; getInfo() keeps local aliases. */
 export type ChartDescriptionType = Exclude<ChartType, 'bar-horizontal' | 'doughnut' | 'stacked-column'> | 'donut'
@@ -61,6 +62,8 @@ export function describeChartConfiguration(config: ChartDescriptionConfig, conte
     if (!config.palette?.length && !chartSeriesColorIsAuthored(current, field, knownName)) delete entry.color
     const type = style.type ?? descriptionSeriesType(config.type, position)
     if (type !== undefined) entry.type = type
+    const waterfallStyles = chartWaterfallAuthoredStyles(current, field, knownName)
+    if (waterfallStyles !== undefined) entry.waterfallStyles = waterfallStyles
     series[field] = entry
     if (activeFields.has(field)) activeStyles.push(style)
   }

@@ -78,6 +78,31 @@ test('literal or disjoint native objects retain a concrete unresolved reason', (
   }
 })
 
+test('successful imports retain deduplicated native differences beside the editable chart and source DTO', () => {
+  const model = sheet(), raw = { index: 4, authored: authored(),
+    unsupportedReasons: ['CHART_NATIVE_GRADIENT_PATH_UNMAPPED', 'CHART_NATIVE_PATTERNED_LINE_STROKE', 'CHART_NATIVE_GRADIENT_PATH_UNMAPPED'] }
+  model.metadata.source = { charts: [raw] }
+  const result = imports.normalizeWorkbookCharts([{ charts: [raw] }], [model], [])
+  assert.deepEqual(result.unresolved, [])
+  assert.equal(result.charts.length, 1)
+  assert.deepEqual(model.metadata.officeChartDifferences, { [result.charts[0].id]: { index: 4,
+    reasons: ['CHART_NATIVE_GRADIENT_PATH_UNMAPPED', 'CHART_NATIVE_PATTERNED_LINE_STROKE'] } })
+  assert.equal(model.metadata.source.charts[0], raw)
+  imports.normalizeWorkbookCharts([{ charts: [{ index: 4, authored: authored() }] }], [model], [])
+  assert.equal(Object.hasOwn(model.metadata, 'officeChartDifferences'), false)
+  assert.equal(model.metadata.source.charts[0], raw)
+})
+
+test('invalid diagnostics produce an unresolved import and never publish partial difference records', () => {
+  for (const reasons of [[''], [7], ['CHART_NATIVE_GRADIENT_PATH_UNMAPPED', null]]) {
+    const model = sheet(); model.metadata.officeChartDifferences = { old: { index: 0, reasons: ['STALE'] } }
+    const result = imports.normalizeWorkbookCharts([{ charts: [{ index: 0, authored: authored(), unsupportedReasons: reasons }] }], [model], [])
+    assert.deepEqual(result.charts, [])
+    assert.deepEqual(result.unresolved, [{ sheetId: model.id, index: 0, reason: 'CHART_IMPORT_DIAGNOSTICS_INVALID' }])
+    assert.equal(model.metadata.officeChartDifferences, undefined)
+  }
+})
+
 test('visible-only defaults share the source reader and preserve field indexes in both orientations', async () => {
   const model = sheet()
   model.rowCount = 3; model.columnCount = 3; model.hiddenRows = [1]; model.hiddenColumns = [2]

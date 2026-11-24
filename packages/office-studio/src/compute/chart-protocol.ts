@@ -10,6 +10,7 @@ export type ChartStatisticsJob =
   | ChartJobKey & { kind: 'boxplot'; quartileMethod: 'inclusive' | 'exclusive'; whiskerMultiplier: number }
   | ChartJobKey & { kind: 'pareto'; includeZeroValues: boolean }
   | ChartJobKey & { kind: 'waterfall'; totalColumn?: number }
+  | ChartJobKey & { kind: 'waterfallLayout'; seriesIndices: number[]; stackType: 'arrangement' | 'stacked'; useSubtotal: boolean; totalColumns?: Array<number | null> }
   | ChartJobKey & { kind: 'trendline'; type: 'exp' | 'linear' | 'log' | 'movingAvg' | 'poly' | 'pow'; order?: number; period?: number }
   | ChartJobKey & { kind: 'errorBars'; direction: 'x' | 'y'; type: 'both' | 'plus' | 'minus'; valueType: 'fixedVal' | 'percentage' | 'stdDev' | 'stdErr' | 'cust'; value?: number; plusColumn?: number; minusColumn?: number }
 
@@ -39,6 +40,9 @@ export interface ChartStatisticsSegment {
  * Box: values[min,q1,median,q3,max,...outliers].
  * Pareto: values[value,cumulativePercent], indices[dictionaryId].
  * Waterfall: values[start,end,value], indices[categoryIndex,isTotal].
+ * WaterfallLayout: values[finalCumulative,...N*(start,end,value),...C*(fromValue,toValue)];
+ * indices[N,C,...N*(seriesPosition,dataPointIndex,visibleCategoryIndex,flags),...C*(fromCategory,toCategory)].
+ * flags bit0=total, bit1=synthetic. A stacked global subtotal has seriesPosition=0xffffffff.
  * Trend: values[x,y]; error: values[x,y,minus,plus], indices[categoryIndex].
  */
 export interface ChartStatisticsOutput {

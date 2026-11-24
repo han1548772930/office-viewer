@@ -2,10 +2,12 @@ import { isRecord } from './protocol.ts'
 import type { ChartStatisticsFit, ChartStatisticsOutput, ChartStatisticsParams, ChartStatisticsSegment } from './chart-protocol.ts'
 import { estimateChartTaskMemory } from './chart-tasks.ts'
 import { isUnsignedCount } from '../platform/wasm/task-protocol.ts'
+import { CHART_COMPUTE_LIMITS } from './chart-protocol.ts'
+import { isBoundedDenseArray } from './array-shape.ts'
 
 function isFit(value: unknown): value is ChartStatisticsFit {
-  if (!isRecord(value) || !Array.isArray(value.coefficients) || value.coefficients.length < 2 || value.coefficients.length > 7
-    || !value.coefficients.every(coefficient => typeof coefficient === 'number' && Number.isFinite(coefficient))
+  if (!isRecord(value) || !isBoundedDenseArray(value.coefficients, 7,
+    (coefficient): coefficient is number => typeof coefficient === 'number' && Number.isFinite(coefficient), 2)
     || !['xScale', 'xMean', 'xSpread', 'yScale', 'yMean'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))) return false
   return Number(value.xScale) > 0 && Number(value.yScale) > 0 && Number(value.xSpread) > 0 && Number(value.xSpread) <= 2
     && Math.abs(Number(value.xMean)) <= 1 && Math.abs(Number(value.yMean)) <= 1
@@ -28,7 +30,7 @@ function ownsBuffer(view: Float64Array | Uint32Array): boolean {
 export function readChartStatisticsOutput(value: unknown, params: ChartStatisticsParams): ChartStatisticsOutput | null {
   if (!isRecord(value) || value.kind !== 'chartStatistics' || !(value.values instanceof Float64Array) || !(value.indices instanceof Uint32Array)
     || !ownsBuffer(value.values) || !ownsBuffer(value.indices) || value.values.buffer === value.indices.buffer
-    || !Array.isArray(value.segments) || value.segments.length !== params.jobs.length) return null
+    || !isBoundedDenseArray(value.segments, CHART_COMPUTE_LIMITS.maxJobs, isSegment) || value.segments.length !== params.jobs.length) return null
   const capacity = estimateChartTaskMemory(params)
   if (value.values.length > capacity.valueCapacity || value.indices.length > capacity.indexCapacity) return null
   const segments: ChartStatisticsSegment[] = []
@@ -39,7 +41,7 @@ export function readChartStatisticsOutput(value: unknown, params: ChartStatistic
       || candidate.field !== params.series[job.seriesIndex]?.field || candidate.slot !== job.slot
       || candidate.seriesPosition !== params.series[job.seriesIndex]?.seriesPosition
       || candidate.valueOffset !== valueOffset || candidate.indexOffset !== indexOffset
-      || candidate.validSampleCount > params.rowCount) return null
+      || candidate.validSampleCount > params.rowCount * (job.kind === 'waterfallLayout' ? job.seriesIndices.length : 1)) return null
     valueOffset += candidate.valueLength; indexOffset += candidate.indexLength
     if (valueOffset > value.values.length || indexOffset > value.indices.length) return null
     if (job.kind !== 'trendline' && (candidate.fit !== undefined || candidate.r2 !== undefined)) return null
@@ -61,6 +63,16 @@ export function readChartStatisticsOutput(value: unknown, params: ChartStatistic
         if (candidate.valueLength !== params.rowCount * 3 || candidate.indexLength !== params.rowCount * 2
           || candidate.available !== (params.rowCount > 0)) return null
         break
+      case 'waterfallLayout': {
+        const points = params.rowCount === 0 ? 0 : params.rowCount * job.seriesIndices.length
+          + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)
+        const connectors = Math.max(0, (job.stackType === 'stacked' ? params.rowCount : params.rowCount * job.seriesIndices.length) - 1)
+        if (candidate.valueLength !== 1 + points * 3 + connectors * 2 || candidate.indexLength !== 2 + points * 4 + connectors * 2
+          || candidate.available !== (params.rowCount > 0) || value.indices[candidate.indexOffset] !== points
+          || value.indices[candidate.indexOffset + 1] !== connectors || !Number.isFinite(value.values[candidate.valueOffset])
+          || params.rowCount === 0 && (candidate.validSampleCount !== 0 || value.values[candidate.valueOffset] !== 0)) return null
+        break
+      }
       case 'trendline':
         if (candidate.indexLength !== 0 || candidate.valueLength % 2 || candidate.valueLength > (job.type === 'movingAvg' ? params.rowCount : 33) * 2) return null
         if (job.type === 'movingAvg') {

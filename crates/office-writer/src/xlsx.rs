@@ -281,7 +281,8 @@ impl Default for AuthoredChartOptions {
 impl<'de> Deserialize<'de> for AuthoredChartOptions {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let source = Value::deserialize(deserializer)?;
-        let typed = serde_json::from_value(source.clone()).map_err(serde::de::Error::custom)?;
+        let typed: office_io_common::chart_options::Options = serde_json::from_value(source.clone()).map_err(serde::de::Error::custom)?;
+        typed.validate_paints().map_err(serde::de::Error::custom)?;
         Ok(Self { typed, source })
     }
 }

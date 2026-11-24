@@ -2,6 +2,7 @@ mod distribution;
 mod errors;
 mod math;
 mod trendline;
+mod waterfall;
 #[cfg(test)]
 mod tests;
 
@@ -45,6 +46,10 @@ pub enum ErrorSides { Both, Plus, Minus }
 #[serde(rename_all = "camelCase")]
 pub enum ErrorValueType { FixedVal, Percentage, StdDev, StdErr, Cust }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaterfallStackType { Arrangement, Stacked }
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
 pub enum HistogramBinning { Count { count: u32 }, Width { width: f64 } }
@@ -59,6 +64,8 @@ pub enum ChartJob {
     /// Total/change flags share the columnar numeric input, avoiding a large
     /// per-point control DTO. Only exact 0/1 flags are accepted.
     Waterfall { series_index: u32, slot: u32, total_column: Option<u32> },
+    WaterfallLayout { series_index: u32, slot: u32, series_indices: Vec<u32>, stack_type: WaterfallStackType,
+        use_subtotal: bool, total_columns: Option<Vec<Option<u32>>> },
     Trendline { series_index: u32, slot: u32, #[serde(rename = "type")] trend_type: TrendType,
         order: Option<u32>, period: Option<u32> },
     ErrorBars { series_index: u32, slot: u32, direction: ErrorDirection,
@@ -73,21 +80,26 @@ impl ChartJob {
             Self::Boxplot { series_index, slot, .. } => ("boxplot", *series_index, *slot),
             Self::Pareto { series_index, slot, .. } => ("pareto", *series_index, *slot),
             Self::Waterfall { series_index, slot, .. } => ("waterfall", *series_index, *slot),
+            Self::WaterfallLayout { series_index, slot, .. } => ("waterfallLayout", *series_index, *slot),
             Self::Trendline { series_index, slot, .. } => ("trendline", *series_index, *slot),
             Self::ErrorBars { series_index, slot, .. } => ("errorBars", *series_index, *slot),
         }
     }
 
-    pub fn output_capacity(&self, rows: usize) -> (usize, usize) {
-        match self {
+    pub fn output_capacity(&self, rows: usize) -> Result<(usize, usize), ComputeError> {
+        if rows > MAX_ROWS { return Err(ComputeError::memory()); }
+        Ok(match self {
             Self::Histogram { .. } => (10_002 * 2, 10_002 * 2),
             Self::Boxplot { .. } => (rows + 5, 0),
             Self::Pareto { .. } => (rows * 2, rows),
             Self::Waterfall { .. } => (rows * 3, rows * 2),
+            Self::WaterfallLayout { series_indices, stack_type, use_subtotal, .. } => {
+                return waterfall::output_capacity(rows, series_indices.len(), *stack_type, *use_subtotal);
+            }
             Self::Trendline { trend_type: TrendType::MovingAvg, .. } => (rows * 2, 0),
             Self::Trendline { .. } => (33 * 2, 0),
             Self::ErrorBars { .. } => (rows * 4, rows),
-        }
+        })
     }
 
     fn scratch_capacity(&self, rows: usize) -> usize {
@@ -100,7 +112,7 @@ impl ChartJob {
             Self::Trendline { trend_type: TrendType::MovingAvg, period, .. } =>
                 rows.min(period.unwrap_or(2) as usize) * 112,
             Self::Trendline { .. } => rows * 16 + 4096,
-            Self::Waterfall { .. } | Self::ErrorBars { .. } => 0,
+            Self::Waterfall { .. } | Self::WaterfallLayout { .. } | Self::ErrorBars { .. } => 0,
         }
     }
 }
@@ -177,6 +189,15 @@ impl ChartStatisticsParams {
                         return Err(ComputeError::invalid("Waterfall total flag column is out of range"));
                     }
                 }
+                ChartJob::WaterfallLayout { series_indices, total_columns, .. } => {
+                    let mut selected = HashSet::new();
+                    if series_indices.is_empty() || series_indices.len() > MAX_CHART_SERIES || series_indices.first() != Some(&series)
+                        || series_indices.iter().any(|index| *index as usize >= self.series.len() || !selected.insert(*index))
+                        || total_columns.as_ref().is_some_and(|columns| columns.len() != series_indices.len()
+                            || columns.iter().any(|column| column.is_some_and(|column| column >= self.column_count))) {
+                        return Err(ComputeError::invalid("Waterfall layout series/total columns are missing, duplicated or out of range"));
+                    }
+                }
                 ChartJob::Trendline { order, period, .. } => {
                     if order.is_some_and(|value| !(2..=6).contains(&value))
                         || period.is_some_and(|value| !(2..=100_000).contains(&value)) {
@@ -216,12 +237,14 @@ impl ChartStatisticsParams {
             || self.series.len() > MAX_CHART_SERIES || self.jobs.len() > MAX_CHART_JOBS {
             return Err(ComputeError::memory());
         }
+        let elements = rows.checked_mul(self.column_count as usize).ok_or_else(ComputeError::memory)?;
+        self.validate_shape(elements, elements, rows)?;
         let input_bytes = rows.checked_mul(self.column_count as usize).and_then(|value| value.checked_mul(9))
             .and_then(|value| value.checked_add(rows.checked_mul(4)?)).ok_or_else(ComputeError::memory)?;
         let mut value_capacity: usize = 0;
         let mut index_capacity: usize = 0;
         for job in &self.jobs {
-            let (values, indices) = job.output_capacity(rows);
+            let (values, indices) = job.output_capacity(rows)?;
             value_capacity = value_capacity.checked_add(values).ok_or_else(ComputeError::memory)?;
             index_capacity = index_capacity.checked_add(indices).ok_or_else(ComputeError::memory)?;
         }
@@ -231,6 +254,14 @@ impl ChartStatisticsParams {
             .checked_add(CHART_SCRATCH_ALLOWANCE).ok_or_else(ComputeError::memory)?;
         let controls = self.series.len().checked_mul(32)
             .and_then(|value| value.checked_add(self.jobs.len().checked_mul(512)?)).ok_or_else(ComputeError::memory)?;
+        let controls = self.jobs.iter().try_fold(controls, |total, job| {
+            let extra = match job {
+                ChartJob::WaterfallLayout { series_indices, total_columns, .. } => series_indices.len().checked_mul(4)
+                    .and_then(|size| size.checked_add(total_columns.as_ref().map_or(0, |columns| columns.len()).checked_mul(8)?)),
+                _ => Some(0),
+            }.ok_or_else(ComputeError::memory)?;
+            total.checked_add(extra).ok_or_else(ComputeError::memory)
+        })?;
         let estimated_peak_bytes = input_bytes.checked_mul(2)
             .and_then(|value| value.checked_add(output_bytes.checked_mul(2)?))
             .and_then(|value| value.checked_add(scratch))
@@ -368,6 +399,8 @@ impl ChartStatistics {
                     distribution::pareto(&input, series, *include_zero_values, result),
                 ChartJob::Waterfall { total_column, .. } =>
                     distribution::waterfall(&input, series, *total_column, result),
+                ChartJob::WaterfallLayout { series_indices, stack_type, use_subtotal, total_columns, .. } =>
+                    waterfall::layout(&input, &self.params.series, series_indices, *stack_type, *use_subtotal, total_columns.as_deref(), result),
                 ChartJob::Trendline { trend_type, order, period, .. } =>
                     trendline::trendline(&input, series, *trend_type, *order, *period, result),
                 ChartJob::ErrorBars { direction, sides, value_type, value, plus_column, minus_column, .. } =>

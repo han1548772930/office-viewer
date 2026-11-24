@@ -17,6 +17,8 @@ import { chartBoxplotAxis, chartBoxplotGeometry, chartBoxplotStyle, chartBoxplot
 import { chartAxisTitleSpace } from './chart-axis-title'
 import { chartManualPlotFrame, chartPlotAreaFromFrame, supportsChartPlotArea, validateChartPlotArea } from './chart-plot-area'
 import { chartDateAxis, chartDateSerial } from './chart-date-axis'
+import { chartWaterfallUsesSecondaryAxis } from './chart-waterfall'
+import { layoutChartWaterfall } from './chart-waterfall-layout'
 import { chartChordLayout, chartRelationLayout, chartSankeyLayout, chartSunburstLayout, chartTreemapLayout, chartWordCloudLayout } from './chart-special-layout'
 
 export type ChartPlotFrameSource = Pick<ChartConfig, 'type' | 'position' | 'size' | 'title' | 'subtitle' | 'options' | 'legend' | 'xAxis' | 'yAxis'>
@@ -34,7 +36,7 @@ export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: Chart
   const title = chart.title ? Math.max(28, (chart.options?.titleStyle?.fontSize ?? inheritedSize ?? 14) + 14) : 0
   const subtitle = chart.subtitle ? Math.max(18, (chart.options?.subtitleStyle?.fontSize ?? inheritedSize ?? 11) + 7) : 0
   const sideLegend = legend.visible && ['left', 'right'].includes(legend.position) ? Math.min(96, frame.width * 0.24) : 0
-  const secondary = chart.type === 'pareto' || (sourceSeries
+  const secondary = chart.type === 'pareto' || chartWaterfallUsesSecondaryAxis(chart, sourceSeries) || (sourceSeries
     ? sourceSeries.some((series, index) => chartSeriesStyle(chart, series.field, index, undefined, series.sourceName ?? series.name).rightAxis)
     : Object.values(chart.options?.series ?? {}).some(style => style.rightAxis) || chart.options?.namedSeries?.some(entry => entry.style.rightAxis) || chart.options?.allSeriesStyle?.rightAxis)
   const horizontal = descriptor.family === 'bar', sideAxis = (horizontal ? chart.xAxis : chart.yAxis) ?? {}, bottomAxis = (horizontal ? chart.yAxis : chart.xAxis) ?? {}
@@ -63,6 +65,7 @@ export function layoutChartData(data: ChartData, chart: ChartModel, computed?: C
 
 export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartModel, palette = chartPalette(chart)): ChartLayout {
   const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series)
+  if (derived.waterfallLayout) return layoutChartWaterfall(data, chart, derived.waterfallLayout, frame, plot, palette)
   const dateAxis = chartDateAxis(data, chart)
   const horizontal = descriptor.family === 'bar', numericX = descriptor.dataShape === 'xy' || descriptor.dataShape === 'bubble' || Boolean(dateAxis)
   const sourceStyles = data.series.map((series, index) => chart.type === 'pareto' ? chartParetoBarStyle(chart, series.field, index, palette, series.sourceName ?? series.name)
@@ -92,10 +95,6 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     }
   }
   if (data.candles) for (const candle of data.candles) if (candle) primaryValues.push(candle.low, candle.high)
-  if (derived.waterfalls) derived.waterfalls.forEach((points, index) => {
-    const values = sourceStyles[index]?.rightAxis ? rightValues : primaryValues
-    for (const point of points) values.push(point.start, point.end)
-  })
   for (const trend of derived.trends) {
     const values = sourceStyles[trend.seriesPosition]?.rightAxis ? rightValues : primaryValues
     for (const point of trend.statistics.points) values.push(point[1])
@@ -212,15 +211,6 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     const sectors = chartSunburstLayout(data.hierarchy!, plot), center = { x: plot.x + plot.width / 2, y: plot.y + plot.height / 2 }
     layout.categories = chartHierarchyItems(data.hierarchy!).map(item => item.path.join(' / '))
     layout.series[0]!.points = sectors.map(sector => ({ ...chartPolar(center, (sector.inner + sector.outer) / 2, (sector.start + sector.end) / 2), value: sector.node.value, category: layout.categories[sector.pointIndex]!, categoryIndex: sector.pointIndex }))
-  } else if (descriptor.family === 'waterfall') {
-    layout.series = layout.series.map((series, seriesIndex) => {
-      const axis = series.rightAxis ? rightAxis : chart.yAxis, min = series.rightAxis ? rightExtent.min : extent.min, max = series.rightAxis ? rightExtent.max : extent.max
-      return { ...series, points: derived.waterfalls![seriesIndex]!.map(point => ({
-        x: plot.x + categoryPosition(point.categoryIndex) * plot.width, y: plot.y + (1 - chartAxisRatio(point.end, min, max, axis)) * plot.height,
-        baseY: plot.y + (1 - chartAxisRatio(point.start, min, max, axis)) * plot.height, baseValue: point.start,
-        category: data.categories[point.categoryIndex]!, categoryIndex: point.categoryIndex, value: point.value,
-      })) }
-    })
   }
   if (derived.pareto) {
     const style = chartParetoCumulativeStyle(chart, palette)

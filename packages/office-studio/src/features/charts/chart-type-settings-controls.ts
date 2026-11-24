@@ -70,10 +70,10 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
     selectControl('threeD.grouping', '三维系列布局', [['standard', '沿深度排列'], ['clustered', '按分类聚集']], item => item.options?.threeD?.grouping, (item, value) => { optionGroup(item, 'threeD').grouping = value }, 'standard'),
     numberControl('threeD.gapDepth', '系列深度间距（%）', item => item.options?.threeD?.gapDepth, (item, value) => { optionGroup(item, 'threeD').gapDepth = value }, 0, 500, 150),
   )
-  if (descriptor.family === 'column' || descriptor.family === 'bar' || descriptor.family === 'combination' || descriptor.family === 'waterfall') controls.push(
-    numberControl('bar.gapWidth', '柱条间距（%）', item => item.options?.bar?.gapWidth, (item, value) => { optionGroup(item, 'bar').gapWidth = value }, 0, 500, 150),
-    numberControl('bar.overlap', '系列重叠（%）', item => item.options?.bar?.overlap, (item, value) => { optionGroup(item, 'bar').overlap = value }, -100, 100, 0),
-  )
+  if (descriptor.family === 'column' || descriptor.family === 'bar' || descriptor.family === 'combination' || descriptor.family === 'waterfall') {
+    controls.push(numberControl('bar.gapWidth', '柱条间距（%）', item => item.options?.bar?.gapWidth, (item, value) => { optionGroup(item, 'bar').gapWidth = value }, 0, 500, 150))
+    if (descriptor.family !== 'waterfall') controls.push(numberControl('bar.overlap', '系列重叠（%）', item => item.options?.bar?.overlap, (item, value) => { optionGroup(item, 'bar').overlap = value }, -100, 100, 0))
+  }
   if (descriptor.family === 'area' && !descriptor.threeD) controls.push(switchControl('area.smooth', '平滑面积边界', item => item.options?.area?.smooth, (item, value) => { optionGroup(item, 'area').smooth = value }))
   if (descriptor.family === 'pie') {
     controls.push(
@@ -116,7 +116,6 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
     numberControl('relation.force.edgeLength', '连线长度', item => item.options?.relation?.force?.edgeLength, (item, value) => { (optionGroup(item, 'relation').force ??= {}).edgeLength = value }, 0, 10_000, 70),
   )
   if (descriptor.family === 'waterfall') controls.push(
-    switchControl('waterfall.connector', '显示累计连接线', item => item.options?.waterfall?.connector, (item, value) => { optionGroup(item, 'waterfall').connector = value }, true),
     colorControl('waterfall.positiveColor', '增加颜色', item => item.options?.waterfall?.positiveColor, (item, value) => { optionGroup(item, 'waterfall').positiveColor = value }),
     colorControl('waterfall.negativeColor', '减少颜色', item => item.options?.waterfall?.negativeColor, (item, value) => { optionGroup(item, 'waterfall').negativeColor = value }),
     colorControl('waterfall.totalColor', '合计颜色', item => item.options?.waterfall?.totalColor, (item, value) => { optionGroup(item, 'waterfall').totalColor = value }),

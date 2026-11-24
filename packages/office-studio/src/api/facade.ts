@@ -8,6 +8,9 @@ import type {
   ChartSemanticOptions,
   ChartSeriesOptions,
   ChartSeriesSelector,
+  ChartWaterfallConnectorOptions,
+  ChartWaterfallSeriesStyle,
+  ChartWaterfallStackType,
   ChartBubbleMappingOptions,
   ChartTrendlineOptions,
   ChartErrorBarOptions,
@@ -69,6 +72,7 @@ import { convertChartType } from '../features/charts/chart-type-conversion'
 import { chartGaugeNullableValues, chartGaugeRangesOptions, chartGaugeTicksOptions, patchChartGaugeOptions } from '../features/charts/chart-gauge-api'
 import { ChartGaugeModes, ChartGaugePointerShapes, chartGaugePresetOptions, type ChartGaugePreset } from '../features/charts/chart-gauge'
 import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/chart-radar'
+import { assertChartWaterfallType, chartWaterfallConnectorValues, patchChartWaterfallStyle } from '../features/charts/chart-waterfall'
 import { ChartAllSeriesStyleTargets, ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, chartCartesianAxisPatch, chartAxisPointerValues, chartSeriesStyleValues, clearChartAllSeriesStyle, clearChartAxis, clearChartAxisPointer, clearChartSeriesStyle, patchChartSeriesOverride,
   type ChartAllSeriesStyleTarget, type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget } from '../features/charts/chart-cartesian-api'
 import { chartSeriesOverride, validateChartSeriesSelector } from '../features/charts/chart-series-selector'
@@ -76,6 +80,8 @@ import { validateChartPlotArea } from '../features/charts/chart-plot-area'
 import { validateChartGradientAuthoring, validateChartGradientSeriesPatch } from '../features/charts/chart-gradient'
 import { describeChartConfiguration, type ChartDescription, type ChartDescriptionContext } from '../features/charts/chart-description'
 import { chartDescriptionSourceContext } from './chart-description-host'
+import { assertChartReadPermission, chartStatisticsSignature, type ChartStatisticsRequestContext } from '../features/charts/services/chart-statistics-service'
+import { ComputeError } from '../compute/errors'
 import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
 import {
   getCommonDocumentTextStyle,
@@ -169,6 +175,9 @@ import { createSheetDataValidationRule, sheetDataValidationOptions, validateShee
 import { createSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 
 export interface CreateUnitOptions { makeCurrent?: boolean }
+/** Local asynchronous read options. Identity, revision and permission checks
+ * come from the Facade host and cannot be replaced by caller options. */
+export type ChartComputationReadOptions = Omit<ChartStatisticsRequestContext, 'documentId' | 'modelRevision' | 'userId' | 'assertCurrent'>
 export interface FRangeCoordinates { startRow: number; startColumn: number; endRow: number; endColumn: number; rangeType?: 0 | 1 | 2 | 3 }
 export interface FSelectionCell extends FRangeCoordinates { actualRow: number; actualColumn: number; isMerged: boolean; isMergedMainCell: boolean }
 export type PivotTableSourceInfo = PivotTableSourceInput
@@ -957,6 +966,45 @@ export class ChartConfigBuilder {
     return this.setOptions(patchChartSeriesOverride(this.value.options, selector, clearChartSeriesStyle(chartSeriesOverride(this.value.options, selector), target)))
   }
   clearAllSeriesOverrides(): this { return this.setOptions({ series: {}, namedSeries: [] }) }
+  setPositiveStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOptions(patchChartWaterfallStyle(this.value.options, selector, 'positive', value))
+  }
+  clearPositiveStyle(selector: ChartSeriesSelector): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOptions(patchChartWaterfallStyle(this.value.options, selector, 'positive', undefined))
+  }
+  setNegativeStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOptions(patchChartWaterfallStyle(this.value.options, selector, 'negative', value))
+  }
+  clearNegativeStyle(selector: ChartSeriesSelector): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOptions(patchChartWaterfallStyle(this.value.options, selector, 'negative', undefined))
+  }
+  setSubtotalStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOptions(patchChartWaterfallStyle(this.value.options, selector, 'subtotal', value))
+  }
+  clearSubtotalStyle(selector: ChartSeriesSelector): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOptions(patchChartWaterfallStyle(this.value.options, selector, 'subtotal', undefined))
+  }
+  setConnector(value: boolean | ChartNullablePatch<ChartWaterfallConnectorOptions>): this {
+    assertChartWaterfallType(this.value.type)
+    return this.setOption('waterfall', { connector: chartWaterfallConnectorValues(value) })
+  }
+  clearConnector(): this { assertChartWaterfallType(this.value.type); return this.setOption('waterfall', { connector: undefined }) }
+  setStackType(value: ChartWaterfallStackType): this {
+    assertChartWaterfallType(this.value.type); validateChartWaterfallStackType(value)
+    return this.setOption('waterfall', { stackType: value, ...(value === 'stacked' ? { pointRoles: undefined } : {}) })
+  }
+  resetStackType(): this { assertChartWaterfallType(this.value.type); return this.setOption('waterfall', { stackType: undefined }) }
+  setUseSubtotal(value: boolean): this {
+    assertChartWaterfallType(this.value.type); validateChartWaterfallSubtotalValue(value)
+    return this.setOption('waterfall', { useSubtotal: value })
+  }
+  resetUseSubtotal(): this { assertChartWaterfallType(this.value.type); return this.setOption('waterfall', { useSubtotal: undefined }) }
   setTrendlines(trendlines: readonly ChartTrendlineOptions[]): this { return this.setOption('trendlines', [...trendlines]) }
   setErrorBars(errorBars: readonly ChartErrorBarOptions[]): this { return this.setOption('errorBars', [...errorBars]) }
   setThreeD(threeD: ChartSemanticOptions['threeD']): this { return this.setOption('threeD', threeD) }
@@ -1040,8 +1088,34 @@ export class FChart {
   }
   getDataSource(): ChartSource { return cloneModel(this.model().source) }
   getData(): ReturnType<typeof readChartData> { const model = this.model(); this.assertCanReadSource(model); return readChartData(this.workbook(), model) }
-  getLayout(): ReturnType<typeof chartLayout> { const model = this.model(); this.assertCanReadSource(model); return chartLayout(this.workbook(), model) }
-  getRenderCommands(): ReturnType<typeof chartRenderCommands> { const model = this.model(); this.assertCanReadSource(model); return chartRenderCommands(this.workbook(), model) }
+  getLayout(): ReturnType<typeof chartLayout> {
+    const model = this.model(); this.assertCanReadSource(model)
+    const computed = this.api.chartStatisticsService.getCached(model, this.computationContext(model))?.statistics
+    return cloneModel(chartLayout(this.workbook(), model, computed))
+  }
+  getRenderCommands(): ReturnType<typeof chartRenderCommands> {
+    const model = this.model(); this.assertCanReadSource(model)
+    const computed = this.api.chartStatisticsService.getCached(model, this.computationContext(model))?.statistics
+    return cloneModel(chartRenderCommands(this.workbook(), model, computed))
+  }
+  async getComputedData(options: ChartComputationReadOptions = {}): Promise<ReturnType<typeof readChartData>> {
+    const model = this.model(), context = this.computationContext(model, options)
+    const snapshot = await this.api.chartStatisticsService.request(this.workbook(), model, context).promise
+    context.assertCurrent?.()
+    return cloneModel(snapshot.statistics.preparedData ?? readChartData(this.workbook(), model))
+  }
+  async getComputedLayout(options: ChartComputationReadOptions = {}): Promise<ReturnType<typeof chartLayout>> {
+    const model = this.model(), context = this.computationContext(model, options)
+    const snapshot = await this.api.chartStatisticsService.request(this.workbook(), model, context).promise
+    context.assertCurrent?.()
+    return cloneModel(chartLayout(this.workbook(), model, snapshot.statistics))
+  }
+  async getComputedRenderCommands(options: ChartComputationReadOptions = {}): Promise<ReturnType<typeof chartRenderCommands>> {
+    const model = this.model(), context = this.computationContext(model, options)
+    const snapshot = await this.api.chartStatisticsService.request(this.workbook(), model, context).promise
+    context.assertCurrent?.()
+    return cloneModel(chartRenderCommands(this.workbook(), model, snapshot.statistics))
+  }
   async update(info: ChartPatch): Promise<this> {
     this.model()
     const committed = await this.api.executeCommand<boolean>('sheet.command.update-chart', { unitId: this.unitId, chartId: this.id, patch: info })
@@ -1082,6 +1156,45 @@ export class FChart {
     return this.setOptions(patchChartSeriesOverride(this.model().options, selector, clearChartSeriesStyle(chartSeriesOverride(this.model().options, selector), target)))
   }
   async clearAllSeriesOverrides(): Promise<this> { return this.setOptions({ series: {}, namedSeries: [] }) }
+  async setPositiveStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): Promise<this> {
+    const model = this.model(); assertChartWaterfallType(model.type)
+    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'positive', value))
+  }
+  async clearPositiveStyle(selector: ChartSeriesSelector): Promise<this> {
+    const model = this.model(); assertChartWaterfallType(model.type)
+    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'positive', undefined))
+  }
+  async setNegativeStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): Promise<this> {
+    const model = this.model(); assertChartWaterfallType(model.type)
+    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'negative', value))
+  }
+  async clearNegativeStyle(selector: ChartSeriesSelector): Promise<this> {
+    const model = this.model(); assertChartWaterfallType(model.type)
+    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'negative', undefined))
+  }
+  async setSubtotalStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): Promise<this> {
+    const model = this.model(); assertChartWaterfallType(model.type)
+    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'subtotal', value))
+  }
+  async clearSubtotalStyle(selector: ChartSeriesSelector): Promise<this> {
+    const model = this.model(); assertChartWaterfallType(model.type)
+    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'subtotal', undefined))
+  }
+  async setConnector(value: boolean | ChartNullablePatch<ChartWaterfallConnectorOptions>): Promise<this> {
+    assertChartWaterfallType(this.model().type)
+    return this.setOption('waterfall', { connector: chartWaterfallConnectorValues(value) })
+  }
+  async clearConnector(): Promise<this> { assertChartWaterfallType(this.model().type); return this.setOption('waterfall', { connector: undefined }) }
+  async setStackType(value: ChartWaterfallStackType): Promise<this> {
+    assertChartWaterfallType(this.model().type); validateChartWaterfallStackType(value)
+    return this.setOption('waterfall', { stackType: value, ...(value === 'stacked' ? { pointRoles: undefined } : {}) })
+  }
+  async resetStackType(): Promise<this> { assertChartWaterfallType(this.model().type); return this.setOption('waterfall', { stackType: undefined }) }
+  async setUseSubtotal(value: boolean): Promise<this> {
+    assertChartWaterfallType(this.model().type); validateChartWaterfallSubtotalValue(value)
+    return this.setOption('waterfall', { useSubtotal: value })
+  }
+  async resetUseSubtotal(): Promise<this> { assertChartWaterfallType(this.model().type); return this.setOption('waterfall', { useSubtotal: undefined }) }
   async setTrendlines(trendlines: readonly ChartTrendlineOptions[]): Promise<this> { return this.setOption('trendlines', [...trendlines]) }
   async setErrorBars(errorBars: readonly ChartErrorBarOptions[]): Promise<this> { return this.setOption('errorBars', [...errorBars]) }
   async setRightYAxis(axis: ChartNullablePatch<ChartAxisOptions> | undefined): Promise<this> { return this.setOption('rightYAxis', axis === undefined ? undefined : chartAxisPatch(this.model().options?.rightYAxis, axis)) }
@@ -1149,6 +1262,21 @@ export class FChart {
   private assertCanReadSource(chart: ChartModel): void {
     const sourceSheetId = chart.pivotTableId ? this.workbook().pivotTables?.find(pivot => pivot.id === chart.pivotTableId)?.source.subUnitId : chart.source.sheetId ?? chart.sheetId
     if (sourceSheetId) this.api.assertCanViewWorksheet(this.unitId, sourceSheetId)
+    assertChartReadPermission(this.workbook(), chart, this.api.currentUserId)
+  }
+  private computationContext(chart: ChartModel, options: ChartComputationReadOptions = {}): ChartStatisticsRequestContext {
+    this.assertCanReadSource(chart)
+    const modelRevision = this.api.getWorkbookRevision(this.unitId), signature = chartStatisticsSignature(chart)
+    const signal = options.signal, userId = this.api.currentUserId
+    return { ...options, documentId: this.unitId, modelRevision, userId,
+      assertCurrent: () => {
+        if (signal?.aborted) throw new ComputeError('COMPUTE_CANCELLED', '图表计算读取已取消')
+        const workbook = this.api.getWorkbookModel(this.unitId), current = workbook?.charts?.find(candidate => candidate.id === this.id)
+        if (!workbook || !current || this.api.currentUserId !== userId || this.api.getWorkbookRevision(this.unitId) !== modelRevision || chartStatisticsSignature(current) !== signature) {
+          throw new ComputeError('COMPUTE_STALE_RESULT', '图表或来源已在计算期间更新')
+        }
+        this.assertCanReadSource(current)
+      } }
   }
   private workbook(): WorkbookModel {
     const workbook = this.api.getWorkbookModel(this.unitId)
@@ -1164,6 +1292,10 @@ function chartOptionPatch<K extends keyof ChartSemanticOptions>(key: K, value: C
 }
 function validateChartSeriesField(field: number): void { if (!Number.isSafeInteger(field) || field < 0) throw new RangeError('图表系列字段须为非负安全整数。') }
 function validateChartAutomaticGradientValue(value: boolean): void { if (typeof value !== 'boolean') throw new TypeError('自动渐变设置须为布尔值。') }
+function validateChartWaterfallStackType(value: ChartWaterfallStackType): void {
+  if (value !== 'arrangement' && value !== 'stacked') throw new TypeError('瀑布图排列方式无效。')
+}
+function validateChartWaterfallSubtotalValue(value: boolean): void { if (typeof value !== 'boolean') throw new TypeError('瀑布图自动小计设置须为布尔值。') }
 function assertChartRadarType(type: ChartType): void { if (type !== 'radar') throw new TypeError('雷达专属 API 仅适用于雷达图。') }
 function assertChartBubbleType(type: ChartType): void { if (type !== 'bubble') throw new TypeError('气泡映射 API 仅适用于气泡图。') }
 function chartGaugeValueFieldMapping(current: ChartSemanticOptions['mapping'], index: number, category: number): NonNullable<ChartSemanticOptions['mapping']> {

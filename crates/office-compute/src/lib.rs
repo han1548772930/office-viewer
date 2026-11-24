@@ -11,7 +11,7 @@ mod chart_wasm;
 pub use aggregate::{NumericAggregate, NumericStatistics};
 pub use chart::{ChartJob, ChartMemoryEstimate, ChartSegment, ChartSeries, ChartStatistics,
     ChartStatisticsParams, ChartStatisticsResult, ChartTrendlineFit, ErrorDirection,
-    ErrorSides, ErrorValueType, HistogramBinning, QuartileMethod, TrendType};
+    ErrorSides, ErrorValueType, HistogramBinning, QuartileMethod, TrendType, WaterfallStackType};
 pub use error::{ComputeError, MAX_ELEMENTS, MAX_KEYS, MAX_ROWS};
 pub use filter::NumericFilter;
 pub use sort::StableNumericSort;

@@ -4,11 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{ExportError, xml};
 use office_io_common::chart_kind::{NativeChartKind, native_chart_kind};
 use office_io_common::chart_options::Series;
+use office_io_common::chart_color::ChartColor;
 use office_io_common::chart_xml;
 use super::{WorkbookInput, SheetInput, ChartInput, range_bounds, safe_sheet_names, chart_range_formula, cell_ref, MAX_ROW_INDEX, MAX_COLUMN_INDEX};
 
 #[path = "xlsx_chart_style.rs"]
 mod style;
+#[path = "xlsx_chart_paint.rs"]
+mod paint;
 #[path = "xlsx_chart_bindings.rs"]
 mod bindings;
 #[path = "xlsx_chart_source.rs"]
@@ -209,24 +212,45 @@ fn series(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, index: u
     let (name_formula, name) = context.header(chart, spec.field)?;
     let (value_formula, values) = bound_vector(context, chart, spec, spec.field, chart.options.invalid_value_strategy.as_deref() == Some("zero"))?;
     if spec.kind.pie && (!values.iter().flatten().any(|value| *value > 0.0) || values.iter().flatten().any(|value| *value < 0.0)) { return Err(ExportError::invalid("pie values must be non-negative with a positive total")); }
-    let color = spec.style.color.as_deref().or_else(|| chart.palette.get(index % chart.palette.len().max(1)).map(String::as_str)).unwrap_or(DEFAULT_PALETTE[index % DEFAULT_PALETTE.len()]);
+    let base_color = spec.style.color.clone().unwrap_or_else(|| ChartColor::from(chart.palette.get(index % chart.palette.len().max(1)).map(String::as_str).unwrap_or(DEFAULT_PALETTE[index % DEFAULT_PALETTE.len()])));
+    let fill_opacity = spec.style.fill_opacity.or_else(|| matches!(spec.kind.plot, "areaChart" | "area3DChart").then_some(0.28));
+    let color = paint::series_color(chart, spec, &base_color, &spec.style, false)?;
+    let representative = base_color.representative().map_err(ExportError::invalid)?;
     let mut out = format!("<c:ser><c:idx val=\"{index}\"/><c:order val=\"{index}\"/>");
     if let Some(name) = spec.style.name.as_deref() { out.push_str(&format!("<c:tx><c:v>{}</c:v></c:tx>", xml::escape(name))); }
     else if let Some(group) = spec.group_index.and_then(|index| chart.native_bindings.as_ref()?.groups.get(index)) { out.push_str(&format!("<c:tx><c:v>{}</c:v></c:tx>", xml::escape(&group.name))); }
     else { out.push_str(&format!("<c:tx><c:strRef><c:f>{}</c:f>{}</c:strRef></c:tx>", xml::escape(&name_formula), string_cache(&[name]))); }
-    out.push_str(&style::series_shape(&spec.style, color, matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart"))?);
-    if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "radarChart" | "stockChart") { out.push_str(&style::marker(spec.style.point.as_ref(), Some(color))?); }
+    out.push_str(&style::series_shape(&spec.style, &color, fill_opacity, matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "stockChart"))?);
+    if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "radarChart" | "stockChart") {
+        out.push_str(&style::painted_marker(spec.style.point.as_ref(), Some(&color), fill_opacity, spec.style.fill_pattern.as_ref().and_then(Option::as_ref))?);
+    }
     if spec.kind.pie {
         if let Some(explosion) = chart.options.pie.as_ref().and_then(|pie| pie.explosion) { out.push_str(&format!("<c:explosion val=\"{}\"/>", style::integer(explosion, 0.0, 100.0, "pie explosion")?)); }
     }
-    for (point_index, point) in &spec.style.data_points {
+    let mut point_indexes = spec.style.data_points.keys().copied().collect::<BTreeSet<_>>();
+    if paint::automatic_enabled(chart) && matches!(spec.kind.plot, "barChart" | "bar3DChart") {
+        point_indexes.extend(values.iter().enumerate().filter_map(|(index, value)| {
+            if !value.is_some_and(|value| value < 0.0) { return None; }
+            let point = spec.style.data_points.get(&index);
+            let color = point.and_then(|point| point.color.as_ref()).unwrap_or(&base_color);
+            let pattern = point.and_then(|point| point.fill_pattern.as_ref()).or(spec.style.fill_pattern.as_ref()).and_then(Option::as_ref);
+            (color.as_solid().is_some() && pattern.is_none()).then_some(index)
+        }));
+    }
+    for point_index in &point_indexes {
         if *point_index >= chart.native_bindings.as_ref().map_or(context.point_count, |bindings| bindings.point_count) { continue; }
+        let default = office_io_common::chart_options::Point::default();
+        let point = spec.style.data_points.get(point_index).unwrap_or(&default);
+        let point_base = point.color.as_ref().unwrap_or(&base_color);
+        let point_style = Series { fill_opacity: point.fill_opacity.or(fill_opacity),
+            fill_pattern: point.fill_pattern.clone().or_else(|| spec.style.fill_pattern.clone()), border: point.border.clone().or_else(|| spec.style.border.clone()), ..Default::default() };
+        let point_color = paint::series_color(chart, spec, point_base, &point_style, values.get(*point_index).copied().flatten().is_some_and(|value| value < 0.0))?;
         out.push_str(&format!("<c:dPt><c:idx val=\"{point_index}\"/>"));
         if matches!(spec.kind.plot, "lineChart" | "line3DChart" | "scatterChart" | "radarChart" | "stockChart") {
-            let point_marker = office_io_common::chart_options::Marker { shape: point.shape.clone().or_else(|| spec.style.point.as_ref().and_then(|marker| marker.shape.clone())), size: point.size.or_else(|| spec.style.point.as_ref().and_then(|marker| marker.size)), color: point.color.clone().or_else(|| spec.style.point.as_ref().and_then(|marker| marker.color.clone())) };
-            out.push_str(&style::marker(Some(&point_marker), Some(color))?);
+            let point_marker = office_io_common::chart_options::Marker { shape: point.shape.clone().or_else(|| spec.style.point.as_ref().and_then(|marker| marker.shape.clone())), size: point.size.or_else(|| spec.style.point.as_ref().and_then(|marker| marker.size)), color: point.color.as_ref().map(ChartColor::representative).transpose().map_err(ExportError::invalid)?.or_else(|| spec.style.point.as_ref().and_then(|marker| marker.color.clone())) };
+            out.push_str(&style::painted_marker(Some(&point_marker), Some(&point_color), point_style.fill_opacity, point_style.fill_pattern.as_ref().and_then(Option::as_ref))?);
         }
-        out.push_str(&style::shape(point.color.as_deref().or(Some(color)), point.fill_opacity.or(spec.style.fill_opacity), point.border.as_ref().or(spec.style.border.as_ref()), Some(color))?);
+        out.push_str(&style::painted_shape(&point_color, point_style.fill_opacity, point_style.fill_pattern.as_ref().and_then(Option::as_ref), point_style.border.as_ref(), Some(&representative))?);
         out.push_str("</c:dPt>");
     }
     let pie = chart.options.pie.as_ref();
@@ -379,7 +403,8 @@ pub(super) fn chart_xml(workbook: &WorkbookInput, chart: &ChartInput, chart_inde
     out.push_str(&style::title(chart.title.as_deref(), chart.subtitle.as_deref(), chart.options.title_style.as_ref(), chart.options.subtitle_style.as_ref())?);
     out.push_str("<c:autoTitleDeleted val=\"0\"/>");
     out.push_str(&view(chart, first_kind)?);
-    out.push_str("<c:plotArea><c:layout/>");
+    out.push_str("<c:plotArea>");
+    out.push_str(&paint::plot_layout(chart.options.plot_area.as_ref())?);
     let mut groups: Vec<(NativeChartKind, bool, Vec<usize>)> = Vec::new();
     for (index, spec) in specs.iter().enumerate() {
         if let Some(group) = groups.iter_mut().find(|group| group.0 == spec.kind && group.1 == spec.secondary) { group.2.push(index); }
@@ -390,7 +415,10 @@ pub(super) fn chart_xml(workbook: &WorkbookInput, chart: &ChartInput, chart_inde
     if groups.is_empty() { groups.push((first_kind, false, Vec::new())); }
     for (kind, secondary, indexes) in &groups {
         out.push_str(&plot_start(*kind, chart)?);
-        for index in indexes { out.push_str(&series(&context, chart, &specs[*index], *index)?); }
+        for index in indexes {
+            let fragment = series(&context, chart, &specs[*index], *index)?;
+            append_chart_xml(&mut out, &fragment)?;
+        }
         let base = axis_base + if *secondary { 2 } else { 0 };
         out.push_str(&plot_end(*kind, chart, indexes.len(), base, base + 1, axis_base + 4)?);
     }
@@ -425,8 +453,10 @@ pub(super) fn chart_xml(workbook: &WorkbookInput, chart: &ChartInput, chart_inde
     let appearance = chart.options.appearance.as_ref();
     out.push_str(&style::shape(appearance.and_then(|appearance| appearance.background.as_deref()), None, appearance.and_then(|appearance| appearance.border.as_ref()), None)?);
     out.push_str(&style::text_properties(appearance.and_then(|appearance| appearance.font.as_ref()), None)?);
-    let native = format!("{out}</c:chartSpace>");
-    let signature = chart_xml::signature(&chart_xml::parse(&native).map_err(ExportError::invalid)?);
+    let closing = "</c:chartSpace>";
+    append_chart_xml(&mut out, closing)?;
+    let signature = chart_xml::signature(&chart_xml::parse_with_reserved_nodes(&out, 3).map_err(ExportError::invalid)?);
+    out.truncate(out.len() - closing.len());
     let (first_row, first_col, last_row, last_col) = context.bounds;
     let source = serde_json::json!({"version":1,"nativeSignature":signature,"authored":{
         "type":chart.chart_type,"source":{"sheetName":context.sheet_name,"orientation":chart.source.orientation,"range":{"startRow":first_row,"startCol":first_col,"endRow":last_row,"endCol":last_col}},
@@ -435,8 +465,16 @@ pub(super) fn chart_xml(workbook: &WorkbookInput, chart: &ChartInput, chart_inde
         "legend":chart.legend.as_ref().map(|legend| serde_json::json!({"visible":legend.visible,"position":legend.position,"font":legend.font})),
         "helperSheets":chart.native_bindings.as_ref().and_then(|bindings| bindings.helper.as_ref()).map(|helper| vec![serde_json::json!({"name":helper.sheet_name,"key":helper.key})]).unwrap_or_default()
     }});
-    out.push_str(&format!("<c:extLst><c:ext uri=\"{}\"><ov:source xmlns:ov=\"{}\">{}</ov:source></c:ext></c:extLst></c:chartSpace>", office_io_common::chart_options::SOURCE_EXTENSION_URI, office_io_common::chart_options::SOURCE_EXTENSION_NS, xml::escape(&source.to_string())));
+    append_chart_xml(&mut out, &format!("<c:extLst><c:ext uri=\"{}\"><ov:source xmlns:ov=\"{}\">{}</ov:source></c:ext></c:extLst></c:chartSpace>", office_io_common::chart_options::SOURCE_EXTENSION_URI, office_io_common::chart_options::SOURCE_EXTENSION_NS, xml::escape(&source.to_string())))?;
     Ok(out)
+}
+
+fn append_chart_xml(out: &mut String, fragment: &str) -> Result<(), ExportError> {
+    if out.len().checked_add(fragment.len()).is_none_or(|bytes| bytes > chart_xml::MAX_XML_BYTES) {
+        return Err(ExportError::invalid("CHART_XML_RESOURCE_LIMIT: native chart part exceeds 16 MiB"));
+    }
+    out.push_str(fragment);
+    Ok(())
 }
 
 fn bound_vector(context: &Context<'_>, chart: &ChartInput, spec: &SeriesSpec, field: usize, as_zero: bool) -> Result<(String, Vec<Option<f64>>), ExportError> {

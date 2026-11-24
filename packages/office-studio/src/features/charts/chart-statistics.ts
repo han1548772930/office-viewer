@@ -1,4 +1,5 @@
-import type { ChartErrorBarOptions, ChartModel, ChartSemanticOptions, ChartTrendlineOptions } from '../../domain/model'
+import type { ChartErrorBarOptions, ChartModel, ChartSemanticOptions, ChartTrendlineOptions, ChartWaterfallStackType } from '../../domain/model'
+import { ComputeError } from '../../compute/errors'
 import type { ChartData, ChartSeriesData } from './chart-engine'
 import { chartNumber } from './chart-data'
 import { chartFiniteProduct, chartFiniteSum, chartInterpolate, chartScaledMoments, finiteChartValue } from './chart-math'
@@ -9,6 +10,26 @@ export interface HistogramData { validSampleCount: number; bins: HistogramBin[] 
 export interface BoxplotData { min: number; q1: number; median: number; q3: number; max: number; outliers: number[] }
 export interface ParetoData { categories: string[]; values: number[]; cumulativePercent: number[] }
 export interface WaterfallPoint { start: number; end: number; value: number; role: 'change' | 'total'; categoryIndex: number }
+export const CHART_WATERFALL_GLOBAL_SERIES = 0xffff_ffff
+export interface WaterfallLayoutPoint extends WaterfallPoint {
+  seriesPosition: number
+  /** A source row for real points; sourceCategoryCount for automatic subtotals. */
+  dataPointIndex: number
+  synthetic: boolean
+}
+export interface WaterfallLayoutConnector {
+  from: { categoryIndex: number; value: number }
+  to: { categoryIndex: number; value: number }
+}
+export interface WaterfallLayoutData {
+  stackType: ChartWaterfallStackType
+  useSubtotal: boolean
+  sourceCategoryCount: number
+  seriesFields: number[]
+  points: WaterfallLayoutPoint[]
+  connectors: WaterfallLayoutConnector[]
+  cumulative: number
+}
 export interface TrendlineData { points: Array<[number, number]>; formula?: string; r2?: number }
 /** Coefficients fit centered normalized Y to centered/spread normalized X.
  * Log/exp/power transforms are applied before these scale factors. */
@@ -97,17 +118,15 @@ export function chartPareto(categories: readonly string[], samples: readonly (nu
   return { categories: sorted.map(([name]) => name), values: sorted.map(([_name, group]) => group.value), cumulativePercent: sorted.map(([_name, group], index) => { cumulative += group.value / scale; return total ? index === sorted.length - 1 ? 100 : Math.min(100, cumulative / total * 100) : 0 }) }
 }
 
-export function chartWaterfall(series: ChartSeriesData, chart: ChartModel): WaterfallPoint[] {
+/** Legacy single-series projection, never a second accumulation engine. */
+export function chartWaterfall(series: ChartSeriesData, chart: ChartModel, computed?: WaterfallLayoutData): WaterfallPoint[] {
   validateChartOptions({ waterfall: chart.options?.waterfall })
-  let running = 0
-  return series.values.map((value, categoryIndex) => {
-    const numeric = finiteChartValue(value ?? 0, '瀑布图数据')
-    const role = chart.options?.waterfall?.pointRoles?.find(point => point.seriesIndex === series.field && point.dataPointIndex === categoryIndex)?.role ?? 'change'
-    const start = role === 'total' ? 0 : running
-    const end = role === 'total' ? numeric : finiteChartValue(running + numeric, '瀑布图累计值')
-    running = end
-    return { start, end, value: numeric, role, categoryIndex }
-  })
+  if (!computed) throw new ComputeError('COMPUTE_NOT_READY', '瀑布图布局需要先完成 Rust/WASM 计算。')
+  const positions = computed.seriesFields.flatMap((field, position) => field === series.field ? [position] : [])
+  if (positions.length !== 1 || computed.sourceCategoryCount !== series.values.length) throw new RangeError('瀑布图投影与当前来源系列不匹配。')
+  return computed.points.filter(point => point.seriesPosition === positions[0] && !point.synthetic).map(point => ({
+    start: point.start, end: point.end, value: point.value, role: point.role, categoryIndex: point.dataPointIndex,
+  }))
 }
 
 export function chartTrendline(series: ChartSeriesData, options: ChartTrendlineOptions): TrendlineData {

@@ -10,16 +10,18 @@ import { chartFiniteSum, chartInterpolate, chartLinearRatio, finiteChartValue } 
 import { chartParetoDateValues, prepareChartDateData, type ChartDateAxisConfig } from './chart-date-axis'
 import { chartColorChannels, chartColorRepresentative, isChartLinearGradient } from './chart-color'
 import { supportsChartExplicitGradient } from './chart-gradient'
+import { ComputeError } from '../../compute/errors'
 import {
-  chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, chartWaterfall,
-  type BoxplotData, type ChartErrorInterval, type HistogramData, type ParetoData, type TrendlineData, type WaterfallPoint,
+  chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, CHART_WATERFALL_GLOBAL_SERIES,
+  type BoxplotData, type ChartErrorInterval, type HistogramData, type ParetoData, type TrendlineData, type WaterfallPoint, type WaterfallLayoutData, type WaterfallLayoutPoint,
 } from './chart-statistics'
 
 export interface ChartDerivedData {
   data: ChartData
   histogram?: HistogramData
   boxes?: Array<{ field: number; seriesPosition: number; sourceName: string; name: string; statistics?: BoxplotData }>
-  waterfalls?: WaterfallPoint[][]
+  waterfalls?: WaterfallLayoutPoint[][]
+  waterfallLayout?: WaterfallLayoutData
   pareto?: ParetoData
   trends: Array<{ field: number; seriesPosition: number; statistics: TrendlineData; config: ChartTrendlineOptions }>
   errors: Array<{ field: number; seriesPosition: number; intervals: ChartErrorInterval[]; config: ChartErrorBarOptions }>
@@ -32,6 +34,8 @@ export interface ChartComputedStatistics {
   histogram?: HistogramData
   boxplots?: Array<{ field: number; seriesPosition: number; statistics?: BoxplotData }>
   waterfalls?: Array<{ field: number; seriesPosition: number; points: WaterfallPoint[] }>
+  /** The complete multi-series layout comes only from the Rust statistics job. */
+  waterfallLayout?: WaterfallLayoutData
   pareto?: ParetoData
   /** Source field IDs may repeat after Bubble grouping. Each result retains the
    * authored config slot and its actual preparedData.series position. */
@@ -86,11 +90,23 @@ export function deriveChartData(source: ChartData, chart: ChartModel, computed?:
       categoryValues = chartParetoDateValues(prepareChartDateData(data, chart), result.pareto.categories, chart.options?.pareto?.includeZeroValues)
     }
     data = { date1904: data.date1904, categories: result.pareto.categories, categoryValues, series: [{ ...series, values: result.pareto.values }] }
-  } else if (chart.type === 'waterfall') result.waterfalls = data.series.map((series, seriesPosition) => {
-    const waterfall = computed?.waterfalls?.find(result => result.seriesPosition === seriesPosition)
-    if (computed?.waterfalls && !waterfall) throw new RangeError('缺少与当前系列位置匹配的瀑布统计结果。')
-    return waterfall?.points ?? chartWaterfall(series, chart)
-  })
+  } else if (chart.type === 'waterfall') {
+    const waterfall = computed?.waterfallLayout
+    if (!waterfall) throw new ComputeError('COMPUTE_NOT_READY', '瀑布图布局需要先完成 Rust/WASM 计算。')
+    if (waterfall.stackType !== (chart.options?.waterfall?.stackType ?? 'arrangement')
+      || waterfall.useSubtotal !== (chart.options?.waterfall?.useSubtotal ?? true) || waterfall.sourceCategoryCount !== data.categories.length
+      || waterfall.seriesFields.length !== data.series.length || waterfall.seriesFields.some((field, index) => field !== data.series[index]!.field)) {
+      throw new ComputeError('COMPUTE_STALE_RESULT', '瀑布图布局与当前来源、排列方式或小计配置不匹配。')
+    }
+    result.waterfallLayout = waterfall
+    result.waterfalls = data.series.map(() => [])
+    for (const point of waterfall.points) {
+      if (point.seriesPosition === CHART_WATERFALL_GLOBAL_SERIES) continue
+      const points = result.waterfalls[point.seriesPosition]
+      if (!points) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '瀑布图数据点不属于当前来源系列。')
+      points.push(point)
+    }
+  }
   data = prepareChartDateData(data, chart)
   result.data = data
   for (const [configIndex, config] of (chart.options?.trendlines ?? []).entries()) {

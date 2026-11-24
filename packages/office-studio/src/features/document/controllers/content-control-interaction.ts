@@ -1,11 +1,12 @@
 import type { DocumentModel } from '../../../domain/model'
-import type { DocumentContentControlSelectionRequest } from '../commands/content-control-command-types'
+import type { DocumentContentControlSelectionRequest, DocumentContentControlValueCommand } from '../commands/content-control-command-types'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 import { cloneDocumentInputSession, documentInputLocation, sameDocumentInputLocation, type DocumentInputSession } from '../model/document-input-session'
 import { findDocumentBlock, runText, runsForTarget, sameTarget, textTargets, type DocumentSelection } from '../model/document-model'
 import { cloneDocumentSelection } from '../model/document-table-selection'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { documentModelForBlockHost } from '../services/document-block-host'
+import { documentContentControlTemporaryBindingCaret } from '../services/content-control-bindings'
 
 export interface DocumentContentControlInteractionContext {
   source: DocumentModel
@@ -25,7 +26,7 @@ export interface DocumentContentControlFocusContext extends DocumentContentContr
 }
 
 /** Value commands replace text within one paragraph; a temporary SDT leaves a collapsed end caret. */
-export function documentContentControlSelectionAfterValueEdit(request: DocumentContentControlSelectionRequest,
+export function documentContentControlSelectionAfterValueEdit(request: DocumentContentControlSelectionRequest & { command?: DocumentContentControlValueCommand },
   current: DocumentModel): DocumentSelection | undefined {
   if (request.source.id !== current.id) return undefined
   let before = request.source, after = current
@@ -45,6 +46,11 @@ export function documentContentControlSelectionAfterValueEdit(request: DocumentC
     return { anchor: { ...target, offset: control.startOffset }, focus: { ...target, offset: control.endOffset } }
   }
   if (!previous.temporary || ['controlLocked', 'sdtLocked', 'sdtContentLocked'].includes(previous.lock ?? '')) return undefined
+  if (request.command) {
+    const value = request.command.id === 'doc.command.set-content-control-checked' ? request.command.params.checked ? 'true' : 'false' : request.command.params.value
+    const mapped = documentContentControlTemporaryBindingCaret(request.source, current, request.controlId, value, request.host)
+    if (mapped) return mapped
+  }
   const sourceTarget = textTargets(before).find(target => (target.cellBlockId ?? target.blockId) === previous.blockId)
   if (!sourceTarget) return undefined
   const sourceText = runText(runsForTarget(before, sourceTarget))

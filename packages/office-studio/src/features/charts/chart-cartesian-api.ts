@@ -4,7 +4,7 @@ import { chartSeriesOverride, validateChartSeriesSelector } from './chart-series
 import { chartLinearGradient, isChartLinearGradient } from './chart-color'
 
 export const ChartAllSeriesStyleTargets = Object.freeze({ Border: 'border', Color: 'color', FillOpacity: 'fillOpacity', Label: 'label', Point: 'point', RightAxis: 'rightAxis' } as const)
-export const ChartSeriesClearTargets = Object.freeze({ ...ChartAllSeriesStyleTargets, DataPoints: 'dataPoints' } as const)
+export const ChartSeriesClearTargets = Object.freeze({ ...ChartAllSeriesStyleTargets, DataPoints: 'dataPoints', WaterfallStyles: 'waterfallStyles' } as const)
 export const ChartAxisTargets = Object.freeze({ Min: 'min', Max: 'max', Reverse: 'reverse', Line: 'line', Tick: 'tick', Format: 'format', Label: 'label', GridLine: 'gridLine' } as const)
 export const ChartAxisTitleAlignments = Object.freeze({ Start: 'start', Center: 'center', End: 'end' } as const)
 export const ChartAxisPointerTargets = Object.freeze({ IndicatorLabelColor: 'indicatorLabelColor', IndicatorLabelTextColor: 'indicatorLabelTextColor', IndicatorLineColor: 'indicatorLineColor', IndicatorLineType: 'indicatorLineType' } as const)
