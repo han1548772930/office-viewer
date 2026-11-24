@@ -16,6 +16,8 @@ mod document_story_roundtrip_tests;
 mod story_fields;
 mod document_text_fields;
 mod document_block_extraction;
+mod document_story_source;
+mod document_paragraph_source;
 mod document_table_sidecar;
 mod document_table_merges;
 #[cfg(test)]

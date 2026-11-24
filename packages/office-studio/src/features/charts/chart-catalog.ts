@@ -107,6 +107,7 @@ export function chartDataHint(type: ChartType): string {
     case 'distribution': return type === 'histogram' ? '选择一个数值样本字段；分箱使用 Scott 自动规则、箱数或箱宽。' : '每个数值字段作为一组样本，显示四分位、须线和异常点。'
     case 'gauge': return '选择仪表数值和可选标签字段；刻度和进度在图表设置中调整。'
     case 'heatmap': return '分类字段定义列，所选数值系列定义行和各格权重。'
-    default: return resolveChartType(type).family === 'pie' ? '选择一个非负数值系列，合计须大于零。' : '首行或首列为字段名，分类字段与数值系列独立配置。'
+    default: return type === 'pareto' ? '选择一个分类字段和一个数值权重字段；同名分类先合并，再按合计降序排列并生成累计百分比。负合计排除，零合计可选保留。'
+      : resolveChartType(type).family === 'pie' ? '选择一个非负数值系列，合计须大于零。' : '首行或首列为字段名，分类字段与数值系列独立配置。'
   }
 }

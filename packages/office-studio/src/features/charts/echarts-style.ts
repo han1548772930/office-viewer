@@ -1,24 +1,34 @@
 import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartSeriesOptions } from '../../domain/model'
-import { chartColorOpacity, chartLabelText, formatChartNumber } from './chart-geometry'
+import { chartColorOpacity, chartFilledMarkBorder, chartLabelText, formatChartNumber } from './chart-geometry'
 import { definedChartStyleFields } from './chart-options'
+import { chartEChartsAutomaticGradient, type ChartAutomaticGradient } from './chart-auto-gradient'
+import { chartColorRepresentative } from './chart-color'
 
 export function chartEChartsFont(font: ChartFontOptions | undefined, fallback: string, size?: number) {
   return { color: font?.color ?? fallback, fontSize: font?.fontSize ?? size, fontWeight: font?.bold ? 'bold' as const : 'normal' as const,
     fontStyle: font?.italic ? 'italic' as const : 'normal' as const, fontFamily: font?.family }
 }
 
-export function chartEChartsItemStyle(style: ChartSeriesOptions) {
-  return { color: style.color, opacity: style.fillOpacity ?? 1, borderColor: style.border?.color === undefined ? undefined : chartColorOpacity(style.border.color, style.border.opacity ?? 1),
+export function chartEChartsItemStyle(style: ChartSeriesOptions, gradient?: ChartAutomaticGradient) {
+  return { color: chartEChartsAutomaticGradient(gradient) ?? (style.color === undefined ? undefined : chartColorRepresentative(style.color)), opacity: gradient ? 1 : style.fillOpacity ?? 1, borderColor: style.border?.color === undefined ? undefined : chartColorOpacity(style.border.color, style.border.opacity ?? 1),
     borderWidth: style.border?.visible === false ? 0 : style.border?.width, borderType: style.border?.dashType, borderJoin: 'round' as const }
 }
 
-export function chartEChartsMarkerStyle(style: ChartSeriesOptions) {
-  return chartEChartsItemStyle({ ...style, color: style.point?.color ?? style.color })
+/** Native item opacity also fades its outline. Pareto business bars author
+ * fill and border alpha independently, so embed only the fill multiplier. */
+export function chartEChartsIndependentItemStyle(style: ChartSeriesOptions, gradient?: ChartAutomaticGradient) {
+  const item = chartEChartsItemStyle(style.color === undefined ? style : { ...style, border: chartFilledMarkBorder(style.color, style.border) }, gradient)
+  return gradient || style.fillOpacity === undefined || style.fillOpacity === 1 ? item
+    : { ...item, color: style.color === undefined ? undefined : chartColorOpacity(style.color, style.fillOpacity), opacity: 1 }
 }
 
-export function chartEChartsLineStyle(style: ChartSeriesOptions) {
-  return { color: style.border?.color ?? style.color, width: style.border?.visible === false ? 0 : style.border?.width ?? 2,
-    opacity: style.border?.opacity ?? 1, type: style.border?.dashType ?? 'solid' as const }
+export function chartEChartsMarkerStyle(style: ChartSeriesOptions, gradient?: ChartAutomaticGradient) {
+  return chartEChartsItemStyle({ ...style, color: style.point?.color ?? style.color }, gradient?.authored ? undefined : gradient)
+}
+
+export function chartEChartsLineStyle(style: ChartSeriesOptions, gradient?: ChartAutomaticGradient) {
+  return { color: chartEChartsAutomaticGradient(gradient) ?? style.border?.color ?? (style.color === undefined ? undefined : chartColorRepresentative(style.color)), width: style.border?.visible === false ? 0 : style.border?.width ?? 2,
+    opacity: gradient ? 1 : style.border?.opacity ?? 1, type: style.border?.dashType ?? 'solid' as const }
 }
 
 export function chartEChartsLabel(label: ChartLabelOptions | undefined, color: string) {

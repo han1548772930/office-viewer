@@ -1,13 +1,17 @@
-import type { ChartAxisOptions, ChartFillPatternPreset, ChartFontOptions, ChartLabelOptions, ChartLegendOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions, ChartSeriesSelector } from '../../domain/model'
+import type { ChartAxisOptions, ChartColor, ChartFillPatternPreset, ChartFontOptions, ChartLabelOptions, ChartLegendOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions, ChartSeriesSelector } from '../../domain/model'
 import type { ChartConfig } from './chart-engine'
 import { chartPalette, chartSeriesStyle } from './chart-options'
 import { chartSeriesOverride, validateChartSeriesSelector } from './chart-series-selector'
 import { CHART_FILL_PATTERN_PRESETS } from './chart-fill-pattern'
+import { chartColorRepresentative, chartLinearGradient, isChartLinearGradient, validateChartColor } from './chart-color'
+import { supportsChartExplicitGradient } from './chart-gradient'
 
-interface ControlBase { key: string; label: string; extra?: string; visible?: (config: ChartConfig) => boolean }
+interface ControlBase { key: string; label: string; extra?: string; visible?: (config: ChartConfig) => boolean;
+  reset?: (config: ChartConfig) => void; resetLabel?: string; canReset?: (config: ChartConfig) => boolean }
 export type ChartSettingControl = ControlBase & (
   | { kind: 'number'; read: (config: ChartConfig) => number | undefined; write: (config: ChartConfig, value: number | undefined) => void; min?: number; max?: number; step?: number; fallback?: number }
   | { kind: 'text' | 'color'; read: (config: ChartConfig) => string | undefined; write: (config: ChartConfig, value: string | undefined) => void }
+  | { kind: 'chart-color'; read: (config: ChartConfig) => ChartColor | undefined; write: (config: ChartConfig, value: ChartColor | undefined) => void; target: 'series' | 'dataPoint'; fallback?: (config: ChartConfig) => ChartColor | undefined }
   | { kind: 'switch'; read: (config: ChartConfig) => boolean | undefined; write: (config: ChartConfig, value: boolean) => void; fallback?: boolean }
   | { kind: 'select'; read: (config: ChartConfig) => string | undefined; write: (config: ChartConfig, value: string | undefined) => void; choices: Array<{ label: string; value: string }>; fallback?: string }
   | { kind: 'field'; read: (config: ChartConfig) => number | undefined; write: (config: ChartConfig, value: number | undefined) => void }
@@ -19,6 +23,14 @@ export function numberControl(key: string, label: string, read: (config: ChartCo
 }
 export function textControl(key: string, label: string, read: (config: ChartConfig) => string | undefined, write: (config: ChartConfig, value: string | undefined) => void): ChartSettingControl { return { key, label, kind: 'text', read, write } }
 export function colorControl(key: string, label: string, read: (config: ChartConfig) => string | undefined, write: (config: ChartConfig, value: string | undefined) => void): ChartSettingControl { return { key, label, kind: 'color', read, write } }
+export function chartColorControl(key: string, label: string, read: (config: ChartConfig) => ChartColor | undefined,
+  write: (config: ChartConfig, value: ChartColor | undefined) => void, target: 'series' | 'dataPoint' = 'series', fallback?: (config: ChartConfig) => ChartColor | undefined): ChartSettingControl {
+  return { key, label, kind: 'chart-color', read, target, fallback, write: (config, value) => {
+    if (value !== undefined) validateChartColor(value)
+    if (isChartLinearGradient(value) && !supportsChartExplicitGradient(config.type, target)) throw new TypeError('该图型的此颜色只接受纯色。')
+    write(config, isChartLinearGradient(value) ? chartLinearGradient(value) : value)
+  } }
+}
 export function switchControl(key: string, label: string, read: (config: ChartConfig) => boolean | undefined, write: (config: ChartConfig, value: boolean) => void, fallback = false): ChartSettingControl { return { key, label, kind: 'switch', read, write, fallback } }
 export function fieldControl(key: string, label: string, read: (config: ChartConfig) => number | undefined, write: (config: ChartConfig, value: number | undefined) => void): ChartSettingControl { return { key, label, kind: 'field', read, write } }
 export function fieldsControl(key: string, label: string, read: (config: ChartConfig) => number[] | undefined, write: (config: ChartConfig, value: number[]) => void, points = false): ChartSettingControl { return { key, label, kind: points ? 'points' : 'fields', read, write } }
@@ -27,7 +39,7 @@ export function selectControl<T extends string>(key: string, label: string, valu
     write: (config, value) => write(config, values.find(([choice]) => choice === value)?.[0]) }
 }
 
-type ChartObjectOptionGroup = Exclude<keyof ChartSemanticOptions, 'invalidValueStrategy' | 'plotVisibleOnly' | 'series' | 'namedSeries' | 'trendlines' | 'errorBars'>
+type ChartObjectOptionGroup = Exclude<keyof ChartSemanticOptions, 'invalidValueStrategy' | 'plotVisibleOnly' | 'autoGradientFill' | 'plotArea' | 'series' | 'namedSeries' | 'trendlines' | 'errorBars'>
 export function optionGroup<K extends ChartObjectOptionGroup>(config: ChartConfig, key: K): NonNullable<ChartSemanticOptions[K]> {
   const options = config.options ??= {}
   if (options[key] === undefined) Object.assign(options, { [key]: {} })
@@ -112,8 +124,8 @@ type ChartPatternStyle = Pick<ChartSeriesOptions, 'color' | 'fillPattern'>
 /** The preset selector edits the authored layer, keeping inherited and explicitly solid fills distinguishable. */
 export function chartFillPatternControls(key: string, read: (config: ChartConfig) => ChartPatternStyle | undefined,
   write: (config: ChartConfig) => ChartPatternStyle, effective = read, prefix = ''): ChartSettingControl[] {
-  const choices: ReadonlyArray<readonly [ChartFillPatternPreset | 'inherit' | 'none', string]> = [['inherit', '继承默认填充'], ['none', '纯色填充'], ...CHART_FILL_PATTERN_PRESETS]
-  const foreground = (config: ChartConfig): string => effective(config)?.fillPattern?.foregroundColor ?? effective(config)?.color ?? chartPalette(config)[0]!
+  const choices: ReadonlyArray<readonly [ChartFillPatternPreset | 'inherit' | 'none', string]> = [['inherit', '继承默认填充'], ['none', '无纹理'], ...CHART_FILL_PATTERN_PRESETS]
+  const foreground = (config: ChartConfig): string => effective(config)?.fillPattern?.foregroundColor ?? chartColorRepresentative(effective(config)?.color ?? chartPalette(config)[0]!)
   const background = (config: ChartConfig): string => effective(config)?.fillPattern?.backgroundColor ?? config.options?.appearance?.background ?? '#ffffff'
   const preset = selectControl(`${key}.fillPattern.preset`, `${prefix}填充纹理`, choices,
     config => read(config)?.fillPattern === null ? 'none' : read(config)?.fillPattern?.preset ?? 'inherit', (config, value) => {
@@ -126,7 +138,7 @@ export function chartFillPatternControls(key: string, read: (config: ChartConfig
     ...colorControl(`${key}.fillPattern.${property}`, `${prefix}纹理${property === 'foregroundColor' ? '前景色' : '背景色'}`,
       config => read(config)?.fillPattern?.[property], (config, value) => {
         const pattern = read(config)?.fillPattern
-        if (pattern) write(config).fillPattern = { ...pattern, [property]: value ?? (property === 'foregroundColor' ? effective(config)?.color ?? chartPalette(config)[0]! : config.options?.appearance?.background ?? '#ffffff') }
+        if (pattern) write(config).fillPattern = { ...pattern, [property]: value ?? (property === 'foregroundColor' ? foreground(config) : background(config)) }
       }), visible: (config: ChartConfig) => config.type !== 'wordCloud' && Boolean(read(config)?.fillPattern),
   }))
   return [preset, ...colors]
@@ -146,7 +158,7 @@ export function chartSeriesControls(selector?: ChartSeriesSelector, combination 
     ...(selector === undefined ? [] : [textControl(`${key}.name`, '系列显示名称', config => read(config)?.name, (config, value) => { write(config).name = value })]),
     ...(combination ? [selectControl(`${key}.type`, '系列图型', [['column', '柱形'], ['columnStacked', '堆积柱形'], ['line', '折线'], ['area', '面积'], ['areaStacked', '堆积面积']], config => read(config)?.type, (config, value) => { write(config).type = value })] : []),
     ...(secondaryAxis ? [switchControl(`${key}.rightAxis`, horizontal ? '使用顶部数值轴' : '使用右侧数值轴', config => read(config)?.rightAxis, (config, value) => { write(config).rightAxis = value })] : []),
-    colorControl(`${key}.color`, '系列颜色', config => read(config)?.color, (config, value) => { const style = write(config); style.color = value; style.fillPattern = null }),
+    chartColorControl(`${key}.color`, '系列颜色', config => authored(config)?.color, (config, value) => { const style = write(config); style.color = value; style.fillPattern = null }, 'series', config => effective(config)?.color ?? chartPalette(config)[0]!),
     ...chartFillPatternControls(key, authored, write, effective),
     numberControl(`${key}.fillOpacity`, '填充不透明度', config => read(config)?.fillOpacity, (config, value) => { write(config).fillOpacity = value }, 0, 1),
     selectControl(`${key}.point.shape`, '标记形状', [['circle', '圆形'], ['rect', '方形'], ['triangle', '三角形'], ['diamond', '菱形'], ['none', '无标记']], config => read(config)?.point?.shape, (config, value) => { (write(config).point ??= {}).shape = value }),

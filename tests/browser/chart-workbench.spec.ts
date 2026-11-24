@@ -1,6 +1,133 @@
 import { expect, test } from '@playwright/test'
 
-// P12/P14 drafts for unified validation. These new cases have not been run in the implementation phase.
+// P15: authored controls are tested through the workbench only during future unified validation.
+test('gradient reset and manual plot controls remain drafts until one undoable apply and survive reopen', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+  await expect(page.getByRole('grid', { name: '工作表画布' })).toBeVisible()
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), sheet = officeAPI.getActiveWorkbook()!.getActiveSheet()!
+    sheet.getRange('A1:B4').setValues([['Category', 'Units'], ['A', 10], ['B', 20], ['C', 30]])
+    await sheet.insertChart(sheet.newChart('area').setSource('A1:B4').setValueFields([1]).setAbsolutePosition(100, 100)
+      .setSize(500, 320).setTitle('Gradient plot draft').build())
+  })
+  const hitbox = page.getByRole('button', { name: 'Gradient plot draft', exact: true })
+  await expect(hitbox).toHaveAttribute('data-rendered', 'true')
+  const snapshot = async () => page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), workbook = officeAPI.getActiveWorkbook()!, chart = workbook.getActiveSheet()!.getCharts()[0]!
+    return { contents: JSON.stringify(workbook.save()), authored: chart.getOptions().autoGradientFill, gradient: chart.getDescription().autoGradientFill,
+      plotArea: chart.getOptions().plotArea, plot: chart.getLayout().plot, revision: chart.getInfo().revision }
+  })
+  await hitbox.click()
+  const editor = page.getByRole('dialog', { name: '图表设置' })
+  await expect(editor).toBeVisible()
+  const before = await snapshot(), version = Number(await hitbox.getAttribute('data-source-version'))
+  await editor.getByText('图型专属设置', { exact: true }).click()
+  const gradient = editor.getByRole('switch', { name: '自动渐变填充', exact: true }), reset = editor.getByRole('button', { name: '自动渐变填充恢复默认', exact: true })
+  await expect(gradient).toHaveAttribute('aria-checked', 'true')
+  await expect(reset).toBeDisabled()
+  await gradient.click()
+  await expect(gradient).toHaveAttribute('aria-checked', 'false')
+  await expect(reset).toBeEnabled()
+  await reset.click()
+  await expect(gradient).toHaveAttribute('aria-checked', 'true')
+  await expect(reset).toBeDisabled()
+  expect((await snapshot()).contents).toBe(before.contents)
+  await gradient.click()
+  await editor.getByText('绘图区', { exact: true }).click()
+  await editor.getByRole('switch', { name: '手动设置绘图区', exact: true }).click()
+  for (const [name, value] of [['左侧位置 (%)', '15'], ['顶部位置 (%)', '25'], ['宽度 (%)', '60'], ['高度 (%)', '50']] as const) {
+    const input = editor.getByRole('spinbutton', { name, exact: true })
+    await input.fill(value)
+    await input.press('Tab')
+  }
+  expect((await snapshot()).contents).toBe(before.contents)
+  await editor.getByRole('button', { name: '应用', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).plotArea).toEqual({ left: 0.15, top: 0.25, width: 0.6, height: 0.5 })
+  await expect.poll(async () => (await snapshot()).gradient).toBe(false)
+  await expect.poll(async () => Number(await hitbox.getAttribute('data-source-version'))).toBeGreaterThan(version)
+  const applied = await snapshot()
+  expect(applied.revision).toBe(before.revision + 1)
+  expect(applied.plot.width).toBe(300)
+  expect(applied.plot.height).toBe(160)
+  const reopened = await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), workbook = officeAPI.getActiveWorkbook()!
+    const saved = officeAPI.createWorkbook({ ...workbook.save(), id: crypto.randomUUID() }, { makeCurrent: false }).getActiveSheet()!.getCharts()[0]!
+    return { options: saved.getOptions(), gradient: saved.getDescription().autoGradientFill, plot: saved.getLayout().plot }
+  })
+  expect(reopened.options.plotArea).toEqual(applied.plotArea)
+  expect(reopened.gradient).toBe(false)
+  expect(reopened.plot).toEqual(applied.plot)
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name)
+    officeAPI.getActiveWorkbook()!.undo()
+  })
+  await expect.poll(async () => (await snapshot()).plotArea).toBeUndefined()
+  await expect.poll(async () => (await snapshot()).gradient).toBe(true)
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name)
+    officeAPI.getActiveWorkbook()!.redo()
+  })
+  await expect.poll(async () => (await snapshot()).plotArea).toEqual(applied.plotArea)
+  await expect(page.locator('.chart-render-error')).toHaveCount(0)
+})
+
+test('an invalid manual rectangle reports its constraint and publishes no chart content or history', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('grid', { name: '工作表画布' })).toBeVisible()
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), sheet = officeAPI.getActiveWorkbook()!.getActiveSheet()!
+    sheet.getRange('A1:B4').setValues([['Category', 'Units'], ['A', 10], ['B', 20], ['C', 30]])
+    await sheet.insertChart(sheet.newChart('column').setSource('A1:B4').setValueFields([1]).setTitle('Invalid plot draft').build())
+  })
+  const hitbox = page.getByRole('button', { name: 'Invalid plot draft', exact: true })
+  await expect(hitbox).toHaveAttribute('data-rendered', 'true')
+  await hitbox.click()
+  const editor = page.getByRole('dialog', { name: '图表设置' })
+  const snapshot = async () => page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name), workbook = officeAPI.getActiveWorkbook()!, chart = workbook.getActiveSheet()!.getCharts()[0]!
+    return { contents: JSON.stringify(workbook.save()), revision: chart.getInfo().revision, plotArea: chart.getOptions().plotArea }
+  })
+  const before = await snapshot()
+  await editor.getByText('绘图区', { exact: true }).click()
+  await editor.getByRole('switch', { name: '手动设置绘图区', exact: true }).click()
+  for (const [name, value] of [['左侧位置 (%)', '95'], ['宽度 (%)', '90']] as const) {
+    const input = editor.getByRole('spinbutton', { name, exact: true })
+    await input.fill(value)
+    await input.press('Tab')
+  }
+  await editor.getByRole('button', { name: '应用', exact: true }).click()
+  await expect(editor.getByText('绘图区须完整位于图表范围内。', { exact: true }).first()).toBeVisible()
+  expect(await snapshot()).toEqual(before)
+  for (const [name, value] of [['左侧位置 (%)', '20'], ['顶部位置 (%)', '20'], ['宽度 (%)', '60'], ['高度 (%)', '60']] as const) {
+    const input = editor.getByRole('spinbutton', { name, exact: true })
+    await input.fill(value)
+    await input.press('Tab')
+  }
+  await editor.getByRole('button', { name: '应用', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).plotArea).toEqual({ left: 0.2, top: 0.2, width: 0.6, height: 0.6 })
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name)
+    officeAPI.getActiveWorkbook()!.undo()
+  })
+  await expect.poll(async () => (await snapshot()).plotArea).toBeUndefined()
+  await page.evaluate(async () => {
+    const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
+    const { officeAPI } = await import(resource.name)
+    officeAPI.getActiveWorkbook()!.undo()
+  })
+  await expect(hitbox).toHaveCount(0)
+})
+
+// P12/P14/P15 drafts for unified validation. These new cases have not been run in the implementation phase.
 test('hover at worksheet zoom/scroll changes only the raster and pointer cancellation discards a drag draft', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/')
@@ -89,7 +216,7 @@ test('pattern controls edit a detached draft, apply a real solid override, and p
   expect((await snapshot()).contents).toBe(before.contents)
   editor = await openPatternPanel()
   await editor.getByLabel('填充纹理', { exact: true }).click()
-  await page.getByText('纯色填充', { exact: true }).last().click()
+  await page.getByText('无纹理', { exact: true }).last().click()
   await expect(editor.getByLabel('纹理前景色', { exact: true })).toHaveCount(0)
   await editor.getByRole('button', { name: '应用', exact: true }).click()
   await expect.poll(async () => (await snapshot()).pattern).toBeNull()

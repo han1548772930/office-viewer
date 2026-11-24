@@ -56,6 +56,10 @@ import { releaseDocumentFieldOpenRefresh, reserveDocumentFieldOpenRefresh, type 
 import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeaderFooterAction } from './document/document-header-footer-capabilities'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { selectedDocumentContentControl } from '../features/document/services/content-controls'
+import { CONTENT_CONTROL_CHECKBOX_STYLES, CONTENT_CONTROL_DATE_FORMATS, contentControlCheckboxStyle } from '../features/document/services/content-control-presentation'
+import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
+import { contentControlValueCommandState } from '../features/document/commands/content-control-command-state'
+import { documentContentControlInteractionCurrent } from '../features/document/controllers/content-control-interaction'
 import { codeBlockData, editCodeBlockText, exitCodeBlock, insertCodeBlock, updateCodeBlock, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { deleteDocumentNote, insertDocumentNote, noteReferencePoint, updateDocumentNote, type DocumentNoteKind } from '../features/document/notes/document-notes.ts'
@@ -510,7 +514,7 @@ const ribbonTabs = computed(() => {
       appearance: control.appearance,
       multiLine: control.multiLine,
       temporary: control.temporary,
-      checkboxStyle: typeof control.metadata?.checkboxStyle === 'string' ? control.metadata.checkboxStyle : undefined,
+      checkboxStyle: contentControlCheckboxStyle(control),
       dateFormat: control.dateFormat,
       parentId: control.parentId,
       placement: control.placement,
@@ -1003,6 +1007,42 @@ function onSelection(value: DocumentSelection) {
   if (outlineNavigationTarget.value !== value.focus.blockId) outlineNavigationTarget.value = undefined
   props.documentApi?.setInputSelection(value, undefined, editingHost.value)
 }
+function contentControlRequestCurrent(request: DocumentContentControlSelectionRequest, requireSession = false): boolean {
+  return documentContentControlInteractionCurrent(request, {
+    source: model.value, host: editingHost.value, session: captureInputSession(), requireSession: requireSession && !!props.documentApi,
+    disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
+  })
+}
+function onContentControlSelection(request: DocumentContentControlSelectionRequest) {
+  if (!contentControlRequestCurrent(request)) return
+  onSelection(cloneDocumentSelection(request.selection))
+  activeContentControlId.value = request.controlId
+}
+function onContentControlCommand(request: DocumentContentControlCommandRequest) {
+  const api = props.documentApi
+  if (!api || request.command.params.controlId !== request.controlId || !contentControlRequestCurrent(request, true)) return
+  const state = contentControlValueCommandState(model.value, request.command, { host: editingHost.value, permission: permissionContext.value })
+  if (!state.available) { notify(state.reason ?? '无法修改此内容控件。'); return }
+  const host = editingHost.value && { ...editingHost.value }, sourceId = model.value.id
+  try {
+    onSelection(cloneDocumentSelection(request.selection))
+    const session = captureInputSession()
+    if (!session?.valid) return
+    const changed = api.executeContentControlCommand(request.command.id, { ...request.command.params, host,
+      expectedRevision: session.modelRevision, inputGeneration: session.generation })
+    if (!inputStateActive || api !== props.documentApi || sourceId !== model.value.id || !sameDocumentBlockHost(host, editingHost.value)) return
+    const latest = api.getInputState()
+    // General history publication invalidates the captured session without
+    // changing its generation. An observer selection/edit must keep its caret.
+    if (api.getModelRevision() !== session.modelRevision + (changed ? 1 : 0) || latest?.generation !== session.generation) return
+    const control = editingModel.value.contentControls?.find(control => control.id === request.controlId)
+    const target = control && textTargets(editingModel.value).find(target => (target.cellBlockId ?? target.blockId) === control.blockId)
+    if (control && target) {
+      onSelection({ anchor: { ...target, offset: control.startOffset }, focus: { ...target, offset: control.endOffset } })
+      activeContentControlId.value = control.id
+    }
+  } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+}
 function toggleFormat(field: 'bold' | 'italic' | 'underline', source?: DocumentModel, story?: DocumentStoryRange) {
   if (source || story) {
     const api = props.documentApi, scope = storyActionVersion.value
@@ -1091,17 +1131,11 @@ function insertContentControl(type: DocumentContentControlType) {
   }
   try {
     const text = '在此处输入'
-    const checkboxStyles = {
-      Cross: { checkedState: { value: '2612', font: 'Segoe UI Symbol' }, uncheckedState: { value: '2610', font: 'Segoe UI Symbol' } },
-      Check: { checkedState: { value: '2611', font: 'Segoe UI Symbol' }, uncheckedState: { value: '2610', font: 'Segoe UI Symbol' } },
-      Minimal: { checkedState: { value: '2713', font: 'Segoe UI Symbol' }, uncheckedState: { value: '25A1', font: 'Segoe UI Symbol' } },
-      Round: { checkedState: { value: '25CF', font: 'Segoe UI Symbol' }, uncheckedState: { value: '25CB', font: 'Segoe UI Symbol' } },
-    } as const
     const typeDefaults: Partial<Record<DocumentContentControlType, Record<string, unknown>>> = {
       richText: { placeholder: text, showingPlaceholder: true },
       text: { placeholder: text, showingPlaceholder: true, multiLine: false },
-      checkbox: { checked: false, checkbox: { checked: false, ...checkboxStyles.Cross }, metadata: { checkboxStyle: 'Cross' } },
-      date: { placeholder: '选择日期', showingPlaceholder: true, dateFormat: 'yyyy-MM-dd', dateCalendar: 'gregorian', dateStorage: 'dateTime' },
+      checkbox: { checked: false, checkbox: { checked: false, ...CONTENT_CONTROL_CHECKBOX_STYLES.Cross }, metadata: { checkboxStyle: 'Cross' } },
+      date: { placeholder: '选择日期', showingPlaceholder: true, dateFormat: CONTENT_CONTROL_DATE_FORMATS[0], dateCalendar: 'gregorian', dateStorage: 'dateTime' },
       dropDownList: { placeholder: '选择一项', showingPlaceholder: true, items: [{ displayText: '选择一项', value: '选择一项' }] },
       comboBox: { placeholder: '选择或输入一项', showingPlaceholder: true, items: [{ displayText: '选择一项', value: '选择一项' }] },
       picture: { placeholder: '选择图片', showingPlaceholder: true },
@@ -2165,6 +2199,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
+            :active-content-control-id="activeContentControlId" @content-control-selection="onContentControlSelection" @content-control-command="onContentControlCommand"
             :permission-context="permissionContext" :table-floating-toolbar="tableFloatingToolbarOpen" @operation="onRibbonExecute"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
@@ -2212,7 +2247,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       </Form>
       <p v-if="modalError" role="alert" class="insert-error">{{ modalError }}</p>
     </Modal>
-    <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" @error="notify" />
+    <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" :read-only="!canEditContextSelection || legacyStoryActive" @error="notify" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="insertTableFromDialog" />
     <DocumentTablePropertiesDialog v-if="tableProperties" :open="tableProperties.open" :model="editingModel" :selection="selection" :permission="permissionContext"
       :table-id="tableProperties.tableId" :range="tableProperties.range" :kind="tableProperties.kind" :type="tableProperties.type" :composing="documentInputComposing"

@@ -7,6 +7,8 @@ export { CONTENT_HISTORY_COMMANDS, CONTENT_HISTORY_COMMAND_IDS, ContentHistoryCa
   type ContentHistoryCommandInput, type ContentHistoryDirection, type ContentHistoryTarget } from './api/content-history-commands.ts'
 export {
   FBlob,
+  FChart,
+  ChartConfigBuilder,
   FDocument,
   FDocumentContentControl,
   FDocumentParagraph,
@@ -20,6 +22,8 @@ export {
   FWorksheet,
   PositionTypeEnum,
   type CreateUnitOptions,
+  type ChartInfo,
+  type ChartPatch,
   type DataValidationError,
   type DataValidationRule,
   type DataValidationRuleInput,
@@ -215,6 +219,12 @@ export { readChartRecordsAsync } from './features/charts/chart-source-compute.ts
 export type { ChartComputePreparationContext } from './features/charts/chart-compute-lifecycle.ts'
 export type { ChartComputedStatistics } from './features/charts/chart-derived.ts'
 export type { ChartConfig, ChartData, ChartSeriesData } from './features/charts/chart-engine.ts'
+export { describeChartConfiguration, chartDescriptionFieldIndexes,
+  type ChartDescription, type ChartDescriptionType, type ChartDescriptionContext, type ChartDescriptionConfig,
+  type ChartSeriesDescription, type ChartAxisBindingDescription, type ChartDescriptionAxis } from './features/charts/chart-description.ts'
+export { CHART_LINEAR_GRADIENT_TYPE, CHART_GRADIENT_MAX_STOPS, chartLinearGradient, isChartLinearGradient,
+  validateChartColor, chartColorRepresentative, type ChartLinearGradientInput } from './features/charts/chart-color.ts'
+export { supportsChartExplicitGradient } from './features/charts/chart-gradient.ts'
 export { ChartGaugeModes, ChartGaugePointerShapes, CHART_GAUGE_PRESETS, chartGaugePresetOptions,
   type ChartGaugePreset } from './features/charts/chart-gauge.ts'
 export { ChartRadarShapes } from './features/charts/chart-radar.ts'

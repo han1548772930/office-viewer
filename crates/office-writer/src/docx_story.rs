@@ -9,6 +9,9 @@ use crate::ExportError;
 #[path = "docx_story_field_cache.rs"]
 mod field_cache;
 
+#[path = "docx_story_source_guard.rs"]
+mod source_guard;
+
 pub(super) fn default_style(model: &Value) -> Value {
     let mut text = json!({ "fontFamily": "Aptos", "fontSize": 9, "color": "#1f2937", "bold": false, "italic": false, "underline": false, "strike": false });
     if let Some(declared) = get(get(model, "defaultStyle"), "text").as_object() {
@@ -101,10 +104,12 @@ struct Lock { id: String, start: usize, end: usize, kind: String }
 
 fn hex_id(id: &str) -> String { id.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect() }
 
+pub(super) fn lock_tag(id: &str) -> String { format!("office_story_lock_v1_{}", hex_id(id)) }
+
 fn open_lock(context: &mut WriteContext<'_>, lock: &Lock) -> Result<String, ExportError> {
     let numeric = context.next_story_control;
     context.next_story_control = numeric.checked_add(1).ok_or_else(|| ExportError::invalid("页眉页脚内容控件数量超出范围。"))?;
-    Ok(format!("<w:sdt><w:sdtPr><w:id w:val=\"{numeric}\"/><w:tag w:val=\"office_story_lock_v1_{}\"/><w:lock w:val=\"{}\"/><w:text/></w:sdtPr><w:sdtContent>", hex_id(&lock.id), xml_attribute(&lock.kind)))
+    Ok(format!("<w:sdt><w:sdtPr><w:id w:val=\"{numeric}\"/><w:tag w:val=\"{}\"/><w:lock w:val=\"{}\"/><w:text/></w:sdtPr><w:sdtContent>", lock_tag(&lock.id), xml_attribute(&lock.kind)))
 }
 
 fn literal_tokens<'a>(tokens: &mut Vec<Token<'a>>, spans: &[(usize, usize, &'a Value)], from: usize, to: usize, buffer: &mut usize) -> Result<(), ExportError> {
@@ -235,6 +240,15 @@ fn render_paragraph(context: &mut WriteContext<'_>, path: &str, tokens: &[Token<
 
 pub(super) fn write_story(context: &mut WriteContext<'_>, path: &str, content_type: &str, story: &str, text: &str, fields: &[&Value], supplied: &Value) -> Result<(), ExportError> {
     let root = if story == "header" { "hdr" } else { "ftr" };
+    if let Some(blocks) = super::block_hosts::content_blocks(supplied)? {
+        source_guard::validate(supplied, root)?;
+        return context.with_relationship_owner(path, |context| {
+            let mut body = String::new();
+            for block in blocks { body.push_str(&context.block(block)?); }
+            if blocks.is_empty() { body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>"); }
+            context.package.add_xml(path, content_type, format!("{}<w:{root} {}>{body}</w:{root}>", xml::DECL, super::CONTENT_NAMESPACES))
+        });
+    }
     let defaults = context.story_defaults.clone();
     let legacy = legacy_content(text, &defaults);
     let content = if supplied.is_null() { &legacy } else { supplied };

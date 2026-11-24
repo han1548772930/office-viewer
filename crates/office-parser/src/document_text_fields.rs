@@ -2,7 +2,7 @@
 //! Positions are the same half-open UTF-16 offsets as the extracted paragraphs.
 use std::{collections::{BTreeMap, HashMap}, io::Cursor};
 
-use duke_pages::{BlockDetails, DocModel, DocNode, DocumentBlock, ParagraphChildNode, ParagraphNode, StructuredDocument, TableCellContentNode, TableNode};
+use duke_pages::{BlockDetails, DocModel, DocumentBlock, ParagraphChildNode, ParagraphNode, StructuredDocument};
 use serde_json::{Value, json};
 use zip::ZipArchive;
 
@@ -48,6 +48,7 @@ struct Reader {
     next_id: usize,
     tagged_identity: Option<(usize, String)>,
     identities: HashMap<String, String>,
+    id_prefix: String,
 }
 
 fn namespaces(node: &Element, inherited: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -84,7 +85,7 @@ impl Reader {
         self.next_id += 1;
         for ancestor in &mut self.pending { ancestor.nested = true; }
         let id = self.tagged_identity.take().filter(|(offset, _)| *offset == at.offset).map(|(_, id)| id)
-            .unwrap_or_else(|| format!("word-field-{}", self.next_id));
+            .unwrap_or_else(|| format!("{}{}", if self.id_prefix.is_empty() { "word-field-" } else { &self.id_prefix }, self.next_id));
         self.pending.push(Pending { id, begin_sequence: self.next_id, instruction: simple.unwrap_or_default().to_owned(), instruction_xml: String::new(),
             begin: at, result: simple.map(|_| at), locked, nested: false,
             in_instruction: self.pending.iter().any(|field| field.result.is_none()), language: None,
@@ -123,6 +124,12 @@ impl Reader {
                 let properties = node.child("rPr").map(|property| &xml[property.start..property.end]).unwrap_or("");
                 let mut run_scope = scope.clone();
                 if let Some(property) = node.child("rPr") { run_scope = namespaces(property, &run_scope); }
+                if node.children.iter().all(|child| matches!(child.name.as_str(), "rPr" | "lastRenderedPageBreak")) {
+                    let mut format = json!({ "version": 1, "namespaces": run_scope });
+                    if !properties.is_empty() { format["propertiesXml"] = json!(properties); }
+                    if let Some(style) = paragraph_style { format["paragraphStyleId"] = json!(style); }
+                    projection.spans.push(RunSpan { start: at.offset, end: at.offset, format });
+                }
                 for child in &node.children { self.visit(child, xml, paragraph, projection, &run_scope, paragraph_style, properties)?; }
                 return Ok(());
             }
@@ -193,38 +200,17 @@ impl Reader {
 
 fn on_off(value: &str) -> bool { !matches!(value, "0" | "false" | "off") }
 
-fn collect_sources<'a>(source: &'a DocModel) -> Vec<(&'a ParagraphNode, String)> {
-    fn table<'a>(value: &'a TableNode, path: &str, output: &mut Vec<(&'a ParagraphNode, String)>) {
-        let root = value.block_id.as_deref().unwrap_or(path);
-        for (row, value) in value.rows.iter().enumerate() { for (cell, value) in value.cells.iter().enumerate() { for (index, node) in value.nodes.iter().enumerate() {
-            let fallback = format!("{root}/row/{row}/cell/{cell}/{index}");
-            match node {
-                TableCellContentNode::Paragraph(value) => output.push((value, value.block_id.clone().unwrap_or(fallback))),
-                TableCellContentNode::Table(value) => table(value, &fallback, output),
-            }
-        } } }
-    }
-    let mut paragraphs = Vec::new();
-    for (index, node) in source.nodes.iter().enumerate() {
-        let fallback = format!("document/{index}");
-        match node {
-            DocNode::Paragraph(value) => paragraphs.push((value, value.block_id.clone().unwrap_or(fallback))),
-            DocNode::Table(value) => table(value, &fallback, &mut paragraphs),
-        }
-    }
-    paragraphs
-}
-
 fn paragraph_block(block: &DocumentBlock) -> bool {
     matches!(&block.details, BlockDetails::Paragraph(_)) || matches!(&block.details, BlockDetails::Raw(raw) if raw["kind"].as_str() == Some("paragraph"))
 }
 
-fn collect_blocks(blocks: &[DocumentBlock], output: &mut HashMap<String, (String, String)>) {
+fn collect_blocks(blocks: &[DocumentBlock], note_id: Option<i64>, output: &mut HashMap<crate::document_story_source::SourceAddress, (String, String)>) {
     for block in blocks {
+        let note_id = block.note_id.or(note_id);
         if paragraph_block(block) {
-            for source in block.source_refs.iter().filter(|source| source.story == "body") { output.insert(source.node_id.clone(), (block.id.clone(), block.content.clone())); }
+            for source in &block.source_refs { output.insert(crate::document_story_source::SourceAddress::from_ref(source, note_id), (block.id.clone(), block.content.clone())); }
         }
-        collect_blocks(&block.children, output);
+        collect_blocks(&block.children, note_id, output);
     }
 }
 
@@ -291,7 +277,11 @@ fn inline_sources(details: &mut Value, spans: &[RunSpan]) -> Result<(), String> 
         let mut boundaries = vec![start, end];
         for span in spans { if span.start > start && span.start < end { boundaries.push(span.start); } if span.end > start && span.end < end { boundaries.push(span.end); } }
         boundaries.sort_unstable(); boundaries.dedup();
-        if start == end { result.push(inline.clone()); continue; }
+        if start == end {
+            let mut value = inline.clone();
+            if let Some(span) = spans.iter().find(|span| span.start <= start && span.end >= end) { value["sourceFormat"] = span.format.clone(); }
+            result.push(value); continue;
+        }
         for pair in boundaries.windows(2) {
             let (from, to) = (pair[0], pair[1]);
             let part = slice_utf16(text, from - start, to - start).ok_or("A native run source splits a UTF-16 surrogate pair.")?;
@@ -305,27 +295,52 @@ fn inline_sources(details: &mut Value, spans: &[RunSpan]) -> Result<(), String> 
     Ok(())
 }
 
+/// Ordinary run provenance uses the same visible-text reader as native fields.
+/// Cross-paragraph fields are handled later by the complete story plan.
+pub(crate) fn restore_run_formats(details: &mut Value, xml: &str, text: &str, inherited: &BTreeMap<String, String>) -> Result<(), String> {
+    let root = parse_xml(xml)?;
+    let style = root.child("pPr").and_then(|properties| properties.child("pStyle")).and_then(|style| style.attribute("val"));
+    let mut reader = Reader::default();
+    let mut projection = Projection { text: String::new(), offset: 0, spans: Vec::new() };
+    reader.visit(&root, xml, 0, &mut projection, inherited, style, "")?;
+    if projection.text != text { return Err("Source run formatting does not match the extracted visible text.".into()); }
+    inline_sources(details, &projection.spans)
+}
+
 /// Prepare every paragraph before publishing any field ranges. A failed mapping
 /// retains source XML and a diagnostic instead of inventing valid offsets.
 pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, identities: &HashMap<String, String>) -> FieldRestoration {
-    let sources = collect_sources(source);
-    if !sources.iter().any(|(paragraph, _)| paragraph.source_xml.as_ref().is_some_and(|xml| xml.contains("fldChar") || xml.contains("fldSimple"))) { return FieldRestoration::default(); }
-    let mut blocks = HashMap::new(); collect_blocks(&document.blocks, &mut blocks);
+    let mut result = FieldRestoration::default();
+    let mut retained = Vec::new();
+    for story in crate::document_story_source::stories(source) {
+        let mut restored = restore_story(document, &story, identities);
+        result.warnings.append(&mut restored.warnings);
+        if let Some(source) = restored.source { retained.push(source); }
+    }
+    if retained.len() == 1 { result.source = retained.pop(); }
+    else if !retained.is_empty() { result.source = Some(json!({ "version": 1, "format": "docx", "stories": retained })); }
+    result
+}
+
+fn restore_story(document: &mut StructuredDocument, story: &crate::document_story_source::SourceStory<'_>, identities: &HashMap<String, String>) -> FieldRestoration {
+    let sources = crate::document_story_source::collect(story).paragraphs;
+    if !sources.iter().any(|(_, paragraph)| paragraph.source_xml.as_ref().is_some_and(|xml| xml.contains("fldChar") || xml.contains("fldSimple"))) { return FieldRestoration::default(); }
+    let mut blocks = HashMap::new(); collect_blocks(&document.blocks, None, &mut blocks);
     let mut paragraphs = Vec::new();
     let mut missing = Vec::new();
-    for (paragraph, id) in &sources {
-        let block = blocks.get(id).or_else(|| id.rfind("/body/").and_then(|index| blocks.get(&id[index..])));
-        let Some((block_id, text)) = block else { missing.push(id.clone()); continue; };
-        paragraphs.push(Paragraph { source: paragraph, source_id: id.clone(), block_id: block_id.clone(), text: text.clone() });
+    for (address, paragraph) in &sources {
+        let Some((block_id, text)) = blocks.get(address) else { missing.push(address.node_id.clone()); continue; };
+        paragraphs.push(Paragraph { source: paragraph, source_id: address.node_id.clone(), block_id: block_id.clone(), text: text.clone() });
     }
     if !missing.is_empty() {
         let error = format!("DOCX native field paragraphs {missing:?} could not be mapped to extracted blocks");
-        let retained = sources.iter().map(|(paragraph, id)| json!({ "sourceNodeId": id, "xml": paragraph.source_xml })).collect::<Vec<_>>();
+        let retained = sources.iter().map(|(address, paragraph)| json!({ "sourceNodeId": address.node_id, "xml": paragraph.source_xml })).collect::<Vec<_>>();
         return FieldRestoration { warnings: vec![format!("{error}; source definitions were retained in the document payload.")],
-            source: Some(json!({ "version": 1, "format": "docx", "mappingError": error, "paragraphs": retained, "identities": identities })) };
+            source: Some(json!({ "version": 1, "format": "docx", "story": story.story, "partName": story.part, "noteId": story.note_id, "mappingError": error, "paragraphs": retained, "identities": identities })) };
     }
     let prepared: Result<HashMap<String, Value>, String> = (|| {
-        let mut reader = Reader { identities: identities.clone(), ..Reader::default() }; let mut projections = HashMap::new();
+        let id_prefix = if story.story == "body" { "word-field-".into() } else { format!("word-field:{}:{}:{}:", story.story, story.part, story.note_id.map(|id| id.to_string()).unwrap_or_default()) };
+        let mut reader = Reader { identities: identities.clone(), id_prefix, ..Reader::default() }; let mut projections = HashMap::new();
         for (index, paragraph) in paragraphs.iter().enumerate() {
             let xml = paragraph.source.source_xml.as_deref().ok_or("A native field paragraph has no source XML.")?;
             let root = parse_xml(xml)?;
@@ -338,7 +353,7 @@ pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, iden
             if projection.text != paragraph.text { return Err(format!("Native field visible-text projection differs from paragraph {:?}.", paragraph.block_id)); }
             projections.insert(paragraph.block_id.clone(), projection);
         }
-        if !reader.pending.is_empty() { return Err("A native field is not closed at the end of the body.".into()); }
+        if !reader.pending.is_empty() { return Err("A native field is not closed before the end of its story.".into()); }
         let mut fields = HashMap::<String, Vec<Value>>::new(); let mut ids = std::collections::HashSet::new();
         for field in reader.fields {
             let (block, field) = field_value(field, &paragraphs)?;
@@ -346,9 +361,10 @@ pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, iden
             fields.entry(block).or_default().push(field);
         }
         let mut details = HashMap::new();
-        fn prepare(blocks: &[DocumentBlock], fields: &HashMap<String, Vec<Value>>, projections: &HashMap<String, Projection>, output: &mut HashMap<String, Value>) -> Result<(), String> {
+        fn prepare(blocks: &[DocumentBlock], note_id: Option<i64>, story: &crate::document_story_source::SourceStory<'_>, fields: &HashMap<String, Vec<Value>>, projections: &HashMap<String, Projection>, output: &mut HashMap<String, Value>) -> Result<(), String> {
             for block in blocks {
-                if paragraph_block(block) {
+                let note_id = block.note_id.or(note_id);
+                if belongs_to_story(block, note_id, story) && paragraph_block(block) && (projections.contains_key(&block.id) || fields.contains_key(&block.id)) {
                     let mut details = block.details.to_json_value();
                     if let Some(fields) = fields.get(&block.id) {
                         let marker = &details["officeNumberingMarker"];
@@ -361,38 +377,46 @@ pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel, iden
                     if let Some(projection) = projections.get(&block.id) { inline_sources(&mut details, &projection.spans)?; }
                     output.insert(block.id.clone(), details);
                 }
-                prepare(&block.children, fields, projections, output)?;
+                prepare(&block.children, note_id, story, fields, projections, output)?;
             }
             Ok(())
         }
-        prepare(&document.blocks, &fields, &projections, &mut details)?;
+        prepare(&document.blocks, None, story, &fields, &projections, &mut details)?;
         Ok(details)
     })();
     let mut warnings = Vec::new();
-    fn visit(blocks: &mut [DocumentBlock], prepared: &mut HashMap<String, Value>) {
+    fn visit(blocks: &mut [DocumentBlock], note_id: Option<i64>, story: &crate::document_story_source::SourceStory<'_>, prepared: &mut HashMap<String, Value>) {
         for block in blocks {
-            if let Some(details) = prepared.remove(&block.id) { block.details = BlockDetails::Raw(details); }
-            visit(&mut block.children, prepared);
+            let note_id = block.note_id.or(note_id);
+            if belongs_to_story(block, note_id, story) {
+                if let Some(details) = prepared.remove(&block.id) { block.details = BlockDetails::Raw(details); }
+            }
+            visit(&mut block.children, note_id, story, prepared);
         }
     }
     match prepared {
-        Ok(mut details) => visit(&mut document.blocks, &mut details),
+        Ok(mut details) => visit(&mut document.blocks, None, story, &mut details),
         Err(error) => {
-            fn retain(blocks: &mut [DocumentBlock], paragraphs: &[Paragraph<'_>], error: &str) {
+            fn retain(blocks: &mut [DocumentBlock], note_id: Option<i64>, story: &crate::document_story_source::SourceStory<'_>, paragraphs: &[Paragraph<'_>], error: &str) {
                 for block in blocks {
-                    if let Some(paragraph) = paragraphs.iter().find(|paragraph| paragraph.block_id == block.id) {
+                    let note_id = block.note_id.or(note_id);
+                    if let Some(paragraph) = paragraphs.iter().find(|paragraph| paragraph.block_id == block.id && belongs_to_story(block, note_id, story)) {
                         let mut details = block.details.to_json_value();
                         details["nativeFieldSource"] = json!({ "version": 1, "xml": paragraph.source.source_xml, "mappingError": error });
                         block.details = BlockDetails::Raw(details);
                     }
-                    retain(&mut block.children, paragraphs, error);
+                    retain(&mut block.children, note_id, story, paragraphs, error);
                 }
             }
-            retain(&mut document.blocks, &paragraphs, &error);
+            retain(&mut document.blocks, None, story, &paragraphs, &error);
             warnings.push(format!("DOCX native fields could not be mapped safely: {error}; source definitions were retained."));
         }
     }
     FieldRestoration { warnings, source: None }
+}
+
+fn belongs_to_story(block: &DocumentBlock, note_id: Option<i64>, story: &crate::document_story_source::SourceStory<'_>) -> bool {
+    note_id == story.note_id && block.source_refs.iter().any(|reference| reference.part_name == story.part && reference.story == story.story)
 }
 
 #[cfg(test)]

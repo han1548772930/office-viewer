@@ -140,6 +140,9 @@ fn parse_document_impl(
     }
     let mut native_field_source = None;
     if is_docx || format == "doc" {
+        let warnings = crate::document_paragraph_source::restore(&mut document, &source_model, archive.as_mut().filter(|_| is_docx))
+            .map_err(|error| ParseFailure::office_file(format!("Native paragraph provenance could not be retained: {error}")))?;
+        document.warnings.extend(warnings);
         crate::document_format_sidecar::restore_paragraphs(&mut document, &source_model, &paragraph_wrap);
     }
     if is_docx {

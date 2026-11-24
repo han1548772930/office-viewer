@@ -15,8 +15,12 @@ import { chartRadarCategoryAxisControls, chartRadarValueAxisControls } from '../
 import { convertChartType } from '../chart-type-conversion'
 import { chartSeriesStyle } from '../chart-options'
 import { validateChartNamedSeriesBindings } from '../chart-series-selector'
+import { chartParetoSettingsCategories } from '../chart-pareto'
+import { chartAutoGradientControls, chartPlotAreaControls } from '../chart-plot-area-controls'
+import { supportsChartPlotArea, validateChartPlotArea } from '../chart-plot-area'
 import ChartOptionFields from './ChartOptionFields.vue'
 import ChartSeriesSettings from './ChartSeriesSettings.vue'
+import ChartParetoSettings from './ChartParetoSettings.vue'
 import ChartStatisticsSettings from './ChartStatisticsSettings.vue'
 import ChartCollectionSettings from './ChartCollectionSettings.vue'
 
@@ -32,14 +36,25 @@ const namedBindingError = computed(() => {
   try { validateChartNamedSeriesBindings(config.value.options, projection.value.data?.series ?? []); return undefined }
   catch (reason) { return reason instanceof Error ? reason.message : String(reason) }
 })
+const plotAreaError = computed(() => {
+  try { validateChartPlotArea(config.value.options?.plotArea); return undefined }
+  catch (reason) { return reason instanceof Error ? reason.message : String(reason) }
+})
+const plotAreaControls = computed(() => chartPlotAreaControls(projection.value.data?.series))
 const fieldCount = computed(() => projection.value.source?.fields.length ?? (sourceLocked.value || !sourceSheet.value ? props.data?.fields?.length : undefined) ?? chartDraftFieldCount(props.draft))
 const fields = computed<ChartSettingsField[]>(() => {
   const sourceFields = projection.value.source?.fields ?? (sourceLocked.value || !sourceSheet.value ? props.data?.fields : undefined)
   return sourceFields ? sourceFields.map((label, value) => ({ label: label || `字段 ${value + 1}`, value })) : chartDraftFields(props.draft, sourceSheet.value)
 })
 const categories = computed(() => projection.value.data?.categories ?? [])
-const pointCategories = computed(() => descriptor.value.family === 'boxplot' ? projection.value.data?.series.map(series => series.name) ?? [] : projection.value.data?.hierarchy
-  ? chartHierarchyItems(projection.value.data.hierarchy).map(item => item.path.join(' / ')) : categories.value)
+const pointCategories = computed(() => {
+  if (descriptor.value.family === 'pareto') {
+    try { return chartParetoSettingsCategories(projection.value.data, config.value.options?.pareto?.includeZeroValues, config.value) }
+    catch { return [] }
+  }
+  return descriptor.value.family === 'boxplot' ? projection.value.data?.series.map(series => series.name) ?? [] : projection.value.data?.hierarchy
+    ? chartHierarchyItems(projection.value.data.hierarchy).map(item => item.path.join(' / ')) : categories.value
+})
 const numericFields = computed(() => fields.value.filter(field => projection.value.source?.records.some(record => chartNumber(record[field.value]) !== null)))
 const seriesFields = computed<ChartSettingsField[]>(() => {
   if (projection.value.data?.series.length) {
@@ -88,6 +103,7 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
     <Alert v-if="projection.error" type="warning" :message="projection.error" show-icon />
     <Alert v-if="namedBindingError" type="warning" :message="namedBindingError" show-icon />
     <Alert v-if="dateAxisError" type="warning" :message="dateAxisError" show-icon />
+    <Alert v-if="plotAreaError" type="warning" :message="plotAreaError" show-icon />
     <Collapse :default-active-key="['data', 'common']">
       <CollapsePanel key="data" header="数据源与字段">
         <FormItem v-if="sheets?.length" label="数据所在工作表"><Select :value="sourceSheetId" :options="sheets.map(sheet => ({ value: sheet.id, label: sheet.name }))" aria-label="图表数据工作表" :disabled="sourceLocked || disabled" @update:value="sourceSheetChange" /></FormItem>
@@ -106,7 +122,12 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
           <CollapsePanel key="border" header="图表边框"><ChartOptionFields :config="config" :controls="borderControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
         </Collapse>
       </CollapsePanel>
-      <CollapsePanel key="type" header="图型专属设置"><ChartOptionFields :config="config" :controls="chartTypeSettingsControls(config, fieldCount, projection.data?.series[0]?.sourceName ?? projection.data?.series[0]?.name)" :categories="categories" :disabled="disabled" @update:config="change" /></CollapsePanel>
+      <CollapsePanel key="type" header="图型专属设置">
+        <ChartOptionFields :config="config" :controls="chartAutoGradientControls()" :disabled="disabled" @update:config="change" />
+        <ChartOptionFields :config="config" :controls="chartTypeSettingsControls(config, fieldCount, projection.data?.series[0]?.sourceName ?? projection.data?.series[0]?.name)" :categories="categories" :disabled="disabled" @update:config="change" />
+        <ChartParetoSettings v-if="config.type === 'pareto'" :config="config" :data="projection.data" :disabled="disabled" @update:config="change" />
+      </CollapsePanel>
+      <CollapsePanel v-if="supportsChartPlotArea(config.type)" key="plot-area" header="绘图区"><ChartOptionFields :config="config" :controls="plotAreaControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel key="series" header="系列、标记与数据标签">
         <Collapse>
           <CollapsePanel key="all" header="所有系列"><ChartOptionFields :config="config" :controls="chartSeriesControls(undefined, descriptor.family === 'combination', secondaryAxis, descriptor.family === 'bar')" :disabled="disabled" @update:config="change" /></CollapsePanel>

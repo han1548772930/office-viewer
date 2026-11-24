@@ -173,13 +173,16 @@ test('ordinary text insertion moves content-control anchors and content locks re
 test('checkboxes and date/list controls enforce type-specific values', () => {
   const { studio, document } = createDocument('___ 2026-01-01 A')
   const checkbox = document.addContentControl({ id: 'check', type: 'checkbox', blockId: 'paragraph-1', startOffset: 0, endOffset: 3 })
+  assert.equal(document.getText(), '☐ 2026-01-01 A')
+  assert.deepEqual(checkbox.getRange(), { blockId: 'paragraph-1', startOffset: 0, endOffset: 1 })
   checkbox.setChecked(true)
   assert.equal(checkbox.getInfo().checked, true)
   assert.equal(checkbox.getInfo().value, 'true')
   assert.equal(checkbox.getInfo().checkbox.checked, true)
+  assert.equal(document.getText(), '☒ 2026-01-01 A')
   assert.throws(() => checkbox.setValue('yes'), /does not accept text values/)
 
-  const date = document.addContentControl({ id: 'date', type: 'date', blockId: 'paragraph-1', startOffset: 4, endOffset: 14, dateValue: '2026-01-01' })
+  const date = document.addContentControl({ id: 'date', type: 'date', blockId: 'paragraph-1', startOffset: 2, endOffset: 12, dateValue: '2026-01-01' })
   assert.throws(() => date.setValue('2026-02-30'), /YYYY-MM-DD/)
   date.setValue('2026-02-28')
   assert.equal(date.getInfo().dateValue, '2026-02-28')
@@ -191,7 +194,7 @@ test('checkboxes and date/list controls enforce type-specific values', () => {
   assert.equal(document.undo(), true)
   assert.equal(date.getText(), '02/28/2026')
 
-  const list = document.addContentControl({ id: 'list', type: 'dropDownList', blockId: 'paragraph-1', startOffset: 15, endOffset: 16, value: 'A', items: [{ displayText: 'Alpha', value: 'A' }, { displayText: 'Beta', value: 'B' }] })
+  const list = document.addContentControl({ id: 'list', type: 'dropDownList', blockId: 'paragraph-1', startOffset: 13, endOffset: 14, value: 'A', items: [{ displayText: 'Alpha', value: 'A' }, { displayText: 'Beta', value: 'B' }] })
   assert.throws(() => list.selectItem('C'), /not present in dropdown/)
   list.selectItem('B')
   assert.equal(list.getText(), 'Beta')

@@ -111,6 +111,29 @@ fn paragraph_overlay_keeps_advanced_properties_but_clear_drops_source_paragraph_
 }
 
 #[test]
+fn block_paragraph_properties_emit_one_root_and_overlay_current_numbering() {
+    let mut styles = registry(&format!("<w:styles xmlns:w=\"{WORD_NAMESPACE}\"/>"), None);
+    let baseline = json!({ "align": "center", "spaceBefore": 12 });
+    let block = json!({ "type": "paragraph", "style": baseline, "metadata": {
+        "source": { "details": { "sourceFormat": source_format(
+            r#"<w:pPr><w:jc w:val="center"/><w:keepNext/><w:rPr><w:smallCaps/></w:rPr></w:pPr>"#, None
+        ) } },
+        "officeParagraphStyleBaseline": baseline,
+        "officeParagraphSemanticBaseline": { "type": "paragraph" }
+    } });
+    let generated = r#"<w:jc w:val="left"/><w:numPr><w:ilvl w:val="2"/><w:numId w:val="9"/></w:numPr>"#;
+    let xml = styles.block_paragraph_properties(generated, &block).unwrap();
+    let properties = parse_xml(&xml, false).unwrap();
+    assert!(properties.is_word("pPr"));
+    assert!(properties.child("pPr").is_none());
+    assert_eq!(properties.child("jc").unwrap().attribute("val"), Some("center"));
+    assert!(properties.child("keepNext").is_some());
+    assert!(properties.child("rPr").unwrap().child("smallCaps").is_some());
+    assert_eq!(properties.child("numPr").unwrap().child("numId").unwrap().attribute("val"), Some("9"));
+    assert!(styles.block_paragraph_properties("<w:pPr/>", &block).unwrap_err().contains("nested properties root"));
+}
+
+#[test]
 fn equal_extension_prefixes_keep_independent_default_style_and_story_scopes() {
     const DEFAULT_EXTENSION: &str = "http://schemas.microsoft.com/office/word/2010/wordml";
     const STYLE_EXTENSION: &str = "http://schemas.microsoft.com/office/word/2012/wordml";

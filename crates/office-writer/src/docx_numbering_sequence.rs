@@ -291,7 +291,7 @@ fn group_key(instance: &NumberingInstance) -> (String, String) {
     let name = if let Some(id) = integer(group) { format!("source:{id}") }
         else if let Some(group) = group.as_str() { format!("name:{group}") }
         else { format!("instance:{}", instance.id) };
-    (abstract_key(instance.kind, Some(definition)), name)
+    (format!("{}:{}", instance.owner, abstract_key(instance.kind, Some(definition))), name)
 }
 
 fn marker_style(block: &Value, level: &Value) -> (String, Value) {
@@ -332,6 +332,10 @@ fn native_xml_contract(numbering_xml: &str, id: u32) -> Option<String> {
 }
 
 pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &[NumberingInstance], numbering_xml: &str, preserved: &PreservedMarkerPlan) -> Result<SequencePlan, ExportError> {
+    prepare_sequence_groups(&[blocks], lookup, instances, numbering_xml, preserved)
+}
+
+pub(crate) fn prepare_sequence_groups(block_groups: &[&[Value]], lookup: &HashMap<usize, u32>, instances: &[NumberingInstance], numbering_xml: &str, preserved: &PreservedMarkerPlan) -> Result<SequencePlan, ExportError> {
     let mut plan = SequencePlan { next_bookmark: preserved.next_bookmark, sequence_prefix: preserved.sequence_prefix.clone(), bookmark_names: preserved.bookmark_names.clone(), ..Default::default() };
     let by_id = instances.iter().map(|instance| (instance.id, instance)).collect::<HashMap<_, _>>();
     let mut groups = HashMap::<(String, String), u32>::new();
@@ -342,7 +346,8 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
         let key = group_key(instance);
         if groups.contains_key(&key) { continue; }
         let group = get(get(definition, "instance"), "consecutiveListId");
-        let primary_id = if group.is_null() { Some(instance.id) } else { instances.iter().find(|candidate| candidate.definition.is_some() && abstract_key(candidate.kind, candidate.definition.as_ref()) == key.0 && primary(candidate, group)).map(|candidate| candidate.id) };
+        let primary_id = if group.is_null() { Some(instance.id) } else { instances.iter().find(|candidate| candidate.owner == instance.owner && candidate.definition.is_some()
+            && abstract_key(candidate.kind, candidate.definition.as_ref()) == abstract_key(instance.kind, instance.definition.as_ref()) && primary(candidate, group)).map(|candidate| candidate.id) };
         let id = primary_id.unwrap_or_else(|| { let id = next_group; next_group += 1; id });
         groups.insert(key, id);
     }
@@ -457,7 +462,10 @@ pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, 
         }
         Ok(())
     }
-    visit(blocks, lookup, &by_id, &groups, &mut counters, &mut mappings, &mut warnings, &mut plan, preserved)?;
+    for blocks in block_groups {
+        counters.clear();
+        visit(blocks, lookup, &by_id, &groups, &mut counters, &mut mappings, &mut warnings, &mut plan, preserved)?;
+    }
     if !mappings.is_empty() {
         let mapping = json!({ "version": 1, "instances": mapped_instances, "paragraphs": mappings });
         plan.mapping_xml = Some(format!("{}<officeNumbering xmlns=\"{MAPPING_NAMESPACE}\" version=\"1\"><mapping>{}</mapping></officeNumbering>", xml::DECL, xml::escape(&mapping.to_string())));

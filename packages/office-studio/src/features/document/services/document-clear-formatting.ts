@@ -125,7 +125,9 @@ export function applyDocumentStoryClearFormatting(model: DocumentModel, story: D
 
 function hasStorySourceFormat(metadata: Record<string, unknown>): boolean {
   const source = metadata.source
-  return !!source && typeof source === 'object' && !Array.isArray(source) && Reflect.get(source, 'sourceFormat') !== undefined
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return false
+  const details = Reflect.get(source, 'details')
+  return Reflect.get(source, 'sourceFormat') !== undefined || !!details && typeof details === 'object' && !Array.isArray(details) && Reflect.get(details, 'sourceFormat') !== undefined
 }
 
 function clearedRun(run: DocumentRun, defaults: DocumentDefaultStyle['text'], disableCodeSyntax = false): DocumentRun {
@@ -177,6 +179,7 @@ export function applyDocumentClearFormatting(model: DocumentModel, range: Docume
     const to = !range.tableSelection && sameTarget(target, end) ? end.offset : runText(runs).length
     block.runs = clearDocumentFormattingRuns(runs, from, to, defaults.text, !!block.metadata.codeBlock)
     block.style = { ...defaults.paragraph }
+    if (hasStorySourceFormat(block.metadata)) block.metadata.officeStoryParagraphFormatCleared = true
     block.type = 'paragraph'
     block.level = 0
     clearBlockNumbering(block)

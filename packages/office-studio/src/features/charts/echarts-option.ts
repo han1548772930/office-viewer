@@ -13,17 +13,21 @@ import { readChartData, type ChartData } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { chartBubblePointSize, chartPointStyle, chartSeriesKind, deriveChartData, type ChartComputedStatistics } from './chart-derived'
 import { chartPalette, chartSeriesStyle, definedChartStyleFields } from './chart-options'
-import { chartEChartsAxisStyle, chartEChartsFont, chartEChartsItemStyle, chartEChartsLabel, chartEChartsLineStyle, chartEChartsMarkerStyle, chartEChartsPointLabel } from './echarts-style'
+import { chartEChartsAxisStyle, chartEChartsFont, chartEChartsIndependentItemStyle, chartEChartsItemStyle, chartEChartsLabel, chartEChartsLineStyle, chartEChartsMarkerStyle, chartEChartsPointLabel } from './echarts-style'
 import { chartSpecialEChartsOption, type ChartEChartsContext } from './echarts-special-option'
 import { drawDerivedChartData } from './chart-draw'
 import { chartPlotFrame, layoutDerivedChartData } from './chart-layout'
-import { chartPieOuterRadius } from './chart-pie-layout'
+import { chartPieLayout, chartPieOuterRadius } from './chart-pie-layout'
 import { chartRadarAxisLabel, chartRadarAxisLine, chartRadarExtent, chartRadarGeometry } from './chart-radar'
 import { formatChartNumber } from './chart-geometry'
 import { chartAxisTitleCommand, chartAxisTitleFont, chartAxisTitleSpace } from './chart-axis-title'
 import { chartDateAxis, chartDateAxisLabel, type ChartDateAxis } from './chart-date-axis'
 import { chartAxisPointerGeometry, chartAxisPointerPresentation, supportsChartAxisPointer, type ChartAxisPointerRuntime } from './chart-axis-pointer'
 import type { ChartRenderTheme } from './chart-theme'
+import { chartAutoGradientFill, chartEChartsAutomaticGradient } from './chart-auto-gradient'
+import { chartColorRepresentative, isChartLinearGradient } from './chart-color'
+import { createChartMarkGradient, supportsChartExplicitGradient } from './chart-gradient'
+import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativeExtent, chartParetoCumulativeMarkerStyle, chartParetoCumulativeStyle } from './chart-pareto'
 
 export type ChartEChartsOption = ComposeOption<
   | BarSeriesOption | LineSeriesOption | PieSeriesOption | RadarSeriesOption | ScatterSeriesOption | BoxplotSeriesOption
@@ -49,7 +53,8 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   const pointerEnabled = supportsChartAxisPointer(chart) && data.categories.length > 0 && data.series.length > 0
   const frame = chartPlotFrame(localChart, derived.boxes ?? data.series), grid = {
     left: frame.plot.x, right: Math.max(0, chart.size.width - frame.plot.x - frame.plot.width),
-    top: frame.plot.y, bottom: Math.max(0, chart.size.height - frame.plot.y - frame.plot.height), containLabel: true,
+    // chartPlotFrame already reserves automatic label/title bands; authored bounds are exact.
+    top: frame.plot.y, bottom: Math.max(0, chart.size.height - frame.plot.y - frame.plot.height), containLabel: false,
   }
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite) || requiresGraphicChart(chart, data, derived.boxes)) {
     const layout = layoutDerivedChartData(derived, localChart, palette)
@@ -104,7 +109,7 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     }),
     ...(isRadar ? { radar: radarComponent(data, chart, context) } : {}),
     series: isPie ? [pieSeries(data, chart, context)] : isScatter ? scatterSeries(data, chart, context)
-      : isRadar ? radarSeries(data, chart, context) : categorySeries(data, chart, context),
+      : isRadar ? radarSeries(data, chart, context) : categorySeries(data, chart, context, derived.pareto?.cumulativePercent),
     officeChartKey,
     ...(pointerRuntime ? { officeChartPointer: pointerRuntime } : {}),
   }
@@ -115,11 +120,18 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     if (special.legend && previousLegend && !Array.isArray(previousLegend) && !Array.isArray(special.legend)) option.legend = { ...previousLegend, ...special.legend }
   }
   if (derived.pareto) {
-    const cumulative: LineSeriesOption = { type: 'line', name: '累计百分比', yAxisIndex: 1,
-      data: dates ? derived.pareto.cumulativePercent.map((value, index) => dates.values[index] == null ? null : [dates.values[index]!, value]) : derived.pareto.cumulativePercent,
-      showSymbol: true, lineStyle: { color: palette[1 % palette.length] } }
-    option.series = [...categorySeries(data, chart, context), cumulative]
-    option.yAxis = [numericAxis(chart.yAxis, axisColor, splitLineColor, 'y', false, inheritedFont), { ...numericAxis(secondAxis, axisColor, splitLineColor, 'y', true, inheritedFont), min: secondAxis.min ?? 0, max: secondAxis.max ?? 100,
+    const style = chartParetoCumulativeStyle(chart, palette), name = CHART_PARETO_CUMULATIVE_NAME
+    const extent = chartParetoCumulativeExtent(chart, derived.pareto.cumulativePercent)
+    const cumulative: LineSeriesOption = { type: 'line', name, yAxisIndex: 1,
+      data: derived.pareto.cumulativePercent.map((value, index) => {
+        if (dates && dates.values[index] == null || secondAxis.scaleType === 'log' && value <= 0) return null
+        const datum = dates ? [dates.values[index]!, value] : value
+        return style.label?.visible ? { value: datum, label: chartEChartsPointLabel(style.label, color, value, data.categories[index] ?? '', name, value) } : datum
+      }),
+      showSymbol: style.point?.shape !== 'none' && (style.point?.size ?? 7) > 0, symbol: style.point?.shape ?? 'circle', symbolSize: style.point?.size ?? 7,
+      connectNulls: chart.options?.invalidValueStrategy === 'link', lineStyle: chartEChartsLineStyle(style), itemStyle: chartEChartsMarkerStyle(chartParetoCumulativeMarkerStyle(style)), label: chartEChartsLabel(style.label, color) }
+    option.series = [...categorySeries(data, chart, context, derived.pareto.cumulativePercent), cumulative]
+    option.yAxis = [numericAxis(chart.yAxis, axisColor, splitLineColor, 'y', false, inheritedFont), { ...numericAxis(secondAxis, axisColor, splitLineColor, 'y', true, inheritedFont), min: extent.min, max: extent.max,
       position: 'right', splitLine: { show: false } }]
     option.legend = { ...(!Array.isArray(option.legend) ? option.legend : {}), data: [...seriesNames, '累计百分比'] }
   }
@@ -145,12 +157,22 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
 
 function requiresGraphicChart(chart: ChartModel, data: ChartData, boxes?: readonly { field: number; seriesPosition: number; sourceName: string }[]): boolean {
   const radar = chart.type === 'radar' ? chartRadarExtent(data, chart.yAxis) : undefined
+  const pareto = chart.type === 'pareto' ? chartParetoCumulativeStyle(chart, chartPalette(chart)) : undefined
   return Boolean(resolveChartType(chart.type).threeD || ['pieOfPie', 'barOfPie', 'wordCloud', 'chord', 'waterfall', 'sankey', 'relation'].includes(chart.type)
     // Scatter and Heatmap do not support native decals; every patterned mark uses the shared geometry.
     || data.series.some((source, index) => {
-      const style = chartSeriesStyle(chart, source.field, index, undefined, source.sourceName ?? source.name)
+      const style = chart.type === 'pareto' ? chartParetoBarStyle(chart, source.field, index, chartPalette(chart), source.sourceName ?? source.name)
+        : chartSeriesStyle(chart, source.field, index, undefined, source.sourceName ?? source.name)
+      const kind = chartSeriesKind(chart, source.field, index, source.sourceName ?? source.name)
       return style.fillPattern || Object.values(style.dataPoints ?? {}).some(point => point?.fillPattern)
+        // Explicit line/area gradients share the Canvas mark rectangle across
+        // fragments; native paints cannot reproduce these segment coordinates.
+        || (kind.type === 'line' || kind.type === 'area') && supportsChartExplicitGradient(chart.type)
+          && (isChartLinearGradient(style.color) || supportsChartExplicitGradient(chart.type, 'dataPoint') && Object.values(style.dataPoints ?? {}).some(point => isChartLinearGradient(point?.color)))
+        // Native line/area paints cannot vary per segment; use the common scene for authored point overrides.
+        || chartAutoGradientFill(chart) && (kind.type === 'line' || kind.type === 'area') && Object.values(style.dataPoints ?? {}).some(point => point && (point.color !== undefined || point.fillOpacity !== undefined || point.border?.color !== undefined || point.border?.opacity !== undefined))
     })
+    || pareto && (isChartLinearGradient(pareto.color) || Object.keys(pareto.dataPoints ?? {}).length > 0)
     || chart.type === 'radar' && data.series.some((source, index) => {
       const style = chartSeriesStyle(chart, source.field, index, undefined, source.sourceName ?? source.name)
       return style.label?.visible || Object.keys(style.dataPoints ?? {}).length > 0
@@ -201,7 +223,7 @@ function radarSeries(data: ChartData, chart: ChartModel, context: ChartEChartsCo
     const style = chartSeriesStyle(chart, source.field, index, context.palette, source.sourceName ?? source.name)
     return { type: 'radar', name: style.name ?? source.name, symbol: style.point?.shape ?? 'none', symbolSize: style.point?.size ?? 4,
       lineStyle: chartEChartsLineStyle(style), itemStyle: chartEChartsMarkerStyle(style),
-      ...(chart.options?.radar?.fill ? { areaStyle: { color: style.color, opacity: style.fillOpacity ?? 0.25 } } : {}),
+      ...(chart.options?.radar?.fill ? { areaStyle: { color: style.color === undefined ? undefined : chartColorRepresentative(style.color), opacity: style.fillOpacity ?? 0.25 } } : {}),
       data: [{ name: style.name ?? source.name, value: source.values }] }
   })
 }
@@ -238,15 +260,18 @@ function dateCategoryAxis(dates: ChartDateAxis, axis: ChartAxisOptions, axisColo
 function pieSeries(data: ChartData, chart: ChartModel, context: ChartEChartsContext): PieSeriesOption {
   const source = data.series[0]!, options = chart.options?.pie, { palette, color, grid } = context
   const scale = source.values.reduce<number>((max, value) => Math.max(max, value ?? 0), 0) || 1, total = source.values.reduce<number>((sum, value) => sum + Math.max(0, value ?? 0) / scale, 0), start = -(options?.startAngle ?? -90)
-  const radius = chartPieOuterRadius({ x: grid.left, y: grid.top, width: chart.size.width - grid.left - grid.right, height: chart.size.height - grid.top - grid.bottom }, options?.explosion)
+  const plot = { x: grid.left, y: grid.top, width: chart.size.width - grid.left - grid.right, height: chart.size.height - grid.top - grid.bottom }
+  const radius = chartPieOuterRadius(plot, options?.explosion)
+  const sectors = new Map(chartPieLayout(data, chart, plot).sectors.map(sector => [sector.part.index, sector]))
   return { type: 'pie', name: source.name, radius: chart.type === 'doughnut' ? [radius * (options?.doughnutHole ?? 0.55), radius] : radius,
     center: ['50%', '50%'], left: grid.left, right: grid.right, top: grid.top, bottom: grid.bottom,
     startAngle: start, ...(options?.isHalfPie ? { endAngle: start - 180 } : {}), ...(options?.rosePie ? { roseType: 'radius' } : {}),
     ...(options?.explosion ? { selectedMode: 'multiple', selectedOffset: radius * options.explosion / 100 } : {}),
     avoidLabelOverlap: true, stillShowZeroSum: false, showEmptyCircle: false, label: { color }, labelLine: { show: options?.showLabelLine !== false },
     data: data.categories.map((name, index) => {
-      const value = Math.max(0, source.values[index] ?? 0), style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index), label = { ...style.label, ...options?.label }
-      return { name, value, selected: Boolean(options?.explosion), itemStyle: chartEChartsItemStyle(style),
+      const value = Math.max(0, source.values[index] ?? 0), style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index, chart.type), label = { ...style.label, ...options?.label }
+      const sector = sectors.get(index), gradient = createChartMarkGradient(chart, style, 'pie', {}, sector ? { x: sector.center.x - sector.outer, y: sector.center.y - sector.outer, width: sector.outer * 2, height: sector.outer * 2 } : undefined)
+      return { name, value, selected: Boolean(options?.explosion), itemStyle: chartEChartsItemStyle(style, gradient),
         label: chartEChartsPointLabel({ visible: true, contentType: 'category', position: 'outside', ...label }, color, value, name, source.name, total ? (value / scale) / total * 100 : 0) }
     }) }
 }
@@ -262,7 +287,7 @@ function scatterSeries(data: ChartData, chart: ChartModel, context: ChartECharts
       data: source.values.flatMap<NonNullable<ScatterSeriesOption['data']>[number]>((value, index) => {
         const x = source.xValues?.[index], size = source.sizeValues?.[index]
         if (value === null || x == null || !Number.isFinite(value) || !Number.isFinite(x) || chart.xAxis.scaleType === 'log' && x <= 0 || axis.scaleType === 'log' && value <= 0 || bubble && (size == null || size <= 0)) return []
-        const pointStyle = chartPointStyle(style, index)
+        const pointStyle = chartPointStyle(style, index, chart.type)
         if (!bubble && !style.dataPoints?.[index] && !style.label?.visible) return [[x, value]]
         const diameter = bubble ? chartBubblePointSize(pointStyle, size!, maxSize, chart.options, Math.min(chart.size.width - context.grid.left - context.grid.right, chart.size.height - context.grid.top - context.grid.bottom)) : pointStyle.point?.size ?? 8
         return [{ name: data.categories[index], value: [x, value, ...(bubble ? [size!] : [])], symbol: pointStyle.point?.shape ?? 'circle', symbolSize: diameter, itemStyle: chartEChartsMarkerStyle(pointStyle),
@@ -271,31 +296,42 @@ function scatterSeries(data: ChartData, chart: ChartModel, context: ChartECharts
   })
 }
 
-function categorySeries(data: ChartData, chart: ChartModel, context: ChartEChartsContext): Array<BarSeriesOption | LineSeriesOption> {
+function categorySeries(data: ChartData, chart: ChartModel, context: ChartEChartsContext, cumulativePercent?: readonly number[]): Array<BarSeriesOption | LineSeriesOption> {
+  const horizontal = resolveChartType(chart.type).family === 'bar', grid = context.grid
+  const plot = { x: grid.left, y: grid.top, width: chart.size.width - grid.left - grid.right, height: chart.size.height - grid.top - grid.bottom }
   return data.series.map((source, index) => {
-    const kind = chartSeriesKind(chart, source.field, index, source.sourceName ?? source.name), style = chartSeriesStyle(chart, source.field, index, context.palette, source.sourceName ?? source.name), name = style.name ?? source.name
+    const kind = chartSeriesKind(chart, source.field, index, source.sourceName ?? source.name), style = chart.type === 'pareto'
+      ? chartParetoBarStyle(chart, source.field, index, context.palette, source.sourceName ?? source.name) : chartSeriesStyle(chart, source.field, index, context.palette, source.sourceName ?? source.name), name = style.name ?? source.name
+    const itemStyle = chart.type === 'pareto' ? chartEChartsIndependentItemStyle : chartEChartsItemStyle
     const axis: ChartAxisOptions = style.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
+    const isBar = kind.type === 'column' || kind.type === 'bar' || chart.type === 'histogram' || chart.type === 'pareto'
+    const markerGradient = createChartMarkGradient(chart, { ...style, color: isChartLinearGradient(style.color) ? style.color : style.point?.color ?? style.color }, 'line', { reverse: axis.reverse, symbol: true }, plot)
     const values = source.values.map((value, categoryIndex) => {
       const date = context.dateAxis?.values[categoryIndex]
       if (value === null || axis.scaleType === 'log' && value <= 0 || context.dateAxis && date == null) return null
-      const datum = context.dateAxis ? resolveChartType(chart.type).family === 'bar' ? [value, date!] : [date!, value] : value
-      if (!style.dataPoints?.[categoryIndex] && !style.label?.visible) return datum
-      const point = chartPointStyle(style, categoryIndex)
-      return { value: datum, itemStyle: kind.type === 'column' || kind.type === 'bar' ? chartEChartsItemStyle(point) : chartEChartsMarkerStyle(point), symbol: point.point?.shape, symbolSize: point.point?.size,
-        ...(point.label?.visible ? { label: chartEChartsPointLabel(point.label, context.color, value, data.categories[categoryIndex] ?? '', name) } : {}) }
+      const datum = context.dateAxis ? horizontal ? [value, date!] : [date!, value] : value
+      const point = chartPointStyle(style, categoryIndex, chart.type)
+      const gradient = isBar ? createChartMarkGradient(chart, point, horizontal ? 'bar' : 'column', { negative: value < 0, reverse: axis.reverse })
+        : createChartMarkGradient(chart, { ...point, color: isChartLinearGradient(point.color) ? point.color : point.point?.color ?? point.color }, 'line', { reverse: axis.reverse, symbol: true }, plot)
+      if (!style.dataPoints?.[categoryIndex] && !style.label?.visible && !gradient) return datum
+      const percentage = cumulativePercent ? cumulativePercent[categoryIndex]! - (categoryIndex ? cumulativePercent[categoryIndex - 1]! : 0) : undefined
+      return { value: datum, itemStyle: isBar ? itemStyle(point, gradient) : chartEChartsMarkerStyle(point, gradient), symbol: point.point?.shape, symbolSize: point.point?.size,
+        ...(point.label?.visible ? { label: chartEChartsPointLabel(point.label, context.color, value, data.categories[categoryIndex] ?? '', name, percentage) } : {}) }
     })
     const stacked = kind.stacked ? chart.type === 'combination' ? `${kind.type}-${style.rightAxis ? 'right' : 'left'}` : style.rightAxis ? 'total-right' : 'total' : undefined
-    if (kind.type === 'bar' || kind.type === 'column' || chart.type === 'histogram' || chart.type === 'pareto') return {
+    if (isBar) return {
       type: 'bar', name, data: values, stack: stacked,
       ...(resolveChartType(chart.type).family === 'bar' ? { xAxisIndex: style.rightAxis ? 1 : 0, yAxisIndex: 0 } : style.rightAxis ? { yAxisIndex: 1 } : {}),
-      itemStyle: chartEChartsItemStyle(style), label: chartEChartsLabel(style.label, context.color),
+      itemStyle: itemStyle(style, createChartMarkGradient(chart, style, horizontal ? 'bar' : 'column', { reverse: axis.reverse })), label: chartEChartsLabel(style.label, context.color),
       barCategoryGap: chart.type === 'histogram' ? `${(chart.options?.histogram?.binGap ?? 0.05) * 100}%` : `${chart.options?.bar?.gapWidth ?? 150}%`,
       ...(chart.options?.bar?.overlap === undefined ? {} : { barGap: `${-chart.options.bar.overlap}%` }),
     }
+    const areaGradient = kind.type === 'area' ? createChartMarkGradient(chart, { ...style, fillOpacity: style.fillOpacity ?? 0.28 }, 'area', { reverse: axis.reverse }, plot) : undefined
+    const lineGradient = kind.type === 'line' ? createChartMarkGradient(chart, { ...style, color: style.border?.color ?? style.color, fillOpacity: style.border?.opacity ?? 1 }, 'line', { reverse: axis.reverse }, plot) : undefined
     return { type: 'line', name, data: values, stack: stacked, yAxisIndex: style.rightAxis ? 1 : 0,
       showSymbol: style.point?.shape !== 'none' || Object.values(style.dataPoints ?? {}).some(point => point?.shape !== undefined && point.shape !== 'none'),
       symbol: style.point?.shape ?? 'circle', symbolSize: style.point?.size ?? 6, connectNulls: chart.options?.invalidValueStrategy === 'link',
-      smooth: kind.type === 'area' && chart.options?.area?.smooth, lineStyle: chartEChartsLineStyle(style), itemStyle: chartEChartsMarkerStyle(style), label: chartEChartsLabel(style.label, context.color),
-      ...(kind.type === 'area' ? { areaStyle: { color: style.color, opacity: style.fillOpacity ?? 0.28 } } : {}) }
+      smooth: kind.type === 'area' && chart.options?.area?.smooth, lineStyle: chartEChartsLineStyle(style, lineGradient), itemStyle: chartEChartsMarkerStyle(style, markerGradient), label: chartEChartsLabel(style.label, context.color),
+      ...(kind.type === 'area' ? { areaStyle: { color: chartEChartsAutomaticGradient(areaGradient) ?? (style.color === undefined ? undefined : chartColorRepresentative(style.color)), opacity: areaGradient ? 1 : style.fillOpacity ?? 0.28 } } : {}) }
   })
 }

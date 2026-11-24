@@ -4,6 +4,7 @@ import type {
   ChartAxisPointerOptions,
   ChartLegendOptions,
   ChartModel,
+  ChartPlotAreaOptions,
   ChartSemanticOptions,
   ChartSeriesOptions,
   ChartSeriesSelector,
@@ -71,6 +72,10 @@ import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/cha
 import { ChartAllSeriesStyleTargets, ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, ChartSeriesClearTargets, chartCartesianAxisPatch, chartAxisPointerValues, chartSeriesStyleValues, clearChartAllSeriesStyle, clearChartAxis, clearChartAxisPointer, clearChartSeriesStyle, patchChartSeriesOverride,
   type ChartAllSeriesStyleTarget, type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget } from '../features/charts/chart-cartesian-api'
 import { chartSeriesOverride, validateChartSeriesSelector } from '../features/charts/chart-series-selector'
+import { validateChartPlotArea } from '../features/charts/chart-plot-area'
+import { validateChartGradientAuthoring, validateChartGradientSeriesPatch } from '../features/charts/chart-gradient'
+import { describeChartConfiguration, type ChartDescription, type ChartDescriptionContext } from '../features/charts/chart-description'
+import { chartDescriptionSourceContext } from './chart-description-host'
 import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
 import {
   getCommonDocumentTextStyle,
@@ -873,6 +878,7 @@ export class FSelection {
 
 export class ChartConfigBuilder {
   private value: ChartConfig
+  private readonly descriptionId = randomId('chart-draft')
 
   constructor(type: ChartType) {
     resolveChartType(type)
@@ -917,8 +923,17 @@ export class ChartConfigBuilder {
   setTitle(title: string): this { this.value = { ...this.value, title }; return this }
   setSubtitle(subtitle: string): this { this.value = { ...this.value, subtitle }; return this }
   setPalette(palette: readonly string[]): this { this.value = { ...this.value, palette: [...palette] }; return this }
-  setOptions(options: ChartSemanticOptions): this { this.value = { ...this.value, options: mergeChartOptions(this.value.options, options) }; return this }
+  setOptions(options: ChartSemanticOptions): this {
+    const next = mergeChartOptions(this.value.options, options)
+    validateChartGradientAuthoring(this.value.type, next, this.value.options)
+    this.value = { ...this.value, options: next }; return this
+  }
   setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): this { return this.setOptions(chartOptionPatch(key, value)) }
+  setAutoGradientFill(value: boolean): this { validateChartAutomaticGradientValue(value); return this.setOption('autoGradientFill', value) }
+  resetAutoGradientFill(): this { return this.setOption('autoGradientFill', undefined) }
+  /** Local convenience for the upstream plotArea configuration property. */
+  setPlotArea(value: ChartPlotAreaOptions): this { validateChartPlotArea(value); return this.setOption('plotArea', value) }
+  resetPlotArea(): this { return this.setOption('plotArea', undefined) }
   setMapping(mapping: ChartSemanticOptions['mapping']): this { return this.setOption('mapping', mapping) }
   setUseDateAxis(value: boolean): this { return this.setOption('mapping', { useDateAxis: value }) }
   resetUseDateAxis(): this { return this.setUseDateAxis(false) }
@@ -926,10 +941,16 @@ export class ChartConfigBuilder {
   clearAxisPointer(target?: ChartAxisPointerTarget): this { return this.setOption('axisPointer', clearChartAxisPointer(this.value.options?.axisPointer, target)) }
   setBubbleMapping(mapping: ChartBubbleMappingOptions): this { assertChartBubbleType(this.value.type); return this.setOption('mapping', { bubble: mapping }) }
   clearBubbleMapping(): this { assertChartBubbleType(this.value.type); return this.setOption('mapping', { bubble: undefined }) }
-  setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): this { return this.setOption('allSeriesStyle', chartSeriesStyleValues(style)) }
+  setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): this {
+    const next = chartSeriesStyleValues(style)
+    validateChartGradientSeriesPatch(this.value.type, next, '所有系列')
+    return this.setOption('allSeriesStyle', next)
+  }
   clearAllSeriesStyle(target?: ChartAllSeriesStyleTarget): this { return this.setOption('allSeriesStyle', clearChartAllSeriesStyle(this.value.options?.allSeriesStyle, target)) }
   setSeries(selector: ChartSeriesSelector, style: ChartNullablePatch<ChartSeriesOptions> | undefined): this {
-    return this.setOptions(patchChartSeriesOverride(this.value.options, selector, chartSeriesStyleValues(style)))
+    const next = chartSeriesStyleValues(style)
+    validateChartGradientSeriesPatch(this.value.type, next)
+    return this.setOptions(patchChartSeriesOverride(this.value.options, selector, next))
   }
   clearSeries(selector: ChartSeriesSelector, target?: ChartSeriesClearTarget): this {
     validateChartSeriesSelector(selector)
@@ -996,6 +1017,9 @@ export class ChartConfigBuilder {
   clearYAxisTitle(): this { return this.setYAxis({ title: undefined }) }
   setRightYAxisTitle(title: string): this { return this.setOption('rightYAxis', chartAxisPatch(this.value.options?.rightYAxis, { title })) }
   clearRightYAxisTitle(): this { return this.setOption('rightYAxis', chartAxisPatch(this.value.options?.rightYAxis, { title: undefined })) }
+  describe(context: Omit<ChartDescriptionContext, 'id'> = {}): ChartDescription {
+    return describeChartConfiguration(this.value, { ...context, id: this.descriptionId })
+  }
   build(): ChartInfo { return cloneModel(this.value) }
 }
 
@@ -1008,6 +1032,12 @@ export class FChart {
   getType(): ChartType { return this.model().type }
   getInfo(): ChartModel { return cloneModel(this.model()) }
   getOptions(): ChartSemanticOptions { return cloneChartOptions(this.model().options) ?? {} }
+  /** Local live description API; upstream names describe() on its builder. */
+  getDescription(): ChartDescription {
+    const model = this.model()
+    this.assertCanReadSource(model)
+    return describeChartConfiguration(model, chartDescriptionSourceContext(this.workbook(), model))
+  }
   getDataSource(): ChartSource { return cloneModel(this.model().source) }
   getData(): ReturnType<typeof readChartData> { const model = this.model(); this.assertCanReadSource(model); return readChartData(this.workbook(), model) }
   getLayout(): ReturnType<typeof chartLayout> { const model = this.model(); this.assertCanReadSource(model); return chartLayout(this.workbook(), model) }
@@ -1025,6 +1055,10 @@ export class FChart {
   async setPalette(palette: readonly string[]): Promise<this> { return this.update({ palette: [...palette] }) }
   async setOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
   async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.setOptions(chartOptionPatch(key, value)) }
+  async setAutoGradientFill(value: boolean): Promise<this> { validateChartAutomaticGradientValue(value); return this.setOption('autoGradientFill', value) }
+  async resetAutoGradientFill(): Promise<this> { return this.setOption('autoGradientFill', undefined) }
+  async setPlotArea(value: ChartPlotAreaOptions): Promise<this> { validateChartPlotArea(value); return this.setOption('plotArea', value) }
+  async resetPlotArea(): Promise<this> { return this.setOption('plotArea', undefined) }
   async setMapping(mapping: ChartSemanticOptions['mapping']): Promise<this> { return this.setOption('mapping', mapping) }
   async setUseDateAxis(value: boolean): Promise<this> { return this.setOption('mapping', { useDateAxis: value }) }
   async resetUseDateAxis(): Promise<this> { return this.setUseDateAxis(false) }
@@ -1032,10 +1066,16 @@ export class FChart {
   async clearAxisPointer(target?: ChartAxisPointerTarget): Promise<this> { return this.setOption('axisPointer', clearChartAxisPointer(this.model().options?.axisPointer, target)) }
   async setBubbleMapping(mapping: ChartBubbleMappingOptions): Promise<this> { assertChartBubbleType(this.model().type); return this.setOption('mapping', { bubble: mapping }) }
   async clearBubbleMapping(): Promise<this> { assertChartBubbleType(this.model().type); return this.setOption('mapping', { bubble: undefined }) }
-  async setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> { return this.setOption('allSeriesStyle', chartSeriesStyleValues(style)) }
+  async setAllSeriesStyle(style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> {
+    const next = chartSeriesStyleValues(style)
+    validateChartGradientSeriesPatch(this.model().type, next, '所有系列')
+    return this.setOption('allSeriesStyle', next)
+  }
   async clearAllSeriesStyle(target?: ChartAllSeriesStyleTarget): Promise<this> { return this.setOption('allSeriesStyle', clearChartAllSeriesStyle(this.model().options?.allSeriesStyle, target)) }
   async setSeries(selector: ChartSeriesSelector, style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> {
-    return this.setOptions(patchChartSeriesOverride(this.model().options, selector, chartSeriesStyleValues(style)))
+    const model = this.model(), next = chartSeriesStyleValues(style)
+    validateChartGradientSeriesPatch(model.type, next)
+    return this.setOptions(patchChartSeriesOverride(model.options, selector, next))
   }
   async clearSeries(selector: ChartSeriesSelector, target?: ChartSeriesClearTarget): Promise<this> {
     validateChartSeriesSelector(selector)
@@ -1123,6 +1163,7 @@ function chartOptionPatch<K extends keyof ChartSemanticOptions>(key: K, value: C
   return cloneChartOptions(patch)!
 }
 function validateChartSeriesField(field: number): void { if (!Number.isSafeInteger(field) || field < 0) throw new RangeError('图表系列字段须为非负安全整数。') }
+function validateChartAutomaticGradientValue(value: boolean): void { if (typeof value !== 'boolean') throw new TypeError('自动渐变设置须为布尔值。') }
 function assertChartRadarType(type: ChartType): void { if (type !== 'radar') throw new TypeError('雷达专属 API 仅适用于雷达图。') }
 function assertChartBubbleType(type: ChartType): void { if (type !== 'bubble') throw new TypeError('气泡映射 API 仅适用于气泡图。') }
 function chartGaugeValueFieldMapping(current: ChartSemanticOptions['mapping'], index: number, category: number): NonNullable<ChartSemanticOptions['mapping']> {
@@ -1624,7 +1665,7 @@ export class FDocument {
     return this.api.mutateDocument(this.id, commandId, label, update)
   }
   executeContentControlCommand<P extends Record<string, unknown>>(commandId: string, params: P): boolean {
-    return this.api.executeCommandSync(commandId, { unitId: this.id, ...params })
+    return this.api.executeCommandSync(commandId, { ...params, unitId: this.id })
   }
 
   private model(): DocumentModel {

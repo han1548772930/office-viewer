@@ -21,11 +21,17 @@ OSS 只读 checkout：`E:/rust_test/univer`，tag `v1.6.0`，commit `eaf4cfa04fa
 | P09 Gauge 语义与样式 | `engine-chart/lib/types/types.d.ts:185–279`；`enum.d.ts:128–140`；`facade/builders/f-gauge-chart-builder.d.ts:4–13,130–419`；`models/common/constants/default-chart-style.d.ts:4,82,160,238,294,342`；`chart-ui/lib/types/editor/sections/specific-section/gauge-style.d.ts:2–10` | 有限观测独立包裹、无效值跳过、指示器钳制而保留原始格式、量程/角度/9 个样式组、全部对应 setter/reset、5 套预设声明与 nullable 编辑 patch。声明不证明上游 UI 同时提供 5 个预设入口或运行时效果；本地差异见第 5 节。 |
 | P10 可见数据默认 | `engine-chart/lib/types/types.d.ts:396–398::IChartContext.plotVisibleOnly`；`chart-builder/chart-types.d.ts:552`；`models/chart-model/chart-model.d.ts:74::getPlotVisibleOnly` | `IChartContext` 注释明确 “Absence preserves the historical true default.”；其余声明只提供兼容默认/布尔 getter，不证明运行时返回。缓存没有 engine-chart 可执行 bundle，本轮未核验上游 getter 实现。 |
 | P11 Radar 专属契约与显隐 | `engine-chart/lib/types/facade/builders/f-radar-chart-builder.d.ts`；`types.d.ts::IChartRadarAxisLabelSpec`；`chart-ui/lib/es/index.js::Sl/xl` | shape/fill/axisLabel 的 6 个 setter/reset、DeepNullish 数值标签外观；shape reset 明确 Polygon，fill reset 明确仅轮廓。面板顺序为 shape → fill → 数值标签可见性，格式/字体仅在有效 visible 为真时出现；`Sl` 从 `A.radar.axisLabel.visible` 取默认，实际默认值仍未核实。 |
-| P12 Cartesian 与 Boxplot 继承 | `engine-chart/lib/types/facade/f-cartesian-chart-builder.d.ts`、`facade/f-axis-chart-builder.d.ts`；`chart-builder/configuration/cartesian-series.d.ts/axes.d.ts/axis-pointer.d.ts`；`chart-builder/chart-types.d.ts:114–150,484–489::IChartAxisSpec/IChartAxesSpec/IChartAxisPointerSpec`；`enum.d.ts:242::AxisAlignEnum`；`facade/builders/f-boxplot-chart-builder.d.ts`；`chart-ui/lib/es/index.js::$c/js/Hs/zs/Bs/Vs/qi/Hi` | 系列 7 个/全系列 6 个 clear target、轴 8 个 clear target、轴标题字体/对齐、日期开关、指示器 4 个字段与恢复目标及 `number / { name }` selector。Boxplot 原始样本、标题/日期/指示器已接代码，SolidSeries fillPattern 继续待开发；上游次轴公开类型排除 reverse。标题沿轴定位和 Radar 指示器的最终效果未核实。 |
+| P12 Cartesian 与 Boxplot 继承 | `engine-chart/lib/types/facade/f-cartesian-chart-builder.d.ts`、`facade/f-axis-chart-builder.d.ts`；`chart-builder/configuration/cartesian-series.d.ts/axes.d.ts/axis-pointer.d.ts`；`chart-builder/chart-types.d.ts:114–150,484–489::IChartAxisSpec/IChartAxesSpec/IChartAxisPointerSpec`；`enum.d.ts:242::AxisAlignEnum`；`facade/builders/f-boxplot-chart-builder.d.ts`；`chart-ui/lib/es/index.js::$c/js/Hs/zs/Bs/Vs/qi/Hi` | 系列 7 个/全系列 6 个 clear target、轴 8 个 clear target、轴标题字体/对齐、日期开关、指示器 4 个字段与恢复目标及 `number / { name }` selector。Boxplot 原始样本、标题/日期/指示器已接代码；SolidSeries fillPattern 的当前实现见 P14。上游次轴公开类型排除 reverse；标题沿轴定位和 Radar 指示器的最终效果未核实。 |
 | P13 Bubble 映射与名称 selector | `engine-chart/lib/types/facade/builders/f-bubble-chart-builder.d.ts::setBubbleMapping/clearBubbleMapping`；`chart-builder/configuration/cartesian-series.d.ts::ChartPublicSeriesSelector`；`chart-builder/chart-types.d.ts::ChartSeriesSelector/IChartBubbleMappingSpec` | Bubble 的 X/Y 必为数值，size/label/series 为可选源字段；每源行一气泡，各向量按源行对齐。公开 selector 为 `number / { name }`，内部 selector 为 `{ index } / { name }`。本地保留既有数值源字段语义，以独立 namedSeries 数组表达名称覆盖；名称精确匹配、重名歧义拒绝和未活动覆盖保留是本地规则，缓存没有可执行 engine-chart bundle，尚未核实上游运行时边界。 |
+| P14 SolidSeries 填充纹理 | `engine-chart/lib/types/chart-builder/chart-types.d.ts:221,234::IChartSeriesStyleSpec/IChartSeriesDataPointStyleSpec`；`types.d.ts:753,765,794::ISeriesStyle/IAllSeriesStyle`；`models/chart-render/converter/render-spec-operators/series-style-operator/series-fill-pattern.d.ts::createSeriesPatternStyle` | 系列及可填充数据点接受 `fillPattern / null`；公开转换声明包括 color/decal，本地独立生成 DrawingML 风格纹理几何。54 种纹理不是 54 个已验收功能；上游精确像素、各类型可见入口/优先级及原生 Office 往返仍须核实。 |
+| P15 自动渐变与绘图区 | `engine-chart/lib/types/chart-builder/configuration/auto-gradient-fill.d.ts::setAutoGradientFill/resetAutoGradientFill`；`chart-builder/chart-types.d.ts:502,554,579,628–632::IChartPlotAreaSpec/IChartSemanticConfig/IChartDescription`；`types.d.ts:867::IChartPlotArea`；`models/chart-render/converter/render-spec-operators/auto-gradient-presets.d.ts/grid-operator.d.ts`；`chart-ui/lib/es/index.js::Oi/Qo/Zo/Yi/Wi` | 自动渐变保存布尔覆盖，reset 恢复图型默认，描述返回有效布尔值；UI 的默认表达式为 Area 开启。手动绘图区是相对完整图表外框的 left/top/width/height。声明提供 Bar/Area/Line/Pie 预设及自动 grid/编辑 seed；闭源预设色标、矩形边界限制及最终拖拽/面板行为未核实。 |
+| P16 语义描述与显式线性渐变 | `engine-chart/lib/types/chart-builder/chart-color.d.ts:1–49::CHART_LINEAR_GRADIENT_TYPE/IChartLinearGradient/ChartColor/chartLinearGradient`；`chart-builder/chart-types.d.ts:153,219,232,250–258,618–650::IChartSeriesDescription/IChartCategoryDescription/IChartDescription`；`chart-builder/chart-builder.d.ts:22::describe`；`chart-live-adapter.d.ts:5`；`facade/builders/f-line-chart-builder.d.ts:52/f-area-chart-builder.d.ts:52`；`models/chart-render/converter/render-spec-operators/chart-color.d.ts::getChartColorRepresentative/toEChartsColor/resolveChartColor`；`chart-ui/lib/es/index.js::$o/sc/dc/Tc/xc/cc` | 描述按源字段索引返回无数值元数据、语义样式和轴绑定；颜色为 CSS 字符串或带稳定 discriminator 的 mark-local 渐变。公开 stop.opacity 乘 CSS alpha。声明不公开完整校验/代表色算法；共享 picker `$o` 只取作者第一个 stop.color，Pareto `sc` 则只传纯色。完整方向/色标编辑器是本地扩展，不能把当前 picker 当作完整上游渐变编辑证据。 |
+| P17 Pareto 独立柱形与累计线样式 | `engine-chart/lib/types/chart-builder/chart-types.d.ts:436–483::IChartParetoBarStyleSpec/IChartParetoLineStyleSpec/IChartParetoSpec`；`facade/builders/f-pareto-chart-builder.d.ts`；`chart-builder/configuration/pareto.d.ts`；`enum.d.ts:319,363,442::SeriesLabelPosition/LinePointShape/LabelContentType`；`models/chart-render/converter/converters/pareto-chart-converter.d.ts`、`models/chart-render/converter/render-spec-operators/series-style-operator/pareto-series-style.handler.d.ts`；`chart-ui/lib/es/index.js::cc/oc/Wu` | Builder 声明 6 个 setter/clear/reset、深合并、非正累计线宽忽略、第四主题色/2px/opacity1/7px 点默认；同名分类合并后排除负合计，零合计可选保留。`cc` 有独立 bar/line 字段、标签显隐和组合内容、逐点颜色/移除及累计点形状/大小。`Wu` 使用聚合降序索引且总是只列正合计；其与 includeZeroValues 的运行时关系及 renderer 的逐点优先级仍未核实。 |
 | R01 本项目绘制依赖 | ECharts 6.1.0 的 `lib/chart/gauge/GaugeView.js:211–250,337–355,469,508,532`、`lib/util/shape/sausage.js`；zrender 6.1.0 的 `lib/core/PathProxy.js:34–55` | 静态读取当前锁定依赖的刻度文字定位/对齐、progress overlap/环宽/z2、锚点/文字层级与 arc normalization，作为本项目两绘制适配器的实现依据；不是 Univer 内部源码证据。 |
 | R02 Radar / Boxplot 绘制依据 | ECharts 6.1.0 的 `lib/coord/radar/Radar.js/RadarModel.js`、`lib/chart/radar/RadarView.js`、`lib/chart/boxplot/boxplotLayout.js::layEndLine`、`BoxplotView.js` | Radar 原生坐标支持 clockwise，但没有径向 inverse；径向反向等配置复用 graphic。Boxplot 须线 cap 使用完整箱宽，原生 View 不绘制数据标签，启用标签时复用共享图元。ECharts 的 Radar 默认标签隐藏不是 Univer 默认值证据；实际 SSR 仍未执行。 |
 | R03 真实指示器动作 | ECharts 6.1.0 `lib/component/axisPointer/modelHelper.js:93–190`、`AxisPointerModel.js`；2026-11-24 Context7 的官方 `updateAxisPointer`、`tooltip.triggerOn` 与 `axisPointer.type: cross` 文档 | tooltip 的 pointer 子模型优先于 component defaults，因此两个位置同步四个作者样式；离屏 Canvas 通过动作更新，`showContent:false/triggerOn:'none'`。文档为动态 API 依据，不是固定 Univer 运行时证据；原生和 graphic 浏览器草稿均未执行。 |
+| R04 渐变绘制 API | 2026-11-24 Context7 查询 `/apache/echarts-doc` 返回 [option.md](https://github.com/apache/echarts-doc/blob/master/en/option/option.md) 的 serializable linear gradient | `{ type:'linear', x,y,x2,y2,colorStops,global }`；`global:false` 使用图元归一化坐标，`global:true` 使用 Canvas 像素坐标。只用于本项目 ECharts 6.1.0 适配，文档动态版本不证明固定 Univer 实现，也没有运行当前原生渲染。 |
+| R05 本地渐变编辑控件 | 2026-11-24 Context7 `/antdv-next/antdv-next` 的 ColorPicker/FormItem 当前 main 文档；本地 [pnpm-lock.yaml](../../pnpm-lock.yaml) 锁定 antdv-next 1.8.2 | 使用受控 value/update:value、RGB value-format 保留 CSS alpha；FormItem、Select、InputNumber、Button 和反馈控件承载方向与色标。动态 main 只是 API 使用依据；本地 1.8.2 的实际主题、弹层、焦点和 IME 尚未运行验证。 |
 | O01 OSS 对象变换 | [固定提交的 canvas-float-dom-manager.service.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-drawing-ui/src/services/canvas-float-dom-manager.service.ts) 的 `applySheetChartTransformerConfig` | 只证明通用对象选中/变换框，不证明 Pro 图表类型、面板或 Office 行为。 |
 
 公开产品/Office 行为对照入口：[Sheets 图表](https://docs.univer.ai/zh-CN/guides/sheets/features/charts)、[共享图表](https://docs.univer.ai/zh-CN/overview/features/charts)、[透视图](https://docs.univer.ai/zh-CN/guides/sheets/features/pivot-chart)、[Exchange](https://office.univer.ai/exchange)。动态规格、可访问演示和标准 Office 样本需分别记录观察日期、输入与结果。本轮没有浏览器或文件样本观察，不能把链接或声明当作已验证行为。
@@ -46,6 +52,10 @@ OSS 只读 checkout：`E:/rust_test/univer`，tag `v1.6.0`，commit `eaf4cfa04fa
 | Pivot 上下文/浮动入口 | `sheet.operation.open-pivot-chart-panel/open-pivot-chart-field-list/open-pivot-chart-filter-panel`；`sheet.command.expand-pivot-chart-category-item/collapse-pivot-chart-category-item`。 | 绑定透视、源字段、分类项的展开/折叠状态；本地共享图表属性和透视配置面板已接，图内字段按钮、过滤与轴项交互未闭环。 |
 | 类型目录子项 45 | P01 的 CHART_TYPE_CATALOG；Sheets 普通插入、属性和透视图复用同目录。 | 是选择项而非 Ribbon 根数；不是常驻、扩展、溢出或上下文按钮完成证明。Docs 将复用同目录，但尚无生产挂载。 |
 | P12 对象属性面板叶字段 | `$c`：标题文字 → 可选对齐 → 可选字体复合控件；`js`：X 轴日期开关；`Hs`：线色 → 线型 → 标签底色 → 标签文字色。 | 本批每个可见轴接 7 个叶字段（文字 1、对齐 1、字体 5），X 轴日期开关 1，指示器字段 4。属于上下文属性字段，不增加常驻、插件根、溢出或 45 个目录计数；字体复合节点不与叶字段重复相加。运行时可见组合未验收。 |
+| P15 上下文配置入口 | `Qo/Zo`：自动渐变设置支持 Column/Bar/Area/Combination/Pie/Waterfall 六族，对应目录 25 项；Line 的公开渲染预设存在但设置开关隐藏。`Yi/Wi`：PlotArea 支持 Column/Bar/Line/Area/Scatter/Bubble/Combination/Pie/Radar 九族，对应目录 31 项。 | 本地渐变为 1 个布尔值入口加 1 个默认恢复动作；绘图区为手动模式开关 1 加百分比叶字段 4，共 5 个值入口。研究 bundle 只找到 PlotArea section/状态注册，未定位到实际四坐标输入 UI；四字段控件是本地独立实现。均属于上下文属性，不增加 Ribbon 常驻/插件根或 45 项目录数，显隐/交互仍未验收。 |
+| P14 上下文纹理属性 | SolidSeries 的全系列、源字段/名称系列及可填充数据点接 `fillPattern`；固定声明见 P14，完整上游 section 显隐/顺序仍未定位。 | 每个作者层为纹理 selector 1、显式纹理下前景/背景颜色各 1；本地 selector 在除 WordCloud 外的 44 个目录项显示，绘制效果取决于实际填充图元。54 个 preset 加继承/无纹理共 56 个选择值，不能计作 56 个独立功能或 Ribbon 根；上游各图型可见入口、默认纹理及运行效果仍待核实。 |
+| P16 上下文颜色复合属性 | 固定 ChartColor/LineSeriesPatch/SolidSeriesPatch 区分系列填充、可填充点和纯色符号；本地颜色节点复用全系列、字段/名称系列和单点作者层。 | 目录中系列渐变可写 31 项，可填充数据点渐变可写 25 项；符号颜色仍只接受纯色。每个颜色节点含继承/纯色/渐变模式选择；渐变展开后为方向坐标 4 个、每个色标颜色/offset/opacity 3 个及真实增删动作。可变色标数不是功能数，不与外层颜色节点、常驻根或 45 项目录重复相加；完整上游渐变编辑入口未找到。 |
+| P17 Pareto 上下文样式属性 | `cc` 按 target 分 barStyle/cumulativeLineStyle，顺序为颜色/opacity → bar 边框或 line 线宽/线型/点 → 标签 → bar 的 includeZeroValues → 可选逐点选择与样式。仅 Pareto，标签细节仅在可见时显示，逐点编辑另受 showDataPointEditor 和实际 options 非空控制。 | 本地一个 ChartParetoSettings 下为柱形、累计线两个 Collapse。每组顶层至多 16 个配置节点，共 32；现有零分类 Switch 另 1。选择点后柱形有 10、累计线有 12 个样式节点，另有选择器各 1；其中纹理颜色 2 个为条件项。两组整体恢复和已选点恢复各 2 个真实动作。颜色内部叶字段另按 P16 展开，字体按 5 个叶字段计，不重复计复合节点。这是本地上下文节点计数，完整固定布局/命令/公开行为未验收。 |
 | 溢出/运行装配 | desktop Ribbon 的 classic/grid 共享溢出机制。 | 未执行运行时菜单/权限/主题/窄屏验证；未知分支与上下文计数保留待核实，不能将静态根声明相加为完整可见入口总数。 |
 
 本节计数仅为静态可识别根声明：Sheets 1、Docs 1、Pivot 2；Sheets 对象上下文 4；目录子项 45。图表工作表、浮动元素、Docs 复用上下文及 Pivot 字段入口另列，不冒称其完整入口总数已经清点完毕。
@@ -95,10 +105,10 @@ OSS 只读 checkout：`E:/rust_test/univer`，tag `v1.6.0`，commit `eaf4cfa04fa
 | 33 | bubble / bubble | 数值 X/Y、可选 size/label/group；分组独立稀疏向量；C/E，源名独立样式与次轴。 | 同 Y 字段多组统计身份、名称 selector、2 个 mapping setter/clear 及字段/分组/单点设置已落盘，草稿未运行；重名/未活动行为、marker 增强与原生 Office 效果仍须区分和验收。 |
 | 34 | relation / relation | 名义来源/目标、非负权重；S 图节点/边与布局。 | none/circular/force、环/自环、命中与大图预算。 |
 | 35 | waterfall / waterfall | 系列逐项 change/total；统计结果 → C 专用基线柱/连接线。 | role/dataPoint 索引在过滤/聚合后迁移、完整专属配置。 |
-| 36 | pareto / pareto | 单非负权重、同名分类聚合降序及累计比例；统计 → C/E。 | 零项/重复项、单点索引迁移、累计线样式。 |
+| 36 | pareto / pareto | 单 signed 权重字段、同名分类先合计再排除负合计、可选保留零合计、降序与累计比例；统计 → C/E。 | 独立柱形/累计线样式、物化点索引、百分比标签及纯色/渐变绘制已写代码；共享 Pareto 类型/六个 Facade 操作和 Rust signed 合计同步仍待根任务接线。组合标签内容、全部 19 种标记、源变化索引迁移及公开/Office 行为继续保留未完成或未验收。 |
 | 37 | sankey / sankey | 名义有向边、重复边累计；S 节点流量、带宽、循环回流。 | 大图/循环碰撞、公开布局与路径交互。 |
 | 38 | heatmap / heatmap | 分类为列、数值系列为行；C/X、连续/分段色标、单位/标签。 | 轴反向、显式点样式覆盖、完整色标交互。 |
-| 39 | boxplot / boxplot | 每个原始数值字段一组样本；inclusive/exclusive 四分位、完整箱宽须线/异常点；统计 → C/X，共享分布样式、主/次轴、median anchor/标签。 | 使用继承的 Cartesian 系列 API，无专造 Boxplot setter；填充/边框透明度独立，log 下保留原统计并跳过非法图元。fillPattern、逐原始异常点独立覆盖与公开/Office 效果仍未完成或未验收。 |
+| 39 | boxplot / boxplot | 每个原始数值字段一组样本；inclusive/exclusive 四分位、完整箱宽须线/异常点；统计 → C/X，共享分布样式、主/次轴、median anchor/标签。 | 使用继承的 Cartesian 系列 API，无专造 Boxplot setter；填充/边框透明度独立，log 下保留原统计并跳过非法图元。箱体及异常点继承纹理已接；逐原始异常点独立覆盖仍缺，公开/Office 效果未验收。 |
 | 40 | candlestick / candlestick | 最高/最低/收盘，开盘可选；验证 low ≤ open/close ≤ high；C/X。 | 三字段 HLC 不补造 open，走 graphic；OHLC 涨跌/hollow/颜色和 Office 往返。 |
 | 41 | histogram / histogram | 单样本系列；Scott 自动分箱、箱数/箱宽、下/上溢箱、间隙；统计 → C/E。 | 分箱/边界规则、源点到箱索引和 Office 统计图。 |
 | 42 | treemap / treemap | 逐层名称 + 非负权重、按完整路径累计；S/X。 | DFS 原索引/父标签已接；深层/同名路径、碰撞和大样本预算。 |
@@ -117,6 +127,7 @@ OSS 只读 checkout：`E:/rust_test/univer`，tag `v1.6.0`，commit `eaf4cfa04fa
 - 数值系列 selector 保留原有源字段语义；名称 selector 按原始系列名或 Bubble 分组字符串精确匹配，大小写、空白及空名称均保留。显示名由 style.name 单独覆盖；全系列 → 字段 → 名称继承不把显示名反写为源身份。未活动名称覆盖保留，活动源名称匹配多系列时拒绝；这是本地可测试规则，P13 的上游重名和隐藏边界仍未核实。
 - 图关系跳过空端点与零/null 权重，负权重拒绝，重复边累计；Chord 将端点对归一为无向边；Relation/Sankey 保留方向和 cycle 标记。层级跳过空路径/零/null 权重，负权重拒绝，按完整路径累计；DFS 索引在布局排序前固定，根与所有子节点都可解析样式。
 - HLC/OHLC 字段不重复，缺样本保留 null；最高/最低/开盘/收盘关系非法时拒绝。三字段 HLC 直接绘高低线/收盘短线，没有伪造开盘值。
+- Pareto 的 TS 小数据契约接受 signed 源行，同名分类先有限累加，再排除负合计；零合计缺省排除、includeZeroValues 时保留，等合计按首次源分类出现顺序排列。累计百分比使用缩放合计，正总量的最后点为 100，全部零合计时为 0，不改源行。Rust 的当前同步缺口见 P17；两计算路径尚不能宣称一致或验收。
 - `createChart/updateChart/readChartData` 接受可选预加载 records；更新先准备候选、转换和全部校验，再修改模型。显式字段/映射 patch 优先于类型转换的默认角色。预加载能力已写契约草稿；生产命令的大源准备/复用还需与根任务计算服务接线一起验证。
 - Boxplot、Histogram、Pareto、Waterfall、Trendline、ErrorBars 有共享统计契约。根任务本批实现 `crates/office-compute/src/chart/`、`chart_wasm.rs` 与 Worker 协议/planner/decoder/service；Rust/WASM、TypedArray 复制、取消与数值正确性均未执行验证。主线程统计函数仍服务显式小数据/同步公共 API，选择阈值和端到端性能必须基准后确定，不能宣称全部重操作已迁移。
 
@@ -141,18 +152,19 @@ OSS 只读 checkout：`E:/rust_test/univer`，tag `v1.6.0`，commit `eaf4cfa04fa
 | --- | --- | --- |
 | ChartType、Mapping/MappingFields | `type/source/categoryField/valueFields/seriesToCategory/options.mapping`；projection/settings/type-conversion。 | 字段角色已区分；同源转换、跨形状点索引迁移及所有公开 mapping 细项未验收。 |
 | Appearance、Title、Subtitle | `options.appearance/titleStyle/subtitleStyle`、title/subtitle；共同字体/背景/边框。 | 专属位置/富文本等公开细项待逐项追踪，不能由一组字体控件宣称完整 section。 |
-| Theme、Legend | palette + 统一 theme token；`legend.visible/position/font`。 | 上游命名主题/自动渐变未完全表达；长图例、复合饼 aggregate 图例仍缺。 |
-| AllSeriesStyle、Series | `allSeriesStyle/series[field]/namedSeries[{name,style}]`；name/type/color/fillOpacity/border/point/rightAxis/label/dataPoints，nullable 单字段恢复与 6/7 个 clear target。 | Bubble 名称组及 Boxplot 分布已消费同一继承样式，单点按源分类索引逐项继承；两集合可独立清除，clearAllSeriesOverrides 同时清空。SolidSeries fillPattern、过滤/排序后的单点身份迁移及逐原始异常点独立覆盖尚未完成。 |
+| Theme、Legend | palette + 统一 theme token；`legend.visible/position/font`。 | 上游命名主题未完整表达；长图例、复合饼 aggregate 图例仍缺。自动渐变另列。 |
+| AllSeriesStyle、Series | `allSeriesStyle/series[field]/namedSeries[{name,style}]`；name/type/color/fillOpacity/fillPattern/border/point/rightAxis/label/dataPoints，nullable 单字段恢复与 6/7 个 clear target。 | Bubble 名称组及 Boxplot 分布消费同一继承样式；SolidSeries 纹理、null 清纹理和 undefined 恢复继承已接。两集合可独立清除，clearAllSeriesOverrides 同时清空。过滤/排序后的单点身份迁移及逐原始异常点独立覆盖仍缺，完整入口/Office 行为未验收。 |
 | Axes、DepthAxis | xAxis/yAxis/rightYAxis/depthAxis；线/刻度/格式/标签/反向、标题字体及对齐，8 个 clear target、三轴标题恢复、partial 次轴与显式 linear 清除 logBase；日期序号坐标/边界、真实指示器。 | 横向 Bar 次轴是顶部数值 X；depthAxis 独立且无 min/max/format。标题字体/对齐在 Canvas、native 与 3D 接入；沿轴定位为本地决定，上游最终布局未核实。月份/年份刻度、完整公开多轴/定位和实际 UI/Office 行为待补；本地次轴 reverse 是扩展。 |
 | Trendlines、ErrorBars、ErrorBarFields | 独立作者配置、字段引用、Worker 结果身份；样式/公式/R²、自定义误差。 | 支持 2D 非堆积 Cartesian/Scatter/Bubble/非堆积组合系列；3D/堆积不生成统计图元，保留配置以便换型，不冒称完成未知上游增强。 |
 | ThreeD | view 的 rotX/rotY/perspective/rightAngleAxes/heightPercent/depthPercent + grouping/gapDepth。 | 模型、绘制和独立清除已接；公开投影/遮挡/透明排序仍未验收。本地 3D 次轴是增强，上游 P04 不暴露此 API。 |
 | Pie、Bar、Area、Radar、Funnel | options 下同名专属配置；C/D/P/E/X。 | 配置实际影响绘制；公开完整 section、组合边界仍待逐项验收。 |
-| Aggregation、InvalidValueStrategy、Pareto/ParetoDataPointOptions、Waterfall、Histogram | aggregate/topN、空值策略、Pareto/role/分箱配置。 | 统计本体已接；过滤、聚合、前 N、排序/分箱之后作者点/role 索引语义未完整迁移。 |
+| Aggregation、InvalidValueStrategy、Pareto/ParetoDataPointOptions、Waterfall、Histogram | aggregate/topN、空值策略、pareto.includeZeroValues/barStyle/cumulativeLineStyle、role/分箱配置。 | Pareto signed 合并、独立样式/标签/物化点选择已写代码，共享类型/六个公开操作与 Rust 同步待补接；完整枚举/组合标签和源变化点索引迁移仍缺。过滤、聚合、前 N、排序/分箱之后作者点/role 索引语义未完整迁移。 |
 | Candlestick、Heatmap | 专属映射、涨跌/空心、颜色范围/分段/单位/标签。 | HLC/OHLC 区分、系列/单点覆盖已接；全部公开轴/图内编辑细项未验证。 |
 | Treemap、SunburstFields/HierarchyIndexes/ValueIndex/Style、ChordFields/Mapping/Style、Relation、WordCloud | 层级/边映射、父/中心/点标签、ribbon/节点布局、词云形状/字号/旋转。 | 完整路径和 DFS 样式已接；大布局预算/Worker、公开交互/碰撞与字体实测不足。 |
 | GaugeFields/LabelIndex/ValueIndex/Style | `mapping.gauge/gauge`；scale/angles 映射、ticks、ranges、axisLine/axisTick/splitLine/axisLabel/pointer/anchor/progress/title/detail、预设/清除、tile 与标签继承。 | 固定声明的 setter/reset 已表达并消费；本地扁平量程/角度与 null reset 扩展明确记录。源 numeric cell 显示格式、全部 UI/原生/Office 及性能未验收。 |
 | AxisPointer | 四个作者字段、`setAxisPointer/clearAxisPointer` 与独立恢复目标、nullable patch、真实悬停线和轴标签、Canvas 位图版本更新及离开/拖拽/滚动/切表/卸载清理。 | 普通坐标/Heatmap 走 ECharts 原生动作，自绘图及 Radar 走独立图元组；缓存内容布局而不在悬停重做数据统计。上游默认颜色/完整 Radar 交互、浏览器效果及性能仍未验收。 |
-| AutoGradientFill、PlotArea | 本地尚无完整对应持久/交互契约。 | 继续待实现，不能把背景色或绘图区 rectangle 标为对齐。 |
+| AutoGradientFill | `options.autoGradientFill`；共享默认 helper、Builder/FChart set/reset、有效 description、antdv Switch/default reset、Canvas/native/3D 派生 paint。 | 25 个目录项显示开关，另 4 个 Line 目录项可经公开 API 启用；换型保留不活动覆盖。实际纹理优先，alpha 只乘一次；闭源色标/颜色空间、全部组合/最终 Office 效果未核实、未验收。 |
+| PlotArea | `options.plotArea { left,top,width,height }`；编辑 seed、完整矩形校验、5 个本地值控件、公共 chartPlotFrame/布局/指示器/native grid。 | 31 个目录项使用同一归一化矩形，按原外框位置/尺寸重建；关闭清配置，换型保留不活动值。手动边界限制为本地决定，上游四字段 UI/最终拖拽和原生 Office 布局仍待核实，未验收。 |
 
 `chart-type-conversion.ts` 保留源、作者外观和非当前图型配置，按实际数值角色选 X/Y/size、edge、hierarchy、HLC/OHLC 和 gauge 字段；跨百分比变体清除不适用的固定轴边界。堆积/Radar 切换为线性轴。数据角色转换不等于所有 point overrides/作者索引已成功迁移。
 
@@ -195,7 +207,7 @@ Native Radar 已接统一范围、分类方向、半径、圆形/多边形网和
 
 ### Boxplot 的原始分布、样式和对数轴边界
 
-[chart-boxplot.ts](../../packages/office-studio/src/features/charts/chart-boxplot.ts) 以原始 `field + seriesPosition + sourceName` 选择分布样式、主/次数值轴及几何；每组数据继续输入原始样本，由共享统计契约提供五数和异常点。boxes 保留原始 sourceName，作者 name 仅改显示标签；不能把布局下标当成作者字段，也不把五数行当成原始样本。每个分布的公共 dataPoints override 使用分布位置；异常点消费该分布的 point shape/size/填充/边框样式。SolidSeries 的完整 fillPattern 和每个原始异常点独立覆盖仍是缺口。
+[chart-boxplot.ts](../../packages/office-studio/src/features/charts/chart-boxplot.ts) 以原始 `field + seriesPosition + sourceName` 选择分布样式、主/次数值轴及几何；每组数据继续输入原始样本，由共享统计契约提供五数和异常点。boxes 保留原始 sourceName，作者 name 仅改显示标签；不能把布局下标当成作者字段，也不把五数行当成原始样本。每个分布的公共 dataPoints override 使用分布位置；异常点消费该分布的 point shape/size/填充/边框/纹理样式。SolidSeries fillPattern 已接入 P14 公共几何；每个原始异常点独立覆盖仍是缺口，完整纹理/Office 行为未验收。
 
 Canvas 箱体、median、须线、完整箱宽 cap 与异常点均消费同一分布样式；填充透明度不再衰减独立边框。矩形异常点单独绘填充及边线，以保留边框 opacity/dash。主/次轴 extent、布局的 median anchor 和数据标签使用同一比例，空分布保留位置，不使后续分布身份偏移。带数据标签时使用共享 graphic，因为 R02 的 native Boxplot View 没有标签绘制路径；native 五数及异常点仍消费相同字段、轴和透明度。
 
@@ -205,7 +217,7 @@ log 轴下，非正或非有限五数不能绘制完整箱体/须线/median/标�
 
 [chart-cartesian-api.ts](../../packages/office-studio/src/features/charts/chart-cartesian-api.ts) 提供 `ChartSeriesClearTargets` 7 项、`ChartAllSeriesStyleTargets` 6 项和 `ChartAxisTargets` 8 项；Builder/FChart 与 FOffice Enum 接同一常量。`clearSeries/clearAllSeriesOverrides/clearAllSeriesStyle`、`clearXAxis/clearYAxis/clearRightYAxis` 及三轴 title setter/clear 已落盘；clear 单目标保留其他作者字段，全组恢复移除对应覆盖。系列 nullable patch 复制输入后将 null 字段归一为 undefined；轴 setter 保持 P12 的 partial 字段契约，通过显式 undefined 恢复字段。后续合并保留该恢复意图，不再从 getter 的 JSON 克隆丢失它。
 
-次轴 partial patch 使用有效 linear 默认；显式改为 linear 同时清除旧 logBase，防止继承的 logBase 令候选校验拒绝。所有入口继续走共享 `update-chart`、内容历史与内部快照；新增 Radar/Cartesian 4 个与 Boxplot 1 个 Facade 草稿覆盖恢复目标、部分次轴、继承、非法输入原子拒绝、撤销/重做和重开，未执行。名称 selector 已按下一节落盘，但本地数值 selector 仍表示源字段，不能把它等同上游内部 index 的全部转换契约。轴 titleStyle/titleAlignment、useDateAxis/AxisPointer 的当前代码与边界见下一节；SolidSeries fillPattern 继续待开发。
+次轴 partial patch 使用有效 linear 默认；显式改为 linear 同时清除旧 logBase，防止继承的 logBase 令候选校验拒绝。所有入口继续走共享 `update-chart`、内容历史与内部快照；新增 Radar/Cartesian 4 个与 Boxplot 1 个 Facade 草稿覆盖恢复目标、部分次轴、继承、非法输入原子拒绝、撤销/重做和重开，未执行。名称 selector 已按下一节落盘，但本地数值 selector 仍表示源字段，不能把它等同上游内部 index 的全部转换契约。轴 titleStyle/titleAlignment、useDateAxis/AxisPointer 的当前代码与边界见后文；SolidSeries fillPattern 的代码/差异见 P14 小节。
 
 ### P12 轴标题、日期刻度与真实指示器
 
@@ -231,10 +243,78 @@ log 轴下，非正或非有限五数不能绘制完整箱体/须线/median/标�
 
 本批新增 10 个独立 selector/继承/投影/布局/UI/真实 native scatter SSR 契约草稿，另有 3 个 Facade 草稿覆盖 mapping setter/clear、输入隔离、7 个名称恢复目标、原子拒绝、源分组消失/重现、撤销/重做和内部保存重开；全部未执行。Native renderer 的 series.name 用于 tooltip、legend 与更新，重复显示名的 legend 映射可为多对多，参见 2026-11-24 通过 Context7 查阅的 [ECharts series name](https://github.com/apache/echarts-doc/blob/master/en/option-gl/partial/series-name.md) 与 [legend matching rules](https://github.com/apache/echarts-doc/blob/master/en/option/component/legend.md)；动态文档不是固定 Univer 运行时证据。本地独立源名称不依赖此显示名映射；完整图内 legend command/事件闭环及 Office 动态分组行为仍未验收。
 
+### P14 SolidSeries 纹理、继承与绘制差异
+
+[chart-fill-pattern.ts](../../packages/office-studio/src/features/charts/chart-fill-pattern.ts) 表达 `ChartSeriesFillPattern { preset, foregroundColor, backgroundColor }`，两种颜色均必填并校验；[chart-fill-pattern-geometry.ts](../../packages/office-studio/src/features/charts/chart-fill-pattern-geometry.ts) 独立生成 54 种 DrawingML 风格纹理。依据是 P14 的公开类型和 `createSeriesPatternStyle` 转换声明；缓存没有闭源 renderer 的可执行实现，这些独立 mask 不声称复刻上游像素。
+
+全系列 → 源字段 → 源名称 → 数据点使用既有样式继承链。`undefined` 恢复上层纹理，`null` 明确无纹理；完整纹理对象原子替换，避免新 preset 继承旧来源的额外字段。系列颜色控件同时写 `fillPattern:null`，这是本地编辑规则；颜色恢复、纹理恢复和自动渐变布尔值互相独立。界面的“无纹理”仅清除纹理，自动渐变仍按 P15 的有效配置执行。`setSeries/setAllSeriesStyle`、逐点 patch 与 clear target 复用既有命令、历史及内部 JSON 保存，未添加专造纹理 Facade 方法。
+
+16×16 tile 的前景/背景 mask 合并成互不重叠的矩形并缓存；多边形先三角化，再与 tile 矩形相交，填充透明度只应用一次，边框独立绘制。柱体、面积/标记、Pie/环扇、Boxplot 箱体/异常标记、Scatter/Bubble、Heatmap、OHLC 实体、图节点/流带、层级和 Gauge 指针/进度等实际填充图元接入公共几何；3D 面采用同一纹理加面阴影。纹理按当前图元边界平铺，跨分段相位和闭源纹理精确缩放未核实。绘制命令保留字符串颜色，未把 ECharts decal/CanvasPattern 保存为权威模型。
+
+任何活动系列或数据点含实际纹理时，ECharts 适配器转为共享 graphic，避免原生 Scatter/Heatmap 的 decal 能力差异；图元、布局与悬停指示器复用同源几何。全系列/字段/名称/逐点面板均使用 `antdv-next` FormItem、Select、ColorPicker 等；54 个选项不是完成证明，全部最终显隐、主题、焦点/IME、Canvas2D/WebGPU、公开行为与原生 XLSX/DOCX/Office 往返仍未验收。契约草稿覆盖 mask 唯一性/覆盖率、透明区域不重叠、凹面/环孔裁剪、继承和原子拒绝；没有性能测量，缓存与几何预算不得描述为已达标优化。
+
+### P15 AutoGradientFill 与归一化 PlotArea
+
+自动渐变的固定声明位于 `engine-chart/lib/types/chart-builder/configuration/auto-gradient-fill.d.ts:2,4`、`facade/f-chart-builder-base.d.ts:377,390` 和 `facade/f-chart.d.ts:441,453`。`chart-builder/chart-types.d.ts:554` 的 semantic 配置是可选布尔值，`:628–632::IChartDescription.autoGradientFill` 是应用图型默认后的必选布尔值。上游底层 ChartBuilder 在 `chart-builder/chart-builder.d.ts:22` 使用 `describe()`，live adapter 在 `chart-live-adapter.d.ts:5` 有同一描述契约；本项目 `getDescription()` 是由根任务接线的本地新增接口命名，不把名称说成固定版同名 API。上游完整描述另有 data-free 系列/分类 metadata 和 semantic-axis bindings，本地映射与名称 selector 差异须分别记录。上游 setter 的同步 chaining 与本项目 live facade 的异步命令返回继续区分。
+
+[chart-auto-gradient.ts](../../packages/office-studio/src/features/charts/chart-auto-gradient.ts) 统一有效默认：Area 族开启，其余关闭；显式 false 保留，reset 删除覆盖并重新取当前图型默认。`chart-ui::Oi/Qo/Zo` 支持自动渐变开关的 25 项与实际渲染预设可支持的 29 项分别记录：额外 4 项是 Line，可通过公共 API 启用；不支持的族保留作者值但不消费该预设。Switch/default reset 编辑隔离草稿，经一次应用进入共享 `update-chart` 和内容历史。上游 Builder 注释还明确作者系列/扇区的显式渐变色对象优先；本轮 P16 已扩展 ChartColor 作者模型和绘制路径，两种配置继续独立，完整公开行为仍未验收。
+
+自动颜色由有效系列/逐点颜色派生，实际纹理优先；Area 采用有效透明度的 6%→100%，柱/线采用 +0.28/−0.08 色调，Pie 采用 +0.28/−0.12。它们是本地独立预设，上游闭源色标及颜色空间仍待核实。负值、数值轴反向和横向柱以绘制的基线/顶端选方向；Area/Line 分片共享绘图区坐标，扇区共享外圆坐标，3D 柱六个面按投影后的基线/顶端对齐并各自应用阴影。ECharts 原生线性颜色使用可序列化对象；全局坐标为图表像素，未指定公共边界的柱颜色为图元内归一化坐标，透明度嵌入色标后原生 opacity 为 1。Line/Area 作者逐段颜色/不透明度覆盖转为共享 graphic，保持同一有效样式。
+
+[chart-gradient-geometry.ts](../../packages/office-studio/src/features/charts/chart-gradient-geometry.ts) 对自动预设在 0–1 内使用 48 等分色带及两个端点钳制带，显式作者色标另见 P16。裁剪保留几何面积，退化方向使用中间颜色。`262_144` 指令预算检查的是**每次渐变 append 的当前目标数组加待提交输出**，失败该次 append 不提交；后续边框/图例、分次调用的扇区和单独生成后合并的 3D scene 不受这一完整场景上限保证。完整场景/Worker 预算、取消、实际传输和内存仍待完成及测量。`chart3DScene(..., emitCommands=false)` 可只产生命中/布局坐标，不生成面 paint，3D Pie 在此模式也跳过只供渐变绘制使用的 sector bounds；循环合并数组避免函数参数展开，但没有基准，不作性能结论。
+
+[chart-plot-area.ts](../../packages/office-studio/src/features/charts/chart-plot-area.ts) 以完整图表外框为基准保存 `{ left,top,width,height }`，按外框移动/缩放重建 Canvas、原生 grid、Pie/Radar 和 3D 的共同绘图区。P15 声明包括 `IChartPlotAreaSpec`、`IChartPlotArea`、`resolveAutomaticCartesianGrid` 和 `resolveChartPlotAreaForEditing`；固定 UI 只定位到 `Yi/Wi` 的 section/状态注册，实际四坐标输入及拖拽实现未找到。手动模式开关加四个百分比 InputNumber 是本地独立界面，不声称复刻上游面板。
+
+手动编辑种子包括当前标题/字体/图例和活动源系列的有效次轴；最小外框种子保持正宽高。所有坐标须有限、0–1、宽高正、矩形位于外框内，这是本地边界决定，未核实上游是否允许越界布局；原生 Office IO 应保留不满足本地界面边界的源信息及诊断。PlotArea patch 整体替换，关闭手动模式使用 `setOptions({ plotArea:undefined })` 恢复自动布局，换型保留不活动矩形，没有新增虚构的专属 setter。原生 grid 的 `containLabel:false` 对自动/手动路径都成立，因为共享布局已预留轴/标题空间。输入可暂时构成无效矩形，预览源系列仍保留，应用校验原子拒绝；清空单字段按有效源系列恢复其自动种子，修改不会提前进入内容历史。
+
+新增 9 个自动渐变、10 个绘图区及 3 个 Facade 集成草稿，另有 2 个浏览器草稿覆盖隔离编辑/恢复、绘图区真实布局、位图版本、失败不发布内容/历史、纠正后应用、撤销/重做和内部保存重开。Facade 接线由根任务负责，当前测试、类型/构建、浏览器、Office 文件/独立重开、主题/焦点/IME 及大样本性能/内存全部未执行，保持“未验收”。
+
+### P16 源字段语义描述与作者渐变
+
+[chart-description.ts](../../packages/office-studio/src/features/charts/chart-description.ts) 显式选择作者语义、字段角色、标题/副标题、palette、legend 和 axes，返回独立的描述对象；不接受或扫描 workbook cells、records、source values、几何或绘制结果。series 使用源字段 Record，保留未活动数值覆盖，namedSeries 独立保留；按全系列 → 字段 → 已知源名称继承，style.name 只改显示。没有源名时的 `Series N` 回退不匹配作者名称覆盖；调用方可用 seriesNames 提供空字符串及真实分组身份。主题回退颜色不进入描述，显式 palette/颜色保留；自动 PlotArea 不展开为 layout seed，autoGradientFill 返回有效布尔值。
+
+描述的类型名使用目录 canonical ID：历史 bar → column、横向 bar-horizontal → bar、doughnut → donut；getInfo 的兼容类型不变。轴绑定使用语义 category/secondaryCategory/primaryValue/secondaryValue 与 horizontal/vertical、边缘位置，Bar 交换两个维度；仅活动次轴出现 secondaryValue，Pareto 始终有该轴，Heatmap 的行标签用 secondaryCategory，Radar 不虚构矩形轴绑定。本地 `axes:{x,y,rightY}` 是公开轴配置的适配表达，不是固定版内部字段结构。
+
+根任务已在 Builder 接 `describe(context?)` 和稳定 chart-draft ID，在实时 FChart 接本地扩展 `getDescription()`，公共描述/颜色导出也已落盘；[chart-description-host.ts](../../packages/office-studio/src/api/chart-description-host.ts) 只读取请求的普通源头部单元格。Pivot 缺源服务提供的 metadata 时保留作者字段，未扫描或重新计算数据。全部 numeric-only 角色推断、分组 Bubble/派生 Candlestick 的精确名称仍需要宿主元数据；不由描述重新执行统计。固定版底层 Builder/live adapter 的同名契约是 describe，不能把 getDescription 的本地名字说成固定版同名 API。
+
+[chart-color.ts](../../packages/office-studio/src/features/charts/chart-color.ts) 增加 `ChartColor = string | ChartLinearGradient`、稳定 linear-gradient discriminator 和 `chartLinearGradient(input)`。作者 start/end 和 stops 深复制，保留作者 stop 顺序；坐标要求有限，可在 0–1 外，色标 offset/opacity 限 0–1，2–256 个密集色标。渐变对象只接受已知普通数据字段，拒绝稀疏、额外、symbol、隐藏或 accessor 元数据。CSS 字符串使用现有纯颜色 parser；边框、字体、marker 和 palette 继续是纯色。最大 256、offset/opacity 边界和严格普通对象规则都是本地保护边界，上游声明仅明确至少两个 stop 与 opacity 乘源 CSS alpha，完整 renderer 校验未公开。
+
+配置深合并把颜色对象作为原子值替换，nullable 恢复也先复制整个渐变；没有从旧色标继承残余坐标。新写入按 [chart-gradient.ts](../../packages/office-studio/src/features/charts/chart-gradient.ts) 判断：系列支持 31 个目录项，数据点支持 25 个，2D Line/Area 的数据点和所有符号只接受纯色。换型及完整集合替换可保留相等的不活动渐变；在纯色契约的图型上新增渐变原子拒绝。绘制的 point resolver 会跳过不支持的点渐变覆盖，marker 使用纯色代表值，源作者配置和描述继续保留。其他专属纯色图型的历史系列渐变使用代表色回退，不能据此声称它们支持渐变填充。
+
+实际纹理优先，显式作者渐变优先于自动预设，并在 autoGradientFill=false 时仍绘制。运行时色标稳定排序，CSS alpha × stop.opacity × fillOpacity 只乘一次；3D 的每个面再逐色标阴影，不把整条渐变压平。作者方向不会因负值、坐标轴 reverse 或横向条形改变，自动预设仍按 P15 的方向规则。runtime.authored、bounds 及 ECharts colorStops/global 不进入作者模型或描述。
+
+Column/Bar、Pie/复合 Pie、Waterfall、Histogram/Pareto 消费 mark-local paint；Line/Area 的片段共享同一系列范围，Area 包含基线和已采样平滑 extrema。3D 柱六面共享八顶点投影边界，Pie 使用实际投影扇区边界，Line/Area 使用投影系列面范围；自动 3D 柱仍使用投影基线/顶端方向。普通 native Column/Bar/Pie 转换为可序列化 ECharts paint；明确 Line/Area/组合线型片段的作者渐变走公共 graphic，以保持同一片段坐标。固定 P16 converter 只声明 global:false 的 normalized 对象，本地公共像素 bounds/graphic 是独立适配，闭源几何与最终像素仍未核实。
+
+共享渐变几何在自动 48 等分之外插入作者 stop 边界，重复 offset 和窄色带保留硬边，两个端点钳制，不重复覆盖同一半透明面积；退化向量只使用 0–1 单带。代表色取最低 offset 的第一个 stop 并应用其 opacity，这与固定共享 picker `$o` 直接取 stops[0].color 的可见代码不同；底层 getChartColorRepresentative 只有声明，未核实真实规则。极端有限作者坐标可能在转换到像素时溢出，当前转换/几何拒绝非有限 paint，极端边界仍未验收。P15 的每次 append 预算不等于完整场景或 Worker 内存保证。
+
+[chart-color-editing.ts](../../packages/office-studio/src/features/charts/chart-color-editing.ts) 和 [ChartColorInput.vue](../../packages/office-studio/src/features/charts/views/ChartColorInput.vue) 提供继承/纯色/渐变、四方向坐标、逐 stop CSS alpha/offset/opacity 和真实增删。编辑保留作者顺序，自动新建渐变使用水平纯色到透明，这是本地 seed；追加复制最后 stop，至少保留两项。所有可替换控件为 antdv-next，布局 CSS 不写固定主题色；普通色仍用库 ColorPicker。已保留但当前目标不支持的渐变可恢复继承或改纯色，方向/stop 暂停编辑是当前类型契约，不是假按钮或能力占位。原生 RGB/alpha、主题、弹层、键盘、焦点恢复及 IME 均未运行验证。
+
+本批写了 13 个 description、15 个显式渐变算法/绘制/UI 控件、3 个显式渐变 Facade 和 2 个真实颜色编辑器浏览器草稿；全部未执行。内部 JSON 重开、Canvas/native paint、完整 31 项 paint 差异等只是草稿中的待断言行为，不是产品验收或实测性能。
+
+### P17 Pareto 独立样式、物化点与恢复
+
+[chart-pareto.ts](../../packages/office-studio/src/features/charts/chart-pareto.ts) 实现独立 barStyle/cumulativeLineStyle 的纯 helper、nullable 复制与累计非正线宽忽略。柱形继承通用源字段/名称样式，再覆盖专属 color、opacity、border、label 和 dataPoints；清除专属组后恢复有效通用继承。累计线独立于源系列样式，缺省第四活动主题色、2px 实线、opacity1、size7；circle 是本地形状默认，固定 oc 仅从闭源 A.point.shape 读取，实际默认仍待核实。point.color、边框和标签字体是纯色，线/柱填充及其可填充点支持作者渐变。
+
+`chart-statistics.ts::chartPareto` 和候选校验已改为接受 signed 源行，按第 4 节先合计再过滤。专属面板与通用系列面板的逐点选择器使用同一小数据物化函数，先复用 renderer 的 aggregation/TopN/空值和日期准备，再返回当前排序分类并按物化下标编辑；不再直接用未准备的源行列表。`chartComputeInputSteps/prepareChartComputeInputs/chartComputeInputs` 入参仅需既有 `ChartDateAxisConfig` 的 type/options/xAxis，未增加第二套聚合引擎或改变 Worker 结果 DTO。其正合计聚合降序与固定 Wu 一致，另扩展 includeZeroValues 下的零合计选择；TopN 前处理与上游最终可见效果仍未核实。源出现新分类、合计排序变化、过滤/TopN 和其他换型后如何迁移旧点覆盖仍未完成；当前按新物化位置消费，不把它说成稳定源行身份或全部上游索引契约。
+
+本地逐点 color/opacity/border 可影响结束于该点的累计片段，marker 的颜色用纯色代表值，size/shape 消费其覆盖。曲线的全局 stroke 不充当 marker border；只有点的作者 border 作用于符号，边框回退用未烘入 fillOpacity 的纯色，避免两次 alpha。点 border.width=0 或 visible=false 只隐藏 marker 边框；曲线继续使用正线宽。独立边框 opacity 按点覆盖消费，否则用有效点填充 opacity；这些片段/marker 优先级是本地明确规则，固定 Pareto handler 没有可执行实现，最终可见效果仍待核实。
+
+Canvas 与 native 普通柱形都消费专属样式，native Pareto 对纯色填充单独烘入 fill alpha、item.opacity=1，使边框 alpha 独立；已有渐变色标仍只消费一次。请求了 border 作者字段而未写 color/width 时，两个适配器以原始填充代表色/1px 补绘制默认，这是本地决定，空 border 仍无轮廓。虚/点线矩形轮廓使用公共 line 几何，width0 不发送非法 Canvas stroke。累计线的默认 native marker 没有全局 stroke 边框；显式累计渐变或任何累计点覆盖走同一 graphic，标签由同一文本 helper 生成。柱形百分比是相邻累计百分比之差，累计线百分比是当前累计值；`0.0%` 等 percent 数字格式先以比例值格式化，只输出一个百分号。共享 formatter 仍是既有数字格式子集，复杂 Office format 不因这一修正变成完整支持。
+
+累计数值轴缺省 linear 0–100；author log 轴使用同一 positive extent helper，零累计点保留在统计中但不生成非法 log 图元。单个作者 min/max 在默认百分比范围外时为另一端生成有效有序边界，Canvas/native 使用相同结果。这个 log/自动边界行为是本地明确决定，公开演示和文件样本仍未观察。
+
+[chart-pareto-settings-controls.ts](../../packages/office-studio/src/features/charts/chart-pareto-settings-controls.ts)、[ChartParetoSettings.vue](../../packages/office-studio/src/features/charts/views/ChartParetoSettings.vue) 的两个专属组、整体/逐点恢复实际编辑独立草稿，经公共一次 apply 写内容/history。标签细节按有效 visible 展开，关闭保留作者内容/字体；bar UI 另反映通用标签继承，区别于 cc 的直接 authored visible 检查。没有预览系列时，bar 逐点颜色回退仍按 config.valueFields 的源字段取样式，和顶层柱形组一致。既有 includeZeroValues Switch 保留；全部 FormItem、Select、InputNumber、ColorPicker、Button、Collapse 和反馈用 antdv-next，无新增原生控件；共享普通颜色字段也改用 RGB value-format 保留 CSS alpha，显示格式仍为 Hex。逐点颜色/opacity/纹理/边框相较固定 cc 的逐点颜色与累计 shape/size 是本地扩展；bar.dataPoints 的公共 size/shape 字段仍保留，但当前柱形 geometry 不消费它们，面板没有写空操作。
+
+上游公开 label position 有 auto/insideBase/insideEnd，本地共享 label 尚缺这三项并另有 center；上游 LabelContentType 是含 Empty/BubbleSize 的数值 mask，cc 可组合四个内容，本地仍是四个单选字符串。上游 LinePointShape 19 项，本地共享 marker 只有 circle/rect/triangle/diamond/none 5 项，其他 14 项及 hollow 行为仍未实现。border.visible、nullable reset、线宽 ≤100 与上述局部选择均为本地扩展/限制，不能把当前 Pareto 标为全功能对齐或把未实现枚举删除出最终范围。
+
+**本轮最后静态查看时，ChartParetoBarStyleOptions/ChartParetoLineStyleOptions/ChartParetoOptions 的共享类型、Builder/FChart 的 setBarStyle/clearBarStyle、setCumulativeLineStyle/clearCumulativeLineStyle、setIncludeZeroValues/resetIncludeZeroValues 6 个操作和 Rust signed 合计同步仍待根任务补接。** 图表 helper/controls 已引用这些预定共享类型，新增 Facade/浏览器草稿同样等待接线；不是已完成编译或 API 交付。Rust `office-compute/src/chart/distribution.rs::pareto` 仍需移除单行负数拒绝，并按正合计或 includeZero 的零合计过滤，结果 DTO/decoder 保持不变；未同步前不能声称小数据与 Worker 计算一致。
+
+P17 新增 15 个纯算法/候选/继承/nullable/默认/透明度/边框默认/虚线/width0/百分比格式/log/native/graphic/控件草稿，含 aggregation/TopN 选择器与缺少预览系列时的源字段回退；另有 3 个六操作 Facade 历史/隔离/内部重开草稿和 2 个真实面板 edit/reset/cancel/apply/undo/reopen 浏览器草稿，全部未执行。Pro 完整枚举、公开行为、Docs 宿主、原生 Office 往返、真实两后端与大样本 Worker/取消/传输/内存仍未完成或未验收。
+
 ## 6. Canvas 与 UI 技术路径
 
 - `echarts-renderer.ts` 使用锁定的 ECharts 6.1.0，tree-shakeable 注册 Bar/Line/Pie/Radar/Scatter/Funnel/Gauge/Graph/Sankey/Heatmap/Boxplot/Candlestick/Treemap/Sunburst、AxisPointer 等 components 和 CanvasRenderer。领域类型、命令/历史、数据源与 Office 模型由本项目控制。
-- 3D、复合饼、词云、Chord、Waterfall、Sankey、Relation 使用共享 Canvas graphic；HLC Candlestick、极端 Gauge 范围、有趋势/误差的图表同样走共享图元；Radar 的单点覆盖/值标签、分类旋转、径向反向或极端有限范围，以及 Boxplot 的 median 数据标签使用该路径。布局/命中用同源公开 ChartLayout，不把“同名 ECharts series 存在”当作图型等价证明。
+- 3D、复合饼、词云、Chord、Waterfall、Sankey、Relation 使用共享 Canvas graphic；HLC Candlestick、极端 Gauge 范围、有趋势/误差的图表同样走共享图元；Radar 的单点覆盖/值标签、分类旋转、径向反向或极端有限范围，以及 Boxplot 的 median 数据标签使用该路径。任一活动系列/数据点含实际纹理，Line/Area/组合线型作者显式渐变，启用自动渐变的 Line/Area 逐段颜色/透明度覆盖，以及 Pareto 的显式累计渐变/点覆盖也切至该公共路径；普通柱/条/Pie 渐变使用原生 serializable paint。布局/命中用同源公开 ChartLayout，不把“同名 ECharts series 存在”当作图型等价证明。
 - `ChartOverlay.vue` 按 sourceVersion 合成 ECharts Canvas 位图至工作表 Canvas；宿主可以 WebGPU 或 Canvas2D。**图表位图由 ECharts Canvas2D 栅格化，WebGPU 合成不表示图内已原生 WebGPU 绘制。** 直接 DrawCommand 路径可交同一 Canvas/WebGPU backend，完整两后端行为仍未验收。
 - 本次涉及的 Insert/Dialog、Drawer、Pivot 面板及共享字段/系列/统计控件使用 `antdv-next` 的 Form/FormItem、Input、InputNumber、Select、Switch、Button、ColorPicker、Collapse、Alert 等；没有新增原生表单或其他 UI 库。ConfigProvider/theme token 由应用统一管理；静态控件接入不替代主题切换、弹层尺寸、禁用/悬浮/焦点和 IME 验证。
 - ECharts tooltip、legend、brush/dataZoom 等图内事件没有完整路由为编辑器 command；元素选中、对象菜单、Pivot 字段按钮及 Docs 宿主仍需独立实现，不把栅格输出当作编辑闭环。
@@ -253,7 +333,7 @@ ECharts 技术参考：[6.1.0 release](https://github.com/apache/echarts/release
 
 1. 固定版所有动态/图表工作表/浮动/上下文入口、参数、权限、历史和持久化逐入口闭环；Docs 宿主与 Pivot 字段/筛选/轴项操作。
 2. 名称 selector 的公开演示/重名/隐藏边界与真实 UI/Office 验收、统计名称 selector；类型转换、过滤/聚合/Pareto/分箱后的 dataPoints 和 Waterfall role 索引迁移。
-3. Radar 上游数值标签默认值、轴扩展和径向指示器效果；Boxplot 的 SolidSeries fillPattern/逐原始异常点独立覆盖；标题对齐的上游沿轴/文字盒语义、日期月份/年份单位及重复日期；Gauge 源显示格式/最终交互；这些类型与指示器的极端/native/Office 验证，以及 AutoGradientFill/PlotArea 等未映射配置。
+3. Radar 上游数值标签默认值、轴扩展和径向指示器效果；Boxplot 的逐原始异常点独立覆盖；标题对齐的上游沿轴/文字盒语义、日期月份/年份单位及重复日期；Gauge 源显示格式/最终交互；所有纹理、自动/显式渐变与绘图区的上游可见效果/边界、代表色、极端/native/Office 验证。Pareto 的共享接线/Rust signed 同步、19 项完整 marker、组合数值 mask 标签/缺失位置、物化点迁移及公开/Office 样本仍需继续完成。
 4. 长图例/aggregate 图例、复杂图布局/碰撞/字体、完整 3D 相机/遮挡/透明排序及公开效果。
 5. 源准备、预览、放置过滤和复杂布局的有界大计算/Worker 路径；实际进度、预算/取消、传输字节与内存峰值。
 6. 全类型可编辑 XLSX/DOCX 写出/读回、未知信息/不等价原生图型的源/配置保留与诊断；独立 Office 重开和再编辑。
@@ -265,6 +345,17 @@ ECharts 技术参考：[6.1.0 release](https://github.com/apache/echarts/release
 
 | 草稿/已有夹具 | 本轮新增或涉及的覆盖 | 状态 |
 | --- | --- | --- |
+| `chart-fill-pattern.contract.test.mjs` | P14 的 10 个纹理继承/null/undefined/完整对象替换、54 个 mask 唯一性/覆盖/密度、透明前景/背景不重叠、凹面/环孔裁剪、marker/边框透明度、Scatter/Heatmap/Boxplot/Area/Pie graphic 路径、候选原子拒绝与颜色/纹理控件草稿。 | 未执行；不是公开像素、Office 往返或大样本性能验收。 |
+| `chart-facade.contract.test.mjs`、`tests/browser/chart-workbench.spec.ts` 新增 P14 场景 | 既有 Facade 新增 2 个全系列/字段/名称/逐点纹理保存重开、继承恢复/历史、非法纹理拒绝草稿；浏览器新增 1 个隔离草稿、无纹理实际 apply、关闭/undo/JSON reopen 场景。 | 全部未执行；原生 XLSX/DOCX 及独立 Office 重开仍待验收。 |
+| `chart-auto-gradient.contract.test.mjs` | P15 的 9 个图型默认/reset、25 个 UI 与 29 个预设目录区分、有效继承/纹理优先、负值/轴反向/横向、alpha 一次消费、Canvas/native 坐标、色带面积/共享边界/端点钳制、线/环孔、退化和每次 append 预算原子拒绝、逐段作者覆盖场景。 | 新草稿，未执行；颜色预设/原生绘制/Office/性能未验收。 |
+| `chart-plot-area.contract.test.mjs` | P15 的 10 个完整外框归一化/移动缩放、活动次轴/标题 seed、最小外框、编辑/清空、无效草稿保留源系列并纠正、完整矩形原子 patch/拒绝、31 个目录换型保留、Canvas/指示器/native grid、Pie/Radar/3D 几何一致及 Excel-view 快照隔离场景。 | 新草稿，未执行；浮点几何使用容差，无浏览器或 Office 样本验收。 |
+| `chart-gradient-layout-facade.contract.test.mjs` | 3 个 P15 Builder/实时 Facade 有效 description/显式覆盖/reset、PlotArea 公共 setOptions/原子拒绝、内容历史、模型隔离和内部 JSON 保存重开集成草稿。 | 接口由根任务接线；草稿未执行，不是原生文件往返验收。 |
+| `tests/browser/chart-workbench.spec.ts` 新增 P15 场景 | 2 个真实设置面板草稿：渐变 reset 与手动矩形在一次 apply 前不发布内容，apply 后位图版本/布局/history/reopen；无效矩形报告约束且不写内容/历史，纠正后可应用和逐次 undo。 | 未启动 dev server/浏览器，未执行；没有截图、像素、主题、焦点/IME 或 Office 结果。 |
+| `chart-description.contract.test.mjs` | P16 的 13 个 data-free 字段 metadata、canonical ID、源字段 Record/未活动作者层、真实名称与空名称、继承/纯主题色省略、自动 PlotArea 省略、横向/主次/Heatmap/Radar 轴绑定、palette/渐变复制及原始值/几何/paint 排除草稿。 | 未执行；公共 getDescription 是本地接口扩展，不等于 Pivot/Docs 元数据或文件验收。 |
+| `chart-explicit-gradient.contract.test.mjs` | P16 的 15 个严格纯数据构造/2–256 stop、31/25/符号 capability、原子 merge/nullable/隔离、CSS alpha 与作者 stop 顺序/方向/纹理优先、3D 阴影、硬/窄/退化色带面积/每次 append 预算、31 项实际 paint 差异、signed/reverse/native Bar/Pie bounds、Line/Area/组合公共图元、换型保留/新写拒绝以及真实编辑 helper/控件草稿。 | 未执行；option/DrawCommand 草稿不含真实 native SSR 或像素结果，极端坐标、上游代表色、两后端和性能仍未验收。 |
+| `chart-explicit-gradient-facade.contract.test.mjs`、`tests/browser/chart-gradient.spec.ts` | 3 个 Builder/实时 API 草稿覆盖公开构造/描述、nullable/history/internal reopen、错误类型与作者模型隔离；2 个真实颜色编辑器草稿覆盖方向/alpha/stop 顺序、一键 apply/撤销重开以及不活动渐变恢复/取消。 | 未执行；没有 dev server、浏览器、截图、主题/焦点/IME 或原生 Office 结果。 |
+| `chart-pareto.contract.test.mjs` | P17 的 15 个 signed 聚合/零负合计/等值顺序/大数百分比、单字段候选、独立默认/通用继承、深合并/nullable/宽度忽略/拒绝、原生与 Canvas 独立 fill/border/marker alpha、作者边框默认/虚线/矩形 width0、业务/累计标签及 percent format、log/单边范围、渐变 native/graphic、聚合排序索引/点样式/TopN 准备、描述隔离、预览缺失时的源字段回退与真实控件显隐/草稿消费场景。 | 未执行；共享 Pareto 类型仍待接线，真实 native renderer/文件/浏览器/性能没有运行。 |
+| `chart-pareto-facade.contract.test.mjs`、`tests/browser/chart-pareto.spec.ts` | 3 个六操作 Builder/实时集成草稿覆盖深合并/非正宽度/null reset、内部保存重开/历史/原子拒绝；2 个真实专属面板草稿覆盖 signed 分类、bar/line/point 编辑和一次 apply，以及整组恢复/cancel/undo/redo/internal reopen。 | 等待根任务六个 Facade 操作接线；全部未执行，不是可调用 API 已验收、源索引全迁移或 Office 往返证明。 |
 | `packages/office-studio/tests/chart-data-layout.contract.test.mjs` | 45 项空态、原始 null/精度、双方向可见数据缺省/Switch 重投影、透视角色、DFS/样式、转换/原子拒绝、Bubble marker、分组统计身份、Bar 次轴、堆积/大权重、Radar 单点/标签、14 万异常点/瀑布、3D 深度/横向标签；Gauge 默认/5 预设、有效/无效 tile、源索引/原文/clamp、极端角度、零指示器、nullable/非法 patch、字体/格式继承、控件/草稿重置链路、真实 native 弧宽/层级/文字/指针变换的 SSR 草稿。 | 草稿，未执行，包括 native SSR；大数组断言不是性能基准。 |
 | `chart-radar-boxplot.contract.test.mjs` | Radar nullable/字体继承、条件显隐、线性 signed/极端范围、源分类索引、分类/径向反向、值标签和 graphic；native Radar 的真实文本/字体/范围/半径/圆网 SSR；Boxplot 原始字段/位置、已知四分位、透明度/完整 cap、native path/端点 SSR、主/次轴 median anchor/标签、log 保留统计与合法正异常点；nullable patch 对象/数组隔离、危险/稀疏对象拒绝。 | 新草稿，未执行，包括 native SSR；不是浏览器交互或性能验收。 |
 | `chart-facade.contract.test.mjs` | 类型/option patch、cell placement、depthAxis/view 独立清除；Gauge 公开导出与 FOffice 实例 Enum、单值绑定、全部样式/量程/角度/刻度/ranges setter/reset、5 预设/全组清除、对象隔离/非法输入原子拒绝、更新/撤销/重做/内部保存重建；另新增 Radar/Cartesian 4 个、Boxplot 1 个及 Bubble/名称 3 个草稿，覆盖 6/7/8 个 clear target、轴标题/partial 次轴/linear 清除 logBase、原始箱线样本/主次轴、名称独立覆盖/消失重现/7 个恢复目标/两集合清除、mapping/错误输入/历史/内部重开。 | 本轮修改未执行。 |

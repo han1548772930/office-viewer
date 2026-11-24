@@ -350,8 +350,16 @@ export type ChartFillPatternPreset = 'pct5' | 'pct10' | 'pct20' | 'pct25' | 'pct
   | 'solidDmnd' | 'openDmnd' | 'dotDmnd' | 'plaid' | 'sphere' | 'weave' | 'divot' | 'shingle' | 'wave' | 'trellis' | 'zigZag'
 /** Omission inherits the surrounding style; null explicitly paints a solid fill. */
 export interface ChartSeriesFillPattern { preset: ChartFillPatternPreset; foregroundColor: string; backgroundColor: string }
+/** Source-authorable mark-local gradient, following the fixed chart-color contract. */
+export interface ChartLinearGradient {
+  type: 'linear-gradient'
+  start: { x: number; y: number }
+  end: { x: number; y: number }
+  stops: Array<{ offset: number; color: string; opacity?: number }>
+}
+export type ChartColor = string | ChartLinearGradient
 /** Public null patches reset authored fields, except fillPattern:null disables the inherited pattern. */
-export type ChartNullablePatch<T> = T extends ChartSeriesFillPattern ? T : T extends readonly unknown[] ? T : T extends object
+export type ChartNullablePatch<T> = T extends ChartSeriesFillPattern | ChartLinearGradient ? T : T extends readonly unknown[] ? T : T extends object
   ? { [K in keyof T]?: ChartNullablePatch<T[K]> | null } : T
 export type ChartRadarShape = 'polygon' | 'circle'
 export interface ChartRadarAxisLabelOptions extends ChartFontOptions { visible?: boolean; format?: string }
@@ -359,14 +367,14 @@ export interface ChartRadarOptions { shape?: ChartRadarShape; fill?: boolean; ax
 export interface ChartSeriesOptions {
   name?: string
   type?: 'column' | 'columnStacked' | 'line' | 'area' | 'areaStacked'
-  color?: string
+  color?: ChartColor
   fillOpacity?: number
   fillPattern?: ChartSeriesFillPattern | null
   border?: ChartLineOptions
   point?: { shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; size?: number; color?: string }
   rightAxis?: boolean
   label?: ChartLabelOptions
-  dataPoints?: Record<number, { color?: string; fillOpacity?: number; fillPattern?: ChartSeriesFillPattern | null; size?: number; shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; border?: ChartLineOptions }>
+  dataPoints?: Record<number, { color?: ChartColor; fillOpacity?: number; fillPattern?: ChartSeriesFillPattern | null; size?: number; shape?: 'circle' | 'rect' | 'triangle' | 'diamond' | 'none'; border?: ChartLineOptions }>
 }
 /** Numeric selectors keep the source-field contract; names match source identities exactly. */
 export type ChartSeriesSelector = number | { name: string }
@@ -431,10 +439,14 @@ export interface ChartGaugeOptions extends ChartGaugeScaleOptions, ChartGaugeAng
   /** Historical shared title/detail font and content configuration. Dedicated groups take precedence. */
   label?: ChartLabelOptions
 }
+/** Fractions of the entire chart frame, independent of the renderer and axis labels. */
+export interface ChartPlotAreaOptions { left: number; top: number; width: number; height: number }
 /** Renderer-independent authored configuration. Derived statistics and geometries are not saved here. */
 export interface ChartSemanticOptions {
   invalidValueStrategy?: 'zero' | 'break' | 'link'
   plotVisibleOnly?: boolean
+  autoGradientFill?: boolean
+  plotArea?: ChartPlotAreaOptions
   appearance?: { background?: string; border?: ChartLineOptions; font?: ChartFontOptions }
   titleStyle?: ChartFontOptions
   subtitleStyle?: ChartFontOptions

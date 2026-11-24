@@ -9,7 +9,7 @@ export type ChartBoxplotDistribution = NonNullable<ChartDerivedData['boxes']>[nu
 
 /** Each raw numeric field owns one distribution, even when its header or output order changes. */
 export function chartBoxplotStyle(chart: ChartModel, box: ChartBoxplotDistribution, categoryIndex: number, palette: readonly string[]): ChartSeriesOptions {
-  return chartPointStyle(chartSeriesStyle(chart, box.field, box.seriesPosition, palette, box.sourceName), categoryIndex)
+  return chartPointStyle(chartSeriesStyle(chart, box.field, box.seriesPosition, palette, box.sourceName), categoryIndex, chart.type)
 }
 
 export function chartBoxplotAxis(chart: ChartModel, style: ChartSeriesOptions): ChartAxisOptions {

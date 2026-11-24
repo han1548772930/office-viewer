@@ -2,28 +2,13 @@
 //! duke-pages extraction path, including covered rows and nested tables.
 use std::{collections::{BTreeMap, HashMap, HashSet}, io::Cursor};
 
-use duke_pages::{BlockDetails, BlockType, DocModel, DocNode, DocumentBlock, StructuredDocument,
-    TableCellContentNode, TableNode};
+use duke_pages::{BlockDetails, BlockType, DocModel, DocumentBlock, StructuredDocument, TableNode};
 use office_io_common::{chart_xml, document_table_source::{TABLE_SOURCE_NAMESPACE, TABLE_SOURCE_PART, TableSourceEntry, native_identity, validate_entries}};
 use quick_xml::{Reader, events::Event};
 use serde_json::{Map, Value, json};
 use zip::ZipArchive;
 
 use crate::document_format_sidecar::{Element, parse_xml, read_xml};
-
-fn collect<'a>(nodes: &'a [DocNode], tables: &mut Vec<&'a TableNode>) {
-    fn table<'a>(source: &'a TableNode, tables: &mut Vec<&'a TableNode>) {
-        tables.push(source);
-        for row in &source.rows {
-            for cell in &row.cells {
-                for node in &cell.nodes {
-                    if let TableCellContentNode::Table(source) = node { table(source, tables); }
-                }
-            }
-        }
-    }
-    for node in nodes { if let DocNode::Table(source) = node { table(source, tables); } }
-}
 
 fn scope(node: &Element, inherited: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut result = inherited.clone();
@@ -168,19 +153,23 @@ fn details(block: &mut DocumentBlock) -> &mut Map<String, Value> {
 /// geometry after an external resize, and a changed grid keeps stale data only
 /// as explicit provenance rather than assigning it to unrelated columns.
 pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel,
-    archive: Option<&mut ZipArchive<Cursor<&[u8]>>>) -> Result<Vec<String>, String> {
-    let mut tables = Vec::new(); collect(&source.nodes, &mut tables);
+    mut archive: Option<&mut ZipArchive<Cursor<&[u8]>>>) -> Result<Vec<String>, String> {
+    use crate::document_story_source::{SourceAddress, collect, stories};
+    let tables = stories(source).iter().flat_map(|story| collect(story).tables).collect::<HashMap<_, _>>();
     let mut entries = HashMap::new();
-    let mut namespaces = BTreeMap::new();
-    if let Some(archive) = archive {
+    let mut part_scopes = HashMap::new();
+    if let Some(archive) = archive.as_mut() {
         entries = read_entries(archive)?;
-        let part = document.blocks.iter().flat_map(|block| &block.source_refs).find(|source| source.story == "body").map(|source| source.part_name.as_str()).unwrap_or("word/document.xml");
-        namespaces = part_namespaces(archive, part)?;
+        for address in tables.keys() {
+            if !part_scopes.contains_key(&address.part) {
+                part_scopes.insert(address.part.clone(), part_namespaces(archive, &address.part)?);
+            }
+        }
     }
     // Duke normalizes the package vocabulary and hoists the actual namespace
     // bindings into document_open_tag. Its table source uses that vocabulary;
     // raw ZIP prefixes alone cannot describe renamed extension prefixes.
-    namespaces.extend(model_namespaces(source)?);
+    let mut namespaces = model_namespaces(source)?;
     // Generated legacy fragments may have no document opening tag. Only the
     // standard prefixes emitted by the current Duke writer get a fallback;
     // unknown prefixes still fail the namespace-aware native XML parser.
@@ -198,22 +187,32 @@ pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel,
         ("w10", "urn:schemas-microsoft-com:office:word"),
         ("m", "http://schemas.openxmlformats.org/officeDocument/2006/math"),
     ] { namespaces.entry(prefix.into()).or_insert_with(|| namespace.into()); }
+    for scope in part_scopes.values_mut() {
+        // The extracted fragments use Duke's canonical vocabulary; retain the
+        // owning part's extra bindings without overriding that vocabulary.
+        scope.extend(namespaces.iter().map(|(prefix, namespace)| (prefix.clone(), namespace.clone())));
+    }
     let mut warnings = Vec::new();
-    let mut index = 0usize;
     let mut used = HashSet::new();
-    fn visit(blocks: &mut [DocumentBlock], tables: &[&TableNode], index: &mut usize, entries: &HashMap<String, TableSourceEntry>,
-        namespaces: &BTreeMap<String, String>, used: &mut HashSet<String>, warnings: &mut Vec<String>) -> Result<(), String> {
+    let mut used_sources = HashSet::new();
+    fn visit(blocks: &mut [DocumentBlock], note_id: Option<i64>, tables: &HashMap<SourceAddress, &TableNode>, entries: &HashMap<String, TableSourceEntry>,
+        namespaces: &BTreeMap<String, String>, scopes: &HashMap<String, BTreeMap<String, String>>, used: &mut HashSet<String>,
+        used_sources: &mut HashSet<SourceAddress>, warnings: &mut Vec<String>) -> Result<(), String> {
         for block in blocks {
-            if block.r#type == BlockType::Table && block.source_refs.first().is_none_or(|source| source.story == "body") {
-                let source = tables.get(*index).ok_or("A native body table has no corresponding source model")?;
-                *index += 1;
+            let note_id = block.note_id.or(note_id);
+            if block.r#type == BlockType::Table {
+                let (address, source) = block.source_refs.iter().find_map(|reference| {
+                    let address = SourceAddress::from_ref(reference, note_id);
+                    tables.get(&address).map(|source| (address, *source))
+                }).ok_or("A native table has no corresponding source in its package/story owner")?;
+                used_sources.insert(address.clone());
                 if source.block_id.as_deref().is_some_and(|id| id != block.id) { return Err("Native table extraction/source identities do not match".into()); }
                 // Source row/cell styles are already resolved by duke-pages;
                 // retain their actual physical row count even when no anchors
                 // start in a row covered by preceding vertical merges.
                 details(block).insert("rowCount".into(), json!(source.rows.len()));
                 if let Some(xml) = &source.source_xml {
-                    let xml = complete_namespace(xml, namespaces)?;
+                    let xml = complete_namespace(xml, scopes.get(&address.part).unwrap_or(namespaces))?;
                     let identity = native_identity(&xml)?;
                     let mut properties = native_properties(&xml)?;
                     crate::document_table_merges::restore(block, &mut properties)?;
@@ -232,12 +231,12 @@ pub(crate) fn restore(document: &mut StructuredDocument, source: &DocModel,
                     }
                 }
             }
-            visit(&mut block.children, tables, index, entries, namespaces, used, warnings)?;
+            visit(&mut block.children, note_id, tables, entries, namespaces, scopes, used, used_sources, warnings)?;
         }
         Ok(())
     }
-    visit(&mut document.blocks, &tables, &mut index, &entries, &namespaces, &mut used, &mut warnings)?;
-    if index != tables.len() { warnings.push("Some native body tables were not extracted; their source model remains retained".into()); }
+    visit(&mut document.blocks, None, &tables, &entries, &namespaces, &part_scopes, &mut used, &mut used_sources, &mut warnings)?;
+    if used_sources.len() != tables.len() { warnings.push("Some native story tables were not extracted; their source model remains retained".into()); }
     Ok(warnings)
 }
 

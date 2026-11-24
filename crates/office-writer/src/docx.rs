@@ -20,15 +20,19 @@ mod text_fields;
 use text_fields::TextFieldPlan;
 #[path = "docx_table.rs"]
 mod table_writer;
+#[path = "docx_block_hosts.rs"]
+mod block_hosts;
 
 #[path = "docx_numbering.rs"]
 mod numbering;
-use numbering::{assign_lists, numbering_left, numbering_level, prepare_sequences, write_numbering_xml, NumberingInstance, SequencePlan};
+use numbering::{assign_list_groups, numbering_left, numbering_level, prepare_sequence_groups, write_numbering_xml, NumberingInstance, SequencePlan};
 #[path = "docx_numbering_marker.rs"]
 mod numbering_marker;
-use numbering_marker::{prepare_preserved_markers, PreservedMarkerPlan, PreservedParagraph};
+use numbering_marker::{prepare_preserved_marker_groups, PreservedMarkerPlan, PreservedParagraph};
 #[cfg(test)]
-use numbering::build_numbering_xml;
+use numbering::{assign_lists, build_numbering_xml, prepare_sequences};
+#[cfg(test)]
+use numbering_marker::prepare_preserved_markers;
 
 const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
@@ -79,6 +83,7 @@ const SETTINGS_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml";
 const EMU_PER_PIXEL: f64 = 9_525.0;
 const TWIPS_PER_PIXEL: f64 = 15.0;
+const CONTENT_NAMESPACES: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture""#;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum NoteKind {
@@ -203,6 +208,7 @@ struct WriteContext<'a> {
     controls_by_block: HashMap<String, Vec<ContentControl>>,
     used_controls: BTreeSet<String>,
     next_relationship: u32,
+    relationship_owner: String,
     next_image: u32,
     page: PageGeometry,
     section_header_footer_refs: HashMap<String, SectionHeaderFooterRefs>,
@@ -225,8 +231,15 @@ impl<'a> WriteContext<'a> {
         let id = format!("rId{}", self.next_relationship);
         self.next_relationship += 1;
         self.package
-            .add_relationship(Some("word/document.xml"), &id, kind, target, external)?;
+            .add_relationship(Some(&self.relationship_owner), &id, kind, target, external)?;
         Ok(id)
+    }
+
+    fn with_relationship_owner<T>(&mut self, owner: &str, write: impl FnOnce(&mut Self) -> Result<T, ExportError>) -> Result<T, ExportError> {
+        let previous = std::mem::replace(&mut self.relationship_owner, owner.to_owned());
+        let result = write(self);
+        self.relationship_owner = previous;
+        result
     }
 
     fn warn(&mut self, code: &'static str, message: impl Into<String>) {
@@ -655,6 +668,7 @@ impl<'a> WriteContext<'a> {
             "pageBreak" => Ok("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>".to_owned()),
             "columnBreak" => Ok("<w:p><w:r><w:br w:type=\"column\"/></w:r></w:p>".to_owned()),
             "sectionBreak" => {
+                if self.relationship_owner != "word/document.xml" { return Err(ExportError::invalid("辅助内容区不能包含正文分节符。")); }
                 let value = string(get(get(block, "sectionBreak"), "type"))
                     .unwrap_or_else(|| "nextPage".to_owned());
                 if !matches!(
@@ -761,11 +775,7 @@ impl<'a> WriteContext<'a> {
         if divider {
             properties.push_str("<w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"AAB3BF\"/></w:pBdr>");
         }
-        let paragraph_properties = if properties.is_empty() {
-            String::new()
-        } else {
-            format!("<w:pPr>{properties}</w:pPr>")
-        };
+        let paragraph_properties = self.source_styles.block_paragraph_properties(&properties, block).map_err(ExportError::invalid)?;
         let source_runs = field(block, "runs")
             .and_then(Value::as_array)
             .map_or(&[][..], Vec::as_slice);
@@ -900,40 +910,41 @@ fn collect_notes(model: &Value, blocks: &[Value]) -> Result<NoteBundle, ExportEr
         }
     }
 
+    let mut bundle = NoteBundle { footnotes: std::mem::take(&mut notes[0]), endnotes: std::mem::take(&mut notes[1]), ids, orphaned: Vec::new() };
     let mut references = BTreeSet::new();
     collect_references(blocks, &mut references)?;
-    let mut orphaned = Vec::new();
+    for host in block_hosts::auxiliary_contents(model, blocks, &bundle)? { collect_references(host.blocks, &mut references)?; }
     for (kind, source_id) in references {
-        if ids.contains_key(&(kind, source_id.clone())) {
+        if bundle.ids.contains_key(&(kind, source_id.clone())) {
             continue;
         }
         let index = if kind == NoteKind::Endnote { 1 } else { 0 };
         let id = next_id[index];
         next_id[index] += 1;
-        ids.insert((kind, source_id.clone()), id);
-        notes[index].push(NoteEntry {
+        bundle.ids.insert((kind, source_id.clone()), id);
+        let entries = if kind == NoteKind::Footnote { &mut bundle.footnotes } else { &mut bundle.endnotes };
+        entries.push(NoteEntry {
             id,
             value: Value::Null,
         });
-        orphaned.push((kind, source_id));
+        bundle.orphaned.push((kind, source_id));
     }
-    Ok(NoteBundle {
-        footnotes: std::mem::take(&mut notes[0]),
-        endnotes: std::mem::take(&mut notes[1]),
-        ids,
-        orphaned,
-    })
+    Ok(bundle)
 }
 
 fn collect_content_controls(
     model: &Value,
     blocks: &[Value],
 ) -> Result<HashMap<String, Vec<ContentControl>>, ExportError> {
+    collect_content_controls_for_groups(model, &[blocks])
+}
+
+fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Result<HashMap<String, Vec<ContentControl>>, ExportError> {
     let Some(items) = field(model, "contentControls").and_then(Value::as_array) else {
         return Ok(HashMap::new());
     };
     let mut block_ids = BTreeSet::new();
-    collect_block_ids(blocks, &mut block_ids)?;
+    for blocks in groups { collect_block_ids(blocks, &mut block_ids)?; }
     let mut controls = HashMap::<String, Vec<ContentControl>>::new();
     for (index, value) in items.iter().enumerate() {
         let id = string(get(value, "id")).unwrap_or_default();
@@ -1272,7 +1283,7 @@ fn note_text(value: &Value) -> Option<String> {
 }
 
 fn note_runs(value: &Value) -> &[Value] {
-    for candidate in [value, get(value, "body")] {
+    for candidate in [get(value, "content"), value, get(value, "body")] {
         if let Some(runs) = field(candidate, "runs").and_then(Value::as_array) {
             return runs;
         }
@@ -1334,20 +1345,47 @@ fn note_body_xml(value: &Value, kind: NoteKind, id: i64, defaults: RunDefaultEff
     )
 }
 
-fn notes_xml(kind: NoteKind, notes: &[NoteEntry], defaults: RunDefaultEffects) -> String {
+fn notes_xml(context: &mut WriteContext<'_>, kind: NoteKind, notes: &[NoteEntry]) -> Result<String, ExportError> {
+    let path = format!("word/{}.xml", kind.collection());
+    context.with_relationship_owner(&path, |context| {
     let element = kind.collection().trim_end_matches('s');
     let mut body = format!(
         "<w:{element} w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:{element}><w:{element} w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{element}>"
     );
     for note in notes {
-        body.push_str(&note_body_xml(&note.value, kind, note.id, defaults));
+        if let Some(blocks) = block_hosts::content_blocks(get(&note.value, "content"))? {
+            let reference = kind.body_reference_tag();
+            let reference_style = if kind == NoteKind::Footnote { "FootnoteReference" } else { "EndnoteReference" };
+            let marker = format!("<w:r><w:rPr><w:rStyle w:val=\"{reference_style}\"/></w:rPr><w:{reference}/></w:r>");
+            let mut paragraphs = String::new();
+            for (index, block) in blocks.iter().enumerate() {
+                let mut output = context.block(block)?;
+                if index == 0 {
+                    if output.starts_with("<w:p>") {
+                        let position = if output.starts_with("<w:p><w:pPr") {
+                            let opening = output.find('>').and_then(|first| output[first + 1..].find('>').map(|second| first + 1 + second))
+                                .ok_or_else(|| ExportError::invalid("注释首段的段落属性开头无效。"))?;
+                            if output.as_bytes().get(opening.saturating_sub(1)) == Some(&b'/') { opening + 1 }
+                            else { output.find("</w:pPr>").ok_or_else(|| ExportError::invalid("注释首段缺少段落属性结束标记。"))? + "</w:pPr>".len() }
+                        } else { "<w:p>".len() };
+                        output.insert_str(position, &marker);
+                    } else { paragraphs.push_str(&format!("<w:p>{marker}</w:p>")); }
+                }
+                paragraphs.push_str(&output);
+            }
+            if blocks.is_empty() { paragraphs.push_str(&format!("<w:p>{marker}</w:p>")); }
+            body.push_str(&format!("<w:{element} w:id=\"{}\">{paragraphs}</w:{element}>", note.id));
+        } else {
+            body.push_str(&note_body_xml(&note.value, kind, note.id, context.run_defaults));
+        }
     }
-    format!(
-        "{}<w:{} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{body}</w:{}>",
+    Ok(format!(
+        "{}<w:{} {CONTENT_NAMESPACES}>{body}</w:{}>",
         xml::DECL,
         kind.collection(),
         kind.collection()
-    )
+    ))
+    })
 }
 
 fn collect_comments(
@@ -1456,19 +1494,21 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         return Err(ExportError::invalid("正文包含尚未映射的原生字段段落；完整来源已保留，需补齐范围映射后才能写出 DOCX。"));
     }
     let legacy_source = legacy_source::prepare(&model)?;
-    table_writer::validate_document_tables(blocks)?;
     let generated_styles = default_style::styles_xml(&model, styles_xml())?;
     let run_defaults = RunDefaultEffects::for_model(&model);
     let notes = collect_notes(&model, blocks)?;
+    let auxiliary = block_hosts::auxiliary_contents(&model, blocks, &notes)?;
+    let mut block_groups = vec![blocks.as_slice()];
+    block_groups.extend(auxiliary.iter().map(|host| host.blocks));
+    block_hosts::validate_ownership(&block_groups)?;
+    for blocks in &block_groups { table_writer::validate_document_tables(blocks)?; }
     let (comment_entries, comment_anchors, comment_warnings) = collect_comments(&model)?;
-    let controls_by_block = collect_content_controls(&model, blocks)?;
+    let controls_by_block = collect_content_controls_for_groups(&model, &block_groups)?;
     let declared_control_count = field(&model, "contentControls")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let page = page_geometry(get(&model, "page"))?;
-    let section_header_footers = field(&model, "sectionHeaderFooters")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let section_header_footers = get(&model, "sectionHeaderFooters");
     let title = string(get(&model, "name")).unwrap_or_else(|| "Document".to_owned());
     let core = core_properties(&model, &title);
     package.add_relationship(
@@ -1518,6 +1558,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         controls_by_block,
         used_controls: BTreeSet::new(),
         next_relationship: 3,
+        relationship_owner: "word/document.xml".to_owned(),
         next_image: 1,
         page,
         section_header_footer_refs: HashMap::new(),
@@ -1534,28 +1575,26 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         context.package.add_binary(LEGACY_SOURCE_PART, LEGACY_SOURCE_CONTENT_TYPE, bytes)?;
         context.relationship(LEGACY_SOURCE_RELATIONSHIP, LEGACY_SOURCE_TARGET, false)?;
     }
-    let (list_ids, numbering) = assign_lists(blocks)?;
+    let (list_ids, numbering) = assign_list_groups(&block_groups)?;
     context.list_ids = list_ids;
     context.numbering = numbering;
     let numbering_xml = write_numbering_xml(&context.numbering, context.package, &mut context.warnings)?;
     // Source stories may import numbered paragraph styles. Reserve all generated
     // list/picture IDs before any source consumer is allowed to allocate IDs.
     context.source_styles.reserve_numbering(&numbering_xml).map_err(ExportError::invalid)?;
-    let has_different_odd_even =
-        prepare_section_header_footers(&mut context, &section_header_footers, get(&model, "sectionSetup"), blocks)?;
-    context.preserved_markers = prepare_preserved_markers(blocks, &context.controls_by_block, &mut context.source_styles)?;
+    block_hosts::append_locks(&mut context, &auxiliary)?;
+    context.preserved_markers = prepare_preserved_marker_groups(&block_groups, &context.controls_by_block, &mut context.source_styles)?;
     context.warnings.append(&mut context.preserved_markers.warnings);
-    context.sequences = prepare_sequences(blocks, &context.list_ids, &context.numbering, &numbering_xml, &context.preserved_markers)?;
+    context.sequences = prepare_sequence_groups(&block_groups, &context.list_ids, &context.numbering, &numbering_xml, &context.preserved_markers)?;
     context.warnings.append(&mut context.sequences.warnings);
-    context.text_fields = TextFieldPlan::prepare(&mut context, blocks)?;
+    context.text_fields = TextFieldPlan::prepare_groups(&mut context, &block_groups)?;
+    let has_text_fields = context.text_fields.has_fields;
+    let has_different_odd_even =
+        prepare_section_header_footers(&mut context, section_header_footers, get(&model, "sectionSetup"), blocks)?;
     let mut body = String::new();
     for block in blocks {
         body.push_str(&context.block(block)?);
     }
-    table_writer::write_sources(&mut context)?;
-    let fields = std::mem::take(&mut context.text_fields);
-    fields.write_identities(&mut context)?;
-    let has_body_fields = fields.has_fields;
     if let Some(mapping) = context.sequences.mapping_xml.take() {
         context.package.add_xml("customXml/office-numbering.xml", "application/xml", mapping)?;
         context.relationship("http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml", "../customXml/office-numbering.xml", false)?;
@@ -1580,29 +1619,21 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             ),
         );
     }
-    let used_control_count = context.used_controls.len();
-    if used_control_count < declared_control_count {
-        context.warn(
-            "DOCX_CONTENT_CONTROL_UNWRITTEN",
-            format!(
-                "{} content control(s) could not be mapped to a supported inline DOCX control and were preserved as ordinary paragraph text.",
-                declared_control_count - used_control_count
-            ),
-        );
-    }
     if !notes.footnotes.is_empty() {
+        let xml = notes_xml(&mut context, NoteKind::Footnote, &notes.footnotes)?;
         context.package.add_xml(
             "word/footnotes.xml",
             FOOTNOTES_CONTENT_TYPE,
-            notes_xml(NoteKind::Footnote, &notes.footnotes, run_defaults),
+            xml,
         )?;
         context.relationship(REL_FOOTNOTES, "footnotes.xml", false)?;
     }
     if !notes.endnotes.is_empty() {
+        let xml = notes_xml(&mut context, NoteKind::Endnote, &notes.endnotes)?;
         context.package.add_xml(
             "word/endnotes.xml",
             ENDNOTES_CONTENT_TYPE,
-            notes_xml(NoteKind::Endnote, &notes.endnotes, run_defaults),
+            xml,
         )?;
         context.relationship(REL_ENDNOTES, "endnotes.xml", false)?;
     }
@@ -1621,6 +1652,15 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         context.relationship(REL_COMMENTS, "comments.xml", false)?;
         context.relationship(REL_COMMENTS_EXTENDED, "commentsExtended.xml", false)?;
     }
+    table_writer::write_sources(&mut context)?;
+    let fields = std::mem::take(&mut context.text_fields);
+    fields.write_identities(&mut context)?;
+    let declared_control_ids = get(&model, "contentControls").as_array().into_iter().flatten()
+        .filter_map(|control| get(control, "id").as_str()).collect::<BTreeSet<_>>();
+    let written_controls = context.used_controls.iter().filter(|id| declared_control_ids.contains(id.as_str())).count();
+    if written_controls < declared_control_count {
+        context.warn("DOCX_CONTENT_CONTROL_UNWRITTEN", format!("{} content control(s) could not be mapped to a supported inline DOCX control and were preserved as ordinary paragraph text.", declared_control_count - written_controls));
+    }
     if blocks.is_empty() {
         body.push_str("<w:p><w:r><w:t></w:t></w:r></w:p>");
     }
@@ -1631,7 +1671,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         .package
         .add_xml("word/document.xml", DOCUMENT_CONTENT_TYPE, document_xml)?;
     let has_story_fields = section_header_footers.as_object().is_some_and(|sections| sections.values().any(|s| s["pageFields"].as_array().is_some_and(|fields| !fields.is_empty())));
-    if has_different_odd_even || has_story_fields || has_body_fields {
+    if has_different_odd_even || has_story_fields || has_text_fields {
         context
             .package
             .add_xml("word/settings.xml", SETTINGS_CONTENT_TYPE, settings_xml(has_different_odd_even))?;

@@ -5,11 +5,11 @@ import { definedChartStyleFields } from './chart-options'
 
 type TitleAxis = Pick<ChartAxisOptions, 'title' | 'titleStyle' | 'titleAlignment' | 'reverse'>
 
-export function chartAxisTitleFont(chart: ChartModel, axis: Pick<ChartAxisOptions, 'titleStyle'>): ChartFontOptions {
+export function chartAxisTitleFont(chart: Pick<ChartModel, 'options'>, axis: Pick<ChartAxisOptions, 'titleStyle'>): ChartFontOptions {
   return { ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(axis.titleStyle) }
 }
 
-export function chartAxisTitleSpace(chart: ChartModel, axis: TitleAxis): number {
+export function chartAxisTitleSpace(chart: Pick<ChartModel, 'options'>, axis: TitleAxis): number {
   return axis.title ? (chartAxisTitleFont(chart, axis).fontSize ?? 11) + 7 : 0
 }
 

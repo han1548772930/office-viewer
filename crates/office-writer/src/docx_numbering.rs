@@ -10,7 +10,7 @@ use crate::xml;
 
 #[path = "docx_numbering_sequence.rs"]
 mod sequence;
-pub(super) use sequence::{prepare_sequences, SequencePlan};
+pub(super) use sequence::{prepare_sequences, prepare_sequence_groups, SequencePlan};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ListKind {
@@ -21,6 +21,7 @@ enum ListKind {
 
 pub(super) struct NumberingInstance {
     id: u32,
+    owner: usize,
     kind: ListKind,
     definition: Option<Value>,
     name: Option<String>,
@@ -92,11 +93,17 @@ fn merged_level(definition: &Value, level: &Value) -> Value {
 }
 
 pub(super) fn assign_lists(blocks: &[Value]) -> Result<(HashMap<usize, u32>, Vec<NumberingInstance>), ExportError> {
+    assign_list_groups(&[blocks])
+}
+
+/// IDs are package-wide; named list counters belong to each independent story.
+pub(super) fn assign_list_groups(groups: &[&[Value]]) -> Result<(HashMap<usize, u32>, Vec<NumberingInstance>), ExportError> {
     struct Assignments {
         lookup: HashMap<usize, u32>,
         numbering: Vec<NumberingInstance>,
         named: HashMap<(String, String), u32>,
         next_id: u32,
+        owner: usize,
     }
     fn visit(blocks: &[Value], state: &mut Assignments) -> Result<(), ExportError> {
         let mut active: Option<(String, u32)> = None;
@@ -132,7 +139,7 @@ pub(super) fn assign_lists(blocks: &[Value]) -> Result<(HashMap<usize, u32>, Vec
             let id = existing.unwrap_or_else(|| {
                 let id = state.next_id;
                 state.next_id += 1;
-                state.numbering.push(NumberingInstance { id, kind, definition: source.cloned(), name: name.clone() });
+                state.numbering.push(NumberingInstance { id, owner: state.owner, kind, definition: source.cloned(), name: name.clone() });
                 id
             });
             if let Some(name) = name {
@@ -143,8 +150,12 @@ pub(super) fn assign_lists(blocks: &[Value]) -> Result<(HashMap<usize, u32>, Vec
         }
         Ok(())
     }
-    let mut state = Assignments { lookup: HashMap::new(), numbering: Vec::new(), named: HashMap::new(), next_id: 1 };
-    visit(blocks, &mut state)?;
+    let mut state = Assignments { lookup: HashMap::new(), numbering: Vec::new(), named: HashMap::new(), next_id: 1, owner: 0 };
+    for (owner, blocks) in groups.iter().enumerate() {
+        state.owner = owner;
+        state.named.clear();
+        visit(blocks, &mut state)?;
+    }
     Ok((state.lookup, state.numbering))
 }
 

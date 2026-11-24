@@ -3,7 +3,7 @@ import { cloneModel } from '../../../domain/serialization'
 import { documentId, tableForBlock } from '../model/document-model'
 import { documentTableGrid } from '../model/document-table-grid'
 import { documentTableCellContentContainers, rebindDocumentTableContinuations } from '../model/document-table-continuations'
-import { documentTextFieldRanges, remapDocumentTextFieldIds } from '../model/document-text-fields'
+import { documentTextFieldRanges, documentTextFields, remapDocumentTextFieldIds } from '../model/document-text-fields'
 
 /** Clipboard blocks are borrowed input; IDs and continuation bindings belong to each new paste. */
 export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
@@ -56,7 +56,9 @@ export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): Do
     }
   }
   visit(copies)
-  for (const block of paragraphs) remapDocumentTextFieldIds(block, blockIds)
+  const fieldIds = new Map<string, string>()
+  for (const block of paragraphs) for (const field of documentTextFields(block)) fieldIds.set(field.id, documentId('field'))
+  for (const block of paragraphs) remapDocumentTextFieldIds(block, blockIds, fieldIds)
   documentTextFieldRanges({ blocks: copies })
   return copies
 }

@@ -1,4 +1,4 @@
-//! Preserve the body paragraphs that an Office editor must be able to address.
+//! Preserve the paragraphs in every story that an Office editor must address.
 //! duke-pages 0.6.0 filters empty/invisible paragraphs and flattens object-only
 //! paragraphs. A temporary extraction bookmark keeps their existing structure;
 //! it is removed from both the source model and result before either is exposed.
@@ -105,7 +105,7 @@ pub(crate) fn extract(source: &mut DocModel) -> StructuredDocument {
         if let Some(nodes) = &comment.nodes { collect_names(nodes, &mut used); }
     }
     let mut names = HashSet::new(); let mut sequence = 0usize;
-    visit_body(&mut source.nodes, &mut |paragraph| {
+    crate::document_story_source::visit_nodes_mut(source, &mut |nodes| visit_body(nodes, &mut |paragraph| {
         if !needs_anchor(paragraph) { return; }
         let name = loop {
             let name = format!("office_studio_internal_keep_{sequence}"); sequence += 1;
@@ -113,11 +113,11 @@ pub(crate) fn extract(source: &mut DocModel) -> StructuredDocument {
         };
         names.insert(name.clone());
         paragraph.bookmarks.push(ParagraphBookmark { child_index: 0, name });
-    });
+    }));
     let mut document = extract_document_blocks(source);
-    visit_body(&mut source.nodes, &mut |paragraph| {
+    crate::document_story_source::visit_nodes_mut(source, &mut |nodes| visit_body(nodes, &mut |paragraph| {
         paragraph.bookmarks.retain(|bookmark| !names.contains(&bookmark.name));
-    });
+    }));
     remove_anchors(&mut document.blocks, &names);
     document
 }

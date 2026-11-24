@@ -77,7 +77,7 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
       const series: FunnelSeriesOption = { type: 'funnel', name: source.name, left: grid.left, right: grid.right, top: grid.top, bottom: grid.bottom,
         sort: options?.sort ?? 'descending', gap: options?.gap ?? 2, label: { show: true, ...chartEChartsFont(undefined, color, 10) },
         data: data.categories.map((name, index) => {
-          const style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index), value = options?.useAbsoluteValue ? Math.abs(source.values[index] ?? 0) : source.values[index] ?? 0
+          const style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index, chart.type), value = options?.useAbsoluteValue ? Math.abs(source.values[index] ?? 0) : source.values[index] ?? 0
           return { name, value, itemStyle: chartEChartsItemStyle(style), label: chartEChartsPointLabel({ visible: true, contentType: 'category', ...style.label }, color, value, name, source.name) }
         }),
       }
@@ -145,7 +145,7 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
       const tiles = chartGaugeTiles(data, { x: grid.left, y: grid.top, width: Math.max(1, chart.size.width - grid.left - grid.right), height: Math.max(1, chart.size.height - grid.top - grid.bottom) })
       const series: GaugeSeriesOption[] = tiles.flatMap(tile => {
         const index = tile.categoryIndex, value = source.values[index]!
-        const name = data.categories[index]!, radius = tile.radius, style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index), label = style.label
+        const name = data.categories[index]!, radius = tile.radius, style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index, chart.type), label = style.label
         const options = resolveChartGaugeOptions(authored, radius, chart.options?.appearance?.font, label)
         const ratio = chartGaugeRatio(value, options.min, options.max), sweep = chartGaugeSweep(options)
         const pointerColor = chartColorOpacity(options.pointer.color ?? style.color!, style.fillOpacity ?? 1), progressColor = chartColorOpacity(options.progress.color ?? style.color!, style.fillOpacity ?? 1)

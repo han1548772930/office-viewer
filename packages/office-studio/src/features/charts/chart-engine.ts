@@ -24,6 +24,7 @@ import { layoutChartData } from './chart-layout'
 import { drawChartData } from './chart-draw'
 import { readChartRecordSteps } from './chart-source-compute'
 import { chartCellPosition, chartPlacementGeometry } from './chart-placement'
+import { validateChartGradientAuthoring } from './chart-gradient'
 
 export interface ChartConfig {
   type: ChartType
@@ -141,6 +142,7 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
     yAxis: cloneChartAxis({ ...DEFAULT_AXIS, ...(config.yAxis ?? {}) }),
     revision: 0,
   }
+  validateChartGradientAuthoring(model.type, model.options)
   validateAxis(model.xAxis, 'xAxis')
   validateAxis(model.yAxis, 'yAxis')
   validateChartData(model, readChartData(workbook, model, preloaded), model.yAxis)
@@ -152,6 +154,7 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: P
   const source = patch.source ? normalizeSource(patch.source) : chart.source
   const pivotTableId = Object.prototype.hasOwnProperty.call(patch, 'pivotTableId') ? patch.pivotTableId : chart.pivotTableId
   const sourceChart = { ...chart, source, pivotTableId, options: mergeChartOptions(chart.options, patch.options) }
+  validateChartGradientAuthoring(patch.type ?? chart.type, sourceChart.options, chart.options)
   const sheet = requireSheet(workbook, chart.sheetId)
   if (!pivotTableId) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
   validateChartType(patch.type ?? chart.type)
@@ -245,7 +248,7 @@ function validateChartData(chart: ChartModel, data: ChartData, axis: ChartAxisOp
   if (type === 'histogram' && data.series.length !== 1) throw new RangeError('直方图须选择一个数值样本字段。')
   if (type === 'pareto' && data.series.length !== 1) throw new RangeError('帕累托图须选择一个数值权重字段。')
   if ((type === 'funnel' || type === 'wordCloud') && data.series.length !== 1) throw new RangeError('漏斗和词云图须选择一个权重字段。')
-  if ((type === 'pareto' || type === 'wordCloud') && data.series.some(series => series.values.some(value => value !== null && value < 0))) throw new RangeError('此图表的权重不能为负数。')
+  if (type === 'wordCloud' && data.series.some(series => series.values.some(value => value !== null && value < 0))) throw new RangeError('此图表的权重不能为负数。')
 }
 
 function validateSourceInSheet(range: CellRange, sheet: SpreadsheetSheet): void {

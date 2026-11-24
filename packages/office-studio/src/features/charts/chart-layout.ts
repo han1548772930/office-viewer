@@ -1,11 +1,13 @@
-import type { ChartAxisOptions, ChartModel } from '../../domain/model'
+import type { ChartAxisOptions, ChartModel, ChartPlotAreaOptions } from '../../domain/model'
 import type { RenderRect } from '../../rendering/contracts'
-import type { ChartData, ChartLayout, ChartPoint, ChartSeriesLayout } from './chart-engine'
+import type { ChartConfig, ChartData, ChartLayout, ChartPoint, ChartSeriesLayout } from './chart-engine'
 import { chartHierarchyItems } from './chart-data'
 import { resolveChartType } from './chart-catalog'
 import { deriveChartData, chartSeriesKind, type ChartComputedStatistics, type ChartDerivedData } from './chart-derived'
 import { chartAxisExtent, chartAxisRatio, chartPolar } from './chart-geometry'
 import { chartPalette, chartSeriesStyle } from './chart-options'
+import { chartColorRepresentative } from './chart-color'
+import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativeExtent, chartParetoCumulativeStyle } from './chart-pareto'
 import { finiteChartValue } from './chart-math'
 import { chart3DScene } from './chart-3d'
 import { chartFunnelLayout, chartGaugeTiles, chartPieLayout } from './chart-pie-layout'
@@ -13,28 +15,46 @@ import { chartGaugeRatio, chartGaugeSweep, resolveChartGaugeOptions } from './ch
 import { chartRadarExtent, chartRadarGeometry } from './chart-radar'
 import { chartBoxplotAxis, chartBoxplotGeometry, chartBoxplotStyle, chartBoxplotSummaryDrawable, chartBoxplotValueDrawable } from './chart-boxplot'
 import { chartAxisTitleSpace } from './chart-axis-title'
+import { chartManualPlotFrame, chartPlotAreaFromFrame, supportsChartPlotArea, validateChartPlotArea } from './chart-plot-area'
 import { chartDateAxis, chartDateSerial } from './chart-date-axis'
 import { chartChordLayout, chartRelationLayout, chartSankeyLayout, chartSunburstLayout, chartTreemapLayout, chartWordCloudLayout } from './chart-special-layout'
 
-export function chartPlotFrame(chart: ChartModel, sourceSeries?: readonly { field: number; name: string; sourceName?: string }[]): { frame: RenderRect; plot: RenderRect } {
+export type ChartPlotFrameSource = Pick<ChartConfig, 'type' | 'position' | 'size' | 'title' | 'subtitle' | 'options' | 'legend' | 'xAxis' | 'yAxis'>
+export type ChartPlotSourceSeries = readonly { field: number; name: string; sourceName?: string }[]
+
+export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: ChartPlotSourceSeries): { frame: RenderRect; plot: RenderRect } {
   const descriptor = resolveChartType(chart.type)
   const axes = ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination', 'waterfall', 'pareto', 'heatmap', 'boxplot', 'candlestick', 'histogram', 'radar'].includes(descriptor.family)
   const frame = { x: chart.position.x, y: chart.position.y, width: chart.size.width, height: chart.size.height }
-  const topLegend = chart.legend.visible && chart.legend.position === 'top' ? 24 : 0, bottomLegend = chart.legend.visible && chart.legend.position === 'bottom' ? 24 : 0
+  const manual = chartManualPlotFrame(chart.type, frame, chart.options?.plotArea)
+  if (manual) return { frame, plot: manual }
+  const legend = { visible: true, position: 'bottom', ...chart.legend }
+  const topLegend = legend.visible && legend.position === 'top' ? 24 : 0, bottomLegend = legend.visible && legend.position === 'bottom' ? 24 : 0
   const inheritedSize = chart.options?.appearance?.font?.fontSize
   const title = chart.title ? Math.max(28, (chart.options?.titleStyle?.fontSize ?? inheritedSize ?? 14) + 14) : 0
   const subtitle = chart.subtitle ? Math.max(18, (chart.options?.subtitleStyle?.fontSize ?? inheritedSize ?? 11) + 7) : 0
-  const sideLegend = chart.legend.visible && ['left', 'right'].includes(chart.legend.position) ? Math.min(96, frame.width * 0.24) : 0
+  const sideLegend = legend.visible && ['left', 'right'].includes(legend.position) ? Math.min(96, frame.width * 0.24) : 0
   const secondary = chart.type === 'pareto' || (sourceSeries
     ? sourceSeries.some((series, index) => chartSeriesStyle(chart, series.field, index, undefined, series.sourceName ?? series.name).rightAxis)
     : Object.values(chart.options?.series ?? {}).some(style => style.rightAxis) || chart.options?.namedSeries?.some(entry => entry.style.rightAxis) || chart.options?.allSeriesStyle?.rightAxis)
-  const horizontal = descriptor.family === 'bar', sideAxis = horizontal ? chart.xAxis : chart.yAxis, bottomAxis = horizontal ? chart.yAxis : chart.xAxis
+  const horizontal = descriptor.family === 'bar', sideAxis = (horizontal ? chart.xAxis : chart.yAxis) ?? {}, bottomAxis = (horizontal ? chart.yAxis : chart.xAxis) ?? {}
   const rightAxis = chart.options?.rightYAxis ?? { scaleType: 'linear' }
-  const left = (axes ? 54 + chartAxisTitleSpace(chart, sideAxis) : 14) + (chart.legend.position === 'left' ? sideLegend : 0)
-  const right = (secondary && !horizontal ? 54 + chartAxisTitleSpace(chart, rightAxis) : 12) + (chart.legend.position === 'right' ? sideLegend : 0)
+  const left = (axes ? 54 + chartAxisTitleSpace(chart, sideAxis) : 14) + (legend.position === 'left' ? sideLegend : 0)
+  const right = (secondary && !horizontal ? 54 + chartAxisTitleSpace(chart, rightAxis) : 12) + (legend.position === 'right' ? sideLegend : 0)
   const top = 12 + title + subtitle + topLegend + (secondary && horizontal ? 40 + chartAxisTitleSpace(chart, rightAxis) : 0)
   const bottom = (axes ? 40 + chartAxisTitleSpace(chart, bottomAxis) : 14) + bottomLegend
   return { frame, plot: { x: frame.x + left, y: frame.y + top, width: Math.max(1, frame.width - left - right), height: Math.max(1, frame.height - top - bottom) } }
+}
+
+/** Preserve authored rectangles; automatic seeds include real series/secondary axes. */
+export function resolveChartPlotAreaForEditing(chart: ChartPlotFrameSource, sourceSeries?: ChartPlotSourceSeries): ChartPlotAreaOptions | undefined {
+  if (!supportsChartPlotArea(chart.type)) return undefined
+  if (chart.options?.plotArea) {
+    validateChartPlotArea(chart.options.plotArea)
+    return { ...chart.options.plotArea }
+  }
+  const { frame, plot } = chartPlotFrame(chart, sourceSeries)
+  return chartPlotAreaFromFrame(frame, plot)
 }
 
 export function layoutChartData(data: ChartData, chart: ChartModel, computed?: ChartComputedStatistics, palette = chartPalette(chart)): ChartLayout {
@@ -45,7 +65,8 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
   const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series)
   const dateAxis = chartDateAxis(data, chart)
   const horizontal = descriptor.family === 'bar', numericX = descriptor.dataShape === 'xy' || descriptor.dataShape === 'bubble' || Boolean(dateAxis)
-  const sourceStyles = data.series.map((series, index) => chartSeriesStyle(chart, series.field, index, palette, series.sourceName ?? series.name))
+  const sourceStyles = data.series.map((series, index) => chart.type === 'pareto' ? chartParetoBarStyle(chart, series.field, index, palette, series.sourceName ?? series.name)
+    : chartSeriesStyle(chart, series.field, index, palette, series.sourceName ?? series.name))
   const kinds = data.series.map((series, index) => chartSeriesKind(chart, series.field, index, series.sourceName ?? series.name))
   const positive = new Map<string, number[]>(), negative = new Map<string, number[]>()
   const rawPoints = data.series.map((series, seriesIndex) => series.values.flatMap((value, categoryIndex) => {
@@ -85,7 +106,7 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     for (const point of error.intervals) values.push(finiteChartValue(point.y - point.minus, '误差下界'), finiteChartValue(point.y + point.plus, '误差上界'))
   }
   const extent = descriptor.family === 'radar' ? chartRadarExtent(data, chart.yAxis) : chartAxisExtent(primaryValues, chart.yAxis), rightAxis: ChartAxisOptions = chart.options?.rightYAxis ?? { scaleType: 'linear' }
-  const rightExtent = derived.pareto ? { min: rightAxis.min ?? 0, max: rightAxis.max ?? 100 } : chartAxisExtent(rightValues, rightAxis)
+  const rightExtent = derived.pareto ? chartParetoCumulativeExtent(chart, derived.pareto.cumulativePercent) : chartAxisExtent(rightValues, rightAxis)
   const xValues = rawPoints.flatMap(points => points.map(point => point.x))
   for (const error of derived.errors) if (error.config.direction === 'x') {
     for (const point of error.intervals) xValues.push(finiteChartValue(point.x - point.minus, 'X 误差下界'), finiteChartValue(point.x + point.plus, 'X 误差上界'))
@@ -120,7 +141,7 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
         ...(numericX ? { xValue: point.x } : {}), ...(point.size == null ? {} : { size: point.size }),
       }
     })
-    return { field: source.field, name: style.name ?? source.name, color: style.color ?? palette[index % palette.length]!, ...kinds[index]!, rightAxis: style.rightAxis, points }
+    return { field: source.field, name: style.name ?? source.name, color: chartColorRepresentative(style.color ?? palette[index % palette.length]!), ...kinds[index]!, rightAxis: style.rightAxis, points }
   })
   const layout: ChartLayout = { frame, plot, ...extent, categories: data.categories, series, horizontal,
     ...(numericX ? { xMin: xExtent.min, xMax: xExtent.max } : {}),
@@ -132,13 +153,13 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     layout.series = derived.boxes.map((box, categoryIndex): ChartSeriesLayout => {
       const style = chartBoxplotStyle(chart, box, categoryIndex, palette), geometry = chartBoxplotGeometry(chart, layout, style, categoryIndex, derived.boxes!.length)
       const summary = geometry.summary(box.statistics)
-      return { field: box.field, name: style.name ?? box.name, color: style.color ?? palette[box.seriesPosition % palette.length]!, type: 'line', stacked: false, rightAxis: style.rightAxis,
+      return { field: box.field, name: style.name ?? box.name, color: chartColorRepresentative(style.color ?? palette[box.seriesPosition % palette.length]!), type: 'line', stacked: false, rightAxis: style.rightAxis,
         points: box.statistics && summary ? [{ x: geometry.x, y: summary.median, value: box.statistics.median, category: box.name, categoryIndex }] : [] }
     })
     return layout
   }
   if (descriptor.threeD) {
-    const scene = chart3DScene(data, chart, layout, undefined, palette)
+    const scene = chart3DScene(data, chart, layout, undefined, palette, false)
     layout.series = layout.series.map((series, index) => ({ ...series, points: scene.points[index]! }))
     return layout
   }
@@ -202,8 +223,10 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     })
   }
   if (derived.pareto) {
-    layout.series.push({ name: '累计百分比', color: palette[1 % palette.length]!, type: 'line', stacked: false, rightAxis: true,
+    const style = chartParetoCumulativeStyle(chart, palette)
+    layout.series.push({ name: CHART_PARETO_CUMULATIVE_NAME, color: chartColorRepresentative(style.color!), type: 'line', stacked: false, rightAxis: true,
       points: derived.pareto.cumulativePercent.flatMap((value, categoryIndex) => {
+        if (rightAxis.scaleType === 'log' && value <= 0) return []
         const position = categoryPosition(categoryIndex)
         return Number.isFinite(position) ? [{ x: plot.x + position * plot.width,
           y: plot.y + (1 - chartAxisRatio(value, rightExtent.min, rightExtent.max, rightAxis)) * plot.height, value, category: data.categories[categoryIndex]!, categoryIndex }] : []

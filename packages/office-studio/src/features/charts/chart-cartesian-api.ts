@@ -1,6 +1,7 @@
 import type { ChartAxisOptions, ChartAxisPointerOptions, ChartNullablePatch, ChartSemanticOptions, ChartSeriesOptions, ChartSeriesSelector } from '../../domain/model'
 import { cloneChartOptions, mergeChartOptions } from './chart-options'
 import { chartSeriesOverride, validateChartSeriesSelector } from './chart-series-selector'
+import { chartLinearGradient, isChartLinearGradient } from './chart-color'
 
 export const ChartAllSeriesStyleTargets = Object.freeze({ Border: 'border', Color: 'color', FillOpacity: 'fillOpacity', Label: 'label', Point: 'point', RightAxis: 'rightAxis' } as const)
 export const ChartSeriesClearTargets = Object.freeze({ ...ChartAllSeriesStyleTargets, DataPoints: 'dataPoints' } as const)
@@ -26,6 +27,7 @@ function normalizePatchObject(value: unknown, nullResets = true): Record<string,
   for (const [key, entry] of Object.entries(value)) {
     if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new TypeError('图表配置 patch 包含无效属性。')
     if (entry === null) entries.push([key, key === 'fillPattern' || !nullResets ? null : undefined])
+    else if (isChartLinearGradient(entry)) entries.push([key, chartLinearGradient(entry)])
     else if (Array.isArray(entry)) entries.push([key, detachPatchArray(entry)])
     else entries.push([key, entry && typeof entry === 'object' ? normalizePatchObject(entry, nullResets) : entry])
   }

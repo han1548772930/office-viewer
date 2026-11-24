@@ -89,7 +89,7 @@ test('paragraph splitting updates table-cell control targets without moving them
   add(model)
   const target = { blockId: 'table', row: 0, col: 0, cellBlockId: 'paragraph-1' }
   commands.executeDocumentCommand(model, selection(5, 5, target), { id: 'doc.command.insert-text', text: '\n' })
-  const blocks = table.metadata.table.rows[0].cells[0].blocks
+  const blocks = model.blocks[0].metadata.table.rows[0].cells[0].blocks
   assert.deepEqual(blocks.map(textOf), ['Left ', 'NAME right'])
   assert.equal(model.contentControls[0].blockId, blocks[1].id)
   assert.equal(controls.contentControlText(model, model.contentControls[0]), 'NAME')
@@ -193,8 +193,9 @@ test('unchanged property fields do not prevent unlocking a wrapper from the prop
 test('text and checkbox value commands cannot bypass a locked repeating-section ancestor', () => {
   for (const type of ['text', 'checkbox']) {
     const model = fixture('ABCD')
-    add(model, { id: 'section', type: 'repeatingSection', startOffset: 0, endOffset: 4, lock: 'contentLocked' })
+    add(model, { id: 'section', type: 'repeatingSection', startOffset: 0, endOffset: 4 })
     add(model, { id: 'child', type, startOffset: 1, endOffset: 3, parentId: 'section' })
+    controls.updateDocumentContentControl(model, 'section', { lock: 'contentLocked' })
     const before = structuredClone(model)
     const edit = type === 'text'
       ? () => controls.setDocumentContentControlValue(model, 'child', 'new')

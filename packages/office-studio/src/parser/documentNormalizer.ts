@@ -12,6 +12,8 @@ import { validateDocumentOfficeSource } from './documentOfficeSource.ts'
 import { documentTextFields, documentTextFieldRanges } from '../features/document/model/document-text-fields.ts'
 import { hydrateDocumentTocsFromNativeFields } from '../features/document/toc/document-native-toc.ts'
 import { normalizeDocumentTable, normalizedDocumentTableId } from './documentTables'
+import { claimParsedDocumentStoryBlocks, normalizeParsedDocumentBlockGroup, parsedDocumentBlockOwnership } from './documentAuxiliaryContent'
+import { projectDocumentStoryBlocks } from '../features/document/model/document-story-blocks'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -118,7 +120,7 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     const type = record(inline).type
     return type === 'text' || type === 'form_field'
   }).map((inline, index) => normalizeRun(inline, id+'-run-'+index))
-  if (!runs.length) runs.push(normalizeRun({ text: text(raw.content) }, id+'-run-0'))
+  if (!runs.length) runs.push(normalizeRun({ text: text(raw.content), sourceFormat: details.paragraphMarkSourceFormat }, id+'-run-0'))
   const level = Math.min(6, Math.max(0, finite(details.headingLevel, finite(style.headingLevel))))
   const numbering = record(details.numbering)
   const listLevel = Math.min(8, Math.max(0, Math.trunc(finite(numbering.ilvl, finite(numbering.level)))))
@@ -222,20 +224,24 @@ function normalizeBlock(value: unknown, fallbackId: string, lists: ReturnType<ty
     documentTextFields(block)
   }
   if (details.nativeFieldSource !== undefined) block.metadata.nativeFieldSource = details.nativeFieldSource
+  if (details.sourceFormat !== undefined) {
+    validateStorySourceFormat(details.sourceFormat)
+    block.metadata.officeParagraphStyleBaseline = { ...block.style }
+    block.metadata.officeParagraphSemanticBaseline = { type: block.type, level: block.level, namedStyleType: block.metadata.namedStyleType }
+  }
   return block
 }
 
-function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: DocumentBlock[], model: DocumentModel): Record<string, DocumentSectionHeaderFooter> {
+function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: DocumentBlock[], model: DocumentModel, lists: ReturnType<typeof documentNumberingIndex>, claimed: Set<string>): Record<string, DocumentSectionHeaderFooter> {
   const layout = array(data.sectionLayout)
   if (!layout.length) return {}
   const parsedBlocks = array(data.blocks).map(record)
   const documentId = text(data.documentId)
   const result: Record<string, DocumentSectionHeaderFooter> = {}
   const sectionBreaks = blocks.filter((block) => block.type === 'sectionBreak')
-  const storyText = (partName: string, kind: 'header' | 'footer'): string => {
-    const story = parsedBlocks.find((block) => block.type === kind && array(block.sourceRefs).some((source) => text(record(source).partName) === partName))
-    return text(story?.content)
-  }
+  const sourceStory = (partName: string, kind: 'header' | 'footer') => parsedBlocks.find(block => block.type === kind
+    && (array(block.sourceRefs).some(source => text(record(source).partName) === partName)
+      || text(block.id).endsWith(`/${partName}/story`)))
   for (const [index, rawSection] of layout.entries()) {
     const section = record(rawSection)
     const sectionId = index === 0
@@ -260,7 +266,7 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
       const field = headerFields[text(reference.referenceType, 'default')]
       if (field) {
         defined.add(field)
-        readStory(value, field, reference, storyText(text(reference.partName), 'header'), model)
+        readStory(value, field, reference, sourceStory(text(reference.partName), 'header'), model, lists, claimed, sectionId)
       }
     }
     for (const entry of array(section.footerSections)) {
@@ -268,7 +274,7 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
       const field = footerFields[text(reference.referenceType, 'default')]
       if (field) {
         defined.add(field)
-        readStory(value, field, reference, storyText(text(reference.partName), 'footer'), model)
+        readStory(value, field, reference, sourceStory(text(reference.partName), 'footer'), model, lists, claimed, sectionId)
       }
     }
     // Each omitted native reference inherits that specific previous story.
@@ -280,10 +286,11 @@ function normalizeSectionHeaderFooters(data: Record<string, unknown>, blocks: Do
   return result
 }
 
-function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageField['story'], reference: Record<string, unknown>, fallbackText: string, model: DocumentModel) {
+function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageField['story'], reference: Record<string, unknown>, rawStory: Record<string, unknown> | undefined,
+  model: DocumentModel, lists: ReturnType<typeof documentNumberingIndex>, claimed: Set<string>, sectionId: string) {
   const content = record(reference.storyText)
   const positioned = typeof content.text === 'string'
-  section[story] = positioned ? text(content.text) : fallbackText
+  section[story] = positioned ? text(content.text) : text(rawStory?.content)
   const fields = array(positioned ? content.fields : reference.pageFields)
   for (const [fieldIndex, raw] of fields.entries()) {
     const detail = record(raw)
@@ -344,6 +351,42 @@ function readStory(section: DocumentSectionHeaderFooter, story: DocumentPageFiel
       ...(typeof content.relationshipsXml === 'string' ? { relationshipsXml: content.relationshipsXml } : {}),
       unsupportedFeatures: array(content.unsupportedFeatures).filter(feature => typeof feature === 'string'), baseline } }
     section.storyContent = { ...section.storyContent, [story]: rich }
+  }
+  if (rawStory && Array.isArray(rawStory.children)) {
+    const previous = section.storyContent?.[story], oldBuffer = storyBuffer(section, story).value
+    const parsed = normalizeParsedDocumentBlockGroup(rawStory.children, `${sectionId}-${story}`, (raw, id) => normalizeBlock(raw, id, lists))
+    const owned = claimParsedDocumentStoryBlocks(parsed, claimed)
+    const projection = projectDocumentStoryBlocks({ ...previous, blocks: owned.blocks, runs: previous?.runs ?? [], paragraphs: previous?.paragraphs ?? [],
+      metadata: { ...previous?.metadata, officeStoryBlockSource: { version: 1, partName: text(reference.partName), sourceRefs: rawStory.sourceRefs,
+        ...(owned.copied ? { copiedSharedPart: true } : {}) } } })
+    section[story] = projection.text
+    section.storyContent = { ...section.storyContent, [story]: projection.content }
+    section.pageFields = [...(section.pageFields ?? []).filter(field => field.story !== story), ...projection.pageFields.map(field => ({ ...field, story }))]
+    const buffer = storyBuffer(section, story).value
+    if (previous?.locks?.length && buffer !== oldBuffer) throw new RangeError('页眉页脚块树与原始内容锁坐标不一致；不能将锁应用到其他文本。')
+    validateDocumentStoryLocks(projection.content.locks, buffer)
+  }
+}
+
+function attachParsedNoteStories(model: DocumentModel, stories: Record<string, unknown[]>, lists: ReturnType<typeof documentNumberingIndex>, claimed: Set<string>): void {
+  for (const kind of ['footnote', 'endnote'] as const) {
+    const notes = kind === 'footnote' ? model.footnotes : model.endnotes
+    const byId = new Map<string, unknown[]>()
+    for (const raw of stories[kind] ?? []) {
+      const noteId = record(raw).noteId
+      if (typeof noteId !== 'number' || !Number.isSafeInteger(noteId)) throw new TypeError('注释内容区缺少有效的来源标识。')
+      const id = String(noteId), group = byId.get(id) ?? []
+      group.push(raw); byId.set(id, group)
+    }
+    for (const [id, raw] of byId) {
+      const note = notes?.[id]
+      if (!note) throw new TypeError(`注释内容区 ${kind}:${id} 缺少对应的注释记录。`)
+      const owned = claimParsedDocumentStoryBlocks(normalizeParsedDocumentBlockGroup(raw, `${kind}-${id}`, (raw, fallback) => normalizeBlock(raw, fallback, lists)), claimed)
+      note.content = projectDocumentStoryBlocks({ ...note.content, blocks: owned.blocks, runs: [], paragraphs: [],
+        metadata: { ...note.content?.metadata, officeStoryBlockSource: { version: 1, story: kind, noteId: id, sourceRefs: raw.flatMap(value => array(record(value).sourceRefs)),
+          ...(owned.copied ? { copiedSharedPart: true } : {}) } } }, 'display').content
+      note.text = runText(note.content.runs)
+    }
   }
 }
 
@@ -448,6 +491,9 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
   result.id = id
   result.name = envelope.fileName
   result.blocks = []
+  const defaultStyle = normalizeDefaultStyle(data.defaultStyle)
+  if (defaultStyle) result.defaultStyle = defaultStyle
+  else delete result.defaultStyle
   const stories: Record<string, unknown[]> = {}
   const lists = documentNumberingIndex(data.numberingDefinitions)
   for (const [index, source] of array(data.blocks).entries()) {
@@ -458,20 +504,17 @@ export function normalizeDocument(envelope: ParseEnvelope): DocumentModel {
       ;(stories[key] ??= []).push(raw)
       continue
     }
-    const block = normalizeBlock(raw, id+'-block-'+index, lists)
-    result.blocks.push(block)
-    if (block.type !== 'table') for (const [childIndex, child] of array(raw.children).entries()) {
-      if (record(child).type === 'figure') result.blocks.push(normalizeBlock(child, block.id+'-object-'+childIndex, lists))
-    }
+    const fallbackId = id+'-block-'+index
+    result.blocks.push(...normalizeParsedDocumentBlockGroup([raw], fallbackId, (raw, fallback) => normalizeBlock(raw, fallback, lists), fallbackId))
   }
   if (!result.blocks.length) result.blocks = createBlankDocument().blocks
   documentTextFieldRanges(result)
-  Object.assign(result, normalizeDocumentNotes(data, result.blocks))
+  const claimed = parsedDocumentBlockOwnership(result.blocks)
+  result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks, result, lists, claimed)
+  const referenceBlocks = [...result.blocks, ...Object.values(result.sectionHeaderFooters).flatMap(section => Object.values(section.storyContent ?? {}).flatMap(content => content?.blocks ?? []))]
+  Object.assign(result, normalizeDocumentNotes(data, referenceBlocks))
+  attachParsedNoteStories(result, stories, lists, claimed)
   result.comments = normalizeDocumentComments(data.comments, result.blocks)
-  const defaultStyle = normalizeDefaultStyle(data.defaultStyle)
-  if (defaultStyle) result.defaultStyle = defaultStyle
-  else delete result.defaultStyle
-  result.sectionHeaderFooters = normalizeSectionHeaderFooters(data, result.blocks, result)
   const breaks = result.blocks.filter(block => block.type === 'sectionBreak')
   array(data.sectionLayout).forEach((raw, index) => {
     const section = record(raw)

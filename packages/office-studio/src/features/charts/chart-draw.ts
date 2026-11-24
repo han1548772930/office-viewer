@@ -4,11 +4,11 @@ import type { ChartData, ChartLayout, ChartPoint } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { deriveChartData, chartBubblePointSize, chartCandlestickPointStyle, chartHeatmapExtent, chartHeatmapPointStyle, chartHierarchyPointStyle, chartPointStyle, type ChartComputedStatistics, type ChartDerivedData } from './chart-derived'
 import { chartHierarchyItems } from './chart-data'
-import { normalizeChartColor } from './chart-color'
+import { isChartLinearGradient, normalizeChartColor } from './chart-color'
 import { chartInterpolate, chartLinearRatio } from './chart-math'
 import { layoutDerivedChartData } from './chart-layout'
 import {
-  chartArc, chartAxisRatio, chartAxisTicks, chartBezier, chartCircle, chartColorOpacity, chartFont, chartLabelText, chartLine,
+  chartArc, chartAxisRatio, chartAxisTicks, chartBezier, chartCircle, chartColorOpacity, chartFilledMarkBorder, chartFont, chartLabelText, chartLine,
   chartPolar, chartPolygon, chartRect, chartSymbol, formatChartNumber, type ChartVector,
 } from './chart-geometry'
 import { chartPalette, chartSeriesColorIsAuthored, chartSeriesStyle, definedChartStyleFields } from './chart-options'
@@ -20,6 +20,9 @@ import { chartBoxplotGeometry, chartBoxplotStyle } from './chart-boxplot'
 import { chartAxisTitleCommand, chartAxisTitleFont, chartAxisTitleSpace } from './chart-axis-title'
 import { chartDateAxisLabel } from './chart-date-axis'
 import { chartFillPatternPaint } from './chart-fill-pattern'
+import type { ChartAutomaticGradient } from './chart-auto-gradient'
+import { chartSeriesGradientBounds, createChartMarkGradient } from './chart-gradient'
+import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativeMarkerStyle, chartParetoCumulativePointStyle, chartParetoCumulativeStyle } from './chart-pareto'
 import { chartChordLayout, chartRelationLayout, chartRibbon, chartSankeyLayout, chartSunburstLayout, chartTreemapLayout, chartWordCloudLayout } from './chart-special-layout'
 import type { ChartRenderTheme } from './chart-theme'
 
@@ -44,7 +47,7 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
     return normalizeChartCommands(commands)
   }
   if (descriptor.threeD) {
-    commands.push(...chart3DScene(data, chart, layout, textColor, palette).commands)
+    for (const command of chart3DScene(data, chart, layout, textColor, palette).commands) commands.push(command)
     drawPointLabels(commands, data, chart, layout, textColor, palette)
   } else if (descriptor.family === 'pie') drawPie(commands, data, chart, layout, textColor, palette)
   else if (descriptor.family === 'radar') {
@@ -65,12 +68,8 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
     else if (descriptor.family === 'waterfall') drawWaterfall(commands, derived, chart, layout, palette)
     else if (descriptor.family === 'heatmap') drawHeatmap(commands, data, chart, layout, textColor, palette)
     else drawCartesian(commands, data, chart, layout, palette)
-    if (derived.pareto) {
-      const color = palette[1 % palette.length]!, points = layout.series.at(-1)!.points
-      for (let index = 1; index < points.length; index++) chartLine(commands, points[index - 1]!, points[index]!, { width: 2, color }, color, layout.plot)
-      points.forEach(point => chartCircle(commands, point, 2, color, undefined, layout.plot))
-    }
-    if (descriptor.family !== 'boxplot') drawPointLabels(commands, data, chart, layout, textColor, palette)
+    if (derived.pareto) drawParetoCumulative(commands, chart, layout, textColor, palette)
+    if (descriptor.family !== 'boxplot') drawPointLabels(commands, data, chart, layout, textColor, palette, derived.pareto?.cumulativePercent)
     drawTrendlinesAndErrors(commands, derived, chart, layout, textColor, palette)
   }
   drawLegend(commands, data, chart, layout, textColor, palette)
@@ -180,33 +179,47 @@ function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartMod
   const barWidth = groupWidth / Math.max(1, barGroups.length - (barGroups.length - 1) * overlap)
   const maxBubbleSize = data.series.reduce((max, source) => source.sizeValues?.reduce<number>((maximum, size) => Math.max(maximum, size ?? 0), max) ?? max, 1)
   layout.series.slice(0, data.series.length).forEach((series, seriesIndex) => {
-    const source = data.series[seriesIndex]!, field = source.field, style = chartSeriesStyle(chart, field, seriesIndex, palette, source.sourceName ?? source.name)
+    const source = data.series[seriesIndex]!, field = source.field, style = chart.type === 'pareto' ? chartParetoBarStyle(chart, field, seriesIndex, palette, source.sourceName ?? source.name)
+      : chartSeriesStyle(chart, field, seriesIndex, palette, source.sourceName ?? source.name)
+    const axis = series.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
     const isBar = series.type === 'column' || series.type === 'bar' || chart.type === 'histogram' || chart.type === 'pareto'
     if (isBar) {
       const group = series.stacked ? `stack:${series.rightAxis ? 'right' : 'left'}` : `field:${field}`, groupIndex = Math.max(0, barGroups.indexOf(group))
       for (const point of series.points) {
-        const pointStyle = chartPointStyle(style, point.categoryIndex), color = chartColorOpacity(pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1)
+        const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type), color = chartColorOpacity(pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1)
         const center = horizontal ? point.y : point.x, offset = center - groupWidth / 2 + groupIndex * barWidth * (1 - overlap)
         const rect = horizontal ? { x: Math.min(point.x, point.baseX!), y: offset, width: Math.abs(point.x - point.baseX!), height: Math.max(1, barWidth - 1) }
           : { x: offset, y: Math.min(point.y, point.baseY!), width: Math.max(1, barWidth - 1), height: Math.abs(point.y - point.baseY!) }
-        chartRect(commands, rect, color, pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
+        const gradient = createChartMarkGradient(chart, { ...pointStyle, color: pointStyle.color ?? series.color }, horizontal ? 'bar' : 'column', { negative: point.value < 0, reverse: axis.reverse })
+        const border = chart.type === 'pareto' ? chartFilledMarkBorder(pointStyle.color ?? series.color, pointStyle.border) : pointStyle.border
+        chartRect(commands, rect, color, border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1), gradient)
       }
       return
     }
     if (chart.type === 'scatter' || chart.type === 'bubble') {
       for (const point of series.points) {
-        const pointStyle = chartPointStyle(style, point.categoryIndex)
+        const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type)
         const size = chart.type === 'bubble' ? chartBubblePointSize(pointStyle, point.size ?? 0, maxBubbleSize, chart.options, Math.min(plot.width, plot.height)) : pointStyle.point?.size ?? 8
         if (chart.type === 'bubble' && (point.size === undefined || point.size <= 0)) continue
         chartSymbol(commands, point, size, chartColorOpacity(pointStyle.point?.color ?? pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1), pointStyle.point?.shape ?? 'circle', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
       }
       return
     }
+    const curvedPoints = series.type === 'area' && chart.options?.area?.smooth ? (function* (): Generator<ChartVector> {
+      for (let index = 1; index < series.points.length; index++) {
+        if (series.points[index]!.categoryIndex !== series.points[index - 1]!.categoryIndex + 1 && chart.options?.invalidValueStrategy !== 'link') continue
+        yield* smoothChartSegment(series.points, index)
+      }
+    })() : undefined
+    const seriesBounds = chartSeriesGradientBounds(series, series.type === 'area', curvedPoints)
     for (let index = 1; index < series.points.length; index++) {
       const previous = series.points[index - 1]!, point = series.points[index]!
       if (point.categoryIndex !== previous.categoryIndex + 1 && chart.options?.invalidValueStrategy !== 'link') continue
-      const styleAtPoint = chartPointStyle(style, point.categoryIndex), color = styleAtPoint.color ?? series.color
+      const styleAtPoint = chartPointStyle(style, point.categoryIndex, chart.type), color = styleAtPoint.color ?? series.color
       const path = series.type === 'area' && chart.options?.area?.smooth ? smoothChartSegment(series.points, index) : [previous, point]
+      const areaGradient = series.type === 'area' ? createChartMarkGradient(chart, { ...styleAtPoint, color, fillOpacity: styleAtPoint.fillOpacity ?? 0.28 }, 'area', { reverse: axis.reverse }, isChartLinearGradient(color) ? seriesBounds : plot) : undefined
+      const lineColor = styleAtPoint.border?.color ?? color
+      const lineGradient = series.type === 'line' ? createChartMarkGradient(chart, { ...styleAtPoint, color: lineColor, fillOpacity: styleAtPoint.border?.opacity ?? 1 }, 'line', { reverse: axis.reverse }, isChartLinearGradient(lineColor) ? seriesBounds : plot) : undefined
       for (let step = 1; step < path.length; step++) {
         const a = path[step - 1]!, b = path[step]!
         if (series.type === 'area') {
@@ -215,16 +228,18 @@ function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartMod
           const fill = chartColorOpacity(color, styleAtPoint.fillOpacity ?? 0.28), pattern = chartFillPatternPaint(styleAtPoint.fillPattern, styleAtPoint.fillOpacity ?? 0.28)
           if ((a.y - base0) * (b.y - base1) < 0) {
             const ratio = Math.abs(a.y - base0) / (Math.abs(a.y - base0) + Math.abs(b.y - base1)), crossing = { x: a.x + (b.x - a.x) * ratio, y: base0 + (base1 - base0) * ratio }
-            chartPolygon(commands, [{ x: a.x, y: base0 }, a, crossing], fill, undefined, plot, pattern)
-            chartPolygon(commands, [crossing, b, { x: b.x, y: base1 }], fill, undefined, plot, pattern)
-          } else chartPolygon(commands, [{ x: a.x, y: base0 }, a, b, { x: b.x, y: base1 }], fill, undefined, plot, pattern)
+            chartPolygon(commands, [{ x: a.x, y: base0 }, a, crossing], fill, undefined, plot, pattern, areaGradient)
+            chartPolygon(commands, [crossing, b, { x: b.x, y: base1 }], fill, undefined, plot, pattern, areaGradient)
+          } else chartPolygon(commands, [{ x: a.x, y: base0 }, a, b, { x: b.x, y: base1 }], fill, undefined, plot, pattern, areaGradient)
         }
-        chartLine(commands, a, b, { ...styleAtPoint.border, color: styleAtPoint.border?.color ?? color, width: styleAtPoint.border?.width ?? 2 }, color, plot)
+        chartLine(commands, a, b, { ...styleAtPoint.border, color: styleAtPoint.border?.color ?? color, width: styleAtPoint.border?.width ?? 2 }, color, plot, lineGradient)
       }
     }
     series.points.forEach(point => {
-      const pointStyle = chartPointStyle(style, point.categoryIndex)
-      chartSymbol(commands, point, pointStyle.point?.size ?? 6, chartColorOpacity(pointStyle.point?.color ?? pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1), pointStyle.point?.shape ?? 'circle', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
+      const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type)
+      const color = pointStyle.point?.color ?? pointStyle.color ?? series.color
+      const gradient = createChartMarkGradient(chart, { ...pointStyle, color: isChartLinearGradient(pointStyle.color) ? pointStyle.color : color }, 'line', { reverse: axis.reverse, symbol: true }, plot)
+      chartSymbol(commands, point, pointStyle.point?.size ?? 6, chartColorOpacity(color, pointStyle.fillOpacity ?? 1), pointStyle.point?.shape ?? 'circle', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1), gradient)
     })
   })
 }
@@ -234,18 +249,45 @@ function smoothChartSegment(points: ChartPoint[], index: number): ChartVector[] 
   return chartBezier(a, { x: a.x + (b.x - previous.x) / 6, y: a.y + (b.y - previous.y) / 6 }, { x: b.x - (next.x - a.x) / 6, y: b.y - (next.y - a.y) / 6 }, b, 12)
 }
 
-function drawPointLabels(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
+function drawPointLabels(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[], cumulativePercent?: readonly number[]): void {
   for (const [index, series] of layout.series.entries()) {
+    if (chart.type === 'pareto' && index >= data.series.length) continue
     const source = data.series[index]
-    const style = chartSeriesStyle(chart, source?.field ?? series.field ?? index, index, palette, source?.sourceName ?? source?.name)
+    const style = chart.type === 'pareto' ? chartParetoBarStyle(chart, source?.field ?? series.field ?? index, index, palette, source?.sourceName ?? source?.name)
+      : chartSeriesStyle(chart, source?.field ?? series.field ?? index, index, palette, source?.sourceName ?? source?.name)
     if (!style.label?.visible) continue
     series.points.forEach(point => {
-      const label = chartPointStyle(style, point.categoryIndex).label, inside = label?.position === 'inside' || label?.position === 'center'
+      const label = chartPointStyle(style, point.categoryIndex, chart.type).label, inside = label?.position === 'inside' || label?.position === 'center'
       const x = inside && layout.horizontal ? (point.x + (point.baseX ?? point.x)) / 2 : point.x + (label?.position === 'left' ? -9 : label?.position === 'right' ? 9 : 0)
       const y = inside && !layout.horizontal ? (point.y + (point.baseY ?? point.y)) / 2 : point.y + (inside || label?.position === 'left' || label?.position === 'right' ? 0 : label?.position === 'bottom' ? 10 : -9)
-      commands.push({ kind: 'text', x, y, text: chartLabelText(label, point.value, point.category, series.name), font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label?.color ?? color,
+      const percentage = cumulativePercent ? cumulativePercent[point.categoryIndex]! - (point.categoryIndex ? cumulativePercent[point.categoryIndex - 1]! : 0) : undefined
+      commands.push({ kind: 'text', x, y, text: chartLabelText(label, point.value, point.category, series.name, percentage), font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label?.color ?? color,
         align: label?.position === 'left' ? 'right' : label?.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: layout.plot })
     })
+  }
+}
+
+function drawParetoCumulative(commands: DrawCommand[], chart: ChartModel, layout: ChartLayout, textColor: string, palette: string[]): void {
+  const series = layout.series.at(-1)!, style = chartParetoCumulativeStyle(chart, palette), bounds = chartSeriesGradientBounds(series)
+  const reverse = chart.options?.rightYAxis?.reverse
+  for (let index = 1; index < series.points.length; index++) {
+    const previous = series.points[index - 1]!, point = series.points[index]!
+    if (point.categoryIndex !== previous.categoryIndex + 1 && chart.options?.invalidValueStrategy !== 'link') continue
+    const current = chartParetoCumulativePointStyle(style, point.categoryIndex), color = current.border?.color ?? current.color!
+    const gradient = createChartMarkGradient(chart, { ...current, color, fillOpacity: current.border?.opacity ?? 1 }, 'line', { reverse }, isChartLinearGradient(color) ? bounds : layout.plot)
+    chartLine(commands, previous, point, { ...current.border, visible: true, color,
+      width: current.border?.width !== undefined && current.border.width > 0 ? current.border.width : style.border?.width ?? 2 }, color, layout.plot, gradient)
+  }
+  for (const point of series.points) {
+    const current = chartParetoCumulativeMarkerStyle(style, point.categoryIndex), label = current.label
+    chartSymbol(commands, point, current.point?.size ?? 7, chartColorOpacity(current.color!, current.fillOpacity ?? 1),
+      current.point?.shape ?? 'circle', current.border, layout.plot, chartFillPatternPaint(current.fillPattern, current.fillOpacity ?? 1))
+    if (!label?.visible) continue
+    const x = point.x + (label.position === 'left' ? -9 : label.position === 'right' ? 9 : 0)
+    const y = point.y + (label.position === 'inside' || label.position === 'center' || label.position === 'left' || label.position === 'right' ? 0 : label.position === 'bottom' ? 10 : -9)
+    commands.push({ kind: 'text', x, y, text: chartLabelText(label, point.value, point.category, CHART_PARETO_CUMULATIVE_NAME, point.value),
+      font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label.color ?? textColor,
+      align: label.position === 'left' ? 'right' : label.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: layout.plot })
   }
 }
 
@@ -325,7 +367,7 @@ function drawRadar(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
     if (chart.options?.radar?.fill) chartPolygon(commands, polygon, chartColorOpacity(style.color ?? series.color, style.fillOpacity ?? 0.25), undefined, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 0.25))
     polygon.forEach((point, categoryIndex) => chartLine(commands, point, polygon[(categoryIndex + 1) % polygon.length]!, { color: series.color, width: 2, ...style.border }, series.color))
     series.points.forEach(point => {
-      const pointStyle = chartPointStyle(style, point.categoryIndex)
+      const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type)
       chartSymbol(commands, point, pointStyle.point?.size ?? 4, chartColorOpacity(pointStyle.point?.color ?? pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1),
         pointStyle.point?.shape ?? 'none', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
     })
@@ -338,11 +380,12 @@ function drawRadar(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
   if (yTitle) commands.push(yTitle)
 }
 
-export function drawChartSector(commands: DrawCommand[], center: ChartVector, inner: number, outer: number, start: number, end: number, color: string, border?: ChartSeriesOptions['border'], clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
+export function drawChartSector(commands: DrawCommand[], center: ChartVector, inner: number, outer: number, start: number, end: number, color: string, border?: ChartSeriesOptions['border'], clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
   const count = Math.max(2, Math.ceil(Math.abs(end - start) / (Math.PI / 48)))
+  const paint = gradient && { ...gradient, bounds: gradient.bounds ?? { x: center.x - outer, y: center.y - outer, width: outer * 2, height: outer * 2 } }
   for (let index = 0; index < count; index++) {
     const a = start + (end - start) * index / count, b = start + (end - start) * (index + 1) / count
-    chartPolygon(commands, inner > 0 ? [chartPolar(center, inner, a), chartPolar(center, outer, a), chartPolar(center, outer, b), chartPolar(center, inner, b)] : [center, chartPolar(center, outer, a), chartPolar(center, outer, b)], color, undefined, clip, pattern)
+    chartPolygon(commands, inner > 0 ? [chartPolar(center, inner, a), chartPolar(center, outer, a), chartPolar(center, outer, b), chartPolar(center, inner, b)] : [center, chartPolar(center, outer, a), chartPolar(center, outer, b)], color, undefined, clip, pattern, paint)
   }
   if (border && border.visible !== false) {
     const outerArc = chartArc(center, outer, start, end), innerArc = inner > 0 ? chartArc(center, inner, start, end) : [center]
@@ -355,8 +398,9 @@ function drawPie(commands: DrawCommand[], data: ChartData, chart: ChartModel, la
   const pie = chartPieLayout(data, chart, layout.plot), field = data.series[0]!.field
   for (const [start, end] of pie.connectors) chartLine(commands, start, end, { color, width: 1 }, color)
   for (const sector of pie.sectors) {
-    const style = chartPointStyle(chartSeriesStyle(chart, field, sector.part.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), sector.part.index)
-    drawChartSector(commands, sector.center, sector.inner, sector.outer, sector.start, sector.end, chartColorOpacity(style.color ?? palette[sector.part.index % palette.length]!, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
+    const style = chartPointStyle(chartSeriesStyle(chart, field, sector.part.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), sector.part.index, chart.type)
+    const fill = style.color ?? palette[sector.part.index % palette.length]!, gradient = createChartMarkGradient(chart, { ...style, color: fill }, 'pie')
+    drawChartSector(commands, sector.center, sector.inner, sector.outer, sector.start, sector.end, chartColorOpacity(fill, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
     const label = { ...style.label, ...chart.options?.pie?.label }
     if (label.visible !== false) {
       const outside = label.position !== 'inside' && label.position !== 'center', point = chartPolar(sector.center, outside ? sector.outer * 1.12 : (sector.inner + sector.outer) / 2, (sector.start + sector.end) / 2)
@@ -365,8 +409,9 @@ function drawPie(commands: DrawCommand[], data: ChartData, chart: ChartModel, la
     }
   }
   for (const bar of pie.bars) {
-    const style = chartPointStyle(chartSeriesStyle(chart, field, bar.part.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), bar.part.index)
-    chartRect(commands, bar.rect, chartColorOpacity(style.color ?? palette[bar.part.index % palette.length]!, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
+    const style = chartPointStyle(chartSeriesStyle(chart, field, bar.part.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), bar.part.index, chart.type)
+    const fill = style.color ?? palette[bar.part.index % palette.length]!, gradient = createChartMarkGradient(chart, { ...style, color: fill }, 'column')
+    chartRect(commands, bar.rect, chartColorOpacity(fill, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
     const label = { ...style.label, ...chart.options?.pie?.label }
     if (label.visible !== false) commands.push({ kind: 'text', x: bar.rect.x + bar.rect.width / 2, y: bar.rect.y + bar.rect.height / 2, text: chartLabelText({ contentType: 'category', ...label }, bar.part.value, bar.part.category, data.series[0]!.name, bar.percentage), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', maxWidth: bar.rect.width, clip: layout.plot })
   }
@@ -432,11 +477,13 @@ function drawWaterfall(commands: DrawCommand[], derived: ChartDerivedData, chart
   const width = groupWidth / Math.max(1, layout.series.length - (layout.series.length - 1) * overlap), options = chart.options?.waterfall
   layout.series.forEach((series, seriesIndex) => series.points.forEach((point, index) => {
     const source = derived.data.series[seriesIndex]!, role = derived.waterfalls![seriesIndex]![index]!.role
-    const style = chartPointStyle(chartSeriesStyle(chart, source.field, seriesIndex, palette, source.sourceName ?? source.name), point.categoryIndex)
+    const style = chartPointStyle(chartSeriesStyle(chart, source.field, seriesIndex, palette, source.sourceName ?? source.name), point.categoryIndex, chart.type)
     const roleColor = role === 'total' ? options?.totalColor ?? palette[seriesIndex % palette.length]! : point.value >= 0 ? options?.positiveColor ?? '#059669' : options?.negativeColor ?? '#dc2626'
     const color = style.dataPoints?.[point.categoryIndex]?.color ?? (chartSeriesColorIsAuthored(chart, source.field, source.sourceName ?? source.name) ? style.color! : roleColor)
     const x = point.x - groupWidth / 2 + seriesIndex * width * (1 - overlap)
-    chartRect(commands, { x, y: Math.min(point.y, point.baseY!), width: Math.max(1, width - 1), height: Math.abs(point.y - point.baseY!) }, chartColorOpacity(color, style.fillOpacity ?? 1), style.border, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
+    const axis = series.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
+    const gradient = createChartMarkGradient(chart, { ...style, color }, 'column', { negative: point.value < 0, reverse: axis.reverse })
+    chartRect(commands, { x, y: Math.min(point.y, point.baseY!), width: Math.max(1, width - 1), height: Math.abs(point.y - point.baseY!) }, chartColorOpacity(color, style.fillOpacity ?? 1), style.border, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
     const next = series.points[index + 1]
     if (next && options?.connector !== false) chartLine(commands, { x: x + (chart.xAxis.reverse ? 0 : width), y: point.y }, { x: next.x - groupWidth / 2 + seriesIndex * width * (1 - overlap) + (chart.xAxis.reverse ? width : 0), y: point.y }, { color: '#94a3b8', dashType: 'dashed', width: 1 }, '#94a3b8', plot)
   }))
@@ -459,7 +506,7 @@ function drawHeatmap(commands: DrawCommand[], data: ChartData, chart: ChartModel
 function drawGraph(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
   const sankey = chart.type === 'sankey', graph = sankey ? chartSankeyLayout(data.graph!, layout.plot) : chartRelationLayout(data.graph!, chart, layout.plot)
   for (const link of graph.links) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, link.colorIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), link.colorIndex)
+    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, link.colorIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), link.colorIndex, chart.type)
     const fill = chartColorOpacity(style.color!, (sankey ? 0.55 : 0.6) * (style.fillOpacity ?? 1))
     const pattern = chartFillPatternPaint(style.fillPattern, (sankey ? 0.55 : 0.6) * (style.fillOpacity ?? 1))
     chartPolygon(commands, chartRibbon(link.points, link.width), fill, undefined, layout.plot, pattern)
@@ -470,7 +517,7 @@ function drawGraph(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
     }
   }
   for (const node of graph.nodes) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, node.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), node.index), fill = chartColorOpacity(style.color!, style.fillOpacity ?? 1)
+    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, node.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), node.index, chart.type), fill = chartColorOpacity(style.color!, style.fillOpacity ?? 1)
     if (sankey) chartRect(commands, { x: node.x, y: node.y, width: node.width, height: node.height }, fill, style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
     else chartSymbol(commands, node, style.point?.size ?? node.width, chartColorOpacity(style.point?.color ?? style.color!, style.fillOpacity ?? 1), style.point?.shape ?? 'circle', style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
     if (style.label?.visible !== false) commands.push({ kind: 'text', x: node.x + (sankey ? node.width + 4 : 0), y: node.y + (sankey ? node.height / 2 : node.height / 2 + 10),
@@ -483,12 +530,12 @@ function drawChord(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
   for (const link of chord.links) {
     const source = chartArc(chord.center, chord.innerRadius, link.sourceStart, link.sourceEnd), target = chartArc(chord.center, chord.innerRadius, link.targetStart, link.targetEnd)
     const first = chartBezier(source.at(-1)!, chord.center, chord.center, target[0]!), second = chartBezier(target.at(-1)!, chord.center, chord.center, source[0]!)
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, link.sourceIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), link.sourceIndex)
+    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, link.sourceIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), link.sourceIndex, chart.type)
     chartPolygon(commands, [...source, ...first.slice(1), ...target.slice(1), ...second.slice(1)], chartColorOpacity(style.color!, (chart.options?.chord?.ribbonOpacity ?? 0.55) * (style.fillOpacity ?? 1)), undefined, layout.plot,
       chartFillPatternPaint(style.fillPattern, (chart.options?.chord?.ribbonOpacity ?? 0.55) * (style.fillOpacity ?? 1)))
   }
   for (const node of chord.nodes) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, node.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), node.index), label = { contentType: 'category' as const, ...style.label, ...chart.options?.chord?.label }
+    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, node.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), node.index, chart.type), label = { contentType: 'category' as const, ...style.label, ...chart.options?.chord?.label }
     drawChartSector(commands, chord.center, chord.innerRadius, chord.outerRadius, node.start, node.end, chartColorOpacity(style.color!, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
     if (label.visible !== false) commands.push({ kind: 'text', ...chartPolar(chord.center, chord.outerRadius + 10, (node.start + node.end) / 2), text: chartLabelText(label, node.value, node.name, data.series[0]!.name), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot })
   }
@@ -497,7 +544,7 @@ function drawChord(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
 function drawWordCloud(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, palette: string[]): void {
   const words = chartWordCloudLayout(data, chart.options?.wordCloud, layout.plot)
   for (const word of words) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, word.categoryIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), word.categoryIndex)
+    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, word.categoryIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), word.categoryIndex, chart.type)
     commands.push({ kind: 'text', x: word.x + word.width / 2, y: word.y + word.height / 2, text: word.text, font: chartFont({ ...chart.options?.appearance?.font, ...style.label, fontSize: word.fontSize }), color: chartColorOpacity(style.color ?? palette[word.categoryIndex % palette.length]!, style.fillOpacity ?? 1), align: 'center', baseline: 'middle', rotation: word.rotation, clip: layout.plot })
   }
 }
@@ -534,7 +581,7 @@ function drawGauge(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
   const authored = chart.options?.gauge, source = data.series[0]!
   for (const tile of chartGaugeTiles(data, layout.plot)) {
     const index = tile.categoryIndex, value = source.values[index]!, name = data.categories[index]!
-    const style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index), label = style.label
+    const style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index, chart.type), label = style.label
     const options = resolveChartGaugeOptions(authored, tile.radius, chart.options?.appearance?.font, label), sweep = chartGaugeSweep(options)
     const ratio = chartGaugeRatio(value, options.min, options.max), span = sweep.end - sweep.start, angle = sweep.start + span * ratio
     const pointerColor = chartColorOpacity(options.pointer.color ?? style.color!, style.fillOpacity ?? 1), progressColor = chartColorOpacity(options.progress.color ?? style.color!, style.fillOpacity ?? 1)
@@ -582,7 +629,7 @@ function drawGauge(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
 function drawFunnel(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
   const source = data.series[0]!
   for (const step of chartFunnelLayout(data, chart, layout.plot)) {
-    const style = chartPointStyle(chartSeriesStyle(chart, source.field, step.categoryIndex, palette, source.sourceName ?? source.name), step.categoryIndex)
+    const style = chartPointStyle(chartSeriesStyle(chart, source.field, step.categoryIndex, palette, source.sourceName ?? source.name), step.categoryIndex, chart.type)
     chartPolygon(commands, step.points, chartColorOpacity(style.color ?? palette[step.categoryIndex % palette.length]!, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
     if (style.label?.visible !== false) commands.push({ kind: 'text', ...step.center, text: chartLabelText({ contentType: 'category', ...style.label }, step.value, step.category, source.name), font: chartFont(style.label, 10), color: style.label?.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot })
   }
@@ -596,12 +643,13 @@ function drawLegend(commands: DrawCommand[], data: ChartData, chart: ChartModel,
   const items = categoryLegend ? data.categories.flatMap((name, index) => {
     if (family === 'gauge' && !Number.isFinite(data.series[0]?.values[index])) return []
     const style = roots?.[index] ? chartHierarchyPointStyle(chart, data.series[0]!.field, roots[index]!, palette, data.series[0]!.sourceName ?? data.series[0]!.name)
-      : chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), index)
+      : chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), index, chart.type)
     return [{ name, color: chartColorOpacity(family === 'relation' ? style.point?.color ?? style.color! : style.color!, style.fillOpacity ?? 1), pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) }]
-  }) : chart.type === 'boxplot' ? [{ name: '样本分布', color: layout.series[0]?.color ?? palette[0]!, pattern: chartFillPatternPaint(chartPointStyle(chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name), 0).fillPattern, 0.45) }, ...(chart.options?.boxplot?.showOutliers === false ? [] : [{ name: '异常值', color: chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name).point?.color ?? layout.series[0]?.color ?? palette[0]!, pattern: undefined }])]
+  }) : chart.type === 'boxplot' ? [{ name: '样本分布', color: layout.series[0]?.color ?? palette[0]!, pattern: chartFillPatternPaint(chartPointStyle(chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name), 0, chart.type).fillPattern, 0.45) }, ...(chart.options?.boxplot?.showOutliers === false ? [] : [{ name: '异常值', color: chartSeriesStyle(chart, layout.series[0]?.field ?? data.series[0]!.field, 0, palette, data.series[0]!.sourceName ?? data.series[0]!.name).point?.color ?? layout.series[0]?.color ?? palette[0]!, pattern: undefined }])]
     : layout.series.map((series, index) => {
-      const source = data.series[index], style = source ? chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name) : undefined
-      return { name: series.name, color: series.color, pattern: chartFillPatternPaint(style?.fillPattern, style?.fillOpacity ?? 1) }
+      const source = data.series[index], style = source ? chart.type === 'pareto' ? chartParetoBarStyle(chart, source.field, index, palette, source.sourceName ?? source.name)
+        : chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name) : chart.type === 'pareto' ? chartParetoCumulativeStyle(chart, palette) : undefined
+      return { name: series.name, color: chartColorOpacity(series.color, style?.fillOpacity ?? 1), pattern: chartFillPatternPaint(style?.fillPattern, style?.fillOpacity ?? 1) }
     })
   const font: ChartFontOptions = { ...chart.options?.appearance?.font, ...chart.legend.font }, fontSize = font.fontSize ?? 11
   const horizontal = chart.legend.position === 'top' || chart.legend.position === 'bottom', itemWidth = Math.max(72, Math.min(140, layout.frame.width / Math.max(1, items.length)))

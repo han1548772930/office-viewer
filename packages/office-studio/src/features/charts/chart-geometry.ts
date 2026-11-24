@@ -1,25 +1,37 @@
-import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSeriesFillPattern } from '../../domain/model'
+import type { ChartAxisOptions, ChartColor, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSeriesFillPattern } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
-import { chartColorChannels, normalizeChartColor } from './chart-color'
+import { chartColorChannels, chartColorRepresentative, normalizeChartColor } from './chart-color'
 import { chartInterpolate, chartLinearRatio, finiteChartValue } from './chart-math'
 import { appendChartFillPattern } from './chart-fill-pattern-geometry'
+import type { ChartAutomaticGradient } from './chart-auto-gradient'
+import { appendChartGradient, appendChartGradientLine } from './chart-gradient-geometry'
 
 export interface ChartVector { x: number; y: number }
 export interface ChartVector3 extends ChartVector { z: number }
+/** Fallback stroke paint may derive from a fill; persisted border.color is solid-only. */
+type ChartPaintLineOptions = Omit<ChartLineOptions, 'color'> & { color?: ChartColor }
 
 export function chartFont(font: ChartFontOptions = {}, size = 11): string {
   return `${font.italic ? 'italic ' : ''}${font.bold ? '600 ' : ''}${font.fontSize ?? size}px ${font.family ?? 'Aptos, Arial, sans-serif'}`
 }
 
-export function chartColorOpacity(color: string, opacity = 1): string {
-  if (opacity >= 1) return normalizeChartColor(color)
-  const [r, g, b, a] = chartColorChannels(color)
+export function chartColorOpacity(color: ChartColor, opacity = 1): string {
+  const solid = chartColorRepresentative(color)
+  if (opacity >= 1) return normalizeChartColor(solid)
+  const [r, g, b, a] = chartColorChannels(solid)
   return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a * opacity})`
 }
 
-export function chartShade(color: string, factor: number): string {
-  const [r, g, b, a] = chartColorChannels(color)
+export function chartShade(color: ChartColor, factor: number): string {
+  const [r, g, b, a] = chartColorChannels(chartColorRepresentative(color))
   return `rgba(${Math.round(Math.min(1, r * factor) * 255)}, ${Math.round(Math.min(1, g * factor) * 255)}, ${Math.round(Math.min(1, b * factor) * 255)}, ${a})`
+}
+
+/** A requested filled-mark outline defaults to 1px in its raw source color.
+ * An empty border retains the renderer's no-outline default. */
+export function chartFilledMarkBorder(color: ChartColor, border?: ChartLineOptions): ChartLineOptions | undefined {
+  if (!border || border.visible === false || !Object.values(border).some(value => value !== undefined)) return undefined
+  return { ...border, color: border.color ?? chartColorRepresentative(color), width: border.width ?? 1 }
 }
 
 /** A small, deterministic numeric-format subset; the authored format is retained in the model. */
@@ -42,7 +54,8 @@ export function chartLabelText(label: ChartLabelOptions | undefined, value: numb
   switch (label?.contentType) {
     case 'category': return category
     case 'series': return series
-    case 'percentage': return `${formatChartNumber(percentage ?? 0, label.format)}%`
+    case 'percentage': return label.format?.includes('%') ? formatChartNumber((percentage ?? 0) / 100, label.format)
+      : `${formatChartNumber(percentage ?? 0, label.format)}%`
     default: return formatChartNumber(value, label?.format)
   }
 }
@@ -108,28 +121,33 @@ export function chartAxisTicks(min: number, max: number, axis: ChartAxisOptions)
     : chartInterpolate(min, max, index / 4))
 }
 
-export function chartLine(commands: DrawCommand[], start: ChartVector, end: ChartVector, style: ChartLineOptions = {}, fallback = '#94a3b8', clip?: RenderRect): void {
+export function chartLine(commands: DrawCommand[], start: ChartVector, end: ChartVector, style: ChartPaintLineOptions = {}, fallback: ChartColor = '#94a3b8', clip?: RenderRect, gradient?: ChartAutomaticGradient): void {
   if (style.visible === false) return
   const color = chartColorOpacity(style.color ?? fallback, style.opacity ?? 1), width = style.width ?? 1
   if (width <= 0) return
+  const draw = (a: ChartVector, b: ChartVector): void => {
+    if (gradient) appendChartGradientLine(commands, a, b, width, gradient, clip)
+    else commands.push({ kind: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y, color, width, ...(clip ? { clip } : {}) })
+  }
   if (!style.dashType || style.dashType === 'solid') {
-    commands.push({ kind: 'line', x1: start.x, y1: start.y, x2: end.x, y2: end.y, color, width, ...(clip ? { clip } : {}) }); return
+    draw(start, end); return
   }
   const distance = Math.hypot(end.x - start.x, end.y - start.y)
   const length = style.dashType === 'dotted' ? Math.max(1, width) : Math.max(4, width * 4)
   const gap = Math.max(2, width * 2)
   for (let offset = 0; offset < distance; offset += length + gap) {
     const a = offset / distance, b = Math.min(distance, offset + length) / distance
-    commands.push({ kind: 'line', x1: start.x + (end.x - start.x) * a, y1: start.y + (end.y - start.y) * a, x2: start.x + (end.x - start.x) * b, y2: start.y + (end.y - start.y) * b, color, width, ...(clip ? { clip } : {}) })
+    draw({ x: start.x + (end.x - start.x) * a, y: start.y + (end.y - start.y) * a }, { x: start.x + (end.x - start.x) * b, y: start.y + (end.y - start.y) * b })
   }
 }
 
-export function chartPolygon(commands: DrawCommand[], points: ChartVector[], fill: string, border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
+export function chartPolygon(commands: DrawCommand[], points: ChartVector[], fill: string, border?: ChartPaintLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
   if (points.length < 3) return
   // The shared WebGPU driver accepts triangle fans. Emit explicit triangles for
   // concave ribbons and annular sectors so both backends receive the same fill.
   const triangles = triangulateChartPolygon(points)
   if (pattern) appendChartFillPattern(commands, triangles, pattern, clip)
+  else if (gradient) appendChartGradient(commands, triangles, gradient, clip)
   else for (const triangle of triangles) commands.push({ kind: 'polygon', points: triangle, fill, ...(clip ? { clip } : {}) })
   if (border && border.visible !== false) points.forEach((point, index) => chartLine(commands, point, points[(index + 1) % points.length]!, border, fill, clip))
 }
@@ -161,19 +179,19 @@ export function triangulateChartPolygon(input: readonly ChartVector[]): ChartVec
   return triangles
 }
 
-export function chartCircle(commands: DrawCommand[], center: ChartVector, radius: number, fill: string, border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
+export function chartCircle(commands: DrawCommand[], center: ChartVector, radius: number, fill: string, border?: ChartPaintLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
   if (radius <= 0) return
-  chartPolygon(commands, Array.from({ length: 36 }, (_unused, index) => chartPolar(center, radius, index * Math.PI / 18)), fill, border, clip, pattern)
+  chartPolygon(commands, Array.from({ length: 36 }, (_unused, index) => chartPolar(center, radius, index * Math.PI / 18)), fill, border, clip, pattern, gradient)
 }
 
-export function chartRect(commands: DrawCommand[], rectangle: RenderRect, fill: string, border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
-  if (pattern) {
+export function chartRect(commands: DrawCommand[], rectangle: RenderRect, fill: string, border?: ChartPaintLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
+  if (pattern || gradient || border?.dashType && border.dashType !== 'solid') {
     const { x, y, width, height } = rectangle
     chartPolygon(commands, [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }], fill,
-      border?.color !== undefined || border?.width !== undefined ? border : undefined, clip, pattern)
+      border?.color !== undefined || border?.width !== undefined ? border : undefined, clip, pattern, gradient)
     return
   }
-  commands.push({ kind: 'rect', ...rectangle, fill, ...(border?.visible === false ? {} : { stroke: border?.color === undefined ? undefined : chartColorOpacity(border.color, border.opacity ?? 1), strokeWidth: border?.width }), ...(clip ? { clip } : {}) })
+  commands.push({ kind: 'rect', ...rectangle, fill, ...(border?.visible === false || (border?.width ?? 1) <= 0 ? {} : { stroke: border?.color === undefined ? undefined : chartColorOpacity(border.color, border.opacity ?? 1), strokeWidth: border?.width }), ...(clip ? { clip } : {}) })
 }
 
 export function chartPolar(center: ChartVector, radius: number, angle: number): ChartVector {
@@ -196,16 +214,16 @@ export function chartBezier(start: ChartVector, first: ChartVector, second: Char
   })
 }
 
-export function chartSymbol(commands: DrawCommand[], point: ChartVector, size: number, color: string, shape = 'rect', border?: ChartLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern): void {
+export function chartSymbol(commands: DrawCommand[], point: ChartVector, size: number, color: string, shape = 'rect', border?: ChartPaintLineOptions, clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
   if (shape === 'none' || size <= 0) return
   const radius = size / 2
-  if (shape === 'circle') return chartCircle(commands, point, radius, color, border, clip, pattern)
+  if (shape === 'circle') return chartCircle(commands, point, radius, color, border, clip, pattern, gradient)
   if (shape === 'diamond' || shape === 'triangle') {
     const points = shape === 'diamond' ? [{ x: point.x, y: point.y - radius }, { x: point.x + radius, y: point.y }, { x: point.x, y: point.y + radius }, { x: point.x - radius, y: point.y }]
       : [{ x: point.x, y: point.y - radius }, { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }]
-    chartPolygon(commands, points, color, border, clip, pattern); return
+    chartPolygon(commands, points, color, border, clip, pattern, gradient); return
   }
-  if (pattern) return chartPolygon(commands, [{ x: point.x - radius, y: point.y - radius }, { x: point.x + radius, y: point.y - radius },
-    { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }], color, border, clip, pattern)
+  if (pattern || gradient) return chartPolygon(commands, [{ x: point.x - radius, y: point.y - radius }, { x: point.x + radius, y: point.y - radius },
+    { x: point.x + radius, y: point.y + radius }, { x: point.x - radius, y: point.y + radius }], color, border, clip, pattern, gradient)
   chartRect(commands, { x: point.x - radius, y: point.y - radius, width: size, height: size }, color, border, clip)
 }

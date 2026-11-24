@@ -85,11 +85,12 @@ export function chartPareto(categories: readonly string[], samples: readonly (nu
   const grouped = new Map<string, { value: number; index: number }>()
   samples.forEach((value, index) => {
     if (value === null || !Number.isFinite(value)) return
-    if (value < 0) throw new RangeError('帕累托图权重不能为负数。')
     const name = categories[index] ?? String(index + 1), group = grouped.get(name) ?? { value: 0, index }
     group.value = finiteChartValue(group.value + value, '帕累托分类合计'); grouped.set(name, group)
   })
-  const sorted = [...grouped].filter(([_name, group]) => includeZeroValues || group.value > 0).sort((a, b) => b[1].value - a[1].value || a[1].index - b[1].index)
+  // Fixed Pareto builder contract aggregates signed rows before filtering.
+  // includeZeroValues retains zero totals; negative totals are always excluded.
+  const sorted = [...grouped].filter(([_name, group]) => group.value > 0 || includeZeroValues && group.value === 0).sort((a, b) => b[1].value - a[1].value || a[1].index - b[1].index)
   const scale = sorted[0]?.[1].value || 1
   const total = sorted.reduce((sum, [_name, group]) => sum + group.value / scale, 0)
   let cumulative = 0

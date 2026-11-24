@@ -311,13 +311,24 @@ export function transformDocumentTextFieldsForBlockEdit(block: DocumentBlock, st
   transformDocumentTextFieldsForBlockRangeEdit([block], start, end, text, [block], preserveFieldId, model)
 }
 
-export function remapDocumentTextFieldIds(block: DocumentBlock, blockIds?: ReadonlyMap<string, string>): void {
+export function remapDocumentTextFieldIds(block: DocumentBlock, blockIds?: ReadonlyMap<string, string>, fieldIds?: ReadonlyMap<string, string>): void {
   const fields = documentTextFields(block)
+  const ids = fieldIds ?? new Map(fields.map(field => [field.id, documentId('field')]))
   if (fields.length) setDocumentTextFields(block, fields.map(field => {
     const { endBlockId, ...definition } = field
     const end = endBlockId === undefined ? undefined : blockIds ? blockIds.get(endBlockId) : endBlockId
     if (endBlockId !== undefined && end === undefined) throw new RangeError(`复制范围不包含字段 ${field.id} 的末段。`)
-    return { ...definition, id: documentId('field'), ...(end === undefined || end === block.id ? {} : { endBlockId: end }) }
+    const id = ids.get(field.id)
+    if (id === undefined) throw new RangeError(`复制范围没有字段 ${field.id} 的新身份。`)
+    const metadata = cloneModel(field.metadata ?? {}), source = metadata.source
+    if (isRecord(source) && source.parentFieldId !== undefined && source.parentFieldId !== null) {
+      if (typeof source.parentFieldId !== 'string') throw new TypeError(`字段 ${field.id} 的父身份无效。`)
+      const parent = ids.get(source.parentFieldId)
+      if (parent === undefined) throw new RangeError(`复制范围不包含字段 ${field.id} 的父字段。`)
+      metadata.officeTextFieldCopySource = { version: 1, fieldId: field.id, parentFieldId: source.parentFieldId }
+      source.parentFieldId = parent
+    }
+    return { ...definition, id, metadata, ...(end === undefined || end === block.id ? {} : { endBlockId: end }) }
   }))
 }
 

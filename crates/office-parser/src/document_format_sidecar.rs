@@ -404,34 +404,15 @@ fn patch_paragraph(block: &mut DocumentBlock, patch: &ParagraphPatch, inherited_
 }
 
 pub(crate) fn restore_paragraphs(document: &mut StructuredDocument, source: &DocModel, wrap: &ParagraphWordWrap) {
-    let mut paragraphs = HashMap::<String, &ParagraphNode>::new();
-    fn table<'a>(value: &'a TableNode, path: &str, output: &mut HashMap<String, &'a ParagraphNode>) {
-        let root = value.block_id.as_deref().unwrap_or(path);
-        for (row_index, row) in value.rows.iter().enumerate() {
-            for (cell_index, cell) in row.cells.iter().enumerate() {
-                for (node_index, node) in cell.nodes.iter().enumerate() {
-                    let path = format!("{root}/row/{row_index}/cell/{cell_index}/{node_index}");
-                    match node {
-                        TableCellContentNode::Paragraph(value) => { output.insert(value.block_id.clone().unwrap_or(path), value); }
-                        TableCellContentNode::Table(value) => table(value, &path, output),
-                    }
-                }
-            }
-        }
-    }
-    for (index, node) in source.nodes.iter().enumerate() {
-        let path = format!("document/{index}");
-        match node {
-            DocNode::Paragraph(value) => { paragraphs.insert(value.block_id.clone().unwrap_or(path), value); }
-            DocNode::Table(value) => table(value, &path, &mut paragraphs),
-        }
-    }
-    fn visit(blocks: &mut [DocumentBlock], paragraphs: &HashMap<String, &ParagraphNode>, wrap: &ParagraphWordWrap, warnings: &mut Vec<String>) {
+    use crate::document_story_source::{SourceAddress, collect, stories};
+    let paragraphs = stories(source).iter().flat_map(|story| collect(story).paragraphs).collect::<HashMap<_, _>>();
+    fn visit(blocks: &mut [DocumentBlock], note_id: Option<i64>, paragraphs: &HashMap<SourceAddress, &ParagraphNode>, wrap: &ParagraphWordWrap, warnings: &mut Vec<String>) {
         for block in blocks {
+            let note_id = block.note_id.or(note_id);
             let paragraph = matches!(&block.details, BlockDetails::Paragraph(_))
                 || matches!(&block.details, BlockDetails::Raw(details) if details["kind"].as_str() == Some("paragraph"));
-            let source = paragraph.then(|| block.source_refs.iter().filter(|source| source.story == "body").find_map(|source| {
-                paragraphs.get(&source.node_id).copied().or_else(|| source.node_id.rfind("/body/").and_then(|index| paragraphs.get(&source.node_id[index..]).copied()))
+            let source = paragraph.then(|| block.source_refs.iter().find_map(|source| {
+                paragraphs.get(&SourceAddress::from_ref(source, note_id)).copied()
             })).flatten();
             if let Some(source) = source {
                 if let Some(xml) = &source.source_xml {
@@ -444,10 +425,10 @@ pub(crate) fn restore_paragraphs(document: &mut StructuredDocument, source: &Doc
                     }
                 }
             }
-            visit(&mut block.children, paragraphs, wrap, warnings);
+            visit(&mut block.children, note_id, paragraphs, wrap, warnings);
         }
     }
-    visit(&mut document.blocks, &paragraphs, wrap, &mut document.warnings);
+    visit(&mut document.blocks, None, &paragraphs, wrap, &mut document.warnings);
 }
 
 #[cfg(test)]

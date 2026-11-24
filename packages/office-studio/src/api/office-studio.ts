@@ -87,20 +87,7 @@ import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineUpdate, type ChangeSheetOu
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
-import {
-  createDocumentContentControl,
-  deleteRepeatingSectionItem,
-  duplicateRepeatingSectionItem,
-  replacePictureContentControlImage,
-  removeDocumentContentControl,
-  resetDocumentContentControlPlaceholder,
-  selectDocumentContentControlItem,
-  setDocumentContentControlChecked,
-  setDocumentContentControlValue,
-  updateDocumentContentControl,
-  type ContentControlInput,
-  type ContentControlPatch,
-} from '../features/document/services/content-controls'
+import { registerDocumentContentControlCommands } from './document-content-control-commands'
 
 export interface OfficeStudioOptions {
   locale?: string
@@ -1641,52 +1628,7 @@ export class OfficeStudio {
       this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
     }
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
-    this.registerCommand<{ unitId: string; control: ContentControlInput; host?: DocumentAuxiliaryBlockHost }, boolean>('doc.command.add-content-control', ({ unitId, control, host }) => {
-      const session = this.documentInput.get(unitId)
-      const currentHost = host ?? (session?.valid && session.modelRevision === this.getDocumentRevision(unitId)
-        && session.location.kind === 'body' && session.location.host
-        && (session.location.selection.anchor.cellBlockId ?? session.location.selection.anchor.blockId) === control.blockId ? session.location.host : undefined)
-      return this.commitDocument(unitId, 'Add content control', (model) => {
-      const created = createDocumentContentControl(model, control, control.id, currentHost)
-      if (created.type === 'repeatingSection') {
-        createDocumentContentControl(model, {
-          type: 'repeatingSectionItem',
-          blockId: created.blockId,
-          startOffset: created.startOffset,
-          endOffset: created.endOffset,
-          placement: created.placement,
-          parentId: created.id,
-        }, undefined, currentHost)
-      }
-    })
-    })
-    this.registerCommand<{ unitId: string; controlId: string; patch: ContentControlPatch }, boolean>('doc.command.update-content-control', ({ unitId, controlId, patch }) => this.commitDocument(unitId, 'Update content control', (model) => {
-      updateDocumentContentControl(model, controlId, patch)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string; value: string }, boolean>('doc.command.set-content-control-value', ({ unitId, controlId, value }) => this.commitDocument(unitId, 'Set content control value', (model) => {
-      setDocumentContentControlValue(model, controlId, value)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string; checked: boolean }, boolean>('doc.command.set-content-control-checked', ({ unitId, controlId, checked }) => this.commitDocument(unitId, 'Set content control checkbox', (model) => {
-      setDocumentContentControlChecked(model, controlId, checked)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.reset-content-control-placeholder', ({ unitId, controlId }) => this.commitDocument(unitId, 'Reset content control placeholder', (model) => {
-      resetDocumentContentControlPlaceholder(model, controlId)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string; image: DocumentImage }, boolean>('doc.command.replace-picture-content-control-image', ({ unitId, controlId, image }) => this.commitDocument(unitId, 'Replace picture content control image', (model) => {
-      replacePictureContentControlImage(model, controlId, image)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.duplicate-repeating-section-item', ({ unitId, controlId }) => this.commitDocument(unitId, 'Duplicate repeating-section item', (model) => {
-      duplicateRepeatingSectionItem(model, controlId)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.delete-repeating-section-item', ({ unitId, controlId }) => this.commitDocument(unitId, 'Delete repeating-section item', (model) => {
-      deleteRepeatingSectionItem(model, controlId)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string; value: string }, boolean>('doc.command.select-content-control-item', ({ unitId, controlId, value }) => this.commitDocument(unitId, 'Select content control item', (model) => {
-      selectDocumentContentControlItem(model, controlId, value)
-    }))
-    this.registerCommand<{ unitId: string; controlId: string }, boolean>('doc.command.remove-content-control', ({ unitId, controlId }) => this.commitDocument(unitId, 'Remove content control', (model) => {
-      removeDocumentContentControl(model, controlId)
-    }))
+    registerDocumentContentControlCommands(this)
   }
 
   private commitPivotChange(

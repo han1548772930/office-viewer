@@ -29,8 +29,16 @@ import DocumentTableOverlay from './DocumentTableOverlay.vue'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../../features/document/model/document-block-host'
 import { documentModelForBlockHost } from '../../features/document/services/document-block-host'
 import { documentLayoutForBlockHost } from '../../features/document/layout/document-auxiliary-layout'
+import DocumentContentControlOverlay from './DocumentContentControlOverlay.vue'
+import { documentContentControlGeometry } from '../../features/document/layout/content-control-geometry'
+import { appendDocumentContentControlScene } from '../../features/document/rendering/content-control-scene'
+import { selectedDocumentContentControl } from '../../features/document/services/content-controls'
+import { contentControlValueCommandState } from '../../features/document/commands/content-control-command-state'
+import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../../features/document/commands/content-control-command-types'
+import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlFocusTokenMatchesRequest, type DocumentContentControlFocusToken } from '../../features/document/controllers/content-control-interaction'
+import { prepareDocumentContentControlTextInputSelection, synchronizeDocumentContentControlsAfterEdit } from '../../features/document/services/content-control-editing'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
   operation: [id: string, params?: unknown]
@@ -44,6 +52,8 @@ const emit = defineEmits<{
   'refresh-fields': [source: DocumentModel, story?: DocumentStoryRange, bodySelection?: DocumentSelection]
   'update:selection': [selection: DocumentSelection]
   'selection-committed': []
+  'content-control-selection': [request: DocumentContentControlSelectionRequest]
+  'content-control-command': [request: DocumentContentControlCommandRequest]
   'navigate-to-heading': [headingId: string]
   'context-menu': [payload: { x: number; y: number; point: DocumentPoint; source?: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost }]
   layout: [layout: DocumentLayout, source: DocumentModel]
@@ -64,6 +74,8 @@ function inputElement(): HTMLTextAreaElement | null {
 }
 const layout = shallowRef<DocumentLayout>(emptyLayout())
 const tableOverlay = ref<{ cancelGesture: () => void; cancelInteraction: () => void; continueGesture: (pointer: DocumentTableDragPointer) => void }>()
+const contentControlOverlay = ref<{ cancelInteraction: () => void }>()
+const contentControlActive = ref(true)
 const hoverTable = shallowRef<DocumentTableHit>()
 const tablePreview = shallowRef<DocumentTableGesturePreview>()
 const storyRef = ref<{ $el: HTMLElement; focus: (options?: { preventScroll?: boolean }) => void }>()
@@ -141,9 +153,11 @@ let compositionInput: HTMLTextAreaElement | null | undefined
 let compositionMarks: RunPatch = {}
 let compositionSession: DocumentInputSession | undefined
 let compositionHost: DocumentAuxiliaryBlockHost | undefined
+let compositionControlId: string | undefined
 let blockedBodyInput: HTMLTextAreaElement | null | undefined
 let disposed = false
 let active = true
+let pendingContentControlFocus: DocumentContentControlFocusToken | undefined
 const measurer = createTextMeasurer()
 const { inputValue: storyInputValue, composing: storyComposing, bridgeVersion: storyBridgeVersion, storyRange, storyEventIsCurrent, syncStorySelection, focusStory, storyInputChanged,
   captureStoryInput, storyCompositionStart, storyCompositionEnd, storyFocused, cancelStoryInput } = useDocumentStoryInput(props, {
@@ -170,6 +184,65 @@ const editingLayout = computed(() => documentLayoutForBlockHost(layout.value, pr
 const legacyStoryActive = computed(() => !!props.story && !props.host)
 function dispatchCommand(command: DocumentCommand) { emit('command', props.host ? { ...command, host: { ...props.host } } : command) }
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
+const contentControlGeometries = computed(() => documentContentControlGeometry(displayEditingModel.value, editingLayout.value))
+const activeContentControl = computed(() => {
+  const selection = displaySelection.value
+  if (selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) return undefined
+  const blockId = selection.focus.cellBlockId ?? selection.focus.blockId
+  const start = Math.min(selection.anchor.offset, selection.focus.offset), end = Math.max(selection.anchor.offset, selection.focus.offset)
+  const explicit = displayEditingModel.value.contentControls?.find(control => control.id === props.activeContentControlId
+    && control.blockId === blockId && start >= control.startOffset && end <= control.endOffset)
+  return explicit ?? selectedDocumentContentControl(displayEditingModel.value, blockId, start, end)
+})
+function explicitInputControlId(): string | undefined {
+  const selection = props.selection
+  if (selection.tableSelection || !sameTarget(selection.anchor, selection.focus)) return undefined
+  const control = editingModel.value.contentControls?.find(control => control.id === props.activeContentControlId)
+  if (!control || control.blockId !== (selection.focus.cellBlockId ?? selection.focus.blockId)
+    || Math.min(selection.anchor.offset, selection.focus.offset) < control.startOffset
+    || Math.max(selection.anchor.offset, selection.focus.offset) > control.endOffset) return undefined
+  return control.id
+}
+function contentControlRequestCurrent(request: DocumentContentControlSelectionRequest): boolean {
+  if (!active || disposed || composing.value || storyComposing.value || legacyStoryActive.value
+    || props.host?.kind === 'story' && props.storyReadonly || request.source !== props.model || !sameDocumentBlockHost(request.host, props.host)) return false
+  const control = editingModel.value.contentControls?.find(control => control.id === request.controlId)
+  if (!control || !sameTarget(request.selection.anchor, request.selection.focus)
+    || (request.selection.focus.cellBlockId ?? request.selection.focus.blockId) !== control.blockId
+    || Math.min(request.selection.anchor.offset, request.selection.focus.offset) < control.startOffset
+    || Math.max(request.selection.anchor.offset, request.selection.focus.offset) > control.endOffset) return false
+  const captured = request.inputSession, current = captured && props.captureInputSession?.(request.source)
+  return !captured || !!current && current.valid && captured.valid && captured.generation === current.generation
+    && captured.modelRevision === current.modelRevision && sameDocumentInputLocation(captured.location, current.location)
+}
+function selectContentControl(request: DocumentContentControlSelectionRequest) {
+  if (!contentControlRequestCurrent(request)) return
+  pendingContentControlFocus = undefined
+  emit('content-control-selection', request)
+  caretVisible.value = true; requestDraw()
+}
+function dispatchContentControlCommand(request: DocumentContentControlCommandRequest) {
+  pendingContentControlFocus = undefined
+  if (!contentControlRequestCurrent(request) || request.command.params.controlId !== request.controlId
+    || props.captureInputSession && !request.inputSession?.valid) return
+  const state = contentControlValueCommandState(props.model, request.command, { host: props.host, permission: props.permissionContext })
+  if (!state.available) { emit('notify', state.reason ?? '无法修改内容控件。'); return }
+  emit('content-control-command', request)
+  // Read passively after the shared command has restored its checked selection.
+  // Passing an old source model here must not renew a stale input session.
+  pendingContentControlFocus = captureDocumentContentControlFocusToken(request, props.captureInputSession?.())
+}
+function focusContentControl(request: DocumentContentControlSelectionRequest) {
+  if (!active || disposed || composing.value || storyComposing.value || legacyStoryActive.value
+    || props.host?.kind === 'story' && props.storyReadonly || props.model.id !== request.source.id || !sameDocumentBlockHost(request.host, props.host)) return
+  const pending = pendingContentControlFocus
+  if (pending && documentContentControlFocusTokenMatchesRequest(pending, request)) {
+    pendingContentControlFocus = undefined
+    if (!documentContentControlFocusCurrent(pending, { source: props.model, host: props.host,
+      session: props.captureInputSession?.(), selection: props.selection })) return
+  } else if (!contentControlRequestCurrent(request)) return
+  focus()
+}
 const storyStyle = computed(() => {
   const target = props.story, entry = target && layout.value.pageHeaderFooters[target.page]
   if (!entry || entry.isParityBlank || !target) return { display: 'none' }
@@ -205,6 +278,11 @@ watch(() => props.captureInputSession?.(), () => {
 }, { flush: 'sync' })
 watch(() => props.searchMatches, requestDraw, { deep: true })
 watch(() => token.value.colorPrimary, requestDraw)
+watch(() => [token.value.colorBorder, token.value.colorText], requestDraw)
+watch(() => props.activeContentControlId, () => {
+  if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(false)
+  requestDraw()
+}, { flush: 'sync' })
 watch(tablePreview, requestDraw)
 watch(() => props.zoom, (zoom) => {
   cancelSelectionDrag()
@@ -220,9 +298,12 @@ watch(() => props.zoom, (zoom) => {
   })
 })
 
-onActivated(() => { active = true; void nextTick(resize) })
+onActivated(() => { active = true; contentControlActive.value = true; void nextTick(resize) })
 onDeactivated(() => {
   active = false
+  pendingContentControlFocus = undefined
+  contentControlActive.value = false
+  contentControlOverlay.value?.cancelInteraction()
   cancelBodyComposition()
   cancelStoryInput()
   focused.value = false
@@ -262,6 +343,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true
+  pendingContentControlFocus = undefined
   cancelDragAutoscroll()
   cancelBodyComposition()
   cancelStoryInput()
@@ -335,9 +417,12 @@ function requestDraw() {
   if (frame || disposed || !active) return
   frame = requestAnimationFrame(() => {
     frame = 0
-    surface?.render(sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value || storyComposing.value, images, searchMatches: props.searchMatches, tocPrimaryColor: token.value.colorPrimary, tableGesture: tablePreview.value,
+    const scene = sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value || storyComposing.value, images, searchMatches: props.searchMatches, tocPrimaryColor: token.value.colorPrimary, tableGesture: tablePreview.value,
       host: props.host, selectionModel: displayEditingModel.value, selectionLayout: editingLayout.value,
-      ...(legacyStoryActive.value && props.story ? { story: { location: props.story, selection: props.storySelection ?? storyRange() } } : {}) }))
+      ...(legacyStoryActive.value && props.story ? { story: { location: props.story, selection: props.storySelection ?? storyRange() } } : {}) })
+    if (!legacyStoryActive.value) appendDocumentContentControlScene(scene, contentControlGeometries.value, layout.value, viewport.value,
+      { activeControlId: activeContentControl.value?.id, primary: token.value.colorPrimary, border: token.value.colorBorder })
+    surface?.render(scene)
   })
 }
 
@@ -374,6 +459,12 @@ function pointFromEvent(event: Pick<MouseEvent, 'clientX' | 'clientY'>): Documen
 
 function select(selection: DocumentSelection) {
   emit('update:selection', selection)
+  if (!selection.tableSelection && sameTarget(selection.anchor, selection.focus) && !legacyStoryActive.value) {
+    const control = selectedDocumentContentControl(editingModel.value, selection.focus.cellBlockId ?? selection.focus.blockId,
+      Math.min(selection.anchor.offset, selection.focus.offset), Math.max(selection.anchor.offset, selection.focus.offset))
+    if (control && !control.metadata?.officeStoryLockSource) emit('content-control-selection', { controlId: control.id, selection, source: props.model,
+      host: props.host ? { ...props.host } : undefined, inputSession: props.captureInputSession?.(props.model) })
+  }
   caretVisible.value = true
   requestDraw()
 }
@@ -646,12 +737,13 @@ function compositionStart(event: CompositionEvent) {
   if (!bodyEventIsCurrent(event)) return
   try {
     const context = props.permissionContext ?? { documentId: props.model.id ?? '', userId: 'local-user' }
-    const permission = resolveDocumentPermission(props.model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(editingModel.value, props.selection))
+    const inputSelection = prepareDocumentContentControlTextInputSelection(editingModel.value, props.selection, { controlId: explicitInputControlId() })
+    const permission = resolveDocumentPermission(props.model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(editingModel.value, inputSelection))
     if (!permission.allowed) throw new Error('此选区不允许编辑')
     if (props.selection.tableSelection) {
       const state = documentTableCommandState(editingModel.value, props.selection, { id: 'doc.command.table-set-range-text', mode: 'replace', text: '' }, context)
       if (!state.available) throw new Error(state.reason ?? '此表格选区不允许输入')
-    } else assertDocumentTextSelectionEditable(editingModel.value, props.selection)
+    } else assertDocumentTextSelectionEditable(editingModel.value, inputSelection)
   } catch (error) {
     const input = inputElement()
     if (input) input.value = ''
@@ -675,12 +767,14 @@ function compositionStart(event: CompositionEvent) {
   compositionRange = compositionSelection.value
   compositionModel = props.model
   compositionHost = props.host ? { ...props.host } : undefined
+  compositionControlId = explicitInputControlId()
   compositionInput = inputElement()
   compositionMarks = { ...props.typingMarks }
 }
 
 function bodyCompositionCurrent() {
   return active && !disposed && !legacyStoryActive.value && sameDocumentBlockHost(compositionHost, props.host) && compositionModel === props.model && !!compositionRange
+    && compositionControlId === explicitInputControlId()
     && compositionInput === inputElement()
     && sameTarget(compositionRange.anchor, props.selection.anchor) && compositionRange.anchor.offset === props.selection.anchor.offset
     && sameTarget(compositionRange.focus, props.selection.focus) && compositionRange.focus.offset === props.selection.focus.offset
@@ -709,6 +803,7 @@ function cancelBodyComposition(refocus = true) {
   compositionMarks = {}
   compositionSession = undefined
   compositionHost = undefined
+  compositionControlId = undefined
   pendingText = ''
   suppressCompositionInput = false
   if (hadComposition) { preview.value = null; if (active && !disposed) relayout() }
@@ -726,9 +821,14 @@ function compositionUpdate(event: CompositionEvent) {
   if (!composing.value) return
   if (!bodyCompositionCurrent() || !compositionRange) { cancelBodyComposition(); return }
   pendingText = event.data
+  if (!pendingText) {
+    preview.value = null; compositionSelection.value = cloneDocumentSelection(compositionRange); relayout(); return
+  }
   const model = cloneDocument(props.model)
   try {
-    const selection = executeDocumentCommand(model, compositionRange, { id: 'doc.command.insert-text', text: pendingText, marks: compositionMarks, host: props.host }, props.permissionContext)
+    const prepared = prepareDocumentContentControlTextInputSelection(editingModel.value, compositionRange, { controlId: compositionControlId })
+    const selection = executeDocumentCommand(model, prepared, { id: 'doc.command.insert-text', text: pendingText, marks: compositionMarks, host: props.host }, props.permissionContext)
+    synchronizeDocumentContentControlsAfterEdit(props.model, model, { origin: 'text-input', selection: prepared, activeControlId: compositionControlId })
     preview.value = model
     compositionSelection.value = selection
     relayout()
@@ -747,6 +847,7 @@ function compositionEnd(event: CompositionEvent) {
   compositionMarks = {}
   compositionSession = undefined
   compositionHost = undefined
+  compositionControlId = undefined
   compositionSelection.value = null
   preview.value = null
   const input = inputElement()
@@ -910,7 +1011,7 @@ function revealStory(target: StoryLocation) {
   if (y < el.scrollTop + 30 || y > el.scrollTop + el.clientHeight - 30) el.scrollTop = Math.max(0, y - el.clientHeight / 2)
   focus()
 }
-function cancelInput(refocus = true) { tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
+function cancelInput(refocus = true) { pendingContentControlFocus = undefined; tableOverlay.value?.cancelInteraction(); contentControlOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
 defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollToPage, scrollToBlock, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
 </script>
 
@@ -922,6 +1023,10 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, scrollTo
     </div>
     <DocumentTableOverlay ref="tableOverlay" :model="displayEditingModel" :layout="editingLayout" :selection="displaySelection" :viewport="viewport" :permission="permissionContext" :hover="hoverTable"
       :floating-toolbar="tableFloatingToolbar" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)" :story-active="legacyStoryActive" @selection="select" @command="command => dispatchCommand(command)" @operation="(id, params) => emit('operation', id, params)" @preview="value => tablePreview = value" @drag-pointer="overlayDragPointer" @focus="focus" @notify="value => emit('notify', value)" />
+    <DocumentContentControlOverlay ref="contentControlOverlay" :source="model" :model="displayEditingModel" :layout="layout" :geometries="contentControlGeometries"
+      :selection="displaySelection" :viewport="viewport" :active-control-id="activeContentControl?.id" :host="host" :permission="permissionContext"
+      :capture-input-session="captureInputSession" :inactive="legacyStoryActive || !contentControlActive" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)"
+      @selection="selectContentControl" @command="dispatchContentControlCommand" @focus="focusContentControl" @notify="message => emit('notify', message)" />
     <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="bodyFocusChanged" @blur="bodyFocusChanged" @copy="copy" @cut="cut" @paste="paste" />
     <Input.TextArea v-if="legacyStoryActive && story" :key="`${model.id}:${story.page}:${story.area}:${storyBridgeVersion}`" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyInputValue" :readonly="storyReadonly" :rows="1" :change-on-composing="true" variant="borderless" @keydown="storyKeys" @keyup="syncStorySelection" @select="syncStorySelection" @beforeinput="storyBeforeInput" @compositionstart="storyCompositionStart" @compositionend="storyCompositionEnd" @change="storyInputChanged" @focus="storyFocusChanged" @blur="storyFocusChanged" />
     <Alert v-if="error" class="canvas-error" type="error" show-icon :message="error" role="alert" />

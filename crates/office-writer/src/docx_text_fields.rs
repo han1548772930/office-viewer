@@ -20,7 +20,7 @@ pub(super) struct Boundary {
     pub xml: String,
 }
 
-struct Paragraph<'a> { block: &'a Value, id: String, text: String, absolute: usize }
+pub(super) struct Paragraph<'a> { pub block: &'a Value, pub id: String, pub text: String, pub absolute: usize }
 struct Field {
     value: Value,
     start: usize,
@@ -71,6 +71,12 @@ fn collect<'a>(blocks: &'a [Value], output: &mut Vec<Paragraph<'a>>, absolute: &
     Ok(())
 }
 
+pub(super) fn story_paragraphs(blocks: &[Value]) -> Result<Vec<Paragraph<'_>>, ExportError> {
+    let mut output = Vec::new(); let mut absolute = 0;
+    collect(blocks, &mut output, &mut absolute)?;
+    Ok(output)
+}
+
 fn boolean(value: &Value, name: &str) -> Result<bool, ExportError> {
     match value.get(name) {
         Some(Value::Bool(value)) => Ok(*value),
@@ -102,6 +108,27 @@ fn instruction(context: &mut WriteContext<'_>, block: &Value, field: &Value) -> 
 }
 
 impl TextFieldPlan {
+    /// Resolve topology per host, then publish one package-wide identity map.
+    pub fn prepare_groups(context: &mut WriteContext<'_>, groups: &[&[Value]]) -> Result<Self, ExportError> {
+        let mut result = Self::default();
+        let mut identities = BTreeSet::new();
+        for blocks in groups {
+            let plan = Self::prepare(context, blocks)?;
+            for (id, boundaries) in plan.by_block {
+                if result.by_block.insert(id, boundaries).is_some() { return Err(ExportError::invalid("多个内容区共享字段段落标识。")); }
+            }
+            for (id, ranges) in plan.languages {
+                if result.languages.insert(id, ranges).is_some() { return Err(ExportError::invalid("多个内容区共享字段语言范围。")); }
+            }
+            for (bookmark, id) in plan.identities {
+                if !identities.insert(id.clone()) { return Err(ExportError::invalid("多个内容区共享字段身份；复制内容需要重新分配身份。")); }
+                result.identities.push((bookmark, id));
+            }
+            result.has_fields |= plan.has_fields;
+        }
+        Ok(result)
+    }
+
     pub fn prepare(context: &mut WriteContext<'_>, blocks: &[Value]) -> Result<Self, ExportError> {
         fn has_fields(blocks: &[Value]) -> Result<bool, ExportError> {
             for block in blocks {

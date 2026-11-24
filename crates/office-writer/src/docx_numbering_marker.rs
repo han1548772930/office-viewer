@@ -325,6 +325,10 @@ fn source_numbering_matches(marker: &Value, baseline: &Value) -> bool {
 }
 
 pub(super) fn prepare_preserved_markers(blocks: &[Value], controls: &HashMap<String, Vec<ContentControl>>, styles: &mut SourceStyles) -> Result<PreservedMarkerPlan, ExportError> {
+    prepare_preserved_marker_groups(&[blocks], controls, styles)
+}
+
+pub(super) fn prepare_preserved_marker_groups(groups: &[&[Value]], controls: &HashMap<String, Vec<ContentControl>>, styles: &mut SourceStyles) -> Result<PreservedMarkerPlan, ExportError> {
     let mut plan = PreservedMarkerPlan { next_bookmark: 1, sequence_prefix: "office_seq_".into(), ..Default::default() };
     let mut names = HashSet::<String>::new();
     let mut sequence_names = HashSet::<String>::new();
@@ -384,7 +388,7 @@ pub(super) fn prepare_preserved_markers(blocks: &[Value], controls: &HashMap<Str
         }
         Ok(())
     }
-    visit(blocks, controls, styles, &mut plan, &mut names, &mut sequence_names)?;
+    for blocks in groups { visit(blocks, controls, styles, &mut plan, &mut names, &mut sequence_names)?; }
     plan.bookmark_names = names;
     let mut index = 0u32;
     while sequence_names.iter().any(|name| name.starts_with(&plan.sequence_prefix)) {

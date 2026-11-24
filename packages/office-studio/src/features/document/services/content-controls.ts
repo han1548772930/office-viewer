@@ -8,6 +8,7 @@ import {
   compactRuns,
   createParagraph,
   createRun,
+  documentBlockAncestry,
   documentId,
   runText,
   runsForTarget,
@@ -16,6 +17,7 @@ import {
   tableForBlock,
   textTargets,
   type DocumentRun,
+  type RunPatch,
   type TextTarget,
 } from '../model/document-model'
 import type { DocumentImage } from '../model/document-model'
@@ -26,13 +28,51 @@ import { applyDocumentBlockHostModel, documentModelForBlockHost } from './docume
 import { cloneModel } from '../../../domain/serialization'
 import { assertDocumentStoryLocksPreserved } from './document-story-locks'
 import { resolveSectionHeaderFooter } from './section-header-footer'
+import { contentControlCheckboxGlyph, formatContentControlDate, validContentControlIsoDate } from './content-control-presentation'
+import { validateContentControlPropertyPatch } from './content-control-properties'
+import { synchronizeDocumentContentControlsAfterEdit, unwrapDocumentContentControlShells } from './content-control-editing'
+import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
 
 export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: string }
+
+export interface ContentControlRangeEditOptions {
+  /** A checked input context explicitly addresses the contents at start/end boundaries. */
+  activeControlId?: string
+}
+
+function insideControlEditChain(model: DocumentModel, blockId: string, startOffset: number, endOffset: number,
+  activeControlId: string | undefined): Set<string> {
+  const result = new Set<string>()
+  if (!activeControlId) return result
+  const index = new Map((model.contentControls ?? []).map(control => [control.id, control]))
+  let current = index.get(activeControlId)
+  if (!current || current.metadata?.officeStoryLockSource || current.blockId !== blockId
+    || !Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset)
+    || startOffset < current.startOffset || endOffset > current.endOffset || startOffset > endOffset) {
+    throw new RangeError('内容控件内部编辑上下文已失效：' + activeControlId)
+  }
+  while (current) {
+    if (result.has(current.id)) throw new RangeError('内容控件内部编辑遇到循环父级：' + current.id)
+    if (current.blockId !== blockId || startOffset < current.startOffset || endOffset > current.endOffset) {
+      throw new RangeError('内容控件内部编辑不属于其父级范围：' + current.id)
+    }
+    result.add(current.id)
+    const parentId: string | undefined = current.parentId
+    if (parentId && !index.has(parentId)) throw new RangeError('内容控件内部编辑的父级不存在：' + parentId)
+    current = parentId ? index.get(parentId) : undefined
+  }
+  return result
+}
 
 export type ContentControlPatch = Partial<Omit<DocumentContentControl, 'id' | 'blockId' | 'startOffset' | 'endOffset' | 'value' | 'checked' | 'dateValue'>>
 
 const lockedContent = new Set<DocumentContentControl['lock']>(['contentLocked', 'sdtContentLocked'])
 const lockedControl = new Set<DocumentContentControl['lock']>(['controlLocked', 'sdtLocked', 'sdtContentLocked'])
+
+function assertControlAcceptsParagraphBreak(control: DocumentContentControl): void {
+  if (!['richText', 'group', 'repeatingSection', 'repeatingSectionItem', 'docPartObj'].includes(control.type)
+    && !(control.type === 'text' && control.multiLine === true)) throw new RangeError(`此类型内容控件不接受段落换行：${control.id}`)
+}
 
 function editHostedControl<T>(model: DocumentModel, blockId: string, edit: (scoped: DocumentModel) => T, requestedHost?: DocumentAuxiliaryBlockHost): { value: T } | undefined {
   const host = requestedHost ?? documentBlockHostForId(model, blockId)
@@ -83,57 +123,90 @@ export function createDocumentContentControl(
   id = input.id ?? `content-control-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   host?: DocumentAuxiliaryBlockHost,
 ): DocumentContentControl {
-  if (!id.trim()) throw new TypeError('Content control id must not be empty')
+  if (typeof id !== 'string' || !id.trim()) throw new TypeError('Content control id must not be empty')
   if (model.contentControls?.some((control) => control.id === id)) throw new Error(`Content control already exists: ${id}`)
   const hosted = editHostedControl(model, input.blockId, scoped => createDocumentContentControl(scoped, input, id), host)
   if (hosted) return hosted.value
-  if (!id.trim()) throw new TypeError('Content control id must not be empty')
-  if (model.contentControls?.some((control) => control.id === id)) throw new Error(`Content control already exists: ${id}`)
-  const control: DocumentContentControl = {
+  const { id: _inputId, blockId: _blockId, startOffset: _start, endOffset: _end, value: _value, checked: _checked, dateValue: _dateValue, ...properties } = input
+  validateContentControlPropertyPatch(properties)
+  if (input.checked !== undefined && typeof input.checked !== 'boolean') throw new TypeError('复选框状态必须是布尔值。')
+  if (input.value !== undefined && typeof input.value !== 'string') throw new TypeError('内容控件值必须是文本。')
+  const candidate = cloneModel(model)
+  const control: DocumentContentControl = cloneControl({
     ...input,
     id,
     lock: input.lock ?? 'unlocked',
     showingPlaceholder: input.showingPlaceholder ?? false,
-    items: input.items?.map((item) => ({ ...item })),
-    metadata: input.metadata ? { ...input.metadata } : undefined,
-  }
-  validateControl(model, control)
-  const controls = model.contentControls ?? (model.contentControls = [])
+  })
+  validateControl(candidate, control)
+  const controls = candidate.contentControls ?? (candidate.contentControls = [])
   assertNoPartialOverlap(controls, control)
   controls.push(control)
   controls.sort((left, right) => left.blockId.localeCompare(right.blockId) || left.startOffset - right.startOffset || left.id.localeCompare(right.id))
-  if (control.showingPlaceholder && control.placeholder && ['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
-    replaceControlText(model, control, control.placeholder)
+  if (control.type === 'checkbox') {
+    assertAncestorContentEditable(candidate, control)
+    control.checked = input.checked ?? input.checkbox?.checked ?? false
+    control.checkbox = { ...control.checkbox, checked: control.checked }
+    const glyph = contentControlCheckboxGlyph(control)
+    replaceControlText(candidate, control, glyph.text, { fontFamily: glyph.fontFamily })
+    control.value = control.checked ? 'true' : 'false'
+    control.showingPlaceholder = false
+  } else if (control.showingPlaceholder && control.placeholder && ['text', 'richText', 'date', 'dropDownList', 'comboBox', 'picture'].includes(control.type)) {
+    assertAncestorContentEditable(candidate, control)
+    replaceControlText(candidate, control, control.placeholder)
     control.value = control.placeholder
   }
+  Object.assign(model, candidate)
   return control
 }
 
 export function updateDocumentContentControl(model: DocumentModel, id: string, patch: ContentControlPatch): void {
   const blockId = hostedControlBlock(model, id)
   if (blockId && editHostedControl(model, blockId, scoped => updateDocumentContentControl(scoped, id, patch))) return
-  const control = requireControl(model, id)
-  if (hasControlStructurePatch(control, patch) && isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${id}`)
-  const next: DocumentContentControl = {
+  const control = requireControl(model, id), candidate = cloneModel(model)
+  validateContentControlPropertyPatch(patch, control)
+  const next: DocumentContentControl = cloneControl({
     ...control,
     ...patch,
     id: control.id,
-    items: patch.items?.map((item) => ({ ...item })) ?? control.items?.map((item) => ({ ...item })),
-    metadata: patch.metadata ? { ...patch.metadata } : control.metadata ? { ...control.metadata } : undefined,
-  }
-  validateControl(model, next)
-  const controls = model.contentControls!
+  })
+  validateControl(candidate, next)
+  const controls = candidate.contentControls!
   assertNoPartialOverlap(controls.filter((candidate) => candidate.id !== id), next)
-  Object.assign(control, next)
-  if (control.type === 'date' && !control.showingPlaceholder && control.dateValue) {
-    replaceControlText(model, control, formatContentControlDate(control.dateValue, control.dateFormat, control.dateLocale))
+  controls[controls.findIndex(control => control.id === id)] = next
+  let display: { text: string; marks?: RunPatch } | undefined
+  const changed = (key: keyof ContentControlPatch) => Object.hasOwn(patch, key) && JSON.stringify(control[key]) !== JSON.stringify(next[key])
+  if (next.type === 'checkbox' && (changed('checkbox') || changed('type'))) {
+    next.checked = patch.checkbox?.checked ?? next.checked ?? next.checkbox?.checked ?? false
+    next.checkbox = { ...next.checkbox, checked: next.checked }
+    const glyph = contentControlCheckboxGlyph(next)
+    display = { text: glyph.text, marks: { fontFamily: glyph.fontFamily } }
+    next.value = next.checked ? 'true' : 'false'
+    next.showingPlaceholder = false
+  } else if (next.showingPlaceholder && ['text', 'richText', 'date', 'dropDownList', 'comboBox', 'picture'].includes(next.type)
+    && (changed('placeholder') || changed('showingPlaceholder'))) {
+    display = { text: next.placeholder ?? '' }
+    next.value = next.placeholder ?? ''
+  } else if (next.type === 'date' && !next.showingPlaceholder && next.dateValue
+    && (changed('dateFormat') || changed('dateLocale') || changed('dateCalendar') || changed('type'))) {
+    display = { text: formatContentControlDate(next.dateValue, next.dateFormat, next.dateLocale, next.dateCalendar) }
+  } else if (['dropDownList', 'comboBox'].includes(next.type) && !next.showingPlaceholder && next.value !== undefined && changed('items')) {
+    display = { text: next.items?.find(item => item.value === next.value)?.displayText ?? next.value }
   }
+  if (display) {
+    if (isContentLocked(control) && isContentLocked(next)) throw new Error(`Content control content is locked: ${id}`)
+    assertAncestorContentEditable(candidate, next)
+    replaceControlText(candidate, next, display.text, display.marks)
+  }
+  // A wrapper lock protects removal, not its properties. Publish after all text/field checks succeed.
+  Object.assign(model, candidate)
 }
 
 export function setDocumentContentControlValue(model: DocumentModel, id: string, value: string): void {
   const blockId = hostedControlBlock(model, id)
   if (blockId && editHostedControl(model, blockId, scoped => setDocumentContentControlValue(scoped, id, value))) return
   const control = requireControl(model, id)
+  if (typeof value !== 'string') throw new TypeError('内容控件值必须是文本。')
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
   if (!['text', 'richText', 'date', 'dropDownList', 'comboBox'].includes(control.type)) {
@@ -142,29 +215,47 @@ export function setDocumentContentControlValue(model: DocumentModel, id: string,
   if (control.type === 'dropDownList' && !control.items?.some((item) => item.value === value)) {
     throw new RangeError(`Value is not present in dropdown content control: ${value}`)
   }
-  if (control.type === 'date' && value !== '' && !validIsoDate(value)) throw new RangeError('Date content control value must be YYYY-MM-DD')
+  if (control.type === 'text' && control.multiLine !== true && /[\r\n]/.test(value)) throw new RangeError('此纯文本控件未启用多行输入。')
+  if (control.type === 'date' && value !== '' && !validContentControlIsoDate(value)) throw new RangeError('Date content control value must be YYYY-MM-DD')
   const displayValue = control.type === 'date'
-    ? formatContentControlDate(value, control.dateFormat, control.dateLocale)
+    ? formatContentControlDate(value, control.dateFormat, control.dateLocale, control.dateCalendar)
     : ['dropDownList', 'comboBox'].includes(control.type)
       ? control.items?.find((item) => item.value === value)?.displayText ?? value
-      : value
-  replaceControlText(model, control, displayValue)
-  control.value = value
-  if (control.type === 'date') control.dateValue = value
-  control.showingPlaceholder = false
+      : value.replace(/\r\n?/g, '\n')
+  if (control.type === 'comboBox' && /[\r\n]/.test(displayValue)) throw new RangeError('组合框内容不能包含段落换行。')
+  const storedValue = control.type === 'text' || control.type === 'richText' ? displayValue : value
+  const previousText = contentControlText(model, control)
+  if (!control.showingPlaceholder && previousText === displayValue && control.value === storedValue
+    && (control.type !== 'date' || control.dateValue === value)) return
+  const candidate = cloneModel(model), next = requireControl(candidate, id)
+  if (previousText !== displayValue) replaceControlText(candidate, next, displayValue)
+  next.value = storedValue
+  if (next.type === 'date') next.dateValue = value
+  next.showingPlaceholder = false
+  synchronizeDocumentContentControlsAfterEdit(model, candidate, { origin: 'control-value', controlId: id })
+  Object.assign(model, candidate)
 }
 
 export function setDocumentContentControlChecked(model: DocumentModel, id: string, checked: boolean): void {
   const blockId = hostedControlBlock(model, id)
   if (blockId && editHostedControl(model, blockId, scoped => setDocumentContentControlChecked(scoped, id, checked))) return
   const control = requireControl(model, id)
+  if (typeof checked !== 'boolean') throw new TypeError('复选框状态必须是布尔值。')
   if (control.type !== 'checkbox') throw new TypeError(`Content control ${id} is not a checkbox`)
   if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
   assertAncestorContentEditable(model, control)
-  control.checked = checked
-  control.value = checked ? 'true' : 'false'
-  control.checkbox = { ...control.checkbox, checked }
-  control.showingPlaceholder = false
+  const glyph = contentControlCheckboxGlyph(control, checked), previousText = contentControlText(model, control)
+  const storedValue = checked ? 'true' : 'false'
+  if (!control.showingPlaceholder && previousText === glyph.text && control.value === storedValue
+    && control.checked === checked && control.checkbox?.checked === checked) return
+  const candidate = cloneModel(model), next = requireControl(candidate, id)
+  next.checked = checked
+  next.value = storedValue
+  next.checkbox = { ...next.checkbox, checked }
+  if (previousText !== glyph.text) replaceControlText(candidate, next, glyph.text, { fontFamily: glyph.fontFamily })
+  next.showingPlaceholder = false
+  synchronizeDocumentContentControlsAfterEdit(model, candidate, { origin: 'control-value', controlId: id })
+  Object.assign(model, candidate)
 }
 
 export function resetDocumentContentControlPlaceholder(model: DocumentModel, id: string): void {
@@ -443,33 +534,12 @@ export function contentControlRange(control: DocumentContentControl): { blockId:
   return { blockId: control.blockId, startOffset: control.startOffset, endOffset: control.endOffset }
 }
 
-function formatContentControlDate(value: string, format?: string, locale?: string): string {
-  const date = new Date(`${value}T00:00:00.000Z`)
-  if (Number.isNaN(date.valueOf())) return value
-  if (!format || format === 'yyyy-MM-dd') return value
-  const monthNames = (() => {
-    try {
-      const formatter = new Intl.DateTimeFormat(locale || 'en-US', { month: 'long', timeZone: 'UTC' })
-      return Array.from({ length: 12 }, (_, month) => formatter.format(new Date(Date.UTC(2020, month, 1))))
-    } catch {
-      return []
-    }
-  })()
-  const year = date.getUTCFullYear()
-  const month = date.getUTCMonth()
-  const day = date.getUTCDate()
-  return format.replace(/yyyy|yy|MMMM|MMM|MM|M|dd|d/g, (token) => {
-    switch (token) {
-      case 'yyyy': return String(year).padStart(4, '0')
-      case 'yy': return String(year).slice(-2)
-      case 'MMMM': return monthNames[month] ?? String(month + 1).padStart(2, '0')
-      case 'MMM': return monthNames[month]?.slice(0, 3) ?? String(month + 1).padStart(2, '0')
-      case 'MM': return String(month + 1).padStart(2, '0')
-      case 'M': return String(month + 1)
-      case 'dd': return String(day).padStart(2, '0')
-      default: return String(day)
-    }
-  })
+/** Shared capability check for Canvas controls and the actual value commands. */
+export function assertDocumentContentControlValueEditable(model: DocumentModel, id: string): void {
+  const control = requireControl(model, id), host = documentBlockHostForId(model, control.blockId)
+  if (host) { assertDocumentContentControlValueEditable(documentModelForBlockHost(model, host, true), id); return }
+  if (isContentLocked(control)) throw new Error(`Content control content is locked: ${id}`)
+  assertAncestorContentEditable(model, control)
 }
 
 export function assertTextRangeEditable(model: DocumentModel, startOffset: number, endOffset: number): void {
@@ -520,10 +590,16 @@ export function transformContentControlsForBlockEdit(
   replacementLength: number,
   split?: ContentControlParagraphSplit,
   preserveControlRanges = false,
+  options: ContentControlRangeEditOptions = {},
 ): void {
   if (!model.contentControls?.length || (startOffset === endOffset && replacementLength === 0 && !split)) return
   // Validate every affected range on a detached plan before changing any live anchors.
   const next: DocumentModel = { ...model, contentControls: getDocumentContentControls(model) }
+  const selectedAtEmptyInsertion = !preserveControlRanges && startOffset === endOffset
+    ? selectedDocumentContentControl(model, blockId, startOffset) : undefined
+  const emptyInsertionControl = selectedAtEmptyInsertion?.startOffset === selectedAtEmptyInsertion?.endOffset
+    ? selectedAtEmptyInsertion : undefined
+  const inside = insideControlEditChain(model, blockId, startOffset, endOffset, options.activeControlId ?? emptyInsertionControl?.id)
   for (const control of next.contentControls!) {
     if (!next.contentControls!.some((candidate) => candidate.id === control.id)) continue
     if (control.blockId !== blockId) continue
@@ -531,13 +607,20 @@ export function transformContentControlsForBlockEdit(
     const overlaps = insertion
       ? startOffset > control.startOffset && startOffset < control.endOffset
       : startOffset < control.endOffset && control.startOffset < endOffset
-    const removesWholeControl = !preserveControlRanges && overlaps && startOffset <= control.startOffset && endOffset >= control.endOffset && replacementLength === 0
+    const removesWholeControl = !preserveControlRanges && !inside.has(control.id) && overlaps
+      && startOffset <= control.startOffset && endOffset >= control.endOffset && replacementLength === 0
     if (removesWholeControl) {
       if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
       removeControlTreeFromModel(next, control)
       continue
     }
     if (overlaps && isContentControlLockedAtEdit(model, control, startOffset, endOffset, insertion)) throw new Error(`Content control content is locked: ${control.id}`)
+    if (insertion && inside.has(control.id)) {
+      if (isContentLocked(control)) throw new Error(`Content control content is locked: ${control.id}`)
+      assertAncestorContentEditable(model, control)
+      control.endOffset += replacementLength
+      continue
+    }
     if (!overlaps) {
       if (!insertion && endOffset <= control.startOffset) {
         const delta = replacementLength - (endOffset - startOffset)
@@ -567,14 +650,30 @@ export function transformContentControlsForBlockEdit(
     }
   }
   if (split) {
-    const controls = next.contentControls!
-    const movesToSuffix = (control: DocumentContentControl): boolean => {
+    const unwrapping = new Set<string>()
+    if (!preserveControlRanges) {
+      for (const control of next.contentControls!) {
+        if (control.blockId !== blockId || control.endOffset <= split.firstBreakOffset
+          || control.startOffset >= split.lastParagraphOffset || !control.temporary || isControlLocked(control)
+          || control.metadata?.officeStoryLockSource) continue
+        const previous = model.contentControls!.find(candidate => candidate.id === control.id)!
+        if (isContentLocked(previous)) throw new Error(`Content control content is locked: ${control.id}`)
+        assertAncestorContentEditable(model, previous)
+        assertControlAcceptsParagraphBreak(control)
+        unwrapping.add(control.id)
+      }
+    }
+    next.contentControls = unwrapDocumentContentControlShells(next.contentControls!, unwrapping)
+    const controls = next.contentControls
+    const movesToSuffix = (control: DocumentContentControl, visited = new Set<string>()): boolean => {
+      if (visited.has(control.id)) throw new RangeError(`Content control parent relationships must not contain a cycle: ${control.id}`)
+      visited.add(control.id)
       if (control.endOffset <= split.firstBreakOffset) {
         // Empty children at the split boundary follow their enclosing wrapper.
         const parent = control.startOffset === control.endOffset && control.parentId
           ? controls.find((candidate) => candidate.id === control.parentId && candidate.startOffset < candidate.endOffset)
           : undefined
-        return parent ? movesToSuffix(parent) : false
+        return parent ? movesToSuffix(parent, visited) : false
       }
       if (control.startOffset < split.lastParagraphOffset) {
         throw new RangeError(`A paragraph break cannot split a content control range: ${control.id}`)
@@ -619,6 +718,7 @@ export function transformContentControlsForBodyRangeEdit(
   endOffset: number,
   replacementLength: number,
   preserveControlRanges = true,
+  options: ContentControlRangeEditOptions = {},
 ): void {
   if (!model.contentControls?.length) return
   const source = new Map(sourceParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
@@ -626,13 +726,25 @@ export function transformContentControlsForBodyRangeEdit(
   const next: DocumentModel = { ...model, contentControls: getDocumentContentControls(model) }
   const delta = replacementLength - (endOffset - startOffset)
   const insertion = startOffset === endOffset
+  const emptyInputControl = !preserveControlRanges && insertion ? (model.contentControls ?? [])
+    .filter(control => control.startOffset === control.endOffset && source.get(control.blockId)?.absoluteStart !== undefined
+      && source.get(control.blockId)!.absoluteStart + control.startOffset === startOffset)
+    .sort((left, right) => hasAncestor(model.contentControls ?? [], left, right.id) ? -1 : hasAncestor(model.contentControls ?? [], right, left.id) ? 1 : 0)[0] : undefined
+  const inputControlId = options.activeControlId ?? emptyInputControl?.id
+  const inputControl = inputControlId ? model.contentControls?.find(control => control.id === inputControlId) : undefined
+  const inputParagraph = inputControl && source.get(inputControl.blockId)
+  if (inputControlId && (!inputControl || !inputParagraph)) throw new RangeError('内容控件内部编辑的源段落不存在：' + inputControlId)
+  const inside = inputControl && inputParagraph
+    ? insideControlEditChain(model, inputControl.blockId, startOffset - inputParagraph.absoluteStart, endOffset - inputParagraph.absoluteStart, inputControlId)
+    : new Set<string>()
+  const unwrapping = new Set<string>()
   for (const control of [...next.contentControls!]) {
     if (!next.contentControls!.some(candidate => candidate.id === control.id)) continue
     const paragraph = source.get(control.blockId)
     if (!paragraph) continue
     const from = paragraph.absoluteStart + control.startOffset, to = paragraph.absoluteStart + control.endOffset
     const overlaps = insertion ? startOffset > from && startOffset < to : startOffset < to && from < endOffset
-    if (!preserveControlRanges && overlaps && startOffset <= from && endOffset >= to && replacementLength === 0) {
+    if (!preserveControlRanges && !inside.has(control.id) && overlaps && startOffset <= from && endOffset >= to && replacementLength === 0) {
       if (isControlLocked(control)) throw new Error(`Content control wrapper is locked: ${control.id}`)
       removeControlTreeFromModel(next, control)
       continue
@@ -641,7 +753,11 @@ export function transformContentControlsForBodyRangeEdit(
       throw new Error(`Content control content is locked: ${control.id}`)
     }
     let start = from, end = to
-    if (insertion) {
+    if (insertion && inside.has(control.id)) {
+      if (isContentLocked(control)) throw new Error(`Content control content is locked: ${control.id}`)
+      assertAncestorContentEditable(model, control)
+      end += replacementLength
+    } else if (insertion) {
       if (startOffset <= from) { start += replacementLength; end += replacementLength }
       else if (startOffset < to) end += replacementLength
     } else if (endOffset <= from) { start += delta; end += delta }
@@ -652,15 +768,25 @@ export function transformContentControlsForBodyRangeEdit(
     }
     const first = destination.find(candidate => start >= candidate.absoluteStart && start <= candidate.absoluteEnd)
     const last = destination.find(candidate => end >= candidate.absoluteStart && end <= candidate.absoluteEnd)
-    if (!first || !last || first.block.id !== last.block.id) throw new RangeError(`正文编辑无法把内容控件 ${control.id} 映射到同一段落。`)
+    if (!first || !last) throw new RangeError(`正文编辑无法把内容控件 ${control.id} 映射到同一段落。`)
+    if (first.block.id !== last.block.id) {
+      if (preserveControlRanges || !control.temporary || isControlLocked(control) || control.metadata?.officeStoryLockSource) {
+        throw new RangeError(`正文编辑无法把内容控件 ${control.id} 映射到同一段落。`)
+      }
+      if (isContentLocked(control)) throw new Error(`Content control content is locked: ${control.id}`)
+      assertAncestorContentEditable(model, control)
+      assertControlAcceptsParagraphBreak(control)
+      unwrapping.add(control.id)
+      continue
+    }
     control.blockId = first.block.id
     control.startOffset = start - first.absoluteStart
     control.endOffset = end - last.absoluteStart
   }
-  model.contentControls = next.contentControls
+  model.contentControls = unwrapDocumentContentControlShells(next.contentControls!, unwrapping)
 }
 
-function replaceControlText(model: DocumentModel, control: DocumentContentControl, value: string): void {
+function replaceControlText(model: DocumentModel, control: DocumentContentControl, value: string, marks: RunPatch = {}): void {
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control paragraph not found: ${control.blockId}`)
   const oldLength = control.endOffset - control.startOffset
@@ -676,19 +802,21 @@ function replaceControlText(model: DocumentModel, control: DocumentContentContro
     }
   }
   const runs = runsForTarget(model, target)
-  const prefix = sliceRuns(runs, 0, control.startOffset)
-  const suffix = sliceRuns(runs, control.endOffset)
-  const source = runs.find((run) => run.text.length > 0) ?? createRun()
-  const { id: _id, text: _text, ...inherited } = source
-  const inserted: DocumentRun[] = value ? [createRun(value, inherited)] : []
-  transformDocumentTextFieldsForBlockEdit(findBlock(model, control.blockId)!, control.startOffset, control.endOffset, value, undefined, model)
-  setTargetRuns(model, target, compactRuns([...prefix, ...inserted, ...suffix]))
+  const { before: prefix, after: suffix } = splitDocumentRunRange(runs, control.startOffset, control.endOffset)
+  const inherited = documentRunStyleAt(runs, control.startOffset, control.endOffset) ?? {}
+  const inserted: DocumentRun[] = value ? [createRun(value, { ...inherited, ...marks })] : []
+  const block = findBlock(model, control.blockId)!
+  transformDocumentTextFieldsForBlockEdit(block, control.startOffset, control.endOffset, value, undefined, model)
+  const nextRuns = [...prefix, ...inserted, ...suffix]
+  // The editor's shared range splitter keeps note/field entities at the boundaries exactly once.
+  block.runs = nextRuns.length ? nextRuns : [createRun('', inherited)]
+  for (const ancestor of documentBlockAncestry(model, block.id) ?? []) delete ancestor.metadata.html
   const delta = value.length - oldLength
   if (delta === 0) return
   for (const candidate of model.contentControls ?? []) {
     if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
     if (candidate.startOffset <= control.startOffset && candidate.endOffset >= control.endOffset
-      && candidate.id === control.parentId) {
+      && hasAncestor(model.contentControls ?? [], control, candidate.id)) {
       candidate.endOffset += delta
     } else if (candidate.startOffset >= control.endOffset) {
       candidate.startOffset += delta
@@ -777,14 +905,15 @@ function blockContainerContaining(model: DocumentModel, blockId: string): Docume
 function validateControl(model: DocumentModel, control: DocumentContentControl): void {
   const block = findBlock(model, control.blockId)
   if (!block || ['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) throw new Error(`Content control target is not a text paragraph: ${control.blockId}`)
-  if (!Number.isInteger(control.startOffset) || !Number.isInteger(control.endOffset) || control.startOffset < 0 || control.endOffset < control.startOffset) throw new RangeError('Content control range is invalid')
+  if (!Number.isSafeInteger(control.startOffset) || !Number.isSafeInteger(control.endOffset) || control.startOffset < 0 || control.endOffset < control.startOffset) throw new RangeError('Content control range is invalid')
   const target = targetForControl(model, control)
   if (!target) throw new Error(`Content control target is not addressable: ${control.blockId}`)
-  const length = runText(runsForTarget(model, target)).length
+  const text = runText(runsForTarget(model, target)), length = text.length
   if (control.endOffset > length) throw new RangeError(`Content control range exceeds paragraph length: ${length}`)
+  if (!isDocumentTextBoundary(text, control.startOffset) || !isDocumentTextBoundary(text, control.endOffset)) throw new RangeError(`Content control UTF-16 range splits a character: ${control.id}`)
   if (!['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox', 'picture', 'group', 'repeatingSection', 'repeatingSectionItem', 'docPartObj'].includes(control.type)) throw new TypeError('Unsupported content control type')
   if (control.lock === undefined) control.lock = 'unlocked'
-  if (control.type === 'date' && control.dateValue !== undefined && control.dateValue !== '' && !validIsoDate(control.dateValue)) throw new RangeError('Date content control value must be YYYY-MM-DD')
+  if (control.type === 'date' && control.dateValue !== undefined && control.dateValue !== '' && !validContentControlIsoDate(control.dateValue)) throw new RangeError('Date content control value must be YYYY-MM-DD')
   if ((control.type === 'dropDownList' || control.type === 'comboBox') && (!control.items?.length || control.items.some((item) => !item.value))) throw new RangeError('List content controls require non-empty values')
   if (control.type === 'dropDownList' && !control.showingPlaceholder && control.value !== undefined && !control.items?.some((item) => item.value === control.value)) throw new RangeError(`Dropdown value is not present in its item list: ${control.value}`)
   if (control.type === 'checkbox' && control.checked === undefined) control.checked = false
@@ -818,10 +947,6 @@ function requireControl(model: DocumentModel, id: string): DocumentContentContro
 
 function isContentLocked(control: DocumentContentControl): boolean { return lockedContent.has(control.lock) }
 function isControlLocked(control: DocumentContentControl): boolean { return lockedControl.has(control.lock) }
-function hasControlStructurePatch(control: DocumentContentControl, patch: ContentControlPatch): boolean {
-  return Object.entries(patch).some(([key, value]) => key !== 'lock' && JSON.stringify(Reflect.get(control, key)) !== JSON.stringify(value))
-}
-
 function assertAncestorContentEditable(model: DocumentModel, control: DocumentContentControl): void {
   for (const candidate of model.contentControls ?? []) {
     if (candidate.id === control.id || candidate.blockId !== control.blockId) continue
@@ -830,13 +955,8 @@ function assertAncestorContentEditable(model: DocumentModel, control: DocumentCo
     }
   }
 }
-function validIsoDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
-  const date = new Date(`${value}T00:00:00Z`)
-  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value
-}
 function cloneControl(control: DocumentContentControl): DocumentContentControl {
-  return JSON.parse(JSON.stringify(control)) as DocumentContentControl
+  return cloneModel(control)
 }
 
 function hasAncestor(controls: readonly DocumentContentControl[], control: DocumentContentControl, ancestorId: string): boolean {

@@ -1,6 +1,7 @@
 import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartSemanticOptions, ChartSeriesOptions, ChartSeriesFillPattern } from '../../domain/model'
-import { chartColorChannels } from './chart-color'
+import { chartColorChannels, validateChartColor } from './chart-color'
 import { isChartFillPatternPreset } from './chart-fill-pattern'
+import { validateChartPlotArea } from './chart-plot-area'
 
 export function validateChartPalette(palette: readonly string[] | undefined): void {
   if (palette === undefined) return
@@ -15,6 +16,8 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   visitValues(options)
   enumeration(options.invalidValueStrategy, ['zero', 'break', 'link'], '空值处理')
   boolean(options.plotVisibleOnly, '仅绘制可见单元格')
+  boolean(options.autoGradientFill, '自动渐变填充')
+  validateChartPlotArea(options.plotArea)
   for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'axisPointer', 'rightYAxis', 'depthAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) optionalObject(options[key], `图表.${key}`)
   if (options.appearance) {
     color(options.appearance.background, '图表背景'); line(options.appearance.border, '图表边框'); font(options.appearance.font, '图表字体')
@@ -116,7 +119,18 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
       roles.add(key)
     })
   }
-  boolean(options.pareto?.includeZeroValues, '保留零权重分类')
+  const pareto = options.pareto
+  boolean(pareto?.includeZeroValues, '保留零权重分类')
+  if (pareto) {
+    optionalObject(pareto.barStyle, '帕累托柱形样式'); optionalObject(pareto.cumulativeLineStyle, '帕累托累计线样式')
+    const bar = pareto.barStyle, cumulative = pareto.cumulativeLineStyle
+    if (bar) series({ color: bar.color, fillOpacity: bar.opacity, border: bar.border, label: bar.label, dataPoints: bar.dataPoints }, '帕累托柱形')
+    if (cumulative) {
+      optionalNumber(cumulative.width, -Number.MAX_VALUE, 100, '帕累托累计线宽'); enumeration(cumulative.dashType, ['solid', 'dashed', 'dotted'], '帕累托累计线型')
+      series({ color: cumulative.color, fillOpacity: cumulative.opacity, point: cumulative.point, label: cumulative.label, dataPoints: cumulative.dataPoints }, '帕累托累计线')
+      if (cumulative.label?.position === 'outside') throw new TypeError('帕累托累计线标签不接受 outside 位置。')
+    }
+  }
   const histogram = options.histogram
   if (histogram) {
     optionalObject(histogram.binning, '直方图分箱')
@@ -241,7 +255,7 @@ function axis(value: ChartAxisOptions | undefined, name: string): void {
 function series(value: ChartSeriesOptions | undefined, name: string): void {
   optionalObject(value, name)
   if (!value) return
-  string(value.name, `${name}名称`); enumeration(value.type, ['column', 'columnStacked', 'line', 'area', 'areaStacked'], `${name}图型`); color(value.color, `${name}颜色`); optionalNumber(value.fillOpacity, 0, 1, `${name}填充不透明度`); boolean(value.rightAxis, `${name}右轴`)
+  string(value.name, `${name}名称`); enumeration(value.type, ['column', 'columnStacked', 'line', 'area', 'areaStacked'], `${name}图型`); seriesColor(value.color, `${name}颜色`); optionalNumber(value.fillOpacity, 0, 1, `${name}填充不透明度`); boolean(value.rightAxis, `${name}右轴`)
   fillPattern(value.fillPattern, `${name}填充纹理`)
   line(value.border, `${name}边框`); label(value.label, `${name}标签`); optionalObject(value.point, `${name}标记`)
   enumeration(value.point?.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}标记形状`); optionalNumber(value.point?.size, 0, 256, `${name}标记大小`); color(value.point?.color, `${name}标记颜色`)
@@ -250,7 +264,7 @@ function series(value: ChartSeriesOptions | undefined, name: string): void {
     for (const [key, point] of Object.entries(value.dataPoints)) {
       recordIndex(key, `${name}项目索引`); optionalObject(point, `${name}项目 ${key}`)
       if (!point) continue
-      color(point.color, `${name}项目颜色`); optionalNumber(point.fillOpacity, 0, 1, `${name}项目不透明度`); optionalNumber(point.size, 0, 256, `${name}项目大小`); line(point.border, `${name}项目边框`)
+      seriesColor(point.color, `${name}项目颜色`); optionalNumber(point.fillOpacity, 0, 1, `${name}项目不透明度`); optionalNumber(point.size, 0, 256, `${name}项目大小`); line(point.border, `${name}项目边框`)
       fillPattern(point.fillPattern, `${name}项目填充纹理`)
       enumeration(point.shape, ['circle', 'rect', 'triangle', 'diamond', 'none'], `${name}项目标记形状`)
     }
@@ -285,5 +299,6 @@ function color(value: unknown, name: string, required = false): void {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name}须为有效颜色。`)
   chartColorChannels(value)
 }
+function seriesColor(value: unknown, name: string): void { if (value !== undefined) validateChartColor(value, name) }
 function enumeration(value: unknown, choices: readonly string[], name: string): void { if (value !== undefined) requiredEnum(value, choices, name) }
 function requiredEnum(value: unknown, choices: readonly string[], name: string): void { if (typeof value !== 'string' || !choices.includes(value)) throw new TypeError(`${name}包含无效选项。`) }

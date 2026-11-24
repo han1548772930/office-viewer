@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Button, Collapse, CollapsePanel, FormItem, Select } from 'antdv-next'
 import type { ChartConfig, ChartData } from '../chart-engine'
-import { chartFillPatternControls, chartSeriesControls, colorControl, fieldControl, numberControl, selectControl, seriesStyleGroup, type ChartSettingControl } from '../chart-settings-controls'
+import { chartColorControl, chartFillPatternControls, chartSeriesControls, colorControl, fieldControl, numberControl, selectControl, seriesStyleGroup, type ChartSettingControl } from '../chart-settings-controls'
 import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-settings-draft'
 import { patchChartSeriesOverride } from '../chart-cartesian-api'
 import { chartSeriesOverride } from '../chart-series-selector'
@@ -27,9 +27,9 @@ const pointControls = computed<ChartSettingControl[]>(() => {
   const read = (config: ChartConfig) => chartSeriesOverride(config.options, selector)?.dataPoints?.[index]
   const write = (config: ChartConfig) => (seriesStyleGroup(config, selector).dataPoints ??= {})[index] ??= {}
   const effective = (config: ChartConfig) => chartPointStyle(chartSeriesStyle(config, typeof selector === 'number' ? selector : target.value?.source?.field ?? 0,
-    target.value?.source?.position ?? 0, chartPalette(config), typeof selector === 'object' ? selector.name : undefined), index)
+    target.value?.source?.position ?? 0, chartPalette(config), typeof selector === 'object' ? selector.name : undefined), index, config.type)
   return [
-    colorControl('point.color', '项目颜色', config => read(config)?.color, (config, value) => { const point = write(config); point.color = value; point.fillPattern = null }),
+    chartColorControl('point.color', '项目颜色', config => read(config)?.color, (config, value) => { const point = write(config); point.color = value; point.fillPattern = null }, 'dataPoint', config => effective(config)?.color),
     ...chartFillPatternControls('point', read, write, effective, '项目'),
     numberControl('point.fillOpacity', '项目填充不透明度', config => read(config)?.fillOpacity, (config, value) => { write(config).fillOpacity = value }, 0, 1),
     numberControl('point.size', '项目标记大小', config => read(config)?.size, (config, value) => { write(config).size = value }, 0, 256),

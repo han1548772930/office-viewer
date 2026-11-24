@@ -1,6 +1,7 @@
 import type { ChartModel, ChartSemanticOptions, ChartSeriesOptions } from '../../domain/model'
 import { validateChartOptions } from './chart-option-validation'
 import { chartNamedSeriesStyle } from './chart-series-selector'
+import { isChartLinearGradient } from './chart-color'
 export { validateChartOptions, validateChartPalette, validateChartAxis, validateChartFont } from './chart-option-validation'
 
 const DEFAULT_COLORS = ['#2563eb', '#dc2626', '#059669', '#d97706', '#7c3aed', '#0891b2']
@@ -11,7 +12,7 @@ export function cloneChartOptions(options: ChartSemanticOptions | undefined): Ch
   return cloneOptionValue(options) as ChartSemanticOptions
 }
 
-/** Groups omitted from a patch are retained. An explicitly supplied collection replaces that collection. */
+/** Omitted groups are retained. Collections and normalized plot rectangles replace atomically. */
 export function mergeChartOptions(current: ChartSemanticOptions | undefined, patch: ChartSemanticOptions | undefined): ChartSemanticOptions | undefined {
   if (patch === undefined) return cloneChartOptions(current)
   const merged: ChartSemanticOptions = { ...cloneChartOptions(current), ...cloneChartOptions(patch) }
@@ -31,7 +32,7 @@ export function cloneOptionValue(value: unknown): unknown {
 function mergeOptionGroup(current: unknown, patch: unknown): unknown {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch) || !current || typeof current !== 'object' || Array.isArray(current)) return cloneOptionValue(patch)
   const merged: Record<string, unknown> = { ...current, ...patch }
-  for (const [key, value] of Object.entries(patch)) if (key !== 'fillPattern' && value && typeof value === 'object' && !Array.isArray(value)) merged[key] = mergeOptionGroup(Reflect.get(current, key), value)
+  for (const [key, value] of Object.entries(patch)) if (key !== 'fillPattern' && value && typeof value === 'object' && !Array.isArray(value) && !isChartLinearGradient(value)) merged[key] = mergeOptionGroup(Reflect.get(current, key), value)
   return merged
 }
 

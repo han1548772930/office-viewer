@@ -19,6 +19,7 @@
     "build": "vue-tsc -p tsconfig.json --declaration --emitDeclarationOnly --outDir dist/types && vite build"
   },
   "dependencies": {
+    "dayjs": "1.11.23",
     "echarts": "6.1.0"
   },
   "peerDependencies": {

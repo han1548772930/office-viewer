@@ -2,7 +2,8 @@ use super::{BTreeMap, BTreeSet, Content, Element, Properties, SourceStyles, WORD
 use serde_json::Value;
 
 fn metadata_source_format(provenance: &Value) -> &Value {
-    get(get(get(provenance, "metadata"), "source"), "sourceFormat")
+    let source = get(get(provenance, "metadata"), "source");
+    source.get("sourceFormat").unwrap_or_else(|| get(get(source, "details"), "sourceFormat"))
 }
 
 fn read_properties(format: &Value, local: &str) -> Result<Option<Element>, String> {
@@ -36,8 +37,13 @@ fn read_properties(format: &Value, local: &str) -> Result<Option<Element>, Strin
     Ok(Some(result))
 }
 
+/// Input is a fragment of property children; output is one complete pPr/rPr.
 fn generated_properties(xml: &str, local: &str) -> Result<Element, String> {
-    parse_xml(&format!("<w:{local} xmlns:w=\"{WORD_NAMESPACE}\">{xml}</w:{local}>"), false)
+    let result = parse_xml(&format!("<w:{local} xmlns:w=\"{WORD_NAMESPACE}\">{xml}</w:{local}>"), false)?;
+    if result.children().any(|child| child.is_word(local)) {
+        return Err(format!("Generated {local} properties must contain children, not a nested properties root."));
+    }
+    Ok(result)
 }
 
 fn replace_properties(container: &mut Element, local: &str, properties: Element) {
@@ -228,7 +234,7 @@ impl SourceStyles {
         let original = read_properties(format, "pPr")?.unwrap_or_else(|| Element::word("pPr"));
         let paragraph_id = original.child("pStyle").and_then(|style| style.attribute("val")).or_else(|| get(format, "paragraphStyleId").as_str());
         let mut result = self.resolved_story_paragraph(&original, paragraph_id)?;
-        let baseline = get(metadata, "officeStoryParagraphStyleBaseline");
+        let baseline = metadata.get("officeStoryParagraphStyleBaseline").unwrap_or_else(|| get(metadata, "officeParagraphStyleBaseline"));
         for (fields, properties) in [
             (&["align"][..], &["jc"][..]),
             (&["indent", "indentStart", "indentEnd", "indentFirstLine", "hanging"][..], &["ind"][..]),
@@ -243,6 +249,25 @@ impl SourceStyles {
             replace_properties(&mut result, "rPr", mark);
         }
         super::super::source_xml::validate_namespace_bindings(&result, &BTreeMap::from([("w".into(), WORD_NAMESPACE.into())]))?;
+        Ok(result.render(None))
+    }
+
+    /// Blocks use generated package-wide numbering, while unchanged imported
+    /// named paragraph styles retain their source IDs and advanced properties.
+    pub(in super::super) fn block_paragraph_properties(&mut self, xml: &str, block: &Value) -> Result<String, String> {
+        let merged = self.story_paragraph_properties(xml, get(block, "style"), block)?;
+        // story_paragraph_properties already returns a complete root.
+        let mut result = parse_xml(&merged, false)?;
+        let generated = generated_properties(xml, "pPr")?;
+        overlay_properties(&mut result, &generated, &["numPr"]);
+        let metadata = get(block, "metadata");
+        let baseline = get(metadata, "officeParagraphSemanticBaseline");
+        let changed = !baseline.is_null() && (get(block, "type") != get(baseline, "type")
+            || get(block, "level") != get(baseline, "level")
+            || get(metadata, "namedStyleType") != get(baseline, "namedStyleType"));
+        if changed || baseline.is_null() && generated.child("pStyle").is_some() {
+            overlay_properties(&mut result, &generated, &["pStyle", "keepNext"]);
+        }
         Ok(result.render(None))
     }
 

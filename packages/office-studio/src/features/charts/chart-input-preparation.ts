@@ -1,15 +1,15 @@
-import type { CellScalar, ChartModel } from '../../domain/model'
+import type { CellScalar } from '../../domain/model'
 import type { ChartData } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
 import { finiteChartValue } from './chart-math'
-import { chartDateSerial, prepareChartDateData } from './chart-date-axis'
+import { chartDateSerial, prepareChartDateData, type ChartDateAxisConfig } from './chart-date-axis'
 import { CHART_PREPARATION_CHUNK, consumeChartPreparation, type ChartComputePreparationContext } from './chart-compute-lifecycle'
 
 interface CategoryEntry { category: string; indexes: number[]; values: Array<number | null>; weight?: number; synthetic?: boolean }
 
 /** Both the synchronous public contract and asynchronous preparation consume
  * this implementation. The yielded values are scheduling boundaries only. */
-export function* chartComputeInputSteps(source: ChartData, chart: ChartModel): Generator<void, ChartData, void> {
+export function* chartComputeInputSteps(source: ChartData, chart: ChartDateAxisConfig): Generator<void, ChartData, void> {
   const data = resolveChartType(chart.type).dataShape === 'category' ? yield* aggregateCategorySteps(source, chart) : source
   const percent = resolveChartType(chart.type).percent
   const scales: number[] = [], totals: number[] = []
@@ -46,7 +46,7 @@ export function* chartComputeInputSteps(source: ChartData, chart: ChartModel): G
   return ['histogram', 'boxplot'].includes(chart.type) ? prepared : prepareChartDateData(prepared, chart)
 }
 
-export function prepareChartComputeInputs(source: ChartData, chart: ChartModel, context: ChartComputePreparationContext = {}): Promise<ChartData> {
+export function prepareChartComputeInputs(source: ChartData, chart: ChartDateAxisConfig, context: ChartComputePreparationContext = {}): Promise<ChartData> {
   return consumeChartPreparation(chartComputeInputSteps(source, chart), context)
 }
 
@@ -71,7 +71,7 @@ function* finiteSumSteps<T>(items: readonly T[], valueAt: (item: T) => number | 
   return finiteChartValue(total * scale, label)
 }
 
-function* aggregateCategorySteps(data: ChartData, chart: ChartModel): Generator<void, ChartData, void> {
+function* aggregateCategorySteps(data: ChartData, chart: ChartDateAxisConfig): Generator<void, ChartData, void> {
   const options = chart.options?.aggregation
   if (!options?.aggregate && !options?.topN) return data
   const groups = new Map<string, number[]>()
@@ -169,7 +169,7 @@ function* projectCategoryCoordinatesSteps(source: Array<number | null>, entries:
   return projected
 }
 
-function* categorySourceValueSteps(data: ChartData, entry: CategoryEntry, chart: ChartModel): Generator<void, CellScalar, void> {
+function* categorySourceValueSteps(data: ChartData, entry: CategoryEntry, chart: ChartDateAxisConfig): Generator<void, CellScalar, void> {
   if (entry.synthetic) return entry.category
   const first = data.categoryValues?.[entry.indexes[0]!] ?? null
   const date = chart.options?.mapping?.useDateAxis === true

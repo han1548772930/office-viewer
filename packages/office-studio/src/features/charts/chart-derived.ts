@@ -1,4 +1,4 @@
-import type { ChartErrorBarOptions, ChartModel, ChartSeriesOptions, ChartTrendlineOptions } from '../../domain/model'
+import type { ChartErrorBarOptions, ChartModel, ChartSeriesOptions, ChartTrendlineOptions, ChartType } from '../../domain/model'
 import type { ChartData } from './chart-engine'
 import type { ChartHierarchyItem } from './chart-data'
 import { resolveChartType, supportsChartErrorDirection, supportsChartStatistics } from './chart-catalog'
@@ -7,8 +7,9 @@ import { chartSeriesColorIsAuthored, chartSeriesStyle, definedChartStyleFields }
 import { validateChartNamedSeriesBindings } from './chart-series-selector'
 import { chartShade, formatChartNumber } from './chart-geometry'
 import { chartFiniteSum, chartInterpolate, chartLinearRatio, finiteChartValue } from './chart-math'
-import { chartParetoDateValues, prepareChartDateData } from './chart-date-axis'
-import { chartColorChannels } from './chart-color'
+import { chartParetoDateValues, prepareChartDateData, type ChartDateAxisConfig } from './chart-date-axis'
+import { chartColorChannels, chartColorRepresentative, isChartLinearGradient } from './chart-color'
+import { supportsChartExplicitGradient } from './chart-gradient'
 import {
   chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, chartWaterfall,
   type BoxplotData, type ChartErrorInterval, type HistogramData, type ParetoData, type TrendlineData, type WaterfallPoint,
@@ -38,7 +39,7 @@ export interface ChartComputedStatistics {
   errorBars?: Array<{ configIndex: number; seriesPosition: number; intervals: ChartErrorInterval[] }>
 }
 
-export function chartComputeInputs(source: ChartData, chart: ChartModel): ChartData {
+export function chartComputeInputs(source: ChartData, chart: ChartDateAxisConfig): ChartData {
   const steps = chartComputeInputSteps(source, chart)
   while (true) { const step = steps.next(); if (step.done) return step.value }
 }
@@ -130,10 +131,14 @@ export function chartCompoundPieData(data: ChartData, chart: ChartModel): ChartC
   return { primary, secondary, aggregateIndex }
 }
 
-export function chartPointStyle(style: ChartSeriesOptions, categoryIndex: number): ChartSeriesOptions {
-  const point = style.dataPoints?.[categoryIndex]
+export function chartPointStyle(style: ChartSeriesOptions, categoryIndex: number, type?: ChartType): ChartSeriesOptions {
+  const authored = style.dataPoints?.[categoryIndex]
+  // A type switch retains authored data. Unsupported point gradients stop
+  // overriding the active series; marker colors are always solid CSS colors.
+  const point = type !== undefined && isChartLinearGradient(authored?.color) && !supportsChartExplicitGradient(type, 'dataPoint')
+    ? { ...authored, color: undefined } : authored
   return { ...style, ...definedChartStyleFields(point), border: { ...style.border, ...definedChartStyleFields(point?.border) }, point: { ...style.point,
-    ...(point?.color === undefined ? {} : { color: point.color }),
+    ...(point?.color === undefined ? {} : { color: chartColorRepresentative(point.color) }),
     ...(point?.size === undefined ? {} : { size: point.size }), ...(point?.shape === undefined ? {} : { shape: point.shape }) } }
 }
 
@@ -154,7 +159,7 @@ export function chartHierarchyPointStyle(chart: ChartModel, field: number, item:
     const step = chart.type === 'sunburst' ? 0.08 : 0.1
     base.color = chartShade(base.color!, 1 - Math.min(0.4, item.depth * step))
   }
-  return chartPointStyle(base, item.pointIndex)
+  return chartPointStyle(base, item.pointIndex, chart.type)
 }
 
 export function chartHeatmapExtent(data: ChartData, chart: ChartModel): { min: number; max: number } {
@@ -177,11 +182,11 @@ export function chartHeatmapPointStyle(chart: ChartModel, field: number, row: nu
       base.color = `rgba(${Math.round(channels[0]! * 255)}, ${Math.round(channels[1]! * 255)}, ${Math.round(channels[2]! * 255)}, ${channels[3]})`
     }
   }
-  return chartPointStyle(base, column)
+  return chartPointStyle(base, column, chart.type)
 }
 
 export function chartCandlestickPointStyle(chart: ChartModel, field: number, index: number, rising: boolean, palette: readonly string[], sourceName?: string): ChartSeriesOptions {
   const base = chartSeriesStyle(chart, field, 0, palette, sourceName)
   if (!chartSeriesColorIsAuthored(chart, field, sourceName)) base.color = rising ? chart.options?.candlestick?.risingColor ?? '#dc2626' : chart.options?.candlestick?.fallingColor ?? '#059669'
-  return chartPointStyle(base, index)
+  return chartPointStyle(base, index, chart.type)
 }
