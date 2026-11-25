@@ -2,7 +2,7 @@ import type { CellRange, SpreadsheetSheet, WorkbookModel } from '../../domain/mo
 import { cloneModel } from '../../domain/serialization.ts'
 import { assignSheetAxisSpan, sheetColumnWidth } from '../../domain/sheet-axis.ts'
 import { validateSheetDataValidationChanges, type SheetValidationPosition } from '../sheet-validation/validation-engine.ts'
-import { assertSheetClipboardArea, assertSheetClipboardSnapshot, captureSheetClipboard, sheetClipboardSourceFingerprint } from './sheet-clipboard-data.ts'
+import { assertSheetClipboardArea, assertSheetClipboardSnapshot, captureSheetClipboard, sheetClipboardCellAt, sheetClipboardSourceFingerprint } from './sheet-clipboard-data.ts'
 import { createSheetClipboardPastedCell } from './sheet-clipboard-cell.ts'
 import { assertSheetClipboardWorkbookChangesEditable } from './sheet-clipboard-permissions.ts'
 import { sheetClipboardPasteMode } from './sheet-clipboard-command.ts'
@@ -13,6 +13,10 @@ import { pasteSheetClipboardWorkbookResources } from './sheet-clipboard-workbook
 import { assertSheetCommandRanges, assertSheetRangesEditable, sheetRangeContainsCell, sheetRangesEqual, sheetRangesIntersect } from './sheet-range-command.ts'
 import type { SheetClipboardLocation, SheetClipboardPasteContext, SheetClipboardPastePlan, SheetClipboardSnapshot } from './sheet-clipboard-types.ts'
 import type { SheetPasteMode } from './sheet-paste.ts'
+import { hasInheritedSheetStyle, resolveSheetCellStyle } from './sheet-style-inheritance.ts'
+import { planSheetRangeThemeCut } from './sheet-range-theme-structure.ts'
+import { sheetUsedRangeThemeRule } from './sheet-range-theme-resolver.ts'
+import { pasteSheetClipboardImages } from '../sheet-images/sheet-image-clipboard.ts'
 
 export * from './sheet-clipboard-types.ts'
 export * from './sheet-clipboard-data.ts'
@@ -75,6 +79,7 @@ export function createSheetClipboardPastePlan(
     targetSheetId: originalTarget.id, targetSheetName: originalTarget.name,
     sourceRange: { ...snapshot.source!.range }, targetRange: { ...geometry.ranges[0]! },
   } : undefined
+  const themeSource = move ? workbook.sheets.find(sheet => sheet.id === move.sourceSheetId) : undefined
   if (move && move.sourceSheetId === move.targetSheetId && sheetRangesEqual(move.sourceRange, move.targetRange)) {
     return { sheetChanges: [], metadataChanged: false, result: { accepted: true, changed: false, ranges: geometry.ranges.map(range => ({ ...range })), issues: [] } }
   }
@@ -113,6 +118,11 @@ export function createSheetClipboardPastePlan(
     }
     sourceDraft.mergedRanges = sourceDraft.mergedRanges.filter(merge => !sheetRangesIntersect(merge, move.sourceRange))
     trimSheetClipboardRangeResources(sourceDraft, [move.sourceRange], true, true)
+    if (themeSource?.rangeThemeRules?.length || originalTarget.rangeThemeRules?.length) {
+      const themes = planSheetRangeThemeCut(themeSource?.rangeThemeRules ?? [], originalTarget.rangeThemeRules ?? [],
+        move.sourceRange, move.targetRange, move.sourceSheetId === move.targetSheetId)
+      sourceDraft.rangeThemeRules = themes.sourceRules; targetDraft.rangeThemeRules = themes.targetRules
+    }
   }
   if (actualMode === 'columnWidths') {
     for (let column = 0; column < geometry.columns.length; column++) {
@@ -126,12 +136,18 @@ export function createSheetClipboardPastePlan(
     for (let row = 0; row < geometry.rows.length; row++) for (let column = 0; column < geometry.columns.length; column++) {
       const sourceRow = row % snapshot.rows.length, sourceCol = column % snapshot.columns.length
       const position = { row: geometry.rows[row]!, col: geometry.columns[column]! }, key = `${position.row}:${position.col}`
-      let sourceCell = snapshot.cells[`${sourceRow}:${sourceCol}`]
+      let sourceCell = sheetClipboardCellAt(snapshot, sourceRow, sourceCol)
       if (sourceCell && move) sourceCell = moveSheetClipboardCellReferences(sourceCell, move.sourceSheetName, move.targetSheetName, workbook, move)
       const pasted = createSheetClipboardPastedCell(sourceCell, targetDraft.cells[key], position, actualMode, {
         rowDelta: position.row - snapshot.rows[sourceRow]!, columnDelta: position.col - snapshot.columns[sourceCol]!,
         externalFormat: snapshot.externalFormat, date1904: workbook.date1904, region: context.region,
         preserveFormulaReferences: snapshot.copyType === 'cut', contentOnly: !!geometry.contentOnlyMerge,
+        preserveRangeThemeSource: !!themeSource && !!sheetUsedRangeThemeRule(themeSource, {
+          startRow: snapshot.rows[sourceRow]!, endRow: snapshot.rows[sourceRow]!, startCol: snapshot.columns[sourceCol]!, endCol: snapshot.columns[sourceCol]!,
+        }),
+        sourceIsVirtual: !snapshot.cells[`${sourceRow}:${sourceCol}`] && !!sourceCell,
+        targetStyle: resolveSheetCellStyle(targetDraft, position.row, position.col, targetDraft.cells[key], workbook),
+        targetHasInheritedStyle: hasInheritedSheetStyle(targetDraft, position.row, position.col, workbook, targetDraft.cells[key]?.themeStyle),
       })
       if (pasted) targetDraft.cells[key] = pasted
       else delete targetDraft.cells[key]
@@ -149,6 +165,7 @@ export function createSheetClipboardPastePlan(
   const metadataChanged = JSON.stringify(metadata) !== JSON.stringify(workbook.metadata)
   const candidate: WorkbookModel = { ...workbook, sheets: workbook.sheets.map(sheet => drafts.get(sheet.id) ?? sheet), metadata }
   const workbookResources = pasteSheetClipboardWorkbookResources(workbook, candidate, target, snapshot, geometry, actualMode, move)
+  pasteSheetClipboardImages(workbook, candidate, target, snapshot, geometry, actualMode, move)
   const changes = candidate.sheets.filter(sheet => JSON.stringify(sheet) !== JSON.stringify(workbook.sheets.find(original => original.id === sheet.id)))
   for (const after of changes) {
     const before = workbook.sheets.find(sheet => sheet.id === after.id)!

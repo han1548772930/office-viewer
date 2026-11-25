@@ -6,6 +6,8 @@ import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from 
 import { transformFormulaReferenceAreasForAxisEdit, translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
 import { parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { formatProtectionRange } from '../sheet-protection/range-protection.ts'
+import { transformSheetImagesForAxisEdit } from '../sheet-images/sheet-image-structure.ts'
+import { sheetClipboardObjectAxes } from './sheet-clipboard-object-geometry.ts'
 
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : undefined
@@ -152,6 +154,8 @@ function chartForEdit(chart: ChartModel, edit: SheetAxisEdit): ChartModel | unde
   })) : undefined
   return { ...chart, source: { ...chart.source, range }, categoryField, valueFields, seriesToCategory, revision: chart.revision + 1 }
 }
+// Cell-band edits reuse these continuous-resource semantics when the whole resource lies in the band.
+export { tableForEdit as transformSheetTableForAxisEdit, chartForEdit as transformSheetChartForAxisEdit }
 function internalHyperlink(value: string, original: WorkbookModel, targetId: string, edit: SheetAxisEdit): string {
   const target = parseSheetHyperlinkTarget(value, original)
   if (target?.type !== 'internal' || target.sheetId !== targetId) return value
@@ -261,4 +265,7 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
     workbook.metadata.definedNames = updateDefinedNames(workbook.metadata.definedNames, original, target.name, edit, false)
     workbook.metadata.localDefinedNames = updateDefinedNames(workbook.metadata.localDefinedNames, original, target.name, edit, true)
   }
+  const before = original.sheets.find(sheet => sheet.id === target.id)!, after = workbook.sheets.find(sheet => sheet.id === target.id)!
+  if (before.images) after.images = transformSheetImagesForAxisEdit(before.images, edit, after,
+    { before: sheetClipboardObjectAxes(original, before), after: sheetClipboardObjectAxes(workbook, after) })
 }

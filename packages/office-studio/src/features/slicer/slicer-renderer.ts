@@ -1,6 +1,6 @@
 import type { SlicerModel, TimelineLevel } from '../../domain/model'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts'
-import { SpreadsheetGeometry, type GridViewport } from '../../rendering/spreadsheet/layout'
+import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, SpreadsheetGeometry, type GridViewport } from '../../rendering/spreadsheet/layout'
 import { parseTimelineDate, timelineDateToInput, type TimelineDate } from './timeline-date'
 import { slicerCanvasIcon, type SlicerIconName } from './slicer-canvas-icons'
 import { resolveSlicerBounds } from './slicer-drawing'
@@ -227,7 +227,10 @@ export function slicerObjectDrawCommands(layouts: readonly SlicerObjectLayout[],
       for (let index = 0; index < 3; index += 1) commands.push({ kind: 'line', x1: right - 3 - index * 3, y1: bottom, x2: right, y2: bottom - 3 - index * 3, color: colors.border, width: 1 })
     }
     commands.push({ kind: 'rect', x: layout.rect.x + .5, y: layout.rect.y + .5, width: Math.max(0, layout.rect.width - 1), height: Math.max(0, layout.rect.height - 1), fill: 'transparent', stroke: colors.border, strokeWidth: 1 })
-    for (let index = begin; index < commands.length; index += 1) commands[index]!.clip ??= layout.rect
+    for (let index = begin; index < commands.length; index += 1) {
+      commands[index]!.clip ??= layout.rect
+      commands[index]!.drawingRef = { kind: layout.model.type === 'timeline' ? 'timeline' : 'slicer', id: layout.id }
+    }
   }
   return commands
 }
@@ -275,7 +278,8 @@ export function hitTestSlicerObjects(layouts: readonly SlicerObjectLayout[], x: 
 }
 
 export function slicerObjectContentPoint(x: number, y: number, viewport: GridViewport): { x: number; y: number } {
-  return { x: (x + viewport.scrollLeft) / viewport.zoom, y: (y + viewport.scrollTop) / viewport.zoom }
+  return { x: GRID_HEADER_WIDTH + (x - GRID_HEADER_WIDTH + viewport.scrollLeft) / viewport.zoom,
+    y: GRID_HEADER_HEIGHT + (y - GRID_HEADER_HEIGHT + viewport.scrollTop) / viewport.zoom }
 }
 
 export function timelinePeriods(items: readonly string[], level: TimelineLevel, date1904: boolean, startIndex = 0, count = Number.POSITIVE_INFINITY, locale = 'zh-CN'): SlicerCanvasPeriod[] {

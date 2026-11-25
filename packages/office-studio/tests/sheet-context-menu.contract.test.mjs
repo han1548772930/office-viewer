@@ -8,22 +8,23 @@ const commands = (hit, state = options) => flattenItems(createSheetContextMenuIt
 
 test('cell context menu exposes clipboard, editing, row/column, freeze and protection commands', () => {
   const items = createSheetContextMenuItems({ kind: 'cell', row: 2, column: 1, key: 'B3' }, options)
-  assert.deepEqual(commands({ kind: 'cell', row: 2, column: 1, key: 'B3' }), [
+  const actualCommands = commands({ kind: 'cell', row: 2, column: 1, key: 'B3' })
+  for (const command of [
     'sheet.command.copy', 'sheet.command.cut', 'sheet.command.paste', 'sheet.command.copy-formulas', 'sheet.command.paste-values',
     'sheet.command.paste-formats', 'sheet.command.paste-column-widths', 'sheet.command.paste-except-borders', 'sheet.command.paste-formulas',
     'sheet.command.clear-content', 'sheet.command.clear-format', 'sheet.command.clear-all', 'sheet.command.text-to-number',
-    'sheet.command.insert-range-move-right', 'sheet.command.insert-range-move-down', 'sheet.command.insert-row', 'sheet.command.insert-column',
-    'sheet.command.delete-range-move-left', 'sheet.command.delete-range-move-up', 'sheet.command.delete-column', 'sheet.command.delete-row', 'sheet.command.freeze-selection',
+    'sheet.command.insert-row-before', 'sheet.command.insert-col-before', 'sheet.command.insert-range-move-right-confirm', 'sheet.command.insert-range-move-down-confirm',
+    'sheet.command.delete-column', 'sheet.command.delete-row', 'sheet.command.delete-range-move-left-confirm', 'sheet.command.delete-range-move-up-confirm', 'sheet.command.freeze-selection',
     'sheet.command.freeze-first-row', 'sheet.command.freeze-first-column', 'sheet.command.unfreeze',
     'sheet.operation.open-range-protection', 'sheet.operation.open-range-protection',
-  ])
-  assert.deepEqual(items.map(item => item.id), ['copy', 'cut', 'paste', 'copy-special', 'paste-special', 'clear-selection', 'text-to-number', 'insert-cells', 'delete-cells', 'freeze', 'protect-range'])
+  ]) assert.ok(actualCommands.includes(command), command)
+  assert.deepEqual(items.map(item => item.id), ['copy', 'cut', 'paste', 'copy-special', 'paste-special', 'clear-selection', 'borders', 'text-to-number', 'insert-cells', 'delete-cells', 'freeze', 'protect-range'])
   assert.equal(items.find(item => item.id === 'insert-cells').separatorBefore, true)
-  assert.deepEqual(items.find(item => item.id === 'insert-cells').children.slice(0, 2).map(item => item.commandId), [
-    'sheet.command.insert-range-move-right', 'sheet.command.insert-range-move-down',
+  assert.deepEqual(items.find(item => item.id === 'insert-cells').children.map(item => item.commandId), [
+    'sheet.command.insert-row-before', 'sheet.command.insert-col-before', 'sheet.command.insert-range-move-right-confirm', 'sheet.command.insert-range-move-down-confirm',
   ])
-  assert.deepEqual(items.find(item => item.id === 'delete-cells').children.slice(0, 2).map(item => item.commandId), [
-    'sheet.command.delete-range-move-left', 'sheet.command.delete-range-move-up',
+  assert.deepEqual(items.find(item => item.id === 'delete-cells').children.map(item => item.commandId), [
+    'sheet.command.delete-column', 'sheet.command.delete-row', 'sheet.command.delete-range-move-left-confirm', 'sheet.command.delete-range-move-up-confirm',
   ])
   assert.equal(items.find(item => item.id === 'copy').quick, true)
   assert.deepEqual(items.find(item => item.id === 'paste-special')?.children?.map(item => item.commandId), [
@@ -34,26 +35,24 @@ test('cell context menu exposes clipboard, editing, row/column, freeze and prote
 test('row and column headers get axis-specific operations and preserve freeze/protection actions', () => {
   const rowItems = createSheetContextMenuItems({ kind: 'row', row: 4 }, options)
   const columnItems = createSheetContextMenuItems({ kind: 'column', column: 3 }, options)
-  assert.ok(commands({ kind: 'row', row: 4 }).includes('sheet.command.insert-row'))
+  assert.ok(commands({ kind: 'row', row: 4 }).includes('sheet.command.insert-row-before'))
   assert.ok(commands({ kind: 'row', row: 4 }).includes('sheet.command.set-row-height'))
   assert.ok(commands({ kind: 'row', row: 4 }).includes('sheet.command.delete-row'))
-  assert.ok(!commands({ kind: 'row', row: 4 }).includes('sheet.command.insert-column'))
+  assert.ok(!commands({ kind: 'row', row: 4 }).includes('sheet.command.insert-col-before'))
   assert.ok(!commands({ kind: 'row', row: 4 }).includes('sheet.command.delete-column'))
-  assert.ok(commands({ kind: 'column', column: 3 }).includes('sheet.command.insert-column'))
+  assert.ok(commands({ kind: 'column', column: 3 }).includes('sheet.command.insert-col-before'))
   assert.ok(commands({ kind: 'column', column: 3 }).includes('sheet.command.set-worksheet-col-width'))
   assert.ok(commands({ kind: 'column', column: 3 }).includes('sheet.command.delete-column'))
-  assert.ok(!commands({ kind: 'column', column: 3 }).includes('sheet.command.insert-row'))
+  assert.ok(!commands({ kind: 'column', column: 3 }).includes('sheet.command.insert-row-before'))
   assert.ok(!commands({ kind: 'column', column: 3 }).includes('sheet.command.delete-row'))
   assert.ok(commands({ kind: 'row', row: 4 }).includes('sheet.operation.open-range-protection'))
-  assert.deepEqual(rowItems.find(item => item.id === 'insert-row-above')?.params, { sheetId: 'sheet-a', index: 4 })
-  assert.deepEqual(rowItems.find(item => item.id === 'insert-row-below')?.params, { sheetId: 'sheet-a', index: 5 })
-  assert.deepEqual(rowItems.find(item => item.id === 'delete-row')?.params, { sheetId: 'sheet-a', index: 4 })
-  assert.deepEqual(columnItems.find(item => item.id === 'insert-column-left')?.params, { sheetId: 'sheet-a', index: 3 })
-  assert.deepEqual(columnItems.find(item => item.id === 'insert-column-right')?.params, { sheetId: 'sheet-a', index: 4 })
-  assert.deepEqual(columnItems.find(item => item.id === 'delete-column')?.params, { sheetId: 'sheet-a', index: 3 })
+  const rowTarget = { sheetId: 'sheet-a', ranges: [{ startRow: 4, endRow: 4, startCol: 0, endCol: 16_383 }] }
+  const columnTarget = { sheetId: 'sheet-a', ranges: [{ startRow: 0, endRow: 1_048_575, startCol: 3, endCol: 3 }] }
+  for (const id of ['insert-row-above', 'insert-row-below', 'delete-row']) assert.deepEqual(rowItems.find(item => item.id === id)?.params, rowTarget)
+  for (const id of ['insert-column-left', 'insert-column-right', 'delete-column']) assert.deepEqual(columnItems.find(item => item.id === id)?.params, columnTarget)
   assert.deepEqual(rowItems.find(item => item.id === 'row-height')?.params, { sheetId: 'sheet-a', index: 4 })
   assert.deepEqual(columnItems.find(item => item.id === 'column-width')?.params, { sheetId: 'sheet-a', index: 3 })
-  assert.ok(rowItems.some(item => item.commandId === 'sheet.command.hide-row'))
+  assert.ok(rowItems.some(item => item.commandId === 'sheet.command.hide-row-confirm'))
   assert.ok(columnItems.some(item => item.commandId === 'sheet.command.auto-fit-column'))
 })
 

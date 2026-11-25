@@ -22,12 +22,15 @@ export interface SheetRichTextEditorScene {
   clip: RenderRect
   contentWidth: number
   contentHeight: number
+  caretAffinity?: SheetRichTextEditorCaretAffinity
 }
+export type SheetRichTextEditorCaretAffinity = 'upstream' | 'downstream'
 
 /** The antdv input supplies text/IME events; Canvas supplies rich glyphs, selection and pointer positions. */
 export function createSheetRichTextEditorScene(cell: ExcelCellView, rect: RenderRect, clip: RenderRect, zoom: number,
   selection: { start: number; end: number }, options: { background: string; color: string; accent: string; selectionColor: string;
-    scrollLeft?: number; scrollTop?: number; composing?: boolean; focused?: boolean; measure?: SheetTextMeasure }): SheetRichTextEditorScene | undefined {
+    scrollLeft?: number; scrollTop?: number; composing?: boolean; focused?: boolean;
+    caretAffinity?: SheetRichTextEditorCaretAffinity; measure?: SheetTextMeasure }): SheetRichTextEditorScene | undefined {
   const rawMeasure = options.measure ?? measureSpreadsheetText
   const measure: SheetTextMeasure = (text, font) => {
     const width = rawMeasure(text, font)
@@ -84,17 +87,24 @@ export function createSheetRichTextEditorScene(cell: ExcelCellView, rect: Render
   }
   const paintRect = { ...rect, x: rect.x - (options.scrollLeft ?? 0), y: rect.y - (options.scrollTop ?? 0) }
   if (!options.composing) commands.push(...createSheetCellTextCommands({ cell: view, presentation: { text: cell.value }, rect: paintRect, clip, zoom, measure }))
+  const scene: SheetRichTextEditorScene = { commands, lines, clip,
+    contentWidth: layout.width + 12 * zoom, contentHeight: layout.height + 6 * zoom, caretAffinity: options.caretAffinity }
   if (selection.start === selection.end && !options.composing && options.focused !== false) {
-    const line = [...lines].reverse().find(line => line.start <= selection.start && line.end >= selection.start) ?? lines.at(-1)
-    if (line) {
-      const x = line.xAt(selection.start)
-      commands.push({ kind: 'line', x1: x, y1: line.top, x2: x, y2: line.top + line.height, color: options.accent, width: 1, clip })
+    const caret = sheetRichTextEditorCaret(scene, selection.start)
+    if (caret) {
+      commands.push({ kind: 'line', x1: caret.x, y1: caret.top, x2: caret.x, y2: caret.top + caret.height, color: options.accent, width: 1, clip })
     }
   }
-  return { commands, lines, clip, contentWidth: layout.width + 12 * zoom, contentHeight: layout.height + 6 * zoom }
+  return scene
 }
 
 export function hitSheetRichTextEditor(scene: SheetRichTextEditorScene, x: number, y: number): number | undefined {
+  return hitSheetRichTextEditorPosition(scene, x, y)?.offset
+}
+
+/** Wrapped line ends and starts can share one UTF-16 offset while occupying different visual rows. */
+export function hitSheetRichTextEditorPosition(scene: SheetRichTextEditorScene, x: number, y: number):
+  { offset: number; affinity: SheetRichTextEditorCaretAffinity } | undefined {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !scene.lines.length) return undefined
   const line = scene.lines.reduce((best, line) => {
     const distance = (item: SheetRichTextEditorLine) => y < item.top ? item.top - y : y > item.top + item.height ? y - item.top - item.height : 0
@@ -107,12 +117,15 @@ export function hitSheetRichTextEditor(scene: SheetRichTextEditorScene, x: numbe
     if (x < (line.xAt(a) + line.xAt(b)) / 2) last = middle
     else first = middle + 1
   }
-  return line.offsets[first]
+  const offset = line.offsets[first]
+  return offset === undefined ? undefined : { offset, affinity: offset === line.end ? 'upstream' : 'downstream' }
 }
 
-export function sheetRichTextEditorCaret(scene: SheetRichTextEditorScene, offset: number) {
+export function sheetRichTextEditorCaret(scene: SheetRichTextEditorScene, offset: number,
+  affinity: SheetRichTextEditorCaretAffinity = scene.caretAffinity ?? 'downstream') {
   let index = -1
-  for (let at = scene.lines.length - 1; at >= 0; at--) {
+  for (let at = affinity === 'upstream' ? 0 : scene.lines.length - 1;
+    at >= 0 && at < scene.lines.length; at += affinity === 'upstream' ? 1 : -1) {
     const line = scene.lines[at]!
     if (line.start <= offset && line.end >= offset) { index = at; break }
   }
@@ -122,16 +135,18 @@ export function sheetRichTextEditorCaret(scene: SheetRichTextEditorScene, offset
 
 /** Visual lines use the same run metrics as paint; UTF-16 offsets still belong to the antdv input. */
 export function moveSheetRichTextEditorCaret(scene: SheetRichTextEditorScene, offset: number,
-  key: 'ArrowUp' | 'ArrowDown' | 'Home' | 'End', preferredX?: number): { offset: number; preferredX?: number } | undefined {
+  key: 'ArrowUp' | 'ArrowDown' | 'Home' | 'End', preferredX?: number):
+  { offset: number; preferredX?: number; affinity: SheetRichTextEditorCaretAffinity } | undefined {
   const caret = sheetRichTextEditorCaret(scene, offset)
   if (!caret) return undefined
   const current = scene.lines[caret.lineIndex]!
-  if (key === 'Home' || key === 'End') return { offset: key === 'Home' ? current.start : current.end }
+  if (key === 'Home' || key === 'End') return { offset: key === 'Home' ? current.start : current.end,
+    affinity: key === 'Home' ? 'downstream' : 'upstream' }
   const index = Math.max(0, Math.min(scene.lines.length - 1, caret.lineIndex + (key === 'ArrowUp' ? -1 : 1)))
-  if (index === caret.lineIndex) return { offset, preferredX: preferredX ?? caret.x }
+  if (index === caret.lineIndex) return { offset, preferredX: preferredX ?? caret.x, affinity: scene.caretAffinity ?? 'downstream' }
   const next = scene.lines[index]!, x = preferredX ?? caret.x
-  const result = hitSheetRichTextEditor({ ...scene, lines: [next] }, x, next.top + next.height / 2)
-  return result === undefined ? undefined : { offset: result, preferredX: x }
+  const result = hitSheetRichTextEditorPosition({ ...scene, lines: [next] }, x, next.top + next.height / 2)
+  return result === undefined ? undefined : { ...result, preferredX: x }
 }
 
 export function sheetRichTextEditorWord(text: string, offset: number): { start: number; end: number } {

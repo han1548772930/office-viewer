@@ -87,6 +87,33 @@ test('column shrink preserves gap and minima, while stack uses the full host wid
   assert.deepEqual(structuralLayout.documentColumnWidths(group([0, 0]), 10), { widths: [0, 0], gap: 16, stacked: false })
 })
 
+test('column dimensions retain authored NumberUnit values until edited, then write changed lengths in CSS pixels', () => {
+  const block = { ...paragraph('columns'), type: 'columns', runs: [], columns: { version: 1, gap: 16, layout: 'fixed', responsive: 'shrink',
+    columns: ['left', 'right'].map(id => ({ id, widthRatio: 1, blocks: [paragraph(id + '-p', id)] })) } }
+  const encoded = codec.encodeDocumentBody(content([block])), source = encoded.body.columnGroups[0]
+  source.gap = 12; source.horizontalPadding = { v: 6, u: 0, author: 'keep' }; source.minHeight = 54
+  const original = copy(encoded), decoded = codec.decodeDocumentBody(encoded.body, encoded).content
+  assert.deepEqual(encoded, original)
+  assert.deepEqual(structuralLayout.documentColumnMetrics(decoded.blocks[0].columns), { horizontalPadding: 8, minHeight: 72 })
+  const unchanged = codec.encodeDocumentBody(decoded).body.columnGroups[0]
+  assert.equal(unchanged.gap, 12); assert.deepEqual(unchanged.horizontalPadding, source.horizontalPadding); assert.equal(unchanged.minHeight, 54)
+  Object.assign(decoded.blocks[0].columns, { gap: 20, horizontalPadding: 10, minHeight: 96 })
+  const changed = codec.encodeDocumentBody(decoded).body.columnGroups[0]
+  assert.deepEqual(changed.gap, { v: 20, u: 3 }); assert.deepEqual(changed.horizontalPadding, { v: 10, u: 3 }); assert.deepEqual(changed.minHeight, { v: 96, u: 3 })
+  const reopened = codec.decodeDocumentBody(codec.encodeDocumentBody(decoded).body).content.blocks[0].columns
+  assert.deepEqual(structuralLayout.documentColumnMetrics(reopened), { horizontalPadding: 10, minHeight: 96 })
+})
+
+test('provided malformed column dimensions are rejected without mutating the imported body', () => {
+  const block = { ...paragraph('columns'), type: 'columns', runs: [], columns: { version: 1, gap: 16, layout: 'fixed', responsive: 'shrink',
+    columns: ['left', 'right'].map(id => ({ id, widthRatio: 1, blocks: [paragraph(id + '-p')] })) } }
+  for (const key of ['horizontalPadding', 'minHeight']) for (const value of [null, -1, '8', { v: 1, u: 99 }, { v: -1, u: 3 }, { v: 1_000_001, u: 3 }]) {
+    const encoded = codec.encodeDocumentBody(content([block])); encoded.body.columnGroups[0][key] = value
+    const before = copy(encoded)
+    assert.throws(() => codec.decodeDocumentBody(encoded.body, encoded)); assert.deepEqual(encoded, before)
+  }
+})
+
 test('nowrap preserves a long logical code line and tab uses measured tab stops with one UTF-16 source character', () => {
   const runs = [modelUtils.createRun('A\tB\n😀C')]
   const lines = textLayout.wrapRuns(runs, 3, measurer, false, 14.67, undefined, undefined, { softWrap: false, tabSize: 4 })

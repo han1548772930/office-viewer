@@ -5,11 +5,12 @@ import { createServer } from 'vite'
 
 // P15 integration drafts. The SSR server starts only when future validation runs.
 // This implementation phase has not run servers, tests, browsers or file samples.
-let server, api
+let server, api, plotInteraction
 beforeAll(async () => {
   server = await createServer({ configFile: resolve(process.cwd(), 'vite.config.ts'), root: process.cwd(),
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
+  plotInteraction = await server.ssrLoadModule('/packages/office-studio/src/features/charts/chart-plot-area-interaction.ts')
 })
 afterAll(async () => { await server?.close() })
 
@@ -119,4 +120,24 @@ test('gradient and plot authorship survive internal JSON save/reopen with data, 
     restored.redo()
     assert.equal(saved.getOptions().autoGradientFill, undefined)
   } finally { reopened?.dispose(); studio.dispose() }
+})
+
+test('one plot drag result uses one existing author command and history entry without changing chart position, size, source or titles', async () => {
+  const { studio, workbook, sheet } = setup()
+  let subscription
+  try {
+    const chart = await sheet.insertChart(sheet.newChart('column').setSource('A1:C4').setValueFields([1, 2]).setSize(500, 320)
+      .setTitle({ text: 'Main', rotate: 20 }).setSubtitle({ text: 'Sub', color: '#123456' }).setOptions({ plotArea: manual }).build())
+    const before = chart.getInfo(), beforeLayout = chart.getLayout(), revision = studio.getWorkbookRevision(workbook.getId()), commands = []
+    subscription = studio.events.on('CommandExecuted', event => { if (event.id === 'sheet.command.update-chart') commands.push(event.params) })
+    const target = plotInteraction.createChartPlotAreaTarget('column', beforeLayout.frame, beforeLayout.plot, beforeLayout.plot, true)
+    const resized = plotInteraction.chartPlotAreaDragLayout(target, before.size, { x: 40, y: 20 }, 'se')
+    assert.equal(await chart.setOptions({ plotArea: resized }), chart)
+    const after = chart.getInfo()
+    assert.equal(commands.length, 1); assert.equal(studio.getWorkbookRevision(workbook.getId()), revision + 1)
+    assert.deepEqual(after.options.plotArea, resized); assert.deepEqual(after.position, before.position); assert.deepEqual(after.size, before.size)
+    assert.deepEqual(after.source, before.source); assert.deepEqual(after.options.titleStyle, before.options.titleStyle)
+    assert.deepEqual(after.options.subtitleStyle, before.options.subtitleStyle)
+    workbook.undo(); assert.deepEqual(chart.getInfo(), before); workbook.redo(); assert.deepEqual(chart.getInfo(), after)
+  } finally { subscription?.dispose(); studio.dispose() }
 })

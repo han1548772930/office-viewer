@@ -1,4 +1,8 @@
 import type { SheetAxisSpan } from './sheet-axis.ts'
+import type { SheetBackgroundImage, SheetCellImage, SheetFloatingImage } from './sheet-images.ts'
+import type { DrawingAffineGeometry } from './drawing-affine.ts'
+import type { SheetDrawingShapeDTO, SheetDrawingState } from './sheet-drawings.ts'
+export type { SheetImageResource, SheetCellImage, SheetFloatingImage, SheetBackgroundImage } from './sheet-images.ts'
 
 export type OfficeKind = 'workbook' | 'document'
 
@@ -30,6 +34,11 @@ export interface CellStyle {
   metadata?: Record<string, unknown>
 }
 
+/** Sparse direct formatting; omitted properties continue to inherit. */
+export type SheetCellStylePatch = Omit<Partial<CellStyle>, 'font'> & { font?: Partial<FontStyle> }
+export type SheetStyleSource = SheetCellStylePatch | string | null
+export type SheetCellStyleProperty = Exclude<keyof CellStyle, 'font'> | `font.${keyof FontStyle}`
+
 export interface SpreadsheetCell {
   id: string
   row: number
@@ -38,11 +47,22 @@ export interface SpreadsheetCell {
   formula: string | null
   display: string
   style: CellStyle
+  /** Persisted materialization marker; a saved cache must never become newly authored formatting. */
+  styleMaterialized?: true
+  /** Authoritative sparse formatting. Absence preserves legacy fully specified cell styles. */
+  authoredStyle?: SheetCellStylePatch
+  /** Public cell.s catalog reference; direct edits keep unrelated referenced properties live. */
+  authoredStyleReference?: string
+  /** Explicit resets suppress these properties of the referenced direct style. */
+  clearedStyleProperties?: SheetCellStyleProperty[]
+  /** Range-theme formatting is composed before direct cell formatting. */
+  themeStyle?: SheetStyleSource
   dataType?: string
   cachedDataType?: string | null
   richText?: ReadonlyArray<Record<string, unknown>>
   hyperlink?: string | null
   sparkline?: SparklineSpec
+  image?: SheetCellImage
   metadata?: Record<string, unknown>
 }
 
@@ -340,8 +360,10 @@ export interface ChartFontOptions { color?: string; fontSize?: number; bold?: bo
 
 export type ChartTitlePosition = 'top' | 'bottom' | 'left' | 'right' | 'hide'
 export type ChartTextAlignment = 'left' | 'center' | 'right'
-export interface ChartTitleStyleOptions extends ChartFontOptions { visible?: boolean; position?: ChartTitlePosition; alignment?: ChartTextAlignment }
-export interface ChartSubtitleStyleOptions extends ChartFontOptions { alignment?: ChartTextAlignment }
+/** Normalized text anchor in the chart frame; clearing it restores automatic layout. */
+export interface ChartTitleManualLayout { left: number; top: number }
+export interface ChartTitleStyleOptions extends ChartFontOptions { visible?: boolean; position?: ChartTitlePosition; alignment?: ChartTextAlignment; manualLayout?: ChartTitleManualLayout; rotate?: number }
+export interface ChartSubtitleStyleOptions extends ChartFontOptions { alignment?: ChartTextAlignment; manualLayout?: ChartTitleManualLayout; rotate?: number }
 export interface ChartLineOptions { visible?: boolean; color?: string; width?: number; opacity?: number; dashType?: 'solid' | 'dashed' | 'dotted' }
 export interface ChartLabelOptions extends ChartFontOptions {
   visible?: boolean
@@ -434,6 +456,12 @@ export interface ChartDataPointOptions {
   shape?: ChartPointShape
   border?: ChartLineOptions
 }
+/** Slice appearance is independent of legacy series dataPoints. The
+ * composite aggregate reuses these fields in its own unindexed author scope. */
+export interface ChartPieSliceStyleOptions extends Pick<ChartDataPointOptions, 'color' | 'fillOpacity' | 'fillPattern' | 'border'> {
+  explosion?: number
+}
+export type ChartPieAggregateStyleOptions = ChartPieSliceStyleOptions
 /** Public null patches reset authored fields, except fillPattern:null disables the inherited pattern. */
 export type ChartNullablePatch<T> = T extends ChartSeriesFillPattern | ChartLinearGradient ? T : T extends readonly unknown[] ? T : T extends object
   ? { [K in keyof T]?: ChartNullablePatch<T[K]> | null } : T
@@ -601,8 +629,18 @@ export interface ChartRelationOptions {
   force?: ChartRelationForceOptions
 }
 
+export type ChartAreaLineStyle = 'line' | 'smooth' | 'step'
+export type ChartInvalidValueStrategy = 'zero' | 'break' | 'link'
+
+export interface ChartLineAndAreaOptions {
+  /** Shared shape of line/area series, including stacked and projected 3D variants. */
+  lineStyle?: ChartAreaLineStyle
+  /** Legacy area-only switch. An explicit lineStyle takes precedence. */
+  smooth?: boolean
+}
+
 export interface ChartSemanticOptions {
-  invalidValueStrategy?: 'zero' | 'break' | 'link'
+  invalidValueStrategy?: ChartInvalidValueStrategy
   plotVisibleOnly?: boolean
   autoGradientFill?: boolean
   plotArea?: ChartPlotAreaOptions
@@ -635,12 +673,14 @@ export interface ChartSemanticOptions {
   }
   threeD?: { view?: { rotX?: number; rotY?: number; perspective?: number; rightAngleAxes?: boolean; heightPercent?: number; depthPercent?: number }; grouping?: 'standard' | 'clustered'; gapDepth?: number }
   bar?: { gapWidth?: number; overlap?: number }
-  area?: { smooth?: boolean }
+  area?: ChartLineAndAreaOptions
   pie?: {
     startAngle?: number; doughnutHole?: number; explosion?: number; rosePie?: boolean; isHalfPie?: boolean
     showLabelLine?: boolean; label?: ChartLabelOptions
-    secondaryPlot?: { type?: 'pie' | 'bar'; size?: number; gapWidth?: number; split?: { type: 'auto' | 'position' | 'value' | 'percentage' | 'custom'; count?: number; lessThan?: number; pointIndexes?: number[] } }
+    secondaryPlot?: { type?: 'pie' | 'bar'; size?: number; gapWidth?: number; connector?: ChartLineOptions; split?: { type: 'auto' | 'position' | 'value' | 'percentage' | 'custom'; count?: number; lessThan?: number; pointIndexes?: number[] } }
     aggregateLabel?: string
+    aggregateStyle?: ChartPieAggregateStyleOptions
+    sliceStyles?: Partial<Record<number, ChartPieSliceStyleOptions>>
   }
   radar?: ChartRadarOptions
   bubble?: { scale?: number; sizeRepresents?: 'area' | 'width' }
@@ -710,6 +750,7 @@ export interface ChartModel {
   source: ChartSource
   position: { x: number; y: number }
   size: { width: number; height: number }
+  drawingGeometry?: DrawingAffineGeometry
   title?: string
   subtitle?: string
   palette?: string[]
@@ -772,12 +813,37 @@ export interface SlicerModel {
   revision: number
 }
 
+export const SHEET_RANGE_THEME_SECTIONS = ['wholeStyle', 'firstColumnStyle', 'secondColumnStyle', 'firstRowStyle', 'secondRowStyle',
+  'headerColumnStyle', 'lastColumnStyle', 'headerRowStyle', 'lastRowStyle'] as const
+export type SheetRangeThemeSection = typeof SHEET_RANGE_THEME_SECTIONS[number]
+/** Range themes are author rules, composed before cell direct formatting instead of written into every cell. */
+export type SheetRangeThemeStyle = { name: string; metadata?: Record<string, unknown> } & Partial<Record<SheetRangeThemeSection, SheetCellStylePatch | null>>
+export interface SheetRangeThemeRule {
+  id: string
+  themeName: string
+  range: CellRange
+  /** Logical header/stripe/footer geometry retained when a partial move splits physical membership. */
+  styleRange?: CellRange
+  metadata?: Record<string, unknown>
+}
+
 export interface SpreadsheetSheet {
   id: string
   name: string
   visible: boolean
   tabColor?: string
   cells: Record<string, SpreadsheetCell>
+  images?: SheetFloatingImage[]
+  drawingState?: SheetDrawingState
+  shapes?: SheetDrawingShapeDTO[]
+  backgroundImage?: SheetBackgroundImage
+  defaultStyle?: SheetStyleSource
+  rowStyles?: Record<number, SheetStyleSource>
+  columnStyles?: Record<number, SheetStyleSource>
+  rowStyleSpans?: SheetAxisSpan<SheetStyleSource>[]
+  columnStyleSpans?: SheetAxisSpan<SheetStyleSource>[]
+  rowStylePriority?: boolean
+  rangeThemeRules?: SheetRangeThemeRule[]
   mergedRanges: CellRange[]
   columnWidths: Record<number, number>
   rowHeights: Record<number, number>
@@ -815,6 +881,9 @@ export interface SpreadsheetSheet {
 export interface WorkbookModel {
   kind: 'workbook'
   name: string
+  defaultStyle?: SheetStyleSource
+  styles?: Record<string, SheetCellStylePatch>
+  rangeThemes?: Record<string, SheetRangeThemeStyle>
   calculationMode?: 'automatic' | 'manual'
   sheets: SpreadsheetSheet[]
   activeSheetId: string
@@ -905,6 +974,11 @@ export interface DocumentParagraphStyle {
   spacingRule?: 'auto' | 'atLeast' | 'exact'
   wordWrap?: boolean
   snapToGrid?: boolean
+  /** Undefined inherits; false explicitly cancels an inherited pagination rule. */
+  keepLines?: boolean
+  keepNext?: boolean
+  widowControl?: boolean
+  pageBreakBefore?: boolean
 }
 
 /** Resolved document defaults, independent of paragraph and direct run formatting. */
@@ -1255,6 +1329,7 @@ export const createCell = (row: number, col: number, value: CellScalar = ''): Sp
   formula: null,
   display: value === null ? '' : String(value),
   style: defaultCellStyle(),
+  authoredStyle: {},
 })
 
 export const createBlankSheet = (name = 'Sheet1'): SpreadsheetSheet => ({

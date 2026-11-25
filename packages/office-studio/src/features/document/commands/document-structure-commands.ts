@@ -10,7 +10,7 @@ import { validateDocumentStoryBlocks } from '../model/document-story-blocks'
 import { reconcileDocumentContentControlBlockEdits } from '../model/content-control-block-edits'
 import { resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
 import { validateDocumentContentControlRanges } from '../services/content-controls'
-import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
+import { assertDocumentParagraphPaginationChangesEditable, assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
 import { removeDeletedDocumentRepeatingNoteScopes } from '../services/repeating-content-control-copy'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { updateDocumentStructuredCodeBlock } from '../services/document-code-editing'
@@ -25,6 +25,8 @@ import { planDocumentTableFieldAnchors } from '../services/document-table-anchor
 import { setDocumentTextFields, documentTextFieldRanges } from '../model/document-text-fields'
 import { reconcileDocumentTocFieldParents } from '../toc/document-toc-edit'
 import { insertDocumentBlocksAtPoint } from '../services/document-block-insertion'
+import { setDocumentCodeFontFamily } from '../code-blocks/document-code-fonts'
+import { clearDocumentQuotePagination, DOCUMENT_PARAGRAPH_PAGINATION_FIELDS, initializeDocumentQuotePagination, reconcileDocumentQuotePagination } from '../model/document-paragraph-pagination'
 
 export interface DocumentColumnGroupCreateOptions {
   columnGroupId?: string
@@ -40,15 +42,17 @@ export interface DocumentColumnGroupCreateOptions {
 }
 
 export type DocumentStructureCommand =
-  | { id: 'doc.command.wrap-structured-block'; blockType: DocumentDecoratedBlockType; blockId?: string; blockIds?: string[]; callout?: Partial<DocumentCalloutConfig>; code?: Partial<DocumentCodeConfig>; quote?: Partial<DocumentQuoteStyle>; textColor?: string | null }
-  | { id: 'doc.command.insert-structured-block'; blockType: DocumentDecoratedBlockType; blockId?: string; afterBlockId?: string; at?: DocumentPoint; source?: string; callout?: Partial<DocumentCalloutConfig>; code?: Partial<DocumentCodeConfig>; quote?: Partial<DocumentQuoteStyle>; textColor?: string | null }
+  | { id: 'doc.command.wrap-structured-block'; blockType: DocumentDecoratedBlockType; blockId?: string; blockIds?: string[]; callout?: Partial<DocumentCalloutConfig>; code?: Partial<DocumentCodeConfig>; fontFamily?: string; quote?: Partial<DocumentQuoteStyle>; textColor?: string | null }
+  | { id: 'doc.command.insert-structured-block'; blockType: DocumentDecoratedBlockType; blockId?: string; afterBlockId?: string; at?: DocumentPoint; source?: string; callout?: Partial<DocumentCalloutConfig>; code?: Partial<DocumentCodeConfig>; fontFamily?: string; quote?: Partial<DocumentQuoteStyle>; textColor?: string | null }
   | { id: 'doc.command.unwrap-structured-block'; blockId: string }
+  | { id: 'doc.command.convert-structured-block'; blockId: string; blockType: DocumentDecoratedBlockType }
   | { id: 'doc.command.remove-structured-block'; blockId: string }
   | { id: 'doc.command.exit-structured-block'; blockId: string }
   | { id: 'doc.command.update-callout'; blockId: string; patch: Partial<DocumentCalloutConfig>; textColor?: string | null }
   | { id: 'doc.command.update-quote-style'; blockId: string; patch: Partial<DocumentQuoteStyle> }
   | { id: 'doc.command.update-code-settings'; blockId: string; patch: Partial<DocumentCodeConfig> }
-  | { id: 'doc.command.update-code-block'; blockId: string; source?: string; patch?: Partial<DocumentCodeConfig>; host?: DocumentAuxiliaryBlockHost }
+  | { id: 'doc.command.set-code-font-family'; blockId: string; fontFamily: string }
+  | { id: 'doc.command.update-code-block'; blockId: string; source?: string; patch?: Partial<DocumentCodeConfig>; fontFamily?: string; host?: DocumentAuxiliaryBlockHost }
   | { id: 'doc.command.indent-code-block'; blockId: string; direction: -1 | 1 }
   | ({ id: 'doc.command.insert-column-group'; afterBlockId?: string; at?: DocumentPoint } & DocumentColumnGroupCreateOptions)
   | ({ id: 'doc.command.wrap-column-group'; blockIds?: string[] } & DocumentColumnGroupCreateOptions)
@@ -60,7 +64,7 @@ export type DocumentStructureCommand =
   | { id: 'doc.command.insert-column-paragraph'; blockId: string; columnId: string; index: number; text?: string; paragraphId?: string }
 
 const ids = new Set<DocumentStructureCommand['id']>(['doc.command.wrap-structured-block', 'doc.command.insert-structured-block',
-  'doc.command.unwrap-structured-block', 'doc.command.remove-structured-block', 'doc.command.exit-structured-block', 'doc.command.update-callout', 'doc.command.update-quote-style', 'doc.command.update-code-settings', 'doc.command.update-code-block', 'doc.command.indent-code-block',
+  'doc.command.unwrap-structured-block', 'doc.command.convert-structured-block', 'doc.command.remove-structured-block', 'doc.command.exit-structured-block', 'doc.command.update-callout', 'doc.command.update-quote-style', 'doc.command.update-code-settings', 'doc.command.set-code-font-family', 'doc.command.update-code-block', 'doc.command.indent-code-block',
   'doc.command.insert-column-group', 'doc.command.wrap-column-group', 'doc.command.update-column-group', 'doc.command.add-column',
   'doc.command.remove-column', 'doc.command.move-column', 'doc.command.set-column-text', 'doc.command.insert-column-paragraph'])
 export function isDocumentStructureCommand(command: { id: string }): command is DocumentStructureCommand {
@@ -100,6 +104,7 @@ function blocksForSelection(model: DocumentModel, selection: DocumentSelection, 
 function freshParagraph(model: DocumentModel, text = '', code = false): DocumentBlock {
   const defaults = documentDefaultStyle(model), paragraph = createParagraph(text, { ...defaults.text, ...(code ? { fontFamily: 'Consolas' } : {}) })
   paragraph.style = { ...defaults.paragraph, ...(code ? { lineHeight: 1.35, spaceBefore: 0, spaceAfter: 0 } : {}) }
+  for (const key of DOCUMENT_PARAGRAPH_PAGINATION_FIELDS) delete paragraph.style[key]
   return paragraph
 }
 function structureId(model: DocumentModel, prefix: string, requested?: string): string {
@@ -115,6 +120,7 @@ function createContainer(model: DocumentModel, type: DocumentDecoratedBlockType,
   block.style = { ...block.style, spaceBefore: 8, spaceAfter: 8 }
   if (type === 'callout') { block.callout = { ...defaultDocumentCalloutConfig(), ...callout }; validateDocumentCalloutConfig(block.callout) }
   if (type === 'code') { block.code = { ...defaultDocumentCodeConfig(), ...code }; validateDocumentCodeConfig(block.code) }
+  if (type === 'quote') initializeDocumentQuotePagination(block)
   return block
 }
 
@@ -252,6 +258,10 @@ export function executeDocumentStructureCommand(model: DocumentModel, selection:
     if (command.id === 'doc.command.wrap-structured-block') {
       if (command.quote) setQuoteStyle(candidate, wrapper, command.quote)
       setStructuredTextColor(candidate, wrapper, command.textColor)
+      if (command.fontFamily !== undefined) {
+        if (command.blockType !== 'code') throw new TypeError('等宽字体命令需要代码块。')
+        for (const id of setDocumentCodeFontFamily(candidate, wrapper, command.fontFamily)) affectedIds.add(id)
+      }
     }
   } else if (command.id === 'doc.command.insert-structured-block' || command.id === 'doc.command.insert-column-group') {
     const block = command.id === 'doc.command.insert-column-group' ? createColumns(candidate, command)
@@ -267,14 +277,34 @@ export function executeDocumentStructureCommand(model: DocumentModel, selection:
     if (command.id === 'doc.command.insert-structured-block') {
       if (command.quote) setQuoteStyle(candidate, block, command.quote)
       setStructuredTextColor(candidate, block, command.textColor)
+      if (command.fontFamily !== undefined) {
+        if (command.blockType !== 'code') throw new TypeError('等宽字体命令需要代码块。')
+        for (const id of setDocumentCodeFontFamily(candidate, block, command.fontFamily)) affectedIds.add(id)
+      }
     }
   } else {
     const block = findDocumentBlock(candidate, command.blockId)
     const legacy = block && !isDocumentStructuredBlock(block) && (block.type === 'quote' || !!codeBlockData(block))
     if (!block || !isDocumentStructuredBlock(block) && !legacy) throw new RangeError('高级块已不存在。')
     affectedIds.add(block.id)
-    if (command.id === 'doc.command.unwrap-structured-block') {
-      if (block.type === 'quote') clearDocumentQuoteParagraphBorders(block)
+    if (command.id === 'doc.command.convert-structured-block') {
+      if (!block.children || !['quote', 'callout', 'code'].includes(block.type)) throw new TypeError('转换需要完整的引用、标注或代码容器。')
+      if (command.blockType === 'code' && block.children.some(child => !isDocumentTextBlock(child))) throw new RangeError('代码块需要完整的文本段落。')
+      if (block.type !== command.blockType) {
+        const prior = block.metadata.documentStructuredTypeSources
+        const sources: Record<string, unknown> = prior && typeof prior === 'object' && !Array.isArray(prior) ? { ...prior } : {}
+        if (block.code) sources.code = cloneModel(block.code)
+        if (block.callout) sources.callout = cloneModel(block.callout)
+        if (block.type === 'quote') { clearDocumentQuoteParagraphBorders(block); clearDocumentQuotePagination(block) }
+        block.type = command.blockType; delete block.code; delete block.callout
+        const record = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+        if (block.type === 'code') { block.code = { ...defaultDocumentCodeConfig(), ...record(sources.code) }; validateDocumentCodeConfig(block.code) }
+        if (block.type === 'callout') { block.callout = { ...defaultDocumentCalloutConfig(), ...record(sources.callout) }; validateDocumentCalloutConfig(block.callout) }
+        block.metadata = { ...block.metadata, documentStructuredTypeSources: sources }
+        if (block.type === 'quote') initializeDocumentQuotePagination(block)
+      }
+    } else if (command.id === 'doc.command.unwrap-structured-block') {
+      if (block.type === 'quote') { clearDocumentQuoteParagraphBorders(block); clearDocumentQuotePagination(block) }
       if (legacy) { block.type = 'paragraph'; delete block.metadata.codeBlock; delete block.metadata.quoteStyle }
       else {
         const container = findDocumentBlockContainer(candidate, block.id)!, children = block.children ?? block.columns!.columns.flatMap(column => column.blocks)
@@ -305,6 +335,9 @@ export function executeDocumentStructureCommand(model: DocumentModel, selection:
     } else if (command.id === 'doc.command.update-code-settings') {
       if (block.type !== 'code') throw new TypeError('当前块不是代码块。')
       block.code = { ...block.code!, ...command.patch }; validateDocumentCodeConfig(block.code)
+    } else if (command.id === 'doc.command.set-code-font-family') {
+      if (block.type !== 'code' && !codeBlockData(block)) throw new TypeError('当前块不是代码块。')
+      for (const id of setDocumentCodeFontFamily(candidate, block, command.fontFamily)) affectedIds.add(id)
     } else {
       if (block.type !== 'columns' || !block.columns) throw new TypeError('当前块不是多栏组。')
       const group = block.columns
@@ -367,6 +400,8 @@ export function executeDocumentStructureCommand(model: DocumentModel, selection:
       validateDocumentColumnGroup(group)
     }
   }
+  reconcileDocumentQuotePagination(candidate)
+  assertDocumentParagraphPaginationChangesEditable(model, candidate)
   removeDeletedDocumentRepeatingNoteScopes(model, candidate)
   if (removedIds.size) reconcileDocumentNotesAfterStructure(candidate, removedIds)
   const paragraphs = documentTextFieldParagraphs(candidate)

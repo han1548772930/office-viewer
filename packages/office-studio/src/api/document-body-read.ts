@@ -8,6 +8,10 @@ import { documentSectionSetupFromBody, documentSectionTypeFromBody } from './doc
 import { documentTableFromBody } from './document-body-table'
 import { documentCalloutFromBody, documentCodeFromBody, documentColumnGroupFromBody } from './document-body-structures'
 import { applyDocumentBodyBlockSource, documentBodyOfficeSource, documentBodyRunMetadata } from './document-body-source'
+import { readDocumentBodyLatexRanges } from './document-body-latex'
+import { DOCUMENT_LATEX_ATOM } from '../features/document/latex/latex-formula'
+import { documentImageFromDrawing } from './document-image-body'
+import { DOCUMENT_IMAGE_ATOM, documentImageAtom, setDocumentImageAtom } from '../features/document/images/document-image-atom'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyArray, documentBodyIdentity, documentBodyOffset,
   type DocumentBodyDecodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyStructureIndex, type DocumentBodyTextSpan, type UniverDocumentBodyResources } from './document-body-types'
 
@@ -22,6 +26,14 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   const body = bodyRecord(value)
   if (typeof body.dataStream !== 'string') throw new TypeError('文档 body.dataStream 必须为字符串。')
   const stream = body.dataStream
+  const latexRanges = readDocumentBodyLatexRanges(body, resources)
+  const latexRangesOrdered = [...latexRanges.values()]
+  const latexAt = (offset: number) => {
+    let low = 0, high = latexRangesOrdered.length
+    while (low < high) { const middle = (low + high) >>> 1; if (latexRangesOrdered[middle]!.start <= offset) low = middle + 1; else high = middle }
+    const range = latexRangesOrdered[low - 1]
+    return range && range.end > offset ? range : undefined
+  }
   if (stream.length * 2 > 32 * 1024 * 1024) throw new RangeError('文档公开内容超过单次文本预算。')
   const paragraphs = new Map<number, UniverBodyRecord>(), tables = new Map<number, UniverBodyRecord>(), customBlocks = new Map<number, UniverBodyRecord>()
   const blockRanges = new Map<number, UniverBodyRecord>(), columnGroups = new Map<number, UniverBodyRecord>()
@@ -36,6 +48,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   const mapEntries = (input: unknown, map: Map<number, UniverBodyRecord>, token: string, label: string) => {
     for (const raw of documentBodyArray(input, label)) {
       const offset = checkPosition(raw.startIndex, label)
+      if (latexAt(offset)) throw new RangeError(`${label} 不能位于公式实体内部。`)
       if (stream[offset] !== token || map.has(offset)) throw new RangeError(`${label} 与内容流标记不匹配或位置重复。`)
       map.set(offset, raw)
     }
@@ -78,6 +91,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   }
   const sectionSources: UniverBodyRecord[] = [], sectionIds = new Set<string>()
   for (let at = stream.indexOf(T.section); at >= 0; at = stream.indexOf(T.section, at + 1)) {
+    if (latexAt(at)) continue
     const raw = sections.get(at) ?? {}, sectionId = documentBodyIdentity(raw.sectionId ?? documentId('section'), '分节')
     if (sectionIds.has(sectionId)) throw new TypeError(`分节标识重复：${sectionId}`)
     sectionIds.add(sectionId); documentSectionTypeFromBody(raw.sectionType)
@@ -100,7 +114,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   const boundaries = [...new Set(textRuns.flatMap(run => [run.start, run.end]))].sort((a, b) => a - b)
   const positions: DocumentBodyParagraphPosition[] = [], diagnostics: string[] = [], identities = new Set<string>()
   const structures: DocumentBodyStructureIndex = { blocks: [], rows: [], cells: [] }
-  const runSourceIds = new Map<string, string>()
+  const runSourceIds = new Map<string, string>(), drawingIds = new Set<string>()
   let cursor = 0, count = 0
   const reserve = (block: DocumentBlock) => {
     if (++count > 250_000) throw new RangeError('文档公开内容超过块预算。')
@@ -108,7 +122,8 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
     identities.add(block.id); return block
   }
   const paragraphAt = (position: number) => {
-    const terminal = stream.indexOf(T.paragraph, position)
+    let terminal = stream.indexOf(T.paragraph, position)
+    while (terminal >= 0 && latexAt(terminal)) terminal = stream.indexOf(T.paragraph, latexAt(terminal)!.end)
     return terminal < 0 ? {} : paragraphs.get(terminal) ?? {}
   }
   const readBlocks = (until?: string, depth = 0): DocumentBlock[] => {
@@ -136,6 +151,15 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         run.metadata = { ...documentBodyRunMetadata(part.source), ...run.metadata, ...documentRunStyleSource(run, explicit, inherited),
           ...part.metadata, univerBodyRunSource: { version: 1, runId: run.id, start: part.start, end: part.end,
           ...(part.source ? { textRun: cloneModel(part.source) } : {}) } }
+        if (part.metadata?.latexFormula) {
+          const range = bodyRecord(run.metadata.univerBodyLatexRangeSource), extension = bodyRecord(range.officeStudio)
+          if (extension.runId !== undefined) run.id = documentBodyIdentity(extension.runId, '公式运行')
+          run.metadata.univerBodyLatexRangeSource = { ...range, runId: run.id }
+          run.metadata.univerBodyRunSource = { ...bodyRecord(run.metadata.univerBodyRunSource), runId: run.id }
+        }
+        const imageAtom = documentImageAtom(run)
+        if (imageAtom) setDocumentImageAtom(run, typeof bodyRecord(part.metadata?.imageAtom).imageId === 'string'
+          ? String(bodyRecord(part.metadata?.imageAtom).imageId) : imageAtom.imageId, imageAtom.image)
         return run
       })
       const paragraph = documentParagraphFromBody(terminal ? raw : { ...raw, paragraphId: undefined }, runs, options, resources.lists)
@@ -168,6 +192,12 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
     }
     while (cursor < stream.length) {
       const token = stream[cursor]!
+      const formula = latexRanges.get(cursor)
+      if (formula) {
+        append(DOCUMENT_LATEX_ATOM, cursor, formula.end, { latexFormula: formula.formula,
+          univerBodyLatexRangeSource: formula.source, univerBodyLatexConfigSource: formula.config })
+        cursor = formula.end; continue
+      }
       if (token === until) {
         flush(cursor, false)
         if (!blocks.length) {
@@ -301,20 +331,28 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         }
         const drawing = resources.drawings?.[id]
         if (drawing) {
+          if (drawingIds.has(id)) throw new TypeError(`文档绘图标识重复：${id}`)
+          drawingIds.add(id)
           const source = typeof drawing.source === 'string' ? drawing.source : typeof drawing.src === 'string' ? drawing.src : undefined
           if (!source || drawing.drawingType !== undefined && drawing.drawingType !== 0) {
             append('\uFFFC', from, cursor, { univerBodyCustomBlock: cloneModel(raw), univerBodyDrawingSource: cloneModel(drawing) })
             diagnostics.push(`绘图 ${id} 的 ${String(drawing.drawingType)} 类型保留在模型，尚未接入该 body 宿主的图形适配。`); continue
           }
-          flush(from, false); const transform = bodyRecord(drawing.docTransform), dimensions = bodyRecord(transform.size)
+          const transform = bodyRecord(drawing.docTransform), dimensions = bodyRecord(transform.size)
           const width = bodyNumber(dimensions.width ?? bodyRecord(drawing.transform).width) ?? 160, height = bodyNumber(dimensions.height ?? bodyRecord(drawing.transform).height) ?? 120
           if (width <= 0 || height <= 0) throw new RangeError('文档图片尺寸必须为正。')
+          const image = documentImageFromDrawing(drawing, source, width, height, resources.drawingsOrder?.indexOf(id) ?? 0)
+          if (bodyRecord(raw.officeStudio).type !== 'image' || bodyRecord(raw.officeStudio).imageAtom === true) {
+            append(DOCUMENT_IMAGE_ATOM, from, cursor, { imageAtom: { version: 1, imageId: id, image },
+              univerBodyCustomBlock: cloneModel(raw), univerBodyDrawingSource: cloneModel(drawing) })
+            continue
+          }
+          flush(from, false)
           const block = createParagraph(); block.id = id; block.type = 'image'; block.runs = []
-          block.metadata = { image: { src: source, alt: typeof drawing.description === 'string' ? drawing.description : '', width, height },
+          block.metadata = { image,
             univerBodyCustomBlock: cloneModel(raw), univerBodyDrawingSource: cloneModel(drawing) }
           applyDocumentBodyBlockSource(block, raw)
           blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: from, end: cursor }); start = cursor
-          if (drawing.layoutType === 0 || drawing.layoutType === undefined) diagnostics.push(`行内绘图 ${id} 已保留图像和源锚点，当前编辑块布局与源段内环绕尚需对齐。`)
           continue
         }
         append('\uFFFC', from, cursor, { univerBodyCustomBlock: cloneModel(raw) })
@@ -327,7 +365,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
       }
       const from = cursor
       do { cursor++ } while (cursor < stream.length && stream[cursor] !== until && !containerEnds.has(stream[cursor]!)
-        && !nonprinting.has(stream[cursor]!) && !flowTokens.has(stream[cursor]!) && !generatedRanges.has(cursor) && !noteRanges.has(cursor))
+        && !nonprinting.has(stream[cursor]!) && !flowTokens.has(stream[cursor]!) && !generatedRanges.has(cursor) && !noteRanges.has(cursor) && !latexRanges.has(cursor))
       append(stream.slice(from, cursor), from, cursor)
     }
     if (until) throw new RangeError('文档结构容器缺少结束标记。')

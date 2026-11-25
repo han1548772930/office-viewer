@@ -1,8 +1,13 @@
 import { createCell, type CellRange, type SpreadsheetSheet } from '../../domain/model.ts'
-import { cellKey, parseCellKey, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { parseCellKey, setSheetViewCellStyleProperties, sheetViewCellAt, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { assertSheetBorderRanges, createSheetBorderPlan, normalizeSheetBorderColor, normalizeSheetBorderPreset, normalizeSheetBorderStyle,
-  type SheetBorderLineStyle, type SheetBorderOptions, type SheetBorderPlan, type SheetBorderPreset, type SheetBorderSource } from './sheet-cell-border.ts'
+  type SheetBorderLineStyle, type SheetBorderOptions, type SheetBorderPlan, type SheetBorderPosition, type SheetBorderPreset, type SheetBorderSource } from './sheet-cell-border.ts'
+import { resolveSheetCellStyle, setSheetCellStyleProperties, type SheetStyleContext, type SheetStyleSheet } from './sheet-style-inheritance.ts'
+import { captureSheetStyleRegion } from './sheet-style-region.ts'
+
+/** A temporary synchronous budget. Larger inherited-border clears still need the Worker protocol. */
+export const SHEET_INHERITED_BORDER_SYNC_CELL_BUDGET = 100_000
 
 export const SHEET_BORDER_FORMAT_COMMANDS = Object.freeze({
   set: 'sheet.command.set-border', basic: 'sheet.command.set-border-basic', position: 'sheet.command.set-border-position',
@@ -78,9 +83,31 @@ function assertPlanEditable(sheet: SpreadsheetSheet | ExcelSheetView, plan: Shee
     throw new Error('相邻单元格的边框受保护，操作未应用。')
   }
 }
-function modelSource(sheet: SpreadsheetSheet): SheetBorderSource {
-  return { readBorder: (row, col) => sheet.cells[`${row}:${col}`]?.style.border,
-    existingCells: () => Object.values(sheet.cells).map(({ row, col }) => ({ row, col })), mergedRanges: sheet.mergedRanges }
+function* inheritedBorderPositions(sheet: SheetStyleSheet, context: SheetStyleContext, ranges: readonly CellRange[],
+  existing: Iterable<SheetBorderPosition>, readBorder: SheetBorderSource['readBorder']): Generator<SheetBorderPosition> {
+  const visited = new Set<number>()
+  for (const position of existing) { visited.add(position.row * 16_384 + position.col); yield position }
+  let projected = 0
+  for (const range of ranges) {
+    const area = { startRow: Math.max(0, range.startRow - 1), endRow: Math.min(1_048_575, range.endRow + 1),
+      startCol: Math.max(0, range.startCol - 1), endCol: Math.min(16_383, range.endCol + 1) }
+    const source = captureSheetStyleRegion(sheet, { start: area.startRow, end: area.endRow }, { start: area.startCol, end: area.endCol }, context)
+    const layers = [source.defaultStyle, ...Object.values(source.rowStyles ?? {}), ...Object.values(source.columnStyles ?? {}),
+      ...(source.rowStyleSpans ?? []).map(span => span.value), ...(source.columnStyleSpans ?? []).map(span => span.value)]
+    if (!layers.some(style => style?.border && Object.keys(style.border).length)) continue
+    projected += (area.endRow - area.startRow + 1) * (area.endCol - area.startCol + 1)
+    if (projected > SHEET_INHERITED_BORDER_SYNC_CELL_BUDGET) throw new RangeError('继承边框清除超出当前同步处理预算，需使用后续 Worker 路径。')
+    for (let row = area.startRow; row <= area.endRow; row++) for (let col = area.startCol; col <= area.endCol; col++) {
+      const key = row * 16_384 + col
+      if (visited.has(key) || !Object.keys(readBorder(row, col) ?? {}).length) continue
+      visited.add(key); yield { row, col }
+    }
+  }
+}
+function modelSource(sheet: SpreadsheetSheet, context: SheetStyleContext): SheetBorderSource {
+  const readBorder: SheetBorderSource['readBorder'] = (row, col) => resolveSheetCellStyle(sheet, row, col, sheet.cells[`${row}:${col}`], context).border
+  return { readBorder,
+    existingCells: ranges => inheritedBorderPositions(sheet, context, ranges, Object.values(sheet.cells), readBorder), mergedRanges: sheet.mergedRanges }
 }
 function viewSource(sheet: ExcelSheetView): SheetBorderSource {
   const mergedRanges = (sheet.merges ?? []).map(merge => {
@@ -88,21 +115,23 @@ function viewSource(sheet: ExcelSheetView): SheetBorderSource {
     if (!first || !last) throw new RangeError('合并单元格范围无效。')
     return { startRow: first.row, startCol: first.col, endRow: last.row, endCol: last.col }
   })
-  return { readBorder: (row, col) => sheet.cells[cellKey(row, col)]?.border,
-    existingCells: () => Object.keys(sheet.cells).flatMap(key => { const position = parseCellKey(key); return position ? [position] : [] }), mergedRanges }
+  const readBorder: SheetBorderSource['readBorder'] = (row, col) => sheetViewCellAt(sheet, row, col).border
+  return { readBorder, existingCells: ranges => inheritedBorderPositions(sheet, { defaultStyle: sheet.workbookDefaultStyle, styles: sheet.styles }, ranges,
+    Object.keys(sheet.cells).flatMap(key => { const position = parseCellKey(key); return position ? [position] : [] }), readBorder), mergedRanges }
 }
 
 export function applySheetBorderFormatCommand(
-  sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetBorderFormatAction, userId = 'local-user',
+  sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetBorderFormatAction, userId = 'local-user', context: SheetStyleContext = {},
 ): boolean {
   if (!ranges.length) return false
   assertEditable(sheet, ranges, userId)
   if (!action.apply) return false
-  const plan = createSheetBorderPlan(modelSource(sheet), ranges, action.state.type, action.state)
+  const plan = createSheetBorderPlan(modelSource(sheet, context), ranges, action.state.type, action.state)
   assertPlanEditable(sheet, plan, userId)
   for (const patch of plan.patches) {
     const key = `${patch.row}:${patch.col}`, cell = sheet.cells[key] ?? createCell(patch.row, patch.col)
-    cell.style.border = patch.border
+    cell.style = resolveSheetCellStyle(sheet, patch.row, patch.col, sheet.cells[key], context)
+    setSheetCellStyleProperties(cell, { border: patch.border })
     sheet.cells[key] = cell
   }
   return plan.patches.length > 0
@@ -116,8 +145,7 @@ export function applySheetViewBorderFormatCommand(
   const plan = createSheetBorderPlan(viewSource(sheet), ranges, action.state.type, action.state)
   assertPlanEditable(sheet, plan, userId)
   for (const patch of plan.patches) {
-    const key = cellKey(patch.row, patch.col)
-    sheet.cells[key] = { ...(sheet.cells[key] ?? { value: '' }), border: patch.border }
+    setSheetViewCellStyleProperties(sheet, patch.row, patch.col, { border: patch.border })
   }
   return plan.patches.length > 0
 }

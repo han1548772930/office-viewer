@@ -1,12 +1,15 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import type { DocumentCommand } from '../commands/document-commands'
-import { blocksFromHtml, createParagraph, createRun, documentHtml, findDocumentBlock, runText, tableForBlock, type DocumentRun, type DocumentSelection, type DocumentTableViewSelection, type RunPatch } from '../model/document-model'
+import { blocksFromHtml, createParagraph, createRun, documentHtml, findDocumentBlock, imageForBlock, orderedSelection, sameTarget, sliceRuns, tableForBlock, textTargets, type DocumentRun, type DocumentSelection, type DocumentTableViewSelection, type RunPatch } from '../model/document-model'
 import { documentTableCellsInRange, documentTableGrid } from '../model/document-table-grid'
 import { resolveDocumentTableViewSelection } from '../model/document-table-selection'
 import { documentTableCellBorders, documentTableCellFill, documentTableCellMargin } from '../model/document-table-style'
 import { documentTableValuesFromTsv, documentTableTextMatrix, documentTableValuesToTsv } from '../model/document-table-text'
 import { documentTableCellContentContainers } from '../model/document-table-continuations'
+import { documentImageAtom, setDocumentImageAtom } from '../images/document-image-atom'
+import { documentImageEntries } from '../images/document-image-model'
+import { documentBlockChildContainers } from '../model/document-structural-blocks'
 
 export interface DocumentClipboardData { text: string; html?: string }
 export const DOCUMENT_PASTE_OPTIONS = [
@@ -24,6 +27,37 @@ export interface DocumentClipboardReader {
 export interface DocumentClipboardWriter {
   writeText(text: string): Promise<void>
   write?(items: ClipboardItem[]): Promise<void>
+}
+
+function clipboardRunText(runs: readonly DocumentRun[]): string {
+  return runs.map(run => documentImageAtom(run)?.image.alt ?? run.text).join('')
+}
+
+/** Selected atom runs travel with their real IMG payload and paragraph formatting. */
+export function documentSelectionClipboardData(model: DocumentModel, selection: DocumentSelection): DocumentClipboardData {
+  if (selection.tableSelection) return documentTableClipboardData(model, selection.tableSelection)
+  const { start, end } = orderedSelection(model, selection), targets = textTargets(model)
+  const first = targets.findIndex(target => sameTarget(target, start)), last = targets.findIndex(target => sameTarget(target, end))
+  if (first < 0 || last < first) throw new RangeError('复制选区的文字宿主已不存在。')
+  const selected = targets.slice(first, last + 1).map(target => {
+    const block = findDocumentBlock(model, target.cellBlockId ?? target.blockId)
+    if (!block) throw new RangeError('复制选区的段落已不存在。')
+    const copied = cloneModel(block)
+    copied.runs = sliceRuns(copied.runs, sameTarget(target, start) ? start.offset : 0, sameTarget(target, end) ? end.offset : Number.POSITIVE_INFINITY)
+    delete copied.metadata.html
+    return copied
+  })
+  return { text: selected.map(block => clipboardRunText(block.runs)).join('\n'), html: documentHtml({ ...model, blocks: selected }) }
+}
+
+export function documentImageClipboardData(model: DocumentModel, imageId: string): DocumentClipboardData {
+  const entry = documentImageEntries(model).find(entry => entry.imageId === imageId)
+  if (!entry) throw new RangeError('复制的图片已不存在。')
+  const block = createParagraph()
+  block.style = cloneModel(entry.block.style)
+  const run = entry.inline ? cloneModel(entry.inline.run) : createRun('\uFFFC')
+  setDocumentImageAtom(run, entry.imageId, cloneModel(entry.image)); block.runs = [run]
+  return { text: entry.image.alt, html: documentHtml({ ...model, blocks: [block] }) }
 }
 
 /** Crop compact anchors while materializing effective formatting at the new clipboard edges. */
@@ -54,7 +88,7 @@ export function documentTableClipboardData(model: DocumentModel, selection: Docu
   cropped.style = { ...cropped.style, align: 'left', indent: 0, offsetY: 0, ...(width === undefined ? {} : { width }) }
   delete copied.metadata.html
   documentTableGrid(cropped)
-  return { text: documentTableValuesToTsv(documentTableTextMatrix(table, range)), html: documentHtml({ ...model, blocks: [copied] }) }
+  return { text: documentTableValuesToTsv(documentTableTextMatrix(table, range, blockPlainText)), html: documentHtml({ ...model, blocks: [copied] }) }
 }
 
 /** Return whether the rich payload was written; callers can preserve a cut when only text succeeded. */
@@ -156,8 +190,16 @@ export async function readDocumentClipboard(clipboard: DocumentClipboardReader, 
 }
 
 function blockPlainText(block: DocumentBlock): string {
+  return clipboardBlockPlainText(block, 0)
+}
+
+function clipboardBlockPlainText(block: DocumentBlock, depth: number): string {
+  if (depth > 64) throw new RangeError('剪贴板内容嵌套超过预算。')
   const table = tableForBlock(block)
-  return table ? documentTableValuesToTsv(documentTableTextMatrix(table)) : runText(block.runs)
+  if (table) return documentTableValuesToTsv(documentTableTextMatrix(table, undefined, child => clipboardBlockPlainText(child, depth + 1)))
+  const children = documentBlockChildContainers(block)
+  return children.length ? children.flat().map(child => clipboardBlockPlainText(child, depth + 1)).join('\n')
+    : imageForBlock(block)?.alt ?? clipboardRunText(block.runs)
 }
 
 function paragraphsFromPlainText(text: string): DocumentBlock[] {
@@ -190,10 +232,13 @@ export function applyDocumentPasteDestinationStyle(blocks: DocumentBlock[], dest
         strike: sourceRun.strike,
         ...(sourceRun.verticalAlign === undefined ? {} : { verticalAlign: sourceRun.verticalAlign }),
       } : {}
-      return createRun(sourceRun.text, { ...appearance, ...overrides,
+      const copied = createRun(sourceRun.text, { ...appearance, ...overrides,
         ...(preserveSourceEmphasis && sourceRun.href ? { href: sourceRun.href } : {}),
         ...(preserveSourceEmphasis && sourceRun.metadata ? { metadata: sourceRun.metadata } : {}),
       })
+      const image = documentImageAtom(sourceRun)
+      if (image) setDocumentImageAtom(copied, image.imageId, cloneModel(image.image))
+      return copied
     })
   }
 }

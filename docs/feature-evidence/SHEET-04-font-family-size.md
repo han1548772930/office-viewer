@@ -1,6 +1,6 @@
 # SHEET-04 字体、字号与字号步进（待统一验证）
 
-记录日期：2026-11-23。固定参考根 `E:\rust_test\univer`，Univer v1.6.0、提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。这份记录覆盖字体组第一行的四个入口，与 [第二行字体开关和颜色](SHEET-04-color-reset.md)、[边框](SHEET-04-borders.md)互补。仅完成源码复核、实现与用例编写，本批未执行测试、类型检查、构建、Rust/WASM 或浏览器；SHEET-04 保持“未验收”。
+记录日期：2026-11-23；2026-11-25 续作见[富文本字体与 Canvas 编辑](SHEET-04-05-rich-text-font-editing.md)和[默认样式继承](SHEET-04-default-style-inheritance.md)。固定参考根 `E:\rust_test\univer`，Univer v1.6.0、提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。这份记录覆盖字体组第一行的四个入口，与 [第二行字体开关和颜色](SHEET-04-color-reset.md)、[边框](SHEET-04-borders.md)互补。仅完成源码复核、实现与用例编写，本批未执行测试、类型检查、构建、Rust/WASM 或浏览器；SHEET-04 保持“未验收”。
 
 ## 来源与入口
 
@@ -25,7 +25,7 @@
 
 字号步进先读取活动单元格，再将一个确定字号应用于选区并集，重叠格只处理一次。UI 传入 `selectedKey` 对应主格；明确 API 范围未传 primary 时，使用最后范围的起点。显式 primary 必须是有效整数坐标并位于选区内；null、非对象、缺失坐标或选区外坐标拒绝整个操作。与固定命令相同，增大仅检查上界、减小仅检查下界：`500 → 499` 是减小字号，`500 → 400` 是增大字号；`399.5 → 400.5` 的增大行为也保留单侧检查，不能擅自改成双侧 clamp。
 
-family/size 为 null 时仅扫描已有单元格，跳过筛除行，不新增稀疏空白；本项目必填字体字段恢复为 Aptos / 11。非重置操作保留其他字体属性、样式、值、公式、缓存、metadata 和已存储 richText。model 和 standalone view 路径使用相同动作语义；Studio 合并工作表与本工作表表格的筛除行，保留手动隐藏行，提交时关闭公式重算。
+family/size 为 null 时仅扫描已有单元格，跳过筛除行，不新增稀疏空白。2026-11-25 已改为清直接/run 作者属性、屏蔽相应引用字段并恢复有效继承；没有上层来源才回退 Aptos / 11。非重置操作保留无关字体属性、样式、值、公式、缓存、metadata，并同步整格对应 rich-run 覆盖。model 和 standalone view 路径使用相同动作语义；Studio 合并工作表与本工作表表格的筛除行，保留手动隐藏行，提交时关闭公式重算。
 
 `office-studio.ts` 通过同一注册项验证权限、提交模型和内容历史；`FRange.setFontFamily/setFontSize` 改为派发该命令。`ExcelWorkbench.vue` 的 dispatcher 使用统一字体注册表，原字体/字号局部 handler 已移除；稀疏 null 重置绕过直接枚举选区门槛。`src/index.ts` 导出 font action、command input/params、primary、range 和 mark 类型。成功但未改内容的命令返回 false，仍有通用 CommandExecuted 事件；不会添加内容历史。取消、非法和权限失败没有成功事件或部分模型修改。
 
@@ -41,8 +41,8 @@ family/size 为 null 时仅扫描已有单元格，跳过筛除行，不新增�
 
 ## 仍未验收的差异
 
-- 固定版 null 清除 `ff/fs` 后参与 composed style 继承；本项目 null 暂恢复必填 Aptos/11，且默认字体与固定 Arial/11 不同。工作簿、工作表、行列和主题默认样式继承仍须实现，不能将这次重置称为完整默认样式能力。
-- 固定版行内 family/size/step 作用于实际文本范围。本项目本次只实现整格字体属性，保留已存储 richText，但没有重写局部文本运行或实现行内字体命令；RichText 保留不证明局部字体编辑完成。
+- 2026-11-25 已补 workbook/worksheet/行列/theme/direct 组合、目录引用/reset、空格输入/复制/格式刷/填充和来源持久基础，见[默认样式证据](SHEET-04-default-style-inheritance.md)。null 已参与继承；本地底层默认仍 Aptos/11，与固定 Arial/11 不同。完整范围主题、字体/CJK/复杂脚本及原生文件映射仍未完成或未验收。
+- 2026-11-25 已补同一字体命令的行内范围/typing 草稿、整格运行覆盖、Facade 部分样式与 Canvas 编辑接线，见[续作证据](SHEET-04-05-rich-text-font-editing.md)。复杂 shaping、真实 IME、富剪贴板、全部继承场景、浏览器和 Office 往返仍未验收，不能仅以运行保留计完成。
 - 独立工作簿只读、设置样式权限与绘图内文字上下文仍需整体能力验收；当前工作表/范围编辑保护及 UI 禁用不能推导完整权限等价。
 - 字体文件加载、字体回退/度量、真实中文输入法、每个语言与主题下的焦点、XLSX 导出/独立 Excel 重开、源主题字体及默认样式保真没有本批实测结果。
 - 非重置大范围设置仍需 Worker/批量模型与取消路径。本批没有同数据集前后耗时、帧时间、主线程长任务、传输或内存基准，不声明性能优化或大样本达标。

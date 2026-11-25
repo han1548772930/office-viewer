@@ -48,7 +48,7 @@
 
 `sheet-cell-border.ts` 先构建不可变 patch plan，按多个选区的并集判断内外边，去重后不填充 bounding-box 间隙；部分选区触及合并格时扩展到该逻辑合并区域。合并格不新增内部 cardinal 线，斜线只写原主格；均匀 perimeter 在主格保留摘要，以兼容现有快照和 Office 写出链。实际物理格有自身边属性时优先使用它，显式 null 阻断主格回退。清除主格所代表的一个段之前，先物化其他继承段，避免邻格清除使整条合并边一起消失。
 
-外边设置保留邻格其他边与扩展 metadata，只清其相向边。权限检查覆盖输入选区、扩展合并区域及所有真正变化的 patch，包括邻格和物化继承段；任一拒绝时不应用任何 patch。邻格没有需要改变的相向边时不扩大权限目标。`none` 只扫描已有格和必要相邻合并 perimeter 的交集，不因清空稀疏空白而创建格；公式、值、缓存及未修改的样式字段保留。
+外边设置保留邻格其他边与扩展 metadata，只清其相向边。权限检查覆盖输入选区、扩展合并区域及所有真正变化的 patch，包括邻格和物化继承段；任一拒绝时不应用任何 patch。邻格没有需要改变的相向边时不扩大权限目标。2026-11-25 已接[有效默认样式](SHEET-04-default-style-inheritance.md)：无继承边框时 `none` 保持既有稀疏扫描；有继承边框时按需投影选区和邻格，明确 author border group 以阻断原边。公式、值、缓存及无关样式来源保留。
 
 共享命令 ID 为 `set-border`、`set-border-basic`、`set-border-position`、`set-border-color`、`set-border-style` 和兼容 `set-borders`，均带 `sheet.command.` 前缀。`sheet-border-format-command.ts` 提供 action staging、两种行列坐标参数归一化及 model/view 适配；`sheet-toolbar-format.ts` 保留四参 `applySheetBorders` 的 void 契约，内部调用相同 plan。兼容 helper 没有合并上下文，合并调用应使用工作表 model/view 命令。
 
@@ -72,4 +72,4 @@ Facade 新增 `FOffice.Enum.BorderType`、`FOffice.Enum.BorderStyleTypes` 和 `F
 
 集中验证仍需执行新旧相关契约、浏览器、类型、前端及 Rust/WASM 检查；确认真实 Canvas 的合并分段、背景覆盖顺序及各种线型可见结果。Office 文件仍走本项目解析与写出，SLANT_DASH_DOT 的 XLSX 线型映射由主任务补齐；XLSX 导出/重导入、独立 Excel 重开、主题色/tint、原始扩展边数据保真、局部富文本/绘图格式均未验收。
 
-非清除大范围设置当前仍需 Worker/批量模型路径和取消契约；主格回退局部清除可能物化整侧继承段。没有首屏、滚动、编辑、缩放、Worker/WASM 传输、内存及同数据集前后基准，不声明大样本性能达标。匿名 standalone 仍沿用现有按名称标识会话的边界，重名匿名工作簿隔离尚未核实。
+非清除大范围设置当前仍需 Worker/批量模型路径和取消契约；主格回退局部清除可能物化整侧继承段。继承空白边框清除新增临时同步投影预算 100,000 个位置，超预算的分块 Worker 路径尚未实现；该预算不是性能测量或大范围能力证明。没有首屏、滚动、编辑、缩放、Worker/WASM 传输、内存及同数据集前后基准，不声明大样本性能达标。匿名 standalone 仍沿用现有按名称标识会话的边界，重名匿名工作簿隔离尚未核实。

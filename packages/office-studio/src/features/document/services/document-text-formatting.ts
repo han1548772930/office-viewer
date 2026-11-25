@@ -1,10 +1,11 @@
 import type { DocumentModel } from '../../../domain/model'
-import { orderedSelection, runText, runsForTarget, sameTarget, textTargets, type DocumentSelection } from '../model/document-model'
+import { findDocumentBlock, orderedSelection, runText, runsForTarget, sameTarget, textTargets, type DocumentSelection } from '../model/document-model'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { assertDocumentPermission, permissionTargetsForSelection, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { assertTextRangeEditable } from './content-controls'
 import { flattenDocumentBody } from './document-facade'
 import { documentTableSelectedTextTargets } from '../model/document-table-selection'
+import { DOCUMENT_PARAGRAPH_PAGINATION_FIELDS } from '../model/document-paragraph-pagination'
 
 /** Formatting and insertion share the same text boundaries and content-lock decision. */
 export function assertDocumentTextSelectionEditable(model: DocumentModel, selection: DocumentSelection): void {
@@ -40,4 +41,19 @@ export function documentTextFormattingState(model: DocumentModel, selection: Doc
     assertDocumentTextSelectionEditable(model, selection)
     return { available: true }
   } catch (error) { return { available: false, reason: error instanceof Error ? error.message : String(error) } }
+}
+
+/** A generated quote rule changes the entire paragraph, even if the insertion
+ * point lies outside a locked span. Check both sides before publishing. */
+export function assertDocumentParagraphPaginationChangesEditable(before: DocumentModel, after: DocumentModel): void {
+  const originals = new Map(textTargets(before).map(target => [target.cellBlockId ?? target.blockId, target]))
+  for (const target of textTargets(after)) {
+    const id = target.cellBlockId ?? target.blockId, block = findDocumentBlock(after, id)!, originalTarget = originals.get(id)
+    const original = originalTarget && findDocumentBlock(before, id)
+    if (original && DOCUMENT_PARAGRAPH_PAGINATION_FIELDS.every(key => original.style[key] === block.style[key])) continue
+    if (!original && DOCUMENT_PARAGRAPH_PAGINATION_FIELDS.every(key => block.style[key] === undefined)) continue
+    assertDocumentTextSelectionEditable(after, { anchor: { ...target, offset: 0 }, focus: { ...target, offset: runText(block.runs).length } })
+    if (original && originalTarget) assertDocumentTextSelectionEditable(before,
+      { anchor: { ...originalTarget, offset: 0 }, focus: { ...originalTarget, offset: runText(original.runs).length } })
+  }
 }

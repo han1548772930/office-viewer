@@ -14,7 +14,7 @@ test('LaTeX parser supports grouped fractions, roots, scripts, and common symbol
   assert.throws(() => parseLatexFormula('\\frac{a}{b'), /未闭合/)
 })
 
-test('unsupported syntax reports its source offset instead of silently rendering source text', () => {
+test('unclosed matrices and missing scripts report source errors instead of silently rendering source text', () => {
   assert.throws(() => parseLatexFormula('x + \\begin{matrix}'), (error) => error instanceof LatexFormulaError && error.offset === 4)
   assert.throws(() => parseLatexFormula('x^'), /缺少内容/)
 })

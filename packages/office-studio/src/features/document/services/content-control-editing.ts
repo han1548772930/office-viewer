@@ -20,6 +20,7 @@ export const DOCUMENT_CONTENT_CONTROL_TEXT_INPUT_COMMAND_IDS = [
   'doc.command.insert-text', 'doc.command.delete', 'doc.command.paste-blocks',
   'doc.command.table-set-cell-text', 'doc.command.table-set-range-text',
   'doc.command.replace-range',
+  'doc.command.insert-latex-formula', 'doc.command.remove-latex-formula', 'doc.command.replace-latex-formula-with-text',
 ] as const
 
 export function documentContentControlCommandIsTextInput(command: string | { id: string }): boolean {

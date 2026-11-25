@@ -1,6 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentSectionSetup } from '../../../domain/model.ts'
 import { DEFAULT_DOCUMENT_SECTION_ID, documentSectionIds } from './section-header-footer.ts'
 import { validateDocumentNoteSettings } from '../notes/document-note-settings'
+import { markDocumentParagraphPaginationAuthored } from '../model/document-paragraph-pagination'
 
 export type DocumentParagraphStylePatch = Partial<DocumentParagraphStyle>
 export type DocumentSectionSetupPatch = Partial<DocumentSectionSetup>
@@ -8,6 +9,7 @@ export type DocumentSectionSetupPatch = Partial<DocumentSectionSetup>
 export const DOCUMENT_PARAGRAPH_STYLE_FIELDS = [
   'align', 'indent', 'lineHeight', 'spaceBefore', 'spaceAfter', 'indentStart', 'indentEnd',
   'indentFirstLine', 'hanging', 'spacingRule', 'wordWrap', 'snapToGrid',
+  'keepLines', 'keepNext', 'widowControl', 'pageBreakBefore',
 ] as const
 const paragraphStyleFields = new Set<string>(DOCUMENT_PARAGRAPH_STYLE_FIELDS)
 
@@ -23,8 +25,8 @@ export function validateDocumentParagraphStylePatch(patch: DocumentParagraphStyl
       if (!['auto', 'atLeast', 'exact'].includes(value)) throw new TypeError('Unsupported line spacing rule')
       continue
     }
-    if (key === 'wordWrap' || key === 'snapToGrid') {
-      if (typeof value !== 'boolean') throw new TypeError(`Paragraph ${key === 'wordWrap' ? 'word wrap' : 'snap to grid'} must be boolean`)
+    if (['wordWrap', 'snapToGrid', 'keepLines', 'keepNext', 'widowControl', 'pageBreakBefore'].includes(key)) {
+      if (typeof value !== 'boolean') throw new TypeError(`Paragraph ${key} must be boolean`)
       continue
     }
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new RangeError(`Paragraph ${key} must be a non-negative finite number`)
@@ -45,6 +47,7 @@ export function applyDocumentParagraphStylePatch(block: DocumentBlock, patch: Do
     validateDocumentParagraphStylePatch({ lineHeight: block.style.lineHeight }, patch.spacingRule)
   }
   block.style = { ...block.style, ...patch }
+  markDocumentParagraphPaginationAuthored(block, patch)
 }
 
 export function validateDocumentSectionSetupPatch(patch: DocumentSectionSetupPatch): void {

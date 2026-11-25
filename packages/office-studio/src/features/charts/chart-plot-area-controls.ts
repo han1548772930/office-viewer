@@ -23,12 +23,18 @@ export function chartPlotAreaControls(sourceSeries?: ChartPlotSourceSeries): Cha
   })
   manual.visible = config => supportsChartPlotArea(config.type)
   manual.extra = '按图表外框的百分比设置；左侧位置加宽度、顶部位置加高度须不超过 100%。'
+  manual.resetLabel = '恢复整组自动布局'
+  manual.canReset = config => config.options?.plotArea !== undefined
+  manual.reset = config => { if (config.options) config.options.plotArea = undefined }
   const coordinates = (['left', 'top', 'width', 'height'] as const).map((key, index) => {
     const control = numberControl(`plotArea.${key}`, ['左侧位置 (%)', '顶部位置 (%)', '宽度 (%)', '高度 (%)'][index]!,
       config => config.options?.plotArea ? config.options.plotArea[key] * 100 : undefined,
       (config, value) => { (config.options ??= {}).plotArea = { ...(config.options?.plotArea ?? automatic(config)), [key]: value === undefined ? automatic(config)[key] : value / 100 } },
       key === 'width' || key === 'height' ? 0.0001 : 0, 100)
     control.visible = config => supportsChartPlotArea(config.type) && Boolean(config.options?.plotArea)
+    control.resetLabel = '恢复自动值'
+    control.canReset = config => config.options?.plotArea !== undefined && config.options.plotArea[key] !== automatic(config)[key]
+    control.reset = config => { if (config.options?.plotArea) config.options.plotArea = { ...config.options.plotArea, [key]: automatic(config)[key] } }
     if (control.kind === 'number') control.step = 0.5
     return control
   })

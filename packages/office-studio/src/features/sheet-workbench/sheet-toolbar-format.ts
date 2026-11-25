@@ -21,7 +21,8 @@ export function adjustSheetDecimals(cell: ExcelCellView, delta: -1 | 1): ExcelCe
 }
 export function clearSheetCellFormat(cell: ExcelCellView): ExcelCellView {
   const style = defaultCellStyle()
-  return { ...cell, fontFamily: style.font.family, fontSize: style.font.size, bold: false, italic: false,
+  return { ...cell, authoredStyle: {}, authoredStyleReference: null, clearedStyleProperties: null,
+    fontFamily: style.font.family, fontSize: style.font.size, bold: false, italic: false,
     underline: false, strike: false, color: style.font.color, background: style.fill, align: style.horizontal, vertical: style.vertical,
     wrap: false, wrapStrategy: 'overflow', border: {}, rotation: 0, rotationVertical: false, indent: 0, shrinkToFit: false, numberFormat: 'general', rawNumberFormat: 'General' }
 }

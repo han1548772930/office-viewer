@@ -33,6 +33,7 @@ let compositionPatch: Partial<DocumentParagraphStyle> | undefined
 const panelStyle = computed(() => ({
   '--paragraph-border': token.value.colorBorderSecondary,
   '--paragraph-background': token.value.colorBgContainer,
+  '--paragraph-muted': token.value.colorTextSecondary,
 }))
 const mixedLabel = computed(() => t('doc.paragraph-settings.mixed', 'Mixed'))
 const alignments = computed(() => ([
@@ -50,6 +51,12 @@ const indentationFields = [
 const spacingFields = [
   { field: 'spaceBefore', key: 'before', label: 'Before' },
   { field: 'spaceAfter', key: 'after', label: 'After' },
+] as const
+const paginationFields = [
+  { field: 'keepLines', key: 'keep-lines', label: 'Keep lines together' },
+  { field: 'keepNext', key: 'keep-next', label: 'Keep with next paragraph' },
+  { field: 'widowControl', key: 'widow-control', label: 'Widow and orphan control' },
+  { field: 'pageBreakBefore', key: 'page-break-before', label: 'Page break before' },
 ] as const
 const spacingRules = computed(() => (['auto', 'atLeast', 'exact'] as const).map(value => ({ value, label: t('doc.paragraph-settings.spacing-rule.' + value, value) })))
 const lineSpacingRange = computed(() => documentParagraphLineSpacingInput(draft.value.spacingRule))
@@ -154,6 +161,14 @@ function onPanelKeydown(event: KeyboardEvent) {
       <FormItem name="wordWrap" class="paragraph-wrap-item">
         <Checkbox :checked="draft.wordWrap" :indeterminate="isMixed('wordWrap')" :aria-checked="isMixed('wordWrap') ? 'mixed' : draft.wordWrap" @update:checked="checked => applyPatch({ wordWrap: checked })">{{ t('doc.paragraph-settings.word-wrap', 'Allow Latin text to wrap inside words') }}</Checkbox>
       </FormItem>
+      <fieldset>
+        <legend>{{ t('doc.paragraph-settings.pagination', 'Pagination') }}</legend>
+        <FormItem v-for="item in paginationFields" :key="item.field" :name="item.field" class="paragraph-wrap-item">
+          <Checkbox :checked="draft[item.field]" :indeterminate="isMixed(item.field)" :aria-checked="isMixed(item.field) ? 'mixed' : draft[item.field]"
+            :data-document-pagination-field="item.field" @update:checked="checked => applyPatch({ [item.field]: checked })">{{ t('doc.paragraph-settings.' + item.key, item.label) }}</Checkbox>
+        </FormItem>
+        <div class="pagination-description">{{ t('doc.paragraph-settings.pagination-description', 'Applied in traditional paginated documents. Values are retained in other modes.') }}</div>
+      </fieldset>
       <Alert v-if="error" type="error" show-icon :message="error" role="alert" />
     </Form>
   </Card>
@@ -169,6 +184,7 @@ function onPanelKeydown(event: KeyboardEvent) {
 .paragraph-settings :deep(.ant-form-item-label) { text-align: start; white-space: normal; }
 .paragraph-settings :deep(.paragraph-wrap-item .ant-form-item-row) { display: block; }
 .settings-heading { margin-bottom: 10px; font-size: 13px; font-weight: 500; }
+.pagination-description { color: var(--paragraph-muted); font-size: 12px; }
 .alignment-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; border: 1px solid var(--paragraph-border); padding: 4px; }
 .alignment-buttons :deep(.ant-btn) { width: 100%; height: 32px; padding: 0; }
 fieldset { display: grid; gap: 9px; min-width: 0; margin: 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--paragraph-border); }

@@ -33,6 +33,14 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
     enumeration(options.titleStyle.alignment, ['left', 'center', 'right'], '标题对齐')
   }
   if (options.subtitleStyle) enumeration(options.subtitleStyle.alignment, ['left', 'center', 'right'], '副标题对齐')
+  for (const [style, name] of [[options.titleStyle, '标题'], [options.subtitleStyle, '副标题']] as const) {
+    if (style?.rotate !== undefined) number(style.rotate, -360, 360, `${name}旋转角度`)
+    if (style?.manualLayout !== undefined) {
+      plain(style.manualLayout, `${name}手动位置`)
+      number(style.manualLayout.left, 0, 1, `${name}手动横向位置`)
+      number(style.manualLayout.top, 0, 1, `${name}手动纵向位置`)
+    }
+  }
   if (options.axisPointer) {
     color(options.axisPointer.indicatorLineColor, '轴指示线颜色'); color(options.axisPointer.indicatorLabelColor, '轴指示标签背景')
     color(options.axisPointer.indicatorLabelTextColor, '轴指示标签文字'); enumeration(options.axisPointer.indicatorLineType, ['solid', 'dashed', 'dotted'], '轴指示线型')
@@ -90,16 +98,33 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
     }
   }
   optionalNumber(options.bar?.gapWidth, 0, 500, '柱条间距'); optionalNumber(options.bar?.overlap, -100, 100, '系列重叠')
+  enumeration(options.area?.lineStyle, ['line', 'smooth', 'step'], '折线与面积线型')
   boolean(options.area?.smooth, '平滑面积边界')
   const pie = options.pie
   if (pie) {
     optionalNumber(pie.startAngle, -360, 360, '饼图起始角'); optionalNumber(pie.doughnutHole, 0, 0.95, '圆环内径比例'); optionalNumber(pie.explosion, 0, 100, '扇区分离')
     boolean(pie.rosePie, '玫瑰图半径'); boolean(pie.isHalfPie, '半圆饼图'); boolean(pie.showLabelLine, '饼图标签引导线')
     label(pie.label, '饼图标签'); string(pie.aggregateLabel, '主图合计标签')
+    if (pie.sliceStyles !== undefined) {
+      plain(pie.sliceStyles, '饼图来源扇区样式')
+      for (const [key, slice] of Object.entries(pie.sliceStyles)) {
+        recordIndex(key, '饼图来源扇区索引'); optionalObject(slice, '饼图来源扇区样式')
+        if (!slice) continue
+        series({ color: slice.color, fillOpacity: slice.fillOpacity, fillPattern: slice.fillPattern, border: slice.border }, '饼图来源扇区')
+        optionalNumber(slice.explosion, 0, 100, '饼图来源扇区分离')
+      }
+    }
+    optionalObject(pie.aggregateStyle, '主图合计扇区样式')
+    if (pie.aggregateStyle) {
+      const aggregate = pie.aggregateStyle
+      series({ color: aggregate.color, fillOpacity: aggregate.fillOpacity, fillPattern: aggregate.fillPattern, border: aggregate.border }, '主图合计扇区')
+      optionalNumber(aggregate.explosion, 0, 100, '主图合计扇区分离')
+    }
     optionalObject(pie.secondaryPlot, '饼图副图')
     if (pie.secondaryPlot) {
       const secondary = pie.secondaryPlot
       enumeration(secondary.type, ['pie', 'bar'], '饼图副图类型'); optionalNumber(secondary.size, 15, 100, '副图大小'); optionalNumber(secondary.gapWidth, 0, 500, '主副图间距')
+      line(secondary.connector, '主副图连接线')
       optionalObject(secondary.split, '复合饼图拆分规则')
       if (secondary.split) {
         const split = secondary.split

@@ -27,15 +27,15 @@ test('insert-right shifts selected and trailing cells while retaining source for
   assert.equal(result.sheet.columnCount, 6)
 })
 
-test('insert-down expands rows and moves only cells in the selected columns', () => {
+test('insert-down keeps spare canvas capacity and moves only cells in the selected columns', () => {
   const source = sheet({ cells: { B1: { value: 'selected' }, C1: { value: 'other-column' }, B2: { value: 'trailing' } } })
   const result = moveSheetCellRange(source, range(0, 1, 0, 1), 'down')
   assert.equal(result.status, 'applied')
-  assert.equal(result.sheet.cells.B1.value, '')
+  assert.equal(result.sheet.cells.B1, undefined)
   assert.equal(result.sheet.cells.B2.value, 'selected')
   assert.equal(result.sheet.cells.B3.value, 'trailing')
   assert.equal(result.sheet.cells.C1.value, 'other-column')
-  assert.equal(result.sheet.rowCount, 5)
+  assert.equal(result.sheet.rowCount, 4)
 })
 
 test('delete-left and delete-up remove the selected cells and shift trailing cells into the selection', () => {
@@ -67,8 +67,8 @@ test('partial merged ranges require confirmation and are removed only after conf
   assert.deepEqual(source.merges, ['A1:C1', 'D2:E2'])
 })
 
-test('insert at sheet limits is rejected and formula and defined names follow the structural edit', () => {
-  const tooWide = sheet({ columnCount: 16_384 })
+test('real content overflow at sheet limits is rejected and formula and defined names follow the structural edit', () => {
+  const tooWide = sheet({ columnCount: 16_384, cells: { XFD1: { value: 'edge' } } })
   assert.equal(moveSheetCellRange(tooWide, range(0, 16_383, 0, 16_383), 'right').status, 'invalid')
 
   const workbook = {
@@ -133,7 +133,7 @@ test('protected ranges anywhere in the trailing move band reject each direction 
 })
 
 test('inserted blanks retain formatting while moving cell-bound sparklines only with their source data', () => {
-  const source = sheet({ cells: { B1: { value: '12', rawValue: 12, formula: '=A1', cachedValue: '12', displayValue: '12', bold: true, sparkline: { type: 'line' } } } })
+  const source = sheet({ cells: { B1: { value: '12', rawValue: 12, formula: '=A1', cachedValue: '12', displayValue: '12', bold: true, sparkline: { type: 'line', sourceRange: 'A1:A4' } } } })
   const result = moveSheetCellRange(source, range(0, 1, 0, 1), 'down')
   assert.equal(result.status, 'applied')
   assert.equal(result.sheet.cells.B1.value, '')
@@ -142,5 +142,8 @@ test('inserted blanks retain formatting while moving cell-bound sparklines only 
   assert.equal(result.sheet.cells.B1.cachedValue, undefined)
   assert.equal(result.sheet.cells.B1.sparkline, undefined)
   assert.equal(result.sheet.cells.B1.bold, true)
-  assert.equal(result.sheet.cells.B2, source.cells.B1)
+  assert.notEqual(result.sheet.cells.B2, source.cells.B1)
+  assert.equal(result.sheet.cells.B2.formula, '=A1')
+  assert.equal(result.sheet.cells.B2.rawValue, 12)
+  assert.deepEqual(result.sheet.cells.B2.sparkline, source.cells.B1.sparkline)
 })

@@ -8,6 +8,7 @@ import {
   TextCursorInput, Trash2, Underline, Undo2, X, Quote, MessageSquareText,
 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
+import { documentStructureCommandFromMenu } from './document-structure-ribbon'
 import { DOCUMENT_PASTE_OPTIONS } from '../../features/document/services/document-clipboard'
 import { validateDocumentParagraphStylePatch } from '../../features/document/services/document-settings'
 import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
@@ -29,10 +30,12 @@ import { documentTableCommandFromRibbon } from './document-table-command-parser'
 import { isDocumentTableCommand } from '../../features/document/commands/table-command-types'
 import { createDocumentNoteRibbon, type DocumentNoteRibbonContext } from './document-note-ribbon'
 import { createDocumentStructureRibbon, type DocumentStructureRibbonContext } from './document-structure-ribbon'
+import { createDocumentLatexRibbon, type DocumentLatexRibbonContext } from './document-latex-ribbon'
 
 export interface DocumentTocContextActionStates { update: DocumentTocActionState; delete: DocumentTocActionState }
 
 export interface DocumentRibbonContext {
+  latex?: DocumentLatexRibbonContext
   structuredBlock?: DocumentStructureRibbonContext
   notes?: DocumentNoteRibbonContext
   table?: DocumentTableRibbonContext
@@ -217,7 +220,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       ] },
       { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { order: 5, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-character' },
       { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { order: 6, disabled: context.editingDisabled, gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol' }, popupCommandId: 'doc.command.insert-character' },
-      action('doc-image', '图片', ImagePlus, 'doc.operation.open-image', undefined, { order: 0, gridLayout: { row: 1, column: 4 } }),
+      action('doc-image', '图片', ImagePlus, 'doc.command.insert-float-image', undefined, { order: 0, disabled: context.editingDisabled, gridLayout: { row: 1, column: 4 } }),
       action('doc-link', '链接', Link, 'doc.operation.open-link', undefined, { order: 1, gridLayout: { row: 1, column: 5 } }),
       action('doc-divider', '分隔线', SeparatorHorizontal, 'doc.command.insert-divider', undefined, { order: 4, gridLayout: { row: 2, column: 5 } }),
       action('doc-code-block', '代码块', CodeXml, 'doc.operation.insert-code-block', undefined, { order: 7, disabled: context.editingDisabled, gridLayout: { row: 1, column: 7 } }),
@@ -337,6 +340,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       }],
     })
   }
+  const latexRibbon = context.latex && createDocumentLatexRibbon(context.latex, translate)
+  if (latexRibbon) tabs.push(latexRibbon)
   if (context.selectedContentControl) {
     const control = context.selectedContentControl
     const values: RibbonItem[] = []
@@ -449,6 +454,8 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 
 /** Validate toolbar parameters before they enter the same command path as Canvas input. */
 export function documentCommandFromRibbon(id: string, params: unknown): DocumentCommand | undefined {
+  const structure = documentStructureCommandFromMenu(id, params)
+  if (structure) return structure
   if (isDocumentTableCommand({ id })) return documentTableCommandFromRibbon(id, params)
   if (id === 'ui.command.clear-formatting' || id === 'doc.command.clear-formatting') return { id: 'doc.command.clear-formatting' }
   if (id === 'doc.command.change-paragraph-indent') {

@@ -1,7 +1,7 @@
 # Docs 与 Sheets 顶部功能区对齐清单
 
 审阅日期：2026-11-21  
-静态入口复算：2026-11-22；未执行产品、factory 或商业 SDK。
+静态入口复算快照：2026-11-22；2026-11-25 人工更新 Docs 常规根声明与续作证据，未执行产品、factory 或商业 SDK。
 固定 Univer 版本：`eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公开说明为准。
 
@@ -31,14 +31,14 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Docs
 
-v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-univer-oss-ribbon.mjs` 读取共享、Docs 和插件 schema；未执行 factory 的动态条件。本地常规根声明为 **50 项**，上下文分开。Pro v1.6.0 缓存注册及未解析入口见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)，不再用 1.5.2 的 9 项作为当前总数。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-univer-oss-ribbon.mjs` 读取共享、Docs 和插件 schema；未执行 factory 的动态条件。2026-11-25 人工静态回读当前 document-ribbon，本地常规根声明为 **52 项（33/16/3）**，含 hidden、排除 children/context；原 50（33/14/3）为 11-22 快照。Pro v1.6.0 缓存注册及未解析入口见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)，不再用 1.5.2 的 9 项作为当前总数。
 
 | 标签 | 固定版分组和入口数 | 本地当前根项 | 对齐状态 |
 | --- | --- | ---: | --- |
 | Home / 开始 | HISTORY 5、FORMAT 11、LAYOUT 5、OTHERS 4，共 25 | 33 | 本地 history 5、format 11、layout 5、others 2，另有段落工具 5、其他工具 5。列表、颜色、格式刷与粘贴已有实现切片；快捷键/功能搜索和全部分组状态仍须核对。 |
-| Insert / 插入 | MEDIA 7、CELL 1、OTHERS 2，共 10 | 14 | 本地 media 9、cell 2、extensions 3；目录入口已接线，代码、LaTeX、内容控件、脚注等按 Pro 对应注册与行为另核对。 |
+| Insert / 插入 | MEDIA 7、CELL 1、OTHERS 2，共 10 | 16 | 本地 media 9、cell 2、structured 3、extensions 2；代码块、引用/Callout/多栏、目录及内容控件已有接线，全部 Pro 仍按对应包追踪；结构块差异见[证据](DOC-13-14-16-17-structured-blocks.md)。 |
 | View / 视图 | DISPLAY 3，共 3 | 3 | 页面设置、缩放、全屏三个根项；大纲、专注和打印现在位于 Home 扩展组。数量相同不代表行为已验收。 |
-| 合计 | **38** | **50** | 这是静态常规声明数量，条件隐藏、Pro 替换与浮动入口仍需追踪。 |
+| 合计 | **38** | **52** | 这是静态常规声明数量，条件隐藏、Pro 替换与浮动入口仍需追踪，不表示功能完成。 |
 
 固定版 Insert 的 MEDIA 网格由多个插件共同注册。Breaks 在 `r1c1` 跨两行，Table 在 `r1c2`，Emoji 在 `r1c3`，Symbol 在 `r2c3`，Image 在 `r1c4`，Hyperlink 在 `r1c5`，Horizontal Line 在 `r2c5`。本地之前没有显式 `gridLayout`，列优先 fallback 导致 Image 掉到第二行；并且 Breaks、Horizontal Line、Symbol、Emoji 被放入 OTHERS。现已按上述位置修正，定向 Ribbon 契约测试 20/20 通过。页面布局统一浏览器验收尚未执行。
 
@@ -48,22 +48,24 @@ v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-u
 
 ### Sheets
 
-v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，本地当前常规 schema 为 **68 项**。此处替换此前 62/75/78 等混用计数；同一脚本口径区分父菜单与子项，More 不增加数量。Pro 注册中的重复挂载、替换与上下文条件仍待继续追踪，不将历史 1.5.2 的 15 项加到当前 OSS 数字。完整逐组、上下文、处理器和 Pro 边界见[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，2026-11-26 本地常规 schema 为 **69 项**，含新增[本地范围主题根](SHEET-04-range-themes.md)；68 为此前快照。此处替换此前 62/75/78 等混用计数；根声明与子项分开，More 不增加数量。Pro 注册中的重复挂载、替换与上下文条件仍待继续追踪，不将历史 1.5.2 的 15 项加到当前 OSS 数字。完整逐组、上下文、处理器和 Pro 边界见[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版根项 | 本地当前根项 | 主要差异 |
 | --- | ---: | ---: | --- |
-| START / 开始 | 30 | 29 | 本地 clipboard 5、font 11、layout 6、number 5、tools 2。查找已移 Data；颜色主按钮、完整色板与共享命令正在补齐。快捷键/功能搜索和全部语义仍须核对。 |
+| START / 开始 | 30 | 30 | 本地 clipboard 5、font 11、layout 6、number 5、tools 3；工具第 3 项为本地范围主题，grid r1c3 跨两行。数量相同不表示入口语义一致；查找在 Data，快捷键/功能搜索和全部动态状态仍须核对。 |
 | INSERT / 插入 | 9 | 6 | 本地 media 3、cells 3；超链接、图表、迷你图及快速验证有入口。图片、线程评论和快捷数据条/图标集仍缺完整入口闭环。 |
 | FORMULAS / 公式 | 12 | 11 | 固定版是常用加十类函数菜单与计算选项；本地 8 个 catalog 根分类、计算模式/编辑公式/重算 3 项，完整函数目录与语义未齐。 |
 | DATA / 数据 | 6 | 17 | 本地 organization 2、rules 2、pivot 4、outline 8、data-tools 1。筛选切换/清除/重应用已接入；表格选择器及完整 Pro 分组/分析仍须核对。 |
 | VIEW / 视图 | 6 | 5 | 十字高亮属于固定 OSS 入口；仍缺工作表背景图及添加/删除完整闭环。 |
-| 合计 | **63** | **68** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
+| 合计 | **63** | **69** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
 
 Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；INSERT EDIT/MEDIA/CELL/OTHERS；FORMULAS BASIC/OTHERS；DATA FORMULAS/RULES/ORGANIZATION/ANALYSIS/OTHERS；VIEW DISPLAY/VISIBILITY。零根项的组不进入数量；根声明按菜单 schema 的产品归属静态投影。固定 desktop 装配与 factory 决定最终显隐，尚未执行。本地公式按当前 117 项 catalog 的 8 类静态展开；没有执行求值引擎。
 
-固定版还有 MAIN_AREA、COL_HEADER、ROW_HEADER、FOOTER_TABS、绘图对象上下文菜单。脚本记录 Sheets 130 个右键/浮动层级节点，包含父子层级，不当作根数。本地行列右键已经显式传入命中 sheetId/index；标签复制、颜色与保护亦有实现切片，关联资源、veryHidden 和全部权限/保存闭环仍未验收。具体来源和差异见 Sheets 清点文档。
+固定版还有 MAIN_AREA、COL_HEADER、ROW_HEADER、FOOTER_TABS、绘图对象上下文菜单。脚本记录 Sheets 130 个右键/浮动层级节点，包含父子层级，不当作根数。本地行列结构/显隐右键传 sheetId/ranges，尺寸入口传命中 sheetId/index；标签复制、颜色与保护亦有实现切片，关联资源、veryHidden 和全部权限/保存闭环仍未验收。具体来源和差异见 Sheets 清点文档。
 
 填充柄外观使用 1 CSS px 选区/预览边框，2026-11-21 历史描边测试覆盖 0.75、1 和 1.5 缩放，不覆盖后续修改。2026-11-25 已补共享 AutoFill/Refill/CopyDown/CopyRight/AutoClear、FRange 和 Ctrl/Cmd+D/R；Canvas 使用 antdv-next 四模式选项，拖动和双击共用推断默认、单向范围和内缩清尾。序列新增数值线性/等比、文本数字/补零、中文数字/星期、英文星期/月份及其他循环；筛选行、合并、CF/DV、权限与验证进入同一候选事务。重填修订同一历史，等价内容只更新选区/菜单；边缘自动滚动沿用现有调度。见 [SHEET-02 自动填充证据](SHEET-02-auto-fill.md)。本批草稿未执行，standalone 重填 receipt、超过同步预算的 Worker、完整日期/公式边界、真实 IME/冻结/主题/滚动和 Office 往返仍未验收。
+
+2026-11-26 [局部移位事务](SHEET-02-cell-shift-transactions.md)复用四核心+四确认命令、两个父项/四个移位子项，右键子项顺序按固定 schema；新增常规/扩展/溢出/独立上下文根均为 0。确认、Facade Dimension、完整候选/资源、权限/验证、内容与选择历史、宿主重入保护已落盘，56 个草稿未运行；完整 drawing/media、全部资源组合、Office、IME/两后端和性能仍有缺口。
 
 ## 顶部入口对应功能闭环
 
@@ -83,11 +85,11 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 - [ ] DOC-10 线程评论入口、锚点、回复/编辑/解决、权限和持久同步。
 - [ ] DOC-11 内容控件及锁定/重复结构。
 - [ ] DOC-12 脚注和尾注的编辑、编号、分页与 DOCX 映射。
-- [ ] DOC-13 代码块。
-- [ ] DOC-14 多栏组与节级分栏。
-- [ ] DOC-15 LaTeX 公式。
-- [ ] DOC-16 引用块。
-- [ ] DOC-17 Callout 标注块。
+- [ ] DOC-13 代码块；[结构](DOC-13-14-16-17-structured-blocks.md)、[Canvas/host](DOC-13-14-16-17-canvas-interactions.md)、[21 项词法/字体/More/桌面移动入口](DOC-13-14-16-17-code-popmenus.md)，未验收。
+- [ ] DOC-14 多栏组与节级分栏；[组/栏](DOC-13-14-16-17-structured-blocks.md)、[Canvas 调宽/单位](DOC-13-14-16-17-canvas-interactions.md)、[段落/表后入口](DOC-13-14-16-17-code-popmenus.md)，未验收。
+- [ ] DOC-15 LaTeX 公式；[四公开命令、稳定 source 范围/资源、Canvas/Ant 编辑与 43 个未运行草稿](DOC-15-latex-editing.md)、[71 模板/11 类、1 个上下文 tab/11 根与 47 条新声明（计划 117 用例）](DOC-15-latex-templates-ribbon.md)。常规根增量 0；公开 inline/本地 block 区分；其他段落/浮动/移动入口、完整 TeX/OMML、Worker 和真实 UI/性能仍未验收。
+- [ ] DOC-16 引用块；[容器/来源](DOC-13-14-16-17-structured-blocks.md)、[Canvas](DOC-13-14-16-17-canvas-interactions.md)、[入口/保内容转换](DOC-13-14-16-17-code-popmenus.md)、[四项段落分页/Quote keep 与作者恢复、37 个草稿](DOC-16-quote-pagination.md)，未验收。
+- [ ] DOC-17 Callout 标注块；[属性/历史](DOC-13-14-16-17-structured-blocks.md)、[Canvas](DOC-13-14-16-17-canvas-interactions.md)、[段落/表后/移动入口](DOC-13-14-16-17-code-popmenus.md)，未验收。
 - [ ] DOC-18 形状、连接器和 SmartArt。
 - [ ] DOC-19 文档图表。
 - [ ] DOC-20 水印。
@@ -98,10 +100,10 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 ### Sheets
 
 - [ ] SHEET-01 工作簿和工作表生命周期。
-- [ ] SHEET-02 范围、选区、填充和网格编辑。
-- [ ] SHEET-03 行列结构、尺寸、隐藏/显示和自动适应。
-- [ ] SHEET-04 样式、默认样式、范围主题及混合态。
-- [ ] SHEET-05 富文本。
+- [ ] SHEET-02 范围、选区、填充和网格编辑；[四方向共享移位/确认、资源与 56 个未运行草稿](SHEET-02-cell-shift-transactions.md)，未验收。
+- [ ] SHEET-03 行列结构、尺寸、隐藏/显示和自动适应；[公开 h/ah/ia/w/hd 与来源变换、17 个草稿](SHEET-03-public-axis-import.md)，未验收。
+- [ ] SHEET-04 样式、默认样式、范围主题及混合态；[富文本/Canvas](SHEET-04-05-rich-text-font-editing.md)、[默认来源/引用/reset/空白复制填充与 58 个草稿](SHEET-04-default-style-inheritance.md)、[短字段读回与 13 个草稿](SHEET-04-public-style-readback.md)、[32 内置/九区段/共享命令/Ant 弹窗与 46 个草稿](SHEET-04-range-themes.md)、[九区段 Ant 表单/原子保存应用与 45 个新草稿](SHEET-04-range-theme-editor.md)、[局部移位/剪切与 32 个草稿](SHEET-04-range-theme-structure.md)，未验收。
+- [ ] SHEET-05 富文本；[局部格式/typing/API、连续拖选/换行定位与 55 个草稿](SHEET-04-05-rich-text-font-editing.md)，未验收。
 - [ ] SHEET-06 数字格式和 1900/1904 日期系统。
 - [ ] SHEET-07 冻结、网格线、视口和缩放。
 - [ ] SHEET-08 剪贴板和选择性粘贴。
@@ -118,7 +120,7 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 - [ ] SHEET-19 图片和水印。
 - [ ] SHEET-20 十字高亮。
 - [ ] SHEET-21 形状及绘图（Pro 目标）。
-- [ ] SHEET-22 可编辑图表（Pro 目标）。
+- [ ] SHEET-22 可编辑图表（Pro 目标）；[逐型审计](SHEET-22-chart-type-audit.md)、[Relation/词云资源](SHEET-22-relation-word-cloud-resources.md)、[图例](SHEET-22-legend-selection-wrap.md)、[标题配置](SHEET-22-title-subtitle-contract.md)、[标题直接编辑](SHEET-22-title-direct-editing.md)、[绘图区大小/恢复](SHEET-22-plot-area-direct-editing.md)、[层级图 Ant Tooltip](SHEET-22-hierarchy-ant-tooltip.md)、[四个对象上下文根/剪贴板/PNG/删除与 34 个草稿](SHEET-22-chart-object-context-actions.md)、[真实 Drawer 路由/草稿保护与 33 个草稿](SHEET-22-chart-edit-panel-routing.md)、[Line/Smooth/Step 二维/3D 与 34 个新草稿](SHEET-22-line-and-area-styles.md)，均未验收。27 route 分组是导航分类，不是完成数量；本批线型常规根增量为 0。
 - [ ] SHEET-23 数据透视表（Pro 目标）。
 - [ ] SHEET-24 透视图（Pro 目标）。
 - [ ] SHEET-25 切片器和时间线（Pro 目标）。

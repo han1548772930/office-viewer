@@ -30,14 +30,14 @@
 
 颜色阶段的边框工作包括完整颜色面板、禁用守卫与选区显示状态；2026-11-23 后续边框批次已将 15 预设/12 线型、API/Facade、邻格及合并边段接入共享 plan 和注册命令，具体差异与未执行用例见 [边框记录](SHEET-04-borders.md)。内容内的局部富文本/绘图文字格式、真实 IME、Office 重开、主题/tint 文件保真、首屏与大样本格式操作性能均保留“未验收”。
 
-字体组第一行的字体、字号及增大/减小字号已接入同一字体命令注册和 Facade，另写 25 组契约、13 组浏览器用例，尚未执行，详见 [字体与字号记录](SHEET-04-font-family-size.md)。UI 字号保持 6–400，API 保留有限正数；null 目前恢复 Aptos/11，没有据此声称原始默认样式继承或局部富文本字体命令已实现。
+字体组第一行的字体、字号及增大/减小字号已接入同一字体命令注册和 Facade，另写 25 组契约、13 组浏览器用例，尚未执行，详见 [字体与字号记录](SHEET-04-font-family-size.md)。UI 字号保持 6–400，API 保留有限正数。2026-11-25 已补[局部富文本/Canvas](SHEET-04-05-rich-text-font-editing.md)与[默认样式继承](SHEET-04-default-style-inheritance.md)：family/size/mark null 恢复有效继承；颜色/填充 null 保留显式无色契约。本地 Aptos/11 回退、全部范围主题/主题字体、真实 Office 仍未验收。
 
 本批落盘记录（2026-11-23）：`packages/office-studio/src/features/sheet-workbench/sheet-colors.ts` 提供 45 色、严格 HEX/RGB/HSB 草稿校验、主题不透明色及边框色归一化；`sheet-font-format-command.ts` 提供动作解析、固定版别名、范围/权限验证和 model/view 两条适配。`components/spreadsheet/SheetColorControl.vue` 使用 `antdv-next@1.8.2` 的 Button、Tooltip、ColorPicker、Form/Form.Item 和 Divider，复用库内 Input/InputNumber/Select，不新增原生交互控件。由于该版本 ColorPicker 不暴露通道草稿或输入引用，组件只查询其库内输入，用于补可访问标签、焦点恢复和原始草稿校验，避免不完整输入提交旧标量。谱/色相的键盘调整同样刷新草稿。顶部弹层使用共享主题 token，边框颜色子面板挂在父弹层内并使用 child popup scope，父层关闭时子层一并关闭；这些交互仍须浏览器验证。
 
 `components/ExcelWorkbench.vue` 已接入选区的文字/填充/边框颜色状态，以及与选区分开的最近执行颜色；带 ID 的工作簿按 ID 隔离记忆，关闭工作簿清理其记忆，取消/权限失败不收到成功事件，重置不清除最近色。当前记忆只接收有效 HEX，旧 API 的其他非空颜色字符串仍原样保留在模型内，不据此声称 named color/theme/tint 的最近色语义已验收。默认文字色取 ConfigProvider 文本 token 的 RGB 部分，默认填充色取 primary token；这与固定版 gray.900/primary.600 的具体 token 值存在实现差异。`i18n/sheets/locales/toolbar-colors.ts` 和 `office-i18n.ts` 接入 19 种语言的颜色阶段、混合、重置和验证文案，尚未逐地区浏览器验收。
 
-快捷键来源：`packages/sheets-ui/src/controllers/shortcuts/style.shortcut.ts` 将粗体、斜体、下划线绑定为 Ctrl/Cmd+B、I、U，删除线是 Ctrl/Cmd+Shift+X；`utils.ts` 的 `whenSheetFocusedInlineFormat` 也允许上游行内编辑。本项目已把四个非编辑 Canvas 选区快捷键接入相同命令，同时忽略 IME、Alt 和已处理事件。当前编辑中的富文本快捷键尚未实现，顶部整格格式操作仍先完成当前单元格编辑，不能记为上游行内命令等价。
+快捷键来源：`packages/sheets-ui/src/controllers/shortcuts/style.shortcut.ts` 将粗体、斜体、下划线绑定为 Ctrl/Cmd+B、I、U，删除线是 Ctrl/Cmd+Shift+X；`utils.ts` 的 `whenSheetFocusedInlineFormat` 也允许上游行内编辑。本项目四个非编辑 Canvas 选区快捷键接入相同命令，并忽略 IME、Alt 和已处理事件。2026-11-25 编辑中的同组命令已按实际文字范围/typing 草稿分派，最终提交共享输入事务，见[富文本证据](SHEET-04-05-rich-text-font-editing.md)；真实键盘、焦点、输入法与全部上下文仍未验收。
 
 新增验证用例：`packages/office-studio/tests/sheet-font-color.contract.test.mjs` 共 24 组，覆盖 45 色、主题色、严格通道输入、颜色记忆、边框混合态、19 语言键、命令别名/参数、快捷键、范围转换、混合/重叠选区、筛除行、稀疏重置、model/view 保真、no-op、权限原子拒绝、Ribbon 布局、Facade/注册命令、撤销重做和快照重开。`sheet-font-color.browser.test.mjs` 共 19 组，覆盖 Canvas 保留、两阶段颜色、焦点、Enter/Escape、合成输入事件、滑块键盘/RGB/HSB、最近色/选区/重置、API 同步、历史和工作簿隔离、取消、保护、主题/RTL、grid overflow、嵌套边框及外部颜色命令期间的编辑草稿。全部仅已编写，尚未执行；合成 composition 事件不能代替真实输入法验收，快照重开不能代替 XLSX 导出和独立 Office 重开。
 
-检查状态：本批只做源码静态审阅及所改 tracked 文件的 `git diff --check`（退出码 0），未运行测试、类型检查、前端构建、Rust/WASM 检查或浏览器。统一验证之前维持“待统一验证”；没有真实文件/浏览器结果和同数据集前后性能记录，不标记完整支持或性能达标。非重置大范围操作仍需落实 Worker/批量模型路径并完成基准，现有 UI 的直接选区门槛不能充当大范围功能完成证明。无 ID 的 standalone 工作簿沿用现有按名称判定的会话边界；重名匿名工作簿的身份隔离仍须由统一模型身份解决。
+检查状态：2026-11-23 历史批仅做源码静态审阅及当时所改 tracked 文件的 `git diff --check`（退出码 0）；2026-11-25 续作没有复跑该检查或运行测试、类型检查、前端构建、Rust/WASM、浏览器。统一验证之前维持“待统一验证”；没有真实文件/浏览器结果和同数据集前后性能记录，不标记完整支持或性能达标。非重置大范围操作仍需落实 Worker/批量模型路径并完成基准，现有 UI 的直接选区门槛不能充当大范围功能完成证明。无 ID 的 standalone 工作簿沿用现有按名称判定的会话边界；重名匿名工作簿的身份隔离仍须由统一模型身份解决。

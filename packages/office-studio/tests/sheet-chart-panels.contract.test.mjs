@@ -319,3 +319,46 @@ test('statistical readers check cancellation before lookup and after a provider 
     assert.deepEqual(f.sourceCalls, []); assert.deepEqual(f.calls, []); assert.equal(f.dataReads(), 0)
   } finally { f.dispose() }
 })
+
+test('P17 same-chart navigation retains one editor session and does not issue author or source reads', () => {
+  const f = fixture()
+  try {
+    assert.equal(f.panels.openChartEditor(model(), { tab: 'style', titleKey: 'subtitle' }), true)
+    const session = f.panels.chartEditorContext.value, routeKey = f.panels.chartEditorRouteKey.value
+    assert.equal(f.panels.openChartEditor(model(), { tab: 'data' }), true)
+    assert.equal(f.panels.chartEditorContext.value, session); assert.equal(f.panels.chartEditorContext.value.key, session.key)
+    assert.equal(f.panels.chartEditorRouteKey.value, routeKey + 1); assert.deepEqual(f.panels.chartEditorRoute.value, { tab: 'data' })
+    assert.equal(f.panels.chartEditorOpen.value, true); assert.deepEqual(f.calls, []); assert.deepEqual(f.sourceCalls, []); assert.deepEqual(f.refreshes, [])
+  } finally { f.dispose() }
+})
+
+test('P17 invalid routes and a busy editor keep the previous session and requested location intact', async () => {
+  const pending = deferred(), f = fixture({ update: () => pending.promise })
+  try {
+    f.panels.openChartEditor(model(), { tab: 'style', section: 'legend' })
+    const session = f.panels.chartEditorContext.value, route = f.panels.chartEditorRoute.value, key = f.panels.chartEditorRouteKey.value
+    assert.throws(() => f.panels.openChartEditor(model(), { tab: 'data', section: 'legend' }), /数据标签页/)
+    assert.equal(f.panels.chartEditorContext.value, session); assert.equal(f.panels.chartEditorRoute.value, route); assert.equal(f.panels.chartEditorRouteKey.value, key)
+    const applying = session.apply({ title: 'Pending' })
+    assert.equal(f.panels.openChartEditor(model(), { tab: 'data' }), false)
+    assert.equal(f.panels.chartEditorRoute.value, route); pending.resolve(); await applying
+    assert.equal(f.panels.chartEditorContext.value, session); assert.equal(f.panels.chartEditorRouteKey.value, key)
+  } finally { f.dispose() }
+})
+
+test('P17 navigationCurrent rejects IME/focus exclusions, replaced identities and closed sessions', () => {
+  const f = fixture()
+  try {
+    f.panels.openChartEditor(model(), { tab: 'style', axisId: 'yAxis' })
+    const old = f.panels.chartEditorContext.value
+    assert.equal(old.navigationCurrent(), true); f.canFocus.value = false; assert.equal(old.navigationCurrent(), false)
+    f.canFocus.value = true; assert.equal(old.navigationCurrent(), true)
+    old.setOpen(false); assert.equal(old.navigationCurrent(), false); old.closed()
+    f.panels.openChartEditor(model(), { tab: 'data' })
+    const next = f.panels.chartEditorContext.value
+    assert.equal(old.navigationCurrent(), false); assert.equal(next.navigationCurrent(), true)
+    f.studio.value = f.secondStudio; assert.equal(next.navigationCurrent(), false)
+    assert.equal(f.panels.chartEditorRoute.value, undefined); assert.equal(f.panels.chartEditorOpen.value, false)
+    assert.equal(f.focusCount(), 1)
+  } finally { f.dispose() }
+})

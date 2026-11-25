@@ -4,7 +4,7 @@ import { layoutSheetCellRichText } from '../src/features/sheet-workbench/sheet-c
 import { layoutSheetStackedText } from '../src/features/sheet-workbench/sheet-cell-text-layout.ts'
 import { calculateSheetAxisAutoFit } from '../src/features/sheet-workbench/sheet-auto-fit.ts'
 import { createSheetCellTextCommands } from '../src/rendering/spreadsheet/cell-text.ts'
-import { createSheetRichTextEditorScene, hitSheetRichTextEditor, moveSheetRichTextEditorCaret, sheetRichTextEditorCaret } from '../src/rendering/spreadsheet/rich-text-editor.ts'
+import { createSheetRichTextEditorScene, hitSheetRichTextEditor, hitSheetRichTextEditorPosition, moveSheetRichTextEditorCaret, sheetRichTextEditorCaret } from '../src/rendering/spreadsheet/rich-text-editor.ts'
 
 // Draft only. Deterministic measurements verify geometry contracts, not browser font shaping.
 const size = font => Number(/([\d.]+)px/u.exec(font)[1])
@@ -99,7 +99,7 @@ test('rich editor hit geometry respects supplementary characters and the fonts t
 test('visual line navigation and scroll share variable-height line coordinates', () => {
   const cell = mixed(), scene = createSheetRichTextEditorScene(cell, rect, rect, 1, { start: 1, end: 1 }, { ...appearance, scrollLeft: 2, scrollTop: 4 })
   const down = moveSheetRichTextEditorCaret(scene, 1, 'ArrowDown')
-  assert.equal(down.offset, 3); assert.equal(moveSheetRichTextEditorCaret(scene, 4, 'Home').offset, 3)
+  assert.equal(down.offset, 4); assert.equal(moveSheetRichTextEditorCaret(scene, 4, 'Home').offset, 3)
   assert.equal(moveSheetRichTextEditorCaret(scene, 4, 'End').offset, 5)
   assert.equal(scene.lines[0].top, -1); assert.ok(scene.contentHeight > 43)
 })
@@ -122,3 +122,42 @@ test('long editor scene construction does not shape every growing character pref
   assert.equal(scene.lines[0].offsets.length, value.length + 1)
   assert.ok(hitSheetRichTextEditor(scene, 40, 5) > 0)
 })
+
+test('wrapped boundaries keep distinct visual caret rows for one native UTF-16 offset', () => {
+  const cell = { value: 'abcd', rawValue: 'abcd', wrapStrategy: 'wrap', richText: [{ text: 'abcd', fontSize: 9 }] }
+  const area = { ...rect, width: 24 }, scene = createSheetRichTextEditorScene(cell, area, area, 1, { start: 2, end: 2 }, appearance)
+  assert.deepEqual(scene.lines.map(line => [line.start, line.end]), [[0, 2], [2, 4]])
+  assert.equal(sheetRichTextEditorCaret(scene, 2, 'upstream').lineIndex, 0)
+  assert.equal(sheetRichTextEditorCaret(scene, 2, 'downstream').lineIndex, 1)
+  const upstream = createSheetRichTextEditorScene(cell, area, area, 1, { start: 2, end: 2 }, { ...appearance, caretAffinity: 'upstream' })
+  const downstream = createSheetRichTextEditorScene(cell, area, area, 1, { start: 2, end: 2 }, { ...appearance, caretAffinity: 'downstream' })
+  assert.equal(upstream.commands.filter(command => command.kind === 'line').at(-1).y1, upstream.lines[0].top)
+  assert.equal(downstream.commands.filter(command => command.kind === 'line').at(-1).y1, downstream.lines[1].top)
+})
+
+test('mouse hits at the end and start of adjacent wrapped rows share offsets while retaining their own affinity', () => {
+  const cell = { value: 'abcd', rawValue: 'abcd', wrapStrategy: 'wrap', richText: [{ text: 'abcd', fontSize: 9 }] }
+  const area = { ...rect, width: 24 }, scene = createSheetRichTextEditorScene(cell, area, area, 1, { start: 0, end: 0 }, appearance)
+  const [first, second] = scene.lines
+  const end = hitSheetRichTextEditorPosition(scene, first.xAt(first.end) + 100, first.top + first.height / 2)
+  const start = hitSheetRichTextEditorPosition(scene, second.xAt(second.start) - 100, second.top + second.height / 2)
+  assert.deepEqual(end, { offset: 2, affinity: 'upstream' }); assert.deepEqual(start, { offset: 2, affinity: 'downstream' })
+  assert.equal(sheetRichTextEditorCaret(scene, end.offset, end.affinity).lineIndex, 0)
+  assert.equal(sheetRichTextEditorCaret(scene, start.offset, start.affinity).lineIndex, 1)
+})
+
+test('repeated End and subsequent Home stay on the selected visual line and vertical motion preserves its target end', () => {
+  const cell = { value: 'abcdef', rawValue: 'abcdef', wrapStrategy: 'wrap', richText: [{ text: 'abcdef', fontSize: 9 }] }
+  const area = { ...rect, width: 24 }, scene = createSheetRichTextEditorScene(cell, area, area, 1, { start: 0, end: 0 }, appearance)
+  const end = moveSheetRichTextEditorCaret(scene, 0, 'End')
+  assert.deepEqual(end, { offset: 2, affinity: 'upstream' })
+  const focused = { ...scene, caretAffinity: end.affinity }
+  assert.deepEqual(moveSheetRichTextEditorCaret(focused, end.offset, 'End'), end)
+  assert.deepEqual(moveSheetRichTextEditorCaret(focused, end.offset, 'Home'), { offset: 0, affinity: 'downstream' })
+  const down = moveSheetRichTextEditorCaret(focused, end.offset, 'ArrowDown')
+  assert.equal(down.offset, 4); assert.equal(down.affinity, 'upstream')
+  assert.equal(sheetRichTextEditorCaret({ ...scene, caretAffinity: down.affinity }, down.offset).lineIndex, 1)
+  const up = moveSheetRichTextEditorCaret({ ...scene, caretAffinity: down.affinity }, down.offset, 'ArrowUp', down.preferredX)
+  assert.equal(up.offset, 2); assert.equal(up.affinity, 'upstream')
+})
+

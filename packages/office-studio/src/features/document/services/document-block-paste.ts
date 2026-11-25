@@ -5,17 +5,31 @@ import { documentTableGrid } from '../model/document-table-grid'
 import { documentTableCellContentContainers, rebindDocumentTableContinuations } from '../model/document-table-continuations'
 import { documentTextFieldRanges, documentTextFields, remapDocumentTextFieldIds } from '../model/document-text-fields'
 import { documentStructuredChildContainers, validateDocumentStructuredBlock } from '../model/document-structural-blocks'
+import { documentImageAtom, setDocumentImageAtom } from '../images/document-image-atom'
+import { normalizeDocumentImage } from '../images/document-image-model'
 
 /** Clipboard blocks are borrowed input; IDs and continuation bindings belong to each new paste. */
 export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
   let blockCount = 0, cellCount = 0
-  const sourceIds = new Set<string>()
+  const sourceIds = new Set<string>(), imageIds = new Set<string>()
   const inspect = (items: readonly DocumentBlock[], depth: number) => {
     if (depth > 64) throw new RangeError('粘贴内容超过文档嵌套预算')
     for (const block of items) {
       if (!block || typeof block.id !== 'string' || !block.id || sourceIds.has(block.id) || !Array.isArray(block.runs)
         || !block.style || !block.metadata) throw new TypeError('复制范围必须包含标识唯一的文档块')
       sourceIds.add(block.id)
+      if (block.type === 'image') {
+        if (imageIds.has(block.id)) throw new TypeError('复制范围含重复的图片标识。')
+        imageIds.add(block.id)
+      }
+      for (const run of block.runs) {
+        const atom = documentImageAtom(run)
+        if (run.metadata?.imageAtom !== undefined && !atom) throw new TypeError('复制范围含无效的图片原子。')
+        if (atom) {
+          if (imageIds.has(atom.imageId)) throw new TypeError('复制范围含重复的图片标识。')
+          imageIds.add(atom.imageId); normalizeDocumentImage(atom.image)
+        }
+      }
       validateDocumentStructuredBlock(block)
       if (++blockCount > 250_000) throw new RangeError('粘贴内容超过单次文档块预算')
       for (const content of documentStructuredChildContainers(block)) inspect(content, depth + 1)
@@ -36,7 +50,11 @@ export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): Do
       const nextId = documentId(block.type)
       blockIds.set(block.id, nextId)
       block.id = nextId
-      block.runs = block.runs.map(run => ({ ...run, id: documentId('run') }))
+      block.runs = block.runs.map(run => {
+        const atom = documentImageAtom(run), copied = { ...run, id: documentId('run') }
+        if (atom) setDocumentImageAtom(copied, documentId('image'), cloneModel(atom.image))
+        return copied
+      })
       delete block.metadata.html
       if (block.checklist) {
         const previous = block.checklist.listId

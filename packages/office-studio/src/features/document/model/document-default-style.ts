@@ -28,7 +28,7 @@ export function documentDefaultStyle(model?: Pick<DocumentModel, 'defaultStyle'>
     || paragraph.spacingRule !== undefined && !['auto', 'atLeast', 'exact'].includes(paragraph.spacingRule)) {
     throw new RangeError('文档默认段落格式无效。')
   }
-  if (['wordWrap', 'snapToGrid'].some(key => {
+  if (['wordWrap', 'snapToGrid', 'keepLines', 'keepNext', 'widowControl', 'pageBreakBefore'].some(key => {
     const value = Reflect.get(paragraph, key)
     return value !== undefined && typeof value !== 'boolean'
   })) throw new RangeError('文档默认段落格式无效。')

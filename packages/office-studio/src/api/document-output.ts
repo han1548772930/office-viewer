@@ -1,6 +1,7 @@
 import type { DocumentModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { documentDefaultStyle } from '../features/document/model/document-default-style'
+import { documentUsesTraditionalPagination } from '../features/document/model/document-paragraph-pagination'
 import { createRun } from '../features/document/model/document-model'
 import { assertDocumentBodySerializable } from './document-body-codec'
 import { bodyRecord, documentParagraphStyleToBody, documentRunStyleToBody } from './document-body-style'
@@ -10,7 +11,7 @@ import { writePublicDocumentStories } from './document-output-stories'
 import { writePublicDocumentNotes } from './document-output-notes'
 import { assertOfficeDocumentSnapshotCommentAnchors } from './document-snapshot-source'
 import type { UniverDocumentData } from './document-snapshot-types'
-import { writeDocumentPluginResources } from './document-plugin-resources'
+import { readDocumentPluginResources, refreshDocumentLatexPluginWrapper, writeDocumentPluginResources } from './document-plugin-resources'
 
 /** Detached v1.6.0 snapshot. It is built from the current command model, not
  * the unchanged input stream retained for Office/source preservation. */
@@ -28,7 +29,8 @@ export function documentToPublicSnapshot(model: DocumentModel, revision = 0): Un
   const style = documentSectionSetupToBody({ ...model.page, ...model.sectionSetup }, originalStyle)
   style.textStyle = documentRunStyleToBody(createRun('', { ...defaults.text, metadata: { univerTextStyle: bodyRecord(originalStyle.textStyle) } }))
   style.defaultParagraphStyle = documentParagraphStyleToBody(defaults.paragraph, originalStyle.defaultParagraphStyle)
-  style.documentFlavor = model.metadata?.documentFlavor ?? originalStyle.documentFlavor ?? 1
+  const flavor = model.metadata?.documentFlavor ?? originalStyle.documentFlavor ?? 1
+  style.documentFlavor = flavor === 0 && documentUsesTraditionalPagination(model) ? 1 : flavor
   const stories = writePublicDocumentStories(model, source, sections), notes = writePublicDocumentNotes(model, source)
   const firstSection = sections[0] ?? {}
   for (const key of ['defaultHeaderId', 'defaultFooterId', 'firstPageHeaderId', 'firstPageFooterId', 'evenPageHeaderId', 'evenPageFooterId',
@@ -42,7 +44,7 @@ export function documentToPublicSnapshot(model: DocumentModel, revision = 0): Un
   const snapshot: UniverDocumentData = { ...source, ...data, id: model.id, title: model.name, rev: sourceRevision + revision, documentStyle: style,
     styles: model.metadata?.documentStyles ? cloneModel(bodyRecord(model.metadata.documentStyles)) as UniverDocumentData['styles'] : undefined,
     tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists,
-    callouts: undefined, codes: undefined,
+    callouts: undefined, codes: undefined, latexFormulas: undefined,
     resources: writeDocumentPluginResources(source, [data, ...Object.values(stories.headers), ...Object.values(stories.footers),
       ...Object.values(notes.notes), ...Object.values(notes.footnotes), ...Object.values(notes.endnotes)]),
     headers: Object.keys(stories.headers).length ? stories.headers : undefined, footers: Object.keys(stories.footers).length ? stories.footers : undefined,
@@ -56,6 +58,13 @@ export function documentToPublicSnapshot(model: DocumentModel, revision = 0): Un
   // Legacy input aliases and deleted modeled resources must not supersede
   // the current title/body when this public snapshot is reopened.
   delete snapshot.name
+  const liveLatex = readDocumentPluginResources(snapshot.resources).latexFormulas ?? {}
+  for (const entry of [snapshot, ...[snapshot.headers, snapshot.footers, snapshot.notes, snapshot.footnotes, snapshot.endnotes]
+    .flatMap(group => Object.values(group ?? {}))]) {
+    const value = bodyRecord(entry)
+    delete value.latexFormulas
+    if (value !== snapshot) refreshDocumentLatexPluginWrapper(value, liveLatex)
+  }
   assertDocumentBodySerializable(snapshot)
   return snapshot
 }

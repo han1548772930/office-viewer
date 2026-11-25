@@ -65,6 +65,9 @@ export function normalizeSheetBorderStyle(value: unknown): SheetBorderLineStyle 
   if (typeof style === 'string' && numericStyles.includes(style as SheetBorderLineStyle)) return style as SheetBorderLineStyle
   throw new TypeError('边框线型无效。')
 }
+export function sheetBorderStyleNumber(value: unknown): SheetBorderStyleType {
+  return numericStyles.indexOf(normalizeSheetBorderStyle(value)) as SheetBorderStyleType
+}
 export function normalizeSheetBorderColor(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError('边框颜色必须是非空字符串。')
   return sheetColorHex(value) ?? value
@@ -78,7 +81,7 @@ export function assertSheetBorderRanges(ranges: readonly CellRange[]): void {
 export interface SheetBorderPosition { row: number; col: number }
 export interface SheetBorderSource {
   readBorder: (row: number, col: number) => Record<string, unknown> | undefined
-  existingCells: () => Iterable<SheetBorderPosition>
+  existingCells: (ranges: readonly CellRange[]) => Iterable<SheetBorderPosition>
   mergedRanges?: readonly CellRange[]
 }
 export interface SheetBorderPatch extends SheetBorderPosition { border: Record<string, unknown> }
@@ -195,8 +198,8 @@ export function createSheetBorderPlan(
     if (!selected(nextRow, nextCol)) clearSegment(nextRow, nextCol, offset.opposite)
   }
   if (type === 'none') {
-    // Clear only existing cells, even for a full row/column/sheet selection.
-    for (const { row, col } of source.existingCells()) if (selected(row, col)) {
+    // Bare sheets stay sparse; the source also projects affected virtual cells with inherited borders.
+    for (const { row, col } of source.existingCells(ranges)) if (selected(row, col)) {
       for (const key of [...SHEET_BORDER_SIDES, ...diagonalKeys]) set(row, col, key, undefined)
     }
     const clearNeighbor = (row: number, col: number, side: SheetBorderSide) => {
@@ -204,7 +207,7 @@ export function createSheetBorderPlan(
       const offset = sideOffsets[side]
       if (selected(row + offset.row, col + offset.col)) clearSegment(row, col, side)
     }
-    for (const { row, col } of source.existingCells()) for (const side of SHEET_BORDER_SIDES) clearNeighbor(row, col, side)
+    for (const { row, col } of source.existingCells(ranges)) for (const side of SHEET_BORDER_SIDES) clearNeighbor(row, col, side)
     // An imported merge may store only a main-cell edge, so its other physical segments are virtual.
     for (const merge of merges) if (!selected(merge.startRow, merge.startCol)) for (const side of SHEET_BORDER_SIDES) {
       const offset = sideOffsets[side]

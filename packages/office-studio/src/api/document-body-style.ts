@@ -127,12 +127,21 @@ export function documentParagraphStyleFromBody(value: unknown, defaults: Documen
     if (spacing <= 0) throw new RangeError('段落行距必须为正。')
     style.lineHeight = !style.spacingRule || style.spacingRule === 'auto' ? spacing : spacing * 4 / 3
   }
-  for (const key of ['wordWrap', 'snapToGrid'] as const) { const current = bodyBoolean(raw[key]); if (current !== undefined) style[key] = current }
+  for (const key of ['wordWrap', 'snapToGrid', 'keepLines', 'keepNext', 'widowControl', 'pageBreakBefore'] as const) {
+    const current = bodyBoolean(raw[key]); if (current !== undefined) style[key] = current
+  }
   return style
 }
 
-export function documentParagraphStyleToBody(style: DocumentParagraphStyle, source?: unknown): UniverBodyRecord {
+export function documentParagraphStyleToBody(style: DocumentParagraphStyle, source?: unknown, resolution?: unknown): UniverBodyRecord {
   const raw = cloneModel(bodyRecord(source)), px = (v: number) => ({ v, u: 3 })
+  const provenance = bodyRecord(resolution), baseline = bodyRecord(provenance.baseline)
+  for (const key of ['keepLines', 'keepNext', 'widowControl', 'pageBreakBefore'] as const) {
+    if (provenance.version === 1 && style[key] === baseline[key]
+      && !(Array.isArray(provenance.authored) && provenance.authored.includes(key))) continue
+    if (style[key] === undefined) delete raw[key]
+    else raw[key] = Number(style[key])
+  }
   return { ...raw, horizontalAlign: style.align === 'center' ? 2 : style.align === 'right' ? 3 : style.align === 'justify' ? 4 : 1,
     indentStart: px(style.indentStart ?? style.indent), indentEnd: px(style.indentEnd ?? 0),
     indentFirstLine: px(style.indentFirstLine ?? 0), hanging: px(style.hanging ?? 0), spaceAbove: px(style.spaceBefore), spaceBelow: px(style.spaceAfter),

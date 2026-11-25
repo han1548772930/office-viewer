@@ -110,10 +110,10 @@ export function createSheetMergePlan(merges: readonly CellRange[], ranges: reado
 }
 
 function modelHasContent(cell: SpreadsheetCell): boolean {
-  return Boolean(cell.formula || cell.richText?.length) || cell.value !== null && cell.value !== ''
+  return Boolean(cell.formula || cell.richText?.length || cell.image) || cell.value !== null && cell.value !== ''
 }
 function viewHasContent(cell: ExcelCellView): boolean {
-  return Boolean(cell.formula || cell.richText?.length) || cell.rawValue !== undefined && cell.rawValue !== null && cell.rawValue !== '' || cell.value !== ''
+  return Boolean(cell.formula || cell.richText?.length || cell.image) || cell.rawValue !== undefined && cell.rawValue !== null && cell.rawValue !== '' || cell.value !== ''
 }
 function resultForPlan<C>(
   plan: SheetMergePlan, action: SheetMergeAction, groups: readonly (readonly { cell: C }[])[], hasContent: (cell: C) => boolean,
@@ -185,7 +185,7 @@ function withViewStyle(cell: ExcelCellView | undefined, style: CellStyle): Excel
 /** A relocated donor replaces the whole cell; undefined view fields otherwise inherit the old master during model adaptation. */
 function relocatedViewCell(source: ExcelCellView): ExcelCellView {
   const cell = withViewStyle(structuredClone(source), viewStyle(source))
-  return { ...cell, hyperlink: cell.hyperlink ?? null, metadata: cell.metadata ?? null, richText: cell.richText ?? null,
+  return { ...cell, hyperlink: cell.hyperlink ?? null, metadata: cell.metadata ?? null, richText: cell.richText ?? null, image: cell.image ?? null,
     dataType: cell.dataType ?? (cell.formula ? 'formula' : cell.rawValue !== undefined ? inferSheetCellValueType(cell.rawValue) : undefined),
     cachedDataType: cell.formula ? cell.cachedDataType === undefined
       ? cell.rawValue === undefined || cell.rawValue === null ? null : inferSheetCellValueType(cell.rawValue)

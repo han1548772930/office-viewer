@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+body { margin: 0; } #fields { width: 460px; padding: 12px; } #bitmap { position: fixed; left: 500px; top: 12px; width: 520px; height: 360px; }
+</style></head><body><div id="fields"></div><canvas id="bitmap"></canvas><script type="module">
+import { createApp, h, nextTick, ref, watch } from 'vue'
+import { Alert, Button, ConfigProvider, Form, theme } from 'antdv-next'
+import { getInstanceByDom } from 'echarts/core'
+import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model.ts'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { FOffice } from '/packages/office-studio/src/api/facade.ts'
+import { createChart, readChartData } from '/packages/office-studio/src/features/charts/chart-engine.ts'
+import { createChartSettingsDraft, chartSettingsPatch } from '/packages/office-studio/src/features/charts/chart-settings-draft.ts'
+import { chartEChartsOption } from '/packages/office-studio/src/features/charts/echarts-option.ts'
+import { EChartsCanvasRenderer } from '/packages/office-studio/src/features/charts/echarts-renderer.ts'
+import { chartTitleCommands } from '/packages/office-studio/src/features/charts/chart-titles.ts'
+import ChartSettingsFields from '/packages/office-studio/src/features/charts/views/ChartSettingsFields.vue'
+import '/packages/office-studio/src/style.css'
+
+// Prepared data isolates bitmap previews. Apply still uses the real public
+// chart command and needs the normal Worker/WASM platform in the later run.
+const book = createBlankWorkbook(), sheet = book.sheets[0]
+const table = [['Region', 'Revenue', 'Costs'], ['North', 7, 3], ['South', 4, 2]]
+sheet.cells = Object.fromEntries(table.flatMap((row, r) => row.map((value, c) => [r + ':' + c, createCell(r, c, value)])))
+const initial = createChart(book, sheet.id, { type: 'line', categoryField: 0, valueFields: [1, 2], title: 'Main', subtitle: 'Sub',
+  source: { orientation: 'columns', range: { startRow: 0, startCol: 0, endRow: 2, endCol: 2 } }, position: { x: 0, y: 0 }, size: { width: 520, height: 360 },
+  legend: { visible: true, position: 'bottom' }, options: { appearance: { font: { family: 'Georgia' } } } })
+book.charts = [initial]
+let studio = new OfficeStudio({ workbook: book }), workbook, live, frame, applies = 0
+const data = readChartData(book, initial), draft = ref(createChartSettingsDraft(initial)), dark = ref(false), dpr = ref(1), error = ref(''), loading = ref(false)
+const renderer = new EChartsCanvasRenderer()
+function bind() {
+  workbook = FOffice.newAPI(studio).getActiveWorkbook(); live = workbook.getActiveSheet().getChart(initial.id)
+}
+bind()
+function preview() { return { ...live.getInfo(), ...draft.value.config } }
+function paint() {
+  const chart = preview(), colors = dark.value ? { backgroundColor: '#181818', textColor: '#eeeeee' } : { backgroundColor: '#ffffff', textColor: '#334155' }
+  frame = renderer.render(chart.id, chartEChartsOption(studio.getWorkbookModel(workbook.getId()), chart, colors, { preparedData: data }),
+    { width: chart.size.width, height: chart.size.height, devicePixelRatio: Math.max(0.1, window.devicePixelRatio || 1) * dpr.value }, colors)
+  const canvas = document.querySelector('#bitmap'); canvas.width = frame.source.width; canvas.height = frame.source.height
+  canvas.getContext('2d').drawImage(frame.source, 0, 0)
+  return frame
+}
+async function apply() {
+  loading.value = true; error.value = ''
+  try { await live.update(chartSettingsPatch(draft.value)); applies++; draft.value = createChartSettingsDraft(live.getInfo()); paint() }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause) }
+  finally { loading.value = false }
+}
+const app = createApp({ setup: () => () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, () =>
+  h(Form, { layout: 'vertical' }, () => [h(ChartSettingsFields, { draft: draft.value, data, projection: { data, prepared: true }, hostSheetId: sheet.id,
+    disabled: loading.value, 'onUpdate:draft': value => { draft.value = value } }),
+    h(Button, { type: 'primary', loading: loading.value, onClick: apply }, () => '应用标题'),
+    ...(error.value ? [h(Alert, { type: 'error', message: error.value })] : [])])) })
+app.mount('#fields')
+watch([draft, dark, dpr], paint, { deep: true, flush: 'post' }); await nextTick(); paint()
+function state() {
+  return { author: live.getInfo(), draft: draft.value.config, revision: studio.getWorkbookRevision(workbook.getId()), applies, error: error.value,
+    sourceVersion: frame.sourceVersion, width: frame.source.width, height: frame.source.height,
+    expectedWidth: Math.round(520 * Math.max(0.1, window.devicePixelRatio || 1) * dpr.value), expectedHeight: Math.round(360 * Math.max(0.1, window.devicePixelRatio || 1) * dpr.value),
+    commands: chartTitleCommands(preview(), dark.value ? '#eeeeee' : '#334155') }
+}
+window.chartTitlesFixture = { renderer, data, state, paint, getInstanceByDom, async setDark(value) { dark.value = value; await nextTick() },
+  async setDpr(value) { dpr.value = value; await nextTick() },
+  async setPreview(position, shared = false) { draft.value = createChartSettingsDraft({ ...initial, options: { ...initial.options, titleStyle: { position },
+    ...(shared ? { allSeriesStyle: { label: { visible: true, position: 'insideEnd' } } } : {}) } }); await nextTick(); return paint() },
+  async undo() { workbook.undo(); draft.value = createChartSettingsDraft(live.getInfo()); await nextTick(); paint() },
+  async redo() { workbook.redo(); draft.value = createChartSettingsDraft(live.getInfo()); await nextTick(); paint() },
+  async reopen() { const saved = JSON.parse(JSON.stringify(workbook.save())); studio.dispose(); studio = new OfficeStudio({ workbook: saved }); bind();
+    draft.value = createChartSettingsDraft(live.getInfo()); await nextTick(); paint() },
+  nativeText() { return getInstanceByDom(frame.source).getZr().storage.getDisplayList().filter(element => element.type === 'tspan').map(element => element.style.text) },
+  dispose() { app.unmount(); studio.dispose(); renderer.dispose() } }
+</script></body></html>

@@ -1,4 +1,5 @@
 import { transformSheetAxisReferenceInterval, type SheetAxisEdit } from '../../domain/sheet-axis-structure.ts'
+import { assertSheetCellShiftEdit, type SheetCellShiftEdit } from '../../domain/sheet-cell-shift.ts'
 
 const MAX_ROW = 1_048_575, MAX_COLUMN = 16_383
 export interface FormulaReferenceArea {
@@ -260,6 +261,25 @@ export function transformFormulaReferenceAreasForAxisEdit(formula: string, edit:
     if (area.external || area.threeDimensional || owner?.toLowerCase() !== targetSheetName.toLowerCase()
       || endpointOwner?.toLowerCase() !== targetSheetName.toLowerCase()
       || edit.axis === 'row' && area.kind === 'wholeColumn' || edit.axis === 'column' && area.kind === 'wholeRow') return { ...area }
+    const first = edit.axis === 'row' ? area.startRow : area.startColumn, last = edit.axis === 'row' ? area.endRow : area.endColumn
+    const interval = transformSheetAxisReferenceInterval({ start: Math.min(first, last), end: Math.max(first, last) }, edit)
+    if (!interval) return null
+    const start = first <= last ? interval.start : interval.end, end = first <= last ? interval.end : interval.start
+    return edit.axis === 'row' ? { ...area, startRow: start, endRow: end } : { ...area, startColumn: start, endColumn: end }
+  })
+}
+
+/** Fixed-version range references change only when their whole perpendicular span lies in the moved band. */
+export function transformFormulaReferenceAreasForCellShift(formula: string, edit: SheetCellShiftEdit,
+  formulaSheetName: string | undefined, targetSheetName: string): string {
+  assertSheetCellShiftEdit(edit)
+  return mapFormulaReferenceAreas(formula, area => {
+    const owner = area.sheetName ?? formulaSheetName, endpointOwner = area.endSheetName ?? owner
+    const firstBand = edit.axis === 'row' ? area.startColumn : area.startRow, lastBand = edit.axis === 'row' ? area.endColumn : area.endRow
+    if (area.external || area.threeDimensional || owner?.toLowerCase() !== targetSheetName.toLowerCase()
+      || endpointOwner?.toLowerCase() !== targetSheetName.toLowerCase()
+      || edit.axis === 'row' && area.kind === 'wholeColumn' || edit.axis === 'column' && area.kind === 'wholeRow'
+      || Math.min(firstBand, lastBand) < edit.bandStart || Math.max(firstBand, lastBand) > edit.bandEnd) return { ...area }
     const first = edit.axis === 'row' ? area.startRow : area.startColumn, last = edit.axis === 'row' ? area.endRow : area.endColumn
     const interval = transformSheetAxisReferenceInterval({ start: Math.min(first, last), end: Math.max(first, last) }, edit)
     if (!interval) return null

@@ -15,6 +15,7 @@ import { reviewedDocsTranslations } from './docs/locales/reviewed.ts'
 import { docPermissionLocaleMessages } from './docs/locales/permissions.ts'
 import { docToolbarColorLocales } from './docs/locales/toolbar-colors.ts'
 import { documentSettingsLocaleMessages } from './docs/locales/document-settings.ts'
+import { documentLatexEnUS, documentLatexLocaleMessages } from './docs/locales/document-latex'
 import { documentCommentLocaleMessages } from './docs/locales/document-comments.ts'
 import { documentTableInsertLocales } from './docs/locales/document-table-insert.ts'
 import { sheetsEnUS } from './sheets/locales/en-US.ts'
@@ -30,6 +31,7 @@ import { sheetTabContextLocales } from './sheets/locales/sheet-tab-context.ts'
 import { sheetFilterMenuLocales } from './sheets/locales/filter-menu.ts'
 import { conditionalFormattingLocaleMessages } from './sheets/locales/conditional-formatting.ts'
 import { sheetCrosshairHighlightLocales } from './sheets/locales/crosshair-highlight.ts'
+import { sheetRangeThemeLocales } from './sheets/locales/range-themes.ts'
 import { sheetLocalearSA, sheetLocaleesES, sheetLocalecaES, sheetLocaledeDE, sheetLocalefaIR, sheetLocalefrFR, sheetLocaleidID, sheetLocaleitIT, sheetLocalejaJP, sheetLocalekoKR, sheetLocaleplPL, sheetLocaleptBR, sheetLocaleruRU, sheetLocaleskSK, sheetLocaleviVN, sheetLocalezhHK, sheetLocalezhTW } from './sheets/locales/workbench.ts'
 import { docLocalearSA, docLocaleesES, docLocalecaES, docLocaledeDE, docLocalefaIR, docLocalefrFR, docLocaleidID, docLocaleitIT, docLocalejaJP, docLocalekoKR, docLocaleplPL, docLocaleptBR, docLocaleruRU, docLocaleskSK, docLocaleviVN, docLocalezhHK, docLocalezhTW } from './docs/locales/workbench.ts'
 
@@ -182,7 +184,7 @@ const sheetRibbonRuleGroupLabels: Record<OfficeLocale, string> = {
 
 export function createOfficeMessages(): Record<OfficeLocale, Record<string, string>> {
   const messages = {} as Record<OfficeLocale, Record<string, string>>
-  const englishFallback = { ...coreEnUS, ...sheetsEnUS, ...docsEnUS }
+  const englishFallback = { ...coreEnUS, ...sheetsEnUS, ...docsEnUS, ...sheetRangeThemeLocales['en-US'] }
   for (const locale of supportedOfficeLocales) {
     messages[locale] = {
       ...englishFallback,
@@ -200,6 +202,7 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       'groups.rules': sheetRibbonRuleGroupLabels[locale],
       ...conditionalFormattingLocaleMessages[locale],
       ...sheetCrosshairHighlightLocales[locale],
+      ...sheetRangeThemeLocales[locale],
       ...sheetNumberFormatLocales[locale],
       ...sheetToolbarColorLocales[locale],
       ...sheetToolbarBorderApiStyleLocales[locale],
@@ -215,6 +218,7 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       ...docPermissionLocaleMessages[locale],
       ...docToolbarColorLocales[locale],
       ...documentSettingsLocaleMessages[locale],
+      ...documentLatexEnUS, ...documentLatexLocaleMessages[locale],
       ...documentCommentLocaleMessages[locale],
       ...documentTableInsertLocales[locale],
       'groups.doc-access': locale === 'zh-CN' ? '权限' : locale === 'en-US' ? 'Access' : docPermissionLocaleMessages[locale]!['doc.permissions.scope.document']!,

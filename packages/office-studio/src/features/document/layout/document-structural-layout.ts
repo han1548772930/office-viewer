@@ -6,14 +6,39 @@ import type { DocumentSectionFlow } from './document-section-flow'
 import type { DocumentLayout, LayoutColumn, LayoutFlowLocation, LayoutPage, LayoutRect } from './document-layout-types'
 import { documentQuoteLineColor } from '../model/document-structured-appearance'
 
-type AppendChildren = (blocks: DocumentBlock[], flow: DocumentSectionFlow) => void
+type AppendChildren = (blocks: DocumentBlock[], flow: DocumentSectionFlow, trailingInset?: number) => void
 type Positioned = LayoutRect & Partial<LayoutFlowLocation> & { page: number }
 const locationKey = (value: Positioned | (LayoutFlowLocation & { page: number })) => `${value.page}:${value.sectionFragment ?? 0}:${value.column ?? 0}`
 const cursorLocation = (flow: DocumentSectionFlow) => ({ ...flow.location, page: flow.page.index, cursor: flow.cursor })
 const offsets = (layout: DocumentLayout) => ({ lines: layout.lines.length, cells: layout.cells.length, images: layout.images.length,
   dividers: layout.dividers.length, fragments: layout.tableFragments?.length ?? 0, containers: layout.containers?.length ?? 0 })
+const physicalColumns = (flow: DocumentSectionFlow) => flow.pages.flatMap(page => page.sections.flatMap(section => section.columns.map(column => ({
+  key: locationKey({ page: page.index, sectionFragment: section.fragment, column: column.index }), column,
+}))))
+
+/** Large minimums occupy real subsequent frames, including empty frames, rather than overflowing one page. */
+function reserveColumnMinimum(flow: DocumentSectionFlow, start: ReturnType<typeof cursorLocation>, minHeight: number): void {
+  const frames = physicalColumns(flow), first = frames.findIndex(frame => frame.key === locationKey(start)), last = frames.findIndex(frame => frame.key === locationKey(cursorLocation(flow)))
+  const used = first === last ? flow.cursor - start.cursor : first < 0 || last < first ? 0
+    : frames.slice(first, last + 1).reduce((sum, frame, index, sequence) => sum + (index === 0 ? frame.column.y + frame.column.height - start.cursor
+      : index === sequence.length - 1 ? flow.cursor - frame.column.y : frame.column.height), 0)
+  let remaining = Math.max(0, minHeight - used)
+  while (remaining > 1e-6) {
+    const capacity = Math.max(0, flow.column.y + flow.column.height - flow.cursor)
+    if (capacity <= 1e-6) { flow.nextColumn(); continue }
+    const height = Math.min(remaining, capacity); flow.consume(height); remaining -= height
+    if (remaining > 1e-6) flow.nextColumn()
+  }
+}
 
 export { DOCUMENT_COLUMN_HORIZONTAL_PADDING, DOCUMENT_COLUMN_MIN_HEIGHT } from '../model/document-structural-blocks'
+export function documentDecoratedBlockInsets(block: DocumentBlock) {
+  const config = block.callout
+  return { left: config ? config.paddingLeft + (config.showIcon ? config.iconSize + config.iconGap : 0)
+    : block.type === 'code' ? block.code?.showLineNumbers ? 44 : 12 : 18,
+  right: config?.paddingRight ?? 12, top: config?.paddingTop ?? 8,
+  bottom: config?.paddingBottom ?? (block.type === 'code' && !block.code?.wrap ? 24 : 8) }
+}
 export function documentColumnMetrics(group: DocumentColumnGroup) {
   return { horizontalPadding: group.horizontalPadding ?? DOCUMENT_COLUMN_HORIZONTAL_PADDING, minHeight: group.minHeight ?? DOCUMENT_COLUMN_MIN_HEIGHT }
 }
@@ -37,7 +62,9 @@ function appendContainerDecorations(block: DocumentBlock, flow: DocumentSectionF
   start: ReturnType<typeof cursorLocation>, from: ReturnType<typeof offsets>): void {
   const items: Positioned[] = [...result.lines.slice(from.lines), ...result.cells.slice(from.cells), ...result.images.slice(from.images),
     ...result.dividers.slice(from.dividers), ...(result.tableFragments?.slice(from.fragments) ?? [])]
-  const keys = [...new Set([locationKey(start), ...items.map(locationKey), locationKey(cursorLocation(flow))])]
+  const frames = physicalColumns(flow), first = frames.findIndex(frame => frame.key === locationKey(start)), last = frames.findIndex(frame => frame.key === locationKey(cursorLocation(flow)))
+  const keys = first >= 0 && last >= first ? frames.slice(first, last + 1).map(frame => frame.key)
+    : [...new Set([locationKey(start), ...items.map(locationKey), locationKey(cursorLocation(flow))])]
   const end = cursorLocation(flow), decorations = result.containers ?? (result.containers = [])
   for (const [index, key] of keys.entries()) {
     const values = key.split(':').map(Number), page = flow.pages.find(page => page.index === values[0]), section = page?.sections.find(section => section.fragment === values[1])
@@ -57,13 +84,9 @@ function appendContainerDecorations(block: DocumentBlock, flow: DocumentSectionF
 export function layoutDocumentStructuredBlock(block: DocumentBlock, flow: DocumentSectionFlow, result: DocumentLayout, append: AppendChildren): void {
   if (!isDocumentStructuredBlock(block)) throw new TypeError('结构排版需要一个真实容器。')
   if (block.type === 'columns') { layoutColumns(block, flow, result, append); return }
-  const from = offsets(result), start = cursorLocation(flow), config = block.callout
-  const left = config ? config.paddingLeft + (config.showIcon ? config.iconSize + config.iconGap : 0)
-    : block.type === 'code' ? block.code?.showLineNumbers ? 44 : 12 : 18
-  const right = config?.paddingRight ?? 12, top = config?.paddingTop ?? 8,
-    bottom = config?.paddingBottom ?? (block.type === 'code' && !block.code?.wrap ? 24 : 8)
+  const from = offsets(result), start = cursorLocation(flow), { left, right, top, bottom } = documentDecoratedBlockInsets(block)
   flow.withColumnInsets(left, right, () => {
-    flow.addSpace(top); append(block.children!, flow); flow.addSpace(bottom)
+    flow.addSpace(top); append(block.children!, flow, bottom); flow.addSpace(bottom)
   })
   if (block.type === 'code') {
     const paragraphs = documentTextFieldParagraphs({ blocks: block.children! }), byId = new Map(paragraphs.map(paragraph => [paragraph.block.id, paragraph]))
@@ -93,7 +116,7 @@ function layoutColumns(block: DocumentBlock, flow: DocumentSectionFlow, result: 
       flow.ensureRoom(Math.min(metrics.minHeight, flow.fullPageContentHeight))
       const start = cursorLocation(flow)
       flow.withColumnInsets(metrics.horizontalPadding, metrics.horizontalPadding, () => append(column.blocks, flow))
-      if (locationKey(start) === locationKey(cursorLocation(flow))) flow.consume(Math.max(0, metrics.minHeight - (flow.cursor - start.cursor)))
+      reserveColumnMinimum(flow, start, metrics.minHeight)
     }
     appendContainerDecorations(block, flow, result, groupStart, fromGroup)
     return
@@ -114,8 +137,9 @@ function layoutColumns(block: DocumentBlock, flow: DocumentSectionFlow, result: 
       return { ...frame.page, content: { x, y: frame.top, width, height: frame.height }, columnCount: 1, columnGap: 0,
         maximumContentHeight: flow.fullPageContentHeight }
     })
+    const childStart = cursorLocation(child)
     child.withColumnInsets(metrics.horizontalPadding, metrics.horizontalPadding, () => append(column.blocks, child))
-    if (child.pages.length === 1) child.consume(Math.max(0, metrics.minHeight - (child.cursor - child.page.content.y)))
+    reserveColumnMinimum(child, childStart, metrics.minHeight)
     for (const page of child.pages) {
       const local = child.pages.indexOf(page), frame = frameAt(local), used = Math.max(...page.sections.map(section => section.usedHeight), 0)
       frame.column.usedHeight = Math.max(frame.column.usedHeight, frame.top - frame.column.y + used)

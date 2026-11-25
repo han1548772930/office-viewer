@@ -9,9 +9,10 @@ import { chartEChartsAutomaticGradient } from './chart-auto-gradient'
 import { chartEChartsFont, chartEChartsIndependentItemStyle } from './echarts-style'
 import { chartFillPatternPaint } from './chart-fill-pattern'
 import { chartTreemapBackgroundPaint, chartTreemapHeaderHeight, chartTreemapLabelBackground, chartTreemapLabelText,
-  chartTreemapParentLayout, chartTreemapRenderNodes, chartTreemapTextColor, chartTreemapValueText, resolveChartTreemapLabel, type ChartTreemapRenderNode } from './chart-treemap'
+  chartTreemapParentLayout, chartTreemapRenderNodes, chartTreemapTextColor, resolveChartTreemapLabel, type ChartTreemapRenderNode } from './chart-treemap'
 import { CHART_TREEMAP_BACKGROUND_KEY, CHART_TREEMAP_FIT_KEY, CHART_TREEMAP_OVERLAP_KEY } from './echarts-treemap-layout'
 import { CHART_HIERARCHY_PATTERN_KEY } from './echarts-hierarchy-pattern'
+import { chartContentTooltipText, chartTreemapContentTooltip, type ChartHierarchyTooltipRuntime } from './chart-content-tooltip'
 
 interface NativeTreemapNode {
   id: string; name: string; value: number; semanticNode: ChartTreemapRenderNode['node']; semanticParentId?: string; isTreemapResidual?: boolean
@@ -22,7 +23,12 @@ interface NativeTreemapNode {
   upperLabel: ReturnType<typeof chartEChartsFont> & { show: boolean; formatter: string; overflow: 'break'; height: number; lineHeight: number }
   children?: NativeTreemapNode[]
 }
-export interface ChartTreemapPointerRuntime { mode: 'treemap' }
+export interface ChartTreemapPointerRuntime extends ChartHierarchyTooltipRuntime { mode: 'treemap' }
+
+export function createChartTreemapPointerRuntime(data: ChartData): ChartTreemapPointerRuntime {
+  const context = { fieldName: data.hierarchyValueFieldName ?? data.series[0]?.name ?? '' }
+  return { mode: 'treemap', contentTooltip: item => chartTreemapContentTooltip(item, context) }
+}
 
 export function chartTreemapEChartsData(data: ChartData, chart: ChartModel, context: ChartEChartsContext): NativeTreemapNode[] {
   const roots = chartTreemapRenderNodes(data.hierarchy ?? []), source = data.series[0]!, mode = chartTreemapParentLayout(chart.options?.treemap)
@@ -61,15 +67,12 @@ export function chartTreemapEChartsData(data: ChartData, chart: ChartModel, cont
 /** Tooltip identity is semantic: residual leaves retain the owning parent path
  * and signed self value, rather than exposing synthetic IDs as categories. */
 export function chartTreemapTooltip(data: ChartData, context?: ChartEChartsContext): TooltipComponentOption {
-  return { show: true, showContent: true, trigger: 'item', triggerOn: 'mousemove|click', renderMode: 'richText',
+  const pointer = createChartTreemapPointerRuntime(data)
+  return { show: true, showContent: false, trigger: 'item', triggerOn: 'none', renderMode: 'richText',
     showDelay: 0, hideDelay: 0, transitionDuration: 0, confine: true, backgroundColor: context?.backgroundColor ?? '#ffffff',
     borderColor: context?.axisColor, textStyle: { color: context?.color ?? '#334155' }, formatter: params => {
     const item = (Array.isArray(params) ? params[0] : params)?.data
-    const node = item && typeof item === 'object' && 'semanticNode' in item ? item.semanticNode as NativeTreemapNode['semanticNode'] : undefined
-    if (!node) return ''
-    const lines = [node.path?.join(' / ') ?? node.name, `${data.hierarchyValueFieldName ?? data.series[0]?.name ?? ''}: ${chartTreemapValueText(node.value, node.formattedValue)}`]
-    if (node.children?.length && node.selfValue !== 0) lines.push(`自身数值: ${chartTreemapValueText(node.selfValue, node.formattedSelfValue)}`, `子节点合计: ${node.value - node.selfValue}`)
-    return lines.join('\n')
+    return chartContentTooltipText(pointer.contentTooltip?.(item))
   } }
 }
 

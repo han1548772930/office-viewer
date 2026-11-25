@@ -7,6 +7,8 @@ import { deriveChartData } from '../src/features/charts/chart-derived.ts'
 import { chartPlotFrame } from '../src/features/charts/chart-layout.ts'
 import { chartTitleControls, chartTitleFontControls } from '../src/features/charts/chart-settings-controls.ts'
 import { chartTitleCommands, chartTitleFont, chartTitleGeometry, chartTitlePatch } from '../src/features/charts/chart-titles.ts'
+import { createChartHeatmapScale } from '../src/features/charts/chart-heatmap.ts'
+import { createChartHeatmapLegend } from '../src/features/charts/chart-heatmap-draw.ts'
 
 // Drafts for the later verification phase; no runner or browser has executed.
 const workbook = { sheets: [{ id: 'sheet', cells: {} }] }
@@ -88,7 +90,7 @@ test('native and shared Canvas title graphics use the same positions and styles,
   const derived = deriveChartData(source, chart, { preparedData: source }), common = drawDerivedChartData(derived, chart).filter(command => command.kind === 'text' && ['Main', 'Sub'].includes(command.text))
   const native = chartEChartsOption(workbook, chart, {}, { preparedData: source }), graphics = elements(native).filter(element => element.type === 'text' && ['Main', 'Sub'].includes(element.style.text))
   assert.equal(native.title, undefined); assert.equal(graphics.length, 2)
-  assert.deepEqual(graphics.map(element => [element.style.text, element.x, element.y, element.style.font, element.style.align]), common.map(command => [command.text, command.x, command.y, command.font, command.align]))
+  assert.deepEqual(graphics.map(element => [element.style.text, element.x, element.y, element.style.font, element.style.align, element.style.fill]), common.map(command => [command.text, command.x, command.y, command.font, command.align, command.color]))
   const shared = chartEChartsOption(workbook, { ...chart, options: { ...chart.options, allSeriesStyle: { label: { visible: true, position: 'insideEnd' } } } }, {}, { preparedData: source })
   assert.deepEqual(elements(shared).filter(element => element.type === 'text' && ['Main', 'Sub'].includes(element.style.text)).map(element => [element.x, element.y]), graphics.map(element => [element.x, element.y]))
   const heatmap = chartEChartsOption(workbook, { ...chart, type: 'heatmap' }, {}, { preparedData: source })
@@ -109,4 +111,21 @@ test('text layout fits bounded rows without dropping author text, preserves code
   assert.equal(wrapped.title.length, 5000)
   const manual = { ...model(), options: { titleStyle: { position: 'left' }, plotArea: { left: 0.2, top: 0.3, width: 0.5, height: 0.4 } } }
   assert.deepEqual(chartPlotFrame(manual, source.series).plot, { x: 104, y: 108, width: 260, height: 144 })
+})
+
+test('continuous and piecewise heatmap legends keep bars/hits outside the title band on each matching edge', () => {
+  for (const type of ['continuous', 'piecewise']) for (const position of ['top', 'bottom', 'left', 'right']) {
+    const chart = model({ type: 'heatmap', legend: { visible: true, position }, options: { titleStyle: { position }, heatmap: { visualMapType: type } } })
+    const layout = chartPlotFrame(chart, source.series), bands = chartTitleGeometry(chart).bands
+    const scale = createChartHeatmapScale({ min: 0, max: 8 }, ['#ff0000', '#0000ff'], type), legend = createChartHeatmapLegend(chart, layout, scale, '#334155')
+    const rectangles = legend.bar ? [legend.bar] : legend.pieces.map(piece => piece.hit)
+    assert.ok(rectangles.length > 0)
+    for (const rect of rectangles) {
+      if (position === 'top') assert.ok(rect.y >= bands.top)
+      if (position === 'bottom') assert.ok(rect.y + rect.height <= chart.size.height - bands.bottom)
+      if (position === 'left') assert.ok(rect.x >= bands.left)
+      if (position === 'right') assert.ok(rect.x + rect.width <= chart.size.width - bands.right)
+    }
+    assert.equal(legend.frame, layout.frame)
+  }
 })

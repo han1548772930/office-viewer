@@ -1,13 +1,17 @@
+import type { SheetImageResource } from '../../domain/sheet-images.ts'
+import { sheetImageClipboardPngBlob } from '../../features/sheet-images/sheet-image-system-clipboard.ts'
+
 export interface SheetSystemClipboardContent {
   text?: string
   html?: string
+  files?: readonly File[]
 }
 
 export interface SheetSystemClipboard {
   /** Optional adapter-specific probe. Merely having a clipboard object does not establish a reader. */
   canRead?(): boolean
   read(): Promise<SheetSystemClipboardContent | undefined>
-  write(content: { plain: string; html: string }): Promise<boolean>
+  write(content: { plain: string; html: string; image?: SheetImageResource }): Promise<boolean>
 }
 
 /** Browser I/O stays outside the model planner. Undefined means no reader, rather than an empty clipboard. */
@@ -23,12 +27,24 @@ export const sheetSystemClipboard: SheetSystemClipboard = {
         const items = await clipboard.read()
         const item = items.find(candidate => candidate.types.includes('text/plain') || candidate.types.includes('text/html'))
         // An actual empty/media-only clipboard must not silently paste an older internal cache.
-        if (!item) return { text: '', html: '' }
+        if (!item) {
+          const files: File[] = []
+          for (const candidate of items) {
+            const mimeType = candidate.types.find(type => type.startsWith('image/'))
+            if (mimeType) files.push(new File([await candidate.getType(mimeType)], `clipboard-image-${files.length + 1}`, { type: mimeType }))
+          }
+          return { text: '', html: '', ...(files.length ? { files } : {}) }
+        }
         const [text, html] = await Promise.all([
           item.types.includes('text/plain') ? item.getType('text/plain').then(blob => blob.text()) : undefined,
           item.types.includes('text/html') ? item.getType('text/html').then(blob => blob.text()) : undefined,
         ])
-        return { ...(text === undefined ? {} : { text }), ...(html === undefined ? {} : { html }) }
+        const files: File[] = []
+        if (!text && !html) for (const candidate of items) {
+          const mimeType = candidate.types.find(type => type.startsWith('image/'))
+          if (mimeType) files.push(new File([await candidate.getType(mimeType)], `clipboard-image-${files.length + 1}`, { type: mimeType }))
+        }
+        return { ...(text === undefined ? {} : { text }), ...(html === undefined ? {} : { html }), ...(files.length ? { files } : {}) }
       } catch (error) {
         if (typeof clipboard.readText !== 'function') throw error
       }
@@ -43,6 +59,7 @@ export const sheetSystemClipboard: SheetSystemClipboard = {
         await clipboard.write([new ClipboardItem({
           'text/plain': new Blob([content.plain], { type: 'text/plain' }),
           'text/html': new Blob([content.html], { type: 'text/html' }),
+          ...(content.image ? { 'image/png': sheetImageClipboardPngBlob(content.image) } : {}),
         })])
         return true
       } catch (error) {

@@ -15,6 +15,8 @@ export function documentParagraphSettingsStyle(style: Partial<DocumentParagraphS
     indentStart: style.indentStart ?? (style.indent ?? 0) * 24, indentEnd: style.indentEnd ?? 0,
     indentFirstLine: style.indentFirstLine ?? 0, hanging: style.hanging ?? 0,
     spacingRule: style.spacingRule ?? 'auto', wordWrap: style.wordWrap ?? false, snapToGrid: style.snapToGrid ?? false,
+    keepLines: style.keepLines ?? false, keepNext: style.keepNext ?? false,
+    widowControl: style.widowControl ?? false, pageBreakBefore: style.pageBreakBefore ?? false,
   }
 }
 

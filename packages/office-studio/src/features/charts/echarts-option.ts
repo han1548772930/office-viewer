@@ -19,6 +19,7 @@ import { chartBoxplotAxis, chartBoxplotOutliers, chartBoxplotOutlierStyle, chart
 import { drawDerivedChartData } from './chart-draw'
 import { chartPlotFrame, layoutDerivedChartData } from './chart-layout'
 import { chartPieLayout, chartPieOuterRadius } from './chart-pie-layout'
+import { chartPieMaximumExplosion, chartPieSliceStyle } from './chart-pie'
 import { chartRadarAxisLabel, chartRadarAxisLine, chartRadarExtent, chartRadarGeometry } from './chart-radar'
 import { formatChartNumber } from './chart-geometry'
 import { chartRectangularAxisTitleCommands } from './chart-axis-title'
@@ -36,8 +37,8 @@ import { createChartSankeyHitIndex, createChartSankeyTopology, type ChartSankeyP
 import { chartHeatmapExtent, chartHeatmapLegendBand } from './chart-heatmap'
 import { chartHistogramBinGap } from './chart-histogram'
 import { chartCandlestickMode, chartCandlestickState, chartCandlestickStyle } from './chart-candlestick'
-import type { ChartTreemapPointerRuntime } from './echarts-treemap-option'
-import type { ChartSunburstPointerRuntime } from './echarts-sunburst-option'
+import { createChartTreemapPointerRuntime, type ChartTreemapPointerRuntime } from './echarts-treemap-option'
+import { createChartSunburstPointerRuntime, type ChartSunburstPointerRuntime } from './echarts-sunburst-option'
 import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
 import { createChartChordHitIndex, createChartChordTopology, type ChartChordPointerRuntime } from './chart-chord-interaction'
 import { assertChartSourcePresent } from './chart-source-diagnostic'
@@ -46,7 +47,10 @@ import { createChartRelationHitIndex, createChartRelationTopology, type ChartRel
 import { chartHasLegend, chartLegendDataCount, chartLegendGeometry, chartLegendItems, chartLegendRelationScene, chartLegendSankeyScene,
   chartLegendSelectMode, chartLegendViewData, chartLegendViewLayout, type ChartLegendItem, type ChartLegendSelection } from './chart-legend'
 import { chartNativeLegendNames, type ChartCanvasLegendRuntime, type ChartCanvasLegendFrameOption } from './echarts-legend'
-import { chartTitleCommands, chartTitleGeometry, type ChartTitleGeometry } from './chart-titles'
+import { chartTitleCommands, chartTitleGeometry, isChartTitleTextCommand, type ChartTitleGeometry } from './chart-titles'
+import { createChartPlotAreaTarget, type ChartCanvasPlotAreaTarget } from './chart-plot-area-interaction'
+import { resolveChartAreaLineStyle } from './chart-line-and-area'
+import { chartCanvasCommandElement, chartCanvasNativeElementRuntime, chartCanvasNativePointOrder, chartCanvasParetoLineRuntimeId, chartCanvasRuntimeSeriesId, type ChartCanvasElementRuntime } from './chart-element-interaction'
 
 export type ChartEChartsPointerRuntime = ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
 
@@ -61,6 +65,8 @@ export type ChartEChartsOption = ComposeOption<
   /** Transient surface interaction metadata. Removed before signature generation and setOption. */
   officeChartPointer?: ChartEChartsPointerRuntime
   officeChartLegend?: ChartCanvasLegendRuntime
+  officeChartPlotArea?: ChartCanvasPlotAreaTarget
+  officeChartElements?: ChartCanvasElementRuntime
 }
 
 export type ChartEChartsTheme = ChartRenderTheme
@@ -80,6 +86,9 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     // chartPlotFrame already reserves automatic label/title bands; authored bounds are exact.
     top: frame.plot.y, bottom: Math.max(0, chart.size.height - frame.plot.y - frame.plot.height), containLabel: false,
   }
+  const automaticFrame = chart.options?.plotArea ? chartPlotFrame({ ...localChart, options: { ...localChart.options, plotArea: undefined } },
+    derived.boxes ?? data.series, chartLegendDataCount(data, chart)) : frame
+  const officeChartPlotArea = createChartPlotAreaTarget(chart.type, frame.frame, frame.plot, automaticFrame.plot, !!chart.options?.plotArea)
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite) || requiresGraphicChart(chart, data, derived.boxes, derived.pareto?.cumulativePercent)) {
     const originalLayout = layoutDerivedChartData(derived, localChart, palette)
     const originalSankeyScene = originalLayout.sankey ? createChartSankeyScene(data, localChart, originalLayout.sankey,
@@ -118,11 +127,13 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
           // the visible content continues to come from the shared Canvas scene.
           series: items.map(item => ({ type: 'pie' as const, name: item.name, data: [], radius: 0, silent: true,
             legendHoverLink: false, tooltip: { show: false }, itemStyle: { color: item.color } })) } : {}),
-      }, ...(pointerRuntime ? { pointer: pointerRuntime } : {}) }
+      }, ...(pointerRuntime ? { pointer: pointerRuntime } : {}),
+        plotArea: createChartPlotAreaTarget(chart.type, layout.frame, layout.plot, automaticFrame.plot, !!chart.options?.plotArea) }
     }
     const initial = buildGraphicView({}), legendRuntime: ChartCanvasLegendRuntime | undefined = nativeLegend
       ? { names: items.map(item => item.name), selectMode: chartLegendSelectMode(chart), rebuild: buildGraphicView } : undefined
-    return { ...initial.option, officeChartKey, ...(initial.pointer ? { officeChartPointer: initial.pointer } : {}),
+    return { ...initial.option, officeChartKey, officeChartElements: chartCanvasNativeElementRuntime(data, chart, undefined, undefined, derived), ...(initial.pointer ? { officeChartPointer: initial.pointer } : {}),
+      ...(initial.plotArea ? { officeChartPlotArea: initial.plotArea } : {}),
       ...(legendRuntime ? { officeChartLegend: legendRuntime } : {}) }
   }
   const isPie = descriptor.family === 'pie', isScatter = chart.type === 'scatter' || chart.type === 'bubble', isRadar = chart.type === 'radar', horizontal = descriptor.family === 'bar'
@@ -147,8 +158,8 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   // ECharts tooltip.axisPointer has priority over the component defaults for both cross axes.
   if (pointerConfig) tooltip.axisPointer = { type: 'cross', lineStyle: pointerConfig.lineStyle, crossStyle: pointerConfig.lineStyle,
     label: pointerConfig.label, animation: false }
-  const pointerRuntime: ChartAxisPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | undefined = chart.type === 'treemap' ? { mode: 'treemap' }
-    : chart.type === 'sunburst' ? { mode: 'sunburst' } : pointerEnabled ? isRadar || chart.type === 'heatmap' || dates
+  const pointerRuntime: ChartAxisPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | undefined = chart.type === 'treemap' ? createChartTreemapPointerRuntime(data)
+    : chart.type === 'sunburst' ? createChartSunburstPointerRuntime(data, chart) : pointerEnabled ? isRadar || chart.type === 'heatmap' || dates
     ? { mode: 'graphic', geometry: chartAxisPointerGeometry(data, localChart, sharedLayout!, theme) }
     : { mode: 'native' } : undefined
   if (pointerRuntime?.mode === 'graphic' && pointerRuntime.geometry.heatmap) context.heatmapScale = pointerRuntime.geometry.heatmap.scale
@@ -169,6 +180,7 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     series: isPie ? [pieSeries(data, chart, context)] : isScatter ? scatterSeries(data, chart, context)
       : isRadar ? radarSeries(data, chart, context) : categorySeries(data, chart, context, businessPercentages),
     officeChartKey,
+    ...(officeChartPlotArea ? { officeChartPlotArea } : {}),
     ...(pointerRuntime ? { officeChartPointer: pointerRuntime } : {}),
   }
   const special = chartSpecialEChartsOption(data, derived, chart, context)
@@ -183,7 +195,7 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   if (derived.pareto) {
     const style = chartParetoCumulativeStyle(chart, palette), name = CHART_PARETO_CUMULATIVE_NAME
     const extent = chartParetoCumulativeExtent(chart, derived.pareto.cumulativePercent)
-    const cumulative: LineSeriesOption = { type: 'line', name, yAxisIndex: 1,
+    const cumulative: LineSeriesOption = { type: 'line', id: chartCanvasParetoLineRuntimeId(chart.id), name, yAxisIndex: 1,
       data: (dates ? chartDateSeriesOrder(dates, chart) : derived.pareto.cumulativePercent.map((_value, index) => index)).map(index => {
         const value = derived.pareto!.cumulativePercent[index]!
         if (secondAxis.scaleType === 'log' && value <= 0) return null
@@ -219,7 +231,8 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     const current = option.graphic
     option.graphic = { elements: [graphic, ...(!Array.isArray(current) ? current?.elements ?? [] : [])] }
   }
-  const titleLegendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(chart.size.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend.font?.fontSize ?? inheritedFont?.fontSize ?? 11)
+  const titleSeed = chartTitleGeometry(localChart).bands, titleLegendWidth = Math.max(1, chart.size.width - titleSeed.left - titleSeed.right)
+  const titleLegendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(titleLegendWidth, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend.font?.fontSize ?? inheritedFont?.fontSize ?? 11)
     : chartLegendGeometry(localChart, chartLegendDataCount(data, chart)).band
   const titles = chartTitleCommands(localChart, color, titleLegendBand)
   if (titles.length) {
@@ -239,6 +252,7 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
         return { mode: 'graphic', geometry: { ...pointerRuntime.geometry, data: view.data } }
       } } : {}) }
   }
+  option.officeChartElements = chartCanvasNativeElementRuntime(data, localChart, dates, option, derived)
   return option
 }
 
@@ -262,6 +276,8 @@ function requiresGraphicChart(chart: ChartModel, data: ChartData, boxes?: readon
       || (marker.point?.size ?? 7) > 0 && chartMarkerRequiresSharedGeometry(marker.point?.shape)
   })
   return Boolean(resolveChartType(chart.type).threeD || ['pieOfPie', 'barOfPie', 'wordCloud', 'chord', 'waterfall', 'sankey', 'relation'].includes(chart.type)
+    || resolveChartType(chart.type).family === 'pie' && Object.values(chart.options?.pie?.sliceStyles ?? {}).some(slice => slice
+      && (slice.explosion !== undefined || !!slice.fillPattern))
     // Scatter and Heatmap do not support native decals; every patterned mark uses the shared geometry.
     || data.series.some((source, index) => {
       // Boxplot data here contains summaries. Its sample styles are evaluated
@@ -326,16 +342,21 @@ function requiresGraphicChart(chart: ChartModel, data: ChartData, boxes?: readon
 
 export function chartGraphics(commands: DrawCommand[], chartId: string, zOffset = 0): NonNullable<GraphicComponentOption['elements']> {
   return commands.map((command, index): NonNullable<GraphicComponentOption['elements']>[number] => {
-    const id = `${chartId}-${index}`, common = { id, silent: true, z: index + zOffset }
+    const titleLayout = isChartTitleTextCommand(command) ? command.chartTitle : undefined
+    const canvasElement = chartCanvasCommandElement(command)
+    const id = titleLayout ? `${chartId}:title:${titleLayout.kind}:${titleLayout.lineIndex}` : `${chartId}-${index}`
+    const common = { id, silent: !titleLayout && !canvasElement, z: titleLayout ? 10_000 + index : index + zOffset,
+      ...(titleLayout || canvasElement ? { cursor: 'pointer', info: { ...(titleLayout ? { chartElementHit: { kind: titleLayout.kind }, chartTitle: titleLayout } : {}),
+        ...(canvasElement ? { officeChartElement: canvasElement } : {}) } } : {}) }
     let element: NonNullable<GraphicComponentOption['elements']>[number]
     if (command.kind === 'rect') element = { ...common, type: 'rect', shape: { x: command.x, y: command.y, width: command.width, height: command.height }, style: { fill: command.fill, stroke: command.stroke, lineWidth: command.strokeWidth ?? 1 } }
     else if (command.kind === 'line') element = { ...common, type: 'line', shape: { x1: command.x1, y1: command.y1, x2: command.x2, y2: command.y2 }, style: { stroke: command.color, lineWidth: command.width ?? 1 } }
     else if (command.kind === 'polygon') element = { ...common, type: 'polygon', shape: { points: command.points.map(point => [point.x, point.y]) }, style: { fill: command.fill } }
     else if (command.kind === 'text') element = { ...common, type: 'text', x: command.x, y: command.y, rotation: -(command.rotation ?? 0) * Math.PI / 180,
       style: { text: command.text, font: command.font, fill: command.color, align: command.align ?? 'left', verticalAlign: command.baseline === 'middle' ? 'middle' : command.baseline === 'bottom' ? 'bottom' : 'top',
-        ...(command.maxWidth === undefined ? {} : { width: command.maxWidth, overflow: 'truncate' as const }) } }
+        ...(command.maxWidth === undefined || titleLayout && command.rotation ? {} : { width: command.maxWidth, overflow: 'truncate' as const }) } }
     else throw new TypeError('图表几何不能携带位图，请使用图表位图适配层。')
-    return command.clip ? { type: 'group', id: `${id}-clip`, silent: true, children: [element],
+    return command.clip ? { type: 'group', id: `${id}-clip`, silent: !titleLayout && !canvasElement, children: [element],
       clipPath: { type: 'rect', shape: { x: command.clip.x, y: command.clip.y, width: command.clip.width, height: command.clip.height } } } : element
   })
 }
@@ -369,7 +390,7 @@ function radarComponent(data: ChartData, chart: ChartModel, context: ChartEChart
 function radarSeries(data: ChartData, chart: ChartModel, context: ChartEChartsContext): RadarSeriesOption[] {
   return data.series.map((source, index) => {
     const style = chartSeriesStyle(chart, source.field, index, context.palette, source.sourceName ?? source.name)
-    return { type: 'radar', name: style.name ?? source.name, symbol: chartNativeMarkerSymbol(style.point?.shape, 'none'), symbolSize: style.point?.size ?? 4,
+    return { type: 'radar', id: chartCanvasRuntimeSeriesId(chart.id, index), name: style.name ?? source.name, symbol: chartNativeMarkerSymbol(style.point?.shape, 'none'), symbolSize: style.point?.size ?? 4,
       lineStyle: chartEChartsLineStyle(style), itemStyle: chartEChartsMarkerStyle(style),
       ...(chart.options?.radar?.fill ? { areaStyle: { color: style.color === undefined ? undefined : chartColorRepresentative(style.color), opacity: style.fillOpacity ?? 0.25 } } : {}),
       data: [{ name: style.name ?? source.name, value: source.values }] }
@@ -430,15 +451,15 @@ function pieSeries(data: ChartData, chart: ChartModel, context: ChartEChartsCont
   const source = data.series[0]!, options = chart.options?.pie, { palette, color, grid } = context
   const scale = source.values.reduce<number>((max, value) => Math.max(max, value ?? 0), 0) || 1, total = source.values.reduce<number>((sum, value) => sum + Math.max(0, value ?? 0) / scale, 0), start = -(options?.startAngle ?? -90)
   const plot = { x: grid.left, y: grid.top, width: chart.size.width - grid.left - grid.right, height: chart.size.height - grid.top - grid.bottom }
-  const radius = chartPieOuterRadius(plot, options?.explosion)
+  const radius = chartPieOuterRadius(plot, chartPieMaximumExplosion(data, chart))
   const sectors = new Map(chartPieLayout(data, chart, plot).sectors.map(sector => [sector.part.index, sector]))
-  return { type: 'pie', name: source.name, radius: chart.type === 'doughnut' ? [radius * (options?.doughnutHole ?? 0.55), radius] : radius,
+  return { type: 'pie', id: chartCanvasRuntimeSeriesId(chart.id, 0), name: source.name, radius: chart.type === 'doughnut' ? [radius * (options?.doughnutHole ?? 0.55), radius] : radius,
     center: ['50%', '50%'], left: grid.left, right: grid.right, top: grid.top, bottom: grid.bottom,
     startAngle: start, ...(options?.isHalfPie ? { endAngle: start - 180 } : {}), ...(options?.rosePie ? { roseType: 'radius' } : {}),
     ...(options?.explosion ? { selectedMode: 'multiple', selectedOffset: radius * options.explosion / 100 } : {}),
     avoidLabelOverlap: true, stillShowZeroSum: false, showEmptyCircle: false, label: { color }, labelLine: { show: options?.showLabelLine !== false },
     data: data.categories.map((name, index) => {
-      const value = Math.max(0, source.values[index] ?? 0), style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index, chart.type), label = { ...style.label, ...options?.label }
+      const value = Math.max(0, source.values[index] ?? 0), style = chartPieSliceStyle(chart, source, index, palette), label = { ...style.label, ...options?.label }
       const sector = sectors.get(index), gradient = createChartMarkGradient(chart, style, 'pie', {}, sector ? { x: sector.center.x - sector.outer, y: sector.center.y - sector.outer, width: sector.outer * 2, height: sector.outer * 2 } : undefined)
       return { name, value, selected: Boolean(options?.explosion), itemStyle: chartEChartsItemStyle(style, gradient),
         label: chartEChartsPointLabel({ visible: true, contentType: 'category', position: 'outside', ...label }, color, value, name, source.name, total ? (value / scale) / total * 100 : 0) }
@@ -450,13 +471,12 @@ function scatterSeries(data: ChartData, chart: ChartModel, context: ChartECharts
   for (const source of data.series) for (const size of source.sizeValues ?? []) if (size !== null) maxSize = Math.max(maxSize, size)
   return data.series.map((source, seriesIndex) => {
     const style = chartSeriesStyle(chart, source.field, seriesIndex, context.palette, source.sourceName ?? source.name), name = style.name ?? source.name, bubble = chart.type === 'bubble'
-    const axis: ChartAxisOptions = style.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
-    const order = context.dateAxis ? chartDateSeriesOrder(context.dateAxis, chart) : source.values.map((_value, index) => index)
-    return { type: 'scatter', name, xAxisIndex: 0, yAxisIndex: style.rightAxis ? 1 : 0, symbol: chartNativeMarkerSymbol(style.point?.shape), symbolSize: style.point?.size ?? 8,
+    const order = chartCanvasNativePointOrder(data, chart, seriesIndex, context.dateAxis)
+    return { type: 'scatter', id: chartCanvasRuntimeSeriesId(chart.id, seriesIndex), name, xAxisIndex: 0, yAxisIndex: style.rightAxis ? 1 : 0, symbol: chartNativeMarkerSymbol(style.point?.shape), symbolSize: style.point?.size ?? 8,
       itemStyle: chartEChartsMarkerStyle(style), label: chartEChartsLabel(style.label, context.color),
       data: order.flatMap<NonNullable<ScatterSeriesOption['data']>[number]>(index => {
         const value = source.values[index] ?? null, x = context.dateAxis ? context.dateAxis.coordinates[index] : source.xValues?.[index], size = source.sizeValues?.[index]
-        if (value === null || x == null || !Number.isFinite(value) || !Number.isFinite(x) || chart.xAxis.scaleType === 'log' && x <= 0 || axis.scaleType === 'log' && value <= 0 || bubble && (size == null || size <= 0)) return []
+        if (value === null || x == null) return []
         const pointStyle = chartPointStyle(style, index, chart.type)
         if (!context.dateAxis && !bubble && !style.dataPoints?.[index] && !style.label?.visible) return [[x, value]]
         const diameter = bubble ? chartBubblePointSize(pointStyle, size!, maxSize, chart.options, Math.min(chart.size.width - context.grid.left - context.grid.right, chart.size.height - context.grid.top - context.grid.bottom)) : pointStyle.point?.size ?? 8
@@ -491,18 +511,20 @@ function categorySeries(data: ChartData, chart: ChartModel, context: ChartEChart
     })
     const stacked = kind.stacked ? chart.type === 'combination' ? `${kind.type}-${style.rightAxis ? 'right' : 'left'}` : style.rightAxis ? 'total-right' : 'total' : undefined
     if (isBar) return {
-      type: 'bar', name, data: values, stack: stacked,
+      type: 'bar', id: chartCanvasRuntimeSeriesId(chart.id, index), name, data: values, stack: stacked,
       ...(resolveChartType(chart.type).family === 'bar' ? { xAxisIndex: style.rightAxis ? 1 : 0, yAxisIndex: 0 } : style.rightAxis ? { yAxisIndex: 1 } : {}),
       itemStyle: itemStyle(style, createChartMarkGradient(chart, style, horizontal ? 'bar' : 'column', { reverse: axis.reverse })), label: chartEChartsLabel(style.label, context.color),
       barCategoryGap: chart.type === 'histogram' ? `${chartHistogramBinGap(chart.options?.histogram) * 100}%` : `${chart.options?.bar?.gapWidth ?? 150}%`,
       ...(chart.options?.bar?.overlap === undefined ? {} : { barGap: `${-chart.options.bar.overlap}%` }),
     }
+    const lineShape = resolveChartAreaLineStyle(chart, kind.type === 'area' ? 'area' : 'line')
     const areaGradient = kind.type === 'area' ? createChartMarkGradient(chart, { ...style, fillOpacity: style.fillOpacity ?? 0.28 }, 'area', { reverse: axis.reverse }, plot) : undefined
     const lineGradient = kind.type === 'line' ? createChartMarkGradient(chart, { ...style, color: style.border?.color ?? style.color, fillOpacity: style.border?.opacity ?? 1 }, 'line', { reverse: axis.reverse }, plot) : undefined
-    return { type: 'line', name, data: values, stack: stacked, yAxisIndex: style.rightAxis ? 1 : 0,
+    return { type: 'line', id: chartCanvasRuntimeSeriesId(chart.id, index), name, data: values, stack: stacked, yAxisIndex: style.rightAxis ? 1 : 0,
       showSymbol: style.point?.shape !== 'none' || Object.values(style.dataPoints ?? {}).some(point => point?.shape !== undefined && point.shape !== 'none'),
       symbol: chartNativeMarkerSymbol(style.point?.shape), symbolSize: style.point?.size ?? 6, connectNulls: chart.options?.invalidValueStrategy === 'link',
-      smooth: kind.type === 'area' && chart.options?.area?.smooth, lineStyle: chartEChartsLineStyle(style, lineGradient), itemStyle: chartEChartsMarkerStyle(style, markerGradient), label: chartEChartsLabel(style.label, context.color),
+      smooth: lineShape === 'smooth', ...(lineShape === 'smooth' ? { smoothMonotone: 'x' as const } : {}), step: lineShape === 'step' ? 'middle' : false,
+      lineStyle: chartEChartsLineStyle(style, lineGradient), itemStyle: chartEChartsMarkerStyle(style, markerGradient), label: chartEChartsLabel(style.label, context.color),
       ...(kind.type === 'area' ? { areaStyle: { color: chartEChartsAutomaticGradient(areaGradient) ?? (style.color === undefined ? undefined : chartColorRepresentative(style.color)), opacity: areaGradient ? 1 : style.fillOpacity ?? 0.28 } } : {}) }
   })
 }

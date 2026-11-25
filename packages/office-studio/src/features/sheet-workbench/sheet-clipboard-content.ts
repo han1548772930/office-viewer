@@ -1,7 +1,10 @@
 import { defaultCellStyle, type CellScalar, type SpreadsheetCell } from '../../domain/model.ts'
 import { applyExcelCellView, toExcelCellView, type ExcelCellView } from '../../services/excelViewAdapter.ts'
-import { assertSheetClipboardArea, assertSheetClipboardBytes, assertSheetClipboardSnapshot } from './sheet-clipboard-data.ts'
+import { assertSheetClipboardArea, assertSheetClipboardBytes, assertSheetClipboardSnapshot, sheetClipboardCellAt } from './sheet-clipboard-data.ts'
 import type { SheetClipboardSnapshot } from './sheet-clipboard-types.ts'
+import { sheetImageResourceFromDataUrl } from '../sheet-images/sheet-image-source.ts'
+import { normalizeSheetCellImage } from '../sheet-images/sheet-image-model.ts'
+import { SheetImageSourceNeedsPreparationError } from '../sheet-images/sheet-image-public.ts'
 
 const HTML_ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 const CSS_UNIT_FACTORS: Readonly<Record<string, number>> = { px: 1, pt: 4 / 3, in: 96, cm: 96 / 2.54, mm: 96 / 25.4 }
@@ -93,7 +96,9 @@ function cellHtml(cell: SpreadsheetCell | undefined, formulaOnly: boolean): stri
       return typeof run.hyperlink === 'string' && safeHref(run.hyperlink) ? `<a href="${escapeHtml(run.hyperlink)}">${text}</a>` : text
     }).join('')
     : escapeHtml(displayText(cell, false)).replace(/\r\n?|\n/g, '<br>')
-  return cell.hyperlink ? `<a href="${escapeHtml(cell.hyperlink)}">${text}</a>` : text
+  const linked = cell.hyperlink ? `<a href="${escapeHtml(cell.hyperlink)}">${text}</a>` : text
+  const image = cell.image
+  return image ? `${linked}<img src="${escapeHtml(image.resource.source)}" width="${image.resource.width}" height="${image.resource.height}" alt="${escapeHtml(image.altText)}" title="${escapeHtml(image.title)}">` : linked
 }
 
 /** The plain flavour contains evaluated values; the internal HTML token selects the complete snapshot. */
@@ -107,7 +112,7 @@ export function sheetClipboardContent(snapshot: SheetClipboardSnapshot): { plain
   for (let row = 0; row < snapshot.rows.length; row++) {
     const plain: string[] = [], html: string[] = []
     for (let col = 0; col < snapshot.columns.length; col++) {
-      const key = cellKey(row, col), cell = snapshot.cells[key], merge = anchors.get(key)
+      const key = cellKey(row, col), cell = sheetClipboardCellAt(snapshot, row, col), merge = anchors.get(key)
       plain.push(quoteTsv(displayText(covered.has(key) ? undefined : cell, snapshot.formulaOnly)))
       if (covered.has(key)) continue
       const formula = cell?.formula ? ` data-office-formula="${escapeHtml(cell.formula)}"` : ''
@@ -203,6 +208,7 @@ function inlineHtmlRuns(root: Element, base: ExcelCellView, styles: Map<string, 
     if (node.nodeType !== 1) return
     const element = node as Element, tag = element.tagName.toLowerCase()
     if (['script', 'style', 'iframe', 'object', 'embed', 'meta', 'link', 'title', 'base'].includes(tag)) return
+    if (tag === 'img') return
     if (tag === 'br') { runs.push({ text: '\n' }); return }
     let marks = inherited
     for (const name of element.getAttribute('class')?.split(/\s+/) ?? []) if (styles.has(name)) marks = styleView(styles.get(name)!, marks)
@@ -239,7 +245,8 @@ export function parseSheetClipboardHtml(html: string): SheetClipboardSnapshot | 
   assertSheetClipboardBytes(html)
   if (typeof DOMParser === 'undefined') throw new Error('当前环境缺少 HTML 剪贴板解析器。')
   const parsed = new DOMParser().parseFromString(html, 'text/html'), table = parsed.querySelector('table')
-  if (parsed.querySelector('img,svg,canvas,video,audio,object,embed')) throw new Error('图片及绘图剪贴板资源尚未接入，未修改目标区域。')
+  if (parsed.querySelector('svg,canvas,video,audio,object,embed')) throw new Error('剪贴板包含尚未接入的绘图或附件资源，未修改目标区域。')
+  if (table && Array.from(parsed.querySelectorAll('img')).some(image => !table.contains(image))) throw new Error('剪贴板图片位于表格区域外，无法确定其单元格位置。')
   const styles = new Map<string, Record<string, string>>()
   for (const sheet of Array.from(parsed.querySelectorAll('style'))) {
     for (const match of (sheet.textContent ?? '').matchAll(/\.([\w-]+)\s*\{([^{}]+)\}/g)) styles.set(match[1]!, cssDeclarations(match[2]!))
@@ -259,6 +266,16 @@ export function parseSheetClipboardHtml(html: string): SheetClipboardSnapshot | 
     sourceView.hyperlink = inline.hyperlink
     sourceView.displayValue = inline.text
     const cell = applyExcelCellView({ row, col }, sourceView)
+    const images = Array.from(element.querySelectorAll('img'))
+    if (images.length > 1) throw new Error('一个剪贴板单元格包含多张图片，当前图片正文布局尚未覆盖，未修改目标区域。')
+    const image = images[0]
+    if (image) {
+      const source = image.getAttribute('src') ?? ''
+      if (!/^data:/i.test(source)) throw new SheetImageSourceNeedsPreparationError()
+      const resource = sheetImageResourceFromDataUrl(source, image.getAttribute('title') || 'clipboard-image')
+      cell.image = normalizeSheetCellImage({ id: crypto.randomUUID(), resource, title: image.getAttribute('title') ?? '', altText: image.getAttribute('alt') ?? '',
+        metadata: { clipboardHtmlImage: { width: image.getAttribute('width'), height: image.getAttribute('height'), style: image.getAttribute('style') ?? '' } } })
+    }
     cell.metadata = { ...cell.metadata, clipboardHtml: element.innerHTML }
     cell.style.metadata = { ...cell.style.metadata, clipboardCss: element.getAttribute('style') ?? '' }
     cells[cell.id] = cell

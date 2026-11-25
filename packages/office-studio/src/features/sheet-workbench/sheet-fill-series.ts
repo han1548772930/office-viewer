@@ -1,6 +1,6 @@
 import type { CellScalar } from '../../domain/model.ts'
 
-export interface SheetFillSeriesSeed { value: CellScalar; formula?: string | null; date?: boolean }
+export interface SheetFillSeriesSeed { value: CellScalar; formula?: string | null; date?: boolean; image?: boolean }
 export interface SheetFillSeriesGroup {
   start: number
   length: number
@@ -88,6 +88,7 @@ function formatChineseNumber(value: number): string | undefined {
 
 interface ClassifiedSeed { kind: SheetFillSeriesGroup['kind']; key: string; value?: number; cycle?: readonly string[]; prefix?: string; suffix?: string; padding?: number }
 function classify(seed: SheetFillSeriesSeed, preferredCycle?: readonly string[]): ClassifiedSeed {
+  if (seed.image) return { kind: 'copy', key: 'image' }
   if (seed.formula) return { kind: 'copy', key: 'formula' }
   if (typeof seed.value === 'number' && Number.isFinite(seed.value)) return { kind: seed.date ? 'date' : 'number', key: seed.date ? 'date' : 'number', value: seed.value }
   if (typeof seed.value !== 'string') return { kind: 'copy', key: 'other' }

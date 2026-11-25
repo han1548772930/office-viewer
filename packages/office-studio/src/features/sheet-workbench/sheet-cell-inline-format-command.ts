@@ -1,5 +1,5 @@
 import type { FontStyle, WorkbookModel } from '../../domain/model.ts'
-import { cellKey, toExcelCellView } from '../../services/excelViewAdapter.ts'
+import { cellKey, sheetModelCellViewAt } from '../../services/excelViewAdapter.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { getSheetCellEditConflict } from './sheet-cell-edit-session.ts'
 import { editSheetCellInlineText, sheetCellInputText } from './sheet-cell-edit.ts'
@@ -50,7 +50,7 @@ function target(workbook: WorkbookModel, input: SheetCellInputCommandInput, user
   if (!canViewWorksheetProtection(sheet, userId) || !canEditWorksheetProtection(sheet, userId)
     || !canEditProtectedRanges(sheet, [range], userId)) throw new Error('当前用户没有修改目标文字格式的权限。')
   const cell = sheet.cells[`${range.startRow}:${range.startCol}`]
-  return { sheet, range, modelCell: cell, cell: cell ? toExcelCellView(cell) : undefined }
+  return { sheet, range, modelCell: cell, cell: sheetModelCellViewAt(workbook, sheet, range.startRow, range.startCol) }
 }
 
 /** Same font command IDs and value rules apply while editing; the operation never publishes document content. */

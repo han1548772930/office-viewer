@@ -2,6 +2,8 @@ import type { SheetBorderFormatState } from '../features/sheet-workbench/sheet-b
 import type { SheetMergeConfirmationRequest } from '../features/sheet-workbench/sheet-merge-command.ts'
 import type { SheetFormatPainterConfirmationRequest, SheetFormatPainterState } from '../features/sheet-workbench/sheet-format-painter-session.ts'
 import type { SheetAxisEdit } from '../domain/sheet-axis-structure.ts'
+import type { SheetCellShiftEdit } from '../domain/sheet-cell-shift.ts'
+import type { SheetCellShiftConfirmationRequest } from '../features/sheet-workbench/sheet-cell-shift-command.ts'
 import type { SheetSelectionCell } from '../features/sheet-workbench/sheet-selection.ts'
 import type { DocumentInputSession } from '../features/document/model/document-input-session.ts'
 
@@ -27,7 +29,8 @@ export interface ApiEventMap {
   SheetNameChanged: { workbookId: string; sheetId: string; oldName: string; newName: string }
   SheetValueChanged: { workbookId: string; sheetId: string; ranges: ApiRange[] }
   SheetDimensionsChanged: { workbookId: string; sheetId: string; axis: 'row' | 'column'; automatic: boolean; ranges: ApiRange[] }
-  SheetStructureChanged: { workbookId: string; sheetId: string; edits: SheetAxisEdit[] }
+  SheetStructureChanged: { workbookId: string; sheetId: string; edits: Array<SheetAxisEdit | SheetCellShiftEdit> }
+  SheetCellShiftConfirmationRequested: SheetCellShiftConfirmationRequest
   SheetVisibilityChanged: { workbookId: string; sheetId: string; axis: 'row' | 'column'; visible: boolean; ranges: ApiRange[] }
   SheetBorderFormatStateChanged: { workbookId: string; sheetId: string; state: SheetBorderFormatState }
   SheetMergeConfirmationRequested: SheetMergeConfirmationRequest
@@ -63,6 +66,7 @@ export class FEventName {
   readonly SheetValueChanged = 'SheetValueChanged'
   readonly SheetDimensionsChanged = 'SheetDimensionsChanged'
   readonly SheetStructureChanged = 'SheetStructureChanged'
+  readonly SheetCellShiftConfirmationRequested = 'SheetCellShiftConfirmationRequested'
   readonly SheetVisibilityChanged = 'SheetVisibilityChanged'
   readonly SheetBorderFormatStateChanged = 'SheetBorderFormatStateChanged'
   readonly SheetMergeConfirmationRequested = 'SheetMergeConfirmationRequested'

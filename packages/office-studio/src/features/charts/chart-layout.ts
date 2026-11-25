@@ -35,7 +35,8 @@ export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: Chart
   if (manual) return { frame, plot: manual }
   const legend = { visible: true, position: 'bottom', ...chart.legend, ...(!chartHasLegend(chart.type) ? { visible: false } : {}) }
   const count = legendCount ?? (['pie', 'funnel', 'gauge', 'sankey'].includes(descriptor.family) ? sourceSeries?.[0]?.values?.length : sourceSeries?.length) ?? 0
-  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(frame.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend?.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11) : chartLegendGeometry(chart, count).band
+  const titleSeed = chartTitleGeometry(chart).bands, legendWidth = Math.max(1, frame.width - titleSeed.left - titleSeed.right)
+  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(legendWidth, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend?.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11) : chartLegendGeometry(chart, count).band
   const topLegend = legend.visible && legend.position === 'top' ? legendBand : 0, bottomLegend = legend.visible && legend.position === 'bottom' ? legendBand : 0
   const titles = chartTitleGeometry(chart, legendBand).bands
   const sideLegend = legend.visible && ['left', 'right'].includes(legend.position) ? chart.type === 'heatmap' ? Math.min(132, frame.width * 0.28) : Math.min(96, frame.width * 0.24) : 0

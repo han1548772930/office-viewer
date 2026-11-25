@@ -1,4 +1,5 @@
 import type { CellRange, ChartModel, PivotTableModel, SheetAutoFilter, SheetTableModel, SlicerModel, WorkbookModel } from '../../domain/model.ts'
+import { sheetImageClipboardBounds } from '../sheet-images/sheet-image-clipboard.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { resolveSlicerBounds } from '../slicer/slicer-drawing.ts'
 import { assertSheetCommandRanges, sheetRangeContainsCell, sheetRangesEqual, sheetRangesIntersect } from './sheet-range-command.ts'
@@ -361,5 +362,13 @@ export function sheetClipboardWorkbookResourceChangedRanges(before: WorkbookMode
     const sheet = workbook.sheets.find(sheet => sheet.id === slicer.hostSheetId)
     return sheet ? { sheetId: sheet.id, range: sheetClipboardObjectRange(workbook, sheet.id, resolveSlicerBounds(slicer, sheetClipboardObjectAxes(workbook, sheet))) } : undefined
   })
+  for (const sheet of before.sheets) {
+    const next = after.sheets.find(item => item.id === sheet.id)
+    if (!next) continue
+    track(sheet.images ?? [], next.images ?? [], (workbook, image) => {
+      const owner = workbook.sheets.find(item => item.id === sheet.id)
+      return owner ? { sheetId: owner.id, range: sheetClipboardObjectRange(workbook, owner.id, sheetImageClipboardBounds(workbook, owner, image)) } : undefined
+    })
+  }
   return result
 }

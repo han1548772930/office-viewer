@@ -2,13 +2,13 @@
 
 参考源码固定为 Univer `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，本地固定检出位于 `E:\rust_test\univer`。本清点只追踪 desktop Sheets preset 的 Ribbon、上下文菜单注册和本地 command dispatcher，不包含浏览器或像素验收。
 
-2026-11-22 使用 `scripts/audit-univer-oss-ribbon.mjs` 重新读取固定 v1.6.0 的 OSS 注册 schema：常规根声明为 `30/9/12/6/6`，共 63 项。本地 `createSheetRibbon` 的常规静态声明为 `29/6/11/17/5`，共 68 项。下文数量按同一父菜单口径更新；factory、动态显隐与实际装配尚未执行，不作为完整运行态入口数或验收结论。
+2026-11-22 使用 `scripts/audit-univer-oss-ribbon.mjs` 重新读取固定 v1.6.0 的 OSS 注册 schema：常规根声明为 `30/9/12/6/6`，共 63 项。2026-11-26 本地 `createSheetRibbon` 增加[范围主题根](SHEET-04-range-themes.md)，当前为 `30/6/11/17/5`，共 69 项；68 是此前快照。[局部移位](SHEET-02-cell-shift-transactions.md)、[九区段编辑](SHEET-04-range-theme-editor.md)、[图表面板 route](SHEET-22-chart-edit-panel-routing.md)与[P18 线型](SHEET-22-line-and-area-styles.md)不新增常规根。factory、动态显隐与实际装配尚未执行，不作为完整运行态入口数或验收结论。
 
 ## 口径
 
 - 一个“根入口”是合并菜单后位于 Ribbon Tab / Group 下的顶层菜单节点。Split、menu/select 的子项不重复计数；动态公式分类按实际生成的分类菜单计数。Context menu、浮动对象菜单和 Footer 菜单单列。
 - Univer 菜单由 `packages/ui/src/services/menu/menu-manager.service.ts` 提供 Tab/Group 顺序，再由 `examples/src/sheets/mount.ts` 装配 preset，以及 sheets-ui、numfmt、formula、filter、sort、table、drawing、hyperlink、thread-comment、data-validation、conditional-formatting 和共享 find-replace 插件合并注册。
-- 本地读取 `createSheetRibbon()` 的根数组，children 不重复计数；公式 8 个根分类由当前 117 项 catalog 的类别静态展开。常规 schema 为 `29/6/11/17/5`，包括条件禁用项。日期时间已作为快速日期子项；插入函数作为常用函数菜单子项；透视表、切片器和时间线保留在 Data，迷你图位于 Insert。
+- 本地读取 `createSheetRibbon()` 的根数组，children 不重复计数；公式 8 个根分类由当前 117 项 catalog 的类别静态展开。常规 schema 为 `30/6/11/17/5`，包括条件禁用项。日期时间已作为快速日期子项；插入函数作为常用函数菜单子项；透视表、切片器和时间线保留在 Data，迷你图位于 Insert。
 - 固定 OSS 顶层父菜单声明为 `30/9/12/6/6`。View 的十字高亮由 `sheets-crosshair-highlight/src/menu/schema.ts` 注入，属于固定版入口；此前将其记为本地独有扩展不准确。
 - 根入口数只比较 schema 规模，不能说明功能完整。子菜单、上下文入口、权限隐藏、动态状态、溢出菜单、Pro 规格入口和实际命令效果分开核对。
 
@@ -16,7 +16,7 @@
 
 | 标签 | Univer 根入口与来源顺序 | 本地根入口与现状 | 主要差异 |
 | --- | --- | --- | --- |
-| START / 开始 | 30。HISTORY 5、FORMAT 11、LAYOUT 6、NUMBER 5、OTHERS 3。入口来自共享 ui、sheets-ui、sheets-numfmt-ui 的 `menu/schema.ts`，组顺序来自 `menu-manager.service.ts`。 | 29。clipboard 5、font 11、layout 6、number 5、tools 2。 | 水平/垂直对齐、换行、旋转、合并均已收为对应父菜单；数字五项、颜色/最近颜色/重置、字体/字号与边框已有共享命令切片，均待统一验证。Start tools 保留保护范围及本地清内容；快捷键/功能搜索仍需核对。 |
+| START / 开始 | 30。HISTORY 5、FORMAT 11、LAYOUT 6、NUMBER 5、OTHERS 3。入口来自共享 ui、sheets-ui、sheets-numfmt-ui 的 `menu/schema.ts`，组顺序来自 `menu-manager.service.ts`。 | 30。clipboard 5、font 11、layout 6、number 5、tools 3。 | 水平/垂直对齐、换行、旋转、合并均已收为对应父菜单；数字五项、颜色/最近颜色/重置、字体/字号与边框已有共享命令切片，均待统一验证。Start tools 保留保护范围、本地清内容和范围主题；主题为第 3 根，grid r1c3 跨两行，快捷键/功能搜索仍需核对。 |
 | INSERT / 插入 | 9。MEDIA 4：图片、超链接、评论面板、添加评论；CELL 5：复选框、下拉、日期、快捷数据条/图标集。 | 6。media 3：超链接、图表、迷你图；cells 3：复选框、下拉、日期父项。 | 超链接已有真实入口；日期时间归日期子项。图片、线程评论及两类快捷条件格式缺完整入口闭环，图表/迷你图按 Pro 发布包位置与状态继续核对。行列结构编辑由上下文承载。 |
 | FORMULAS / 公式 | 12。BASIC 为常用加十类函数菜单，OTHERS 为计算选项；来源 `sheets-formula-ui/src/menu/schema.ts`。 | 11。formula-edit 8 个 catalog 分类，calculation-options 3 项：模式、编辑公式、重算。 | 插入函数已收进常用菜单；完整函数目录、分类、参数/返回类型和求值契约仍未齐。仅复制/粘贴公式已在本地选择性复制/粘贴菜单，仍须按固定命令与历史核对。 |
 | DATA / 数据 | 6。RULES 2、ORGANIZATION 3、OTHERS 1；来源 validation、conditional-formatting、sort、filter、table、find-replace 的 schema。 | 17。organization 2、rules 2、pivot 4、outline 8、data-tools 1。 | 排序父菜单、筛选 split、规则及查找已有入口；筛选复用切换/清条件/重应用命令。仍缺结构化表格选择器及全部 Pro 分组/分析语义。透视表、透视图、切片器与时间线不再重复于 Insert。 |
@@ -48,13 +48,13 @@ MAIN_AREA 源核心 IDs 包括 `SheetCopyCommand`/`SheetCutCommand`/`SheetPasteC
 
 | 上下文位置 | Univer 可见操作类别 | 本地实现与差异 |
 | --- | --- | --- |
-| MAIN_AREA | 快速复制/剪切/粘贴；仅复制/粘贴特殊类型；清内容/格式/全部；文本转数字；插入/删除单元格并可移动邻格；冻结；范围权限；插件注入排序、评论、超链接等。 | 已声明三类清除、文本转数字、右/下插格及左/上删格、特殊剪贴板、冻结和范围保护；已有链接时可打开。排序/筛选、评论、链接编辑/删除和表格等完整插件上下文仍待补齐；位移、引用/合并确认及权限闭环未验收。 |
-| COL_HEADER | 剪贴板/特殊粘贴；插入多列、隐藏/显示列、删除列、列宽/自动列宽、列冻结、范围权限。 | 已声明通用剪贴板/特殊粘贴、左/右插入、删除/隐藏/显示、手动列宽弹窗、自适应、冻结与范围保护。结构/尺寸命令携带 sheetId/index；批量插入及剪贴板是否正确使用命中列仍待补齐/验证。 |
-| ROW_HEADER | 剪贴板/特殊粘贴；插入多行、隐藏/显示行、删除行、行高/适应内容、行冻结、范围权限。 | 已声明通用剪贴板/特殊粘贴、上/下插入、删除/隐藏/显示、手动行高弹窗、自适应、冻结与范围保护。结构/尺寸命令携带 sheetId/index；批量插入及剪贴板是否正确使用命中行仍待补齐/验证。 |
-| FOOTER_TABS | 删除/复制/重命名/标签色/隐藏/显示列表/工作表权限等。 | 已加入复制工作表、标签颜色选择和模型持久字段。复制会复制单元格、格式、合并/尺寸/验证等工作表快照，不会复制 chart/pivot/table 关联对象；有明确提示且不视为完整复制功能。仍缺范围/工作表权限菜单入口和 veryHidden 语义；隐藏工作表列表可恢复普通隐藏表。 |
-| Drawing / 浮动对象 | 图片保存、绘图评论和对象上下文工具。商业图表/形状上下文需按公开规格核验。 | 当前 Excel Ribbon 无 contextual tab schema；画布仅有图表 Overlay。没有图片/图形对象菜单或工具栏入口。 |
+| MAIN_AREA | 快速复制/剪切/粘贴；仅复制/粘贴特殊类型；清内容/格式/全部；文本转数字；插入/删除单元格并可移动邻格；冻结；范围权限；插件注入排序、评论、超链接等。 | [共享移位](SHEET-02-cell-shift-transactions.md)接四 confirm ID/固定子项顺序、部分合并/筛选尾部、候选/资源/权限/历史；清除、特殊剪贴板、冻结/保护及已有链接有接线。排序/筛选、评论、链接编辑/删除与完整 table context 仍缺，所有行为未验收。 |
+| COL_HEADER | 剪贴板/特殊粘贴；插入多列、隐藏/显示列、删除列、列宽/自动列宽、列冻结、范围权限。 | 结构/显隐入口传 sheetId/ranges，尺寸入口传 sheetId/index；命中选区、批量结构、spans/过滤/折叠隐藏组合与宿主保护见[轴事务](COMMON-03-input-selection-axis-history.md#3-行列命令与-ui)。完整剪贴板、字体/auto-height/Office 和性能未验收。 |
+| ROW_HEADER | 剪贴板/特殊粘贴；插入多行、隐藏/显示行、删除行、行高/适应内容、行冻结、范围权限。 | 同列头按实际命中轴/选区传参，共享结构、显隐和尺寸命令/候选；[公开 h/ah/ia/w/hd 导入](SHEET-03-public-axis-import.md)及来源变换已落盘，真实组合场景和 Office/性能未验收。 |
+| FOOTER_TABS | 删除/复制/重命名/标签色/隐藏/显示列表/工作表权限等。 | 生命周期/标签/保护和普通隐藏列表已有接线；[复制资源](SHEET-01-worksheet-copy.md)已处理可识别 chart/pivot/table 等依赖及身份重映射，不能继续记为仅复制 cells。全部未知资源/veryHidden/权限/文件重开仍未验收，详见[生命周期](SHEET-01-worksheet-lifecycle.md)。 |
+| Drawing / 浮动对象 | 图片保存、绘图评论和对象上下文工具。商业图表/形状上下文需按公开规格核验。 | 常规 Ribbon 无独立图表 contextual tab；[对象四根](SHEET-22-chart-object-context-actions.md)、标题/绘图区浮栏和[Drawer route](SHEET-22-chart-edit-panel-routing.md)已有接线。通用图片/形状/组合对象、所有 element 的命中和完整直接编辑仍缺，不能概括为已有全部绘图菜单。 |
 
-行列结构操作曾错误依赖旧的单元格选区。现由 `sheet-context-menu.ts` 将右键命中的 `sheetId/index` 传入行列插删、隐藏和自适应命令；冻结和范围保护也带入命中轴/范围。`ExcelWorkbench.vue` 据参数修改对应 sheet/axis，并将变更放入工作簿历史。已补充的隐藏/显示以模型 `hiddenRows` / `hiddenColumns` 为持久数据，显示操作当前一次清除该轴全部手动隐藏项。自动行高/列宽采用浏览器 Canvas 字体度量和本地模型尺寸上限；它不是上游 Worker/WASM 大表格布局实现，也未做字体、溢出、绘图对象或跨样本 Office 互操作验证。行列头右键仍不会像上游那样把命中区域设成当前选区；命令目标独立传递，选区只在命令成功后移动到结构编辑后的单元格。
+2026-11-26 静态现状：行列插删与显隐按命中或已有合法整轴选区传 sheetId/ranges，尺寸/适应按 sheetId/index；共享命令、候选、资源和内容/选择历史接线见[轴事务](COMMON-03-input-selection-axis-history.md#3-行列命令与-ui)。隐藏使用点与 spans，手动、筛选、outline、零尺寸原因分别保留，不再把显示描述成无条件清除整轴。Canvas 字体度量、实际右键选区/焦点、全部资源/样本、Worker/Rust/WASM 大表路径及 Office 保真仍需统一验证；当前没有新增执行结果。
 
 ## 溢出与布局入口
 

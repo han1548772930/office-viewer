@@ -164,10 +164,27 @@ export function chartTitleControls(kind: ChartTitleKind): ChartSettingControl[] 
       reset: config => { config[kind] = undefined; if (config.options) config.options[group] = undefined } },
     ...(kind === 'title' ? [{ ...selectControl('titleStyle.position', '标题位置', [['top', '上方'], ['bottom', '下方'], ['left', '左侧'], ['right', '右侧'], ['hide', '隐藏']],
       config => config.options?.titleStyle?.visible === false ? 'hide' : config.options?.titleStyle?.position,
-      (config, value) => { const style = optionGroup(config, 'titleStyle'); style.visible = value === undefined ? undefined : value !== 'hide'; if (value !== 'hide') style.position = value }, 'top'),
+      (config, value) => { const style = optionGroup(config, 'titleStyle'); style.visible = value === undefined ? undefined : value !== 'hide'; if (value !== 'hide') { style.position = value; style.manualLayout = undefined } }, 'top'),
       ...resetField('position') }] : []),
     { ...selectControl(`${group}.alignment`, kind === 'title' ? '标题对齐' : '副标题对齐', alignments,
       config => config.options?.[group]?.alignment, (config, value) => { optionGroup(config, group).alignment = value }, 'center'), ...resetField('alignment') },
+    { ...numberControl(`${group}.rotate`, kind === 'title' ? '标题旋转角度' : '副标题旋转角度',
+      config => config.options?.[group]?.rotate, (config, value) => { optionGroup(config, group).rotate = value }, -360, 360),
+      canReset: config => config.options?.[group]?.rotate !== undefined,
+      reset: config => { const style = config.options?.[group]; if (style) style.rotate = undefined } },
+    { ...switchControl(`${group}.manualLayout`, kind === 'title' ? '标题手动位置' : '副标题手动位置',
+      config => !!config.options?.[group]?.manualLayout,
+      (config, value) => { const style = optionGroup(config, group); style.manualLayout = value ? style.manualLayout ?? { left: 0.1, top: 0.1 } : undefined }, false),
+      canReset: config => config.options?.[group]?.manualLayout !== undefined,
+      reset: config => { const style = config.options?.[group]; if (style) style.manualLayout = undefined } },
+    ...(['left', 'top'] as const).map(field => ({
+      ...numberControl(`${group}.manualLayout.${field}`, field === 'left' ? '文字锚点横向比例' : '文字锚点纵向比例',
+        config => config.options?.[group]?.manualLayout?.[field],
+        (config, value) => { const style = optionGroup(config, group); style.manualLayout = value === undefined ? undefined : { left: 0.1, top: 0.1, ...style.manualLayout, [field]: value } }, 0, 1),
+      visible: (config: ChartConfig) => !!config.options?.[group]?.manualLayout,
+      canReset: (config: ChartConfig) => config.options?.[group]?.manualLayout !== undefined,
+      reset: (config: ChartConfig) => { const style = config.options?.[group]; if (style) style.manualLayout = undefined },
+    })),
   ]
 }
 

@@ -37,6 +37,25 @@ const emoji = createCell(0, 3, 'A🙂B')
 emoji.richText = [{ id: 'a', text: 'A' }, { id: 'emoji', text: '🙂', font: { italic: true } },
   { id: 'b', text: 'B', hyperlink: 'https://example.test' }]
 original.sheets[0].cells['0:3'] = emoji
+const mixed = createCell(0, 4, 'A🙂BC')
+mixed.richText = [{ id: 'small', text: 'A', font: { family: 'Arial', size: 9 } },
+  { id: 'large', text: '🙂BC', font: { family: 'Georgia', size: 18 } }]
+original.sheets[0].cells['0:4'] = mixed
+const lines = createCell(0, 5, 'aa\nbb')
+lines.richText = [{ id: 'line-one', text: 'aa\n', font: { size: 9 } }, { id: 'line-two', text: 'bb', font: { size: 18 } }]
+lines.style.wrapStrategy = 'wrap'; lines.style.wrap = true
+original.sheets[0].cells['0:5'] = lines
+original.sheets[0].cells['1:4'] = createCell(1, 4, '123')
+const longText = 'a'.repeat(300) + 'B'.repeat(300), longCell = createCell(0, 6, longText)
+longCell.richText = [{ id: 'long-small', text: longText.slice(0, 300), font: { family: 'Arial', size: 9 } },
+  { id: 'long-large', text: longText.slice(300), font: { family: 'Georgia', size: 18 } }]
+longCell.style.wrapStrategy = 'clip'; longCell.style.wrap = false
+original.sheets[0].cells['0:6'] = longCell
+const wrappedText = 'W'.repeat(24), wrappedCell = createCell(0, 7, wrappedText)
+wrappedCell.richText = [{ id: 'wrap-first', text: wrappedText.slice(0, 12), font: { family: 'Arial', size: 24 } },
+  { id: 'wrap-second', text: wrappedText.slice(12), font: { family: 'Arial', size: 18 } }]
+wrappedCell.style.wrapStrategy = 'wrap'; wrappedCell.style.wrap = true
+original.sheets[0].cells['0:7'] = wrappedCell
 const attempts = [], commands = [], notices = [], updates = []
 let canceled = false, remembered, base = copy(original)
 function connect(studio) {

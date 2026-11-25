@@ -165,7 +165,7 @@ export function insertDocumentColumnGroup(document: FDocument, columnCount: numb
   } else insertion = model.blocks.at(-1) ? { afterBlockId: model.blocks.at(-1)!.id } : { at: selection.focus }
   const result = document.executeCommand({ id: 'doc.command.insert-column-group', columnGroupId, columnCount, ...insertion,
     ...(options.columnIds === undefined ? {} : { columnIds: [...options.columnIds] }), ...(options.widthRatios === undefined ? {} : { widthRatios: [...options.widthRatios] }),
-    ...(options.gap === undefined ? {} : { gap: columnLengthInPixels(options.gap, '栏间距') }),
+    ...(typeof options.gap === 'number' && Number.isFinite(options.gap) && options.gap >= 0 ? { gap: options.gap * 4 / 3 } : {}),
     ...(options.horizontalPadding === undefined ? {} : { horizontalPadding: columnLengthInPixels(options.horizontalPadding, '栏水平内边距') }),
     ...(options.minHeight === undefined ? {} : { minHeight: columnLengthInPixels(options.minHeight, '栏最小高度') }), ...(host ? { host } : {}) }, selection)
   return result.changed && findDocumentBlock(document.getSegmentModel(segmentId), columnGroupId)?.columns ? new FDocumentColumnGroup(document, columnGroupId, segmentId) : null

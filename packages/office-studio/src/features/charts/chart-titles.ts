@@ -1,5 +1,5 @@
-import type { ChartFontOptions, ChartLegendOptions, ChartSemanticOptions, ChartSubtitleStyleOptions, ChartTextAlignment, ChartTitlePosition, ChartTitleStyleOptions } from '../../domain/model'
-import type { TextCommand } from '../../rendering/contracts'
+import type { ChartFontOptions, ChartLegendOptions, ChartSemanticOptions, ChartSubtitleStyleOptions, ChartTextAlignment, ChartTitleManualLayout, ChartTitlePosition, ChartTitleStyleOptions } from '../../domain/model'
+import type { DrawCommand, RenderRect, TextCommand } from '../../rendering/contracts'
 import type { ChartUpdatePatch } from './chart-engine'
 import { chartFont } from './chart-geometry'
 import { cloneChartOptions, definedChartStyleFields } from './chart-options'
@@ -9,6 +9,21 @@ export const ChartTextAlignments = Object.freeze({ Left: 'left', Right: 'right',
 export type ChartTitleSpec = string | (ChartTitleStyleOptions & { text?: string })
 export type ChartSubtitleSpec = string | (ChartSubtitleStyleOptions & { text?: string })
 export type ChartTitleKind = 'title' | 'subtitle'
+export type ChartTitleObjectSpec = ChartTitleStyleOptions & { text?: string }
+export interface ChartTitlePaintLayout {
+  kind: ChartTitleKind
+  lineIndex: number
+  anchor: { x: number; y: number }
+  clip: RenderRect
+  manual: boolean
+  vertical: boolean
+  alignment: ChartTextAlignment
+}
+/** Chart-local metadata stays outside the shared rendering protocol. */
+export interface ChartTitleTextCommand extends TextCommand { chartTitle: ChartTitlePaintLayout }
+export function isChartTitleTextCommand(command: DrawCommand): command is ChartTitleTextCommand {
+  return command.kind === 'text' && 'chartTitle' in command
+}
 export interface ChartTitleGeometrySource {
   title?: string
   subtitle?: string
@@ -42,7 +57,7 @@ export function chartTitleFont(chart: Pick<ChartTitleGeometrySource, 'options'>,
     ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(chart.options?.[kind === 'title' ? 'titleStyle' : 'subtitleStyle']) }
 }
 
-interface TitleTextLayout { kind: ChartTitleKind; font: ChartFontOptions; alignment: ChartTextAlignment; lines: string[]; lineHeight: number; height: number; width: number; offset: number }
+interface TitleTextLayout { kind: ChartTitleKind; font: ChartFontOptions; alignment: ChartTextAlignment; lines: string[]; lineHeight: number; height: number; width: number; offset: number; manualLayout?: ChartTitleManualLayout; rotate: number }
 export interface ChartTitleGeometry {
   position: ChartTitlePosition
   vertical: boolean
@@ -69,15 +84,17 @@ export function chartTitleGeometry(chart: ChartTitleGeometrySource, legendBand?:
   for (const kind of ['title', 'subtitle'] as const) {
     const text = chart[kind]
     if (!text) continue
-    const font = chartTitleFont(chart, kind), size = font.fontSize!, lineHeight = size * 1.25
+    const style = chart.options?.[kind === 'title' ? 'titleStyle' : 'subtitleStyle']
+    const manualLayout = style?.manualLayout, font = chartTitleFont(chart, kind), size = font.fontSize!, lineHeight = size * 1.25
     const remaining = vertical ? availableHeight : Math.max(lineHeight, availableHeight - offset - (kind === 'title' && chart.subtitle ? chartTitleFont(chart, 'subtitle').fontSize! * 1.25 + 6 : 0))
-    const lines = titleTextLines(text, vertical ? size : Math.max(1, frame.width - 24), size, Math.max(1, Math.floor(remaining / lineHeight)), vertical)
-    const height = lines.length * lineHeight, width = vertical ? size : Math.min(Math.max(1, frame.width - 24), lines.reduce((maximum, line) => Math.max(maximum, titleTextWidth(line, size)), 0))
-    const alignment = chart.options?.[kind === 'title' ? 'titleStyle' : 'subtitleStyle']?.alignment ?? 'center'
-    entries.push({ kind, font, alignment, lines, lineHeight, height, width, offset })
-    offset += (vertical ? size : height) + 6
+    const lines = titleTextLines(text, vertical ? size : manualLayout ? Infinity : Math.max(1, frame.width - 24), size,
+      manualLayout && !vertical ? 100_001 : Math.max(1, Math.floor(remaining / lineHeight)), vertical)
+    const height = lines.length * lineHeight, width = vertical ? size : Math.min(manualLayout ? Infinity : Math.max(1, frame.width - 24), lines.reduce((maximum, line) => Math.max(maximum, titleTextWidth(line, size)), 0))
+    const alignment = manualLayout && !vertical ? 'left' : style?.alignment ?? 'center'
+    entries.push({ kind, font, alignment, lines, lineHeight, height, width, offset, manualLayout, rotate: style?.rotate ?? 0 })
+    if (!manualLayout) offset += (vertical ? size : height) + 6
   }
-  if (entries.length) bands[position] = Math.max(0, offset - 6) + 12
+  if (offset) bands[position] = Math.max(0, offset - 6) + 12
   return { frame, position, vertical, bands, entries, startY, availableHeight }
 }
 
@@ -103,20 +120,28 @@ function titleTextLines(text: string, width: number, size: number, maximum: numb
     line += character; used += advance
   }
   if (line || !lines.length) lines.push(line)
-  if (truncated) lines[lines.length - 1] = vertical ? '…' : `${lines.at(-1)!.slice(0, -1)}…`
+  if (truncated) {
+    const last = lines.at(-1)!, end = last.charCodeAt(last.length - 1), before = last.charCodeAt(last.length - 2)
+    const remove = end >= 0xdc00 && end <= 0xdfff && before >= 0xd800 && before <= 0xdbff ? 2 : 1
+    lines[lines.length - 1] = vertical ? '…' : `${last.slice(0, -remove)}…`
+  }
   return lines
 }
 
-export function chartTitleCommands(chart: ChartTitleGeometrySource, color: string, legendBand?: number): TextCommand[] {
+export function chartTitleCommands(chart: ChartTitleGeometrySource, color: string, legendBand?: number): ChartTitleTextCommand[] {
   const geometry = chartTitleGeometry(chart, legendBand), { frame, vertical, position } = geometry
   return geometry.entries.flatMap(entry => {
-    const size = entry.font.fontSize!, x = vertical ? position === 'left' ? frame.x + 8 + entry.offset + size / 2
+    const size = entry.font.fontSize!, x = entry.manualLayout ? frame.x + entry.manualLayout.left * frame.width : vertical ? position === 'left' ? frame.x + 8 + entry.offset + size / 2
       : frame.x + frame.width - 8 - entry.offset - size / 2 : entry.alignment === 'left' ? frame.x + 12
       : entry.alignment === 'right' ? frame.x + frame.width - 12 : frame.x + frame.width / 2
-    const y = vertical ? geometry.startY + (entry.alignment === 'left' ? 0 : entry.alignment === 'right' ? geometry.availableHeight - entry.height : (geometry.availableHeight - entry.height) / 2)
+    const y = entry.manualLayout ? frame.y + entry.manualLayout.top * frame.height : vertical ? geometry.startY + (entry.alignment === 'left' ? 0 : entry.alignment === 'right' ? geometry.availableHeight - entry.height : (geometry.availableHeight - entry.height) / 2)
       : position === 'bottom' ? frame.y + frame.height - 8 - entry.offset - entry.height : frame.y + 8 + entry.offset
-    return entry.lines.flatMap((text, index) => text ? [{ kind: 'text' as const, x, y: y + (index + 0.5) * entry.lineHeight, text,
+    const radians = entry.rotate * Math.PI / 180
+    return entry.lines.flatMap((text, index) => text ? [{ kind: 'text' as const, x: x - Math.sin(radians) * (index + 0.5) * entry.lineHeight,
+      y: y + Math.cos(radians) * (index + 0.5) * entry.lineHeight, text,
       font: chartFont(entry.font, size), color: entry.font.color ?? color, align: vertical ? 'center' as const : entry.alignment,
-      baseline: 'middle' as const, maxWidth: Math.max(1, vertical ? size : frame.width - 24), clip: frame }] : [])
+      baseline: 'middle' as const, ...(entry.manualLayout && !vertical ? {} : { maxWidth: Math.max(1, vertical ? size : frame.width - 24) }),
+      ...(entry.rotate ? { rotation: entry.rotate } : {}), clip: frame,
+      chartTitle: { kind: entry.kind, lineIndex: index, anchor: { x, y }, clip: frame, manual: !!entry.manualLayout, vertical, alignment: entry.alignment } }] : [])
   })
 }

@@ -173,11 +173,11 @@ export function layoutSheetStackedText(text: string, options: { height: number; 
 
 /** Numeric and Boolean values, merged cells and full-width alignment never use horizontal overflow. */
 export function canSheetCellTextOverflow(cell: ExcelCellView | undefined): boolean {
-  if (!cell || sheetCellWrapStrategy(cell) !== 'overflow' || sheetCellShrinkToFit(cell) || cell.align === 'justify' || sheetCellTextRotation(cell) === 'v') return false
+  if (!cell || cell.image || sheetCellWrapStrategy(cell) !== 'overflow' || sheetCellShrinkToFit(cell) || cell.align === 'justify' || sheetCellTextRotation(cell) === 'v') return false
   const value = sheetCellNumberValue(cell), type = sheetCellStoredValueType(cell)
   return typeof value !== 'number' && typeof value !== 'boolean' && type !== 'number' && type !== 'boolean'
 }
 
 export function isSheetCellCoverable(cell: ExcelCellView | undefined): boolean {
-  return !cell || !cell.formula && !cell.sparkline && (cell.rawValue === undefined || cell.rawValue === null || cell.rawValue === '') && cell.value === ''
+  return !cell || !cell.formula && !cell.sparkline && !cell.image && (cell.rawValue === undefined || cell.rawValue === null || cell.rawValue === '') && cell.value === ''
 }

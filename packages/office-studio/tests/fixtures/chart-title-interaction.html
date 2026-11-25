@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+body { margin: 0; } #stage { position: relative; width: 1180px; height: 650px; margin: 12px; }
+.fixture-scroll { position: absolute; inset: 0; overflow: auto; z-index: 0; }
+.fixture-extent { width: 2200px; height: 1200px; }
+.fixture-scene { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+</style></head><body><div id="stage"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { getInstanceByDom } from 'echarts/core'
+import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model.ts'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { FOffice } from '/packages/office-studio/src/api/facade.ts'
+import { createChart, readChartData } from '/packages/office-studio/src/features/charts/chart-engine.ts'
+import { EChartsCanvasRenderer } from '/packages/office-studio/src/features/charts/echarts-renderer.ts'
+import { createCanvas2DDriver } from '/packages/office-studio/src/rendering/canvas2d.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import ChartOverlay from '/packages/office-studio/src/components/ChartOverlay.vue'
+import '/packages/office-studio/src/style.css'
+
+// Production Overlay/Ant/ECharts/Canvas2D and author Facade are used. Prepared
+// data isolates paint setup; author commits still need the real Worker/WASM
+// during the later run. This is not a full Workbench/Office/WebGPU acceptance.
+const surfaces = new Map(), originalRender = EChartsCanvasRenderer.prototype.render
+EChartsCanvasRenderer.prototype.render = function (id, ...args) {
+  const frame = originalRender.call(this, id, ...args)
+  surfaces.set(id, { renderer: this, frame, instance: getInstanceByDom(frame.source) })
+  return frame
+}
+const studioSlot = shallowRef(), view = shallowRef(), prepared = shallowRef({}), zoom = ref(100), dark = ref(false)
+let app, driver, commands = [], updates = [], fallbackUpdates = [], removals = [], subscriptions = [], rejectNext = false
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))) }
+function studio() { return studioSlot.value }
+function book() { return FOffice.newAPI(studio()).getActiveWorkbook() }
+function live(id) { return book().getActiveSheet().getChartById(id) }
+function syncView() { view.value = toExcelWorkbookView(studio().getWorkbookModel(book().getId())) }
+function bind(next) {
+  for (const subscription of subscriptions) subscription.dispose()
+  subscriptions = []; studioSlot.value = next; syncView()
+  subscriptions.push(next.events.on('CommandExecuted', event => {
+    if (event.id === 'sheet.command.update-chart') updates.push(event.params)
+    syncView()
+  }))
+  subscriptions.push(next.events.on('BeforeCommandExecute', event => {
+    if (rejectNext && event.id === 'sheet.command.update-chart') { rejectNext = false; event.cancel = true }
+  }))
+}
+function paint() {
+  if (!driver) return
+  const host = document.querySelector('#stage'), scroller = document.querySelector('.fixture-scroll'), scale = zoom.value / 100
+  const left = scroller?.scrollLeft ?? 0, top = scroller?.scrollTop ?? 0
+  const transformClip = clip => clip && ({ x: clip.x * scale - left, y: clip.y * scale - top, width: clip.width * scale, height: clip.height * scale })
+  driver.resize(host.clientWidth, host.clientHeight, Math.max(0.1, window.devicePixelRatio || 1))
+  const visible = commands.map(command => command.kind === 'image'
+    ? { ...command, x: command.x * scale - left, y: command.y * scale - top, width: command.width * scale, height: command.height * scale, clip: transformClip(command.clip) }
+    : command.kind === 'line' ? { ...command, x1: command.x1 * scale - left, y1: command.y1 * scale - top,
+      x2: command.x2 * scale - left, y2: command.y2 * scale - top, width: (command.width ?? 1) * scale, clip: transformClip(command.clip) } : command)
+  driver.render({ width: host.clientWidth, height: host.clientHeight, background: dark.value ? '#141414' : '#ffffff', commands: visible })
+}
+function protection() { return { id: 'readonly', permissionId: 'permission', unitType: 'worksheet', ownerUserId: 'other-user',
+  allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView' } }
+async function mount({ readonly = false, position = 'top', rotate = 0, multiline = false, type = 'line', plotArea } = {}) {
+  await release(); surfaces.clear(); commands = []; updates = []; fallbackUpdates = []; removals = []; rejectNext = false
+  const model = createBlankWorkbook(), sheet = model.sheets[0]; model.id = 'title-interaction-book'
+  const table = [['Region', 'Main'], ['North', 7], ['South', 4]]
+  sheet.cells = Object.fromEntries(table.flatMap((row, r) => row.map((value, c) => [r + ':' + c, createCell(r, c, value)])))
+  if (readonly) sheet.worksheetProtection = protection()
+  const config = { type, source: { orientation: 'columns', range: { startRow: 0, startCol: 0, endRow: 2, endCol: 1 } }, categoryField: 0, valueFields: [1],
+    title: multiline ? 'Main\nSecond' : 'Main', subtitle: 'Sub', legend: { visible: true, position: 'bottom', selectMode: 'multiple' },
+    position: { x: 64, y: 48 }, size: { width: 460, height: 340 },
+    options: { appearance: { font: { family: 'Georgia' } }, titleStyle: { position, rotate, fontSize: 18 }, subtitleStyle: { color: '#123456' },
+      ...(plotArea ? { plotArea } : {}) } }
+  const native = createChart(model, sheet.id, config), shared = createChart(model, sheet.id, { ...config, position: { x: 624, y: 48 },
+    options: { ...config.options, allSeriesStyle: { label: { visible: true, position: 'insideEnd' } } } })
+  native.id = 'native-title'; shared.id = 'shared-title'; model.charts = [native, shared]
+  prepared.value = { [native.id]: { preparedData: readChartData(model, native) }, [shared.id]: { preparedData: readChartData(model, shared) } }
+  zoom.value = 100; dark.value = false; bind(new OfficeStudio({ workbook: model }))
+  app = createApp({ setup: () => () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, () =>
+    h('div', { style: 'position:absolute;inset:0' }, [
+      h('div', { class: 'canvas-scroll fixture-scroll', onScroll: paint }, [h('div', { class: 'fixture-extent' })]),
+      h('canvas', { class: 'fixture-scene', ref: value => { if (value && !driver) driver = createCanvas2DDriver(value) } }),
+      h(ChartOverlay, { workbook: view.value, activeSheetId: view.value.activeSheetId, studio: studioSlot.value, zoom: zoom.value, computedStatistics: prepared.value,
+        onUpdateChart: value => fallbackUpdates.push(value), onRemoveChart: id => removals.push(id), onOverlayCommands: value => { commands = value; paint() } }),
+    ])) })
+  app.mount('#stage'); await settled(); return state()
+}
+function target(id, kind = 'title') { return surfaces.get(id)?.renderer.getTitleTarget(id, kind) }
+function plotTarget(id) { return surfaces.get(id)?.renderer.getPlotAreaTarget(id) }
+function plotPoint(id, body = false) {
+  const selected = plotTarget(id), bounds = selected?.bounds
+  if (!bounds) throw new Error('Visible plot area was not found: ' + id)
+  const rect = [...document.querySelectorAll('.chart-hitbox')].find(node => node.dataset.chartId === id).getBoundingClientRect()
+  return { x: rect.left + (bounds.x + (body ? bounds.width / 2 : 0)) * zoom.value / 100,
+    y: rect.top + (bounds.y + bounds.height / 2) * zoom.value / 100 }
+}
+function browserPoint(id, kind = 'title') {
+  const selection = target(id, kind), polygon = selection?.polygons[0]
+  if (!polygon?.length) throw new Error('Measured title was not found: ' + id + '/' + kind)
+  const point = polygon.reduce((sum, next) => ({ x: sum.x + next.x / polygon.length, y: sum.y + next.y / polygon.length }), { x: 0, y: 0 })
+  const node = [...document.querySelectorAll('.chart-hitbox')].find(node => node.dataset.chartId === id), rect = node.getBoundingClientRect()
+  return { x: rect.left + point.x * zoom.value / 100, y: rect.top + point.y * zoom.value / 100 }
+}
+function legendPoint(id) {
+  const surface = surfaces.get(id), points = []
+  for (const root of surface.instance.getZr().storage.getRoots()) root.traverse(element => {
+    if (element.type !== 'text') return
+    const bounds = element.getBoundingRect().clone(), transform = element.getComputedTransform()
+    if (transform) bounds.applyTransform(transform)
+    const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+    if (surface.renderer.getLegendHit(id, point)?.kind === 'item') points.push(point)
+  })
+  if (!points.length) throw new Error('Actual native legend item was not found')
+  const rect = [...document.querySelectorAll('.chart-hitbox')].find(node => node.dataset.chartId === id).getBoundingClientRect()
+  return { x: rect.left + points[0].x * zoom.value / 100, y: rect.top + points[0].y * zoom.value / 100 }
+}
+function state() {
+  if (!studioSlot.value) return { released: true }
+  return { author: JSON.stringify(studio().getWorkbookModel(book().getId()).charts), revision: studio().getWorkbookRevision(book().getId()), updates: updates.length,
+    fallbackUpdates: fallbackUpdates.length, removals: removals.length, zoom: zoom.value, dark: dark.value,
+    outlines: commands.filter(command => command.kind === 'line').length, charts: studio().getWorkbookModel(book().getId()).charts.map(chart => ({
+      id: chart.id, title: chart.title, subtitle: chart.subtitle, options: JSON.parse(JSON.stringify(chart.options ?? {})), position: { ...chart.position }, size: { ...chart.size },
+      target: target(chart.id), subtitleTarget: target(chart.id, 'subtitle'), plotTarget: plotTarget(chart.id), legendView: surfaces.get(chart.id)?.renderer.getLegendView(chart.id),
+      width: surfaces.get(chart.id)?.frame.source.width,
+      expectedWidth: Math.round(chart.size.width * Math.max(0.1, window.devicePixelRatio || 1) * zoom.value / 100),
+    })) }
+}
+async function release() {
+  const old = [...surfaces.values()]
+  app?.unmount(); app = undefined; driver?.dispose(); driver = undefined
+  for (const subscription of subscriptions) subscription.dispose(); subscriptions = []
+  studioSlot.value?.dispose(); studioSlot.value = undefined; await settled()
+  return old.map(surface => ({ disposed: surface.instance.isDisposed(), size: [surface.frame.source.width, surface.frame.source.height] }))
+}
+window.chartTitleInteractionFixture = { mount, state, target, browserPoint, legendPoint, plotTarget, plotPoint, surfaces, release,
+  async undo() { book().undo(); syncView(); await settled(); return state() }, async redo() { book().redo(); syncView(); await settled(); return state() },
+  async reopen() { const saved = JSON.parse(JSON.stringify(book().save())), old = studio(); bind(new OfficeStudio({ workbook: saved })); old.dispose(); await settled(); return state() },
+  async setReadonly(value) { studio().getWorkbookModel(book().getId()).sheets[0].worksheetProtection = value ? protection() : undefined; syncView(); await settled() },
+  async setDark(value) { dark.value = value; await settled() }, async setZoom(value) { zoom.value = value; await settled() },
+  async scroll(left, top = 0) { const scroller = document.querySelector('.fixture-scroll'); scroller.scrollLeft = left; scroller.scrollTop = top; await settled() },
+  async changeTitle(id, spec) { await live(id).setTitle(spec); await settled(); return state() },
+  async changePlot(id, plotArea) { await live(id).setOptions({ plotArea }); await settled(); return state() },
+  rejectNextUpdate() { rejectNext = true },
+  async dispose() { await release(); surfaces.clear(); EChartsCanvasRenderer.prototype.render = originalRender } }
+await mount()
+</script></body></html>

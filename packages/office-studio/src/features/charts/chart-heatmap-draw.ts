@@ -7,6 +7,7 @@ import { chartColorOpacity, chartFont, chartLine, chartRect } from './chart-geom
 import { chartHeatmapPointStyle } from './chart-derived'
 import { chartFillPatternPaint } from './chart-fill-pattern'
 import { definedChartStyleFields } from './chart-options'
+import { chartTitleGeometry } from './chart-titles'
 import { chartHeatmapBoundaryText, chartHeatmapCellRect, chartHeatmapFieldNames, chartHeatmapLabelAnchor,
   chartHeatmapLabelText, chartHeatmapLegendBand, chartHeatmapRatioColor, chartHeatmapValueVisible, resolveChartHeatmapLabel,
   type ChartHeatmapScale } from './chart-heatmap'
@@ -77,15 +78,18 @@ export function drawChartHeatmapCells(commands: DrawCommand[], data: ChartData, 
 /** The actual legend is a shared Canvas scene in both adapters. The internal
  * native visualMap is noninteractive; surface pointer forwarding queries these
  * exact rectangles rather than depending on an unattached Canvas DOM event. */
-export function createChartHeatmapLegend(chart: Pick<ChartModel, 'legend' | 'options'>, layout: Pick<ChartLayout, 'frame' | 'plot'>,
+export function createChartHeatmapLegend(chart: Pick<ChartModel, 'legend' | 'options' | 'title' | 'subtitle'>, layout: Pick<ChartLayout, 'frame' | 'plot'>,
   scale: ChartHeatmapScale, color: string): ChartHeatmapLegend {
   const visible = chart.legend.visible, position = chart.legend.position, horizontal = position === 'top' || position === 'bottom'
-  const { frame, plot } = layout, font = { ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(chart.legend.font) }
+  const { frame: chartFrame, plot } = layout, font = { ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(chart.legend.font) }
   const fontSize = font.fontSize ?? 11, commands: DrawCommand[] = []
-  const legend: ChartHeatmapLegend = { visible, position, horizontal, frame, font, color: font.color ?? color, scale, pieces: [], commands }
+  const titles = chartTitleGeometry({ ...chart, position: { x: chartFrame.x, y: chartFrame.y }, size: { width: chartFrame.width, height: chartFrame.height } }).bands
+  const frame = { x: chartFrame.x + titles.left, y: chartFrame.y + titles.top,
+    width: Math.max(1, chartFrame.width - titles.left - titles.right), height: Math.max(1, chartFrame.height - titles.top - titles.bottom) }
+  const legend: ChartHeatmapLegend = { visible, position, horizontal, frame: chartFrame, font, color: font.color ?? color, scale, pieces: [], commands }
   if (!visible) return legend
   function text(value: string, x: number, y: number, maxWidth: number, align: TextCommand['align'] = 'center'): void {
-    commands.push({ kind: 'text', x, y, text: value, font: chartFont(font, 11), color: legend.color, align, baseline: 'middle', maxWidth: Math.max(1, maxWidth), clip: frame })
+    commands.push({ kind: 'text', x, y, text: value, font: chartFont(font, 11), color: legend.color, align, baseline: 'middle', maxWidth: Math.max(1, maxWidth), clip: chartFrame })
   }
   if (scale.type === 'continuous') {
     const sideWidth = position === 'left' ? Math.max(1, plot.x - frame.x - 54) : Math.max(1, frame.x + frame.width - plot.x - plot.width - 12)
@@ -102,7 +106,7 @@ export function createChartHeatmapLegend(chart: Pick<ChartModel, 'legend' | 'opt
     for (let index = 0; index < count; index++) {
       const ratio = (index + 0.5) / count, rect = horizontal ? { x: bar.x + index / count * bar.width, y: bar.y, width: bar.width / count, height: bar.height }
         : { x: bar.x, y: bar.y + (count - index - 1) / count * bar.height, width: bar.width, height: bar.height / count }
-      chartRect(commands, rect, chartHeatmapRatioColor(scale, scale.extent.min === scale.extent.max ? 0.5 : ratio), undefined, frame)
+      chartRect(commands, rect, chartHeatmapRatioColor(scale, scale.extent.min === scale.extent.max ? 0.5 : ratio), undefined, chartFrame)
     }
     const minText = chartHeatmapBoundaryText(scale.extent.min, chart.options?.heatmap?.unit), maxText = chartHeatmapBoundaryText(scale.extent.max, chart.options?.heatmap?.unit)
     if (horizontal) {
@@ -124,7 +128,7 @@ export function createChartHeatmapLegend(chart: Pick<ChartModel, 'legend' | 'opt
       const x = startX + visibleIndex % columns * itemWidth, y = startY + Math.floor(visibleIndex / columns) * step
       const rect = { x, y, width: 12, height: Math.min(12, step) }, hit = { x, y: y - 2, width: itemWidth, height: step }
       legend.pieces.push({ pieceIndex, rect, hit })
-      chartRect(commands, rect, piece.color, undefined, frame)
+      chartRect(commands, rect, piece.color, undefined, chartFrame)
       // Fixed piecewise labels do not append the continuous boundary unit.
       text(piece.text, x + 18, y + rect.height / 2, itemWidth - 24, 'left')
     }

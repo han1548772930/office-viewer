@@ -68,7 +68,8 @@ export function documentPublicParagraphs(index: DocumentPublicBodyIndex): Docume
   const positions = new Map(index.positions.map(position => [position.block.id, position]))
   return findDocumentParagraphs(index.model, {}).flatMap(info => {
     const position = positions.get(info.paragraphId)
-    return position ? [{ ...info, startOffset: position.start, endOffset: position.end }] : []
+    return position ? [{ ...info, text: index.data.body.dataStream.slice(position.start, position.end),
+      startOffset: position.start, endOffset: position.end }] : []
   })
 }
 

@@ -1,6 +1,7 @@
 /// <reference types="@webgpu/types" />
 import type { RenderDriver, RenderRect, RenderScene, TextCommand } from './contracts'
 import { intersectRect, parseColor } from './geometry'
+import { imageCommandGeometry } from './image-geometry.ts'
 
 interface TextureEntry { texture: GPUTexture; bindGroup: GPUBindGroup; used: number; bytes: number }
 interface TextMetricsEntry { advance: number; left: number; top: number; right: number; bottom: number }
@@ -112,11 +113,11 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
       frame += 1
       const vertices: number[] = [], batches: Batch[] = []
       const viewport: RenderRect = { x: 0, y: 0, width, height }
-      const quad = (points: number[], color: string, texture: TextureEntry, clip: RenderRect, opacity = 1) => {
+      const quad = (points: number[], color: string, texture: TextureEntry, clip: RenderRect, opacity = 1, uv = [[0, 0], [1, 0], [1, 1], [0, 1]]) => {
         if (clip.width <= 0 || clip.height <= 0) return
         const rgba = parseColor(color); rgba[3] *= opacity
         const start = vertices.length / 8
-        const indices = [0, 1, 2, 0, 2, 3], uv = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        const indices = [0, 1, 2, 0, 2, 3]
         for (const index of indices) vertices.push(points[index * 2] / width * 2 - 1, 1 - points[index * 2 + 1] / height * 2, uv[index][0], uv[index][1], ...rgba)
         const previous = batches[batches.length - 1]
         if (previous && previous.texture === texture && previous.clip.x === clip.x && previous.clip.y === clip.y && previous.clip.width === clip.width && previous.clip.height === clip.height) previous.count += 6
@@ -202,7 +203,11 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             }
             break
           }
-          case 'image': rect(command, '#ffffff', clip, getImage(command.source, command.sourceVersion), command.opacity ?? 1); break
+          case 'image': {
+            const geometry = imageCommandGeometry(command)
+            if (geometry) quad(geometry.points, '#ffffff', getImage(command.source, command.sourceVersion), clip, command.opacity ?? 1, geometry.uv)
+            break
+          }
         }
       }
       const data = new Float32Array(vertices)

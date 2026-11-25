@@ -20,6 +20,10 @@ export function mergeChartOptions(current: ChartSemanticOptions | undefined, pat
   for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'axisPointer', 'rightYAxis', 'depthAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) {
     if (current?.[key] && patch[key]) Object.assign(merged, { [key]: mergeOptionGroup(current[key], patch[key]) })
   }
+  // A shape edit or reset clears the old switch. A legacy switch-only edit
+  // deliberately resumes legacy area-only behavior rather than being ignored.
+  if (patch.area && Object.hasOwn(patch.area, 'lineStyle')) delete merged.area?.smooth
+  else if (patch.area && Object.hasOwn(patch.area, 'smooth')) delete merged.area?.lineStyle
   // Count and Width are mutually exclusive authored variants. Changing the
   // mode replaces its entire configuration rather than retaining the old arm.
   if (patch.histogram && Object.hasOwn(patch.histogram, 'binning')) merged.histogram = { ...merged.histogram,

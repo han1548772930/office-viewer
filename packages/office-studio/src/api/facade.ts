@@ -8,6 +8,8 @@ import type {
   ChartParetoBarStyleOptions,
   ChartParetoLineStyleOptions,
   ChartSemanticOptions,
+  ChartAreaLineStyle,
+  ChartInvalidValueStrategy,
   ChartSeriesOptions,
   ChartSeriesSelector,
   ChartWaterfallConnectorOptions,
@@ -96,8 +98,10 @@ import { sheetFillApplyType } from '../features/sheet-workbench/sheet-fill-comma
 import type { SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
 import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
 import { SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, type DocumentCustomXmlPartsWriteOptions } from './document-custom-xml-commands'
-import { assertDocumentPermission } from '../features/document/permissions/document-permissions'
+import { assertDocumentPermission, permissionTargetsForSelection } from '../features/document/permissions/document-permissions'
 import { cloneChartOptions, mergeChartOptions } from '../features/charts/chart-options'
+import { ChartAreaLineStyles, ChartInvalidValueTypes, CHART_INVALID_VALUE_STRATEGY_DEFAULT,
+  chartAreaLineStylePatch, chartAreaLineStyleValue, chartInvalidValueStrategyValue, resolveChartAreaLineStyle } from '../features/charts/chart-line-and-area'
 import { chartTypeSelectOptions, resolveChartType } from '../features/charts/chart-catalog'
 import { convertChartType } from '../features/charts/chart-type-conversion'
 import { chartGaugeNullableValues, chartGaugeRangesOptions, chartGaugeTicksOptions, patchChartGaugeOptions } from '../features/charts/chart-gauge-api'
@@ -138,7 +142,6 @@ import {
   getDocumentTextStyleRuns,
   documentBodyText,
   saveDocumentSnapshot,
-  setDocumentParagraphStyle,
   setDocumentTextStyle,
   type DocumentParagraphIdentity,
   type DocumentParagraphInfo,
@@ -158,6 +161,7 @@ import type { OfficeStudio } from './office-studio'
 import { COMMIT_SHEET_CELL_INPUT_COMMAND, type SheetCellInputCommandResult,
   type SheetCellInputOptions } from '../features/sheet-workbench/sheet-cell-input-command.ts'
 import { SHEET_AXIS_DIMENSION_COMMANDS } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
+import { SHEET_CELL_SHIFT_COMMANDS, SheetCellShiftDimensions, type SheetCellShiftDimension } from '../features/sheet-workbench/sheet-cell-shift-command.ts'
 import type { SheetAxisStructureCommandInput } from '../features/sheet-workbench/sheet-axis-structure-command.ts'
 import { SHEET_AXIS_VISIBILITY_COMMANDS } from '../features/sheet-workbench/sheet-axis-visibility.ts'
 import { SET_SHEET_CONDITIONAL_FORMATS_COMMAND } from '../features/conditional-formatting/conditional-format-command.ts'
@@ -176,6 +180,14 @@ import { FDocumentQuote, FDocumentCallout, FDocumentCode, documentStructuredBloc
   insertDocumentQuote, insertDocumentCallout, insertDocumentCode, type DocumentStructuredFindQuery,
   type DocumentQuoteInsertOptions, type DocumentCalloutInsertOptions, type DocumentCodeInsertOptions } from './document-structured-blocks'
 import { FDocumentColumnGroup, insertDocumentColumnGroup, type DocumentColumnFindQuery, type DocumentColumnInsertOptions } from './document-columns'
+import { FDocumentLatex, documentLatexFormulaTargets, documentLatexRangeAt, findDocumentLatexFormulas, insertDocumentLatexAtRange,
+  insertDocumentLatexAtSelection, type DocumentLatexCreateOptions, type DocumentLatexInsertOptions, type DocumentLatexFindQuery } from './document-latex'
+import { resolveDocumentSegmentHost } from './document-segments'
+import { registerDocumentLatexTemplateEditor, type DocumentLatexTemplateEditorHandle } from './document-latex-template-editors'
+import { registerDocumentLatexPopupEditor, type DocumentLatexPopupEditor, type DocumentLatexPopupEditorHandle } from './document-latex-popup-editors'
+import { DOCUMENT_LATEX_POPUP_OPERATIONS, type DocumentLatexPopupOperationRequest } from '../features/document/controllers/document-latex-popup'
+import { DOCUMENT_LATEX_TEMPLATE_OPERATION } from '../features/document/latex/latex-templates'
+import { documentBlockHostId } from '../features/document/model/document-block-host'
 import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
 import { DocumentNoteCommandRejectedError, type DocumentNoteCommandResult } from './document-note-commands'
@@ -199,11 +211,31 @@ import { documentNoteInputFromPublic, documentNoteSettingsFromPublic, documentNo
 export type { DocumentNoteInfo, DocumentNoteContentInput, PublicDocumentNoteInput, PublicDocumentNoteDecoration,
   PublicDocumentFootnoteSettings, PublicDocumentEndnoteSettings } from './document-note-body'
 import { FEventName, type ApiEventMap, type Disposable } from './events'
-import { applyCellValue, randomId, type ApiCellValue } from './model-utils'
+import { applyCellValue, randomId, type ApiCellValue, type WorkbookInput } from './model-utils'
+import { SHEET_IMAGE_COMMANDS } from '../features/sheet-images/sheet-image-commands.ts'
+import { sheetBackgroundImageFromPublic, sheetBackgroundImageToPublic, sheetCellDataWithPublicImage, workbookWithPublicSheetImages,
+  SheetImageSourceTypes, type SheetImageSourceType, type UniverWorksheetBackgroundImage, type UniverWorkbookData, type UniverSheetCellData,
+  type UniverSheetImageDrawing } from '../features/sheet-images/sheet-image-public.ts'
+import { sheetImageSaveConfig, type SaveCellImagesOptions } from '../features/sheet-images/sheet-image-save.ts'
+import type { SheetImageInputPreparationOptions } from '../features/sheet-images/sheet-image-input-preparation.ts'
+import { FOverGridImage, FOverGridImageBuilder, canViewSheetImage, insertWorksheetImage, preparedSheetImages, type SheetImageAsyncOptions } from './sheet-images.ts'
+import { SheetDrawingAnchorTypes, type SheetFloatingImage } from '../domain/sheet-images.ts'
+import { SHEET_IMAGE_CROP_TYPES } from '../features/sheet-images/sheet-image-crop.ts'
+import { SHEET_IMAGE_ALIGN_TYPES, SHEET_IMAGE_ALIGN_OPERATIONS, type SheetImageAlignType } from '../features/sheet-images/sheet-image-selection.ts'
+import { FDocumentImage, insertDocumentImage, getDocumentImage, getDocumentImages, type DocumentImageInsertOptions } from './document-images'
+import { registerDocumentImageEditor, type DocumentImageEditor, type DocumentImageEditorHandle } from './document-image-editors'
 import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
 import { parseSheetHyperlinkTarget } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCellInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { SHEET_FONT_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-font-format-command.ts'
+import { SHEET_DEFAULT_STYLE_COMMANDS } from './sheet-default-style-commands.ts'
+import { SHEET_RANGE_THEME_COMMANDS } from './sheet-range-theme-commands.ts'
+import { RangeThemeStyle, sheetRangeThemeToJson, type SheetRangeThemeStyleJson } from '../features/sheet-workbench/sheet-range-theme-style.ts'
+import { SHEET_BUILTIN_RANGE_THEME_NAMES } from '../features/sheet-workbench/sheet-range-theme-presets.ts'
+import { sheetRangeThemeByName, sheetUsedRangeThemeRule } from '../features/sheet-workbench/sheet-range-theme-resolver.ts'
+import { resolveSheetCellStyle, resolveSheetStyleSource, sheetAxisStyleSource, sheetCellDirectStyle, type SheetStyleInput } from '../features/sheet-workbench/sheet-style-inheritance.ts'
+import type { CellStyle, SheetStyleSource } from '../domain/model.ts'
+import { sheetStyleDataWithPublicFields, type SheetApiStyleData } from '../features/sheet-workbench/sheet-public-style.ts'
 import { FORMAT_SHEET_CELL_RICH_TEXT_COMMAND, type SheetCellInlineStylePatch } from '../features/sheet-workbench/sheet-cell-inline-format-command.ts'
 import { SHEET_BORDER_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { SheetBorderTypes, SheetBorderStyleTypes, type SheetBorderType, type SheetBorderPreset, type SheetBorderStyleType, type SheetBorderLineStyle } from '../features/sheet-workbench/sheet-cell-border.ts'
@@ -277,6 +309,11 @@ export type DocumentContentControlPatch = ContentControlPatch
 export class FOffice {
   readonly Event = new FEventName()
   readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
+    ImageSourceType: SheetImageSourceTypes, SheetDrawingAnchorType: Object.freeze(SheetDrawingAnchorTypes), CropType: Object.freeze(SHEET_IMAGE_CROP_TYPES),
+    ArrangeType: Object.freeze({ forward: 0, backward: 1, front: 2, back: 3 } as const), AlignType: SHEET_IMAGE_ALIGN_TYPES, DrawingType: Object.freeze({ UNRECOGNIZED: -1, DRAWING_IMAGE: 0, DRAWING_SHAPE: 1,
+      DRAWING_CHART: 2, DRAWING_TABLE: 3, DRAWING_SMART_ART: 4, DRAWING_VIDEO: 5, DRAWING_GROUP: 6, DRAWING_UNIT: 7,
+      DRAWING_DOM: 8, DRAWING_BLOCK: 9, DRAWING_SLICER: 10, DRAWING_TIMELINE: 11, DRAWING_OLE: 12 } as const),
+    Dimension: SheetCellShiftDimensions,
     WorksheetHiddenState: Object.freeze({ VISIBLE: 0, HIDDEN: 1, VERY_HIDDEN: 2 } as const),
     AUTO_FILL_APPLY_TYPE: Object.freeze({ COPY: 'COPY', SERIES: 'SERIES', ONLY_FORMAT: 'ONLY_FORMAT', NO_FORMAT: 'NO_FORMAT' } as const),
     ChartGaugeMode: ChartGaugeModes, ChartGaugePointerShape: ChartGaugePointerShapes, ChartRadarShape: ChartRadarShapes,
@@ -284,6 +321,7 @@ export class FOffice {
     ChartRelationChartLayoutEnum: ChartRelationLayouts,
     ChartVisualMapType: ChartVisualMapTypes,
     ChartSelectModeEnum: ChartLegendSelectModes,
+    ChartAreaLineStyle: ChartAreaLineStyles, ChartInvalidValueType: ChartInvalidValueTypes,
     ChartLegendPositionEnum: ChartLegendPositions,
     ChartTitlePositionEnum: ChartTitlePositions,
     ChartLabelAlignEnum: ChartTextAlignments,
@@ -312,8 +350,12 @@ export class FOffice {
   getCurrentLocale(): string { return this.studio.regionalSettings.locale.value.replace('-', '') }
   getCurrentRegion(): string { return this.studio.regionalSettings.region.value.replace('-', '') }
 
-  createWorkbook(data: Partial<WorkbookModel> & Record<string, unknown> = {}, options: CreateUnitOptions = {}): FWorkbook {
+  createWorkbook(data: WorkbookInput = {}, options: CreateUnitOptions = {}): FWorkbook {
     const model = this.studio.createWorkbook(data, options.makeCurrent ?? true)
+    return new FWorkbook(this.studio, model.id!)
+  }
+  async createWorkbookAsync(data: WorkbookInput = {}, options: CreateUnitOptions & SheetImageInputPreparationOptions = {}): Promise<FWorkbook> {
+    const model = await this.studio.createWorkbookAsync(data, options.makeCurrent ?? true, options)
     return new FWorkbook(this.studio, model.id!)
   }
 
@@ -386,6 +428,23 @@ export class FWorkbook {
 
   getId(): string { return this.id }
   getName(): string { return this.model().name }
+  getDefaultStyle(): SheetStyleSource { return cloneModel(this.model().defaultStyle ?? null) }
+  getRegisteredRangeThemes(): string[] { return [...SHEET_BUILTIN_RANGE_THEME_NAMES] }
+  getCustomRangeThemes(): string[] { return Object.keys(this.model().rangeThemes ?? {}) }
+  createRangeThemeStyle(name: string, options?: Omit<SheetRangeThemeStyleJson, 'name'>): RangeThemeStyle { return new RangeThemeStyle(name, options) }
+  getRangeThemeStyle(name: string): RangeThemeStyle | null {
+    const style = sheetRangeThemeByName(name, this.model())
+    return style ? new RangeThemeStyle(style.name, sheetRangeThemeToJson(style)) : null
+  }
+  registerRangeTheme(style: RangeThemeStyle): void {
+    if (!(style instanceof RangeThemeStyle)) throw new TypeError('请提供 RangeThemeStyle 配置。')
+    this.api.executeCommandSync(SHEET_RANGE_THEME_COMMANDS.register, { unitId: this.id, rangeThemeStyleJson: style.toJson() })
+  }
+  unregisterRangeTheme(name: string): void { this.api.executeCommandSync(SHEET_RANGE_THEME_COMMANDS.unregister, { unitId: this.id, themeName: name }) }
+  setDefaultStyle(style: SheetStyleInput): this {
+    this.api.executeCommandSync(SHEET_DEFAULT_STYLE_COMMANDS.workbook, { unitId: this.id, style })
+    return this
+  }
   getCalculationMode(): 'automatic' | 'manual' { return this.model().calculationMode ?? 'automatic' }
   setCalculationMode(mode: 'automatic' | 'manual'): this {
     this.api.executeCommandSync('sheet.command.set-calculation-mode', { unitId: this.id, mode })
@@ -402,6 +461,16 @@ export class FWorkbook {
   save(): WorkbookModel {
     for (const sheet of this.model().sheets) this.api.assertCanViewWorksheet(this.id, sheet.id)
     const snapshot = cloneModel(this.model())
+    snapshot.modified = false
+    this.api.markSaved('workbook', this.id)
+    return snapshot
+  }
+  getSnapshot(): UniverWorkbookData {
+    for (const sheet of this.model().sheets) this.api.assertCanViewWorksheet(this.id, sheet.id)
+    return workbookWithPublicSheetImages(this.model())
+  }
+  savePublicSnapshot(): UniverWorkbookData {
+    const snapshot = this.getSnapshot()
     snapshot.modified = false
     this.api.markSaved('workbook', this.id)
     return snapshot
@@ -535,6 +604,86 @@ export class FWorksheet {
   getUnitId(): string { return this.unitId }
   getSheetId(): string { return this.id }
   getSheetName(): string { return this.sheet().name }
+  getBackgroundImage(): UniverWorksheetBackgroundImage | null {
+    this.api.assertCanViewWorksheet(this.unitId, this.id)
+    const image = this.sheet().backgroundImage
+    return image ? sheetBackgroundImageToPublic(image) : null
+  }
+  setBackgroundImage(source: string, imageSourceType: SheetImageSourceType = 'URL'): this {
+    const backgroundImage = sheetBackgroundImageFromPublic({ source, imageSourceType })
+    this.api.executeCommandSync(SHEET_IMAGE_COMMANDS.setBackground, { unitId: this.unitId, sheetId: this.id, backgroundImage })
+    return this
+  }
+  async setBackgroundImageAsync(source: string | File, options: SheetImageAsyncOptions = {}): Promise<boolean> {
+    return this.api.executeCommand(SHEET_IMAGE_COMMANDS.addBackground, { ...options, unitId: this.unitId, sheetId: this.id,
+      ...(typeof source === 'string' ? { source } : { files: [source] }) })
+  }
+  deleteBackgroundImage(): this { this.api.executeCommandSync(SHEET_IMAGE_COMMANDS.deleteBackground, { unitId: this.unitId, sheetId: this.id }); return this }
+  insertImage(source: string | File, column = 0, row = 0, offsetX = 0, offsetY = 0, options: SheetImageAsyncOptions = {}): Promise<boolean> {
+    return insertWorksheetImage(this.api, this.unitId, this.id, source, column, row, offsetX, offsetY, options)
+  }
+  newOverGridImage(): FOverGridImageBuilder { this.sheet(); return new FOverGridImageBuilder(this.api, this.unitId, this.id) }
+  insertImages(images: readonly (SheetFloatingImage | UniverSheetImageDrawing)[]): this {
+    this.api.executeCommandSync(SHEET_IMAGE_COMMANDS.insertPrepared, { unitId: this.unitId, sheetId: this.id, images: preparedSheetImages(this.api, this.unitId, this.id, images) })
+    return this
+  }
+  updateImages(images: readonly (SheetFloatingImage | UniverSheetImageDrawing)[]): this {
+    this.api.executeCommandSync(SHEET_IMAGE_COMMANDS.updateBatch, { unitId: this.unitId, sheetId: this.id, images: preparedSheetImages(this.api, this.unitId, this.id, images) })
+    return this
+  }
+  getImages(): FOverGridImage[] {
+    const workbook = this.workbook(), sheet = this.sheet(workbook)
+    return (sheet.images ?? []).filter(image => canViewSheetImage(this.api, workbook, sheet, image))
+      .map(image => new FOverGridImage(this.api, this.unitId, this.id, image.id))
+  }
+  getImageById(id: string): FOverGridImage | null {
+    const workbook = this.workbook(), sheet = this.sheet(workbook), image = sheet.images?.find(item => item.id === id)
+    return image && canViewSheetImage(this.api, workbook, sheet, image) ? new FOverGridImage(this.api, this.unitId, this.id, id) : null
+  }
+  deleteImages(images: readonly FOverGridImage[]): this {
+    if (images.some(image => image.getUnitId() !== this.unitId || image.getSubUnitId() !== this.id)) throw new Error('图片必须属于当前工作表。')
+    this.api.executeCommandSync(SHEET_IMAGE_COMMANDS.remove, { unitId: this.unitId, sheetId: this.id, imageIds: images.map(image => image.getId()) })
+    return this
+  }
+  alignImages(images: readonly FOverGridImage[], alignType: SheetImageAlignType): this {
+    if (images.some(image => image.getUnitId() !== this.unitId || image.getSubUnitId() !== this.id)) throw new Error('图片必须属于当前工作表。')
+    this.api.executeCommandSync(SHEET_IMAGE_ALIGN_OPERATIONS.align, { unitId: this.unitId, sheetId: this.id,
+      drawings: images.map(image => ({ unitId: this.unitId, subUnitId: this.id, drawingId: image.getId() })), alignType })
+    return this
+  }
+  saveCellImagesAsync(options: SaveCellImagesOptions = {}, ranges?: readonly FRange[]): Promise<boolean> {
+    if (ranges?.some(range => range.getUnitId() !== this.unitId || range.getSheetId() !== this.id)) throw new Error('图片范围必须属于当前工作表。')
+    return this.api.executeCommand(SHEET_IMAGE_COMMANDS.saveCell, { unitId: this.unitId, sheetId: this.id, saveConfig: sheetImageSaveConfig(options),
+      ranges: ranges ? ranges.map(range => toCellRange(range.getRange())) : [{ startRow: 0, startCol: 0, endRow: 1_048_575, endCol: 16_383 }] })
+  }
+  getDefaultStyle(): SheetStyleSource { return cloneModel(this.sheet().defaultStyle ?? null) }
+  setDefaultStyle(style: SheetStyleInput): this {
+    this.api.executeCommandSync(SHEET_DEFAULT_STYLE_COMMANDS.worksheet, { unitId: this.unitId, subUnitId: this.id, defaultStyle: style })
+    return this
+  }
+  getRowDefaultStyle(index: number, keepRaw = false): SheetStyleSource {
+    return this.axisDefaultStyle(index, 'rowStyles', keepRaw)
+  }
+  getColumnDefaultStyle(index: number, keepRaw = false): SheetStyleSource {
+    return this.axisDefaultStyle(index, 'columnStyles', keepRaw)
+  }
+  setRowDefaultStyle(index: number, style: SheetStyleInput): this {
+    this.api.executeCommandSync(SHEET_DEFAULT_STYLE_COMMANDS.row, { unitId: this.unitId, subUnitId: this.id, index, style })
+    return this
+  }
+  setColumnDefaultStyle(index: number, style: SheetStyleInput): this {
+    this.api.executeCommandSync(SHEET_DEFAULT_STYLE_COMMANDS.column, { unitId: this.unitId, subUnitId: this.id, index, style })
+    return this
+  }
+  setRowStylePriority(rowPriority: boolean): this {
+    this.api.executeCommandSync(SHEET_DEFAULT_STYLE_COMMANDS.rowPriority, { unitId: this.unitId, subUnitId: this.id, rowPriority })
+    return this
+  }
+  private axisDefaultStyle(index: number, key: 'rowStyles' | 'columnStyles', keepRaw: boolean): SheetStyleSource {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= (key === 'rowStyles' ? 1_048_576 : 16_384)) throw new RangeError('默认样式的行列索引越界。')
+    const style = sheetAxisStyleSource(this.sheet(), key === 'rowStyles' ? 'row' : 'column', index)
+    return cloneModel((keepRaw ? style : resolveSheetStyleSource(style, this.workbook())) ?? null)
+  }
   getDataValidations(): DataValidationRule[] { return cloneModel(this.sheet().dataValidations ?? []) }
   getDataValidation(range: FRange | FRangeCoordinates | string): DataValidationRule | null {
     const bounds = this.ownedRange(range)
@@ -1081,6 +1230,10 @@ export class ChartConfigBuilder {
     this.value = { ...this.value, options: next }; return this
   }
   setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): this { return this.setOptions(chartOptionPatch(key, value)) }
+  setAreaLineStyle(value: ChartAreaLineStyle): this { return this.setOptions(chartAreaLineStylePatch(this.value.type, chartAreaLineStyleValue(value))) }
+  clearAreaLineStyle(): this { return this.setOptions(chartAreaLineStylePatch(this.value.type, undefined)) }
+  setInvalidValueStrategy(value: ChartInvalidValueStrategy): this { return this.setOption('invalidValueStrategy', chartInvalidValueStrategyValue(value)) }
+  resetInvalidValueStrategy(): this { return this.setOption('invalidValueStrategy', undefined) }
   setAutoGradientFill(value: boolean): this { validateChartAutomaticGradientValue(value); return this.setOption('autoGradientFill', value) }
   resetAutoGradientFill(): this { return this.setOption('autoGradientFill', undefined) }
   /** Local convenience for the upstream plotArea configuration property. */
@@ -1343,6 +1496,8 @@ export class FChart {
   getType(): ChartType { return this.model().type }
   getInfo(): ChartModel { return cloneModel(this.model()) }
   getOptions(): ChartSemanticOptions { return cloneChartOptions(this.model().options) ?? {} }
+  getAreaLineStyle(): ChartAreaLineStyle { return resolveChartAreaLineStyle(this.model()) }
+  getInvalidValueStrategy(): ChartInvalidValueStrategy { return this.model().options?.invalidValueStrategy ?? CHART_INVALID_VALUE_STRATEGY_DEFAULT }
   /** Local live description API; upstream names describe() on its builder. */
   getDescription(): ChartDescription {
     const model = this.model()
@@ -1387,13 +1542,17 @@ export class FChart {
   }
   async setDataSource(source: ChartSource): Promise<this> { return this.update({ source }) }
   async setType(type: ChartType): Promise<this> { resolveChartType(type); return this.update({ type }) }
-  async setTitle(title: ChartTitleSpec | undefined): Promise<this> { return this.update(chartTitlePatch(title)) }
+  async setTitle(title: ChartTitleSpec | undefined): Promise<this> { const patch = chartTitlePatch(title); return Object.keys(patch).length ? this.update(patch) : this }
   async clearTitle(): Promise<this> { return this.setTitle(undefined) }
-  async setSubtitle(subtitle: ChartSubtitleSpec | undefined): Promise<this> { return this.update(chartTitlePatch(subtitle, 'subtitle')) }
+  async setSubtitle(subtitle: ChartSubtitleSpec | undefined): Promise<this> { const patch = chartTitlePatch(subtitle, 'subtitle'); return Object.keys(patch).length ? this.update(patch) : this }
   async clearSubtitle(): Promise<this> { return this.setSubtitle(undefined) }
   async setPalette(palette: readonly string[]): Promise<this> { return this.update({ palette: [...palette] }) }
   async setOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
   async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.setOptions(chartOptionPatch(key, value)) }
+  async setAreaLineStyle(value: ChartAreaLineStyle): Promise<this> { return this.setOptions(chartAreaLineStylePatch(this.model().type, chartAreaLineStyleValue(value))) }
+  async clearAreaLineStyle(): Promise<this> { return this.setOptions(chartAreaLineStylePatch(this.model().type, undefined)) }
+  async setInvalidValueStrategy(value: ChartInvalidValueStrategy): Promise<this> { return this.setOption('invalidValueStrategy', chartInvalidValueStrategyValue(value)) }
+  async resetInvalidValueStrategy(): Promise<this> { return this.setOption('invalidValueStrategy', undefined) }
   async setAutoGradientFill(value: boolean): Promise<this> { validateChartAutomaticGradientValue(value); return this.setOption('autoGradientFill', value) }
   async resetAutoGradientFill(): Promise<this> { return this.setOption('autoGradientFill', undefined) }
   async setPlotArea(value: ChartPlotAreaOptions): Promise<this> { validateChartPlotArea(value); return this.setOption('plotArea', value) }
@@ -1711,6 +1870,23 @@ export class FRange {
   getUnitId(): string { return this.unitId }
   getSheetId(): string { return this.sheetId }
   getRange(): FRangeCoordinates { return { ...this.range } }
+  insertCells(shiftDimension: SheetCellShiftDimension): void {
+    if (shiftDimension !== SheetCellShiftDimensions.ROWS && shiftDimension !== SheetCellShiftDimensions.COLUMNS) throw new TypeError('单元格插入方向无效。')
+    this.api.executeCommandSync(shiftDimension === SheetCellShiftDimensions.ROWS ? SHEET_CELL_SHIFT_COMMANDS.down : SHEET_CELL_SHIFT_COMMANDS.right,
+      { unitId: this.unitId, subUnitId: this.sheetId, range: this.range })
+  }
+  deleteCells(shiftDimension: SheetCellShiftDimension): void {
+    if (shiftDimension !== SheetCellShiftDimensions.ROWS && shiftDimension !== SheetCellShiftDimensions.COLUMNS) throw new TypeError('单元格删除方向无效。')
+    this.api.executeCommandSync(shiftDimension === SheetCellShiftDimensions.ROWS ? SHEET_CELL_SHIFT_COMMANDS.up : SHEET_CELL_SHIFT_COMMANDS.left,
+      { unitId: this.unitId, subUnitId: this.sheetId, range: this.range })
+  }
+  useThemeStyle(themeName: string | null | undefined): void {
+    this.api.executeCommandSync(SHEET_RANGE_THEME_COMMANDS.set, { unitId: this.unitId, subUnitId: this.sheetId, range: this.range, themeName })
+  }
+  removeThemeStyle(themeName: string): void {
+    this.api.executeCommandSync(SHEET_RANGE_THEME_COMMANDS.remove, { unitId: this.unitId, subUnitId: this.sheetId, range: this.range, themeName })
+  }
+  getUsedThemeStyle(): string | undefined { return sheetUsedRangeThemeRule(this.sheet(), toCellRange(this.range))?.themeName }
   getRow(): number { return this.range.startRow }
   getLastRow(): number { return this.range.endRow }
   getColumn(): number { return this.range.startColumn }
@@ -1769,8 +1945,17 @@ export class FRange {
     this.api.executeCommandSync('sheet.command.sort-range', { unitId: this.unitId, sheetId: this.sheetId, range, criteria, options, order })
     return this
   }
-  getCellData(): SpreadsheetCell | null { const cell = this.cellAt(this.range.startRow, this.range.startColumn); return cell ? cloneModel(cell) : null }
-  getCellDatas(): (SpreadsheetCell | null)[][] { return this.mapCells((cell) => cell ? cloneModel(cell) : null) }
+  getCellData(): (SpreadsheetCell & UniverSheetCellData) | null { const cell = this.cellAt(this.range.startRow, this.range.startColumn); return cell ? sheetCellDataWithPublicImage(cell) : null }
+  getCellDatas(): ((SpreadsheetCell & UniverSheetCellData) | null)[][] { return this.mapCells((cell) => cell ? sheetCellDataWithPublicImage(cell) : null) }
+  insertCellImageAsync(source: string | File, options: SheetImageAsyncOptions = {}): Promise<boolean> {
+    return this.api.executeCommand(SHEET_IMAGE_COMMANDS.insertCell, { ...options, unitId: this.unitId, sheetId: this.sheetId,
+      row: this.range.startRow, column: this.range.startColumn, ranges: [toCellRange(this.range)],
+      ...(typeof source === 'string' ? { source } : { files: [source] }) })
+  }
+  saveCellImagesAsync(options: SaveCellImagesOptions = {}): Promise<boolean> {
+    return this.api.executeCommand(SHEET_IMAGE_COMMANDS.saveCell, { unitId: this.unitId, sheetId: this.sheetId,
+      ranges: [toCellRange(this.range)], saveConfig: sheetImageSaveConfig(options) })
+  }
   /** Explicit editor-text interpretation; setValue/setValues retain their scalar/DTO API semantics. */
   setInputText(input: string, options: SheetCellInputOptions = {}): SheetCellInputCommandResult {
     if (this.getHeight() !== 1 || this.getWidth() !== 1) {
@@ -1793,7 +1978,7 @@ export class FRange {
     for (let row = 0; row < this.getHeight(); row++) for (let column = 0; column < this.getWidth(); column++) {
       const targetRow = this.range.startRow + row
       const targetColumn = this.range.startColumn + column
-      candidateSheet.cells[`${targetRow}:${targetColumn}`] = applyCellValue(candidateSheet.cells[`${targetRow}:${targetColumn}`], targetRow, targetColumn, values[row]![column]!)
+      candidateSheet.cells[`${targetRow}:${targetColumn}`] = applyCellValue(candidateSheet.cells[`${targetRow}:${targetColumn}`], targetRow, targetColumn, values[row]![column]!, candidate, candidateSheet)
       positions.push({ row: targetRow, column: targetColumn })
     }
     const validation = validateSheetDataValidationChanges(candidate, this.sheetId, positions)
@@ -1804,7 +1989,7 @@ export class FRange {
         const targetRow = this.range.startRow + row
         const targetColumn = this.range.startColumn + column
         const key = `${targetRow}:${targetColumn}`
-        sheet.cells[key] = applyCellValue(sheet.cells[key], targetRow, targetColumn, values[row]![column]!)
+        sheet.cells[key] = applyCellValue(sheet.cells[key], targetRow, targetColumn, values[row]![column]!, model, sheet)
       }
     }, { range: this.range, values })
     this.api.events.emit('SheetValueChanged', { workbookId: this.unitId, sheetId: this.sheetId, ranges: [{ ...this.range, sheetId: this.sheetId, unitId: this.unitId }] })
@@ -1828,10 +2013,18 @@ export class FRange {
     return this
   }
   getNumberFormat(): string {
-    const pattern = this.cellAt(this.range.startRow, this.range.startColumn)?.style.numberFormat
+    const pattern = this.styleAt(this.range.startRow, this.range.startColumn).numberFormat
     return !pattern || /^general$/i.test(pattern) ? '' : pattern
   }
-  getNumberFormats(): string[][] { return this.mapCells(cell => !cell?.style.numberFormat || /^general$/i.test(cell.style.numberFormat) ? '' : cell.style.numberFormat) }
+  getNumberFormats(): string[][] { return this.mapStyles(style => /^general$/i.test(style.numberFormat) ? '' : style.numberFormat) }
+  getCellStyleData(type: 'row' | 'col' | 'cell' = 'row'): SheetApiStyleData | null {
+    if (!['row', 'col', 'cell'].includes(type)) throw new TypeError('单元格样式读取类型无效。')
+    const sheet = this.sheet(), row = this.range.startRow, col = this.range.startColumn, cell = sheet.cells[`${row}:${col}`]
+    if (type === 'cell') return cell ? sheetStyleDataWithPublicFields(sheetCellDirectStyle(cell, this.api.getWorkbookModel(this.unitId)) ?? {}) : null
+    return sheetStyleDataWithPublicFields(resolveSheetCellStyle({ ...sheet, rowStylePriority: type === 'row' }, row, col, cell, this.api.getWorkbookModel(this.unitId)))
+  }
+  getFontFamily(type: 'row' | 'col' | 'cell' = 'row'): string | null { return this.getCellStyleData(type)?.ff ?? null }
+  getFontSize(type: 'row' | 'col' | 'cell' = 'row'): number | null { return this.getCellStyleData(type)?.fs ?? null }
   setFontWeight(weight: 'normal' | 'bold' | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontWeight, weight) }
   setFontStyle(style: 'normal' | 'italic' | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontStyle, style) }
   setFontFamily(family: string | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontFamily, family) }
@@ -1865,17 +2058,17 @@ export class FRange {
   setWrapStrategy(strategy: SheetWrapStrategy): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.wrapStrategy, strategy) }
   setShrinkToFit(enabled: boolean): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.shrink, enabled) }
   setTextRotation(rotation: SheetTextRotation): this { return this.formatLayout(SHEET_LAYOUT_FORMAT_COMMANDS.rotation, rotation) }
-  getHorizontalAlignment(): 'general' | 'left' | 'center' | 'right' | 'justify' { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.horizontal ?? 'general' }
-  getVerticalAlignment(): 'top' | 'middle' | 'bottom' { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.vertical ?? createCell(0, 0).style.vertical }
+  getHorizontalAlignment(): 'general' | 'left' | 'center' | 'right' | 'justify' { return this.styleAt(this.range.startRow, this.range.startColumn).horizontal }
+  getVerticalAlignment(): 'top' | 'middle' | 'bottom' { return this.styleAt(this.range.startRow, this.range.startColumn).vertical }
   getWrap(): boolean { return this.getWrapStrategy() === 'wrap' }
-  getWrapStrategy(): SheetWrapStrategy { return sheetCellWrapStrategy(this.cellAt(this.range.startRow, this.range.startColumn)?.style) }
-  getTextRotation(): SheetTextRotation { return sheetCellTextRotation(this.cellAt(this.range.startRow, this.range.startColumn)?.style) }
+  getWrapStrategy(): SheetWrapStrategy { return sheetCellWrapStrategy(this.styleAt(this.range.startRow, this.range.startColumn)) }
+  getTextRotation(): SheetTextRotation { return sheetCellTextRotation(this.styleAt(this.range.startRow, this.range.startColumn)) }
   private formatLayout(command: string, value: unknown): this {
     this.api.executeCommandSync(command, { unitId: this.unitId, sheetId: this.sheetId, ranges: [toCellRange(this.range)], value })
     return this
   }
-  getBackground(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.fill ?? '#ffffff' }
-  getFontWeight(): 'normal' | 'bold' { return this.cellAt(this.range.startRow, this.range.startColumn)?.style.font.bold ? 'bold' : 'normal' }
+  getBackground(): string { return this.styleAt(this.range.startRow, this.range.startColumn).fill ?? '#ffffff' }
+  getFontWeight(): 'normal' | 'bold' { return this.styleAt(this.range.startRow, this.range.startColumn).font.bold ? 'bold' : 'normal' }
   merge(options: SheetMergeOptions = {}): this { return this.mergeWithMode('all', options) }
   mergeAcross(options: SheetMergeOptions = {}): this { return this.mergeWithMode('horizontal', options) }
   mergeVertically(options: SheetMergeOptions = {}): this { return this.mergeWithMode('vertical', options) }
@@ -1930,7 +2123,18 @@ export class FRange {
     const sheet = this.sheet()
     return Array.from({ length: this.getHeight() }, (_, row) => Array.from({ length: this.getWidth() }, (_, column) => read(sheet.cells[`${this.range.startRow + row}:${this.range.startColumn + column}`])))
   }
-  private cellAt(row: number, column: number): SpreadsheetCell | undefined { return this.sheet().cells[`${row}:${column}`] }
+  private styleAt(row: number, column: number): CellStyle {
+    const sheet = this.sheet()
+    return resolveSheetCellStyle(sheet, row, column, sheet.cells[`${row}:${column}`], this.api.getWorkbookModel(this.unitId))
+  }
+  private mapStyles<T>(read: (style: CellStyle) => T): T[][] {
+    return Array.from({ length: this.getHeight() }, (_, row) => Array.from({ length: this.getWidth() }, (_, column) =>
+      read(this.styleAt(this.range.startRow + row, this.range.startColumn + column))))
+  }
+  private cellAt(row: number, column: number): SpreadsheetCell | undefined {
+    const cell = this.sheet().cells[`${row}:${column}`]
+    return cell ? { ...cell, style: this.styleAt(row, column) } : undefined
+  }
   private sheet(model = this.api.getWorkbookModel(this.unitId)): SpreadsheetSheet {
     if (!model) throw new Error(`Workbook not found: ${this.unitId}`)
     const sheet = model.sheets.find((item) => item.id === this.sheetId)
@@ -2129,14 +2333,14 @@ export class FDocument {
   getBodyData(segmentId = ''): UniverDocumentBodyData { return this.getPublicBodyIndex(segmentId).data }
   getPublicBodyIndex(segmentId = ''): DocumentPublicBodyIndex {
     this.getSegmentModel(segmentId)
-    return documentPublicBodyIndex(this.model(), segmentId ? this.noteSegmentHost(segmentId) : undefined)
+    return documentPublicBodyIndex(this.model(), this.getSegmentHost(segmentId))
   }
   getTextRange(startOffset: number, endOffset: number, segmentId = ''): FDocumentTextRange {
     assertDocumentPublicRange(this.getPublicBodyIndex(segmentId), startOffset, endOffset)
     return new FDocumentTextRange(this, startOffset, endOffset, segmentId)
   }
   insertText(index: number, text: string, segmentId = ''): boolean {
-    const host = segmentId ? this.noteSegmentHost(segmentId) : undefined
+    const host = this.getSegmentHost(segmentId)
     this.getSegmentModel(segmentId)
     const selection = documentSelectionAtPublicBodyRange(this.model(), index, index, host)
     if (!selection && !segmentId && index === 0 && !textTargets(this.model()).length) {
@@ -2146,6 +2350,15 @@ export class FDocument {
   }
   getParagraphInfos(segmentId = ''): DocumentParagraphInfo[] { return documentPublicParagraphs(this.getPublicBodyIndex(segmentId)) }
   getParagraphs(segmentId = ''): FDocumentParagraph[] { return this.getParagraphInfos(segmentId).map((item) => new FDocumentParagraph(this, item, segmentId)) }
+  /** Paragraph APIs and the settings panel share the registered content command. */
+  formatParagraph(paragraphId: string, patch: Partial<DocumentParagraphStyle>, segmentId = ''): boolean {
+    const scoped = this.getSegmentModel(segmentId), target = textTargets(scoped).find(candidate => (candidate.cellBlockId ?? candidate.blockId) === paragraphId)
+    if (!target) throw new RangeError(`Document paragraph with id ${paragraphId} not found`)
+    const host = this.getSegmentHost(segmentId)
+    const effectivePatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as Partial<DocumentParagraphStyle>
+    return this.executeCommand({ id: 'doc.command.format-paragraph', patch: effectivePatch, ...(host ? { host } : {}) },
+      { anchor: { ...target, offset: 0 }, focus: { ...target, offset: 0 } }).changed
+  }
   getParagraph(paragraphId: string, segmentId = ''): FDocumentParagraph | null { return this.findParagraphs({ paragraphId }, segmentId)[0] ?? null }
   findParagraphs(query: string | { text?: string; paragraphId?: string; blockId?: string }, segmentId = ''): FDocumentParagraph[] {
     const match = typeof query === 'string' ? { text: query } : query
@@ -2159,6 +2372,37 @@ export class FDocument {
     return this.getParagraphs(segmentId).at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  getLatexFormulas(segmentId = ''): FDocumentLatex[] { return documentLatexFormulaTargets(this, segmentId).map(item => new FDocumentLatex(this, item.rangeId, segmentId)) }
+  getLatexFormula(rangeId: string, segmentId = ''): FDocumentLatex | null { return this.findLatexFormulas({ rangeId }, segmentId)[0] ?? null }
+  getLatexFormulaAt(offset: number, segmentId = ''): FDocumentLatex | null {
+    const id = documentLatexRangeAt(this.getPublicBodyIndex(segmentId), offset)
+    return id ? this.getLatexFormula(id, segmentId) : null
+  }
+  findLatexFormulaByText(latex: string, segmentId = ''): FDocumentLatex | null { return this.findLatexFormulas(latex, segmentId)[0] ?? null }
+  findLatexFormulas(query: string | DocumentLatexFindQuery, segmentId = ''): FDocumentLatex[] { return findDocumentLatexFormulas(this, query, segmentId) }
+  insertLatexAtOffset(offset: number, latex: string, options: DocumentLatexInsertOptions = {}): FDocumentLatex | null { return insertDocumentLatexAtRange(this, offset, offset, latex, options) }
+  insertLatexAtSelection(latex: string, options: DocumentLatexCreateOptions = {}): FDocumentLatex | null { return insertDocumentLatexAtSelection(this, latex, options) }
+  /** Local UI binding; source drafts are not persisted until a formula command applies them. */
+  bindLatexTemplateEditor(insert: (templateId: string) => boolean): DocumentLatexTemplateEditorHandle {
+    return registerDocumentLatexTemplateEditor(this.api, this.id, insert)
+  }
+  /** Local UI binding; the fixed upstream contract is the popup operation IDs. */
+  bindLatexPopupEditor(editor: DocumentLatexPopupEditor): DocumentLatexPopupEditorHandle {
+    return registerDocumentLatexPopupEditor(this.api, this.id, editor)
+  }
+  bindImageEditor(editor: DocumentImageEditor): DocumentImageEditorHandle { return registerDocumentImageEditor(this.api, this.id, editor) }
+  insertImage(options: DocumentImageInsertOptions): Promise<FDocumentImage | null> { return insertDocumentImage(this, options) }
+  getImage(imageId: string, segmentId = ''): FDocumentImage | null { return getDocumentImage(this, imageId, segmentId) }
+  getImages(segmentId = ''): FDocumentImage[] { return getDocumentImages(this, segmentId) }
+  openLatexPopup(request: Omit<DocumentLatexPopupOperationRequest, 'unitId'> = {}): boolean {
+    return this.api.executeCommandSync(DOCUMENT_LATEX_POPUP_OPERATIONS.open, { ...request, unitId: this.id })
+  }
+  closeLatexPopup(): boolean {
+    return this.api.executeCommandSync(DOCUMENT_LATEX_POPUP_OPERATIONS.close, { unitId: this.id })
+  }
+  insertLatexTemplate(templateId: string): boolean {
+    return this.api.executeCommandSync(DOCUMENT_LATEX_TEMPLATE_OPERATION, { unitId: this.id, templateId })
+  }
   getQuotes(segmentId = ''): FDocumentQuote[] { return documentStructuredBlocks(this, 'quote', segmentId).map(block => new FDocumentQuote(this, block.id, segmentId)) }
   getQuote(blockId: string, segmentId = ''): FDocumentQuote | null { return this.findQuotes({ blockId }, segmentId)[0] ?? null }
   getQuoteAt(offset: number, segmentId = ''): FDocumentQuote | null {
@@ -2298,7 +2542,7 @@ export class FDocument {
     return new FDocumentContentControl(this, id)
   }
   replaceRange(startOffset: number, endOffset: number, text: string, segmentId = ''): boolean {
-    const host = segmentId ? this.noteSegmentHost(segmentId) : undefined
+    const host = this.getSegmentHost(segmentId)
     this.getSegmentModel(segmentId)
     const selection = documentSelectionAtPublicBodyRange(this.model(), startOffset, endOffset, host)
     return !!selection && this.executeCommand({ id: 'doc.command.insert-text', text, ...(host ? { host } : {}) }, selection).changed
@@ -2312,13 +2556,18 @@ export class FDocument {
       assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view')
       return model
     }
-    const model = this.model(), host = this.noteSegmentHost(segmentId)
-    assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view', documentNotePermissionTargets(model, host.noteKind, host.noteId))
-    return documentModelForBlockHost(model, host)
+    const model = this.model(), host = this.getSegmentHost(segmentId)!, scoped = documentModelForBlockHost(model, host)
+    const targets = textTargets(scoped), first = targets[0], last = targets.at(-1)
+    assertDocumentPermission(model.permissionRules ?? [], { documentId: this.id, userId: this.getCurrentUserId() }, 'view', host.kind === 'note'
+      ? documentNotePermissionTargets(model, host.noteKind, host.noteId)
+      : [{ scope: 'entity', id: documentBlockHostId(host) }, ...(first && last ? permissionTargetsForSelection(scoped,
+        { anchor: { ...first, offset: 0 }, focus: { ...last, offset: 0 } }) : [])])
+    return scoped
   }
+  getSegmentHost(segmentId = ''): DocumentAuxiliaryBlockHost | undefined { return resolveDocumentSegmentHost(this.model(), segmentId) }
   mutateSegment(label: string, commandId: string, update: (model: DocumentModel) => void, segmentId = ''): boolean {
     if (!segmentId) return this.mutate(label, commandId, update)
-    const host = this.noteSegmentHost(segmentId)
+    const host = this.getSegmentHost(segmentId)!
     return this.mutate(label, commandId, model => {
       const scoped = documentModelForBlockHost(model, host, true)
       update(scoped); applyDocumentBlockHostModel(model, host, scoped)
@@ -2328,11 +2577,6 @@ export class FDocument {
     return this.api.executeCommandSync(commandId, { ...params, unitId: this.id })
   }
 
-  private noteSegmentHost(noteId: string): Extract<DocumentAuxiliaryBlockHost, { kind: 'note' }> {
-    const model = this.model(), kinds = (['footnote', 'endnote'] as const).filter(kind => !!(kind === 'footnote' ? model.footnotes : model.endnotes)?.[noteId])
-    if (kinds.length !== 1) throw new RangeError('注释内容区不存在或标识不唯一：' + noteId)
-    return { kind: 'note', noteKind: kinds[0]!, noteId }
-  }
   private insertNote(kind: DocumentNoteKind, offset: number, input?: DocumentNoteContentInput): string | null {
     let selection: DocumentSelection | undefined, options: ReturnType<typeof documentNoteInputFromPublic>
     try {
@@ -2423,6 +2667,9 @@ export class FDocumentTextRange {
     return index.data.body.dataStream.slice(this.startOffset, this.endOffset)
   }
   setText(text: string): boolean { return this.document.replaceRange(this.startOffset, this.endOffset, text, this.segmentId) }
+  replaceWithLatex(latex: string, options: DocumentLatexCreateOptions = {}): FDocumentLatex | null {
+    return insertDocumentLatexAtRange(this.document, this.startOffset, this.endOffset, latex, { ...options, segmentId: this.segmentId })
+  }
   getTextStyleRuns(): DocumentTextStyleRun[] {
     const index = this.document.getPublicBodyIndex(this.segmentId), range = documentPublicRangeToFlat(index, this.startOffset, this.endOffset)
     return getDocumentTextStyleRuns(index.model, range.startOffset, range.endOffset).map(run => ({ ...run,
@@ -2478,6 +2725,9 @@ export class FDocumentParagraph {
   }
   setText(text: string): boolean { return this.getTextRange().setText(text) }
   appendText(text: string): boolean { return this.document.insertText(this.getInfo().endOffset, text, this.segmentId) }
+  appendLatex(latex: string, options: DocumentLatexCreateOptions = {}): FDocumentLatex | null {
+    return this.document.insertLatexAtOffset(this.getInfo().endOffset, latex, { ...options, segmentId: this.segmentId })
+  }
   getTextStyle(): DocumentTextStyle { return this.getTextRange().getTextStyle() }
   setTextStyle(style: UniverDocumentTextStyle | DocumentTextStylePatch): boolean { return this.getTextRange().setTextStyle(style) }
   getParagraphStyle(): DocumentParagraphStyle {
@@ -2486,9 +2736,7 @@ export class FDocumentParagraph {
     return style
   }
   setParagraphStyle(style: Partial<DocumentParagraphStyle>): boolean {
-    return this.document.mutateSegment('Set paragraph style', 'doc.command.set-paragraph-style', (model) => {
-      setDocumentParagraphStyle(model, this.identity(), style)
-    }, this.segmentId)
+    return this.document.formatParagraph(this.info.paragraphId, style, this.segmentId)
   }
 
   private identity(): DocumentParagraphIdentity {

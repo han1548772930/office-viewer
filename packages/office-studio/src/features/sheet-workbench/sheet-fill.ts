@@ -72,7 +72,7 @@ export function createSheetFillPlan(
   const range = { startRow: selection.startRow, endRow: selection.endRow, startColumn: selection.startCol, endColumn: selection.endCol }
   if (!resolved) return { range, cellPatches: [] }
   const work = (selection.endRow - selection.startRow + 1) * (selection.endCol - selection.startCol + 1)
-  if (work > SHEET_FILL_SYNC_CELL_BUDGET) throw new RangeError('?????????????')
+  if (work > SHEET_FILL_SYNC_CELL_BUDGET) throw new RangeError('填充范围超出当前同步预算，需要分块 Worker 填充。')
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]!
   sheet.rowCount = Math.max(sheet.rowCount ?? 1, source.endRow + 1, selection.endRow + 1)
   sheet.columnCount = Math.max(sheet.columnCount ?? 1, source.endColumn + 1, selection.endCol + 1)

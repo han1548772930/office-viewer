@@ -9,12 +9,12 @@ import { chartEChartsAutomaticGradient } from './chart-auto-gradient'
 import { chartEChartsFont, chartEChartsItemStyle } from './echarts-style'
 import { chartFillPatternPaint } from './chart-fill-pattern'
 import { chartLabelBackground, chartLabelBackgroundPaint } from './chart-label-background'
-import { chartTreemapValueText } from './chart-treemap'
 import { CHART_SUNBURST_INNER_RADIUS_RATIO, CHART_SUNBURST_OUTER_RADIUS_RATIO, chartSunburstCenterText,
   chartSunburstLabelText, chartSunburstLabelVisible, chartSunburstRenderNodes, chartSunburstTotal,
   resolveChartSunburstCenterLabel, resolveChartSunburstLabel, type ChartSunburstRenderNode } from './chart-sunburst'
 import { CHART_SUNBURST_BACKGROUND_KEY, CHART_SUNBURST_FIT_KEY } from './echarts-sunburst-layout'
 import { CHART_HIERARCHY_PATTERN_KEY } from './echarts-hierarchy-pattern'
+import { chartContentTooltipText, chartSunburstContentTooltip, type ChartHierarchyTooltipRuntime } from './chart-content-tooltip'
 
 type NativeSunburstItem = NonNullable<SunburstSeriesOption['data']>[number]
 export interface ChartSunburstEChartsNode extends Omit<NativeSunburstItem, 'children' | 'value'> {
@@ -25,7 +25,13 @@ export interface ChartSunburstEChartsNode extends Omit<NativeSunburstItem, 'chil
   [CHART_HIERARCHY_PATTERN_KEY]?: ChartSeriesFillPattern
   children?: ChartSunburstEChartsNode[]
 }
-export interface ChartSunburstPointerRuntime { mode: 'sunburst' }
+export interface ChartSunburstPointerRuntime extends ChartHierarchyTooltipRuntime { mode: 'sunburst' }
+
+export function createChartSunburstPointerRuntime(data: ChartData, chart: ChartModel): ChartSunburstPointerRuntime {
+  const context = { fieldName: data.hierarchyValueFieldName ?? data.series[0]?.name ?? '',
+    total: chartSunburstTotal(data.hierarchy ?? []), format: resolveChartSunburstLabel(chart).format, date1904: data.date1904 }
+  return { mode: 'sunburst', contentTooltip: item => chartSunburstContentTooltip(item, context) }
+}
 
 /** The option contains flat semantic facts and one native child tree. It does
  * not serialize a duplicate semantic subtree into every descendant. */
@@ -57,28 +63,15 @@ export function chartSunburstEChartsData(data: ChartData, chart: ChartModel, con
   return roots.map(root => result.get(root)!)
 }
 
-type SunburstTooltipFacts = Pick<ChartSunburstEChartsNode, 'value' | 'formattedValue' | 'semanticPath' | 'semanticSelfValue' | 'semanticChildValue'>
-function isTooltipFacts(value: unknown): value is SunburstTooltipFacts {
-  return Boolean(value && typeof value === 'object' && 'value' in value && typeof value.value === 'number' && Number.isFinite(value.value)
-    && 'semanticPath' in value && Array.isArray(value.semanticPath) && value.semanticPath.every(part => typeof part === 'string')
-    && 'semanticSelfValue' in value && typeof value.semanticSelfValue === 'number' && Number.isFinite(value.semanticSelfValue)
-    && 'semanticChildValue' in value && typeof value.semanticChildValue === 'number' && Number.isFinite(value.semanticChildValue)
-    && (!('formattedValue' in value) || value.formattedValue === undefined || typeof value.formattedValue === 'string'))
-}
-
 /** Residual tooltips show their own positive fact but retain the owning
  * parent's path and signed own/children facts, matching fixed XOe. */
 export function chartSunburstTooltip(data: ChartData, chart: ChartModel, context: ChartEChartsContext): TooltipComponentOption {
-  const total = chartSunburstTotal(data.hierarchy ?? []), label = resolveChartSunburstLabel(chart)
-  return { show: true, showContent: true, trigger: 'item', triggerOn: 'mousemove|click', renderMode: 'richText',
+  const pointer = createChartSunburstPointerRuntime(data, chart)
+  return { show: true, showContent: false, trigger: 'item', triggerOn: 'none', renderMode: 'richText',
     showDelay: 0, hideDelay: 0, transitionDuration: 0, confine: true, backgroundColor: context.backgroundColor ?? '#ffffff',
     borderColor: context.axisColor, textStyle: { color: context.color }, formatter: params => {
       const node = (Array.isArray(params) ? params[0] : params)?.data
-      if (!isTooltipFacts(node)) return ''
-      const percentage = total > 0 ? node.value / total * 100 : 0
-      const lines = [node.semanticPath.join(' / '), `${data.hierarchyValueFieldName ?? data.series[0]?.name ?? ''}: ${chartTreemapValueText(node.value, node.formattedValue, label.format, data.date1904)} (${percentage.toFixed(1)}%)`]
-      if (node.semanticChildValue !== 0 && node.semanticSelfValue !== 0) lines.push(`自身数值: ${node.semanticSelfValue}`, `子节点合计: ${node.semanticChildValue}`)
-      return lines.join('\n')
+      return chartContentTooltipText(pointer.contentTooltip?.(node))
     } }
 }
 

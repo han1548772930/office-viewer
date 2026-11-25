@@ -6,6 +6,8 @@ import { documentTableGrid } from './document-table-grid'
 import { DOCUMENT_TABLE_BORDER_SIDES, DOCUMENT_TABLE_DEFAULT_MARGIN, documentTableCellBorders, documentTableCellFill, documentTableCellMargin, documentTableRowProperties } from './document-table-style'
 import { documentRunHasNoteReference } from './document-note-reference'
 import { documentBlockChildContainers, documentStructuredChildContainers, isDocumentTextBlock, isDocumentStructuredBlock } from './document-structural-blocks'
+import type { DocumentImageCrop, DocumentImageDistances, DocumentImagePosition, DocumentImageWrappingStyle, DocumentImageWrapSide } from '../images/document-image-model'
+import { clearDocumentImageAtomStyleMetadata, documentImageAtom, setDocumentImageAtom } from '../images/document-image-atom'
 
 export interface DocumentRun extends InlineRun { highlight?: string; href?: string }
 export interface TextTarget { blockId: string; row?: number; col?: number; cellBlockId?: string }
@@ -93,7 +95,12 @@ export interface DocumentTable {
   /** Imported legacy row properties remain available to the layout/IO adapters. */
   rowStyles?: Array<Record<string, unknown>>
 }
-export interface DocumentImage { src: string; alt: string; width: number; height: number }
+export interface DocumentImage {
+  src: string; alt: string; width: number; height: number
+  angle?: number; flipX?: boolean; flipY?: boolean; keepAspectRatio?: boolean; wrappingStyle?: DocumentImageWrappingStyle; wrapSide?: DocumentImageWrapSide
+  positionH?: DocumentImagePosition; positionV?: DocumentImagePosition; crop?: DocumentImageCrop; distances?: DocumentImageDistances; layer?: number
+  resourceId?: string; mimeType?: string; byteLength?: number; intrinsicWidth?: number; intrinsicHeight?: number; originalSource?: string
+}
 export type RunPatch = Partial<Omit<DocumentRun, 'id' | 'text'>>
 export type DocumentRunClearField = 'color' | 'highlight'
 export const DOCUMENT_AUTOMATIC_TEXT_COLOR = 'auto'
@@ -282,21 +289,34 @@ export function setTargetRuns(model: DocumentModel, target: TextTarget, runs: Do
   const block = blockAtPoint(model, target)
   if (!block) return
   block.runs = compactRuns(runs)
+  reconcileDocumentLatexBlockMarker(block)
   delete block.metadata.html
   for (const ancestor of documentBlockAncestry(model, block.id) ?? []) delete ancestor.metadata.html
+}
+
+function singleBlockLatexFormula(block: DocumentBlock): Record<string, unknown> | undefined {
+  const content = block.runs.filter(run => run.text || run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula !== undefined)
+  const run = content.length === 1 ? content[0] : undefined, formula = run?.metadata?.latexFormula
+  return run?.text === '\uFFFC' && isRecord(formula) && typeof formula.latex === 'string' && formula.version === 1 && formula.mode === 'block'
+    ? formula : undefined
+}
+
+/** Typing beside/removing a display formula must not leave a whole-paragraph export marker. */
+export function reconcileDocumentLatexBlockMarker(block: DocumentBlock): void {
+  if (block.metadata.latexFormulaBlock === true && !singleBlockLatexFormula(block)) delete block.metadata.latexFormulaBlock
 }
 
 export function compactRuns(runs: DocumentRun[]): DocumentRun[] {
   const result: DocumentRun[] = []
   for (const source of runs) {
-    const entity = documentRunHasNoteReference(source) || source.metadata?.latexFormula !== undefined
+    const entity = documentRunHasNoteReference(source) || source.metadata?.latexFormula !== undefined || documentImageAtom(source) !== undefined
     if (!source.text && !entity) continue
     const normalized = source.verticalAlign === 'baseline' ? applyRunPatch(source, { verticalAlign: 'baseline' }) : source
     const last = result.at(-1)
     const { id: _id, text: _text, ...marks } = normalized
     if (last) {
       const { id: _lastId, text: _lastText, ...lastMarks } = last
-      if (!entity && !documentRunHasNoteReference(last) && last.metadata?.latexFormula === undefined
+      if (!entity && !documentRunHasNoteReference(last) && last.metadata?.latexFormula === undefined && documentImageAtom(last) === undefined
         && JSON.stringify(marks) === JSON.stringify(lastMarks)) { last.text += normalized.text; continue }
     }
     result.push({ ...normalized })
@@ -355,6 +375,7 @@ export function marksAtPoint(model: DocumentModel, point: DocumentPoint): RunPat
   const { id: _id, text: _text, ...patch } = run
   if (patch.metadata) {
     const metadata = { ...patch.metadata }
+    clearDocumentImageAtomStyleMetadata(metadata)
     for (const key of ['note', 'noteReference', 'latexFormula', 'officeStoryRunSourceId']) delete metadata[key]
     if (Object.keys(metadata).length) patch.metadata = metadata
     else delete patch.metadata
@@ -701,6 +722,21 @@ function inlineRunsFromElement(root: HTMLElement, defaults: RunPatch = {}): Docu
     if (node.nodeType === Node.TEXT_NODE) { if (node.textContent) runs.push(createRun(node.textContent, patch)); return }
     if (!(node instanceof HTMLElement) || ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA'].includes(node.tagName)) return
     if (node.tagName === 'BR') { runs.push(createRun('\n', patch)); return }
+    if (node.tagName === 'IMG') {
+      const source = node.getAttribute('src') ?? ''
+      if (!/^(?:https?:\/\/|blob:|data:image\/(?:png|jpe?g|gif|webp|bmp);base64,)/i.test(source)) return
+      let retained: Partial<DocumentImage> = {}
+      if (node.dataset.officeImage === 'v1' && node.dataset.officeImageData) {
+        try { const value = JSON.parse(node.dataset.officeImageData); if (isRecord(value)) retained = value as Partial<DocumentImage> } catch { /* Ordinary IMG attributes remain usable. */ }
+      }
+      const width = retained.width ?? Number(node.getAttribute('width') ?? (Number.parseFloat(node.style.width) || 160))
+      const height = retained.height ?? Number(node.getAttribute('height') ?? (Number.parseFloat(node.style.height) || 120))
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return
+      const run = createRun('\uFFFC', patch)
+      setDocumentImageAtom(run, documentId('image'), { ...retained, src: source, alt: node.getAttribute('alt') ?? '', width, height, wrappingStyle: retained.wrappingStyle ?? 'inline' })
+      runs.push(run)
+      return
+    }
     if (node.dataset.officeLatex === 'v1' && node.dataset.officeLatexMode !== 'block') {
       const latex = node.dataset.officeLatexSource ?? node.textContent ?? ''
       const run = createRun('\uFFFC', { ...patch, fontFamily: 'Cambria Math' })
@@ -730,8 +766,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function runsHtml(runs: readonly InlineRun[]): string {
   return runs.map((source) => {
     const run = source as DocumentRun
+    const image = documentImageAtom(run)?.image
+    if (image) return `<img data-office-image="v1" data-office-image-data="${escapeHtml(JSON.stringify(image))}" src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt)}" width="${image.width}" height="${image.height}">`
     const formula = run.metadata?.latexFormula
-    if (isRecord(formula) && typeof formula.latex === 'string' && (formula.mode === 'inline' || formula.mode === 'block')) {
+    if (run.text === '\uFFFC' && isRecord(formula) && formula.version === 1 && typeof formula.latex === 'string' && (formula.mode === 'inline' || formula.mode === 'block')) {
       const latex = escapeHtml(formula.latex)
       return `<span data-office-latex="v1" data-office-latex-mode="${formula.mode}" data-office-latex-source="${latex}">${latex}</span>`
     }
@@ -796,7 +834,7 @@ function documentBlocksHtml(blocks: readonly DocumentBlock[]): string {
       const source = escapeHtml(codeBlock.source)
       return `<pre data-office-code-block="v1" data-office-language="${escapeHtml(language)}" data-office-line-numbers="${codeBlock.lineNumbers === true}" style="white-space:pre-wrap;font-family:Consolas,monospace"><code>${source}</code></pre>`
     }
-    const latexBlock = block.metadata.latexFormulaBlock === true ? (block.runs[0] as DocumentRun | undefined)?.metadata?.latexFormula : undefined
+    const latexBlock = block.metadata.latexFormulaBlock === true ? singleBlockLatexFormula(block) : undefined
     if (isRecord(latexBlock) && typeof latexBlock.latex === 'string') {
       const source = escapeHtml(latexBlock.latex)
       return `<div data-office-latex="v1" data-office-latex-mode="block" data-office-latex-source="${source}" style="text-align:center">${source}</div>`

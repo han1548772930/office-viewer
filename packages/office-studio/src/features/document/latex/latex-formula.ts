@@ -1,257 +1,152 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
-import type { DrawCommand } from '../../../rendering/contracts.ts'
-import type { DocumentPoint, DocumentRun, DocumentSelection } from '../model/document-model.ts'
-import { blockAtPoint, createParagraph, createRun, findDocumentBlockContainer, orderedSelection, runsForTarget, sameTarget, setTargetRuns, sliceRuns } from '../model/document-model.ts'
-import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
-import { documentTableCellContentContainers } from '../model/document-table-continuations'
+import type { DocumentPoint, DocumentRun, DocumentSelection, RunPatch, TextTarget } from '../model/document-model.ts'
+import { blockAtPoint, createParagraph, createRun, findDocumentBlockContainer, orderedSelection, runText, runsForTarget, sameTarget, setTargetRuns, sliceRuns, textTargets } from '../model/document-model.ts'
+import { documentFieldLocked, documentTextFieldParagraphs, documentTextFieldRangeIntersects, documentTextFieldRanges, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentRunStyleAt, validateDocumentRunPatch } from '../model/document-run-range'
 import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
 import { getDocumentContentControls, transformContentControlsForBlockEdit } from '../services/content-controls'
 import { transformDocumentCommentAnchorsForBodyRangeEdit } from '../comments/document-comment-anchors'
 
-export type LatexFormulaMode = 'inline' | 'block'
-export interface LatexFormula { latex: string; mode: LatexFormulaMode; version: 1 }
-export type LatexNode =
-  | { type: 'text'; value: string }
-  | { type: 'sequence'; children: LatexNode[] }
-  | { type: 'fraction'; numerator: LatexNode; denominator: LatexNode }
-  | { type: 'sqrt'; value: LatexNode }
-  | { type: 'script'; base: LatexNode; sup?: LatexNode; sub?: LatexNode }
-export interface LatexMetrics { width: number; height: number; baseline: number }
-export type LatexPrimitive =
-  | { kind: 'text'; x: number; y: number; text: string; font: string }
-  | { kind: 'line'; x1: number; y1: number; x2: number; y2: number; width: number }
-export interface LatexLayout extends LatexMetrics { primitives: LatexPrimitive[] }
+import type { LatexFormula, LatexFormulaMode } from './latex-types'
+import { parseLatexFormula } from './latex-parser'
+export type { LatexFormula, LatexFormulaMode, LatexNode, LatexTextStyle, LatexAccent, LatexMetrics, LatexPrimitive, LatexLayout } from './latex-types'
+export { assertLatexFormulaSource, LatexFormulaError, parseLatexFormula } from './latex-parser'
+export { layoutLatexFormula, latexFormulaDrawCommands, type LatexLayoutOptions } from './latex-layout'
 
-const OBJECT_REPLACEMENT = '\uFFFC'
-const SYMBOLS: Record<string, string> = {
-  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', theta: 'θ', lambda: 'λ', mu: 'μ', pi: 'π', sigma: 'σ',
-  phi: 'φ', omega: 'ω', Delta: 'Δ', Gamma: 'Γ', Lambda: 'Λ', Omega: 'Ω',
-  times: '×', cdot: '·', pm: '±', le: '≤', leq: '≤', ge: '≥', geq: '≥', neq: '≠', ne: '≠',
-  approx: '≈', infty: '∞', sum: '∑', prod: '∏', int: '∫', rightarrow: '→', leftarrow: '←',
+export interface DocumentLatexFormulaTarget {
+  blockId: string
+  runId: string
+  rangeId: string
+  formula: LatexFormula
+  target: TextTarget
+  startOffset: number
+  endOffset: number
+  run: DocumentRun
 }
 
-export class LatexFormulaError extends Error {
-  readonly offset: number
-
-  constructor(message: string, offset: number) { super(message); this.offset = offset; this.name = 'LatexFormulaError' }
-}
-
-export function parseLatexFormula(source: string): LatexNode {
-  const input = source.trim()
-  if (!input) throw new LatexFormulaError('公式不能为空。', 0)
-  let index = 0
-  const parseSequence = (inGroup: boolean): LatexNode => {
-    const children: LatexNode[] = []
-    while (index < input.length) {
-      const char = input[index]
-      if (char === '}') {
-        if (!inGroup) throw new LatexFormulaError('存在多余的右花括号。', index)
-        index += 1
-        return sequence(children)
-      }
-      if (char === '{') {
-        index += 1
-        children.push(parseSequence(true))
-        continue
-      }
-      let base = parseAtom()
-      let sup: LatexNode | undefined
-      let sub: LatexNode | undefined
-      while (input[index] === '^' || input[index] === '_') {
-        const operator = input[index++]
-        const script = parseScript()
-        if (operator === '^') {
-          if (sup) throw new LatexFormulaError('一个公式项不能有两个上标。', index - 1)
-          sup = script
-        } else {
-          if (sub) throw new LatexFormulaError('一个公式项不能有两个下标。', index - 1)
-          sub = script
-        }
-      }
-      if (sup || sub) base = { type: 'script', base, sup, sub }
-      children.push(base)
-    }
-    if (inGroup) throw new LatexFormulaError('公式中有未闭合的左花括号。', input.length)
-    return sequence(children)
-  }
-  const parseAtom = (): LatexNode => {
-    const start = index
-    const char = input[index]
-    if (char === '\\') {
-      index += 1
-      const match = /^[A-Za-z]+/.exec(input.slice(index))
-      if (!match) {
-        const escaped = input[index++]
-        if (!['{', '}', '_', '%', '$'].includes(escaped ?? '')) throw new LatexFormulaError('不支持该转义符。', start)
-        return { type: 'text', value: escaped! }
-      }
-      const command = match[0]
-      index += command.length
-      if (command === 'frac') return { type: 'fraction', numerator: parseRequiredGroup(command), denominator: parseRequiredGroup(command) }
-      if (command === 'sqrt') return { type: 'sqrt', value: parseRequiredGroup(command) }
-      if (command === 'text' || command === 'mathrm' || command === 'mathbf') return parseRequiredGroup(command)
-      const symbol = SYMBOLS[command]
-      if (!symbol) throw new LatexFormulaError(`暂不支持 \\${command} 命令。`, start)
-      return { type: 'text', value: symbol }
-    }
-    if (char === '^' || char === '_') throw new LatexFormulaError('上标或下标缺少基项。', index)
-    if (!char) throw new LatexFormulaError('公式项不完整。', index)
-    index += 1
-    return { type: 'text', value: char }
-  }
-  const parseRequiredGroup = (command: string): LatexNode => {
-    if (input[index] !== '{') throw new LatexFormulaError(`\\${command} 后必须使用花括号参数。`, index)
-    index += 1
-    return parseSequence(true)
-  }
-  const parseScript = (): LatexNode => {
-    if (input[index] === '{') { index += 1; return parseSequence(true) }
-    if (index >= input.length || input[index] === '^' || input[index] === '_') throw new LatexFormulaError('上标或下标缺少内容。', index)
-    return parseAtom()
-  }
-  return parseSequence(false)
-}
-
-function sequence(children: LatexNode[]): LatexNode {
-  if (!children.length) return { type: 'text', value: '' }
-  return children.length === 1 ? children[0]! : { type: 'sequence', children }
-}
-
-export function layoutLatexFormula(source: string, options: { fontSize?: number; measure?: (text: string, font: string) => number } = {}): LatexLayout {
-  const root = parseLatexFormula(source)
-  const baseSize = Math.max(8, Math.min(96, options.fontSize ?? 16))
-  const measure = options.measure ?? ((text: string, font: string) => text.length * Number(/([\d.]+)px/.exec(font)?.[1] ?? baseSize) * 0.58)
-  return layoutNode(root, 0, 0, baseSize, measure)
-}
-
-export function latexFormulaDrawCommands(source: string, x: number, baseline: number, options: { fontSize?: number; color?: string; measure?: (text: string, font: string) => number } = {}): { layout: LatexLayout; commands: DrawCommand[] } {
-  const layout = layoutLatexFormula(source, options)
-  const color = options.color ?? '#1f2937'
-  const commands: DrawCommand[] = layout.primitives.map((primitive) => primitive.kind === 'text'
-    ? { kind: 'text', x: x + primitive.x, y: baseline + primitive.y, text: primitive.text, font: primitive.font, color, baseline: 'alphabetic' }
-    : { kind: 'line', x1: x + primitive.x1, y1: baseline + primitive.y1, x2: x + primitive.x2, y2: baseline + primitive.y2, color, width: primitive.width })
-  return { layout, commands }
-}
-
-function layoutNode(node: LatexNode, x: number, baseline: number, size: number, measure: (text: string, font: string) => number): LatexLayout {
-  const font = `${size}px "Cambria Math", "STIX Two Math", "Times New Roman", serif`
-  if (node.type === 'text') {
-    const width = measure(node.value, font)
-    return { width, height: size * 1.2, baseline: size * 0.9, primitives: node.value ? [{ kind: 'text', x, y: baseline, text: node.value, font }] : [] }
-  }
-  if (node.type === 'sequence') {
-    let cursor = x
-    let height = size * 1.2
-    const primitives: LatexPrimitive[] = []
-    for (const child of node.children) {
-      const item = layoutNode(child, cursor, baseline, size, measure)
-      cursor += item.width
-      height = Math.max(height, item.height)
-      primitives.push(...item.primitives)
-    }
-    return { width: cursor - x, height, baseline: size * 0.9, primitives }
-  }
-  if (node.type === 'sqrt') {
-    const inside = layoutNode(node.value, x + size * 0.78, baseline, size, measure)
-    const radical = layoutNode({ type: 'text', value: '\u221A' }, x, baseline, size * 1.25, measure)
-    const top = baseline - inside.baseline - size * 0.08
-    return { width: inside.width + size * 0.78, height: Math.max(inside.height, size * 1.35), baseline: size * 0.9, primitives: [...radical.primitives, ...inside.primitives, { kind: 'line', x1: x + size * 0.72, y1: top, x2: x + size * 0.78 + inside.width, y2: top, width: Math.max(0.8, size / 18) }] }
-  }
-  if (node.type === 'fraction') {
-    const childSize = size * 0.78
-    const numerator = layoutNode(node.numerator, 0, 0, childSize, measure)
-    const denominator = layoutNode(node.denominator, 0, 0, childSize, measure)
-    const width = Math.max(numerator.width, denominator.width) + size * 0.32
-    const ruleY = baseline - size * 0.12
-    const numeratorX = x + (width - numerator.width) / 2
-    const denominatorX = x + (width - denominator.width) / 2
-    const numeratorBaseline = ruleY - size * 0.12 - numerator.baseline
-    const denominatorBaseline = ruleY + size * 0.2 + denominator.baseline
-    return { width, height: numerator.height + denominator.height + size * 0.45, baseline: size * 0.9, primitives: [
-      ...translate(numerator.primitives, numeratorX, numeratorBaseline),
-      { kind: 'line', x1: x + size * 0.08, y1: ruleY, x2: x + width - size * 0.08, y2: ruleY, width: Math.max(0.8, size / 18) },
-      ...translate(denominator.primitives, denominatorX, denominatorBaseline),
-    ] }
-  }
-  const base = layoutNode(node.base, x, baseline, size, measure)
-  const scriptSize = size * 0.68
-  const scriptX = x + base.width
-  const sup = node.sup ? layoutNode(node.sup, scriptX, baseline - size * 0.42, scriptSize, measure) : undefined
-  const sub = node.sub ? layoutNode(node.sub, scriptX, baseline + size * 0.32, scriptSize, measure) : undefined
-  return { width: base.width + Math.max(sup?.width ?? 0, sub?.width ?? 0), height: Math.max(base.height, (sup?.height ?? 0) + size * 0.4, (sub?.height ?? 0) + size * 0.3), baseline: base.baseline, primitives: [...base.primitives, ...(sup?.primitives ?? []), ...(sub?.primitives ?? [])] }
-}
-
-function translate(primitives: LatexPrimitive[], x: number, y: number): LatexPrimitive[] {
-  return primitives.map((primitive) => primitive.kind === 'text'
-    ? { ...primitive, x: primitive.x + x, y: primitive.y + y }
-    : { ...primitive, x1: primitive.x1 + x, x2: primitive.x2 + x, y1: primitive.y1 + y, y2: primitive.y2 + y })
-}
-
+export const DOCUMENT_LATEX_ATOM = '\uFFFC'
+export const DOCUMENT_LATEX_RANGE_KIND = 'univer-docs-latex-formula'
 export function createLatexFormulaRun(latex: string, mode: LatexFormulaMode = 'inline', style: Partial<DocumentRun> = {}): DocumentRun {
+  validateLatexFormulaMode(mode)
   parseLatexFormula(latex)
-  const run = createRun(OBJECT_REPLACEMENT, style)
-  run.metadata = { ...run.metadata, latexFormula: { latex: latex.trim(), mode, version: 1 } satisfies LatexFormula }
+  const run = createRun(DOCUMENT_LATEX_ATOM, style)
+  run.metadata = { ...run.metadata, latexFormula: { latex, mode, version: 1 } satisfies LatexFormula }
   return run
 }
 
 export function getLatexFormula(run: DocumentRun): LatexFormula | undefined {
   const value = run.metadata?.latexFormula
-  if (!value || typeof value !== 'object') return undefined
+  if (run.text !== DOCUMENT_LATEX_ATOM || !value || typeof value !== 'object') return undefined
   const formula = value as Partial<LatexFormula>
   return typeof formula.latex === 'string' && (formula.mode === 'inline' || formula.mode === 'block') && formula.version === 1
     ? { latex: formula.latex, mode: formula.mode, version: 1 }
     : undefined
 }
 
-export function getLatexFormulas(model: DocumentModel): Array<{ blockId: string; runId: string; formula: LatexFormula }> {
-  const result: Array<{ blockId: string; runId: string; formula: LatexFormula }> = []
-  const visit = (blocks: readonly DocumentBlock[]) => {
-    for (const block of blocks) {
-      for (const run of block.runs as DocumentRun[]) {
-        const formula = getLatexFormula(run)
-        if (formula) result.push({ blockId: block.id, runId: run.id, formula })
-      }
-      const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
-      for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) for (const content of documentTableCellContentContainers(cell)) visit(content)
+/** Imported IDs survive edits/reopen. A copied run receives its own range ID. */
+export function latexFormulaRangeId(run: DocumentRun): string {
+  const source = run.metadata?.univerBodyLatexRangeSource
+  if (source && typeof source === 'object' && !Array.isArray(source)
+    && Reflect.get(source, 'runId') === run.id && typeof Reflect.get(source, 'rangeId') === 'string') {
+    return Reflect.get(source, 'rangeId') as string
+  }
+  return run.id
+}
+
+export function getLatexFormulas(model: DocumentModel): DocumentLatexFormulaTarget[] {
+  const result: DocumentLatexFormulaTarget[] = []
+  for (const target of textTargets(model)) {
+    let offset = 0
+    for (const run of runsForTarget(model, target)) {
+      const formula = getLatexFormula(run)
+      if (formula) result.push({ blockId: target.cellBlockId ?? target.blockId, runId: run.id,
+        rangeId: latexFormulaRangeId(run), formula, target, startOffset: offset, endOffset: offset + run.text.length, run })
+      offset += run.text.length
     }
   }
-  visit(model.blocks)
   return result
+}
+
+/** Only a caret before/inside the atom or its exact selection opens editing. */
+export function selectedLatexFormula(model: DocumentModel, selection: DocumentSelection): DocumentLatexFormulaTarget | undefined {
+  if (selection.tableSelection) return undefined
+  const { start, end } = orderedSelection(model, selection)
+  if (!sameTarget(start, end)) return undefined
+  return getLatexFormulas(model).find(item => sameTarget(item.target, start)
+    && (start.offset === end.offset ? start.offset >= item.startOffset && start.offset < item.endOffset
+      : start.offset === item.startOffset && end.offset === item.endOffset))
+}
+
+/** Reading an editor seed expands formula atoms to their original source. */
+export function documentLatexSourceForSelection(model: DocumentModel, selection: DocumentSelection): string {
+  if (selection.tableSelection) throw new RangeError('公式编辑器需要文字选区。')
+  const targets = textTargets(model)
+  for (const point of [selection.anchor, selection.focus]) {
+    if (!Number.isSafeInteger(point.offset) || point.offset < 0 || !targets.some(target => sameTarget(target, point))
+      || point.offset > runText(runsForTarget(model, point)).length) throw new RangeError('公式文字范围已越界或目标已不存在。')
+  }
+  const { start, end } = orderedSelection(model, selection)
+  if (!sameTarget(start, end)) throw new RangeError('公式编辑器需要同一段落内的文字范围。')
+  const runs = runsForTarget(model, start), text = runText(runs)
+  for (const offset of [start.offset, end.offset]) {
+    if (offset > 0 && offset < text.length && text.charCodeAt(offset - 1) >= 0xd800 && text.charCodeAt(offset - 1) <= 0xdbff
+      && text.charCodeAt(offset) >= 0xdc00 && text.charCodeAt(offset) <= 0xdfff) throw new RangeError('公式文字范围不能切开 Unicode 字符。')
+  }
+  const source = sliceRuns(runs, start.offset, end.offset).map(run => getLatexFormula(run)?.latex ?? run.text).join('')
+  if (source.length > 65_536) throw new RangeError('公式源文本超过编辑器预算。')
+  return source
+}
+
+export function validateLatexFormulaMode(mode: unknown): asserts mode is LatexFormulaMode {
+  if (mode !== 'inline' && mode !== 'block') throw new TypeError('公式显示形式无效。')
+}
+
+export function assertLatexFormulaSelectionEditable(model: DocumentModel, selection: DocumentSelection): void {
+  assertDocumentTextSelectionEditable(model, selection)
+  const { start, end } = orderedSelection(model, selection), paragraphs = documentTextFieldParagraphs(model)
+  const from = paragraphs.find(item => item.block.id === (start.cellBlockId ?? start.blockId))
+  const to = paragraphs.find(item => item.block.id === (end.cellBlockId ?? end.blockId))
+  if (!from || !to) throw new RangeError('公式编辑目标已不存在。')
+  const locked = documentTextFieldRanges(model).find(range => documentFieldLocked(range.field)
+    && documentTextFieldRangeIntersects(range, from.absoluteStart + start.offset, to.absoluteStart + end.offset))
+  if (locked) throw new RangeError(`公式位于锁定字段中：${locked.field.id}`)
 }
 
 export function updateLatexFormula(model: DocumentModel, runId: string, latex: string): boolean {
   parseLatexFormula(latex)
-  for (const block of model.blocks) {
-    const run = (block.runs as DocumentRun[]).find((candidate) => candidate.id === runId)
-    if (!run || !getLatexFormula(run)) continue
-    run.metadata = { ...run.metadata, latexFormula: { ...getLatexFormula(run)!, latex: latex.trim() } }
-    return true
-  }
-  return false
+  const item = getLatexFormulas(model).find(item => item.runId === runId)
+  if (!item) return false
+  assertLatexFormulaSelectionEditable(model, { anchor: { ...item.target, offset: item.startOffset }, focus: { ...item.target, offset: item.endOffset } })
+  item.run.metadata = { ...item.run.metadata, latexFormula: { ...item.formula, latex } }
+  return true
 }
 
-export function createLatexFormulaBlock(latex: string): DocumentBlock {
+export function createLatexFormulaBlock(latex: string, style: Partial<DocumentRun> = {}): DocumentBlock {
   const block = createParagraph()
   block.style = { ...block.style, align: 'center', spaceBefore: 8, spaceAfter: 8 }
-  block.runs = [createLatexFormulaRun(latex, 'block')]
+  block.runs = [createLatexFormulaRun(latex, 'block', style)]
   block.metadata = { ...block.metadata, latexFormulaBlock: true }
   return block
 }
 
-export function insertLatexFormula(model: DocumentModel, selection: DocumentSelection, latex: string, mode: LatexFormulaMode = 'inline'): DocumentPoint {
+export function insertLatexFormula(model: DocumentModel, selection: DocumentSelection, latex: string, mode: LatexFormulaMode = 'inline', marks: RunPatch = {}): DocumentPoint {
+  validateLatexFormulaMode(mode)
+  validateDocumentRunPatch(marks)
+  parseLatexFormula(latex)
   if (selection.tableSelection) throw new RangeError('公式需要单元格内的文字选区或插入位置')
   const { start, end } = orderedSelection(model, selection)
   if (!sameTarget(start, end)) throw new RangeError('公式插入暂时要求在同一段落内选择内容。')
   const block = blockAtPoint(model, start), container = block && findDocumentBlockContainer(model, block.id)
   if (!block || !container) throw new RangeError('公式插入目标已不存在')
-  assertDocumentTextSelectionEditable(model, { anchor: start, focus: end })
+  assertLatexFormulaSelectionEditable(model, { anchor: start, focus: end })
   const sourceParagraphs = documentTextFieldParagraphs(model), paragraph = sourceParagraphs.find(paragraph => paragraph.block.id === block.id)
   if (!paragraph) throw new RangeError('公式插入目标缺少正文映射')
   const before = sliceRuns(runsForTarget(model, start), 0, start.offset)
   const after = sliceRuns(runsForTarget(model, start), end.offset)
+  const style = { ...documentRunStyleAt(runsForTarget(model, start), start.offset, end.offset), ...marks }
   const controls: DocumentModel = { ...model, contentControls: model.contentControls && getDocumentContentControls(model) }
   if (mode === 'inline') {
-    const formula = createLatexFormulaRun(latex, mode)
+    const formula = createLatexFormulaRun(latex, mode, style)
     transformContentControlsForBlockEdit(controls, block.id, start.offset, end.offset, formula.text.length)
     transformDocumentTextFieldsForBlockEdit(block, start.offset, end.offset, formula.text, undefined, model)
     model.contentControls = controls.contentControls
@@ -261,11 +156,11 @@ export function insertLatexFormula(model: DocumentModel, selection: DocumentSele
     return { ...start, offset: start.offset + formula.text.length }
   }
   const index = container.indexOf(block)
-  const equation = createLatexFormulaBlock(latex)
+  const equation = createLatexFormulaBlock(latex, style)
   const trailing = createParagraph()
   trailing.style = { ...block.style }
   trailing.runs = after.length ? after : [createRun()]
-  const replacement = `\n${OBJECT_REPLACEMENT}\n`
+  const replacement = `\n${DOCUMENT_LATEX_ATOM}\n`
   transformContentControlsForBlockEdit(controls, block.id, start.offset, end.offset, replacement.length, {
     blockId: trailing.id, firstBreakOffset: start.offset, lastParagraphOffset: start.offset + replacement.length,
   })
@@ -275,6 +170,6 @@ export function insertLatexFormula(model: DocumentModel, selection: DocumentSele
   container.splice(index + 1, 0, equation, trailing)
   transformDocumentCommentAnchorsForBodyRangeEdit(model, sourceParagraphs, documentTextFieldParagraphs(model),
     paragraph.absoluteStart + start.offset, paragraph.absoluteStart + end.offset, replacement)
-  return start.row === undefined ? { blockId: equation.id, offset: OBJECT_REPLACEMENT.length }
-    : { ...start, cellBlockId: equation.id, offset: OBJECT_REPLACEMENT.length }
+  return start.row === undefined ? { blockId: equation.id, offset: DOCUMENT_LATEX_ATOM.length }
+    : { ...start, cellBlockId: equation.id, offset: DOCUMENT_LATEX_ATOM.length }
 }

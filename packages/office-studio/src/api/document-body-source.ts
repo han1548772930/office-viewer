@@ -12,11 +12,12 @@ const STRUCTURAL_BLOCK_TYPES = new Set<DocumentBlock['type']>(['callout', 'code'
 function isBlockType(value: unknown): value is DocumentBlock['type'] {
   return typeof value === 'string' && BLOCK_TYPES.some(type => type === value)
 }
-const BLOCK_DERIVED = ['table', 'html', 'documentTextFields', 'univerBodyParagraphSource', 'univerBodyTableSource',
+const BLOCK_DERIVED = ['table', 'html', 'documentTextFields', 'univerBodyParagraphSource', 'univerParagraphPaginationResolution', 'univerBodyTableSource',
   'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodySectionSource', 'univerBodyBreakSource', 'univerNoteSeparatorRangeSource',
   'univerBodyBlockRangeSource', 'univerBodyColumnGroupSource', 'univerBodyColumnGroupBaseline', 'univerBodyCalloutSource', 'univerBodyCodeSource']
 const RUN_DERIVED = ['univerTextStyle', 'univerTextStyleResolution', 'univerBodyRunSource', 'univerBodyNoteRangeSource',
-  'univerBodyHyperlinkSource', 'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodyRawCustomBlock']
+  'univerBodyHyperlinkSource', 'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodyRawCustomBlock',
+  'latexFormula', 'univerBodyLatexRangeSource', 'univerBodyLatexConfigSource']
 
 /** The extension accompanies the actual public paragraph/run/table record. It
  * stores identity and provenance, never a parallel block tree or body string. */
@@ -87,7 +88,7 @@ export function applyDocumentBodyBlockSource(block: DocumentBlock, record: Unive
   }
 }
 export function documentBodyRunSource(run: InlineRun): UniverBodyRecord {
-  const metadata = documentBodySourceMetadata(run.metadata, '运行', RUN_DERIVED)
+  const metadata = documentBodySourceMetadata(run.metadata, '运行', [...RUN_DERIVED, 'imageAtom'])
   return { version: 1, runId: run.id, ...(Object.keys(metadata).length ? { metadata } : {}) }
 }
 export function documentBodyRunMetadata(record?: UniverBodyRecord): UniverBodyRecord {

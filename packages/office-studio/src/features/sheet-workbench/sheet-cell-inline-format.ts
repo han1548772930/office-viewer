@@ -151,7 +151,7 @@ export function sheetInlineFontChangeForAction(action: SheetFontFormatAction, ce
   const field = action.kind === 'mark' ? action.field : 'size'
   const caretValue = selection.start === selection.end && typing?.position === selection.start ? typing.font[field] : undefined
   const values = caretValue === undefined ? sheetCellFontValues(cell, field, selection) : [caretValue]
-  return action.kind === 'mark' ? { field, value: action.value ?? !values.every(value => value === true) }
+  return action.kind === 'mark' ? { field, value: action.value === null ? null : action.value ?? !values.every(value => value === true) }
     : { field: 'size', value: nextSheetFontFormatSize(typeof values[0] === 'number' ? values[0] : cell?.fontSize ?? 11, action.direction) }
 }
 

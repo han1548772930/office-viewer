@@ -61,6 +61,7 @@ import { reconcileDocumentTableAnchors } from './document-table-anchors'
 import { replaceDocumentBlockContentControlImage, replaceDocumentBlockContentControlText } from './content-control-block-value'
 import { finalizeDocumentContentControlHostResources } from './content-control-host-resources'
 import { documentContentControlGroupEditAllowed } from '../model/content-control-group-lock'
+import { documentImageEntries, setDocumentImageEntry } from '../images/document-image-model'
 
 export type ContentControlInput = Omit<DocumentContentControl, 'id'> & { id?: string }
 
@@ -507,6 +508,17 @@ function replacePictureContentControlImageInModel(model: DocumentModel, id: stri
   const pointer = control.metadata?.pictureBlockId
   if (pointer !== undefined && (typeof pointer !== 'string' || !pointer)) throw new TypeError('图片内容控件的对象身份无效：' + id)
   const existingPictureId = typeof control.metadata?.pictureBlockId === 'string' ? control.metadata.pictureBlockId : undefined
+  const embeddedPicture = existingPictureId ? documentImageEntries(model).find(entry => entry.imageId === existingPictureId && entry.inline) : undefined
+  if (embeddedPicture) {
+    for (const other of model.contentControls ?? []) if (other.id !== id && other.type === 'picture' && other.metadata?.pictureBlockId === existingPictureId) {
+      if (isContentLocked(other)) throw new RangeError('图片替换不能改变锁定子控件所引用的图片：' + other.id)
+      throw new RangeError('图片对象不能被多个图片内容控件同时拥有：' + existingPictureId)
+    }
+    setDocumentImageEntry(embeddedPicture, cloneModel(image))
+    control.metadata = { ...control.metadata, pictureImage: cloneModel(image) }
+    control.value = undefined; control.showingPlaceholder = false
+    return embeddedPicture.imageId
+  }
   const existingPicture = existingPictureId ? findBlock(model, existingPictureId) : undefined
   if (existingPictureId && (!existingPicture || existingPicture.type !== 'image')) throw new RangeError('图片内容控件的对象不是实际图片：' + id)
   if (existingPicture?.type === 'image') {

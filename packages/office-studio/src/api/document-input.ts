@@ -57,6 +57,7 @@ export function documentFromPublicInput(input: UniverBodyRecord, candidate: Docu
   const flavor = style.documentFlavor ?? 1
   if (![0, 1, 2, 3].includes(Number(flavor)) || typeof flavor !== 'number') throw new RangeError('文档模式无效。')
   candidate.metadata.documentFlavor = flavor
+  candidate.metadata.documentFlavorContract = 'univer'
   if (input.customXmlParts !== undefined) candidate.customXmlParts = normalizeDocumentCustomXmlParts(input.customXmlParts)
   const documentSetup: DocumentSectionSetup = { ...candidate.page, ...documentSectionSetupFromBody(style) }
   // Later sections inherit document defaults, rather than explicit overrides

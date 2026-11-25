@@ -1,6 +1,7 @@
 import type { DocumentDefaultStyle } from '../../../domain/model'
 import { normalizeDocumentHighlight } from './document-highlight'
 import { applyRunPatch, createRun, documentId, runText, type DocumentRun, type RunPatch } from './document-model'
+import { clearDocumentImageAtomStyleMetadata } from '../images/document-image-atom'
 
 /** The same font and text patch contract is used by commands and typing marks. */
 export function validateDocumentRunPatch(patch: RunPatch): void {
@@ -60,10 +61,13 @@ export function documentRunStyleAt(runs: readonly DocumentRun[], start: number, 
   const { id: _id, text: _text, ...style } = run
   if (style.metadata) {
     const metadata = { ...style.metadata }
+    clearDocumentImageAtomStyleMetadata(metadata)
     // A newly typed character is not a duplicate note or embedded formula.
     delete metadata.note
     delete metadata.noteReference
     delete metadata.latexFormula
+    delete metadata.univerBodyLatexRangeSource
+    delete metadata.univerBodyLatexConfigSource
     style.metadata = metadata
   }
   return style

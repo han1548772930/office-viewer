@@ -23,6 +23,36 @@ export function lineForPoint(layout: DocumentLayout, point: DocumentPoint): Layo
   return atOffset(preferred) ?? atOffset(original) ?? atOffset(all) ?? original.at(-1) ?? all.at(-1)
 }
 
+/** Wrap fragments around a drawing are one physical row in their owning host. */
+export function documentPhysicalLineFragments(layout: Pick<DocumentLayout, 'lines'>, line: LayoutLine): LayoutLine[] {
+  if (!line.rowKey) return [line]
+  return layout.lines.filter(candidate => candidate.rowKey === line.rowKey && candidate.page === line.page
+    && candidate.sectionId === line.sectionId && candidate.sectionFragment === line.sectionFragment && candidate.column === line.column
+    && candidate.tableCellId === line.tableCellId && !!candidate.repeatedHeader === !!line.repeatedHeader
+    && sameTarget(candidate.target, line.target) && sameDocumentBlockHost(candidate.host, line.host))
+    .sort((left, right) => (left.fragmentIndex ?? 0) - (right.fragmentIndex ?? 0) || left.start - right.start)
+}
+
+export function documentPhysicalLineNavigation(layout: DocumentLayout, point: DocumentPoint, direction: 'up' | 'down' | 'home' | 'end',
+  preferredX?: number): DocumentPoint | undefined {
+  const line = lineForPoint(layout, point)
+  if (!line) return undefined
+  const fragments = documentPhysicalLineFragments(layout, line)
+  if (direction === 'home' || direction === 'end') {
+    const edge = direction === 'home' ? fragments[0]! : fragments.at(-1)!
+    return { ...edge.target, offset: direction === 'home' ? edge.start : edge.end, pageAffinity: edge.page }
+  }
+  const indices = fragments.map(fragment => layout.lines.indexOf(fragment)), step = direction === 'up' ? -1 : 1
+  const adjacent = layout.lines[(step < 0 ? Math.min(...indices) : Math.max(...indices)) + step]
+  if (!adjacent) return undefined
+  const x = preferredX ?? caretRect(layout, point)?.x ?? line.x
+  const nextFragments = documentPhysicalLineFragments(layout, adjacent)
+  const distance = (candidate: LayoutLine) => x < candidate.x ? candidate.x - x
+    : x > candidate.x + candidate.width ? x - candidate.x - candidate.width : 0
+  const next = nextFragments.reduce((best, candidate) => distance(candidate) < distance(best) ? candidate : best)
+  return hitTestDocumentLine(next, x)
+}
+
 export function documentStoryLayoutLines(layout: DocumentLayout, location: { page: number; area: 'header' | 'footer' }): LayoutStoryLine[] {
   const story = layout.pageHeaderFooters[location.page]
   if (story?.isParityBlank) return []
@@ -85,6 +115,13 @@ export function caretRect(layout: DocumentLayout, point: DocumentPoint): LayoutR
   return clipped.width > 0 && clipped.height > 0 ? clipped : undefined
 }
 
+function visibleLineRect(line: LayoutLine): LayoutRect {
+  if (!line.clip) return line
+  // A scrolled short/empty code row remains a hit target even when its glyphs are outside the content clip.
+  if (line.codeBlock?.gutterX !== undefined) return intersectTableRect({ ...line.clip, y: line.y, height: line.height }, line.clip)
+  return intersectTableRect(line, line.clip)
+}
+
 export function hitTestDocument(layout: DocumentLayout, x: number, y: number): DocumentPoint | undefined {
   const page = layout.pages.find(page => x >= page.x && x <= page.x + page.width && y >= page.y && y <= page.y + page.height)
   if (page?.isParityBlank) return undefined
@@ -94,7 +131,7 @@ export function hitTestDocument(layout: DocumentLayout, x: number, y: number): D
     const visible = cell.clip ? intersectTableRect(cell, cell.clip) : cell
     return x >= visible.x && x <= visible.x + visible.width && y >= visible.y && y <= visible.y + visible.height
   }).sort((left, right) => (right.depth ?? 0) - (left.depth ?? 0) || left.width * left.height - right.width * right.height)[0]
-  const visibleLines = pageLines.filter(line => !line.clip || intersectTableRect(line, line.clip).width > 0 && intersectTableRect(line, line.clip).height > 0)
+  const visibleLines = pageLines.filter(line => { const visible = visibleLineRect(line); return visible.width > 0 && visible.height > 0 })
   const cellLines = cell?.cellId ? visibleLines.filter(line => line.tableCellId === cell.cellId) : []
   if (cell?.cellId && !cellLines.length) return undefined
   const columnLines = visibleLines.filter(line => {
@@ -111,7 +148,7 @@ export function hitTestDocument(layout: DocumentLayout, x: number, y: number): D
   let nearest: LayoutLine | undefined
   let best = Number.POSITIVE_INFINITY
   for (const line of cellLines.length ? cellLines : columnLines.length ? columnLines : visibleLines) {
-    const visible = line.clip ? intersectTableRect(line, line.clip) : line
+    const visible = visibleLineRect(line)
     const dy = y < visible.y ? visible.y - y : y > visible.y + visible.height ? y - visible.y - visible.height : 0
     const dx = x < visible.x ? visible.x - x : x > visible.x + visible.width ? x - visible.x - visible.width : 0
     const score = dy * 8 + dx

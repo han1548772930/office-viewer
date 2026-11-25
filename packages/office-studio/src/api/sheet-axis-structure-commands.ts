@@ -26,6 +26,7 @@ export function registerSheetAxisStructureCommands(api: OfficeStudio): Disposabl
       primary: { row: plan.selection.startRow, column: plan.selection.startCol } }
     const label = `${action.kind === 'insert' ? '插入' : action.kind === 'delete' ? '删除' : action.kind === 'move' ? '移动' : '复制'}${action.axis === 'row' ? '行' : '列'}`
     const changed = api.commitWorkbook(target.unitId, label, model => Object.assign(model, plan.workbook), {
+      preserveStyleInheritance: true,
       ...(currentSelection ? { selections: { sheetId: target.sheetId, before: currentSelection, after: selection } } : {}),
       prepareView: model => { toExcelWorkbookView(model) },
     })

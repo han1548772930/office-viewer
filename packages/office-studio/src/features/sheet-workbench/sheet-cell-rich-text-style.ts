@@ -89,3 +89,22 @@ export function setSheetCellRichTextFont(runs: ReadonlyArray<Record<string, unkn
   })
   return { runs: changed ? next : runs, changed }
 }
+
+/** Clear modeled font properties in one pass while retaining text, links, identities and unknown fields. */
+export function clearSheetCellRichTextFonts(runs: ReadonlyArray<Record<string, unknown>> | null | undefined): {
+  runs: ReadonlyArray<Record<string, unknown>> | null | undefined; changed: boolean
+} {
+  if (!runs?.length) return { runs, changed: false }
+  const fields = Object.keys(aliases) as SheetRichTextFontField[]
+  let changed = false
+  const next = runs.map(run => {
+    const nested = fontRecord(run.font)
+    if (!fields.some(field => Object.hasOwn(run, aliases[field]) || !!nested && Object.hasOwn(nested, field))) return run
+    const result = cloneModel(run), font = nested ? cloneModel(nested) : undefined
+    for (const field of fields) { delete result[aliases[field]]; if (font) delete font[field] }
+    if (font) { if (Object.keys(font).length) result.font = font; else delete result.font }
+    changed = true
+    return result
+  })
+  return { runs: changed ? next : runs, changed }
+}

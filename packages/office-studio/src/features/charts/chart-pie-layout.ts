@@ -3,6 +3,7 @@ import type { RenderRect } from '../../rendering/contracts'
 import type { ChartData } from './chart-engine'
 import { chartCompoundPieData, type ChartPiePart } from './chart-derived'
 import { chartPolar, type ChartVector } from './chart-geometry'
+import { chartPieAggregateExplosion, chartPieMaximumExplosion, chartPieSliceExplosion } from './chart-pie'
 
 export interface ChartPieSectorLayout {
   part: ChartPiePart
@@ -30,14 +31,15 @@ export function chartPieLayout(data: ChartData, chart: ChartModel, plot: RenderR
   const options = chart.options?.pie, compound = chart.type === 'pieOfPie' || chart.type === 'barOfPie'
   const result: ChartPieLayout = { sectors: [], bars: [], connectors: [] }
   if (!data.series.length || !data.categories.length) return result
-  const radius = chartPieOuterRadius(plot, options?.explosion)
+  const maximumExplosion = chartPieMaximumExplosion(data, chart)
+  const radius = chartPieOuterRadius(plot, maximumExplosion)
   const startAngle = (options?.startAngle ?? -90) * Math.PI / 180, angleSize = options?.isHalfPie ? Math.PI : Math.PI * 2
   const scale = data.series[0]!.values.reduce<number>((max, value) => Math.max(max, value ?? 0), 0) || 1
   const total = data.series[0]!.values.reduce<number>((sum, value) => sum + Math.max(0, value ?? 0) / scale, 0)
   const percentage = (value: number): number => total > 0 ? (value / scale) / total * 100 : 0
   const secondaryBar = chart.type === 'barOfPie' || options?.secondaryPlot?.type === 'bar'
   const secondaryRatio = (options?.secondaryPlot?.size ?? 65) / 100, gapRatio = (options?.secondaryPlot?.gapWidth ?? 50) / 100
-  const secondaryWidthRatio = secondaryRatio * (secondaryBar ? 0.45 : 1), explosionRatio = 1 + (options?.explosion ?? 0) / 100
+  const secondaryWidthRatio = secondaryRatio * (secondaryBar ? 0.45 : 1), explosionRatio = 1 + maximumExplosion / 100
   const primaryRadius = compound ? Math.min(radius, plot.width / (2 * explosionRatio * (1 + secondaryWidthRatio) + gapRatio)) : radius
   const secondaryRadius = primaryRadius * secondaryRatio, secondaryHalfWidth = primaryRadius * secondaryWidthRatio
   const usedWidth = 2 * explosionRatio * (primaryRadius + secondaryHalfWidth) + primaryRadius * gapRatio
@@ -53,7 +55,8 @@ export function chartPieLayout(data: ChartData, chart: ChartModel, plot: RenderR
     for (const part of items) {
       if (part.value <= 0 || sum <= 0) continue
       const end = angle + angleSize * (part.value / partScale) / sum, middle = (angle + end) / 2
-      const exploded = chartPolar(center, Math.max(0, options?.explosion ?? 0) / 100 * outer, middle)
+      const explosion = part.index === partition?.aggregateIndex ? chartPieAggregateExplosion(chart) : chartPieSliceExplosion(chart, part.index)
+      const exploded = chartPolar(center, Math.max(0, explosion) / 100 * outer, middle)
       result.sectors.push({ part, center: exploded, start: angle, end, inner: hole, outer: options?.rosePie ? outer * Math.sqrt(part.value / largest) : outer, percentage: percentage(part.value), secondary })
       angle = end
     }

@@ -57,8 +57,48 @@ test('invalid live title configuration rejects before content revision/history c
   const { studio, workbook, sheet, builder } = setup()
   try {
     const chart = await sheet.insertChart(builder.setTitle('Before').build()), before = chart.getInfo(), revision = studio.getWorkbookRevision(workbook.getId())
+    assert.equal(await chart.setTitle({}), chart); assert.equal(await chart.setSubtitle({}), chart)
     await assert.rejects(chart.setTitle({ visible: 'yes' }), TypeError)
     await assert.rejects(chart.setSubtitle({ fontSize: -1 }), RangeError)
     assert.deepEqual(chart.getInfo(), before); assert.equal(studio.getWorkbookRevision(workbook.getId()), revision)
   } finally { studio.dispose() }
+})
+
+test('public title/subtitle objects retain detached manual anchors and rotations and restore automatic layout independently', () => {
+  const { studio, builder } = setup()
+  try {
+    const spec = { text: 'Main', manualLayout: { left: 0.2, top: 0.3 }, rotate: 30, fontSize: 18 }
+    builder.setTitle(spec).setSubtitle({ text: 'Sub', manualLayout: { left: 0.3, top: 0.4 }, rotate: -15 })
+    spec.manualLayout.left = 0.8
+    assert.deepEqual(builder.build().options.titleStyle.manualLayout, { left: 0.2, top: 0.3 })
+    const before = builder.build()
+    assert.throws(() => builder.setTitle({ manualLayout: { left: 0.2 } }), RangeError)
+    assert.throws(() => builder.setSubtitle({ rotate: 361 }), RangeError)
+    assert.deepEqual(builder.build(), before)
+    builder.setTitle({ manualLayout: undefined })
+    assert.equal(builder.build().options.titleStyle.manualLayout, undefined); assert.equal(builder.build().options.titleStyle.rotate, 30)
+    assert.deepEqual(builder.build().options.subtitleStyle, before.options.subtitleStyle)
+  } finally { studio.dispose() }
+})
+
+test('one title author patch commits text/manual anchor/rotation together and undo/redo/JSON reopening preserve the complete style', async () => {
+  const { studio, workbook, sheet, builder } = setup()
+  let reopened
+  try {
+    const chart = await sheet.insertChart(builder.setTitle('Before').setSubtitle({ text: 'Sub', rotate: -15 }).build())
+    const before = chart.getInfo(), revision = studio.getWorkbookRevision(workbook.getId())
+    await chart.setTitle({ text: 'Moved', manualLayout: { left: 0.2, top: 0.3 }, rotate: 30, fontSize: 18 })
+    const authored = chart.getInfo()
+    assert.equal(studio.getWorkbookRevision(workbook.getId()), revision + 1)
+    workbook.undo(); assert.deepEqual(chart.getInfo(), before); workbook.redo(); assert.deepEqual(chart.getInfo(), authored)
+    const saved = JSON.parse(JSON.stringify(workbook.save()))
+    reopened = new api.OfficeStudio({ workbook: saved })
+    const again = api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getChartById(chart.getChartId())
+    assert.deepEqual(again.getInfo().options.titleStyle, authored.options.titleStyle)
+    await chart.setTitle({ manualLayout: undefined })
+    const automatic = chart.getInfo()
+    assert.equal(automatic.options.titleStyle.manualLayout, undefined); assert.equal(automatic.options.titleStyle.rotate, 30)
+    assert.equal(automatic.title, 'Moved'); assert.deepEqual(automatic.options.subtitleStyle, authored.options.subtitleStyle)
+    workbook.undo(); assert.deepEqual(chart.getInfo(), authored); workbook.redo(); assert.deepEqual(chart.getInfo(), automatic)
+  } finally { reopened?.dispose(); studio.dispose() }
 })

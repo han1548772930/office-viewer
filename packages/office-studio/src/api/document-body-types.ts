@@ -29,6 +29,8 @@ export interface UniverDocumentBodyResources {
   lists?: Record<string, UniverBodyRecord>
   callouts?: Record<string, UniverBodyRecord>
   codes?: Record<string, UniverBodyRecord>
+  /** Local codec resource map; public snapshots serialize DOC_LATEX_PLUGIN.formulas. */
+  latexFormulas?: Record<string, UniverBodyRecord>
 }
 export interface UniverDocumentBodyData extends UniverDocumentBodyResources { body: UniverDocumentBody }
 

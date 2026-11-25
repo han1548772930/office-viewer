@@ -6,13 +6,15 @@ import type { DrawCommand } from '../../rendering/contracts'
 import type { CellRange, TimelineLevel } from '../../domain/model'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
+import { cellAddress, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
 import { createSpreadsheetScene, displayCell, sheetNumberFormatPreviewPatternAt } from '../../rendering/spreadsheet/scene'
 import type { SheetNumberFormatPreview } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout, hitCellEditorFillHandle } from '../../rendering/spreadsheet/editor-layout'
-import { createSheetRichTextEditorScene, hitSheetRichTextEditor, moveSheetRichTextEditorCaret,
-  sheetRichTextEditorCaret, sheetRichTextEditorWord } from '../../rendering/spreadsheet/rich-text-editor.ts'
+import { createSheetRichTextEditorScene, hitSheetRichTextEditor, hitSheetRichTextEditorPosition, moveSheetRichTextEditorCaret,
+  sheetRichTextEditorCaret, sheetRichTextEditorWord, type SheetRichTextEditorCaretAffinity } from '../../rendering/spreadsheet/rich-text-editor.ts'
+import { clampSheetRichTextEditorScroll, stepSheetRichTextEditorDragScroll } from '../../rendering/spreadsheet/rich-text-editor-scroll.ts'
 import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
+import { sheetViewCellAt } from '../../services/excelViewAdapter.ts'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH, sheetRangeDashedOutlineCommands } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
 import { resolveSheetFillTarget, sheetFillPointerTarget } from '../../features/sheet-workbench/sheet-fill-target.ts'
@@ -20,7 +22,7 @@ import type { SheetFillOptionsView } from '../../features/sheet-workbench/sheet-
 import { canResumeSheetFillGesture, sheetFillGestureSelectionMatches, sheetFillGestureStillCurrent, snapshotSheetFillGesture,
   type SheetFillCommitContext, type SheetFillGestureContext } from '../../features/sheet-workbench/sheet-fill-gesture.ts'
 import type { SheetFormatPainterCanvasState } from '../../features/sheet-workbench/sheet-format-painter.ts'
-import { canEditProtectedRanges, canEditWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
+import { canEditProtectedRanges, canEditWorksheetProtection, canViewProtectedRanges, canViewWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
 import { sheetAxisHeaderAffectedRange, sheetAxisHeaderDestination, sheetAxisHeaderMoveSource,
   type SheetAxisHeaderMoveSource } from '../../features/sheet-workbench/sheet-axis-header-gesture.ts'
 import { sheetHeaderAxisIndexAt, sheetHeaderDragCommands } from '../../rendering/spreadsheet/header-drag.ts'
@@ -43,11 +45,21 @@ import { OfficeTranslatorKey, useOfficeRegion } from '../../i18n/office-i18n'
 import { SHEET_CLIPBOARD_COMMANDS } from '../../features/sheet-workbench/sheet-clipboard.ts'
 import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 import { SHEET_CLIPBOARD_PASTE_OPTIONS, sheetClipboardGridRange, sheetClipboardOverlayPosition, type SheetClipboardPasteOptionsView } from './sheet-clipboard-overlay.ts'
+import { useSheetImageCanvas } from './use-sheet-image-canvas.ts'
+import { SHEET_IMAGE_COMMANDS, type SheetImageCommandInput } from '../../features/sheet-images/sheet-image-commands.ts'
+import { sheetImagePlacement } from '../../features/sheet-images/sheet-image-placement.ts'
+import { SHEET_IMAGE_CROP_PRESETS } from '../../features/sheet-images/sheet-image-crop.ts'
+import { SHEET_IMAGE_ALIGN_OPERATIONS, SHEET_IMAGE_ALIGN_PRESETS } from '../../features/sheet-images/sheet-image-selection.ts'
+import type { SheetDrawingAffineGeometry, SheetDrawingLeafRef, SheetDrawingRef } from '../../domain/sheet-drawings.ts'
+import { drawingPaintOrder, DRAWING_ARRANGE_MENU, DRAWING_GROUP_MENU, SHEET_DRAWING_GROUP_COMMAND_IDS, type SheetDrawingScene } from '../../features/drawing-groups/index.ts'
+import { sheetDrawingGeometryRange } from '../../features/sheet-drawings/sheet-drawing-viewport.ts'
+import { useSheetDrawingCanvas } from './use-sheet-drawing-canvas.ts'
+import type { SheetDrawingCommandInput } from '../../api/sheet-drawing-commands.ts'
 
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -78,6 +90,13 @@ const emit = defineEmits<{
   (event: 'slicer-settings', slicerId: string): void
   (event: 'slicer-move', payload: { slicerId: string; left: number; top: number }): void
   (event: 'slicer-resize', payload: { slicerId: string; width: number; height: number }): void
+  (event: 'select-image', imageId?: string, additive?: boolean, preserve?: boolean): void
+  (event: 'edit-image', imageId: string, row?: number, column?: number): void
+  (event: 'save-image', imageId: string): void
+  (event: 'image-command', commandId: string, input: SheetImageCommandInput): void
+  (event: 'select-drawing', ref?: SheetDrawingRef, additive?: boolean, preserve?: boolean): void
+  (event: 'drawing-command', commandId: string, input: SheetDrawingCommandInput): void
+  (event: 'chart-event', eventValue: MouseEvent | KeyboardEvent, chartId: string, view: { scrollLeft: number; scrollTop: number }): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: () => void } | null>(null)
 // The synchronous callback also owns "no session" while Vue is still flushing the previous props.
@@ -99,7 +118,16 @@ const scene = computed(() => {
   const selectionCommands: DrawCommand[] = []
   const selected = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
   if (selected) selectionCommands.push({ kind: 'rect', ...selected.rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2 })
-  const result = createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, formatPainterSource: props.formatPainter?.sourceSheetId === props.sheet.id ? props.formatPainter.sourceRange : undefined, formatPainterColor: token.value.colorPrimary, suppressFillHandle: Boolean(props.formatPainter), searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, overlayCommands: [...(props.overlayCommands ?? []), ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight })
+  const overlays = (props.overlayCommands ?? []).flatMap(command => {
+    if (!command.drawingRef) return [command]
+    const object = props.drawingScene?.objects.find(object => object.ref.kind === command.drawingRef?.kind && object.ref.id === command.drawingRef.id)
+    if (object && !drawingVisible(object.ref, object.geometry)) return []
+    const preview = drawingCanvas.previewGeometry.value.get(`${command.drawingRef.kind}:${command.drawingRef.id}`)
+    return command.kind === 'image' && command.drawingRef.kind === 'chart' && preview ? [{ ...command, x: 0, y: 0,
+      width: preview.width, height: preview.height, matrix: { ...preview.matrix, e: preview.matrix.e + GRID_HEADER_WIDTH, f: preview.matrix.f + GRID_HEADER_HEIGHT } }] : [command]
+  })
+  const result = createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, formatPainterSource: props.formatPainter?.sourceSheetId === props.sheet.id ? props.formatPainter.sourceRange : undefined, formatPainterColor: token.value.colorPrimary, suppressFillHandle: Boolean(props.formatPainter || props.selectedImageId || props.selectedDrawingRefs?.length), searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, drawingOrder: drawingOrder.value, overlayCommands: [...overlays, ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight, ...imageCanvas.sceneOptions.value })
+  result.commands.push(...drawingCanvas.commands.value)
   const drag = headerDrag.value
   result.commands.push(...sheetHeaderDragCommands(geometry.value, viewport.value, drag?.moved ? {
     axis: drag.axis, source: drag.interval, destination: drag.destination, allowed: drag.allowed,
@@ -114,7 +142,7 @@ const scene = computed(() => {
 const selectedCellText = computed(() => {
   const position = parseAddress(props.selectedKey)
   const preview = position ? sheetNumberFormatPreviewPatternAt(props.numberFormatPreview, position.row, position.column) : undefined
-  return displayCell(props.sheet.cells[props.selectedKey], props.sheet.date1904, region.value, preview)
+  return displayCell(position ? sheetViewCellAt(props.sheet, position.row, position.column) : undefined, props.sheet.date1904, region.value, preview)
 })
 const outlineToggleRects = computed(() => geometry.value.outlineToggleRects(viewport.value))
 const outlineLevelButtons = computed(() => {
@@ -133,9 +161,13 @@ const outlineLevelButtons = computed(() => {
   })
 })
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
-const editedCell = computed(() => props.sheet.cells[props.editingKey ?? ''])
+const editedCell = computed(() => {
+  const position = props.editingKey ? parseAddress(props.editingKey) : undefined
+  return position ? sheetViewCellAt(props.sheet, position.row, position.column) : undefined
+})
 const editorScroll = ref({ left: 0, top: 0 })
 const editorFocused = ref(false)
+const editorCaretAffinity = ref<SheetRichTextEditorCaretAffinity>('downstream')
 const editorRichLayout = computed(() => {
   const cell = props.richTextEditorCell, position = props.editingKey ? parseAddress(props.editingKey) : undefined
   if (!cell || cell.value !== props.editValue || !position) return undefined
@@ -167,7 +199,7 @@ const richTextEditorScene = computed(() => {
   return createSheetRichTextEditorScene(cell, rect, layout.clip, viewport.value.zoom, props.editSelection ?? { start: 0, end: 0 }, {
     background: cell.background ?? token.value.colorBgContainer, color: token.value.colorText, accent: token.value.colorPrimary,
     selectionColor: token.value.colorPrimaryBgHover, scrollLeft: editorScroll.value.left, scrollTop: editorScroll.value.top,
-    composing: composing.value, focused: editorFocused.value,
+    composing: composing.value, focused: editorFocused.value, caretAffinity: editorCaretAffinity.value,
   })
 })
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
@@ -302,11 +334,117 @@ const fillHandleStyle = computed(() => editLayout.value ? {
   clipPath: editLayout.value.fillHandleClipPath,
 } : { clipPath: 'inset(50%)' })
 const composing = ref(false)
+const drawingOrder = computed(() => props.drawingScene ? drawingPaintOrder(props.drawingScene) : undefined)
+function drawingVisible(_ref: SheetDrawingLeafRef, frame: SheetDrawingAffineGeometry): boolean {
+  return canViewWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')
+    && canViewProtectedRanges(props.sheet, [sheetDrawingGeometryRange(geometry.value, frame)], props.currentUserId ?? 'local-user')
+}
+const drawingCanvas = useSheetDrawingCanvas({
+  scene: () => props.drawingScene, geometry: () => geometry.value, viewport: () => viewport.value,
+  selection: () => props.selectedDrawingRefs ?? [], revision: () => props.workbookRevision, userId: () => props.currentUserId ?? 'local-user',
+  blocked: () => Boolean(props.editingKey || composing.value || props.formatPainter || props.imageInteractionBlocked),
+  color: () => token.value.colorPrimary, background: () => token.value.colorBgContainer, visible: drawingVisible,
+  select: (ref, additive, preserve) => emit('select-drawing', ref, additive, preserve), command: (id, input) => emit('drawing-command', id, input),
+  focus: () => root.value?.focus({ preventScroll: true }), capture: id => root.value?.setPointerCapture(id),
+  release: id => { if (root.value?.hasPointerCapture(id)) root.value.releasePointerCapture(id) }, render: queueRender,
+})
+const imageCanvas = useSheetImageCanvas({
+  geometry: () => geometry.value, viewport: () => viewport.value, sheet: () => props.sheet,
+  selectedId: () => props.selectedImageId, revision: () => props.workbookRevision, userId: () => props.currentUserId ?? 'local-user',
+  selectedIds: () => props.selectedImageIds ?? (props.selectedImageId ? [props.selectedImageId] : []),
+  drawingOrder: () => drawingOrder.value?.filter(ref => ref.kind === 'image').map(ref => ref.id) ?? (props.sheet.images ?? []).map(image => image.id),
+  drawingPreview: id => drawingCanvas.previewGeometry.value.get(`image:${id}`),
+  selectionControls: () => !drawingCanvas.sharedControls.value,
+  hitAllowed: (id, position) => !props.drawingScene || drawingCanvas.pick(position)?.leaf.kind === 'image' && drawingCanvas.pick(position)?.leaf.id === id,
+  editing: () => Boolean(props.editingKey || props.imageInteractionBlocked), composing: () => composing.value, painter: () => Boolean(props.formatPainter),
+  color: () => token.value.colorPrimary, background: () => token.value.colorBgContainer,
+  select: (id, additive, preserve) => emit('select-image', id, additive, preserve), edit: (id, row, column) => emit('edit-image', id, row, column),
+  update: (id, image, expectedRevision) => emit('image-command', SHEET_IMAGE_COMMANDS.update, {
+    sheetId: props.sheet.id, imageId: id, patch: { placement: sheetImagePlacement(image, geometry.value), crop: image.crop,
+      rotation: image.rotation, flipX: image.flipX, flipY: image.flipY, drawingGeometry: image.drawingGeometry }, expectedRevision,
+  }),
+  remove: id => emit('image-command', SHEET_IMAGE_COMMANDS.remove, { sheetId: props.sheet.id, imageId: id, expectedRevision: props.workbookRevision }),
+  removeMany: imageIds => emit('image-command', SHEET_IMAGE_COMMANDS.remove, { sheetId: props.sheet.id, imageIds, expectedRevision: props.workbookRevision }),
+  updateBatch: (images, expectedRevision) => emit('image-command', SHEET_IMAGE_COMMANDS.updateBatch, { sheetId: props.sheet.id, images, expectedRevision }),
+  crop: (id, input) => emit('image-command', id, { ...input, sheetId: props.sheet.id, expectedRevision: props.workbookRevision }),
+  render: queueRender,
+})
+const imageSelectionIds = computed(() => props.selectedImageIds ?? (props.selectedImageId ? [props.selectedImageId] : []))
+const multipleImagesSelected = computed(() => imageSelectionIds.value.length > 1)
+const drawingContextOpen = ref(false), drawingContextPosition = ref({ x: 0, y: 0 })
+const drawingGroupMenu = computed(() => ({ items: DRAWING_GROUP_MENU.items.map(item => ({ key: item.contentCommandId, label: item.label,
+  disabled: item.action === 'group' ? !drawingCanvas.canGroup.value : !drawingCanvas.canUngroup.value })),
+  onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(String(key)) }))
+const drawingArrangeMenu = computed(() => ({ items: DRAWING_ARRANGE_MENU.items.map(item => ({ key: item.action, label: item.label, disabled: !drawingCanvas.editable.value })),
+  onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(`arrange:${key}`) }))
+const drawingContextMenu = computed(() => ({ selectable: false, items: [
+  { key: 'group', label: '组合', children: drawingGroupMenu.value.items },
+  { key: 'arrange', label: '排列', children: DRAWING_ARRANGE_MENU.items.map(item => ({ key: `arrange:${item.action}`, label: item.label, disabled: !drawingCanvas.editable.value })) },
+  { key: 'remove', label: '删除', danger: true, disabled: !drawingCanvas.editable.value },
+], onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(String(key)) }))
+function chooseDrawingMenu(key: string): void {
+  drawingContextOpen.value = false
+  if (key === 'remove') drawingCanvas.run('sheet.command.remove-sheet-drawings')
+  else if (key === SHEET_DRAWING_GROUP_COMMAND_IDS.group && drawingCanvas.canGroup.value) drawingCanvas.run(key)
+  else if (key === SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup && drawingCanvas.canUngroup.value) drawingCanvas.run(key)
+  else if (key.startsWith('arrange:')) {
+    const item = DRAWING_ARRANGE_MENU.items.find(item => `arrange:${item.action}` === key)
+    if (item) drawingCanvas.run(SHEET_DRAWING_GROUP_COMMAND_IDS.arrange, { arrangeType: item.action })
+  }
+}
+watch([() => props.sheet, () => props.workbookRevision, () => props.selectedDrawingRefs, () => props.imageInteractionBlocked], () => { drawingContextOpen.value = false }, { flush: 'sync' })
+const imageArrangeMenu = computed(() => ({ items: [{ key: '0', label: '上移一层' }, { key: '1', label: '下移一层' },
+  { key: '2', label: '置于顶层' }, { key: '3', label: '置于底层' }], onClick: (info: { key: string | number }) => {
+  const arrangeType = Number(info.key)
+  if (!props.selectedImageId || !imageCanvas.selectedEditable.value || ![0, 1, 2, 3].includes(arrangeType)) return
+  emit('image-command', SHEET_IMAGE_COMMANDS.arrange, { sheetId: props.sheet.id, drawingIds: imageSelectionIds.value,
+    arrangeType: arrangeType as 0 | 1 | 2 | 3, expectedRevision: props.workbookRevision })
+} }))
+const imageCropMenu = computed(() => ({ items: SHEET_IMAGE_CROP_PRESETS.map(preset => ({ key: preset.value, label: preset.label })),
+  onClick: (info: { key: string | number }) => {
+    if (!props.selectedImageId || multipleImagesSelected.value || !imageCanvas.selectedEditable.value) return
+    const preset = SHEET_IMAGE_CROP_PRESETS.find(preset => preset.value === String(info.key))
+    if (!preset) return
+    emit('image-command', SHEET_IMAGE_COMMANDS.cropAuto, { sheetId: props.sheet.id, imageId: props.selectedImageId,
+      cropType: preset.value, expectedRevision: props.workbookRevision })
+  } }))
+const imageAlignMenu = computed(() => ({ items: SHEET_IMAGE_ALIGN_PRESETS.map(preset => ({ key: preset.value, label: preset.label })),
+  onClick: (info: { key: string | number }) => {
+    const preset = SHEET_IMAGE_ALIGN_PRESETS.find(preset => preset.value === String(info.key))
+    if (!preset || !imageCanvas.selectedEditable.value || !multipleImagesSelected.value) return
+    emit('image-command', SHEET_IMAGE_ALIGN_OPERATIONS.align, { sheetId: props.sheet.id, imageIds: imageSelectionIds.value,
+      alignType: preset.value, expectedRevision: props.workbookRevision })
+  } }))
 const surfaceError = ref('')
 const contextMenuOpen = ref(false)
 const contextMenuHit = ref<GridHit | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuSelection = computed(() => props.selectedRanges?.at(-1))
+const contextImageRanges = computed<CellRange[]>(() => {
+  const hit = contextMenuHit.value, ranges = props.selectedRanges ?? []
+  if (!hit || !['cell', 'row', 'column', 'all'].includes(hit.kind)) return []
+  const inside = ranges.some(range => hit.kind === 'cell' ? hit.row >= range.startRow && hit.row <= range.endRow && hit.column >= range.startColumn && hit.column <= range.endColumn
+    : hit.kind === 'row' ? range.startColumn === 0 && range.endColumn === props.sheet.columnCount - 1 && hit.row >= range.startRow && hit.row <= range.endRow
+      : hit.kind === 'column' && range.startRow === 0 && range.endRow === props.sheet.rowCount - 1 && hit.column >= range.startColumn && hit.column <= range.endColumn)
+  if (inside) return ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }))
+  return [hit.kind === 'cell' ? { startRow: hit.row, endRow: hit.row, startCol: hit.column, endCol: hit.column }
+    : hit.kind === 'row' ? { startRow: hit.row, endRow: hit.row, startCol: 0, endCol: props.sheet.columnCount - 1 }
+      : hit.kind === 'column' ? { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: hit.column, endCol: hit.column }
+        : { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: 0, endCol: props.sheet.columnCount - 1 }]
+})
+const contextCellImage = computed(() => {
+  const hit = contextMenuHit.value
+  if (hit?.kind !== 'cell') return undefined
+  const merge = geometry.value.mergeAt(hit.row, hit.column), row = merge?.startRow ?? hit.row, column = merge?.startColumn ?? hit.column
+  const image = props.sheet.cells[cellAddress(row, column)]?.image
+  return image && canViewProtectedRanges(props.sheet, [{ startRow: row, endRow: row, startCol: column, endCol: column }], props.currentUserId ?? 'local-user') ? { id: image.id, row, column } : undefined
+})
+const contextCellImagePositions = computed(() => Object.entries(props.sheet.cells).flatMap(([key, cell]) => {
+  const point = cell.image && parseAddress(key)
+  return point && contextImageRanges.value.some(range => point.row >= range.startRow && point.row <= range.endRow && point.column >= range.startCol && point.column <= range.endCol)
+    ? [{ startRow: point.row, endRow: point.row, startCol: point.column, endCol: point.column }] : []
+}))
+const canSaveContextImages = computed(() => canViewProtectedRanges(props.sheet, contextCellImagePositions.value, props.currentUserId ?? 'local-user'))
 const canShiftHorizontally = computed(() => {
   const range = contextMenuSelection.value
   if (!range) return false
@@ -365,9 +503,12 @@ let selectionPress: { pointerId: number; sheetId: string; painter: boolean } | u
 let headerSelectionDrag: { axis: 'row' | 'column' } | undefined
 let gesturePointerId: number | undefined
 let richTextPress: { pointerId: number; sessionId?: string; sheetId: string; key: string; value: string; anchor: number } | undefined
+let richTextPointer: { x: number; y: number } | undefined
+let richTextScrollFrame = 0, richTextScrollTime: number | undefined
+let editorAffinityOffset: number | undefined
 let preferredEditorX: number | undefined
 let painterDoubleClickUntil = 0
-let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; startPoint: { x: number; y: number } } | undefined
+let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; startPoint: { x: number; y: number }; pane?: { frozenX: boolean; frozenY: boolean } } | undefined
 const slicerAnchor = new Map<string, number>()
 const multiSelect = ref(new Set<string>())
 let lastPointer: { x: number; y: number } | undefined
@@ -430,14 +571,39 @@ function restoreViewport() {
   onScroll()
 }
 function point(event: MouseEvent) { const rect = root.value!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top } }
+type DrawingHit = NonNullable<ReturnType<typeof drawingCanvas.pick>>
+function drawingContentPoint(position: { x: number; y: number }, hit?: DrawingHit, capturedPane?: { frozenX: boolean; frozenY: boolean }): { x: number; y: number } {
+  const pane = capturedPane ?? hit?.layout
+  return slicerObjectContentPoint(position.x, position.y, pane ? { ...viewport.value,
+    scrollLeft: pane.frozenX ? 0 : viewport.value.scrollLeft, scrollTop: pane.frozenY ? 0 : viewport.value.scrollTop } : viewport.value)
+}
+function emitChartEvent(event: MouseEvent, hit: DrawingHit): void {
+  emit('chart-event', event, hit.leaf.id, { scrollLeft: hit.layout.frozenX ? 0 : viewport.value.scrollLeft, scrollTop: hit.layout.frozenY ? 0 : viewport.value.scrollTop })
+}
+/** Native chart hitboxes are an input bridge. Common Canvas order decides which drawing receives the event. */
+function routeDrawingEvent(event: MouseEvent, chartId: string): boolean {
+  if (!props.drawingScene || !root.value || !active || disposed) return false
+  const position = point(event), hit = drawingCanvas.pick(position), controls = drawingCanvas.hasControlAt(position) || imageCanvas.hasControlAt(position),
+    additive = event.type === 'pointerdown' && (event.ctrlKey || event.metaKey || event.shiftKey
+      && !(props.selectedDrawingRefs?.length === 1 && props.selectedDrawingRefs[0]?.kind === 'chart' && props.selectedDrawingRefs[0].id === chartId))
+  if (!controls && !additive && hit?.leaf.kind === 'chart' && hit.leaf.id === chartId && hit.target.kind === 'chart') return false
+  event.preventDefault(); event.stopPropagation()
+  if (event.type === 'pointerdown' && event instanceof PointerEvent) onPointerDown(event)
+  else if (event.type === 'pointermove' && event instanceof PointerEvent) onPointerMove(event)
+  else if (event.type === 'dblclick') onDoubleClick(event)
+  else if (event.type === 'contextmenu') onContextMenu(event)
+  else if (event.type === 'wheel' && event instanceof WheelEvent) onWheel(event)
+  return true
+}
 function editorElement(): HTMLInputElement | HTMLTextAreaElement | undefined {
   const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
   return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element : undefined
 }
-function selectEditorText(start: number, end = start): void {
+function selectEditorText(start: number, end = start, affinity: SheetRichTextEditorCaretAffinity = 'downstream'): void {
   const element = editorElement()
   if (!element || composing.value) return
   element.focus({ preventScroll: true })
+  editorCaretAffinity.value = affinity; editorAffinityOffset = end
   element.setSelectionRange(Math.min(start, end), Math.max(start, end), start > end ? 'backward' : 'forward')
   // A library-owned input remains the authority for native offsets and the shared edit trace.
   element.dispatchEvent(new Event('select', { bubbles: true }))
@@ -445,10 +611,7 @@ function selectEditorText(start: number, end = start): void {
 function scrollRichEditor(left: number, top: number): void {
   const scene = richTextEditorScene.value, layout = editLayout.value
   if (!scene || !layout) return
-  const next = {
-    left: Math.max(0, Math.min(Math.max(0, scene.contentWidth - layout.clip.width), left)),
-    top: Math.max(0, Math.min(Math.max(0, scene.contentHeight - layout.clip.height), top)),
-  }
+  const next = clampSheetRichTextEditorScroll(scene, { left, top })
   if (next.left !== editorScroll.value.left || next.top !== editorScroll.value.top) editorScroll.value = next
 }
 function ensureRichEditorCaretVisible(): void {
@@ -471,6 +634,9 @@ function onEditorSelectionCapture(event: Event): void {
   const target = event.target
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
   editorFocused.value = target === document.activeElement
+  const focus = target.selectionDirection === 'backward' ? target.selectionStart : target.selectionEnd
+  const nativeMove = event.type === 'keyup' && !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes((event as KeyboardEvent).key)
+  if (focus !== editorAffinityOffset || nativeMove) { editorCaretAffinity.value = 'downstream'; editorAffinityOffset = undefined }
   if (event.type === 'keyup' && !['ArrowUp', 'ArrowDown'].includes((event as KeyboardEvent).key)) preferredEditorX = undefined
   void nextTick(ensureRichEditorCaretVisible)
 }
@@ -484,15 +650,35 @@ function richPressIsCurrent(): boolean {
   return !!richTextPress && richTextPress.sessionId === inputSessionId() && richTextPress.sheetId === props.sheet.id
     && richTextPress.key === props.editingKey && richTextPress.value === props.editValue
 }
+function stopRichTextDragScroll(): void {
+  cancelAnimationFrame(richTextScrollFrame)
+  richTextScrollFrame = 0; richTextScrollTime = undefined
+}
+function continueRichTextDragScroll(time: number): void {
+  richTextScrollFrame = 0
+  if (!active || disposed || composing.value || !richPressIsCurrent()) { clearPointerGesture(); return }
+  const scene = richTextEditorScene.value, position = richTextPointer
+  if (!scene || !position || editorElement() !== document.activeElement) { stopRichTextDragScroll(); return }
+  const elapsed = richTextScrollTime === undefined ? 1000 / 60 : time - richTextScrollTime
+  richTextScrollTime = time
+  const next = stepSheetRichTextEditorDragScroll(scene, editorScroll.value, position, elapsed)
+  if (next.left === editorScroll.value.left && next.top === editorScroll.value.top) { stopRichTextDragScroll(); return }
+  editorScroll.value = next
+  const hit = hitSheetRichTextEditorPosition(richTextEditorScene.value ?? scene, position.x, position.y)
+  if (hit && richTextPress) selectEditorText(richTextPress.anchor, hit.offset, hit.affinity)
+  if (richPressIsCurrent()) richTextScrollFrame = requestAnimationFrame(continueRichTextDragScroll)
+}
 function updateRichTextPointer(position: { x: number; y: number }): void {
   if (!richPressIsCurrent() || composing.value) { clearPointerGesture(); return }
   const scene = richTextEditorScene.value, layout = editLayout.value
   if (!scene || !layout || !richTextPress) return
+  richTextPointer = position
+  const hit = hitSheetRichTextEditorPosition(scene, position.x, position.y)
+  if (hit) selectEditorText(richTextPress.anchor, hit.offset, hit.affinity)
   const clip = layout.clip
-  scrollRichEditor(editorScroll.value.left + (position.x < clip.x ? -12 : position.x > clip.x + clip.width ? 12 : 0),
-    editorScroll.value.top + (position.y < clip.y ? -12 : position.y > clip.y + clip.height ? 12 : 0))
-  const offset = hitSheetRichTextEditor(richTextEditorScene.value ?? scene, position.x, position.y)
-  if (offset !== undefined) selectEditorText(richTextPress.anchor, offset)
+  const outside = position.x < clip.x || position.x > clip.x + clip.width || position.y < clip.y || position.y > clip.y + clip.height
+  if (outside && !richTextScrollFrame) richTextScrollFrame = requestAnimationFrame(continueRichTextDragScroll)
+  else if (!outside) stopRichTextDragScroll()
 }
 function onEditorPointerDownCapture(event: PointerEvent): void {
   onEditorFillPointerDown(event)
@@ -501,13 +687,15 @@ function onEditorPointerDownCapture(event: PointerEvent): void {
   if (!scene || !element || !key) return
   const position = point(event), clip = scene.clip
   if (position.x < clip.x || position.x > clip.x + clip.width || position.y < clip.y || position.y > clip.y + clip.height) return
-  const offset = hitSheetRichTextEditor(scene, position.x, position.y)
-  if (offset === undefined) return
+  const hit = hitSheetRichTextEditorPosition(scene, position.x, position.y)
+  if (!hit) return
+  const offset = hit.offset
   event.preventDefault(); event.stopPropagation()
   const anchor = event.shiftKey ? element.selectionDirection === 'backward' ? element.selectionEnd ?? offset : element.selectionStart ?? offset : offset
   preferredEditorX = undefined
-  selectEditorText(anchor, offset)
+  selectEditorText(anchor, offset, hit.affinity)
   richTextPress = { pointerId: event.pointerId, sessionId: inputSessionId(), sheetId: props.sheet.id, key, value: props.editValue, anchor }
+  richTextPointer = position
   gesturePointerId = event.pointerId
   root.value?.setPointerCapture(event.pointerId)
 }
@@ -588,8 +776,18 @@ function onPointerDown(event: PointerEvent) {
   if (gesturePointerId !== undefined || !active || disposed) return
   if ((event.target as HTMLElement).closest('input, textarea')) return
   const position = point(event)
-  const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
-  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  if (drawingCanvas.begin(position, event)) return
+  if (imageCanvas.begin(position, event)) {
+    event.preventDefault(); event.stopPropagation(); root.value?.focus({ preventScroll: true })
+    if (imageCanvas.hasGesture()) { gesturePointerId = event.pointerId; root.value?.setPointerCapture(event.pointerId) }
+    return
+  }
+  const drawingHit = drawingCanvas.pick(position)
+  if (drawingHit?.leaf.kind === 'chart') {
+    root.value?.focus({ preventScroll: true }); emitChartEvent(event, drawingHit); return
+  }
+  const content = drawingContentPoint(position, drawingHit)
+  const slicerHit = hitTestSlicerObjects(drawingHit ? slicerLayouts.value.filter(layout => layout.id === drawingHit.leaf.id) : slicerLayouts.value, content.x, content.y, timelineMenuId.value)
   if (slicerHit) {
     if (event.button !== 0) return
     event.preventDefault()
@@ -606,7 +804,7 @@ function onPointerDown(event: PointerEvent) {
       next.set(slicerHit.id, slicerHit.index)
       focusedTimelinePeriods.value = next
     }
-    slicerPress = { hit: slicerHit, start: slicerHit, startPoint: content }
+    slicerPress = { hit: slicerHit, start: slicerHit, startPoint: content, pane: drawingHit?.layout }
     gesturePointerId = event.pointerId
     root.value?.setPointerCapture(event.pointerId)
     return
@@ -659,14 +857,21 @@ function onPointerDown(event: PointerEvent) {
   root.value?.setPointerCapture(event.pointerId)
 }
 function onPointerMove(event: PointerEvent) {
+  if (drawingCanvas.move(point(event), event)) return
+  if (imageCanvas.move(point(event), event)) return
   if (!active || disposed || gesturePointerId !== undefined && gesturePointerId !== event.pointerId) return
   if (richTextPress) { updateRichTextPointer(point(event)); return }
+  if (gesturePointerId === undefined) {
+    const drawingHit = drawingCanvas.pick(point(event))
+    if (drawingHit?.leaf.kind === 'chart' && drawingHit.target.kind === 'chart') { emitChartEvent(event, drawingHit); return }
+    if (drawingHit?.target.kind === 'group' || drawingHit?.target.kind === 'shape') { if (root.value) root.value.style.cursor = 'move'; return }
+  }
   const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
   if (pendingFillPress) { pendingFillPress.position = position; return }
   if (headerDrag.value || headerSelectionDrag) { updateHeaderGesture(position, event.ctrlKey || event.metaKey); return }
   if (slicerPress && ['period', 'timelineStart', 'timelineEnd', 'scroll'].includes(slicerPress.start.type)) {
-    const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
+    const content = drawingContentPoint(position, undefined, slicerPress.pane)
     const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
     if (hit?.id === slicerPress.hit.id) slicerPress.hit = hit
     return
@@ -684,8 +889,13 @@ function onPointerMove(event: PointerEvent) {
   }
 }
 function onPointerUp(event: PointerEvent) {
+  if (drawingCanvas.end(point(event), event)) { clearPointerGesture(); return }
+  if (imageCanvas.end(point(event), event)) { clearPointerGesture(); return }
   if (gesturePointerId !== event.pointerId) return
-  if (richTextPress) { clearPointerGesture(); return }
+  if (richTextPress) {
+    if (event.type === 'pointerup') updateRichTextPointer(point(event))
+    clearPointerGesture(); return
+  }
   if (pendingFillPress) { clearPointerGesture(); return }
   gesturePointerId = undefined
   const canceled = event.type !== 'pointerup'
@@ -707,7 +917,7 @@ function onPointerUp(event: PointerEvent) {
     slicerPress = undefined
     if (!canceled) {
       const position = point(event)
-      const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
+      const content = drawingContentPoint(position, undefined, press.pane)
       const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
       if (timelineMenuId.value && hit?.type !== 'timelineMenu' && hit?.type !== 'timelineLevel') timelineMenuId.value = ''
       if (press.start.type === 'move' || press.start.type === 'resize') {
@@ -814,9 +1024,12 @@ function onPointerUp(event: PointerEvent) {
   if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
 }
 function clearPointerGesture() {
+  drawingCanvas.cancel()
+  imageCanvas.cancel()
   const pointerId = gesturePointerId
   gesturePointerId = undefined
   richTextPress = undefined
+  richTextPointer = undefined; stopRichTextDragScroll()
   selectionPress = undefined; dragging = false; fillDrag = undefined; pendingFillPress = undefined; fillPreview.value = undefined; fillHandleHovered.value = false; lastPointer = undefined; resizeDrag = undefined; slicerPress = undefined
   headerDrag.value = undefined; headerSelectionDrag = undefined
   if (root.value) root.value.style.cursor = ''
@@ -839,7 +1052,11 @@ function onDoubleClick(event: MouseEvent) {
   if ((event.target as HTMLElement).closest('input, textarea')) return
   if (props.formatPainter || event.timeStamp < painterDoubleClickUntil) { event.preventDefault(); return }
   const p = point(event)
-  const content = slicerObjectContentPoint(p.x, p.y, viewport.value)
+  if (drawingCanvas.enterGroup(p)) { event.preventDefault(); event.stopPropagation(); return }
+  const drawingHit = drawingCanvas.pick(p)
+  if (drawingHit?.leaf.kind === 'chart') { emitChartEvent(event, drawingHit); return }
+  if (imageCanvas.editAt(p)) { event.preventDefault(); event.stopPropagation(); return }
+  const content = drawingContentPoint(p, drawingHit)
   const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
   if (slicerHit) { emit('slicer-settings', slicerHit.id); return }
   const source = hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, p.x, p.y)
@@ -863,7 +1080,17 @@ function onContextMenu(event: MouseEvent) {
   if (!bounds) return
   const localX = event.clientX - bounds.left
   const localY = event.clientY - bounds.top
-  const content = slicerObjectContentPoint(localX, localY, viewport.value)
+  const drawingHit = drawingCanvas.pick({ x: localX, y: localY })
+  if (drawingCanvas.selectAt({ x: localX, y: localY })) {
+    contextMenuOpen.value = false; drawingContextPosition.value = { x: localX, y: localY }
+    const sheetId = props.sheet.id, revision = props.workbookRevision
+    void nextTick(() => { if (active && !disposed && props.sheet.id === sheetId && props.workbookRevision === revision
+      && drawingCanvas.sharedControls.value && !props.imageInteractionBlocked) drawingContextOpen.value = true })
+    return
+  }
+  if (drawingHit?.leaf.kind === 'chart') { emitChartEvent(event, drawingHit); return }
+  if (imageCanvas.selectAt({ x: localX, y: localY })) { contextMenuOpen.value = false; return }
+  const content = drawingContentPoint({ x: localX, y: localY }, drawingHit)
   const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
   if (slicerHit) { emit('select-slicer', slicerHit.id); emit('slicer-settings', slicerHit.id); return }
   const actual = geometry.value.hitTest(localX, localY, viewport.value)
@@ -896,7 +1123,7 @@ function onEditorKeydownCapture(event: KeyboardEvent): void {
     if (next) {
       event.preventDefault(); event.stopPropagation()
       preferredEditorX = next.preferredX === undefined ? undefined : next.preferredX + editorScroll.value.left
-      selectEditorText(event.shiftKey ? backward ? end : start : next.offset, next.offset)
+      selectEditorText(event.shiftKey ? backward ? end : start : next.offset, next.offset, next.affinity)
     }
     return
   }
@@ -919,6 +1146,7 @@ function onNativeInputCapture(event: Event): void {
     if (target.closest('.canvas-cell-input') && /[\r\n]/u.test(target.value)) retainedMultiline.value = true
   }
   nativeInput.capture(event, 'input')
+  editorCaretAffinity.value = 'downstream'; editorAffinityOffset = undefined
   preferredEditorX = undefined
   void nextTick(ensureRichEditorCaretVisible)
 }
@@ -956,6 +1184,7 @@ function onEditorPasteCapture(event: ClipboardEvent): void {
 function onEditorBlur(event: FocusEvent): void {
   if (!(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
   editorFocused.value = false
+  if (richTextPress) clearPointerGesture()
   const next = event.relatedTarget
   if (next instanceof HTMLElement && next.closest('.canvas-cell-input, .formula-toolbar')) return
   if (props.keepEditFocus?.(next instanceof Element ? next : null)) return
@@ -985,8 +1214,10 @@ function onWheel(event: WheelEvent) {
   }
   if ((event.target as HTMLElement).closest('input, textarea')) return
   const position = point(event)
-  const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
-  const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  const drawingHit = drawingCanvas.pick(position)
+  if (drawingHit?.leaf.kind === 'chart') { emitChartEvent(event, drawingHit); return }
+  const content = drawingContentPoint(position, drawingHit)
+  const hit = hitTestSlicerObjects(drawingHit ? slicerLayouts.value.filter(layout => layout.id === drawingHit.leaf.id) : slicerLayouts.value, content.x, content.y, timelineMenuId.value)
   if (!hit) return
   event.preventDefault()
   const layout = slicerLayouts.value.find(item => item.id === hit.id)
@@ -1004,6 +1235,17 @@ function onWheel(event: WheelEvent) {
 }
 function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
 function onKeydown(event: KeyboardEvent) {
+  if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && drawingCanvas.sharedControls.value && !event.isComposing && event.keyCode !== 229) {
+    const menu = drawingCanvas.menuPosition.value
+    if (menu) { event.preventDefault(); event.stopPropagation(); drawingContextPosition.value = { x: menu.left, y: menu.top + 34 }; drawingContextOpen.value = true; return }
+  }
+  if (drawingCanvas.keydown(event)) return
+  if (imageCanvas.keydown(event)) return
+  const selectedChart = props.selectedDrawingRefs?.length === 1 && props.selectedDrawingRefs[0]?.kind === 'chart' ? props.selectedDrawingRefs[0] : undefined
+  if (selectedChart && !props.editingKey && !props.imageInteractionBlocked) {
+    emit('chart-event', event, selectedChart.id, { scrollLeft: viewport.value.scrollLeft, scrollTop: viewport.value.scrollTop })
+    if (event.defaultPrevented) return
+  }
   if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (fillDrag || pendingFillPress || headerDrag.value || headerSelectionDrag)) {
     event.preventDefault(); event.stopPropagation(); clearPointerGesture(); return
   }
@@ -1100,13 +1342,14 @@ function ensureVisible(address: string) {
   onScroll()
 }
 function focus() { root.value?.focus({ preventScroll: true }) }
-defineExpose({ focusEditor, insertEditorText, ensureVisible, focus, getBackend: () => surface?.backend })
+defineExpose({ focusEditor, insertEditorText, ensureVisible, focus, getBackend: () => surface?.backend, operateImageCrop: imageCanvas.operateImageCrop, routeDrawingEvent })
 watch(scene, queueRender)
 watch(fullSize, () => { void nextTick(resize) })
 watch(() => props.zoom, () => { viewport.value = { ...viewport.value, zoom: props.zoom / 100 }; void nextTick(() => { resize(); ensureVisible(props.selectedKey) }) })
 watch([() => props.editingKey, () => props.editSessionId], ([key]) => {
   changeInputComposition(false); retainedMultiline.value = false; editorHasPendingFocus = false; editorFocusRequest++
   editorScroll.value = { left: 0, top: 0 }; editorFocused.value = false; preferredEditorX = undefined
+  editorCaretAffinity.value = 'downstream'; editorAffinityOffset = undefined
   if (richTextPress) clearPointerGesture()
   if (key) ensureVisible(key)
 }, { flush: 'sync' })
@@ -1193,6 +1436,45 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
     @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
+    <div v-if="drawingCanvas.menuPosition.value" class="sheet-drawing-float-menu" role="toolbar" aria-label="绘图组合工具"
+      :style="{ left: `${drawingCanvas.menuPosition.value.left}px`, top: `${drawingCanvas.menuPosition.value.top}px`, background: token.colorBgElevated, borderColor: token.colorBorder }"
+      @pointerdown.stop @dblclick.stop @contextmenu.prevent.stop @keydown.stop>
+      <Dropdown :trigger="['click']" :menu="drawingGroupMenu" :auto-focus="false" destroy-on-hidden>
+        <Button size="small" :disabled="!drawingCanvas.canGroup.value && !drawingCanvas.canUngroup.value" aria-label="组合或取消组合">组合</Button>
+      </Dropdown>
+      <Dropdown :trigger="['click']" :menu="drawingArrangeMenu" :auto-focus="false" destroy-on-hidden>
+        <Button size="small" :disabled="!drawingCanvas.editable.value" aria-label="排列绘图对象">排列</Button>
+      </Dropdown>
+      <Dropdown v-if="multipleImagesSelected && imageSelectionIds.length === selectedDrawingRefs?.length" :trigger="['click']" :menu="imageAlignMenu" :auto-focus="false" destroy-on-hidden>
+        <Button size="small" :disabled="!imageCanvas.selectedEditable.value" aria-label="对齐图片">对齐</Button>
+      </Dropdown>
+      <Tooltip title="删除当前选择的绘图对象"><Button size="small" danger :disabled="!drawingCanvas.editable.value" @click="chooseDrawingMenu('remove')">删除</Button></Tooltip>
+    </div>
+    <div v-if="drawingContextOpen" class="sheet-drawing-context-anchor" :style="{ left: `${drawingContextPosition.x}px`, top: `${drawingContextPosition.y}px` }">
+      <Dropdown :trigger="[]" :open="drawingContextOpen" :menu="drawingContextMenu" auto-focus destroy-on-hidden @update:open="drawingContextOpen = $event">
+        <span aria-hidden="true" />
+      </Dropdown>
+    </div>
+    <Alert v-if="drawingCanvas.error.value" class="sheet-drawing-error" type="error" :title="drawingCanvas.error.value" show-icon closable @close="drawingCanvas.error.value = ''" @pointerdown.stop />
+    <div v-if="imageCanvas.menuPosition.value && selectedImageId" class="sheet-image-float-menu" role="toolbar" aria-label="图片工具"
+      :style="{ left: `${imageCanvas.menuPosition.value.left}px`, top: `${imageCanvas.menuPosition.value.top}px`, background: token.colorBgElevated, borderColor: token.colorBorder }"
+      @pointerdown.stop @dblclick.stop @contextmenu.prevent.stop @keydown.stop>
+      <Tooltip v-if="!imageCanvas.isCropping.value && !multipleImagesSelected" :title="translate('sheet.image.properties', '图片属性')"><Button size="small" :disabled="!imageCanvas.selectedEditable.value" @click="emit('edit-image', selectedImageId)">{{ translate('sheet.image.properties', '图片属性') }}</Button></Tooltip>
+      <Tooltip v-if="!imageCanvas.isCropping.value && !multipleImagesSelected" :title="translate('sheet.image.save', '保存图片')"><Button size="small" @click="emit('save-image', selectedImageId)">{{ translate('sheet.image.save', '保存图片') }}</Button></Tooltip>
+      <Dropdown v-if="!multipleImagesSelected" :trigger="['click']" :menu="imageCropMenu" :disabled="!imageCanvas.selectedEditable.value" :auto-focus="false" :destroy-on-hidden="true">
+        <Button size="small" :disabled="!imageCanvas.selectedEditable.value" aria-label="裁剪图片">裁剪</Button>
+      </Dropdown>
+      <Button v-if="imageCanvas.isCropping.value" size="small" type="primary" @click="emit('image-command', SHEET_IMAGE_COMMANDS.cropClose, { sheetId: sheet.id, expectedRevision: workbookRevision })">完成裁剪</Button>
+      <Button v-if="imageCanvas.isCropping.value" size="small" @click="emit('image-command', SHEET_IMAGE_COMMANDS.cropClose, { sheetId: sheet.id, isCancel: true })">取消</Button>
+      <Dropdown v-if="!imageCanvas.isCropping.value" :trigger="['click']" :menu="imageArrangeMenu" :disabled="!imageCanvas.selectedEditable.value" :auto-focus="false" :destroy-on-hidden="true">
+        <Button size="small" :disabled="!imageCanvas.selectedEditable.value" aria-label="排列图片">排列</Button>
+      </Dropdown>
+      <Dropdown v-if="!imageCanvas.isCropping.value && multipleImagesSelected" :trigger="['click']" :menu="imageAlignMenu" :disabled="!imageCanvas.selectedEditable.value" :auto-focus="false" :destroy-on-hidden="true">
+        <Button size="small" :disabled="!imageCanvas.selectedEditable.value" aria-label="对齐图片">对齐</Button>
+      </Dropdown>
+      <Tooltip v-if="!imageCanvas.isCropping.value" :title="translate('sheet.image.delete', '删除图片')"><Button size="small" danger :disabled="!imageCanvas.selectedEditable.value" @click="emit('image-command', SHEET_IMAGE_COMMANDS.remove, { sheetId: sheet.id, imageIds: imageSelectionIds, expectedRevision: workbookRevision })">{{ translate('sheet.image.delete', '删除图片') }}</Button></Tooltip>
+    </div>
+    <Alert v-if="imageCanvas.imageError.value" class="sheet-image-error" type="error" :title="imageCanvas.imageError.value" show-icon closable @close="imageCanvas.imageError.value = ''" @pointerdown.stop />
     <SheetFillOptions v-if="fillOptionsStyle && fillOptions" :options="fillOptions" :position="fillOptionsStyle"
       :revision="workbookRevision" :selection-key="JSON.stringify(selectedRanges)" :label="translate('sheet.fill-options', '自动填充选项')"
       :labels="{ COPY: translate('sheet.fill.copy', '复制单元格'), SERIES: translate('sheet.fill.series', '填充序列'),
@@ -1250,6 +1532,7 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
       :has-hidden-columns="hasContextHiddenColumns"
       :can-convert-text="canConvertSelectedText"
       :has-hyperlink="hasContextHyperlink"
+      :has-cell-images="Boolean(contextCellImagePositions.length)" :can-save-cell-images="canSaveContextImages" :context-image="contextCellImage"
       :can-format="canFormat"
       :clipboard-capabilities="clipboardCapabilities"
       :can-shift-horizontally="canShiftHorizontally"
@@ -1280,10 +1563,18 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
 .canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; touch-action: auto; }
 .canvas-cell-input :deep(.ant-select-input) { height: 100%; }
 .canvas-cell-input :deep(.ant-select-content) { height: 100%; min-height: 0; }
+.rich-text-editor-active :deep(.canvas-cell-input .ant-select-content),
+.rich-text-editor-active :deep(.canvas-cell-input .ant-select-selector) { background: transparent; }
 .rich-text-editor-active :deep(.canvas-cell-input input), .rich-text-editor-active :deep(.canvas-cell-input textarea) { -webkit-text-fill-color: transparent; }
 .rich-text-editor-active :deep(.canvas-cell-input input::selection), .rich-text-editor-active :deep(.canvas-cell-input textarea::selection) { color: transparent; background: transparent; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
 .fill-handle-hovered :deep(.canvas-cell-input input), .fill-handle-hovered :deep(.canvas-cell-input textarea) { cursor: crosshair; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; inset-inline-start: 12px; max-width: calc(100% - 24px); }
+.sheet-image-float-menu { position: absolute; z-index: 5; display: flex; gap: 4px; padding: 3px; border: 1px solid; border-radius: 4px; }
+.sheet-drawing-float-menu { position: absolute; z-index: 6; display: flex; gap: 4px; padding: 3px; border: 1px solid; border-radius: 4px; }
+.sheet-drawing-context-anchor { position: absolute; width: 1px; height: 1px; pointer-events: none; }
+.sheet-drawing-context-anchor > span { display: block; width: 1px; height: 1px; }
+.sheet-drawing-error { position: absolute; z-index: 7; top: 32px; left: 48px; max-width: calc(100% - 70px); }
+.sheet-image-error { position: absolute; z-index: 6; top: 32px; left: 48px; max-width: calc(100% - 70px); }
 </style>

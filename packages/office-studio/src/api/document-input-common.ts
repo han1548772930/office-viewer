@@ -16,8 +16,8 @@ export function publicDocumentRecord(value: unknown, label: string): UniverBodyR
 
 export function publicDocumentResources(value: UniverBodyRecord, fallback: UniverDocumentBodyResources = {}): UniverDocumentBodyResources {
   const plugins = readDocumentPluginResources(value.resources), result: UniverDocumentBodyResources = {}
-  for (const key of ['tableSource', 'drawings', 'lists', 'callouts', 'codes'] as const) {
-    const plugin = key === 'callouts' || key === 'codes' ? plugins[key] : undefined
+  for (const key of ['tableSource', 'drawings', 'lists', 'callouts', 'codes', 'latexFormulas'] as const) {
+    const plugin = key === 'callouts' || key === 'codes' || key === 'latexFormulas' ? plugins[key] : undefined
     if (value[key] === undefined && fallback[key] === undefined && plugin === undefined) continue
     const own = value[key] === undefined ? {} : publicDocumentRecord(value[key], key)
     const inherited = fallback[key] === undefined ? {} : publicDocumentRecord(fallback[key], key)

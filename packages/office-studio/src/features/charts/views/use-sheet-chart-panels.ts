@@ -7,6 +7,7 @@ import type { ChartComputedStatistics } from '../chart-derived'
 import type { ChartSettingsSourceSheet } from '../chart-settings-draft'
 import type { ChartSettingsSourceLoader, ChartSettingsStatisticsLoader } from '../chart-settings-data'
 import { ComputeError } from '../../../compute/errors.ts'
+import { normalizeChartEditPanelRoute, type ChartEditPanelRoute } from '../chart-edit-panel-route'
 
 type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
 
@@ -33,7 +34,7 @@ interface ChartPanelTarget {
 }
 interface ChartPanelReaders { loadSource: ChartSettingsSourceLoader; loadStatistics: ChartSettingsStatisticsLoader }
 interface ChartInsertTarget extends ChartPanelTarget, ChartPanelReaders { config: ChartConfig; apply: (config: ChartConfig) => Promise<void> }
-interface ChartEditorTarget extends ChartPanelTarget, ChartPanelReaders { chartId: string; chart: ChartModel; apply: (patch: ChartPatch) => Promise<void> }
+interface ChartEditorTarget extends ChartPanelTarget, ChartPanelReaders { chartId: string; chart: ChartModel; navigationCurrent: () => boolean; apply: (patch: ChartPatch) => Promise<void> }
 interface PivotChartTarget extends ChartPanelTarget { applied: () => void; setBusy: (busy: boolean) => void }
 
 /** Panel callbacks retain their originating unit, even after the workbench switches. */
@@ -43,6 +44,7 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
   const chartError = ref(''), editorError = ref('')
   const chartInsertContext = shallowRef<ChartInsertTarget>()
   const chartEditorContext = shallowRef<ChartEditorTarget>()
+  const chartEditorRoute = shallowRef<ChartEditPanelRoute>(), chartEditorRouteKey = ref(0)
   const pivotChartContext = shallowRef<PivotChartTarget>()
   const sourceRevision = ref(0)
   let generation = 0, disposed = false
@@ -70,6 +72,7 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
     closeChartPanels()
     chartInsertContext.value = undefined
     chartEditorContext.value = undefined
+    chartEditorRoute.value = undefined; chartEditorRouteKey.value++
     pivotChartContext.value = undefined
     chartInsertBusy.value = false
     chartEditorBusy.value = false
@@ -145,12 +148,20 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
     chartModalOpen.value = true
   }
 
-  function openChartEditor(chart: ChartModel): void {
-    if (!canOpen()) return
+  function openChartEditor(chart: ChartModel, requestedRoute?: ChartEditPanelRoute): boolean {
+    if (!canOpen()) return false
+    const route = requestedRoute === undefined ? undefined : normalizeChartEditPanelRoute(requestedRoute)
+    const existing = chartEditorContext.value
+    if (existing && current(existing) && existing.chartId === chart.id && existing.sheetId === chart.sheetId) {
+      // A route change is navigation. Keep the session and the Drawer draft.
+      chartEditorRoute.value = route; chartEditorRouteKey.value++; chartEditorOpen.value = true
+      return true
+    }
     const captured = target()
-    if (!captured || chart.sheetId !== captured.sheetId) return
+    if (!captured || chart.sheetId !== captured.sheetId) return false
     closeChartPanels()
     const session: ChartEditorTarget = { ...captured, chartId: chart.id, chart,
+      navigationCurrent: () => chartEditorContext.value === session && chartEditorOpen.value && current(session) && host.canRestoreFocus(),
       loadSource: (config, options) => readSource(session, config, options, () => chartEditorContext.value === session && chartEditorOpen.value),
       loadStatistics: (config, options) => readStatistics(session, config, options, () => chartEditorContext.value === session && chartEditorOpen.value),
       setOpen(open) {
@@ -159,6 +170,7 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
       closed() {
         if (chartEditorContext.value !== session || chartEditorOpen.value) return
         chartEditorContext.value = undefined
+        chartEditorRoute.value = undefined
         chartEditorBusy.value = false
         editorError.value = ''
         restoreFocus(session)
@@ -180,8 +192,10 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
       },
     }
     chartEditorContext.value = session
+    chartEditorRoute.value = route; chartEditorRouteKey.value++
     editorError.value = ''
     chartEditorOpen.value = true
+    return true
   }
 
   function openPivotChart(): void {
@@ -247,6 +261,6 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
   onScopeDispose(() => { disposed = true; releaseChartPanelSessions() })
 
   return { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, chartEditorBusy, chartError, chartEditorError,
-    chartInsertContext, chartEditorContext, pivotChartContext, chartEditorChart, chartSourceRevision, chartEditorSheet, chartEditorSheets, chartInsertSheets,
+    chartInsertContext, chartEditorContext, chartEditorRoute, chartEditorRouteKey, pivotChartContext, chartEditorChart, chartSourceRevision, chartEditorSheet, chartEditorSheets, chartInsertSheets,
     openInsertChart, openChartEditor, openPivotChart }
 }

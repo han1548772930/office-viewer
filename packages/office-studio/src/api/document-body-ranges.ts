@@ -8,6 +8,8 @@ import { bodyBoolean, bodyRecord } from './document-body-style'
 import { documentBodyOfficeSource, documentBodySourceMetadata } from './document-body-source'
 import { applyDocumentBodyControlOwnership } from './document-body-control-ranges'
 import { documentBodyNoteReferenceCount } from './document-body-note-boundaries'
+import { isDocumentBodyLatexRange } from './document-body-latex'
+import { getLatexFormula, latexFormulaRangeId } from '../features/document/latex/latex-formula'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyArray, documentBodyIdentity, documentBodyLocalOffset, documentBodyOffset,
   type DocumentBodyDecodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyStructureIndex } from './document-body-types'
 
@@ -36,7 +38,11 @@ export function applyDocumentBodyRanges(value: unknown, positions: readonly Docu
     const startNoteReferenceCount = documentBodyNoteReferenceCount(first, Math.max(first.start, from))
     const endNoteReferenceCount = documentBodyNoteReferenceCount(last!, Math.min(last!.end, to))
     const properties = bodyRecord(raw.properties), rangeType = raw.rangeType
-    if (rangeType === 0) {
+    if (isDocumentBodyLatexRange(raw)) {
+      const runs = first.block.runs as DocumentRun[]
+      if (first !== last || endOffset - startOffset !== 1 || !runs.some(run => getLatexFormula(run) && latexFormulaRangeId(run) === id)) throw new RangeError('公式公开范围未映射到一个完整的模型实体。')
+      modeledRangeIds.add(id)
+    } else if (rangeType === 0) {
       const url = typeof properties.url === 'string' ? properties.url : typeof properties.anchor === 'string' ? `#${properties.anchor}` : undefined
       if (!url) { diagnostics.push(`超链接范围 ${id} 缺少可导航目标，定义已保留。`); continue }
       for (const position of affected) {

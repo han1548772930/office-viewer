@@ -1,7 +1,9 @@
-import type { DocumentModel, DocumentSectionBreakType } from '../../../domain/model'
+import type { DocumentModel, DocumentParagraphStyle, DocumentSectionBreakType } from '../../../domain/model'
+import { documentParagraphPagination, documentUsesTraditionalPagination } from '../model/document-paragraph-pagination'
 import { documentEffectiveSectionSetup, type EffectiveDocumentSectionSetup } from '../services/document-settings'
 import { DEFAULT_DOCUMENT_SECTION_ID, documentSectionIds, resolveSectionHeaderFooter } from '../services/section-header-footer'
 import { PAGE_GAP, PAGE_INSET, type LayoutColumn, type LayoutFlowLocation, type LayoutPage, type LayoutSection } from './document-layout-types'
+import { documentImageWrapBands, type DocumentImageObstacle } from './document-image-layout'
 
 const EPSILON = 1e-6
 const equal = (left: number, right: number) => Math.abs(left - right) < EPSILON
@@ -43,11 +45,13 @@ export class DocumentSectionFlow {
   private readonly firstSectionPages = new Map<string, number>()
   private readonly oddEvenSections: Set<string>
   private readonly populatedPages = new Set<number>()
+  private readonly populatedColumns = new Set<LayoutColumn>()
   private readonly maximumHeights = new Map<number, number>()
   private readonly frameColumns = new Map<number, { count: number; gap: number }>()
   private auxiliarySegment?: DocumentAuxiliaryFlowSegment
   private readonly columnInsets: Array<{ left: number; right: number }> = []
   private readonly columnBases = new Map<LayoutColumn, { x: number; width: number }>()
+  private readonly imageObstacles = new Map<number, DocumentImageObstacle[]>()
 
   constructor(private readonly model: DocumentModel, private readonly options: DocumentSectionFlowOptions = {}) {
     const ids = documentSectionIds(model)
@@ -62,6 +66,62 @@ export class DocumentSectionFlow {
 
   get location(): LayoutFlowLocation {
     return { sectionId: this.config.sectionId, sectionFragment: this.section.fragment, column: this.column.index }
+  }
+
+  get paginationEnabled(): boolean { return documentUsesTraditionalPagination(this.model) }
+  addImageObstacle(obstacle: DocumentImageObstacle): void {
+    const items = this.imageObstacles.get(this.page.index) ?? []
+    items.push(obstacle); this.imageObstacles.set(this.page.index, items)
+  }
+  removeImageObstacle(obstacle: DocumentImageObstacle, page: number): void {
+    const items = this.imageObstacles.get(page)
+    if (!items) return
+    const index = items.indexOf(obstacle)
+    if (index >= 0) items.splice(index, 1)
+    if (!items.length) this.imageObstacles.delete(page)
+  }
+  imageWrapBandsAt(y: number, height: number, insetStart = 0, insetEnd = 0) {
+    return documentImageWrapBands({ ...this.column, x: this.column.x + insetStart,
+      width: Math.max(1, this.column.width - insetStart - insetEnd) }, y, height, this.imageObstacles.get(this.page.index) ?? [])
+  }
+  imageWrapBands(height: number, insetStart = 0, insetEnd = 0) {
+    for (let attempt = 0; attempt <= (this.imageObstacles.get(this.page.index)?.length ?? 0) + 1; attempt++) {
+      const page = this.page.index, column = this.column, section = this.section,
+        bands = this.imageWrapBandsAt(this.cursor, height, insetStart, insetEnd)
+      const distance = bands[0]!.y - this.cursor
+      if (distance <= 1e-6) return bands
+      this.ensureRoom(distance + height)
+      if (page !== this.page.index || column !== this.column || section !== this.section) continue
+      this.consume(distance)
+      return bands.map(band => ({ ...band, y: this.cursor }))
+    }
+    return [{ x: this.column.x + insetStart, y: this.cursor, width: Math.max(1, this.column.width - insetStart - insetEnd), height }]
+  }
+  imageWrapBand(height: number) {
+    return this.imageWrapBands(height).sort((a, b) => b.width - a.width || a.x - b.x)[0]!
+  }
+  paragraphPagination(style: DocumentParagraphStyle) { return documentParagraphPagination(style, this.model) }
+  get remainingContentHeight(): number { return Math.max(0, this.column.y + this.column.height - this.cursor) }
+  get atColumnStart(): boolean { return !this.populatedColumns.has(this.column)
+    || this.cursor <= this.column.y + (this.auxiliarySegment?.prefixHeight?.(this.page) ?? 0) + EPSILON }
+  get atFullColumnStart(): boolean { return this.atColumnStart
+    && equal(this.column.height - (this.auxiliarySegment?.prefixHeight?.(this.page) ?? 0), this.fullPageContentHeight) }
+
+  /** Author pageBreakBefore starts a physical page and reuses an existing blank
+   * boundary, unlike two distinct explicit break tokens in the content stream. */
+  paragraphPageBreakBefore(): void {
+    if (this.paginationEnabled && this.populatedPages.has(this.page.index)) this.newPage('page')
+  }
+
+  /** A fitting group moves as a unit. An oversized paragraph starts on a full
+   * column, then its line layout is allowed to make finite progress. */
+  keepContentTogether(height: number): void {
+    if (!this.paginationEnabled || !Number.isFinite(height) || height <= 0) return
+    // Leading host padding cannot be fixed by skipping one more equally sized
+    // empty page. Relax the keep rule there and let whole lines split.
+    if (height <= this.fullPageContentHeight + EPSILON) {
+      if (!this.atFullColumnStart || height <= this.remainingContentHeight + EPSILON) this.ensureRoom(height)
+    } else if (!this.atFullColumnStart) this.ensureRoom(Math.max(1, this.fullPageContentHeight))
   }
 
   /** Decorated containers narrow the same pagination cursor, including continuation columns. */
@@ -131,6 +191,7 @@ export class DocumentSectionFlow {
   consume(height: number): void {
     this.cursor += height
     this.populatedPages.add(this.page.index)
+    this.populatedColumns.add(this.column)
     this.boundary = undefined
     this.recordHeight()
   }
@@ -145,7 +206,7 @@ export class DocumentSectionFlow {
     while (this.cursor + height > this.column.y + this.column.height + EPSILON) {
       if (this.column.height <= EPSILON) { this.nextColumn(); continue }
       const prefix = this.auxiliarySegment?.prefixHeight?.(this.page) ?? 0
-      const freshFullColumn = this.cursor <= this.column.y + prefix + EPSILON && equal(this.column.y, this.page.content.y)
+      const freshFullColumn = this.atColumnStart && equal(this.column.y, this.page.content.y)
         && equal(this.column.height - prefix, this.fullPageContentHeight)
       if (freshFullColumn && height > this.column.height - prefix) return
       this.nextColumn()

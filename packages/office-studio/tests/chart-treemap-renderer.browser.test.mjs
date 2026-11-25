@@ -141,21 +141,24 @@ test('native pattern paints the leaf content when all label states omit Text and
   assert.deepEqual(result.size, [16, 16]); assert.deepEqual(result.alpha, [102]); assert.deepEqual(result.states, [true, true, true]); assert.equal(result.author, true)
 })
 
-test('bitmap hover shows semantic residual tooltip and clears/restores ancestor emphasis through leave and reentry', async () => {
+test('bitmap hover supplies semantic residual facts to Ant without native tooltip text and retains ancestor emphasis', async () => {
   const result = await page.evaluate(() => {
     const f = window.treemapRendererDraft, { workbook, chart } = f.treemapFixture(), before = JSON.stringify(chart), option = f.chartEChartsOption(workbook, chart)
     const frame = f.renderer.render(chart.id, option, f.size), instance = f.getInstanceByDom(frame.source), residual = f.inspect(instance).find(item => item.item.isTreemapResidual)
     const box = residual.graphic.getBoundingRect().clone(); box.applyTransform(residual.graphic.getComputedTransform())
     const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }, words = () => instance.getZr().storage.getDisplayList().map(item => item.style?.text ?? '').filter(Boolean)
-    const active = f.renderer.updatePointer(chart.id, point), during = words(), cached = f.renderer.updatePointer(chart.id, point)
+    const active = f.renderer.updatePointer(chart.id, point), during = words(), tooltip = f.renderer.getContentTooltip(chart.id, point), cached = f.renderer.updatePointer(chart.id, point)
     const emphasized = f.inspect(instance).find(item => item.item.semanticNode.name === 'South' && item.node.viewChildren?.length).graphic.currentStates
-    const left = f.renderer.updatePointer(chart.id), cleared = words(), returned = f.renderer.updatePointer(chart.id, point), reentered = words()
-    const answer = { active: Boolean(active), cached: cached === undefined, left: Boolean(left), returned: Boolean(returned), during, cleared, reentered,
+    const left = f.renderer.updatePointer(chart.id), cleared = words(), absent = f.renderer.getContentTooltip(chart.id, point) === undefined,
+      returned = f.renderer.updatePointer(chart.id, point), reentered = f.renderer.getContentTooltip(chart.id, point)
+    const answer = { active: Boolean(active), cached: cached === undefined, left: Boolean(left), returned: Boolean(returned), during, cleared, tooltip, absent, reentered,
       emphasis: emphasized.includes('emphasis'), author: JSON.stringify(chart) === before }
     f.renderer.retain(new Set()); return answer
   })
   assert.equal(result.active, true); assert.equal(result.cached, true); assert.equal(result.left, true); assert.equal(result.returned, true)
-  assert.ok(result.during.some(text => /Weight: 9/.test(text))); assert.ok(result.during.some(text => /自身数值: 3/.test(text)))
-  assert.equal(result.cleared.some(text => /Weight: 9/.test(text)), false); assert.ok(result.reentered.some(text => /Weight: 9/.test(text)))
+  assert.equal(result.during.some(text => /Weight: 9|自身数值: 3/.test(text)), false)
+  assert.deepEqual(result.tooltip.lines, ['Weight: 9', '自身数值: 3', '子节点合计: 6']); assert.equal(result.tooltip.title, 'South')
+  assert.equal(result.absent, true); assert.deepEqual(result.reentered, result.tooltip)
+  assert.equal(result.cleared.some(text => /Weight: 9/.test(text)), false)
   assert.equal(result.emphasis, true); assert.equal(result.author, true)
 })

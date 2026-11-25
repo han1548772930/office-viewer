@@ -16,11 +16,13 @@ import { resolveDocumentContentControlTextInputId, synchronizeDocumentContentCon
 import { synchronizeDocumentContentControlBindings } from './content-control-bindings'
 import { validateDocumentContentControlRanges } from './content-controls'
 import { removeDeletedDocumentRepeatingNoteScopes } from './repeating-content-control-copy'
+import { documentCodeUsesFontFamily, setDocumentCodeFontFamily, validateDocumentCodeFontFamily } from '../code-blocks/document-code-fonts'
 
 export interface DocumentStructuredCodeUpdate {
   blockId: string
   source?: string
   patch?: Partial<DocumentCodeConfig>
+  fontFamily?: string
   host?: DocumentAuxiliaryBlockHost
 }
 
@@ -33,12 +35,14 @@ export function updateDocumentStructuredCodeBlock(model: DocumentModel, selectio
   if (original?.type !== 'code' || !original.code || !original.children) throw new RangeError('代码块已不存在。')
   const config = { ...original.code, ...update.patch }
   validateDocumentCodeConfig(config)
+  if (update.fontFamily !== undefined) validateDocumentCodeFontFamily(update.fontFamily)
+  const fontChanged = update.fontFamily !== undefined && !documentCodeUsesFontFamily(original, update.fontFamily)
   const paragraphs = documentTextFieldParagraphs(source)
   const children = documentTextFieldParagraphs({ blocks: original.children })
   const currentText = children.map(paragraph => paragraph.text).join('\n')
   const nextText = update.source === undefined ? currentText : normalizeDocumentCodeSource(update.source)
   const textChanged = nextText !== currentText
-  if (!textChanged && JSON.stringify(config) === JSON.stringify(original.code)) return { changed: false, selection: cloneModel(selection) }
+  if (!textChanged && !fontChanged && JSON.stringify(config) === JSON.stringify(original.code)) return { changed: false, selection: cloneModel(selection) }
   if (textChanged && (!original.children.length || original.children.some(block => !isDocumentTextBlock(block)))) {
     throw new RangeError('代码源文本编辑不能移除嵌套的结构内容。')
   }
@@ -71,6 +75,7 @@ export function updateDocumentStructuredCodeBlock(model: DocumentModel, selectio
   const code = findDocumentBlock(scoped, update.blockId)
   if (code?.type !== 'code') throw new RangeError('代码源文本修改不能删除其容器。')
   code.code = config
+  if (update.fontFamily !== undefined) setDocumentCodeFontFamily(scoped, code, update.fontFamily)
   if (host) applyDocumentBlockHostModel(candidate, host, scoped)
   else candidate = scoped
   removeDeletedDocumentRepeatingNoteScopes(model, candidate)

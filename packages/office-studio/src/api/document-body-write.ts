@@ -17,6 +17,10 @@ import { documentBodyBlockSource, documentBodyRunSource, documentBodySourceMetad
 import { documentBodyControlSource, documentBodyPublicControlPlacement, documentBodyStructuralControlBounds } from './document-body-control-ranges'
 import { documentBodyPictureInputSource, documentBodyProjectedPictureInput } from './document-body-structural-input'
 import { documentCalloutToBody, documentColumnGroupToBody } from './document-body-structures'
+import { getLatexFormula, latexFormulaRangeId, DOCUMENT_LATEX_RANGE_KIND } from '../features/document/latex/latex-formula'
+import { documentBodyLatexConfig, isDocumentBodyLatexRange } from './document-body-latex'
+import { documentImageToDrawing } from './document-image-body'
+import { documentImageAtom } from '../features/document/images/document-image-atom'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyLocalOffset, type DocumentBodyEncodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyTextSpan,
   type UniverDocumentBody, type UniverDocumentBodyData, type UniverDocumentCustomBlock, type UniverDocumentCustomRange,
   type DocumentBodyStructureIndex, type UniverDocumentCustomTable, type UniverDocumentParagraph, type UniverDocumentTextRun,
@@ -68,6 +72,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   const tableSource = cloneModel(bodyRecord(sourceResources.tableSource)) as Record<string, UniverBodyRecord>,
     drawings = cloneModel(bodyRecord(sourceResources.drawings)) as Record<string, UniverBodyRecord>, lists = cloneModel(bodyRecord(sourceResources.lists)) as Record<string, UniverBodyRecord>
   const callouts = cloneModel(bodyRecord(sourceResources.callouts)) as Record<string, UniverBodyRecord>, codes = cloneModel(bodyRecord(sourceResources.codes)) as Record<string, UniverBodyRecord>
+  const latexFormulas = cloneModel(bodyRecord(sourceResources.latexFormulas)) as Record<string, UniverBodyRecord>, writtenLatex = new Set<string>()
   const writtenCallouts = new Set<string>(), writtenCodes = new Set<string>()
   const sourceTableIds = new Set(documentArray(sourceBody.tables).map(raw => raw.tableId).filter((id): id is string => typeof id === 'string'))
   const writtenTableIds = new Set<string>()
@@ -94,6 +99,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     append(T.section)
   }
   const registerDrawing = (id: string, drawing: UniverBodyRecord, sourceId?: unknown) => {
+    if (writtenDrawingIds.has(id)) throw new TypeError(`文档绘图标识重复：${id}`)
     drawings[id] = { ...drawing, drawingId: id }; writtenDrawingIds.add(id)
     if (typeof sourceId === 'string' && sourceId !== id) drawingAliases.set(sourceId, id)
   }
@@ -162,9 +168,8 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
         if (anchor && documentBodyProjectedPictureInput(anchor, blocks) === block) extension.metadata = {
           ...bodyRecord(extension.metadata), pictureInputAnchorSource: documentBodyPictureInputSource(anchor) }
         append(T.customBlock); customBlocks.push({ ...source, startIndex: start, blockId: block.id, officeStudio: extension })
-        drawing.drawingId = block.id; drawing.drawingType = 0; drawing.source = image.src; drawing.description = image.alt
-        drawing.docTransform = { ...bodyRecord(drawing.docTransform), size: { ...bodyRecord(bodyRecord(drawing.docTransform).size), width: image.width, height: image.height } }
-        registerDrawing(block.id, drawing, source.blockId); structures.blocks.push({ block, container: blocks, start, end: offset }); continue
+        drawing.drawingId = block.id; drawing.drawingType = 0
+        registerDrawing(block.id, documentImageToDrawing(image, drawing), source.blockId); structures.blocks.push({ block, container: blocks, start, end: offset }); continue
       }
       if (block.type === 'sectionBreak') {
         if (depth > 0) throw new RangeError('单元格中不能导出独立分节。')
@@ -186,7 +191,24 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
       let local = 0
       for (const run of block.runs) {
         const from = offset, note = noteIdentity(run), sourceCustom = bodyRecord(run.metadata?.univerBodyCustomBlock), runSource = bodyRecord(run.metadata?.univerBodyRunSource), publicRun = bodyRecord(runSource.textRun)
-        if (note) {
+        const formula = getLatexFormula(run), imageAtom = documentImageAtom(run)
+        if (formula) {
+          const id = latexFormulaRangeId(run), raw = bodyRecord(run.metadata?.univerBodyLatexRangeSource)
+          if (writtenLatex.has(id)) throw new TypeError('公式范围标识重复：' + id)
+          writtenLatex.add(id)
+          append(formula.latex)
+          ranges.push({ id, type: 5, startBlockId: block.id, endBlockId: block.id, start: local, end: local + run.text.length,
+            properties: { ...bodyRecord(raw.properties), kind: DOCUMENT_LATEX_RANGE_KIND },
+            source: { ...raw, officeStudio: { ...bodyRecord(raw.officeStudio), version: 1, runId: run.id, latexMode: formula.mode } },
+            atomic: true, absolute: { start: from, end: offset } })
+          latexFormulas[id] = documentBodyLatexConfig(formula.latex, run.metadata?.univerBodyLatexConfigSource ?? latexFormulas[id])
+        } else if (imageAtom) {
+          append(T.customBlock)
+          customBlocks.push({ ...sourceCustom, startIndex: from, blockId: imageAtom.imageId,
+            officeStudio: { ...bodyRecord(sourceCustom.officeStudio), version: 1, imageAtom: true } })
+          const drawing = documentImageToDrawing(imageAtom.image, cloneModel(bodyRecord(run.metadata?.univerBodyDrawingSource)))
+          registerDrawing(imageAtom.imageId, { ...drawing, drawingId: imageAtom.imageId, drawingType: 0 }, sourceCustom.blockId)
+        } else if (note) {
           const raw = bodyRecord(run.metadata?.univerBodyNoteRangeSource)
           append('\uFFFC')
           ranges.push({ id: typeof raw.rangeId === 'string' ? raw.rangeId : `note:${run.id}`, type: note.kind === 'footnote' ? 8 : 9,
@@ -441,12 +463,23 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     if (raw.blockType === 'callout' && typeof raw.blockId === 'string' && !writtenCallouts.has(raw.blockId)) delete callouts[raw.blockId]
     if (raw.blockType === 'code' && typeof raw.blockId === 'string' && !writtenCodes.has(raw.blockId)) delete codes[raw.blockId]
   }
+  for (const raw of documentArray(sourceBody.customRanges)) if (isDocumentBodyLatexRange(raw)
+    && typeof raw.rangeId === 'string' && !writtenLatex.has(raw.rangeId)) delete latexFormulas[raw.rangeId]
   Object.assign(lists, writtenLists.finish())
   const drawingOrder = Array.isArray(sourceResources.drawingsOrder) ? sourceResources.drawingsOrder
     .filter((id): id is string => typeof id === 'string').map(id => drawings[id] ? id : drawingAliases.get(id) ?? id).filter(id => drawings[id]) : []
   const drawingsOrder = [...new Set([...drawingOrder, ...Object.keys(drawings)])]
+  const imageOrder = drawingsOrder.filter(id => writtenDrawingIds.has(id) && drawings[id]?.drawingType === 0)
+    .sort((a, b) => {
+      const left = bodyRecord(drawings[a]?.officeStudioImage).layer, right = bodyRecord(drawings[b]?.officeStudioImage).layer
+      return (typeof left === 'number' ? left : drawingOrder.indexOf(a)) - (typeof right === 'number' ? right : drawingOrder.indexOf(b))
+    })
+  const imageIds = new Set(imageOrder)
+  let imageIndex = 0
+  for (const [index, id] of drawingsOrder.entries()) if (imageIds.has(id)) drawingsOrder[index] = imageOrder[imageIndex++]!
   return { body, ...(Object.keys(tableSource).length ? { tableSource } : {}), ...(Object.keys(drawings).length ? { drawings, drawingsOrder } : {}),
-    ...(Object.keys(lists).length ? { lists } : {}), ...(Object.keys(callouts).length ? { callouts } : {}), ...(Object.keys(codes).length ? { codes } : {}) }
+    ...(Object.keys(lists).length ? { lists } : {}), ...(Object.keys(callouts).length ? { callouts } : {}), ...(Object.keys(codes).length ? { codes } : {}),
+    ...(Object.keys(latexFormulas).length ? { latexFormulas } : {}) }
 }
 
 function streamRangeEnd(stream: string, sourceEnd: number, offset: number): number {

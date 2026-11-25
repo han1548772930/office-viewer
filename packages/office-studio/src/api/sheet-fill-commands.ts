@@ -106,7 +106,7 @@ function runFill(api: OfficeStudio, commandId: string, input: SheetFillCommandIn
     const index = draft.sheets.findIndex(item => item.id === sheet.id)
     if (index < 0) throw new Error('填充工作表已移除。')
     draft.sheets[index] = cloneModel(nextSheet)
-  }, { expectedRevision: input.expectedRevision, expectedHistoryGeneration: input.expectedHistoryGeneration,
+  }, { expectedRevision: input.expectedRevision, expectedHistoryGeneration: input.expectedHistoryGeneration, preserveStyleInheritance: true,
     amend: recent?.hasHistoryEntry ? recent.savepoint : undefined, recalculate: plan.result.applyType === 'ONLY_FORMAT' ? false : undefined,
     selections: initialSelection(api, unitId, sheet.id, finalSelection, beforeSelection),
     prepareView: model => { toExcelWorkbookView(model) }, onHistoryCommitted: value => { receipt = value } })

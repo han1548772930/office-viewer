@@ -11,6 +11,7 @@ import { decodeDocumentBody, documentBodyContentControls, encodeDocumentBody } f
 import { bodyRecord, documentRunStyleFromBody, documentRunStyleToBody, type UniverBodyRecord } from './document-body-style'
 import { documentBodyOfficeSource, documentBodySourceMetadata } from './document-body-source'
 import type { DocumentBodyDecodeOptions, UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources } from './document-body-types'
+import { publicDocumentResources } from './document-input-common'
 
 /** Fixed core IDocumentNote input; domain-shaped input remains available for local clients. */
 export interface PublicDocumentNoteInput extends UniverDocumentBodyResources {
@@ -19,6 +20,7 @@ export interface PublicDocumentNoteInput extends UniverDocumentBodyResources {
   referenceTextStyle?: UniverBodyRecord
   showBodyReference?: boolean
   officeStudio?: UniverBodyRecord
+  resources?: UniverBodyRecord[]
 }
 export type DocumentNoteContentInput = PublicDocumentNoteInput | DocumentNoteInsertOptions
 export interface PublicDocumentNoteDecoration extends UniverDocumentBody, UniverDocumentBodyResources {}
@@ -34,11 +36,7 @@ export interface DocumentNoteInfo extends Omit<DocumentNote, 'referenceTextStyle
 }
 
 function resourcesFrom(value: UniverBodyRecord): UniverDocumentBodyResources {
-  const resources: UniverDocumentBodyResources = {}
-  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes'] as const) {
-    if (value[key] !== undefined) Object.assign(resources, { [key]: value[key] })
-  }
-  return resources
+  return publicDocumentResources(value)
 }
 
 /** Reference formatting is independent of note-body formatting and retains unknown public keys. */
@@ -70,10 +68,10 @@ export function documentNoteInputFromPublic(model: DocumentModel, input?: Docume
     next.content = decoded.content
     if (decoded.contentControls.length) next.contentControls = decoded.contentControls
     delete next.body
-  } else if (['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes'].some(key => raw[key] !== undefined)) {
+  } else if (['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes', 'latexFormulas', 'resources'].some(key => raw[key] !== undefined)) {
     throw new TypeError('注释资源必须随对应 body 一起提供。')
   }
-  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes']) delete next[key]
+  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes', 'latexFormulas', 'resources']) delete next[key]
   if (raw.referenceTextStyle !== undefined) {
     next.referenceTextStyle = referenceStyleFrom(raw.referenceTextStyle, defaults)
     next.metadata = { ...bodyRecord(next.metadata), univerReferenceTextStyle: cloneModel(raw.referenceTextStyle) }

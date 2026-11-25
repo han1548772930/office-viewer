@@ -3,6 +3,8 @@ import type { RenderRect, TextCommand } from '../../rendering/contracts'
 import type { ChartLayout } from './chart-engine'
 import { chartFont, type ChartVector } from './chart-geometry'
 import { definedChartStyleFields } from './chart-options'
+import { withChartCanvasElement } from './chart-element-interaction'
+import type { ChartEditPanelAxis } from './chart-edit-panel-route'
 
 type TitleAxis = Pick<ChartAxisOptions, 'title' | 'titleStyle' | 'titleAlignment' | 'reverse'>
 export const CHART_AXIS_TITLE_DEFAULT_FONT_SIZE = 12
@@ -42,16 +44,16 @@ export function chartRectangularAxisTitleCommands(chart: ChartModel,
   const titleY = plot.y + plot.height + 30 + (chartAxisTitleFont(chart, bottom).fontSize ?? CHART_AXIS_TITLE_DEFAULT_FONT_SIZE) / 2
   const titleX = plot.x - 54 - chartAxisTitleSpace(chart, side) / 2
   const commands: TextCommand[] = []
-  function append(axis: TitleAxis, start: ChartVector, end: ChartVector, rotation: number): void {
+  function append(axis: TitleAxis, start: ChartVector, end: ChartVector, rotation: number, axisId: ChartEditPanelAxis): void {
     const command = chartAxisTitleCommand(chart, axis, start, end, color, rotation, frame)
-    if (command) commands.push(command)
+    if (command) commands.push(withChartCanvasElement(command, { kind: 'axisTitle', axisId }))
   }
-  append(bottom, { x: plot.x, y: titleY }, { x: plot.x + plot.width, y: titleY }, 0)
-  append(side, { x: titleX, y: plot.y }, { x: titleX, y: plot.y + plot.height }, -90)
+  append(bottom, { x: plot.x, y: titleY }, { x: plot.x + plot.width, y: titleY }, 0, horizontal ? 'yAxis' : 'xAxis')
+  append(side, { x: titleX, y: plot.y }, { x: titleX, y: plot.y + plot.height }, -90, horizontal ? 'xAxis' : 'yAxis')
   if (layout.rightMin !== undefined && layout.rightMax !== undefined) {
     const axis = chart.options?.rightYAxis ?? { scaleType: 'linear' }, offset = chartAxisTitleSpace(chart, axis) / 2
     append(axis, horizontal ? { x: plot.x, y: plot.y - 40 - offset } : { x: plot.x + plot.width + 54 + offset, y: plot.y },
-      horizontal ? { x: plot.x + plot.width, y: plot.y - 40 - offset } : { x: plot.x + plot.width + 54 + offset, y: plot.y + plot.height }, horizontal ? 0 : 90)
+      horizontal ? { x: plot.x + plot.width, y: plot.y - 40 - offset } : { x: plot.x + plot.width + 54 + offset, y: plot.y + plot.height }, horizontal ? 0 : 90, 'rightYAxis')
   }
   return commands
 }

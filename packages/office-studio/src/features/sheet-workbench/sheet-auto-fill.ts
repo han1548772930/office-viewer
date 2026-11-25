@@ -1,8 +1,9 @@
-import { createCell, type CellRange, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../../domain/model.ts'
+import type { CellRange, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { validateSheetDataValidationChanges, type SheetValidationIssue } from '../sheet-validation/validation-engine.ts'
 import { canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { createSheetClipboardPastedCell } from './sheet-clipboard-cell.ts'
+import { sheetClipboardCellAt } from './sheet-clipboard-data.ts'
 import { pasteSheetClipboardRangeResources } from './sheet-clipboard-resources.ts'
 import { sheetClipboardRowsToRanges, type SheetClipboardTargetGeometry } from './sheet-clipboard-target.ts'
 import type { SheetClipboardSnapshot } from './sheet-clipboard-types.ts'
@@ -12,6 +13,8 @@ import { resolveSheetFillTarget, type SheetFillTarget } from './sheet-fill-targe
 import type { SheetFillApplyType } from './sheet-fill.ts'
 import { classifySheetNumberFormat, formatSheetValue } from './sheet-number-format.ts'
 import { assertSheetRangesEditable, sheetRangeContainsCell, sheetRangesEqual, sheetRangesIntersect } from './sheet-range-command.ts'
+import { hasInheritedSheetStyle, resolveSheetCellStyle } from './sheet-style-inheritance.ts'
+import { captureSheetStyleRegion } from './sheet-style-region.ts'
 
 export const SHEET_AUTO_FILL_COMMAND = 'sheet.command.auto-fill'
 export const SHEET_REFILL_COMMAND = 'sheet.command.refill'
@@ -59,18 +62,18 @@ function cellIndex(sheet: SpreadsheetSheet): Map<string, SpreadsheetCell> {
   return new Map(Object.values(sheet.cells).map(cell => [`${cell.row}:${cell.col}`, cell]))
 }
 function seedPattern(cells: readonly (SpreadsheetCell | undefined)[]): SheetFillSeriesPattern {
-  return createSheetFillSeriesPattern(cells.map(cell => ({ value: cell?.value ?? null, formula: cell?.formula,
+  return createSheetFillSeriesPattern(cells.map(cell => ({ value: cell?.value ?? null, formula: cell?.formula, image: Boolean(cell?.image),
     date: cell !== undefined && ['date', 'time', 'datetime', 'duration'].includes(classifySheetNumberFormat(cell.style.numberFormat)) })))
 }
 function setSeriesValue(cell: SpreadsheetCell, value: string | number | boolean | null, workbook: WorkbookModel, region?: string): void {
   cell.value = value; cell.formula = null; cell.cachedDataType = null
   cell.dataType = value === null ? 'blank' : typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'text'
   cell.display = formatSheetValue(value, cell.style.numberFormat, workbook.date1904, region) ?? String(value ?? '')
-  delete cell.richText
+  delete cell.richText; delete cell.image
   if (cell.metadata) delete cell.metadata.formulaError
 }
 
-function sourceSnapshot(sheet: SpreadsheetSheet, source: CellRange, rows: number[], columns: number[]): SheetClipboardSnapshot {
+function sourceSnapshot(workbook: WorkbookModel, sheet: SpreadsheetSheet, source: CellRange, rows: number[], columns: number[]): SheetClipboardSnapshot {
   const merges = sheet.mergedRanges.filter(merge => sheetRangesIntersect(merge, source)).map(merge => {
     const startRow = rows.indexOf(merge.startRow), endRow = rows.indexOf(merge.endRow)
     if (startRow < 0 || endRow < 0 || endRow - startRow !== merge.endRow - merge.startRow) {
@@ -78,7 +81,15 @@ function sourceSnapshot(sheet: SpreadsheetSheet, source: CellRange, rows: number
     }
     return { startRow, endRow, startCol: merge.startCol - source.startCol, endCol: merge.endCol - source.startCol }
   })
-  return { version: 1, id: 'auto-fill-source', copyType: 'copy', formulaOnly: false, rows, columns, cells: {}, merges,
+  const rowOffsets = new Map(rows.map((row, offset) => [row, offset])), cells: Record<string, SpreadsheetCell> = {}
+  for (const cell of Object.values(sheet.cells)) {
+    const row = rowOffsets.get(cell.row), col = cell.col - source.startCol
+    if (row === undefined || col < 0 || col >= columns.length) continue
+    cells[`${row}:${col}`] = { ...cloneModel(cell), id: `${row}:${col}`, row, col,
+      style: resolveSheetCellStyle(sheet, cell.row, cell.col, cell, workbook) }
+  }
+  return { version: 1, id: 'auto-fill-source', copyType: 'copy', formulaOnly: false, rows, columns, cells, merges,
+    styleRegion: captureSheetStyleRegion(sheet, rows, columns, workbook),
     columnWidths: [], conditionalFormats: sheet.conditionalFormats ? cloneModel(sheet.conditionalFormats) : undefined,
     dataValidations: sheet.dataValidations ? cloneModel(sheet.dataValidations) : undefined }
 }
@@ -165,28 +176,39 @@ export function createSheetAutoFillPlan(workbook: WorkbookModel, sheetId: string
   sheet.columnCount = Math.max(sheet.columnCount ?? 1, target.selection.endCol + 1)
   const sourceColumns = Array.from({ length: source.endCol - source.startCol + 1 }, (_, col) => source.startCol + col)
   const vertical = target.direction === 'up' || target.direction === 'down'
-  const patterns = vertical ? sourceColumns.map(col => seedPattern(sourceRows.map(row => index.get(`${row}:${col}`))))
-    : sourceRows.map(row => seedPattern(sourceColumns.map(col => index.get(`${row}:${col}`))))
+  const snapshot = sourceSnapshot(workbook, original, source, sourceRows, sourceColumns)
+  const patterns = vertical ? sourceColumns.map((_, col) => seedPattern(sourceRows.map((_, row) => sheetClipboardCellAt(snapshot, row, col))))
+    : sourceRows.map((_, row) => seedPattern(sourceColumns.map((_, col) => sheetClipboardCellAt(snapshot, row, col))))
   const effectiveType = options.applyType ?? (patterns.every(pattern => pattern.preferredApplyType === 'COPY') ? 'COPY' : 'SERIES')
-  const snapshot = sourceSnapshot(original, source, sourceRows, sourceColumns)
   if (effectiveType !== 'NO_FORMAT') sheet.mergedRanges = sheet.mergedRanges.filter(merge => !ranges.some(range => sheetRangesIntersect(range, merge)))
   const changedPositions: Array<{ row: number; column: number }> = []
   for (let r = 0; r < destinationRows.length; r++) for (let c = 0; c < destinationColumns.length; c++) {
     const row = destinationRows[r]!, col = destinationColumns[c]!
     const ordinal = vertical ? target.direction === 'up' ? r - destinationRows.length : sourceRows.length + r
       : target.direction === 'left' ? c - destinationColumns.length : sourceColumns.length + c
-    const sourceRow = vertical ? sourceRows[mod(ordinal, sourceRows.length)]! : sourceRows[r]!
-    const sourceCol = vertical ? sourceColumns[c]! : sourceColumns[mod(ordinal, sourceColumns.length)]!
-    const seed = index.get(`${sourceRow}:${sourceCol}`), existing = index.get(`${row}:${col}`)
+    const sourceRowOffset = vertical ? mod(ordinal, sourceRows.length) : r
+    const sourceColOffset = vertical ? c : mod(ordinal, sourceColumns.length)
+    const sourceRow = sourceRows[sourceRowOffset]!, sourceCol = sourceColumns[sourceColOffset]!
+    const seed = sheetClipboardCellAt(snapshot, sourceRowOffset, sourceColOffset), existing = index.get(`${row}:${col}`)
+    const sourceIsVirtual = !snapshot.cells[`${sourceRowOffset}:${sourceColOffset}`]
+    const targetStyle = resolveSheetCellStyle(original, row, col, existing, workbook)
     let cell = createSheetClipboardPastedCell(seed, existing, { row, col }, effectiveType === 'ONLY_FORMAT' ? 'formats' : 'all', {
-      date1904: workbook.date1904, region: options.region, rowDelta: row - sourceRow, columnDelta: col - sourceCol })
+      date1904: workbook.date1904, region: options.region, rowDelta: row - sourceRow, columnDelta: col - sourceCol,
+      sourceIsVirtual: effectiveType !== 'NO_FORMAT' && sourceIsVirtual, targetStyle,
+      targetHasInheritedStyle: hasInheritedSheetStyle(original, row, col, workbook, existing?.themeStyle) })
     const key = `${row}:${col}`
-    if (cell && effectiveType !== 'ONLY_FORMAT' && effectiveType !== 'COPY' && !seed?.formula) {
+    if (cell && effectiveType !== 'ONLY_FORMAT' && effectiveType !== 'COPY' && !seed?.formula && !seed?.image) {
       const generated = sheetFillSeriesValueAt(patterns[vertical ? c : r]!, ordinal)
       if (generated !== undefined) setSeriesValue(cell, generated, workbook, options.region)
     }
     if (effectiveType === 'NO_FORMAT') {
-      if (cell) { cell.style = cloneModel(existing?.style ?? createCell(row, col, null).style)
+      if (cell && sourceIsVirtual && !existing && cell.value === null && !cell.formula && !cell.richText?.length && !cell.sparkline && !cell.image) cell = undefined
+      if (cell) {
+        cell.style = cloneModel(targetStyle)
+        cell.authoredStyle = existing?.authoredStyle === undefined ? existing ? undefined : {} : cloneModel(existing.authoredStyle)
+        cell.authoredStyleReference = existing?.authoredStyleReference
+        cell.clearedStyleProperties = existing?.clearedStyleProperties ? [...existing.clearedStyleProperties] : undefined
+        cell.themeStyle = existing?.themeStyle === undefined ? undefined : cloneModel(existing.themeStyle)
         if (!cell.formula) cell.display = formatSheetValue(cell.value, cell.style.numberFormat, workbook.date1904, options.region) ?? String(cell.value ?? '') }
       else if (existing) cell = { ...clearSpreadsheetCellContent(existing), id: key, row, col }
     }

@@ -16,7 +16,7 @@ export interface DocumentStructuredRange { blockId: string; startIndex: number; 
 export interface DocumentStructuredInsertOptions { blockId?: string; startOffset?: number; endOffset?: number; segmentId?: string }
 export interface DocumentQuoteInsertOptions extends DocumentStructuredInsertOptions { style?: Partial<DocumentQuoteStyle> }
 export interface DocumentCalloutInsertOptions extends DocumentStructuredInsertOptions { config?: Partial<DocumentCalloutConfig>; textColor?: string | null }
-export interface DocumentCodeInsertOptions extends DocumentStructuredInsertOptions { config?: Partial<DocumentCodeConfig> }
+export interface DocumentCodeInsertOptions extends DocumentStructuredInsertOptions { config?: Partial<DocumentCodeConfig>; fontFamily?: string }
 export interface DocumentCalloutBorderStyle { color: string; opacity: number; style: 1 | 2 | 3; width: number }
 export type DocumentCalloutBorderPatch = Partial<Omit<DocumentCalloutBorderStyle, 'style'>> & { style?: 1 | 2 | 3 | DocumentCalloutConfig['borderStyle'] }
 export interface DocumentCalloutStyle { backgroundColor: string; border: DocumentCalloutBorderStyle; textColor: string }
@@ -138,14 +138,16 @@ export class FDocumentCode extends FDocumentStructuredBlock {
   }
   updateConfig(options: { config: Partial<DocumentCodeConfig> }): boolean { return this.execute({ id: 'doc.command.update-code-block', blockId: this.blockId, patch: cloneModel(options.config) }) }
   setText(source: string): boolean { return this.execute({ id: 'doc.command.update-code-block', blockId: this.blockId, source }) }
-  describe() { const range = this.getRange(); return range ? { ...range, type: 'code' as const, text: this.getText(), config: this.getConfig() } : null }
+  getFontFamily(): string { const block = this.source(); return block && codeBlockData(block)?.fontFamily || 'monospace' }
+  setFontFamily(fontFamily: string): boolean { return this.execute({ id: 'doc.command.set-code-font-family', blockId: this.blockId, fontFamily }) }
+  describe() { const range = this.getRange(); return range ? { ...range, type: 'code' as const, text: this.getText(), config: this.getConfig(), fontFamily: this.getFontFamily() } : null }
 }
 
 function isParagraph(value: FDocumentParagraph | DocumentStructuredInsertOptions | undefined): value is FDocumentParagraph {
   return !!value && typeof value === 'object' && 'getInfo' in value && typeof value.getInfo === 'function'
 }
 function insertDecorated(document: FDocument, blockType: 'quote' | 'callout' | 'code', paragraph: FDocumentParagraph | undefined,
-  options: DocumentStructuredInsertOptions, config: { callout?: Partial<DocumentCalloutConfig>; code?: Partial<DocumentCodeConfig>; quote?: Partial<DocumentQuoteStyle>; textColor?: string | null }): string | null {
+  options: DocumentStructuredInsertOptions, config: { callout?: Partial<DocumentCalloutConfig>; code?: Partial<DocumentCodeConfig>; fontFamily?: string; quote?: Partial<DocumentQuoteStyle>; textColor?: string | null }): string | null {
   if (paragraph && paragraph.getDocumentId() !== document.getId()) throw new RangeError('段落属于另一份文档。')
   const segmentId = paragraph?.segmentId ?? options.segmentId ?? '', model = document.getSegmentModel(segmentId)
   if (paragraph && options.segmentId !== undefined && options.segmentId !== paragraph.segmentId) throw new RangeError('段落与指定的内容区不一致。')
@@ -182,7 +184,7 @@ export function insertDocumentCallout(document: FDocument, paragraphOrOptions: F
 }
 export function insertDocumentCode(document: FDocument, paragraphOrOptions: FDocumentParagraph | DocumentCodeInsertOptions = {}, options: DocumentCodeInsertOptions = {}): FDocumentCode | null {
   const paragraph = isParagraph(paragraphOrOptions) ? paragraphOrOptions : undefined, value = isParagraph(paragraphOrOptions) ? options : paragraphOrOptions
-  const id = insertDecorated(document, 'code', paragraph, value, { ...(value.config ? { code: value.config } : {}) })
+  const id = insertDecorated(document, 'code', paragraph, value, { ...(value.config ? { code: value.config } : {}), ...(value.fontFamily === undefined ? {} : { fontFamily: value.fontFamily }) })
   return id ? new FDocumentCode(document, id, paragraph?.segmentId ?? value.segmentId ?? '') : null
 }
 

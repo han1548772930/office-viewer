@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Chart object command fixture</title>
+<style>body{margin:0}#app{height:100vh}</style></head><body><div id="app"></div>
+<script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, Form, FormItem, Input, Modal, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice, FChart } from '/packages/office-studio/src/api/facade'
+import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
+import { createChart } from '/packages/office-studio/src/features/charts/chart-engine'
+import { CHART_OBJECT_COMMANDS, CHART_SHEET_METADATA_KEY } from '/packages/office-studio/src/features/charts/chart-object-commands'
+import { chartObjectClipboardStore } from '/packages/office-studio/src/features/charts/chart-object-clipboard-store'
+import { chartImageExportEnvironment } from '/packages/office-studio/src/features/charts/chart-image-export'
+import { EChartsCanvasRenderer } from '/packages/office-studio/src/features/charts/echarts-renderer'
+import { sheetSystemClipboard } from '/packages/office-studio/src/components/spreadsheet/sheet-system-clipboard'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+
+// Observers retain real Canvas/clipboard/download behavior. They only delay
+// completion in lifecycle scenarios and record the encoded bitmap for comparison.
+const originalRender = EChartsCanvasRenderer.prototype.render
+const originalCreateCanvas = chartImageExportEnvironment.createCanvas
+const originalDownload = chartImageExportEnvironment.download
+const originalWrite = sheetSystemClipboard.write
+const originalChartUpdate = FChart.prototype.update
+const studioSlot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic')
+const display = ref({ chrome: 'full', zoom: 100 })
+const competingDialog = ref(false), competingText = ref('')
+const surfaces = new Map(), owned = [], downloads = [], encodings = [], notices = [], commands = [], pendingCopies = [], pendingExports = [], pendingAuthors = []
+let app, stopView, holdCopy = false, holdExport = false, holdAuthor = false, lastContent
+const json = value => JSON.parse(JSON.stringify(value))
+const studio = () => studioSlot.value, api = () => FOffice.newAPI(studio()), book = () => api().getActiveWorkbook()
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+
+EChartsCanvasRenderer.prototype.render = function(id, option, size, colors) {
+  const frame = originalRender.call(this, id, option, size, colors)
+  surfaces.set(id, { renderer: this, frame, option }); return frame
+}
+chartImageExportEnvironment.createCanvas = () => {
+  const canvas = originalCreateCanvas(), encode = canvas.toBlob.bind(canvas); owned.push(canvas)
+  canvas.toBlob = (callback, type) => {
+    const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+    encodings.push({ width: canvas.width, height: canvas.height, pixels: Array.from(pixels) })
+    encode(blob => { if (holdExport) pendingExports.push(() => callback(blob)); else callback(blob) }, type)
+  }
+  return canvas
+}
+chartImageExportEnvironment.download = (blob, filename, signal) => {
+  downloads.push({ filename, type: blob.type, bytes: blob.size }); originalDownload(blob, filename, signal)
+}
+sheetSystemClipboard.write = async content => {
+  lastContent = { ...content }
+  const written = await originalWrite(content)
+  if (holdCopy) return new Promise(resolve => pendingCopies.push(() => resolve(written)))
+  return written
+}
+// Delay only the completion of a real canonical update. Content/history still
+// use FChart.update; the late UI continuation is exercised after host changes.
+FChart.prototype.update = async function(patch) {
+  const result = await originalChartUpdate.call(this, patch)
+  return holdAuthor ? new Promise(resolve => pendingAuthors.push(() => resolve(result))) : result
+}
+function readonlyProtection() { return { id: 'readonly-object', permissionId: 'readonly-object-permission', unitType: 'worksheet',
+  ownerUserId: 'other-user', allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView' } }
+function seed({ readonly = false, primary = false, multiSeries = false, nativeType = 'line', rows: suppliedRows, nativeOptions = {}, nativeConfig = {} } = {}) {
+  const model = createBlankWorkbook(), sheet = model.sheets[0]
+  model.id = 'chart-object-fixture'; model.name = '图表对象'; model.calculationMode = 'manual'; sheet.id = 'source'; sheet.name = 'Source'; model.activeSheetId = sheet.id
+  sheet.rowCount = 80; sheet.columnCount = 16; sheet.defaultRowHeight = 28; sheet.defaultColumnWidth = 100
+  const rows = suppliedRows ?? (multiSeries ? [['Label', 'Value', 'Comparison'], ['North', 7, 3], ['South', 4, 9]] : [['Label', 'Value'], ['North', 7], ['South', 4]])
+  sheet.cells = Object.fromEntries(rows.flatMap((row, r) => row.map((value, c) => [`${r}:${c}`, createCell(r, c, value)])))
+  model.sheets.push({ ...json(sheet), id: 'destination', name: 'Destination', cells: {} })
+  const config = { type: nativeType, title: 'Native object', subtitle: 'Sub', position: { x: 64, y: 48 }, size: { width: 420, height: 300 },
+    source: { orientation: 'columns', range: { startRow: 0, startCol: 0, endRow: rows.length - 1, endCol: multiSeries ? 2 : 1 } }, categoryField: 0, valueFields: multiSeries ? [1, 2] : [1],
+    legend: { visible: true, position: 'bottom' }, options: { titleStyle: { rotate: 0, fontSize: 18, manualLayout: { left: 0.25, top: 0.06 } },
+      plotArea: { left: 0.16, top: 0.22, width: 0.74, height: 0.62 }, appearance: { font: { family: 'Georgia' } },
+      ...(multiSeries ? { series: { 2: { rightAxis: true, name: 'Renamed comparison' } }, rightYAxis: { title: 'Secondary', scaleType: 'linear' } } : {}), ...json(nativeOptions) }, ...json(nativeConfig) }
+  const native = createChart(model, sheet.id, config, 'native-object')
+  const shared = createChart(model, sheet.id, { ...config, type: 'waterfall', title: 'Shared object', position: { x: 584, y: 48 },
+    options: { appearance: { font: { family: 'Georgia' } }, allSeriesStyle: { label: { visible: true } } } }, 'shared-object')
+  model.charts = [native, shared]
+  if (readonly) sheet.worksheetProtection = readonlyProtection()
+  if (primary) sheet.metadata = { [CHART_SHEET_METADATA_KEY]: { version: 1, primaryChartId: native.id } }
+  return model
+}
+function bind(value) {
+  stopView?.(); studioSlot.value = value; view.value = toExcelWorkbookView(value.editor.workbook.model)
+  stopView = watch(() => studioSlot.value?.editor.workbook.model, model => { if (model) view.value = toExcelWorkbookView(model) }, { flush: 'sync' })
+  value.events.addEvent('CommandExecuted', event => commands.push({ id: event.id, params: json(event.params ?? {}) }))
+}
+async function release() {
+  holdCopy = false; holdExport = false; holdAuthor = false
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined
+  for (const finish of pendingCopies.splice(0)) finish()
+  for (const finish of pendingExports.splice(0)) finish()
+  for (const finish of pendingAuthors.splice(0)) finish()
+  studioSlot.value?.dispose(); studioSlot.value = undefined; await settled()
+}
+async function mount(options = {}) {
+  await release(); surfaces.clear(); owned.length = downloads.length = encodings.length = notices.length = commands.length = 0
+  lastContent = undefined; dark.value = false; variant.value = 'classic'; display.value = { chrome: 'full', zoom: 100 }; competingDialog.value = false; competingText.value = ''; bind(new OfficeStudio({ workbook: seed(options) }))
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h('div', { style: { height: '100%' } }, [h(ExcelWorkbench, { modelValue: view.value, studio: studioSlot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)),
+    }), h(Modal, { open: competingDialog.value, title: '临时对话框', footer: null, destroyOnHidden: true,
+      onCancel: () => { competingDialog.value = false } }, { default: () => h(Form, { layout: 'vertical' }, {
+        default: () => h(FormItem, { label: '输入' }, { default: () => h(Input, { value: competingText.value, 'aria-label': '临时对话框输入',
+          'onUpdate:value': value => { competingText.value = value } }) }),
+      }) })]),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+function state() {
+  if (!studioSlot.value) return { released: true }
+  const model = studio().getWorkbookModel(book().getId()), unit = studio().editor.history.units[book().getId()], clipboard = chartObjectClipboardStore(studio().pinia)
+  return { model: json(model), charts: json(model.charts ?? []), activeSheetId: model.activeSheetId, revision: studio().getWorkbookRevision(model.id),
+    history: { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 }, clipboardId: clipboard.clipboard?.id, systemWritten: clipboard.systemWritten,
+    commands: json(commands), notices: json(notices), downloads: json(downloads), owned: owned.map(canvas => [canvas.width, canvas.height]),
+    pendingCopies: pendingCopies.length, pendingExports: pendingExports.length, pendingAuthors: pendingAuthors.length,
+    frames: [...surfaces.entries()].map(([id, surface]) => ({ id, width: surface.frame.source.width, height: surface.frame.source.height })),
+  }
+}
+window.chartObjectFixture = { mount, state, encoding: () => encodings.at(-1),
+  elements(id = 'native-object') { return json(surfaces.get(id)?.renderer.getElementTargets(id) ?? []) },
+  elementPoint(selector, id = 'native-object') {
+    const renderer = surfaces.get(id)?.renderer, chart = studio().getWorkbookModel(book().getId()).charts.find(chart => chart.id === id)
+    if (!renderer || !chart) throw new Error('Chart has no element frame')
+    const matches = element => Object.entries(selector).every(([key, value]) => key === 'seriesId'
+      ? (element.binding ?? element.directEdit?.binding)?.seriesId === value
+      : key === 'markKind' ? element.directEdit?.kind === value
+        : key === 'markPart' ? element.directEdit?.part === value
+          : key === 'globalMark' ? !element.directEdit?.binding === value
+            : ['sourcePointIndex', 'sourceField', 'sourceName', 'plot'].includes(key) ? element.directEdit?.[key] === value : element[key] === value)
+    const target = renderer.getElementTargets(id).find(target => matches(target.element))
+    if (!target) throw new Error(`No painted element: ${JSON.stringify(selector)}`)
+    const hitbox = document.querySelector(`.chart-hitbox[data-chart-id="${id}"]`), rect = hitbox.getBoundingClientRect(), bounds = target.bounds
+    const accept = point => {
+      const hit = renderer.getElementHit(id, point, selector.kind === 'series')
+      return hit && matches(hit.element) ? { local: point, viewport: { x: rect.left + point.x * rect.width / chart.size.width,
+        y: rect.top + point.y * rect.height / chart.size.height }, target: json(hit) } : undefined
+    }
+    const center = accept({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 })
+    if (center) return center
+    // Test-only bounded sampling asks the real native contain/clip/z-order
+    // index. It never substitutes a guessed HTML element hitbox.
+    for (let y = bounds.y; y <= bounds.y + bounds.height; y += 0.5) for (let x = bounds.x; x <= bounds.x + bounds.width; x += 0.5) {
+      const found = accept({ x, y }); if (found) return found
+    }
+    throw new Error(`Element is completely shielded or clipped: ${JSON.stringify(selector)}`)
+  },
+  hitElement(point, id = 'native-object', seriesOnly = false) { return json(surfaces.get(id)?.renderer.getElementHit(id, point, seriesOnly) ?? null) },
+  legendView(id = 'native-object') { return json(surfaces.get(id)?.renderer.getLegendView(id) ?? null) },
+  renderOption(id = 'native-object') { const option = surfaces.get(id)?.option
+    if (!option) throw new Error('Chart has no rendered option')
+    const series = Array.isArray(option.series) ? option.series : option.series ? [option.series] : []
+    return { series: series.map(item => ({ type: item.type, name: item.name, smooth: item.smooth, step: item.step,
+      connectNulls: item.connectNulls, stack: item.stack, yAxisIndex: item.yAxisIndex, data: json(item.data ?? []) })),
+      graphicCount: option.graphic?.elements?.length ?? 0, key: option.officeChartKey }
+  },
+  async scene(id = 'native-object') { return json(await book().getActiveSheet().getChartById(id).getComputedRenderCommands()) },
+  async data(id = 'native-object') { return json(await book().getActiveSheet().getChartById(id).getComputedData()) },
+  async shape(value, id = 'native-object') { const chart = book().getActiveSheet().getChartById(id)
+    await (value === undefined ? chart.clearAreaLineStyle() : chart.setAreaLineStyle(value)); await settled(); return state() },
+  async invalidValues(value, id = 'native-object') { const chart = book().getActiveSheet().getChartById(id)
+    await (value === undefined ? chart.resetInvalidValueStrategy() : chart.setInvalidValueStrategy(value)); await settled(); return state() },
+  async switchSheet(id) { book().setActiveSheet(id); await settled(); return state() },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async reopen() { const saved = json(book().save()), old = studio(); bind(new OfficeStudio({ workbook: saved })); old.dispose(); await settled(); return state() },
+  async changeTitle(id, text) { await book().getActiveSheet().getChartById(id).setTitle(text); await settled(); return state() },
+  async updateChart(patch, id = 'native-object') { await book().getActiveSheet().getChartById(id).update(patch); await settled(); return state() },
+  async openPanel(id, route, overrides = {}) { const model = studio().getWorkbookModel(book().getId()), chart = model.charts.find(chart => chart.id === id)
+    if (!chart) throw new Error('Requested fixture chart does not exist')
+    return studio().executeCommand(CHART_OBJECT_COMMANDS.edit, { unitId: model.id, sheetId: chart.sheetId, chartId: id,
+      ...(route === undefined ? {} : { route }), ...overrides }) },
+  async prepare(id = 'native-object') { await book().getActiveSheet().getChartById(id).getComputedData(); await settled(); return state() },
+  async otherDialog(open) { competingDialog.value = open; await settled() },
+  holdCopy() { holdCopy = true }, finishCopies() { holdCopy = false; for (const finish of pendingCopies.splice(0)) finish() },
+  holdExport() { holdExport = true }, finishExports() { holdExport = false; for (const finish of pendingExports.splice(0)) finish() },
+  holdAuthor() { holdAuthor = true }, finishAuthors() { holdAuthor = false; for (const finish of pendingAuthors.splice(0)) finish() },
+  async zoom(value) { display.value = { ...display.value, zoom: value }; await settled(); return state() },
+  async scroll(left, top) { const scroller = document.querySelector('.canvas-scroll'); scroller.scrollLeft = left; scroller.scrollTop = top; await settled(); return state() },
+  nativeGridPaste(override) { const grid = document.querySelector('[role="grid"][aria-label="工作表画布"]'), data = new DataTransfer()
+    if (!lastContent) throw new Error('No copied chart content')
+    const content = override ?? lastContent
+    data.setData('text/plain', content.plain); data.setData('text/html', content.html)
+    return !grid.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true })) },
+  async dispose() { await release(); surfaces.clear(); EChartsCanvasRenderer.prototype.render = originalRender
+    chartImageExportEnvironment.createCanvas = originalCreateCanvas; chartImageExportEnvironment.download = originalDownload; sheetSystemClipboard.write = originalWrite; FChart.prototype.update = originalChartUpdate },
+}
+await mount()
+</script></body></html>

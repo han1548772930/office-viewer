@@ -138,17 +138,20 @@ test('bitmap hover reports residual own value, ancestor emphasis, leave/reentry 
     const frame = f.renderer.render(chart.id, option, f.size), instance = f.getInstanceByDom(frame.source)
     const residual = f.inspect(instance).find(entry => entry.item.isSunburstResidual), point = f.centerPoint(residual.graphic)
     const words = () => instance.getZr().storage.getDisplayList().filter(entry => !entry.ignore).map(entry => entry.style?.text ?? '').filter(Boolean)
-    const active = f.renderer.updatePointer(chart.id, point), during = words(), cached = f.renderer.updatePointer(chart.id, point)
+    const active = f.renderer.updatePointer(chart.id, point), during = words(), tooltip = f.renderer.getContentTooltip(chart.id, point), cached = f.renderer.updatePointer(chart.id, point)
     const south = f.inspect(instance).find(entry => entry.item.name === 'South'), emphasized = south.graphic.currentStates.includes('emphasis')
-    const left = f.renderer.updatePointer(chart.id), cleared = words(), returned = f.renderer.updatePointer(chart.id, point), reentered = words()
+    const left = f.renderer.updatePointer(chart.id), cleared = words(), absent = f.renderer.getContentTooltip(chart.id, point) === undefined,
+      returned = f.renderer.updatePointer(chart.id, point), reentered = f.renderer.getContentTooltip(chart.id, point)
     const answer = { versions: [frame.sourceVersion, active?.sourceVersion, left?.sourceVersion, returned?.sourceVersion], cached: cached === undefined,
-      during, cleared, reentered, emphasized, author: JSON.stringify(chart) === before }
+      during, cleared, tooltip, absent, reentered, emphasized, author: JSON.stringify(chart) === before }
     f.renderer.retain(new Set()); return answer
   })
   assert.equal(result.cached, true); assert.ok(result.versions.every(Number.isFinite))
   for (let index = 1; index < result.versions.length; index++) assert.ok(result.versions[index] > result.versions[index - 1])
-  assert.ok(result.during.some(text => /Weight: 3 \(13\.6%\)/.test(text))); assert.ok(result.during.some(text => /自身数值: 3/.test(text)))
-  assert.equal(result.cleared.some(text => /Weight: 3/.test(text)), false); assert.ok(result.reentered.some(text => /Weight: 3/.test(text)))
+  assert.equal(result.during.some(text => /Weight: 3|自身数值: 3/.test(text)), false)
+  assert.deepEqual(result.tooltip.lines, ['Weight: 3 (13.6%)', '自身数值: 3', '子节点合计: 6']); assert.equal(result.tooltip.title, 'South')
+  assert.equal(result.absent, true); assert.deepEqual(result.reentered, result.tooltip)
+  assert.equal(result.cleared.some(text => /Weight: 3/.test(text)), false)
   assert.equal(result.emphasized, true); assert.equal(result.author, true)
 })
 

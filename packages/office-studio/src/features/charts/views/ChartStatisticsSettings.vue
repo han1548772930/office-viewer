@@ -1,17 +1,24 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { Button, Collapse, CollapsePanel } from 'antdv-next'
 import type { ChartConfig } from '../chart-engine'
 import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-settings-draft'
 import { chartErrorBarControls, chartTrendlineControls } from '../chart-statistics-controls'
 import ChartOptionFields from './ChartOptionFields.vue'
 
-const props = defineProps<{ config: ChartConfig; seriesFields: ChartSettingsField[]; sourceFields: ChartSettingsField[]; numericX?: boolean; disabled?: boolean }>()
+const props = defineProps<{ config: ChartConfig; seriesFields: ChartSettingsField[]; sourceFields: ChartSettingsField[]; numericX?: boolean; routeKind?: 'trendlines' | 'errorBars'; routeKey?: number; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
+const openPanels = ref<string[]>([])
+watch([() => props.routeKind, () => props.routeKey], ([kind]) => {
+  if (kind) openPanels.value = (props.config.options?.[kind] ?? []).map((_entry, index) => `${kind === 'trendlines' ? 'trend' : 'error'}-${index}`)
+}, { immediate: true })
+function openKeys(value: unknown): string[] { return (Array.isArray(value) ? value : [value]).filter((key): key is string => typeof key === 'string') }
 function change(value: ChartConfig): void { emit('update:config', value) }
 function add(kind: 'trendlines' | 'errorBars'): void {
   const config = cloneChartDraftConfig(props.config), options = config.options ??= {}, field = props.seriesFields[0]?.value ?? config.valueFields?.[0] ?? 1
   if (kind === 'trendlines') (options.trendlines ??= []).push({ seriesIndex: field, type: 'linear' })
   else (options.errorBars ??= []).push({ seriesIndex: field, direction: 'y', type: 'both', valueType: 'fixedVal', value: 1 })
+  openPanels.value = [...openPanels.value, `${kind === 'trendlines' ? 'trend' : 'error'}-${(options[kind]?.length ?? 1) - 1}`]
   change(config)
 }
 function remove(kind: 'trendlines' | 'errorBars', index: number): void {
@@ -24,10 +31,10 @@ function remove(kind: 'trendlines' | 'errorBars', index: number): void {
 <template>
   <div class="chart-statistics-settings">
     <div class="chart-statistics-actions">
-      <Button :disabled="disabled" @click="add('trendlines')">添加趋势线</Button>
-      <Button :disabled="disabled" @click="add('errorBars')">添加误差线</Button>
+      <Button :disabled="disabled" data-chart-statistics-add="trendlines" @click="add('trendlines')">添加趋势线</Button>
+      <Button :disabled="disabled" data-chart-statistics-add="errorBars" @click="add('errorBars')">添加误差线</Button>
     </div>
-    <Collapse>
+    <Collapse :active-key="openPanels" @update:active-key="openPanels = openKeys($event)">
       <CollapsePanel v-for="(_line, index) in config.options?.trendlines ?? []" :key="`trend-${index}`" :header="`趋势线 ${index + 1}`">
         <ChartOptionFields :config="config" :controls="chartTrendlineControls(config, index).filter(control => control.key.endsWith('seriesIndex'))" :fields="seriesFields" :disabled="disabled" @update:config="change" />
         <ChartOptionFields :config="config" :controls="chartTrendlineControls(config, index).filter(control => !control.key.endsWith('seriesIndex'))" :disabled="disabled" @update:config="change" />

@@ -53,6 +53,34 @@
 8. 本地 Office 文件解析和编辑可以离线运行。前端通过服务接口适配接入协作/持久版本；未配置服务时仍使用真实本地模型，不以空回调伪装联网功能。
 9. 配置至少覆盖监听地址、持久化目录/数据库、认证来源、资源预算与任务并发。提供项目内启动说明和恢复方案；正式依赖和锁文件随实现正常生成，本次不安装或启动服务。
 
+## 2026-11-25 前端内容协议增量
+
+以下需求续接[富文本字体与编辑](feature-evidence/SHEET-04-05-rich-text-font-editing.md)、[默认样式来源](feature-evidence/SHEET-04-default-style-inheritance.md)、[Docs 结构块](feature-evidence/DOC-13-14-16-17-structured-blocks.md)、[Canvas/辅助宿主](feature-evidence/DOC-13-14-16-17-canvas-interactions.md)和[Code/段落入口](feature-evidence/DOC-13-14-16-17-code-popmenus.md)，服务和原生文件闭环仍待开发/验收。
+
+| 功能 ID | 持久内容与原生文件要求 | 临时状态与计算边界 |
+| --- | --- | --- |
+| SHEET-04 / SHEET-05 | 保存最终单元格值、类型、数字格式及全部 rich runs；保留来源身份、嵌套字体/公开别名、显式 false、颜色、链接、空标记和未知扩展。XLSX 解析/写出复用本项目链路，扩展 rich run 与主题字体映射，实际 Excel 保存/重开不得扁平化或丢作者字段。 | input trace、typing 偏好、native/Canvas selection、滚动和焦点只属于编辑视图，不进入持久内容或历史版本。文本范围 changeset 明确定义 UTF-16 offsets、来源版本、运行/锚点变换及权限，过期草稿不能覆盖新内容。 |
+| SHEET-04 / SHEET-03 / SHEET-08 | 保存 workbook/worksheet 默认、样式目录、行列点/spans/priority，以及 cell authored patch、reference、reset mask、theme 和物化标记。完整 `style` 不能作为唯一权威或覆盖稀疏作者来源；目录更新、行列变换、重开和恢复不将旧缓存冻成 direct。[公开轴](feature-evidence/SHEET-03-public-axis-import.md)已在前端映射 h/ah/ia/w/hd，原始对象及未知扩展存档随结构变换保留；17 个草稿未运行。服务端当前值与来源存档分开，完整 auto-height/Office 样式与单位映射仍待实施/验收；[短字段读回](feature-evidence/SHEET-04-public-style-readback.md)仅为边界投影。 | 剪贴板/格式刷的已解析区域快照与 pending cut 属于会话来源，未粘贴的 snapshot、笔状态和 view 不进入持久内容。成功粘贴/刷格式/填充提交作者结果；NO_FORMAT 保留目标来源。超同步预算继承边框/填充由分块 Worker/Rust/WASM 和取消协议落实，100,000 预算不是验收指标。 |
+| DOC-13 / DOC-14 / DOC-16 / DOC-17 | 保存 Code/Column/Quote/Callout 的真实块树、段落运行、来源 body 与配置。Column 的 horizontalPadding/minHeight 按 CSS px 保持模型值，默认 8/72；公开 body NumberUnit 在未修改时保留作者单位，作者修改后输出 `u=3`。内部快照保留不等于 DOCX/ODT 原生结构保真，需扩展解析/写出及来源关系并验证 Office 样本。 | Code block/host 的水平滚动、结构浮动入口及拖拽预览属于视图，不进内容历史；实际结构变更通过同一内容命令、权限与原子事务。 |
+| DOC-13 / DOC-16 / DOC-17 | Code 字体保存在真实段落/run，language/wrap/showLineNumbers/tabSize 保留作者值及未知扩展；结构类型转换保留容器/子段落 ID、内容/资源和 `metadata.documentStructuredTypeSources` 可恢复配置。changeset、历史与原生文件映射不得仅保存七类高亮颜色或丢转换来源。 | Prism Token/UTF-16 Canvas 分区是派生视图，字体登记、Popover/Drawer、More 草稿及 target/revision/focus 不进内容日志。表后/辅助 host/嵌套内容变更使用明确位置及同一锁/权限检查；[Quote 分页切片](feature-evidence/DOC-16-quote-pagination.md)已接共享布局，复杂对象/表格分页仍待前端补齐和统一验证。 |
+| SHEET-22 / SHEET-24 | 图表作者 DTO 保存标题/副标题样式、标题 manualLayout/rotate、绘图区相对完整外框的 manual rectangle、图例配置、类型特有配置与资源 ID/二进制关系；恢复历史和复制时资源仍可解析。标题/plot 拖动释放生成一次作者事务；真实 XLSX/DOCX/DrawingML 可编辑写回按图型逐项补，不以内部 JSON 为等价证据。 | 图例 selected/page、标题/plot hover/selection/preview、Sankey 临时拖动位置、Relation viewport 等 renderer view 不进入内容日志。target bounds/automatic seed metadata 仅供同源命中，不序列化成作者 option；故事/宿主和过期 revision 在发布时重验。详见[标题](feature-evidence/SHEET-22-title-direct-editing.md)和[绘图区](feature-evidence/SHEET-22-plot-area-direct-editing.md)。 |
+
+富文本测量/布局、批量格式、图表变换及索引等重计算仍归项目纯内核与 Worker/Rust/WASM，遵守类型化控制 DTO、transferable、lease、memory.grow 视图重建、复制字节统计和取消契约；不放进 ntex 网络处理层。服务端作业需要同源计算时复用纯 Rust 内核并由有界执行器调度。当前不启动服务或执行统一验证。
+
+## 2026-11-26 前端内容协议增量
+
+| 功能 ID | 持久内容与原生文件要求 | 临时状态与计算边界 |
+| --- | --- | --- |
+| SHEET-04 范围主题 | 保存 workbook 自定义九区段目录、worksheet 规则 ID/name/物理范围、可选逻辑 styleRange 与未知扩展；逻辑范围可含负起点且必须包含物理成员。目录注销保留 dangling 规则，重注册可恢复。九区段保存/应用形成一个内容 changeset，服务端重验所有同名引用区域、expected revision/history，不拆成先注册后应用。行列/表复制、局部移位及 cut/all 使用规则变换/ID 重映射。公开 `SHEET_RANGE_THEME_MODEL_PLUGIN` 资源已前端导入，完整输出与 XLSX/theme/tint 仍须扩展本项目解析/写出，不以 JSON 代替 Office。 | Ant 草稿/区段/边框位置/错误/pending、区域快照、剪贴板与回焦 generation 不进入内容日志。set/remove 和目录变更通过共享事务，移除权限覆盖整条规则；局部移位已接[共享候选/确认](feature-evidence/SHEET-02-cell-shift-transactions.md)。大量规则索引/样式投影归 Worker/Rust/WASM；复杂组合仍待前端补齐与验收，详见[基础 46 个草稿](feature-evidence/SHEET-04-range-themes.md)、[九区段编辑 45 个新草稿](feature-evidence/SHEET-04-range-theme-editor.md)及[局部结构 32 个草稿](feature-evidence/SHEET-04-range-theme-structure.md)。 |
+| DOC-02 / DOC-16 分页 | 保存四项可选段落 boolean（keepLines/keepNext/pageBreakBefore/widowControl）、默认/作者来源及 Quote 自动生成前的恢复信息；公共 body 输出 0/1，保持未修改来源扩展。DOCX 必须映射真实 w:keepLines/w:keepNext/w:pageBreakBefore/w:widowControl，Quote 插入/退出/转换保留作者覆盖。 | 实际行测量、note floor、分页和辅助 host 都是前端布局派生结果，不把预测高度、page/column cursor 或 UI draft 当作者内容。共享 paragraph 命令和 Facade 接线已落盘，37 个草稿未运行；复杂对象/表格规则和原生文件仍待实施/验收，见[Quote 分页](feature-evidence/DOC-16-quote-pagination.md)。 |
+| SHEET-22 / SHEET-24 对象操作 | 同 workbook 粘贴保存新图表 ID、原 source/pivot 绑定、作者格式及资源引用，一次内容历史；删除 prune 无引用资源。跨 workbook 依赖导入、真实 chart-sheet、通用/分组 drawing 与 Office 外部 clipboard 仍是前端和文件适配缺口。服务端只承担内容确认/权限/持久化，不兜底缺失的客户端操作。 | 编辑打开面板、复制、PNG 导出不增加内容历史；clipboard ID/ticket/session、Ant 菜单与借用/owned Canvas 不进入快照。真实 Canvas PNG 编码的像素复制、预算/释放与迟到回调已有接线，34 个草稿未运行，无性能通过结论；详见[图表对象操作](feature-evidence/SHEET-22-chart-object-context-actions.md)。 |
+| SHEET-02 / SHEET-03 / SHEET-08 局部移位 | 保存实际移动格的作者来源、公式/名称、CF/DV/主题片段、保护、表格/筛选、图表/透视绑定与切片器锚点；一次内容历史同时记录选择前后。后续 changeset 定义横纵带结构 edit、旧版本/资源变换和重基，服务端重新检查所有实际来源/目标权限；不能只保存按钮 ID。XLSX 复用本项目 parser/writer，补通用 drawing/media 和独立 Office 重开。 | 确认 request、baseRevision/history generation、UI host identity/signature、输入/回焦和 pending 不进内容日志。四核心+四确认命令、Facade、候选/权限/验证和 observer guard 已落盘，56 个草稿未运行；同步矩形预算不是性能证据，大范围资源变换/索引/取消归 Worker/Rust/WASM，详见[移位事务](feature-evidence/SHEET-02-cell-shift-transactions.md)。 |
+| SHEET-22 / SHEET-24 面板 route | 仅应用后的 chart 作者 patch 与源/资源绑定进入内容模型、历史和服务日志；同一图表反复打开面板保持未提交 draft，不能把导航误记为作者变更。 | tab/section/axisId/seriesId/titleKey、导航 key、Collapse/Tabs、focus/composition/session 属于 UI，不同步为 chart 内容。P17 route 接真实 Ant Drawer/控件，33 个草稿未运行；全部 element 命中/直接编辑、外部 drawing/跨 workbook 等仍归前端与文件适配，详见[面板路由](feature-evidence/SHEET-22-chart-edit-panel-routing.md)。 |
+| SHEET-22 线型/空值 | 保存 `area.lineStyle` 的 line/smooth/step 与 invalidValueStrategy；专用写入/reset 清除旧 smooth/空值覆盖，保留其他作者字段，一次更新进入内容历史。XLSX 原生线型映射、Step 诊断及真实 Excel 重开继续扩展本项目 parser/writer，manifest 或图片不替代可编辑文件。 | 采样几何、effective legacy 状态和渲染缓存属于派生数据；导航和未应用的 Select draft 不进入内容日志。P18 已接二维/3D 与公开 Builder/FChart，34 个新草稿未运行；曲率/组合最终效果、两后端及大样本 Worker/WASM、取消/内存/复制计量未验收，详见[线型证据](feature-evidence/SHEET-22-line-and-area-styles.md)。 |
+| DOC-15 / COMMON-03/05 / DOC-01/03/12 LaTeX | 保存稳定 range/run ID、原始 latex source、字符/段落来源及 live DOC_LATEX_PLUGIN 配置；named resource 优先，删除不从旧 nested wrapper 复活。公开段落 text/offset 读真实 dataStream source，header/footer segment ID 复用保存分配及 aliases。公开插件仅 inline，本地 block 另用本项目扩展。协作/历史保留 source↔atom 坐标映射及锁/权限；模板应用后仍保存原 source，真实 DOCX/OMML 读写继续扩展本项目链路，内部 JSON 不代替 Office 验收。 | Canvas/数学 AST/布局、71 模板目录、unit editor owner/句柄、Ant source draft/错误、上下文 tab/selection/session/revision 和迟到回焦不进内容日志。四 public 命令、FDocumentLatex 与模板 operation/Facade 绑定使用同一 canonical 内容路径；原 43 个及新 47 条声明（计划 117 用例）未运行。其他段落/浮动/移动入口、完整 TeX/OMML、Worker/Rust/WASM 布局/取消/复制计量和真实 IME/两后端/性能仍有缺口，详见[LaTeX 编辑](feature-evidence/DOC-15-latex-editing.md)与[模板/上下文](feature-evidence/DOC-15-latex-templates-ribbon.md)。 |
+
+上述增量不改变后端暂缓和未来 ntex 的安排，完整前端/文件/服务验收目标保留。
+
 ## 后续验收
 
 - 两个独立客户端并发修改、请求重复/乱序、相同 ID 不同内容、离线编辑和断网重连，核对确认版本、模型与资源一致。

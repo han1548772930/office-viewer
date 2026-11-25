@@ -6,6 +6,7 @@ import {
   defaultCellStyle,
   type CellScalar,
   type CellStyle,
+  type SheetCellStylePatch,
   type DocumentModel,
   type SpreadsheetCell,
   type SpreadsheetSheet,
@@ -19,12 +20,22 @@ import { formatSheetValue } from '../features/sheet-workbench/sheet-number-forma
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
 import { documentFromPublicInput } from './document-input'
+import { initializeWorkbookCellStyles, normalizeSheetStyleInput, resolveSheetCellStyle, resolveSheetStyleSource, setSheetCellStyleProperties,
+  type SheetStyleContext, type SheetStyleInput, type SheetStyleSheet } from '../features/sheet-workbench/sheet-style-inheritance.ts'
+import { applySheetPublicAxisInput } from '../features/sheet-workbench/sheet-public-axis.ts'
+import { initializeWorkbookDrawingStates } from '../features/sheet-drawings/sheet-drawing-model-lifecycle.ts'
+import { importSheetRangeThemeResources, normalizeWorkbookRangeThemes } from '../features/sheet-workbench/sheet-range-theme-model.ts'
+import { applySheetPublicCellBody, importWorkbookSheetImageResources, normalizeWorkbookSheetImages, sheetBackgroundImageFromPublic,
+  type UniverSheetImageBody, type UniverWorkbookData } from '../features/sheet-images/sheet-image-public.ts'
+
+export type WorkbookInput = (Partial<WorkbookModel> & Record<string, unknown>) | UniverWorkbookData
 
 export type ApiCellData = {
   v?: CellScalar
   f?: string | null
-  s?: Partial<CellStyle> & { font?: Partial<CellStyle['font']> }
+  s?: SheetStyleInput
   t?: SheetCellTypeInput
+  p?: UniverSheetImageBody | null
 }
 
 export type ApiCellValue = CellScalar | ApiCellData
@@ -55,6 +66,10 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
   next.activeSheetId = next.sheets.some((sheet) => sheet.id === next.activeSheetId) ? next.activeSheetId : next.sheets[0]!.id
   next.calculationMode ??= 'automatic'
   next.pivotTables ??= []
+  normalizeWorkbookRangeThemes(next)
+  normalizeWorkbookSheetImages(next)
+  initializeWorkbookDrawingStates(next)
+  initializeWorkbookCellStyles(next)
   return next
 }
 
@@ -66,7 +81,7 @@ export function ensureDocumentId(model: DocumentModel): DocumentModel {
   return next
 }
 
-export function workbookFromInput(input: Partial<WorkbookModel> & Record<string, unknown> = {}): WorkbookModel {
+export function workbookFromInput(input: WorkbookInput = {}): WorkbookModel {
   if (input.kind === 'workbook' && Array.isArray(input.sheets)) return ensureWorkbookId(input as WorkbookModel)
   assertWorkbookConditionalFormatBudget(input.sheets)
   const base = createBlankWorkbook()
@@ -74,20 +89,30 @@ export function workbookFromInput(input: Partial<WorkbookModel> & Record<string,
   base.name = typeof input.name === 'string' ? input.name : typeof input.title === 'string' ? input.title : base.name
   base.date1904 = input.date1904 === true
   base.calculationMode = input.calculationMode === 'manual' ? 'manual' : 'automatic'
+  if (input.metadata) base.metadata = clone(input.metadata) as WorkbookModel['metadata']
+  if (Array.isArray(input.tables)) base.tables = clone(input.tables) as WorkbookModel['tables']
+  if (Array.isArray(input.charts)) base.charts = clone(input.charts) as WorkbookModel['charts']
+  if (Array.isArray(input.pivotTables)) base.pivotTables = clone(input.pivotTables) as WorkbookModel['pivotTables']
+  if (Array.isArray(input.slicers)) base.slicers = clone(input.slicers) as WorkbookModel['slicers']
+  if (input.defaultStyle !== undefined) base.defaultStyle = clone(input.defaultStyle) as WorkbookModel['defaultStyle']
+  if (input.styles && typeof input.styles === 'object') base.styles = clone(input.styles) as WorkbookModel['styles']
+  if (input.rangeThemes !== undefined) base.rangeThemes = clone(input.rangeThemes) as WorkbookModel['rangeThemes']
   const sourceSheets = input.sheets
   if (Array.isArray(sourceSheets)) {
-    base.sheets = sourceSheets.map((sheet) => normalizeSheet(sheet as Partial<SpreadsheetSheet> & Record<string, unknown>))
+    base.sheets = sourceSheets.map((sheet) => normalizeSheet(sheet as Partial<SpreadsheetSheet> & Record<string, unknown>, base))
   } else if (sourceSheets && typeof sourceSheets === 'object') {
     const sheetMap = sourceSheets as Record<string, Record<string, unknown>>
     const order = Array.isArray(input.sheetOrder) ? input.sheetOrder.filter((id): id is string => typeof id === 'string') : Object.keys(sheetMap)
     base.sheets = order.map((id, index) => {
       const source = sheetMap[id] ?? {}
       const name = typeof source.name === 'string' ? source.name : `Sheet${index + 1}`
-      return normalizeSheet({ ...source, id, name })
+      return normalizeSheet({ ...source, id, name }, base)
     })
   }
   if (!base.sheets.length) base.sheets = [createBlankSheet()]
   base.activeSheetId = typeof input.activeSheetId === 'string' ? input.activeSheetId : base.sheets[0]!.id
+  importSheetRangeThemeResources(base, input.resources)
+  importWorkbookSheetImageResources(base, input.resources)
   return ensureWorkbookId(base)
 }
 
@@ -99,7 +124,7 @@ export function documentFromInput(input: Partial<DocumentModel> & Record<string,
   return documentFromPublicInput(input, ensureDocumentId(base))
 }
 
-function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknown>): SpreadsheetSheet {
+function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknown>, context: SheetStyleContext): SpreadsheetSheet {
   const sheet = createBlankSheet(typeof input.name === 'string' ? input.name : 'Sheet1')
   sheet.id = typeof input.id === 'string' ? input.id : randomId('sheet')
   sheet.name = typeof input.name === 'string' ? input.name : sheet.name
@@ -113,6 +138,17 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
   sheet.columnCount = numberOrUndefined(input.columnCount)
   sheet.visible = input.visible !== false
   sheet.showGridlines = input.showGridlines !== false
+  if (input.defaultStyle !== undefined) sheet.defaultStyle = normalizeSheetStyleInput(input.defaultStyle)
+  if (input.metadata) sheet.metadata = clone(input.metadata)
+  if (Array.isArray(input.images)) sheet.images = clone(input.images)
+  if (input.drawingState !== undefined) sheet.drawingState = clone(input.drawingState)
+  if (Array.isArray(input.shapes)) sheet.shapes = clone(input.shapes)
+  if (input.backgroundImage !== undefined) sheet.backgroundImage = sheetBackgroundImageFromPublic(input.backgroundImage)
+  applySheetPublicAxisInput(sheet, input)
+  if (input.rowStyleSpans) sheet.rowStyleSpans = clone(input.rowStyleSpans)
+  if (input.columnStyleSpans) sheet.columnStyleSpans = clone(input.columnStyleSpans)
+  if (input.rowStylePriority !== undefined) sheet.rowStylePriority = input.rowStylePriority
+  if (input.rangeThemeRules !== undefined) sheet.rangeThemeRules = clone(input.rangeThemeRules)
   sheet.frozenRows = numberOrZero(input.frozenRows ?? (input.freeze as Record<string, unknown> | undefined)?.rows)
   sheet.frozenCols = numberOrZero(input.frozenCols ?? (input.freeze as Record<string, unknown> | undefined)?.columns)
   if (input.cells && typeof input.cells === 'object') sheet.cells = clone(input.cells as Record<string, SpreadsheetCell>)
@@ -123,14 +159,25 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
       for (const [columnKey, raw] of Object.entries(columns as Record<string, unknown>)) {
         const row = Number(rowKey), col = Number(columnKey)
         if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || col < 0) continue
-        sheet.cells[`${row}:${col}`] = cellFromApi(row, col, raw)
+        sheet.cells[`${row}:${col}`] = cellFromApi(row, col, raw, context, sheet)
       }
     }
   }
   return sheet
 }
 
-export function cellFromApi(row: number, col: number, raw: unknown): SpreadsheetCell {
+function applyApiCellStyle(cell: SpreadsheetCell, source: SheetStyleInput, context: SheetStyleContext, sheet: SheetStyleSheet): void {
+  const style = normalizeSheetStyleInput(source)
+  if (typeof style === 'string') {
+    resolveSheetStyleSource(style, context)
+    cell.authoredStyleReference = style; cell.authoredStyle = {}; delete cell.clearedStyleProperties
+  } else if (style === null) {
+    cell.authoredStyle = {}; delete cell.authoredStyleReference; delete cell.clearedStyleProperties
+  } else setSheetCellStyleProperties(cell, style)
+  cell.style = resolveSheetCellStyle(sheet, cell.row, cell.col, cell, context)
+}
+
+export function cellFromApi(row: number, col: number, raw: unknown, context: SheetStyleContext = {}, sheet: SheetStyleSheet = {}): SpreadsheetCell {
   const source = apiCellSource(raw)
   const scalar = apiCellScalar(source ? source.v : raw, source?.t)
   const cell = createCell(row, col, scalar)
@@ -139,12 +186,13 @@ export function cellFromApi(row: number, col: number, raw: unknown): Spreadsheet
     cell.display = scalar === null ? source.f : String(scalar)
   }
   applyApiCellTypes(cell, source)
-  if (source?.s) cell.style = mergeCellStyle(cell.style, source.s)
+  if (source?.s !== undefined) applyApiCellStyle(cell, source.s, context, sheet)
+  if (source?.p !== undefined) applySheetPublicCellBody(cell, source.p)
   if (!cell.formula || cell.value !== null) cell.display = formatSheetValue(cell.value, cell.style.numberFormat) ?? cell.display
   return cell
 }
 
-export function mergeCellStyle(style: CellStyle, patch: Partial<CellStyle> & { font?: Partial<CellStyle['font']> }): CellStyle {
+export function mergeCellStyle(style: CellStyle, patch: SheetCellStylePatch): CellStyle {
   return {
     ...style,
     ...patch,
@@ -152,16 +200,21 @@ export function mergeCellStyle(style: CellStyle, patch: Partial<CellStyle> & { f
   }
 }
 
-export function applyCellValue(cell: SpreadsheetCell | undefined, row: number, col: number, value: unknown): SpreadsheetCell {
+export function applyCellValue(cell: SpreadsheetCell | undefined, row: number, col: number, value: unknown,
+  context: SheetStyleContext = {}, sheet: SheetStyleSheet = {}): SpreadsheetCell {
   const next = cell ? clone(cell) : createCell(row, col, null)
   const source = apiCellSource(value)
   const scalar = apiCellScalar(source ? source.v : value, source?.t)
   next.formula = source ? source.f ?? null : typeof scalar === 'string' && scalar.startsWith('=') ? scalar : null
   next.value = next.formula && !source ? null : scalar
   next.display = next.formula && next.value === null ? next.formula : next.value === null ? '' : String(next.value)
+  delete next.image
+  if (next.metadata) { delete next.metadata.publicBody; delete next.metadata.sheetImagePublicDrawingId }
   applyApiCellTypes(next, source)
   if (next.metadata && 'formulaError' in next.metadata) delete next.metadata.formulaError
-  if (source?.s) next.style = mergeCellStyle(next.style, source.s)
+  if (source?.s !== undefined) applyApiCellStyle(next, source.s, context, sheet)
+  else next.style = resolveSheetCellStyle(sheet, row, col, next, context)
+  if (source?.p !== undefined) applySheetPublicCellBody(next, source.p)
   if (!next.formula || next.value !== null) next.display = formatSheetValue(next.value, next.style.numberFormat) ?? next.display
   return next
 }

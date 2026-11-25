@@ -6,8 +6,7 @@ import { bodyBoolean, bodyLength, bodyNumber, bodyRecord, type UniverBodyRecord 
 import { documentBodyIdentity, type DocumentBodyDecodeOptions } from './document-body-types'
 
 const calloutSizes = ['borderWidth', 'borderRadius', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'iconSize', 'iconGap'] as const
-const optionalColumnLength = (value: unknown, fontSize: number): number | undefined => {
-  if (value === undefined) return undefined
+const optionalColumnLength = (value: unknown, fontSize: number): number => {
   const length = bodyLength(value, fontSize)
   if (length === undefined) throw new TypeError('多栏组提供的长度必须为数字或有效 NumberUnit。')
   return length

@@ -35,7 +35,7 @@ export function registerSheetRangeEditorCommands(api: OfficeStudio): void {
     const changed = api.commitWorkbook(target.unitId, mode === 'all' ? '清除全部' : mode === 'format' ? '清除格式' : '清除内容', model => {
       const sheet = model.sheets.find(candidate => candidate.id === target.sheetId)!
       const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => table.autoFilter?.filteredRows ?? [])]
-      applySheetClearCommand(sheet, target.ranges, mode, api.currentUserId, filteredRows)
+      applySheetClearCommand(sheet, target.ranges, mode, api.currentUserId, filteredRows, model)
       if (mode !== 'format') assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
     })
     if (changed && mode !== 'format') changedValueEvent(api, target.unitId, target.sheetId, target.ranges)

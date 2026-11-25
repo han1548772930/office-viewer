@@ -6,6 +6,7 @@ import { documentStorySelectionFormatting } from '../../features/document/servic
 import type { DocumentStoryRange } from '../../features/document/model/document-story'
 import { documentTableSelection, type DocumentTableSelection } from '../../features/document/commands/table-commands'
 import { documentTableSelectedTextTargets } from '../../features/document/model/document-table-selection'
+import { documentParagraphPagination } from '../../features/document/model/document-paragraph-pagination'
 import { DOCUMENT_PARAGRAPH_SETTING_FIELDS, documentParagraphSettingsStyle, type DocumentParagraphSettingField } from './document-paragraph-settings-state'
 import {
   DOCUMENT_NAMED_PARAGRAPH_STYLES, applyRunPatch, createRun, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
@@ -56,7 +57,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     const block = blockAtPoint(model, target)
     if (block) {
       presets.push(blockListPreset(block))
-      paragraphs.push(documentParagraphSettingsStyle(block.style))
+      paragraphs.push(documentParagraphSettingsStyle({ ...block.style, ...documentParagraphPagination(block.style, model) }))
       const namedStyle = block.metadata.namedStyleType
       if (typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)) styles.push(namedStyle.startsWith('heading') ? `H${namedStyle.slice(-1)}` : namedStyle)
       else if (block.type === 'heading' && block.level >= 1 && block.level <= 5) styles.push(`H${block.level}`)
@@ -99,7 +100,7 @@ function documentToolbarMarks(styles: readonly RunPatch[]): Pick<DocumentToolbar
 export function documentStoryToolbarState(model: DocumentModel, range: DocumentStoryRange, pending: RunPatch = {}): DocumentToolbarState {
   const selected = documentStorySelectionFormatting(model, range, pending)
   const paragraph: Partial<DocumentParagraphStyle> = {}, mixedParagraph: DocumentParagraphSettingField[] = []
-  const paragraphs = selected.paragraphs.map(documentParagraphSettingsStyle)
+  const paragraphs = selected.paragraphs.map(style => documentParagraphSettingsStyle({ ...style, ...documentParagraphPagination(style, model) }))
   for (const key of DOCUMENT_PARAGRAPH_SETTING_FIELDS) {
     const value = paragraphs[0]?.[key]
     if (paragraphs.every(style => style[key] === value)) Object.assign(paragraph, { [key]: value })

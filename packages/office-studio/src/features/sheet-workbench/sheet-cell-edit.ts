@@ -52,7 +52,7 @@ export function editSheetCellText(cell: ExcelCellView | undefined, input: string
   const forcedText = !textFormat && input.startsWith("'")
   if (!forcedText && !textFormat && input.startsWith('=')) {
     return { ...current, value: '', formula: input, dataType: 'formula', cachedDataType: null,
-      rawValue: null, cachedValue: undefined, displayValue: input }
+      rawValue: null, cachedValue: undefined, displayValue: input, image: null }
   }
   const parsed = forcedText || textFormat || input === '' ? undefined
     : parseSheetNumberEdit(input, sheetCellNumberValue(current), pattern, { date1904, region, currentYear })
@@ -60,6 +60,7 @@ export function editSheetCellText(cell: ExcelCellView | undefined, input: string
   const numberPattern = parsed?.numberFormat ?? pattern
   const detectedFormat = parsed?.numberFormat ? classifySheetNumberFormat(parsed.numberFormat) : undefined
   return { ...current, value: value === null ? '' : String(value), formula: undefined,
+    image: null,
     dataType: forcedText ? 'force_string' : inferSheetCellValueType(value), cachedDataType: null,
     rawValue: value, cachedValue: undefined,
     ...(parsed?.numberFormat ? { rawNumberFormat: parsed.numberFormat, numberFormat: detectedFormat === 'custom' ? undefined : detectedFormat } : {}),
@@ -74,6 +75,7 @@ export function editSheetCellInlineText(cell: ExcelCellView | undefined, input: 
   const pattern = sheetCellNumberPattern(cell)
   const text = !isSheetTextNumberFormat(pattern) && input.startsWith("'") ? input.slice(1) : input
   return { ...cell, value: text, rawValue: text, formula: undefined,
+    image: null,
     dataType: isForcedSheetCellValueType(cell.dataType) ? 'force_string' : 'text', cachedDataType: null,
     cachedValue: undefined, displayValue: formatSheetValue(text, pattern, date1904, region) ?? text }
 }

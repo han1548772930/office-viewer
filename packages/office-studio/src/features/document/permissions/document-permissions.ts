@@ -10,6 +10,7 @@ import { flattenDocumentBody } from '../services/document-facade'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock } from '../services/section-header-footer'
 import { DOCUMENT_STORY_KEYS } from '../model/document-story'
 import { sameSectionStory, sectionStoryLinkedToPrevious } from '../model/document-section-stories'
+import { documentImageAtom } from '../images/document-image-atom'
 
 export interface DocumentPermissionTarget {
   scope: Exclude<DocumentPermissionScope, 'document'>
@@ -112,7 +113,11 @@ export function permissionTargetsForSelection(model: DocumentModel, selection: D
     const view = resolveDocumentTableViewSelection(model, selection.tableSelection), block = findDocumentBlock(model, view.tableId)!
     const owners = documentTableCellsInRange(documentTableGrid(tableForBlock(block)!), view.range), result = new Map<string, DocumentPermissionTarget>()
     addBlockPermissionTargets(model, view.tableId, result)
-    for (const owner of owners) for (const id of documentTableDescendantIds(documentTableCellBlocks(owner.cell))) addBlockPermissionTargets(model, id, result)
+    for (const owner of owners) for (const id of documentTableDescendantIds(documentTableCellBlocks(owner.cell))) {
+      addBlockPermissionTargets(model, id, result)
+      const child = findDocumentBlock(model, id)
+      if (child) addInlineImagePermissionTargets(child, 0, Number.POSITIVE_INFINITY, result)
+    }
     return [...result.values()]
   }
   const { start, end } = orderedSelection(model, selection)
@@ -124,6 +129,9 @@ export function permissionTargetsForSelection(model: DocumentModel, selection: D
   const result = new Map<string, DocumentPermissionTarget>()
   for (const target of targets.slice(firstIndex, endIndex + 1)) {
     addBlockPermissionTargets(model, target.cellBlockId ?? target.blockId, result)
+    const block = findDocumentBlock(model, target.cellBlockId ?? target.blockId)
+    if (block) addInlineImagePermissionTargets(block, samePoint(target, start) ? start.offset : 0,
+      samePoint(target, end) ? end.offset : Number.POSITIVE_INFINITY, result)
   }
   return [...result.values()]
 }
@@ -137,9 +145,22 @@ export function permissionTargetsForRange(model: DocumentModel, startOffset: num
     const intersects = start === end
       ? start >= segment.startOffset && start <= segment.endOffset
       : start < segment.endOffset && end > segment.startOffset
-    if (intersects) addBlockPermissionTargets(model, segment.cellBlockId ?? segment.blockId, result)
+    if (intersects) {
+      addBlockPermissionTargets(model, segment.cellBlockId ?? segment.blockId, result)
+      const block = findDocumentBlock(model, segment.cellBlockId ?? segment.blockId)
+      if (block) addInlineImagePermissionTargets(block, Math.max(0, start - segment.startOffset), end - segment.startOffset, result)
+    }
   }
   return [...result.values()]
+}
+
+function addInlineImagePermissionTargets(block: DocumentBlock, start: number, end: number, result: Map<string, DocumentPermissionTarget>): void {
+  let offset = 0
+  for (const run of block.runs) {
+    const next = offset + run.text.length, atom = documentImageAtom(run)
+    if (atom && start < next && end > offset) result.set(`entity:${atom.imageId}`, { scope: 'entity', id: atom.imageId })
+    offset = next
+  }
 }
 
 function addBlockPermissionTargets(model: DocumentModel, blockId: string, result: Map<string, DocumentPermissionTarget>): void {
@@ -192,6 +213,18 @@ export function permissionTargetsForBlock(model: DocumentModel, blockId: string)
   return [...result.values()]
 }
 
+/** An inline image has its own entity rule and inherits its paragraph/host rules. */
+export function permissionTargetsForImage(model: DocumentModel, imageId: string): DocumentPermissionTarget[] {
+  const result = new Map<string, DocumentPermissionTarget>()
+  for (const block of allPermissionBlocks(model).values()) {
+    if (block.type === 'image' && block.id === imageId || block.runs.some(run => documentImageAtom(run)?.imageId === imageId)) {
+      addBlockPermissionTargets(model, block.id, result)
+      result.set(`entity:${imageId}`, { scope: 'entity', id: imageId })
+    }
+  }
+  return [...result.values()]
+}
+
 function blockPermissionAncestry(blocks: readonly DocumentBlock[], id: string): DocumentBlock[] | undefined {
   for (const block of blocks) {
     if (block.id === id) return [block]
@@ -215,6 +248,23 @@ export function permissionTargetsForChangedBlocks(before: DocumentModel, after: 
   for (const id of changedIds) {
     addBlockPermissionTargets(before, id, result)
     addBlockPermissionTargets(after, id, result)
+  }
+  const images = (blocks: Map<string, DocumentBlock>) => {
+    const entries = new Map<string, { blockId: string; value: string }>()
+    for (const block of blocks.values()) for (const run of block.runs) {
+      const atom = documentImageAtom(run)
+      if (atom) entries.set(atom.imageId, { blockId: block.id, value: JSON.stringify({ image: atom.image, metadata: run.metadata,
+        fontFamily: run.fontFamily, fontSize: run.fontSize, verticalAlign: run.verticalAlign }) })
+    }
+    return entries
+  }
+  const previousImages = images(beforeBlocks), nextImages = images(afterBlocks)
+  for (const id of new Set([...previousImages.keys(), ...nextImages.keys()])) {
+    const previous = previousImages.get(id), next = nextImages.get(id)
+    if (previous?.blockId === next?.blockId && previous?.value === next?.value) continue
+    result.set(`entity:${id}`, { scope: 'entity', id })
+    if (previous) addBlockPermissionTargets(before, previous.blockId, result)
+    if (next) addBlockPermissionTargets(after, next.blockId, result)
   }
   // Binding properties and backing XML can change without changing a paragraph's
   // displayed text. Publish/undo/redo must protect those same block scopes.

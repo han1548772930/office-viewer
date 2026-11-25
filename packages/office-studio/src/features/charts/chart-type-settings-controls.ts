@@ -11,6 +11,8 @@ import { chartCandlestickSettingsMapping } from './chart-candlestick'
 import { chartChordMappingControls } from './chart-chord-settings-controls'
 import { chartRelationMappingControls, chartRelationSettingsControls } from './chart-relation-settings-controls'
 import type { ChartRecords } from './chart-data'
+import { chartLineAndAreaSettingsControls } from './chart-line-and-area-settings-controls'
+import { chartPieAggregateControls, chartPieConnectorControls } from './chart-pie-settings-controls'
 
 type Mapping = NonNullable<ChartSemanticOptions['mapping']>
 function resetBoxplotField(control: ChartSettingControl, field: keyof NonNullable<ChartSemanticOptions['boxplot']>): ChartSettingControl {
@@ -76,7 +78,7 @@ export function chartDataMappingControls(config: ChartConfig, fieldCount: number
   ])]
 }
 
-export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: number, sourceName?: string): ChartSettingControl[] {
+export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: number, sourceName?: string, data?: ChartData): ChartSettingControl[] {
   const descriptor = resolveChartType(config.type), controls: ChartSettingControl[] = []
   if (descriptor.threeD) controls.push(
     numberControl('threeD.view.rotX', '三维俯仰角', item => item.options?.threeD?.view?.rotX, (item, value) => { (optionGroup(item, 'threeD').view ??= {}).rotX = value }, -90, 90, 28),
@@ -92,7 +94,7 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
     controls.push(numberControl('bar.gapWidth', '柱条间距（%）', item => item.options?.bar?.gapWidth, (item, value) => { optionGroup(item, 'bar').gapWidth = value }, 0, 500, 150))
     if (descriptor.family !== 'waterfall') controls.push(numberControl('bar.overlap', '系列重叠（%）', item => item.options?.bar?.overlap, (item, value) => { optionGroup(item, 'bar').overlap = value }, -100, 100, 0))
   }
-  if (descriptor.family === 'area' && !descriptor.threeD) controls.push(switchControl('area.smooth', '平滑面积边界', item => item.options?.area?.smooth, (item, value) => { optionGroup(item, 'area').smooth = value }))
+  controls.push(...chartLineAndAreaSettingsControls(config))
   if (descriptor.family === 'pie') {
     controls.push(
       numberControl('pie.startAngle', '起始角', item => item.options?.pie?.startAngle, (item, value) => { optionGroup(item, 'pie').startAngle = value }, -360, 360, -90),
@@ -107,13 +109,14 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
       controls.push(
         numberControl('pie.secondaryPlot.size', '副图大小（%）', item => item.options?.pie?.secondaryPlot?.size, (item, value) => { secondary(item).size = value }, 15, 100, 65),
         numberControl('pie.secondaryPlot.gapWidth', '主副图间距（%）', item => item.options?.pie?.secondaryPlot?.gapWidth, (item, value) => { secondary(item).gapWidth = value }, 0, 500, 50),
-        textControl('pie.aggregateLabel', '主图合计标签', item => item.options?.pie?.aggregateLabel, (item, value) => { optionGroup(item, 'pie').aggregateLabel = value }),
         selectControl('pie.secondaryPlot.split.type', '拆分规则', [['auto', '自动'], ['position', '按位置'], ['value', '按数值'], ['percentage', '按百分比'], ['custom', '指定项目']], item => item.options?.pie?.secondaryPlot?.split?.type, (item, value) => { split(item).type = value ?? 'auto' }, 'auto'),
       )
       const splitType = config.options?.pie?.secondaryPlot?.split?.type
       if (splitType === 'position' || splitType === 'auto') controls.push(numberControl('pie.secondaryPlot.split.count', '副图项目数', item => item.options?.pie?.secondaryPlot?.split?.count, (item, value) => { split(item).count = value }, 1, 100_000))
       if (splitType === 'value' || splitType === 'percentage') controls.push(numberControl('pie.secondaryPlot.split.lessThan', splitType === 'percentage' ? '低于百分比' : '低于数值', item => item.options?.pie?.secondaryPlot?.split?.lessThan, (item, value) => { split(item).lessThan = value }, 0, splitType === 'percentage' ? 100 : undefined))
       if (splitType === 'custom') controls.push(fieldsControl('pie.secondaryPlot.split.pointIndexes', '副图项目', item => item.options?.pie?.secondaryPlot?.split?.pointIndexes, (item, value) => { split(item).pointIndexes = value }, true))
+      controls.push(...chartPieAggregateControls(data?.series[0] ?? { field: config.valueFields?.[0] ?? 1, name: sourceName ?? '', sourceName }, data?.categories.length ?? 0),
+        ...chartPieConnectorControls())
     }
   }
   if (descriptor.family === 'radar') controls.push(...chartRadarSettingsControls(config))

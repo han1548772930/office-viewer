@@ -21,12 +21,16 @@ export function toChartWorkbook(view: ExcelWorkbookChartView): WorkbookModel {
     modified: false,
     id: view.id ?? 'chart-overlay-workbook',
     charts: view.charts?.map((chart) => cloneChart(chart)),
+    slicers: view.slicers?.map(model => cloneModel(model)),
     tables: view.tables?.map(table => cloneModel(table)),
     pivotTables: view.pivotTables?.map((pivot) => ({ ...pivot, source: { ...pivot.source, range: { ...pivot.source.range } }, anchor: { ...pivot.anchor }, fields: pivot.fields.map((field) => ({ ...field })), options: { ...pivot.options } })),
     sheets: view.sheets.map((source) => ({
       id: source.id,
       name: source.name,
       visible: source.visible ?? true,
+      images: source.images ? cloneModel(source.images) : undefined,
+      drawingState: source.drawingState ? cloneModel(source.drawingState) : undefined,
+      shapes: source.shapes ? cloneModel(source.shapes) : undefined,
       cells: Object.fromEntries(Object.entries(source.cells).flatMap(([address, value]) => {
         const position = parseA1(address)
         if (!position) return []
@@ -67,6 +71,7 @@ export function cloneChart(chart: ChartModel): ChartModel {
     source: { ...chart.source, range: { ...chart.source.range } },
     position: { ...chart.position },
     size: { ...chart.size },
+    drawingGeometry: chart.drawingGeometry ? cloneModel(chart.drawingGeometry) : undefined,
     legend: cloneModel(chart.legend),
     xAxis: cloneModel(chart.xAxis),
     yAxis: cloneModel(chart.yAxis),

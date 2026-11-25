@@ -11,6 +11,7 @@ test('paragraph controls resolve missing defaults and legacy left indentation wi
   assert.deepEqual(documentParagraphSettingsStyle(source), {
     align: 'right', indent: 2, lineHeight: 1.25, spaceBefore: 0, spaceAfter: 8,
     indentStart: 48, indentEnd: 0, indentFirstLine: 0, hanging: 0, spacingRule: 'auto', wordWrap: false, snapToGrid: false,
+    keepLines: false, keepNext: false, widowControl: false, pageBreakBefore: false,
   })
   assert.deepEqual(source, before)
   assert.equal(documentParagraphSettingsStyle({ indent: 2, indentStart: 0 }).indentStart, 0)

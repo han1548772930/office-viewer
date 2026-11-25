@@ -6,14 +6,19 @@ import type { RenderSurface } from '../../rendering/contracts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import { blockAtPoint, documentTabCommand, graphemeOffsets, type DocumentCommand } from '../../features/document/commands/document-commands'
 import { applyDocumentEditorCommand } from '../../api/document-editor-commands'
-import { caretRect, createTextMeasurer, documentStoryCaretRect, documentStoryLayoutLines, emptyLayout, hitTestDocument, hitTestDocumentLine, hitTestDocumentStory, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
-import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch, type TextTarget } from '../../features/document/model/document-model'
+import { caretRect, createTextMeasurer, documentPhysicalLineNavigation, documentStoryCaretRect, documentStoryLayoutLines, emptyLayout, hitTestDocument, hitTestDocumentStory, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
+import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch, type TextTarget } from '../../features/document/model/document-model'
 import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
-import { documentTableClipboardData, documentTablePasteCommand, type DocumentClipboardData } from '../../features/document/services/document-clipboard'
+import { documentImageClipboardData, documentSelectionClipboardData, documentTablePasteCommand, type DocumentClipboardData } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 import { documentStructuredBlockAtSelection } from '../../features/document/commands/document-structure-commands'
+import { clampDocumentCodeScrollOffsets, documentCodeCaretScrollOffset, documentCodeScrollRegions, projectDocumentCodeScroll } from '../../features/document/layout/document-code-scroll'
+import { captureDocumentStructuredCanvasTarget, documentStructuredCanvasTargetCurrent, type DocumentStructuredCanvasTarget, type DocumentStructuredCanvasCommandRequest, type DocumentStructuredCanvasOperationRequest } from '../../features/document/controllers/document-structured-canvas'
+import { documentLatexCanvasRequestCurrent, type DocumentLatexCanvasEditRequest } from '../../features/document/controllers/document-latex-canvas'
+import { documentLatexDragAnchor, hitTestDocumentLatex, type DocumentLatexHit } from '../../features/document/layout/document-latex-hit'
+import DocumentStructuredOverlay from './DocumentStructuredOverlay.vue'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
 import type { StoryLocation } from '../../features/document/services/story-editor'
 import { documentFormattingWordRange } from '../../features/document/services/document-format-painter'
@@ -43,10 +48,22 @@ import { documentContentControlCommandIsTextInput, documentContentControlCommand
 import { documentContentControlContainsSelection } from '../../features/document/model/content-control-table-rows'
 import { hitTestDocumentNoteDecoration, hitTestDocumentNoteGlyph, hitTestDocumentNoteRegion, type DocumentNoteGlyphHit } from '../../features/document/layout/document-note-hit'
 import { documentNoteCanvasRequestCurrent, documentNotePreview, type DocumentNoteCanvasNavigationRequest, type DocumentNotePreview } from '../../features/document/controllers/document-note-canvas'
+import { documentImageEntries } from '../../features/document/images/document-image-model'
+import { assertDocumentImageEditable, type DocumentImageObjectCommand } from '../../features/document/commands/document-image-commands'
+import { permissionTargetsForImage } from '../../features/document/permissions/document-permissions'
+import { captureDocumentImageCanvasTarget, documentImageCanvasTargetCurrent, documentImageAtPoint, documentImageResizeCorner, documentImageGestureResult,
+  type DocumentImageCanvasTarget, type DocumentImageCanvasCommandRequest, type DocumentImageCanvasOperationRequest, type DocumentImageGesture, type DocumentImageGestureResult } from '../../features/document/controllers/document-image-canvas'
+import DocumentImageOverlay from './DocumentImageOverlay.vue'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; activeContentControlPopupMode?: DocumentContentControlPopupMode; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; selectedImageId?: string; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; activeContentControlPopupMode?: DocumentContentControlPopupMode; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
+  'structured-command': [request: DocumentStructuredCanvasCommandRequest]
+  'structured-operation': [request: DocumentStructuredCanvasOperationRequest]
+  'latex-edit': [request: DocumentLatexCanvasEditRequest]
+  'image-selection': [target: DocumentImageCanvasTarget | undefined]
+  'image-command': [request: DocumentImageCanvasCommandRequest]
+  'image-operation': [request: DocumentImageCanvasOperationRequest]
   operation: [id: string, params?: unknown]
   'open-story': [location: StoryLocation, point?: DocumentPoint]
   'close-story': []
@@ -89,7 +106,10 @@ function bridgeTextArea(bridge: DocumentTextAreaBridgeRef | null | undefined): H
   return null
 }
 function inputElement(): HTMLTextAreaElement | null { return bridgeTextArea(inputRef.value) }
-const layout = shallowRef<DocumentLayout>(emptyLayout())
+const sourceLayout = shallowRef<DocumentLayout>(emptyLayout())
+const codeScrollOffsets = shallowRef<Record<string, number>>({})
+const layout = computed(() => projectDocumentCodeScroll(sourceLayout.value, codeScrollOffsets.value))
+const structuredOverlay = ref<{ cancelInteraction: () => void }>()
 const inspectionActive = computed(() => !!props.inspectionHost && sameDocumentBlockHost(props.inspectionHost, props.host))
 const tableOverlay = ref<{ cancelGesture: () => void; cancelInteraction: () => void; continueGesture: (pointer: DocumentTableDragPointer) => void }>()
 const contentControlOverlay = ref<{ cancelInteraction: () => void }>()
@@ -154,12 +174,13 @@ let lastSurfaceSize: { width: number; height: number; dpr: number } | undefined
 let frame = 0
 let blink: ReturnType<typeof setInterval> | undefined
 let dragAnchor: DocumentPoint | undefined
+let latexDragSelection: DocumentSelection | undefined
 let tableDragAnchor: DocumentTableHit | undefined
 let tableKeyboardCursor: DocumentTableKeyboardCursor | undefined
 let dragSelectionSource: DocumentModel | undefined
 let dragScrollFrame = 0
 let dragScrollPointer: DocumentTableDragPointer | undefined
-let dragScrollSource: 'selection' | 'overlay' | undefined
+let dragScrollSource: 'selection' | 'overlay' | 'image' | undefined
 let storyDragAnchor: { location: StoryLocation; offset: number } | undefined
 let pointerId: number | undefined
 let suppressCompositionInput = false
@@ -199,11 +220,106 @@ const displayModel = computed(() => preview.value ?? props.model)
 const editingModel = computed(() => props.host ? documentModelForBlockHost(props.model, props.host) : props.model)
 const displayEditingModel = computed(() => props.host ? documentModelForBlockHost(displayModel.value, props.host) : displayModel.value)
 const editingLayout = computed(() => documentLayoutForBlockHost(layout.value, props.host))
+const sourceEditingLayout = computed(() => documentLayoutForBlockHost(sourceLayout.value, props.host))
+const selectedImage = computed(() => documentImageEntries(editingModel.value).find(entry => entry.imageId === props.selectedImageId))
+const selectedImageRectangle = computed(() => editingLayout.value.images.find(image => image.objectImage && image.blockId === props.selectedImageId))
+const imageGesture = shallowRef<DocumentImageGesture>(), imageGesturePreview = shallowRef<DocumentImageGestureResult>()
+const imageContextPoint = shallowRef<{ x: number; y: number }>()
+function imageTarget(imageId = props.selectedImageId): DocumentImageCanvasTarget | undefined {
+  return imageId ? captureDocumentImageCanvasTarget(props.model, imageId, props.selection, props.host, props.captureInputSession?.(props.model)) : undefined
+}
+function imageEditable(imageId = props.selectedImageId): boolean {
+  if (!imageId || !active || disposed || composing.value || storyComposing.value || legacyStoryActive.value || props.host?.kind === 'story' && props.storyReadonly) return false
+  const context = props.permissionContext ?? { documentId: props.model.id ?? '', userId: 'local-user' }
+  if (!resolveDocumentPermission(props.model.permissionRules ?? [], context, 'edit', permissionTargetsForImage(editingModel.value, imageId)).allowed) return false
+  try { assertDocumentImageEditable(editingModel.value, imageId); return true } catch { return false }
+}
+const imageReadOnly = computed(() => !imageEditable())
+function imageTargetCurrent(target: DocumentImageCanvasTarget): boolean {
+  return documentImageCanvasTargetCurrent(target, { source: props.model, model: editingModel.value, selection: props.selection, host: props.host,
+    session: props.captureInputSession?.(), requireSession: !!props.captureInputSession, disabled: !imageEditable(target.imageId) })
+}
+function imageOperation(mode: 'edit' | 'crop' | 'replace') {
+  const target = imageTarget()
+  if (target && imageTargetCurrent(target)) { imageContextPoint.value = undefined; emit('image-operation', { target, mode }) }
+}
+function imageCommand(command: DocumentImageObjectCommand) {
+  const target = imageTarget(command.imageId)
+  if (target && imageTargetCurrent(target)) { imageContextPoint.value = undefined; emit('image-command', { target, command }) }
+}
+function selectCanvasImage(imageId: string, page: number, after?: (target: DocumentImageCanvasTarget) => void) {
+  const source = props.model, host = props.host && { ...props.host }, entry = documentImageEntries(editingModel.value).find(entry => entry.imageId === imageId)
+  if (!entry) return
+  const before = props.captureInputSession?.(source), snapshot = props.captureInputSession ? undefined : JSON.stringify(source)
+  const selection: DocumentSelection = entry.inline ? {
+    anchor: { ...entry.inline.target, offset: entry.inline.startOffset, pageAffinity: page },
+    focus: { ...entry.inline.target, offset: entry.inline.endOffset, pageAffinity: page },
+  } : cloneDocumentSelection(props.selection)
+  if (entry.inline) select(selection)
+  focus()
+  void nextTick(() => {
+    const current = props.captureInputSession?.(source)
+    if (!active || disposed || composing.value || storyComposing.value || source !== props.model || !sameDocumentBlockHost(host, props.host)
+      || JSON.stringify(selection) !== JSON.stringify(props.selection)
+      || before && current?.modelRevision !== before.modelRevision || snapshot !== undefined && snapshot !== JSON.stringify(source)) return
+    const target = imageTarget(imageId)
+    if (!target) return
+    emit('image-selection', target); after?.(target); requestDraw()
+  })
+}
+function cancelImageGesture() {
+  if (imageGesture.value?.pointerId === pointerId) cancelSelectionDrag()
+  imageGesture.value = undefined; imageGesturePreview.value = undefined; requestDraw()
+}
+function moveImageGesture(pointer: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'altKey'>) {
+  const gesture = imageGesture.value, coordinates = coordinatesFromEvent(pointer)
+  if (!gesture || !coordinates || pointer.pointerId !== gesture.pointerId) return
+  if (!imageTargetCurrent(gesture.target) || gesture.zoom !== props.zoom) { cancelImageGesture(); return }
+  if (Math.hypot(coordinates.x - gesture.start.x, coordinates.y - gesture.start.y) * gesture.zoom / 100 < 2) return
+  imageGesturePreview.value = documentImageGestureResult(gesture, coordinates.x, coordinates.y, pointer.altKey); requestDraw()
+}
+watch(() => [props.model, props.host, props.zoom], () => { cancelImageGesture(); imageContextPoint.value = undefined })
+watch(() => props.selectedImageId, value => { if (imageGesture.value && imageGesture.value.target.imageId !== value) cancelImageGesture(); requestDraw() })
 const legacyStoryActive = computed(() => !!props.story && !props.host)
 function dispatchCommand(command: DocumentCommand) {
+  if (props.selectedImageId && documentContentControlCommandIsTextInput(command)) {
+    cancelImageGesture(); imageContextPoint.value = undefined; emit('image-selection', undefined)
+  }
   const input = documentContentControlCommandIsTextInput(command) && !documentContentControlCommandUsesWholeCellInput(command, props.selection)
     ? { ...command, activeContentControlId: command.activeContentControlId ?? explicitInputControlId() } : command
   emit('command', props.host ? { ...input, host: { ...props.host } } : input)
+}
+function structuredTargetCurrent(target: DocumentStructuredCanvasTarget): boolean {
+  return documentStructuredCanvasTargetCurrent(target, { source: props.model, selection: props.selection, host: props.host,
+    session: props.captureInputSession?.(), requireSession: !!props.captureInputSession,
+    disabled: !active || disposed || composing.value || storyComposing.value || legacyStoryActive.value || props.host?.kind === 'story' && props.storyReadonly })
+}
+function dispatchStructuredCommand(request: DocumentStructuredCanvasCommandRequest) { if (structuredTargetCurrent(request)) emit('structured-command', request) }
+function dispatchStructuredOperation(request: DocumentStructuredCanvasOperationRequest) { if (structuredTargetCurrent(request)) emit('structured-operation', request) }
+function focusStructured(target: DocumentStructuredCanvasTarget) { if (structuredTargetCurrent(target)) focus() }
+function requestLatexEdit(hit: DocumentLatexHit) {
+  const source = props.model, host = props.host && { ...props.host }, before = props.captureInputSession?.(source)
+  const snapshot = props.captureInputSession ? undefined : JSON.stringify(source)
+  select(hit.selection); focus()
+  // Selection publication advances the input session. Capture the new session
+  // after Vue has delivered it, while retaining the pre-selection content revision.
+  void nextTick(() => {
+    if (source !== props.model || !sameDocumentBlockHost(host, props.host)) return
+    const session = props.captureInputSession?.(source)
+    if (before && session?.modelRevision !== before.modelRevision || snapshot !== undefined && snapshot !== JSON.stringify(source)) return
+    const request: DocumentLatexCanvasEditRequest = {
+      ...captureDocumentStructuredCanvasTarget(source, hit.selection, host, session), rangeId: hit.item.rangeId,
+    }
+    if (documentLatexCanvasRequestCurrent(request, { source: props.model, selection: props.selection, host: props.host, session,
+      requireSession: !!props.captureInputSession, disabled: !active || disposed || composing.value || storyComposing.value || legacyStoryActive.value
+        || props.host?.kind === 'story' && props.storyReadonly })) emit('latex-edit', request)
+  })
+}
+function scrollCode(request: { source: DocumentModel; key: string; value: number }) {
+  if (!active || disposed || composing.value || storyComposing.value || request.source !== props.model || !Number.isFinite(request.value)) return
+  const region = documentCodeScrollRegions(sourceLayout.value).find(region => region.key === request.key)
+  if (!region) return
+  codeScrollOffsets.value = { ...codeScrollOffsets.value, [request.key]: Math.max(0, Math.min(region.maxScroll, request.value)) }
 }
 const displaySelection = computed(() => compositionSelection.value ?? props.selection)
 const contentControlGeometries = computed(() => documentContentControlGeometry(displayEditingModel.value, editingLayout.value))
@@ -315,8 +431,10 @@ watch(() => props.captureInputSession?.(), () => {
 }, { flush: 'sync' })
 watch([composing, storyComposing], ([body, story]) => { if (body || story) clearNoteHover() })
 watch(() => props.searchMatches, requestDraw, { deep: true })
+watch(codeScrollOffsets, requestDraw)
+watch(() => props.model.id, () => { codeScrollOffsets.value = {} })
 watch(() => token.value.colorPrimary, requestDraw)
-watch(() => [token.value.colorBorder, token.value.colorText], requestDraw)
+watch(() => [token.value.colorBorder, token.value.colorText, token.value.colorError], requestDraw)
 watch(() => props.activeContentControlId, () => {
   if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(false)
   requestDraw()
@@ -341,10 +459,12 @@ watch(() => props.zoom, (zoom) => {
 onActivated(() => { active = true; contentControlActive.value = true; void nextTick(resize) })
 onDeactivated(() => {
   active = false
+  cancelImageGesture(); imageContextPoint.value = undefined
   clearNoteHover()
   pendingContentControlFocus = undefined
   contentControlActive.value = false
   contentControlOverlay.value?.cancelInteraction()
+  structuredOverlay.value?.cancelInteraction()
   cancelBodyComposition()
   cancelStoryInput()
   focused.value = false
@@ -384,6 +504,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true
+  cancelImageGesture()
+  structuredOverlay.value?.cancelInteraction()
   clearNoteHover()
   pendingContentControlFocus = undefined
   cancelDragAutoscroll()
@@ -396,7 +518,7 @@ onUnmounted(() => {
   if (blink) clearInterval(blink)
   cancelAnimationFrame(frame)
   surface?.dispose()
-  images.forEach((image) => { image.onload = null; image.onerror = null })
+  images.forEach((image) => { image.onload = null; image.onerror = null; image.src = '' })
 })
 
 function resize() {
@@ -431,8 +553,9 @@ function onViewportResize() {
 
 function relayout() {
   if (disposed) return
-  layout.value = inspectionActive.value ? layoutDocumentBlockHostInspection(displayModel.value, props.inspectionHost!, measurer)
+  sourceLayout.value = inspectionActive.value ? layoutDocumentBlockHostInspection(displayModel.value, props.inspectionHost!, measurer)
     : layoutDocument(displayModel.value, measurer)
+  codeScrollOffsets.value = clampDocumentCodeScrollOffsets(sourceLayout.value, codeScrollOffsets.value)
   const layoutImages = [...layout.value.images, ...(layout.value.auxiliaryContent ?? []).flatMap(content => content.images),
     ...(layout.value.noteDecorations ?? []).flatMap(content => content.images)]
   const sources = new Set(layoutImages.map((image) => image.src))
@@ -440,6 +563,7 @@ function relayout() {
     if (sources.has(src)) continue
     image.onload = null
     image.onerror = null
+    image.src = ''
     images.delete(src)
   }
   for (const image of layoutImages) {
@@ -451,7 +575,7 @@ function relayout() {
     images.set(image.src, source)
     source.src = image.src
   }
-  emit('layout', layout.value, displayModel.value)
+  emit('layout', sourceLayout.value, displayModel.value)
   publishViewport('layout')
   void nextTick(() => { if (!disposed) syncViewport('layout') })
   requestDraw()
@@ -461,7 +585,10 @@ function requestDraw() {
   if (frame || disposed || !active) return
   frame = requestAnimationFrame(() => {
     frame = 0
-    const scene = sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value || storyComposing.value, images, searchMatches: props.searchMatches, tocPrimaryColor: token.value.colorPrimary, tableGesture: tablePreview.value,
+    const scene = sceneFromDocument(displayModel.value, layout.value, viewport.value, { selection: displaySelection.value, focused: focused.value, caretVisible: caretVisible.value, composing: composing.value || storyComposing.value, images,
+      imageSelection: imageGesturePreview.value?.rectangle ?? selectedImageRectangle.value, imageHandleColor: token.value.colorBgElevated,
+      ...(imageGesture.value && imageGesturePreview.value ? { imagePreview: { imageId: imageGesture.value.target.imageId, rectangle: imageGesturePreview.value.rectangle, wrappingStyle: imageGesturePreview.value.patch.wrappingStyle } } : {}),
+      searchMatches: props.searchMatches, tocPrimaryColor: token.value.colorPrimary, formulaErrorColor: token.value.colorError, tableGesture: tablePreview.value,
       host: props.host, selectionModel: displayEditingModel.value, selectionLayout: editingLayout.value,
       ...(legacyStoryActive.value && props.story ? { story: { location: props.story, selection: props.storySelection ?? storyRange() } } : {}) })
     if (!legacyStoryActive.value) appendDocumentContentControlScene(scene, contentControlGeometries.value, layout.value, viewport.value,
@@ -600,6 +727,24 @@ function pointerDown(event: PointerEvent) {
   }
   if (props.story && !props.host) emit('close-story')
   if (!inspectionActive.value && props.host?.kind === 'story' && !story) { emit('close-story'); return }
+  const corner = coordinates && selectedImageRectangle.value && documentImageResizeCorner(selectedImageRectangle.value, coordinates.x, coordinates.y, props.zoom)
+  const imageHit = corner ? selectedImageRectangle.value : coordinates && documentImageAtPoint(editingModel.value, editingLayout.value, coordinates.x, coordinates.y, event.altKey)
+  if (imageHit && coordinates) {
+    const image = documentImageEntries(editingModel.value).find(entry => entry.imageId === imageHit.blockId)?.image
+    if (!image) return
+    event.preventDefault(); cancelSelectionDrag(); imageContextPoint.value = undefined
+    if (imageEditable(imageHit.blockId)) {
+      pointerId = event.pointerId; dragSelectionSource = props.model; scrollRef.value?.setPointerCapture(event.pointerId)
+    }
+    selectCanvasImage(imageHit.blockId, imageHit.page, target => {
+      if (pointerId !== event.pointerId || dragSelectionSource !== props.model || !imageEditable(imageHit.blockId)) return
+      const page = layout.value.pages[imageHit.page]
+      imageGesture.value = { target, image: { ...image }, rectangle: { ...imageHit }, corner: corner || undefined,
+        start: coordinates, pageOrigin: { x: page?.x ?? 0, y: page?.y ?? 0 }, pointerId: event.pointerId, zoom: props.zoom }
+    })
+    requestDraw(); return
+  }
+  emit('image-selection', undefined); imageContextPoint.value = undefined
   const tableHit = coordinates && hitTestDocumentTable(editingLayout.value, coordinates.x, coordinates.y)
   hoverTable.value = tableHit
   const point = pointFromEvent(event)
@@ -624,12 +769,16 @@ function pointerDown(event: PointerEvent) {
     const href = marksAtPoint(editingModel.value, point).href
     if (href) { window.open(href, '_blank', 'noopener,noreferrer'); return }
   }
+  const latexHit = coordinates && hitTestDocumentLatex(editingModel.value, editingLayout.value, coordinates.x, coordinates.y)
+  latexDragSelection = latexHit && !event.shiftKey ? latexHit.selection : undefined
   dragAnchor = event.shiftKey ? { ...props.selection.anchor } : point
+  if (latexDragSelection) dragAnchor = latexDragSelection.anchor
   tableDragAnchor = tableHit
   pointerId = event.pointerId
   dragSelectionSource = props.model
   scrollRef.value?.setPointerCapture(event.pointerId)
-  select({ anchor: dragAnchor, focus: point })
+  select(latexDragSelection ?? { anchor: dragAnchor,
+    focus: latexHit ? documentLatexDragAnchor(editingModel.value, latexHit.selection, dragAnchor) : point })
   focus()
 }
 
@@ -677,6 +826,17 @@ function contextMenu(event: MouseEvent) {
     requestDraw()
     return
   }
+  const imageHit = coordinates && documentImageAtPoint(editingModel.value, editingLayout.value, coordinates.x, coordinates.y, event.altKey)
+  if (imageHit && !composing.value && !storyComposing.value) {
+    const root = scrollRef.value?.getBoundingClientRect()
+    if (!root) return
+    event.preventDefault()
+    selectCanvasImage(imageHit.blockId, imageHit.page, () => {
+      imageContextPoint.value = { x: Math.max(8, Math.min(event.clientX - root.left, viewport.value.width - 210)),
+        y: Math.max(8, Math.min(event.clientY - root.top, viewport.value.height - 240)) }
+    })
+    requestDraw(); return
+  }
   const tableHit = coordinates && hitTestDocumentTable(editingLayout.value, coordinates.x, coordinates.y)
   const point = pointFromEvent(event)
   if (tableHit && (!point || lineForPoint(editingLayout.value, point)?.tableCellId !== tableHit.cell.cellId)) {
@@ -691,7 +851,8 @@ function contextMenu(event: MouseEvent) {
   }
   if (!point) return
   event.preventDefault()
-  const selection = documentSelectionForContextMenu(editingModel.value, props.selection, point)
+  const latexHit = coordinates && hitTestDocumentLatex(editingModel.value, editingLayout.value, coordinates.x, coordinates.y)
+  const selection = latexHit?.selection ?? documentSelectionForContextMenu(editingModel.value, props.selection, point)
   if (selection !== props.selection) select(selection)
   if (source !== props.model) return
   emit('context-menu', { x: event.clientX, y: event.clientY, point, source, host: props.host })
@@ -700,6 +861,7 @@ function contextMenu(event: MouseEvent) {
 }
 
 function pointerMove(event: PointerEvent) {
+  if (imageGesture.value?.pointerId === event.pointerId) { event.preventDefault(); moveImageGesture(event); startDragAutoscroll(event, 'image'); return }
   const coordinates = coordinatesFromEvent(event)
   updateNoteHover(coordinates)
   const tableHit = coordinates && !legacyStoryActive.value ? hitTestDocumentTable(editingLayout.value, coordinates.x, coordinates.y) : undefined
@@ -731,12 +893,17 @@ function updateDragSelection(event: Pick<PointerEvent, 'clientX' | 'clientY' | '
   }
   if (!dragAnchor) return
   const point = pointFromEvent(event)
-  if (point) select({ anchor: dragAnchor, focus: point })
+  if (point) {
+    const latexHit = coordinates && hitTestDocumentLatex(editingModel.value, editingLayout.value, coordinates.x, coordinates.y)
+    const focus = latexHit ? documentLatexDragAnchor(editingModel.value, latexHit.selection, dragAnchor) : point
+    const anchor = latexDragSelection ? documentLatexDragAnchor(editingModel.value, latexDragSelection, focus) : dragAnchor
+    select({ anchor, focus })
+  }
 }
 
 function cancelSelectionDrag() {
   if (pointerId !== undefined && scrollRef.value?.hasPointerCapture(pointerId)) scrollRef.value.releasePointerCapture(pointerId)
-  pointerId = undefined; dragAnchor = undefined; tableDragAnchor = undefined; storyDragAnchor = undefined; dragSelectionSource = undefined
+  pointerId = undefined; dragAnchor = undefined; latexDragSelection = undefined; tableDragAnchor = undefined; storyDragAnchor = undefined; dragSelectionSource = undefined
   if (dragScrollSource === 'selection') cancelDragAutoscroll()
 }
 
@@ -744,7 +911,7 @@ function cancelDragAutoscroll() {
   cancelAnimationFrame(dragScrollFrame); dragScrollFrame = 0; dragScrollPointer = undefined; dragScrollSource = undefined
 }
 
-function startDragAutoscroll(pointer: DocumentTableDragPointer, source: 'selection' | 'overlay') {
+function startDragAutoscroll(pointer: DocumentTableDragPointer, source: 'selection' | 'overlay' | 'image') {
   dragScrollPointer = { clientX: pointer.clientX, clientY: pointer.clientY, pointerId: pointer.pointerId, ctrlKey: pointer.ctrlKey, metaKey: pointer.metaKey }
   dragScrollSource = source
   if (!dragScrollFrame) dragScrollFrame = requestAnimationFrame(scrollDrag)
@@ -764,6 +931,7 @@ function scrollDrag() {
   if (left === element.scrollLeft && top === element.scrollTop) return
   syncViewport('scroll')
   if (source === 'selection') updateDragSelection(pointer)
+  else if (source === 'image') moveImageGesture({ ...pointer, altKey: false })
   else tableOverlay.value?.continueGesture(pointer)
   if (dragScrollPointer) dragScrollFrame = requestAnimationFrame(scrollDrag)
 }
@@ -774,6 +942,14 @@ function overlayDragPointer(pointer?: DocumentTableDragPointer) {
 }
 
 function pointerUp(event: PointerEvent) {
+  if (imageGesture.value?.pointerId === event.pointerId) {
+    const gesture = imageGesture.value
+    if (event.type === 'pointerup') moveImageGesture(event)
+    const preview = imageGesturePreview.value
+    if (event.type === 'pointerup' && preview && imageTargetCurrent(gesture.target)) emit('image-command', { target: gesture.target,
+      command: { id: 'doc.command.update-image', imageId: gesture.target.imageId, patch: preview.patch } })
+    cancelImageGesture(); cancelDragAutoscroll(); focus(); return
+  }
   if (pointerId !== event.pointerId) return
   if (event.type === 'pointerup' && dragSelectionSource === props.model && (dragAnchor || tableDragAnchor)) {
     updateDragSelection(event)
@@ -815,6 +991,14 @@ function doubleClick(event: MouseEvent) {
     focusStory(word?.start ?? offset, word?.end ?? offset, location)
     return
   }
+  const latexHit = coordinates && hitTestDocumentLatex(editingModel.value, editingLayout.value, coordinates.x, coordinates.y)
+  const imageHit = coordinates && documentImageAtPoint(editingModel.value, editingLayout.value, coordinates.x, coordinates.y, event.altKey)
+  if (imageHit) {
+    event.preventDefault()
+    selectCanvasImage(imageHit.blockId, imageHit.page, target => emit('image-operation', { target, mode: 'edit' }))
+    return
+  }
+  if (latexHit) { event.preventDefault(); requestLatexEdit(latexHit); return }
   const point = pointFromEvent(event)
   if (!point) return
   const text = runText(runsForTarget(editingModel.value, point))
@@ -825,10 +1009,15 @@ function doubleClick(event: MouseEvent) {
 
 function ensureCaretVisible() {
   const element = scrollRef.value
+  if (!element || !focused.value || pointerId !== undefined || dragScrollSource || props.selectedImageId) return
+  if (!displaySelection.value.tableSelection) {
+    const code = documentCodeCaretScrollOffset(sourceEditingLayout.value, displaySelection.value.focus, codeScrollOffsets.value)
+    if (code && Math.abs(code.offset - (codeScrollOffsets.value[code.key] ?? 0)) > 1e-6) codeScrollOffsets.value = { ...codeScrollOffsets.value, [code.key]: code.offset }
+  }
   const cell = documentTableSelectionFocusCell(editingLayout.value, displaySelection.value, tableKeyboardCursor?.focus)
   const rectangle = cell && documentTableVisibleRect(cell)
   const caret = rectangle ? { ...rectangle, width: Math.min(30, rectangle.width), height: Math.min(30, rectangle.height) } : caretRect(editingLayout.value, displaySelection.value.focus)
-  if (!element || !caret || !focused.value || pointerId !== undefined || dragScrollSource) return
+  if (!caret) return
   const offset = documentRectScrollOffset(layout.value, viewport.value, caret)
   if (element.scrollLeft !== offset.left) element.scrollLeft = offset.left
   if (element.scrollTop !== offset.top) element.scrollTop = offset.top
@@ -846,7 +1035,11 @@ function beforeInput(event: InputEvent) {
   if (suppressCompositionInput && ['insertText', 'insertFromComposition'].includes(event.inputType)) { event.preventDefault(); suppressCompositionInput = false; return }
   if (event.inputType === 'insertText' && event.data != null) { event.preventDefault(); dispatchCommand({ id: 'doc.command.insert-text', text: event.data }) }
   else if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') { event.preventDefault(); dispatchCommand({ id: 'doc.command.insert-text', text: event.inputType === 'insertLineBreak' ? '\u2028' : '\n' }) }
-  else if (event.inputType.startsWith('delete')) { event.preventDefault(); dispatchCommand({ id: 'doc.command.delete', direction: event.inputType.includes('Forward') ? 1 : -1 }) }
+  else if (event.inputType.startsWith('delete')) {
+    event.preventDefault()
+    if (props.selectedImageId && selectedImage.value) imageCommand({ id: 'doc.command.remove-image', imageId: props.selectedImageId })
+    else dispatchCommand({ id: 'doc.command.delete', direction: event.inputType.includes('Forward') ? 1 : -1 })
+  }
   else if (event.inputType === 'historyUndo') { event.preventDefault(); emit('undo') }
   else if (event.inputType === 'historyRedo') { event.preventDefault(); emit('redo') }
 }
@@ -887,6 +1080,7 @@ function compositionStart(event: CompositionEvent) {
     bodyBridgeVersion.value++
     return
   }
+  if (props.selectedImageId) { cancelImageGesture(); imageContextPoint.value = undefined; emit('image-selection', undefined) }
   composing.value = true
   suppressCompositionInput = false
   pendingText = ''
@@ -1010,8 +1204,7 @@ function move(direction: 'left' | 'right' | 'up' | 'down' | 'home' | 'end', exte
       const target = direction === 'home' ? targets[0] : targets.at(-1)
       if (target) point = { ...target, offset: direction === 'home' ? 0 : runText(runsForTarget(model, target)).length }
     } else {
-      const line = lineForPoint(editingLayout.value, point)
-      if (line) point.offset = direction === 'home' ? line.start : line.end
+      point = documentPhysicalLineNavigation(editingLayout.value, point, direction) ?? point
     }
   } else if (direction === 'left' || direction === 'right') {
     const text = runText(runsForTarget(model, point))
@@ -1025,13 +1218,7 @@ function move(direction: 'left' | 'right' | 'up' | 'down' | 'home' | 'end', exte
       if (target) point = { ...target, offset: direction === 'left' ? runText(runsForTarget(model, target)).length : 0 }
     }
   } else {
-    const line = lineForPoint(editingLayout.value, point)
-    const caret = caretRect(editingLayout.value, point)
-    if (line && caret) {
-      const index = editingLayout.value.lines.indexOf(line)
-      const nextLine = editingLayout.value.lines[index + (direction === 'up' ? -1 : 1)]
-      if (nextLine) point = hitTestDocumentLine(nextLine, caret.x)
-    }
+    point = documentPhysicalLineNavigation(editingLayout.value, point, direction) ?? point
   }
   select({ anchor: extend ? props.selection.anchor : point, focus: point })
 }
@@ -1041,6 +1228,23 @@ function keydown(event: KeyboardEvent) {
   if (event.isComposing || composing.value || event.keyCode === 229) return
   const command = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
+  if (props.selectedImageId && selectedImage.value) {
+    if (event.key === 'Escape') { event.preventDefault(); cancelImageGesture(); emit('image-selection', undefined); imageContextPoint.value = undefined; return }
+    if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); imageCommand({ id: 'doc.command.remove-image', imageId: props.selectedImageId }); return }
+    if (event.key === 'Enter') { event.preventDefault(); imageOperation('edit'); return }
+    const delta = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, [number, number]>)[event.key]
+    if ((selectedImage.value.image.wrappingStyle ?? 'inline') === 'inline' && (delta || event.key === 'Home' || event.key === 'End')) {
+      event.preventDefault(); cancelImageGesture(); emit('image-selection', undefined); imageContextPoint.value = undefined
+      const direction = ({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Home: 'home', End: 'end' } as const)[event.key as 'ArrowLeft']
+      move(direction, event.shiftKey, command); return
+    }
+    if (delta && !command && selectedImageRectangle.value && imageEditable()) {
+      event.preventDefault(); const target = imageTarget()!, rectangle = selectedImageRectangle.value, page = layout.value.pages[rectangle.page], step = event.shiftKey ? 10 : 1
+      const result = documentImageGestureResult({ target, image: selectedImage.value.image, rectangle, start: { x: 0, y: 0 },
+        pageOrigin: { x: page?.x ?? 0, y: page?.y ?? 0 }, pointerId: -1, zoom: props.zoom }, delta[0] * step, delta[1] * step)
+      imageCommand({ id: 'doc.command.update-image', imageId: target.imageId, patch: result.patch }); return
+    }
+  }
   if (event.key === 'Escape') { tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tablePreview.value = undefined }
   if (key === 'f9' && !command && !event.altKey && !event.shiftKey) {
     if (document.activeElement !== inputElement()) return
@@ -1096,20 +1300,28 @@ function keydown(event: KeyboardEvent) {
 }
 
 function copy(event: ClipboardEvent): boolean {
-  if (!bodyEventIsCurrent(event) || selectionCollapsed(props.selection)) return false
+  if (!bodyEventIsCurrent(event) || !selectedImage.value && selectionCollapsed(props.selection)) return false
   event.preventDefault()
-  const permission = resolveDocumentPermission(props.model.permissionRules ?? [], props.permissionContext ?? { documentId: props.model.id ?? '', userId: 'local-user' }, 'copy', permissionTargetsForSelection(editingModel.value, props.selection))
-  if (!permission.allowed || !event.clipboardData) { if (!permission.allowed) emit('notify', '此选区不允许复制'); return false }
+  const targets = selectedImage.value ? permissionTargetsForImage(editingModel.value, selectedImage.value.imageId)
+    : permissionTargetsForSelection(editingModel.value, props.selection)
+  const context = props.permissionContext ?? { documentId: props.model.id ?? '', userId: 'local-user' }
+  const rules = props.model.permissionRules ?? [], permission = resolveDocumentPermission(rules, context, 'copy', targets)
+  const visible = resolveDocumentPermission(rules, context, 'view', targets)
+  if (!permission.allowed || !visible.allowed || !event.clipboardData) { if (!permission.allowed || !visible.allowed) emit('notify', '此选区不允许复制'); return false }
   try {
-    const data: DocumentClipboardData = props.selection.tableSelection ? documentTableClipboardData(editingModel.value, props.selection.tableSelection)
-      : { text: selectedPlainText(editingModel.value, props.selection) }
+    const data: DocumentClipboardData = selectedImage.value ? documentImageClipboardData(editingModel.value, selectedImage.value.imageId)
+      : documentSelectionClipboardData(editingModel.value, props.selection)
     event.clipboardData.setData('text/plain', data.text)
     if (data.html) event.clipboardData.setData('text/html', data.html)
   } catch (error) { emit('notify', error instanceof Error ? error.message : String(error)); return false }
   return true
 }
 
-function cut(event: ClipboardEvent) { if (copy(event)) dispatchCommand({ id: 'doc.command.insert-text', text: '' }) }
+function cut(event: ClipboardEvent) {
+  if (!copy(event)) return
+  if (selectedImage.value) imageCommand({ id: 'doc.command.remove-image', imageId: selectedImage.value.imageId })
+  else dispatchCommand({ id: 'doc.command.insert-text', text: '' })
+}
 function paste(event: ClipboardEvent) {
   if (!bodyEventIsCurrent(event)) return
   event.preventDefault()
@@ -1155,7 +1367,7 @@ function revealStory(target: StoryLocation) {
 }
 /** SDT navigation closes value UI without canceling the document's text/IME session. */
 function cancelContentControlPopup() { pendingContentControlFocus = undefined; contentControlOverlay.value?.cancelInteraction() }
-function cancelInput(refocus = true) { clearNoteHover(); cancelContentControlPopup(); tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
+function cancelInput(refocus = true) { clearNoteHover(); cancelImageGesture(); imageContextPoint.value = undefined; structuredOverlay.value?.cancelInteraction(); cancelContentControlPopup(); tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
 defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelContentControlPopup, executeContentControlCommand, scrollToPage, scrollToBlock, captureScrollOffset, restoreScrollOffset, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
 </script>
 
@@ -1165,8 +1377,17 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelCo
     <div ref="scrollRef" class="document-scroll" role="textbox" aria-label="文档画布编辑区" aria-multiline="true" tabindex="-1" @scroll="onScroll" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerleave="() => { hoverTable = undefined; deferNoteHoverHide() }" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="doubleClick" @contextmenu="contextMenu">
       <div class="document-scroll-spacer" :style="spacerStyle" />
     </div>
+    <DocumentImageOverlay :image="selectedImage?.image" :rectangle="selectedImageRectangle" :layout="layout" :viewport="viewport" :disabled="imageReadOnly"
+      :inactive="legacyStoryActive || !contentControlActive" :context-point="imageContextPoint" @close-context="imageContextPoint = undefined" @edit="imageOperation"
+      @remove="selectedImageId && imageCommand({ id: 'doc.command.remove-image', imageId: selectedImageId })"
+      @reset="selectedImageId && imageCommand({ id: 'doc.command.reset-image-size', imageId: selectedImageId })"
+      @arrange="arrange => selectedImageId && imageCommand({ id: 'doc.command.arrange-image', imageId: selectedImageId, arrange })" />
     <DocumentTableOverlay ref="tableOverlay" :model="displayEditingModel" :layout="editingLayout" :selection="displaySelection" :viewport="viewport" :permission="permissionContext" :hover="hoverTable"
       :floating-toolbar="tableFloatingToolbar" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)" :story-active="legacyStoryActive" @selection="select" @command="command => dispatchCommand(command)" @operation="(id, params) => emit('operation', id, params)" @preview="value => tablePreview = value" @drag-pointer="overlayDragPointer" @focus="focus" @notify="value => emit('notify', value)" />
+    <DocumentStructuredOverlay ref="structuredOverlay" :source="model" :model="displayEditingModel" :layout="editingLayout" :source-layout="sourceEditingLayout" :selection="displaySelection" :viewport="viewport"
+      :host="host" :permission="permissionContext" :capture-input-session="captureInputSession" :code-scroll-offsets="codeScrollOffsets"
+      :inactive="legacyStoryActive || !contentControlActive" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)"
+      @command="dispatchStructuredCommand" @operation="dispatchStructuredOperation" @code-scroll="scrollCode" @focus="focusStructured" />
     <DocumentContentControlOverlay ref="contentControlOverlay" :source="model" :model="displayEditingModel" :layout="layout" :geometries="contentControlGeometries"
       :selection="displaySelection" :viewport="viewport" :active-control-id="activeContentControl?.id" :popup-mode="activeContentControlPopupMode" :host="host" :permission="permissionContext"
       :capture-input-session="captureInputSession" :inactive="legacyStoryActive || !contentControlActive" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)"

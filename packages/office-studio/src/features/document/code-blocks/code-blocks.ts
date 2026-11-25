@@ -16,9 +16,10 @@ import { assertDocumentPermission, permissionTargetsForChangedBlocks, type Docum
 import { validateDocumentCodeConfig, visitDocumentBlocks } from '../model/document-structural-blocks'
 import { updateDocumentStructuredCodeBlock } from '../services/document-code-editing'
 import { documentCodeSourceEdit as codeSourceEdit, documentCodeIndentEdits, normalizeDocumentCodeSource as normalizeCodeSource } from '../model/document-code-source'
+import { documentCodeFontFamily, documentCodeUsesFontFamily, setDocumentCodeFontFamily, validateDocumentCodeFontFamily } from './document-code-fonts'
 
-export type DocumentCodeLanguage = 'plain' | 'javascript' | 'typescript' | 'json' | 'css' | 'html' | 'python' | 'sql' | 'rust'
-export type CodeTokenKind = 'keyword' | 'string' | 'number' | 'comment' | 'operator' | 'punctuation' | 'plain'
+export { tokenizeCode } from './document-code-tokenizer'
+export type { DocumentCodeLanguage, CodeTokenKind, CodeToken } from './document-code-tokenizer'
 
 export interface DocumentCodeBlockData {
   language: string
@@ -26,22 +27,10 @@ export interface DocumentCodeBlockData {
   lineNumbers: boolean
   tabSize?: number
   wrap?: boolean
+  fontFamily?: string
 }
 
-export interface CodeToken {
-  kind: CodeTokenKind
-  text: string
-  start: number
-  end: number
-}
-
-const languages = new Set<DocumentCodeLanguage>(['plain', 'javascript', 'typescript', 'json', 'css', 'html', 'python', 'sql', 'rust'])
-const jsKeywords = new Set('async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch this throw try typeof var void while with yield interface type enum namespace implements public private protected readonly'.split(' '))
-const pythonKeywords = new Set('and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield True False None'.split(' '))
-const sqlKeywords = new Set('add all alter as asc begin by case cast constraint create cross database date desc delete distinct drop else end exists foreign from full group having in index inner insert into is join key left like not null on or order outer primary references right select set table then union unique update values when where'.split(' '))
-const rustKeywords = new Set('as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self static struct super trait true type unsafe use where while'.split(' '))
-
-export function createCodeBlock(source = '', language: DocumentCodeLanguage = 'plain', lineNumbers = false): DocumentBlock {
+export function createCodeBlock(source = '', language = 'plain', lineNumbers = false): DocumentBlock {
   const normalizedLanguage = normalizeCodeLanguage(language)
   const normalizedSource = normalizeCodeSource(source)
   const block = createParagraph(normalizedSource, { fontFamily: 'Consolas', fontSize: 10 })
@@ -53,13 +42,14 @@ export function createCodeBlock(source = '', language: DocumentCodeLanguage = 'p
 export function codeBlockData(block: DocumentBlock): DocumentCodeBlockData | undefined {
   if (block.type === 'code' && block.code && block.children) return {
     source: documentTextFieldParagraphs({ blocks: block.children }).map(paragraph => paragraph.text).join('\n'), language: block.code.language,
-    lineNumbers: block.code.showLineNumbers, tabSize: block.code.tabSize, wrap: block.code.wrap }
+    lineNumbers: block.code.showLineNumbers, tabSize: block.code.tabSize, wrap: block.code.wrap, fontFamily: documentCodeFontFamily(block) }
   const value = block.metadata.codeBlock
   if (!isRecord(value) || typeof value.source !== 'string') return undefined
   return {
     source: normalizeCodeSource(value.source),
     language: normalizeCodeLanguage(value.language),
     lineNumbers: value.lineNumbers === true,
+    fontFamily: documentCodeFontFamily(block),
     ...(typeof value.tabSize === 'number' ? { tabSize: value.tabSize } : {}), ...(typeof value.wrap === 'boolean' ? { wrap: value.wrap } : {}),
   }
 }
@@ -132,6 +122,7 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
     if (!target) throw new RangeError('代码块缺少真实输入段落。')
     const result = updateDocumentStructuredCodeBlock(model, sourceSelection ?? collapsedSelection({ ...target, offset: 0 }), {
       blockId, ...(patch.source === undefined ? {} : { source: patch.source }),
+      ...(patch.fontFamily === undefined ? {} : { fontFamily: patch.fontFamily }),
       patch: { ...(patch.language === undefined ? {} : { language: patch.language }), ...(patch.lineNumbers === undefined ? {} : { showLineNumbers: patch.lineNumbers }),
         ...(patch.tabSize === undefined ? {} : { tabSize: patch.tabSize }), ...(patch.wrap === undefined ? {} : { wrap: patch.wrap }) },
     }, permissionContext ?? { documentId: model.id, userId: 'local-user' })
@@ -143,9 +134,12 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
     language: patch.language === undefined ? current.language : normalizeCodeLanguage(patch.language),
     lineNumbers: patch.lineNumbers === undefined ? current.lineNumbers : patch.lineNumbers === true,
     ...(patch.tabSize === undefined ? {} : { tabSize: patch.tabSize }), ...(patch.wrap === undefined ? {} : { wrap: patch.wrap }),
+    ...(patch.fontFamily === undefined ? {} : { fontFamily: patch.fontFamily }),
   }
+  if (patch.fontFamily !== undefined) validateDocumentCodeFontFamily(patch.fontFamily)
+  const fontChanged = patch.fontFamily !== undefined && !documentCodeUsesFontFamily(block, patch.fontFamily)
   validateDocumentCodeConfig({ language: next.language, showLineNumbers: next.lineNumbers, tabSize: next.tabSize ?? 4, wrap: next.wrap ?? true })
-  if (host || permissionContext || current.source !== next.source && model.contentControls?.length) {
+  if (host || permissionContext || patch.fontFamily !== undefined || current.source !== next.source && model.contentControls?.length) {
     const candidate = cloneModel(model), scoped = host ? documentModelForBlockHost(candidate, host, true) : candidate
     const change = codeSourceEdit(current.source, next.source)
     const target = textTargets(source).find(target => (target.cellBlockId ?? target.blockId) === block.id)
@@ -155,7 +149,7 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
     const selection = { anchor: { ...target, offset: change.startOffset }, focus: { ...target, offset: change.endOffset } }
     const textChanged = current.source !== next.source
     const activeControlId = textChanged ? resolveDocumentContentControlTextInputId(source, selection) : undefined
-    const changed = applyCodeBlockUpdate(scoped, findDocumentBlock(scoped, block.id)!, current, next, change, {}, { activeControlId })
+    const changed = applyCodeBlockUpdate(scoped, findDocumentBlock(scoped, block.id)!, current, next, change, {}, { activeControlId }, fontChanged)
     if (!changed) return { changed: false, ...(sourceSelection ? { selection: cloneModel(sourceSelection) } : {}) }
     if (host) applyDocumentBlockHostModel(candidate, host, scoped)
     const selectionHost = host ?? documentEditingBlockHost(model)
@@ -180,9 +174,9 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
 
 interface CodeSourceEdit { startOffset: number; endOffset: number; text: string }
 
-function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}, controlEdit: ContentControlRangeEditOptions = {}): boolean {
+function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}, controlEdit: ContentControlRangeEditOptions = {}, applyFont = false): boolean {
   if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers
-    && current.tabSize === next.tabSize && current.wrap === next.wrap) return false
+    && current.tabSize === next.tabSize && current.wrap === next.wrap && current.fontFamily === next.fontFamily && !applyFont) return false
   if (current.source !== next.source) {
     const change = edit ?? codeSourceEdit(current.source, next.source)
     if (runText(block.runs) !== current.source) throw new Error('代码源文本与格式范围不一致。')
@@ -194,7 +188,8 @@ function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, curren
     block.runs = nextRuns
     transformDocumentCommentAnchorsForTextEdit(model, block.id, change.startOffset, change.endOffset, change.text)
   }
-  block.metadata = { ...block.metadata, codeBlock: next }
+  if (applyFont && next.fontFamily !== undefined) setDocumentCodeFontFamily(model, block, next.fontFamily)
+  block.metadata = { ...block.metadata, codeBlock: { ...block.metadata.codeBlock as Record<string, unknown>, ...next } }
   return true
 }
 
@@ -227,7 +222,7 @@ export function editCodeBlockText(model: DocumentModel, selection: DocumentSelec
   return collapsedSelection({ ...start, offset: caret })
 }
 
-export function insertCodeBlock(model: DocumentModel, afterBlockId: string | undefined, source = '', language: DocumentCodeLanguage = 'plain'): DocumentBlock {
+export function insertCodeBlock(model: DocumentModel, afterBlockId: string | undefined, source = '', language = 'plain'): DocumentBlock {
   const block = createCodeBlock(source, language)
   const container = afterBlockId ? findDocumentBlockContainer(model, afterBlockId) : model.blocks
   if (!container) throw new RangeError('代码块插入目标已不存在')
@@ -272,52 +267,18 @@ export function codeBlockPlainText(block: DocumentBlock): string {
   return codeBlockData(block)?.source ?? runText(block.runs)
 }
 
-/** Token ranges are UTF-16 offsets into the authoritative source string. */
-export function tokenizeCode(source: string, languageValue: string): CodeToken[] {
-  const alias = languageValue.trim().toLowerCase()
-  const language = normalizeCodeLanguage(alias === 'plaintext' ? 'plain' : alias === 'markup' ? 'html' : languageValue)
-  const text = normalizeCodeSource(source)
-  if (language === 'plain') return text ? [{ kind: 'plain', text, start: 0, end: text.length }] : []
-  const tokens: CodeToken[] = []
-  const pattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|\b\d+(?:\.\d+)?\b|[A-Za-z_$][\w$]*|=>|==?=?|!=?=?|<=?|>=?|\+\+|--|&&|\|\||[{}()[\].,;:]|[-+*/%=&|!<>?])/g
-  let cursor = 0
-  for (const match of text.matchAll(pattern)) {
-    const start = match.index ?? 0
-    if (start > cursor) tokens.push({ kind: 'plain', text: text.slice(cursor, start), start: cursor, end: start })
-    const value = match[0]
-    const kind = tokenKind(value, language)
-    tokens.push({ kind, text: value, start, end: start + value.length })
-    cursor = start + value.length
-  }
-  if (cursor < text.length) tokens.push({ kind: 'plain', text: text.slice(cursor), start: cursor, end: text.length })
-  return tokens
-}
-
 export function cloneCodeBlockData(value: DocumentCodeBlockData): DocumentCodeBlockData {
   return { ...value }
 }
 
-export function normalizeCodeLanguage(value: unknown): DocumentCodeLanguage {
-  if (typeof value !== 'string') return 'plain'
-  const normalized = value.trim().toLowerCase() as DocumentCodeLanguage
-  return languages.has(normalized) ? normalized : 'plain'
+export function normalizeCodeLanguage(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value : 'plain'
 }
 
 function graphemeBoundaries(source: string): number[] {
   const offsets = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(source), (part) => part.index)
   offsets.push(source.length)
   return offsets
-}
-
-function tokenKind(value: string, language: DocumentCodeLanguage): CodeTokenKind {
-  if (/^(?:"|'|`)/.test(value) || (language === 'json' && value.startsWith('"'))) return 'string'
-  if (/^(?:\/\/|#|\/\*|<!--)/.test(value)) return 'comment'
-  if (/^\d/.test(value)) return 'number'
-  const keywords = language === 'python' ? pythonKeywords : language === 'sql' ? sqlKeywords : language === 'rust' ? rustKeywords : jsKeywords
-  if (keywords.has(value)) return 'keyword'
-  if (/^[{}()[\].,;:]$/.test(value)) return 'punctuation'
-  if (/^(?:=>|==?=?|!=?=?|<=?|>=?|\+\+|--|&&|\|\||[-+*/%=&|!<>?])$/.test(value)) return 'operator'
-  return 'plain'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

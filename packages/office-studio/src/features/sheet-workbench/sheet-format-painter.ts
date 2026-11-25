@@ -1,7 +1,7 @@
 import { createCell, defaultCellStyle, type CellRange, type CellStyle, type SpreadsheetSheet } from '../../domain/model.ts'
 import { parseSheetCellText } from '../../domain/sheet-cell-value.ts'
 import { cloneModel } from '../../domain/serialization.ts'
-import { cellKey, parseCellKey, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { cellKey, parseCellKey, sheetViewCellAt, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { applySheetMergeCommand, applySheetViewMergeCommand, createSheetMergePlan, previewSheetMergeCommand,
   type SheetMergePlan } from './sheet-merge-command.ts'
@@ -9,13 +9,17 @@ import { assertSheetCommandRanges, assertSheetRangesEditable, sheetRangeContains
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from './sheet-number-format.ts'
 import { assertConditionalFormatPainterSource, captureConditionalFormatPainterSource, createConditionalFormatPainterPlan,
   type SheetConditionalFormatPainterSource } from './sheet-format-painter-conditional.ts'
+import { resolveSheetCellStyle, type SheetStyleContext } from './sheet-style-inheritance.ts'
+import { assertSheetStyleRegion, captureSheetStyleRegion, explicitSheetCellStyle, sheetStyleRegionCellStyle,
+  type SheetStyleRegionSnapshot } from './sheet-style-region.ts'
 
 /** The existing synchronous editor budget includes expanded brush and merge targets. */
 export const MAXIMUM_FORMAT_PAINTER_CELLS = 100_000
-/** Only formatting is sampled; sparse relative coordinates represent default-style cells implicitly. */
+/** Stored cells stay sparse; resolved axis/default sources describe all blank-cell formatting. */
 export interface SheetFormatPainterSource {
   readonly range: CellRange
   readonly styles: Readonly<Record<string, CellStyle>>
+  readonly inheritedStyles?: SheetStyleRegionSnapshot
   readonly merges: readonly CellRange[]
   readonly conditional?: SheetConditionalFormatPainterSource
 }
@@ -40,7 +44,7 @@ export interface SheetFormatPainterResult {
   added: CellRange[]
   removed: CellRange[]
 }
-export interface SheetFormatPainterOptions { mergeConfirmed?: boolean; userId?: string; date1904?: boolean; region?: string }
+export interface SheetFormatPainterOptions { mergeConfirmed?: boolean; userId?: string; date1904?: boolean; region?: string; styleContext?: SheetStyleContext }
 
 function normalizedStyle(style?: CellStyle): CellStyle {
   const defaults = defaultCellStyle()
@@ -97,21 +101,26 @@ function expandedSourceRange(range: CellRange, merges: readonly CellRange[]): Ce
   }
   return result
 }
-function collectSource(range: CellRange, merges: readonly CellRange[], cells: Iterable<{ row: number; col: number; style: CellStyle }>, conditional?: SheetConditionalFormatPainterSource): SheetFormatPainterSource {
+function collectSource(range: CellRange, merges: readonly CellRange[], cells: Iterable<{ row: number; col: number; style: CellStyle }>,
+  conditional?: SheetConditionalFormatPainterSource, inheritedStyles?: SheetStyleRegionSnapshot): SheetFormatPainterSource {
   const expanded = expandedSourceRange(range, merges), styles: Record<string, CellStyle> = {}
   for (const cell of cells) {
     if (!sheetRangeContainsCell(expanded, cell.row, cell.col)) continue
     const style = normalizedStyle(cell.style)
-    if (stableStyle(style) !== DEFAULT_STYLE_KEY) styles[`${cell.row - expanded.startRow}:${cell.col - expanded.startCol}`] = cloneModel(style)
+    const row = cell.row - expanded.startRow, col = cell.col - expanded.startCol
+    const inherited = inheritedStyles ? stableStyle(sheetStyleRegionCellStyle(inheritedStyles, row, col)) : DEFAULT_STYLE_KEY
+    if (stableStyle(style) !== inherited) styles[`${row}:${col}`] = cloneModel(style)
   }
-  return freezeSource({ range: expanded, styles,
+  return freezeSource({ range: expanded, styles, ...(inheritedStyles ? { inheritedStyles } : {}),
     merges: merges.filter(merge => sheetRangesIntersect(expanded, merge)).map(merge => ({ ...merge })), ...(conditional ? { conditional } : {}) })
 }
-export function captureSheetFormatPainterSource(sheet: SpreadsheetSheet, range: CellRange, userId = 'local-user'): SheetFormatPainterSource {
+export function captureSheetFormatPainterSource(sheet: SpreadsheetSheet, range: CellRange, userId = 'local-user', context: SheetStyleContext = {}): SheetFormatPainterSource {
   const expanded = expandedSourceRange(range, sheet.mergedRanges)
   assertSheetRangesEditable(sheet, [expanded], userId)
-  return collectSource(expanded, sheet.mergedRanges, Object.values(sheet.cells).map(cell => ({ row: cell.row, col: cell.col, style: cell.style })),
-    captureConditionalFormatPainterSource(sheet.id, sheet.conditionalFormats, expanded))
+  return collectSource(expanded, sheet.mergedRanges, Object.values(sheet.cells).filter(cell => sheetRangeContainsCell(expanded, cell.row, cell.col))
+    .map(cell => ({ row: cell.row, col: cell.col, style: resolveSheetCellStyle(sheet, cell.row, cell.col, cell, context) })),
+    captureConditionalFormatPainterSource(sheet.id, sheet.conditionalFormats, expanded),
+    captureSheetStyleRegion(sheet, { start: expanded.startRow, end: expanded.endRow }, { start: expanded.startCol, end: expanded.endCol }, context))
 }
 function viewMerges(sheet: ExcelSheetView): CellRange[] {
   return (sheet.merges ?? []).map(value => {
@@ -123,11 +132,14 @@ function viewMerges(sheet: ExcelSheetView): CellRange[] {
 export function captureSheetViewFormatPainterSource(sheet: ExcelSheetView, range: CellRange, userId = 'local-user'): SheetFormatPainterSource {
   const merges = viewMerges(sheet), expanded = expandedSourceRange(range, merges)
   assertSheetRangesEditable(sheet, [expanded], userId)
-  const cells = Object.entries(sheet.cells).flatMap(([key, cell]) => {
+  const cells = Object.keys(sheet.cells).flatMap(key => {
     const position = parseCellKey(key)
-    return position ? [{ ...position, style: viewStyle(cell) }] : []
+    return position && sheetRangeContainsCell(expanded, position.row, position.col)
+      ? [{ ...position, style: viewStyle(sheetViewCellAt(sheet, position.row, position.col)) }] : []
   })
-  return collectSource(expanded, merges, cells, captureConditionalFormatPainterSource(sheet.id, sheet.conditionalFormats, expanded))
+  return collectSource(expanded, merges, cells, captureConditionalFormatPainterSource(sheet.id, sheet.conditionalFormats, expanded),
+    captureSheetStyleRegion(sheet, { start: expanded.startRow, end: expanded.endRow }, { start: expanded.startCol, end: expanded.endCol },
+      { defaultStyle: sheet.workbookDefaultStyle, styles: sheet.styles }))
 }
 function assertJsonStyle(value: unknown, ancestors = new Set<object>()): void {
   if (value === undefined || value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return
@@ -143,6 +155,7 @@ function validateSource(source: SheetFormatPainterSource): void {
   assertSheetCommandRanges([source.range, ...source.merges])
   if (source.conditional) { assertConditionalFormatPainterSource(source.conditional); assertJsonStyle(source.conditional) }
   const height = source.range.endRow - source.range.startRow + 1, width = source.range.endCol - source.range.startCol + 1
+  if (source.inheritedStyles !== undefined) { assertSheetStyleRegion(source.inheritedStyles, height, width); assertJsonStyle(source.inheritedStyles) }
   for (const [key, style] of Object.entries(source.styles)) {
     const coordinate = /^(0|[1-9]\d*):(0|[1-9]\d*)$/.exec(key)
     if (!coordinate || !Number.isSafeInteger(Number(coordinate[1])) || !Number.isSafeInteger(Number(coordinate[2]))
@@ -221,7 +234,9 @@ export function createSheetFormatPainterPlan(merges: readonly CellRange[], sourc
 }
 function sourceStyle(source: SheetFormatPainterSource, target: CellRange, row: number, col: number): CellStyle {
   const height = source.range.endRow - source.range.startRow + 1, width = source.range.endCol - source.range.startCol + 1
-  return source.styles[`${(row - target.startRow) % height}:${(col - target.startCol) % width}`] ?? DEFAULT_STYLE
+  const sourceRow = (row - target.startRow) % height, sourceCol = (col - target.startCol) % width
+  return source.styles[`${sourceRow}:${sourceCol}`]
+    ?? (source.inheritedStyles ? sheetStyleRegionCellStyle(source.inheritedStyles, sourceRow, sourceCol) : DEFAULT_STYLE)
 }
 function styleAssignments(source: SheetFormatPainterSource, ranges: readonly CellRange[]): Map<number, { row: number; col: number; style: CellStyle }> {
   const assignments = new Map<number, { row: number; col: number; style: CellStyle }>()
@@ -247,9 +262,12 @@ export function applySheetFormatPainterCommand(sheet: SpreadsheetSheet, source: 
   let changed = merge.changed || conditional.changed
   for (const { row, col, style } of assignments.values()) {
     const key = `${row}:${col}`, current = sheet.cells[key]
-    if (stableStyle(current?.style ?? DEFAULT_STYLE) === stableStyle(style)) continue
+    if (stableStyle(resolveSheetCellStyle(sheet, row, col, current, options.styleContext)) === stableStyle(style)) continue
     const cell = current ?? createCell(row, col)
-    cell.style = cloneModel(style)
+    cell.style = explicitSheetCellStyle(style)
+    cell.authoredStyle = cloneModel(cell.style)
+    delete cell.themeStyle
+    delete cell.authoredStyleReference; delete cell.clearedStyleProperties
     // Reformat destination raw/cache values; source values and formula caches are never sampled.
     if (cell.formula === null || cell.value !== null) cell.display = formatSheetValue(cell.value, style.numberFormat, options.date1904, options.region) ?? cell.display
     sheet.cells[key] = cell
@@ -263,6 +281,7 @@ export function applySheetFormatPainterCommand(sheet: SpreadsheetSheet, source: 
 function withViewStyle(current: ExcelCellView | undefined, style: CellStyle, options: SheetFormatPainterOptions): ExcelCellView {
   const cell = current ?? { value: '', rawValue: null }, classification = classifySheetNumberFormat(style.numberFormat)
   const next: ExcelCellView = { ...cell, fontFamily: style.font.family, fontSize: style.font.size,
+    authoredStyle: explicitSheetCellStyle(style), themeStyle: null, authoredStyleReference: null, clearedStyleProperties: null,
     bold: style.font.bold, italic: style.font.italic, underline: style.font.underline, strike: style.font.strike,
     color: style.font.color, background: style.fill, align: style.horizontal, vertical: style.vertical,
     wrap: style.wrap, wrapStrategy: style.wrapStrategy ?? (style.wrap ? 'wrap' : 'overflow'),
@@ -292,7 +311,7 @@ export function applySheetViewFormatPainterCommand(sheet: ExcelSheetView, source
   if (merge.requiresConfirmation || !plan.ranges.length) return result
   let changed = merge.changed || conditional.changed
   for (const { row, col, style } of styleAssignments(source, plan.ranges).values()) {
-    const key = cellKey(row, col), current = candidate.cells[key]
+    const key = cellKey(row, col), current = sheetViewCellAt(candidate, row, col)
     if (stableStyle(viewStyle(current)) === stableStyle(style)) continue
     candidate.cells[key] = withViewStyle(current, style, { ...options, date1904: options.date1904 ?? sheet.date1904 })
     candidate.rowCount = Math.max(candidate.rowCount, row + 1)

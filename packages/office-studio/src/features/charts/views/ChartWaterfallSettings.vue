@@ -11,16 +11,37 @@ import { CHART_WATERFALL_POINT_CHOICE_LIMIT, chartWaterfallConnectorControls, ch
   chartWaterfallPointRoleControls, chartWaterfallStyleControls, chartWaterfallStylePointIsActive, chartWaterfallStylePoints } from '../chart-waterfall-settings-controls'
 import ChartOptionFields from './ChartOptionFields.vue'
 
-const props = defineProps<{ config: ChartConfig; fields: ChartSettingsField[]; categories: string[]; data?: ChartData; disabled?: boolean }>()
+const props = defineProps<{ config: ChartConfig; fields: ChartSettingsField[]; categories: string[]; data?: ChartData; routeSeriesTarget?: string; routeRole?: ChartWaterfallStyleTarget; routeKey?: number; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
-const selectedTarget = ref('all'), selectedRole = ref<ChartWaterfallStyleTarget>('positive'), selectedPoint = ref<number>()
+const selectedTarget = ref('all'), selectedRole = ref<ChartWaterfallStyleTarget>(props.routeRole ?? 'positive'), selectedPoint = ref<number>()
 const selectedSourceField = ref<number>(), selectedSourcePoint = ref<number>()
+const routeError = ref<string>()
+const routePending = ref(!!props.routeSeriesTarget)
+let requestedTarget: string | undefined = props.routeSeriesTarget
 const stacked = computed(() => props.config.options?.waterfall?.stackType === 'stacked')
 const globalSubtotal = computed(() => stacked.value && selectedRole.value === 'subtotal')
 const seriesTargets = computed(() => chartSeriesSettingTargets(props.config, props.fields, props.data))
 const targets = computed(() => [{ value: 'all', label: globalSubtotal.value ? '全局合计共享样式' : '所有来源共享样式', disabled: false },
   ...seriesTargets.value.map(target => ({ ...target, disabled: globalSubtotal.value || target.disabled }))])
-watch(targets, items => { if (!items.some(item => item.value === selectedTarget.value)) selectedTarget.value = 'all' }, { immediate: true })
+function chooseRequestedTarget(items: { value: string; disabled?: boolean; ambiguous?: boolean }[]): void {
+  if (requestedTarget !== undefined) {
+    const match = items.find(item => item.value === requestedTarget)
+    if (!match || match.disabled || match.ambiguous) {
+      routePending.value = true
+      routeError.value = props.data ? '指定瀑布图系列不存在或不可单独编辑，请重新定位。' : undefined
+      selectedTarget.value = requestedTarget
+      return
+    }
+    selectedTarget.value = match.value; requestedTarget = undefined; routePending.value = false; routeError.value = undefined
+  } else { routePending.value = false; if (!items.some(item => item.value === selectedTarget.value)) selectedTarget.value = 'all' }
+}
+watch(targets, chooseRequestedTarget, { immediate: true })
+watch([() => props.routeSeriesTarget, () => props.routeRole, () => props.routeKey], ([value, role]) => {
+  if (role) selectedRole.value = role
+  requestedTarget = value
+  if (!value && role) selectedTarget.value = 'all'
+  chooseRequestedTarget(targets.value)
+})
 watch(globalSubtotal, global => { if (global) selectedTarget.value = 'all' }, { immediate: true })
 const target = computed(() => seriesTargets.value.find(item => item.value === selectedTarget.value))
 const selector = computed(() => target.value?.selector)
@@ -31,7 +52,7 @@ const source = computed(() => {
   const series = position < 0 ? undefined : props.data?.series[position]
   return series ? { field: series.field, position, name: series.name, sourceName: series.sourceName ?? series.name } : undefined
 })
-const disabled = computed(() => props.disabled || target.value?.disabled || target.value?.ambiguous)
+const disabled = computed(() => props.disabled || routePending.value || !!routeError.value || target.value?.disabled || target.value?.ambiguous)
 const controls = computed(() => chartWaterfallStyleControls(selectedRole.value, selector.value, source.value))
 const points = computed(() => chartWaterfallStylePoints(props.config, selectedRole.value, selector.value, props.data))
 const rowCount = computed(() => props.data?.categories.length ?? 0)
@@ -51,6 +72,7 @@ watch(selectedSourceField, () => { selectedSourcePoint.value = undefined })
 watch(rowCount, count => { if (selectedSourcePoint.value !== undefined && selectedSourcePoint.value >= count) selectedSourcePoint.value = undefined })
 const roles = [{ value: 'positive', label: '增加 / 正值' }, { value: 'negative', label: '减少 / 负值' }, { value: 'subtotal', label: '小计 / 合计' }]
 function change(config: ChartConfig): void { emit('update:config', config) }
+function selectSeries(): void { requestedTarget = undefined; routePending.value = false; routeError.value = undefined }
 function role(value: unknown): void { if (value === 'positive' || value === 'negative' || value === 'subtotal') selectedRole.value = value }
 function setPointIndex(value: unknown, sourcePoint: boolean): void {
   const maximum = rowCount.value + Number(!sourcePoint && selectedRole.value === 'subtotal' && props.config.options?.waterfall?.useSubtotal !== false)
@@ -63,7 +85,7 @@ function resetRole(): void {
   const next = cloneChartDraftConfig(props.config), current = selector.value
   if (current === undefined) {
     const styles = next.options?.waterfall?.styles
-    if (styles) delete styles[selectedRole.value]
+    if (styles) styles[selectedRole.value] = undefined
   } else next.options = { ...next.options, ...patchChartWaterfallStyle(next.options, current, selectedRole.value, undefined) }
   change(next)
 }
@@ -72,15 +94,15 @@ function resetPoint(): void {
   const next = cloneChartDraftConfig(props.config)
   const group = selector.value === undefined ? next.options?.waterfall?.styles?.[selectedRole.value]
     : chartSeriesOverride(next.options, selector.value)?.waterfallStyles?.[selectedRole.value]
-  if (group?.dataPoints) delete group.dataPoints[selectedPoint.value]
+  if (group?.dataPoints) group.dataPoints[selectedPoint.value] = undefined
   change(next)
 }
 </script>
 
 <template>
-  <div class="chart-waterfall-settings">
+  <div class="chart-waterfall-settings" :data-chart-waterfall-role="selectedRole">
     <ChartOptionFields :config="config" :controls="[...chartWaterfallLayoutControls(), ...chartWaterfallConnectorControls()]" :disabled="props.disabled" @update:config="change" />
-    <FormItem label="角色样式作用系列"><Select v-model:value="selectedTarget" :options="targets" show-search option-filter-prop="label" aria-label="瀑布图角色样式作用系列" :disabled="props.disabled" /></FormItem>
+    <div data-chart-route-series :data-chart-selected-series="selectedTarget"><FormItem label="角色样式作用系列" :validate-status="routeError ? 'error' : undefined" :help="routeError"><Select v-model:value="selectedTarget" :options="targets" show-search option-filter-prop="label" aria-label="瀑布图角色样式作用系列" :disabled="props.disabled" @update:value="selectSeries" /></FormItem></div>
     <FormItem label="瀑布图角色"><Select :value="selectedRole" :options="roles" aria-label="瀑布图角色" :disabled="props.disabled" @update:value="role" /></FormItem>
     <ChartOptionFields :config="config" :controls="controls" :disabled="disabled" @update:config="change" />
     <Button :disabled="disabled" @click="resetRole">恢复该角色继承样式</Button>

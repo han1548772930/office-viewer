@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+body { margin: 0; } #stage { position: relative; width: 1280px; height: 640px; margin: 12px; }
+.fixture-scroll { position: absolute; inset: 0; overflow: auto; z-index: 0; }
+.fixture-extent { width: 2200px; height: 1100px; }
+.fixture-scene { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+</style></head><body><div id="stage"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { getInstanceByDom } from 'echarts/core'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { EChartsCanvasRenderer } from '/packages/office-studio/src/features/charts/echarts-renderer.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { treemapFixture } from '/packages/office-studio/tests/fixtures/chart-treemap-fixtures.mjs'
+import { sunburstFixture } from '/packages/office-studio/tests/fixtures/chart-sunburst-fixtures.mjs'
+import ChartOverlay from '/packages/office-studio/src/components/ChartOverlay.vue'
+import '/packages/office-studio/src/style.css'
+
+// Real native Canvas surfaces and the production Overlay/Ant host. Current
+// prepared data isolates view operations from Worker/WASM preparation. This
+// fixture is not the complete Workbench or a WebGPU/Office-file acceptance run.
+const surfaces = new Map(), originalRender = EChartsCanvasRenderer.prototype.render
+EChartsCanvasRenderer.prototype.render = function (id, ...args) {
+  const frame = originalRender.call(this, id, ...args)
+  surfaces.set(id, { renderer: this, frame, instance: getInstanceByDom(frame.source) })
+  return frame
+}
+const zoom = ref(100), dark = ref(false), prepared = shallowRef({})
+let app, studio, view, canvas, commands = [], updates = [], removals = [], books, initial
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))) }
+function paint() {
+  if (!canvas) return
+  const host = document.querySelector('#stage'), ratio = Math.max(0.1, window.devicePixelRatio || 1), scale = zoom.value / 100
+  canvas.width = Math.round(host.clientWidth * ratio); canvas.height = Math.round(host.clientHeight * ratio)
+  const context = canvas.getContext('2d'), scroll = document.querySelector('.fixture-scroll')
+  context.fillStyle = dark.value ? '#141414' : '#ffffff'; context.fillRect(0, 0, canvas.width, canvas.height)
+  context.setTransform(ratio * scale, 0, 0, ratio * scale, -(scroll?.scrollLeft ?? 0) * ratio, -(scroll?.scrollTop ?? 0) * ratio)
+  for (const command of commands) if (command.kind === 'image' && command.source instanceof HTMLCanvasElement) {
+    context.drawImage(command.source, command.x, command.y, command.width, command.height)
+  }
+}
+async function mount({ readonly = false, scale = 100 } = {}) {
+  app?.unmount(); studio?.dispose(); surfaces.clear(); canvas = undefined; commands = []; updates = []; removals = []
+  const tree = treemapFixture(), sun = sunburstFixture(), workbook = tree.workbook, sheet = tree.sheet
+  workbook.id = 'hierarchy-tooltip-draft'
+  tree.chart.position = { x: 64, y: 48 }
+  sun.chart.sheetId = sheet.id; sun.chart.position = { x: 656, y: 48 }
+  workbook.charts = [tree.chart, sun.chart]
+  if (readonly) sheet.worksheetProtection = { id: 'read-only', permissionId: 'permission', unitType: 'worksheet',
+    ownerUserId: 'other-user', allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView' }
+  zoom.value = scale; dark.value = false; books = { tree, sun }
+  prepared.value = { [tree.chart.id]: { preparedData: tree.data }, [sun.chart.id]: { preparedData: sun.data } }
+  studio = new OfficeStudio({ workbook }); view = toExcelWorkbookView(studio.getWorkbookModel(workbook.id))
+  initial = { author: JSON.stringify(studio.getWorkbookModel(workbook.id).charts), revision: studio.getWorkbookRevision(workbook.id) }
+  app = createApp({ setup: () => () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, () =>
+    h('div', { style: 'position:absolute;inset:0' }, [
+      h('div', { class: 'canvas-scroll fixture-scroll', onScroll: paint }, [h('div', { class: 'fixture-extent' })]),
+      h('canvas', { class: 'fixture-scene', ref: value => { canvas = value } }),
+      h(ChartOverlay, { workbook: view, activeSheetId: view.activeSheetId, studio, zoom: zoom.value, computedStatistics: prepared.value,
+        onUpdateChart: event => updates.push(event), onRemoveChart: id => removals.push(id),
+        onOverlayCommands: value => { commands = value; paint() } }),
+    ])) })
+  app.mount('#stage'); await settled()
+  return { ...initial, ids: [tree.chart.id, sun.chart.id] }
+}
+function items(id) {
+  const surface = surfaces.get(id), data = surface.instance.getModel().getSeriesByIndex(0).getData(), result = []
+  data.tree.eachNode('preorder', node => {
+    const item = data.getRawDataItem(node.dataIndex), graphic = data.getItemGraphicEl(node.dataIndex)
+    if (!graphic || !item?.semanticNode && !item?.semanticPath) return
+    const texts = []
+    if (graphic.getTextContent?.()) texts.push(graphic.getTextContent())
+    graphic.traverse?.(child => { if (child !== graphic && child.getTextContent?.()) texts.push(child.getTextContent()) })
+    result.push({ item, graphic, texts })
+  })
+  return result
+}
+function center(element) {
+  const box = element.getBoundingRect().clone(), transform = element.getComputedTransform()
+  if (transform) box.applyTransform(transform)
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+}
+function localPoint(id, target = 'residual') {
+  const result = items(id), entry = result.find(({ item }) => target === 'residual' ? item.isTreemapResidual || item.isSunburstResidual
+    : target === 'parent' ? (item.semanticNode?.name ?? item.name) === 'South' && item.children?.length
+      : (item.semanticNode?.path ?? item.semanticPath)?.at(-1) === target)
+  if (!entry) throw new Error('Native hierarchy item was not found: ' + id + ' / ' + target)
+  if (id === 'treemap-draft') {
+    if (target === 'parent') {
+      const label = entry.texts.find(text => !text.ignore && text.style.text === 'South')
+      if (!label) throw new Error('Native parent banner text was not found')
+      return center(label)
+    }
+    return center(entry.graphic)
+  }
+  const shape = entry.graphic.shape, angle = (shape.startAngle + shape.endAngle) / 2, radius = (shape.r0 + shape.r) / 2
+  const point = { x: shape.cx + Math.cos(angle) * radius, y: shape.cy + Math.sin(angle) * radius }, transform = entry.graphic.getComputedTransform()
+  if (!transform) return point
+  return { x: transform[0] * point.x + transform[2] * point.y + transform[4], y: transform[1] * point.x + transform[3] * point.y + transform[5] }
+}
+function browserPoint(id, target) {
+  const local = localPoint(id, target), element = document.querySelector('.chart-hitbox[data-chart-id="' + id + '"]'), rect = element.getBoundingClientRect()
+  return { x: rect.left + local.x * zoom.value / 100, y: rect.top + local.y * zoom.value / 100 }
+}
+function state() {
+  return { author: JSON.stringify(studio.getWorkbookModel(view.id).charts), revision: studio.getWorkbookRevision(view.id), initial,
+    updates: updates.length, removals: removals.length, zoom: zoom.value, dark: dark.value,
+    charts: [...surfaces.entries()].map(([id, surface]) => {
+      const hit = document.querySelector('.chart-hitbox[data-chart-id="' + id + '"]'), chart = studio.getWorkbookModel(view.id).charts.find(chart => chart.id === id)
+      return { id, readonly: hit.classList.contains('chart-view-only'), version: Number(hit.dataset.sourceVersion), width: surface.frame.source.width,
+        expectedWidth: Math.round(chart.size.width * Math.max(0.1, window.devicePixelRatio || 1) * zoom.value / 100),
+        words: surface.instance.getZr().storage.getDisplayList().filter(element => !element.ignore).map(element => element.style?.text ?? '').filter(Boolean) }
+    }) }
+}
+async function changePreparedValues() {
+  // Stand-in for the next prepared result: double source facts while keeping
+  // layout proportions. This does not exercise the source-edit/Worker chain.
+  const next = structuredClone(prepared.value)
+  for (const value of Object.values(next)) {
+    const data = value.preparedData, pending = [...(data.hierarchy ?? [])]
+    while (pending.length) {
+      const node = pending.pop(); node.value *= 2; node.selfValue *= 2; node.formattedValue = undefined; node.formattedSelfValue = undefined
+      pending.push(...(node.children ?? []))
+    }
+    for (const series of data.series) series.values = series.values.map(value => value === null ? null : value * 2)
+  }
+  prepared.value = next; await settled()
+}
+async function release() {
+  const old = [...surfaces.values()]; app?.unmount(); app = undefined; studio?.dispose(); studio = undefined; canvas = undefined; await settled()
+  return old.map(surface => ({ disposed: surface.instance.isDisposed(), size: [surface.frame.source.width, surface.frame.source.height] }))
+}
+window.chartHierarchyTooltipFixture = { mount, items, localPoint, browserPoint, state, surfaces, changePreparedValues, release,
+  async setDark(value) { dark.value = value; await settled() }, async setZoom(value) { zoom.value = value; await settled() },
+  async scroll(left, top = 0) { const scroller = document.querySelector('.fixture-scroll'); scroller.scrollLeft = left; scroller.scrollTop = top; await settled() },
+  async dispose() { await release(); surfaces.clear(); EChartsCanvasRenderer.prototype.render = originalRender } }
+await mount()
+</script></body></html>

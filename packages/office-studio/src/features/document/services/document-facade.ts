@@ -3,6 +3,7 @@ import { transformContentControlsForBlockEdit, transformContentControlsForBodyRa
 import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 import { transformDocumentCommentAnchorsForBodyRangeEdit } from '../comments/document-comment-anchors'
 import { documentTableCellBlocks } from '../model/document-table-continuations'
+import { applyDocumentParagraphStylePatch } from './document-settings'
 import {
   applyRunPatch,
   compactRuns,
@@ -225,10 +226,9 @@ export function setDocumentParagraphStyle(
   patch: Partial<DocumentParagraphStyle>
 ): void {
   const effectivePatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as Partial<DocumentParagraphStyle>
-  validateParagraphStylePatch(effectivePatch)
   const reference = locateParagraphTarget(model, identity)
   if (!reference) throw new Error(`Document paragraph with id ${identity.paragraphId} not found`)
-  reference.block.style = { ...reference.block.style, ...effectivePatch }
+  applyDocumentParagraphStylePatch(reference.block, effectivePatch)
 }
 
 /** Insert plain text into a cloned model at a flattened-body offset. */
@@ -333,17 +333,6 @@ function validateTextStylePatch(patch: DocumentTextStylePatch): void {
   if (patch.verticalAlign !== undefined && !['baseline', 'subscript', 'superscript'].includes(patch.verticalAlign)) {
     throw new TypeError(`Unsupported vertical alignment: ${patch.verticalAlign}`)
   }
-}
-
-function validateParagraphStylePatch(patch: Partial<DocumentParagraphStyle>): void {
-  if (patch.align !== undefined && !['left', 'center', 'right', 'justify'].includes(patch.align)) {
-    throw new TypeError(`Unsupported paragraph alignment: ${patch.align}`)
-  }
-  for (const key of ['indent', 'lineHeight', 'spaceBefore', 'spaceAfter'] as const) {
-    const value = patch[key]
-    if (value !== undefined && !Number.isFinite(value)) throw new RangeError(`Paragraph ${key} must be finite`)
-  }
-  if (patch.lineHeight !== undefined && patch.lineHeight <= 0) throw new RangeError('Paragraph line height must be positive')
 }
 
 function locateParagraphTarget(model: DocumentModel, identity: DocumentParagraphIdentity): TargetReference | undefined {

@@ -17,6 +17,7 @@ import { chartHeatmapCellRect, chartHeatmapFieldNames, chartHeatmapLabelAnchor, 
 import { createChartCandlestickEChartsSeries } from './echarts-candlestick-option'
 import { chartTreemapTooltip, createChartTreemapEChartsSeries } from './echarts-treemap-option'
 import { chartSunburstCenterGraphic, chartSunburstTooltip, createChartSunburstEChartsSeries } from './echarts-sunburst-option'
+import { chartCanvasBoxplotRuntimeId, chartCanvasRuntimeSeriesId } from './chart-element-interaction'
 
 export interface ChartEChartsContext {
   palette: string[]
@@ -51,7 +52,7 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
   switch (chart.type) {
     case 'funnel': {
       const source = data.series[0]!, options = chart.options?.funnel
-      const series: FunnelSeriesOption = { type: 'funnel', name: source.name, left: grid.left, right: grid.right, top: grid.top, bottom: grid.bottom,
+      const series: FunnelSeriesOption = { type: 'funnel', id: chartCanvasRuntimeSeriesId(chart.id, 0), name: source.name, left: grid.left, right: grid.right, top: grid.top, bottom: grid.bottom,
         sort: options?.sort ?? 'descending', gap: options?.gap ?? 2, label: { show: true, ...chartEChartsFont(undefined, color, 10) },
         data: data.categories.map((name, index) => {
           const style = chartPointStyle(chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), index, chart.type), value = options?.useAbsoluteValue ? Math.abs(source.values[index] ?? 0) : source.values[index] ?? 0
@@ -94,11 +95,11 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
           lte: piece.upper, color: piece.color, label: piece.text })) } : {}) }, series: [series] }
     }
     case 'boxplot': {
-      const boxes = derived.boxes!, series: BoxplotSeriesOption = { type: 'boxplot', name: '样本分布', boxWidth: ['48%', '48%'], data: boxes.map((box, index) => {
+      const boxes = derived.boxes!, series: BoxplotSeriesOption = { type: 'boxplot', id: chartCanvasBoxplotRuntimeId(chart.id, 'summary'), name: '样本分布', boxWidth: ['48%', '48%'], data: boxes.map((box, index) => {
         const statistics = box.statistics, style = chartBoxplotStyle(chart, box, index, palette)
         return { name: box.name, value: statistics && chartBoxplotSummaryDrawable(statistics, chartBoxplotAxis(chart, style)) ? [statistics.min, statistics.q1, statistics.median, statistics.q3, statistics.max] : [], itemStyle: chartBoxplotEChartsStyle(style) }
       }) }
-      const outliers: ScatterSeriesOption = { type: 'scatter', name: '异常值', data: boxes.flatMap((box, index) => {
+      const outliers: ScatterSeriesOption = { type: 'scatter', id: chartCanvasBoxplotRuntimeId(chart.id, 'outliers'), name: '异常值', data: boxes.flatMap((box, index) => {
         if (chart.options?.boxplot?.showOutliers === false) return []
         const style = chartBoxplotStyle(chart, box, index, palette), axis = chartBoxplotAxis(chart, style)
         const items: NonNullable<ScatterSeriesOption['data']> = []

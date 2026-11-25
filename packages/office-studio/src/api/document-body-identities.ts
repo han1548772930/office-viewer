@@ -3,6 +3,7 @@ import { tableForBlock } from '../features/document/model/document-model'
 import { documentTextFields } from '../features/document/model/document-text-fields'
 import { documentBlockChildContainers } from '../features/document/model/document-structural-blocks'
 import { documentBodyIdentity } from './document-body-types'
+import { documentImageAtom } from '../features/document/images/document-image-atom'
 
 /** Namespaces match the current domain's copy maps and addressable identities. */
 export function documentBodyContentIdentities(blocks: readonly DocumentBlock[], controls: readonly DocumentContentControl[]): string[] {
@@ -11,7 +12,13 @@ export function documentBodyContentIdentities(blocks: readonly DocumentBlock[], 
   const visit = (blocks: readonly DocumentBlock[]) => {
     for (const block of blocks) {
       add('block', block.id)
-      for (const run of block.runs) add('run', run.id)
+      if (block.type === 'image') add('drawing', block.id)
+      for (const run of block.runs) {
+        add('run', run.id)
+        const image = documentImageAtom(run)
+        if (run.metadata?.imageAtom !== undefined && !image) throw new TypeError('文档内容区含无效的图片原子。')
+        if (image) add('drawing', image.imageId)
+      }
       for (const field of documentTextFields(block)) add('field', field.id)
       for (const row of tableForBlock(block)?.rows ?? []) {
         add('row', row.id)

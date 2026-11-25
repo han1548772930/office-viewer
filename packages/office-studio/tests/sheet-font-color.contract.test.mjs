@@ -113,7 +113,7 @@ test('public range aliases resolve to the same mark and color actions as toolbar
 
 test('font enum setters keep their contracts while invalid action parameters reject before changes', () => {
   assert.deepEqual(fontFormatActionForCommand('sheet.command.set-font-weight', { value: 'bold' }), { kind: 'mark', field: 'bold', value: true })
-  assert.deepEqual(fontFormatActionForCommand('sheet.command.set-font-weight', null), { kind: 'mark', field: 'bold', value: false })
+  assert.deepEqual(fontFormatActionForCommand('sheet.command.set-font-weight', null), { kind: 'mark', field: 'bold', value: null })
   assert.deepEqual(fontFormatActionForCommand('sheet.command.set-font-style', 'italic'), { kind: 'mark', field: 'italic', value: true })
   assert.deepEqual(fontFormatActionForCommand('sheet.command.set-color', 'red'), { kind: 'color', field: 'color', value: 'red' })
   assert.equal(fontFormatActionForCommand('sheet.command.set-color', ''), undefined)

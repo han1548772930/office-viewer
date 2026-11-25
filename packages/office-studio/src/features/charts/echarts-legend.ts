@@ -2,10 +2,12 @@ import type { EChartsOption } from 'echarts'
 import type { ChartLegendSelectMode } from '../../domain/model'
 import type { ChartLegendSelection } from './chart-legend'
 import type { ChartEChartsOption, ChartEChartsPointerRuntime } from './echarts-option'
+import type { ChartCanvasPlotAreaTarget } from './chart-plot-area-interaction'
 
 export interface ChartCanvasLegendFrameOption {
   option: ChartEChartsOption
   pointer?: ChartEChartsPointerRuntime
+  plotArea?: ChartCanvasPlotAreaTarget
 }
 
 /** A renderer-owned operation. Functions and selected/scroll state are stripped

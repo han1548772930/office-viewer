@@ -1,6 +1,8 @@
 import type { CellRange, CellScalar, SpreadsheetSheet } from '../../domain/model.ts'
 import { createCell } from '../../domain/model.ts'
 import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { setSheetViewCellStyleProperties, sheetViewCellAt } from '../../services/excelViewAdapter.ts'
+import { resolveSheetCellStyle, setSheetCellStyleProperties, type SheetStyleContext } from './sheet-style-inheritance.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { validateCustomNumberFormat } from './custom-number-format.ts'
 import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, sheetNumberFormatPattern, type SheetNumberFormat } from './sheet-number-format.ts'
@@ -110,15 +112,17 @@ function assertEditable(sheet: SpreadsheetSheet | ExcelSheetView, ranges: CellRa
   if (!canEditWorksheetProtection(sheet, userId) || !canEditProtectedRanges(sheet, ranges, userId)) throw new Error('当前选区受保护，不能修改数字格式。')
 }
 
-export function applySheetNumberFormatCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetNumberFormatAction, region = 'zh-CN', date1904 = false, userId = 'local-user'): boolean {
+export function applySheetNumberFormatCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetNumberFormatAction, region = 'zh-CN', date1904 = false, userId = 'local-user', styleContext: SheetStyleContext = {}): boolean {
   const scope = actionRanges(ranges, action)
   if (!scope.length) return false
   assertEditable(sheet, scope, userId)
-  const targets = [...positions(scope)].map(({ row, col }) => ({ row, col, value: sheet.cells[`${row}:${col}`]?.value ?? null, pattern: sheet.cells[`${row}:${col}`]?.style.numberFormat ?? 'General' }))
+  const targets = [...positions(scope)].map(({ row, col }) => ({ row, col, value: sheet.cells[`${row}:${col}`]?.value ?? null,
+    pattern: resolveSheetCellStyle(sheet, row, col, sheet.cells[`${row}:${col}`], styleContext).numberFormat }))
   const patches = createSheetNumberFormatPlan(targets, action, region)
   for (const { row, col, pattern } of patches) {
     const cell = sheet.cells[`${row}:${col}`] ?? createCell(row, col)
-    cell.style.numberFormat = pattern
+    cell.style = resolveSheetCellStyle(sheet, row, col, sheet.cells[`${row}:${col}`], styleContext)
+    setSheetCellStyleProperties(cell, { numberFormat: pattern })
     if (!cell.formula || cell.value !== null) cell.display = formatSheetValue(cell.value, pattern, date1904, region) ?? cell.display
     sheet.cells[`${row}:${col}`] = cell
   }
@@ -135,15 +139,15 @@ export function applySheetViewNumberFormatCommand(sheet: ExcelSheetView, ranges:
   if (!scope.length) return false
   assertEditable(sheet, scope, userId)
   const targets = [...positions(scope)].map(({ row, col }) => {
-    const cell = sheet.cells[address(row, col)]
+    const cell = sheetViewCellAt(sheet, row, col)
     return { row, col, value: sheetCellNumberValue(cell) ?? null, pattern: cell?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[cell?.numberFormat ?? 'general'] }
   })
   const patches = createSheetNumberFormatPlan(targets, action, region)
   for (const { row, col, pattern } of patches) {
     const key = address(row, col), cell = sheet.cells[key] ?? { value: '' }
-    const kind = classifySheetNumberFormat(pattern)
     const value = sheetCellNumberValue(cell)
-    sheet.cells[key] = { ...cell, rawNumberFormat: pattern, numberFormat: kind === 'custom' ? undefined : kind,
+    setSheetViewCellStyleProperties(sheet, row, col, { numberFormat: pattern })
+    sheet.cells[key] = { ...sheet.cells[key]!,
       displayValue: value === undefined ? cell.displayValue : formatSheetValue(value, pattern, sheet.date1904, region) ?? cell.displayValue }
   }
   return patches.length > 0

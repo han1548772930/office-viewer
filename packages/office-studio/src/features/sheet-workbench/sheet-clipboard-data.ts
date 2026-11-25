@@ -1,10 +1,14 @@
-import type { CellRange, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
+import { createCell, type CellRange, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../../domain/model.ts'
 import { sheetColumnWidth } from '../../domain/sheet-axis.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { assertSheetCommandRanges, assertSheetRangesEditable, sheetRangeContainsCell, sheetRangesIntersect } from './sheet-range-command.ts'
 import { assertSheetClipboardWorkbookResources, captureSheetClipboardWorkbookResources } from './sheet-clipboard-workbook-resources.ts'
 import type { SheetClipboardLocation, SheetClipboardSnapshot } from './sheet-clipboard-types.ts'
+import { resolveSheetCellStyle } from './sheet-style-inheritance.ts'
+import { assertSheetStyleRegion, captureSheetStyleRegion, sheetStyleRegionCellStyle } from './sheet-style-region.ts'
+import { assertSheetClipboardImages, captureSheetClipboardImages } from '../sheet-images/sheet-image-clipboard.ts'
+import { normalizeSheetCellImage } from '../sheet-images/sheet-image-model.ts'
 
 // These are synchronous safety budgets, not measured performance thresholds. Larger transfers need the Worker path.
 export const SHEET_CLIPBOARD_SYNC_CELL_BUDGET = 1_000_000
@@ -51,10 +55,13 @@ export function sheetClipboardSourceFingerprint(sheet: SpreadsheetSheet, range: 
     })
   const resourceCapture = workbook ? captureSheetClipboardWorkbookResources(workbook, { unitId: workbook.id!, sheetId: sheet.id, range },
     Array.from({ length: range.endRow - range.startRow + 1 }, (_, offset) => range.startRow + offset)) : undefined
-  const fingerprint = JSON.stringify({ cells, merges: sheet.mergedRanges.filter(merge => sheetRangesIntersect(merge, range)),
+  const fingerprint = JSON.stringify({ cells, styleRegion: captureSheetStyleRegion(sheet, { start: range.startRow, end: range.endRow },
+    { start: range.startCol, end: range.endCol }, workbook), merges: sheet.mergedRanges.filter(merge => sheetRangesIntersect(merge, range)),
     conditionalFormats: (sheet.conditionalFormats ?? []).filter(rule => rule.ranges.some(item => sheetRangesIntersect(item, range))),
     dataValidations: (sheet.dataValidations ?? []).filter(rule => rule.ranges.some(item => sheetRangesIntersect(item, range))),
-    ...(resourceCapture ? { workbookResources: resourceCapture.resources, sourceOrigin: resourceCapture.origin } : {}) })
+    rangeThemeRules: (sheet.rangeThemeRules ?? []).filter(rule => sheetRangesIntersect(rule.range, range)),
+    ...(resourceCapture ? { workbookResources: resourceCapture.resources, sourceOrigin: resourceCapture.origin,
+      images: captureSheetClipboardImages(workbook!, sheet, range, Array.from({ length: range.endRow - range.startRow + 1 }, (_, offset) => range.startRow + offset)) } : {}) })
   assertSheetClipboardBytes(fingerprint)
   return fingerprint
 }
@@ -91,23 +98,35 @@ export function captureSheetClipboard(workbook: WorkbookModel, location: SheetCl
     const row = rowOffsets.get(cell.row), col = cell.col - range.startCol
     if (row === undefined || col < 0 || col >= columns.length || options.formulaOnly && !cell.formula) continue
     const id = `${row}:${col}`
-    cells[id] = { ...cloneModel(cell), id, row, col }
+    cells[id] = { ...cloneModel(cell), style: resolveSheetCellStyle(sheet, cell.row, cell.col, cell, workbook), id, row, col }
   }
   const resources = options.formulaOnly ? undefined : captureSheetClipboardWorkbookResources(workbook, { ...location, range }, rows)
   const snapshot: SheetClipboardSnapshot = {
     version: 1, id: options.id ?? crypto.randomUUID(), copyType: options.copyType ?? 'copy', formulaOnly: options.formulaOnly ?? false,
     rows, columns, cells,
+    styleRegion: options.formulaOnly ? undefined : captureSheetStyleRegion(sheet, rows, columns, workbook),
     merges: options.formulaOnly ? [] : copiedMerges.map(merge => ({ startRow: rowOffsets.get(merge.startRow)!, endRow: rowOffsets.get(merge.endRow)!,
       startCol: merge.startCol - range.startCol, endCol: merge.endCol - range.startCol })),
     columnWidths: columns.map(column => sheetColumnWidth(sheet, column)),
     conditionalFormats: options.formulaOnly ? undefined : cloneModel((sheet.conditionalFormats ?? []).filter(rule => rule.ranges.some(item => sheetRangesIntersect(item, range)))),
     dataValidations: options.formulaOnly ? undefined : cloneModel((sheet.dataValidations ?? []).filter(rule => rule.ranges.some(item => sheetRangesIntersect(item, range)))),
     ...(resources ? { workbookResources: resources.resources, sourceOrigin: resources.origin, sourceBounds: resources.bounds } : {}),
+    ...(resources ? { images: captureSheetClipboardImages(workbook, sheet, range, rows) } : {}),
     source: { ...location, range, sheetName: sheet.name, revision: options.revision, historyGeneration: options.historyGeneration,
       fingerprint: sheetClipboardSourceFingerprint(sheet, range, workbook) },
   }
   assertSheetClipboardSnapshot(snapshot)
   return snapshot
+}
+
+/** Formatting-only blank cells are projected without changing the sparse snapshot. */
+export function sheetClipboardCellAt(snapshot: SheetClipboardSnapshot, row: number, col: number): SpreadsheetCell | undefined {
+  const stored = snapshot.cells[`${row}:${col}`]
+  if (stored || !snapshot.styleRegion) return stored
+  const cell = createCell(row, col, null)
+  cell.style = sheetStyleRegionCellStyle(snapshot.styleRegion, row, col)
+  cell.authoredStyle = cloneModel(cell.style)
+  return cell
 }
 
 /** API data is checked before its sparse coordinates, styles or formulas can reach a model mutation. */
@@ -119,6 +138,10 @@ export function assertSheetClipboardSnapshot(value: SheetClipboardSnapshot): voi
     throw new TypeError('剪贴板快照无效。')
   }
   assertSheetClipboardArea(value.rows.length, value.columns.length)
+  if (value.styleRegion !== undefined) {
+    if (value.formulaOnly || value.externalFormat) throw new TypeError('继承样式采样只适用于内部普通剪贴板。')
+    assertSheetStyleRegion(value.styleRegion, value.rows.length, value.columns.length)
+  }
   for (const [indices, limit] of [[value.rows, 1_048_576], [value.columns, 16_384]] as const) {
     if (indices.some((index, offset) => !Number.isSafeInteger(index) || index < 0 || index >= limit || offset > 0 && index <= indices[offset - 1]!)) {
       throw new RangeError('剪贴板源坐标无效。')
@@ -134,6 +157,7 @@ export function assertSheetClipboardSnapshot(value: SheetClipboardSnapshot): voi
       || !cell.style || !cell.style.font || !Number.isFinite(cell.style.font.size) || typeof cell.style.font.family !== 'string'
       || typeof cell.style.numberFormat !== 'string' || ![null, 'string', 'number', 'boolean'].includes(cell.value === null ? null : typeof cell.value)
       || typeof cell.value === 'number' && !Number.isFinite(cell.value)) throw new TypeError('剪贴板单元格无效。')
+    if (cell.image) normalizeSheetCellImage(cell.image)
   }
   assertSheetCommandRanges(value.merges)
   if (value.merges.some(merge => merge.endRow >= value.rows.length || merge.endCol >= value.columns.length)) throw new RangeError('剪贴板合并范围无效。')
@@ -165,4 +189,5 @@ export function assertSheetClipboardSnapshot(value: SheetClipboardSnapshot): voi
     throw new TypeError('剪贴板源范围几何无效。')
   }
   assertSheetClipboardBytes(JSON.stringify(value))
+  assertSheetClipboardImages(value)
 }

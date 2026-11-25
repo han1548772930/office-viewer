@@ -24,7 +24,7 @@ test('code block preserves source, language and line-number metadata across JSON
   const restored = JSON.parse(JSON.stringify(block))
 
   assert.deepEqual(codeBlockData(restored), {
-    source: 'const value = 2\nreturn value', language: 'typescript', lineNumbers: true,
+    source: 'const value = 2\nreturn value', language: 'typescript', lineNumbers: true, fontFamily: 'Consolas',
   })
   assert.equal(codeBlockPlainText(restored), 'const value = 2\nreturn value')
 })
@@ -37,7 +37,7 @@ test('inserting, querying and updating code blocks mutates the document model', 
   assert.equal(codeBlocks(document).length, 1)
   assert.equal(document.blocks[1].id, block.id)
   assert.equal(updateCodeBlock(document, block.id, { source: '{\n  "ok": false\n}', lineNumbers: true }), true)
-  assert.deepEqual(codeBlockData(block), { language: 'json', source: '{\n  "ok": false\n}', lineNumbers: true })
+  assert.deepEqual(codeBlockData(block), { language: 'json', source: '{\n  "ok": false\n}', lineNumbers: true, fontFamily: 'Consolas' })
   assert.equal(updateCodeBlock(document, 'missing', { source: 'x' }), false)
 })
 
@@ -52,10 +52,11 @@ test('tokenization returns source-preserving ranges instead of generated HTML', 
   assert.ok(tokens.every(token => source.slice(token.start, token.end) === token.text))
 })
 
-test('language aliases normalize and unsupported values remain editable as plain source', () => {
-  assert.equal(normalizeCodeLanguage(' TypeScript '), 'typescript')
-  assert.equal(normalizeCodeLanguage('unknown-language'), 'plain')
+test('author language values are preserved while aliases and unknown grammars resolve only in the view', () => {
+  assert.equal(normalizeCodeLanguage(' TypeScript '), ' TypeScript ')
+  assert.equal(normalizeCodeLanguage('unknown-language'), 'unknown-language')
   assert.deepEqual(tokenizeCode('<tag>', 'plain'), [{ kind: 'plain', text: '<tag>', start: 0, end: 5 }])
+  assert.deepEqual(tokenizeCode('<tag>', 'unknown-language'), [{ kind: 'plain', text: '<tag>', start: 0, end: 5 }])
 })
 
 test('exit adds a normal paragraph and cancel removes only an empty code block', () => {

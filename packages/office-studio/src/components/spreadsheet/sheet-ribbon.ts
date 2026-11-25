@@ -5,7 +5,7 @@ import {
   BadgeDollarSign, Baseline, Bold, Brush, Calculator, CalendarDays,
   ChartColumnIncreasing, ChartLine, ChartNoAxesColumnIncreasing, ChartNoAxesCombined,
   ClipboardCheck, ClipboardPaste, Clock, Crosshair, DecimalsArrowLeft, DecimalsArrowRight, Expand,
-  Database, Filter, FilterX, FunctionSquare, Grid2X2, Group, Info, Italic, Link, ListFilter, Minimize, PaintBucket, Palette,
+  Database, Filter, FilterX, FunctionSquare, Grid2X2, Group, Image, ImagePlus, Info, Italic, Link, ListFilter, Minimize, PaintBucket, Palette,
   Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
   RotateCw, Search, SearchCode, Settings2, ShieldCheck, Shrink, Sigma, SquareCheck, Strikethrough,
   TableCellsMerge, TableCellsSplit, TableProperties, TextCursor, Underline, Undo2, Ungroup, Workflow,
@@ -25,11 +25,17 @@ import { numberFormatCurrency, sheetCurrencySymbol } from '../../features/sheet-
 import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
+import { OPEN_SHEET_RANGE_THEME_OPERATION } from '../../features/sheet-workbench/sheet-range-theme-command.ts'
+import { SHEET_IMAGE_COMMANDS } from '../../features/sheet-images/sheet-image-commands.ts'
 
 export interface SheetRibbonState {
   clipboardCapabilities?: SheetClipboardCapabilities
   fontList?: OfficeFontList
   fontEditable?: boolean
+  rangeThemeEditable?: boolean
+  imageEditable?: boolean
+  backgroundImageEditable?: boolean
+  hasBackgroundImage?: boolean
   painterActive?: boolean
   painterUnavailable?: boolean
   canUndo: boolean
@@ -237,12 +243,19 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         { id: 'tools', title: '工具', order: 40, items: [
           button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
+          button(OPEN_SHEET_RANGE_THEME_OPERATION, '范围主题', { icon: Palette, showLabel: true, disabled: state.rangeThemeEditable === false || !state.hasSheet,
+            gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
         ] },
       ],
     },
     {
       id: 'insert', title: '插入', order: 10, groups: [
         { id: 'media', title: '媒体', order: 10, items: [
+          { id: 'sheet.menu.image', title: '图片', type: 'menu', icon: Image, order: 0,
+            disabled: !state.hasSheet || state.imageEditable === false, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true }, children: [
+              button(SHEET_IMAGE_COMMANDS.insertFloat, '浮动图片', { icon: ImagePlus, disabled: !state.hasSheet || state.imageEditable === false }),
+              button(SHEET_IMAGE_COMMANDS.insertCell, '单元格图片', { icon: Image, disabled: !state.hasSheet || state.imageEditable === false }),
+            ] },
           button('sheet.operation.insert-hyperlink', '超链接', { icon: Link, showLabel: true, disabled: !state.hyperlinkAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, order: 4, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿' }),
           button('sheet.operation.open-sparkline', '迷你图', { icon: ChartLine, order: 5 }),
@@ -351,8 +364,13 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.command.freeze-first-column', '冻结首列', { icon: Pin }),
             button('sheet.command.unfreeze', '取消冻结', { icon: PinOff, disabled: !state.frozen }),
           ] },
-          { id: 'sheet.operation.set-zoom', commandId: 'sheet.operation.set-zoom', type: 'select', title: '缩放', width: 88, value: state.zoom, valueParams: value => Number(value), gridLayout: { row: 1, column: 2, width: 88, showLabel: true }, options: [50, 75, 100, 125, 150, 175, 200, 400].map(value => ({ label: `${value}%`, value })) },
-          { ...button('sheet.operation.toggle-crosshair-highlight', '十字高亮', { icon: Crosshair, activated: state.crosshairEnabled, gridLayout: { row: 2, column: 2 } }), type: 'split', children: [
+          { id: 'sheet.menu.worksheet-background-image', title: '背景图', type: 'menu', icon: Image, order: .5,
+            disabled: !state.hasSheet || state.backgroundImageEditable === false, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true }, children: [
+              button(SHEET_IMAGE_COMMANDS.addBackground, '设置背景图', { icon: ImagePlus, disabled: !state.hasSheet || state.backgroundImageEditable === false }),
+              button(SHEET_IMAGE_COMMANDS.deleteBackground, '删除背景图', { icon: RemoveFormatting, disabled: !state.hasBackgroundImage || state.backgroundImageEditable === false }),
+            ] },
+          { id: 'sheet.operation.set-zoom', commandId: 'sheet.operation.set-zoom', type: 'select', title: '缩放', width: 88, value: state.zoom, valueParams: value => Number(value), gridLayout: { row: 1, column: 3, width: 88, showLabel: true }, options: [50, 75, 100, 125, 150, 175, 200, 400].map(value => ({ label: `${value}%`, value })) },
+          { ...button('sheet.operation.toggle-crosshair-highlight', '十字高亮', { icon: Crosshair, activated: state.crosshairEnabled, gridLayout: { row: 2, column: 3 } }), type: 'split', children: [
             ...[
               ['blue', '蓝色', 'rgba(91, 141, 239, 0.18)'], ['teal', '青色', 'rgba(36, 166, 153, 0.18)'],
               ['green', '绿色', 'rgba(65, 160, 96, 0.18)'], ['yellow', '黄色', 'rgba(235, 190, 58, 0.2)'],

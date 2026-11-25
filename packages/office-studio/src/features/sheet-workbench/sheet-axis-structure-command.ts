@@ -8,6 +8,10 @@ import { translateFormulaReferenceAreas } from '../formula/formula-reference-are
 import { assertSheetCommandRanges, assertSheetRangesEditable, normalizeSheetCommandRange, sheetCommandRangesWithoutFilteredRows, sheetRangeCommandInputRanges,
   type SheetCommandRange, type SheetRangeCommandInput } from './sheet-range-command.ts'
 import { transformWorkbookAxisResources } from './sheet-axis-structure-resources.ts'
+import { refreshWorkbookCellStyles, transformSheetDefaultStyles } from './sheet-style-inheritance.ts'
+import { transformSheetPublicAxisSources } from './sheet-public-axis.ts'
+import { transformSheetRangeThemeRules } from './sheet-range-theme-model.ts'
+import { copySheetCellImage } from '../sheet-images/sheet-image-model.ts'
 
 export const SHEET_AXIS_STRUCTURE_COMMAND_IDS = [
   'sheet.command.insert-row', 'sheet.command.insert-row-by-range', 'sheet.command.insert-row-before', 'sheet.command.insert-row-after',
@@ -151,6 +155,7 @@ function transformCells(sheet: SpreadsheetSheet, edit: SheetAxisEdit, styles: re
     if (edit.kind === 'copy' && index >= edit.start && index < edit.start + edit.count) {
       const next = position(cell.row, cell.col, edit.destination + index - edit.start), key = `${next.row}:${next.column}`
       cells[key] = { ...cloneModel(cell), id: key, row: next.row, col: next.column }
+      if (cells[key]!.image) cells[key]!.image = copySheetCellImage(cells[key]!.image!)
       const source = position(cell.row, cell.col, mapped!)
       copies.push({ key, sourceRow: source.row, sourceColumn: source.column })
     }
@@ -158,6 +163,10 @@ function transformCells(sheet: SpreadsheetSheet, edit: SheetAxisEdit, styles: re
   for (const source of styles) for (let offset = 0; offset < edit.count; offset++) {
     const next = position(source.row, source.col, edit.start + offset), cell = createCell(next.row, next.column, null)
     cell.style = cloneModel(source.style)
+    cell.authoredStyle = cloneModel(source.authoredStyle ?? (source.authoredStyleReference ? {} : source.style))
+    cell.authoredStyleReference = source.authoredStyleReference
+    cell.clearedStyleProperties = source.clearedStyleProperties ? [...source.clearedStyleProperties] : undefined
+    cell.themeStyle = source.themeStyle === undefined ? undefined : cloneModel(source.themeStyle)
     cells[cell.id] = cell
   }
   return { cells, copies }
@@ -189,6 +198,10 @@ export function planWorkbookAxisStructureCommand(model: WorkbookModel, sheetId: 
       edit.start - (insertionStyle === 'after' ? 1 : 0)))) : sheetColumnWidth(before, Math.max(0, Math.min((before.columnCount ?? 16_384) - 1,
       edit.start - (insertionStyle === 'after' ? 1 : 0)))) : undefined
     Object.assign(sheet, transformSheetAxisDimensions(sheet, { ...edit, inheritedSize: size }))
+    transformSheetDefaultStyles(sheet, edit, edit.kind === 'insert' ? Math.max(0, Math.min(currentCount - 1,
+      edit.start - (insertionStyle === 'after' ? 1 : 0))) : undefined)
+    transformSheetPublicAxisSources(sheet, edit)
+    transformSheetRangeThemeRules(sheet, edit)
     sheet.cells = transformed.cells
     sheet.mergedRanges = merges
     const count = edit.kind === 'insert' || edit.kind === 'copy' ? Math.min(sheetAxisMaximum(edit.axis), currentCount + edit.count)
@@ -216,5 +229,6 @@ export function planWorkbookAxisStructureCommand(model: WorkbookModel, sheetId: 
     selection = edit.axis === 'row' ? { startRow: start, endRow: end, startCol: 0, endCol: (sheet.columnCount ?? 16_384) - 1 }
       : { startRow: 0, endRow: (sheet.rowCount ?? 1_048_576) - 1, startCol: start, endCol: end }
   }
+  refreshWorkbookCellStyles(workbook, undefined, false)
   return { workbook, edits: edits.map(edit => ({ ...edit })), selection, affected }
 }

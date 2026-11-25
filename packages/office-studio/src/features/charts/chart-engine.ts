@@ -37,6 +37,8 @@ import type { ChartRelationGraphLayout, ChartRelationLayoutResult } from './char
 import { validateChartSourceData } from './chart-source-validation'
 import { assertChartSourcePresent } from './chart-source-diagnostic'
 import { chartLegendPatch } from './chart-legend'
+import { drawingAffineFrame, drawingAffineWithFrame, normalizeDrawingAffineGeometry, type DrawingAffineGeometry } from '../../domain/drawing-affine.ts'
+import { GRID_HEADER_WIDTH, GRID_HEADER_HEIGHT } from '../../rendering/spreadsheet/layout.ts'
 
 export interface ChartConfig {
   type: ChartType
@@ -45,6 +47,7 @@ export interface ChartConfig {
   /** Builder placement shortcut; resolved against host axes before creating the model. */
   positionCell?: string
   size: { width: number; height: number }
+  drawingGeometry?: DrawingAffineGeometry
   title?: string
   subtitle?: string
   palette?: string[]
@@ -186,6 +189,7 @@ export function createChartDefinition(workbook: WorkbookModel, sheetId: string, 
     source,
     position,
     size,
+    drawingGeometry: config.drawingGeometry === undefined ? undefined : normalizeDrawingAffineGeometry(config.drawingGeometry),
     title: config.title,
     subtitle: config.subtitle,
     palette: config.palette ? [...config.palette] : undefined,
@@ -243,6 +247,15 @@ export function updateChartDefinition(workbook: WorkbookModel, chart: ChartModel
     palette: Object.prototype.hasOwnProperty.call(patch, 'palette') ? patch.palette ? [...patch.palette] : undefined : chart.palette,
     revision: chart.revision + 1,
   }
+  if (Object.hasOwn(patch, 'drawingGeometry')) next.drawingGeometry = patch.drawingGeometry === undefined ? undefined : normalizeDrawingAffineGeometry(patch.drawingGeometry)
+  else if (chart.drawingGeometry && (patch.position || patch.size)) {
+    const before = drawingAffineFrame(chart.drawingGeometry)
+    next.drawingGeometry = drawingAffineWithFrame(chart.drawingGeometry, {
+      left: patch.position ? next.position.x - GRID_HEADER_WIDTH : before.left,
+      top: patch.position ? next.position.y - GRID_HEADER_HEIGHT : before.top,
+      width: patch.size?.width ?? before.width, height: patch.size?.height ?? before.height,
+    })
+  } else if (chart.drawingGeometry) next.drawingGeometry = normalizeDrawingAffineGeometry(chart.drawingGeometry)
   validateChartPalette(next.palette)
   validateChartText(next.title, '标题'); validateChartText(next.subtitle, '副标题')
   next.categoryField = normalizeField(next.categoryField, 'categoryField')

@@ -2,7 +2,7 @@
 import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Menu, Tooltip, theme } from 'antdv-next'
 import type { MenuItemType, MenuRef } from 'antdv-next'
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Eraser, Eye, EyeOff, Grid2X2, Hash, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Download, Eraser, Eye, EyeOff, Grid2X2, Hash, Image, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
 import type { GridHit, GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { createSheetContextMenuItems, type SheetContextMenuItem } from './sheet-context-menu.ts'
 import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -22,6 +22,9 @@ const props = defineProps<{
   canFormat?: boolean
   canConvertText?: boolean
   hasHyperlink?: boolean
+  hasCellImages?: boolean
+  canSaveCellImages?: boolean
+  contextImage?: { id: string; row: number; column: number }
   canShiftHorizontally?: boolean
   canShiftVertically?: boolean
   selectedRanges?: readonly GridRange[]
@@ -114,6 +117,8 @@ const menuIcons = {
   AutoWidthDoubleIcon: Columns3,
   ConvertToNumberIcon: Hash,
   LinkIcon: Link,
+  ImageIcon: Image,
+  SaveImagesIcon: Download,
 } as const
 
 function toMenuItem(item: (typeof items.value)[number]): MenuItemType {

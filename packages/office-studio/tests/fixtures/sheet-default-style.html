@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Sheets default style fixture</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div><script type="module">
+import { createApp, h, ref, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+const copy = value => JSON.parse(JSON.stringify(value))
+const model = createBlankWorkbook(), sheet = model.sheets[0]
+model.id = 'style-fixture'; model.name = '样式继承'; model.calculationMode = 'manual'
+model.defaultStyle = { font: { family: 'Arial', size: 12 } }
+sheet.rowCount = 80; sheet.columnCount = 12; sheet.defaultColumnWidth = 150; sheet.defaultRowHeight = 32
+sheet.defaultStyle = { font: { size: 14 } }
+sheet.rowStyles = { 0: { font: { family: 'Georgia' } } }
+sheet.columnStyles = { 0: { font: { family: 'Courier New', size: 16 } }, 3: { numberFormat: '0.0%' } }
+const cell = createCell(0, 0, 'abc')
+cell.authoredStyle = { font: { family: 'Aptos', size: 22 } }
+cell.richText = [{ id: 'a', text: 'a', font: { family: 'Times New Roman', size: 30 } }, { id: 'b', text: 'bc', vendor: { keep: 1 } }]
+sheet.cells[cell.id] = cell
+const studio = new OfficeStudio({ workbook: model }), api = FOffice.newAPI(studio)
+studio.regionalSettings.setRegion('en-US')
+const view = ref(toExcelWorkbookView(studio.editor.workbook.model)), dark = ref(false), variant = ref('classic'), notices = []
+watch(() => studio.editor.workbook.model, value => { view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+const active = () => api.getActiveWorkbook()
+window.styleFixture = {
+  snapshot: () => copy(studio.editor.workbook.model), notifications: () => copy(notices),
+  effective: address => active().getActiveSheet().getRange(address).getCellStyleData(),
+  row: (index, style) => active().getActiveSheet().setRowDefaultStyle(index, style),
+  sheet: style => active().getActiveSheet().setDefaultStyle(style),
+  clearFont: address => { const range = active().getActiveSheet().getRange(address); range.setFontFamily(null); range.setFontSize(null) },
+  reopen: () => { const snapshot = active().save(); api.createWorkbook({ ...snapshot, id: 'style-reopened' }) },
+  appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  loadPublicAxes: () => { api.createWorkbook({ id: 'public-axis-fixture', name: '公开行列', calculationMode: 'manual', styles: { axis: { ff: 'Georgia', fs: 15 } },
+    sheetOrder: ['data'], sheets: { data: { id: 'data', name: 'Data', rowCount: 80, columnCount: 12, defaultRowHeight: 32, defaultColumnWidth: 120,
+      rowData: { 0: { h: 48, ia: 0, hd: 0, s: 'axis', custom: { keep: 'row' } }, 1: { h: 32, hd: 1 }, 2: { h: 36, ia: 0 } },
+      columnData: { 0: { w: 180, hd: 0, custom: { keep: 'column' } }, 1: { w: 0, hd: 0 }, 2: { w: 90, hd: 1 } },
+      cellData: { 0: { 0: { v: 'public source' } } },
+    } } }) },
+  axisDimensions: () => { const sheet = active().getActiveSheet(); return { row: sheet.getRowHeight(0), auto: sheet.getRowIsAutoHeight(0), column: sheet.getColumnWidth(0) } },
+  axisSize: (row, height, column, width) => { const sheet = active().getActiveSheet(); sheet.setRowHeightsForced(row, 1, height); sheet.setColumnWidth(column, width) },
+  undo: () => active().undo(), redo: () => active().redo(),
+  history: () => { const unit = studio.editor.history.units[studio.activeWorkbookId]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
+}
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value,
+    canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
+    'onUpdate:modelValue': value => studio.editor.replaceWorkbookFromView(value, 'en-US'),
+    onUndo: () => active().undo(), onRedo: () => active().redo(), onNotify: event => notices.push(copy(event)),
+  }),
+}) }).use(studio.pinia).mount('#app')
+</script></body></html>

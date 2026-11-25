@@ -3,6 +3,8 @@ import { mergeSheetAxisIntervals } from '../../domain/sheet-axis-structure.ts'
 import { sheetBorderLabels } from '../../features/sheet-workbench/sheet-cell-border.ts'
 import { SHEET_BORDER_FORMAT_COMMANDS } from '../../features/sheet-workbench/sheet-border-format-command.ts'
 import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
+import { SHEET_CELL_SHIFT_CONFIRM_COMMANDS } from '../../features/sheet-workbench/sheet-cell-shift-command.ts'
+import { SHEET_IMAGE_COMMANDS } from '../../features/sheet-images/sheet-image-commands.ts'
 
 export interface SheetContextMenuItem {
   id: string
@@ -32,6 +34,9 @@ export interface SheetContextMenuContext {
   canFormat?: boolean
   canConvertText?: boolean
   hasHyperlink?: boolean
+  hasCellImages?: boolean
+  canSaveCellImages?: boolean
+  contextImage?: { id: string; row: number; column: number }
   canShiftHorizontally?: boolean
   canShiftVertically?: boolean
   selectedRanges?: readonly GridRange[]
@@ -105,6 +110,11 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
       ...(item.children ? { children: item.children.flatMap(withClipboardCapability) } : {}) }]
   }
   const clipboard = clipboardItems.flatMap(withClipboardCapability)
+  const imageActions: SheetContextMenuItem[] = options.hasCellImages ? [{ id: 'save-cell-images', label: '保存图片', commandId: SHEET_IMAGE_COMMANDS.saveCell,
+    icon: 'SaveImagesIcon', separatorBefore: true, disabled: options.canSaveCellImages === false,
+    params: { sheetId: options.sheetId, showSaveDialog: true } }] : []
+  if (hit.kind === 'cell' && options.contextImage) imageActions.push({ id: 'edit-cell-image', label: '图片属性', commandId: SHEET_IMAGE_COMMANDS.edit, icon: 'ImageIcon', disabled: options.canFormat === false,
+    params: { sheetId: options.sheetId, imageId: options.contextImage.id, row: options.contextImage.row, column: options.contextImage.column } })
   const linkActions: SheetContextMenuItem[] = hit.kind === 'cell' && options.hasHyperlink
     ? [{ id: 'open-hyperlink', label: '打开超链接', commandId: 'sheet.operation.open-cell-hyperlink', params: { key: hit.key }, icon: 'LinkIcon', separatorBefore: true }]
     : []
@@ -140,6 +150,7 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     { id: 'auto-fit-row', label: '适合数据', commandId: 'sheet.command.auto-fit-row', icon: 'AutoHeightDoubleIcon', params: rowTarget },
     ...freeze,
     protect,
+    ...imageActions,
   ]
   if (hit.kind === 'column') return [
     ...clipboard,
@@ -152,33 +163,36 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     { id: 'auto-fit-column', label: '适合数据', commandId: 'sheet.command.auto-fit-column', icon: 'AutoWidthDoubleIcon', params: columnTarget },
     ...freeze,
     protect,
+    ...imageActions,
   ]
   if (hit.kind === 'all') return [
     ...clipboard,
     ...freeze,
     protect,
+    ...imageActions,
   ]
   return [
     ...clipboard,
     ...linkActions,
     {
       id: 'insert-cells', label: '插入', commandId: '', icon: 'InsertDoubleIcon', separatorBefore: true, children: [
-        { id: 'insert-range-right', label: '右移单元格', commandId: 'sheet.command.insert-range-move-right', icon: 'InsertCellShiftRightDoubleIcon', disabled: options.canShiftHorizontally === false },
-        { id: 'insert-range-down', label: '下移单元格', commandId: 'sheet.command.insert-range-move-down', icon: 'InsertCellDownDoubleIcon', disabled: options.canShiftVertically === false },
         { id: 'insert-row', label: '在上方插入行', commandId: 'sheet.command.insert-row-before', icon: 'InsertRowAboveDoubleIcon', params: rowStructure.params, disabled: !rowStructure.continuous || options.canStructureRows === false },
         { id: 'insert-column', label: '在左侧插入列', commandId: 'sheet.command.insert-col-before', icon: 'LeftInsertColumnDoubleIcon', params: columnStructure.params, disabled: !columnStructure.continuous || options.canStructureColumns === false },
+        { id: 'insert-range-right', label: '右移单元格', commandId: SHEET_CELL_SHIFT_CONFIRM_COMMANDS.right, icon: 'InsertCellShiftRightDoubleIcon', disabled: options.canShiftHorizontally === false },
+        { id: 'insert-range-down', label: '下移单元格', commandId: SHEET_CELL_SHIFT_CONFIRM_COMMANDS.down, icon: 'InsertCellDownDoubleIcon', disabled: options.canShiftVertically === false },
       ],
     },
     {
       id: 'delete-cells', label: '删除', commandId: '', icon: 'ReduceDoubleIcon', children: [
-        { id: 'delete-range-left', label: '左移单元格', commandId: 'sheet.command.delete-range-move-left', icon: 'DeleteCellShiftLeftDoubleIcon', disabled: options.canShiftHorizontally === false },
-        { id: 'delete-range-up', label: '上移单元格', commandId: 'sheet.command.delete-range-move-up', icon: 'DeleteCellShiftUpDoubleIcon', disabled: options.canShiftVertically === false },
         { id: 'delete-column', label: '删除选中列', commandId: 'sheet.command.delete-column', icon: 'DeleteColumnDoubleIcon', params: columnStructure.params, disabled: !options.canDeleteColumn || options.canStructureColumns === false },
         { id: 'delete-row', label: '删除选中行', commandId: 'sheet.command.delete-row', icon: 'DeleteRowDoubleIcon', params: rowStructure.params, disabled: !options.canDeleteRow || options.canStructureRows === false },
+        { id: 'delete-range-left', label: '左移单元格', commandId: SHEET_CELL_SHIFT_CONFIRM_COMMANDS.left, icon: 'DeleteCellShiftLeftDoubleIcon', disabled: options.canShiftHorizontally === false },
+        { id: 'delete-range-up', label: '上移单元格', commandId: SHEET_CELL_SHIFT_CONFIRM_COMMANDS.up, icon: 'DeleteCellShiftUpDoubleIcon', disabled: options.canShiftVertically === false },
       ],
     },
     ...freeze,
     protect,
+    ...imageActions,
   ]
 }
 

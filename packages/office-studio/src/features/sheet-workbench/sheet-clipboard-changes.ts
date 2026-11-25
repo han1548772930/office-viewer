@@ -4,7 +4,8 @@ import { cloneModel } from '../../domain/serialization.ts'
 import { conditionalFormatFormulaAnchor, mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { formulaRelativeReferenceSignature } from '../formula/formula-references.ts'
 import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from '../sheet-validation/validation-formulas.ts'
-import { subtractSheetCommandRange } from './sheet-range-command.ts'
+import { sheetRangesIntersect, subtractSheetCommandRange } from './sheet-range-command.ts'
+import { sheetRangeThemeChangedRanges } from './sheet-range-theme-structure.ts'
 
 const MAX_RANGE_WORK = 5_000_000, MAX_RANGES = 100_000
 
@@ -60,15 +61,74 @@ function rangeDifference(original: readonly CellRange[], removed: readonly CellR
   return result
 }
 function changedRules<R extends { id: string; ranges: CellRange[] }>(before: readonly R[], after: readonly R[], definition: (rule: R) => string): CellRange[] {
-  const originals = new Map(before.map(rule => [rule.id, rule])), updated = new Map(after.map(rule => [rule.id, rule]))
+  // Fragment ID changes do not change a retained predicate. Group by its
+  // per-cell definition so split resources do not widen range permissions.
+  const ordered = (rules: readonly R[]) => rules.map(rule => ({ rule, key: definition(rule) }))
+  const firstEntries = ordered(before), nextEntries = ordered(after)
+  const group = (entries: typeof firstEntries) => {
+    const result = new Map<string, CellRange[]>()
+    for (const { rule, key } of entries) {
+      const ranges = result.get(key) ?? []
+      ranges.push(...rule.ranges); result.set(key, ranges)
+    }
+    return result
+  }
+  const originals = group(firstEntries), updated = group(nextEntries)
   const result: CellRange[] = [], work = { count: 0 }
-  for (const id of new Set([...originals.keys(), ...updated.keys()])) {
-    const first = originals.get(id), next = updated.get(id)
-    if (!first) result.push(...next!.ranges)
-    else if (!next) result.push(...first.ranges)
-    else if (definition(first) !== definition(next)) result.push(...first.ranges, ...next.ranges)
-    else result.push(...rangeDifference(first.ranges, next.ranges, work), ...rangeDifference(next.ranges, first.ranges, work))
+  for (const key of new Set([...originals.keys(), ...updated.keys()])) {
+    const first = originals.get(key) ?? [], next = updated.get(key) ?? []
+    result.push(...rangeDifference(first, next, work), ...rangeDifference(next, first, work))
     if (result.length > MAX_RANGES) throw new RangeError('剪贴板资源差异范围过多。')
+  }
+  // Compare the actual per-cell predicate sequence when precedence can change.
+  // Repeated definitions may move across another predicate without changing
+  // the global definition list, so retain their order inside the coverage map.
+  const order = (entries: typeof firstEntries) => entries.map(entry => entry.key).filter((key, index, keys) => index === 0 || key !== keys[index - 1])
+  const firstOrder = order(firstEntries), nextOrder = order(nextEntries)
+  if (JSON.stringify(firstOrder) !== JSON.stringify(nextOrder)
+    || new Set(firstOrder).size !== firstOrder.length || new Set(nextOrder).size !== nextOrder.length) {
+    const coverage = (entries: typeof firstEntries) => {
+      let regions: Array<{ range: CellRange; keys: string[] }> = []
+      for (const { rule, key } of entries) {
+        const masks: CellRange[] = []
+        for (const range of rule.ranges) {
+          masks.push(...rangeDifference([range], masks, work))
+          if (masks.length > MAX_RANGES) throw new RangeError('剪贴板规则优先级差异范围过多。')
+        }
+        const next: typeof regions = []
+        for (const region of regions) {
+          next.push(...rangeDifference([region.range], masks, work).map(range => ({ range, keys: region.keys })))
+          for (const mask of masks) {
+            if (++work.count > MAX_RANGE_WORK) throw new RangeError('剪贴板规则优先级差异超出当前同步计算预算。')
+            if (!sheetRangesIntersect(region.range, mask)) continue
+            next.push({ range: { startRow: Math.max(region.range.startRow, mask.startRow), endRow: Math.min(region.range.endRow, mask.endRow),
+              startCol: Math.max(region.range.startCol, mask.startCol), endCol: Math.min(region.range.endCol, mask.endCol) },
+              keys: region.keys.at(-1) === key ? region.keys : [...region.keys, key] })
+          }
+          if (next.length > MAX_RANGES) throw new RangeError('剪贴板规则优先级差异范围过多。')
+        }
+        next.push(...rangeDifference(masks, regions.map(region => region.range), work).map(range => ({ range, keys: [key] })))
+        if (next.length > MAX_RANGES) throw new RangeError('剪贴板规则优先级差异范围过多。')
+        const groups = new Map<string, { keys: string[]; ranges: CellRange[] }>()
+        for (const region of next) {
+          const id = JSON.stringify(region.keys), group = groups.get(id) ?? { keys: region.keys, ranges: [] }
+          group.ranges.push(region.range); groups.set(id, group)
+        }
+        regions = [...groups.values()].flatMap(group => compactSheetClipboardRanges(group.ranges).map(range => ({ range, keys: group.keys })))
+      }
+      const result = new Map<string, CellRange[]>()
+      for (const region of regions) {
+        const id = JSON.stringify(region.keys), ranges = result.get(id) ?? []
+        ranges.push(region.range); result.set(id, ranges)
+      }
+      return result
+    }
+    const oldCoverage = coverage(firstEntries), newCoverage = coverage(nextEntries)
+    for (const key of new Set([...oldCoverage.keys(), ...newCoverage.keys()])) {
+      const first = oldCoverage.get(key) ?? [], next = newCoverage.get(key) ?? []
+      result.push(...rangeDifference(first, next, work), ...rangeDifference(next, first, work))
+      if (result.length > MAX_RANGES) throw new RangeError('剪贴板资源差异范围过多。')
+    }
   }
   return result
 }
@@ -78,6 +138,7 @@ export function sheetClipboardChangedRuleRanges(before: SpreadsheetSheet, after:
   return compactSheetClipboardRanges([
     ...changedRules(before.conditionalFormats ?? [], after.conditionalFormats ?? [], conditionalDefinition),
     ...changedRules(before.dataValidations ?? [], after.dataValidations ?? [], validationDefinition),
+    ...sheetRangeThemeChangedRanges(before.rangeThemeRules ?? [], after.rangeThemeRules ?? []),
   ])
 }
 

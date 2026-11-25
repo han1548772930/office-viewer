@@ -34,11 +34,18 @@ import { applyDocumentEditorCommand, assertDocumentEditorCommandRequest, DOCUMEN
   type DocumentEditorCommandRequest, type DocumentEditorCommandResult } from './document-editor-commands.ts'
 import type { DocumentImage } from '../features/document/model/document-model'
 import { useEditorStore } from '../stores/editorStore'
-import { applyCellValue, documentFromInput, workbookFromInput } from './model-utils'
+import { applyCellValue, documentFromInput, workbookFromInput, type WorkbookInput } from './model-utils'
+import { prepareWorkbookSheetImageInput, type SheetImageInputPreparationOptions } from '../features/sheet-images/sheet-image-input-preparation.ts'
 import { EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type Disposable } from './events'
 import { registerSheetRangeEditorCommands } from './sheet-range-editor-commands.ts'
 import { registerSheetCellInputCommands } from './sheet-cell-input-commands.ts'
 import { registerSheetCellInlineFormatCommands } from './sheet-cell-inline-format-commands.ts'
+import { registerSheetDefaultStyleCommands } from './sheet-default-style-commands.ts'
+import { registerSheetRangeThemeCommands } from './sheet-range-theme-commands.ts'
+import { registerSheetImageCommands } from './sheet-image-commands.ts'
+import { registerSheetDrawingCommands } from './sheet-drawing-commands.ts'
+import { reconcileWorkbookDrawingStates } from '../features/sheet-drawings/sheet-drawing-model-lifecycle.ts'
+import { refreshWorkbookCellStyles } from '../features/sheet-workbench/sheet-style-inheritance.ts'
 import { registerSheetClipboardCommands } from './sheet-clipboard-commands.ts'
 import { registerSheetFillCommands } from './sheet-fill-commands.ts'
 import { registerSheetLifecycleCommands } from './sheet-lifecycle-commands.ts'
@@ -47,6 +54,7 @@ import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND, parseSheetSelectionOperation, p
 import { registerSheetAxisDimensionCommands } from './sheet-axis-dimension-commands.ts'
 import { registerSheetAxisVisibilityCommands } from './sheet-axis-visibility-commands.ts'
 import { registerSheetAxisStructureCommands } from './sheet-axis-structure-commands.ts'
+import { registerSheetCellShiftCommands } from './sheet-cell-shift-commands.ts'
 import { registerSheetConditionalFormattingCommands } from './sheet-conditional-formatting-commands.ts'
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import { refreshWorkbookAutoRowHeights } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
@@ -80,6 +88,11 @@ import {
 } from '../features/pivot/services/pivot-engine'
 import { createChartDefinition, updateChartDefinition, type ChartConfig, type ChartUpdatePatch } from '../features/charts/chart-engine'
 import { publishChartImageResourceCandidate, pruneChartImageResources } from '../features/charts/chart-image-resources.ts'
+import { CHART_OBJECT_COMMANDS, PASTE_COPIED_CHART_COMMAND, assertChartObjectAction, assertChartObjectRevision, chartObjectSheetId,
+  chartObjectUIHost, chartObjectUISession, clearChartObjectUIHosts, isPrimaryChartObject, resolveChartObjectTarget, type ChartObjectCommandInput, type ChartObjectPasteInput } from '../features/charts/chart-object-commands.ts'
+import { captureChartObjectClipboard, chartObjectClipboardContent, chartObjectPasteDefinition, createChartObjectId } from '../features/charts/chart-object-clipboard.ts'
+import { normalizeChartEditPanelRoute, planChartEditPanelRoute } from '../features/charts/chart-edit-panel-route.ts'
+import { chartObjectClipboardStore } from '../features/charts/chart-object-clipboard-store.ts'
 import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
 import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, updateSlicerPresentation, type SlicerCreateInput, type SlicerPresentationPatch } from '../features/slicer/slicer-engine'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
@@ -96,6 +109,11 @@ import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksh
 import { assertDocumentPermission, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import { registerDocumentContentControlCommands } from './document-content-control-commands'
 import { registerDocumentCustomXmlCommands } from './document-custom-xml-commands'
+import { registerDocumentLatexCommands } from './document-latex-commands'
+import { disposeDocumentLatexTemplateEditors } from './document-latex-template-editors'
+import { disposeDocumentLatexPopupEditors } from './document-latex-popup-editors'
+import { registerDocumentImageCommands } from './document-image-commands'
+import { disposeDocumentImageEditors, cancelDocumentImageTasksForSource } from './document-image-editors'
 import { documentNoteCommandId, DocumentNoteCommandRejectedError, mapDocumentNoteLocation, registerDocumentNoteCommands,
   type DocumentNoteCommandContext, type DocumentNoteCommandParams, type DocumentNoteCommandResult } from './document-note-commands'
 import { prepareDocumentNoteMutation, type DocumentNoteMutationRequest } from '../features/document/notes/document-note-mutations'
@@ -107,7 +125,7 @@ import { assertDocumentCustomXmlBindings, validateDocumentCustomXmlParts } from 
 export interface OfficeStudioOptions {
   locale?: string
   region?: string
-  workbook?: Partial<WorkbookModel> & Record<string, unknown>
+  workbook?: WorkbookInput
   document?: Partial<DocumentModel> & Record<string, unknown>
   computeClient?: OfficeComputeClient
   numericIndexMinRows?: number
@@ -123,6 +141,8 @@ export type OfficeCommandHandler<P = unknown, R = unknown> = (params: P) => R
 
 export interface WorkbookCommitOptions {
   recalculate?: boolean
+  /** Axis relocation already carries authored formatting; recomposition must not freeze inherited values. */
+  preserveStyleInheritance?: boolean
   expectedRevision?: number
   expectedHistoryGeneration?: number
   /** A recent paste changes its exact top entry, keeping the first paste's undo. */
@@ -161,6 +181,7 @@ export class OfficeStudio {
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
   private readonly asynchronousCommands = new Set<string>()
+  private readonly workbookCreationTasks = new Set<AbortController>()
   private _activeWorkbookId: string
   private _activeDocumentId: string
   private disposed = false
@@ -253,6 +274,7 @@ export class OfficeStudio {
       watch(() => this.editor.document.model, (next, previous) => {
         const id = next.id
         if (!id || this.disposed) return
+        if (previous !== next) cancelDocumentImageTasksForSource(previous)
         if (id !== this._activeDocumentId) {
           this.documents.set(this._activeDocumentId, cloneModel(previous))
           const created = !this.documents.has(id)
@@ -409,7 +431,7 @@ export class OfficeStudio {
     return id === this._activeDocumentId ? this.editor.document.model : this.documents.get(id)
   }
 
-  createWorkbook(input: Partial<WorkbookModel> & Record<string, unknown> = {}, makeCurrent = true): WorkbookModel {
+  createWorkbook(input: WorkbookInput = {}, makeCurrent = true): WorkbookModel {
     this.assertAlive()
     const model = workbookFromInput(input)
     if (this.workbooks.has(model.id!)) throw new Error(`Workbook id already exists: ${model.id}`)
@@ -422,6 +444,21 @@ export class OfficeStudio {
     if (makeCurrent) this.activateWorkbook(model.id!)
     this.events.emit('WorkbookCreated', { workbookId: model.id! })
     return model
+  }
+
+  async createWorkbookAsync(input: WorkbookInput = {}, makeCurrent = true, options: SheetImageInputPreparationOptions = {}): Promise<WorkbookModel> {
+    this.assertAlive()
+    const controller = new AbortController(), cancel = () => controller.abort()
+    this.workbookCreationTasks.add(controller)
+    options.signal?.addEventListener('abort', cancel, { once: true })
+    if (options.signal?.aborted) controller.abort()
+    try {
+      const prepared = await prepareWorkbookSheetImageInput(input, { ...options, signal: controller.signal,
+        current: () => !this.disposed && (options.current?.() ?? true) })
+      this.assertAlive()
+      if (controller.signal.aborted) throw new DOMException('工作簿图片读取已取消。', 'AbortError')
+      return this.createWorkbook(prepared, makeCurrent)
+    } finally { options.signal?.removeEventListener('abort', cancel); this.workbookCreationTasks.delete(controller) }
   }
 
   createDocument(input: Partial<DocumentModel> & Record<string, unknown> = {}, makeCurrent = true): DocumentModel {
@@ -660,7 +697,7 @@ export class OfficeStudio {
   }
 
   private async commitChartChange(id: string, label: string, chartId: string, update: (draft: WorkbookModel) => void,
-    authoring: ChartAuthoringPlan): Promise<boolean> {
+    authoring: ChartAuthoringPlan, assertHostCurrent?: () => void): Promise<boolean> {
     this.assertAlive()
     this.assertContentUnitIdentity('workbook', id)
     const userId = this.currentUserId, savepoint = this.editor.history.captureSavepoint(id)
@@ -671,6 +708,7 @@ export class OfficeStudio {
     const seed = requireChart(plan.candidate, chartId)
     const assertCurrent = (): void => {
       this.assertAlive()
+      assertHostCurrent?.()
       const current = this.getWorkbookModel(id), latestSavepoint = this.editor.history.captureSavepoint(id)
       if (!current || this.currentUserId !== userId || this.getWorkbookRevision(id) !== plan.baseRevision
         || latestSavepoint.revision !== savepoint.revision || latestSavepoint.generation !== savepoint.generation) {
@@ -691,6 +729,7 @@ export class OfficeStudio {
     }
     Object.assign(seed, cloneModel(chart))
     publishChartImageResourceCandidate(plan.candidate, seed)
+    assertHostCurrent?.()
     return plan.publish()
   }
 
@@ -722,6 +761,8 @@ export class OfficeStudio {
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
+    reconcileWorkbookDrawingStates(before, after)
+    refreshWorkbookCellStyles(after, before, typeof options === 'boolean' || options.preserveStyleInheritance !== true, this.regionalSettings.region.value)
     assertWorkbookConditionalFormatBudget(after.sheets)
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
     this.assertChartHostChanges(before, after)
@@ -937,7 +978,7 @@ export class OfficeStudio {
     if (!Object.hasOwn(DOCUMENT_EDITOR_COMMAND_LABELS, command.id)) throw new Error(`Unknown document editor command: ${command.id}`)
     const expectedRevision = this.getDocumentRevision(unitId), inputGeneration = this.documentInput.get(unitId)?.generation
     const expectedHistoryGeneration = this.editor.history.captureSavepoint(unitId).generation
-    const effective = command.id === 'doc.command.insert-text'
+    const effective = command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula'
       ? { ...command, marks: mergeDocumentInputMarks(this.getDocumentInputMarks(unitId, selection, undefined, command.host), command.marks ?? {}) } : command
     return this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>(command.id,
       { unitId, command: effective, selection, expectedRevision, expectedHistoryGeneration, inputGeneration })
@@ -1095,6 +1136,7 @@ export class OfficeStudio {
     this.assertAlive()
     if (this.workbooks.has(id)) {
       this.sheetClipboard.clearUnit(id)
+      chartObjectClipboardStore(this.pinia).clearUnit(id)
       this.sheetFill.clear(id)
       this.sheetSelections.removeUnit(id)
       this.chartStatisticsService.forgetDocument(id)
@@ -1111,6 +1153,9 @@ export class OfficeStudio {
       return true
     }
     if (this.documents.has(id)) {
+      disposeDocumentImageEditors(this, id)
+      disposeDocumentLatexTemplateEditors(this, id)
+      disposeDocumentLatexPopupEditors(this, id)
       this.documentFieldCacheAdapters.delete(id)
       this.documentInput.removeUnit(id)
       this.pendingDocumentInputPublications.delete(id)
@@ -1129,7 +1174,12 @@ export class OfficeStudio {
 
   dispose(): void {
     if (this.disposed) return
+    disposeDocumentImageEditors(this)
     this.disposed = true
+    for (const controller of this.workbookCreationTasks) controller.abort()
+    this.workbookCreationTasks.clear()
+    disposeDocumentLatexTemplateEditors(this)
+    disposeDocumentLatexPopupEditors(this)
     for (const stop of this.stopModelSync) stop()
     this.editor.parser.cancel()
     this.chartStatisticsService.dispose()
@@ -1144,6 +1194,10 @@ export class OfficeStudio {
     this.sheetSelections.$dispose()
     this.sheetClipboard.clear()
     this.sheetClipboard.$dispose()
+    const chartClipboard = chartObjectClipboardStore(this.pinia)
+    chartClipboard.clear()
+    chartClipboard.$dispose()
+    clearChartObjectUIHosts(this)
     this.sheetFill.clear()
     this.sheetFill.$dispose()
     this.documentInput.clear()
@@ -1233,6 +1287,7 @@ export class OfficeStudio {
 
   private replaceDocumentModel(id: string, model: DocumentModel): void {
     const previous = this.getDocumentModel(id)
+    if (previous && previous !== model) cancelDocumentImageTasksForSource(previous)
     this.documents.set(id, model)
     if (id === this._activeDocumentId) this.editor.document.replace(model)
     else if (previous && !equivalentModelData(previous, model, ['modified'])) this.advanceDocumentRevision(id)
@@ -1320,7 +1375,7 @@ export class OfficeStudio {
     const tracksSelection = sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
     let input: RunPatch | undefined
     let command = request.command
-    if (command.id === 'doc.command.insert-text') {
+    if (command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula') {
       input = mergeDocumentInputMarks(sourceCurrent ? this.getDocumentInputMarks(request.unitId, sourceSelection, undefined, selectionHost) : {}, command.marks ?? {})
       command = { ...command, marks: input }
     }
@@ -1510,12 +1565,17 @@ export class OfficeStudio {
     registerSheetRangeEditorCommands(this)
     this.stopModelSync.push(registerSheetCellInputCommands(this).dispose)
     this.stopModelSync.push(registerSheetCellInlineFormatCommands(this).dispose)
+    this.stopModelSync.push(registerSheetDefaultStyleCommands(this).dispose)
+    this.stopModelSync.push(registerSheetRangeThemeCommands(this).dispose)
+    this.stopModelSync.push(registerSheetImageCommands(this).dispose)
+    this.stopModelSync.push(registerSheetDrawingCommands(this).dispose)
     this.stopModelSync.push(registerSheetClipboardCommands(this).dispose)
     this.stopModelSync.push(registerSheetFillCommands(this).dispose)
     this.stopModelSync.push(registerSheetLifecycleCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisDimensionCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisVisibilityCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisStructureCommands(this).dispose)
+    this.stopModelSync.push(registerSheetCellShiftCommands(this).dispose)
     this.stopModelSync.push(registerSheetConditionalFormattingCommands(this).dispose)
     this.stopModelSync.push(registerSheetFormatPainterCommands(this).dispose)
     for (const id of SHEET_BORDER_FORMAT_COMMAND_IDS) {
@@ -1534,7 +1594,7 @@ export class OfficeStudio {
         const action = borderFormatActionForCommand(id, input, previousState)
         if (!action) return false
         if (action.apply) this.commitWorkbook(unitId, action.state.type === 'none' ? '清除边框' : '设置边框', model => {
-          applySheetBorderFormatCommand(requireSheet(model, sheetId), ranges, action, this.currentUserId)
+          applySheetBorderFormatCommand(requireSheet(model, sheetId), ranges, action, this.currentUserId, model)
         }, { recalculate: false })
         let states = this.borderFormatStates.get(unitId)
         if (!states) { states = new Map(); this.borderFormatStates.set(unitId, states) }
@@ -1565,7 +1625,7 @@ export class OfficeStudio {
         return this.commitWorkbook(unitId, label, model => {
           const sheet = requireSheet(model, sheetId)
           const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])]
-          applySheetLayoutFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows)
+          applySheetLayoutFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, model)
         }, { recalculate: false })
       })
     }
@@ -1581,7 +1641,7 @@ export class OfficeStudio {
         const ranges = input?.ranges ?? this.commandSelectionRanges(unitId, sheetId)
         const label = action.kind === 'decimals' ? action.delta === 1 ? '增加小数位' : '减少小数位' : '设置数字格式'
         return this.commitWorkbook(unitId, label, model => {
-          applySheetNumberFormatCommand(requireSheet(model, sheetId), ranges, action, this.regionalSettings.region.value, model.date1904, this.currentUserId)
+          applySheetNumberFormatCommand(requireSheet(model, sheetId), ranges, action, this.regionalSettings.region.value, model.date1904, this.currentUserId, model)
         }, { recalculate: false })
       })
     }
@@ -1624,7 +1684,7 @@ export class OfficeStudio {
         return this.commitWorkbook(unitId, label, model => {
           const sheet = requireSheet(model, sheetId)
           const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])]
-          applySheetFontFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, primary)
+          applySheetFontFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, primary, model)
         }, { recalculate: false })
       })
     }
@@ -1667,7 +1727,7 @@ export class OfficeStudio {
         const cell = values[row - range.startRow]?.[col - range.startColumn]
         if (cell === undefined) continue
         const key = `${row}:${col}`
-        sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell)
+        sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell, model, sheet)
         positions.push({ row, column: col })
       }
       const validation = validateSheetDataValidationChanges(model, sheetId, positions)
@@ -1782,12 +1842,85 @@ export class OfficeStudio {
         Object.assign(chart, updateChartDefinition(model, chart, authoring.patch!))
       }, authoring)
     }, { asynchronous: true })
-    this.registerCommand<{ unitId: string; chartId: string }, boolean>('sheet.command.remove-chart', ({ unitId, chartId }) => this.commitWorkbook(unitId, 'Remove chart', (model) => {
-      const chart = requireChart(model, chartId)
-      this.assertCanEditWorksheet(unitId, chart.sheetId)
-      model.charts = model.charts?.filter((item) => item.id !== chartId)
-      pruneChartImageResources(model)
-    }))
+    const removeChartObject = (input: ChartObjectCommandInput): boolean => {
+      const target = resolveChartObjectTarget(this, input)
+      if (!target) return false
+      const workbook = this.getWorkbookModel(target.unitId)!, chart = requireChart(workbook, target.chartId)
+      if (isPrimaryChartObject(workbook, chart)) return false
+      assertChartObjectAction(this, target, 'delete')
+      return this.commitWorkbook(target.unitId, 'Remove chart', model => {
+        this.assertCanEditWorksheet(target.unitId, target.sheetId)
+        model.charts = model.charts?.filter(item => item.id !== target.chartId)
+        pruneChartImageResources(model)
+      }, { expectedRevision: target.expectedRevision })
+    }
+    this.registerCommand<{ unitId: string; chartId: string }, boolean>('sheet.command.remove-chart', input => {
+      const workbook = this.getWorkbookModel(input.unitId)
+      const chart = workbook && requireChart(workbook, input.chartId)
+      if (!chart) throw new Error('图表所属工作簿已经关闭。')
+      return removeChartObject({ ...input, sheetId: chart.sheetId })
+    })
+    this.registerCommand<ChartObjectCommandInput, boolean>(CHART_OBJECT_COMMANDS.edit, input => {
+      const target = resolveChartObjectTarget(this, input)
+      if (!target) return false
+      const chart = assertChartObjectAction(this, target, 'edit')
+      const route = input?.route === undefined ? undefined : normalizeChartEditPanelRoute(input.route)
+      if (route) {
+        const data = this.chartStatisticsService.getCached(chart, { documentId: target.unitId, modelRevision: target.expectedRevision,
+          userId: this.currentUserId }, this.getWorkbookModel(target.unitId))?.statistics.preparedData
+        planChartEditPanelRoute(chart, route, data)
+      }
+      const host = chartObjectUIHost(this, target)
+      if (!host) throw new Error('图表属性面板宿主尚未绑定。')
+      return host.openPanel(target, route)
+    })
+    this.registerCommand<ChartObjectCommandInput, Promise<boolean>>(CHART_OBJECT_COMMANDS.copy, async input => {
+      const target = resolveChartObjectTarget(this, input)
+      if (!target) return false
+      assertChartObjectAction(this, target, 'copy')
+      const clipboard = chartObjectClipboardStore(this.pinia), ticket = clipboard.beginCopy(target.unitId)
+      const captured = captureChartObjectClipboard(this.getWorkbookModel(target.unitId)!, target)
+      const host = chartObjectUIHost(this, target)
+      const written = host ? await host.writeClipboard(chartObjectClipboardContent(captured)) : false
+      this.assertAlive()
+      assertChartObjectAction(this, target, 'copy')
+      if (host && (!host.current(target) || chartObjectUIHost(this, target) !== host)) throw new Error('图表宿主已切换，复制结果已停止。')
+      return clipboard.publish(ticket, captured, written)
+    }, { asynchronous: true })
+    this.registerCommand<ChartObjectCommandInput, Promise<boolean>>(CHART_OBJECT_COMMANDS.exportImage, async input => {
+      const target = resolveChartObjectTarget(this, input)
+      if (!target) return false
+      assertChartObjectAction(this, target, 'exportImage')
+      const host = chartObjectUIHost(this, target)
+      if (!host) throw new Error('图表图片导出需要已绘制的活动 Canvas 宿主。')
+      return host.exportImage(target)
+    }, { asynchronous: true })
+    this.registerCommand<ChartObjectCommandInput, boolean>(CHART_OBJECT_COMMANDS.delete, removeChartObject)
+    this.registerCommand<ChartObjectPasteInput, Promise<boolean>>(PASTE_COPIED_CHART_COMMAND, async (input = {}) => {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('图表粘贴参数必须为对象。')
+      const unitId = input.unitId ?? this.activeWorkbookId, workbook = this.getWorkbookModel(unitId)
+      if (!workbook) throw new Error('粘贴目标工作簿已经关闭。')
+      const sheetId = chartObjectSheetId(input) ?? workbook.activeSheetId
+      const clipboard = chartObjectClipboardStore(this.pinia).clipboard
+      if (!clipboard) return false
+      const newChartId = input.newChartId ?? createChartObjectId()
+      const host = input.hostSessionId ? chartObjectUISession(this, input.hostSessionId) : undefined
+      const assertCurrent = (): void => {
+        this.assertAlive()
+        assertChartObjectRevision(this.getWorkbookRevision(unitId), input.expectedRevision)
+        if (input.hostSessionId && (!host || chartObjectUISession(this, input.hostSessionId) !== host || !host.currentSheet(unitId, sheetId))) throw new Error('图表粘贴宿主已经切换。')
+        if (chartObjectClipboardStore(this.pinia).clipboard?.id !== clipboard.id) throw new Error('图表剪贴板已更新，请重新粘贴。')
+        this.assertCanEditWorksheet(unitId, sheetId)
+      }
+      assertCurrent()
+      assertChartReadPermission(workbook, clipboard.chart, this.currentUserId)
+      return this.commitChartChange(unitId, 'Paste chart', newChartId, model => {
+        const created = chartObjectPasteDefinition(model, clipboard, { ...input, unitId, sheetId, newChartId })
+        assertChartReadPermission(model, created, this.currentUserId)
+        model.charts ??= []
+        model.charts.push(created)
+      }, {}, assertCurrent)
+    }, { asynchronous: true })
     this.registerCommand<{ unitId: string; pivotTableId: string; source: PivotTableSourceInput; anchor: PivotTableAnchorInput }, boolean>('sheet.command.add-pivot-table', ({ unitId, pivotTableId, source, anchor }) => this.commitPivotChange(unitId, pivotTableId, anchor.subUnitId, 'sheet.command.add-pivot-table', 'Add pivot table', (model) => {
       if (model.pivotTables?.some((pivot) => pivot.id === pivotTableId)) throw new Error(`Pivot table already exists: ${pivotTableId}`)
       createPivotTable(model, source, anchor, pivotTableId)
@@ -1881,6 +2014,8 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
     registerDocumentContentControlCommands(this)
     registerDocumentCustomXmlCommands(this)
+    registerDocumentLatexCommands(this)
+    registerDocumentImageCommands(this)
     registerDocumentNoteCommands(this)
   }
 
@@ -1950,7 +2085,7 @@ export class OfficeStudio {
     const unitId = commandUnitId(params)
     if (unitId && this.documents.has(unitId)) return 'document'
     if (unitId && this.workbooks.has(unitId)) return 'workbook'
-    if (commandId.startsWith('doc.')) return 'document'
+    if (commandId.startsWith('doc.') || commandId.startsWith('docs-latex.')) return 'document'
     if (commandId.startsWith('sheet.') || commandId.startsWith('workbook.')) return 'workbook'
     return undefined
   }

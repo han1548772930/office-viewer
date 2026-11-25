@@ -80,7 +80,7 @@ function resetValue(control: ChartSettingControl): void {
 
 <template>
   <div class="chart-option-fields">
-    <FormItem v-for="control in visibleControls" :key="control.key" :label="control.label" :extra="control.extra" :class="{ 'chart-option-color-field': control.kind === 'chart-color' }">
+    <FormItem v-for="control in visibleControls" :key="control.key" :label="control.label" :extra="control.extra" :data-chart-option-key="control.key" :class="{ 'chart-option-color-field': control.kind === 'chart-color' }">
       <Switch v-if="control.kind === 'switch'" :checked="control.read(config) ?? control.fallback ?? false" :aria-label="control.label" :disabled="disabled" @update:checked="setValue(control, $event)" />
       <InputNumber v-else-if="control.kind === 'number'" :value="numericValue(control)" :min="control.min" :max="control.max" :step="control.step ?? (control.max === 1 ? 0.05 : 1)" :precision="control.precision" :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <ColorPicker v-else-if="control.kind === 'color'" :value="colorValue(control)" format="hex" value-format="rgb" allow-clear show-text :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" @clear="setValue(control, undefined)" />

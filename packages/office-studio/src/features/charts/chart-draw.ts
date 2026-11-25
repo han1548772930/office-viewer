@@ -1,5 +1,5 @@
-import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartModel, ChartSeriesOptions } from '../../domain/model'
-import type { DrawCommand } from '../../rendering/contracts'
+import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartLineOptions, ChartModel, ChartSeriesOptions } from '../../domain/model'
+import type { DrawCommand, RenderRect, TextCommand } from '../../rendering/contracts'
 import { ComputeError } from '../../compute/errors'
 import type { ChartData, ChartLayout, ChartPoint } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
@@ -8,12 +8,13 @@ import { isChartLinearGradient, normalizeChartColor } from './chart-color'
 import { chartInterpolate, chartLinearRatio } from './chart-math'
 import { layoutDerivedChartData } from './chart-layout'
 import {
-  chartArc, chartAxisRatio, chartAxisTicks, chartBezier, chartCircle, chartColorOpacity, chartFilledMarkBorder, chartFont, chartLabelText, chartLine,
+  chartArc, chartAxisRatio, chartAxisTicks, chartCircle, chartColorOpacity, chartFilledMarkBorder, chartFont, chartLabelText, chartLine,
   chartPolar, chartPolygon, chartRect, chartSymbol, formatChartNumber, type ChartVector,
 } from './chart-geometry'
 import { chartPalette, chartSeriesStyle, definedChartStyleFields } from './chart-options'
 import { chart3DScene } from './chart-3d'
 import { chartFunnelLayout, chartGaugeTiles, chartPieLayout } from './chart-pie-layout'
+import { chartPieAggregateStyle, chartPieConnector, chartPieSliceStyle, isChartCompoundPie } from './chart-pie'
 import { chartGaugeAxisLabelAlignment, chartGaugeAxisLabelRadius, chartGaugeColorStops, chartGaugeDetailText, chartGaugePointerPoints, chartGaugeRatio, chartGaugeSweep, resolveChartGaugeOptions } from './chart-gauge'
 import { chartRadarAxisLabel, chartRadarAxisLine, chartRadarGeometry } from './chart-radar'
 import { chartBoxplotGeometry, chartBoxplotOutliers, chartBoxplotOutlierStyle, chartBoxplotStyle } from './chart-boxplot'
@@ -40,6 +41,10 @@ import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
 import { createChartRelationScene, type ChartRelationScene } from './chart-relation-draw'
 import { chartHasLegend, chartLegendDataCount, chartLegendGeometry, chartLegendItems } from './chart-legend'
 import { chartTitleCommands, chartTitleGeometry } from './chart-titles'
+import { resolveChartAreaLineStyle } from './chart-line-and-area'
+import { chartLinePointsConnected, chartLineSegment } from './chart-line-path'
+import { chartCanvasBoxplotBindings, chartCanvasParetoMark, chartCanvasPieSliceMark, chartCanvasSeriesMark, chartCanvasSeriesBindings, tagChartCanvasElementCommands, withChartCanvasElement, type ChartCanvasElement } from './chart-element-interaction'
+import type { ChartEditPanelAxis } from './chart-edit-panel-route'
 
 export { drawChartSector } from './chart-sector-draw'
 
@@ -55,9 +60,10 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
   const border = chart.options?.appearance?.border
   const commands: DrawCommand[] = [{ kind: 'rect', ...layout.frame, fill: background,
     ...(border?.visible === false ? {} : { stroke: border?.color ?? theme.axisColor ?? '#cbd5e1', strokeWidth: border?.width ?? 1 }) }]
-  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(chart.size.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11)
+  const titleSeed = chartTitleGeometry(chart).bands, legendWidth = Math.max(1, chart.size.width - titleSeed.left - titleSeed.right)
+  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(legendWidth, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11)
     : chartLegendGeometry(chart, chartLegendDataCount(data, chart)).band
-  commands.push(...chartTitleCommands(chart, textColor, legendBand))
+  commands.push(...chartTitleCommands(chart, chart.options?.appearance?.font?.color ?? theme.textColor ?? '#334155', legendBand))
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite)) {
     commands.push({ kind: 'text', x: layout.plot.x + layout.plot.width / 2, y: layout.plot.y + layout.plot.height / 2,
       text: data.hierarchyDiagnostic ?? data.graph?.diagnostic ?? '暂无可绘制数据', font: chartFont(chart.options?.appearance?.font, 11), color: textColor, align: 'center', baseline: 'middle', maxWidth: layout.plot.width })
@@ -124,64 +130,71 @@ function drawAxes(commands: DrawCommand[], data: ChartData, chart: ChartModel, l
   const { plot } = layout, horizontal = layout.horizontal, descriptor = resolveChartType(chart.type), numericX = layout.xMin !== undefined
   const gridColor = theme.splitLineColor ?? '#e5e7eb', axisColor = theme.axisColor ?? '#64748b'
   const yAxis = chart.yAxis, xAxis = chart.xAxis
+  const line = (axisId: ChartEditPanelAxis, kind: 'axis' | 'gridLine' | 'tick', start: ChartVector, end: ChartVector,
+    style: ChartLineOptions | undefined, color: string, clip?: RenderRect): void => {
+    const first = commands.length
+    chartLine(commands, start, end, style, color, clip)
+    tagChartCanvasElementCommands(commands, first, kind === 'axis' ? { kind, axisId, part: 'line' } : { kind, axisId })
+  }
+  const label = (axisId: ChartEditPanelAxis, command: TextCommand): void => { commands.push(withChartCanvasElement(command, { kind: 'axis', axisId, part: 'label' })) }
   for (const value of chartAxisTicks(layout.min, layout.max, yAxis)) {
     const ratio = chartAxisRatio(value, layout.min, layout.max, yAxis), coordinate = horizontal ? plot.x + ratio * plot.width : plot.y + (1 - ratio) * plot.height
     const start = horizontal ? { x: coordinate, y: plot.y } : { x: plot.x, y: coordinate }, end = horizontal ? { x: coordinate, y: plot.y + plot.height } : { x: plot.x + plot.width, y: coordinate }
-    chartLine(commands, start, end, yAxis.gridLine, gridColor, plot)
-    if (yAxis.label?.visible !== false) commands.push({ kind: 'text', x: horizontal ? coordinate : plot.x - 8, y: horizontal ? plot.y + plot.height + 14 : coordinate,
+    line('yAxis', 'gridLine', start, end, yAxis.gridLine, gridColor, plot)
+    if (yAxis.label?.visible !== false) label('yAxis', { kind: 'text', x: horizontal ? coordinate : plot.x - 8, y: horizontal ? plot.y + plot.height + 14 : coordinate,
       text: `${formatChartNumber(value, yAxis.format)}${descriptor.percent && !yAxis.format ? '%' : ''}`, font: chartFont({ ...chart.options?.appearance?.font, ...yAxis.label }, 10), color: yAxis.label?.color ?? color,
       align: horizontal ? 'center' : 'right', baseline: 'middle', rotation: yAxis.label?.rotate })
     if (yAxis.tick?.visible) {
       const length = (yAxis.tick.length ?? 4) * (yAxis.tick.position === 'inside' ? 1 : -1)
-      chartLine(commands, horizontal ? { x: coordinate, y: plot.y + plot.height } : { x: plot.x, y: coordinate }, horizontal ? { x: coordinate, y: plot.y + plot.height - length } : { x: plot.x + length, y: coordinate }, yAxis.tick, axisColor)
+      line('yAxis', 'tick', horizontal ? { x: coordinate, y: plot.y + plot.height } : { x: plot.x, y: coordinate }, horizontal ? { x: coordinate, y: plot.y + plot.height - length } : { x: plot.x + length, y: coordinate }, yAxis.tick, axisColor)
     }
   }
   const zeroRatio = chartAxisRatio(yAxis.scaleType === 'log' ? layout.min : 0, layout.min, layout.max, yAxis)
   const zero = Math.max(0, Math.min(1, zeroRatio))
-  chartLine(commands, horizontal ? { x: plot.x + zero * plot.width, y: plot.y } : { x: plot.x, y: plot.y + (1 - zero) * plot.height },
+  line('xAxis', 'axis', horizontal ? { x: plot.x + zero * plot.width, y: plot.y } : { x: plot.x, y: plot.y + (1 - zero) * plot.height },
     horizontal ? { x: plot.x + zero * plot.width, y: plot.y + plot.height } : { x: plot.x + plot.width, y: plot.y + (1 - zero) * plot.height }, { ...xAxis.line, width: xAxis.line?.width ?? 1.25 }, axisColor)
-  chartLine(commands, horizontal ? { x: plot.x, y: plot.y + plot.height } : { x: plot.x, y: plot.y },
+  line('yAxis', 'axis', horizontal ? { x: plot.x, y: plot.y + plot.height } : { x: plot.x, y: plot.y },
     horizontal ? { x: plot.x + plot.width, y: plot.y + plot.height } : { x: plot.x, y: plot.y + plot.height }, yAxis.line, axisColor)
   const categories = layout.categories
   if (layout.dateAxis) commands.push(...chartDateAxisCommands(chart, layout, color, theme))
   else if (numericX) for (const value of chartAxisTicks(layout.xMin!, layout.xMax!, xAxis)) {
     const ratio = chartAxisRatio(value, layout.xMin!, layout.xMax!, xAxis), coordinate = horizontal ? plot.y + ratio * plot.height : plot.x + ratio * plot.width
-    chartLine(commands, horizontal ? { x: plot.x, y: coordinate } : { x: coordinate, y: plot.y }, horizontal ? { x: plot.x + plot.width, y: coordinate } : { x: coordinate, y: plot.y + plot.height }, xAxis.gridLine, gridColor, plot)
-    if (xAxis.label?.visible !== false) commands.push({ kind: 'text', x: horizontal ? plot.x - 8 : coordinate, y: horizontal ? coordinate : plot.y + plot.height + 14,
+    line('xAxis', 'gridLine', horizontal ? { x: plot.x, y: coordinate } : { x: coordinate, y: plot.y }, horizontal ? { x: plot.x + plot.width, y: coordinate } : { x: coordinate, y: plot.y + plot.height }, xAxis.gridLine, gridColor, plot)
+    if (xAxis.label?.visible !== false) label('xAxis', { kind: 'text', x: horizontal ? plot.x - 8 : coordinate, y: horizontal ? coordinate : plot.y + plot.height + 14,
       text: formatChartNumber(value, xAxis.format),
       font: chartFont({ ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(xAxis.label) }, 10), color: xAxis.label?.color ?? color, align: horizontal ? 'right' : 'center', baseline: 'middle', rotation: xAxis.label?.rotate })
     if (xAxis.tick?.visible) {
       const length = (xAxis.tick.length ?? 4) * (xAxis.tick.position === 'inside' ? -1 : 1)
-      chartLine(commands, horizontal ? { x: plot.x, y: coordinate } : { x: coordinate, y: plot.y + plot.height },
+      line('xAxis', 'tick', horizontal ? { x: plot.x, y: coordinate } : { x: coordinate, y: plot.y + plot.height },
         horizontal ? { x: plot.x - length, y: coordinate } : { x: coordinate, y: plot.y + plot.height + length }, xAxis.tick, axisColor)
     }
   } else categories.forEach((category, index) => {
     const ratio = xAxis.reverse ? 1 - (index + 0.5) / Math.max(1, categories.length) : (index + 0.5) / Math.max(1, categories.length)
     const coordinate = horizontal ? plot.y + ratio * plot.height : plot.x + ratio * plot.width
-    if (xAxis.gridLine?.visible) chartLine(commands, horizontal ? { x: plot.x, y: coordinate } : { x: coordinate, y: plot.y },
+    if (xAxis.gridLine?.visible) line('xAxis', 'gridLine', horizontal ? { x: plot.x, y: coordinate } : { x: coordinate, y: plot.y },
       horizontal ? { x: plot.x + plot.width, y: coordinate } : { x: coordinate, y: plot.y + plot.height }, xAxis.gridLine, gridColor, plot)
     if (xAxis.tick?.visible) {
       const length = (xAxis.tick.length ?? 4) * (xAxis.tick.position === 'inside' ? -1 : 1)
       const start = horizontal ? { x: plot.x + zero * plot.width, y: coordinate } : { x: coordinate, y: plot.y + (1 - zero) * plot.height }
-      chartLine(commands, start, { x: start.x - (horizontal ? length : 0), y: start.y + (horizontal ? 0 : length) }, xAxis.tick, axisColor)
+      line('xAxis', 'tick', start, { x: start.x - (horizontal ? length : 0), y: start.y + (horizontal ? 0 : length) }, xAxis.tick, axisColor)
     }
-    if (xAxis.label?.visible !== false) commands.push({ kind: 'text', x: horizontal ? plot.x - 8 : plot.x + ratio * plot.width, y: horizontal ? plot.y + ratio * plot.height : plot.y + plot.height + 14,
+    if (xAxis.label?.visible !== false) label('xAxis', { kind: 'text', x: horizontal ? plot.x - 8 : plot.x + ratio * plot.width, y: horizontal ? plot.y + ratio * plot.height : plot.y + plot.height + 14,
       text: category, font: chartFont({ ...chart.options?.appearance?.font, ...xAxis.label }, 10), color: xAxis.label?.color ?? color, align: horizontal ? 'right' : 'center', baseline: 'middle', rotation: xAxis.label?.rotate,
       maxWidth: horizontal ? Math.max(1, plot.x - layout.frame.x - 12) : Math.max(1, plot.width / Math.max(1, categories.length) - 4) })
   })
   if (layout.rightMin !== undefined && layout.rightMax !== undefined) {
     const axis = chart.options?.rightYAxis ?? { scaleType: 'linear' }
-    chartLine(commands, horizontal ? { x: plot.x, y: plot.y } : { x: plot.x + plot.width, y: plot.y },
+    line('rightYAxis', 'axis', horizontal ? { x: plot.x, y: plot.y } : { x: plot.x + plot.width, y: plot.y },
       { x: plot.x + plot.width, y: horizontal ? plot.y : plot.y + plot.height }, axis.line, axisColor)
     for (const value of chartAxisTicks(layout.rightMin, layout.rightMax, axis)) {
       const ratio = chartAxisRatio(value, layout.rightMin, layout.rightMax, axis)
       const point = horizontal ? { x: plot.x + ratio * plot.width, y: plot.y } : { x: plot.x + plot.width, y: plot.y + (1 - ratio) * plot.height }
-      if (axis.gridLine?.visible) chartLine(commands, point, horizontal ? { x: point.x, y: plot.y + plot.height } : { x: plot.x, y: point.y }, axis.gridLine, gridColor, plot)
+      if (axis.gridLine?.visible) line('rightYAxis', 'gridLine', point, horizontal ? { x: point.x, y: plot.y + plot.height } : { x: plot.x, y: point.y }, axis.gridLine, gridColor, plot)
       if (axis.tick?.visible) {
         const length = (axis.tick.length ?? 4) * (axis.tick.position === 'inside' ? -1 : 1)
-        chartLine(commands, point, { x: point.x + (horizontal ? 0 : length), y: point.y - (horizontal ? length : 0) }, axis.tick, axisColor)
+        line('rightYAxis', 'tick', point, { x: point.x + (horizontal ? 0 : length), y: point.y - (horizontal ? length : 0) }, axis.tick, axisColor)
       }
-      if (axis.label?.visible !== false) commands.push({ kind: 'text', x: point.x + (horizontal ? 0 : 8), y: point.y - (horizontal ? 12 : 0),
+      if (axis.label?.visible !== false) label('rightYAxis', { kind: 'text', x: point.x + (horizontal ? 0 : 8), y: point.y - (horizontal ? 12 : 0),
         text: `${formatChartNumber(value, axis.format)}${chart.type === 'pareto' && !axis.format ? '%' : ''}`, font: chartFont({ ...chart.options?.appearance?.font, ...axis.label }, 10), color: axis.label?.color ?? color,
         align: horizontal ? 'center' : 'left', baseline: 'middle', rotation: axis.label?.rotate })
     }
@@ -190,6 +203,7 @@ function drawAxes(commands: DrawCommand[], data: ChartData, chart: ChartModel, l
 }
 
 function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, palette: string[]): void {
+  const bindings = chart.type === 'pareto' ? [] : chartCanvasSeriesBindings(data, chart.options)
   const { plot } = layout, horizontal = layout.horizontal, categoryStep = layout.categoryBandwidth ?? (horizontal ? plot.height : plot.width) / Math.max(1, layout.categories.length)
   const bars = layout.series.filter(series => series.points.length && (series.type === 'column' || series.type === 'bar'))
   const barGroups = [...new Set(bars.map(series => series.stacked ? `stack:${series.rightAxis ? 'right' : 'left'}` : `field:${series.field}`))]
@@ -198,13 +212,17 @@ function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartMod
   const barWidth = groupWidth / Math.max(1, barGroups.length - (barGroups.length - 1) * overlap)
   const maxBubbleSize = data.series.reduce((max, source) => source.sizeValues?.reduce<number>((maximum, size) => Math.max(maximum, size ?? 0), max) ?? max, 1)
   layout.series.slice(0, data.series.length).forEach((series, seriesIndex) => {
-    const source = data.series[seriesIndex]!, field = source.field, style = chart.type === 'pareto' ? chartParetoBarStyle(chart, field, seriesIndex, palette, source.sourceName ?? source.name)
+    const binding = bindings[seriesIndex], source = data.series[seriesIndex]!, field = source.field
+    const pointElement = (dataIndex: number): ChartCanvasElement | undefined => chart.type === 'pareto' ? chartCanvasParetoMark('bar', source)
+      : binding ? { kind: 'dataPoint', binding, dataIndex } : undefined
+    const style = chart.type === 'pareto' ? chartParetoBarStyle(chart, field, seriesIndex, palette, source.sourceName ?? source.name)
       : chartSeriesStyle(chart, field, seriesIndex, palette, source.sourceName ?? source.name)
     const axis = series.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
     const isBar = series.type === 'column' || series.type === 'bar' || chart.type === 'histogram' || chart.type === 'pareto'
     if (isBar) {
       const group = series.stacked ? `stack:${series.rightAxis ? 'right' : 'left'}` : `field:${field}`, groupIndex = Math.max(0, barGroups.indexOf(group))
       for (const point of series.points) {
+        const first = commands.length
         const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type), color = chartColorOpacity(pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1)
         const center = horizontal ? point.y : point.x, offset = center - groupWidth / 2 + groupIndex * barWidth * (1 - overlap)
         const rect = horizontal ? { x: Math.min(point.x, point.baseX!), y: offset, width: Math.abs(point.x - point.baseX!), height: Math.max(1, barWidth - 1) }
@@ -212,38 +230,44 @@ function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartMod
         const gradient = createChartMarkGradient(chart, { ...pointStyle, color: pointStyle.color ?? series.color }, horizontal ? 'bar' : 'column', { negative: point.value < 0, reverse: axis.reverse })
         const border = chart.type === 'pareto' ? chartFilledMarkBorder(pointStyle.color ?? series.color, pointStyle.border) : pointStyle.border
         chartRect(commands, rect, color, border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1), gradient)
+        tagChartCanvasElementCommands(commands, first, pointElement(point.categoryIndex))
       }
       return
     }
     if (chart.type === 'scatter' || chart.type === 'bubble') {
       for (const point of series.points) {
+        const first = commands.length
         const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type)
         const size = chart.type === 'bubble' ? chartBubblePointSize(pointStyle, point.size ?? 0, maxBubbleSize, chart.options, Math.min(plot.width, plot.height)) : pointStyle.point?.size ?? 8
         if (chart.type === 'bubble' && (point.size === undefined || point.size <= 0)) continue
         chartSymbol(commands, point, size, chartColorOpacity(pointStyle.point?.color ?? pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1), pointStyle.point?.shape ?? 'circle', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
+        tagChartCanvasElementCommands(commands, first, pointElement(point.categoryIndex))
       }
       return
     }
-    const curvedPoints = series.type === 'area' && chart.options?.area?.smooth ? (function* (): Generator<ChartVector> {
+    const lineStyle = resolveChartAreaLineStyle(chart, series.type === 'area' ? 'area' : 'line')
+    const curvedPoints = lineStyle !== 'line' ? (function* (): Generator<ChartVector> {
       for (let index = 1; index < series.points.length; index++) {
-        if (!connectedChartPoints(series.points[index - 1]!, series.points[index]!, chart)) continue
-        yield* smoothChartSegment(series.points, index)
+        for (const point of chartLineSegment(series.points, index, lineStyle, chart.options?.invalidValueStrategy)) {
+          yield point
+          if (series.type === 'area') yield { x: point.x, y: point.baseY }
+        }
       }
     })() : undefined
     const seriesBounds = chartSeriesGradientBounds(series, series.type === 'area', curvedPoints)
+    const seriesStart = commands.length
     for (let index = 1; index < series.points.length; index++) {
       const previous = series.points[index - 1]!, point = series.points[index]!
       if (!connectedChartPoints(previous, point, chart)) continue
       const styleAtPoint = chartPointStyle(style, point.categoryIndex, chart.type), color = styleAtPoint.color ?? series.color
-      const path = series.type === 'area' && chart.options?.area?.smooth ? smoothChartSegment(series.points, index) : [previous, point]
+      const path = chartLineSegment(series.points, index, lineStyle, chart.options?.invalidValueStrategy)
       const areaGradient = series.type === 'area' ? createChartMarkGradient(chart, { ...styleAtPoint, color, fillOpacity: styleAtPoint.fillOpacity ?? 0.28 }, 'area', { reverse: axis.reverse }, isChartLinearGradient(color) ? seriesBounds : plot) : undefined
       const lineColor = styleAtPoint.border?.color ?? color
       const lineGradient = series.type === 'line' ? createChartMarkGradient(chart, { ...styleAtPoint, color: lineColor, fillOpacity: styleAtPoint.border?.opacity ?? 1 }, 'line', { reverse: axis.reverse }, isChartLinearGradient(lineColor) ? seriesBounds : plot) : undefined
       for (let step = 1; step < path.length; step++) {
         const a = path[step - 1]!, b = path[step]!
         if (series.type === 'area') {
-          const t0 = (step - 1) / (path.length - 1), t1 = step / (path.length - 1)
-          const base0 = previous.baseY! + (point.baseY! - previous.baseY!) * t0, base1 = previous.baseY! + (point.baseY! - previous.baseY!) * t1
+          const base0 = a.baseY, base1 = b.baseY
           const fill = chartColorOpacity(color, styleAtPoint.fillOpacity ?? 0.28), pattern = chartFillPatternPaint(styleAtPoint.fillPattern, styleAtPoint.fillOpacity ?? 0.28)
           if ((a.y - base0) * (b.y - base1) < 0) {
             const ratio = Math.abs(a.y - base0) / (Math.abs(a.y - base0) + Math.abs(b.y - base1)), crossing = { x: a.x + (b.x - a.x) * ratio, y: base0 + (base1 - base0) * ratio }
@@ -254,25 +278,24 @@ function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartMod
         chartLine(commands, a, b, { ...styleAtPoint.border, color: styleAtPoint.border?.color ?? color, width: styleAtPoint.border?.width ?? 2 }, color, plot, lineGradient)
       }
     }
+    tagChartCanvasElementCommands(commands, seriesStart, binding ? chartCanvasSeriesMark(binding) : undefined)
     series.points.forEach(point => {
+      const first = commands.length
       const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type)
       const color = pointStyle.point?.color ?? pointStyle.color ?? series.color
       const gradient = createChartMarkGradient(chart, { ...pointStyle, color: isChartLinearGradient(pointStyle.color) ? pointStyle.color : color }, 'line', { reverse: axis.reverse, symbol: true }, plot)
       chartSymbol(commands, point, pointStyle.point?.size ?? 6, chartColorOpacity(color, pointStyle.fillOpacity ?? 1), pointStyle.point?.shape ?? 'circle', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1), gradient)
+      tagChartCanvasElementCommands(commands, first, pointElement(point.categoryIndex))
     })
   })
 }
 
 function connectedChartPoints(previous: ChartPoint, point: ChartPoint, chart: ChartModel): boolean {
-  return chart.options?.invalidValueStrategy === 'link' || (point.sequenceIndex ?? point.categoryIndex) === (previous.sequenceIndex ?? previous.categoryIndex) + 1
-}
-
-function smoothChartSegment(points: ChartPoint[], index: number): ChartVector[] {
-  const a = points[index - 1]!, b = points[index]!, previous = points[Math.max(0, index - 2)]!, next = points[Math.min(points.length - 1, index + 1)]!
-  return chartBezier(a, { x: a.x + (b.x - previous.x) / 6, y: a.y + (b.y - previous.y) / 6 }, { x: b.x - (next.x - a.x) / 6, y: b.y - (next.y - a.y) / 6 }, b, 12)
+  return chartLinePointsConnected(previous, point, chart.options?.invalidValueStrategy)
 }
 
 function drawPointLabels(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[], businessPercentages?: readonly number[]): void {
+  const bindings = chart.type === 'pareto' ? [] : chartCanvasSeriesBindings(data, chart.options)
   for (const [index, series] of layout.series.entries()) {
     if (chart.type === 'pareto' && index >= data.series.length) continue
     const source = data.series[index]
@@ -284,12 +307,16 @@ function drawPointLabels(commands: DrawCommand[], data: ChartData, chart: ChartM
       const label = current.label
       if (!label?.visible) return
       const anchor = chartPointLabelAnchor(label.position, point, layout.horizontal, label.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11)
-      commands.push({ kind: 'text', ...anchor, text: chartLabelText(label, point.value, point.category, series.name, businessPercentages?.[point.categoryIndex], point.size), font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label?.color ?? color, clip: layout.plot })
+      const binding = bindings[index]
+      commands.push(withChartCanvasElement({ kind: 'text', ...anchor, text: chartLabelText(label, point.value, point.category, series.name, businessPercentages?.[point.categoryIndex], point.size), font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label?.color ?? color, clip: layout.plot },
+        chart.type === 'pareto' ? chartCanvasParetoMark('bar', source)
+          : binding ? { kind: 'dataLabel', binding, dataIndex: point.categoryIndex } : undefined))
     })
   }
 }
 
 function drawParetoCumulative(commands: DrawCommand[], chart: ChartModel, layout: ChartLayout, textColor: string, palette: string[]): void {
+  const first = commands.length
   const series = layout.series.at(-1)!, style = chartParetoCumulativeStyle(chart, palette), bounds = chartSeriesGradientBounds(series)
   const reverse = chart.options?.rightYAxis?.reverse
   for (let index = 1; index < series.points.length; index++) {
@@ -309,6 +336,7 @@ function drawParetoCumulative(commands: DrawCommand[], chart: ChartModel, layout
     commands.push({ kind: 'text', ...anchor, text: chartLabelText(label, point.value, point.category, CHART_PARETO_CUMULATIVE_NAME, point.value),
       font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label.color ?? textColor, clip: layout.plot })
   }
+  tagChartCanvasElementCommands(commands, first, { kind: 'mark', directEdit: { kind: 'paretoStyle', part: 'line' } })
 }
 
 function drawTrendlinesAndErrors(commands: DrawCommand[], derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
@@ -353,6 +381,7 @@ function drawTrendlinesAndErrors(commands: DrawCommand[], derived: ChartDerivedD
 }
 
 function drawRadar(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[], theme: ChartRenderTheme): void {
+  const bindings = chartCanvasSeriesBindings(data, chart.options)
   const { plot } = layout, count = data.categories.length, geometry = chartRadarGeometry(data, chart, plot), { center, radius, vertex } = geometry
   const axisLabel = chartRadarAxisLabel(chart), axisLine = chartRadarAxisLine(chart), tick = chart.yAxis.tick
   for (const value of geometry.ticks) {
@@ -383,46 +412,76 @@ function drawRadar(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
       align: 'center', baseline: 'middle', rotation: chart.xAxis.label?.rotate, clip: layout.frame })
   })
   for (const [index, series] of layout.series.entries()) {
+    const binding = bindings[index], first = commands.length
     const source = data.series[index]!, style = chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name), points = new Map(series.points.map(point => [point.categoryIndex, point]))
     const polygon = data.categories.map((_category, categoryIndex) => points.get(categoryIndex) ?? center)
     if (chart.options?.radar?.fill) chartPolygon(commands, polygon, chartColorOpacity(style.color ?? series.color, style.fillOpacity ?? 0.25), undefined, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 0.25))
     polygon.forEach((point, categoryIndex) => chartLine(commands, point, polygon[(categoryIndex + 1) % polygon.length]!, { color: series.color, width: 2, ...style.border }, series.color))
+    tagChartCanvasElementCommands(commands, first, binding ? chartCanvasSeriesMark(binding) : undefined)
     series.points.forEach(point => {
+      const pointStart = commands.length
       const pointStyle = chartPointStyle(style, point.categoryIndex, chart.type)
       chartSymbol(commands, point, pointStyle.point?.size ?? 4, chartColorOpacity(pointStyle.point?.color ?? pointStyle.color ?? series.color, pointStyle.fillOpacity ?? 1),
         pointStyle.point?.shape ?? 'none', pointStyle.border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
+      tagChartCanvasElementCommands(commands, pointStart, binding ? { kind: 'dataPoint', binding, dataIndex: point.categoryIndex } : undefined)
     })
   }
   for (const command of chartRectangularAxisTitleCommands(chart, layout, color)) commands.push(command)
 }
 
 function drawPie(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
-  const pie = chartPieLayout(data, chart, layout.plot), field = data.series[0]!.field
-  for (const [start, end] of pie.connectors) chartLine(commands, start, end, { color, width: 1 }, color)
+  const pie = chartPieLayout(data, chart, layout.plot), source = data.series[0]!, field = source.field
+  const binding = chartCanvasSeriesBindings(data, chart.options)[0]
+  const aggregateIndex = data.categories.length
+  const aggregateElement: ChartCanvasElement = { kind: 'mark', directEdit: { kind: 'pieAggregateStyle',
+    sourceField: field, sourceName: source.sourceName ?? source.name, aggregateIndex } }
+  const labelElement: ChartCanvasElement = { kind: 'mark', directEdit: { kind: 'pieStyle' } }
+  const element = (kind: 'dataPoint' | 'dataLabel', dataIndex: number, secondary = false): ChartCanvasElement | undefined => dataIndex >= 0 && dataIndex < source.values.length
+    ? kind === 'dataLabel' ? labelElement
+      : isChartCompoundPie(chart.type) || chart.options?.pie?.sliceStyles?.[dataIndex] !== undefined
+        ? chartCanvasPieSliceMark(source, dataIndex, secondary ? 'secondary' : 'primary')
+        : binding ? { kind, binding, dataIndex } : undefined : undefined
+  const connector = chartPieConnector(chart, color)
+  if (connector) for (const [start, end] of pie.connectors) {
+    const first = commands.length
+    chartLine(commands, start, end, connector, color, layout.plot)
+    tagChartCanvasElementCommands(commands, first, { kind: 'mark', directEdit: { kind: 'pieConnectorStyle' } })
+  }
   for (const sector of pie.sectors) {
-    const style = chartPointStyle(chartSeriesStyle(chart, field, sector.part.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), sector.part.index, chart.type)
+    const first = commands.length
+    const aggregate = isChartCompoundPie(chart.type) && !sector.secondary && sector.part.index === aggregateIndex
+    const style = aggregate ? chartPieAggregateStyle(chart, source, aggregateIndex, palette)
+      : chartPieSliceStyle(chart, source, sector.part.index, palette)
     const fill = style.color ?? palette[sector.part.index % palette.length]!, gradient = createChartMarkGradient(chart, { ...style, color: fill }, 'pie')
     drawChartSector(commands, sector.center, sector.inner, sector.outer, sector.start, sector.end, chartColorOpacity(fill, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
+    tagChartCanvasElementCommands(commands, first, aggregate ? aggregateElement : element('dataPoint', sector.part.index, sector.secondary))
     const label = { ...style.label, ...chart.options?.pie?.label }
     if (label.visible !== false) {
       const outside = label.position !== 'inside' && label.position !== 'center', point = chartPolar(sector.center, outside ? sector.outer * 1.12 : (sector.inner + sector.outer) / 2, (sector.start + sector.end) / 2)
-      if (outside && chart.options?.pie?.showLabelLine !== false) chartLine(commands, chartPolar(sector.center, sector.outer, (sector.start + sector.end) / 2), point, { color, width: 0.8 }, color)
-      commands.push({ kind: 'text', ...point, text: chartLabelText({ contentType: 'category', ...label }, sector.part.value, sector.part.category, data.series[0]!.name, sector.percentage), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot })
+      if (outside && chart.options?.pie?.showLabelLine !== false) {
+        const guideStart = commands.length
+        chartLine(commands, chartPolar(sector.center, sector.outer, (sector.start + sector.end) / 2), point, { color, width: 0.8 }, color)
+        tagChartCanvasElementCommands(commands, guideStart, aggregate ? aggregateElement : labelElement)
+      }
+      commands.push(withChartCanvasElement({ kind: 'text', ...point, text: chartLabelText({ contentType: 'category', ...label }, sector.part.value, sector.part.category, data.series[0]!.name, sector.percentage), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot }, aggregate ? aggregateElement : element('dataLabel', sector.part.index)))
     }
   }
   for (const bar of pie.bars) {
-    const style = chartPointStyle(chartSeriesStyle(chart, field, bar.part.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), bar.part.index, chart.type)
+    const first = commands.length
+    const style = chartPieSliceStyle(chart, source, bar.part.index, palette)
     const fill = style.color ?? palette[bar.part.index % palette.length]!, gradient = createChartMarkGradient(chart, { ...style, color: fill }, 'column')
     chartRect(commands, bar.rect, chartColorOpacity(fill, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
+    tagChartCanvasElementCommands(commands, first, element('dataPoint', bar.part.index, true))
     const label = { ...style.label, ...chart.options?.pie?.label }
-    if (label.visible !== false) commands.push({ kind: 'text', x: bar.rect.x + bar.rect.width / 2, y: bar.rect.y + bar.rect.height / 2, text: chartLabelText({ contentType: 'category', ...label }, bar.part.value, bar.part.category, data.series[0]!.name, bar.percentage), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', maxWidth: bar.rect.width, clip: layout.plot })
+    if (label.visible !== false) commands.push(withChartCanvasElement({ kind: 'text', x: bar.rect.x + bar.rect.width / 2, y: bar.rect.y + bar.rect.height / 2, text: chartLabelText({ contentType: 'category', ...label }, bar.part.value, bar.part.category, data.series[0]!.name, bar.percentage), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', maxWidth: bar.rect.width, clip: layout.plot }, element('dataLabel', bar.part.index)))
   }
 }
 
 function drawBoxplot(commands: DrawCommand[], derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, textColor: string, palette: string[]): void {
-  const { plot } = layout, boxes = derived.boxes!
+  const { plot } = layout, boxes = derived.boxes!, bindings = chartCanvasBoxplotBindings(boxes, chart.options)
   boxes.forEach((box, index) => {
     if (!box.statistics) return
+    const first = commands.length, binding = bindings[index]
     const style = chartBoxplotStyle(chart, box, index, palette), statistics = box.statistics, color = style.color ?? palette[box.seriesPosition % palette.length]!
     const geometry = chartBoxplotGeometry(chart, layout, style, index, boxes.length), { x, width } = geometry, summary = geometry.summary(statistics)
     if (summary && derived.legendSelection?.['样本分布'] !== false) {
@@ -443,7 +502,9 @@ function drawBoxplot(commands: DrawCommand[], derived: ChartDerivedData, chart: 
           align: label.position === 'left' ? 'right' : label.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: plot })
       }
     }
+    tagChartCanvasElementCommands(commands, first, binding ? chartCanvasSeriesMark(binding) : undefined)
     if (chart.options?.boxplot?.showOutliers !== false && derived.legendSelection?.['异常值'] !== false) for (const outlier of chartBoxplotOutliers(box)) {
+      const pointStart = commands.length
       const pointStyle = chartBoxplotOutlierStyle(style, outlier.sourceIndex)
       const y = geometry.y(outlier.value), size = pointStyle.point?.size ?? 4, shape = pointStyle.point?.shape ?? 'circle'
       if (y === undefined || size <= 0 || shape === 'none') continue
@@ -454,6 +515,7 @@ function drawBoxplot(commands: DrawCommand[], derived: ChartDerivedData, chart: 
         chartRect(commands, { x: x - half, y: y - half, width: size, height: size }, fill, undefined, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
         corners.forEach((point, position) => chartLine(commands, point, corners[(position + 1) % corners.length]!, border, markerColor, plot))
       } else chartSymbol(commands, { x, y }, size, fill, shape, border, plot, chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1))
+      tagChartCanvasElementCommands(commands, pointStart, binding ? { kind: 'dataPoint', binding, dataIndex: outlier.sourceIndex } : undefined)
     }
   })
 }
@@ -465,25 +527,31 @@ function drawWaterfall(commands: DrawCommand[], data: ChartData, chart: ChartMod
   const width = Math.max(1, step / (1 + (chart.options?.bar?.gapWidth ?? 150) / 100) - 1), connector = chartWaterfallConnector(chart)
   const roles = data.series.map((source, index) => chartWaterfallRoleStyles(chart, source.field, index, palette, source.sourceName ?? source.name))
   const globalRoles = chartWaterfallRoleStyles(chart, undefined, 0, palette)
+  const bindings = chartCanvasSeriesBindings(data, chart.options)
   if (connector) for (const segment of scene.connectors) {
     const direction = Math.sign(segment.to.x - segment.from.x), half = Math.min(width / 2, Math.abs(segment.to.x - segment.from.x) / 2)
     chartLine(commands, { x: segment.from.x + direction * half, y: segment.from.y },
       { x: segment.to.x - direction * half, y: segment.to.y }, connector, connector.color, plot)
   }
   for (const point of scene.points) {
+    const first = commands.length, binding = bindings[point.seriesPosition]
+    const element: ChartCanvasElement | undefined = point.seriesPosition === CHART_WATERFALL_GLOBAL_SERIES
+      ? { kind: 'mark', directEdit: { kind: 'waterfallStyle', part: 'subtotal' } }
+      : binding ? { kind: 'mark', directEdit: { kind: 'waterfallStyle', part: point.waterfallRole, binding } } : undefined
     const group = point.seriesPosition === CHART_WATERFALL_GLOBAL_SERIES ? globalRoles : roles[point.seriesPosition]!
     const style = chartPointStyle(group[point.waterfallRole], point.dataPointIndex, chart.type), color = style.color!
     const axis = point.rightAxis ? chart.options?.rightYAxis ?? { scaleType: 'linear' } : chart.yAxis
     const gradient = createChartMarkGradient(chart, { ...style, color }, 'column', { negative: point.value < 0, reverse: axis.reverse })
     chartRect(commands, { x: point.x - width / 2, y: Math.min(point.y, point.baseY), width, height: Math.abs(point.y - point.baseY) },
       chartColorOpacity(color, style.fillOpacity ?? 1), style.border, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1), gradient)
+    tagChartCanvasElementCommands(commands, first, element)
     const label = style.label, inside = label?.position === 'inside' || label?.position === 'center'
     if (!label?.visible) continue
     const x = point.x + (label.position === 'left' ? -9 : label.position === 'right' ? 9 : 0)
     const y = inside ? (point.y + point.baseY) / 2 : point.y + (label.position === 'left' || label.position === 'right' ? 0 : label.position === 'bottom' ? 10 : -9)
-    commands.push({ kind: 'text', x, y, text: chartLabelText(label, point.value, point.category, style.name ?? point.category),
+    commands.push(withChartCanvasElement({ kind: 'text', x, y, text: chartLabelText(label, point.value, point.category, style.name ?? point.category),
       font: chartFont({ ...chart.options?.appearance?.font, ...label }), color: label.color ?? textColor,
-      align: label.position === 'left' ? 'right' : label.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: plot })
+      align: label.position === 'left' ? 'right' : label.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: plot }, element))
   }
 }
 
@@ -546,10 +614,14 @@ function drawGauge(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
 
 function drawFunnel(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
   const source = data.series[0]!
+  const binding = chartCanvasSeriesBindings(data, chart.options)[0]
   for (const step of chartFunnelLayout(data, chart, layout.plot)) {
+    const first = commands.length
     const style = chartPointStyle(chartSeriesStyle(chart, source.field, step.categoryIndex, palette, source.sourceName ?? source.name), step.categoryIndex, chart.type)
     chartPolygon(commands, step.points, chartColorOpacity(style.color ?? palette[step.categoryIndex % palette.length]!, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
-    if (style.label?.visible !== false) commands.push({ kind: 'text', ...step.center, text: chartLabelText({ contentType: 'category', ...style.label }, step.value, step.category, source.name), font: chartFont(style.label, 10), color: style.label?.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot })
+    tagChartCanvasElementCommands(commands, first, binding ? { kind: 'dataPoint', binding, dataIndex: step.categoryIndex } : undefined)
+    if (style.label?.visible !== false) commands.push(withChartCanvasElement({ kind: 'text', ...step.center, text: chartLabelText({ contentType: 'category', ...style.label }, step.value, step.category, source.name), font: chartFont(style.label, 10), color: style.label?.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot },
+      binding ? { kind: 'dataLabel', binding, dataIndex: step.categoryIndex } : undefined))
   }
 }
 

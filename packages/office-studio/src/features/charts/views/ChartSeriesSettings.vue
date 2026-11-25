@@ -12,12 +12,26 @@ import { chartPalette, chartSeriesStyle } from '../chart-options'
 import { CHART_POINT_SHAPE_CHOICES } from '../chart-markers'
 import ChartOptionFields from './ChartOptionFields.vue'
 
-const props = defineProps<{ config: ChartConfig; fields: ChartSettingsField[]; sourceFields: ChartSettingsField[]; categories: string[]; data?: ChartData; combination?: boolean; secondaryAxis?: boolean; horizontal?: boolean; scatter?: boolean; disabled?: boolean }>()
+const props = defineProps<{ config: ChartConfig; fields: ChartSettingsField[]; sourceFields: ChartSettingsField[]; categories: string[]; data?: ChartData; routeSeriesTarget?: string; routeKey?: number; combination?: boolean; secondaryAxis?: boolean; horizontal?: boolean; scatter?: boolean; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
 const selectedTarget = ref<string>(), selectedPoint = ref<number>()
 const sampleError = ref<string>()
+const routeError = ref<string>()
+let requestedTarget: string | undefined = props.routeSeriesTarget
 const targets = computed(() => chartSeriesSettingTargets(props.config, props.fields, props.data))
-watch(targets, items => { if (!items.some(item => item.value === selectedTarget.value)) selectedTarget.value = items.find(item => !item.disabled)?.value }, { immediate: true })
+function chooseRequestedTarget(items: ReturnType<typeof chartSeriesSettingTargets>): void {
+  if (requestedTarget !== undefined) {
+    const match = items.find(item => item.value === requestedTarget)
+    if (!match || match.disabled || match.ambiguous) {
+      selectedTarget.value = undefined
+      routeError.value = props.data ? '指定系列不存在或源名称重复，请重新定位系列。' : undefined
+      return
+    }
+    selectedTarget.value = match.value; requestedTarget = undefined; routeError.value = undefined
+  } else if (!items.some(item => item.value === selectedTarget.value)) selectedTarget.value = items.find(item => !item.disabled)?.value
+}
+watch(targets, chooseRequestedTarget, { immediate: true })
+watch([() => props.routeSeriesTarget, () => props.routeKey], ([value]) => { requestedTarget = value; chooseRequestedTarget(targets.value) })
 watch(selectedTarget, () => { selectedPoint.value = undefined; sampleError.value = undefined })
 const target = computed(() => targets.value.find(item => item.value === selectedTarget.value))
 const controls = computed(() => target.value === undefined ? [] : chartSeriesControls(target.value.selector, props.combination, props.secondaryAxis, props.horizontal, target.value.source, props.config.type === 'bubble'))
@@ -51,6 +65,7 @@ const scatterControl = computed(() => {
     (config, value) => { const mapping = config.seriesToCategory ??= {}; if (value === undefined) delete mapping[field]; else mapping[field] = [value] })]
 })
 function change(config: ChartConfig): void { emit('update:config', config) }
+function selectSeries(): void { requestedTarget = undefined; routeError.value = undefined }
 function selectPointNumber(value: unknown): void {
   sampleError.value = undefined
   if (value === null || value === undefined || value === '') { selectedPoint.value = undefined; return }
@@ -77,7 +92,7 @@ function resetPoint(): void {
 </script>
 
 <template>
-  <FormItem label="选择系列" extra="字段样式应用到该字段的全部分组，名称样式可单独设置一组。"><Select v-model:value="selectedTarget" :options="targets" show-search option-filter-prop="label" aria-label="选择图表系列" :disabled="disabled" /></FormItem>
+  <div data-chart-route-series :data-chart-selected-series="selectedTarget"><FormItem label="选择系列" extra="字段样式应用到该字段的全部分组，名称样式可单独设置一组。" :validate-status="routeError ? 'error' : undefined" :help="routeError"><Select v-model:value="selectedTarget" :options="targets" show-search option-filter-prop="label" aria-label="选择图表系列" :disabled="disabled" @update:value="selectSeries" /></FormItem></div>
   <ChartOptionFields :config="config" :controls="scatterControl" :fields="sourceFields" :disabled="disabled" @update:config="change" />
   <ChartOptionFields :config="config" :controls="controls" :disabled="disabled || target?.ambiguous" @update:config="change" />
   <Button v-if="target" :disabled="disabled" @click="resetSeries">恢复该系列默认样式</Button>

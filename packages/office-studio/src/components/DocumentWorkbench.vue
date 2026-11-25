@@ -20,8 +20,19 @@ import DocumentHeaderFooterPanel from './document/DocumentHeaderFooterPanel.vue'
 import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
 import DocumentStructuredBlockPanel from './document/DocumentStructuredBlockPanel.vue'
 import { documentStandaloneStructureTargetCurrent, type DocumentStructurePanelValue } from './document/document-structure-panel-state'
-import { documentStructureContextItems } from './document/document-structure-ribbon'
+import { documentStructureContextItems, documentStructuredParagraphMenuItems, documentStructuredMountedMenuItems, documentStructureCommandFromMenu,
+  type DocumentStructuredParagraphMenuContext } from './document/document-structure-ribbon'
+import { isDocumentTextBlock } from '../features/document/model/document-structural-blocks'
+import { captureDocumentStructuredCanvasTarget, documentStructuredCanvasTargetCurrent, type DocumentStructuredCanvasTarget,
+  type DocumentStructuredCanvasCommandRequest, type DocumentStructuredCanvasOperationRequest } from '../features/document/controllers/document-structured-canvas'
 import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
+import DocumentImagePanel from './document/DocumentImagePanel.vue'
+import { useDocumentImageEditor } from './document/use-document-image-editor'
+import { isDocumentImageCommand } from '../features/document/commands/document-image-commands'
+import { documentImageFromResource, prepareDocumentImageSource } from '../api/document-images'
+import { trackDocumentImageTask } from '../api/document-image-editors'
+import type { DocumentImage } from '../features/document/model/document-model'
+import { documentImageCanvasTargetCurrent, type DocumentImageCanvasTarget, type DocumentImageCanvasCommandRequest, type DocumentImageCanvasOperationRequest } from '../features/document/controllers/document-image-canvas'
 import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
 import DocumentNoteSettingsDialog from './document/DocumentNoteSettingsDialog.vue'
 import DocumentPermissionPanel from './document/DocumentPermissionPanel.vue'
@@ -35,7 +46,7 @@ import { createDocumentTableRibbon, documentTableExtraContextItems, type Documen
 import { documentTableCommandState } from '../features/document/commands/table-commands'
 import { isDocumentTableCommand, type DocumentTableCommand, type DocumentTableInsertOptions } from '../features/document/commands/table-command-types'
 import { documentTableGrid, documentTableWholeRange, type DocumentTableCellRange } from '../features/document/model/document-table-grid'
-import { findDocumentBlock, tableForBlock } from '../features/document/model/document-model'
+import { documentBlockAncestry, findDocumentBlock, tableForBlock } from '../features/document/model/document-model'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import type { RibbonItem, RibbonVariant } from '../platform/ribbon/ribbon-schema'
 import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
@@ -44,6 +55,7 @@ import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, 
 import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems, type DocumentTocContextActionStates } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentStoryToolbarState, documentToolbarState, type DocumentToolbarState } from './document/document-toolbar-state'
 import { documentParagraphSettingsStyle, type DocumentParagraphLineMetrics } from './document/document-paragraph-settings-state'
+import { documentParagraphPagination } from '../features/document/model/document-paragraph-pagination'
 import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
 import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumbering, canRestartDocumentNumbering, documentCommandSupportsBlockHost, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
@@ -69,7 +81,14 @@ import { documentContentControlInputForSelection, documentContentControlSelectio
 import { documentContentControlCommandIsTextInput, documentContentControlCommandUsesWholeCellInput, resolveDocumentContentControlTextInputId } from '../features/document/services/content-control-editing'
 import { codeBlockData, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
 import { documentStructuredBlockAtSelection, isDocumentStructureCommand, type DocumentStructureCommand } from '../features/document/commands/document-structure-commands'
-import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
+import { documentLatexSourceForSelection, getLatexFormulas, selectedLatexFormula, type LatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
+import { documentLatexSelectionState } from '../features/document/commands/document-latex-commands'
+import { documentLatexCanvasRequestCurrent, type DocumentLatexCanvasEditRequest } from '../features/document/controllers/document-latex-canvas'
+import { documentLatexContextItems, documentLatexMountedMenuItem, documentLatexCommandFromMenu } from './document/document-latex-menu'
+import { DOCUMENT_LATEX_POPUP_OPERATIONS, assertDocumentLatexPopupRequest, type DocumentLatexPopupTarget } from '../features/document/controllers/document-latex-popup'
+import type { DocumentLatexPopupEditorHandle } from '../api/document-latex-popup-editors'
+import { DOCUMENT_LATEX_RIBBON_TAB } from './document/document-latex-ribbon'
+import { DOCUMENT_LATEX_TEMPLATE_LOCAL_OPERATION, DOCUMENT_LATEX_TEMPLATE_OPERATION, getDocumentLatexTemplate } from '../features/document/latex/latex-templates'
 import { documentSupportsNotes } from '../features/document/notes/document-note-editing'
 import { prepareDocumentNoteMutation } from '../features/document/notes/document-note-mutations'
 import type { DocumentNoteKind, DocumentNoteMutationRequest } from '../features/document/notes/document-note-types'
@@ -213,12 +232,15 @@ const modalOpen = ref(false)
 const modalKind = ref<'image' | 'link'>('image')
 const modalValue = ref('')
 const modalError = ref('')
+const pictureImageBusy = ref(false)
+const insertModalComposing = ref(false)
+const imageOverlayActive = ref(false)
 const tableInsertOpen = ref(false)
 const tableFloatingToolbarOpen = ref(false)
 const tableColors = shallowRef<{ background?: string; border?: string }>({})
 const tableProperties = shallowRef<{ open: boolean; tableId: string; range: DocumentTableCellRange; kind: DocumentTablePropertiesKind; host?: DocumentAuxiliaryBlockHost; type?: 'text' | 'number' | 'date' | 'checkbox' | 'dropdown' }>()
 const notice = ref('')
-const documentContextMenu = shallowRef<{ left: number; top: number; fieldRequest?: { source: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost; bodySelection?: DocumentSelection; requestScope: number } }>()
+const documentContextMenu = shallowRef<{ left: number; top: number; structuredTarget?: DocumentStructuredCanvasTarget; fieldRequest?: { source: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost; bodySelection?: DocumentSelection; requestScope: number } }>()
 const contentControlPanelOpen = ref(false)
 const activeContentControlId = ref<string>()
 const activeContentControlPopupMode = ref<DocumentContentControlPopupMode>('value')
@@ -256,7 +278,8 @@ const activeParagraphBlock = computed(() => {
   const point = selection.value.tableSelection ? documentTableSelectedTextTargets(editingModel.value, selection.value.tableSelection)[0] : selection.value.focus
   return point && blockAtPoint(editingModel.value, point)
 })
-const paragraphSettingsStyle = computed(() => documentParagraphSettingsStyle(activeParagraphBlock.value?.style ?? {}))
+const paragraphSettingsStyle = computed(() => documentParagraphSettingsStyle({ ...activeParagraphBlock.value?.style,
+  ...documentParagraphPagination(activeParagraphBlock.value?.style ?? {}, editingModel.value) }))
 const paragraphSettingsFontSize = computed(() => activeParagraphBlock.value?.runs[0]?.fontSize ?? 11)
 const paragraphSettingsSelectionKey = computed(() => `${model.value.id}:${editingHost.value ? documentBlockHostId(editingHost.value) : 'body'}:${JSON.stringify(selection.value)}`)
 const paragraphSettingsLineMetrics = computed<DocumentParagraphLineMetrics | undefined>(() => {
@@ -284,8 +307,25 @@ interface StructureDialogTarget {
 }
 const codeDialogTarget = shallowRef<StructureDialogTarget>()
 const codeDialogData = shallowRef<DocumentCodeBlockData>()
+const codeDialogBlockId = ref<string>()
+const codeDialogFocus = ref<'font' | 'language' | 'settings'>()
 const structureDialog = shallowRef<{ open: boolean; kind: 'quote' | 'callout' | 'columns'; block?: DocumentBlock; target: StructureDialogTarget }>()
 const latexPanelOpen = ref(false)
+const latexPanelRef = ref<InstanceType<typeof DocumentLatexPanel>>()
+const latexPopupOwner = shallowRef<DocumentLatexPopupEditorHandle>()
+const latexEditorKey = ref(0)
+const latexDialogSource = ref('')
+let latexOpeningGeneration = 0
+const latexComposing = ref(false)
+const previousTabBeforeLatex = ref('home')
+const latexDialogTarget = shallowRef<StructureDialogTarget>()
+const latexDialogData = shallowRef<LatexFormula>()
+const latexDialogRangeId = ref<string>()
+const latexError = ref('')
+const latexTargetCurrent = computed(() => !!latexDialogTarget.value && structureTargetCurrent(latexDialogTarget.value))
+const latexReadOnly = computed(() => !latexTargetCurrent.value || !!props.documentApi && !latexPopupOwner.value?.isCurrent()
+  || !documentLatexSelectionState(editingModel.value, selection.value, permissionContext.value).available)
+let latexClosingTarget: StructureDialogTarget | undefined
 const notesPanelOpen = ref(false)
 const notesError = ref('')
 const noteSettings = shallowRef<{ open: boolean; kind: DocumentNoteKind; source: DocumentModel; selection: DocumentSelection; sectionId: string }>()
@@ -343,20 +383,7 @@ const activeTextBlock = computed(() => !selection.value.tableSelection && !legac
 const activeStructuredBlock = computed(() => legacyStoryActive.value ? undefined : documentStructuredBlockAtSelection(editingModel.value, selection.value))
 const activeCodeBlock = computed(() => legacyStoryActive.value ? undefined : documentStructuredBlockAtSelection(editingModel.value, selection.value, 'code') ?? activeTextBlock.value)
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
-const activeLatexFormula = computed(() => {
-  const block = activeTextBlock.value
-  if (!block || !sameTarget(selection.value.anchor, selection.value.focus)) return undefined
-  const start = Math.min(selection.value.anchor.offset, selection.value.focus.offset)
-  const end = Math.max(selection.value.anchor.offset, selection.value.focus.offset)
-  let offset = 0
-  for (const run of block.runs) {
-    const formula = getLatexFormula(run)
-    const runEnd = offset + run.text.length
-    if (formula && (start === end ? start >= offset && start <= runEnd : start <= offset && end >= runEnd)) return { runId: run.id, formula }
-    offset = runEnd
-  }
-  return undefined
-})
+const activeLatexFormula = computed(() => legacyStoryActive.value ? undefined : selectedLatexFormula(editingModel.value, selection.value))
 const pages = computed(() => layout.value.pages)
 const wordCount = computed(() => documentCharacterCount(textTargets(model.value).map((target) => runText(runsForTarget(model.value, target))).join('\n')))
 const selectedCharacters = computed(() => documentSelectionCharacterCount(editingModel.value, selection.value))
@@ -506,8 +533,36 @@ const contextMenuActions = computed(() => {
   const structured = activeStructuredBlock.value
   const structuredActions = structured && (structured.type === 'quote' || structured.type === 'callout' || structured.type === 'code' || structured.type === 'columns')
     ? documentStructureContextItems({ blockId: structured.id, type: structured.type,
+      code: structured.code, columns: structured.columns,
+      columnId: structured.columns?.columns.find(column => !!documentBlockAncestry({ blocks: column.blocks }, selection.value.focus.cellBlockId ?? selection.value.focus.blockId))?.id,
       disabled: !inputStateActive || documentInputComposing.value || !canEditContextSelection.value }).map(action => ({ ...action, group: 'layout' as const })) : []
-  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...structuredActions, ...layoutActions, ...tocActions, ...tableActions, ...noteActions]
+  const latex = activeLatexFormula.value
+  const latexActions = latex ? documentLatexContextItems(latex,
+    documentLatexSelectionState(editingModel.value, selection.value, permissionContext.value, !inputStateActive || documentInputComposing.value), t)
+    .map(action => ({ ...action, group: 'layout' as const })) : []
+  const paragraph = blockAtPoint(editingModel.value, selection.value.focus), paragraphId = selection.value.focus.cellBlockId ?? selection.value.focus.blockId
+  const emptyLatexActions = paragraph && isDocumentTextBlock(paragraph) && runText(paragraph.runs).length === 0 && selectionCollapsed(selection.value)
+    ? [{ ...documentLatexMountedMenuItem('empty-layout', documentLatexSelectionState(editingModel.value, selection.value, permissionContext.value,
+      !inputStateActive || documentInputComposing.value || legacyStoryActive.value), t), group: 'layout' as const }] : []
+  const columnGroup = documentStructuredBlockAtSelection(editingModel.value, selection.value, 'columns')
+  const afterBlockId = selection.value.tableSelection?.tableId ?? structured?.id ?? paragraphId
+  const menuContext: DocumentStructuredParagraphMenuContext = { paragraphId, afterBlockId,
+    disabled: !inputStateActive || documentInputComposing.value || !canEditContextSelection.value,
+    inColumns: !!columnGroup, belowInColumns: !!documentBlockAncestry(editingModel.value, afterBlockId)?.slice(0, -1).some(block => block.type === 'columns'),
+    activeBlockId: structured?.id, activeType: structured && ['quote', 'callout', 'code', 'columns'].includes(structured.type) ? structured.type as DocumentStructuredParagraphMenuContext['activeType'] : undefined,
+    codeAllowed: structured?.children ? structured.children.every(isDocumentTextBlock) : !!paragraph && isDocumentTextBlock(paragraph),
+    columns: columnGroup?.columns, columnGroupId: columnGroup?.id,
+    columnId: columnGroup?.columns?.columns.find(column => !!documentBlockAncestry({ blocks: column.blocks }, paragraphId))?.id }
+  const paragraphActions = !selection.value.tableSelection && paragraph ? [
+    documentStructuredParagraphMenuItems({ paragraphId, disabled: menuContext.disabled, inColumns: menuContext.inColumns })[0]!,
+    ...(isDocumentTextBlock(paragraph) && runText(paragraph.runs).length === 0 ? [{ id: 'doc-context-empty-paragraph-insert', type: 'menu' as const, title: '插入内容',
+      children: documentStructuredMountedMenuItems(menuContext, 'empty-paragraph') }] : []),
+    { id: 'doc-context-layout-insert-below', type: 'menu' as const, title: '在下方插入', children: documentStructuredMountedMenuItems(menuContext, 'layout-below') },
+  ].map(action => ({ ...action, group: 'layout' as const })) : selection.value.tableSelection ? [
+    { id: 'doc-context-table-structured-insert-below', type: 'menu' as const, title: '在表格下方插入',
+      children: documentStructuredMountedMenuItems(menuContext, 'table-below'), group: 'layout' as const },
+  ] : []
+  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...latexActions, ...structuredActions, ...paragraphActions, ...layoutActions, ...emptyLatexActions, ...tocActions, ...tableActions, ...noteActions]
 })
 const documentContextMenuItems = computed<MenuItemType[]>(() => {
   const quickItems = contextMenuActions.value.filter(item => item.group === 'quick')
@@ -526,14 +581,13 @@ const documentContextMenuItems = computed<MenuItemType[]>(() => {
       }] : []),
       ...formatItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled })),
     ] : []),
-    ...(layoutItems.length ? [{ type: 'divider' as const }, ...layoutItems.map(action => ({ key: action.id, label: action.title, disabled: action.disabled,
-      title: 'disabledReason' in action && typeof action.disabledReason === 'string' ? action.disabledReason : undefined }))] : []),
-    ...(tableItems.length ? [{ type: 'divider' as const }, ...tableItems.map(action => tableContextMenuItem(action))] : []),
+    ...(layoutItems.length ? [{ type: 'divider' as const }, ...layoutItems.map(action => documentContextMenuItem(action))] : []),
+    ...(tableItems.length ? [{ type: 'divider' as const }, ...tableItems.map(action => documentContextMenuItem(action))] : []),
   ]
 })
-function tableContextMenuItem(item: RibbonItem): MenuItemType {
+function documentContextMenuItem(item: { id: string; title: string; disabled?: boolean; disabledReason?: string; children?: RibbonItem[] }): MenuItemType {
   return { key: item.id, label: item.title, disabled: item.disabled, title: item.disabledReason,
-    ...(item.children?.length ? { children: item.children.filter(child => !child.hidden).map(tableContextMenuItem) } : {}) }
+    ...(item.children?.length ? { children: item.children.filter(child => !child.hidden).map(documentContextMenuItem) } : {}) }
 }
 const currentMarks = computed(() => toolbarState.value.marks)
 const officeFonts = inject(OfficeFontListKey, undefined)
@@ -562,6 +616,8 @@ const ribbonTabs = computed(() => {
   const deleteItem = control && contentControlRepeatingItemCommandState(model.value,
     { id: 'doc.command.delete-repeating-section-item', params: { controlId: control.id } }, repeatingOptions)
   return createDocumentRibbon({
+    latex: { visible: latexPanelOpen.value, disabled: latexReadOnly.value || latexComposing.value,
+      reason: !latexTargetCurrent.value ? t('document.latex.stale') : undefined },
     structuredBlock: activeStructuredBlock.value && ['quote', 'callout', 'code', 'columns'].includes(activeStructuredBlock.value.type)
       ? { blockId: activeStructuredBlock.value.id, type: activeStructuredBlock.value.type as 'quote' | 'callout' | 'code' | 'columns', disabled: !canEditContextSelection.value || documentInputComposing.value } : undefined,
     notes: { visible: documentSupportsNotes(model.value), insert: noteInsertState.value,
@@ -632,6 +688,8 @@ const ribbonTabs = computed(() => {
 })
 let resizeObserver: ResizeObserver | undefined
 let imageRequest = 0
+let pictureImageAbort: AbortController | undefined
+function abortPictureImageRead() { imageRequest++; pictureImageAbort?.abort(); pictureImageAbort = undefined; pictureImageBusy.value = false }
 let clipboardRequest = 0
 onMounted(() => {
   document.addEventListener('fullscreenchange', syncFullscreen)
@@ -648,7 +706,7 @@ onActivated(() => {
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
   refreshDocumentFieldsOnOpen()
 })
-onUnmounted(() => { inputStateActive = false; inputStateEpoch++; storyActionVersion.value++; noteNavigationMemory.clear(); document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); imageRequest++; clipboardRequest++ })
+onUnmounted(() => { inputStateActive = false; inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++ })
 onDeactivated(() => {
   inputStateActive = false
   inputStateEpoch++
@@ -656,7 +714,7 @@ onDeactivated(() => {
   painter.value = undefined
   clearInputMarks()
   closeStory(false)
-  imageRequest++
+  abortPictureImageRead()
   clipboardRequest++
   modalOpen.value = false
   contentControlPanelOpen.value = false
@@ -664,9 +722,11 @@ onDeactivated(() => {
   paragraphSettingsPanelOpen.value = false
   sectionSettingsPanelOpen.value = false
   commentsPanelOpen.value = false
-  latexPanelOpen.value = false
+  closeLatexPopup(true)
   codeBlockPanelOpen.value = false
   codeDialogTarget.value = undefined
+  codeDialogBlockId.value = undefined
+  codeDialogFocus.value = undefined
   structureDialog.value = undefined
   notesPanelOpen.value = false
   noteSettings.value = undefined
@@ -676,6 +736,22 @@ onDeactivated(() => {
   }
 })
 const previousTabBeforeTable = ref('home')
+watch(latexPanelOpen, open => {
+  if (open) { previousTabBeforeLatex.value = activeTab.value; activeTab.value = DOCUMENT_LATEX_RIBBON_TAB }
+  else if (activeTab.value === DOCUMENT_LATEX_RIBBON_TAB) activeTab.value = previousTabBeforeLatex.value
+}, { flush: 'sync' })
+watch([latexPanelOpen, () => props.documentApi], ([open, api], _previous, onCleanup) => {
+  if (open && api) {
+    const handle = api.bindLatexTemplateEditor(insertLatexTemplateDraft)
+    onCleanup(() => handle.dispose())
+  }
+}, { flush: 'post' })
+watch(() => props.documentApi, (api, _previous, onCleanup) => {
+  if (!api) return
+  const handle = api.bindLatexPopupEditor({ open: acceptLatexPopupTarget, close: closeLatexPopup })
+  latexPopupOwner.value = handle
+  onCleanup(() => { if (latexPopupOwner.value === handle) latexPopupOwner.value = undefined; handle.dispose() })
+}, { immediate: true, flush: 'sync' })
 watch(() => toolbarState.value.table?.blockId, (id, previous) => {
   if (id && id !== previous) { if (activeTab.value !== 'table') previousTabBeforeTable.value = activeTab.value; activeTab.value = 'table' }
   else if (!id && activeTab.value === 'table') activeTab.value = previousTabBeforeTable.value === 'table' ? 'home' : previousTabBeforeTable.value
@@ -687,8 +763,9 @@ watch(selectedContentControlId, (id) => {
 watch([() => props.documentApi, () => model.value, () => selection.value, () => editingHost.value,
   () => permissionContext.value, () => documentInputComposing.value, () => legacyStoryActive.value], () => {
   const request = pictureReplacementRequest.value
-  if (modalOpen.value && request && !pictureRequestCurrent(request)) { imageRequest++; modalOpen.value = false }
+  if (modalOpen.value && request && !pictureRequestCurrent(request)) { abortPictureImageRead(); modalOpen.value = false }
 }, { flush: 'post' })
+watch(modalOpen, open => { insertModalComposing.value = false; if (!open) abortPictureImageRead() }, { flush: 'sync' })
 
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.documentApi, (next, previous, onCleanup) => {
@@ -850,7 +927,7 @@ function activateStoryBlockEditing(point?: DocumentSelection) {
 function scheduleInputFocus(focus: () => void) {
   const epoch = inputStateEpoch, documentId = model.value.id, api = props.documentApi
   void nextTick(() => {
-    if (inputStateActive && epoch === inputStateEpoch && documentId === model.value.id && api === props.documentApi) focus()
+    if (inputStateActive && !imageOverlayActive.value && epoch === inputStateEpoch && documentId === model.value.id && api === props.documentApi) focus()
   })
 }
 function captureNoteOverlayFocus(): () => void {
@@ -860,7 +937,7 @@ function captureNoteOverlayFocus(): () => void {
   return () => {
     if (!inputStateActive || documentInputComposing.value || epoch !== inputStateEpoch || uiVersion !== noteUiVersion
       || api !== props.documentApi || source.id !== model.value.id || notesPanelOpen.value || noteSettings.value?.open
-      || modalOpen.value || tableProperties.value?.open || pageSettingsOpen.value || headerFooterPanelOpen.value
+      || modalOpen.value || imageOverlayActive.value || tableProperties.value?.open || pageSettingsOpen.value || headerFooterPanelOpen.value
       || permissionPanelOpen.value || tocDialog.value.open || !sameDocumentBlockHost(host, editingHost.value)
       || JSON.stringify(selected) !== JSON.stringify(selection.value)) return
     const latest = api?.getInputState()
@@ -931,8 +1008,8 @@ function refreshStandaloneDocumentFieldCaches(locale: string, timestamp: number,
   }
   return true
 }
-function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number }) {
-  if (isDocumentStructureCommand(command) && (!inputStateActive || documentInputComposing.value)) return false
+function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number; error?: string }) {
+  if ((isDocumentStructureCommand(command) || isDocumentImageCommand(command)) && (!inputStateActive || documentInputComposing.value)) return false
   if (!command.host && legacyStoryActive.value && documentCommandSupportsBlockHost(command)
     && command.id !== 'doc.command.format-text' && command.id !== 'doc.command.clear-formatting') activateStoryBlockEditing()
   if (editingHost.value && documentCommandSupportsBlockHost(command)) {
@@ -953,7 +1030,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
   const targets = (command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story ? [{ scope: 'section' as const, id: command.story.sectionId }]
     : command.host ? permissionTargetsForSelection(editingModel.value, selection.value)
     : 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(editingModel.value, selection.value)
-  if (command.id !== 'doc.command.set-document-permission-rules' && command.id !== 'doc.command.insert-table' && !isDocumentTableCommand(command) && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
+  if (command.id !== 'doc.command.set-document-permission-rules' && command.id !== 'doc.command.insert-table' && !isDocumentTableCommand(command) && !isDocumentImageCommand(command) && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
   try {
     if (derivedFieldRefresh && !documentApi) {
       if (command.id !== 'doc.command.refresh-header-footer-fields') return false
@@ -979,7 +1056,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
       if (restoreFocus) scheduleInputFocus(() => storyFormat ? canvasRef.value?.focusStory(storyFormat.range.start, storyFormat.range.end) : canvasRef.value?.focus())
       return true
     }
-    const nextCommand = !documentApi && command.id === 'doc.command.insert-text' ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
+    const nextCommand = !documentApi && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula') ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
     if (documentApi) {
       const result = documentApi.executeCommand(nextCommand, selection.value)
       if (feedback) feedback.modelRevision = result.modelRevision
@@ -1027,6 +1104,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     })
     return true
   } catch (error) {
+    if (feedback) feedback.error = error instanceof Error ? error.message : String(error)
     notify(error instanceof Error ? error.message : String(error))
     if (restoreFocus) scheduleInputFocus(() => canvasRef.value?.focus())
     return false
@@ -1048,29 +1126,56 @@ function structureTargetCurrent(target: StructureDialogTarget): boolean {
   return !!state?.valid && state.location.kind === 'body' && state.generation === target.inputGeneration
     && target.api.getModelRevision() === target.revision && target.api.getHistoryGeneration() === target.historyGeneration
 }
+function structuredCanvasTargetCurrent(target: DocumentStructuredCanvasTarget): boolean {
+  return documentStructuredCanvasTargetCurrent(target, { source: model.value, selection: selection.value, host: editingHost.value,
+    session: captureInputSession(), requireSession: !!props.documentApi,
+    disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value })
+}
+function onStructuredCanvasCommand(request: DocumentStructuredCanvasCommandRequest) {
+  if (structuredCanvasTargetCurrent(request)) execute(request.command)
+}
+function onStructuredCanvasOperation(request: DocumentStructuredCanvasOperationRequest) {
+  if (!structuredCanvasTargetCurrent(request)) return
+  const command = documentLatexCommandFromMenu(request.id, request.params)
+  if (command) {
+    if (selectedLatexFormula(editingModel.value, request.selection)?.rangeId === command.rangeId) execute(command)
+    return
+  }
+  onRibbonExecute(request.id, request.params)
+}
+function onLatexCanvasEdit(request: DocumentLatexCanvasEditRequest) {
+  if (documentLatexCanvasRequestCurrent(request, { source: model.value, selection: selection.value, host: editingHost.value,
+    session: captureInputSession(), requireSession: !!props.documentApi,
+    disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value })) openLatexPanel(request.rangeId)
+}
 function closeStructureDialog(target?: StructureDialogTarget) {
   if (target && structureTargetCurrent(target)) {
     scheduleInputFocus(() => { if (structureTargetCurrent(target)) canvasRef.value?.focus() })
   }
 }
-function openCodeBlockPanel() {
+function openCodeBlockPanel(blockId?: string, focus?: 'font' | 'language' | 'settings') {
   const target = captureStructureTarget()
   if (!target || selection.value.tableSelection) return
-  codeDialogTarget.value = target; codeDialogData.value = activeCodeBlockData.value && { ...activeCodeBlockData.value }; codeBlockPanelOpen.value = true
+  const block = blockId ? findDocumentBlock(editingModel.value, blockId) : activeCodeBlock.value
+  const data = block && codeBlockData(block)
+  if (blockId && !data) return
+  codeDialogTarget.value = target; codeDialogBlockId.value = block?.id; codeDialogFocus.value = focus; codeDialogData.value = data ? { ...data } : undefined; codeBlockPanelOpen.value = true
 }
 function applyCodeBlock(data: DocumentCodeBlockData) {
   const target = codeDialogTarget.value
   if (!target || !structureTargetCurrent(target)) { notify('文档或代码块输入位置已变化，请重新打开代码块设置。'); return }
-  const existing = activeCodeBlock.value, patch = { language: data.language, showLineNumbers: data.lineNumbers, tabSize: data.tabSize ?? 4, wrap: data.wrap ?? true }
+  const existing = codeDialogBlockId.value ? findDocumentBlock(editingModel.value, codeDialogBlockId.value) : undefined,
+    patch = { language: data.language, showLineNumbers: data.lineNumbers, tabSize: data.tabSize ?? 4, wrap: data.wrap ?? true }
   const command: DocumentCommand = existing && codeBlockData(existing)
-    ? { id: 'doc.command.update-code-block', blockId: existing.id, source: data.source, patch }
-    : { id: 'doc.command.insert-structured-block', blockType: 'code', source: data.source, code: patch }
+    ? { id: 'doc.command.update-code-block', blockId: existing.id, source: data.source, patch, ...(data.fontFamily === undefined ? {} : { fontFamily: data.fontFamily }) }
+    : { id: 'doc.command.insert-structured-block', blockType: 'code', source: data.source, code: patch, ...(data.fontFamily === undefined ? {} : { fontFamily: data.fontFamily }) }
   if (execute(command)) codeBlockPanelOpen.value = false
 }
-function openStructurePanel(kind: 'quote' | 'callout' | 'columns') {
+function openStructurePanel(kind: 'quote' | 'callout' | 'columns', blockId?: string) {
   const target = captureStructureTarget()
   if (!target) return
-  const block = documentStructuredBlockAtSelection(editingModel.value, target.selection, kind)
+  const block = blockId ? findDocumentBlock(editingModel.value, blockId) : documentStructuredBlockAtSelection(editingModel.value, target.selection, kind)
+  if (blockId && block?.type !== kind) return
   structureDialog.value = { open: true, kind, ...(block ? { block: cloneDocument(block) } : {}), target }
 }
 function executeStructurePanelCommand(command: DocumentStructureCommand) {
@@ -1094,24 +1199,116 @@ function applyStructurePanel(value: DocumentStructurePanelValue) {
       : { id: 'doc.command.wrap-column-group', columnCount, gap, horizontalPadding, minHeight, layout: columnLayout, responsive, widthRatios, minWidths })
   }
 }
-function applyLatexFormula(data: { latex: string; mode: LatexFormulaMode }) {
-  if (documentInputComposing.value || selection.value.tableSelection) { notify('请先在段落或单元格文字中定位公式插入位置'); return }
-  if (legacyStoryActive.value) activateStoryBlockEditing()
-  if (!canEditContextSelection.value) return
-  if (!canDocumentPermission('edit', permissionTargetsForSelection(editingModel.value, selection.value))) return
-  const next = cloneDocument(model.value), scoped = editingCandidate(next)
+function showLatexPanel(rangeId?: string, initialLatex?: string): boolean {
+  const target = captureStructureTarget()
+  if (!target || selection.value.tableSelection || props.documentApi && !latexPopupOwner.value?.isCurrent()) return false
+  const item = rangeId ? getLatexFormulas(editingModel.value).find(item => item.rangeId === rangeId) : activeLatexFormula.value
+  if (rangeId && (!item || selectedLatexFormula(editingModel.value, target.selection)?.rangeId !== rangeId)) return false
+  const state = documentLatexSelectionState(editingModel.value, target.selection, permissionContext.value)
+  if (!state.available) { if (state.reason) notify(state.reason); return false }
+  latexDialogTarget.value = target; latexDialogRangeId.value = item?.rangeId; latexDialogData.value = item ? { ...item.formula } : undefined
+  latexDialogSource.value = initialLatex ?? item?.formula.latex ?? documentLatexSourceForSelection(editingModel.value, target.selection)
+  latexError.value = ''; latexClosingTarget = undefined; latexEditorKey.value++; latexPanelOpen.value = true
+  return true
+}
+function openLatexPanel(rangeId?: string) { requestLatexPopup(rangeId ? { rangeId } : {}) }
+function requestLatexPopup(params?: unknown): boolean {
+  const request = params ?? {}, api = props.documentApi
+  if (!inputStateActive || documentInputComposing.value || latexComposing.value) return false
   try {
-    if (activeLatexFormula.value) {
-      if (!updateLatexFormula(scoped, activeLatexFormula.value.runId, data.latex)) return
-    } else {
-      const point = insertLatexFormula(scoped, selection.value, data.latex, data.mode)
-      selection.value = collapsedSelection(point)
+    assertDocumentLatexPopupRequest(request)
+    if (legacyStoryActive.value) activateStoryBlockEditing()
+    if (request.unitId !== undefined && request.unitId !== (model.value.id ?? '')) return false
+    if (!api) {
+      if (request.selection || request.startIndex !== undefined || request.segmentId !== undefined) return false
+      return showLatexPanel(request.rangeId, request.initialLatex)
     }
-    if (!publishEditingCandidate(next, scoped)) return
-    void nextTick(() => canvasRef.value?.focus())
-  } catch (error) {
-    notify(error instanceof Error ? error.message : String(error))
+    const input = captureInputSession()
+    if (!input?.valid || input.location.kind !== 'body') return false
+    return api.openLatexPopup({ ...request, expectedRevision: request.expectedRevision ?? api.getModelRevision(),
+      expectedHistoryGeneration: request.expectedHistoryGeneration ?? api.getHistoryGeneration(), expectedInputGeneration: request.expectedInputGeneration ?? input.generation })
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : t('document.latex.failed')
+    if (latexPanelOpen.value) latexError.value = message
+    else notify(message)
+    return false
   }
+}
+function acceptLatexPopupTarget(target: DocumentLatexPopupTarget): boolean {
+  const api = props.documentApi, current = api?.getInputState()
+  if (!api || !inputStateActive || documentInputComposing.value || latexComposing.value || !latexPopupOwner.value?.isCurrent()
+    || api.getModel() !== target.source || target.unitId !== model.value.id || target.unitId !== api.id || api.getModelRevision() !== target.modelRevision
+    || api.getHistoryGeneration() !== target.historyGeneration || !current?.valid || current.location.kind !== 'body'
+    || current.generation !== target.inputGeneration) return false
+  const targetLocation = { kind: 'body' as const, selection: target.selection, ...(target.host ? { host: target.host } : {}) }
+  const viewMatches = () => sameDocumentInputLocation(targetLocation, { kind: 'body', selection: selection.value,
+    ...(editingHost.value ? { host: editingHost.value } : {}) })
+  const same = sameDocumentInputLocation(targetLocation, current.location)
+  if (same && viewMatches()) {
+    latexOpeningGeneration++; return showLatexPanel(target.rangeId, target.initialLatex)
+  }
+  const generation = ++latexOpeningGeneration
+  latexClosingTarget = undefined; latexPanelOpen.value = false
+  if (!same) api.setInputSelection(cloneDocumentSelection(target.selection), undefined, target.host)
+  const next = api.getInputState()
+  if (!next?.valid || !sameDocumentInputLocation(next.location, targetLocation)) return false
+  // The workbench owns a normalized rendering snapshot; the API owns the live model.
+  const inputGeneration = next.generation, viewSource = model.value
+  void nextTick(() => {
+    const latest = api.getInputState()
+    if (generation !== latexOpeningGeneration || api !== props.documentApi || model.value !== viewSource || !inputStateActive
+      || documentInputComposing.value || !latexPopupOwner.value?.isCurrent() || api.getModelRevision() !== target.modelRevision
+      || api.getModel() !== target.source
+      || api.getHistoryGeneration() !== target.historyGeneration || !latest?.valid || latest.location.kind !== 'body'
+      || latest.generation !== inputGeneration || !sameDocumentInputLocation(latest.location, targetLocation) || !viewMatches()) return
+    showLatexPanel(target.rangeId, target.initialLatex)
+  }).catch((cause: unknown) => {
+    if (generation === latexOpeningGeneration && api === props.documentApi && inputStateActive) notify(cause instanceof Error ? cause.message : t('document.latex.failed'))
+  })
+  return true
+}
+function closeLatexPopup(force = false): boolean {
+  if (!force && latexComposing.value) return false
+  latexOpeningGeneration++
+  latexClosingTarget = force ? undefined : latexPanelOpen.value ? latexDialogTarget.value : undefined
+  latexPanelOpen.value = false
+  if (force) { latexDialogTarget.value = undefined; latexComposing.value = false }
+  return true
+}
+function insertLatexTemplateDraft(templateId: string): boolean {
+  if (!latexPanelOpen.value || latexReadOnly.value || latexComposing.value || !getDocumentLatexTemplate(templateId)) return false
+  return latexPanelRef.value?.insertTemplate(templateId) ?? false
+}
+function requestLatexTemplate(params: unknown): boolean {
+  if (!params || typeof params !== 'object' || !('templateId' in params) || typeof params.templateId !== 'string') return false
+  if (!latexPanelOpen.value || latexReadOnly.value || latexComposing.value) return false
+  try { return props.documentApi ? props.documentApi.insertLatexTemplate(params.templateId) : insertLatexTemplateDraft(params.templateId) }
+  catch (cause) { latexError.value = cause instanceof Error ? cause.message : t('document.latex.failed'); return false }
+}
+function closeLatexPanel(open: boolean) {
+  if (open) { latexPanelOpen.value = true; return }
+  try {
+    if (props.documentApi) props.documentApi.closeLatexPopup()
+    else closeLatexPopup()
+  } catch (cause) { latexError.value = cause instanceof Error ? cause.message : t('document.latex.failed') }
+}
+function onLatexPanelClosed() {
+  if (latexPanelOpen.value) return
+  const target = latexClosingTarget; latexClosingTarget = undefined
+  closeStructureDialog(target)
+}
+function applyLatexFormula(data: { latex: string; mode: LatexFormulaMode }) {
+  const target = latexDialogTarget.value
+  if (!target || !structureTargetCurrent(target)) { latexError.value = t('document.latex.stale'); return }
+  const rangeId = latexDialogRangeId.value
+  if (rangeId && !getLatexFormulas(editingModel.value).some(item => item.rangeId === rangeId)) { latexError.value = t('document.latex.stale'); return }
+  const command: DocumentCommand = rangeId ? { id: 'doc.command.update-latex-formula', rangeId, latex: data.latex }
+    : { id: 'doc.command.insert-latex-formula', latex: data.latex, mode: data.mode }
+  const feedback: { selectionCurrent: boolean; error?: string } = { selectionCurrent: true }
+  latexError.value = ''
+  if (!execute(command, false, feedback)) { latexError.value = feedback.error ?? t('document.latex.failed'); return }
+  latexClosingTarget = feedback.selectionCurrent ? captureStructureTarget() : undefined
+  latexPanelOpen.value = false
 }
 function insertNote(kind: DocumentNoteKind) {
   if (!noteInsertState.value.available) { notify(noteInsertState.value.reason ?? '当前不能插入注释。'); return }
@@ -1250,7 +1447,7 @@ function activateNotePosition(position: DocumentNoteNavigationPosition, inspect 
   if (api && (!afterMarks?.valid || api.getModelRevision() !== revision || previousSession?.valid
     && !sameDocumentInputLocation(previousSession.location, afterMarks.location))) return
   if (!editingHost.value && !storyLocation.value) previousStoryTab.value = activeTab.value
-  clipboardRequest++; imageRequest++; inputStateEpoch++
+  clipboardRequest++; abortPictureImageRead(); inputStateEpoch++
   updateBlockHostInspection(source, position.host, inspect)
   editingHost.value = position.host ? { ...position.host } : undefined; storyLocation.value = undefined
   returnBodySelection.value = position.host ? body ?? sanitizeDocumentInputSelection(source, selection.value) : undefined
@@ -1380,7 +1577,7 @@ function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMo
   if (error) { notify(error); return }
   const next = cloneDocument(model.value)
   next.page = { ...page }
-  next.metadata = { ...next.metadata, documentFlavor: mode === 'modern' ? 2 : 0 }
+  next.metadata = { ...next.metadata, documentFlavor: mode === 'modern' ? 2 : 1 }
   paperSize.value = documentPaperSize(page)
   orientation.value = page.width > page.height ? 'landscape' : 'portrait'
   publish(next)
@@ -1638,12 +1835,36 @@ function openDocumentContextMenu(payload: { x: number; y: number; source?: Docum
   documentContextMenu.value = {
     left: Math.max(4, Math.min(payload.x - bounds.left, bounds.width - 238)),
     top: Math.max(4, Math.min(payload.y - bounds.top, bounds.height - 300)),
+    ...(!story ? { structuredTarget: captureDocumentStructuredCanvasTarget(model.value, selection.value, editingHost.value, props.documentApi ? captureInputSession(model.value) : undefined) } : {}),
     fieldRequest: { source: model.value, requestScope: storyActionVersion.value,
       ...(editingHost.value ? { host: { ...editingHost.value } } : {}),
       ...(story ? { story: { ...story } } : { bodySelection: cloneDocumentSelection(selection.value) }) },
   }
 }
 function runContextMenuAction(action: { id: string; commandId?: string; params?: unknown }) {
+  if (action.commandId === DOCUMENT_LATEX_POPUP_OPERATIONS.open || action.commandId === DOCUMENT_LATEX_POPUP_OPERATIONS.localOpen) {
+    const target = documentContextMenu.value?.structuredTarget; documentContextMenu.value = undefined
+    if (target && structuredCanvasTargetCurrent(target)) requestLatexPopup(action.params)
+    return
+  }
+  if (['doc-context-latex-edit', 'doc-context-latex-remove', 'doc-context-latex-text'].includes(action.id)) {
+    const target = documentContextMenu.value?.structuredTarget; documentContextMenu.value = undefined
+    if (!target || !structuredCanvasTargetCurrent(target) || !action.params || typeof action.params !== 'object'
+      || !('rangeId' in action.params) || typeof action.params.rangeId !== 'string') return
+    const item = selectedLatexFormula(editingModel.value, target.selection)
+    if (!item || item.rangeId !== action.params.rangeId) return
+    const command = action.commandId && documentLatexCommandFromMenu(action.commandId, action.params)
+    if (command) execute(command)
+    return
+  }
+  const structure = action.commandId && documentStructureCommandFromMenu(action.commandId, action.params)
+  if (structure || ['doc.operation.edit-structured-block', 'doc.operation.edit-code-font', 'doc.operation.edit-code-settings'].includes(action.commandId ?? '')) {
+    const target = documentContextMenu.value?.structuredTarget; documentContextMenu.value = undefined
+    if (!target || !structuredCanvasTargetCurrent(target)) return
+    if (structure) execute(structure)
+    else onRibbonExecute(action.commandId!, action.params)
+    return
+  }
   if (action.commandId === 'doc.command.update-selected-fields') {
     const request = documentContextMenu.value?.fieldRequest, native = canvasRef.value?.storyRange()
     documentContextMenu.value = undefined
@@ -1752,8 +1973,29 @@ function onWorkbenchKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus() }
   else if (event.key === 'Escape' && editingHost.value?.kind === 'note' && !event.isComposing) { event.preventDefault(); closeStory() }
 }
-function insertImage() { imageRequest++; pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true }
-function insertLink() { imageRequest++; pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
+const imageEditor = useDocumentImageEditor({ source: () => model.value, model: () => editingModel.value, host: () => editingHost.value, selection: () => selection.value,
+  api: () => props.documentApi, session: () => captureInputSession(), permission: () => permissionContext.value,
+  inactive: () => !inputStateActive || documentInputComposing.value || legacyStoryActive.value, execute, focus: () => canvasRef.value?.focus(), notify })
+const { selectedId: selectedImageId, open: imagePanelOpen, mode: imagePanelMode, image: imagePanelImage, editorKey: imagePanelKey,
+  busy: imagePanelBusy, error: imagePanelError, readOnly: imagePanelReadOnly, composing: imagePanelComposing } = imageEditor
+watch(imagePanelOpen, open => { imageOverlayActive.value = open; if (open) inputStateEpoch++ }, { flush: 'sync' })
+function imageCanvasCurrent(target: DocumentImageCanvasTarget): boolean {
+  return documentImageCanvasTargetCurrent(target, { source: model.value, model: editingModel.value, selection: selection.value, host: editingHost.value,
+    session: captureInputSession(), requireSession: !!props.documentApi, disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value })
+}
+function onImageSelection(target?: DocumentImageCanvasTarget) {
+  if (!target) { selectedImageId.value = undefined; return }
+  if (imageCanvasCurrent(target)) { selectedImageId.value = target.imageId; documentContextMenu.value = undefined }
+}
+function onImageCommand(request: DocumentImageCanvasCommandRequest) {
+  if (!imageCanvasCurrent(request.target) || request.command.imageId !== request.target.imageId || !imageEditor.editable(request.target.imageId)) return
+  execute({ ...request.command, ...(request.target.host ? { host: request.target.host } : {}) })
+}
+function onImageOperation(request: DocumentImageCanvasOperationRequest) {
+  if (imageCanvasCurrent(request.target)) imageEditor.show(request.mode, request.target.imageId)
+}
+function insertImage(paragraphMenuPlacement?: 'below') { imageEditor.show('insert', undefined, paragraphMenuPlacement) }
+function insertLink() { abortPictureImageRead(); pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
 function pictureRequestCurrent(request: DocumentPictureReplacementRequest): boolean {
   return request === pictureReplacementRequest.value && request.api === props.documentApi && contentControlRequestCurrent(request, true)
     && contentControlPictureCommandState(model.value, request.controlId, { host: editingHost.value, permission: permissionContext.value }).available
@@ -1768,7 +2010,7 @@ function openSelectedPictureReplacement() {
   if (!contentControlRequestCurrent(request, true)) return
   const state = contentControlPictureCommandState(source, control.id, { host: request.host, permission: permissionContext.value })
   if (!state.available) { notify(state.reason ?? '无法更换此内容控件的图片。'); return }
-  imageRequest++; pendingPictureFocus = undefined; pictureReplacementRequest.value = request
+  abortPictureImageRead(); pendingPictureFocus = undefined; pictureReplacementRequest.value = request
   modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true
 }
 function executeSelectedRepeatingItem(id: DocumentContentControlRepeatingItemCommand['id']) {
@@ -1815,26 +2057,25 @@ function onInsertModalClosed() {
   if (modalOpen.value) return
   const request = pictureReplacementRequest.value
   const token = pendingPictureFocus ?? (request && captureDocumentContentControlFocusToken(request, captureInputSession()))
-  imageRequest++; pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined
+  abortPictureImageRead(); pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined
   if (!token || !request || request.api !== props.documentApi) return
   void nextTick(() => {
     if (request.api === props.documentApi && documentContentControlFocusCurrent(token, { source: model.value, host: editingHost.value,
       session: captureInputSession(), selection: selection.value,
-      disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value })) canvasRef.value?.focus()
+      disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value || imageOverlayActive.value })) canvasRef.value?.focus()
   })
 }
 function confirmModal() {
-  if (!modalOpen.value || !pictureReplacementState.value.available) return
+  if (!modalOpen.value || insertModalComposing.value || pictureImageBusy.value || !pictureReplacementState.value.available) return
   const value = safeUrl(modalValue.value)
   if (!value) { modalError.value = '请输入有效的 http 或 https 地址'; return }
-  if (modalKind.value === 'link') execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })
-  else if (pictureReplacementRequest.value) { if (!replaceSelectedPicture({ src: value, width: 320, height: 0, alt: 'Image' })) return }
-  else execute({ id: 'doc.command.insert-image', image: { src: value, width: 320, height: 0, alt: '图片' } })
-  modalOpen.value = false
+  if (modalKind.value === 'link') {
+    if (execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })) modalOpen.value = false
+  } else void applyPictureImageSource(value)
 }
-function beforeImageUpload(file: File): false { void onImageFile(file); return false }
-async function onImageFile(file: File) {
-  if (!modalOpen.value || modalKind.value !== 'image' || !pictureReplacementState.value.available) return
+function beforeImageUpload(file: File): false { void applyPictureImageSource(file); return false }
+async function applyPictureImageSource(source: string | File) {
+  if (!modalOpen.value || modalKind.value !== 'image' || insertModalComposing.value || pictureImageBusy.value || !pictureReplacementState.value.available) return
   const request = ++imageRequest
   const base = model.value
   const host = editingHost.value && { ...editingHost.value }
@@ -1842,29 +2083,30 @@ async function onImageFile(file: File) {
   const replacement = pictureReplacementRequest.value
   const api = props.documentApi, input = api ? captureInputSession() : undefined
   if (replacement && !pictureRequestCurrent(replacement) || api && !input?.valid) return
+  const active = new AbortController(); pictureImageAbort?.abort(); pictureImageAbort = active; pictureImageBusy.value = true; modalError.value = ''
+  const release = trackDocumentImageTask(base, active)
   const current = () => {
-    if (request !== imageRequest || !modalOpen.value || modalKind.value !== 'image' || model.value !== base || api !== props.documentApi
+    if (active.signal.aborted || request !== imageRequest || !modalOpen.value || modalKind.value !== 'image' || model.value !== base || api !== props.documentApi
       || !sameDocumentBlockHost(host, editingHost.value) || JSON.stringify(range) !== JSON.stringify(selection.value)
       || replacement && !pictureRequestCurrent(replacement)) return false
     const latest = input && captureInputSession()
     return !input || latest?.valid === true && latest.generation === input.generation && latest.modelRevision === input.modelRevision
   }
-  const source = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) }).catch(() => '')
-  if (!current()) return
-  if (!source) { notify('读取图片失败'); return }
-  const image = new Image()
-  image.onload = () => {
+  try {
+    const resource = await prepareDocumentImageSource(source, active.signal, current)
     if (!current()) return
-    if (!image.naturalWidth || !image.naturalHeight) { notify('图片尺寸无效'); return }
-    const imageInfo = { src: source, alt: file.name, width: Math.min(500, image.naturalWidth), height: Math.min(500, image.naturalWidth) * image.naturalHeight / image.naturalWidth }
+    const imageInfo = documentImageFromResource(resource, { alt: typeof source === 'string' ? '图片' : source.name, width: Math.min(500, resource.width) }, typeof source === 'string' ? source : undefined)
     if (replacement) { if (!replaceSelectedPicture(imageInfo)) return }
-    else execute({ id: 'doc.command.insert-image', image: imageInfo })
+    else if (!execute({ id: 'doc.command.insert-image', image: imageInfo }, false)) return
     modalOpen.value = false
+  } catch (error) {
+    if (current()) modalError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    release()
+    if (pictureImageAbort === active) { pictureImageAbort = undefined; pictureImageBusy.value = false }
   }
-  image.onerror = () => { if (current()) notify('无法读取该图片') }
-  image.src = source
 }
-function replaceSelectedPicture(image: { src: string; alt: string; width: number; height: number }): boolean {
+function replaceSelectedPicture(image: DocumentImage): boolean {
   const request = pictureReplacementRequest.value, api = props.documentApi
   if (!request || !api || !pictureRequestCurrent(request) || !request.inputSession?.valid) return false
   const input = request.inputSession, host = request.host, controlId = request.controlId
@@ -2076,7 +2318,7 @@ function openStory(location: StoryLocation, point?: DocumentPoint) {
   if (pageMode.value !== 'traditional' || !page || page.isParityBlank) return
   painter.value = undefined
   clipboardRequest++
-  imageRequest++
+  abortPictureImageRead()
   if (!storyLocation.value) previousStoryTab.value = activeTab.value
   if (!returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
   if (storyLocation.value?.page !== location.page || storyLocation.value?.area !== location.area) storySelection.value = { start: 0, end: 0 }
@@ -2113,7 +2355,7 @@ function closeStory(refocus = true) {
   selection.value = sanitizeDocumentInputSelection(model.value, restore ?? selection.value)
   tableProperties.value = undefined
   documentContextMenu.value = undefined
-  clipboardRequest++; imageRequest++
+  clipboardRequest++; abortPictureImageRead()
   searchScopeSelection.value = undefined; searchInSelection.value = false
   if (activeTab.value === 'header-footer' || activeTab.value === 'table' || activeTab.value === 'content-control') activeTab.value = previousStoryTab.value
   const restoredSelection = cloneDocumentSelection(selection.value)
@@ -2408,6 +2650,9 @@ function applyPainter(format?: DocumentPainterFormat) {
   if (execute({ id: 'doc.command.apply-format-painter', format }) && !painter.value?.continuous) painter.value = undefined
 }
 function onRibbonExecute(id: string, params?: unknown) {
+  if (id === DOCUMENT_LATEX_POPUP_OPERATIONS.open || id === DOCUMENT_LATEX_POPUP_OPERATIONS.localOpen) { requestLatexPopup(params); return }
+  if (id === DOCUMENT_LATEX_POPUP_OPERATIONS.close || id === DOCUMENT_LATEX_POPUP_OPERATIONS.localClose) { closeLatexPanel(false); return }
+  if (id === DOCUMENT_LATEX_TEMPLATE_OPERATION || id === DOCUMENT_LATEX_TEMPLATE_LOCAL_OPERATION) { requestLatexTemplate(params); return }
   if ((id === 'doc.command.unwrap-structured-block' || id === 'doc.command.exit-structured-block' || id === 'doc.command.remove-structured-block')
     && params && typeof params === 'object' && 'blockId' in params && typeof params.blockId === 'string') { execute({ id, blockId: params.blockId }); return }
   if (id === 'doc.operation.open-table-properties') { openTableProperties(params); return }
@@ -2460,13 +2705,20 @@ function onRibbonExecute(id: string, params?: unknown) {
       else openStructurePanel('columns')
       break
     }
-    case 'doc.operation.edit-structured-block': {
-      const block = activeStructuredBlock.value
-      if (block?.type === 'code') openCodeBlockPanel()
-      else if (block?.type === 'quote' || block?.type === 'callout' || block?.type === 'columns') openStructurePanel(block.type)
+    case 'doc.operation.edit-code-font':
+    case 'doc.operation.edit-code-settings': {
+      const blockId = params && typeof params === 'object' && 'blockId' in params && typeof params.blockId === 'string' ? params.blockId : undefined
+      if (blockId) openCodeBlockPanel(blockId, id === 'doc.operation.edit-code-font' ? 'font' : 'settings')
       break
     }
-    case 'doc.operation.open-latex': latexPanelOpen.value = true; break
+    case 'doc.operation.edit-structured-block': {
+      const blockId = params && typeof params === 'object' && 'blockId' in params && typeof params.blockId === 'string' ? params.blockId : undefined
+      const block = blockId ? findDocumentBlock(editingModel.value, blockId) : activeStructuredBlock.value
+      if (block?.type === 'code') openCodeBlockPanel(block.id)
+      else if (block?.type === 'quote' || block?.type === 'callout' || block?.type === 'columns') openStructurePanel(block.type, block.id)
+      break
+    }
+    case 'doc.operation.open-latex': openLatexPanel(); break
     case 'doc.command.copy': void copySelection(); break
     case 'doc.command.cut': void copySelection(true); break
     case 'doc.command.paste': void pasteSelection(); break
@@ -2480,7 +2732,11 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.refresh-header-footer-fields': execute({ id, locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now() }); break
     case 'doc.command.update-selected-fields': refreshSelectedFields(model.value, currentStoryRange.value); break
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
-    case 'doc.operation.open-image': insertImage(); break
+    case 'doc.operation.open-image':
+    case 'doc.command.insert-float-image': insertImage(params && typeof params === 'object' && Reflect.get(params, 'paragraphMenuPlacement') === 'below' ? 'below' : undefined); break
+    case 'doc.operation.edit-doc-image': imageEditor.show('edit', selectedImageId.value); break
+    case 'doc.operation.crop-image': imageEditor.show('crop', selectedImageId.value); break
+    case 'doc.operation.replace-image': imageEditor.show('replace', selectedImageId.value); break
     case 'doc.operation.open-link': insertLink(); break
     case 'doc.operation.insert-content-control':
       if (typeof params === 'string' && ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox', 'picture', 'group', 'repeatingSection', 'repeatingSectionItem', 'docPartObj'].includes(params)) insertContentControl(params as DocumentContentControlType)
@@ -2652,8 +2908,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :inspection-host="blockHostInspection?.host" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
+            :selected-image-id="selectedImageId" @image-selection="onImageSelection" @image-command="onImageCommand" @image-operation="onImageOperation"
             :active-content-control-id="activeContentControlId" :active-content-control-popup-mode="activeContentControlPopupMode" @content-control-selection="onContentControlSelection" @content-control-command="onContentControlCommand"
             @note-navigation="onNoteCanvasNavigation"
+            @structured-command="onStructuredCanvasCommand" @structured-operation="onStructuredCanvasOperation" @latex-edit="onLatexCanvasEdit"
             :permission-context="permissionContext" :table-floating-toolbar="tableFloatingToolbarOpen" @operation="onRibbonExecute"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
@@ -2694,15 +2952,18 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </div>
     <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden
       :focus-trigger-after-close="!pictureReplacementRequest" :after-close="onInsertModalClosed"
-      :ok-button-props="{ disabled: !pictureReplacementState.available }" @ok="confirmModal">
-      <Form layout="vertical" class="insert-form" :disabled="!pictureReplacementState.available" @submit.prevent>
-        <FormItem :label="modalKind === 'image' ? '图片地址' : '链接地址'"><Input v-model:value="modalValue" placeholder="https://" allow-clear :disabled="!pictureReplacementState.available" @press-enter="confirmModal" /></FormItem>
-        <Upload v-if="modalKind === 'image'" accept="image/png,image/jpeg,image/gif,image/webp" :show-upload-list="false" :before-upload="beforeImageUpload" :disabled="!pictureReplacementState.available">
-          <Button type="primary" :disabled="!pictureReplacementState.available"><FileUp :size="15" />选择本地图片</Button>
-        </Upload>
+      :keyboard="!insertModalComposing" :closable="!insertModalComposing" :mask-closable="!insertModalComposing" :cancel-button-props="{ disabled: insertModalComposing }"
+      :confirm-loading="pictureImageBusy" :ok-button-props="{ disabled: insertModalComposing || pictureImageBusy || !pictureReplacementState.available }" @ok="confirmModal">
+      <Form layout="vertical" class="insert-form" :disabled="pictureImageBusy || !pictureReplacementState.available" @submit.prevent @compositionstart="insertModalComposing = true" @compositionend="insertModalComposing = false">
+        <FormItem :label="modalKind === 'image' ? '图片地址' : '链接地址'"><Input v-model:value="modalValue" placeholder="https://" allow-clear :disabled="pictureImageBusy || !pictureReplacementState.available" @press-enter="confirmModal" @compositionstart="insertModalComposing = true" @compositionend="insertModalComposing = false" /></FormItem>
+        <FormItem v-if="modalKind === 'image'" label="本地图片"><Upload accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" :show-upload-list="false" :before-upload="beforeImageUpload" :disabled="pictureImageBusy || !pictureReplacementState.available">
+          <Button type="primary" :disabled="pictureImageBusy || !pictureReplacementState.available"><FileUp :size="15" />选择本地图片</Button>
+        </Upload></FormItem>
       </Form>
       <Alert v-if="modalError" type="error" show-icon :message="modalError" role="alert" class="insert-error" />
     </Modal>
+    <DocumentImagePanel :open="imagePanelOpen" :mode="imagePanelMode" :image="imagePanelImage" :editor-key="imagePanelKey" :busy="imagePanelBusy" :error="imagePanelError" :read-only="imagePanelReadOnly"
+      @update:open="value => { if (!value) imageEditor.close() }" @apply="imageEditor.apply" @source="imageEditor.choose" @closed="imageEditor.closed" @composing="value => imagePanelComposing = value" />
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" :read-only="!canEditContextSelection || legacyStoryActive" @error="notify" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="insertTableFromDialog" />
     <DocumentTablePropertiesDialog v-if="tableProperties" :open="tableProperties.open" :model="editingModel" :selection="selection" :permission="permissionContext"
@@ -2712,11 +2973,14 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :read-only="!canEditHeaderFooterSection" :editable-stories="editableHeaderFooterStories" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
-    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="codeDialogData" @apply="applyCodeBlock" @closed="closeStructureDialog(codeDialogTarget)" />
+    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="codeDialogData" :initial-focus="codeDialogFocus" @apply="applyCodeBlock" @closed="closeStructureDialog(codeDialogTarget)" />
     <DocumentStructuredBlockPanel v-if="structureDialog" :open="structureDialog.open" :kind="structureDialog.kind" :block="structureDialog.block"
       :read-only="!canEditContextSelection || documentInputComposing" @submit="applyStructurePanel" @command="executeStructurePanelCommand"
       @update:open="open => { if (structureDialog) structureDialog = { ...structureDialog, open } }" @closed="closeStructureDialog(structureDialog?.target)" />
-    <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
+    <DocumentLatexPanel ref="latexPanelRef" :open="latexPanelOpen" :initial="latexDialogData" :initial-source="latexDialogSource" :editor-key="latexEditorKey" :compact="workbenchWidth <= 640" :readonly="latexReadOnly"
+      :error="latexError || (latexPanelOpen && !latexTargetCurrent ? t('document.latex.stale') : '')"
+      @update:open="closeLatexPanel" @apply="applyLatexFormula" @template-request="templateId => requestLatexTemplate({ templateId })"
+      @composition-change="value => latexComposing = value" @draft-change="latexError = ''" @closed="onLatexPanelClosed" />
     <DocumentNotesPanel :open="notesPanelOpen" :model="model" :labels="layoutSource === model ? layout.noteLabels : undefined" :permission="permissionContext" :disabled="documentInputComposing" :error="notesError" @update:open="setNotesPanelOpen" @closed="onNotesPanelClosed" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" @edit="openNoteCanvas" />
     <DocumentNoteSettingsDialog v-if="noteSettings" :open="noteSettings.open" :model="model" :kind="noteSettings.kind" :section-id="noteSettings.sectionId" :selection="noteSettings.selection"
       :permission="permissionContext" :disabled="documentInputComposing" :insert-disabled="!!editingHost || legacyStoryActive" :error="notesError"

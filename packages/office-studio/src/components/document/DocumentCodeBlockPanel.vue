@@ -4,8 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { Form, FormItem, Input, InputNumber, Modal, Select, Switch, theme } from 'antdv-next'
 import type { DocumentCodeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
 import { documentStructuredCodeLanguageOptions } from '../../features/document/code-blocks/document-code-languages'
+import { documentCodeFontFamilyOptions } from '../../features/document/code-blocks/document-code-fonts'
 
-const props = defineProps<{ open: boolean; initial?: DocumentCodeBlockData }>()
+const props = defineProps<{ open: boolean; initial?: DocumentCodeBlockData; initialFocus?: 'font' | 'language' | 'settings' }>()
 const { t } = useI18n({ useScope: 'global' })
 const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [value: DocumentCodeBlockData]; closed: [] }>()
 
@@ -14,8 +15,13 @@ const language = ref('typescript')
 const lineNumbers = ref(false)
 const tabSize = ref(4)
 const wrap = ref(true)
+const fontFamily = ref('Consolas')
+const fontSelect = ref<{ focus: () => void }>()
+const languageSelect = ref<{ focus: () => void }>()
+const indentationInput = ref<{ focus: () => void }>()
 const { token } = theme.useToken()
 const languages = computed(() => documentStructuredCodeLanguageOptions(language.value))
+const fonts = computed(() => documentCodeFontFamilyOptions(fontFamily.value))
 
 watch(() => [props.open, props.initial] as const, ([open, initial]) => {
   if (!open) return
@@ -24,19 +30,28 @@ watch(() => [props.open, props.initial] as const, ([open, initial]) => {
   lineNumbers.value = initial?.lineNumbers ?? false
   tabSize.value = initial?.tabSize ?? 4
   wrap.value = initial?.wrap ?? true
+  fontFamily.value = initial?.fontFamily ?? 'Consolas'
 }, { immediate: true })
 
 function apply() {
-  emit('apply', { source: source.value, language: language.value, lineNumbers: lineNumbers.value, tabSize: tabSize.value, wrap: wrap.value })
+  emit('apply', { source: source.value, language: language.value, lineNumbers: lineNumbers.value, tabSize: tabSize.value, wrap: wrap.value,
+    ...(fontFamily.value === props.initial?.fontFamily ? {} : { fontFamily: fontFamily.value }) })
+}
+function afterOpenChange(open: boolean) {
+  if (!open || !props.open) return
+  if (props.initialFocus === 'font') fontSelect.value?.focus()
+  else if (props.initialFocus === 'language') languageSelect.value?.focus()
+  else if (props.initialFocus === 'settings') indentationInput.value?.focus()
 }
 </script>
 
 <template>
-  <Modal :open="open" :title="t('document.code-block.title')" :ok-text="t('common.apply')" :cancel-text="t('common.cancel')" :width="640" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)" @after-close="emit('closed')">
+  <Modal :open="open" :title="t('document.code-block.title')" :ok-text="t('common.apply')" :cancel-text="t('common.cancel')" :width="640" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)" @after-close="emit('closed')" @after-open-change="afterOpenChange">
     <Form layout="vertical" class="code-block-panel" :style="{ '--code-panel-color': token.colorTextSecondary }">
-      <FormItem :label="t('document.code-block.language')"><Select v-model:value="language" :options="languages" :aria-label="t('document.code-block.language-label')" show-search option-filter-prop="label" /></FormItem>
+      <FormItem :label="t('document.code-block.language')"><Select ref="languageSelect" v-model:value="language" :options="languages" :aria-label="t('document.code-block.language-label')" show-search option-filter-prop="label" /></FormItem>
+      <FormItem label="等宽字体"><Select ref="fontSelect" v-model:value="fontFamily" :options="fonts" show-search option-filter-prop="label" aria-label="代码块等宽字体" /></FormItem>
       <FormItem class="code-block-panel__toggle" :label="t('document.code-block.line-numbers')"><Switch v-model:checked="lineNumbers" :aria-label="t('document.code-block.show-line-numbers')" /></FormItem>
-      <FormItem label="缩进空格数"><InputNumber v-model:value="tabSize" :min="1" :max="16" :precision="0" aria-label="代码块缩进空格数" /></FormItem>
+      <FormItem label="缩进空格数"><InputNumber ref="indentationInput" v-model:value="tabSize" :min="1" :max="16" :precision="0" aria-label="代码块缩进空格数" /></FormItem>
       <FormItem class="code-block-panel__toggle" label="自动换行"><Switch v-model:checked="wrap" aria-label="代码块自动换行" /></FormItem>
       <FormItem :label="t('document.code-block.source')"><Input.TextArea v-model:value="source" :aria-label="t('document.code-block.source')" :auto-size="{ minRows: 10, maxRows: 24 }" spellcheck="false" /></FormItem>
     </Form>

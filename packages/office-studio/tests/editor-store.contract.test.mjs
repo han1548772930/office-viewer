@@ -124,13 +124,19 @@ test('range-cell shifts enter workbook history as one atomic undoable edit', () 
   const editor = freshEditor()
   const model = snapshot(editor.state.workbook)
   const sheet = model.sheets[0]
+  model.calculationMode = 'manual'
+  model.defaultStyle = { font: { bold: true }, fill: '#eeddcc' }
   sheet.cells = { '0:0': createCell(0, 0, 'before'), '0:1': createCell(0, 1, 'move') }
+  sheet.cells['0:1'].formula = '=A1+B1'
+  model.metadata = { ...model.metadata, definedNames: [{ name: 'Moved', refersTo: `${sheet.name}!B1` }] }
   editor.workbook.replace(model)
   const original = toExcelWorkbookView(model)
   const moved = moveSheetCellRange(original.sheets[0], { startRow: 0, startColumn: 1, endRow: 0, endColumn: 1 }, 'right')
   assert.equal(moved.status, 'applied')
   const edit = structureEdit({ startRow: 0, startColumn: 1, endRow: 0, endColumn: 1 }, 'right')
   const after = transformWorkbookReferencesForSheetEdit({ ...original, sheets: [moved.sheet] }, sheet.id, edit)
+  assert.equal(after.sheets[0].cells.C1.formula, '=A1+C1')
+  assert.equal(after.metadata.definedNames[0].refersTo, `${sheet.name}!C1`)
   assert.equal(editor.replaceWorkbookFromView(after), true)
   assert.equal(editor.canUndo, true)
   editor.undo()
@@ -138,6 +144,9 @@ test('range-cell shifts enter workbook history as one atomic undoable edit', () 
   assert.equal(editor.state.workbook.sheets[0].cells['0:2'], undefined)
   editor.redo()
   assert.equal(editor.state.workbook.sheets[0].cells['0:2'].value, 'move')
+  assert.equal(editor.state.workbook.sheets[0].cells['0:2'].formula, '=A1+C1')
+  assert.deepEqual(editor.state.workbook.sheets[0].cells['0:2'].authoredStyle, {})
+  assert.equal(editor.state.workbook.sheets[0].cells['0:2'].style.fill, '#eeddcc')
   assert.equal(editor.state.workbook.sheets[0].cells['0:1'], undefined)
 })
 

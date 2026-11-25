@@ -5,6 +5,7 @@ import { expandSheetClipboardRange, SHEET_CLIPBOARD_SYNC_CELL_BUDGET } from './s
 import { sheetCommandRangesWithoutFilteredRows, sheetRangeContainsCell, sheetRangesIntersect } from './sheet-range-command.ts'
 import type { SheetClipboardSnapshot } from './sheet-clipboard-types.ts'
 import type { SheetPasteMode } from './sheet-paste.ts'
+import type { SheetImageObjectClipboard } from '../sheet-images/sheet-image-object-clipboard.ts'
 
 /** Cells are deliberately absent: entry prediction does not normalize or clone the workbook. */
 export interface SheetClipboardCapabilitySheet extends Pick<SpreadsheetSheet, 'id' | 'worksheetProtection' | 'rangeProtectionRules' | 'rowCount' | 'columnCount'> {
@@ -38,6 +39,9 @@ export interface SheetClipboardCapabilitiesInput {
   selection: { ranges: readonly CellRange[]; activeRangeIndex?: number }
   userId: string
   clipboard?: SheetClipboardSnapshot
+  imageClipboard?: Pick<SheetImageObjectClipboard, 'id' | 'source' | 'copyType'>
+  focusedImageRanges?: readonly CellRange[]
+  imagePasteRanges?: readonly CellRange[]
   /** True only when a reader is callable. Its current content remains unknown until the user pastes. */
   systemClipboardAvailable: boolean
   active?: boolean
@@ -56,7 +60,7 @@ export interface SheetClipboardEntryCapability {
   effectiveMode?: SheetPasteMode
 }
 export interface SheetClipboardSourceState {
-  kind: 'none' | 'internal' | 'text' | 'html'
+  kind: 'none' | 'internal' | 'text' | 'html' | 'image'
   id?: string
   copyType?: 'copy' | 'cut'
   formulaOnly: boolean
@@ -173,6 +177,7 @@ function firstPermissionReason(input: SheetClipboardCapabilitiesInput, sheet: Sh
 }
 function sourceState(input: SheetClipboardCapabilitiesInput): SheetClipboardSourceState {
   const snapshot = input.clipboard
+  const sourceUnitId = (snapshot?.source ?? input.imageClipboard?.source)?.unitId
   let hasValue = false, hasFormula = false
   if (snapshot) for (const key in snapshot.cells) {
     const cell = snapshot.cells[key]!
@@ -180,13 +185,14 @@ function sourceState(input: SheetClipboardCapabilitiesInput): SheetClipboardSour
     hasFormula ||= !!cell.formula
     if (hasValue && hasFormula) break
   }
-  return { kind: snapshot ? snapshot.externalFormat ?? 'internal' : 'none', id: snapshot?.id, copyType: snapshot?.copyType,
+  return { kind: snapshot ? snapshot.externalFormat ?? 'internal' : input.imageClipboard ? 'image' : 'none', id: snapshot?.id ?? input.imageClipboard?.id,
+    copyType: snapshot?.copyType ?? input.imageClipboard?.copyType,
     formulaOnly: snapshot?.formulaOnly ?? false, hasValue, hasFormula,
     hasFormat: !!snapshot && snapshot.externalFormat !== 'text' && !!snapshot.rows.length && !!snapshot.columns.length,
     hasColumnWidths: !!snapshot && snapshot.externalFormat !== 'text' && !!snapshot.columns.length
       && snapshot.columnWidths.length === snapshot.columns.length && snapshot.columnWidths.every(width => Number.isFinite(width) && width >= 0 && width <= 2000),
-    rows: snapshot?.rows.length ?? 0, columns: snapshot?.columns.length ?? 0, sourcePresent: !!snapshot?.source,
-    sameWorkbook: !!snapshot?.source && snapshot.source.unitId === input.workbook.id, systemClipboardAvailable: input.systemClipboardAvailable }
+    rows: snapshot?.rows.length ?? 0, columns: snapshot?.columns.length ?? 0, sourcePresent: !!snapshot?.source || !!input.imageClipboard?.source,
+    sameWorkbook: sourceUnitId !== undefined && sourceUnitId === input.workbook.id, systemClipboardAvailable: input.systemClipboardAvailable }
 }
 function capability(hidden: boolean, reason?: string, effectiveMode?: SheetPasteMode): SheetClipboardEntryCapability {
   return { hidden, disabled: !!reason, ...(reason ? { reason } : {}), ...(effectiveMode ? { effectiveMode } : {}) }
@@ -207,18 +213,25 @@ export function sheetClipboardCapabilities(input: SheetClipboardCapabilitiesInpu
   const source = sourceState(input), specialHidden = hidden || !!input.exclusiveRange
   let copyReason = baseReason, cutReason = baseReason
   if (!baseReason && sheet && selected) {
-    const range = expandedRange(sheet, selected), ranges = [range]
+    const range = expandedRange(sheet, selected), ranges = input.focusedImageRanges?.length ? input.focusedImageRanges : [range]
     copyReason = firstPermissionReason(input, sheet, ranges, ['view', 'copy'], 'source')
     cutReason = copyReason ?? firstPermissionReason(input, sheet, ranges, ['edit'], 'source')
-    if ((range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1) > SHEET_CLIPBOARD_SYNC_CELL_BUDGET) {
+    if (!input.focusedImageRanges?.length && (range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1) > SHEET_CLIPBOARD_SYNC_CELL_BUDGET) {
       copyReason ??= '复制范围超出当前同步处理预算。'; cutReason ??= '剪切范围超出当前同步处理预算。'
     }
-    if (!sheetCommandRangesWithoutFilteredRows(ranges, filteredSheetRows(input.workbook, sheet)).length
+    if (!input.focusedImageRanges?.length && !sheetCommandRangesWithoutFilteredRows(ranges, filteredSheetRows(input.workbook, sheet)).length
       && !(sheet.mergedRanges ?? []).some(merge => sheetRangesIntersect(merge, range))) copyReason ??= '所选区域没有可复制的可见行。'
   }
   function pasteCapability(mode: SheetPasteMode, snapshot: SheetClipboardSnapshot | undefined, reader: boolean): SheetClipboardEntryCapability {
     const effective = snapshot?.formulaOnly && mode === 'all' ? 'formulas' : mode
     if (baseReason || !sheet || !selected) return capability(hidden, baseReason ?? '请选择有效的单元格范围。', effective)
+    if (!snapshot && !reader && input.imageClipboard) {
+      if (effective !== 'all' && effective !== 'exceptBorders') return capability(hidden, '图片对象没有单元格值、公式、格式或列宽可供选择性粘贴。', effective)
+      if (input.imageClipboard.source.userId !== input.userId) return capability(hidden, '图片剪贴板属于其他用户。', effective)
+      const ranges = input.imagePasteRanges?.length ? input.imagePasteRanges : [selected]
+      return capability(hidden, ranges.every(range => validRange(range)) ? firstPermissionReason(input, sheet, ranges, ['view', 'edit'], 'target', effective)
+        : '图片粘贴位置超出工作表范围。', effective)
+    }
     if (!snapshot && !reader) return capability(hidden, '系统剪贴板不可读，工作台内也没有可粘贴内容。', effective)
     if (snapshot?.externalFormat === 'text' && (effective === 'formats' || effective === 'columnWidths')) return capability(hidden, '文本剪贴板没有源格式或列宽。', effective)
     if (effective === 'columnWidths' && snapshot && (!snapshot.columns.length || snapshot.columnWidths.length !== snapshot.columns.length
@@ -259,7 +272,8 @@ export function sheetClipboardCapabilities(input: SheetClipboardCapabilitiesInpu
     }
     return [mode, { ...entry, hidden: mode === 'all' ? hidden : specialHidden }]
   })) as Record<SheetPasteMode, SheetClipboardEntryCapability>
-  const copy = capability(hidden, copyReason), cut = capability(hidden, cutReason), copyFormulas = capability(specialHidden, copyReason)
+  const copy = capability(hidden, copyReason), cut = capability(hidden, cutReason), copyFormulas = capability(specialHidden,
+    input.focusedImageRanges?.length ? '图片对象没有单元格公式。' : copyReason)
   const copySpecial = groupCapability(specialHidden, [copyFormulas])
   const pasteSpecial = groupCapability(specialHidden, pasteModes.filter(mode => mode !== 'all').map(mode => paste[mode]))
   const ribbonPaste = groupCapability(specialHidden || !!input.shapeTextEditing, pasteModes.map(mode => paste[mode]))

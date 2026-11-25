@@ -74,7 +74,8 @@ export function projectDocumentCodeScroll(layout: DocumentLayout, offsets: Docum
     if (!region) return source
     const requested = offsets[region.key] ?? 0, offset = Number.isFinite(requested) ? Math.max(0, Math.min(requested, region.maxScroll)) : 0
     const clip = source.clip ? intersect(region.clip, source.clip) : region.clip
-    const gutterClip = source.clip ? intersect(region.container, source.clip) : { ...region.container }
+    const gutter = region.container.clip ? intersect(region.container, region.container.clip) : { ...region.container }
+    const gutterClip = source.clip ? intersect(gutter, source.clip) : gutter
     const result = { ...source, x: source.x - offset, clip,
       ...(source.markerStyle ? { markerStyle: { ...source.markerStyle, x: source.markerStyle.x - offset } } : {}),
       codeBlock: { ...source.codeBlock!, gutterX: source.x, gutterClip },

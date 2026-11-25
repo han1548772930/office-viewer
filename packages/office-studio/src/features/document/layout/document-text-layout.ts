@@ -1,7 +1,9 @@
 import { createDocumentDefaultStyle, type DocumentBlock } from '../../../domain/model'
 import { hasEastAsianLetters } from '../model/document-font'
 import type { DocumentRun, TextTarget } from '../model/document-model'
-import { getLatexFormula, layoutLatexFormula, type LatexLayout } from '../latex/latex-formula'
+import { getLatexFormula, LatexFormulaError, layoutLatexFormula, type LatexLayout } from '../latex/latex-formula'
+import { documentImageAtom } from '../images/document-image-atom'
+import { documentImageBox } from './document-image-layout'
 import type { LayoutGlyph, LayoutLine, LayoutMeasurer, LayoutNoteGlyphDisplay, LayoutRightTabStop, LayoutTabGlyph, LayoutTabLeader } from './document-layout-types'
 
 export function paragraphLineHeight(fontHeight: number, style: DocumentBlock['style']): number {
@@ -32,8 +34,8 @@ export function createTextMeasurer(): LayoutMeasurer {
 }
 
 export type RawGlyph = Omit<LayoutGlyph, 'x' | 'y' | 'height'>
-export interface RawLine { glyphs: RawGlyph[]; start: number; end: number; width: number; fontHeight: number }
-export interface TextWrappingOptions { softWrap?: boolean; tabSize?: number }
+export interface RawLine { glyphs: RawGlyph[]; start: number; end: number; width: number; fontHeight: number; ascent?: number }
+export interface TextWrappingOptions { softWrap?: boolean; tabSize?: number; maximumImageHeight?: number }
 
 /** Leader text is measured decoration; the original tab remains one UTF-16 glyph. */
 function tabLeaderGlyph(width: number, leader: LayoutTabLeader, font: string, measurer: LayoutMeasurer): LayoutTabGlyph {
@@ -75,6 +77,14 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
       note: { noteKind: label.noteKind, noteId: label.noteId, role: 'bodyLabel' } })
   }
   for (const run of runs) {
+    const atom = documentImageAtom(run)
+    if (atom) {
+      const box = documentImageBox(atom.image, typeof width === 'number' ? width : width(0), options.maximumImageHeight ?? Number.MAX_SAFE_INTEGER)
+      tokens.push({ text: run.text, offset, end: offset + run.text.length, width: (atom.image.wrappingStyle ?? 'inline') === 'inline' ? box.width : 0,
+        run, font: runFont(run), imageAtom: { imageId: atom.imageId, image: atom.image, box } })
+      offset += run.text.length
+      continue
+    }
     const reference = display?.references?.get(run.id)
     if (reference) {
       const visualRun = { ...run, ...reference.textStyle }, font = runFont(visualRun)
@@ -89,11 +99,21 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
       const text = part.segment
       const font = eastAsianFont && hasEastAsianLetters(text) ? eastAsianFont : latinFont
       let latex: LatexLayout | undefined
+      let latexError: LayoutGlyph['latexError']
       const formula = text === '\uFFFC' ? getLatexFormula(run) : undefined
       if (formula) {
-        try { latex = layoutLatexFormula(formula.latex, { fontSize: run.fontSize * 4 / 3, measure: measurer.measure }) } catch { /* Preserve a malformed persisted formula as a replacement glyph. */ }
+        try { latex = layoutLatexFormula(formula.latex, { fontSize: run.fontSize * 4 / 3, measure: measurer.measure }) }
+        catch (cause) {
+          if (!(cause instanceof LatexFormulaError)) throw cause
+          latexError = { message: cause.message, offset: cause.offset }
+          const preview = Array.from(formula.latex.replace(/\s+/g, ' ')).slice(0, 48).join('')
+          const label = `⚠ ${preview}${Array.from(formula.latex).length > 48 ? '…' : ''} (${cause.offset + 1})`
+          const size = Math.max(8, Math.min(96, run.fontSize * 4 / 3)), errorFont = `${size}px "Cambria Math", serif`
+          latex = { width: measurer.measure(label, errorFont), height: size * 1.2, baseline: size * 0.9,
+            primitives: [{ kind: 'text', x: 0, y: 0, text: label, font: errorFont }] }
+        }
       }
-      tokens.push({ text, offset: offset + part.index, end: offset + part.index + text.length, width: text === '\n' || text === '\u2028' ? 0 : latex?.width ?? measurer.measure(text === '\t' ? '    ' : text, font), run, font, latex })
+      tokens.push({ text, offset: offset + part.index, end: offset + part.index + text.length, width: text === '\n' || text === '\u2028' ? 0 : latex?.width ?? measurer.measure(text === '\t' ? '    ' : text, font), run, font, latex, latexError })
     }
     offset += run.text.length
   }
@@ -102,7 +122,18 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
   let lineStart = 0
   let lineWidth = 0
   const commit = (end: number) => {
-    lines.push({ glyphs, start: lineStart, end, width: lineWidth, fontHeight: Math.max(minimumFontHeight, ...(glyphs.length ? glyphs.map(glyph => glyph.latex?.height ?? glyph.run.fontSize * 4 / 3) : [runs[0]?.fontSize ? runs[0].fontSize * 4 / 3 : minimumFontHeight])) })
+    const textHeight = Math.max(minimumFontHeight, ...(glyphs.length ? glyphs.map(glyph => glyph.run.fontSize * 4 / 3)
+      : [runs[0]?.fontSize ? runs[0].fontSize * 4 / 3 : minimumFontHeight]))
+    let ascent = textHeight * 0.82, descent = textHeight * 0.18
+    const hasObject = glyphs.some(glyph => glyph.latex || glyph.imageAtom && (glyph.imageAtom.image.wrappingStyle ?? 'inline') === 'inline')
+    if (hasObject) for (const glyph of glyphs) {
+      const offset = glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0
+      const inlineImage = glyph.imageAtom && (glyph.imageAtom.image.wrappingStyle ?? 'inline') === 'inline' ? glyph.imageAtom : undefined
+      ascent = Math.max(ascent, inlineImage ? inlineImage.box.height : (glyph.latex?.baseline ?? glyph.run.fontSize * 4 / 3 * 0.82) - offset)
+      descent = Math.max(descent, inlineImage ? 0 : (glyph.latex ? glyph.latex.height - glyph.latex.baseline : glyph.run.fontSize * 4 / 3 * 0.18) + offset)
+    }
+    lines.push({ glyphs, start: lineStart, end, width: lineWidth, fontHeight: hasObject ? ascent + descent : textHeight,
+      ...(hasObject ? { ascent } : {}) })
     glyphs = []; lineWidth = 0; lineStart = end
   }
   const availableWidth = () => Math.max(1, typeof width === 'number' ? width : width(lines.length))
@@ -163,11 +194,19 @@ export function positionLine(raw: RawLine, target: TextTarget, x: number, y: num
   const shift = !tabbed && align === 'center' ? spare / 2 : !tabbed && align === 'right' ? spare : 0
   const spaces = raw.glyphs.filter(glyph => glyph.text === ' ').length
   const gap = !tabbed && align === 'justify' && justify && spaces ? spare / spaces : 0
+  const baseline = y + (lineHeight - raw.fontHeight) / 2 + (raw.ascent ?? raw.fontHeight * 0.82)
   let cursor = x + shift
   const glyphs = raw.glyphs.map(glyph => {
     const value: LayoutGlyph = { ...glyph, x: cursor, y, height: lineHeight, width: glyph.width + (glyph.text === ' ' ? gap : 0) }
+    if (glyph.latex) {
+      const offset = glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0
+      value.y = baseline + offset - glyph.latex.baseline; value.height = glyph.latex.height
+    }
+    if (glyph.imageAtom && (glyph.imageAtom.image.wrappingStyle ?? 'inline') === 'inline') {
+      value.y = baseline - glyph.imageAtom.box.height; value.height = glyph.imageAtom.box.height
+    }
     cursor += value.width
     return value
   })
-  return { x: x + shift, y, width: Math.max(2, cursor - x - shift), height: lineHeight, glyphLineHeight: raw.fontHeight, target, start: raw.start, end: raw.end, baseline: y + (lineHeight - raw.fontHeight) / 2 + raw.fontHeight * 0.82, glyphs, page, marker }
+  return { x: x + shift, y, width: Math.max(2, cursor - x - shift), height: lineHeight, glyphLineHeight: raw.fontHeight, target, start: raw.start, end: raw.end, baseline, glyphs, page, marker }
 }

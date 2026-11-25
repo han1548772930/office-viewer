@@ -1,4 +1,5 @@
 import type { ExcelCellView } from '../../services/excelViewAdapter'
+import { sheetViewCellAt } from '../../services/excelViewAdapter.ts'
 import type { DrawCommand, RenderRect, RenderScene } from '../contracts'
 import { intersectRect } from '../geometry.ts'
 import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout.ts'
@@ -18,6 +19,10 @@ import { sheetRangeDashedOutlineCommands, SHEET_SELECTION_HANDLE_SIZE, SHEET_SEL
 import { crosshairHighlightRanges } from '../../features/sheet-crosshair/crosshair-highlight.ts'
 import { sheetMergedBorderSegments } from '../../features/sheet-workbench/sheet-cell-border.ts'
 import type { CellRange } from '../../domain/model.ts'
+import type { SheetImageResource } from '../../domain/sheet-images.ts'
+import type { SheetDrawingLeafRef } from '../../domain/sheet-drawings.ts'
+import { orderSheetDrawingCommands } from './drawing-order.ts'
+import { fitSheetCellImage } from '../../features/sheet-images/sheet-image-layout.ts'
 
 function gradientDataBarColor(color: string, strength: number): string {
   const channels = color.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
@@ -49,6 +54,12 @@ export interface SpreadsheetSceneOptions {
   numberFormatPreview?: SheetNumberFormatPreview
   /** Drawing-object commands are expressed in unscaled worksheet CSS pixels. */
   overlayCommands?: readonly DrawCommand[]
+  imageSource?: (resource: SheetImageResource) => CanvasImageSource | undefined
+  imageVisible?: (row: number, column: number) => boolean
+  backgroundImageSource?: CanvasImageSource
+  backgroundImageVersion?: number
+  imageCommands?: readonly DrawCommand[]
+  drawingOrder?: readonly SheetDrawingLeafRef[]
   crosshairHighlight?: { enabled: boolean; color: string }
 }
 export function displayCell(cell: ExcelCellView | undefined, date1904 = false, region?: string, previewPattern?: string): string {
@@ -57,7 +68,9 @@ export function displayCell(cell: ExcelCellView | undefined, date1904 = false, r
 
 /** Layout and hit-testing share the same sparse axes and frozen-pane transforms. */
 export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: GridViewport, options: SpreadsheetSceneOptions): RenderScene {
-  const commands: DrawCommand[] = [], selected = new Set(options.selectedCells), search = options.searchText?.toLocaleLowerCase()
+  const commands: DrawCommand[] = options.backgroundImageSource ? [{ kind: 'image', x: 0, y: 0, width: viewport.width, height: viewport.height,
+    source: options.backgroundImageSource, sourceVersion: options.backgroundImageVersion }] : []
+  const selected = new Set(options.selectedCells), search = options.searchText?.toLocaleLowerCase()
   const panes = geometry.panes(viewport), z = viewport.zoom
   const conditionalScopeValues = Object.entries(geometry.sheet.cells).flatMap(([address, cell]) => {
     const position = parseAddress(address)
@@ -90,11 +103,11 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     : active ? [{ startRow: active.row, endRow: active.row, startColumn: active.column, endColumn: active.column }] : []
   const isSelected = (row: number, column: number) => selected.has(cellAddress(row, column)) || options.selectedRanges?.some(range => row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn)
   const paintCell = (row: number, column: number, clip: RenderRect, foreground: DrawCommand[], borders: DrawCommand[], visibleRange: CellRange, foregroundOnly = false) => {
-    const key = cellAddress(row, column), cell = geometry.sheet.cells[key], rect = geometry.cellRect(row, column, viewport)
+    const key = cellAddress(row, column), cell = sheetViewCellAt(geometry.sheet, row, column), rect = geometry.cellRect(row, column, viewport)
     const merge = geometry.mergeAt(row, column)
     const visible = intersectRect(rect, clip)
     if (rect.width <= 0 || rect.height <= 0 || !foregroundOnly && (visible.width <= 0 || visible.height <= 0)) return
-    if (!foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? '#ffffff', clip })
+    if (!foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? (geometry.sheet.backgroundImage ? 'transparent' : '#ffffff'), clip })
     const conditionalFormulaValue = (formula: string, rule: NonNullable<typeof geometry.sheet.conditionalFormats>[number]) => {
         try {
           const translated = conditionalFormatFormulaAt(formula, rule, row, column)
@@ -121,10 +134,13 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     const conditionalIcon = conditionalStyle.icon ? conditionalIconPreset(conditionalStyle.icon.iconType, conditionalStyle.icon.iconId) : undefined
     if (conditionalIcon && !foregroundOnly) foreground.push({ kind: 'text', x: rect.x + 10 * z, y: rect.y + rect.height / 2, text: conditionalIcon.symbol, font: `${16 * z}px "Segoe UI Symbol", sans-serif`, color: conditionalIcon.color, align: 'center', baseline: 'middle', clip: intersectRect(rect, clip) })
     if (geometry.sheet.showGridlines !== false && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
+    const decodedImage = cell?.image && (!options.imageVisible || options.imageVisible(row, column)) && options.imageSource?.(cell.image.resource)
+    if (decodedImage && cell?.image && !foregroundOnly) foreground.push({ kind: 'image', ...fitSheetCellImage(rect,
+      cell.image.resource.width, cell.image.resource.height, 2 * z), source: decodedImage, clip: intersectRect(rect, clip) })
     if (isSelected(row, column) && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'rgba(36,107,253,0.09)', clip })
     if ((cell?.border || merge) && !foregroundOnly) {
       const segments = merge ? sheetMergedBorderSegments({ startRow: merge.startRow, endRow: merge.endRow, startCol: merge.startColumn, endCol: merge.endColumn },
-        (segmentRow, segmentCol) => geometry.sheet.cells[cellAddress(segmentRow, segmentCol)]?.border, visibleRange)
+        (segmentRow, segmentCol) => sheetViewCellAt(geometry.sheet, segmentRow, segmentCol).border, visibleRange)
         : (['top', 'bottom', 'left', 'right'] as const).map(side => ({ side, row, col: column, edge: cell?.border?.[side] }))
       for (const segment of segments) {
         const { side } = segment, edge = borderEdge(segment.edge)
@@ -252,7 +268,20 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   if (options.formatPainterSource) commands.push(...sheetRangeDashedOutlineCommands(geometry, options.formatPainterSource, viewport, options.formatPainterColor))
   // Overlay drawing objects share the same scroll/zoom transform as the sheet;
   // headers are painted afterwards and therefore stay above floating objects.
-  for (const command of options.overlayCommands ?? []) commands.push(transformOverlayCommand(command, viewport))
+  const drawingCommands: DrawCommand[] = []
+  for (const command of options.overlayCommands ?? []) {
+    if (!command.drawingRef) { drawingCommands.push(transformOverlayCommand(command, viewport)); continue }
+    for (const pane of geometry.panes(viewport)) {
+      if (!pane.clip.width || !pane.clip.height) continue
+      const frozenX = geometry.frozenColumns > 0 && pane.clip.x === GRID_HEADER_WIDTH,
+        frozenY = geometry.frozenRows > 0 && pane.clip.y === GRID_HEADER_HEIGHT,
+        projected = transformOverlayCommand(command, { ...viewport, scrollLeft: frozenX ? 0 : viewport.scrollLeft, scrollTop: frozenY ? 0 : viewport.scrollTop })
+      projected.clip = projected.clip ? intersectRect(projected.clip, pane.clip) : pane.clip
+      if (projected.clip.width > 0 && projected.clip.height > 0) drawingCommands.push(projected)
+    }
+  }
+  drawingCommands.push(...(options.imageCommands ?? []))
+  commands.push(...orderSheetDrawingCommands(drawingCommands, options.drawingOrder))
   commands.push({ kind: 'rect', x: 0, y: 0, width: viewport.width, height: GRID_HEADER_HEIGHT, fill: '#f5f7fa' })
   commands.push({ kind: 'rect', x: 0, y: GRID_HEADER_HEIGHT, width: GRID_HEADER_WIDTH, height: Math.max(0, viewport.height - GRID_HEADER_HEIGHT), fill: '#f5f7fa' })
   for (const pane of panes) {
@@ -291,31 +320,38 @@ function borderEdge(raw: unknown): { style: string; color: string } | undefined 
 
 function transformOverlayCommand(command: DrawCommand, viewport: GridViewport): DrawCommand {
   const transformRect = (rect: RenderRect): RenderRect => ({
-    x: rect.x * viewport.zoom - viewport.scrollLeft,
-    y: rect.y * viewport.zoom - viewport.scrollTop,
+    x: GRID_HEADER_WIDTH + (rect.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y: GRID_HEADER_HEIGHT + (rect.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
     width: rect.width * viewport.zoom,
     height: rect.height * viewport.zoom,
   })
   const clip = command.clip ? transformRect(command.clip) : undefined
+  if (command.kind === 'image' && command.matrix) {
+    const m = command.matrix
+    return { ...command, matrix: { a: m.a * viewport.zoom, b: m.b * viewport.zoom, c: m.c * viewport.zoom, d: m.d * viewport.zoom,
+      e: GRID_HEADER_WIDTH + (m.e - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+      f: GRID_HEADER_HEIGHT + (m.f - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop }, ...(clip ? { clip } : {}) }
+  }
   if (command.kind === 'rect') return { ...command, ...transformRect(command), strokeWidth: command.strokeWidth === undefined ? undefined : command.strokeWidth * viewport.zoom, ...(clip ? { clip } : {}) }
   if (command.kind === 'line') return {
     ...command,
-    x1: command.x1 * viewport.zoom - viewport.scrollLeft,
-    y1: command.y1 * viewport.zoom - viewport.scrollTop,
-    x2: command.x2 * viewport.zoom - viewport.scrollLeft,
-    y2: command.y2 * viewport.zoom - viewport.scrollTop,
+    x1: GRID_HEADER_WIDTH + (command.x1 - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y1: GRID_HEADER_HEIGHT + (command.y1 - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
+    x2: GRID_HEADER_WIDTH + (command.x2 - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y2: GRID_HEADER_HEIGHT + (command.y2 - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
     width: command.width === undefined ? undefined : command.width * viewport.zoom,
     ...(clip ? { clip } : {}),
   }
   if (command.kind === 'polygon') return {
     ...command,
-    points: command.points.map((point) => ({ x: point.x * viewport.zoom - viewport.scrollLeft, y: point.y * viewport.zoom - viewport.scrollTop })),
+    points: command.points.map((point) => ({ x: GRID_HEADER_WIDTH + (point.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+      y: GRID_HEADER_HEIGHT + (point.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop })),
     ...(clip ? { clip } : {}),
   }
   if (command.kind === 'text') return {
     ...command,
-    x: command.x * viewport.zoom - viewport.scrollLeft,
-    y: command.y * viewport.zoom - viewport.scrollTop,
+    x: GRID_HEADER_WIDTH + (command.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y: GRID_HEADER_HEIGHT + (command.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
     font: command.font.replace(/(\d+(?:\.\d+)?)px/g, (_match, size: string) => `${Number(size) * viewport.zoom}px`),
     maxWidth: command.maxWidth === undefined ? undefined : command.maxWidth * viewport.zoom,
     ...(clip ? { clip } : {}),

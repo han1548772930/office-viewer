@@ -55,7 +55,9 @@ export function documentParagraphFromBody(raw: UniverBodyRecord, runs: InlineRun
     if (!Number.isSafeInteger(outline) || outline < 0 || outline > 9) throw new RangeError('段落大纲级别无效。')
     if (outline < 9) { block.type = 'heading'; block.level = outline + 1 }
   }
-  block.metadata = { ...block.metadata, univerBodyParagraphSource: { version: 1, paragraph: cloneModel(raw) } }
+  block.metadata = { ...block.metadata, univerBodyParagraphSource: { version: 1, paragraph: cloneModel(raw) },
+    univerParagraphPaginationResolution: { version: 1, inherited: cloneModel(bodyRecord(inherited.paragraphStyle)),
+      baseline: Object.fromEntries(['keepLines', 'keepNext', 'widowControl', 'pageBreakBefore'].map(key => [key, Reflect.get(block.style, key)])) } }
   if (bodyBoolean(raw.headingCollapsed) !== undefined) block.metadata.headingCollapsed = bodyBoolean(raw.headingCollapsed)
   const paragraphType = block.type, paragraphLevel = block.level
   applyDocumentBodyBlockSource(block, raw)
@@ -165,8 +167,11 @@ function applyBullet(block: DocumentBlock, bullet: UniverBodyRecord, lists: Reco
 export function documentParagraphToBody(block: DocumentBlock, end: number, instanceId?: string): UniverBodyRecord {
   const source = bodyRecord(block.metadata.univerBodyParagraphSource), result = cloneModel(bodyRecord(source.paragraph))
   result.startIndex = end; result.paragraphId = block.id
-  result.paragraphStyle = documentParagraphStyleToBody(block.style, result.paragraphStyle)
+  result.paragraphStyle = documentParagraphStyleToBody(block.style, result.paragraphStyle, block.metadata.univerParagraphPaginationResolution)
   const style = bodyRecord(result.paragraphStyle)
+  if (typeof block.metadata.documentCodeFontFamily === 'string') {
+    style.textStyle = { ...bodyRecord(style.textStyle), ff: block.metadata.documentCodeFontFamily }
+  }
   if (block.type === 'heading') { style.outlineLevel = Math.max(0, block.level - 1); style.namedStyleType = block.level <= 5 ? block.level + 3 : 0 }
   else { delete style.outlineLevel; style.namedStyleType = namedStyles.indexOf(block.metadata.namedStyleType as DocumentNamedParagraphStyle) > 0 ? namedStyles.indexOf(block.metadata.namedStyleType as DocumentNamedParagraphStyle) : 1 }
   if (block.metadata.headingCollapsed !== undefined) result.headingCollapsed = block.metadata.headingCollapsed

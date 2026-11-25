@@ -1,4 +1,5 @@
 import type { RenderDriver, RenderScene } from './contracts'
+import { imageCommandGeometry, imageSourceDimensions } from './image-geometry.ts'
 
 export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
   const context = canvas.getContext('2d', { alpha: false })
@@ -48,10 +49,20 @@ export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
             } else context.fillText(command.text, command.x, command.y, command.maxWidth)
             break
           }
-          case 'image':
+          case 'image': {
+            const geometry = imageCommandGeometry(command)
+            if (!geometry) break
+            const dimensions = imageSourceDimensions(command.source), centerX = command.x + command.width / 2, centerY = command.y + command.height / 2
             context.globalAlpha = command.opacity ?? 1
-            context.drawImage(command.source, command.x, command.y, command.width, command.height)
+            if (command.matrix) { const m = command.matrix; context.transform(m.a, m.b, m.c, m.d, m.e, m.f) }
+            context.translate(centerX, centerY)
+            context.rotate(((command.rotation ?? 0) % 360) * Math.PI / 180)
+            context.scale(command.flipX ? -1 : 1, command.flipY ? -1 : 1)
+            context.drawImage(command.source, geometry.sourceRect.x * dimensions.width, geometry.sourceRect.y * dimensions.height,
+              geometry.sourceRect.width * dimensions.width, geometry.sourceRect.height * dimensions.height,
+              geometry.rect.x - centerX, geometry.rect.y - centerY, geometry.rect.width, geometry.rect.height)
             break
+          }
         }
         context.restore()
       }

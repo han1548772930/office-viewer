@@ -4,6 +4,8 @@
 
 本记录覆盖代码块、多栏组、引用块和 Callout 的前端模型、命令、属性面板、Facade、body 编解码及测试草稿。入口计数说明清点口径，不作为完整功能证明；Pro 全部能力、Office 互操作和真实性能要求保持在交付范围内。
 
+本文的初批开发快照由后续 [Canvas 交互与辅助内容区记录](DOC-13-14-16-17-canvas-interactions.md) 和 [Code 字体、语法与段落弹层记录](DOC-13-14-16-17-code-popmenus.md) 补充；新增浮动/段落菜单、尺寸、调宽、Code 滚动、字体/语法和辅助排版均仍未验收。
+
 ## 1. 依据与模块边界
 
 - OSS：只读仓库 `E:\rust_test\univer`，Univer v1.6.0，固定提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
@@ -87,9 +89,9 @@ Code 另有 `PARAGRAPH → LAYOUT → docs-code-ui.menu.language` submenu 根，
 
 [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 保留常规代码块入口（MEDIA，order 7，grid 1/7），在 INSERT 的“高级块”组提供引用、Callout、多栏三根：order 0 / 1 / 2，grid 1/1、2/1、1/2 跨两行。多栏含 2–5 栏和“设置比例和间距”五个子项，START 的块样式子菜单还有引用入口。这是本地当前布局差异：引用/Callout 尚未移到上游 MEDIA 1/6 与 2/6，多栏提供了额外常规入口；不能称布局完全对齐。
 
-[document-structure-ribbon.ts](../../packages/office-studio/src/components/document/document-structure-ribbon.ts) 为命中的真实块注册四个上下文 Ribbon 动作，并以同一命令注册四个右键动作：属性、保留内容并移除容器、在块后继续输入、删除块和内容。Ribbon grid 顺序为属性 1/1、unwrap 1/2、exit 2/2、remove 2/1。禁用来自编辑权限、活动输入会话和 composition；命令还执行自身校验。
+[document-structure-ribbon.ts](../../packages/office-studio/src/components/document/document-structure-ribbon.ts) 为命中的真实块注册四个上下文 Ribbon 动作，并在右键和浮动菜单保留四个共同动作：属性、保留内容并移除容器、在块后继续输入、删除块和内容。Ribbon grid 顺序为属性 1/1、unwrap 1/2、exit 2/2、remove 2/1。第二批增加 Code 语言/换行/行号和 Column 增删/等宽菜单，逐类计数见 [后续记录](DOC-13-14-16-17-canvas-interactions.md#2-本地入口计数与命令闭环)。禁用来自编辑权限、活动输入会话和 composition；命令还执行自身校验。
 
-本地此四项能力对应 4 个常规根、5 个多栏子项、1 个既有 START 块样式子项、4 个结构上下文 Ribbon 动作和 4 个结构右键动作，按类别分别记录。没有执行运行态 More 溢出统计。
+本地此四项能力对应 4 个常规根、5 个多栏子项、1 个既有 START 块样式子项和 4 个结构上下文 Ribbon 动作。右键/浮动的共同结构动作仍为 4 个，Code 和 Column 现各为 7 个条件菜单根，语言子项和段落插入另计；完整口径见后续记录。没有执行运行态 More 溢出统计。
 
 | 用户动作 | 本地命令 / 服务 | 实际数据效果 |
 | --- | --- | --- |
@@ -119,7 +121,7 @@ Code 另有 `PARAGRAPH → LAYOUT → docs-code-ui.menu.language` submenu 根，
 ## 5. Facade、公共偏移与持久化
 
 - [document-structured-blocks.ts](../../packages/office-studio/src/api/document-structured-blocks.ts)：`FDocumentStructuredBlock` / `FDocumentQuote` / `FDocumentCallout` / `FDocumentCode`，提供 ID、查询、范围、逐段落文字、配置/颜色、插入、unwrap/remove/exit。包装只持有文档与 ID，每次重新解析当前模型，拒绝跨文档段落。
-- [document-columns.ts](../../packages/office-studio/src/api/document-columns.ts)：`FDocumentColumnGroup` / `FDocumentColumn` / `DocsColumnPositions`，提供组/栏查询、配置、比例/间距、添加删除移动、逐栏文字/格式/段落和公开范围。Facade gap 用 pt，领域/Canvas gap 用 CSS px（乘 4/3）；非法插入 gap 使用默认，非法 setGap 拒绝。Facade deleteColumn 使用 `keepContents:false`，对应公开破坏性删除；UI 可选择保留合并。
+- [document-columns.ts](../../packages/office-studio/src/api/document-columns.ts)：`FDocumentColumnGroup` / `FDocumentColumn` / `DocsColumnPositions`，提供组/栏查询、配置、比例/间距、添加删除移动、逐栏文字/格式/段落和公开范围。Facade gap 及第二批新增的 horizontalPadding/minHeight 使用 pt，领域/Canvas 使用 CSS px（乘 4/3）；非法插入 gap 使用默认，非法 setGap 及新尺寸拒绝。Facade deleteColumn 使用 `keepContents:false`，对应公开破坏性删除；UI 可选择保留合并。
 - [facade.ts](../../packages/office-studio/src/api/facade.ts) 的 Docs 方法接入这些包装；[index.ts](../../packages/office-studio/src/index.ts) 导出包装及相关配置、查询、范围和结构命令类型。未复制第二套 OfficeStudio / 历史实现。
 - [document-body-write.ts](../../packages/office-studio/src/api/document-body-write.ts) / [document-body-codec.ts](../../packages/office-studio/src/api/document-body-codec.ts) 继续输出/读取真实结构标记、`blockRanges`、`columnGroups`、Code/Callout 配置及 officeStudio 来源。Column 范围扫描跳过栏间非打印 rangeStart/rangeEnd，并匹配嵌套 column 标记。
 
@@ -139,7 +141,7 @@ Column SHRINK 保持声明的 gap 与最小宽度，只压缩超过最小宽度�
 
 ## 7. 测试草稿与本轮静态检查
 
-四份新增草稿均**未执行**：
+初批四份草稿及后续新增/扩展草稿均**未执行**；Canvas/辅助布局草稿和 26 个新增用例见 [第二批记录](DOC-13-14-16-17-canvas-interactions.md#7-测试草稿与未验收项)，Code/PopMenu 的 56 个新增用例及接口见 [第三批记录](DOC-13-14-16-17-code-popmenus.md#6-草稿静态核对与剩余缺口)，Quote/段落分页的 37 个新增草稿见 [第四批记录](DOC-16-quote-pagination.md#6-草稿数量静态核对与剩余缺口)。初批范围如下：
 
 | 文件 | 有意义的预期范围 |
 | --- | --- |
@@ -152,10 +154,10 @@ Column SHRINK 保持声明的 gap 与最小宽度，只压缩超过最小宽度�
 
 ## 8. 剩余缺口
 
-1. **入口与交互**：Quote/Callout 本地组位置与上游 MEDIA 有差异；六种 paragraph 挂载、Pro Canvas PopMenu / mobile / 语言与比例浮层没有全部补齐。当前四动作 Ribbon/右键和属性面板不代表全部 Pro 入口对齐。
-2. **代码块**：既有 tokenizer 为 plain、javascript、typescript、json、css、html、python、sql、rust 九种；真实 Code 容器与属性面板保留未知语言配置，旧 paragraph metadata 适配仍将未知语言归一化为 plain。与上游 21 项语言目录及全部语法行为仍有差异。长行的容器内水平滚动、裁剪和光标可达性未完成或未验收。
-3. **引用分页**：公开插入规格要求 keepLines / widowControl 和相邻 keepNext，在传统分页能容纳时保持整体；本地尚未实现完整 keep 规则及其历史/文件映射。
-4. **多栏**：上游 `column.ts` 默认 minHeight 72、horizontalPadding 8 未对齐；拖拽调宽、完整比例/等宽上下文、嵌套与 traditional/modern 模式限制的逐行为验证仍需补齐。不得把当前可读/可布局推断成所有模式闭环。
+1. **入口与交互**：Quote/Callout 本地组位置与上游 MEDIA 有差异；第三批已接六种 paragraph 挂载、表格下方、Code 字体/语言/More 和 mobile Drawer。完整基础菜单组合、触控和运行态溢出仍未验收，具体来源及表后便利扩展见第三批记录，不能用四动作或入口数量证明全部 Pro 对齐。
+2. **代码块**：第三批以固定 Prism 1.30.0 替换旧九语言 regex，装载固定 21 项对应 grammar，真实容器和旧 paragraph metadata 都保留未知作者语言；新增真实整块字体命令、Facade 和 Ant 弹层。七类 Canvas 颜色、未知 grammar 纯文本回退与上游有差异，复杂语言/字体/IME 和运行态行为仍需验收。长行滚动投影、裁剪、命中与光标路径继续保留，见第二、第三批记录。
+3. **引用分页**：第四批已落盘四项段落属性、Quote keepLines / widowControl / 相邻 keepNext 生成及作者恢复、共享分页/命令/历史/公共 body 接线，全部未运行验收。原生 DOCX 四项读写、Office 样本和复杂 keep 兼容场景仍需实现或验收，见 [第四批记录](DOC-16-quote-pagination.md)。
+4. **多栏**：第二批已接上游默认 minHeight 72、horizontalPadding 8、显式尺寸、拖拽/键盘调宽及等宽上下文，并补正文/表格/辅助 host 真实布局路径。traditional/modern 限制、上游手柄最小可见高度差异、超大 minHeight 和全部嵌套/分页场景仍未验收，见第二批记录。不得把代码接线推断成所有模式闭环。
 5. **保真**：上游导入的 Quote 边框若没有本地来源记录，无法确认引用前边框，保留为未核实作者格式；Office 二进制映射、字段/控件/note/表格混合文件、独立重开、复制粘贴全部结构组合还需样本。
 6. **验证**：前端类型、构建、四份草稿、真实浏览器/IME、主题/焦点、WebGPU/Canvas2D、Office 文件和大样本性能均未运行。首屏、滚动、编辑、缩放、主线程长任务、Worker/WASM 复制与内存无本轮实测，继续未验收。
 

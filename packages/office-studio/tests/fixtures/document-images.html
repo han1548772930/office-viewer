@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>DOC-07 image editing drafts</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div><script type="module">
+import { computed, createApp, h, KeepAlive, nextTick, ref, shallowRef } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FDocument } from '/packages/office-studio/src/api/facade'
+import { createBlankDocument } from '/packages/office-studio/src/domain/model'
+import { createParagraph, createRun, createTable, textTargets } from '/packages/office-studio/src/features/document/model/document-model'
+import { setDocumentImageAtom } from '/packages/office-studio/src/features/document/images/document-image-atom'
+import { documentImageEntries } from '/packages/office-studio/src/features/document/images/document-image-model'
+import { documentImageFrameCorners } from '/packages/office-studio/src/features/document/layout/document-image-layout'
+import { createTextMeasurer, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
+import { documentLayoutForBlockHost } from '/packages/office-studio/src/features/document/layout/document-auxiliary-layout'
+import { documentModelForBlockHost } from '/packages/office-studio/src/features/document/services/document-block-host'
+import { createDocumentContentControl, replacePictureContentControlImage } from '/packages/office-studio/src/features/document/services/content-controls'
+import { EMPTY_SECTION_HEADER_FOOTER } from '/packages/office-studio/src/features/document/services/section-header-footer'
+import { projectDocumentStoryBlocks } from '/packages/office-studio/src/features/document/model/document-story-blocks'
+import { encodeDocumentBody } from '/packages/office-studio/src/api/document-body-codec'
+import { documentSegmentIdForHost } from '/packages/office-studio/src/api/document-segments'
+import { DOCUMENT_IMAGE_PUBLIC_COMMANDS } from '/packages/office-studio/src/api/document-image-commands'
+import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
+import { createOfficeI18n, createOfficeTranslator, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
+import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWorkbench.vue'
+
+// Synthetic fixture only. This batch did not start Vite, Edge or the browser tests.
+const query = new URLSearchParams(location.search), standalone = query.has('standalone'), copy = value => JSON.parse(JSON.stringify(value))
+const canvas = document.createElement('canvas'); canvas.width = 120; canvas.height = 80
+const context = canvas.getContext('2d'); context.fillStyle = '#ff0000'; context.fillRect(0, 0, 60, 80); context.fillStyle = '#0044ff'; context.fillRect(60, 0, 60, 80)
+const png = canvas.toDataURL('image/png'), byteLength = atob(png.split(',')[1]).length
+const paragraph = (id, text = '') => ({ ...createParagraph(text), id })
+const picture = (id, patch = {}) => ({ ...paragraph(id), type: 'image', runs: [], metadata: { image: { src: png, alt: id, width: 180, height: 120,
+  intrinsicWidth: 120, intrinsicHeight: 80, resourceId: id + '-resource', byteLength, mimeType: 'image/png', keepAspectRatio: true,
+  wrappingStyle: 'inFrontOfText', positionH: { relativeFrom: 0, posOffset: 90 }, positionV: { relativeFrom: 0, posOffset: 170 }, ...patch } } })
+const atom = (id, patch = {}) => {
+  const run = createRun()
+  setDocumentImageAtom(run, id, { ...picture(id).metadata.image, width: 80, height: 40, wrappingStyle: 'inline', positionH: undefined, positionV: undefined, ...patch })
+  return run
+}
+const initial = createBlankDocument(); initial.id = 'images-browser'; initial.name = '图片编辑草稿'
+initial.page = { width: 620, height: 760, marginLeft: 48, marginRight: 48, marginTop: 100, marginBottom: 120 }
+const table = createTable(1, 1); table.rows[0].cells[0].blocks = [picture('cell-image', { wrappingStyle: 'inline', positionH: undefined, positionV: undefined }), paragraph('cell-p', 'Cell text')]
+initial.blocks = [paragraph('p', 'Body'), picture('image'), paragraph('empty'), { ...paragraph('table'), type: 'table', runs: [], metadata: { table } }, paragraph('tail', 'Tail')]
+if (query.has('inline') || query.has('wrap')) {
+  const block = paragraph('p')
+  block.runs = query.has('wrap') ? [atom('wrap-image', { width: 160, height: 120, wrappingStyle: 'wrapSquare',
+    positionH: { relativeFrom: 1, posOffset: 180 }, positionV: { relativeFrom: 1, posOffset: 0 } }), createRun('左右文字😀' + 'a'.repeat(220))]
+    : [createRun('LEFT'), atom('inline-image'), createRun('RIGHT')]
+  Object.assign(block.style, { spaceBefore: 0, spaceAfter: 0, spacingRule: 'atLeast', lineHeight: 20, wordWrap: true, widowControl: false })
+  initial.blocks = [block, paragraph('tail', 'Tail')]
+}
+if (query.has('locked')) createDocumentContentControl(initial, { id: 'locked', type: 'richText', placement: 'block', blockRange: { blockIds: ['p', 'image'] },
+  blockId: 'p', startOffset: 0, endOffset: 4, lock: 'contentLocked' })
+if (query.has('picture-control')) {
+  initial.blocks = [paragraph('picture-anchor', 'P'), paragraph('p', 'Body'), paragraph('tail', 'Tail')]
+  createDocumentContentControl(initial, { id: 'picture-control', type: 'picture', placement: 'block', blockRange: { blockIds: ['picture-anchor'] },
+    blockId: 'picture-anchor', startOffset: 0, endOffset: 1 })
+  replacePictureContentControlImage(initial, 'picture-control', picture('fixture').metadata.image)
+}
+if (query.has('auxiliary')) {
+  const header = projectDocumentStoryBlocks({ blocks: [paragraph('header-p'), picture('header-image', { wrappingStyle: 'inline', width: 100, height: 60, positionH: undefined, positionV: undefined })],
+    runs: [], paragraphs: [], metadata: {} }).content
+  initial.sectionHeaderFooters = { first: { ...EMPTY_SECTION_HEADER_FOOTER, header: '\uFFFC', storyContent: { header } } }
+}
+if (standalone) delete initial.id
+let studio = standalone ? undefined : new OfficeStudio({ document: initial, currentUserId: 'editor' })
+studio?.activateDocument(initial.id)
+const api = shallowRef(studio ? new FDocument(studio, initial.id) : undefined), model = shallowRef(api.value?.getModel() ?? initial)
+let noteId
+if (query.has('auxiliary') && api.value) {
+  noteId = api.value.insertFootnote(1, encodeDocumentBody({ blocks: [paragraph('note-p'), picture('note-image', { wrappingStyle: 'inline', width: 100, height: 60, positionH: undefined, positionV: undefined })],
+    runs: [], paragraphs: [], metadata: {} })); model.value = api.value.getModel()
+}
+const dark = ref(false), active = ref(true), notices = [], locale = ref('zh-CN'), translator = computed(() => createOfficeTranslator(locale.value))
+const root = () => api.value?.getModel() ?? model.value
+const sync = () => { if (api.value) model.value = api.value.getModel() }
+function select(id, offset = 0, host) {
+  if (!api.value) return false
+  const target = textTargets(host ? documentModelForBlockHost(root(), host) : root()).find(target => (target.cellBlockId ?? target.blockId) === id)
+  if (!target) throw new Error('Missing input target')
+  return api.value.setInputSelection({ anchor: { ...target, offset }, focus: { ...target, offset } }, undefined, host)
+}
+function selectRange(id, start, end, host) {
+  if (!api.value) return false
+  const target = textTargets(host ? documentModelForBlockHost(root(), host) : root()).find(target => (target.cellBlockId ?? target.blockId) === id)
+  if (!target) throw new Error('Missing input target')
+  return api.value.setInputSelection({ anchor: { ...target, offset: start }, focus: { ...target, offset: end } }, undefined, host)
+}
+window.documentImageFixture = {
+  png, byteLength, noteId, notices, select, selectRange, dark: value => dark.value = value,
+  images: host => copy(documentImageEntries(host ? documentModelForBlockHost(root(), host) : root()).map(entry => ({ imageId: entry.imageId, image: entry.image }))),
+  snapshot: () => copy(root()), publicSnapshot: () => copy(api.value?.getSnapshot()), selection: () => copy(api.value?.getInputState()?.location),
+  layoutRows: host => copy(documentLayoutForBlockHost(layoutDocument(root(), createTextMeasurer()), host).lines.map(line => ({
+    target: line.target, start: line.start, end: line.end, x: line.x, y: line.y, width: line.width, height: line.height,
+    page: line.page, baseline: line.baseline, rowKey: line.rowKey, fragmentIndex: line.fragmentIndex, fragmentCount: line.fragmentCount,
+  }))),
+  clipboard: (type, data = {}) => {
+    const input = document.querySelector('textarea[aria-label="文档文字输入"]'), transfer = new DataTransfer()
+    if (!input) throw new Error('Missing Ant document input')
+    for (const [mime, value] of Object.entries(data)) transfer.setData(mime, value)
+    input.dispatchEvent(new ClipboardEvent(type, { bubbles: true, cancelable: true, clipboardData: transfer }))
+    return { text: transfer.getData('text/plain'), html: transfer.getData('text/html') }
+  },
+  history: () => studio ? { undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 } : undefined,
+  undo: () => { const result = api.value.undo(); sync(); return result }, redo: () => { const result = api.value.redo(); sync(); return result },
+  openInsert: request => studio.executeCommand(DOCUMENT_IMAGE_PUBLIC_COMMANDS.insert, { unitId: api.value.id, ...request }),
+  openImage: (mode, imageId, host) => studio.executeCommandSync(DOCUMENT_IMAGE_PUBLIC_COMMANDS[mode], { unitId: api.value.id, imageId,
+    ...(host ? { segmentId: documentSegmentIdForHost(root(), host) } : {}) }),
+  cancelNext: () => { const handle = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === 'doc.command.update-image') { event.cancel = true; handle.dispose() } }) },
+  navigateOnUpdate: () => { const handle = studio.events.addEvent('CommandExecuted', event => { if (event.id === 'doc.command.update-image') { select('tail', 1); handle.dispose() } }) },
+  replaceSameSnapshot: () => { model.value = copy(model.value) },
+  deactivate: async () => { active.value = false; await nextTick() }, reactivate: async () => { active.value = true; await nextTick() },
+  saveAndReopen: () => {
+    const saved = api.value.save(); studio.dispose(); studio = new OfficeStudio({ document: copy(saved), currentUserId: 'editor' })
+    studio.activateDocument(saved.id); api.value = new FDocument(studio, saved.id); sync(); return copy(saved)
+  },
+  point: (id = 'image', corner, host) => {
+    const viewport = document.querySelector('.document-scroll'), bounds = viewport.getBoundingClientRect()
+    const layout = documentLayoutForBlockHost(layoutDocument(root(), createTextMeasurer()), host), image = layout.images.find(image => image.blockId === id && image.objectImage)
+    if (!image) throw new Error('Missing image Canvas geometry')
+    viewport.scrollTop = Math.max(0, image.y - 150)
+    const shift = sceneOffset(layout, { width: bounds.width, height: bounds.height, scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, zoom: 100 })
+    const point = corner ? documentImageFrameCorners(image).find(point => point.corner === corner) : { x: image.x + image.width / 2, y: image.y + image.height / 2 }
+    return { x: bounds.x + shift.x + point.x, y: bounds.y + shift.y + point.y }
+  },
+}
+const app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h(KeepAlive, null, { default: () => active.value ? h(DocumentWorkbench, { modelValue: model.value, documentApi: api.value,
+    ribbonVariant: query.get('ribbon') === 'grid' ? 'grid' : 'classic', canUndo: studio?.editor.canUndo, canRedo: studio?.editor.canRedo,
+    'onUpdate:modelValue': next => model.value = next, onNotify: message => notices.push(message) }) : null }),
+}) })
+const i18n = createOfficeI18n(); i18n.global.locale.value = locale.value
+app.use(i18n); app.provide(OfficeLocaleKey, locale); app.provide(OfficeTranslatorKey, (key, fallback) => translator.value(key, fallback)); app.mount('#app')
+window.addEventListener('beforeunload', () => { app.unmount(); studio?.dispose() }, { once: true })
+</script></body></html>

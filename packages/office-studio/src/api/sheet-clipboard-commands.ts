@@ -6,6 +6,8 @@ import { equivalentModelData } from '../platform/commands/model-equivalence.ts'
 import type { HistorySavepoint } from '../platform/history/history-types.ts'
 import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
 import { normalizeSheetCommandRange, sheetRangesEqual, type SheetCommandRange } from '../features/sheet-workbench/sheet-range-command.ts'
+import { copySheetImageObjects, pasteSheetImageObjects } from './sheet-image-object-clipboard.ts'
+import { SHEET_IMAGE_OBJECT_COMMANDS, sheetImageObjectClipboardIdFromHtml } from '../features/sheet-images/sheet-image-object-clipboard.ts'
 import { applySheetClipboardPastePlan, assertSheetClipboardWorkbookChangesEditable, captureSheetClipboard, createSheetClipboardPastePlan,
   cloneSheetClipboardWorkbookResources, parseSheetClipboardHtml, parseSheetClipboardText,
   resolveSheetClipboardCommand, SHEET_CLIPBOARD_COMMAND_IDS, sheetClipboardContent, sheetClipboardIdFromHtml, sheetClipboardPasteMode,
@@ -36,9 +38,12 @@ export function parseSheetClipboardCommandInput(params: unknown): SheetClipboard
     && (!Number.isSafeInteger(input[key]) || Number(input[key]) < (key === 'expectedRevision' ? 0 : 1))) throw new TypeError('剪贴板内容或历史版本无效。')
   if (input.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('工作表标识不一致。')
   const content = normalizeSheetClipboardContentAliases(input)
+  if (input.imageIds !== undefined && (!Array.isArray(input.imageIds) || !input.imageIds.length
+    || input.imageIds.some(id => typeof id !== 'string' || !id.trim()) || new Set(input.imageIds).size !== input.imageIds.length)) throw new TypeError('图片对象选区无效。')
   const result: SheetClipboardCommandInput = {
     unitId: input.unitId as string | undefined, sheetId: input.sheetId as string | undefined, subUnitId: input.subUnitId as string | undefined,
     clipboardId: input.clipboardId as string | undefined, ...content, value: input.value as string | undefined,
+    ...(input.imageIds === undefined ? {} : { imageIds: [...input.imageIds as string[]] }),
     type: input.type as SheetClipboardCommandInput['type'],
     expectedRevision: input.expectedRevision as number | undefined, expectedHistoryGeneration: input.expectedHistoryGeneration as number | undefined,
     ...(input.mode === undefined && input.value === undefined && input.type === undefined ? {} : {
@@ -143,6 +148,7 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
     api.assertCanViewWorksheet(target.unitId, target.sheetId)
     const current = api.getWorkbookModel(target.unitId)!, baseRevision = api.getWorkbookRevision(target.unitId)
     const baseSavepoint = api.editor.history.captureSavepoint(target.unitId), clipboardGeneration = api.sheetClipboard.clipboardGeneration
+    if (copying && input.imageIds) return copySheetImageObjects(api, input, target, action.action === 'cut')
     if (copying) {
       const clipboard = captureSheetClipboard(current, target, { copyType: action.action === 'cut' ? 'cut' : 'copy', formulaOnly: !!action.formulaOnly,
         revision: baseRevision, historyGeneration: baseSavepoint.generation, userId: api.currentUserId })
@@ -156,6 +162,13 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
       || input.clipboardId !== undefined && input.clipboardId !== recent.clipboard.id
       || input.unitId !== undefined && input.unitId !== target.unitId || (input.sheetId ?? input.subUnitId) !== undefined
       && (input.sheetId ?? input.subUnitId) !== target.sheetId)) return failure('stale-paste')
+    const supplied = input.text !== undefined || input.html !== undefined, objectToken = input.html ? sheetImageObjectClipboardIdFromHtml(input.html) : undefined
+    const imageClipboard = action.action === 'paste' && (!supplied || objectToken && (input.clipboardId === undefined || input.clipboardId === objectToken))
+      ? api.sheetClipboard.getImageClipboard(supplied ? objectToken : input.clipboardId) : undefined
+    if (imageClipboard) {
+      const mode = sheetClipboardPasteMode(input.mode, input.value, action.mode, input.type)
+      return mode === 'all' || mode === 'exceptBorders' ? pasteSheetImageObjects(api, input, target, imageClipboard) : failure('empty-clipboard')
+    }
     const clipboard = recent?.clipboard ?? pasteSource(api, input)
     if (!clipboard) return failure('empty-clipboard')
     let mode = sheetClipboardPasteMode(input.mode, input.value, action.mode, input.type)
@@ -206,6 +219,11 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
       }
     }
     return { ...cloneModel(plan.result), changed }
+  }))
+  for (const [action, id] of Object.entries(SHEET_IMAGE_OBJECT_COMMANDS)) registrations.push(api.registerCommand<unknown, SheetClipboardCopyResult | SheetClipboardPasteResult>(id, params => {
+    const input = parseSheetClipboardCommandInput(params)
+    if (action !== 'paste' && !input.imageIds?.length) throw new TypeError('请提供要复制或剪切的图片身份。')
+    return api.executeCommandSync(`sheet.command.${action}`, input)
   }))
   return { dispose: () => registrations.forEach(registration => registration.dispose()) }
 }

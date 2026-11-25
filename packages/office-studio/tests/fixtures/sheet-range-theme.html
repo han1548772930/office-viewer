@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Sheets range theme fixture</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div><script type="module">
+import { createApp, h, ref, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import { createBlankSheet, createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+const copy = value => JSON.parse(JSON.stringify(value)), model = createBlankWorkbook(), sheet = model.sheets[0]
+model.id = 'range-theme-fixture'; model.name = '范围主题'; model.calculationMode = 'manual'
+sheet.id = 'data'; sheet.name = 'Data'; sheet.rowCount = 80; sheet.columnCount = 16; sheet.defaultColumnWidth = 130; sheet.defaultRowHeight = 32
+model.activeSheetId = sheet.id; const other = createBlankSheet('Other'); other.id = 'other'; other.rowCount = 80; other.columnCount = 16; model.sheets.push(other)
+sheet.cells['0:0'] = createCell(0, 0, '源内容'); sheet.cells['0:0'].authoredStyle = {}
+const studio = new OfficeStudio({ workbook: model }), api = FOffice.newAPI(studio), dark = ref(false), variant = ref('classic'), notices = []
+const view = ref(toExcelWorkbookView(studio.editor.workbook.model)), active = () => api.getActiveWorkbook()
+watch(() => studio.editor.workbook.model, value => { view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+window.rangeThemeFixture = {
+  snapshot: () => copy(studio.editor.workbook.model), effective: address => active().getActiveSheet().getRange(address).getCellStyleData(),
+  appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  history: () => { const unit = studio.editor.history.units[studio.activeWorkbookId]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
+  undo: () => active().undo(), redo: () => active().redo(),
+  theme: (address, name) => active().getActiveSheet().getRange(address).useThemeStyle(name),
+  custom: () => active().registerRangeTheme(active().createRangeThemeStyle('自定义蓝', { headerRowStyle: { bg: { rgb: '#123456' } }, firstRowStyle: { bg: { rgb: '#ddeeff' } } })),
+  editorUsage: () => {
+    active().registerRangeTheme(active().createRangeThemeStyle('编辑主题', {
+      wholeStyle: { ff: 'Georgia', fs: 18, ol: { vendor: 'keep' } }, headerRowStyle: { bl: 1, bg: { rgb: '#123456' } },
+    }))
+    active().getActiveSheet().getRange('A1:B4').useThemeStyle('编辑主题')
+    active().getSheetBySheetId('other').getRange('A1:B3').useThemeStyle('编辑主题')
+  },
+  otherEffective: address => active().getSheetBySheetId('other').getRange(address).getCellStyleData(),
+  protectOtherTheme: () => { studio.editor.workbook.model.sheets.find(item => item.id === 'other').rangeProtectionRules = [
+    { id: 'other-locked', ranges: [{ startRow: 2, endRow: 2, startCol: 1, endCol: 1 }], allowedUserIds: ['owner'] },
+  ] },
+  clearHistory: () => studio.editor.history.clear(studio.activeWorkbookId),
+  structure: () => {
+    active().registerRangeTheme(active().createRangeThemeStyle('片段主题', {
+      wholeStyle: { ff: 'Georgia' }, headerRowStyle: { bg: { rgb: '#123456' } },
+      firstRowStyle: { bg: { rgb: '#abcdef' } }, secondRowStyle: { bg: { rgb: '#fedcba' } }, lastRowStyle: { bg: { rgb: '#444444' } },
+    }))
+    active().getActiveSheet().getRange('A1:D6').useThemeStyle('片段主题')
+    active().getActiveSheet().getRange('B3').setValue('移动内容').setFontStyle('italic')
+  },
+  updateStructureTheme: () => active().registerRangeTheme(active().createRangeThemeStyle('片段主题', {
+    wholeStyle: { ff: 'Georgia' }, headerRowStyle: { bg: { rgb: '#123456' } },
+    firstRowStyle: { bg: { rgb: '#abcdef' } }, secondRowStyle: { bg: { rgb: '#778899' } }, lastRowStyle: { bg: { rgb: '#444444' } },
+  })),
+  edit: value => active().getActiveSheet().getRange('A1').setValue(value),
+  protectTail: () => { studio.editor.workbook.model.sheets[0].rangeProtectionRules = [{ id: 'locked', ranges: [{ startRow: 5, endRow: 5, startCol: 3, endCol: 3 }], allowedUserIds: ['owner'] }] },
+  protectMoveTarget: () => { const sheet = studio.editor.workbook.model.sheets[0]; sheet.rangeProtectionRules = [...(sheet.rangeProtectionRules ?? []), { id: 'move-target', ranges: [{ startRow: 10, endRow: 11, startCol: 5, endCol: 6 }], allowedUserIds: ['owner'] }] },
+  switchSheet: () => { active().getSheetBySheetId('other').activate() },
+  reopen: () => { const snapshot = active().save(); api.createWorkbook({ ...snapshot, id: 'range-theme-reopened' }) },
+  notifications: () => copy(notices),
+}
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value,
+    canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
+    'onUpdate:modelValue': value => studio.editor.replaceWorkbookFromView(value, 'zh-CN'),
+    onUndo: () => active().undo(), onRedo: () => active().redo(), onNotify: event => notices.push(copy(event)),
+  }),
+}) }).use(studio.pinia).mount('#app')
+</script></body></html>

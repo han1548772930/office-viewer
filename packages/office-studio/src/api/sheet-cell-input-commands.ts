@@ -18,7 +18,7 @@ export function registerSheetCellInputCommands(api: OfficeStudio): Disposable {
       const sheet = model.sheets.find(item => item.id === input.sheetId)
       if (!sheet) throw new Error('输入的目标工作表已移除。')
       sheet.cells[cell.id] = cloneModel(cell)
-    }, { prepareView: model => { toExcelWorkbookView(model) } })
+    }, { preserveStyleInheritance: true, prepareView: model => { toExcelWorkbookView(model) } })
     if (changed) api.publishObserverEvent('SheetValueChanged', () => ({ workbookId: input.unitId, sheetId: input.sheetId,
       ranges: [{ unitId: input.unitId, sheetId: input.sheetId, startRow: plan.position.row, endRow: plan.position.row,
         startColumn: plan.position.column, endColumn: plan.position.column }] }))

@@ -49,6 +49,9 @@ export function validateChartGradientAuthoring(type: ChartType, options: ChartSe
   for (const entry of options?.namedSeries ?? []) validateChartGradientSeriesPatch(type, changed(entry.style, previous?.namedSeries?.find(before => before.name === entry.name)?.style), `名称系列 ${entry.name}`)
   for (const target of ['positive', 'negative', 'subtotal'] as const) validateChartGradientSeriesPatch(type,
     changed(options?.waterfall?.styles?.[target], previous?.waterfall?.styles?.[target]), `瀑布图.${target}`)
+  validateChartGradientSeriesPatch(type, changed(options?.pie?.aggregateStyle, previous?.pie?.aggregateStyle), '复合饼图合计扇区')
+  for (const [index, slice] of Object.entries(options?.pie?.sliceStyles ?? {}))
+    validateChartGradientSeriesPatch(type, changed(slice, previous?.pie?.sliceStyles?.[Number(index)]), `饼图来源扇区 ${index}`)
 }
 
 function sameGradient(color: ChartLinearGradient, previous: ChartColor | undefined): boolean {

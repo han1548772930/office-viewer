@@ -3,21 +3,23 @@ import type { DocumentTable } from './document-model'
 import { assertDocumentTableRange, documentTableGrid, documentTableWholeRange, expandDocumentTableRange, type DocumentTableCellRange } from './document-table-grid'
 import { documentTableCellBlocks } from './document-table-continuations'
 
-function blockText(block: DocumentBlock): string {
+export type DocumentTableBlockText = (block: DocumentBlock) => string
+
+function blockText(block: DocumentBlock, projection?: DocumentTableBlockText): string {
   const table = block.metadata.table as DocumentTable | undefined
-  if (block.type === 'table' && table?.rows) return documentTableValuesToTsv(documentTableTextMatrix(table))
-  return block.runs.map(run => run.text).join('')
+  if (block.type === 'table' && table?.rows) return documentTableValuesToTsv(documentTableTextMatrix(table, undefined, projection))
+  return projection ? projection(block) : block.runs.map(run => run.text).join('')
 }
 
 /** Covered slots remain empty so copy preserves logical rows/columns and spans. */
-export function documentTableTextMatrix(table: DocumentTable, requested?: DocumentTableCellRange): string[][] {
+export function documentTableTextMatrix(table: DocumentTable, requested?: DocumentTableCellRange, projection?: DocumentTableBlockText): string[][] {
   const grid = documentTableGrid(table), range = requested ?? documentTableWholeRange(grid)
   assertDocumentTableRange(grid, range)
   const selected = expandDocumentTableRange(grid, range)
   return Array.from({ length: selected.endRow - selected.startRow + 1 }, (_, y) =>
     Array.from({ length: selected.endColumn - selected.startColumn + 1 }, (_, x) => {
       const row = selected.startRow + y, column = selected.startColumn + x, owner = grid.cellAt(row, column)!
-      return owner.row === row && owner.column === column ? documentTableCellBlocks(owner.cell).map(blockText).join('\n') : ''
+      return owner.row === row && owner.column === column ? documentTableCellBlocks(owner.cell).map(block => blockText(block, projection)).join('\n') : ''
     }))
 }
 

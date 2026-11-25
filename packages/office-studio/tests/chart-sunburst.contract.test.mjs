@@ -135,6 +135,8 @@ test('native tooltip reports semantic signed parents, positive own residual valu
   const { data, chart } = sunburstFixture({ sunburst: { centerLabel: { visible: true, format: '0.00', family: 'Center Font', fontSize: 21, bold: true } } })
   const roots = chartSunburstEChartsData(data, chart, context), tooltip = chartSunburstTooltip(data, chart, context)
   assert.equal(tooltip.renderMode, 'richText')
+  assert.equal(tooltip.showContent, false)
+  assert.equal(tooltip.triggerOn, 'none')
   assert.equal(tooltip.formatter({ data: roots[0] }), 'North\nWeight: 13 (59.1%)\n自身数值: -5\n子节点合计: 18')
   assert.equal(tooltip.formatter({ data: roots[1].children.find(node => node.isSunburstResidual) }), 'South\nWeight: 3 (13.6%)\n自身数值: 3\n子节点合计: 6')
   assert.equal(tooltip.formatter({ data: { value: Infinity } }), '')

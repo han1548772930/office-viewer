@@ -1,5 +1,7 @@
 import { createCell, defaultCellStyle, type CellRange, type SpreadsheetSheet } from '../../domain/model.ts'
-import { cellKey, parseCellKey, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { setSheetViewCellStyleProperties, sheetViewCellAt, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { resolveSheetCellStyle, setSheetCellStyleProperties, type SheetStyleContext } from './sheet-style-inheritance.ts'
+import { sheetStyleSelectionProbes } from './sheet-style-selection.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { sheetCellShrinkToFit, sheetCellTextRotation, sheetCellWrapStrategy, type SheetCellLayoutStyle, type SheetHorizontalAlignment,
   type SheetTextRotation, type SheetVerticalAlignment, type SheetWrapStrategy } from './sheet-cell-layout.ts'
@@ -158,36 +160,11 @@ export interface SheetLayoutFormatState {
   rotationVertical?: boolean
 }
 
-/** Count the union by rectangular bands, without materializing empty cells in large selections. */
-function scopeSize(ranges: readonly CellRange[], filteredRows: ReadonlySet<number>): number {
-  const boundaries = [...new Set(ranges.flatMap(range => [range.startRow, range.endRow + 1]))].sort((a, b) => a - b)
-  let count = 0
-  for (let index = 0; index < boundaries.length - 1; index++) {
-    const start = boundaries[index]!, end = boundaries[index + 1]!
-    const intervals = ranges.filter(range => range.startRow <= start && range.endRow >= start)
-      .map(range => [range.startCol, range.endCol + 1] as const).sort((a, b) => a[0] - b[0])
-    let width = 0, right = -1
-    for (const interval of intervals) {
-      width += Math.max(0, interval[1] - Math.max(right, interval[0]))
-      right = Math.max(right, interval[1])
-    }
-    let rows = end - start
-    for (const row of filteredRows) if (row >= start && row < end) rows--
-    count += width * rows
-  }
-  return count
-}
-
 export function getSheetViewLayoutFormatState(sheet: ExcelSheetView | undefined, ranges: readonly CellRange[]): SheetLayoutFormatState {
-  const filtered = new Set(sheet?.filteredRows ?? sheet?.autoFilter?.filteredRows ?? [])
-  const cells: Array<ExcelCellView | undefined> = []
-  for (const [key, cell] of Object.entries(sheet?.cells ?? {})) {
-    const position = parseCellKey(key)
-    if (!position || filtered.has(position.row) || !ranges.some(range => position.row >= range.startRow && position.row <= range.endRow && position.col >= range.startCol && position.col <= range.endCol)) continue
-    cells.push(cell)
-  }
-  if (!cells.length || scopeSize(ranges, filtered) > cells.length) cells.push(undefined)
+  const probes = sheet ? sheetStyleSelectionProbes(sheet, ranges) : { cells: [], complete: true }
+  const cells: Array<ExcelCellView | undefined> = probes.cells.length ? probes.cells : [undefined]
   function common<T>(read: (cell: ExcelCellView | undefined) => T): T | undefined {
+    if (!probes.complete) return undefined
     const first = read(cells[0])
     return cells.every(cell => Object.is(read(cell), first)) ? first : undefined
   }
@@ -198,17 +175,19 @@ export function getSheetViewLayoutFormatState(sheet: ExcelSheetView | undefined,
     rotationVertical: rotation === undefined ? undefined : rotation === 'v' }
 }
 
-export function applySheetLayoutFormatCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetLayoutFormatAction, userId = 'local-user', filteredRows = sheet.autoFilter?.filteredRows ?? []): boolean {
+export function applySheetLayoutFormatCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetLayoutFormatAction, userId = 'local-user', filteredRows = sheet.autoFilter?.filteredRows ?? [], styleContext: SheetStyleContext = {}): boolean {
   if (!ranges.length) return false
   assertEditable(sheet, ranges, userId)
   const filtered = new Set(filteredRows)
-  const resolved = resolvedAction(action, ranges, filtered, (row, col) => sheet.cells[`${row}:${col}`]?.style)
+  const resolved = resolvedAction(action, ranges, filtered, (row, col) => resolveSheetCellStyle(sheet, row, col, sheet.cells[`${row}:${col}`], styleContext))
   let changed = false
   for (const { row, col } of positions(ranges, filtered)) {
-    const key = `${row}:${col}`, previous = sheet.cells[key], patch = layoutPatch(previous?.style, resolved)
+    const key = `${row}:${col}`, previous = sheet.cells[key], style = resolveSheetCellStyle(sheet, row, col, previous, styleContext), patch = layoutPatch(style, resolved)
     if (!patch) continue
     const cell = previous ?? createCell(row, col)
-    sheet.cells[key] = { ...cell, style: { ...cell.style, ...patch } }
+    cell.style = style
+    setSheetCellStyleProperties(cell, patch)
+    sheet.cells[key] = cell
     changed = true
   }
   return changed
@@ -217,13 +196,12 @@ export function applySheetViewLayoutFormatCommand(sheet: ExcelSheetView, ranges:
   if (!ranges.length) return false
   assertEditable(sheet, ranges, userId)
   const filtered = new Set(sheet.filteredRows ?? sheet.autoFilter?.filteredRows ?? [])
-  const resolved = resolvedAction(action, ranges, filtered, (row, col) => viewLayout(sheet.cells[cellKey(row, col)]))
+  const resolved = resolvedAction(action, ranges, filtered, (row, col) => viewLayout(sheetViewCellAt(sheet, row, col)))
   let changed = false
   for (const { row, col } of positions(ranges, filtered)) {
-    const key = cellKey(row, col), cell = sheet.cells[key], patch = layoutPatch(viewLayout(cell), resolved)
+    const patch = layoutPatch(viewLayout(sheetViewCellAt(sheet, row, col)), resolved)
     if (!patch) continue
-    const { horizontal, ...rest } = patch
-    sheet.cells[key] = { ...(cell ?? { value: '' }), ...rest, ...(horizontal === undefined ? {} : { align: horizontal }) }
+    setSheetViewCellStyleProperties(sheet, row, col, patch)
     changed = true
   }
   return changed

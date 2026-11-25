@@ -1,7 +1,8 @@
 import type { SpreadsheetCell, WorkbookModel } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
-import { applyExcelCellView, cellKey, parseCellKey, toExcelCellView } from '../../services/excelViewAdapter.ts'
+import { applyExcelCellView, cellKey, parseCellKey, sheetModelCellViewAt } from '../../services/excelViewAdapter.ts'
+import { resolveSheetCellStyle, setSheetCellStyleProperties } from './sheet-style-inheritance.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { validateSheetDataValidationChanges, type SheetValidationIssue } from '../sheet-validation/validation-engine.ts'
 import { editSheetCellInlineText, editSheetCellText, sheetCellInputText } from './sheet-cell-edit.ts'
@@ -138,7 +139,7 @@ export function planSheetCellInput(workbook: WorkbookModel, value: unknown, defa
   if (input.row >= (sheet.rowCount ?? 1_048_576) || input.column >= (sheet.columnCount ?? 16_384)) throw new RangeError('输入超出工作表范围。')
   const merge = sheet.mergedRanges.find(range => input.row >= range.startRow && input.row <= range.endRow && input.column >= range.startCol && input.column <= range.endCol)
   const position = { row: merge?.startRow ?? input.row, column: merge?.startCol ?? input.column }
-  const previous = sheet.cells[`${position.row}:${position.column}`], view = previous ? toExcelCellView(previous) : undefined
+  const previous = sheet.cells[`${position.row}:${position.column}`], view = sheetModelCellViewAt(workbook, sheet, position.row, position.column)
   const date1904 = workbook.date1904 ?? false
   const interpretation = { region: input.session?.region ?? input.region ?? region(defaults.region),
     currentYear: input.session?.currentYear ?? input.currentYear ?? year(defaults.currentYear) }
@@ -154,7 +155,8 @@ export function planSheetCellInput(workbook: WorkbookModel, value: unknown, defa
   }
   if (!canViewWorksheetProtection(sheet, defaults.userId)) throw new Error('当前用户没有查看此工作表的权限。')
   const overwritesRichText = previous?.richText?.length && (!input.session || input.session.mode === 'overwrite')
-  if (!overwritesRichText && !input.editTrace?.operations.length && !input.inlineFormats?.length
+  const overwritesImage = previous?.image && (!input.session || input.session.mode === 'overwrite')
+  if (!overwritesRichText && !overwritesImage && !input.editTrace?.operations.length && !input.inlineFormats?.length
     && sheetCellInputText(view, date1904, interpretation.region) === input.input) return { position, result: { accepted: true, changed: false, issues: [] } }
   if (!canEditWorksheetProtection(sheet, defaults.userId)) throw new Error('此工作表受保护，当前用户没有编辑权限。')
   const range = merge ?? { startRow: position.row, endRow: position.row, startCol: position.column, endCol: position.column }
@@ -183,6 +185,10 @@ export function planSheetCellInput(workbook: WorkbookModel, value: unknown, defa
   }
   const cell = cloneModel(applyExcelCellView({ row: position.row, col: position.column }, edited, previous,
     { date1904, previousDate1904: date1904, numberFormatLocale: interpretation.region }))
+  if (edited.rawNumberFormat !== undefined && edited.rawNumberFormat !== view.rawNumberFormat) {
+    setSheetCellStyleProperties(cell, { numberFormat: edited.rawNumberFormat })
+  }
+  cell.style = resolveSheetCellStyle(sheet, position.row, position.column, cell, workbook)
   const candidate = { ...workbook, sheets: workbook.sheets.map(item => item.id === sheet.id
     ? { ...sheet, cells: { ...sheet.cells, [cell.id]: cell } } : item) }
   const formattingOnly = input.inlineFormats?.length && previous && Object.is(previous.value, cell.value)

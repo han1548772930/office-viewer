@@ -21,7 +21,8 @@ function applyCapturedFormat(
   const target = resolveSheetRangeCommandTarget(api, input)
   if (target.unitId !== state.unitId || !target.ranges.length) return false
   if (input.expectedRevision !== undefined && api.getWorkbookRevision(target.unitId) !== input.expectedRevision) throw new Error('工作簿已更改，请重新选择目标后应用格式刷。')
-  const options = { mergeConfirmed: input.mergeConfirmed, userId: api.currentUserId, date1904: target.workbook.date1904, region: api.regionalSettings.region.value }
+  const options = { mergeConfirmed: input.mergeConfirmed, userId: api.currentUserId, date1904: target.workbook.date1904,
+    region: api.regionalSettings.region.value, styleContext: target.workbook }
   const preview = previewSheetFormatPainterCommand(target.sheet, source, target.ranges, options)
   if (preview.requiresConfirmation) {
     const request = { requestId: crypto.randomUUID(), sessionId: state.sessionId!, workbookId: target.unitId, sheetId: target.sheetId,
@@ -36,7 +37,7 @@ function applyCapturedFormat(
   let contentChanged = false
   const changed = api.commitWorkbook(target.unitId, '应用格式刷', model => {
     const sheet = model.sheets.find(candidate => candidate.id === target.sheetId)!
-    const result = applySheetFormatPainterCommand(sheet, source, target.ranges, options)
+    const result = applySheetFormatPainterCommand(sheet, source, target.ranges, { ...options, styleContext: model })
     contentChanged = result.contentChanged
     if (result.contentChanged) assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
   }, { recalculate: preview.added.length > 0 || preview.removed.length > 0 })
@@ -92,7 +93,7 @@ export function registerSheetFormatPainterCommands(api: OfficeStudio): Disposabl
     const target = resolveSheetRangeCommandTarget(api, input), range = target.ranges.at(-1)
     if (!range) return false
     api.assertCanViewWorksheet(target.unitId, target.sheetId)
-    const capture = () => captureSheetFormatPainterSource(target.sheet, range, api.currentUserId)
+    const capture = () => captureSheetFormatPainterSource(target.sheet, range, api.currentUserId, target.workbook)
     return action.kind === 'activate' ? painter.activate(target.unitId, target.sheetId, capture, action.continuous, action.legacyToggle)
       : painter.setMode(target.unitId, target.sheetId, capture, action.mode)
   }))

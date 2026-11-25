@@ -15,8 +15,11 @@ import { chartFillPatternPaint } from './chart-fill-pattern'
 import type { ChartAutomaticGradient } from './chart-auto-gradient'
 import { isChartLinearGradient } from './chart-color'
 import { chartGradientPointBounds, createChartMarkGradient } from './chart-gradient'
+import { resolveChartAreaLineStyle } from './chart-line-and-area'
+import { chartLineSegment, type ChartLinePathPoint } from './chart-line-path'
 
-interface Chart3DFace { points: ChartVector3[]; color: string; border?: ChartLineOptions; pattern?: ChartSeriesFillPattern; gradient?: ChartAutomaticGradient; marker?: { size: number; shape: string } }
+interface Chart3DFace { points: ChartVector3[]; color: string; border?: ChartLineOptions; pattern?: ChartSeriesFillPattern; gradient?: ChartAutomaticGradient; line?: boolean; marker?: { size: number; shape: string } }
+interface Chart3DSeriesPoint extends ChartLinePathPoint { value: number; base: number; baseY: number; sequenceIndex: number }
 export interface Chart3DScene { commands: DrawCommand[]; points: ChartPoint[][] }
 
 /** Applies camera rotation and perspective to authored geometry; it does not change source values. */
@@ -156,21 +159,26 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
       const depth = depthRatio(descriptor.stacked || grouped ? 0.35 : (seriesIndex + 0.5) / seriesCount)
       const band = gapRatio * (layout.categoryBandwidth === undefined ? 1 / count : layout.categoryBandwidth / (horizontal ? plot.height : plot.width))
       const width = grouped ? band / Math.max(1, seriesCount - (seriesCount - 1) * overlap) : band
-      let previous: { sequenceIndex: number; end: number; base: number; category: number; value: number } | undefined
       const order = layout.dateOrder ?? source.values.map((_value, categoryIndex) => categoryIndex)
+      const seriesPoints: Chart3DSeriesPoint[] = []
       order.forEach((categoryIndex, sequenceIndex) => {
         const value = source.values[categoryIndex] ?? null
-        if (value === null || !Number.isFinite(value) || !Number.isFinite(categoryRatio(categoryIndex)) || axis.scaleType === 'log' && value <= 0) { if (chart.options?.invalidValueStrategy !== 'link') previous = undefined; return }
+        if (value === null || !Number.isFinite(value) || !Number.isFinite(categoryRatio(categoryIndex)) || axis.scaleType === 'log' && value <= 0) return
         const stackKey = style.rightAxis ? 'right' : 'left', stacks = value >= 0 ? positive : negative
         const stack = descriptor.stacked ? stacks.get(stackKey) ?? Array(count).fill(0) as number[] : undefined
         const base = stack?.[categoryIndex] ?? seriesBaseline
         const end = descriptor.stacked ? finiteChartValue(base + value, '三维堆积合计') : value
         if (stack) { stack[categoryIndex] = end; stacks.set(stackKey, stack) }
         const center = categoryRatio(categoryIndex) + (grouped ? (seriesIndex - (seriesCount - 1) / 2) * width * (1 - overlap) : 0)
-        const point = project(world(center, valueRatio(end), depth)), basePoint = project(world(center, valueRatio(base), depth))
+        seriesPoints.push({ x: center, y: valueRatio(end), baseY: valueRatio(base), value, base, categoryIndex, sequenceIndex })
+      })
+      const lineStyle = resolveChartAreaLineStyle(chart, descriptor.family === 'area' ? 'area' : 'line')
+      seriesPoints.forEach((sample, pointIndex) => {
+        const { categoryIndex, sequenceIndex, value, base, x: center, y: top, baseY: bottom } = sample
+        const point = project(world(center, top, depth)), basePoint = project(world(center, bottom, depth))
         points[seriesIndex]!.push({ x: point.x, y: point.y, value, category: data.categories[categoryIndex] ?? '', categoryIndex, baseY: basePoint.y, baseX: basePoint.x, baseValue: base,
           ...(layout.dateAxis ? { xValue: data.categoryDateValues?.[categoryIndex] ?? undefined, sequenceIndex } : {}) })
-        if (!emitCommands) { previous = { sequenceIndex, end, base, category: center, value }; return }
+        if (!emitCommands) return
         const pointStyle = chartPointStyle(style, categoryIndex, chart.type), color = chartColorOpacity(pointStyle.color ?? palette[seriesIndex % palette.length]!, pointStyle.fillOpacity ?? 1)
         const pattern = (shade = 1) => chartFillPatternPaint(pointStyle.fillPattern, pointStyle.fillOpacity ?? 1, shade)
         let markBounds: RenderRect | undefined = plot
@@ -184,36 +192,45 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
             end: { x: (point.x - plot.x) / plot.width, y: (point.y - plot.y) / plot.height } }
         }
         if (descriptor.family === 'column' || descriptor.family === 'bar') {
-          const a = world(center - width / 2, valueRatio(base), depth - depthWidth / 2), b = world(center + width / 2, valueRatio(base), depth - depthWidth / 2)
-          const c = world(center + width / 2, valueRatio(end), depth - depthWidth / 2), d = world(center - width / 2, valueRatio(end), depth - depthWidth / 2)
+          const a = world(center - width / 2, bottom, depth - depthWidth / 2), b = world(center + width / 2, bottom, depth - depthWidth / 2)
+          const c = world(center + width / 2, top, depth - depthWidth / 2), d = world(center - width / 2, top, depth - depthWidth / 2)
           const e = { ...a, z: depth + depthWidth / 2 }, f = { ...b, z: depth + depthWidth / 2 }, g = { ...c, z: depth + depthWidth / 2 }, h = { ...d, z: depth + depthWidth / 2 }
           if (isChartLinearGradient(pointStyle.color)) markBounds = chartGradientPointBounds([a, b, c, d, e, f, g, h].map(project))
           addFace([a, b, c, d], color, pointStyle.border, pattern(), gradient()); addFace([e, f, g, h], chartShade(color, 0.76), pointStyle.border, pattern(0.76), gradient(0.76))
           addFace([a, e, h, d], chartShade(color, 0.68), pointStyle.border, pattern(0.68), gradient(0.68)); addFace([b, f, g, c], chartShade(color, 0.88), pointStyle.border, pattern(0.88), gradient(0.88))
           addFace([d, c, g, h], chartShade(color, 1.18), pointStyle.border, pattern(1.18), gradient(1.18)); addFace([a, b, f, e], chartShade(color, 0.6), pointStyle.border, pattern(0.6), gradient(0.6))
-        } else if (previous && (chart.options?.invalidValueStrategy === 'link' || sequenceIndex === previous.sequenceIndex + 1)) {
-          const a = world(previous.category, valueRatio(previous.end), depth - depthWidth / 2), b = world(center, valueRatio(end), depth - depthWidth / 2)
-          const c = { ...b, z: depth + depthWidth / 2 }, d = { ...a, z: depth + depthWidth / 2 }
-          addFace([a, b, c, d], color, pointStyle.border, pattern(), gradient())
-          if (descriptor.family === 'area') {
-            const aBase = world(previous.category, valueRatio(previous.base), depth - depthWidth / 2), bBase = world(center, valueRatio(base), depth - depthWidth / 2)
-            if (previous.value < 0 && value > 0 || previous.value > 0 && value < 0) {
-              const scale = Math.max(Math.abs(previous.value), Math.abs(value)), aWeight = Math.abs(previous.value) / scale, bWeight = Math.abs(value) / scale
-              const t = aWeight / (aWeight + bWeight), crossCategory = previous.category + (center - previous.category) * t
-              const crossBase = chartInterpolate(previous.base, base, t), crossing = world(crossCategory, valueRatio(crossBase), depth - depthWidth / 2)
-              addFace([aBase, a, crossing], chartShade(color, 0.84), pointStyle.border, pattern(0.84), gradient(0.84)); addFace([crossing, b, bBase], chartShade(color, 0.84), pointStyle.border, pattern(0.84), gradient(0.84))
-              addFace([{ ...aBase, z: depth + depthWidth / 2 }, d, { ...crossing, z: depth + depthWidth / 2 }], chartShade(color, 0.68), pointStyle.border, pattern(0.68), gradient(0.68))
-              addFace([{ ...crossing, z: depth + depthWidth / 2 }, c, { ...bBase, z: depth + depthWidth / 2 }], chartShade(color, 0.68), pointStyle.border, pattern(0.68), gradient(0.68))
-            } else {
-              addFace([aBase, a, b, bBase], chartShade(color, 0.84), pointStyle.border, pattern(0.84), gradient(0.84))
-              addFace([{ ...aBase, z: depth + depthWidth / 2 }, d, c, { ...bBase, z: depth + depthWidth / 2 }], chartShade(color, 0.68), pointStyle.border, pattern(0.68), gradient(0.68))
+        } else if (pointIndex > 0) {
+          const path = chartLineSegment(seriesPoints, pointIndex, lineStyle, chart.options?.invalidValueStrategy)
+          for (let step = 1; step < path.length; step++) {
+            const previous = path[step - 1]!, current = path[step]!
+            const a = world(previous.x, previous.y, depth - depthWidth / 2), b = world(current.x, current.y, depth - depthWidth / 2)
+            const c = { ...b, z: depth + depthWidth / 2 }, d = { ...a, z: depth + depthWidth / 2 }
+            if (descriptor.family === 'area' || pointStyle.border?.visible !== false && pointStyle.border?.width !== 0) addFace([a, b, c, d], color, undefined, pattern(), gradient())
+            // chartLine applies the authored opacity once when emitting edges.
+            const lineColor = chartColorOpacity(pointStyle.border?.color ?? pointStyle.color ?? palette[seriesIndex % palette.length]!, 1)
+            const lineGradient = createChartMarkGradient(chart, { ...pointStyle, color: pointStyle.border?.color ?? pointStyle.color,
+              fillOpacity: pointStyle.border?.opacity ?? 1 }, 'line', { reverse: axis.reverse }, plot)
+            // Draw only the two lengthwise edges, not subdivision seams.
+            for (const edge of [[a, b], [d, c]]) faces.push({ points: edge.map(project), color: lineColor,
+              border: { ...pointStyle.border, width: pointStyle.border?.width ?? 2 }, gradient: lineGradient, line: true })
+            if (descriptor.family === 'area') {
+              const aBase = world(previous.x, previous.baseY, depth - depthWidth / 2), bBase = world(current.x, current.baseY, depth - depthWidth / 2)
+              if ((previous.y - previous.baseY) * (current.y - current.baseY) < 0) {
+                const aWeight = Math.abs(previous.y - previous.baseY), bWeight = Math.abs(current.y - current.baseY), t = aWeight / (aWeight + bWeight)
+                const crossing = world(chartInterpolate(previous.x, current.x, t), chartInterpolate(previous.baseY, current.baseY, t), depth - depthWidth / 2)
+                addFace([aBase, a, crossing], chartShade(color, 0.84), undefined, pattern(0.84), gradient(0.84)); addFace([crossing, b, bBase], chartShade(color, 0.84), undefined, pattern(0.84), gradient(0.84))
+                addFace([{ ...aBase, z: depth + depthWidth / 2 }, d, { ...crossing, z: depth + depthWidth / 2 }], chartShade(color, 0.68), undefined, pattern(0.68), gradient(0.68))
+                addFace([{ ...crossing, z: depth + depthWidth / 2 }, c, { ...bBase, z: depth + depthWidth / 2 }], chartShade(color, 0.68), undefined, pattern(0.68), gradient(0.68))
+              } else {
+                addFace([aBase, a, b, bBase], chartShade(color, 0.84), undefined, pattern(0.84), gradient(0.84))
+                addFace([{ ...aBase, z: depth + depthWidth / 2 }, d, c, { ...bBase, z: depth + depthWidth / 2 }], chartShade(color, 0.68), undefined, pattern(0.68), gradient(0.68))
+              }
             }
           }
         }
         if (descriptor.family === 'line') faces.push({ points: [point], color: chartColorOpacity(pointStyle.point?.color ?? pointStyle.color!, pointStyle.fillOpacity ?? 1), border: pointStyle.border, pattern: pattern(),
           gradient: createChartMarkGradient(chart, { ...pointStyle, color: isChartLinearGradient(pointStyle.color) ? pointStyle.color : pointStyle.point?.color ?? pointStyle.color }, 'line', { reverse: axis.reverse, symbol: true }, plot),
           marker: { size: pointStyle.point?.size ?? 5, shape: pointStyle.point?.shape ?? 'circle' } })
-        previous = { sequenceIndex, end, base, category: center, value }
       })
       if (descriptor.family === 'line' || descriptor.family === 'area') {
         const bounds = chartGradientPointBounds((function* (): Generator<ChartVector3> {
@@ -229,6 +246,7 @@ export function chart3DScene(data: ChartData, chart: ChartModel, layout: ChartLa
   faces.sort((a, b) => a.points.reduce((sum, point) => sum + point.z, 0) / a.points.length - b.points.reduce((sum, point) => sum + point.z, 0) / b.points.length)
   for (const face of faces) {
     if (face.marker) chartSymbol(commands, face.points[0]!, face.marker.size, face.color, face.marker.shape, face.border, plot, face.pattern, face.gradient)
+    else if (face.line) chartLine(commands, face.points[0]!, face.points[1]!, face.border, face.color, plot, face.gradient)
     else chartPolygon(commands, face.points, face.color, face.border, plot, face.pattern, face.gradient)
   }
   return { commands, points }

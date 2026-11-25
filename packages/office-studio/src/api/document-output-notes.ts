@@ -24,7 +24,7 @@ export function writePublicDocumentNotes(model: DocumentModel, source: UniverBod
       if (notes[id]) throw new RangeError('公开 notes 不能包含同名脚注与尾注：' + id)
       const data = documentNoteToPublic(model, note, kind), original = bodyRecord(bodyRecord(source.notes)[id])
       const value: UniverDocumentNoteData = { ...cloneModel(original), noteId: id, type: kind, body: data.body,
-        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists, callouts: data.callouts, codes: data.codes,
+        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists, callouts: data.callouts, codes: data.codes, latexFormulas: data.latexFormulas,
         officeStudio: { version: 1, metadata: documentBodySourceMetadata(note.metadata, '注释', ['univerBodySource', 'univerDocumentSource']) },
         ...(note.customMark === undefined ? {} : { customMark: note.customMark }),
         ...(data.referenceTextStyle === undefined ? {} : { referenceTextStyle: data.referenceTextStyle }),

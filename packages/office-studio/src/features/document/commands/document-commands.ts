@@ -31,7 +31,8 @@ import { selectionFontPatch } from '../model/document-font'
 import { documentRunStyleAt, formatDocumentRunRange, splitDocumentRunRange, validateDocumentRunPatch } from '../model/document-run-range'
 import { applyDocumentStoryTextFormatting } from '../services/document-story-formatting'
 import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshRequest } from '../services/document-story-fields'
-import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
+import { assertDocumentParagraphPaginationChangesEditable, assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
+import { hasManagedDocumentQuotePagination, reconcileDocumentQuotePagination } from '../model/document-paragraph-pagination'
 import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberingDefinition, type ListPreset } from '../model/document-lists'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
@@ -40,17 +41,24 @@ import { documentNoteReferenceOffsets } from '../model/document-note-boundary'
 import { executeDocumentStructureCommand, isDocumentStructureCommand, type DocumentStructureCommand } from './document-structure-commands'
 import { documentBlockChildContainers, isDocumentStructuredBlock } from '../model/document-structural-blocks'
 import { codeBlockData, exitCodeBlock, updateCodeBlockWithSelection } from '../code-blocks/code-blocks'
+import { executeDocumentLatexCommand, isDocumentLatexCommand, type DocumentLatexCommand } from './document-latex-commands'
+import { executeDocumentImageCommand, isDocumentImageCommand, type DocumentImageCommand } from './document-image-commands'
+import { documentImageEntries, normalizeDocumentImage } from '../images/document-image-model'
+import { DOCUMENT_IMAGE_ATOM, documentImageAtom, setDocumentImageAtom } from '../images/document-image-atom'
+import { synchronizeDocumentPictureControlImages } from '../services/document-image-controls'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
-  setTargetRuns, sliceRuns, tableForBlock, textTargets, findDocumentBlock, findDocumentBlockContainer,
+  setTargetRuns, sliceRuns, tableForBlock, textTargets, findDocumentBlock, findDocumentBlockContainer, reconcileDocumentLatexBlockMarker,
   type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
 } from '../model/document-model'
 
 export type DocumentBodyCommand =
   | DocumentTableCommand
   | DocumentStructureCommand
+  | DocumentLatexCommand
+  | DocumentImageCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'>; story?: DocumentStoryRange }
@@ -69,7 +77,7 @@ export type DocumentBodyCommand =
   | { id: 'doc.command.insert-column-break' }
   | { id: 'doc.command.insert-section-break'; type: DocumentSectionBreakType }
   | DocumentTableInsertCommand
-  | { id: 'doc.command.insert-image'; image: DocumentImage }
+  | { id: 'doc.command.insert-image'; image: DocumentImage; imageId?: string; paragraphMenuPlacement?: 'below' }
   | { id: 'doc.command.insert-divider' }
   | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[]; tablePasteMode?: 'source' | 'destination' }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
@@ -322,11 +330,17 @@ export function executeDocumentCommand(
   command: DocumentCommand,
   permissionContext?: DocumentPermissionContext,
 ): DocumentSelection {
-  if (!(model.contentControls ?? []).some(control => control.blockRange)) return executeDocumentCommandMutation(model, selection, command, permissionContext)
+  const blockControls = (model.contentControls ?? []).some(control => control.blockRange)
+  const pictureControls = (model.contentControls ?? []).some(control => control.type === 'picture' && typeof control.metadata?.pictureBlockId === 'string')
+  if (!blockControls && !pictureControls && !hasManagedDocumentQuotePagination(model)) return executeDocumentCommandMutation(model, selection, command, permissionContext)
   const candidate = cloneModel(model)
   const result = executeDocumentCommandMutation(candidate, selection, command, permissionContext)
-  reconcileDocumentContentControlBlockEdits(model, candidate, { selection, activeControlId: command.activeContentControlId,
+  if (pictureControls) synchronizeDocumentPictureControlImages(model, candidate)
+  reconcileDocumentQuotePagination(candidate)
+  assertDocumentParagraphPaginationChangesEditable(model, candidate)
+  if (blockControls) reconcileDocumentContentControlBlockEdits(model, candidate, { selection, activeControlId: command.activeContentControlId,
     absorbAdjacentInsertions: ['doc.command.insert-text', 'doc.command.paste-blocks', 'doc.command.insert-image',
+      'doc.command.insert-latex-formula',
       'doc.command.insert-table', 'doc.command.insert-divider', 'doc.command.insert-page-break', 'doc.command.insert-column-break',
       'doc.command.insert-section-break'].includes(command.id) })
   validateDocumentContentControlRanges(candidate)
@@ -352,7 +366,8 @@ function executeDocumentCommandMutation(
         ...(command.patch?.language === undefined ? {} : { language: command.patch.language }),
         ...(command.patch?.showLineNumbers === undefined ? {} : { lineNumbers: command.patch.showLineNumbers }),
         ...(command.patch?.tabSize === undefined ? {} : { tabSize: command.patch.tabSize }),
-        ...(command.patch?.wrap === undefined ? {} : { wrap: command.patch.wrap }) }, selection, context).selection ?? selection
+        ...(command.patch?.wrap === undefined ? {} : { wrap: command.patch.wrap }),
+        ...(command.fontFamily === undefined ? {} : { fontFamily: command.fontFamily }) }, selection, context).selection ?? selection
     }
     return executeDocumentStructureCommand(model, selection, command, context)
   }
@@ -386,11 +401,12 @@ function executeDocumentCommandMutation(
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
   } else if (command.id !== 'doc.command.change-paragraph-indent' && command.id !== 'doc.command.refresh-header-footer-fields' && command.id !== 'doc.command.update-selected-fields'
-    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command) && !isDocumentStructureCommand(command)
+    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command) && !isDocumentStructureCommand(command) && !isDocumentLatexCommand(command) && !isDocumentImageCommand(command)
     && !(selection.tableSelection && command.id === 'doc.command.paste-blocks') && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   if (isDocumentTableCommand(command)) return executeDocumentTableCommand(model, selection, command, context)
+  if (isDocumentImageCommand(command)) return executeDocumentImageCommand(model, selection, command, context, replaceSelectionText)
   if (command.id === 'doc.command.exit-structured-block') {
     const block = findDocumentBlock(model, command.blockId)
     if (block && !isDocumentStructuredBlock(block) && codeBlockData(block)) {
@@ -400,6 +416,8 @@ function executeDocumentCommandMutation(
     }
   }
   if (isDocumentStructureCommand(command)) return executeDocumentStructureCommand(model, selection, command, context)
+  if (isDocumentLatexCommand(command)) return executeDocumentLatexCommand(model, selection, command, context,
+    (candidate, target, text) => replaceSelectionText(candidate, target, text, undefined, { activeControlId: command.activeContentControlId }))
   if (selection.tableSelection && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.delete')) {
     const view = selection.tableSelection
     return executeDocumentTableCommand(model, selection, { id: 'doc.command.table-set-range-text', tableId: view.tableId, range: view.range,
@@ -445,11 +463,12 @@ function executeDocumentCommandMutation(
       const updates = selectedTargets(model, selection).flatMap((target) => {
         const block = blockAtPoint(model, target)
         if (!block) return []
-        const prepared = { ...block, style: { ...block.style } }
+        assertDocumentTextSelectionEditable(model, { anchor: { ...target, offset: 0 }, focus: { ...target, offset: runText(block.runs).length } })
+        const prepared = { ...block, style: { ...block.style }, metadata: cloneModel(block.metadata) }
         applyDocumentParagraphStylePatch(prepared, command.patch)
-        return [{ block, style: prepared.style }]
+        return [{ block, style: prepared.style, metadata: prepared.metadata }]
       })
-      for (const update of updates) update.block.style = update.style
+      for (const update of updates) { update.block.style = update.style; update.block.metadata = update.metadata }
       return selection
     }
     case 'doc.command.change-paragraph-indent': {
@@ -626,7 +645,23 @@ function executeDocumentCommandMutation(
       Object.assign(model, draft)
       return next
     }
-    case 'doc.command.insert-image': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'image', metadata: { image: command.image } }])
+    case 'doc.command.insert-image': {
+      const image = normalizeDocumentImage({ ...command.image, height: command.image.height === 0 ? command.image.width * 0.625 : command.image.height })
+      const imageId = command.imageId ?? documentId('image'), point = orderedSelection(model, selection).end
+      if (command.imageId !== undefined) {
+        if (!command.imageId.trim() || documentImageEntries(model).some(entry => entry.imageId === command.imageId)) throw new RangeError('图片身份重复或无效。')
+      }
+      if (command.paragraphMenuPlacement === 'below') {
+        const run = createRun(DOCUMENT_IMAGE_ATOM, marksAtPoint(model, point)); setDocumentImageAtom(run, imageId, image)
+        const paragraph = createParagraph(); paragraph.runs = [run]
+        return insertBlocks(model, collapsedSelection({ ...point, offset: runText(runsForTarget(model, point)).length }), [paragraph])
+      }
+      const next = replaceSelectionText(model, selection, DOCUMENT_IMAGE_ATOM, { metadata: { imageAtom: { version: 1, imageId, image } } })
+      const inserted = documentImageEntries(model).find(entry => entry.imageId === imageId)
+      if (!inserted?.inline) throw new RangeError('图片原子插入未产生合法运行。')
+      setDocumentImageAtom(inserted.inline.run, imageId, image)
+      return next
+    }
     case 'doc.command.insert-divider': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'divider', runs: [] }])
     case 'doc.command.paste-blocks': {
       const blocks = copyDocumentBlocksForPaste(command.blocks)
@@ -865,6 +900,7 @@ function setEditingRuns(model: DocumentModel, target: TextTarget, runs: Document
   const block = blockAtPoint(model, target)
   if (!block) return
   block.runs = runs.length ? runs : [createRun('', fallback)]
+  reconcileDocumentLatexBlockMarker(block)
   delete block.metadata.html
   if (target.row !== undefined) {
     const container = findDocumentBlock(model, target.blockId)
@@ -883,7 +919,7 @@ function formatText(model: DocumentModel, selection: DocumentSelection, patch: R
     const from = !selection.tableSelection && sameTarget(target, start) ? start.offset : 0
     const to = !selection.tableSelection && sameTarget(target, end) ? end.offset : runText(runs).length
     const changed = selection.tableSelection && !runText(runs).length
-      ? runs.map(run => run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula ? run : applyRunPatch(run, patch))
+      ? runs.map(run => run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula || documentImageAtom(run) ? run : applyRunPatch(run, patch))
       : formatDocumentRunRange(runs, from, to, patch)
     if (JSON.stringify(runs) === JSON.stringify(changed)) return []
     const block = blockAtPoint(model, target)

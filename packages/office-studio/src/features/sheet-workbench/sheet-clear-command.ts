@@ -1,7 +1,9 @@
 import { defaultCellStyle, type CellRange, type SpreadsheetCell, type SpreadsheetSheet } from '../../domain/model.ts'
-import { parseCellKey, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { parseCellKey, sheetViewCellAt, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { resolveSheetCellStyle, type SheetStyleContext } from './sheet-style-inheritance.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
 import { formatSheetValue } from './sheet-number-format.ts'
+import { clearSheetCellRichTextFonts } from './sheet-cell-rich-text-style.ts'
 import { reanchorSheetDataValidationRule } from '../sheet-validation/validation-formulas.ts'
 import { reanchorConditionalFormatRule } from '../conditional-formatting/conditional-format-formulas.ts'
 import { assertSheetRangesEditable, sheetCommandRangesWithoutFilteredRows, sheetRangeContainsCell, sheetRangesIntersect,
@@ -50,15 +52,15 @@ export function clearModeForCommand(id: string, input?: SheetClearCommandInput):
 /** Clearing a value invalidates every cached representation while retaining cell identity and formatting. */
 export function clearSpreadsheetCellContent(cell: SpreadsheetCell): SpreadsheetCell {
   const metadata = cell.metadata ? { ...cell.metadata } : undefined
-  if (metadata) delete metadata.formulaError
+  if (metadata) { delete metadata.formulaError; delete metadata.publicBody; delete metadata.sheetImagePublicDrawingId }
   return { ...cell, value: null, formula: null, display: '', dataType: 'blank', cachedDataType: null,
-    richText: undefined, hyperlink: null, sparkline: undefined, metadata }
+    richText: undefined, hyperlink: null, sparkline: undefined, image: undefined, metadata }
 }
 export function clearSheetViewCellContent(cell: ExcelCellView): ExcelCellView {
   const metadata = cell.metadata ? { ...cell.metadata } : cell.metadata
-  if (metadata) delete metadata.formulaError
+  if (metadata) { delete metadata.formulaError; delete metadata.publicBody; delete metadata.sheetImagePublicDrawingId }
   return { ...cell, value: '', rawValue: null, formula: undefined, cachedValue: undefined, displayValue: '',
-    dataType: 'blank', cachedDataType: null, richText: null, hyperlink: null, sparkline: undefined, metadata }
+    dataType: 'blank', cachedDataType: null, richText: null, hyperlink: null, sparkline: undefined, image: null, metadata }
 }
 function trimResourceRanges<T extends { ranges: CellRange[] }>(rules: T[] | undefined, ranges: readonly CellRange[], rebase?: (rule: T, ranges: CellRange[]) => T): T[] | undefined {
   return rules?.flatMap(rule => {
@@ -71,6 +73,7 @@ function clearViewFormat(cell: ExcelCellView): ExcelCellView {
   const display = cell.rawValue === undefined ? undefined : cell.formula && cell.rawValue === null ? cell.cachedValue ?? cell.displayValue
     : formatSheetValue(cell.rawValue, 'General')
   return { ...clearSheetCellFormat(cell), hyperlink: null, styleMetadata: null,
+    richText: clearSheetCellRichTextFonts(cell.richText).runs,
     displayValue: display, ...(cell.formula && display !== undefined ? { cachedValue: display } : {}) }
 }
 function parseViewMerges(sheet: ExcelSheetView): CellRange[] {
@@ -94,6 +97,7 @@ function clearScope(
 export function applySheetClearCommand(
   sheet: SpreadsheetSheet, ranges: readonly CellRange[], mode: SheetClearMode, userId = 'local-user',
   filteredRows: readonly number[] = sheet.autoFilter?.filteredRows ?? [],
+  styleContext: SheetStyleContext = {},
 ): boolean {
   if (!ranges.length || mode === 'none') return false
   const scope = clearScope(sheet, ranges, sheet.mergedRanges, mode, userId, filteredRows)
@@ -102,8 +106,13 @@ export function applySheetClearCommand(
     if (!scope.visibleRanges.some(range => sheetRangeContainsCell(range, cell.row, cell.col))) continue
     if (mode === 'all') { delete sheet.cells[key]; changed = true; continue }
     const next = mode === 'content' ? clearSpreadsheetCellContent(cell)
-      : { ...cell, style: defaultCellStyle(), hyperlink: null,
-        display: cell.value === null ? cell.display : formatSheetValue(cell.value, 'General') ?? String(cell.value) }
+      : { ...cell, style: defaultCellStyle(), authoredStyle: {}, hyperlink: null }
+    if (mode === 'format') {
+      delete next.authoredStyleReference; delete next.clearedStyleProperties
+      next.richText = clearSheetCellRichTextFonts(cell.richText).runs ?? undefined
+      next.style = resolveSheetCellStyle(sheet, cell.row, cell.col, next, styleContext)
+      next.display = cell.value === null ? cell.display : formatSheetValue(cell.value, next.style.numberFormat) ?? String(cell.value)
+    }
     if (JSON.stringify(next) !== JSON.stringify(cell)) { sheet.cells[key] = next; changed = true }
   }
   if (scope.removedMerges.length) {
@@ -129,7 +138,8 @@ export function applySheetViewClearCommand(
     const position = parseCellKey(key)
     if (!position || !scope.visibleRanges.some(range => sheetRangeContainsCell(range, position.row, position.col))) continue
     if (mode === 'all') { delete sheet.cells[key]; changed = true; continue }
-    const next = mode === 'content' ? clearSheetViewCellContent(cell) : clearViewFormat(cell)
+    let next = mode === 'content' ? clearSheetViewCellContent(cell) : clearViewFormat(cell)
+    if (mode === 'format') next = sheetViewCellAt({ ...sheet, cells: { ...sheet.cells, [key]: next } }, position.row, position.col)
     if (JSON.stringify(next) !== JSON.stringify(cell)) { sheet.cells[key] = next; changed = true }
   }
   if (scope.removedMerges.length) {

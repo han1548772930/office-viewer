@@ -1,9 +1,11 @@
 import type { DocumentCalloutConfig, DocumentDefaultStyle, DocumentPageField } from '../../../domain/model'
-import type { DocumentRun, DocumentTableBorder, DocumentTableBorderSide, TextTarget } from '../model/document-model'
+import type { DocumentImage, DocumentRun, DocumentTableBorder, DocumentTableBorderSide, TextTarget } from '../model/document-model'
 import type { LatexLayout } from '../latex/latex-formula'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 import type { DocumentNoteLabel } from '../notes/document-note-numbering'
 import type { DocumentNoteKind } from '../notes/document-note-types'
+import type { DocumentImageCrop, DocumentImageWrappingStyle } from '../images/document-image-model'
+import type { DocumentImageBox } from './document-image-layout'
 
 export interface LayoutRect { x: number; y: number; width: number; height: number }
 export interface LayoutFlowLocation { sectionId: string; sectionFragment: number; column: number }
@@ -18,9 +20,10 @@ export interface DocumentTextLayoutDisplay {
   references?: ReadonlyMap<string, LayoutNoteGlyphDisplay>
   leadingLabels?: ReadonlyMap<string, LayoutNoteGlyphDisplay>
 }
-export interface LayoutGlyph extends LayoutRect { text: string; offset: number; end: number; run: DocumentRun; font: string; latex?: LatexLayout; tab?: LayoutTabGlyph; note?: LayoutNoteGlyphAddress }
+export interface LayoutGlyph extends LayoutRect { text: string; offset: number; end: number; run: DocumentRun; font: string; latex?: LatexLayout; latexError?: { message: string; offset: number }; imageAtom?: { imageId: string; image: DocumentImage; box: DocumentImageBox }; tab?: LayoutTabGlyph; note?: LayoutNoteGlyphAddress }
 export interface LayoutLine extends LayoutRect, Partial<LayoutFlowLocation> {
   host?: DocumentAuxiliaryBlockHost
+  rowKey?: string; fragmentIndex?: number; fragmentCount?: number
   target: TextTarget; start: number; end: number; baseline: number; glyphLineHeight?: number; glyphs: LayoutGlyph[]; page: number
   clip?: LayoutRect; tableCellId?: string; repeatedHeader?: boolean
   /** A physical input line shares this image's bounds while retaining paragraph markers outside them. */
@@ -46,6 +49,8 @@ export interface LayoutCell extends LayoutRect, Partial<LayoutFlowLocation> {
 export interface LayoutImage extends LayoutRect, Partial<LayoutFlowLocation> {
   host?: DocumentAuxiliaryBlockHost
   blockId: string; src: string; alt: string; page: number; clip?: LayoutRect; tableCellId?: string; repeatedHeader?: boolean
+  anchor?: { target: TextTarget; startOffset: number; endOffset: number }
+  objectImage?: boolean; angle?: number; flipX?: boolean; flipY?: boolean; crop?: DocumentImageCrop; paintWidth?: number; paintHeight?: number; wrappingStyle?: DocumentImageWrappingStyle; layer?: number
 }
 export interface LayoutDivider extends LayoutRect, Partial<LayoutFlowLocation> { page: number; clip?: LayoutRect; host?: DocumentAuxiliaryBlockHost; color?: string }
 export interface LayoutContainerDecoration extends LayoutRect, Partial<LayoutFlowLocation> {

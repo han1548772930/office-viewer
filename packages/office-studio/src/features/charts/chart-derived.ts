@@ -138,7 +138,7 @@ export function deriveChartData(source: ChartData, chart: ChartModel, computed?:
 export interface ChartPiePart { category: string; value: number; index: number }
 export interface ChartCompoundPieData { primary: ChartPiePart[]; secondary: ChartPiePart[]; aggregateIndex: number }
 
-export function chartCompoundPieData(data: ChartData, chart: ChartModel): ChartCompoundPieData {
+export function chartCompoundPieData(data: ChartData, chart: Pick<ChartModel, 'options'>): ChartCompoundPieData {
   const source = data.series[0]!, parts = data.categories.map((category, index) => ({ category, index, value: Math.max(0, source.values[index] ?? 0) }))
   const split = chart.options?.pie?.secondaryPlot?.split ?? { type: 'auto' as const }
   const scale = parts.reduce((max, part) => Math.max(max, part.value), 0) || 1, total = parts.reduce((sum, part) => sum + part.value / scale, 0)

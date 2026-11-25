@@ -5,9 +5,19 @@ import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outl
 import { inferSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText } from '../domain/sheet-cell-value.ts'
 import type { SheetAxisSpan } from '../domain/sheet-axis.ts'
 import { cloneModel } from '../domain/serialization.ts'
+import type { SheetCellStylePatch, SheetCellStyleProperty, SheetStyleSource } from '../domain/model.ts'
+import type { SheetRangeThemeRule, SheetRangeThemeStyle } from '../domain/model.ts'
+import type { SheetBackgroundImage, SheetCellImage, SheetFloatingImage } from '../domain/sheet-images.ts'
+import type { SheetDrawingShapeDTO, SheetDrawingState } from '../domain/sheet-drawings.ts'
+import { composeSheetCellStyles, mergeSheetCellStylePatch, refreshWorkbookCellStyles, resolveSheetCellStyle, sheetStyleResetsAfterPatch,
+  type SheetStyleContext } from '../features/sheet-workbench/sheet-style-inheritance.ts'
 
 export interface ExcelCellView {
   value: string
+  authoredStyle?: SheetCellStylePatch | null
+  authoredStyleReference?: string | null
+  clearedStyleProperties?: SheetCellStyleProperty[] | null
+  themeStyle?: SheetStyleSource
   formula?: string
   bold?: boolean
   italic?: boolean
@@ -35,6 +45,7 @@ export interface ExcelCellView {
   shrinkToFit?: boolean
   hyperlink?: string | null
   sparkline?: SparklineSpec
+  image?: SheetCellImage | null
   richText?: ReadonlyArray<Record<string, unknown>> | null
   /** Null explicitly clears preserved style metadata when formatting is reset. */
   styleMetadata?: Record<string, unknown> | null
@@ -46,6 +57,21 @@ export interface ExcelSheetView {
   name: string
   tabColor?: string
   cells: Record<string, ExcelCellView>
+  images?: SheetFloatingImage[]
+  drawingState?: SheetDrawingState
+  shapes?: SheetDrawingShapeDTO[]
+  backgroundImage?: SheetBackgroundImage | null
+  defaultStyle?: SheetStyleSource
+  rowStyles?: Record<number, SheetStyleSource>
+  columnStyles?: Record<number, SheetStyleSource>
+  rowStyleSpans?: SheetAxisSpan<SheetStyleSource>[]
+  columnStyleSpans?: SheetAxisSpan<SheetStyleSource>[]
+  rowStylePriority?: boolean
+  rangeThemeRules?: SheetRangeThemeRule[]
+  rangeThemes?: Record<string, SheetRangeThemeStyle>
+  /** Workbook sources are carried with the detached view, including sparse blank-cell presentation. */
+  workbookDefaultStyle?: SheetStyleSource
+  styles?: Record<string, SheetCellStylePatch>
   rowCount: number
   columnCount: number
   merges?: string[]
@@ -80,7 +106,7 @@ export interface ExcelSheetView {
   worksheetProtection?: SheetWorksheetProtectionRule
   conditionalFormats?: SheetConditionalFormatRule[]
 }
-export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; slicers?: SlicerModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual'; metadata?: Record<string, unknown> }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; slicers?: SlicerModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual'; metadata?: Record<string, unknown>; defaultStyle?: SheetStyleSource; styles?: Record<string, SheetCellStylePatch>; rangeThemes?: Record<string, SheetRangeThemeStyle> }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -94,6 +120,10 @@ export const parseCellKey = (key: string): { row: number; col: number } | undefi
   return { row: Number(match[2])-1, col: col-1 }
 }
 export const toExcelCellView = (cell: SpreadsheetCell): ExcelCellView => ({
+  authoredStyle: cell.authoredStyle === undefined ? undefined : cloneModel(cell.authoredStyle),
+  authoredStyleReference: cell.authoredStyleReference,
+  clearedStyleProperties: cell.clearedStyleProperties ? [...cell.clearedStyleProperties] : undefined,
+  themeStyle: cell.themeStyle === undefined ? undefined : cloneModel(cell.themeStyle),
   value: cell.formula ? '' : cell.value === null ? '' : String(cell.value), formula: cell.formula ?? undefined,
   bold: cell.style.font.bold, italic: cell.style.font.italic, underline: cell.style.font.underline, strike: cell.style.font.strike,
   align: cell.style.horizontal,
@@ -108,6 +138,7 @@ export const toExcelCellView = (cell: SpreadsheetCell): ExcelCellView => ({
   indent: cell.style.indent, shrinkToFit: cell.style.shrinkToFit,
   hyperlink: cell.hyperlink ?? undefined,
   sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
+  image: cell.image ? cloneModel(cell.image) : undefined,
   richText: cell.richText ? structuredClone(cell.richText) : undefined,
   styleMetadata: cell.style.metadata ? structuredClone(cell.style.metadata) : undefined,
   metadata: cell.metadata ? structuredClone(cell.metadata) : undefined,
@@ -115,6 +146,9 @@ export const toExcelCellView = (cell: SpreadsheetCell): ExcelCellView => ({
 export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView {
   return {
     id: workbook.id, name: workbook.name, activeSheetId: workbook.activeSheetId, date1904: workbook.date1904, calculationMode: workbook.calculationMode ?? 'automatic',
+    defaultStyle: workbook.defaultStyle === undefined ? undefined : cloneModel(workbook.defaultStyle),
+    styles: workbook.styles ? cloneModel(workbook.styles) : undefined,
+    rangeThemes: workbook.rangeThemes ? cloneModel(workbook.rangeThemes) : undefined,
     metadata: workbook.metadata ? structuredClone(workbook.metadata) : undefined,
     charts: workbook.charts?.map(cloneChartModel),
     pivotTables: workbook.pivotTables?.map(clonePivotTableModel),
@@ -125,12 +159,26 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
       let rowCount = Math.max(1, sheet.rowCount ?? 100)
       let columnCount = Math.max(1, sheet.columnCount ?? 26)
       for (const cell of Object.values(sheet.cells)) {
-        cells[cellKey(cell.row, cell.col)] = toExcelCellView(cell)
+        cells[cellKey(cell.row, cell.col)] = toExcelCellView({ ...cell, style: resolveSheetCellStyle(sheet, cell.row, cell.col, cell, workbook) })
         rowCount = Math.max(rowCount, cell.row+1)
         columnCount = Math.max(columnCount, cell.col+1)
       }
       return {
         id: sheet.id, name: sheet.name, tabColor: sheet.tabColor, cells, rowCount, columnCount,
+        images: sheet.images ? cloneModel(sheet.images) : undefined,
+        drawingState: sheet.drawingState ? cloneModel(sheet.drawingState) : undefined,
+        shapes: sheet.shapes ? cloneModel(sheet.shapes) : undefined,
+        backgroundImage: sheet.backgroundImage ? cloneModel(sheet.backgroundImage) : undefined,
+        defaultStyle: sheet.defaultStyle === undefined ? undefined : cloneModel(sheet.defaultStyle),
+        rowStyles: sheet.rowStyles ? cloneModel(sheet.rowStyles) : undefined,
+        columnStyles: sheet.columnStyles ? cloneModel(sheet.columnStyles) : undefined,
+        rowStyleSpans: sheet.rowStyleSpans ? cloneModel(sheet.rowStyleSpans) : undefined,
+        columnStyleSpans: sheet.columnStyleSpans ? cloneModel(sheet.columnStyleSpans) : undefined,
+        rowStylePriority: sheet.rowStylePriority,
+        rangeThemeRules: sheet.rangeThemeRules ? cloneModel(sheet.rangeThemeRules) : undefined,
+        rangeThemes: workbook.rangeThemes ? cloneModel(workbook.rangeThemes) : undefined,
+        workbookDefaultStyle: workbook.defaultStyle === undefined ? undefined : cloneModel(workbook.defaultStyle),
+        styles: workbook.styles ? cloneModel(workbook.styles) : undefined,
         merges: sheet.mergedRanges.map((r) => cellKey(r.startRow,r.startCol)+':'+cellKey(r.endRow,r.endCol)),
         freeze: { rows: sheet.frozenRows, columns: sheet.frozenCols },
         columnWidths: { ...sheet.columnWidths }, rowHeights: { ...sheet.rowHeights },
@@ -201,12 +249,21 @@ export function applyExcelCellView(position: { row: number; col: number }, cell:
       ?? cell.displayValue ?? (formula ? cell.cachedValue ?? formula : sameContent ? previous?.display ?? cell.value : cell.value))
   const metadata = cell.metadata === null ? undefined : cell.metadata ? structuredClone(cell.metadata) : previous?.metadata ? { ...previous.metadata } : undefined
   if (metadata && (!sameContent || cell.richText === null)) delete metadata.formulaError
+  if (metadata && (!sameContent || cell.image === null)) { delete metadata.publicBody; delete metadata.sheetImagePublicDrawingId }
   const rotationVertical = cell.rotationVertical ?? (cell.rotation === 255 ? true : previous?.style.rotationVertical)
   const rotation = cell.rotation === 255 ? 0 : cell.rotation ?? previous?.style.rotation
-  return {
+  const result: SpreadsheetCell = {
     ...previous, id, ...position, value, formula, dataType, cachedDataType, metadata,
+    authoredStyle: cell.authoredStyle === null ? {} : cell.authoredStyle !== undefined ? cloneModel(cell.authoredStyle)
+      : previous?.authoredStyle !== undefined ? cloneModel(previous.authoredStyle) : previous ? undefined
+        : cell.authoredStyleReference ? {} : sheetViewCellStylePatch(cell),
+    authoredStyleReference: cell.authoredStyleReference === null ? undefined : cell.authoredStyleReference ?? previous?.authoredStyleReference,
+    clearedStyleProperties: cell.clearedStyleProperties === null ? undefined : cell.clearedStyleProperties === undefined
+      ? previous?.clearedStyleProperties : [...cell.clearedStyleProperties],
+    themeStyle: cell.themeStyle === undefined ? previous?.themeStyle : cell.themeStyle,
     hyperlink: cell.hyperlink === undefined ? previous?.hyperlink ?? null : cell.hyperlink,
     sparkline: cell.sparkline ? { ...cell.sparkline } : undefined,
+    image: cell.image === null ? undefined : cell.image ? cloneModel(cell.image) : sameContent ? previous?.image : undefined,
     richText: cell.richText === null ? undefined : cell.richText ? structuredClone(cell.richText) : sameContent ? previous?.richText : undefined,
     display,
     style: {
@@ -225,12 +282,18 @@ export function applyExcelCellView(position: { row: number; col: number }, cell:
       metadata: cell.styleMetadata === null ? undefined : cell.styleMetadata ?? previous?.style.metadata,
     },
   }
+  // A new view cell with explicit provenance can contain inherited presentation. Its direct cache starts sparse.
+  if (!previous && cell.authoredStyle !== undefined) result.style = composeSheetCellStyles(result.authoredStyle)
+  return result
 }
 export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkbookView, numberFormatLocale?: string): WorkbookModel {
   const date1904 = view.date1904 ?? workbook.date1904
-  return {
+  const result: WorkbookModel = {
     ...workbook, id: view.id ?? workbook.id, name: view.name, activeSheetId: view.activeSheetId ?? workbook.activeSheetId, date1904,
     metadata: view.metadata ? structuredClone(view.metadata) : workbook.metadata,
+    defaultStyle: view.defaultStyle === undefined ? workbook.defaultStyle : cloneModel(view.defaultStyle),
+    styles: view.styles ? cloneModel(view.styles) : workbook.styles,
+    rangeThemes: view.rangeThemes === undefined ? workbook.rangeThemes : cloneModel(view.rangeThemes),
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
     pivotTables: view.pivotTables?.map(clonePivotTableModel) ?? workbook.pivotTables,
     slicers: view.slicers?.map((slicer) => ({ ...slicer, position: { ...slicer.position }, size: { ...slicer.size }, layout: slicer.layout ? { ...slicer.layout } : undefined, selectedItems: slicer.selectedItems ? [...slicer.selectedItems] : undefined, timelineRange: slicer.timelineRange ? { ...slicer.timelineRange } : undefined })) ?? workbook.slicers,
@@ -248,6 +311,17 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
       }
       const next: WorkbookModel['sheets'][number] = {
         ...original, id: source.id, name: source.name, tabColor: source.tabColor ?? original?.tabColor, cells, visible: source.visible ?? original?.visible ?? true,
+        images: source.images === undefined ? original?.images : cloneModel(source.images),
+        drawingState: source.drawingState === undefined ? original?.drawingState : cloneModel(source.drawingState),
+        shapes: source.shapes === undefined ? original?.shapes : cloneModel(source.shapes),
+        backgroundImage: source.backgroundImage === null ? undefined : source.backgroundImage === undefined ? original?.backgroundImage : cloneModel(source.backgroundImage),
+        defaultStyle: source.defaultStyle === undefined ? original?.defaultStyle : cloneModel(source.defaultStyle),
+        rowStyles: source.rowStyles === undefined ? original?.rowStyles : cloneModel(source.rowStyles),
+        columnStyles: source.columnStyles === undefined ? original?.columnStyles : cloneModel(source.columnStyles),
+        rowStyleSpans: source.rowStyleSpans === undefined ? original?.rowStyleSpans : cloneModel(source.rowStyleSpans),
+        columnStyleSpans: source.columnStyleSpans === undefined ? original?.columnStyleSpans : cloneModel(source.columnStyleSpans),
+        rowStylePriority: source.rowStylePriority ?? original?.rowStylePriority,
+        rangeThemeRules: source.rangeThemeRules === undefined ? original?.rangeThemeRules : cloneModel(source.rangeThemeRules),
         dataValidations: source.dataValidations?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })) })) ?? original?.dataValidations,
         conditionalFormats: (source.conditionalFormats ?? original?.conditionalFormats)?.map(cloneConditionalFormatRule),
         rangeProtectionRules: source.rangeProtectionRules?.map(rule => ({ ...rule, ranges: rule.ranges.map(range => ({ ...range })), allowedUserIds: [...rule.allowedUserIds] })) ?? original?.rangeProtectionRules,
@@ -285,6 +359,63 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
       return next
     }),
   }
+  refreshWorkbookCellStyles(result, workbook, true, numberFormatLocale)
+  return result
+}
+
+export function sheetViewCellStylePatch(cell: ExcelCellView | undefined): SheetCellStylePatch {
+  if (!cell) return {}
+  const patch: SheetCellStylePatch = {}, font: SheetCellStylePatch['font'] = {}
+  const fontFields = { fontFamily: 'family', fontSize: 'size', bold: 'bold', italic: 'italic', underline: 'underline', strike: 'strike', color: 'color' } as const
+  for (const [field, key] of Object.entries(fontFields)) {
+    const value = cell[field as keyof typeof fontFields]
+    if (value !== undefined) Object.assign(font, { [key]: value })
+  }
+  if (Object.keys(font).length) patch.font = font
+  const fields = { background: 'fill', align: 'horizontal', vertical: 'vertical', wrap: 'wrap', wrapStrategy: 'wrapStrategy',
+    border: 'border', rotation: 'rotation', rotationVertical: 'rotationVertical', indent: 'indent', shrinkToFit: 'shrinkToFit', styleMetadata: 'metadata' } as const
+  for (const [field, key] of Object.entries(fields)) {
+    const value = cell[field as keyof typeof fields]
+    if (value !== undefined && !(key === 'metadata' && value === null)) Object.assign(patch, { [key]: value })
+  }
+  if (cell.rawNumberFormat !== undefined) patch.numberFormat = cell.rawNumberFormat
+  else if (cell.numberFormat !== undefined) patch.numberFormat = SHEET_NUMBER_FORMATS[cell.numberFormat]
+  return patch
+}
+
+/** Read an effective cell without populating the document's sparse cell map. */
+export function sheetViewCellAt(sheet: ExcelSheetView, row: number, col: number, context?: SheetStyleContext): ExcelCellView {
+  const cell = sheet.cells[cellKey(row, col)]
+  const inherited = sheetViewCellStylePatch(cell)
+  const style = resolveSheetCellStyle(sheet, row, col, cell ? { style: composeSheetCellStyles(inherited),
+    authoredStyle: cell.authoredStyle === null ? {} : cell.authoredStyle ?? (cell.authoredStyleReference ? {} : inherited),
+    authoredStyleReference: cell.authoredStyleReference ?? undefined, clearedStyleProperties: cell.clearedStyleProperties ?? undefined,
+    themeStyle: cell.themeStyle } : undefined,
+    context ?? { defaultStyle: sheet.workbookDefaultStyle, styles: sheet.styles, rangeThemes: sheet.rangeThemes })
+  const result = toExcelCellView({ id: `${row}:${col}`, row, col, value: cell?.rawValue ?? null, formula: cell?.formula ?? null,
+    display: cell?.displayValue ?? cell?.value ?? '', style, authoredStyle: cell ? cell.authoredStyle ?? (cell.authoredStyleReference ? {} : inherited) : {}, themeStyle: cell?.themeStyle,
+    authoredStyleReference: cell?.authoredStyleReference ?? undefined, clearedStyleProperties: cell?.clearedStyleProperties ?? undefined })
+  return { ...result, ...cell, fontFamily: style.font.family, fontSize: style.font.size, bold: style.font.bold, italic: style.font.italic,
+    underline: style.font.underline, strike: style.font.strike, color: style.font.color, background: style.fill, align: style.horizontal,
+    vertical: style.vertical, rawNumberFormat: style.numberFormat, numberFormat: classifySheetNumberFormat(style.numberFormat) === 'custom' ? undefined
+      : classifySheetNumberFormat(style.numberFormat) as SheetNumberFormat, wrap: style.wrap, wrapStrategy: style.wrapStrategy, border: style.border,
+    rotation: style.rotation, rotationVertical: style.rotationVertical, indent: style.indent, shrinkToFit: style.shrinkToFit,
+    styleMetadata: style.metadata, authoredStyle: cell ? cell.authoredStyle ?? (cell.authoredStyleReference ? {} : inherited) : {}, themeStyle: cell?.themeStyle }
+}
+
+export function sheetModelCellViewAt(workbook: WorkbookModel, sheet: SpreadsheetSheet, row: number, col: number): ExcelCellView {
+  const cell = sheet.cells[`${row}:${col}`]
+  return toExcelCellView({ ...(cell ?? { id: `${row}:${col}`, row, col, value: null, formula: null, display: '', authoredStyle: {} }),
+    style: resolveSheetCellStyle(sheet, row, col, cell, workbook) })
+}
+
+/** Record explicit view formatting before exposing the composed presentation. */
+export function setSheetViewCellStyleProperties(sheet: ExcelSheetView, row: number, col: number, patch: SheetCellStylePatch): void {
+  const key = cellKey(row, col), current = sheet.cells[key]
+  const authored = mergeSheetCellStylePatch(current?.authoredStyle ?? (current?.authoredStyleReference ? {} : sheetViewCellStylePatch(current)), patch)
+  sheet.cells[key] = { ...(current ?? { value: '', rawValue: null }), authoredStyle: authored,
+    clearedStyleProperties: sheetStyleResetsAfterPatch(current?.clearedStyleProperties ?? undefined, patch) ?? null }
+  sheet.cells[key] = sheetViewCellAt(sheet, row, col)
 }
 
 function cloneSheetTable(table: SheetTableModel): SheetTableModel {

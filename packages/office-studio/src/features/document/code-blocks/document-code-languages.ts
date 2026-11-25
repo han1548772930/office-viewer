@@ -1,4 +1,4 @@
-/** Fixed docs-code-ui v1.6.0 language menu; grammar support is tracked separately. */
+/** Fixed docs-code-ui v1.6.0 language menu; each entry has a registered lexical grammar. */
 export const DOCUMENT_STRUCTURED_CODE_LANGUAGES = [
   { value: 'plaintext', label: '纯文本' }, { value: 'javascript', label: 'JavaScript' },
   { value: 'typescript', label: 'TypeScript' }, { value: 'json', label: 'JSON' },
@@ -10,6 +10,8 @@ export const DOCUMENT_STRUCTURED_CODE_LANGUAGES = [
   { value: 'go', label: 'Go' }, { value: 'rust', label: 'Rust' }, { value: 'ruby', label: 'Ruby' },
   { value: 'php', label: 'PHP' }, { value: 'swift', label: 'Swift' }, { value: 'kotlin', label: 'Kotlin' },
 ] as const
+
+export type DocumentStructuredCodeLanguage = typeof DOCUMENT_STRUCTURED_CODE_LANGUAGES[number]['value']
 
 export function documentStructuredCodeLanguageOptions(language: string): Array<{ value: string; label: string }> {
   const options: Array<{ value: string; label: string }> = DOCUMENT_STRUCTURED_CODE_LANGUAGES.map(item => ({ ...item }))

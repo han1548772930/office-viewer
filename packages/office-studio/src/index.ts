@@ -3,6 +3,43 @@ export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon
 export { WORKBENCH_CONTROL_THEME } from './platform/workbench-theme'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type WorkbookCommitOptions } from './api/office-studio'
+export type { WorkbookInput } from './api/model-utils.ts'
+export { FOverGridImage, FOverGridImageBuilder, type PreparedSheetImage, type SheetImageAsyncOptions } from './api/sheet-images.ts'
+export { SHEET_IMAGE_COMMANDS, type SheetImageCommandInput, type SheetImageCommandId } from './features/sheet-images/sheet-image-commands.ts'
+export { SHEET_DRAWING_PLUGIN, SheetImageSourceTypes, workbookWithPublicSheetImages, sheetCellImageToPublicBody,
+  type SheetImageSourceType, type UniverSheetImageDrawing, type UniverSheetImageBody, type UniverWorksheetBackgroundImage,
+  type UniverSheetCellData, type UniverWorksheetData, type UniverWorkbookData } from './features/sheet-images/sheet-image-public.ts'
+export { prepareWorkbookSheetImageInput, type SheetImageInputPreparationOptions } from './features/sheet-images/sheet-image-input-preparation.ts'
+export { prepareSheetImageFiles, prepareSheetImageUrl, prepareSheetImageResources } from './features/sheet-images/sheet-image-io.ts'
+export { prepareSheetClipboardHtmlImages, type SheetClipboardImagePreparationOptions } from './features/sheet-images/sheet-image-html-preparation.ts'
+export { SHEET_IMAGE_OBJECT_COMMANDS, type SheetImageObjectClipboard } from './features/sheet-images/sheet-image-object-clipboard.ts'
+export { SheetDrawingAnchorTypes } from './domain/sheet-images.ts'
+export type { SheetImageResource, SheetCellImage, SheetFloatingImage, SheetBackgroundImage, SheetDrawingAnchorType,
+  SheetImageAnchor, SheetImageCellMarker, SheetImageBounds, SheetImagePlacement, SheetImagePlacementInput, SheetImageSourceRect } from './domain/sheet-images.ts'
+export type { SheetFloatingImagePatch } from './features/sheet-images/sheet-image-placement.ts'
+export { SHEET_IMAGE_CROP_TYPES, SHEET_IMAGE_CROP_PRESETS, type SheetImageCropType } from './features/sheet-images/sheet-image-crop.ts'
+export { SHEET_IMAGE_CROP_OPERATIONS, type SheetImageCropOperation, type SheetImageCropResult } from './features/sheet-images/sheet-image-crop-session.ts'
+export { SHEET_IMAGE_ALIGN_TYPES, SHEET_IMAGE_ALIGN_OPERATIONS, SHEET_IMAGE_ALIGN_PRESETS,
+  sheetImageSelectionBounds, transformSheetImageSelection, alignSheetImageSelection,
+  type SheetImageAlignType } from './features/sheet-images/sheet-image-selection.ts'
+export type { SaveCellImagesOptions, SheetImageSaveConfig } from './features/sheet-images/sheet-image-save.ts'
+export { SHEET_DEFAULT_STYLE_COMMANDS, type SheetDefaultStyleCommandInput } from './api/sheet-default-style-commands.ts'
+export { composeSheetCellStyles, resolveSheetCellStyle, resolveSheetStyleSource, sheetInheritedCellStyle,
+  normalizeSheetStyleInput, sheetCellDirectStyle, type SheetStyleInput, type SheetStyleContext } from './features/sheet-workbench/sheet-style-inheritance.ts'
+export type { SheetCellStylePatch, SheetCellStyleProperty, SheetStyleSource } from './domain/model.ts'
+export { sheetStyleToPublicData, sheetStyleDataWithPublicFields,
+  type SheetPublicStyleData, type SheetApiStyleData } from './features/sheet-workbench/sheet-public-style.ts'
+export { normalizeSheetPublicAxisData, applySheetPublicAxisInput,
+  type SheetPublicAxisData } from './features/sheet-workbench/sheet-public-axis.ts'
+export { SHEET_RANGE_THEME_COMMANDS, type SheetRangeThemeCommandInput } from './api/sheet-range-theme-commands.ts'
+export { OPEN_SHEET_RANGE_THEME_OPERATION, planSheetRangeThemeCommand, sheetRangeThemeCommandInput, type SheetRangeThemeCommandPlan } from './features/sheet-workbench/sheet-range-theme-command.ts'
+export { RangeThemeStyle, normalizeSheetRangeThemeStyle, sheetRangeThemeToJson, type SheetRangeThemeStyleJson } from './features/sheet-workbench/sheet-range-theme-style.ts'
+export { SHEET_BUILTIN_RANGE_THEME_NAMES } from './features/sheet-workbench/sheet-range-theme-presets.ts'
+export { resolveSheetRangeThemeStyle, sheetRangeThemeHiddenRowSpans, type SheetRangeThemeRegionSnapshot } from './features/sheet-workbench/sheet-range-theme-resolver.ts'
+export { planSheetRangeThemeCellShift, planSheetRangeThemeAxisEdit, planSheetRangeThemeCut, sheetRangeThemeChangedRanges,
+  assertSheetRangeThemeStyleRange, type SheetRangeThemeCellShift } from './features/sheet-workbench/sheet-range-theme-structure.ts'
+export { SHEET_RANGE_THEME_SECTIONS, type SheetRangeThemeSection, type SheetRangeThemeStyle, type SheetRangeThemeRule } from './domain/model.ts'
+export { captureSheetStyleRegion, sheetStyleRegionCellStyle, type SheetStyleRegionSnapshot } from './features/sheet-workbench/sheet-style-region.ts'
 export { COPY_WORKSHEET_COMMAND, planWorksheetCopy, createWorksheetCopyName, remapWorksheetCopyFormula,
   type CopyWorksheetCommandInput, type WorksheetCopyPlan } from './features/sheet-workbench/sheet-worksheet-copy.ts'
 export { WORKSHEET_LIFECYCLE_COMMANDS, planWorksheetLifecycle, worksheetHiddenState,
@@ -14,9 +51,32 @@ export { DOCUMENT_NOTE_COMMANDS, DocumentNoteCommandRejectedError, type Document
   type DocumentNoteCommandContext, type DocumentNoteCommandParams } from './api/document-note-commands'
 export type { DocumentNoteMutationRequest, DocumentNoteInsertOptions, DocumentNoteKind, DocumentNotePatch } from './features/document/notes/document-note-types'
 export { decodeDocumentBody, encodeDocumentBody } from './api/document-body-codec'
+export { FDocumentLatex } from './api/document-latex'
+export { FDocumentImage } from './api/document-images'
+export type { DocumentImageInsertOptions, DocumentImageData, DocumentImageTextRange } from './api/document-images'
+export { DOCUMENT_IMAGE_PUBLIC_COMMANDS } from './api/document-image-commands'
+export type { DocumentImageCommandBase, DocumentImageOperationRequest, DocumentImagePublicInsertRequest, DocumentImageTransformItem,
+  DocumentImagePublicTransformRequest, DocumentImagePublicWrappingRequest, DocumentImagePublicArrangeRequest, DocumentImagePublicRemoveRequest } from './api/document-image-commands'
+export type { DocumentImageEditor, DocumentImageEditorHandle, DocumentImageEditorTarget } from './api/document-image-editors'
+export type { DocumentImagePosition, DocumentImageWrappingStyle, DocumentImagePatch, DocumentImageArrange, DocumentImageSourceRect } from './features/document/images/document-image-model'
+export { DOCUMENT_LATEX_PUBLIC_COMMANDS } from './api/document-latex-commands'
+export { DOCUMENT_LATEX_TEMPLATE_CATEGORIES, DOCUMENT_LATEX_CATEGORY_LABELS, DOCUMENT_LATEX_TEMPLATES,
+  DOCUMENT_LATEX_TEMPLATE_OPERATION, DOCUMENT_LATEX_TEMPLATE_LOCAL_OPERATION, getDocumentLatexTemplate,
+  getDocumentLatexTemplates, isDocumentLatexTemplateCategory, insertDocumentLatexTemplate } from './features/document/latex/latex-templates'
+export type { DocumentLatexTemplateCategory, DocumentLatexTemplate, DocumentLatexTemplateInsertion } from './features/document/latex/latex-templates'
+export type { DocumentLatexTemplateEditorHandle } from './api/document-latex-template-editors'
+export { DOCUMENT_LATEX_POPUP_OPERATIONS } from './features/document/controllers/document-latex-popup'
+export type { DocumentLatexPopupOperationRequest, DocumentLatexPopupTarget, DocumentLatexPopupTextRange } from './features/document/controllers/document-latex-popup'
+export type { DocumentLatexPopupEditor, DocumentLatexPopupEditorHandle } from './api/document-latex-popup-editors'
+export type { DocumentLatexTemplateOperationRequest, DocumentLatexPublicInsertRequest, DocumentLatexPublicUpdateRequest,
+  DocumentLatexPublicRemoveRequest, DocumentLatexPublicReplaceRequest } from './api/document-latex-commands'
+export type { DocumentLatexFormulaConfig, DocumentLatexCreateOptions, DocumentLatexInsertOptions, DocumentLatexUpdateOptions,
+  DocumentLatexFindQuery, DocumentLatexRange, DocumentLatexInfo } from './api/document-latex'
 export type { UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources, DocumentBodyDecodeResult,
   DocumentBodyDecodeOptions, DocumentBodyEncodeOptions, DocumentBodyEncodeResult } from './api/document-body-codec'
 export { documentToPublicSnapshot } from './api/document-output'
+export { documentParagraphPagination, documentUsesTraditionalPagination, DOCUMENT_PARAGRAPH_PAGINATION_FIELDS,
+  type DocumentParagraphPagination, type DocumentParagraphPaginationField } from './features/document/model/document-paragraph-pagination'
 export type { UniverDocumentData, UniverDocumentNoteData, UniverDocumentNoteSource, OfficeDocumentSnapshotSource } from './api/document-snapshot-types'
 export type { UniverDocumentTextStyle, UniverDocumentTextStyleRun, UniverDocumentTextRangeDescription,
   UniverDocumentColorStyle, UniverDocumentTextDecoration } from './api/document-text-style'
@@ -87,7 +147,7 @@ export { createSheetCellEditSession, getSheetCellEditConflict, resolveSheetDate1
   type SheetCellEditSession, type SheetCellEditContext, type SheetCellEditConflict } from './features/sheet-workbench/sheet-cell-edit-session.ts'
 export { sheetCellContentKey, sheetCellInputText, createSheetCellEditorStart } from './features/sheet-workbench/sheet-cell-edit.ts'
 export { editSheetCellRichText } from './features/sheet-workbench/sheet-cell-rich-text-edit.ts'
-export { sheetCellRichTextFontValue, sheetCellRichTextRunView, sheetCellFontValues, setSheetCellRichTextFont,
+export { sheetCellRichTextFontValue, sheetCellRichTextRunView, sheetCellFontValues, setSheetCellRichTextFont, clearSheetCellRichTextFonts,
   type SheetRichTextFontField, type SheetRichTextFontValue } from './features/sheet-workbench/sheet-cell-rich-text-style.ts'
 export { layoutSheetCellRichText, type SheetCellRichTextLayout, type SheetCellRichTextLayoutOptions,
   type SheetRichTextFragment, type SheetRichTextLine, type SheetRichTextColumn } from './features/sheet-workbench/sheet-cell-rich-text-layout.ts'
@@ -123,11 +183,17 @@ export { sheetRowHeight, sheetColumnWidth, sheetRowIsAutoHeight, SparseAxisIndex
 export { transformSheetAxisDimensions, transformSheetAxisSpans, type SheetAxisStructureEdit, type SheetAxisDimensionChanges } from './domain/sheet-axis-transform.ts'
 export { SHEET_AXIS_STRUCTURE_COMMAND_IDS, type SheetAxisStructureCommandInput, type SheetAxisStructureAction,
   type SheetAxisStructurePlan } from './features/sheet-workbench/sheet-axis-structure-command.ts'
+export { SHEET_CELL_SHIFT_COMMANDS, SHEET_CELL_SHIFT_CONFIRM_COMMANDS, SHEET_CELL_SHIFT_COMMAND_IDS, SheetCellShiftDimensions,
+  planWorkbookCellShiftCommand, sheetCellShiftCommandInput, sheetCellShiftCommandRange, sheetCellShiftDirectionForCommand, sheetCellShiftEdit,
+  type SheetCellShiftCommandInput, type SheetCellShiftConfirmationRequest, type SheetCellShiftDimension, type SheetCellShiftDirection,
+  type SheetCellShiftPlan } from './features/sheet-workbench/sheet-cell-shift-command.ts'
+export { assertSheetCellShiftEdit, sheetCellShiftAffectedRange, sheetCellShiftContainsBand, mapSheetCellShiftPosition,
+  inverseSheetCellShiftPosition, transformSheetCellShiftRange, type SheetCellShiftEdit } from './domain/sheet-cell-shift.ts'
 export { SHEET_AXIS_VISIBILITY_COMMANDS, SHEET_AXIS_VISIBILITY_COMMAND_IDS, SheetAxisVisibilityError, planSheetAxisVisibilityCommand,
   type SheetAxisVisibilityCommandInput, type SheetAxisVisibilityAction, type SheetAxisVisibilityPlan } from './features/sheet-workbench/sheet-axis-visibility.ts'
 export { type SheetAxis, type SheetAxisEdit, type SheetAxisInterval, sheetAxisMaximum, mapSheetAxisIndex,
   transformSheetAxisInterval, transformSheetAxisRange, transformSheetAxisReferenceInterval } from './domain/sheet-axis-structure.ts'
-export { mapFormulaReferenceAreas, translateFormulaReferenceAreas, transformFormulaReferenceAreasForAxisEdit,
+export { mapFormulaReferenceAreas, translateFormulaReferenceAreas, transformFormulaReferenceAreasForAxisEdit, transformFormulaReferenceAreasForCellShift,
   type FormulaReferenceArea } from './features/formula/formula-reference-areas.ts'
 export { SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
   type SheetConditionalFormatSubmitResult } from './features/conditional-formatting/conditional-format-command.ts'
@@ -139,6 +205,8 @@ export type { DocumentFieldCacheAdapter, DocumentFieldCacheState, DocumentFieldC
   DocumentFieldCacheRefreshResult } from './features/document/services/document-field-open-refresh.ts'
 export type { DocumentCommand } from './features/document/commands/document-commands.ts'
 export type { DocumentStructureCommand, DocumentColumnGroupCreateOptions } from './features/document/commands/document-structure-commands.ts'
+export { registerDocumentCodeFontFamilies, type DocumentCodeFontFamilyOption } from './features/document/code-blocks/document-code-fonts.ts'
+export { DOCUMENT_STRUCTURED_CODE_LANGUAGES, type DocumentStructuredCodeLanguage } from './features/document/code-blocks/document-code-languages.ts'
 export { FDocumentStructuredBlock, FDocumentQuote, FDocumentCallout, FDocumentCode,
   type DocumentStructuredKind, type DocumentStructuredFindQuery, type DocumentStructuredRange, type DocumentStructuredInsertOptions,
   type DocumentQuoteInsertOptions, type DocumentCalloutInsertOptions, type DocumentCodeInsertOptions,
@@ -270,9 +338,17 @@ export { readChartRecordsAsync } from './features/charts/chart-source-compute.ts
 export type { ChartComputePreparationContext } from './features/charts/chart-compute-lifecycle.ts'
 export type { ChartComputedStatistics } from './features/charts/chart-derived.ts'
 export type { ChartConfig, ChartData, ChartSeriesData } from './features/charts/chart-engine.ts'
+export { CHART_EDIT_PANEL_TABS, CHART_EDIT_PANEL_SECTIONS, CHART_EDIT_PANEL_AXES, CHART_EDIT_PANEL_TITLES,
+  normalizeChartEditPanelRoute, resolveChartEditPanelRoute, chartEditPanelSeriesId,
+  type ChartEditPanelRoute, type ChartEditPanelTab, type ChartEditPanelSection, type ChartEditPanelAxis,
+  type ChartEditPanelTitle, type ChartElementPanelTarget } from './features/charts/chart-edit-panel-route.ts'
 export { ChartLegendPositions, ChartLegendSelectModes, type ChartLegendSpec } from './features/charts/chart-legend.ts'
-export { ChartTitlePositions, ChartTextAlignments, type ChartTitleSpec, type ChartSubtitleSpec } from './features/charts/chart-titles.ts'
-export type { ChartTitlePosition, ChartTextAlignment, ChartTitleStyleOptions, ChartSubtitleStyleOptions } from './domain/model'
+export { ChartAreaLineStyles, ChartInvalidValueTypes, CHART_AREA_LINE_STYLE_DEFAULT, CHART_INVALID_VALUE_STRATEGY_DEFAULT,
+  supportsChartAreaLineStyle, supportsChartLineAndAreaSection, resolveChartAreaLineStyle } from './features/charts/chart-line-and-area.ts'
+export type { ChartAreaLineStyle, ChartInvalidValueStrategy, ChartLineAndAreaOptions } from './domain/model'
+export { ChartTitlePositions, ChartTextAlignments, type ChartTitleSpec, type ChartSubtitleSpec, type ChartTitleObjectSpec, type ChartTitleKind } from './features/charts/chart-titles.ts'
+export type { ChartTitlePosition, ChartTextAlignment, ChartTitleStyleOptions, ChartSubtitleStyleOptions, ChartTitleManualLayout } from './domain/model'
+export type { ChartPlotAreaOptions } from './domain/model'
 export { describeChartConfiguration, chartDescriptionFieldIndexes,
   type ChartDescription, type ChartDescriptionType, type ChartDescriptionContext, type ChartDescriptionConfig,
   type ChartSeriesDescription, type ChartAxisBindingDescription, type ChartDescriptionAxis } from './features/charts/chart-description.ts'

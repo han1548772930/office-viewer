@@ -32,7 +32,7 @@ export function assertDocumentBodySerializable(value: unknown): void {
 
 export function decodeDocumentBody(body: unknown, resources: UniverDocumentBodyResources = {}, options: Partial<DocumentBodyDecodeOptions> = {}): DocumentBodyDecodeResult {
   assertDocumentBodySerializable({ body, resources, options })
-  for (const key of ['tableSource', 'drawings', 'lists', 'callouts', 'codes'] as const) if (resources[key] !== undefined) {
+  for (const key of ['tableSource', 'drawings', 'lists', 'callouts', 'codes', 'latexFormulas'] as const) if (resources[key] !== undefined) {
     const source = resources[key]
     if (!source || typeof source !== 'object' || Array.isArray(source) || Object.values(source).some(value => !value || typeof value !== 'object' || Array.isArray(value))) {
       throw new TypeError(`文档 ${key} 必须按稳定标识提供对象。`)

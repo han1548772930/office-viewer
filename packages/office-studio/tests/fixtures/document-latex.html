@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>LaTeX editing drafts</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div><script type="module">
+import { computed, createApp, h, KeepAlive, nextTick, ref, shallowRef } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FDocument } from '/packages/office-studio/src/api/facade'
+import { createBlankDocument } from '/packages/office-studio/src/domain/model'
+import { createParagraph, createRun, createTable, textTargets } from '/packages/office-studio/src/features/document/model/document-model'
+import { createLatexFormulaRun, getLatexFormulas } from '/packages/office-studio/src/features/document/latex/latex-formula'
+import { createTextMeasurer, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
+import { documentLayoutForBlockHost } from '/packages/office-studio/src/features/document/layout/document-auxiliary-layout'
+import { documentModelForBlockHost } from '/packages/office-studio/src/features/document/services/document-block-host'
+import { createDocumentContentControl } from '/packages/office-studio/src/features/document/services/content-controls'
+import { EMPTY_SECTION_HEADER_FOOTER } from '/packages/office-studio/src/features/document/services/section-header-footer'
+import { projectDocumentStoryBlocks } from '/packages/office-studio/src/features/document/model/document-story-blocks'
+import { encodeDocumentBody } from '/packages/office-studio/src/api/document-body-codec'
+import { documentSegmentIdForHost } from '/packages/office-studio/src/api/document-segments'
+import { DOCUMENT_LATEX_POPUP_OPERATIONS } from '/packages/office-studio/src/features/document/controllers/document-latex-popup'
+import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
+import { createOfficeI18n, createOfficeTranslator, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
+import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWorkbench.vue'
+
+// Fixture only; no browser or development server was started for this batch.
+const query = new URLSearchParams(location.search), standalone = query.has('standalone'), copy = value => JSON.parse(JSON.stringify(value))
+const paragraph = (id, text = '') => ({ ...createParagraph(text), id })
+const math = (id, source) => ({ ...paragraph(id), runs: [createLatexFormulaRun(source)] })
+const initial = createBlankDocument(); initial.id = 'latex-browser'; initial.name = '公式编辑草稿'
+initial.page = { width: 620, height: 680, marginLeft: 48, marginRight: 48, marginTop: 110, marginBottom: 120 }
+const formula = createLatexFormulaRun('  x ^2  ')
+if (query.has('invalid')) formula.metadata.latexFormula.latex = '  \\bad'
+const table = createTable(1, 1); table.rows[0].cells[0].blocks = [math('cell-p', '\\frac{a}{b}')]
+initial.blocks = [{ ...paragraph('p'), runs: [createRun('Before '), formula, createRun(' After')] },
+  { ...paragraph('quote'), type: 'quote', runs: [], children: [math('quote-p', 'z_2')] },
+  { ...paragraph('table'), type: 'table', runs: [], metadata: { table } }, paragraph('tail', 'Tail')]
+if (query.has('entrances')) {
+  initial.blocks.unshift(paragraph('empty'), paragraph('text', 'x + y 😀'))
+  initial.blocks.find(block => block.id === 'quote').children.push(paragraph('quote-text', 'inside'))
+  table.rows[0].cells[0].blocks.push(paragraph('cell-text', 'cell text'))
+}
+if (query.has('locked')) createDocumentContentControl(initial, { id: 'locked', type: 'richText', blockId: 'p', startOffset: 7, endOffset: 8, lock: 'contentLocked' })
+if (query.has('auxiliary')) {
+  const header = projectDocumentStoryBlocks({ blocks: [math('header-p', 'h_1')], runs: [], paragraphs: [], metadata: {} }).content
+  initial.sectionHeaderFooters = { first: { ...EMPTY_SECTION_HEADER_FOOTER, header: '\uFFFC', storyContent: { header } } }
+}
+if (standalone) delete initial.id
+let studio = standalone ? undefined : new OfficeStudio({ document: initial, currentUserId: 'editor' })
+studio?.activateDocument(initial.id)
+const api = shallowRef(studio ? new FDocument(studio, initial.id) : undefined), model = shallowRef(api.value?.getModel() ?? initial)
+let noteId
+if (query.has('auxiliary') && api.value) {
+  noteId = api.value.insertFootnote(1, encodeDocumentBody({ blocks: [math('note-p', 'n_1')], runs: [], paragraphs: [], metadata: {} }))
+  model.value = api.value.getModel()
+}
+const dark = ref(false), active = ref(true), notices = [], locale = ref('zh-CN'), translator = computed(() => createOfficeTranslator(locale.value))
+const root = () => api.value?.getModel() ?? model.value
+const sync = () => { if (api.value) model.value = api.value.getModel() }
+function select(id, start = 0, end = start, host) {
+  if (!api.value) return false
+  const scoped = host ? documentModelForBlockHost(root(), host) : root(), target = textTargets(scoped).find(target => (target.cellBlockId ?? target.blockId) === id)
+  if (!target) throw new Error('Missing real selection target')
+  return api.value.setInputSelection({ anchor: { ...target, offset: start }, focus: { ...target, offset: end } }, undefined, host)
+}
+window.documentLatexFixture = {
+  noteId, notices, select, dark: value => dark.value = value,
+  openPopup: (request = {}, local = false) => studio?.executeCommandSync(local ? DOCUMENT_LATEX_POPUP_OPERATIONS.localOpen : DOCUMENT_LATEX_POPUP_OPERATIONS.open,
+    { unitId: api.value.id, ...request }) ?? false,
+  closePopup: (local = false) => studio?.executeCommandSync(local ? DOCUMENT_LATEX_POPUP_OPERATIONS.localClose : DOCUMENT_LATEX_POPUP_OPERATIONS.close,
+    { unitId: api.value.id }) ?? false,
+  segmentIdForHost: host => documentSegmentIdForHost(root(), host),
+  formulaRange: (rangeId, segmentId = '') => copy(api.value.getLatexFormula(rangeId, segmentId)?.getRange()),
+  bouncePopup: async request => {
+    const result = api.value.openLatexPopup(request); active.value = false; await nextTick(); active.value = true; await nextTick(); return result
+  },
+  navigateOnPopupSelection: () => {
+    const subscription = api.value.onInputStateChanged(event => {
+      if (event.state?.valid && event.state.location.kind === 'body' && event.state.location.selection.focus.blockId !== 'tail') {
+        subscription.dispose(); select('tail', 1)
+      }
+    })
+  },
+  insertTemplate: templateId => api.value?.insertLatexTemplate(templateId) ?? false,
+  history: () => studio ? { undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 } : undefined,
+  snapshot: () => copy(root()), publicSnapshot: () => copy(api.value.getSnapshot()),
+  selection: () => copy(api.value?.getInputState()?.location),
+  formulas: host => copy(getLatexFormulas(host ? documentModelForBlockHost(root(), host) : root()).map(item => ({ rangeId: item.rangeId, blockId: item.blockId, formula: item.formula }))),
+  undo: () => { const result = api.value.undo(); sync(); return result }, redo: () => { const result = api.value.redo(); sync(); return result },
+  cancelNext: () => {
+    const handle = studio.events.addEvent('BeforeCommandExecute', event => {
+      if (event.id === 'doc.command.update-latex-formula') { event.cancel = true; handle.dispose() }
+    })
+  },
+  cancelNextPopupClose: () => {
+    const handle = studio.events.addEvent('BeforeCommandExecute', event => {
+      if (event.id === DOCUMENT_LATEX_POPUP_OPERATIONS.close) { event.cancel = true; handle.dispose() }
+    })
+  },
+  navigateOnUpdate: () => {
+    const handle = studio.events.addEvent('CommandExecuted', event => {
+      if (event.id === 'doc.command.update-latex-formula') { select('tail', 1); handle.dispose() }
+    })
+  },
+  replaceSameSnapshot: () => { model.value = copy(model.value) },
+  saveAndReopen: () => {
+    const saved = api.value.save(); studio.dispose(); studio = new OfficeStudio({ document: copy(saved), currentUserId: 'editor' })
+    studio.activateDocument(saved.id); api.value = new FDocument(studio, saved.id); sync(); return copy(saved)
+  },
+  point: (id = 'p', fraction = 0.5, host) => {
+    const viewport = document.querySelector('.document-scroll'), rect = viewport.getBoundingClientRect()
+    const layout = documentLayoutForBlockHost(layoutDocument(root(), createTextMeasurer()), host)
+    const line = layout.lines.find(line => (line.target.cellBlockId ?? line.target.blockId) === id && line.glyphs.some(glyph => glyph.run.metadata?.latexFormula))
+    const glyph = line?.glyphs.find(glyph => glyph.run.metadata?.latexFormula)
+    if (!glyph) throw new Error('Missing formula Canvas geometry')
+    viewport.scrollTop = Math.max(0, glyph.y - 150)
+    const shift = sceneOffset(layout, { width: rect.width, height: rect.height, scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, zoom: 100 })
+    return { x: rect.x + shift.x + glyph.x + glyph.width * fraction, y: rect.y + shift.y + glyph.y + glyph.height / 2 }
+  },
+  textPoint: (id, offset = 0, host) => {
+    const viewport = document.querySelector('.document-scroll'), rect = viewport.getBoundingClientRect()
+    const layout = documentLayoutForBlockHost(layoutDocument(root(), createTextMeasurer()), host)
+    const line = layout.lines.find(line => (line.target.cellBlockId ?? line.target.blockId) === id && line.start <= offset && line.end >= offset)
+    if (!line) throw new Error('Missing text Canvas geometry')
+    viewport.scrollTop = Math.max(0, line.y - 150)
+    const shift = sceneOffset(layout, { width: rect.width, height: rect.height, scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop, zoom: 100 })
+    const glyph = line.glyphs.find(glyph => glyph.offset <= offset && glyph.end > offset)
+    return { x: rect.x + shift.x + (glyph?.x ?? line.x + line.width) + 1, y: rect.y + shift.y + line.y + line.height / 2 }
+  },
+}
+const app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h(KeepAlive, null, { default: () => active.value ? h(DocumentWorkbench, { modelValue: model.value, documentApi: api.value, ribbonVariant: query.get('ribbon') === 'grid' ? 'grid' : 'classic', canUndo: studio?.editor.canUndo, canRedo: studio?.editor.canRedo,
+    'onUpdate:modelValue': next => model.value = next, onNotify: message => notices.push(message) }) : null }),
+}) })
+const i18n = createOfficeI18n(); i18n.global.locale.value = locale.value
+app.use(i18n); app.provide(OfficeLocaleKey, locale); app.provide(OfficeTranslatorKey, (key, fallback) => translator.value(key, fallback)); app.mount('#app')
+window.addEventListener('beforeunload', () => { app.unmount(); studio?.dispose() }, { once: true })
+</script></body></html>
