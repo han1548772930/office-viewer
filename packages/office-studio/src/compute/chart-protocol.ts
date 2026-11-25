@@ -5,12 +5,19 @@ export const CHART_COMPUTE_LIMITS = {
 
 export interface ChartStatisticsSeries { field: number; seriesPosition: number; column: number; xColumn?: number }
 interface ChartJobKey { seriesIndex: number; slot: number }
+export interface ChartWordCloudGlyph {
+  width: number; height: number; offset: number; length: number; fontSize: number; weight: number
+}
 export type ChartStatisticsJob =
   | ChartJobKey & { kind: 'histogram'; binning?: { mode: 'count'; count: number } | { mode: 'width'; width: number }; underflowThreshold?: number; overflowThreshold?: number }
   | ChartJobKey & { kind: 'boxplot'; quartileMethod: 'medianOfHalves' | 'inclusive' | 'exclusive'; whiskerMethod?: 'range' | 'iqr'; whiskerMultiplier: number }
   | ChartJobKey & { kind: 'pareto'; includeZeroValues: boolean }
   | ChartJobKey & { kind: 'hierarchy'; hierarchyColumns: number[]; labelColumns: number[]; keyCount: number; labelCount: number }
   | ChartJobKey & { kind: 'chord'; sourceColumn: number; targetColumn: number; labelCount: number; startAngle: number; clockwise: boolean; padAngle: number; minAngle: number }
+  | ChartJobKey & { kind: 'wordCloud'; glyphColumn: number; maskColumn: number; width: number; height: number; glyphs: ChartWordCloudGlyph[]; maxAttempts: number; minFontSize: number }
+  | ChartJobKey & { kind: 'relationLayout'; seedColumn: number; sourceColumn: number; targetColumn: number; linkValueColumn: number;
+    nodeCount: number; linkCount: number; width: number; height: number; layout: 'none' | 'circular' | 'force';
+    useValueAsSymbolSize: boolean; symbolSize: number; repulsion: number; gravity: number; edgeLength: number }
   | ChartJobKey & { kind: 'waterfall'; totalColumn?: number }
   | ChartJobKey & { kind: 'waterfallLayout'; seriesIndices: number[]; stackType: 'arrangement' | 'stacked'; useSubtotal: boolean; totalColumns?: Array<number | null> }
   | ChartJobKey & { kind: 'trendline'; type: 'exp' | 'linear' | 'log' | 'movingAvg' | 'poly' | 'pow'; order?: number; period?: number }
@@ -47,6 +54,11 @@ export interface ChartStatisticsSegment {
  * indices[N,E,...N*(displayLabelId),...E*(sourceNodeIndex,targetNodeIndex)]. Angles are radians,
  * in first-valid-source order. Undirected duplicates keep the first endpoint direction.
  * Strings and pixel geometry stay with the owner; only numeric IDs and normalized angles transfer.
+ * WordCloud: values[centerX,centerY,scale], indices[glyphIndex]. The glyph and
+ * mask inputs use grid cells; placement is decoded with the retained grid size.
+ * RelationLayout: values[x,y,symbolSize], indices[nodeIndex]. Positions are
+ * relative to the plot; node values, UTF-16 name seeds and link endpoint/value
+ * columns have separate counts. The retained graph owns names and link identity.
  * Waterfall: values[start,end,value], indices[categoryIndex,isTotal].
  * WaterfallLayout: values[finalCumulative,...N*(start,end,value),...C*(fromValue,toValue)];
  * indices[N,C,...N*(seriesPosition,dataPointIndex,visibleCategoryIndex,flags),...C*(fromCategory,toCategory)].

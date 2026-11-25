@@ -88,6 +88,12 @@ function* chartDataMemorySteps(data: ChartData): Generator<void, number, void> {
   }
   bytes += (data.hierarchyPaletteOrder?.length ?? 0) * 32 + (data.hierarchyValueFieldName?.length ?? 0) * 2
   bytes += (data.candles?.length ?? 0) * 96
+  if (data.wordCloud) for (const word of data.wordCloud.words) {
+    bytes += 384 + (word.id.length + word.text.length + word.font.length) * 2
+    if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
+  bytes += (data.relation?.nodes.length ?? 0) * 192 + (data.graph?.diagnostic?.length ?? 0) * 2
+  for (const category of data.graph?.categories ?? []) bytes += 32 + category.length * 2
   return bytes
 }
 
@@ -177,6 +183,10 @@ export function estimateChartFinalLayoutMemory(source: ChartData, chart: ChartMo
   // At most 128 native 16px pattern tiles at DPR 4 remain in the adapter cache.
   const nativePatternBytes = chart.type === 'treemap' || chart.type === 'sunburst' ? 128 * 64 * 64 * 4 : 0
   let chordBytes = 0
+  // Both the base and scaled/focused relation scene, actual line/marker hit
+  // primitives, measured label quads and ECharts graphics may coexist.
+  const relationBytes = chart.type === 'relation' ? (source.graph?.nodes.length ?? 0) * 24_576
+    + (source.graph?.links.length ?? 0) * 24_576 : 0
   if (chart.type === 'chord' && source.chord) {
     const options = resolveChartChordOptions(chart.options?.chord, chart.options?.appearance?.font)
     let bandVertices = 0, triangles = 0, sectorSlices = 0
@@ -202,5 +212,5 @@ export function estimateChartFinalLayoutMemory(source: ChartData, chart: ChartMo
   }
   return 4 * 1024 * 1024 + nativePatternBytes + categories * 128 + seriesCount * 1024
     + points * 512 + extraSeriesPoints * 256 + summaryValues * 128
-    + trendPoints * 96 + errorPoints * 192 + dateBytes + hierarchyBytes + chordBytes
+    + trendPoints * 96 + errorPoints * 192 + dateBytes + hierarchyBytes + chordBytes + relationBytes
 }

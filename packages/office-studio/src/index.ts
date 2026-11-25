@@ -3,6 +3,11 @@ export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon
 export { WORKBENCH_CONTROL_THEME } from './platform/workbench-theme'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type WorkbookCommitOptions } from './api/office-studio'
+export { COPY_WORKSHEET_COMMAND, planWorksheetCopy, createWorksheetCopyName, remapWorksheetCopyFormula,
+  type CopyWorksheetCommandInput, type WorksheetCopyPlan } from './features/sheet-workbench/sheet-worksheet-copy.ts'
+export { WORKSHEET_LIFECYCLE_COMMANDS, planWorksheetLifecycle, worksheetHiddenState,
+  type WorksheetHiddenState, type WorksheetLifecycleCommandId, type WorksheetLifecycleCommandInput,
+  type WorksheetLifecyclePlan } from './features/sheet-workbench/sheet-worksheet-lifecycle.ts'
 export { SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, type DocumentCustomXmlPartsWriteOptions,
   type DocumentCustomXmlPartsCommandInput } from './api/document-custom-xml-commands'
 export { DOCUMENT_NOTE_COMMANDS, DocumentNoteCommandRejectedError, type DocumentNoteCommandResult,

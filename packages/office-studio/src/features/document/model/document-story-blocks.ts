@@ -4,6 +4,7 @@ import { documentDefaultStyle } from './document-default-style'
 import { createParagraph, createRun, runText, tableForBlock, type DocumentRun } from './document-model'
 import { documentTableCellContentContainers } from './document-table-continuations'
 import { documentTableGrid } from './document-table-grid'
+import { documentStructuredChildContainers, validateDocumentStructuredBlock } from './document-structural-blocks'
 import { splitDocumentRunRange } from './document-run-range'
 import { documentTextFieldParagraphs, documentTextFieldRanges, setDocumentTextFields, type DocumentTextFieldRange } from './document-text-fields'
 import { documentBlockHostId, type DocumentAuxiliaryBlockHost } from './document-block-host'
@@ -54,19 +55,25 @@ function sliceProjectionRuns(runs: readonly DocumentRun[], start: number, end: n
 /** Ordinary field caches use the same paragraph-local UTF-16 coordinates in every host. */
 export function validateDocumentStoryBlocks(blocks: readonly DocumentBlock[]): void {
   if (!Array.isArray(blocks)) throw new TypeError('内容区块树无效。')
-  const blockIds = new Set<string>(), runIds = new Set<string>(), rowIds = new Set<string>(), cellIds = new Set<string>()
+  const blockIds = new Set<string>(), runIds = new Set<string>(), rowIds = new Set<string>(), cellIds = new Set<string>(), columnIds = new Set<string>()
   const visit = (content: readonly DocumentBlock[], depth: number) => {
     if (depth > 64) throw new RangeError('内容区嵌套深度超过 64 层。')
     for (const block of content) {
       if (!block || typeof block.id !== 'string' || !block.id || blockIds.has(block.id) || !Array.isArray(block.runs)
         || !block.metadata || typeof block.metadata !== 'object' || Array.isArray(block.metadata)) throw new TypeError('内容区块标识或结构无效。')
       blockIds.add(block.id)
+      validateDocumentStructuredBlock(block)
       documentDefaultStyle({ defaultStyle: { version: 1, text: documentDefaultStyle().text, paragraph: block.style } })
       for (const run of block.runs) {
         if (!run || typeof run.id !== 'string' || !run.id || runIds.has(run.id) || typeof run.text !== 'string') throw new TypeError('内容区字符标识或文本无效。')
         runIds.add(run.id)
         documentDefaultStyle({ defaultStyle: { version: 1, text: run, paragraph: block.style } })
       }
+      for (const column of block.columns?.columns ?? []) {
+        if (columnIds.has(column.id)) throw new TypeError(`内容区栏标识重复：${column.id}`)
+        columnIds.add(column.id)
+      }
+      for (const container of documentStructuredChildContainers(block)) visit(container, depth + 1)
       const table = tableForBlock(block)
       if (block.type === 'table' && !table) throw new TypeError('内容区表格模型无效。')
       if (!table) continue

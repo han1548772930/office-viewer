@@ -77,7 +77,7 @@ const chartRenderer = new EChartsCanvasRenderer()
 
 const sheetCharts = computed(() => (props.workbook.charts ?? []).filter((chart) => chart.sheetId === props.activeSheetId))
 const domainWorkbook = computed(() => props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : toChartWorkbook(props.workbook))
-const { statistics, snapshots, pending, errors: computeErrors } = useChartStatistics({
+const { statistics, snapshots, pending, errors: computeErrors, diagnostics } = useChartStatistics({
   studio: () => props.studio, workbook: () => props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : domainWorkbook.value, activeSheetId: () => props.activeSheetId,
   externalStatistics: () => props.computedStatistics,
 })
@@ -102,7 +102,6 @@ const overlayStyle = computed(() => ({
   '--chart-focus-ring': token.value.colorPrimaryBgHover,
   '--chart-surface': token.value.colorBgContainer,
 }))
-const renderedChartIds = computed(() => new Set(sheetCharts.value.map(chart => chart.id)))
 const contentTooltipText = computed(() => contentTooltip.value ? [contentTooltip.value.content.title, ...contentTooltip.value.content.lines].join('\n') : '')
 const contentTooltipStyle = computed(() => {
   const tooltip = contentTooltip.value, item = displayCharts.value.find(item => item.chart.id === tooltip?.chartId)
@@ -116,6 +115,8 @@ function renderCommands(): DrawCommand[] {
     chartRenderer.retain(new Set())
     renderedFrames.value = {}
     activePointerId = undefined
+    desiredPointer = undefined
+    contentTooltip.value = undefined
     return []
   }
   const workbook = props.studio ? props.studio.getWorkbookModel(props.workbook.id ?? '') : domainWorkbook.value
@@ -152,8 +153,25 @@ function renderCommands(): DrawCommand[] {
   }
   renderedFrames.value = frames
   renderError.value = errorMessage
-  chartRenderer.retain(renderedChartIds.value)
+  const validFrames = new Set(Object.keys(frames))
+  chartRenderer.retain(validFrames)
+  if (activePointerId && !validFrames.has(activePointerId)) activePointerId = undefined
+  if (desiredPointer && !validFrames.has(desiredPointer.chartId)) desiredPointer = undefined
+  if (contentTooltip.value && !validFrames.has(contentTooltip.value.chartId)) contentTooltip.value = undefined
   return commands
+}
+
+function scaleRelationContent(event: WheelEvent, item: ChartDisplay): void {
+  if (item.chart.type !== 'relation' || drag.value || !commandIndexes.has(item.chart.id)) return
+  event.preventDefault(); event.stopPropagation()
+  const point = chartAxisPointerLocalPoint(pointerPoint(event), item.position,
+    { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value })
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? item.size.height : 1)
+  try {
+    updatePointerFrame(item.chart.id, chartRenderer.scaleContent(item.chart.id, point, delta))
+    desiredPointer = { chartId: item.chart.id, point }; pointerDirty = true
+    queueOverlayFrame()
+  } catch (error) { pointerError.value = error instanceof Error ? error.message : '关系图视图缩放失败' }
 }
 
 function zoomScale(): number { return Math.max(0.1, props.zoom / 100) }
@@ -533,10 +551,12 @@ onUnmounted(() => {
       :data-bitmap-width="renderedFrames[item.chart.id]?.width"
       :data-bitmap-height="renderedFrames[item.chart.id]?.height"
       :data-compute-revision="snapshots[item.chart.id]?.modelRevision"
+      :data-source-diagnostic="diagnostics[item.chart.id]?.code"
       :aria-busy="Boolean(pending[item.chart.id])"
       tabindex="0"
       @pointerdown="beginDrag($event, item, 'move')"
       @pointermove="hoverChart($event, item)"
+      @wheel="scaleRelationContent($event, item)"
       @pointerleave="clearChartPointer(item.chart.id)"
       @blur="clearChartPointer(item.chart.id)"
       @lostpointercapture="onPointerCancel"

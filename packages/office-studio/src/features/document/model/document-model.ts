@@ -5,6 +5,7 @@ import { documentTableCellBlocks, documentTableCellContentContainers, documentTa
 import { documentTableGrid } from './document-table-grid'
 import { DOCUMENT_TABLE_BORDER_SIDES, DOCUMENT_TABLE_DEFAULT_MARGIN, documentTableCellBorders, documentTableCellFill, documentTableCellMargin, documentTableRowProperties } from './document-table-style'
 import { documentRunHasNoteReference } from './document-note-reference'
+import { documentBlockChildContainers, documentStructuredChildContainers, isDocumentTextBlock, isDocumentStructuredBlock } from './document-structural-blocks'
 
 export interface DocumentRun extends InlineRun { highlight?: string; href?: string }
 export interface TextTarget { blockId: string; row?: number; col?: number; cellBlockId?: string }
@@ -204,7 +205,7 @@ export function findDocumentBlock(model: Pick<DocumentModel, 'blocks'>, id: stri
 export function findDocumentBlockContainer(model: Pick<DocumentModel, 'blocks'>, id: string): DocumentBlock[] | undefined {
   const visit = (blocks: DocumentBlock[]): DocumentBlock[] | undefined => {
     if (blocks.some(block => block.id === id)) return blocks
-    for (const block of blocks) for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) {
+    for (const block of blocks) for (const content of documentBlockChildContainers(block)) {
       const nested = visit(content)
       if (nested) return nested
     }
@@ -216,7 +217,7 @@ export function documentBlockAncestry(model: Pick<DocumentModel, 'blocks'>, id: 
   const visit = (blocks: DocumentBlock[]): DocumentBlock[] | undefined => {
     for (const block of blocks) {
       if (block.id === id) return [block]
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) {
+      for (const content of documentBlockChildContainers(block)) {
         const nested = visit(content)
         if (nested) return [block, ...nested]
       }
@@ -240,7 +241,9 @@ export function textTargets(model: DocumentModel): TextTarget[] {
         table.rows.forEach((row, rowIndex) => row.cells.forEach((cell, cellIndex) => {
           for (const content of documentTableCellContentContainers(cell)) visit(content, { blockId: block.id, row: rowIndex, col: cellIndex })
         }))
-      } else if (!['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(block.type)) {
+      } else if (isDocumentStructuredBlock(block)) {
+        for (const content of documentStructuredChildContainers(block)) visit(content, host)
+      } else if (isDocumentTextBlock(block)) {
         targets.push(host ? { ...host, cellBlockId: block.id } : { blockId: block.id })
       }
     }
@@ -253,9 +256,22 @@ export function blockAtPoint(model: DocumentModel, point: TextTarget): DocumentB
   const block = findDocumentBlock(model, point.blockId)
   if (point.row == null || !block) return block
   const cell = tableForBlock(block)?.rows[point.row]?.cells[point.col ?? 0]
-  const contents = cell && documentTableCellBlocks(cell)
-  return contents?.find(candidate => candidate.id === point.cellBlockId)
-    ?? contents?.find(candidate => !['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'].includes(candidate.type))
+  if (!cell) return undefined
+  const contents = documentTableCellBlocks(cell)
+  if (point.cellBlockId) {
+    const candidate = findDocumentBlock({ blocks: contents }, point.cellBlockId)
+    if (candidate && isDocumentTextBlock(candidate)) return candidate
+  }
+  const visit = (blocks: DocumentBlock[]): DocumentBlock | undefined => {
+    for (const candidate of blocks) {
+      if (isDocumentTextBlock(candidate)) return candidate
+      for (const children of documentStructuredChildContainers(candidate)) {
+        const found = visit(children)
+        if (found) return found
+      }
+    }
+  }
+  return visit(contents)
 }
 
 export function runsForTarget(model: DocumentModel, target: TextTarget): DocumentRun[] {
@@ -364,7 +380,13 @@ export function selectedPlainText(model: DocumentModel, selection: DocumentSelec
 
 export function normalizeDocument(model: DocumentModel): DocumentModel {
   const result = cloneDocument(model)
-  result.blocks = result.blocks.flatMap((block) => {
+  const normalizeBlocks = (blocks: DocumentBlock[]): DocumentBlock[] => blocks.flatMap((block) => {
+    if (isDocumentStructuredBlock(block)) {
+      if (block.children) block.children = normalizeBlocks(block.children)
+      if (block.columns) for (const column of block.columns.columns) column.blocks = normalizeBlocks(column.blocks)
+      delete block.metadata.html
+      return [block]
+    }
     const html = block.metadata.html
     if (typeof html !== 'string') return [block]
     const parsed = blocksFromHtml(html)
@@ -372,7 +394,8 @@ export function normalizeDocument(model: DocumentModel): DocumentModel {
     const first = parsed[0]
     return [{ ...first, id: block.id, type: block.type === 'paragraph' ? first.type : block.type, level: block.level || first.level, style: { ...first.style, ...block.style }, metadata: { ...block.metadata, ...first.metadata, sourceHtml: html, html: undefined } }, ...parsed.slice(1)]
   })
-  for (const block of result.blocks) {
+  result.blocks = normalizeBlocks(result.blocks)
+  const normalizeProperties = (blocks: DocumentBlock[]) => { for (const block of blocks) {
     if (block.type === 'table' && !tableForBlock(block)) block.metadata.table = createTable(1, 1)
     if (block.type === 'checklist') {
       block.checklist = {
@@ -384,7 +407,9 @@ export function normalizeDocument(model: DocumentModel): DocumentModel {
       const src = typeof block.metadata.src === 'string' ? block.metadata.src : typeof block.metadata.source === 'string' ? block.metadata.source : ''
       block.metadata.image = { src, alt: String(block.metadata.alt ?? ''), width: Number(block.metadata.width ?? 0), height: Number(block.metadata.height ?? 0) } satisfies DocumentImage
     }
-  }
+    for (const container of documentBlockChildContainers(block)) normalizeProperties(container)
+  } }
+  normalizeProperties(result.blocks)
   if (!textTargets(result).length) result.blocks.push(createParagraph())
   result.wordCount = textTargets(result).reduce((count, target) => count + runText(runsForTarget(result, target)).replace(/\s/g, '').length, 0)
   return result

@@ -46,8 +46,10 @@ export class DocumentSectionFlow {
   private readonly maximumHeights = new Map<number, number>()
   private readonly frameColumns = new Map<number, { count: number; gap: number }>()
   private auxiliarySegment?: DocumentAuxiliaryFlowSegment
+  private readonly columnInsets: Array<{ left: number; right: number }> = []
+  private readonly columnBases = new Map<LayoutColumn, { x: number; width: number }>()
 
-  constructor(model: DocumentModel, private readonly options: DocumentSectionFlowOptions = {}) {
+  constructor(private readonly model: DocumentModel, private readonly options: DocumentSectionFlowOptions = {}) {
     const ids = documentSectionIds(model)
     this.settings = new Map(ids.map(id => [id, documentEffectiveSectionSetup(model, id)]))
     this.oddEvenSections = new Set(ids.filter(id => resolveSectionHeaderFooter(model, id).differentOddEven))
@@ -60,6 +62,33 @@ export class DocumentSectionFlow {
 
   get location(): LayoutFlowLocation {
     return { sectionId: this.config.sectionId, sectionFragment: this.section.fragment, column: this.column.index }
+  }
+
+  /** Decorated containers narrow the same pagination cursor, including continuation columns. */
+  withColumnInsets(left: number, right: number, work: () => void): void {
+    if (![left, right].every(value => Number.isFinite(value) && value >= 0)) throw new RangeError('容器内边距无效。')
+    this.columnInsets.push({ left, right }); this.applyColumnInsets(this.column)
+    try { work() } finally {
+      this.columnInsets.pop()
+      for (const column of this.columnBases.keys()) this.applyColumnInsets(column)
+      if (!this.columnInsets.length) this.columnBases.clear()
+    }
+  }
+
+  /** Independent column contents share parent physical frames, rather than creating document pages. */
+  fork(pageFrame: NonNullable<DocumentSectionFlowOptions['pageFrame']>): DocumentSectionFlow {
+    return new DocumentSectionFlow(this.model, { pageFrame })
+  }
+
+  private applyColumnInsets(column: LayoutColumn): void {
+    if (!this.columnBases.has(column)) this.columnBases.set(column, { x: column.x, width: column.width })
+    const base = this.columnBases.get(column)!
+    let x = base.x, width = base.width
+    for (const inset of this.columnInsets) {
+      const sum = inset.left + inset.right, scale = sum > width - 1 ? Math.max(0, width - 1) / Math.max(1, sum) : 1
+      x += inset.left * scale; width = Math.max(1, width - sum * scale)
+    }
+    column.x = x; column.width = width
   }
 
   get fullPageContentHeight(): number {
@@ -127,7 +156,7 @@ export class DocumentSectionFlow {
     if (explicit) this.section.hasExplicitColumnBreak = true
     this.column.full = true
     const next = this.section.columns[this.column.index + 1]
-    if (next) { this.column = next; this.cursor = next.y; return }
+    if (next) { this.column = next; if (this.columnInsets.length) this.applyColumnInsets(next); this.cursor = next.y; return }
     const previousPage = this.page
     this.auxiliarySegment?.beforePageOverflow?.(this)
     if (this.page !== previousPage) return
@@ -259,6 +288,7 @@ export class DocumentSectionFlow {
   private activateSection(section: LayoutSection, column = 0): void {
     this.section = section
     this.column = section.columns[column]!
+    if (this.columnInsets.length) this.applyColumnInsets(this.column)
     this.cursor = this.column.y
   }
 }

@@ -2,8 +2,7 @@ import { cloneModel } from '../domain/serialization'
 import type { DocumentBlock } from '../domain/model'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId } from '../features/document/model/document-numbering'
 import { blockListPreset } from '../features/document/model/document-lists'
-import { tableForBlock } from '../features/document/model/document-model'
-import { documentTableCellContentContainers } from '../features/document/model/document-table-continuations'
+import { documentBlockChildContainers } from '../features/document/model/document-structural-blocks'
 import type { DocumentBodyListResource } from './document-body-paragraph'
 import { bodyRecord, type UniverBodyRecord } from './document-body-style'
 
@@ -14,10 +13,10 @@ export function documentBodyListInstanceIds(blocks: readonly DocumentBlock[]): R
   const visit = (container: readonly DocumentBlock[]) => {
     let previous: string | undefined, listId = ''
     for (const block of container) {
-      const table = tableForBlock(block)
-      if (table) {
+      const children = documentBlockChildContainers(block)
+      if (children.length) {
         previous = undefined
-        for (const row of table.rows) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) visit(content)
+        for (const content of children) visit(content)
         continue
       }
       if (!blockHasNumbering(block)) { previous = undefined; continue }

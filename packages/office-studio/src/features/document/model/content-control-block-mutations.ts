@@ -3,15 +3,24 @@ import { collapsedSelection, runText, runsForTarget, tableForBlock, textTargets,
 import { documentTableCellContentContainers } from './document-table-continuations'
 import { documentTableDescendantIds } from './document-table-selection'
 import { documentContentControlBlocksSelection, documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from './content-control-block-range'
+import { documentStructuredChildContainers } from './document-structural-blocks'
 
-interface BlockContainerStep { tableId: string; cellId: string; contentIndex: number }
+type BlockContainerStep = { kind: 'table'; tableId: string; cellId: string; contentIndex: number }
+  | { kind: 'block'; blockId: string; columnId?: string }
 
 function containerPath(blocks: DocumentBlock[], target: DocumentBlock[], steps: BlockContainerStep[] = []): BlockContainerStep[] | undefined {
   if (blocks === target) return steps
-  for (const block of blocks) for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) {
-    for (const [contentIndex, content] of documentTableCellContentContainers(cell).entries()) {
-      const found = containerPath(content, target, [...steps, { tableId: block.id, cellId: cell.id, contentIndex }])
+  for (const block of blocks) {
+    for (const [index, content] of documentStructuredChildContainers(block).entries()) {
+      const found = containerPath(content, target, [...steps, { kind: 'block', blockId: block.id,
+        ...(block.columns ? { columnId: block.columns.columns[index]!.id } : {}) }])
       if (found) return found
+    }
+    for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) {
+    for (const [contentIndex, content] of documentTableCellContentContainers(cell).entries()) {
+      const found = containerPath(content, target, [...steps, { kind: 'table', tableId: block.id, cellId: cell.id, contentIndex }])
+      if (found) return found
+    }
     }
   }
   return undefined
@@ -20,6 +29,12 @@ function containerPath(blocks: DocumentBlock[], target: DocumentBlock[], steps: 
 function containerAtPath(blocks: DocumentBlock[], steps: readonly BlockContainerStep[]): DocumentBlock[] | undefined {
   let result = blocks
   for (const step of steps) {
+    if (step.kind === 'block') {
+      const block = result.find(block => block.id === step.blockId), container = step.columnId === undefined ? block?.children
+        : block?.columns?.columns.find(column => column.id === step.columnId)?.blocks
+      if (!container) return undefined
+      result = container; continue
+    }
     const block = result.find(block => block.id === step.tableId), table = block && tableForBlock(block)
     const cells = table?.rows.flatMap(row => row.cells).filter(cell => cell.id === step.cellId) ?? []
     if (cells.length !== 1) return undefined

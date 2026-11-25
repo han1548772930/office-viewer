@@ -5,6 +5,8 @@ import { balanceDocumentSection } from './document-column-balance'
 import { layoutDocumentParagraph, paragraphGeometry } from './document-paragraph-layout'
 import { layoutDocumentTable } from './document-table-layout'
 import { documentPictureInputAnchors, layoutDocumentPictureInputAnchor } from './document-picture-input-anchor'
+import { isDocumentStructuredBlock } from '../model/document-structural-blocks'
+import { layoutDocumentStructuredBlock } from './document-structural-layout'
 import type { DocumentSectionFlow } from './document-section-flow'
 import type { DocumentLayout, DocumentTextLayoutDisplay, LayoutMeasurer } from './document-layout-types'
 
@@ -33,7 +35,9 @@ export function appendDocumentBlocks(blocks: DocumentBlock[], flow: DocumentSect
     flow.ensureRoom(1)
     const inputAnchor = pictureAnchors.get(block.id), style = inputAnchor?.style ?? block.style
     flow.addSpace(style.spaceBefore)
-    if (block.type === 'table') layoutDocumentTable(block, markers, flow, result, measurer, options.textDisplay)
+    if (isDocumentStructuredBlock(block)) layoutDocumentStructuredBlock(block, flow, result,
+      (children, childFlow) => appendDocumentBlocks(children, childFlow, result, measurer, { ...options, markers }))
+    else if (block.type === 'table') layoutDocumentTable(block, markers, flow, result, measurer, options.textDisplay)
     else if (block.type === 'image') {
       const image = imageForBlock(block)
       if (!image) continue

@@ -99,6 +99,19 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.table-sort': '排序表格',
   'doc.command.table-set-style': '设置表格样式',
   'doc.command.table-set-range-text': '编辑表格选区内容',
+  'doc.command.wrap-structured-block': '包裹高级块',
+  'doc.command.insert-structured-block': '插入高级块',
+  'doc.command.unwrap-structured-block': '移除高级块容器',
+  'doc.command.exit-structured-block': '退出高级块',
+  'doc.command.update-callout': '设置标注块',
+  'doc.command.update-code-settings': '设置代码块',
+  'doc.command.update-code-block': '编辑代码块',
+  'doc.command.insert-column-group': '插入多栏组',
+  'doc.command.wrap-column-group': '包裹多栏组',
+  'doc.command.update-column-group': '设置多栏组',
+  'doc.command.add-column': '添加栏',
+  'doc.command.remove-column': '删除栏',
+  'doc.command.move-column': '移动栏',
 }
 
 export function assertDocumentEditorCommandRequest(request: DocumentEditorCommandRequest, commandId: string): void {

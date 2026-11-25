@@ -14,6 +14,9 @@ export type DocumentContentControlRepeatingItemCommand =
   | { id: 'doc.command.duplicate-repeating-section-item'; params: { controlId: string } }
   | { id: 'doc.command.delete-repeating-section-item'; params: { controlId: string } }
 
+/** Transient popup selection mode; it never belongs to the persisted control model. */
+export type DocumentContentControlPopupMode = 'value' | 'properties'
+
 export interface DocumentContentControlSelectionRequest {
   controlId: string
   selection: DocumentSelection
@@ -22,6 +25,7 @@ export interface DocumentContentControlSelectionRequest {
   /** undefined explicitly addresses the body; a story/note must carry its address. */
   host?: DocumentAuxiliaryBlockHost
   inputSession?: DocumentInputSession
+  mode?: DocumentContentControlPopupMode
 }
 
 export interface DocumentContentControlCommandRequest extends DocumentContentControlSelectionRequest {

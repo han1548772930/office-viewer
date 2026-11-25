@@ -56,6 +56,7 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
 
   const mapping = options.mapping
   if (mapping) {
+    enumeration(mapping.relationFormat, ['edgeList', 'coWordMatrix'], '关系来源格式')
     boolean(mapping.useDateAxis, '使用日期轴')
     indexes(mapping.categoryIndexes, '分类字段', true); indexes(mapping.hierarchyIndexes, '层级字段', true)
     for (const key of ['bubble', 'edge', 'chord', 'candlestick', 'gauge'] as const) {
@@ -112,6 +113,8 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
   const relation = options.relation
   if (relation) {
     enumeration(relation.layout, ['none', 'circular', 'force'], '关系图布局'); boolean(relation.useValueAsSymbolSize, '节点权重大小')
+    boolean(relation.emphasisEnabled, '关系邻接强调'); boolean(relation.circularLabelRotation, '圆形布局标签旋转')
+    enumeration(relation.nodeShape, CHART_POINT_SHAPES, '关系图节点形状')
     optionalObject(relation.force, '关系图力导向配置')
     optionalNumber(relation.force?.repulsion, 0, 100_000, '关系图排斥强度'); optionalNumber(relation.force?.gravity, 0, 10, '关系图中心引力'); optionalNumber(relation.force?.edgeLength, 0, 10_000, '关系图边长')
   }
@@ -251,8 +254,11 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
   const wordCloud = options.wordCloud
   if (wordCloud) {
     enumeration(wordCloud.shape, ['cloud', 'rect', 'circle', 'cardioid', 'heart', 'diamond', 'triangle-forward', 'triangle', 'pentagon', 'star'], '词云形状'); boolean(wordCloud.repeat, '词云重复填充')
+    for (const [name, value] of [['maskImageId', wordCloud.maskImageId], ['maskImage', wordCloud.maskImage]] as const) {
+      if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new TypeError(`词云 ${name} 必须是非空图片资源标识。`)
+    }
     optionalNumber(wordCloud.minFontSize, 1, 256, '词云最小字号'); optionalNumber(wordCloud.maxFontSize, 1, 256, '词云最大字号'); optionalNumber(wordCloud.rotation, -90, 90, '词云旋转角')
-    if ((wordCloud.minFontSize ?? 10) > (wordCloud.maxFontSize ?? 54)) throw new RangeError('词云最小字号不能大于最大字号，包括未设置端使用的默认值。')
+    if (!partial && (wordCloud.minFontSize ?? 16) > (wordCloud.maxFontSize ?? 56)) throw new RangeError('词云最小字号不能大于最大字号，包括未设置端使用的默认值。')
   }
   boolean(options.aggregation?.aggregate, '分类聚合'); optionalObject(options.aggregation?.topN, '前 N 项')
   if (options.aggregation?.topN) {

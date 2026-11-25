@@ -4,6 +4,7 @@ import { documentId, imageForBlock, runText, tableForBlock } from '../features/d
 import { documentTableGrid } from '../features/document/model/document-table-grid'
 import { documentTableContinuationEntries } from '../features/document/model/document-table-continuations'
 import { documentTextFields } from '../features/document/model/document-text-fields'
+import { isDocumentStructuredBlock, validateDocumentStructuredBlock } from '../features/document/model/document-structural-blocks'
 import { migrateDocumentStoryBlocks } from '../features/document/model/document-story-blocks'
 import { documentParagraphToBody, documentBodyListForBlock } from './document-body-paragraph'
 import { DocumentBodyListResources, documentBodyListInstanceIds } from './document-body-lists'
@@ -13,9 +14,12 @@ import { bodyRecord, documentRunStyleToBody, type UniverBodyRecord } from './doc
 import { documentTableCellToBody, documentTableRowToBody, documentTableToBody } from './document-body-table'
 import { documentBodyBlockSource, documentBodyRunSource, documentBodySourceMetadata } from './document-body-source'
 import { documentBodyControlSource, documentBodyPublicControlPlacement, documentBodyStructuralControlBounds } from './document-body-control-ranges'
+import { documentBodyPictureInputSource, documentBodyProjectedPictureInput } from './document-body-structural-input'
+import { documentCalloutToBody, documentColumnGroupToBody } from './document-body-structures'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyLocalOffset, type DocumentBodyEncodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyTextSpan,
   type UniverDocumentBody, type UniverDocumentBodyData, type UniverDocumentCustomBlock, type UniverDocumentCustomRange,
-  type DocumentBodyStructureIndex, type UniverDocumentCustomTable, type UniverDocumentParagraph, type UniverDocumentTextRun } from './document-body-types'
+  type DocumentBodyStructureIndex, type UniverDocumentCustomTable, type UniverDocumentParagraph, type UniverDocumentTextRun,
+  type UniverDocumentBlockRange, type UniverDocumentColumnGroup } from './document-body-types'
 
 interface ParagraphMap { block: DocumentBlock; start: number; end: number; spans: DocumentBodyTextSpan[] }
 interface PendingRange { id: string; type: number; startBlockId: string; endBlockId: string; start: number; end: number; startNoteReferenceCount?: number; endNoteReferenceCount?: number; properties: UniverBodyRecord; source?: UniverBodyRecord; atomic?: boolean; absolute?: { start: number; end: number } }
@@ -59,8 +63,11 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   const content = input.blocks === undefined ? migrateDocumentStoryBlocks(cloneModel(input), [], { kind: 'note', noteKind: 'footnote', noteId: 'public-body' }, defaults) : input
   const provenance = bodyRecord(content.metadata?.univerBodySource), sourceBody = cloneModel(bodyRecord(provenance.body)), sourceResources = bodyRecord(provenance.resources)
   const paragraphs: UniverDocumentParagraph[] = [], textRuns: UniverDocumentTextRun[] = [], tables: UniverDocumentCustomTable[] = [], customBlocks: UniverDocumentCustomBlock[] = [], rawCustomBlocks: UniverDocumentCustomBlock[] = []
+  const blockRanges: UniverDocumentBlockRange[] = [], columnGroups: UniverDocumentColumnGroup[] = []
   const tableSource = cloneModel(bodyRecord(sourceResources.tableSource)) as Record<string, UniverBodyRecord>,
     drawings = cloneModel(bodyRecord(sourceResources.drawings)) as Record<string, UniverBodyRecord>, lists = cloneModel(bodyRecord(sourceResources.lists)) as Record<string, UniverBodyRecord>
+  const callouts = cloneModel(bodyRecord(sourceResources.callouts)) as Record<string, UniverBodyRecord>, codes = cloneModel(bodyRecord(sourceResources.codes)) as Record<string, UniverBodyRecord>
+  const writtenCallouts = new Set<string>(), writtenCodes = new Set<string>()
   const sourceTableIds = new Set(documentArray(sourceBody.tables).map(raw => raw.tableId).filter((id): id is string => typeof id === 'string'))
   const writtenTableIds = new Set<string>()
   const writtenLists = new DocumentBodyListResources(), sourceListIds = new Set(documentArray(sourceBody.paragraphs)
@@ -90,7 +97,31 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     if (typeof sourceId === 'string' && sourceId !== id) drawingAliases.set(sourceId, id)
   }
   const writeBlocks = (blocks: readonly DocumentBlock[], depth = 0) => {
+    if (depth > 64) throw new RangeError('文档导出结构嵌套超过预算。')
     for (const block of blocks) {
+      if (isDocumentStructuredBlock(block)) {
+        validateDocumentStructuredBlock(block)
+        const start = offset
+        if (block.type === 'columns') {
+          append(T.groupStart)
+          for (const column of block.columns!.columns) { append(T.columnStart); writeBlocks(column.blocks, depth + 1); append(T.columnEnd) }
+          append(T.groupEnd)
+          columnGroups.push({ ...documentColumnGroupToBody(block), startIndex: start, endIndex: offset - 1, columnGroupId: block.id, officeStudio: documentBodyBlockSource(block) })
+        } else {
+          append(T.blockStart); writeBlocks(block.children!, depth + 1); append(T.blockEnd)
+          blockRanges.push({ ...bodyRecord(block.metadata.univerBodyBlockRangeSource), startIndex: start, endIndex: offset - 1,
+            blockId: block.id, blockType: block.type as 'quote' | 'callout' | 'code', officeStudio: documentBodyBlockSource(block) })
+          if (block.type === 'callout') { callouts[block.id] = documentCalloutToBody(block.callout!, block.metadata.univerBodyCalloutSource); writtenCallouts.add(block.id) }
+          if (block.type === 'code') { codes[block.id] = { ...bodyRecord(block.metadata.univerBodyCodeSource), ...block.code! }; writtenCodes.add(block.id) }
+        }
+        structures.blocks.push({ block, container: blocks, start, end: offset }); continue
+      }
+      const projectedImage = documentBodyProjectedPictureInput(block, blocks)
+      if (projectedImage) {
+        maps.set(block.id, { block, start: offset, end: offset + 1, spans: [{ sourceStart: 0, sourceEnd: 0, targetStart: offset, targetEnd: offset + 1 }] })
+        structures.blocks.push({ block, container: blocks, start: offset, end: offset })
+        continue
+      }
       const table = tableForBlock(block)
       if (table) {
         const start = offset, source = bodyRecord(block.metadata.univerBodyTableSource), grid = documentTableGrid(table), rows: UniverBodyRecord[] = []
@@ -126,7 +157,10 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
       const image = imageForBlock(block)
       if (image) {
         const source = bodyRecord(block.metadata.univerBodyCustomBlock), drawing = cloneModel(bodyRecord(block.metadata.univerBodyDrawingSource)), start = offset
-        append(T.customBlock); customBlocks.push({ ...source, startIndex: start, blockId: block.id, officeStudio: documentBodyBlockSource(block) })
+        const anchor = blocks[blocks.indexOf(block) - 1], extension = documentBodyBlockSource(block)
+        if (anchor && documentBodyProjectedPictureInput(anchor, blocks) === block) extension.metadata = {
+          ...bodyRecord(extension.metadata), pictureInputAnchorSource: documentBodyPictureInputSource(anchor) }
+        append(T.customBlock); customBlocks.push({ ...source, startIndex: start, blockId: block.id, officeStudio: extension })
         drawing.drawingId = block.id; drawing.drawingType = 0; drawing.source = image.src; drawing.description = image.alt
         drawing.docTransform = { ...bodyRecord(drawing.docTransform), size: { ...bodyRecord(bodyRecord(drawing.docTransform).size), width: image.width, height: image.height } }
         registerDrawing(block.id, drawing, source.blockId); structures.blocks.push({ block, container: blocks, start, end: offset }); continue
@@ -333,6 +367,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   for (const item of paragraphs) item.startIndex = afterMarker(item.startIndex)
   for (const item of [...customBlocks, ...rawCustomBlocks]) item.startIndex = sourceCustomTokens.has(item) ? sourceTokenPosition(sourceCustomTokens.get(item)!)! : afterMarker(item.startIndex)
   for (const item of tables) { item.startIndex = afterMarker(item.startIndex); item.endIndex = beforeMarker(item.endIndex) }
+  for (const item of [...blockRanges, ...columnGroups]) { item.startIndex = afterMarker(item.startIndex); item.endIndex = beforeMarker(item.endIndex + 1) - 1 }
   for (const section of sections) section.startIndex = afterMarker(Number(section.startIndex))
   for (const [index, position] of renderedPageBreaks.entries()) renderedPageBreaks[index] = afterMarker(position)
   for (const [index, range] of customRanges.entries()) {
@@ -372,10 +407,12 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     ...(rawCustomBlocks.length ? { docxRawCustomBlocks: rawCustomBlocks } : { docxRawCustomBlocks: undefined }),
     ...(renderedPageBreaks.length ? { renderedPageBreaks } : { renderedPageBreaks: undefined }),
     ...(customRanges.length ? { customRanges } : { customRanges: undefined }), ...(sections.length ? { sectionBreaks: sections } : { sectionBreaks: undefined }) }
+  body.blockRanges = blockRanges.length ? blockRanges : undefined
+  body.columnGroups = columnGroups.length ? columnGroups : undefined
   const metadata = options.includeMetadata === false ? {} : documentBodySourceMetadata(content.metadata, '正文',
     ['univerBodySource', 'univerBodyFirstSectionSource', 'univerDocumentSource', 'documentEditingBlockHost', 'documentEditingBlockSourceId', 'documentEditingSectionId', 'documentEditingSectionIds'])
   body.officeStudio = Object.keys(metadata).length ? { version: 1, metadata } : undefined
-  for (const key of ['customDecorations', 'docxRawBlocks', 'columnGroups', 'blockRanges'] as const) if (Array.isArray(sourceBody[key])) body[key] = sourceBody[key].map(value => {
+  for (const key of ['customDecorations', 'docxRawBlocks'] as const) if (Array.isArray(sourceBody[key])) body[key] = sourceBody[key].map(value => {
     const raw = cloneModel(bodyRecord(value))
     if (typeof raw.startIndex === 'number') raw.startIndex = sourceTokenPosition(raw.startIndex) ?? afterMarker(atSource(raw.startIndex, 'start'))
     if (typeof raw.endIndex === 'number') raw.endIndex = sourceTokenPosition(raw.endIndex) ?? beforeMarker(atSource(raw.endIndex + 1, 'end')) - 1
@@ -392,12 +429,16 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   for (const id of sourceTableIds) if (!writtenTableIds.has(id)) delete tableSource[id]
   for (const id of sourceDrawingIds) if (!writtenDrawingIds.has(id)) delete drawings[id]
   for (const id of sourceListIds) delete lists[id]
+  for (const raw of documentArray(sourceBody.blockRanges)) {
+    if (raw.blockType === 'callout' && typeof raw.blockId === 'string' && !writtenCallouts.has(raw.blockId)) delete callouts[raw.blockId]
+    if (raw.blockType === 'code' && typeof raw.blockId === 'string' && !writtenCodes.has(raw.blockId)) delete codes[raw.blockId]
+  }
   Object.assign(lists, writtenLists.finish())
   const drawingOrder = Array.isArray(sourceResources.drawingsOrder) ? sourceResources.drawingsOrder
     .filter((id): id is string => typeof id === 'string').map(id => drawings[id] ? id : drawingAliases.get(id) ?? id).filter(id => drawings[id]) : []
   const drawingsOrder = [...new Set([...drawingOrder, ...Object.keys(drawings)])]
   return { body, ...(Object.keys(tableSource).length ? { tableSource } : {}), ...(Object.keys(drawings).length ? { drawings, drawingsOrder } : {}),
-    ...(Object.keys(lists).length ? { lists } : {}) }
+    ...(Object.keys(lists).length ? { lists } : {}), ...(Object.keys(callouts).length ? { callouts } : {}), ...(Object.keys(codes).length ? { codes } : {}) }
 }
 
 function streamRangeEnd(stream: string, sourceEnd: number, offset: number): number {

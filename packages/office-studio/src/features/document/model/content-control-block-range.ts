@@ -1,6 +1,6 @@
 import type { DocumentBlock, DocumentContentControl, DocumentModel } from '../../../domain/model'
-import { runText, runsForTarget, tableForBlock, textTargets, type DocumentSelection, type TextTarget } from './document-model'
-import { documentTableCellContentContainers } from './document-table-continuations'
+import { runText, runsForTarget, textTargets, type DocumentSelection, type TextTarget } from './document-model'
+import { documentBlockChildContainers } from './document-structural-blocks'
 import { reanchorDocumentContentControlNoteParagraph } from './content-control-note-boundary'
 import { documentNoteReferenceOffsets } from './document-note-boundary'
 
@@ -28,9 +28,7 @@ export function resolveDocumentContentControlBlocks(model: Pick<DocumentModel, '
   const containers: DocumentBlock[][] = []
   const visit = (blocks: DocumentBlock[]) => {
     if (blocks.some(block => block.id === range.blockIds[0])) containers.push(blocks)
-    for (const block of blocks) for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) {
-      for (const content of documentTableCellContentContainers(cell)) visit(content)
-    }
+    for (const block of blocks) for (const content of documentBlockChildContainers(block)) visit(content)
   }
   visit(model.blocks)
   if (containers.length !== 1) throw new RangeError('内容控件块范围不属于唯一的当前内容容器。')
@@ -47,7 +45,7 @@ export function documentContentControlOwnedBlockIds(range: DocumentContentContro
   const visit = (blocks: DocumentBlock[]) => {
     for (const block of blocks) {
       ids.add(block.id)
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) visit(content)
+      for (const content of documentBlockChildContainers(block)) visit(content)
     }
   }
   visit(range.blocks)

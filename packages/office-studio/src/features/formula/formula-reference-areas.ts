@@ -164,7 +164,8 @@ export function formulaReferenceAreaSignature(formula: string, row: number, colu
 }
 
 /** Strings, structured column identifiers and literal sheet qualifiers are never transformed. */
-export function mapFormulaReferenceAreas(formula: string, transform: (area: Readonly<FormulaReferenceArea>) => FormulaReferenceArea | null): string {
+export function mapFormulaReferenceAreas(formula: string, transform: (area: Readonly<FormulaReferenceArea>) => FormulaReferenceArea | null,
+  options: { invalidReference?: string } = {}): string {
   if (typeof formula !== 'string') throw new TypeError('公式必须是字符串。')
   const patches: Array<{ start: number; end: number; text: string }> = []
   for (const span of areaSpans(formula)) {
@@ -175,7 +176,67 @@ export function mapFormulaReferenceAreas(formula: string, transform: (area: Read
       || changed.startRow > MAX_ROW || changed.endRow > MAX_ROW || changed.startColumn > MAX_COLUMN || changed.endColumn > MAX_COLUMN)) {
       throw new RangeError('变换后的公式引用超出工作表。')
     }
-    patches.push({ start: span.start, end: span.end, text: changed === null ? `${span.area.qualifier}#REF!` : formatArea(changed) })
+    patches.push({ start: span.start, end: span.end, text: changed === null ? options.invalidReference ?? `${span.area.qualifier}#REF!` : formatArea(changed) })
+  }
+  let result = formula
+  for (const patch of patches.reverse()) result = result.slice(0, patch.start) + patch.text + result.slice(patch.end)
+  return result
+}
+
+export interface FormulaSheetQualifier {
+  sheetName: string
+  external: boolean
+  threeDimensional: boolean
+}
+
+/** The same lexical boundary also covers sheet-local names, which are not A1 reference areas. */
+export function mapFormulaSheetQualifiers(formula: string,
+  transform: (qualifier: Readonly<FormulaSheetQualifier>) => string | null): string {
+  if (typeof formula !== 'string') throw new TypeError('公式必须是字符串。')
+  const patches: Array<{ start: number; end: number; text: string }> = []
+  let index = 0
+  while (index < formula.length) {
+    if (formula[index] === '"') {
+      index++
+      while (index < formula.length) {
+        if (formula[index] !== '"') { index++; continue }
+        if (formula[index + 1] === '"') { index += 2; continue }
+        index++; break
+      }
+      continue
+    }
+    const qualifier = !identifier(formula[index - 1]) ? readQualifier(formula, index) : undefined
+    if (qualifier) {
+      const name = transform({ sheetName: qualifier.sheetName, external: qualifier.external,
+        threeDimensional: qualifier.threeDimensional })
+      if (name === null) {
+        const area = readArea(formula, index)
+        const named = /^(?:#REF!|[\p{L}_\\][\p{L}\p{N}_.\\]*)/u.exec(formula.slice(qualifier.end))
+        const end = area?.end ?? qualifier.end + (named?.[0].length ?? 0)
+        patches.push({ start: index, end, text: '#REF!' })
+        index = end
+      } else {
+        if (name !== qualifier.sheetName) patches.push({ start: index, end: qualifier.end,
+          text: `'${name.replace(/'/g, "''")}'!` })
+        index = qualifier.end
+      }
+      continue
+    }
+    if (formula[index] === '[') {
+      let nesting = 1; index++
+      while (index < formula.length && nesting) {
+        if (formula[index] === '[') nesting++
+        else if (formula[index] === ']') nesting--
+        index++
+      }
+    } else if (formula[index] === "'") {
+      index++
+      while (index < formula.length) {
+        if (formula[index] !== "'") { index++; continue }
+        if (formula[index + 1] === "'") { index += 2; continue }
+        index++; break
+      }
+    } else index++
   }
   let result = formula
   for (const patch of patches.reverse()) result = result.slice(0, patch.start) + patch.text + result.slice(patch.end)

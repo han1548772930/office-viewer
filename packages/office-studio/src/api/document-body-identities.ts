@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentContentControl, DocumentStoryContent } from '../domain/model'
 import { tableForBlock } from '../features/document/model/document-model'
 import { documentTextFields } from '../features/document/model/document-text-fields'
-import { documentTableCellContentContainers } from '../features/document/model/document-table-continuations'
+import { documentBlockChildContainers } from '../features/document/model/document-structural-blocks'
 import { documentBodyIdentity } from './document-body-types'
 
 /** Namespaces match the current domain's copy maps and addressable identities. */
@@ -17,9 +17,10 @@ export function documentBodyContentIdentities(blocks: readonly DocumentBlock[], 
         add('row', row.id)
         for (const cell of row.cells) {
           add('cell', cell.id)
-          for (const children of documentTableCellContentContainers(cell)) visit(children)
         }
       }
+      for (const column of block.columns?.columns ?? []) add('column', column.id)
+      for (const children of documentBlockChildContainers(block)) visit(children)
     }
   }
   visit(blocks)

@@ -4,6 +4,7 @@ import { cloneDocumentSelection } from '../model/document-table-selection'
 import { documentContentControlContains, documentContentControlTableRowSelection, resolveDocumentContentControlTableRows,
   type DocumentContentControlTableRows } from '../model/content-control-table-rows'
 import { documentContentControlBlocksSelection, documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
+import { documentContentControlSourceOrders } from '../model/content-control-source-order'
 import type { DocumentLayout, LayoutLine, LayoutRect } from './document-layout-types'
 
 export interface LayoutContentControlFragment extends LayoutRect {
@@ -125,6 +126,7 @@ export function documentContentControlGeometry(model: DocumentModel, layout: Doc
     return result
   }
   const targets = new Map(textTargets(model).map(target => [target.cellBlockId ?? target.blockId, target]))
+  const sourceOrders = documentContentControlSourceOrders([...controls.values()].filter(control => targets.has(control.blockId)))
   const lines = new Map<string, LayoutLine[]>()
   for (const line of layout.lines) {
     const id = line.target.cellBlockId ?? line.target.blockId, items = lines.get(id) ?? []
@@ -192,6 +194,12 @@ export function documentContentControlGeometry(model: DocumentModel, layout: Doc
   return result.sort((left, right) => {
     const leftContains = documentContentControlContains(model, left.control, right.control), rightContains = documentContentControlContains(model, right.control, left.control)
     if (leftContains !== rightContains) return leftContains ? -1 : 1
+    if (leftContains && rightContains) {
+      const nesting = depth(left.control) - depth(right.control)
+      if (nesting) return nesting
+      const leftOrder = sourceOrders.get(left.control.id), rightOrder = sourceOrders.get(right.control.id)
+      if (leftOrder !== undefined && rightOrder !== undefined) return rightOrder - leftOrder
+    }
     return (right.control.blockRange?.blockIds.length ?? 0) - (left.control.blockRange?.blockIds.length ?? 0)
       || (right.control.tableRowRange?.rowIds.length ?? 0) - (left.control.tableRowRange?.rowIds.length ?? 0)
       || (right.control.endOffset - right.control.startOffset) - (left.control.endOffset - left.control.startOffset)

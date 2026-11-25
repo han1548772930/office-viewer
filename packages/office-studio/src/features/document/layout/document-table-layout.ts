@@ -48,6 +48,14 @@ function appendSlice(measurement: DocumentTableMeasurement, start: number, end: 
     result.dividers.push({ ...translateTableRect(source, dx, dy), ...location,
       clip: source.clip ? intersectTableRect(translateTableRect(source.clip, dx, dy), band) : { ...band } })
   }
+  result.containers ??= []
+  for (const source of measurement.containers) {
+    const from = Math.max(start, source.y), to = Math.min(end, source.y + source.height)
+    if (to <= from + EPSILON) continue
+    result.containers.push({ ...source, x: left + source.x, y: top + from - start, height: to - from, ...location,
+      first: source.first && from <= source.y + EPSILON, last: source.last && to >= source.y + source.height - EPSILON,
+      clip: source.clip ? intersectTableRect(translateTableRect(source.clip, dx, dy), band) : { ...band } })
+  }
   result.tableFragments ??= []
   for (const source of measurement.tables) {
     const from = Math.max(start, source.y), to = Math.min(end, source.y + source.height)

@@ -10,6 +10,7 @@ test('sheet-tab menu maps worksheet protection and existing tab commands to thei
     protect: id => calls.push(['protect', id]),
     unprotect: id => calls.push(['unprotect', id]),
     setColor: (id, color) => calls.push(['color', id, color]),
+    customColor: id => calls.push(['custom-color', id]),
     hide: id => calls.push(['hide', id]),
     delete: id => calls.push(['delete', id]),
   })
@@ -17,10 +18,12 @@ test('sheet-tab menu maps worksheet protection and existing tab commands to thei
   menu.onClick({ key: 'protect-sheet' })
   menu.onClick({ key: 'color:#4472c4' })
   menu.onClick({ key: 'delete' })
+  menu.onClick({ key: 'color-custom' })
   assert.deepEqual(calls, [
     ['protect', 'sheet-b'],
     ['color', 'sheet-b', '#4472c4'],
     ['delete', 'sheet-b'],
+    ['custom-color', 'sheet-b'],
   ])
 
   const protectedMenu = createSheetTabMenu('sheet-c', 2, true, (_key, fallback) => fallback, {

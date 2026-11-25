@@ -6,15 +6,16 @@ import { bodyNumber, bodyRecord, documentRunStyleFromBody, documentRunStyleSourc
 import { documentBodyNamedStyle, documentBodyParagraphMarks, documentParagraphFromBody } from './document-body-paragraph'
 import { documentSectionSetupFromBody, documentSectionTypeFromBody } from './document-body-section'
 import { documentTableFromBody } from './document-body-table'
+import { documentCalloutFromBody, documentCodeFromBody, documentColumnGroupFromBody } from './document-body-structures'
 import { applyDocumentBodyBlockSource, documentBodyOfficeSource, documentBodyRunMetadata } from './document-body-source'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyArray, documentBodyIdentity, documentBodyOffset,
   type DocumentBodyDecodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyStructureIndex, type DocumentBodyTextSpan, type UniverDocumentBodyResources } from './document-body-types'
 
 interface TextPart { text: string; start: number; end: number; source?: UniverBodyRecord; metadata?: UniverBodyRecord }
 interface ReadBodyResult { blocks: DocumentBlock[]; positions: DocumentBodyParagraphPosition[]; structures: DocumentBodyStructureIndex; diagnostics: string[]; initialSection?: UniverBodyRecord }
-const containerEnds = new Set<string>([T.cellEnd, T.rowEnd, T.tableEnd])
-const nonprinting = new Set<string>([T.rangeStart, T.rangeEnd, T.blockStart, T.blockEnd, T.groupStart, T.columnStart, T.columnEnd, T.groupEnd])
-const flowTokens = new Set<string>([T.paragraph, T.section, T.tableStart, T.pageBreak, T.columnBreak, T.customBlock])
+const containerEnds = new Set<string>([T.cellEnd, T.rowEnd, T.tableEnd, T.blockEnd, T.columnEnd, T.groupEnd])
+const nonprinting = new Set<string>([T.rangeStart, T.rangeEnd])
+const flowTokens = new Set<string>([T.paragraph, T.section, T.tableStart, T.pageBreak, T.columnBreak, T.customBlock, T.blockStart, T.groupStart, T.columnStart])
 
 /** Stream parsing belongs at the DTO boundary; the result is the ordinary editor block tree. */
 export function readDocumentBody(value: unknown, resources: UniverDocumentBodyResources, options: DocumentBodyDecodeOptions): ReadBodyResult {
@@ -23,6 +24,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   const stream = body.dataStream
   if (stream.length * 2 > 32 * 1024 * 1024) throw new RangeError('文档公开内容超过单次文本预算。')
   const paragraphs = new Map<number, UniverBodyRecord>(), tables = new Map<number, UniverBodyRecord>(), customBlocks = new Map<number, UniverBodyRecord>()
+  const blockRanges = new Map<number, UniverBodyRecord>(), columnGroups = new Map<number, UniverBodyRecord>()
   const rawCustomOffsets = new Set<number>(), sections = new Map<number, UniverBodyRecord>(), softBreaks = new Set<number>()
   const generatedRanges = new Map<number, { rangeId: string; separator?: 'separator' | 'continuationSeparator' }>()
   const noteRanges = new Map<number, { kind: 'footnote' | 'endnote'; id: string; source: UniverBodyRecord }>()
@@ -44,6 +46,12 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   mapEntries(body.docxRawCustomBlocks, customBlocks, T.customBlock, 'docxRawCustomBlocks')
   for (const raw of documentBodyArray(body.docxRawCustomBlocks, 'docxRawCustomBlocks')) rawCustomOffsets.add(Number(raw.startIndex))
   mapEntries(body.sectionBreaks, sections, T.section, 'sectionBreaks')
+  mapEntries(body.blockRanges, blockRanges, T.blockStart, 'blockRanges')
+  mapEntries(body.columnGroups, columnGroups, T.groupStart, 'columnGroups')
+  for (const [start, raw] of [...blockRanges, ...columnGroups]) {
+    const end = checkPosition(raw.endIndex, '高级块结束边界'), closing = blockRanges.get(start) === raw ? T.blockEnd : T.groupEnd
+    if (end <= start || stream[end] !== closing) throw new RangeError('高级块的 inclusive 结束位置与内容流标记不一致。')
+  }
   // The fixed upstream default separator is a FIELD over U+FFFC, rather
   // than a customBlock. Its marker belongs to layout, never editable text.
   for (const raw of documentBodyArray(body.customRanges, 'customRanges')) {
@@ -104,7 +112,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
     return terminal < 0 ? {} : paragraphs.get(terminal) ?? {}
   }
   const readBlocks = (until?: string, depth = 0): DocumentBlock[] => {
-    if (depth > 64) throw new RangeError('文档表格嵌套超过预算。')
+    if (depth > 64) throw new RangeError('文档结构嵌套超过预算。')
     const blocks: DocumentBlock[] = []
     let start = cursor, parts: TextPart[] = [], spans: DocumentBodyTextSpan[] = [], length = 0
     let pendingTokens: Array<{ offset: number; text: string; sourceIndex: number; sourceRangeId?: string }> = []
@@ -160,7 +168,15 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
     }
     while (cursor < stream.length) {
       const token = stream[cursor]!
-      if (token === until) { flush(cursor, false); cursor++; return blocks }
+      if (token === until) {
+        flush(cursor, false)
+        if (!blocks.length) {
+          const block = reserve(createParagraph('', options.defaults.text)); block.style = { ...options.defaults.paragraph }
+          blocks.push(block); positions.push({ block, start: cursor, end: cursor, spans: [] })
+          structures.blocks.push({ block, container: blocks, start: cursor, end: cursor })
+        }
+        cursor++; return blocks
+      }
       const generated = generatedRanges.get(cursor)
       if (generated) {
         spans.push({ sourceStart: cursor, sourceEnd: cursor + 1, targetStart: length, targetEnd: length })
@@ -174,7 +190,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         append('\uFFFC', from, cursor, { noteReference: { kind: reference.kind, noteId: reference.id }, univerBodyNoteRangeSource: cloneModel(reference.source) })
         continue
       }
-      if (containerEnds.has(token)) throw new RangeError('文档表格标记未正确闭合。')
+      if (containerEnds.has(token)) throw new RangeError('文档结构标记未正确闭合。')
       if (token === T.paragraph) { const end = cursor++; flush(end, true, true); start = cursor; continue }
       if (token === T.section) {
         flush(cursor, false); const offset = cursor++
@@ -224,6 +240,38 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         }
         start = cursor; continue
       }
+      if (token === T.blockStart) {
+        flush(cursor, false); const from = cursor++, descriptor = blockRanges.get(from)
+        if (!descriptor || !['quote', 'callout', 'code'].includes(String(descriptor.blockType))) throw new RangeError('高级块缺少有效的 blockRanges 描述。')
+        const id = documentBodyIdentity(descriptor.blockId, '高级块'), children = readBlocks(T.blockEnd, depth + 1)
+        if (descriptor.endIndex !== cursor - 1) throw new RangeError('高级块结束标记未与 blockRanges 正确匹配。')
+        const block = createParagraph(); block.id = id; block.type = descriptor.blockType as 'quote' | 'callout' | 'code'; block.runs = []; block.children = children
+        block.metadata = { univerBodyBlockRangeSource: cloneModel(descriptor) }
+        if (block.type === 'callout') {
+          block.callout = documentCalloutFromBody(resources.callouts?.[id]); block.metadata.univerBodyCalloutSource = cloneModel(resources.callouts?.[id] ?? {})
+        } else if (block.type === 'code') {
+          block.code = documentCodeFromBody(resources.codes?.[id]); block.metadata.univerBodyCodeSource = cloneModel(resources.codes?.[id] ?? {})
+        }
+        applyDocumentBodyBlockSource(block, descriptor)
+        blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: from, end: cursor }); start = cursor; continue
+      }
+      if (token === T.groupStart) {
+        flush(cursor, false); const from = cursor++, descriptor = columnGroups.get(from)
+        if (!descriptor) throw new RangeError('多栏组缺少 columnGroups 描述。')
+        const children: DocumentBlock[][] = [], skipRanges = () => { while (stream[cursor] === T.rangeStart || stream[cursor] === T.rangeEnd) cursor++ }
+        skipRanges()
+        while (stream[cursor] === T.columnStart) {
+          if (children.length >= 12) throw new RangeError('多栏组超过 12 栏预算。')
+          cursor++; children.push(readBlocks(T.columnEnd, depth + 1)); skipRanges()
+        }
+        if (stream[cursor++] !== T.groupEnd || descriptor.endIndex !== cursor - 1) throw new RangeError('多栏组结束边界与 columnGroups 不匹配。')
+        const block = createParagraph(); block.id = documentBodyIdentity(descriptor.columnGroupId, '多栏组'); block.type = 'columns'; block.runs = []
+        block.columns = documentColumnGroupFromBody(descriptor, children, options)
+        block.metadata = { univerBodyColumnGroupSource: cloneModel(descriptor), univerBodyColumnGroupBaseline: { gap: block.columns.gap, fontSize: options.defaults.text.fontSize } }
+        applyDocumentBodyBlockSource(block, descriptor)
+        blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: from, end: cursor }); start = cursor; continue
+      }
+      if (token === T.columnStart) throw new RangeError('栏开始标记必须属于一个多栏组。')
       if (token === T.pageBreak || token === T.columnBreak) {
         if (!options.allowSections) throw new RangeError('注释内容不能包含独立分页或分栏符。')
         flush(cursor, false); const offset = cursor++, block = createParagraph(); block.runs = []; block.type = token === T.pageBreak ? 'pageBreak' : 'columnBreak'
@@ -281,7 +329,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         && !nonprinting.has(stream[cursor]!) && !flowTokens.has(stream[cursor]!) && !generatedRanges.has(cursor) && !noteRanges.has(cursor))
       append(stream.slice(from, cursor), from, cursor)
     }
-    if (until) throw new RangeError('文档表格单元格缺少结束标记。')
+    if (until) throw new RangeError('文档结构容器缺少结束标记。')
     flush(cursor, false)
     return blocks
   }

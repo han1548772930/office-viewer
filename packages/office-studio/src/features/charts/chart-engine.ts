@@ -32,7 +32,10 @@ import type { ChartTreeRect } from './chart-special-layout'
 import type { ChartSunburstSector } from './chart-sunburst-layout'
 import type { ChartChordData } from './chart-chord-data'
 import type { ChartChordLayout } from './chart-chord-layout'
+import type { ChartCloudWord, ChartWordCloudLayoutResult } from './chart-word-cloud-layout'
+import type { ChartRelationGraphLayout, ChartRelationLayoutResult } from './chart-relation-layout'
 import { validateChartSourceData } from './chart-source-validation'
+import { assertChartSourcePresent } from './chart-source-diagnostic'
 
 export interface ChartConfig {
   type: ChartType
@@ -88,6 +91,10 @@ export interface ChartData {
   syntheticValues?: boolean
   graph?: ChartGraphData
   chord?: ChartChordData
+  /** Browser-measured glyphs are placed once by the chart Worker/Rust kernel. */
+  wordCloud?: ChartWordCloudLayoutResult
+  /** Plot-relative node positions from the chart Worker/Rust kernel. */
+  relation?: ChartRelationLayoutResult
   hierarchy?: ChartHierarchyNode[]
   hierarchyPaletteOrder?: string[]
   hierarchyValueFieldName?: string
@@ -141,6 +148,8 @@ export interface ChartLayout {
   series: ChartSeriesLayout[]
   sankey?: ChartSankeyLayout
   chord?: ChartChordLayout
+  relation?: ChartRelationGraphLayout
+  wordCloud?: ChartCloudWord[]
   treemap?: ChartTreeRect[]
   sunburst?: ChartSunburstSector[]
   waterfall?: {
@@ -259,16 +268,19 @@ export function readChartRecords(workbook: WorkbookModel, chart: Pick<ChartModel
 }
 
 export function readChartData(workbook: WorkbookModel, chart: ChartModel, preloaded?: ChartRecords): ChartData {
+  assertChartSourcePresent(workbook, chart)
   const data = projectChartRecords(preloaded ?? readChartRecords(workbook, chart), chart)
   validateChartNamedSeriesBindings(chart.options, data.series)
   return data
 }
 
 export function chartLayout(workbook: WorkbookModel, chart: ChartModel, computed?: ChartComputedStatistics): ChartLayout {
+  assertChartSourcePresent(workbook, chart)
   return layoutChartData(computed?.preparedData ?? readChartData(workbook, chart), chart, computed)
 }
 
 export function chartRenderCommands(workbook: WorkbookModel, chart: ChartModel, computed?: ChartComputedStatistics): DrawCommand[] {
+  assertChartSourcePresent(workbook, chart)
   return drawChartData(computed?.preparedData ?? readChartData(workbook, chart), chart, {}, computed)
 }
 

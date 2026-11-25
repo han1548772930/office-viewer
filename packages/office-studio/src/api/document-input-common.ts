@@ -7,6 +7,7 @@ import { createDocumentRepeatingContentControlCopyIds, indexDocumentRepeatingCon
 import { bodyRecord, type UniverBodyRecord } from './document-body-style'
 import type { DocumentBodyDecodeResult, UniverDocumentBodyResources } from './document-body-types'
 import { documentBodyContentIdentities } from './document-body-identities'
+import { readDocumentPluginResources } from './document-plugin-resources'
 
 export function publicDocumentRecord(value: unknown, label: string): UniverBodyRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${label} 必须为对象。`)
@@ -14,12 +15,13 @@ export function publicDocumentRecord(value: unknown, label: string): UniverBodyR
 }
 
 export function publicDocumentResources(value: UniverBodyRecord, fallback: UniverDocumentBodyResources = {}): UniverDocumentBodyResources {
-  const result: UniverDocumentBodyResources = {}
-  for (const key of ['tableSource', 'drawings', 'lists'] as const) {
-    if (value[key] === undefined && fallback[key] === undefined) continue
+  const plugins = readDocumentPluginResources(value.resources), result: UniverDocumentBodyResources = {}
+  for (const key of ['tableSource', 'drawings', 'lists', 'callouts', 'codes'] as const) {
+    const plugin = key === 'callouts' || key === 'codes' ? plugins[key] : undefined
+    if (value[key] === undefined && fallback[key] === undefined && plugin === undefined) continue
     const own = value[key] === undefined ? {} : publicDocumentRecord(value[key], key)
     const inherited = fallback[key] === undefined ? {} : publicDocumentRecord(fallback[key], key)
-    const entries = { ...inherited, ...own }
+    const entries = { ...inherited, ...own, ...plugin }
     for (const [id, entry] of Object.entries(entries)) publicDocumentRecord(entry, `${key}.${id}`)
     Object.assign(result, { [key]: entries })
   }

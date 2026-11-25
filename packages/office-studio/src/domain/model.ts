@@ -561,6 +561,30 @@ export interface ChartCandlestickOptions {
   hollow?: boolean
 }
 /** Renderer-independent authored configuration. Derived statistics and geometries are not saved here. */
+export type ChartWordCloudShape = 'cloud' | 'rect' | 'circle' | 'cardioid' | 'heart' | 'diamond' | 'triangle-forward' | 'triangle' | 'pentagon' | 'star'
+export interface ChartWordCloudOptions {
+  shape?: ChartWordCloudShape
+  maskImageId?: string
+  /** Legacy authored alias; canonical writes and resets clear it. */
+  maskImage?: string
+  repeat?: boolean
+  /** Local runtime authoring extensions; fixed published defaults are 16..56. */
+  minFontSize?: number
+  maxFontSize?: number
+  rotation?: number
+}
+
+export type ChartRelationLayout = 'none' | 'circular' | 'force'
+export interface ChartRelationForceOptions { repulsion?: number; gravity?: number; edgeLength?: number }
+export interface ChartRelationOptions {
+  layout?: ChartRelationLayout
+  useValueAsSymbolSize?: boolean
+  emphasisEnabled?: boolean
+  circularLabelRotation?: boolean
+  nodeShape?: ChartPointShape
+  force?: ChartRelationForceOptions
+}
+
 export interface ChartSemanticOptions {
   invalidValueStrategy?: 'zero' | 'break' | 'link'
   plotVisibleOnly?: boolean
@@ -587,6 +611,8 @@ export interface ChartSemanticOptions {
     hierarchyIndexes?: number[]
     bubble?: ChartBubbleMappingOptions
     edge?: { sourceIndex: number; targetIndex: number; valueIndex?: number }
+    /** Local row-major adapter for the published Relation co-word data contract. */
+    relationFormat?: 'edgeList' | 'coWordMatrix'
     chord?: ChartChordMapping
     candlestick?: ChartCandlestickMappingOptions
     gauge?: { valueIndex: number; labelIndex?: number }
@@ -603,7 +629,7 @@ export interface ChartSemanticOptions {
   radar?: ChartRadarOptions
   bubble?: { scale?: number; sizeRepresents?: 'area' | 'width' }
   funnel?: { gap?: number; useAbsoluteValue?: boolean; sort?: 'ascending' | 'descending' | 'none' }
-  relation?: { layout?: 'none' | 'circular' | 'force'; useValueAsSymbolSize?: boolean; force?: { repulsion?: number; gravity?: number; edgeLength?: number } }
+  relation?: ChartRelationOptions
   waterfall?: { pointRoles?: Array<{ seriesIndex: number; dataPointIndex: number; role: 'change' | 'total' }>; stackType?: ChartWaterfallStackType; useSubtotal?: boolean; connector?: boolean | ChartWaterfallConnectorOptions; styles?: ChartWaterfallStyles; positiveColor?: string; negativeColor?: string; totalColor?: string }
   pareto?: ChartParetoOptions
   histogram?: { binning?: { mode: 'count'; count: number } | { mode: 'width'; width: number }; underflowThreshold?: number; overflowThreshold?: number; binGap?: number }
@@ -614,7 +640,7 @@ export interface ChartSemanticOptions {
   sunburst?: ChartSunburstOptions
   gauge?: ChartGaugeOptions
   chord?: ChartChordOptions
-  wordCloud?: { shape?: 'cloud' | 'rect' | 'circle' | 'cardioid' | 'heart' | 'diamond' | 'triangle-forward' | 'triangle' | 'pentagon' | 'star'; repeat?: boolean; minFontSize?: number; maxFontSize?: number; rotation?: number }
+  wordCloud?: ChartWordCloudOptions
   aggregation?: { aggregate?: boolean; topN?: { count: number; includeOthers?: boolean; othersLabel?: string } }
 }
 
@@ -781,7 +807,49 @@ export interface WorkbookModel {
 }
 
 export type DocumentSectionBreakType = 'unspecified' | 'nextPage' | 'continuous' | 'nextColumn' | 'evenPage' | 'oddPage'
-export type DocumentBlockType = 'paragraph' | 'heading' | 'bullet' | 'numbered' | 'checklist' | 'quote' | 'divider' | 'table' | 'image' | 'pageBreak' | 'columnBreak' | 'sectionBreak'
+export type DocumentBlockType = 'paragraph' | 'heading' | 'bullet' | 'numbered' | 'checklist' | 'quote' | 'callout' | 'code' | 'columns' | 'divider' | 'table' | 'image' | 'pageBreak' | 'columnBreak' | 'sectionBreak'
+
+/** Block decoration is independent of the editable paragraphs it contains. */
+export interface DocumentCalloutConfig {
+  icon: string
+  showIcon: boolean
+  backgroundColor: string
+  borderColor: string
+  borderWidth: number
+  borderOpacity: number
+  borderStyle: 'solid' | 'dashed' | 'dotted'
+  borderRadius: number
+  paddingTop: number
+  paddingRight: number
+  paddingBottom: number
+  paddingLeft: number
+  iconSize: number
+  iconGap: number
+}
+
+export interface DocumentCodeConfig {
+  language: string
+  showLineNumbers: boolean
+  tabSize: number
+  wrap: boolean
+}
+
+export interface DocumentColumn {
+  id: string
+  widthRatio: number
+  /** CSS pixels; public number-unit provenance is retained separately. */
+  minWidth?: number
+  blocks: DocumentBlock[]
+  metadata?: Record<string, unknown>
+}
+
+export interface DocumentColumnGroup {
+  version: 1
+  columns: DocumentColumn[]
+  gap: number
+  layout: 'fixed' | 'auto'
+  responsive: 'stack' | 'shrink'
+}
 
 export interface InlineRun {
   id: string
@@ -847,6 +915,11 @@ export interface DocumentBlock {
   runs: InlineRun[]
   style: DocumentParagraphStyle
   metadata: Record<string, unknown>
+  /** Authoritative children of quote/callout/code blocks. A legacy quote can remain a paragraph. */
+  children?: DocumentBlock[]
+  callout?: DocumentCalloutConfig
+  code?: DocumentCodeConfig
+  columns?: DocumentColumnGroup
   checklist?: { listId: string; checked: boolean }
   list?: { id: string; preset: keyof typeof import('./document-list-presets.json') }
   sectionBreak?: { type: DocumentSectionBreakType; setup?: DocumentSectionSetup }

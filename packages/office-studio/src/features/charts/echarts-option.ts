@@ -40,6 +40,9 @@ import type { ChartTreemapPointerRuntime } from './echarts-treemap-option'
 import type { ChartSunburstPointerRuntime } from './echarts-sunburst-option'
 import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
 import { createChartChordHitIndex, createChartChordTopology, type ChartChordPointerRuntime } from './chart-chord-interaction'
+import { assertChartSourcePresent } from './chart-source-diagnostic'
+import { createChartRelationScene, type ChartRelationScene } from './chart-relation-draw'
+import { createChartRelationHitIndex, createChartRelationTopology, type ChartRelationPointerRuntime } from './chart-relation-interaction'
 
 export type ChartEChartsOption = ComposeOption<
   | BarSeriesOption | LineSeriesOption | PieSeriesOption | RadarSeriesOption | ScatterSeriesOption | BoxplotSeriesOption
@@ -50,13 +53,14 @@ export type ChartEChartsOption = ComposeOption<
   /** Authored dependencies used by the bitmap cache, including formatter closures. Removed before ECharts.setOption. */
   officeChartKey?: string
   /** Transient surface interaction metadata. Removed before signature generation and setOption. */
-  officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime
+  officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
 }
 
 export type ChartEChartsTheme = ChartRenderTheme
 
 /** Converts authored semantics and derived statistics to a Canvas option without mutating the document. */
 export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, theme: ChartEChartsTheme = {}, computed?: ChartComputedStatistics): ChartEChartsOption {
+  assertChartSourcePresent(workbook, chart)
   const source = computed?.preparedData ?? readChartData(workbook, chart), derived = deriveChartData(source, chart, computed), data = derived.data
   const businessPercentages = derived.pareto ? chartParetoValuePercentages(derived.pareto.values) : undefined
   const descriptor = resolveChartType(chart.type), color = chart.options?.appearance?.font?.color ?? theme.textColor ?? '#334155'
@@ -74,14 +78,19 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     const sankeyScene = layout.sankey ? createChartSankeyScene(data, localChart, layout.sankey,
       chart.options?.appearance?.font?.color ?? theme.textColor ?? '#64748b', palette, layout.frame) : undefined
     const chordScene = layout.chord ? createChartChordScene(data, localChart, layout.chord, theme, palette, layout.frame) : undefined
-    const commands = drawDerivedChartData(derived, localChart, theme, palette, layout, sankeyScene, chordScene)
+    const relationScene = layout.relation ? createChartRelationScene(data, localChart, layout.relation, theme, palette, layout.frame) : undefined
+    const commands = drawDerivedChartData(derived, localChart, theme, palette, layout, sankeyScene, chordScene, relationScene)
     const contentGraphics = sankeyScene?.commands.length ? chartContentGraphics(commands, sankeyScene, chart.id, 'sankey')
-      : chordScene?.commands.length ? chartContentGraphics(commands, chordScene, chart.id, 'chord') : undefined
-    const pointerRuntime: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartChordPointerRuntime | undefined = contentGraphics && sankeyScene
+      : chordScene?.commands.length ? chartContentGraphics(commands, chordScene, chart.id, 'chord')
+      : relationScene?.commands.length ? chartContentGraphics(commands, relationScene, chart.id, 'relation') : undefined
+    const pointerRuntime: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime | undefined = contentGraphics && sankeyScene
       ? { mode: 'sankey', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: sankeyScene,
         hitIndex: createChartSankeyHitIndex(sankeyScene!.layout), topology: createChartSankeyTopology(sankeyScene!.layout) }
       : contentGraphics && chordScene ? { mode: 'chord', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: chordScene,
         hitIndex: createChartChordHitIndex(chordScene.layout), topology: createChartChordTopology(chordScene.layout) }
+        : contentGraphics && relationScene ? { mode: 'relation', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset,
+          scene: relationScene, baseScene: relationScene, hitIndex: createChartRelationHitIndex(relationScene),
+          topology: createChartRelationTopology(relationScene.layout), viewport: { scale: 1, x: 0, y: 0 } }
         : pointerEnabled ? { mode: 'graphic', geometry: chartAxisPointerGeometry(data, localChart, layout, theme) } : undefined
     return {
       animation: false, backgroundColor: chart.options?.appearance?.background ?? theme.backgroundColor ?? 'transparent',
@@ -296,7 +305,7 @@ export function chartGraphics(commands: DrawCommand[], chartId: string, zOffset 
 
 /** Only this group is replaced on hover/drag; the frame, titles and legend
  * keep their existing graphic elements and the authored cache signature. */
-function chartContentGraphics(commands: DrawCommand[], scene: ChartSankeyScene | ChartChordScene, chartId: string, mode: 'sankey' | 'chord'): {
+function chartContentGraphics(commands: DrawCommand[], scene: ChartSankeyScene | ChartChordScene | ChartRelationScene, chartId: string, mode: 'sankey' | 'chord' | 'relation'): {
   elements: NonNullable<GraphicComponentOption['elements']>; groupId: string; zOffset: number
 } {
   const start = commands.indexOf(scene.commands[0]!), end = start + scene.commands.length

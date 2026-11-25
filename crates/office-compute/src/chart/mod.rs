@@ -1,6 +1,8 @@
 mod distribution;
 mod hierarchy;
 mod chord;
+mod word_cloud;
+mod relation;
 mod errors;
 mod math;
 mod trendline;
@@ -11,6 +13,10 @@ mod tests;
 mod hierarchy_tests;
 #[cfg(test)]
 mod chord_tests;
+#[cfg(test)]
+mod word_cloud_tests;
+#[cfg(test)]
+mod relation_tests;
 
 use crate::{ComputeError, MAX_ELEMENTS, MAX_ROWS};
 use serde::{Deserialize, Serialize};
@@ -63,9 +69,22 @@ pub enum ErrorValueType { FixedVal, Percentage, StdDev, StdErr, Cust }
 #[serde(rename_all = "camelCase")]
 pub enum WaterfallStackType { Arrangement, Stacked }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationLayout { None, Circular, Force }
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
 pub enum HistogramBinning { Count { count: f64 }, Width { width: f64 } }
+
+/// Glyph collision cells are supplied by the browser's actual text rasterizer.
+/// Offsets address a retained numeric column; the kernel owns placement only.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WordCloudGlyph {
+    pub width: u32, pub height: u32, pub offset: u32, pub length: u32,
+    pub font_size: f64, pub weight: f64,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
@@ -78,6 +97,11 @@ pub enum ChartJob {
     Hierarchy { series_index: u32, slot: u32, hierarchy_columns: Vec<u32>, label_columns: Vec<u32>, key_count: u32, label_count: u32 },
     Chord { series_index: u32, slot: u32, source_column: u32, target_column: u32, label_count: u32,
         start_angle: f64, clockwise: bool, pad_angle: f64, min_angle: f64 },
+    WordCloud { series_index: u32, slot: u32, glyph_column: u32, mask_column: u32,
+        width: u32, height: u32, glyphs: Vec<WordCloudGlyph>, max_attempts: u32, min_font_size: f64 },
+    RelationLayout { series_index: u32, slot: u32, seed_column: u32, source_column: u32, target_column: u32, link_value_column: u32,
+        node_count: u32, link_count: u32, width: f64, height: f64, layout: RelationLayout,
+        use_value_as_symbol_size: bool, symbol_size: f64, repulsion: f64, gravity: f64, edge_length: f64 },
     /// Total/change flags share the columnar numeric input, avoiding a large
     /// per-point control DTO. Only exact 0/1 flags are accepted.
     Waterfall { series_index: u32, slot: u32, total_column: Option<u32> },
@@ -98,6 +122,8 @@ impl ChartJob {
             Self::Pareto { series_index, slot, .. } => ("pareto", *series_index, *slot),
             Self::Hierarchy { series_index, slot, .. } => ("hierarchy", *series_index, *slot),
             Self::Chord { series_index, slot, .. } => ("chord", *series_index, *slot),
+            Self::WordCloud { series_index, slot, .. } => ("wordCloud", *series_index, *slot),
+            Self::RelationLayout { series_index, slot, .. } => ("relationLayout", *series_index, *slot),
             Self::Waterfall { series_index, slot, .. } => ("waterfall", *series_index, *slot),
             Self::WaterfallLayout { series_index, slot, .. } => ("waterfallLayout", *series_index, *slot),
             Self::Trendline { series_index, slot, .. } => ("trendline", *series_index, *slot),
@@ -119,6 +145,8 @@ impl ChartJob {
             Self::Waterfall { .. } => (rows * 3, rows * 2),
             Self::Chord { .. } => (rows.checked_mul(11).ok_or_else(ComputeError::memory)?,
                 rows.checked_mul(4).and_then(|size| size.checked_add(2)).ok_or_else(ComputeError::memory)?),
+            Self::WordCloud { glyphs, .. } => (glyphs.len() * 3, glyphs.len()),
+            Self::RelationLayout { node_count, .. } => (*node_count as usize * 3, *node_count as usize),
             Self::WaterfallLayout { series_indices, stack_type, use_subtotal, .. } => {
                 return waterfall::output_capacity(rows, series_indices.len(), *stack_type, *use_subtotal);
             }
@@ -135,6 +163,8 @@ impl ChartJob {
             Self::Pareto { .. } => rows * 16,
             Self::Hierarchy { hierarchy_columns, .. } => rows * hierarchy_columns.len() * 256 + (hierarchy_columns.len() + 1) * 64,
             Self::Chord { .. } => rows * 1024,
+            Self::WordCloud { width, height, glyphs, .. } => *width as usize * *height as usize * 2 + glyphs.len() * 128,
+            Self::RelationLayout { node_count, link_count, .. } => *node_count as usize * 768 + *link_count as usize * 32,
             // Each of the two stacks reserves at most period nodes; a node is
             // <=56 bytes natively and <=48 on wasm32.
             Self::Trendline { trend_type: TrendType::MovingAvg, period, .. } =>
@@ -229,6 +259,30 @@ impl ChartStatisticsParams {
                         return Err(ComputeError::invalid("Chord endpoint/value columns, label count or angle settings are invalid"));
                     }
                 }
+                ChartJob::WordCloud { glyph_column, mask_column, width, height, glyphs, max_attempts, min_font_size, .. } => {
+                    if *glyph_column >= self.column_count || *mask_column >= self.column_count || glyph_column == mask_column
+                        || !(1..=4096).contains(width) || !(1..=4096).contains(height)
+                        || *width as usize * *height as usize > rows || glyphs.len() > 10_000
+                        || !(1..=100_000).contains(max_attempts) || !min_font_size.is_finite() || !(1.0..=256.0).contains(min_font_size)
+                        || glyphs.iter().any(|glyph| !(1..=4096).contains(&glyph.width) || !(1..=4096).contains(&glyph.height)
+                            || glyph.offset as usize + glyph.length as usize > rows
+                            || glyph.length as usize > glyph.width as usize * glyph.height as usize
+                            || !glyph.font_size.is_finite() || !(1.0..=256.0).contains(&glyph.font_size)
+                            || !glyph.weight.is_finite() || glyph.weight < 0.0) {
+                        return Err(ComputeError::invalid("Word cloud glyph/mask dimensions, offsets or layout options are invalid"));
+                    }
+                }
+                ChartJob::RelationLayout { seed_column, source_column, target_column, link_value_column, node_count, link_count,
+                    width, height, symbol_size, repulsion, gravity, edge_length, .. } => {
+                    let columns = [self.series[series as usize].column, *seed_column, *source_column, *target_column, *link_value_column];
+                    if columns.iter().any(|column| *column >= self.column_count) || columns.iter().copied().collect::<HashSet<_>>().len() != columns.len()
+                        || *node_count as usize > rows || *link_count as usize > rows || *node_count == 0 && *link_count > 0
+                        || !width.is_finite() || *width <= 0.0 || !height.is_finite() || *height <= 0.0
+                        || !symbol_size.is_finite() || *symbol_size <= 0.0
+                        || [*repulsion, *gravity, *edge_length].iter().any(|value| !value.is_finite() || *value < 0.0) {
+                        return Err(ComputeError::invalid("Relation node/link columns, counts or layout options are invalid"));
+                    }
+                }
                 ChartJob::Waterfall { total_column, .. } => {
                     if total_column.is_some_and(|column| column >= self.column_count) {
                         return Err(ComputeError::invalid("Waterfall total flag column is out of range"));
@@ -304,6 +358,7 @@ impl ChartStatisticsParams {
                 ChartJob::WaterfallLayout { series_indices, total_columns, .. } => series_indices.len().checked_mul(4)
                     .and_then(|size| size.checked_add(total_columns.as_ref().map_or(0, |columns| columns.len()).checked_mul(8)?)),
                 ChartJob::Hierarchy { hierarchy_columns, .. } => hierarchy_columns.len().checked_mul(8),
+                ChartJob::WordCloud { glyphs, .. } => glyphs.len().checked_mul(48),
                 _ => Some(0),
             }.ok_or_else(ComputeError::memory)?;
             total.checked_add(extra).ok_or_else(ComputeError::memory)
@@ -447,6 +502,13 @@ impl ChartStatistics {
                     hierarchy::build(&input, series, hierarchy_columns, label_columns, *key_count, *label_count, result),
                 ChartJob::Chord { source_column, target_column, label_count, start_angle, clockwise, pad_angle, min_angle, .. } =>
                     chord::build(&input, series, *source_column, *target_column, *label_count, *start_angle, *clockwise, *pad_angle, *min_angle, result),
+                ChartJob::WordCloud { glyph_column, mask_column, width, height, glyphs, max_attempts, min_font_size, .. } =>
+                    word_cloud::layout(&input, *glyph_column, *mask_column, *width, *height, glyphs, *max_attempts, *min_font_size, result),
+                ChartJob::RelationLayout { seed_column, source_column, target_column, link_value_column, node_count, link_count,
+                    width, height, layout, use_value_as_symbol_size, symbol_size, repulsion, gravity, edge_length, .. } =>
+                    relation::layout(&input, series.column, *seed_column, *source_column, *target_column, *link_value_column,
+                        *node_count, *link_count, *width, *height, *layout, *use_value_as_symbol_size, *symbol_size,
+                        *repulsion, *gravity, *edge_length, result),
                 ChartJob::Waterfall { total_column, .. } =>
                     distribution::waterfall(&input, series, *total_column, result),
                 ChartJob::WaterfallLayout { series_indices, stack_type, use_subtotal, total_columns, .. } =>

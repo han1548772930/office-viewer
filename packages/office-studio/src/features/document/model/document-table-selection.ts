@@ -7,7 +7,8 @@ import {
   assertDocumentTableRange, documentTableCellsInRange, documentTableGrid, documentTableWholeRange, expandDocumentTableRange,
   type DocumentTableCellRange,
 } from './document-table-grid'
-import { documentTableCellBlocks, documentTableCellContentContainers } from './document-table-continuations'
+import { documentTableCellBlocks } from './document-table-continuations'
+import { documentBlockChildContainers } from './document-structural-blocks'
 
 export function cloneDocumentSelection(selection: DocumentSelection): DocumentSelection {
   return { anchor: { ...selection.anchor }, focus: { ...selection.focus },
@@ -43,7 +44,7 @@ export function documentTableDescendantIds(blocks: readonly DocumentBlock[]): Se
   const visit = (items: readonly DocumentBlock[]) => {
     for (const block of items) {
       ids.add(block.id)
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) visit(content)
+      for (const content of documentBlockChildContainers(block)) visit(content)
     }
   }
   visit(blocks)

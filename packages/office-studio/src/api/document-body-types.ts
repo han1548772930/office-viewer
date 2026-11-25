@@ -7,6 +7,8 @@ export interface UniverDocumentParagraph extends UniverBodyRecord { startIndex: 
 export interface UniverDocumentCustomTable extends UniverBodyRecord { startIndex: number; endIndex: number; tableId: string }
 export interface UniverDocumentCustomBlock extends UniverBodyRecord { startIndex: number; blockId: string }
 export interface UniverDocumentCustomRange extends UniverBodyRecord { startIndex: number; endIndex: number; rangeId: string; rangeType: number; properties?: UniverBodyRecord }
+export interface UniverDocumentBlockRange extends UniverBodyRecord { startIndex: number; endIndex: number; blockId: string; blockType: 'quote' | 'callout' | 'code' }
+export interface UniverDocumentColumnGroup extends UniverBodyRecord { startIndex: number; endIndex: number; columnGroupId: string; columns?: UniverBodyRecord[] }
 export interface UniverDocumentBody extends UniverBodyRecord {
   dataStream: string
   textRuns?: UniverDocumentTextRun[]
@@ -15,6 +17,8 @@ export interface UniverDocumentBody extends UniverBodyRecord {
   customBlocks?: UniverDocumentCustomBlock[]
   docxRawCustomBlocks?: UniverDocumentCustomBlock[]
   customRanges?: UniverDocumentCustomRange[]
+  blockRanges?: UniverDocumentBlockRange[]
+  columnGroups?: UniverDocumentColumnGroup[]
   sectionBreaks?: UniverBodyRecord[]
   renderedPageBreaks?: number[]
 }
@@ -23,6 +27,8 @@ export interface UniverDocumentBodyResources {
   drawings?: Record<string, UniverBodyRecord>
   drawingsOrder?: string[]
   lists?: Record<string, UniverBodyRecord>
+  callouts?: Record<string, UniverBodyRecord>
+  codes?: Record<string, UniverBodyRecord>
 }
 export interface UniverDocumentBodyData extends UniverDocumentBodyResources { body: UniverDocumentBody }
 

@@ -4,6 +4,7 @@ import { documentId, tableForBlock } from '../model/document-model'
 import { documentTableGrid } from '../model/document-table-grid'
 import { documentTableCellContentContainers, rebindDocumentTableContinuations } from '../model/document-table-continuations'
 import { documentTextFieldRanges, documentTextFields, remapDocumentTextFieldIds } from '../model/document-text-fields'
+import { documentStructuredChildContainers, validateDocumentStructuredBlock } from '../model/document-structural-blocks'
 
 /** Clipboard blocks are borrowed input; IDs and continuation bindings belong to each new paste. */
 export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): DocumentBlock[] {
@@ -15,7 +16,9 @@ export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): Do
       if (!block || typeof block.id !== 'string' || !block.id || sourceIds.has(block.id) || !Array.isArray(block.runs)
         || !block.style || !block.metadata) throw new TypeError('复制范围必须包含标识唯一的文档块')
       sourceIds.add(block.id)
+      validateDocumentStructuredBlock(block)
       if (++blockCount > 250_000) throw new RangeError('粘贴内容超过单次文档块预算')
+      for (const content of documentStructuredChildContainers(block)) inspect(content, depth + 1)
       const table = tableForBlock(block)
       if (!table) continue
       const grid = documentTableGrid(table)
@@ -41,6 +44,8 @@ export function copyDocumentBlocksForPaste(blocks: readonly DocumentBlock[]): Do
         block.checklist.listId = listIds.get(previous)!
       }
       paragraphs.push(block)
+      if (block.columns) for (const column of block.columns.columns) column.id = documentId('column')
+      for (const content of documentStructuredChildContainers(block)) visit(content)
       const table = tableForBlock(block)
       if (!table) continue
       // Read before changing row/cell IDs so invalid source continuations cannot be silently discarded.

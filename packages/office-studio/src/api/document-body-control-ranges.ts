@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentContentControl } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { runText, tableForBlock } from '../features/document/model/document-model'
-import { documentTableCellContentContainers } from '../features/document/model/document-table-continuations'
+import { documentBlockChildContainers } from '../features/document/model/document-structural-blocks'
 import { bodyRecord, type UniverBodyRecord } from './document-body-style'
 import { documentBodyOfficeSource, documentBodySourceMetadata } from './document-body-source'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyIdentity, type DocumentBodyBlockPosition, type DocumentBodyParagraphPosition,
@@ -70,7 +70,7 @@ function ownedBlockIds(blocks: readonly DocumentBlock[]): Set<string> {
   const visit = (blocks: readonly DocumentBlock[]) => {
     for (const block of blocks) {
       ids.add(block.id)
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const children of documentTableCellContentContainers(cell)) visit(children)
+      for (const children of documentBlockChildContainers(block)) visit(children)
     }
   }
   visit(blocks)
@@ -121,7 +121,8 @@ export function applyDocumentBodyControlOwnership(control: DocumentContentContro
     if (cell) { control.blockRange = { blockIds: cell.blocks.map(block => block.id) }; control.placement = 'block'; bounds = cell; owned = ownedBlockIds(cell.blocks) }
   } else if (control.placement === 'block') {
     const candidates = index.blocks.filter(entry => canonicalStart(entry.start) >= begins && canonicalEnd(entry.end) <= ends)
-    const groups = [...new Set(candidates.map(entry => entry.container))].map(container => candidates.filter(entry => entry.container === container).sort((a, b) => a.start - b.start))
+    const groups = [...new Set(candidates.map(entry => entry.container))].map(container => candidates.filter(entry => entry.container === container)
+      .sort((a, b) => container.indexOf(a.block) - container.indexOf(b.block)))
     const group = groups.filter(entries => entries.length && matches({ start: entries[0]!.start, end: entries.at(-1)!.end }))
       .sort((a, b) => a[0]!.start - b[0]!.start || b.at(-1)!.end - a.at(-1)!.end)[0]
     if (group) {
@@ -132,6 +133,13 @@ export function applyDocumentBodyControlOwnership(control: DocumentContentContro
   if (source.blockRange !== undefined && source.tableRowRange !== undefined) throw new TypeError('控件不能同时拥有完整块与表格行。')
   if (bounds && (!matches(bounds) || !owned)) throw new RangeError('内容控件来源身份与公开结构范围不匹配。')
   if (owned) {
+    for (const entry of index.blocks) {
+      const anchor = bodyRecord(entry.block.metadata.univerBodyStructuralInputAnchor)
+      if (anchor.version !== 1 || typeof anchor.imageId !== 'string' || !owned.has(anchor.imageId)) continue
+      owned.add(entry.block.id)
+      const at = control.blockRange?.blockIds.indexOf(anchor.imageId) ?? -1
+      if (at >= 0 && !control.blockRange!.blockIds.includes(entry.block.id)) control.blockRange!.blockIds.splice(at, 0, entry.block.id)
+    }
     const fallbackId = source.blockId === undefined ? undefined : documentBodyIdentity(source.blockId, '控件输入段落')
     const fallback = positions.find(position => owned!.has(position.block.id) && (fallbackId === undefined || position.block.id === fallbackId))
     if (!fallback) throw new RangeError('结构内容控件缺少其范围内的输入段落。')

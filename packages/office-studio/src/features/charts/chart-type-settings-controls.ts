@@ -9,6 +9,8 @@ import { chartBoxplotStatisticOptions } from './chart-boxplot-options'
 import { chartHistogramStyleControls } from './chart-histogram-settings-controls'
 import { chartCandlestickSettingsMapping } from './chart-candlestick'
 import { chartChordMappingControls } from './chart-chord-settings-controls'
+import { chartRelationMappingControls, chartRelationSettingsControls } from './chart-relation-settings-controls'
+import { CHART_WORD_CLOUD_MASK_CHOICES } from './chart-word-cloud-mask'
 
 type Mapping = NonNullable<ChartSemanticOptions['mapping']>
 function resetBoxplotField(control: ChartSettingControl, field: keyof NonNullable<ChartSemanticOptions['boxplot']>): ChartSettingControl {
@@ -31,6 +33,7 @@ export function chartDataMappingControls(config: ChartConfig, fieldCount: number
   if (config.type === 'histogram') return [fieldControl('valueFields.histogram', '样本字段', item => item.valueFields?.[0],
     (item, value) => { item.valueFields = value === undefined ? [] : [value] })]
   if (config.type === 'chord') return chartChordMappingControls(fieldCount)
+  if (config.type === 'relation') return chartRelationMappingControls(fieldCount)
   if (descriptor.dataShape === 'bubble') return [
     fieldControl('mapping.bubble.xIndex', 'X 数值字段', item => item.options?.mapping?.bubble?.xIndex ?? item.categoryField ?? 0, (item, value) => { bubble(item).xIndex = value ?? 0 }),
     fieldControl('mapping.bubble.yIndex', 'Y 数值字段', item => item.options?.mapping?.bubble?.yIndex ?? item.valueFields?.[0] ?? 1, (item, value) => { bubble(item).yIndex = value ?? 1 }),
@@ -123,13 +126,7 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
     switchControl('funnel.useAbsoluteValue', '使用权重绝对值', item => item.options?.funnel?.useAbsoluteValue, (item, value) => { optionGroup(item, 'funnel').useAbsoluteValue = value }),
     selectControl('funnel.sort', '漏斗排序', [['descending', '降序'], ['ascending', '升序'], ['none', '原始顺序']], item => item.options?.funnel?.sort, (item, value) => { optionGroup(item, 'funnel').sort = value }, 'descending'),
   )
-  if (descriptor.family === 'relation') controls.push(
-    selectControl('relation.layout', '关系布局', [['none', '固定布局'], ['circular', '圆形'], ['force', '力导向']], item => item.options?.relation?.layout, (item, value) => { optionGroup(item, 'relation').layout = value }, 'force'),
-    switchControl('relation.useValueAsSymbolSize', '权重决定节点大小', item => item.options?.relation?.useValueAsSymbolSize, (item, value) => { optionGroup(item, 'relation').useValueAsSymbolSize = value }),
-    numberControl('relation.force.repulsion', '排斥强度', item => item.options?.relation?.force?.repulsion, (item, value) => { (optionGroup(item, 'relation').force ??= {}).repulsion = value }, 0, 100_000, 180),
-    numberControl('relation.force.gravity', '中心引力', item => item.options?.relation?.force?.gravity, (item, value) => { (optionGroup(item, 'relation').force ??= {}).gravity = value }, 0, 10, 0.1),
-    numberControl('relation.force.edgeLength', '连线长度', item => item.options?.relation?.force?.edgeLength, (item, value) => { (optionGroup(item, 'relation').force ??= {}).edgeLength = value }, 0, 10_000, 70),
-  )
+  if (descriptor.family === 'relation') controls.push(...chartRelationSettingsControls())
   if (descriptor.family === 'waterfall') controls.push(
     colorControl('waterfall.positiveColor', '增加颜色', item => item.options?.waterfall?.positiveColor, (item, value) => { optionGroup(item, 'waterfall').positiveColor = value }),
     colorControl('waterfall.negativeColor', '减少颜色', item => item.options?.waterfall?.negativeColor, (item, value) => { optionGroup(item, 'waterfall').negativeColor = value }),
@@ -149,8 +146,14 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
   if (descriptor.family === 'wordCloud') controls.push(
     selectControl('wordCloud.shape', '词云形状', [['cloud', '云形'], ['rect', '矩形'], ['circle', '圆形'], ['cardioid', '心迹线'], ['heart', '心形'], ['diamond', '菱形'], ['triangle-forward', '右三角'], ['triangle', '三角形'], ['pentagon', '五边形'], ['star', '星形']], item => item.options?.wordCloud?.shape, (item, value) => { optionGroup(item, 'wordCloud').shape = value }, 'cloud'),
     switchControl('wordCloud.repeat', '重复填充词语', item => item.options?.wordCloud?.repeat, (item, value) => { optionGroup(item, 'wordCloud').repeat = value }),
-    numberControl('wordCloud.minFontSize', '最小字号', item => item.options?.wordCloud?.minFontSize, (item, value) => { optionGroup(item, 'wordCloud').minFontSize = value }, 1, 256, 10),
-    numberControl('wordCloud.maxFontSize', '最大字号', item => item.options?.wordCloud?.maxFontSize, (item, value) => { optionGroup(item, 'wordCloud').maxFontSize = value }, 1, 256, 54),
+    selectControl('wordCloud.maskImageId.builtin', '遮罩图形', CHART_WORD_CLOUD_MASK_CHOICES,
+      item => CHART_WORD_CLOUD_MASK_CHOICES.find(([id]) => id === (item.options?.wordCloud?.maskImageId ?? item.options?.wordCloud?.maskImage))?.[0],
+      (item, value) => { const options = optionGroup(item, 'wordCloud'); options.maskImageId = value; options.maskImage = undefined }),
+    { ...textControl('wordCloud.maskImageId', '遮罩图片资源', item => item.options?.wordCloud?.maskImageId ?? item.options?.wordCloud?.maskImage,
+      (item, value) => { const options = optionGroup(item, 'wordCloud'); options.maskImageId = value; options.maskImage = undefined }),
+      extra: '图片遮罩优先于词云形状；清空后恢复形状。', reset: item => { const options = optionGroup(item, 'wordCloud'); options.maskImageId = undefined; options.maskImage = undefined }, resetLabel: '清除遮罩' },
+    numberControl('wordCloud.minFontSize', '最小字号', item => item.options?.wordCloud?.minFontSize, (item, value) => { optionGroup(item, 'wordCloud').minFontSize = value }, 1, 256, 16),
+    numberControl('wordCloud.maxFontSize', '最大字号', item => item.options?.wordCloud?.maxFontSize, (item, value) => { optionGroup(item, 'wordCloud').maxFontSize = value }, 1, 256, 56),
     numberControl('wordCloud.rotation', '词语旋转角', item => item.options?.wordCloud?.rotation, (item, value) => { optionGroup(item, 'wordCloud').rotation = value }, -90, 90, 0),
   )
   return controls

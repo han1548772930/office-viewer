@@ -12,6 +12,10 @@ import { paragraphLineHeight, positionLine, wrapRuns } from './document-text-lay
 import { measureDocumentTableColumnWidths } from './document-table-intrinsic-widths'
 import { documentTableCellBlocks, documentTableCellContentContainers } from '../model/document-table-continuations'
 import { documentPictureInputAnchors, layoutDocumentPictureInputAnchor } from './document-picture-input-anchor'
+import { isDocumentStructuredBlock } from '../model/document-structural-blocks'
+import { documentTextFieldParagraphs } from '../model/document-text-fields'
+import { documentColumnWidths } from './document-structural-layout'
+import type { LayoutContainerDecoration } from './document-layout-types'
 
 export interface TableVerticalInterval { start: number; end: number; kind: 'line' | 'image' | 'row' }
 export interface MeasuredDocumentTable extends LayoutRect {
@@ -20,13 +24,13 @@ export interface MeasuredDocumentTable extends LayoutRect {
 }
 export interface DocumentTableMeasurement {
   width: number; height: number; rowHeights: number[]; rowStarts: number[]; headerHeight: number; headerRowCount: number
-  lines: LayoutLine[]; cells: LayoutCell[]; images: LayoutImage[]; dividers: LayoutDivider[]; tables: MeasuredDocumentTable[]
+  lines: LayoutLine[]; cells: LayoutCell[]; images: LayoutImage[]; dividers: LayoutDivider[]; tables: MeasuredDocumentTable[]; containers: LayoutContainerDecoration[]
   /** Page cuts cannot pass through visible text lines, images, or nonsplitting rows. */
   indivisible: TableVerticalInterval[]
 }
 interface CellContent {
   owner: DocumentTableGridCell; width: number; x: number; height: number
-  lines: LayoutLine[]; cells: LayoutCell[]; images: LayoutImage[]; dividers: LayoutDivider[]; tables: MeasuredDocumentTable[]
+  lines: LayoutLine[]; cells: LayoutCell[]; images: LayoutImage[]; dividers: LayoutDivider[]; tables: MeasuredDocumentTable[]; containers: LayoutContainerDecoration[]
   indivisible: TableVerticalInterval[]
 }
 const EPSILON = 1e-6
@@ -69,17 +73,54 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
   const contents = grid.anchors.map((owner): CellContent => {
     const margin = documentTableCellMargin(table, owner.cell), width = columns[owner.column + owner.colSpan]! - columns[owner.column]!
     const contentWidth = Math.max(1, width - margin.left - margin.right)
-    const content: CellContent = { owner, width, x: columns[owner.column]!, height: 0, lines: [], cells: [], images: [], dividers: [], tables: [], indivisible: [] }
+    const content: CellContent = { owner, width, x: columns[owner.column]!, height: 0, lines: [], cells: [], images: [], dividers: [], tables: [], containers: [], indivisible: [] }
     let cursor = 0
-    const pictureAnchors = new Map(documentTableCellContentContainers(owner.cell).flatMap(blocks => [...documentPictureInputAnchors(blocks)]))
+    const appendBlocks = (blocks: readonly DocumentBlock[], left: number, contentWidth: number, nesting = 0) => {
+    if (nesting > 64) throw new RangeError('表格内高级块嵌套超过预算。')
+    const pictureAnchors = documentPictureInputAnchors(blocks)
     const anchorIds = new Set([...pictureAnchors.values()].map(block => block.id))
-    for (const paragraph of documentTableCellBlocks(owner.cell)) {
+    for (const paragraph of blocks) {
       if (anchorIds.has(paragraph.id)) continue
       const inputAnchor = pictureAnchors.get(paragraph.id), style = inputAnchor?.style ?? paragraph.style
       cursor += assertSpace(style.spaceBefore)
-      if (paragraph.type === 'table') {
+      if (isDocumentStructuredBlock(paragraph)) {
+        const top = cursor, firstLine = content.lines.length
+        if (paragraph.type === 'columns') {
+          const dimensions = documentColumnWidths(paragraph.columns!, contentWidth), endings: number[] = []
+          let x = left
+          for (const [index, column] of paragraph.columns!.columns.entries()) {
+            if (!dimensions.stacked) cursor = top
+            appendBlocks(column.blocks, dimensions.stacked ? left : x, dimensions.widths[index]!, nesting + 1)
+            endings.push(cursor)
+            if (dimensions.stacked) cursor += dimensions.gap
+            else x += dimensions.widths[index]! + dimensions.gap
+          }
+          if (!dimensions.stacked) cursor = Math.max(top, ...endings)
+        } else {
+          const config = paragraph.callout, paddingLeft = config ? config.paddingLeft + (config.showIcon ? config.iconSize + config.iconGap : 0)
+            : paragraph.type === 'code' ? paragraph.code?.showLineNumbers ? 44 : 12 : 18
+          const paddingRight = config?.paddingRight ?? 12, paddingTop = config?.paddingTop ?? 8, paddingBottom = config?.paddingBottom ?? 8
+          cursor += paddingTop
+          appendBlocks(paragraph.children!, left + Math.min(paddingLeft, Math.max(0, contentWidth - 1)), Math.max(1, contentWidth - paddingLeft - paddingRight), nesting + 1)
+          cursor += paddingBottom
+          content.containers.push({ blockId: paragraph.id, kind: paragraph.type as 'quote' | 'callout' | 'code', x: left, y: top, width: contentWidth,
+            height: Math.max(1, cursor - top), page: 0, first: true, last: true, tableDepth: depth + 1, ...(config ? { callout: { ...config } } : {}) })
+          if (paragraph.type === 'code') {
+            const paragraphs = documentTextFieldParagraphs({ blocks: paragraph.children! }), source = paragraphs.map(value => value.text).join('\n')
+            const byId = new Map(paragraphs.map(value => [value.block.id, value]))
+            for (const line of content.lines.slice(firstLine)) {
+              const value = byId.get(line.target.cellBlockId ?? line.target.blockId)
+              if (!value) continue
+              const offset = value.absoluteStart + line.start
+              line.codeBlock = { language: paragraph.code!.language, lineNumber: 1 + (source.slice(0, offset).match(/\n/g)?.length ?? 0),
+                containerId: paragraph.id, sourceOffset: value.absoluteStart, showLineNumbers: paragraph.code!.showLineNumbers,
+                numberVisible: offset === 0 || source[offset - 1] === '\n' }
+            }
+          }
+        }
+      } else if (paragraph.type === 'table') {
         const nested = measureDocumentTable(paragraph, contentWidth, markers, measurer, depth + 1, maximumObjectHeight, display)
-        const nestedTable = tableForBlock(paragraph)!, offset = documentTableHorizontalOffset(nestedTable, nested.width, contentWidth)
+        const nestedTable = tableForBlock(paragraph)!, offset = left + documentTableHorizontalOffset(nestedTable, nested.width, contentWidth)
         const offsetY = nestedTable.style?.offsetY ?? 0
         if (!Number.isFinite(offsetY)) throw new RangeError('表格纵向偏移必须是有限 CSS px')
         cursor += Math.max(0, offsetY)
@@ -88,6 +129,7 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
         for (const image of nested.images) content.images.push({ ...translateTableRect(image, offset, cursor), ...(image.clip ? { clip: translateTableRect(image.clip, offset, cursor) } : {}) })
         for (const divider of nested.dividers) content.dividers.push({ ...translateTableRect(divider, offset, cursor), ...(divider.clip ? { clip: translateTableRect(divider.clip, offset, cursor) } : {}) })
         content.tables.push(...nested.tables.map(item => ({ ...translateTableRect(item, offset, cursor), ...(item.clip ? { clip: translateTableRect(item.clip, offset, cursor) } : {}), rows: item.rows.map(row => ({ ...row, y: row.y + cursor })) })))
+        content.containers.push(...nested.containers.map(item => ({ ...translateTableRect(item, offset, cursor), ...(item.clip ? { clip: translateTableRect(item.clip, offset, cursor) } : {}) })))
         content.indivisible.push(...nested.indivisible.map(interval => ({ ...interval, start: interval.start + cursor, end: interval.end + cursor })))
         cursor += nested.height
       } else if (paragraph.type === 'image') {
@@ -99,14 +141,14 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
           const scale = Math.min(1, available / nativeWidth, Math.max(1, maximumObjectHeight - margin.top - margin.bottom) / nativeHeight)
           const width = nativeWidth * scale, height = nativeHeight * scale
           const shift = (geometry?.firstIndent ?? 0) + (style.align === 'center' ? (available - width) / 2 : style.align === 'right' ? available - width : 0)
-          const positioned = { blockId: paragraph.id, src: image.src, alt: image.alt, x: shift, y: cursor, width, height, page: 0, tableCellId: owner.cell.id }
+          const positioned = { blockId: paragraph.id, src: image.src, alt: image.alt, x: left + shift, y: cursor, width, height, page: 0, tableCellId: owner.cell.id }
           content.images.push(positioned)
           if (inputAnchor) content.lines.push(layoutDocumentPictureInputAnchor(inputAnchor, positioned, documentTableCellTarget(block.id, owner, inputAnchor.id),
-            contentWidth, 0, measurer, content.images, markers.get(inputAnchor.id), display))
+            contentWidth, left, measurer, content.images, markers.get(inputAnchor.id), display))
           cursor += height
         }
       } else if (paragraph.type === 'divider') {
-        content.dividers.push({ x: 0, y: cursor + 9, width: contentWidth, height: 1, page: 0 })
+        content.dividers.push({ x: left, y: cursor + 9, width: contentWidth, height: 1, page: 0 })
         cursor += 18
       } else if (!['pageBreak', 'columnBreak', 'sectionBreak'].includes(paragraph.type)) {
         const list = markers.get(paragraph.id), geometry = paragraphGeometry(paragraph, list, contentWidth, measurer), pageTab = documentTocPageTab(paragraph)
@@ -118,11 +160,11 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
         for (const [index, raw] of rawLines.entries()) {
           const height = paragraphLineHeight(Math.max(raw.fontHeight, index === 0 ? geometry.markerHeight : 0), paragraph.style)
           const indent = index === 0 ? geometry.firstIndent : geometry.indent
-          const line = positionLine(raw, documentTableCellTarget(block.id, owner, paragraph.id), indent, cursor,
+          const line = positionLine(raw, documentTableCellTarget(block.id, owner, paragraph.id), left + indent, cursor,
             geometry.width(index), height, 0, paragraph.style.align, index < rawLines.length - 1,
             index === 0 ? list?.marker ?? (paragraph.type === 'quote' ? '│' : undefined) : undefined)
           line.tableCellId = owner.cell.id
-          if (index === 0) appendListMarker(line, paragraph, list, geometry, 0, content.images)
+          if (index === 0) appendListMarker(line, paragraph, list, geometry, left, content.images)
           if (code) {
             line.codeBlock = { language: code.language, lineNumber: index + 1 }
             line.x += 8; line.width = Math.max(1, line.width - 16)
@@ -135,6 +177,8 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
       }
       cursor += assertSpace(style.spaceAfter)
     }
+    }
+    for (const blocks of documentTableCellContentContainers(owner.cell)) appendBlocks(blocks, 0, contentWidth)
     content.height = cursor + margin.top + margin.bottom
     return content
   })
@@ -160,7 +204,7 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
   }
   const starts = prefix(heights), result: DocumentTableMeasurement = { width: columns.at(-1)!, height: starts.at(-1)!,
     rowHeights: heights, rowStarts: starts, headerRowCount,
-    headerHeight: starts[headerRowCount]!, lines: [], cells: [], images: [], dividers: [], tables: [], indivisible: [] }
+    headerHeight: starts[headerRowCount]!, lines: [], cells: [], images: [], dividers: [], tables: [], containers: [], indivisible: [] }
   result.tables.push({ tableId: block.id, depth, x: 0, y: 0, width: result.width, height: result.height,
     columnWidths: widths, rows: table.rows.map((row, index) => ({ row: index, id: row.id, y: starts[index]!, height: heights[index]!, contentHeight: heights[index]! })) })
   for (const content of contents) {
@@ -179,6 +223,7 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
     result.cells.push(...content.cells.map(item => translatedClipped(item, dx, dy, clip)))
     result.images.push(...content.images.map(item => translatedClipped(item, dx, dy, clip)))
     result.dividers.push(...content.dividers.map(item => translatedClipped(item, dx, dy, clip)))
+    result.containers.push(...content.containers.map(item => translatedClipped(item, dx, dy, clip)))
     result.tables.push(...content.tables.map(item => ({ ...translatedClipped(item, dx, dy, clip), rows: item.rows.map(row => ({ ...row, y: row.y + dy })) })))
     for (const interval of content.indivisible) {
       const start = Math.max(clip.y, interval.start + dy), end = Math.min(clip.y + clip.height, interval.end + dy)
@@ -210,6 +255,7 @@ export function insertDocumentTablePageGap(measurement: DocumentTableMeasurement
     if (line.clip) shifted.clip = shiftedRect(line.clip)
     return shifted
   })
+  measurement.containers = measurement.containers.map(shiftedClip)
   measurement.images = measurement.images.map(image => ({ ...image, ...(image.y >= at - EPSILON ? { y: image.y + height } : {}),
     ...(image.clip ? { clip: shiftedRect(image.clip) } : {}) }))
   measurement.cells = measurement.cells.map(shiftedClip)

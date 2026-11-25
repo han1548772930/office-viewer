@@ -49,11 +49,30 @@ function isJob(value: unknown): value is ChartStatisticsJob {
         && index(value.labelCount, COMPUTE_LIMITS.maxElements)
     case 'waterfall':
       return keys(value, [...common, 'totalColumn']) && optionalIndex(value.totalColumn)
+    case 'wordCloud':
+      return keys(value, [...common, 'glyphColumn', 'maskColumn', 'width', 'height', 'glyphs', 'maxAttempts', 'minFontSize'])
+        && index(value.glyphColumn) && index(value.maskColumn) && index(value.width, 4096) && value.width > 0
+        && index(value.height, 4096) && value.height > 0 && index(value.maxAttempts, 100_000) && value.maxAttempts > 0
+        && finite(value.minFontSize) && value.minFontSize >= 1 && value.minFontSize <= 256
+        && isBoundedDenseArray(value.glyphs, 10_000, (glyph): glyph is import('./chart-protocol').ChartWordCloudGlyph =>
+          isRecord(glyph) && keys(glyph, ['width', 'height', 'offset', 'length', 'fontSize', 'weight'])
+          && index(glyph.width, 4096) && glyph.width > 0 && index(glyph.height, 4096) && glyph.height > 0
+          && index(glyph.offset, COMPUTE_LIMITS.maxRows) && index(glyph.length, COMPUTE_LIMITS.maxRows)
+          && finite(glyph.fontSize) && glyph.fontSize >= 1 && glyph.fontSize <= 256 && finite(glyph.weight) && glyph.weight >= 0)
     case 'chord':
       return keys(value, [...common, 'sourceColumn', 'targetColumn', 'labelCount', 'startAngle', 'clockwise', 'padAngle', 'minAngle'])
         && index(value.sourceColumn) && index(value.targetColumn) && index(value.labelCount, COMPUTE_LIMITS.maxRows * 2)
         && finite(value.startAngle) && typeof value.clockwise === 'boolean'
         && finite(value.padAngle) && value.padAngle >= 0 && finite(value.minAngle) && value.minAngle >= 0
+    case 'relationLayout':
+      return keys(value, [...common, 'seedColumn', 'sourceColumn', 'targetColumn', 'linkValueColumn', 'nodeCount', 'linkCount',
+        'width', 'height', 'layout', 'useValueAsSymbolSize', 'symbolSize', 'repulsion', 'gravity', 'edgeLength'])
+        && [value.seedColumn, value.sourceColumn, value.targetColumn, value.linkValueColumn].every(column => index(column))
+        && index(value.nodeCount, COMPUTE_LIMITS.maxRows) && index(value.linkCount, COMPUTE_LIMITS.maxRows)
+        && finite(value.width) && value.width > 0 && finite(value.height) && value.height > 0
+        && oneOf(value.layout, ['none', 'circular', 'force']) && typeof value.useValueAsSymbolSize === 'boolean'
+        && finite(value.symbolSize) && value.symbolSize > 0 && finite(value.repulsion) && value.repulsion >= 0
+        && finite(value.gravity) && value.gravity >= 0 && finite(value.edgeLength) && value.edgeLength >= 0
     case 'waterfallLayout':
       return keys(value, [...common, 'seriesIndices', 'stackType', 'useSubtotal', 'totalColumns'])
         && isBoundedDenseArray(value.seriesIndices, CHART_COMPUTE_LIMITS.maxSeries,
@@ -107,6 +126,14 @@ export function isChartStatisticsParams(value: unknown): value is ChartStatistic
       if (columns.some(column => column >= value.columnCount) || new Set(columns).size !== columns.length
         || job.labelCount > value.rowCount * 2) return false
     }
+    if (job.kind === 'wordCloud' && (job.glyphColumn >= value.columnCount || job.maskColumn >= value.columnCount
+      || job.glyphColumn === job.maskColumn || job.width * job.height > value.rowCount
+      || job.glyphs.some(glyph => glyph.offset + glyph.length > value.rowCount || glyph.length > glyph.width * glyph.height))) return false
+    if (job.kind === 'relationLayout') {
+      const columns = [value.series[job.seriesIndex]!.column, job.seedColumn, job.sourceColumn, job.targetColumn, job.linkValueColumn]
+      if (columns.some(column => column >= value.columnCount) || new Set(columns).size !== columns.length
+        || job.nodeCount > value.rowCount || job.linkCount > value.rowCount || job.nodeCount === 0 && job.linkCount > 0) return false
+    }
     if (job.kind === 'errorBars') {
       if (job.direction === 'x' && value.series[job.seriesIndex]?.xColumn === undefined) return false
       if (job.valueType === 'cust') {
@@ -136,6 +163,10 @@ export function chartOutputCapacity(job: ChartStatisticsJob, rows: number): { va
       return { values: nodes * 2, indices: 2 + nodes * 4 + rows, scratch: nodes * 256 + (job.hierarchyColumns.length + 1) * 64 }
     }
     case 'chord': return { values: rows * 11, indices: 2 + rows * 4, scratch: rows * 1024 }
+    case 'wordCloud': return { values: job.glyphs.length * 3, indices: job.glyphs.length,
+      scratch: job.width * job.height * 2 + job.glyphs.length * 128 }
+    case 'relationLayout': return { values: job.nodeCount * 3, indices: job.nodeCount,
+      scratch: job.nodeCount * 768 + job.linkCount * 32 }
     case 'waterfall': return { values: rows * 3, indices: rows * 2, scratch: 0 }
     case 'waterfallLayout': {
       const points = rows === 0 ? 0 : rows * job.seriesIndices.length + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)
@@ -160,7 +191,7 @@ export function estimateChartTaskMemory(params: ChartStatisticsParams): {
   const outputBytes = valueCapacity * 8 + indexCapacity * 4
   const controls = params.series.length * 32 + params.jobs.length * 512
     + params.jobs.reduce((sum, job) => sum + (job.kind === 'waterfallLayout' ? job.seriesIndices.length * 4 + (job.totalColumns?.length ?? 0) * 8
-      : job.kind === 'hierarchy' ? job.hierarchyColumns.length * 8 : 0), 0)
+      : job.kind === 'hierarchy' ? job.hierarchyColumns.length * 8 : job.kind === 'wordCloud' ? job.glyphs.length * 48 : 0), 0)
   return { inputBytes, outputBytes, valueCapacity, indexCapacity,
     estimatedPeakBytes: inputBytes * 2 + outputBytes * 2 + scratch + CHART_COMPUTE_LIMITS.scratchAllowance
       + controls + CHART_COMPUTE_LIMITS.runtimeAllowance }

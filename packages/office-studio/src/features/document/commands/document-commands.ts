@@ -37,6 +37,8 @@ import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNum
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
 import { documentTextFieldParagraphs, documentTextFieldRanges, documentTextFields, insertDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
 import { documentNoteReferenceOffsets } from '../model/document-note-boundary'
+import { executeDocumentStructureCommand, isDocumentStructureCommand, type DocumentStructureCommand } from './document-structure-commands'
+import { documentBlockChildContainers, isDocumentStructuredBlock } from '../model/document-structural-blocks'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
@@ -47,6 +49,7 @@ import {
 
 export type DocumentBodyCommand =
   | DocumentTableCommand
+  | DocumentStructureCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'>; story?: DocumentStoryRange }
@@ -102,12 +105,9 @@ function blockContainer(model: DocumentModel, point: TextTarget): DocumentBlock[
 function findBlockById(blocks: readonly DocumentBlock[], id: string): DocumentBlock | undefined {
   for (const block of blocks) {
     if (block.id === id) return block
-    const table = tableForBlock(block)
-    for (const row of table?.rows ?? []) {
-      for (const cell of row.cells) {
-        const nested = findBlockById(documentTableCellBlocks(cell), id)
+    for (const container of documentBlockChildContainers(block)) {
+        const nested = findBlockById(container, id)
         if (nested) return nested
-      }
     }
   }
   return undefined
@@ -342,6 +342,7 @@ function executeDocumentCommandMutation(
   permissionContext?: DocumentPermissionContext,
 ): DocumentSelection {
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
+  if (command.id === 'doc.command.update-code-block') return executeDocumentStructureCommand(model, selection, command, context)
   if (command.host) {
     const host = command.host
     if (!documentCommandSupportsBlockHost(command)
@@ -377,6 +378,7 @@ function executeDocumentCommandMutation(
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   if (isDocumentTableCommand(command)) return executeDocumentTableCommand(model, selection, command, context)
+  if (isDocumentStructureCommand(command)) return executeDocumentStructureCommand(model, selection, command, context)
   if (selection.tableSelection && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.delete')) {
     const view = selection.tableSelection
     return executeDocumentTableCommand(model, selection, { id: 'doc.command.table-set-range-text', tableId: view.tableId, range: view.range,
@@ -531,6 +533,7 @@ function executeDocumentCommandMutation(
       if (command.id === 'doc.command.change-list-type' && !isListPreset(command.listType)) throw new RangeError('Unknown list preset')
       const explicit = command.id === 'doc.command.change-list-type' ? command.listType : undefined
       const type = command.id === 'doc.command.set-block-type' ? command.type : listKind(command.listType)
+      if (type === 'code' || type === 'callout' || type === 'columns') throw new RangeError('结构容器需要使用高级块命令创建。')
       const level = command.id === 'doc.command.set-block-type' ? command.level : undefined
       const isList = type === 'bullet' || type === 'numbered' || type === 'checklist'
       const toggleOff = !explicit && isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === type)

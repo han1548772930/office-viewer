@@ -68,6 +68,13 @@ export function layoutChartData(data: ChartData, chart: ChartModel, computed?: C
 export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartModel, palette = chartPalette(chart)): ChartLayout {
   const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series)
   if (derived.waterfallLayout) return layoutChartWaterfall(data, chart, derived.waterfallLayout, frame, plot, palette)
+  if (descriptor.family === 'relation') {
+    const relation = chartRelationLayout(data, chart, plot), source = data.series[0]
+    return { frame, plot, min: 0, max: 1, categories: data.categories, relation,
+      series: source ? [{ field: source.field, name: source.name, color: palette[0] ?? '#5470c6',
+        points: relation.nodes.map(node => ({ x: node.x, y: node.y, value: node.value,
+          category: node.name, categoryIndex: node.index, size: node.symbolSize })) }] : [] }
+  }
   if (descriptor.family === 'chord') {
     const chord = data.chord ? chartChordLayout(data.chord, chart, plot) : undefined, source = data.series[0]
     if (data.categories.length && source && !chord) throw new TypeError('和弦布局需要同一任务的聚合与角度结果。')
@@ -231,11 +238,9 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     layout.sankey = graph
     layout.series[0]!.points = graph.nodes.map(node => ({ x: node.x + node.width / 2, y: node.y + node.height / 2,
       value: node.value, category: node.name, categoryIndex: node.index }))
-  } else if (descriptor.family === 'relation') {
-    const graph = chartRelationLayout(data.graph!, chart, plot)
-    layout.series[0]!.points = graph.nodes.map(node => ({ x: node.x, y: node.y, value: node.value, category: node.name, categoryIndex: node.index }))
   } else if (descriptor.family === 'wordCloud') {
-    const words = chartWordCloudLayout(data, chart.options?.wordCloud, plot)
+    const words = chartWordCloudLayout(data, plot)
+    layout.wordCloud = words
     layout.series[0]!.points = words.map(word => ({ x: word.x + word.width / 2, y: word.y + word.height / 2, value: word.value, category: word.text, categoryIndex: word.categoryIndex, size: word.fontSize }))
   } else if (descriptor.family === 'treemap') {
     const rectangles = chartTreemapLayout(data.hierarchy!, plot, { parentLabelLayout: chart.options?.treemap?.parentLabelLayout,

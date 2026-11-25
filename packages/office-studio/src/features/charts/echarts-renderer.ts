@@ -17,6 +17,9 @@ import type { ChartSunburstPointerRuntime } from './echarts-sunburst-option'
 import { chartChordContentTooltip, chartChordFocusedCommands, chartChordFocusSelection, hitChartChord,
   type ChartChordContentTooltip, type ChartChordHit, type ChartChordPointerRuntime } from './chart-chord-interaction'
 import type { TextCommand } from '../../rendering/contracts'
+import { transformChartRelationScene } from './chart-relation-draw'
+import { chartRelationContentTooltip, chartRelationFocusedCommands, chartRelationFocusSelection,
+  createChartRelationHitIndex, hitChartRelation, type ChartRelationContentTooltip, type ChartRelationHit, type ChartRelationPointerRuntime } from './chart-relation-interaction'
 
 echarts.use([
   BarChart, BoxplotChart, CandlestickChart, FunnelChart, GaugeChart, GraphChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart, SunburstChart, TreemapChart,
@@ -56,7 +59,7 @@ interface ChartEntry {
   devicePixelRatio: number
   width: number
   height: number
-  pointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime
+  pointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
   pointerSignature: string
   contentDrag?: SankeyContentDrag
 }
@@ -65,7 +68,7 @@ interface ChartEntry {
 export class EChartsCanvasRenderer {
   private readonly charts = new Map<string, ChartEntry>()
 
-  render(chartId: string, option: EChartsOption & { officeChartKey?: string; officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime }, size: EChartsCanvasSize, theme: ChartEChartsTheme = {}): EChartsCanvasFrame {
+  render(chartId: string, option: EChartsOption & { officeChartKey?: string; officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime }, size: EChartsCanvasSize, theme: ChartEChartsTheme = {}): EChartsCanvasFrame {
     if (![size.width, size.height, size.devicePixelRatio].every(value => Number.isFinite(value) && value > 0)) {
       throw new RangeError('图表尺寸和像素比例必须为有效正数。')
     }
@@ -80,6 +83,11 @@ export class EChartsCanvasRenderer {
         // Keep the measured labels and current hover bitmap, but refresh the
         // tooltip facts/base scene so a proportional source change is visible.
         officeChartPointer.hitIndex.labels = entry.pointer.hitIndex.labels
+        entry.pointer = officeChartPointer
+      } else if (entry.pointer?.mode === 'relation' && officeChartPointer?.mode === 'relation') {
+        officeChartPointer.viewport = entry.pointer.viewport
+        officeChartPointer.scene = transformChartRelationScene(officeChartPointer.baseScene, officeChartPointer.viewport)
+        officeChartPointer.hitIndex = createChartRelationHitIndex(officeChartPointer.scene, entry.pointer.hitIndex.labels)
         entry.pointer = officeChartPointer
       } else if (entry.pointer?.mode !== 'sankey' || officeChartPointer?.mode !== 'sankey') entry.pointer = officeChartPointer
       return { source: entry.canvas, sourceVersion: entry.sourceVersion }
@@ -124,6 +132,7 @@ export class EChartsCanvasRenderer {
       entry.height = size.height
       entry.pointer = officeChartPointer
       if (officeChartPointer?.mode === 'chord') this.measureChordLabels(entry, officeChartPointer)
+      if (officeChartPointer?.mode === 'relation') this.measureContentLabels(entry, officeChartPointer)
       entry.pointerSignature = ''
       entry.contentDrag = undefined
     } catch (error) {
@@ -143,6 +152,7 @@ export class EChartsCanvasRenderer {
     const finitePoint = point && Number.isFinite(point.x) && Number.isFinite(point.y) ? point : undefined
     if (pointer.mode === 'treemap' || pointer.mode === 'sunburst') return this.updateHierarchyPointer(entry, finitePoint)
     if (pointer.mode === 'chord') return this.updateChordGraphic(entry, pointer, hitChartChord(pointer.hitIndex, finitePoint))
+    if (pointer.mode === 'relation') return this.updateRelationGraphic(entry, pointer, hitChartRelation(pointer.hitIndex, finitePoint))
     if (pointer.mode === 'sankey') {
       const hit: ChartSankeyHit | undefined = entry.contentDrag ? { kind: 'node', index: entry.contentDrag.nodeIndex }
         : hitChartSankey(pointer.hitIndex, finitePoint)
@@ -198,12 +208,17 @@ export class EChartsCanvasRenderer {
 
   /** UI tooltips use the shared antdv-next host. Reading this result neither
    * changes paint nor dispatches a content command/history operation. */
-  getContentTooltip(chartId: string, point?: ChartVector): ChartChordContentTooltip | undefined {
+  getContentTooltip(chartId: string, point?: ChartVector): ChartChordContentTooltip | ChartRelationContentTooltip | undefined {
     const pointer = this.charts.get(chartId)?.pointer
-    return pointer?.mode === 'chord' ? chartChordContentTooltip(pointer.scene, hitChartChord(pointer.hitIndex, point)) : undefined
+    return pointer?.mode === 'chord' ? chartChordContentTooltip(pointer.scene, hitChartChord(pointer.hitIndex, point))
+      : pointer?.mode === 'relation' ? chartRelationContentTooltip(pointer.scene, hitChartRelation(pointer.hitIndex, point)) : undefined
   }
 
   private measureChordLabels(entry: ChartEntry, pointer: ChartChordPointerRuntime): void {
+    this.measureContentLabels(entry, pointer)
+  }
+
+  private measureContentLabels(entry: ChartEntry, pointer: ChartChordPointerRuntime | ChartRelationPointerRuntime): void {
     const labels = new Map<string, { index: number; command: TextCommand }>()
     let commandIndex = 0
     for (const mark of pointer.scene.marks) for (const command of mark.commands) {
@@ -242,6 +257,35 @@ export class EChartsCanvasRenderer {
     entry.instance.getZr().refreshImmediately()
     entry.pointerSignature = signature; entry.sourceVersion++
     return { source: entry.canvas, sourceVersion: entry.sourceVersion }
+  }
+
+  private updateRelationGraphic(entry: ChartEntry, pointer: ChartRelationPointerRuntime, hit?: ChartRelationHit, force = false): EChartsCanvasFrame | undefined {
+    const selection = chartRelationFocusSelection(pointer.topology, pointer.scene.emphasisEnabled, hit)
+    const signature = selection && hit ? `${hit.kind}:${hit.index}` : ''
+    if (!force && signature === entry.pointerSignature) return undefined
+    const commands = chartRelationFocusedCommands(pointer.scene, selection)
+    const element: NonNullable<GraphicComponentOption['elements']>[number] = { type: 'group', id: pointer.groupId,
+      $action: 'replace', silent: true, children: chartGraphics(commands, pointer.groupId, pointer.zOffset) }
+    entry.instance.setOption({ graphic: { elements: [element] } }, { notMerge: false, lazyUpdate: false, silent: true })
+    entry.instance.getZr().refreshImmediately()
+    entry.pointerSignature = signature; entry.sourceVersion++
+    return { source: entry.canvas, sourceVersion: entry.sourceVersion }
+  }
+
+  /** HOe's scale-only roam is handled inside the bitmap owner. Wheel scaling
+   * changes no document command, prepared Rust buffer or calculation cache. */
+  scaleContent(chartId: string, point: ChartVector, delta: number): EChartsCanvasFrame | undefined {
+    const entry = this.charts.get(chartId), pointer = entry?.pointer
+    if (!entry || pointer?.mode !== 'relation' || ![point.x, point.y, delta].every(Number.isFinite)) return undefined
+    const previous = pointer.viewport, scale = Math.max(0.4, Math.min(2, previous.scale * Math.exp(Math.max(-1, Math.min(1, -delta * 0.0015)))))
+    if (scale === previous.scale) return undefined
+    const ratio = scale / previous.scale
+    pointer.viewport = { scale, x: point.x - (point.x - previous.x) * ratio, y: point.y - (point.y - previous.y) * ratio }
+    pointer.scene = transformChartRelationScene(pointer.baseScene, pointer.viewport)
+    pointer.hitIndex = createChartRelationHitIndex(pointer.scene)
+    const frame = this.updateRelationGraphic(entry, pointer, undefined, true)
+    this.measureContentLabels(entry, pointer)
+    return frame
   }
 
   beginContentDrag(chartId: string, point: ChartVector): EChartsCanvasContentDragStart | undefined {

@@ -6,6 +6,7 @@ import { ComputeError, normalizeComputeError } from '../../../compute/errors.ts'
 import type { ComputeProgress } from '../../../compute/protocol.ts'
 import type { ChartComputedStatistics } from '../chart-derived'
 import { ChartStatisticsService, chartStatisticsSignature, type ChartStatisticsRequest, type ChartStatisticsSnapshot } from '../services/chart-statistics-service'
+import { assertChartSourcePresent, readChartSourceNotFoundDiagnostic, type ChartSourceNotFoundDiagnostic } from '../chart-source-diagnostic'
 
 export interface ChartStatisticsViewHost {
   studio(): OfficeStudio | undefined
@@ -22,6 +23,7 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
   const snapshots = shallowRef<Readonly<Record<string, ChartStatisticsSnapshot>>>({})
   const pending = shallowRef<Readonly<Record<string, ComputeProgress | true>>>({})
   const errors = shallowRef<Readonly<Record<string, string>>>({})
+  const diagnostics = shallowRef<Readonly<Record<string, ChartSourceNotFoundDiagnostic>>>({})
   const requests = new Set<ChartStatisticsRequest>()
   const standaloneRevisions = new Map<string, number>()
   let local: { service: ChartStatisticsService; client: OfficeComputeClient } | undefined
@@ -64,7 +66,7 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
     if (!active) return
     cancelRequests()
     const viewGeneration = generation, studio = host.studio(), workbook = host.workbook(), sheetId = host.activeSheetId()
-    statistics.value = {}; snapshots.value = {}; errors.value = {}
+    statistics.value = {}; snapshots.value = {}; errors.value = {}; diagnostics.value = {}
     if (!workbook?.id) return
     const documentId = workbook.id, charts = (workbook.charts ?? []).filter(chart => chart.sheetId === sheetId)
     if (!charts.length) return
@@ -75,16 +77,24 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
     if (!studio) service.setDocumentRevision(documentId, modelRevision)
     const external = host.externalStatistics()
     for (const chart of charts) {
+      try { assertChartSourcePresent(workbook, chart) }
+      catch (error) {
+        const failure = normalizeComputeError(error), diagnostic = readChartSourceNotFoundDiagnostic(failure)
+        errors.value = { ...errors.value, [chart.id]: failure.message }
+        if (diagnostic) diagnostics.value = { ...diagnostics.value, [chart.id]: diagnostic }
+        continue
+      }
       if (external?.[chart.id]?.preparedData) { statistics.value = { ...statistics.value, [chart.id]: external[chart.id]! }; continue }
       const current = () => active && viewGeneration === generation && host.studio() === studio && host.activeSheetId() === sheetId
         && host.workbook()?.id === documentId && service.isCurrent({ documentId, modelRevision })
       const assertCurrent = () => {
         const latest = host.workbook()?.charts?.find(candidate => candidate.id === chart.id)
         if (!current() || !latest || chartStatisticsSignature(latest) !== chartStatisticsSignature(chart)) throw new ComputeError('COMPUTE_STALE_RESULT', '图表视图或来源已更新')
+        assertChartSourcePresent(host.workbook()!, latest)
       }
       const context = { documentId, modelRevision, userId: studio?.currentUserId ?? 'local-user', assertCurrent }
       try {
-        const cached = service.getCached(chart, context)
+        const cached = service.getCached(chart, context, workbook)
         if (cached) {
           assertCurrent()
           statistics.value = { ...statistics.value, [chart.id]: cached.statistics }
@@ -104,6 +114,13 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
         }).catch(error => {
           if (!current()) return
           const failure = normalizeComputeError(error)
+          const diagnostic = readChartSourceNotFoundDiagnostic(failure)
+          if (diagnostic) {
+            const retained = { ...statistics.value }, retainedSnapshots = { ...snapshots.value }
+            delete retained[chart.id]; delete retainedSnapshots[chart.id]
+            statistics.value = retained; snapshots.value = retainedSnapshots
+            diagnostics.value = { ...diagnostics.value, [chart.id]: diagnostic }
+          }
           if (failure.code !== 'COMPUTE_CANCELLED' && failure.code !== 'COMPUTE_STALE_RESULT') errors.value = { ...errors.value, [chart.id]: failure.message }
         }).finally(() => {
           requests.delete(request)
@@ -111,7 +128,9 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
           const remaining = { ...pending.value }; delete remaining[chart.id]; pending.value = remaining
         })
       } catch (error) {
-        errors.value = { ...errors.value, [chart.id]: normalizeComputeError(error).message }
+        const failure = normalizeComputeError(error), diagnostic = readChartSourceNotFoundDiagnostic(failure)
+        errors.value = { ...errors.value, [chart.id]: failure.message }
+        if (diagnostic) diagnostics.value = { ...diagnostics.value, [chart.id]: diagnostic }
         const remaining = { ...pending.value }; delete remaining[chart.id]; pending.value = remaining
       }
     }
@@ -127,10 +146,10 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
 
   function activate(): void { if (!active) { active = true; scheduleRefresh() } }
   function deactivate(): void {
-    active = false; cancelRequests(); statistics.value = {}; snapshots.value = {}; errors.value = {}
+    active = false; cancelRequests(); statistics.value = {}; snapshots.value = {}; errors.value = {}; diagnostics.value = {}
     subscription?.dispose(); subscription = undefined; connectedStudio = undefined
     local?.service.dispose(); local?.client.dispose(); local = undefined
   }
   onMounted(activate); onActivated(activate); onDeactivated(deactivate); onUnmounted(deactivate)
-  return { statistics, snapshots, pending, errors }
+  return { statistics, snapshots, pending, errors, diagnostics }
 }

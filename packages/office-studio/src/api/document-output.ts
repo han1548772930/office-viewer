@@ -10,6 +10,7 @@ import { writePublicDocumentStories } from './document-output-stories'
 import { writePublicDocumentNotes } from './document-output-notes'
 import { assertOfficeDocumentSnapshotCommentAnchors } from './document-snapshot-source'
 import type { UniverDocumentData } from './document-snapshot-types'
+import { writeDocumentPluginResources } from './document-plugin-resources'
 
 /** Detached v1.6.0 snapshot. It is built from the current command model, not
  * the unchanged input stream retained for Office/source preservation. */
@@ -41,6 +42,9 @@ export function documentToPublicSnapshot(model: DocumentModel, revision = 0): Un
   const snapshot: UniverDocumentData = { ...source, ...data, id: model.id, title: model.name, rev: sourceRevision + revision, documentStyle: style,
     styles: model.metadata?.documentStyles ? cloneModel(bodyRecord(model.metadata.documentStyles)) as UniverDocumentData['styles'] : undefined,
     tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists,
+    callouts: undefined, codes: undefined,
+    resources: writeDocumentPluginResources(source, [data, ...Object.values(stories.headers), ...Object.values(stories.footers),
+      ...Object.values(notes.notes), ...Object.values(notes.footnotes), ...Object.values(notes.endnotes)]),
     headers: Object.keys(stories.headers).length ? stories.headers : undefined, footers: Object.keys(stories.footers).length ? stories.footers : undefined,
     notes: Object.keys(notes.notes).length ? notes.notes : undefined,
     footnotes: Object.keys(notes.footnotes).length ? notes.footnotes : undefined, endnotes: Object.keys(notes.endnotes).length ? notes.endnotes : undefined,

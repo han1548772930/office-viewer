@@ -1,14 +1,14 @@
 import type { DocumentContentControl, DocumentDefaultStyle, DocumentStoryContent } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { documentDefaultStyle } from '../features/document/model/document-default-style'
-import { tableForBlock } from '../features/document/model/document-model'
 import { projectDocumentStoryBlocks } from '../features/document/model/document-story-blocks'
-import { documentTableCellContentContainers } from '../features/document/model/document-table-continuations'
+import { documentBlockChildContainers } from '../features/document/model/document-structural-blocks'
 import { bodyRecord } from './document-body-style'
 import { documentBodyOfficeSource, documentBodySourceMetadata } from './document-body-source'
 import { assertDocumentBodyContentIdentities } from './document-body-identities'
 import { readDocumentBody } from './document-body-read'
 import { applyDocumentBodyRanges } from './document-body-ranges'
+import { prepareDocumentBodyStructuralInputs } from './document-body-structural-input'
 import { writeDocumentBody } from './document-body-write'
 import type { DocumentBodyDecodeOptions, DocumentBodyDecodeResult, DocumentBodyEncodeOptions, DocumentBodyEncodeResult, UniverDocumentBodyData, UniverDocumentBodyResources } from './document-body-types'
 
@@ -32,7 +32,7 @@ export function assertDocumentBodySerializable(value: unknown): void {
 
 export function decodeDocumentBody(body: unknown, resources: UniverDocumentBodyResources = {}, options: Partial<DocumentBodyDecodeOptions> = {}): DocumentBodyDecodeResult {
   assertDocumentBodySerializable({ body, resources, options })
-  for (const key of ['tableSource', 'drawings', 'lists'] as const) if (resources[key] !== undefined) {
+  for (const key of ['tableSource', 'drawings', 'lists', 'callouts', 'codes'] as const) if (resources[key] !== undefined) {
     const source = resources[key]
     if (!source || typeof source !== 'object' || Array.isArray(source) || Object.values(source).some(value => !value || typeof value !== 'object' || Array.isArray(value))) {
       throw new TypeError(`文档 ${key} 必须按稳定标识提供对象。`)
@@ -41,6 +41,7 @@ export function decodeDocumentBody(body: unknown, resources: UniverDocumentBodyR
   if (resources.drawingsOrder !== undefined && (!Array.isArray(resources.drawingsOrder) || resources.drawingsOrder.some(id => typeof id !== 'string'))) throw new TypeError('文档绘图顺序必须为标识数组。')
   const config: DocumentBodyDecodeOptions = { ...options, defaults: options.defaults ?? documentDefaultStyle() }
   const result = readDocumentBody(body, resources, config), modeledRangeIds = new Set<string>()
+  prepareDocumentBodyStructuralInputs(body, result.positions, result.structures, config.defaults)
   const controls = applyDocumentBodyRanges(body, result.positions, result.diagnostics, config, result.structures, modeledRangeIds)
   const source = cloneModel(bodyRecord(body))
   delete source.officeStudio
@@ -73,7 +74,7 @@ export function documentBodyContentControls(content: DocumentStoryContent, contr
   const visit = (blocks: NonNullable<DocumentStoryContent['blocks']>) => {
     for (const block of blocks) {
       ids.add(block.id)
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const child of documentTableCellContentContainers(cell)) visit(child)
+      for (const child of documentBlockChildContainers(block)) visit(child)
     }
   }
   visit(content.blocks ?? [])

@@ -39,6 +39,7 @@ import { EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type
 import { registerSheetRangeEditorCommands } from './sheet-range-editor-commands.ts'
 import { registerSheetCellInputCommands } from './sheet-cell-input-commands.ts'
 import { registerSheetClipboardCommands } from './sheet-clipboard-commands.ts'
+import { registerSheetLifecycleCommands } from './sheet-lifecycle-commands.ts'
 import { CONTENT_HISTORY_COMMAND_IDS, CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget } from './content-history-commands.ts'
 import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND, parseSheetSelectionOperation, parseSheetSelectionShortcut, SELECT_SHEET_RANGE_COMMAND, SET_SHEET_SELECTIONS_OPERATION } from './sheet-selection-commands.ts'
 import { registerSheetAxisDimensionCommands } from './sheet-axis-dimension-commands.ts'
@@ -1498,6 +1499,7 @@ export class OfficeStudio {
     registerSheetRangeEditorCommands(this)
     this.stopModelSync.push(registerSheetCellInputCommands(this).dispose)
     this.stopModelSync.push(registerSheetClipboardCommands(this).dispose)
+    this.stopModelSync.push(registerSheetLifecycleCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisDimensionCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisVisibilityCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisStructureCommands(this).dispose)
@@ -1642,11 +1644,6 @@ export class OfficeStudio {
       (draft) => { configurePivotFromPanel(draft, input) },
     ))
     this.registerCommand<{ unitId: string; name: string }, boolean>('sheet.command.set-workbook-name', ({ unitId, name }) => this.commitWorkbook(unitId, 'Rename workbook', (model) => { model.name = name }))
-    this.registerCommand<{ unitId: string; sheetId: string; name: string }, boolean>('sheet.command.set-worksheet-name', ({ unitId, sheetId, name }) => this.commitWorkbook(unitId, 'Rename worksheet', (model) => {
-      const sheet = model.sheets.find((item) => item.id === sheetId)
-      if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
-      sheet.name = name
-    }))
     this.registerCommand<{ unitId: string; sheetId: string; range: { startRow: number; startColumn: number; endRow: number; endColumn: number }; values: Array<Array<unknown>> }, boolean>('sheet.command.set-range-values', ({ unitId, sheetId, range, values }) => this.commitWorkbook(unitId, 'Set range values', (model) => {
       this.assertCanEditWorksheet(unitId, sheetId)
       this.assertCanEditRange(unitId, sheetId, { startRow: range.startRow, startCol: range.startColumn, endRow: range.endRow, endCol: range.endColumn })

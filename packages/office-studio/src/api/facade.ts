@@ -49,6 +49,10 @@ import type {
   ChartNullablePatch,
   ChartRadarOptions,
   ChartRadarShape,
+  ChartWordCloudShape,
+  ChartPointShape,
+  ChartRelationLayout,
+  ChartRelationForceOptions,
   ChartRadarAxisLabelOptions,
   ChartSource,
   ChartSourceOrientation,
@@ -83,8 +87,9 @@ import type {
   SheetSortCriterion,
   WorkbookModel,
 } from '../domain/model'
-import { createBlankSheet, createCell } from '../domain/model'
+import { createCell } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
+import { worksheetHiddenState, type WorksheetHiddenState } from '../features/sheet-workbench/sheet-worksheet-lifecycle.ts'
 import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
 import { SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, type DocumentCustomXmlPartsWriteOptions } from './document-custom-xml-commands'
 import { assertDocumentPermission } from '../features/document/permissions/document-permissions'
@@ -103,6 +108,10 @@ import { assertChartChordType, chartChordMappingValues, chartChordLayoutPatch, c
   chartChordLabelValues, chartChordRibbonPatch, chartChordEmphasisValues } from '../features/charts/chart-chord-api'
 import { ChartGaugeModes, ChartGaugePointerShapes, chartGaugePresetOptions, type ChartGaugePreset } from '../features/charts/chart-gauge'
 import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/chart-radar'
+import { ChartWordCloudShapes, ChartWordCloudShapeSources, assertChartWordCloudType, chartWordCloudShape,
+  chartWordCloudMaskImageId, chartWordCloudRepeat } from '../features/charts/chart-word-cloud'
+import { ChartRelationLayouts, assertChartRelationType, chartRelationLayoutValue, chartRelationBoolean,
+  chartRelationForce, chartRelationNodeShape } from '../features/charts/chart-relation'
 import { assertChartWaterfallType, chartWaterfallConnectorValues, patchChartWaterfallStyle } from '../features/charts/chart-waterfall'
 import { assertChartParetoType, chartParetoBarStyleValues, chartParetoLineStyleValues } from '../features/charts/chart-pareto'
 import { ChartVisualMapTypes, assertChartHeatmapType, chartHeatmapVisualMapType, chartHeatmapValueRange, chartHeatmapCellLabelValues, chartHeatmapValueUnit,
@@ -255,7 +264,10 @@ export type DocumentContentControlPatch = ContentControlPatch
 export class FOffice {
   readonly Event = new FEventName()
   readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
+    WorksheetHiddenState: Object.freeze({ VISIBLE: 0, HIDDEN: 1, VERY_HIDDEN: 2 } as const),
     ChartGaugeMode: ChartGaugeModes, ChartGaugePointerShape: ChartGaugePointerShapes, ChartRadarShape: ChartRadarShapes,
+    ChartWordCloudShapeEnum: ChartWordCloudShapes, ChartWordCloudShapeSource: ChartWordCloudShapeSources,
+    ChartRelationChartLayoutEnum: ChartRelationLayouts,
     ChartVisualMapType: ChartVisualMapTypes,
     ChartSunburstLabelPosition: Object.freeze({ Inside: 'inside', Outside: 'outside' } as const),
     ChartChordLabelPosition: Object.freeze({ Inside: 'inside', Outside: 'outside' } as const),
@@ -416,35 +428,33 @@ export class FWorkbook {
     return this
   }
   insertSheet(sheetName?: string, options: { index?: number; sheet?: Partial<SpreadsheetSheet> } = {}): FWorksheet {
-    const model = this.model()
-    const name = sheetName ?? `Sheet${model.sheets.length + 1}`
-    if (model.sheets.some((sheet) => sheet.name === name)) throw new Error(`Worksheet name already exists: ${name}`)
-    const sheet = { ...createBlankSheet(name), ...(options.sheet ?? {}) }
-    sheet.id ||= randomId('sheet')
-    sheet.name = name
-    const index = options.index ?? model.sheets.length
-    if (!Number.isInteger(index) || index < 0 || index > model.sheets.length) throw new RangeError(`Invalid worksheet index: ${index}`)
-    this.api.mutateWorkbook(this.id, 'sheet.command.insert-sheet', 'Insert worksheet', (draft) => {
-      draft.sheets.splice(index, 0, cloneModel(sheet))
-      draft.activeSheetId = sheet.id
-    })
-    this.api.activateWorkbook(this.id)
+    const sheet = { ...(options.sheet ?? {}), id: options.sheet?.id ?? randomId('sheet') }
+    const changed = this.api.executeCommandSync('sheet.command.insert-sheet', { unitId: this.id, name: sheetName, index: options.index, sheet })
+    if (!changed || !this.api.getWorkbookModel(this.id)?.sheets.some(item => item.id === sheet.id)) throw new Error('工作表插入未完成。')
     return new FWorksheet(this.api, this.id, sheet.id)
   }
   deleteSheet(sheet: FWorksheet | string): boolean {
     const id = typeof sheet === 'string' ? sheet : sheet.getSheetId()
-    if (this.model().sheets.length <= 1) throw new Error('A workbook must keep at least one worksheet')
-    let deleted = false
-    this.api.mutateWorkbook(this.id, 'sheet.command.delete-sheet', 'Delete worksheet', (model) => {
-      const index = model.sheets.findIndex((item) => item.id === id)
-      if (index < 0) return
-      model.sheets.splice(index, 1)
-      if (model.activeSheetId === id) model.activeSheetId = model.sheets[Math.max(0, index - 1)]!.id
-      deleted = true
-    })
-    return deleted
+    if (typeof sheet !== 'string' && sheet.getWorkbook().getId() !== this.id) throw new Error('工作表必须属于当前工作簿。')
+    if (!this.model().sheets.some(item => item.id === id)) return false
+    return this.api.executeCommandSync('sheet.command.remove-sheet', { unitId: this.id, subUnitId: id })
   }
   getNumSheets(): number { return this.model().sheets.length }
+
+  duplicateSheet(sheet: FWorksheet | string): FWorksheet {
+    const sourceSheetId = typeof sheet === 'string' ? sheet : sheet.getSheetId()
+    if (typeof sheet !== 'string' && sheet.getWorkbook().getId() !== this.id) throw new Error('工作表必须属于当前工作簿。')
+    const targetSheetId = randomId('sheet')
+    const changed = this.api.executeCommandSync('sheet.command.copy-sheet', { unitId: this.id, subUnitId: sourceSheetId, targetSheetId })
+    if (!changed || !this.api.getWorkbookModel(this.id)?.sheets.some(item => item.id === targetSheetId)) throw new Error('工作表复制未完成。')
+    return new FWorksheet(this.api, this.id, targetSheetId)
+  }
+  duplicateActiveSheet(): FWorksheet {
+    const sheet = this.getActiveSheet()
+    if (!sheet) throw new Error('当前没有活动工作表。')
+    return this.duplicateSheet(sheet)
+  }
+  copySheet(sheet: FWorksheet | string): FWorksheet { return this.duplicateSheet(sheet) }
 
   async addPivotTable(
     sourceInfo: PivotTableSourceInfo,
@@ -670,13 +680,31 @@ export class FWorksheet {
   getSlicers(): FSheetSlicer[] { return (this.workbook().slicers ?? []).filter((slicer) => slicer.hostSheetId === this.id).map((slicer) => new FSheetSlicer(this.api, this.unitId, slicer.id)) }
   getSlicer(slicerId: string): FSheetSlicer | null { return this.workbook().slicers?.some((slicer) => slicer.hostSheetId === this.id && slicer.id === slicerId) ? new FSheetSlicer(this.api, this.unitId, slicerId) : null }
   setName(name: string): this {
-    const sheet = this.sheet()
-    const oldName = sheet.name
-    const before: ApiEventMap['BeforeSheetNameChange'] = { workbookId: this.unitId, sheetId: this.id, oldName, newName: name }
-    this.api.events.emit('BeforeSheetNameChange', before)
-    if (before.cancel) throw new Error('Worksheet name change was canceled')
-    this.api.executeCommandSync('sheet.command.set-worksheet-name', { unitId: this.unitId, sheetId: this.id, name })
-    this.api.events.emit('SheetNameChanged', { workbookId: this.unitId, sheetId: this.id, oldName, newName: name })
+    const oldName = this.sheet().name
+    const changed = this.api.executeCommandSync('sheet.command.set-worksheet-name', { unitId: this.unitId, sheetId: this.id, name })
+    if (!changed && oldName !== name) throw new Error('Worksheet name change was canceled')
+    return this
+  }
+  getTabColor(): string | undefined { return this.sheet().tabColor }
+  setTabColor(value: string): this {
+    this.api.executeCommandSync('sheet.command.set-tab-color', { unitId: this.unitId, subUnitId: this.id, value })
+    return this
+  }
+  getHiddenState(): WorksheetHiddenState { return worksheetHiddenState(this.sheet()) }
+  isSheetHidden(): boolean { return this.getHiddenState() !== 0 }
+  hideSheet(): this { return this.isSheetHidden() ? this : this.setHiddenState(1) }
+  showSheet(): this {
+    this.api.executeCommandSync('sheet.command.set-worksheet-show', { unitId: this.unitId, subUnitId: this.id })
+    return this
+  }
+  setHiddenState(hidden: WorksheetHiddenState): this {
+    if (hidden === 0) return this.showSheet()
+    if (hidden !== 1 && hidden !== 2) throw new RangeError('工作表隐藏状态无效。')
+    this.api.executeCommandSync('sheet.command.set-worksheet-hidden', { unitId: this.unitId, subUnitId: this.id, hidden })
+    return this
+  }
+  setIndex(order: number): this {
+    this.api.executeCommandSync('sheet.command.set-worksheet-order', { unitId: this.unitId, subUnitId: this.id, order })
     return this
   }
   getIndex(): number { return this.workbook().sheets.findIndex((sheet) => sheet.id === this.id) }
@@ -1206,8 +1234,28 @@ export class ChartConfigBuilder {
   setRightYAxis(axis: ChartNullablePatch<ChartAxisOptions> | undefined): this { return this.setOption('rightYAxis', axis === undefined ? undefined : chartAxisPatch(this.value.options?.rightYAxis, axis)) }
   clearRightYAxis(target?: ChartAxisTarget): this { return this.setOption('rightYAxis', clearChartAxis(this.value.options?.rightYAxis, target)) }
   setRadar(value: ChartNullablePatch<ChartRadarOptions> | undefined): this { assertChartRadarType(this.value.type); return this.setOption('radar', patchChartRadarOptions(this.value.options?.radar, value)) }
-  setShape(value: ChartRadarShape): this { return this.setRadar({ shape: value }) }
-  resetShape(): this { return this.setRadar({ shape: undefined }) }
+  setShape(value: ChartRadarShape | ChartWordCloudShape): this {
+    if (this.value.type === 'wordCloud') return this.setOption('wordCloud', { shape: chartWordCloudShape(value) })
+    if (value !== 'circle' && value !== 'polygon') throw new TypeError('雷达图形状无效。')
+    return this.setRadar({ shape: value })
+  }
+  resetShape(): this { return this.value.type === 'wordCloud' ? this.setOption('wordCloud', { shape: undefined }) : this.setRadar({ shape: undefined }) }
+  setMaskImage(resourceId: string): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { maskImageId: chartWordCloudMaskImageId(resourceId), maskImage: undefined }) }
+  clearMaskImage(): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { maskImageId: undefined, maskImage: undefined }) }
+  setRepeat(value: boolean): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { repeat: chartWordCloudRepeat(value) }) }
+  resetRepeat(): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { repeat: undefined }) }
+  setLayout(value: ChartRelationLayout): this { assertChartRelationType(this.value.type); return this.setOption('relation', { layout: chartRelationLayoutValue(value) }) }
+  resetLayout(): this { assertChartRelationType(this.value.type); return this.setOption('relation', { layout: undefined }) }
+  setUseValueAsSymbolSize(value: boolean): this { assertChartRelationType(this.value.type); return this.setOption('relation', { useValueAsSymbolSize: chartRelationBoolean(value) }) }
+  resetUseValueAsSymbolSize(): this { assertChartRelationType(this.value.type); return this.setOption('relation', { useValueAsSymbolSize: undefined }) }
+  setEmphasisEnabled(value: boolean): this { assertChartRelationType(this.value.type); return this.setOption('relation', { emphasisEnabled: chartRelationBoolean(value) }) }
+  resetEmphasisEnabled(): this { assertChartRelationType(this.value.type); return this.setOption('relation', { emphasisEnabled: undefined }) }
+  setForce(value: ChartRelationForceOptions): this { assertChartRelationType(this.value.type); return this.setOption('relation', { force: chartRelationForce(value) }) }
+  clearForce(): this { assertChartRelationType(this.value.type); return this.setOption('relation', { force: undefined }) }
+  setCircularLabelRotation(value: boolean): this { assertChartRelationType(this.value.type); return this.setOption('relation', { circularLabelRotation: chartRelationBoolean(value) }) }
+  resetCircularLabelRotation(): this { assertChartRelationType(this.value.type); return this.setOption('relation', { circularLabelRotation: undefined }) }
+  setNodeShape(value: ChartPointShape): this { assertChartRelationType(this.value.type); return this.setOption('relation', { nodeShape: chartRelationNodeShape(value) }) }
+  resetNodeShape(): this { assertChartRelationType(this.value.type); return this.setOption('relation', { nodeShape: undefined }) }
   setFill(value: boolean): this { return this.setRadar({ fill: value }) }
   resetFill(): this { return this.setRadar({ fill: undefined }) }
   setRadarAxisLabel(value: ChartNullablePatch<ChartRadarAxisLabelOptions>): this { return this.setRadar({ axisLabel: value }) }
@@ -1282,12 +1330,12 @@ export class FChart {
   getData(): ReturnType<typeof readChartData> { const model = this.model(); this.assertCanReadSource(model); return readChartData(this.workbook(), model) }
   getLayout(): ReturnType<typeof chartLayout> {
     const model = this.model(); this.assertCanReadSource(model)
-    const computed = this.api.chartStatisticsService.getCached(model, this.computationContext(model))?.statistics
+    const computed = this.api.chartStatisticsService.getCached(model, this.computationContext(model), this.workbook())?.statistics
     return cloneModel(chartLayout(this.workbook(), model, computed))
   }
   getRenderCommands(): ReturnType<typeof chartRenderCommands> {
     const model = this.model(); this.assertCanReadSource(model)
-    const computed = this.api.chartStatisticsService.getCached(model, this.computationContext(model))?.statistics
+    const computed = this.api.chartStatisticsService.getCached(model, this.computationContext(model), this.workbook())?.statistics
     return cloneModel(chartRenderCommands(this.workbook(), model, computed))
   }
   async getComputedData(options: ChartComputationReadOptions = {}): Promise<ReturnType<typeof readChartData>> {
@@ -1489,8 +1537,28 @@ export class FChart {
   async setRightYAxis(axis: ChartNullablePatch<ChartAxisOptions> | undefined): Promise<this> { return this.setOption('rightYAxis', axis === undefined ? undefined : chartAxisPatch(this.model().options?.rightYAxis, axis)) }
   async clearRightYAxis(target?: ChartAxisTarget): Promise<this> { return this.setOption('rightYAxis', clearChartAxis(this.model().options?.rightYAxis, target)) }
   async setRadar(value: ChartNullablePatch<ChartRadarOptions> | undefined): Promise<this> { const model = this.model(); assertChartRadarType(model.type); return this.setOption('radar', patchChartRadarOptions(model.options?.radar, value)) }
-  async setShape(value: ChartRadarShape): Promise<this> { return this.setRadar({ shape: value }) }
-  async resetShape(): Promise<this> { return this.setRadar({ shape: undefined }) }
+  async setShape(value: ChartRadarShape | ChartWordCloudShape): Promise<this> {
+    if (this.model().type === 'wordCloud') return this.setOption('wordCloud', { shape: chartWordCloudShape(value) })
+    if (value !== 'circle' && value !== 'polygon') throw new TypeError('雷达图形状无效。')
+    return this.setRadar({ shape: value })
+  }
+  async resetShape(): Promise<this> { return this.model().type === 'wordCloud' ? this.setOption('wordCloud', { shape: undefined }) : this.setRadar({ shape: undefined }) }
+  async setMaskImage(resourceId: string): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { maskImageId: chartWordCloudMaskImageId(resourceId), maskImage: undefined }) }
+  async clearMaskImage(): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { maskImageId: undefined, maskImage: undefined }) }
+  async setRepeat(value: boolean): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { repeat: chartWordCloudRepeat(value) }) }
+  async resetRepeat(): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { repeat: undefined }) }
+  async setLayout(value: ChartRelationLayout): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { layout: chartRelationLayoutValue(value) }) }
+  async resetLayout(): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { layout: undefined }) }
+  async setUseValueAsSymbolSize(value: boolean): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { useValueAsSymbolSize: chartRelationBoolean(value) }) }
+  async resetUseValueAsSymbolSize(): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { useValueAsSymbolSize: undefined }) }
+  async setEmphasisEnabled(value: boolean): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { emphasisEnabled: chartRelationBoolean(value) }) }
+  async resetEmphasisEnabled(): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { emphasisEnabled: undefined }) }
+  async setForce(value: ChartRelationForceOptions): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { force: chartRelationForce(value) }) }
+  async clearForce(): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { force: undefined }) }
+  async setCircularLabelRotation(value: boolean): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { circularLabelRotation: chartRelationBoolean(value) }) }
+  async resetCircularLabelRotation(): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { circularLabelRotation: undefined }) }
+  async setNodeShape(value: ChartPointShape): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { nodeShape: chartRelationNodeShape(value) }) }
+  async resetNodeShape(): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { nodeShape: undefined }) }
   async setFill(value: boolean): Promise<this> { return this.setRadar({ fill: value }) }
   async resetFill(): Promise<this> { return this.setRadar({ fill: undefined }) }
   async setRadarAxisLabel(value: ChartNullablePatch<ChartRadarAxisLabelOptions>): Promise<this> { return this.setRadar({ axisLabel: value }) }
@@ -1549,9 +1617,9 @@ export class FChart {
     return chart
   }
   private assertCanReadSource(chart: ChartModel): void {
+    assertChartReadPermission(this.workbook(), chart, this.api.currentUserId)
     const sourceSheetId = chart.pivotTableId ? this.workbook().pivotTables?.find(pivot => pivot.id === chart.pivotTableId)?.source.subUnitId : chart.source.sheetId ?? chart.sheetId
     if (sourceSheetId) this.api.assertCanViewWorksheet(this.unitId, sourceSheetId)
-    assertChartReadPermission(this.workbook(), chart, this.api.currentUserId)
   }
   private computationContext(chart: ChartModel, options: ChartComputationReadOptions = {}): ChartStatisticsRequestContext {
     this.assertCanReadSource(chart)

@@ -5,16 +5,18 @@ import { resolveChartType } from './chart-catalog'
 import { chartSeriesColorIsAuthored, chartSeriesStyle, cloneChartOptions, cloneOptionValue } from './chart-options'
 import { validateChartSeriesSelector } from './chart-series-selector'
 import { chartWaterfallAuthoredStyles } from './chart-waterfall'
+import { chartWordCloudEffectiveMask } from './chart-word-cloud'
 
 /** Description names use canonical catalog IDs; getInfo() keeps local aliases. */
 export type ChartDescriptionType = Exclude<ChartType, 'bar-horizontal' | 'doughnut' | 'stacked-column'> | 'donut'
 export type ChartDescriptionAxis = 'category' | 'secondaryCategory' | 'primaryValue' | 'secondaryValue'
 export interface ChartAxisBindingDescription { dimension: 'horizontal' | 'vertical'; position: 'top' | 'left' | 'right' | 'bottom' }
 export interface ChartSeriesDescription extends Omit<ChartSeriesOptions, 'name'> { name: string }
-export interface ChartDescription extends Omit<ChartSemanticOptions, 'series' | 'autoGradientFill'> {
+export interface ChartDescription extends Omit<ChartSemanticOptions, 'series' | 'autoGradientFill' | 'wordCloud'> {
   id: string
   type: ChartDescriptionType
   autoGradientFill: boolean
+  wordCloud?: NonNullable<ChartSemanticOptions['wordCloud']> & { effectiveShapeSource: 'shape' | 'maskImage' }
   title?: string
   subtitle?: string
   palette?: string[]
@@ -67,8 +69,11 @@ export function describeChartConfiguration(config: ChartDescriptionConfig, conte
     series[field] = entry
     if (activeFields.has(field)) activeStyles.push(style)
   }
-  const description: ChartDescription = { ...options, id: context.id, type: resolveChartType(config.type).id as ChartDescriptionType,
-    autoGradientFill: chartAutoGradientFill(current), series }
+  const { wordCloud, ...otherOptions } = options
+  const description: ChartDescription = { ...otherOptions, id: context.id, type: resolveChartType(config.type).id as ChartDescriptionType,
+    autoGradientFill: chartAutoGradientFill(current), series,
+    ...(config.type === 'wordCloud' || wordCloud !== undefined ? { wordCloud: { ...wordCloud,
+      effectiveShapeSource: chartWordCloudEffectiveMask(wordCloud).type === 'image' ? 'maskImage' as const : 'shape' as const } } : {}) }
   for (const key of ['title', 'subtitle', 'palette', 'legend'] as const) if (config[key] !== undefined) Object.assign(description, { [key]: cloneOptionValue(config[key]) })
   if (config.xAxis !== undefined || config.yAxis !== undefined || options.rightYAxis !== undefined) {
     description.axes = { ...(config.xAxis === undefined ? {} : { x: cloneOptionValue(config.xAxis) as Partial<ChartAxisOptions> }),

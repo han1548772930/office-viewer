@@ -7,6 +7,7 @@ import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPrep
 import { chartMapSteps, chartNumericFieldSteps, chartProjectionSourceBytes } from './chart-data-preparation'
 import { chartHierarchyChartDataSteps, chartHierarchyResultSteps, chartHierarchyValueField } from './chart-hierarchy-data'
 import { chartChordChartDataSteps, chartChordMapping, chartChordResultSteps } from './chart-chord-data'
+import { chartRelationGraphSteps, chartRelationMapping, chartRelationChartDataSteps } from './chart-relation-data'
 export { chartHierarchyData, chartHierarchyDataSteps, chartHierarchyValueField } from './chart-hierarchy-data'
 
 export interface ChartRecords {
@@ -27,8 +28,12 @@ export interface ChartRecords {
   syntheticValues?: boolean
 }
 export type ChartDataBinding = Pick<ChartModel, 'type' | 'categoryField' | 'valueFields' | 'seriesToCategory' | 'options'>
-export interface ChartEdge { source: string; target: string; value: number }
-export interface ChartGraphData { nodes: Array<{ name: string; value: number }>; links: ChartEdge[]; cyclic: boolean }
+export interface ChartEdge { source: string; target: string; value: number; sourceIndex?: number; targetIndex?: number }
+export interface ChartGraphData {
+  nodes: Array<{ name: string; value: number; id?: string; category?: string }>
+  links: ChartEdge[]; cyclic: boolean
+  categories?: string[]; valid?: boolean; diagnostic?: string; sourceKind?: 'edgeList' | 'coWordMatrix'
+}
 export interface ChartHierarchyNode {
   id: string; name: string; path: string[]; value: number; selfValue: number
   formattedValue?: string; formattedSelfValue?: string; children?: ChartHierarchyNode[]
@@ -77,6 +82,7 @@ export function* readSpecialChartDataSteps(source: ChartRecords, chart: ChartDat
     const result = yield* chartChordResultSteps(source, chart, context)
     return yield* chartChordChartDataSteps(source, result)
   }
+  if (chart.type === 'relation') return yield* chartRelationChartDataSteps(source, chart, context)
   if (shape === 'bubble') {
     const mapping = chartBubbleMapping(source, chart)
     const groups = new Map<string, { field: number; name: string; values: Array<number | null>; xValues: Array<number | null>; sizeValues: Array<number | null> }>()
@@ -161,6 +167,7 @@ export function chartBubbleMapping(source: ChartRecords, chart: ChartDataBinding
 
 export function chartEdgeMapping(source: ChartRecords, chart: ChartDataBinding): NonNullable<NonNullable<ChartSemanticOptions['mapping']>['edge']> {
   if (chart.type === 'chord') return chartChordMapping(source, chart)
+  if (chart.type === 'relation') return chartRelationMapping(source, chart)
   const mapping = chart.options?.mapping?.edge ?? { sourceIndex: chart.categoryField, targetIndex: chart.valueFields[0] ?? 1, valueIndex: chart.valueFields[1] ?? (source.fields.length > 2 ? 2 : undefined) }
   chartField(source, mapping.sourceIndex, '来源字段'); chartField(source, mapping.targetIndex, '目标字段')
   if (mapping.sourceIndex === mapping.targetIndex) throw new RangeError('来源和目标须使用不同字段。')
@@ -174,6 +181,7 @@ export function chartGraphData(source: ChartRecords, chart: ChartDataBinding): C
 
 export function* chartGraphDataSteps(source: ChartRecords, chart: ChartDataBinding,
   context: ChartComputePreparationContext = {}): Generator<void, ChartGraphData, void> {
+  if (chart.type === 'relation') return yield* chartRelationGraphSteps(source, chart, context)
   if (chart.type === 'chord') {
     const result = yield* chartChordResultSteps(source, chart, context)
     return { nodes: result.nodes, links: result.links, cyclic: false }

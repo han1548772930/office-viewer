@@ -36,14 +36,14 @@ import { documentContentControlGeometry } from '../../features/document/layout/c
 import { appendDocumentContentControlScene } from '../../features/document/rendering/content-control-scene'
 import { selectedDocumentContentControlForSelection } from '../../features/document/services/content-controls'
 import { contentControlValueCommandState } from '../../features/document/commands/content-control-command-state'
-import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest } from '../../features/document/commands/content-control-command-types'
+import type { DocumentContentControlCommandRequest, DocumentContentControlPopupMode, DocumentContentControlSelectionRequest } from '../../features/document/commands/content-control-command-types'
 import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlFocusTokenMatchesRequest, type DocumentContentControlFocusToken } from '../../features/document/controllers/content-control-interaction'
 import { documentContentControlCommandIsTextInput, documentContentControlCommandUsesWholeCellInput, prepareDocumentContentControlTextInputSelection } from '../../features/document/services/content-control-editing'
 import { documentContentControlContainsSelection } from '../../features/document/model/content-control-table-rows'
 import { hitTestDocumentNoteDecoration, hitTestDocumentNoteGlyph, hitTestDocumentNoteRegion, type DocumentNoteGlyphHit } from '../../features/document/layout/document-note-hit'
 import { documentNoteCanvasRequestCurrent, documentNotePreview, type DocumentNoteCanvasNavigationRequest, type DocumentNotePreview } from '../../features/document/controllers/document-note-canvas'
 
-const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
+const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; activeContentControlPopupMode?: DocumentContentControlPopupMode; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
   operation: [id: string, params?: unknown]
@@ -250,6 +250,7 @@ function executeContentControlCommand(request: DocumentContentControlCommandRequ
 function focusContentControl(request: DocumentContentControlSelectionRequest) {
   if (!active || disposed || composing.value || storyComposing.value || legacyStoryActive.value
     || props.host?.kind === 'story' && props.storyReadonly || props.model.id !== request.source.id || !sameDocumentBlockHost(request.host, props.host)) return
+  if (request.mode !== undefined && request.mode !== (props.activeContentControlPopupMode ?? 'value')) return
   const pending = pendingContentControlFocus
   if (pending && documentContentControlFocusTokenMatchesRequest(pending, request)) {
     pendingContentControlFocus = undefined
@@ -1149,8 +1150,10 @@ function revealStory(target: StoryLocation) {
   if (y < el.scrollTop + 30 || y > el.scrollTop + el.clientHeight - 30) el.scrollTop = Math.max(0, y - el.clientHeight / 2)
   focus()
 }
-function cancelInput(refocus = true) { clearNoteHover(); pendingContentControlFocus = undefined; tableOverlay.value?.cancelInteraction(); contentControlOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
-defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, executeContentControlCommand, scrollToPage, scrollToBlock, captureScrollOffset, restoreScrollOffset, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
+/** SDT navigation closes value UI without canceling the document's text/IME session. */
+function cancelContentControlPopup() { pendingContentControlFocus = undefined; contentControlOverlay.value?.cancelInteraction() }
+function cancelInput(refocus = true) { clearNoteHover(); cancelContentControlPopup(); tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
+defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelContentControlPopup, executeContentControlCommand, scrollToPage, scrollToBlock, captureScrollOffset, restoreScrollOffset, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
 </script>
 
 <template>
@@ -1162,7 +1165,7 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, executeC
     <DocumentTableOverlay ref="tableOverlay" :model="displayEditingModel" :layout="editingLayout" :selection="displaySelection" :viewport="viewport" :permission="permissionContext" :hover="hoverTable"
       :floating-toolbar="tableFloatingToolbar" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)" :story-active="legacyStoryActive" @selection="select" @command="command => dispatchCommand(command)" @operation="(id, params) => emit('operation', id, params)" @preview="value => tablePreview = value" @drag-pointer="overlayDragPointer" @focus="focus" @notify="value => emit('notify', value)" />
     <DocumentContentControlOverlay ref="contentControlOverlay" :source="model" :model="displayEditingModel" :layout="layout" :geometries="contentControlGeometries"
-      :selection="displaySelection" :viewport="viewport" :active-control-id="activeContentControl?.id" :host="host" :permission="permissionContext"
+      :selection="displaySelection" :viewport="viewport" :active-control-id="activeContentControl?.id" :popup-mode="activeContentControlPopupMode" :host="host" :permission="permissionContext"
       :capture-input-session="captureInputSession" :inactive="legacyStoryActive || !contentControlActive" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)"
       @selection="selectContentControl" @command="dispatchContentControlCommand" @focus="focusContentControl" @notify="message => emit('notify', message)" />
     <Popover :open="!!noteHover" placement="bottomLeft" :title="noteHover ? `${noteHover.preview.kind === 'footnote' ? '脚注' : '尾注'} ${noteHover.preview.label}` : ''">

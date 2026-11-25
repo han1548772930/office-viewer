@@ -3,6 +3,7 @@ import { cloneModel } from '../domain/serialization'
 import { applyRunPatch, runText, sliceRuns, type DocumentRun } from '../features/document/model/document-model'
 import { documentTextFields, setDocumentTextFields } from '../features/document/model/document-text-fields'
 import { isDocumentTextBoundary } from '../features/document/model/document-story'
+import { readDocumentContentControlSourceOrder } from '../features/document/model/content-control-source-order'
 import { bodyBoolean, bodyRecord } from './document-body-style'
 import { documentBodyOfficeSource, documentBodySourceMetadata } from './document-body-source'
 import { applyDocumentBodyControlOwnership } from './document-body-control-ranges'
@@ -19,7 +20,7 @@ export function applyDocumentBodyRanges(value: unknown, positions: readonly Docu
   options: Pick<DocumentBodyDecodeOptions, 'note'> = {}, structures: DocumentBodyStructureIndex = { blocks: [], rows: [], cells: [] },
   modeledRangeIds: Set<string> = new Set()): DocumentContentControl[] {
   const body = bodyRecord(value), stream = typeof body.dataStream === 'string' ? body.dataStream : '', controls: DocumentContentControl[] = [], ids = new Set<string>()
-  for (const raw of documentBodyArray(body.customRanges, 'customRanges')) {
+  for (const [sourceOrder, raw] of documentBodyArray(body.customRanges, 'customRanges').entries()) {
     const start = documentBodyOffset(raw.startIndex, stream.length, 'customRanges.startIndex'), inclusiveEnd = documentBodyOffset(raw.endIndex, stream.length - 1, 'customRanges.endIndex')
     if (!isDocumentTextBoundary(stream, start) || !isDocumentTextBoundary(stream, inclusiveEnd + 1)) throw new RangeError('文档范围不能截断 UTF-16 字符。')
     if (inclusiveEnd < start) throw new RangeError('文档自定义范围结束位置早于起点。')
@@ -27,7 +28,8 @@ export function applyDocumentBodyRanges(value: unknown, positions: readonly Docu
     if (ids.has(id)) throw new TypeError(`文档范围标识重复：${id}`)
     ids.add(id)
     const from = stream[start] === T.rangeStart ? start + 1 : start, to = stream[inclusiveEnd] === T.rangeEnd ? inclusiveEnd : inclusiveEnd + 1
-    const affected = positions.filter(position => position.start <= to && position.end >= from)
+    const affected = positions.filter(position => from === to ? position.start <= from && position.end >= from
+      : position.start < to && position.end > from || position.start === position.end && position.start >= from && position.start < to)
     const first = affected[0], last = affected.at(-1)
     if (!first || !last) { diagnostics.push(`自定义范围 ${id} 仅覆盖结构标记，其原始定义已保留。`); continue }
     const startOffset = documentBodyLocalOffset(first, Math.max(first.start, from)), endOffset = documentBodyLocalOffset(last!, Math.min(last!.end, to), 'end')
@@ -72,11 +74,14 @@ export function applyDocumentBodyRanges(value: unknown, positions: readonly Docu
       }
       if (properties.lock !== undefined && (typeof properties.lock !== 'string' || !locks.has(properties.lock))) throw new TypeError('文档内容控件锁无效。')
       const checkbox = bodyRecord(properties.checkbox), date = bodyRecord(properties.date), text = bodyRecord(properties.text)
+      const retainedSourceOrder = documentBodySourceMetadata(documentBodyOfficeSource(raw, '内容控件').metadata, '内容控件').univerBodySdtOrder
+      if (retainedSourceOrder !== undefined && readDocumentContentControlSourceOrder(retainedSourceOrder) === undefined) throw new TypeError('内容控件来源顺序无效。')
       const control: DocumentContentControl = { id, type: properties.kind as DocumentContentControl['type'], placement: properties.placement as DocumentContentControl['placement'],
         blockId: first.block.id, startOffset, endOffset: first === last ? endOffset : runText(first.block.runs).length,
         ...(startNoteReferenceCount === undefined ? {} : { startNoteReferenceCount }), ...(first !== last || endNoteReferenceCount === undefined ? {} : { endNoteReferenceCount }),
         ...(properties.lock === undefined ? {} : { lock: properties.lock as DocumentContentControl['lock'] }),
-        metadata: { univerBodySdtSource: cloneModel(raw) } }
+        // Keep the imported ordering when a public save sorts its customRanges.
+        metadata: { univerBodySdtSource: cloneModel(raw), univerBodySdtOrder: retainedSourceOrder ?? { version: 1, order: sourceOrder } } }
       for (const key of ['alias', 'title', 'tag', 'appearance', 'color', 'placeholder', 'value', 'rawSdtPr', 'rawSdtEndPr'] as const) {
         if (properties[key] !== undefined) {
           const current = properties[key]; if (typeof current !== 'string') throw new TypeError(`内容控件 ${key} 必须为字符串。`)

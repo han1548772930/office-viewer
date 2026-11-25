@@ -2,17 +2,19 @@ import type { DocumentBlock, InlineRun } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { runText } from '../features/document/model/document-model'
 import { isListPreset, listKind } from '../features/document/model/document-lists'
+import { isDocumentStructuredBlock } from '../features/document/model/document-structural-blocks'
 import { bodyRecord, documentRunStyleFromBody, documentRunStyleToBody, type UniverBodyRecord } from './document-body-style'
 import { documentBodyIdentity } from './document-body-types'
 
 const BLOCK_TYPES: DocumentBlock['type'][] = ['paragraph', 'heading', 'bullet', 'numbered', 'checklist', 'quote', 'divider',
-  'table', 'image', 'pageBreak', 'columnBreak', 'sectionBreak']
-const STRUCTURAL_BLOCK_TYPES = new Set<DocumentBlock['type']>(['table', 'image', 'pageBreak', 'columnBreak', 'sectionBreak'])
+  'callout', 'code', 'columns', 'table', 'image', 'pageBreak', 'columnBreak', 'sectionBreak']
+const STRUCTURAL_BLOCK_TYPES = new Set<DocumentBlock['type']>(['callout', 'code', 'columns', 'table', 'image', 'pageBreak', 'columnBreak', 'sectionBreak'])
 function isBlockType(value: unknown): value is DocumentBlock['type'] {
   return typeof value === 'string' && BLOCK_TYPES.some(type => type === value)
 }
 const BLOCK_DERIVED = ['table', 'html', 'documentTextFields', 'univerBodyParagraphSource', 'univerBodyTableSource',
-  'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodySectionSource', 'univerBodyBreakSource', 'univerNoteSeparatorRangeSource']
+  'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodySectionSource', 'univerBodyBreakSource', 'univerNoteSeparatorRangeSource',
+  'univerBodyBlockRangeSource', 'univerBodyColumnGroupSource', 'univerBodyColumnGroupBaseline', 'univerBodyCalloutSource', 'univerBodyCodeSource']
 const RUN_DERIVED = ['univerTextStyle', 'univerTextStyleResolution', 'univerBodyRunSource', 'univerBodyNoteRangeSource',
   'univerBodyHyperlinkSource', 'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodyRawCustomBlock']
 
@@ -52,7 +54,7 @@ export function applyDocumentBodyBlockSource(block: DocumentBlock, record: Unive
   if (!Object.keys(source).length) return
   if (source.blockType !== undefined) {
     if (!isBlockType(source.blockType)) throw new TypeError('公开块类型无效。')
-    if (source.blockType !== block.type && (STRUCTURAL_BLOCK_TYPES.has(block.type) || STRUCTURAL_BLOCK_TYPES.has(source.blockType))) {
+    if (source.blockType !== block.type && (isDocumentStructuredBlock(block) || STRUCTURAL_BLOCK_TYPES.has(block.type) || STRUCTURAL_BLOCK_TYPES.has(source.blockType))) {
       throw new TypeError('公开结构块类型与内容流标记不匹配。')
     }
     block.type = source.blockType

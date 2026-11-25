@@ -13,14 +13,19 @@ import { mapDocumentContentControlBindingSelection, synchronizeDocumentContentCo
 import { documentBlockHostForId, documentEditingBlockHost } from '../model/document-block-host'
 import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../services/document-block-host'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { visitDocumentBlocks } from '../model/document-structural-blocks'
+import { updateDocumentStructuredCodeBlock } from '../services/document-code-editing'
+import { documentCodeSourceEdit as codeSourceEdit, normalizeDocumentCodeSource as normalizeCodeSource } from '../model/document-code-source'
 
 export type DocumentCodeLanguage = 'plain' | 'javascript' | 'typescript' | 'json' | 'css' | 'html' | 'python' | 'sql' | 'rust'
 export type CodeTokenKind = 'keyword' | 'string' | 'number' | 'comment' | 'operator' | 'punctuation' | 'plain'
 
 export interface DocumentCodeBlockData {
-  language: DocumentCodeLanguage
+  language: string
   source: string
   lineNumbers: boolean
+  tabSize?: number
+  wrap?: boolean
 }
 
 export interface CodeToken {
@@ -46,17 +51,23 @@ export function createCodeBlock(source = '', language: DocumentCodeLanguage = 'p
 }
 
 export function codeBlockData(block: DocumentBlock): DocumentCodeBlockData | undefined {
+  if (block.type === 'code' && block.code && block.children) return {
+    source: documentTextFieldParagraphs({ blocks: block.children }).map(paragraph => paragraph.text).join('\n'), language: block.code.language,
+    lineNumbers: block.code.showLineNumbers, tabSize: block.code.tabSize, wrap: block.code.wrap }
   const value = block.metadata.codeBlock
   if (!isRecord(value) || typeof value.source !== 'string') return undefined
   return {
     source: normalizeCodeSource(value.source),
     language: normalizeCodeLanguage(value.language),
     lineNumbers: value.lineNumbers === true,
+    ...(typeof value.tabSize === 'number' ? { tabSize: value.tabSize } : {}), ...(typeof value.wrap === 'boolean' ? { wrap: value.wrap } : {}),
   }
 }
 
 export function codeBlocks(model: DocumentModel): DocumentBlock[] {
-  return textTargets(model).flatMap(target => { const block = blockAtPoint(model, target); return block && codeBlockData(block) ? [block] : [] })
+  const blocks: DocumentBlock[] = []
+  visitDocumentBlocks(model.blocks, block => { if (codeBlockData(block)) blocks.push(block) })
+  return blocks
 }
 
 export function updateCodeBlock(model: DocumentModel, blockId: string, patch: Partial<DocumentCodeBlockData>): boolean {
@@ -71,6 +82,17 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
   if (!block) return { changed: false }
   const current = codeBlockData(block)
   if (!current) return { changed: false }
+  if (block.type === 'code') {
+    const owned = new Set(documentTextFieldParagraphs({ blocks: block.children! }).map(paragraph => paragraph.block.id))
+    const target = textTargets(source).find(target => owned.has(target.cellBlockId ?? target.blockId))
+    if (!target) throw new RangeError('代码块缺少真实输入段落。')
+    const result = updateDocumentStructuredCodeBlock(model, sourceSelection ?? collapsedSelection({ ...target, offset: 0 }), {
+      blockId, ...(patch.source === undefined ? {} : { source: patch.source }),
+      patch: { ...(patch.language === undefined ? {} : { language: patch.language }), ...(patch.lineNumbers === undefined ? {} : { showLineNumbers: patch.lineNumbers }),
+        ...(patch.tabSize === undefined ? {} : { tabSize: patch.tabSize }), ...(patch.wrap === undefined ? {} : { wrap: patch.wrap }) },
+    }, permissionContext ?? { documentId: model.id, userId: 'local-user' })
+    return { changed: result.changed, ...(sourceSelection ? { selection: result.selection } : {}) }
+  }
   const next: DocumentCodeBlockData = {
     source: patch.source === undefined ? current.source : normalizeCodeSource(patch.source),
     language: patch.language === undefined ? current.language : normalizeCodeLanguage(patch.language),
@@ -110,17 +132,6 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
 }
 
 interface CodeSourceEdit { startOffset: number; endOffset: number; text: string }
-
-function codeSourceEdit(before: string, after: string): CodeSourceEdit {
-  let startOffset = 0
-  while (startOffset < before.length && startOffset < after.length && before[startOffset] === after[startOffset]) startOffset++
-  while (startOffset > 0 && (!isDocumentTextBoundary(before, startOffset) || !isDocumentTextBoundary(after, startOffset))) startOffset--
-  let suffix = 0
-  while (suffix < before.length - startOffset && suffix < after.length - startOffset
-    && before[before.length - suffix - 1] === after[after.length - suffix - 1]) suffix++
-  while (suffix > 0 && (!isDocumentTextBoundary(before, before.length - suffix) || !isDocumentTextBoundary(after, after.length - suffix))) suffix--
-  return { startOffset, endOffset: before.length - suffix, text: after.slice(startOffset, after.length - suffix) }
-}
 
 function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}, controlEdit: ContentControlRangeEditOptions = {}): boolean {
   if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers) return false
@@ -200,6 +211,7 @@ export function cancelEmptyCodeParagraph(model: DocumentModel, blockId: string):
 }
 
 export function unwrapCodeBlock(block: DocumentBlock): boolean {
+  if (block.type === 'code') return false
   const data = codeBlockData(block)
   if (!data) return false
   delete block.metadata.codeBlock
@@ -213,7 +225,8 @@ export function codeBlockPlainText(block: DocumentBlock): string {
 }
 
 /** Token ranges are UTF-16 offsets into the authoritative source string. */
-export function tokenizeCode(source: string, language: DocumentCodeLanguage): CodeToken[] {
+export function tokenizeCode(source: string, languageValue: string): CodeToken[] {
+  const language = normalizeCodeLanguage(languageValue)
   const text = normalizeCodeSource(source)
   if (language === 'plain') return text ? [{ kind: 'plain', text, start: 0, end: text.length }] : []
   const tokens: CodeToken[] = []
@@ -232,17 +245,13 @@ export function tokenizeCode(source: string, language: DocumentCodeLanguage): Co
 }
 
 export function cloneCodeBlockData(value: DocumentCodeBlockData): DocumentCodeBlockData {
-  return { source: value.source, language: value.language, lineNumbers: value.lineNumbers }
+  return { ...value }
 }
 
 export function normalizeCodeLanguage(value: unknown): DocumentCodeLanguage {
   if (typeof value !== 'string') return 'plain'
   const normalized = value.trim().toLowerCase() as DocumentCodeLanguage
   return languages.has(normalized) ? normalized : 'plain'
-}
-
-function normalizeCodeSource(source: string): string {
-  return source.replace(/\r\n?/g, '\n')
 }
 
 function graphemeBoundaries(source: string): number[] {

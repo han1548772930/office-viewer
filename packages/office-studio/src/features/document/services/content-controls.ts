@@ -40,6 +40,7 @@ import { contentControlCheckboxGlyph, formatContentControlDate, validContentCont
 import { validateContentControlPropertyPatch } from './content-control-properties'
 import { synchronizeDocumentContentControlsAfterEdit, unwrapDocumentContentControlShells } from './content-control-editing'
 import { documentRunStyleAt, splitDocumentRunRange } from '../model/document-run-range'
+import { documentContentControlSourceOrders } from '../model/content-control-source-order'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 import { documentContentControlContains, documentContentControlContainsBlockRange, documentContentControlContainsSelection,
   documentContentControlOwnedRowBlockIds, documentContentControlTableRowBlockIds, reanchorDocumentContentControlTableRows,
@@ -219,14 +220,20 @@ export function selectedDocumentContentControl(model: DocumentModel, blockId: st
 
 export function selectedDocumentContentControlForSelection(model: DocumentModel, selection: DocumentSelection, activeId?: string): DocumentContentControl | undefined {
   const controls = model.contentControls ?? []
+  const targetIds = new Set(textTargets(model).map(target => target.cellBlockId ?? target.blockId))
+  const sourceOrders = documentContentControlSourceOrders(controls.filter(control => targetIds.has(control.blockId)))
   const explicit = controls.find(control => control.id === activeId && !control.metadata?.officeStoryLockSource
     && documentContentControlContainsSelection(model, control, selection))
   return explicit ?? controls.filter(control => !control.metadata?.officeStoryLockSource && documentContentControlContainsSelection(model, control, selection))
     .sort((left, right) => {
       if (hasAncestor(controls, left, right.id)) return -1
       if (hasAncestor(controls, right, left.id)) return 1
-      if (documentContentControlContains(model, left, right)) return 1
-      if (documentContentControlContains(model, right, left)) return -1
+      const leftContains = documentContentControlContains(model, left, right), rightContains = documentContentControlContains(model, right, left)
+      if (leftContains !== rightContains) return leftContains ? 1 : -1
+      if (leftContains && rightContains) {
+        const leftOrder = sourceOrders.get(left.id), rightOrder = sourceOrders.get(right.id)
+        if (leftOrder !== undefined && rightOrder !== undefined) return leftOrder - rightOrder
+      }
       return (left.blockRange?.blockIds.length ?? 0) - (right.blockRange?.blockIds.length ?? 0)
         || (left.tableRowRange?.rowIds.length ?? 0) - (right.tableRowRange?.rowIds.length ?? 0)
         || (left.endOffset - left.startOffset) - (right.endOffset - right.startOffset)

@@ -35,7 +35,7 @@ export interface DocumentNoteInfo extends Omit<DocumentNote, 'referenceTextStyle
 
 function resourcesFrom(value: UniverBodyRecord): UniverDocumentBodyResources {
   const resources: UniverDocumentBodyResources = {}
-  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists'] as const) {
+  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes'] as const) {
     if (value[key] !== undefined) Object.assign(resources, { [key]: value[key] })
   }
   return resources
@@ -70,10 +70,10 @@ export function documentNoteInputFromPublic(model: DocumentModel, input?: Docume
     next.content = decoded.content
     if (decoded.contentControls.length) next.contentControls = decoded.contentControls
     delete next.body
-  } else if (['tableSource', 'drawings', 'drawingsOrder', 'lists'].some(key => raw[key] !== undefined)) {
+  } else if (['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes'].some(key => raw[key] !== undefined)) {
     throw new TypeError('注释资源必须随对应 body 一起提供。')
   }
-  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists']) delete next[key]
+  for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists', 'callouts', 'codes']) delete next[key]
   if (raw.referenceTextStyle !== undefined) {
     next.referenceTextStyle = referenceStyleFrom(raw.referenceTextStyle, defaults)
     next.metadata = { ...bodyRecord(next.metadata), univerReferenceTextStyle: cloneModel(raw.referenceTextStyle) }

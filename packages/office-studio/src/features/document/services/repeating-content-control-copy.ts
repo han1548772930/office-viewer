@@ -13,12 +13,14 @@ import { copyDocumentBlocksForPaste } from './document-block-paste'
 import { documentContentControlNoteBoundaryRanks, partitionDocumentContentControlNoteRuns } from '../model/content-control-note-boundary'
 import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets, remapDocumentNoteReferenceBoundary } from '../model/document-note-boundary'
 import { compareDocumentNoteBoundaries } from '../model/document-note-boundary-edit'
+import { documentBlockChildContainers, documentStructuredChildContainers } from '../model/document-structural-blocks'
 
 export interface DocumentRepeatingContentControlCopyIds {
   block: Map<string, string>
   run: Map<string, string>
   row: Map<string, string>
   cell: Map<string, string>
+  column: Map<string, string>
   field: Map<string, string>
   control: Map<string, string>
   note: Map<string, string>
@@ -77,7 +79,7 @@ export function documentRepeatingContentControlInlineCopySource(block: DocumentB
 }
 
 export function createDocumentRepeatingContentControlCopyIds(): DocumentRepeatingContentControlCopyIds {
-  return { block: new Map(), run: new Map(), row: new Map(), cell: new Map(), field: new Map(),
+  return { block: new Map(), run: new Map(), row: new Map(), cell: new Map(), column: new Map(), field: new Map(),
     control: new Map(), note: new Map(), comment: new Map() }
 }
 
@@ -92,6 +94,10 @@ export function indexDocumentRepeatingContentControlCopies(source: readonly Docu
     const oldFields = documentTextFields(before), newFields = documentTextFields(after)
     if (oldFields.length !== newFields.length) throw new RangeError('复制内容的字段身份不一致。')
     for (const [field, value] of oldFields.entries()) ids.field.set(value.id, newFields[field]!.id)
+    const oldContents = documentStructuredChildContainers(before), newContents = documentStructuredChildContainers(after)
+    if (oldContents.length !== newContents.length) throw new RangeError('复制高级块的内容容器不一致。')
+    for (const [column, value] of (before.columns?.columns ?? []).entries()) ids.column.set(value.id, after.columns!.columns[column]!.id)
+    for (const [child, blocks] of oldContents.entries()) indexDocumentRepeatingContentControlCopies(blocks, newContents[child]!, ids)
     const oldTable = tableForBlock(before), newTable = tableForBlock(after)
     if (!oldTable && !newTable) continue
     if (!oldTable || !newTable || oldTable.rows.length !== newTable.rows.length) throw new RangeError('复制表格的行身份不一致。')
@@ -113,9 +119,7 @@ export function indexDocumentRepeatingContentControlCopies(source: readonly Docu
 export function visitDocumentRepeatingContentControlBlocks(blocks: readonly DocumentBlock[], visit: (block: DocumentBlock) => void): void {
   for (const block of blocks) {
     visit(block)
-    for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) {
-      for (const container of documentTableCellContentContainers(cell)) visitDocumentRepeatingContentControlBlocks(container, visit)
-    }
+    for (const container of documentBlockChildContainers(block)) visitDocumentRepeatingContentControlBlocks(container, visit)
   }
 }
 
@@ -255,6 +259,11 @@ export function remapDocumentRepeatingContentControlMetadata(metadata: Record<st
     if (typeof value === 'string' && ids.block.has(value)) next[key] = ids.block.get(value)!
   }
   if (typeof next.contentControlId === 'string' && ids.control.has(next.contentControlId)) next.contentControlId = ids.control.get(next.contentControlId)!
+  const anchor = next.univerBodyStructuralInputAnchor
+  if (anchor && typeof anchor === 'object' && !Array.isArray(anchor) && typeof Reflect.get(anchor, 'imageId') === 'string') {
+    next.univerBodyStructuralInputAnchor = { ...anchor, imageId: ids.block.get(Reflect.get(anchor, 'imageId')) ?? Reflect.get(anchor, 'imageId') }
+  }
+  delete next.univerBodySdtOrder
   return next
 }
 

@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
-import { documentId, runText, tableForBlock } from './document-model'
-import { documentTableCellContentContainers } from './document-table-continuations'
+import { documentId, runText } from './document-model'
+import { documentBlockChildContainers, isDocumentTextBlock } from './document-structural-blocks'
 import { isDocumentTextBoundary } from './document-story'
 import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets, remapDocumentNoteReferenceBoundary, type DocumentNoteReferenceOffset } from './document-note-boundary'
 import { assertDocumentNoteReferenceOffsets, compareDocumentNoteBoundaries, remapDocumentNoteBoundaryParagraph, type DocumentNoteEditRanks } from './document-note-boundary-edit'
@@ -127,15 +127,13 @@ export interface DocumentTextFieldRange {
   endNoteReferenceCount: number
 }
 
-const NON_TEXT_BLOCK_TYPES = new Set(['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'])
-
 /** Body order includes paragraphs in every nested table; stable IDs remain the stored contract. */
 export function documentTextFieldParagraphs(model: Pick<DocumentModel, 'blocks'>): DocumentTextFieldParagraph[] {
   const paragraphs: DocumentTextFieldParagraph[] = []
   let offset = 0
   const visit = (blocks: DocumentBlock[]) => {
     for (const [index, block] of blocks.entries()) {
-      if (!NON_TEXT_BLOCK_TYPES.has(block.type)) {
+      if (isDocumentTextBlock(block)) {
         const text = runText(block.runs)
         paragraphs.push({ block, container: blocks, index, text, absoluteStart: offset, absoluteEnd: offset + text.length,
           noteReferences: documentNoteReferenceOffsets(block.runs) })
@@ -143,7 +141,7 @@ export function documentTextFieldParagraphs(model: Pick<DocumentModel, 'blocks'>
       } else if (block.metadata.documentTextFields !== undefined && documentTextFields(block).length) {
         throw new TypeError(`正文字段起始位置必须属于文本段落：${block.id}`)
       }
-      for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) visit(content)
+      for (const content of documentBlockChildContainers(block)) visit(content)
     }
   }
   visit(model.blocks)

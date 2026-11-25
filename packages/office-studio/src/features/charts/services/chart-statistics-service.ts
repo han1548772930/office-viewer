@@ -17,6 +17,9 @@ import { decodeChartStatistics, prepareChartStatisticsTask } from '../chart-stat
 import { estimateChartDataMemory, estimateChartDecodedMemory, estimateChartFinalLayoutMemory } from '../chart-compute-memory'
 import { assertChartPreparationCurrent, assertChartPreparationMemory, chartPreparationBudget, type ChartComputePreparationContext } from '../chart-compute-lifecycle'
 import { layoutChartData } from '../chart-layout'
+import { prepareChartWordCloudLayout } from '../chart-word-cloud-layout'
+import { prepareChartRelationLayout } from '../chart-relation-layout'
+import { assertChartSourcePresent, chartSourceNotFoundDiagnostic, ChartSourceNotFoundError } from '../chart-source-diagnostic'
 
 export interface ChartStatisticsRequestContext extends ChartComputePreparationContext {
   documentId: string
@@ -160,7 +163,8 @@ export class ChartStatisticsService {
     return !this.disposed && this.revisions.get(context.documentId) === context.modelRevision && this.client.isCurrent(context)
   }
 
-  getCached(chart: ChartModel, context: ChartStatisticsRequestContext): ChartStatisticsSnapshot | undefined {
+  getCached(chart: ChartModel, context: ChartStatisticsRequestContext, workbook?: WorkbookModel): ChartStatisticsSnapshot | undefined {
+    if (workbook) this.assertSourcePresent(workbook, chart, context.documentId)
     const budget = Math.min(this.memoryBudget, chartPreparationBudget(context))
     assertChartPreparationCurrent(context)
     if (!this.isCurrent(context)) return undefined
@@ -171,6 +175,7 @@ export class ChartStatisticsService {
 
   request(workbook: WorkbookModel, chart: ChartModel, context: ChartStatisticsRequestContext): ChartStatisticsRequest {
     this.assertAlive()
+    this.assertSourcePresent(workbook, chart, context.documentId)
     const startedAt = performance.now(), timeoutMs = context.timeoutMs ?? 30_000
     const memoryBudget = Math.min(this.memoryBudget, chartPreparationBudget(context))
     assertChartPreparationCurrent(context)
@@ -258,6 +263,7 @@ export class ChartStatisticsService {
   private requestDetached(workbook: WorkbookModel, chart: ChartModel, context: ChartStatisticsRequestContext, sourceOnly: boolean,
     extra: Pick<Entry, 'settingsOnly' | 'authoring'> = {}): ChartStatisticsRequest {
     this.assertAlive()
+    this.assertSourcePresent(workbook, chart, context.documentId)
     const startedAt = performance.now(), timeoutMs = context.timeoutMs ?? 30_000
     const memoryBudget = Math.min(this.memoryBudget, chartPreparationBudget(context))
     assertChartPreparationCurrent(context)
@@ -343,7 +349,7 @@ export class ChartStatisticsService {
           onProgress: progress => this.publishProgress(entry, progress) }).promise
         this.assertEntryCurrent(entry)
         assertChartReadPermission(workbook, chart, entry.userId)
-        if (result.output.kind !== 'chartStatistics') throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '层级图任务返回了其他类型的结果')
+        if (result.output.kind !== 'chartStatistics') throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '图表布局任务返回了其他类型的结果')
         hierarchyMetrics = result.metrics
         return result.output
       } }
@@ -363,8 +369,18 @@ export class ChartStatisticsService {
       await validateChartSourceDataAsync(chart, data, preparation)
     }
     data = await prepareChartComputeInputs(data, chart, preparation)
-    const dataBytes = await estimateChartDataMemory(data, preparation)
+    let dataBytes = await estimateChartDataMemory(data, preparation)
     assertChartPreparationMemory(dataBytes, preparation)
+    if (chart.type === 'wordCloud' && !entry.sourceOnly && !entry.authoring) {
+      data = await prepareChartWordCloudLayout(data, chart, { ...preparation, memoryBudgetBytes: Math.max(1, available - dataBytes) })
+      dataBytes = await estimateChartDataMemory(data, preparation)
+      assertChartPreparationMemory(dataBytes, preparation)
+    }
+    if (chart.type === 'relation' && !entry.sourceOnly && !entry.authoring) {
+      data = await prepareChartRelationLayout(data, chart, { ...preparation, memoryBudgetBytes: Math.max(1, available - dataBytes) })
+      dataBytes = await estimateChartDataMemory(data, preparation)
+      assertChartPreparationMemory(dataBytes, preparation)
+    }
     if (entry.sourceOnly || entry.authoring && !chart.options?.mapping?.useDateAxis) {
       this.assertEntryCurrent(entry)
       return { documentId: entry.documentId, modelRevision: entry.modelRevision, chartId: entry.chartId, chartRevision: chart.revision,
@@ -463,6 +479,18 @@ export class ChartStatisticsService {
     if (!this.isCurrent(entry) || retained !== entry) throw new ComputeError('COMPUTE_STALE_RESULT', '图表来源版本已失效')
   }
 
+  private assertSourcePresent(workbook: WorkbookModel, chart: ChartModel, documentId: string): void {
+    const diagnostic = chartSourceNotFoundDiagnostic(workbook, chart)
+    if (!diagnostic) return
+    const error = new ChartSourceNotFoundError(diagnostic), cached = this.entries.get(documentId)?.get(chart.id)
+    if (cached) { cached.snapshot = undefined; this.rejectEntry(cached, error) }
+    for (const entry of [...this.candidates.values()]) if (entry.documentId === documentId && entry.chartId === chart.id) {
+      entry.snapshot = undefined; this.rejectEntry(entry, error)
+    }
+    if (cached) this.emit({ documentId, chartId: chart.id, reason: 'configuration' })
+    throw error
+  }
+
   private rejectEntry(entry: Entry, error: ComputeError): void {
     if (entry.failure) return
     entry.failure = error
@@ -537,6 +565,7 @@ export function chartStatisticsSignature(chart: ChartModel): string {
 }
 
 export function assertChartReadPermission(workbook: WorkbookModel, chart: ChartModel, userId: string): void {
+  assertChartSourcePresent(workbook, chart)
   const host = workbook.sheets.find(sheet => sheet.id === chart.sheetId)
   if (!host || !canViewWorksheetProtection(host, userId)) throw new ComputeError('COMPUTE_INVALID_INPUT', '没有查看图表所在工作表的权限')
   if (chart.pivotTableId) {

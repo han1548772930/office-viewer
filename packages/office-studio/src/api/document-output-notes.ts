@@ -24,7 +24,7 @@ export function writePublicDocumentNotes(model: DocumentModel, source: UniverBod
       if (notes[id]) throw new RangeError('公开 notes 不能包含同名脚注与尾注：' + id)
       const data = documentNoteToPublic(model, note, kind), original = bodyRecord(bodyRecord(source.notes)[id])
       const value: UniverDocumentNoteData = { ...cloneModel(original), noteId: id, type: kind, body: data.body,
-        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists,
+        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists, callouts: data.callouts, codes: data.codes,
         officeStudio: { version: 1, metadata: documentBodySourceMetadata(note.metadata, '注释', ['univerBodySource', 'univerDocumentSource']) },
         ...(note.customMark === undefined ? {} : { customMark: note.customMark }),
         ...(data.referenceTextStyle === undefined ? {} : { referenceTextStyle: data.referenceTextStyle }),
@@ -50,7 +50,7 @@ export function writePublicDocumentNotes(model: DocumentModel, source: UniverBod
       if (target[id]) throw new RangeError('普通注释与保留的分隔资源身份冲突：' + id)
       const data = encodeDocumentBody(content, documentDefaultStyle(model), documentBodyContentControls(content, model.contentControls))
       target[id] = { ...cloneModel(bodyRecord(bodyRecord(source[property])[id])), noteId: id, type: identity.type, ...data,
-        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists }
+        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists, callouts: data.callouts, codes: data.codes }
     }
   }
   return { notes, footnotes, endnotes, noteSettings }

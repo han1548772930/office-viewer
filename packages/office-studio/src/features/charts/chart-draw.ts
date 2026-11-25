@@ -25,7 +25,6 @@ import { chartFillPatternPaint } from './chart-fill-pattern'
 import { chartSeriesGradientBounds, createChartMarkGradient } from './chart-gradient'
 import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativeMarkerStyle, chartParetoCumulativePointStyle, chartParetoCumulativeStyle, chartParetoValuePercentages } from './chart-pareto'
 import { chartPointLabelAnchor } from './chart-labels'
-import { chartRelationLayout, chartRibbon, chartWordCloudLayout } from './chart-special-layout'
 import { createChartSankeyScene, type ChartSankeyScene } from './chart-sankey-draw'
 import { CHART_WATERFALL_GLOBAL_SERIES } from './chart-statistics'
 import { chartWaterfallConnector, chartWaterfallRoleStyles } from './chart-waterfall'
@@ -39,6 +38,7 @@ import { drawChartTreemap } from './chart-treemap-draw'
 import { drawChartSunburst } from './chart-sunburst-draw'
 import { drawChartSector } from './chart-sector-draw'
 import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
+import { createChartRelationScene, type ChartRelationScene } from './chart-relation-draw'
 
 export { drawChartSector } from './chart-sector-draw'
 
@@ -47,7 +47,7 @@ export function drawChartData(source: ChartData, chart: ChartModel, theme: Chart
   return drawDerivedChartData(derived, chart, theme, palette)
 }
 
-export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartModel, theme: ChartRenderTheme = {}, palette = chartPalette(chart, theme.palette), preparedLayout?: ChartLayout, preparedSankeyScene?: ChartSankeyScene, preparedChordScene?: ChartChordScene): DrawCommand[] {
+export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartModel, theme: ChartRenderTheme = {}, palette = chartPalette(chart, theme.palette), preparedLayout?: ChartLayout, preparedSankeyScene?: ChartSankeyScene, preparedChordScene?: ChartChordScene, preparedRelationScene?: ChartRelationScene): DrawCommand[] {
   const data = derived.data, layout = preparedLayout ?? layoutDerivedChartData(derived, chart, palette), descriptor = resolveChartType(chart.type)
   const heatmapScale = chart.type === 'heatmap' ? createChartHeatmapScale(chartHeatmapExtent(data, chart), palette, chart.options?.heatmap?.visualMapType) : undefined
   const background = chart.options?.appearance?.background ?? theme.backgroundColor ?? '#ffffff', textColor = chart.options?.appearance?.font?.color ?? theme.textColor ?? (chart.type === 'heatmap' ? '#334155' : '#64748b')
@@ -60,7 +60,7 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
   if (chart.subtitle) commands.push({ kind: 'text', x: layout.frame.x + layout.frame.width / 2, y: layout.frame.y + titleBand + Math.max(20, 12 + subtitleSize / 2), text: chart.subtitle, font: chartFont(subtitleFont, 11), color: subtitleFont.color ?? textColor, align: 'center', baseline: 'middle', maxWidth: Math.max(1, layout.frame.width - 20), clip: layout.frame })
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite)) {
     commands.push({ kind: 'text', x: layout.plot.x + layout.plot.width / 2, y: layout.plot.y + layout.plot.height / 2,
-      text: data.hierarchyDiagnostic ?? '暂无可绘制数据', font: chartFont(chart.options?.appearance?.font, 11), color: textColor, align: 'center', baseline: 'middle', maxWidth: layout.plot.width })
+      text: data.hierarchyDiagnostic ?? data.graph?.diagnostic ?? '暂无可绘制数据', font: chartFont(chart.options?.appearance?.font, 11), color: textColor, align: 'center', baseline: 'middle', maxWidth: layout.plot.width })
     return normalizeChartCommands(commands)
   }
   if (descriptor.threeD) {
@@ -76,7 +76,11 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
     const scene = preparedSankeyScene ?? createChartSankeyScene(data, chart, layout.sankey, textColor, palette, layout.frame)
     for (const command of scene.commands) commands.push(command)
   }
-  else if (descriptor.family === 'relation') drawGraph(commands, data, chart, layout, textColor, palette)
+  else if (descriptor.family === 'relation') {
+    if (!layout.relation) throw new TypeError('关系图绘制需要匹配的 Worker 节点布局。')
+    const scene = preparedRelationScene ?? createChartRelationScene(data, chart, layout.relation, theme, palette, layout.frame)
+    for (const command of scene.commands) commands.push(command)
+  }
   else if (descriptor.family === 'chord') {
     if (!layout.chord) throw new TypeError('和弦图绘制需要匹配的角度布局。')
     const scene = preparedChordScene ?? createChartChordScene(data, chart, layout.chord, theme, palette, layout.frame)
@@ -483,30 +487,11 @@ function drawWaterfall(commands: DrawCommand[], data: ChartData, chart: ChartMod
   }
 }
 
-function drawGraph(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
-  const graph = chartRelationLayout(data.graph!, chart, layout.plot)
-  for (const link of graph.links) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, link.colorIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), link.colorIndex, chart.type)
-    const fill = chartColorOpacity(style.color!, 0.6 * (style.fillOpacity ?? 1))
-    const pattern = chartFillPatternPaint(style.fillPattern, 0.6 * (style.fillOpacity ?? 1))
-    chartPolygon(commands, chartRibbon(link.points, link.width), fill, undefined, layout.plot, pattern)
-    const end = link.points.at(-1)!, previous = link.points[Math.max(0, link.points.length - 2)]!, dx = end.x - previous.x, dy = end.y - previous.y, distance = Math.max(1e-9, Math.hypot(dx, dy))
-    const target = graph.nodes.find(node => node.name === link.target)!, anchor = { x: end.x - dx / distance * target.width / 2, y: end.y - dy / distance * target.height / 2 }
-    chartPolygon(commands, [anchor, { x: anchor.x - dx / distance * 6 - dy / distance * 3, y: anchor.y - dy / distance * 6 + dx / distance * 3 }, { x: anchor.x - dx / distance * 6 + dy / distance * 3, y: anchor.y - dy / distance * 6 - dx / distance * 3 }], fill, undefined, layout.plot, pattern)
-  }
-  for (const node of graph.nodes) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, node.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), node.index, chart.type)
-    chartSymbol(commands, node, style.point?.size ?? node.width, chartColorOpacity(style.point?.color ?? style.color!, style.fillOpacity ?? 1), style.point?.shape ?? 'circle', style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
-    if (style.label?.visible !== false) commands.push({ kind: 'text', x: node.x, y: node.y + node.height / 2 + 10,
-      text: chartLabelText({ contentType: 'category', ...style.label }, node.value, node.name, data.series[0]!.name), font: chartFont(style.label, 10), color: style.label?.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot })
-  }
-}
-
 function drawWordCloud(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, palette: string[]): void {
-  const words = chartWordCloudLayout(data, chart.options?.wordCloud, layout.plot)
+  const words = layout.wordCloud ?? []
   for (const word of words) {
     const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, word.categoryIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), word.categoryIndex, chart.type)
-    commands.push({ kind: 'text', x: word.x + word.width / 2, y: word.y + word.height / 2, text: word.text, font: chartFont({ ...chart.options?.appearance?.font, ...style.label, fontSize: word.fontSize }), color: chartColorOpacity(style.color ?? palette[word.categoryIndex % palette.length]!, style.fillOpacity ?? 1), align: 'center', baseline: 'middle', rotation: word.rotation, clip: layout.plot })
+    commands.push({ kind: 'text', x: word.x + word.width / 2, y: word.y + word.height / 2, text: word.text, font: word.font, color: chartColorOpacity(style.color ?? palette[word.categoryIndex % palette.length]!, style.fillOpacity ?? 1), align: 'center', baseline: 'middle', rotation: word.rotation, clip: layout.plot })
   }
 }
 
@@ -600,7 +585,11 @@ function drawLegend(commands: DrawCommand[], derived: ChartDerivedData, chart: C
   const family = resolveChartType(chart.type).family
   const categoryLegend = ['pie', 'funnel', 'gauge', 'chord', 'relation', 'sankey', 'treemap', 'sunburst'].includes(family)
   const roots = data.hierarchy ? chartHierarchyItems(data.hierarchy).filter(item => item.depth === 0) : undefined
-  const items = categoryLegend ? data.categories.flatMap((name, index) => {
+  const items = family === 'relation' ? (data.graph?.categories ?? []).map((name, index) => {
+    const source = data.series[0]!, style = chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name)
+    return { name, color: chartColorOpacity(style.point?.color ?? style.color!, style.fillOpacity ?? 1),
+      pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) }
+  }) : categoryLegend ? data.categories.flatMap((name, index) => {
     if (family === 'gauge' && !Number.isFinite(data.series[0]?.values[index])) return []
     const style = roots?.[index] ? chartHierarchyPointStyle(chart, data.series[0]!.field, roots[index]!, palette, data.series[0]!.sourceName ?? data.series[0]!.name)
       : chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), index, chart.type)

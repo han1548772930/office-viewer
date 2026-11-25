@@ -12,6 +12,7 @@ import { documentContentControlContains, documentContentControlContainsSelection
 import { documentContentControlBlocksSelection, documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
 import { documentContentControlBlocksMutationSelection, documentContentControlBlocksValueMutationRange } from '../model/content-control-block-mutations'
 import { documentContentControlInlineMutationNeedsNoteTrace, documentContentControlInlineMutationSelection } from '../model/content-control-inline-mutations'
+import { documentContentControlSourceOrders } from '../model/content-control-source-order'
 
 export interface DocumentContentControlInteractionContext {
   source: DocumentModel
@@ -37,19 +38,25 @@ export function documentContentControlSelectionForId(model: DocumentModel, contr
   return scoped && contentControlSelectionInModel(scoped, controlId)
 }
 
-/** Explicit parents are authoritative; older ranges without parent IDs can resolve strict containment. */
+/** Explicit parents are authoritative. Equal imported ranges use their original customRanges order. */
 export function documentContentControlParentSelection(model: DocumentModel, controlId: string,
-  host?: DocumentAuxiliaryBlockHost): { controlId: string; selection: DocumentSelection } | undefined {
+  host?: DocumentAuxiliaryBlockHost, pageAffinity?: number): { controlId: string; selection: DocumentSelection } | undefined {
+  if (pageAffinity !== undefined && (!Number.isSafeInteger(pageAffinity) || pageAffinity < 0)) return undefined
   const scoped = contentControlScopedModel(model, host)
-  const controls = scoped?.contentControls?.filter(control => !control.metadata?.officeStoryLockSource)
+  if (!scoped) return undefined
+  const targetIds = new Set(textTargets(scoped).map(target => target.cellBlockId ?? target.blockId))
+  const controls = scoped.contentControls?.filter(control => !control.metadata?.officeStoryLockSource && targetIds.has(control.blockId))
   const child = controls?.find(control => control.id === controlId)
-  if (!scoped || !child || !contentControlSelectionInModel(scoped, child.id)) return undefined
+  if (!child || !contentControlSelectionInModel(scoped, child.id)) return undefined
   const contains = (parent: DocumentContentControl) => documentContentControlContains(scoped, parent, child)
-  const strict = (parent: DocumentContentControl) => parent.blockRange
-    ? !child.blockRange || JSON.stringify(parent.blockRange) !== JSON.stringify(child.blockRange)
-    : parent.tableRowRange
-    ? !child.tableRowRange || JSON.stringify(parent.tableRowRange) !== JSON.stringify(child.tableRowRange)
-    : parent.startOffset < child.startOffset || parent.endOffset > child.endOffset
+  const sourceOrders = documentContentControlSourceOrders(controls ?? [])
+  const childOrder = sourceOrders.get(child.id)
+  const eligible = (parent: DocumentContentControl) => {
+    if (!contains(parent)) return false
+    if (!documentContentControlContains(scoped, child, parent)) return true
+    const order = sourceOrders.get(parent.id)
+    return childOrder !== undefined && order !== undefined && order > childOrder
+  }
   const span = (control: DocumentContentControl) => control.blockRange
     ? documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(scoped, control.blockRange)).size * 1_000_000
     : control.tableRowRange
@@ -57,8 +64,17 @@ export function documentContentControlParentSelection(model: DocumentModel, cont
     : control.endOffset - control.startOffset
   try {
     const parent = child.parentId ? controls?.find(control => control.id === child.parentId && contains(control))
-      : controls?.filter(control => contains(control) && strict(control)).sort((left, right) => span(left) - span(right))[0]
+      : controls?.filter(eligible).sort((left, right) => {
+        const leftContains = documentContentControlContains(scoped, left, right), rightContains = documentContentControlContains(scoped, right, left)
+        if (leftContains !== rightContains) return leftContains ? 1 : -1
+        return span(left) - span(right)
+          || (sourceOrders.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (sourceOrders.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+      })[0]
     const selection = parent && contentControlSelectionInModel(scoped, parent.id)
+    if (selection && pageAffinity !== undefined) {
+      selection.anchor.pageAffinity = pageAffinity; selection.focus.pageAffinity = pageAffinity
+      if (selection.tableSelection) selection.tableSelection.pageAffinity = pageAffinity
+    }
     return parent && selection ? { controlId: parent.id, selection } : undefined
   } catch (error) {
     if (error instanceof TypeError || error instanceof RangeError) return undefined
@@ -192,6 +208,7 @@ export function documentContentControlFocusTokenMatchesRequest(token: DocumentCo
   request: DocumentContentControlSelectionRequest): boolean {
   const source = token.request, captured = source.inputSession, current = request.inputSession
   return source.source === request.source && source.controlId === request.controlId
+    && (source.mode ?? 'value') === (request.mode ?? 'value')
     && sameDocumentBlockHost(source.host, request.host)
     && sameDocumentInputLocation(documentInputLocation(source.selection, undefined, source.host), documentInputLocation(request.selection, undefined, request.host))
     && !!captured && !!current && captured.modelRevision === current.modelRevision && captured.generation === current.generation

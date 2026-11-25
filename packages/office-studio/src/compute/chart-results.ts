@@ -41,7 +41,7 @@ export function readChartStatisticsOutput(value: unknown, params: ChartStatistic
       || candidate.field !== params.series[job.seriesIndex]?.field || candidate.slot !== job.slot
       || candidate.seriesPosition !== params.series[job.seriesIndex]?.seriesPosition
       || candidate.valueOffset !== valueOffset || candidate.indexOffset !== indexOffset
-      || candidate.validSampleCount > params.rowCount * (job.kind === 'waterfallLayout' ? job.seriesIndices.length : 1)) return null
+      || candidate.validSampleCount > (job.kind === 'wordCloud' ? job.glyphs.length : params.rowCount * (job.kind === 'waterfallLayout' ? job.seriesIndices.length : 1))) return null
     valueOffset += candidate.valueLength; indexOffset += candidate.indexLength
     if (valueOffset > value.values.length || indexOffset > value.indices.length) return null
     if (job.kind !== 'trendline' && (candidate.fit !== undefined || candidate.r2 !== undefined)) return null
@@ -72,6 +72,14 @@ export function readChartStatisticsOutput(value: unknown, params: ChartStatistic
       case 'waterfall':
         if (candidate.valueLength !== params.rowCount * 3 || candidate.indexLength !== params.rowCount * 2
           || candidate.available !== (params.rowCount > 0)) return null
+        break
+      case 'wordCloud':
+        if (candidate.valueLength !== candidate.indexLength * 3 || candidate.indexLength > job.glyphs.length
+          || candidate.validSampleCount !== candidate.indexLength || candidate.available !== (candidate.indexLength > 0)) return null
+        break
+      case 'relationLayout':
+        if (candidate.valueLength !== job.nodeCount * 3 || candidate.indexLength !== job.nodeCount
+          || candidate.validSampleCount !== job.nodeCount || candidate.available !== (job.nodeCount > 0)) return null
         break
       case 'chord': {
         if (candidate.indexLength < 2) return null

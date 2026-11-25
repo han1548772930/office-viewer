@@ -14,7 +14,7 @@ import type { DocumentLayout } from '../../features/document/layout/document-lay
 import { contentControlFragmentVisibleRect, contentControlSelectionAtFragment, type DocumentContentControlGeometry, type LayoutContentControlFragment } from '../../features/document/layout/content-control-geometry'
 import { sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { contentControlValueCommandState } from '../../features/document/commands/content-control-command-state'
-import type { DocumentContentControlCommandRequest, DocumentContentControlSelectionRequest, DocumentContentControlValueCommand } from '../../features/document/commands/content-control-command-types'
+import type { DocumentContentControlCommandRequest, DocumentContentControlPopupMode, DocumentContentControlSelectionRequest, DocumentContentControlValueCommand } from '../../features/document/commands/content-control-command-types'
 import { formatContentControlDate, validContentControlIsoDate } from '../../features/document/services/content-control-presentation'
 import type { DocumentPermissionContext } from '../../features/document/permissions/document-permissions'
 
@@ -26,6 +26,7 @@ const props = defineProps<{
   selection: DocumentSelection
   viewport: DocumentViewport
   activeControlId?: string
+  popupMode?: DocumentContentControlPopupMode
   host?: DocumentAuxiliaryBlockHost
   permission?: DocumentPermissionContext
   disabled?: boolean
@@ -46,6 +47,7 @@ const draft = reactive({ value: '' })
 const validationError = ref('')
 const saving = ref(false)
 const editorComposing = ref(false)
+let interactionGeneration = 0
 function isValueForm(value: unknown): value is Pick<FormInstance, 'validateFields'> {
   return value !== null && typeof value === 'object' && 'validateFields' in value && typeof value.validateFields === 'function'
 }
@@ -97,10 +99,11 @@ function state(control: DocumentContentControl) {
 }
 function requestFor(geometry: DocumentContentControlGeometry, fragment: LayoutContentControlFragment): DocumentContentControlSelectionRequest {
   return { controlId: geometry.control.id, selection: contentControlSelectionAtFragment(geometry, fragment), source: props.source,
-    host: props.host ? { ...props.host } : undefined, inputSession: props.captureInputSession?.(props.source) }
+    host: props.host ? { ...props.host } : undefined, inputSession: props.captureInputSession?.(props.source), mode: 'value' }
 }
 function requestCurrent(request: DocumentContentControlSelectionRequest) {
   return !props.disabled && !props.inactive && request.source === props.source && sameDocumentBlockHost(request.host, props.host)
+    && request.controlId === props.activeControlId && (request.mode ?? 'value') === (props.popupMode ?? 'value')
     && props.model.contentControls?.some(control => control.id === request.controlId)
     && requestSelectionCurrent(request.selection)
     && (!props.captureInputSession || request.inputSession?.valid)
@@ -119,9 +122,11 @@ async function checkboxChanged(geometry: DocumentContentControlGeometry, fragmen
   if (!state(geometry.control).available) return
   const checked = typeof event === 'boolean' ? event : Boolean(event.target?.checked)
   const source = props.source, host = props.host ? { ...props.host } : undefined
+  cancelInteraction()
+  const generation = interactionGeneration
   selectControl(geometry, fragment)
   await nextTick()
-  if (source !== props.source || !sameDocumentBlockHost(host, props.host) || !state(geometry.control).available) return
+  if (generation !== interactionGeneration || source !== props.source || !sameDocumentBlockHost(host, props.host) || !state(geometry.control).available) return
   const request = requestFor(geometry, fragment)
   if (!requestCurrent(request)) return
   emit('command', { ...request, command: commandFor(geometry.control, checked) })
@@ -130,9 +135,11 @@ async function checkboxChanged(geometry: DocumentContentControlGeometry, fragmen
 async function openEditor(geometry: DocumentContentControlGeometry, fragment: LayoutContentControlFragment, anchorKey: string) {
   if (!state(geometry.control).available) return
   const source = props.source, host = props.host ? { ...props.host } : undefined
+  cancelInteraction()
+  const generation = interactionGeneration
   selectControl(geometry, fragment)
   await nextTick()
-  if (source !== props.source || !sameDocumentBlockHost(host, props.host) || !state(geometry.control).available) return
+  if (generation !== interactionGeneration || source !== props.source || !sameDocumentBlockHost(host, props.host) || !state(geometry.control).available) return
   const request = requestFor(geometry, fragment)
   if (!requestCurrent(request)) return
   editor.value = { request, control: geometry.control, anchorKey }
@@ -142,7 +149,7 @@ async function openEditor(geometry: DocumentContentControlGeometry, fragment: La
   await nextTick()
   if (editor.value?.request === request && requestCurrent(request)) editorInput.value?.focus()
 }
-function cancelInteraction() { editor.value = undefined; validationError.value = ''; editorComposing.value = false; saving.value = false }
+function cancelInteraction() { interactionGeneration++; editor.value = undefined; validationError.value = ''; editorComposing.value = false; saving.value = false }
 function closeEditor(refocus = true) {
   const request = editor.value?.request
   cancelInteraction()
@@ -176,17 +183,19 @@ async function submitValue() {
     const availability = contentControlValueCommandState(props.source, command, { host: props.host, permission: props.permission, disabled: props.disabled })
     if (!availability.available) { validationError.value = availability.reason ?? '无法修改控件值。'; return }
     emit('command', { ...current.request, command })
-    closeEditor()
+    if (editor.value === current) closeEditor()
   } catch (reason) {
     // Form owns field validation messages. Other errors remain visible beside the editor.
-    if (reason instanceof Error) validationError.value = reason.message
-  } finally { saving.value = false }
+    if (editor.value === current && reason instanceof Error) validationError.value = reason.message
+  } finally { if (editor.value === current) saving.value = false }
 }
 function editorKeys(event: KeyboardEvent) {
   if (event.isComposing || editorComposing.value || event.keyCode === 229) return
   if (event.key === 'Escape') { event.preventDefault(); closeEditor() }
 }
 watch(() => props.source, cancelInteraction)
+watch(() => props.popupMode, mode => { if (mode === 'properties') cancelInteraction() }, { flush: 'sync' })
+watch(() => props.activeControlId, id => { if (editor.value && editor.value.request.controlId !== id) cancelInteraction() }, { flush: 'sync' })
 watch(() => props.host, cancelInteraction, { deep: true })
 watch(() => props.permission, () => { if (editor.value && !state(editor.value.control).available) cancelInteraction() }, { deep: true })
 watch(() => [props.disabled, props.inactive], ([disabled, inactive]) => { if (disabled || inactive) cancelInteraction() })
@@ -200,7 +209,7 @@ defineExpose({ cancelInteraction })
 </script>
 
 <template>
-  <div class="content-control-overlay" :style="themeStyle">
+  <div class="content-control-overlay" :style="themeStyle" :data-content-control-popup-mode="popupMode ?? 'value'">
     <Tooltip v-for="item in checkboxes" :key="item.key" :title="state(item.geometry.control).reason ?? label(item.geometry.control)">
       <Checkbox class="content-control-checkbox" :style="rectStyle(item.fragment)" :data-content-control-id="item.geometry.control.id"
         :checked="item.geometry.control.checked ?? item.geometry.control.checkbox?.checked ?? false" :disabled="!state(item.geometry.control).available"

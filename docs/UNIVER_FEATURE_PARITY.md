@@ -42,13 +42,15 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 
 协作、版本历史、持久评论与权限需要本项目内的真实服务及协议。BroadcastChannel 或多个本地数组只能作为辅助测试，不能替代跨用户服务验收。公开的“collaboration: true”、命令常量或数据类型并不构成能力实现。
 
+2026-11-25 用户要求先完成前端，后端暂缓；ntex、同步作业、协作/权限/持久历史等需求保存在[后端需求](BACKEND_REQUIREMENTS.md)，全部范围和未验收状态保留。
+
 ## 3. Sheets 全量目标
 
 顶部 Ribbon 根入口、插件扩展、上下文菜单与 Microsoft Excel 补充候选项见[Docs 与 Sheets 顶部功能区对齐清单](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)及[Sheets 固定源码入口清点](feature-evidence/SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)。
 
 | ID | 能力 | 公开依据 | 本项目交付与验收要点 | 当前 |
 | --- | --- | --- | --- | --- |
-| SHEET-01 | 工作簿、工作表生命周期 | 公开源码 sheets、sheets-ui；[核心][sheet-core]、[API][sheet-api] | 新建/复制/删除/重命名/重排、颜色、隐藏/veryHidden、活动表、校验和可撤销事务 | 未验收 |
+| SHEET-01 | 工作簿、工作表生命周期 | 公开源码 sheets、sheets-ui；[核心][sheet-core]、[API][sheet-api] | 新建/复制/删除/重命名/重排、颜色、隐藏/veryHidden、活动表、校验和可撤销事务 | 未验收；[复制资源与命令闭环](feature-evidence/SHEET-01-worksheet-copy.md)、[生命周期／引用／标签交互](feature-evidence/SHEET-01-worksheet-lifecycle.md) |
 | SHEET-02 | 范围、选区和网格编辑 | 公开源码 selection/editor；[范围规格][sheet-selection] | 单元格/区域/行列/全选/多选、拖选、填充、合并、F2/直接输入、Enter/Tab/Escape；双向视口处理 | 未验收；[合并、取消合并与分类清除](feature-evidence/SHEET-02-merge-clear.md)、[完整选区与共享单格输入](feature-evidence/COMMON-03-input-selection-axis-history.md#2-sheets-的共享模型与事务) |
 | SHEET-03 | 行列结构与尺寸 | [行列规格][sheet-row-col]、公开源码 commands | 插删/移动/复制/隐藏/显示/自动适应、行高列宽；更新公式与所有范围资源 | 未验收；[轴命令、资源变换与宿主发布保护](feature-evidence/COMMON-03-input-selection-axis-history.md#3-行列命令与-ui) |
 | SHEET-04 | 样式、默认样式、范围主题 | 公开源码 style/numfmt；[默认样式][sheet-style]、[范围主题][sheet-range-theme] | 字体、填充、边框、对齐、旋转、换行、缩小适应、继承/主题与混合态；按真实模型生效 | 未验收；[字体与字号](feature-evidence/SHEET-04-font-family-size.md)、[颜色与重置](feature-evidence/SHEET-04-color-reset.md)、[边框](feature-evidence/SHEET-04-borders.md)、[旋转/竖排/缩小适应](feature-evidence/SHEET-04-text-rotation-shrink-to-fit.md)、[分类清除](feature-evidence/SHEET-02-merge-clear.md)、[格式刷与规则模型](feature-evidence/SHEET-04-format-painter.md) |

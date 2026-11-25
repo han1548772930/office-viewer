@@ -37,21 +37,21 @@ export function* chartSourceValidationSteps(chart: ChartModel, source: ChartData
   if (data.visibleFields !== undefined && (!data.categories.length || !data.series.length)) return
   if (descriptor.dataShape === 'hierarchy' && data.hierarchy && !data.hierarchy.length && data.series.length === 1) return
   if (type === 'chord' && data.chord && !data.chord.links.length && data.series.length === 1) return
+  if (type === 'relation' && data.graph && !data.graph.nodes.length && data.series.length === 1) return
   if (!data.categories.length || !data.series.length) throw new RangeError('Chart source must contain at least one category and value series')
   if (type === 'radar' && data.categories.length < 3) throw new RangeError('Radar charts require at least three categories')
   const paired = type === 'scatter' || type === 'bubble'
-  let hasPair = false, pieFinite = false, piePositive = false, pieNegative = false, negativeSize = false, negativeWeight = false
+  let hasPair = false, pieFinite = false, piePositive = false, pieNegative = false, negativeSize = false
   for (const series of data.series) {
     if (!series.values.length || series.values.length !== data.categories.length) throw new RangeError('Chart series must have one value per category')
     if (paired && (!series.xValues || series.xValues.length !== series.values.length)) throw new RangeError('Scatter series must have one X value per Y value')
-    if (paired || descriptor.family === 'pie' || type === 'wordCloud') {
+    if (paired || descriptor.family === 'pie') {
       for (let index = 0; index < series.values.length; index++) {
         const value = series.values[index]!
         if (paired && value !== null && series.xValues?.[index] != null) hasPair = true
         if (descriptor.family === 'pie' && value !== null && Number.isFinite(value)) {
           pieFinite = true; piePositive ||= value > 0; pieNegative ||= value < 0
         }
-        if (type === 'wordCloud' && value !== null && value < 0) negativeWeight = true
         if (++work % CHART_PREPARATION_CHUNK === 0) yield
       }
     }
@@ -79,5 +79,4 @@ export function* chartSourceValidationSteps(chart: ChartModel, source: ChartData
   if (descriptor.dataShape === 'hierarchy' && data.series.length !== 1) throw new RangeError('层级图须选择一个数值权重字段。')
   if (type === 'pareto' && data.series.length !== 1) throw new RangeError('帕累托图须选择一个数值权重字段。')
   if ((type === 'funnel' || type === 'wordCloud') && data.series.length !== 1) throw new RangeError('漏斗和词云图须选择一个权重字段。')
-  if (negativeWeight) throw new RangeError('此图表的权重不能为负数。')
 }

@@ -5,6 +5,7 @@ import { documentBlockHostForId, documentBlockHostId, documentEditingBlockHost, 
 import { documentTableCellsInRange, documentTableGrid } from '../model/document-table-grid'
 import { documentTableDescendantIds, resolveDocumentTableViewSelection } from '../model/document-table-selection'
 import { documentTableCellBlocks } from '../model/document-table-continuations'
+import { documentBlockChildContainers, isDocumentStructuredBlock } from '../model/document-structural-blocks'
 import { flattenDocumentBody } from '../services/document-facade'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock } from '../services/section-header-footer'
 import { DOCUMENT_STORY_KEYS } from '../model/document-story'
@@ -194,9 +195,8 @@ export function permissionTargetsForBlock(model: DocumentModel, blockId: string)
 function blockPermissionAncestry(blocks: readonly DocumentBlock[], id: string): DocumentBlock[] | undefined {
   for (const block of blocks) {
     if (block.id === id) return [block]
-    const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
-    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
-      const nested = blockPermissionAncestry(documentTableCellBlocks(cell), id)
+    for (const container of documentBlockChildContainers(block)) {
+      const nested = blockPermissionAncestry(container, id)
       if (nested) return [block, ...nested]
     }
   }
@@ -274,9 +274,8 @@ function flattenBlocks(blocks: readonly DocumentBlock[]): Map<string, DocumentBl
   const result = new Map<string, DocumentBlock>()
   for (const block of blocks) {
     result.set(block.id, block)
-    const table = block.metadata.table as { rows?: Array<{ cells?: Array<{ blocks?: DocumentBlock[] }> }> } | undefined
-    for (const row of table?.rows ?? []) for (const cell of row.cells ?? []) {
-      for (const [id, nested] of flattenBlocks(documentTableCellBlocks(cell))) result.set(id, nested)
+    for (const container of documentBlockChildContainers(block)) {
+      for (const [id, nested] of flattenBlocks(container)) result.set(id, nested)
     }
   }
   return result
@@ -288,7 +287,7 @@ function samePoint(target: TextTarget, point: TextTarget): boolean {
 }
 
 function isPermissionEntity(block: DocumentBlock): boolean {
-  return block.type === 'table' || block.type === 'image' || block.type === 'divider'
+  return isDocumentStructuredBlock(block) || block.type === 'table' || block.type === 'image' || block.type === 'divider'
     || block.type === 'pageBreak' || block.type === 'columnBreak' || block.type === 'sectionBreak'
 }
 

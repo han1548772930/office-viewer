@@ -63,7 +63,7 @@ export function writePublicDocumentStories(model: DocumentModel, source: UniverB
       used[kind].set(id, signature); written[kind].add(id)
       const raw = bodyRecord(sourceMaps[kind][preferred])
       Object.assign(kind === 'headers' ? headers : footers, { [id]: { ...cloneModel(raw), ...data,
-        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists, [identity]: id } })
+        tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists, callouts: data.callouts, codes: data.codes, [identity]: id } })
       previous.set(story, id); descriptor[reference] = id
     }
   }

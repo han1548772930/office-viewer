@@ -59,7 +59,7 @@ import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeade
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { selectedDocumentContentControlForSelection } from '../features/document/services/content-controls'
 import { contentControlCheckboxStyle } from '../features/document/services/content-control-presentation'
-import type { DocumentContentControlCommandRequest, DocumentContentControlRepeatingItemCommand, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
+import type { DocumentContentControlCommandRequest, DocumentContentControlPopupMode, DocumentContentControlRepeatingItemCommand, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
 import { contentControlPictureCommandState, contentControlRepeatingItemCommandState, contentControlValueCommandState } from '../features/document/commands/content-control-command-state'
 import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlInteractionCurrent, documentContentControlParentSelection, documentContentControlSelectionAfterRepeatingItemEdit, documentContentControlSelectionAfterValueEdit, documentContentControlSelectionForId, type DocumentContentControlFocusToken } from '../features/document/controllers/content-control-interaction'
 import { documentContentControlInputForSelection, documentContentControlSelectionAfterInsertion } from '../features/document/controllers/content-control-insertion'
@@ -217,6 +217,7 @@ const notice = ref('')
 const documentContextMenu = shallowRef<{ left: number; top: number; fieldRequest?: { source: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost; bodySelection?: DocumentSelection; requestScope: number } }>()
 const contentControlPanelOpen = ref(false)
 const activeContentControlId = ref<string>()
+const activeContentControlPopupMode = ref<DocumentContentControlPopupMode>('value')
 type DocumentPictureReplacementRequest = DocumentContentControlSelectionRequest & { api: FDocument }
 const pictureReplacementRequest = shallowRef<DocumentPictureReplacementRequest>()
 let pendingPictureFocus: DocumentContentControlFocusToken | undefined
@@ -1238,6 +1239,7 @@ function leaveCodeBlock(blockId: string) {
 }
 function onSelection(value: DocumentSelection) {
   activeContentControlId.value = undefined
+  activeContentControlPopupMode.value = 'value'
   standalonePendingMarks.value = {}
   selection.value = value
   visibleBlockId.value = value.focus.blockId
@@ -1254,6 +1256,7 @@ function onContentControlSelection(request: DocumentContentControlSelectionReque
   if (!contentControlRequestCurrent(request)) return
   onSelection(cloneDocumentSelection(request.selection))
   activeContentControlId.value = request.controlId
+  activeContentControlPopupMode.value = request.mode ?? 'value'
 }
 function onContentControlCommand(request: DocumentContentControlCommandRequest) {
   const api = props.documentApi
@@ -2414,11 +2417,12 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.select-parent-sdt': {
       const control = selectedContentControl.value, source = model.value, api = props.documentApi
       const host = editingHost.value && { ...editingHost.value }
-      const parent = control && documentContentControlParentSelection(source, control.id, host)
+      const parent = control && documentContentControlParentSelection(source, control.id, host, selection.value.focus.pageAffinity)
       if (!parent || !api || !inputStateActive || documentInputComposing.value || legacyStoryActive.value) break
       const input = captureInputSession(source)
       if (!input?.valid || input.location.kind !== 'body' || !sameDocumentBlockHost(input.location.host, host)) break
       try {
+        canvasRef.value?.cancelContentControlPopup()
         onSelection(cloneDocumentSelection(parent.selection))
         const current = captureInputSession()
         if (!inputStateActive || documentInputComposing.value || legacyStoryActive.value
@@ -2427,6 +2431,7 @@ function onRibbonExecute(id: string, params?: unknown) {
           || current.location.kind !== 'body' || !sameDocumentBlockHost(current.location.host, host)
           || JSON.stringify(current.location.selection) !== JSON.stringify(parent.selection)) break
         activeContentControlId.value = parent.controlId
+        activeContentControlPopupMode.value = 'properties'
         canvasRef.value?.scrollToBlock(parent.selection.focus.blockId)
         // The shared input-state listener restores focus after checking the
         // current revision, generation and host; do not renew an observer's state.
@@ -2572,7 +2577,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :inspection-host="blockHostInspection?.host" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
-            :active-content-control-id="activeContentControlId" @content-control-selection="onContentControlSelection" @content-control-command="onContentControlCommand"
+            :active-content-control-id="activeContentControlId" :active-content-control-popup-mode="activeContentControlPopupMode" @content-control-selection="onContentControlSelection" @content-control-command="onContentControlCommand"
             @note-navigation="onNoteCanvasNavigation"
             :permission-context="permissionContext" :table-floating-toolbar="tableFloatingToolbarOpen" @operation="onRibbonExecute"
             @selection-committed="applyPainter(painter?.format)"

@@ -4,12 +4,13 @@ import { intersectRect, parseColor } from '../../../rendering/geometry'
 import type { DocumentSelection } from '../model/document-model'
 import { blockAtPoint, documentTextColor, findDocumentBlock, orderedSelection, sameTarget, selectionCollapsed, tableForBlock, targetKey, textTargets, type TextTarget } from '../model/document-model'
 import { caretRect, documentStoryCaretRect, type DocumentLayout, type LayoutStoryLine } from '../layout/document-layout'
-import { codeBlockData, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
+import { codeBlockData, codeBlocks as documentCodeBlocks, tokenizeCode, type CodeTokenKind } from '../code-blocks/code-blocks.ts'
 import { documentTocHighlightLayout } from '../toc/document-toc-layout'
 import { appendDocumentTableCell } from './document-table-scene'
 import { documentTableCellsInRange, documentTableGrid, expandDocumentTableRange } from '../model/document-table-grid'
 import type { DocumentTableGesturePreview } from '../layout/document-table-interaction'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
+import { appendDocumentContainerDecoration } from './document-container-scene'
 
 export interface DocumentViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
 export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; tocPrimaryColor?: string; tableGesture?: DocumentTableGesturePreview; searchMatches?: Array<{ target: TextTarget; start: number; end: number }>; host?: DocumentAuxiliaryBlockHost; selectionModel?: DocumentModel; selectionLayout?: DocumentLayout; story?: { location: { page: number; area: 'header' | 'footer' }; selection: { start: number; end: number } } }
@@ -82,9 +83,17 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     const body = layout.pageContent[pageIndex], auxiliary = [...(layout.auxiliaryContent ?? []), ...(layout.noteDecorations ?? [])].filter(content => content.page === pageIndex)
     if (!body && !auxiliary.length) continue
     const content = { cells: [...(body?.cells ?? []), ...auxiliary.flatMap(content => content.cells)], images: [...(body?.images ?? []), ...auxiliary.flatMap(content => content.images)],
-      dividers: [...(body?.dividers ?? []), ...auxiliary.flatMap(content => content.dividers)], columnSeparators: body?.columnSeparators ?? [] }
-    for (const cell of content.cells) {
-      if (visible(cell)) appendDocumentTableCell(commands, cell, rect(cell), rect(layout.pages[pageIndex]!), scale, cell.clip ? rect(cell.clip) : undefined)
+      dividers: [...(body?.dividers ?? []), ...auxiliary.flatMap(content => content.dividers)], columnSeparators: body?.columnSeparators ?? [],
+      containers: [...(body?.containers ?? []), ...auxiliary.flatMap(content => content.containers ?? [])] }
+    const backgrounds = [...content.cells.map(cell => ({ kind: 'cell' as const, item: cell, layer: (cell.depth ?? 0) * 2 })),
+      ...content.containers.map(container => ({ kind: 'container' as const, item: container, layer: container.tableDepth === undefined ? -1 : container.tableDepth * 2 - 1 }))]
+      .sort((a, b) => a.layer - b.layer || b.item.width * b.item.height - a.item.width * a.item.height)
+    for (const background of backgrounds) {
+      if (!visible(background.item)) continue
+      if (background.kind === 'cell') appendDocumentTableCell(commands, background.item, rect(background.item), rect(layout.pages[pageIndex]!), scale,
+        background.item.clip ? rect(background.item.clip) : undefined)
+      else appendDocumentContainerDecoration(commands, background.item, rect(background.item), background.item.clip
+        ? intersectRect(rect(layout.pages[pageIndex]!), rect(background.item.clip)) : rect(layout.pages[pageIndex]!), scale)
     }
     for (const cell of content.cells) {
       if (cell.tableId !== tableView?.tableId || !cell.cellId || !selectedCells.has(cell.cellId) || !visible(cell)) continue
@@ -130,10 +139,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   for (const matches of matchesByTarget.values()) matches.sort((a, b) => a.start - b.start)
   const visibleLines = [...visiblePages].flatMap((pageIndex) => [...(layout.pageContent[pageIndex]?.lines ?? []),
     ...[...(layout.auxiliaryContent ?? []), ...(layout.noteDecorations ?? [])].filter(content => content.page === pageIndex).flatMap(content => content.lines)])
-  const codeBlocks = new Map(targets.flatMap(target => {
-    const block = blockAtPoint(selectionModel, target), data = block && codeBlockData(block)
-    return block && data ? [[block.id, data] as const] : []
-  }))
+  const codeBlocks = new Map(documentCodeBlocks(selectionModel).flatMap(block => { const data = codeBlockData(block); return data ? [[block.id, data] as const] : [] }))
   const codeTokens = new Map([...codeBlocks].map(([blockId, data]) => [blockId, tokenizeCode(data.source, data.language)]))
   for (const line of visibleLines) {
     if (!visible(line)) continue
@@ -143,13 +149,15 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     const lineMatches = matchesByTarget.get(targetKey(line.target)) ?? []
     const start = sameTarget(line.target, ordered.start) ? ordered.start.offset : 0
     const end = sameTarget(line.target, ordered.end) ? ordered.end.offset : Number.POSITIVE_INFINITY
-    const codeKey = line.target.cellBlockId ?? line.target.blockId
+    const codeKey = line.codeBlock?.containerId ?? line.target.cellBlockId ?? line.target.blockId
     const codeData = line.codeBlock ? codeBlocks.get(codeKey) : undefined
-    if (line.codeBlock) {
+    if (line.codeBlock && !line.codeBlock.containerId) {
       commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: line.height * scale, fill: '#f1f4f8', clip })
       if (line.codeBlock.lineNumber === 1) commands.push({ kind: 'rect', x: x(line.x - 8), y: y(line.y), width: (line.width + 16) * scale, height: Math.max(2, scale), fill: '#dce3ec', clip })
       if (codeData?.lineNumbers) commands.push({ kind: 'text', x: x(line.x - 3), y: y(line.baseline), text: String(line.codeBlock.lineNumber), font: `${10 * scale}px Consolas, monospace`, color: '#8a96a5', align: 'right', baseline: 'alphabetic', clip })
     }
+    if (line.codeBlock?.containerId && line.codeBlock.showLineNumbers && line.codeBlock.numberVisible) commands.push({ kind: 'text',
+      x: x(line.x - 10), y: y(line.baseline), text: String(line.codeBlock.lineNumber), font: `${10 * scale}px Consolas, monospace`, color: '#8a96a5', align: 'right', baseline: 'alphabetic', clip })
     if (line.marker) {
       const font = line.markerStyle?.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`) ?? `${14 * scale}px Arial`
       commands.push({ kind: 'text', x: x(line.markerStyle?.x ?? line.x - 6), y: y(line.baseline), text: line.marker, font,
@@ -174,7 +182,8 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
         continue
       }
       const font = glyph.font.replace(/([\d.]+)px/, (_whole, fontSize: string) => `${Number(fontSize) * scale}px`)
-      const token = codeData && codeTokens.get(codeKey)?.find((candidate) => glyph.offset >= candidate.start && glyph.offset < candidate.end)
+      const codeOffset = glyph.offset + (line.codeBlock?.sourceOffset ?? 0)
+      const token = codeData && codeTokens.get(codeKey)?.find((candidate) => codeOffset >= candidate.start && codeOffset < candidate.end)
       const text = glyph.tab ? glyph.tab.leaderText : glyph.text === '\t' ? '    ' : glyph.text
       if (text) commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text, font, color: token && glyph.run.metadata?.codeSyntaxHighlight !== false ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor,
         ...(glyph.tab ? { maxWidth: glyph.width * scale } : {}), clip })

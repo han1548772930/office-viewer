@@ -38,7 +38,7 @@ export function arrangeDocumentPages(layout: DocumentLayout): void {
     }
   }
   for (const line of layout.lines) shiftLine(line, shifts[line.page]!)
-  for (const item of [...layout.cells, ...layout.images, ...layout.dividers]) {
+  for (const item of [...layout.cells, ...layout.images, ...layout.dividers, ...(layout.containers ?? [])]) {
     shiftClipped(item, shifts[item.page]!)
   }
   for (const table of layout.tableFragments ?? []) shiftClipped(table, shifts[table.page]!)
@@ -47,7 +47,7 @@ export function arrangeDocumentPages(layout: DocumentLayout): void {
     shiftRect(content, dx)
     if ('columns' in content) for (const column of content.columns ?? []) shiftRect(column, dx)
     for (const line of content.lines) shiftLine(line, dx)
-    for (const item of [...content.cells, ...content.images, ...content.dividers, ...content.tableFragments]) shiftClipped(item, dx)
+    for (const item of [...content.cells, ...content.images, ...content.dividers, ...content.tableFragments, ...(content.containers ?? [])]) shiftClipped(item, dx)
   }
   // Block-story lines and headerLayoutLines share objects. Shift each geometry
   // once, including their shared page clips, before publishing page indexes.
@@ -58,10 +58,11 @@ export function arrangeDocumentPages(layout: DocumentLayout): void {
   }
   const last = layout.pages.at(-1)
   layout.height = last ? last.y + last.height + PAGE_INSET : 0
-  layout.pageContent = layout.pages.map(() => ({ lines: [], cells: [], images: [], dividers: [], columnSeparators: [] }))
+  layout.pageContent = layout.pages.map(() => ({ lines: [], cells: [], images: [], dividers: [], columnSeparators: [], containers: [] }))
   for (const line of layout.lines) layout.pageContent[line.page]?.lines.push(line)
   for (const cell of layout.cells) layout.pageContent[cell.page]?.cells.push(cell)
   for (const image of layout.images) layout.pageContent[image.page]?.images.push(image)
   for (const divider of layout.dividers) layout.pageContent[divider.page]?.dividers.push(divider)
   for (const separator of layout.columnSeparators) layout.pageContent[separator.page]?.columnSeparators.push(separator)
+  for (const container of layout.containers ?? []) layout.pageContent[container.page]?.containers?.push(container)
 }

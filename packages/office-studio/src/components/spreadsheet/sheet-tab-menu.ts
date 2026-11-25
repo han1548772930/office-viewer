@@ -4,6 +4,7 @@ export interface SheetTabMenuActions {
   protect(sheetId: string): void
   unprotect(sheetId: string): void
   setColor(sheetId: string, color: string): void
+  customColor?(sheetId: string): void
   hide(sheetId: string): void
   delete(sheetId: string): void
 }
@@ -36,6 +37,7 @@ export function createSheetTabMenu(
         { key: 'color:#00b0f0', label: translate('sheet.footer.cyan', '青色') },
         { key: 'color:#4472c4', label: translate('sheet.footer.blue', '蓝色') },
         { key: 'color:#7030a0', label: translate('sheet.footer.purple', '紫色') },
+        ...(actions.customColor ? [{ key: 'color-custom', label: translate('sheet.footer.custom-color', '自定义颜色…') }] : []),
       ] },
       { key: 'protect-sheet', label: translate('sheet.footer.protect-sheet', isProtected ? '工作表保护设置' : '保护工作表') },
       ...(isProtected ? [{ key: 'unprotect-sheet', label: translate('sheet.footer.unprotect-sheet', '移除工作表保护') }] : []),
@@ -48,6 +50,7 @@ export function createSheetTabMenu(
       if (key === 'protect-sheet') actions.protect(sheetId)
       if (key === 'unprotect-sheet' && isProtected) actions.unprotect(sheetId)
       if (key === 'color-reset') actions.setColor(sheetId, '')
+      if (key === 'color-custom') actions.customColor?.(sheetId)
       if (typeof key === 'string' && key.startsWith('color:#')) actions.setColor(sheetId, key.slice('color:'.length))
       if (key === 'hide' && visibleSheetCount > 1) actions.hide(sheetId)
       if (key === 'delete' && visibleSheetCount > 1) actions.delete(sheetId)

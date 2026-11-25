@@ -5,10 +5,11 @@ import { chartSourceVisibility } from './chart-visibility'
 import { formatSheetValue } from '../sheet-workbench/sheet-number-format'
 import { COMPUTE_LIMITS } from '../../compute/protocol.ts'
 import { ComputeError } from '../../compute/errors.ts'
+import { assertChartSourcePresent } from './chart-source-diagnostic'
 import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPreparation,
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 
-export type ChartRecordSource = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type'>>
+export type ChartRecordSource = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type' | 'id'>>
 
 export function readChartRecordsAsync(workbook: WorkbookModel, chart: ChartRecordSource, context: ChartComputePreparationContext = {}): Promise<ChartRecords> {
   return consumeChartPreparation(readChartRecordSteps(workbook, chart, context), context)
@@ -17,6 +18,7 @@ export function readChartRecordsAsync(workbook: WorkbookModel, chart: ChartRecor
 /** Read directly from sparse cells in the authored orientation. No dense
  * worksheet matrix or additional transpose is retained during preparation. */
 export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecordSource, context: ChartComputePreparationContext = {}): Generator<void, ChartRecords, void> {
+  assertChartSourcePresent(workbook, chart)
   if (chart.pivotTableId) {
     const source = readPivotChartSource(workbook, chart.pivotTableId)
     const numericFields = new Set<number>()

@@ -8,6 +8,8 @@ import { FOffice, type FChart } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ApiSheetSelection } from '../api/events.ts'
 import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND } from '../api/sheet-selection-commands.ts'
+import { COPY_WORKSHEET_COMMAND, planWorksheetCopy, type CopyWorksheetCommandInput } from '../features/sheet-workbench/sheet-worksheet-copy.ts'
+import { WORKSHEET_LIFECYCLE_COMMANDS, planWorksheetLifecycle, type WorksheetLifecycleCommandId, type WorksheetLifecycleCommandInput } from '../features/sheet-workbench/sheet-worksheet-lifecycle.ts'
 import { COMMIT_SHEET_CELL_INPUT_COMMAND, planSheetCellInput, sheetCellInputConflictMessage, type SheetCellInputCommandInput,
   type SheetCellInputCommandResult } from '../features/sheet-workbench/sheet-cell-input-command.ts'
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
@@ -29,7 +31,7 @@ import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-
 import SheetFormulaBar from './spreadsheet/SheetFormulaBar.vue'
 import SheetFooter from './spreadsheet/SheetFooter.vue'
 import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
-import { calculateSelectionStatistics, createUniqueSheetName, frozenPaneCountsForSelection, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
+import { calculateSelectionStatistics, frozenPaneCountsForSelection, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { normalizeSheetSelection, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
 import { planSheetSelectionShortcut, SheetSelectionDirections, type SheetSelectionShortcutKey } from '../features/sheet-workbench/sheet-selection-navigation.ts'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
@@ -1725,36 +1727,73 @@ function activateSheet(id: string) {
   syncApiSelection()
 }
 
+function runWorksheetLifecycle(command: WorksheetLifecycleCommandId, input: WorksheetLifecycleCommandInput): boolean {
+  if (!finishEdit()) return false
+  const studio = props.studio, unitId = workbook.value.id, hostSheetId = activeSheetId.value
+  try {
+    if (studio && unitId) {
+      const changed = studio.executeCommandSync<WorksheetLifecycleCommandInput, boolean>(command, {
+        ...input, unitId, expectedRevision: input.expectedRevision ?? studio.getWorkbookRevision(unitId),
+        expectedHistoryGeneration: input.expectedHistoryGeneration ?? studio.editor.history.captureSavepoint(unitId).generation,
+        host: input.host ?? { unitId, sheetId: hostSheetId },
+      })
+      const latest = studio.getWorkbookModel(unitId)
+      if (!changed || !latest || props.studio !== studio || workbook.value.id !== unitId
+        || studio.activeWorkbookId !== unitId || studio.editor.state.activeKind !== 'workbook') return false
+      const revision = studio.getWorkbookRevision(unitId)
+      applyExternalWorkbook(toExcelWorkbookView(latest))
+      commitHistory({ prepared: true, syncSelection: false, current: () => props.studio === studio && workbook.value.id === unitId
+        && studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook' && studio.getWorkbookRevision(unitId) === revision })
+    } else {
+      const model = applyExcelWorkbookView(createBlankWorkbook(), workbook.value, officeRegion.value)
+      const plan = planWorksheetLifecycle(model, command, input, userId.value)
+      if (!plan.changed) return false
+      applyExternalWorkbook(toExcelWorkbookView(plan.workbook))
+      commitHistory()
+    }
+    const active = activeSheetId.value
+    nextTick(() => {
+      if (props.studio === studio && workbook.value.id === unitId && activeSheetId.value === active && !editingKey.value) spreadsheetCanvas.value?.focus()
+    })
+    return true
+  } catch (reason) {
+    emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : '工作表操作未能提交。' })
+    return false
+  }
+}
+
 function addSheet() {
-  if (!finishEdit()) return
-  const id = `sheet-${crypto.randomUUID()}`
-  workbook.value.sheets.push({ id, name: createUniqueSheetName(workbook.value.sheets), cells: {}, rowCount: 100, columnCount })
-  activateSheet(id)
-  commitHistory()
+  runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.insert, { sheet: { id: `sheet-${crypto.randomUUID()}`, rowCount: 100, columnCount } })
 }
 
 function copySheet(id: string) {
   if (!finishEdit()) return
-  const sourceIndex = workbook.value.sheets.findIndex(sheet => sheet.id === id)
-  const source = workbook.value.sheets[sourceIndex]
-  if (!source) return
-  if (!canChangeWorksheet(id)) return
-  let suffix = 2
-  let name = `${source.name} (${suffix})`
-  while (workbook.value.sheets.some(sheet => sheet.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
-    suffix += 1
-    name = `${source.name} (${suffix})`
+  const studio = props.studio, unitId = workbook.value.id, targetSheetId = `sheet-${crypto.randomUUID()}`
+  const hostSheetId = activeSheetId.value
+  try {
+    if (studio && unitId) {
+      const changed = studio.executeCommandSync<CopyWorksheetCommandInput, boolean>(COPY_WORKSHEET_COMMAND, {
+        unitId, subUnitId: id, targetSheetId, expectedRevision: studio.getWorkbookRevision(unitId), host: { unitId, sheetId: hostSheetId },
+      })
+      const latest = studio.getWorkbookModel(unitId)
+      if (!changed || !latest || props.studio !== studio || workbook.value.id !== unitId
+        || studio.activeWorkbookId !== unitId || studio.editor.state.activeKind !== 'workbook') return
+      applyExternalWorkbook(toExcelWorkbookView(latest))
+      const revision = studio.getWorkbookRevision(unitId)
+      commitHistory({ prepared: true, syncSelection: false, current: () => props.studio === studio && workbook.value.id === unitId
+        && studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook' && studio.getWorkbookRevision(unitId) === revision })
+    } else {
+      const model = applyExcelWorkbookView(createBlankWorkbook(), workbook.value, officeRegion.value)
+      const plan = planWorksheetCopy(model, id, { userId: userId.value, targetSheetId })
+      applyExternalWorkbook(toExcelWorkbookView(plan.workbook))
+      commitHistory()
+    }
+    nextTick(() => {
+      if (workbook.value.id === unitId && activeSheetId.value === targetSheetId && !editingKey.value) spreadsheetCanvas.value?.focus()
+    })
+  } catch (reason) {
+    emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : '无法复制工作表。' })
   }
-  const duplicate = cloneWorkbook({ ...workbook.value, sheets: [source] }).sheets[0]
-  if (!duplicate) return
-  duplicate.id = `sheet-${crypto.randomUUID()}`
-  duplicate.name = name
-  duplicate.visible = true
-  workbook.value.sheets.splice(sourceIndex + 1, 0, duplicate)
-  viewSessions.set(duplicate.id, { key: selectedKey.value, anchor: selectionAnchor.value, ranges: selectedRanges.value.map(range => ({ ...range })), zoom: zoom.value })
-  activateSheet(duplicate.id)
-  commitHistory()
-  emit('notify', { type: 'info', message: `已复制工作表“${source.name}”的单元格和工作表设置。图表、透视表与结构化表格关联不会作为副本创建。` })
 }
 
 function openWorksheetProtection(id: string) {
@@ -1782,12 +1821,13 @@ function refreshWorksheetProtection() {
   commitHistory()
 }
 
-function setSheetTabColor(id: string, color: string) {
-  const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
-  if (!sheet || (color !== '' && !/^#[0-9a-f]{6}$/i.test(color))) return
-  if (!canChangeWorksheet(id)) return
-  sheet.tabColor = color || undefined
-  commitHistory()
+function setSheetTabColor(id: string, color: string, context: WorksheetLifecycleCommandInput = {}) {
+  if (context.unitId !== undefined && context.unitId !== workbook.value.id) return
+  runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.tabColor, { ...context, subUnitId: id, value: color })
+}
+
+function moveSheet(id: string, order: number) {
+  runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.order, { subUnitId: id, order })
 }
 
 function switchNextSheet() {
@@ -1812,45 +1852,20 @@ function confirmRenameSheet() {
   if (!validation.valid) { renameError.value = validation.message; return }
   const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
   if (!sheet) return
-  if (!canChangeWorksheet(id)) return
-  sheet.name = renameValue.value.trim()
-  renameSheetId.value = null
-  commitHistory()
+  const name = renameValue.value.trim()
+  if (name === sheet.name || runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.rename, { subUnitId: id, name })) renameSheetId.value = null
 }
 
 function deleteSheet(id: string) {
-  const sheets = workbook.value.sheets
-  const sheet = sheets.find(candidate => candidate.id === id)
-  if (!sheet || (sheet.visible !== false && sheets.filter(candidate => candidate.visible !== false).length <= 1)) return
-  if (!canChangeWorksheet(id)) return
-  if (!finishEdit()) return
-  const remaining = workbook.value.sheets.filter(candidate => candidate.id !== id)
-  if (activeSheetId.value === id) {
-    const next = remaining.find(candidate => candidate.visible !== false && canViewWorksheetProtection(candidate, userId.value))
-    if (next) activateSheet(next.id)
-  }
-  workbook.value.sheets = remaining
-  viewSessions.delete(id)
-  commitHistory()
+  if (runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.remove, { subUnitId: id })) viewSessions.delete(id)
 }
 
 function hideSheet(id: string) {
-  const next = availableSheets.value.find(candidate => candidate.id !== id && candidate.visible !== false)
-  if (!next || !canChangeWorksheet(id) || !finishEdit()) return
-  const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
-  if (!sheet) return
-  if (id === activeSheetId.value) activateSheet(next.id)
-  sheet.visible = false
-  commitHistory()
+  runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.hidden, { subUnitId: id })
 }
 
 function showSheet(id: string) {
-  if (!canChangeWorksheet(id) || !finishEdit()) return
-  const sheet = workbook.value.sheets.find(candidate => candidate.id === id)
-  if (!sheet) return
-  sheet.visible = true
-  activateSheet(id)
-  commitHistory()
+  runWorksheetLifecycle(WORKSHEET_LIFECYCLE_COMMANDS.show, { subUnitId: id })
 }
 
 function importWorkbook(file: File): false {
@@ -2629,7 +2644,7 @@ onActivated(() => { workbenchActive.value = true })
     </Modal>
     <SheetMergeConfirmationDialog :request="mergeRequest" :error="mergeError" @confirm="confirmMerge" @cancel="cancelMerge" @closed="afterMergeClose" />
     <SheetMergeConfirmationDialog :request="painterRequest" :error="painterError" @confirm="confirmPainter" @cancel="cancelPainterConfirmation" @closed="afterPainterClose" />
-    <SheetFooter v-if="chrome.footer" :sheets="availableSheets" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
+    <SheetFooter v-if="chrome.footer" :sheets="availableSheets" :sheet-order="workbook.sheets.map(sheet => sheet.id)" :workbook-id="workbook.id" :revision="studio?.getWorkbookRevision(workbook.id)" :history-generation="studio?.editor.history.captureSavepoint(workbook.id).generation" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @move="moveSheet" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <PivotChartPanel v-if="pivotChartContext" :key="pivotChartContext.key" :open="pivotChartPanelOpen" :studio="pivotChartContext.studio" :workbook-id="pivotChartContext.unitId" :sheet-id="pivotChartContext.sheetId" @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
