@@ -18,6 +18,7 @@ import { setWorksheetProtectionRule } from '../features/sheet-protection/range-p
 import { formatSheetValue } from '../features/sheet-workbench/sheet-number-format.ts'
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
+import { documentFromPublicInput } from './document-input'
 
 export type ApiCellData = {
   v?: CellScalar
@@ -95,15 +96,7 @@ export function documentFromInput(input: Partial<DocumentModel> & Record<string,
   const base = createBlankDocument()
   base.id = typeof input.id === 'string' ? input.id : randomId('document')
   base.name = typeof input.name === 'string' ? input.name : typeof input.title === 'string' ? input.title : base.name
-  const body = input.body
-  const dataStream = body && typeof body === 'object' && typeof (body as Record<string, unknown>).dataStream === 'string'
-    ? String((body as Record<string, unknown>).dataStream)
-    : typeof input.text === 'string' ? input.text : undefined
-  if (dataStream != null) {
-    const lines = dataStream.replace(/\r\n?/g, '\n').split('\n').filter((line, index, all) => index < all.length - 1 || line.length > 0)
-    base.blocks = lines.length ? lines.map((line) => ({ ...base.blocks[0]!, id: randomId('paragraph'), runs: [{ ...base.blocks[0]!.runs[0]!, id: randomId('run'), text: line }] })) : base.blocks
-  }
-  return normalizeDocument(ensureDocumentId(base))
+  return documentFromPublicInput(input, ensureDocumentId(base))
 }
 
 function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknown>): SpreadsheetSheet {

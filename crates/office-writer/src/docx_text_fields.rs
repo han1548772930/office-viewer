@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{Value, json};
 
-use super::{WriteContext, get, slice_utf16, source_xml, xml, xml_attribute};
+use super::{WriteContext, get, note_writer::{NoteBoundary, NotePositions, optional_reference_count}, slice_utf16, source_xml, xml, xml_attribute};
 use crate::ExportError;
 
 const IDENTITY_PART: &str = "customXml/office-fields.xml";
@@ -15,16 +15,24 @@ mod topology;
 
 pub(super) struct Boundary {
     pub offset: usize,
+    pub note_reference_count: usize,
+    pub range: Option<(NoteBoundary, NoteBoundary)>,
     pub priority: u8,
     pub order: i64,
     pub xml: String,
 }
 
-pub(super) struct Paragraph<'a> { pub block: &'a Value, pub id: String, pub text: String, pub absolute: usize }
+pub(super) struct Paragraph<'a> {
+    pub block: &'a Value,
+    pub id: String,
+    pub text: String,
+    pub absolute: usize,
+    note_positions: NotePositions,
+}
 struct Field {
     value: Value,
-    start: usize,
-    end: usize,
+    start: NoteBoundary,
+    end: NoteBoundary,
     first: usize,
     last: usize,
     local_start: usize,
@@ -62,7 +70,8 @@ fn collect<'a>(blocks: &'a [Value], output: &mut Vec<Paragraph<'a>>, absolute: &
             let id = get(block, "id").as_str().map(str::to_owned).unwrap_or_else(|| format!("__office-field-paragraph-{}", output.len()));
             let text = get(block, "runs").as_array().into_iter().flatten().map(|run| get(run, "text").as_str().unwrap_or_default()).collect::<String>();
             let length = text.encode_utf16().count();
-            output.push(Paragraph { block, id, text, absolute: *absolute });
+            let runs = get(block, "runs").as_array().map_or(&[][..], Vec::as_slice);
+            output.push(Paragraph { block, id, text, absolute: *absolute, note_positions: NotePositions::from_runs(runs)? });
             *absolute = absolute.checked_add(length).and_then(|value| value.checked_add(1)).ok_or_else(|| ExportError::invalid("正文字段范围超出索引容量。"))?;
         } else if get(metadata, "documentTextFields").get("fields").and_then(Value::as_array).is_some_and(|fields| !fields.is_empty()) {
             return Err(ExportError::invalid("非文本对象不能持有正文字段结果范围。"));
@@ -175,7 +184,9 @@ impl TextFieldPlan {
                 };
                 let from = offset(entry, "startOffset")?; let to = offset(entry, "endOffset")?;
                 if slice_utf16(&paragraph.text, from, from).is_none() || slice_utf16(&paragraphs[last].text, to, to).is_none() { return Err(ExportError::invalid("正文字段结果范围无效或拆分了 UTF-16 代理对。")); }
-                let start = paragraph.absolute + from; let end = paragraphs[last].absolute + to;
+                let start_rank = paragraph.note_positions.boundary_rank(from, optional_reference_count(entry, "startNoteReferenceCount")?)?;
+                let end_rank = paragraphs[last].note_positions.boundary_rank(to, optional_reference_count(entry, "endNoteReferenceCount")?)?;
+                let start = (paragraph.absolute + from, start_rank); let end = (paragraphs[last].absolute + to, end_rank);
                 if end < start { return Err(ExportError::invalid("正文字段结果终点早于起点。")); }
                 let bookmark = context.sequences.next_bookmark;
                 context.sequences.next_bookmark = bookmark.checked_add(1).ok_or_else(|| ExportError::invalid("字段书签数量超出范围。"))?;
@@ -198,8 +209,8 @@ impl TextFieldPlan {
             result.identities.push((field.bookmark_name.clone(), id.to_owned()));
             if let Some(language) = get(&field.value, "language").as_str().filter(|value| !value.is_empty()) {
                 for paragraph in paragraphs.iter().take(field.last + 1).skip(field.first) {
-                    let start = field.start.saturating_sub(paragraph.absolute).min(paragraph.text.encode_utf16().count());
-                    let end = field.end.saturating_sub(paragraph.absolute).min(paragraph.text.encode_utf16().count());
+                    let start = field.start.0.saturating_sub(paragraph.absolute).min(paragraph.text.encode_utf16().count());
+                    let end = field.end.0.saturating_sub(paragraph.absolute).min(paragraph.text.encode_utf16().count());
                     result.languages.entry(paragraph.id.clone()).or_default().push(LanguageRange { start, end, depth: topology.depths[index], language: language.to_owned() });
                 }
             }
@@ -212,7 +223,9 @@ impl TextFieldPlan {
                 (field.first, field.local_start, &mut delimiters[index].0)
             };
             result.by_block.entry(paragraphs[paragraph].id.clone()).or_default().push(Boundary {
-                offset, priority: 4, order: i64::try_from(order).map_err(|_| ExportError::invalid("正文字段事件数量超出范围。"))?,
+                offset, note_reference_count: if closing { field.end.1 } else { field.start.1 }, priority: 4,
+                range: (field.first == field.last).then_some(((field.local_start, field.start.1), (field.local_end, field.end.1))),
+                order: i64::try_from(order).map_err(|_| ExportError::invalid("正文字段事件数量超出范围。"))?,
                 xml: std::mem::take(marker),
             });
         }

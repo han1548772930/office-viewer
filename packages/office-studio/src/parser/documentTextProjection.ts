@@ -3,6 +3,8 @@ import { cloneModel } from '../domain/serialization'
 import { runText, tableForBlock } from '../features/document/model/document-model'
 import { documentTableCellContentContainers } from '../features/document/model/document-table-continuations'
 import { isDocumentTextBoundary } from '../features/document/model/document-story'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets, type DocumentNoteReferenceOffset } from '../features/document/model/document-note-boundary'
+import { setDocumentNoteBodyMarkers, validateDocumentNoteBodyMarkerSource, type DocumentNoteBodyMarkerCollection } from '../features/document/model/document-note-body-marker'
 import { array, record, text } from './validation'
 
 interface AtomProjection { sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number; noteOrdinal?: number }
@@ -22,7 +24,7 @@ export function parsedDocumentTextProjection(block: DocumentBlock): ParsedDocume
   const noteRuns = block.runs.filter(run => record(run.metadata?.noteReference).kind !== undefined || record(run.metadata?.note).type !== undefined)
   const bodyMarkers = block.runs.filter(run => run.metadata?.officeNoteBodyMarkerSource !== undefined)
   if (!formulaRuns.length && !noteRuns.length && !bodyMarkers.length) return { changed: false, sourceText: targetText, targetText,
-    mapBoundary: offset => isDocumentTextBoundary(targetText, offset) ? offset : undefined }
+    mapBoundary: (offset, count) => (count === undefined || count === 0) && isDocumentTextBoundary(targetText, offset) ? offset : undefined }
   let valid = true
   const inlines = array(record(record(block.metadata.source).details).inlines)
     .map(record).filter(inline => inline.type === 'text' || inline.type === 'form_field')
@@ -36,7 +38,7 @@ export function parsedDocumentTextProjection(block: DocumentBlock): ParsedDocume
     if (!Number.isSafeInteger(index) || index < previousIndex || index < 0 || index >= groups.length) { valid = false; continue }
     groups[index]!.push(run); previousIndex = index
   }
-  const atoms: AtomProjection[] = [], parts: string[] = []
+  const atoms: AtomProjection[] = [], parts: string[] = [], sourceReferences: DocumentNoteReferenceOffset[] = []
   let sourceText = '', targetOffset = 0, noteOrdinal = 0, consumedPrefix = 0
   for (const [index, inline] of inlines.entries()) {
     const literal = text(inline.text), sourceStart = sourceText.length
@@ -70,6 +72,7 @@ export function parsedDocumentTextProjection(block: DocumentBlock): ParsedDocume
         }
         atoms.push({ sourceStart, sourceEnd: sourceText.length + consumedPrefix, targetStart: targetOffset,
           targetEnd: targetOffset + projected.length, noteOrdinal })
+        sourceReferences.push({ runId: noteRun.id, startOffset: sourceStart, endOffset: sourceText.length + consumedPrefix })
       }
     }
     if (atom !== undefined) {
@@ -80,18 +83,20 @@ export function parsedDocumentTextProjection(block: DocumentBlock): ParsedDocume
   }
   valid &&= !consumedPrefix && parts.join('') === targetText
   return { changed: sourceText !== targetText, sourceText, targetText, mapBoundary(offset, noteReferenceCount) {
-    if (!valid || !isDocumentTextBoundary(sourceText, offset) || noteReferenceCount !== undefined && (!Number.isSafeInteger(noteReferenceCount) || noteReferenceCount < 0 || noteReferenceCount > noteOrdinal)) return undefined
+    if (!valid || !isDocumentTextBoundary(sourceText, offset)) return undefined
+    let sourceRank: number
+    try { sourceRank = assertDocumentNoteReferenceBoundaryRank(sourceReferences, offset, noteReferenceCount) }
+    catch (error) { if (error instanceof RangeError) return undefined; throw error }
     let delta = 0
     for (const atom of atoms) {
       if (offset < atom.sourceStart) break
       if (atom.sourceStart === atom.sourceEnd && offset === atom.sourceStart) {
-        if (atom.targetStart === atom.targetEnd) { delta = atom.targetEnd - atom.sourceEnd; continue }
-        if (atom.noteOrdinal === undefined || noteReferenceCount === undefined) return undefined
-        if (noteReferenceCount < atom.noteOrdinal) return atom.targetStart
+        if (atom.noteOrdinal !== undefined && sourceRank < atom.noteOrdinal) return atom.targetStart
+        if (atom.noteOrdinal === undefined && atom.targetStart !== atom.targetEnd) return undefined
         delta = atom.targetEnd - atom.sourceEnd
         continue
       }
-      if (offset === atom.sourceStart) return atom.noteOrdinal !== undefined && noteReferenceCount !== undefined && noteReferenceCount >= atom.noteOrdinal ? atom.targetEnd : atom.targetStart
+      if (offset === atom.sourceStart) return atom.targetStart
       // Continue through adjacent atoms at the same source boundary. Multiple
       // zero-length references can share an offset and still have distinct ranks.
       if (offset === atom.sourceEnd) { delta = atom.targetEnd - atom.sourceEnd; continue }
@@ -122,6 +127,31 @@ export function projectParsedDocumentFieldRanges(blocks: readonly DocumentBlock[
     if (id) sourceIds.set(id, sourceIds.has(id) ? undefined : block.id)
   }
   for (const block of paragraphs.values()) {
+    const markerCollection = record(record(record(block.metadata.source).details).noteBodyMarkers)
+    if (Object.keys(markerCollection).length) {
+      if (markerCollection.version !== 1 || markerCollection.kind !== 'footnote' && markerCollection.kind !== 'endnote'
+        || !Array.isArray(markerCollection.markers) || markerCollection.markers.length > 4096) throw new TypeError('原生注释正文标记投影的集合无效。')
+      const projection = projections.get(block.id)!, references = documentNoteReferenceOffsets(block.runs)
+      const current = array(record(block.metadata.officeNoteBodyMarkers).markers).map(record)
+      const collection: DocumentNoteBodyMarkerCollection = { version: 1, kind: markerCollection.kind,
+        markers: markerCollection.markers.map(value => {
+          const marker = record(value)
+          if (typeof marker.id !== 'string' || typeof marker.sourceOffset !== 'number' || !Number.isSafeInteger(marker.sourceOffset)
+            || marker.sourceOffset < 0 || typeof marker.sourceNoteReferenceCount !== 'number' || !Number.isSafeInteger(marker.sourceNoteReferenceCount)
+            || marker.sourceNoteReferenceCount < 0 || typeof marker.text !== 'string' || marker.text.length > 4096) {
+            throw new TypeError('原生注释正文标记投影的身份或源几何无效。')
+          }
+          validateDocumentNoteBodyMarkerSource(marker.source)
+          const offset = projection.mapBoundary(marker.sourceOffset, marker.sourceNoteReferenceCount)
+          if (offset === undefined) throw new RangeError('原生注释正文标记缺少有效的文字与注释引用来源映射。')
+          const previous = current.find(candidate => candidate.id === marker.id
+            || record(record(candidate.source).officeParsedBodyMarkerSource).id === marker.id)
+          return { id: typeof previous?.id === 'string' ? previous.id : marker.id, offset,
+            noteReferenceCount: assertDocumentNoteReferenceBoundaryRank(references, offset, marker.sourceNoteReferenceCount),
+            source: { ...cloneModel(marker.source), officeParsedBodyMarkerSource: { version: 1, id: marker.id } } }
+        }) }
+      setDocumentNoteBodyMarkers(block, collection, projection.targetText, references)
+    }
     const sourceCollection = record(record(record(block.metadata.source).details).documentTextFields)
     if (!Object.keys(sourceCollection).length) continue
     if (sourceCollection.version !== 1 || !Array.isArray(sourceCollection.fields)) throw new TypeError('原生字段文字投影的集合无效。')
@@ -134,9 +164,16 @@ export function projectParsedDocumentFieldRanges(blocks: readonly DocumentBlock[
       const endId = paragraphs.has(sourceEndId) ? sourceEndId : sourceIds.get(sourceEndId)
       const first = projections.get(block.id)!, last = endId === undefined ? undefined : projections.get(endId)
       if (!last || typeof field.startOffset !== 'number' || typeof field.endOffset !== 'number') throw new RangeError('原生字段文字投影的宿主或偏移无效。')
-      const count = (value: unknown): number | undefined => typeof value === 'number' ? value : undefined
+      const count = (value: unknown): number | undefined => {
+        if (value === undefined) return undefined
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new RangeError('原生字段注释引用序号必须为非负安全整数。')
+        return value
+      }
       const startOffset = first.mapBoundary(field.startOffset, count(field.startNoteReferenceCount)), endOffset = last.mapBoundary(field.endOffset, count(field.endNoteReferenceCount))
       if (startOffset === undefined || endOffset === undefined) throw new RangeError('原生字段结果边界缺少有效的公式或注释引用来源映射。')
+      const startRank = assertDocumentNoteReferenceBoundaryRank(documentNoteReferenceOffsets(block.runs), startOffset, count(field.startNoteReferenceCount))
+      const endRank = assertDocumentNoteReferenceBoundaryRank(documentNoteReferenceOffsets(paragraphs.get(endId!)!.runs), endOffset, count(field.endNoteReferenceCount))
+      if (block.id === endId && (startOffset > endOffset || startOffset === endOffset && startRank > endRank)) throw new RangeError('原生字段投影后的注释引用端点顺序相反。')
       return { ...field, ...(typeof current?.id === 'string' ? { id: current.id } : {}), startOffset, endOffset,
         ...(field.endBlockId !== undefined ? { endBlockId: endId } : {}),
         metadata: { ...record(field.metadata), ...record(current?.metadata), officeParsedFieldSource: { version: 1, id: sourceId } } }

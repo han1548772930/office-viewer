@@ -52,6 +52,30 @@ test('paragraph editing checks document and every scoped target, with deny takin
   assert.equal(documentDenied.deniedBy.id, 'doc-deny')
 })
 
+// Scoped view drafts; this batch did not execute these tests or browser content-access acceptance.
+test('view and edit rules independently resolve every paragraph, section and entity target', () => {
+  const targets = [{ scope: 'paragraph', id: 'note-p' }, { scope: 'entity', id: 'footnote:note' }, { scope: 'section', id: 'section-1' }]
+  const rules = [rule('edit-locked', 'entity', 'edit', 'deny', ['writer'], 'footnote:note'),
+    rule('view-note', 'paragraph', 'view', 'allow', ['writer'], 'note-p'),
+    rule('view-hidden', 'section', 'view', 'deny', ['writer'], 'section-1')]
+  permissionModule.validateDocumentPermissionRules(rules)
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'view', targets).deniedBy.id, 'view-hidden')
+  assert.equal(permissionModule.resolveDocumentPermission(rules, context, 'edit', targets).deniedBy.id, 'edit-locked')
+  assert.equal(permissionModule.resolveDocumentPermission(rules.slice(0, 2), context, 'view', targets).allowed, true)
+  assert.equal(permissionModule.resolveDocumentPermission([rule('hidden', 'paragraph', 'view', 'deny', [], 'note-p')], context, 'edit', targets).allowed, true)
+})
+
+test('default-deny scoped view requires every target grant and a document view denial takes precedence', () => {
+  const targets = [{ scope: 'paragraph', id: 'p' }, { scope: 'entity', id: 'noteDecoration:footnote:separator:active' }]
+  const scoped = [rule('paragraph-view', 'paragraph', 'view', 'allow', ['writer'], 'p')], denyContext = { ...context, defaultAllow: false }
+  assert.equal(permissionModule.resolveDocumentPermission(scoped, denyContext, 'view', targets).allowed, false)
+  scoped.push(rule('story-view', 'entity', 'view', 'allow', ['writer'], targets[1].id))
+  assert.equal(permissionModule.resolveDocumentPermission(scoped, denyContext, 'view', targets).allowed, true)
+  assert.equal(permissionModule.resolveDocumentPermission(scoped, { ...denyContext, userId: 'guest' }, 'view', targets).allowed, false)
+  const denied = permissionModule.resolveDocumentPermission([...scoped, rule('document-hidden', 'document', 'view', 'deny')], denyContext, 'view', targets)
+  assert.equal(denied.deniedBy.id, 'document-hidden')
+})
+
 test('scoped grants and default-deny contexts require a matching user grant', () => {
   const rules = [rule('p1-allow', 'paragraph', 'edit', 'allow', ['writer'], 'p1')]
   const target = [{ scope: 'paragraph', id: 'p1' }]

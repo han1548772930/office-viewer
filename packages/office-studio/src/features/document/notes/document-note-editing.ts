@@ -6,6 +6,7 @@ import { documentDefaultStyle } from '../model/document-default-style'
 import { blockAtPoint, collapsedSelection, createRun, documentBlockAncestry, documentId, marksAtPoint, orderedSelection,
   runText, runsForTarget, sameTarget, sliceRuns, textTargets, type DocumentRun, type DocumentSelection } from '../model/document-model'
 import { documentRunHasNoteReference } from '../model/document-note-reference'
+import { documentNoteReferenceOffsets } from '../model/document-note-boundary'
 import { isDocumentTextBoundary } from '../model/document-story'
 import { documentTextFieldParagraphs, transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
 import { applyDocumentBlockHostModel, documentModelForBlockHost, documentPointAtBlockHostOffset } from '../services/document-block-host'
@@ -122,11 +123,14 @@ export function insertDocumentNote(model: DocumentModel, selection: DocumentSele
       ...(properties.referenceTextStyle ? { referenceTextStyle: cloneModel(properties.referenceTextStyle) } : {}),
       ...(properties.showBodyReference !== undefined ? { showBodyReference: properties.showBodyReference } : {}),
       ...(properties.metadata ? { metadata: cloneModel(properties.metadata) } : {}) }
-    transformContentControlsForBlockEdit(candidate, block.id, point.offset, point.offset, reference.text.length)
-    transformDocumentTextFieldsForBlockEdit(block, point.offset, point.offset, reference.text, undefined, candidate)
+    const sourceNoteReferences = documentNoteReferenceOffsets(block.runs)
     // References are independent entities, including a legitimate empty custom mark.
-    block.runs = [...sliceRuns(block.runs as DocumentRun[], 0, point.offset), reference, ...sliceRuns(block.runs as DocumentRun[], point.offset)]
-    transformDocumentCommentAnchorsForTextEdit(candidate, block.id, point.offset, point.offset, reference.text)
+    const futureRuns = [...sliceRuns(block.runs as DocumentRun[], 0, point.offset), reference, ...sliceRuns(block.runs as DocumentRun[], point.offset)]
+    transformContentControlsForBlockEdit(candidate, block.id, point.offset, point.offset, reference.text.length, undefined, false,
+      { projectedNoteReferences: documentNoteReferenceOffsets(futureRuns) })
+    transformDocumentTextFieldsForBlockEdit(block, point.offset, point.offset, reference.text, undefined, candidate, documentNoteReferenceOffsets(futureRuns))
+    block.runs = futureRuns
+    transformDocumentCommentAnchorsForTextEdit(candidate, block.id, point.offset, point.offset, reference.text, Date.now(), sourceNoteReferences)
     for (const ancestor of documentBlockAncestry(candidate, block.id) ?? []) delete ancestor.metadata.html
     if (kind === 'footnote') candidate.footnotes = { ...candidate.footnotes, [id]: note }
     else candidate.endnotes = { ...candidate.endnotes, [id]: note }
@@ -224,11 +228,14 @@ export function deleteDocumentNote(model: DocumentModel, kind: DocumentNoteKind,
       if (index < 0) throw new RangeError('注释引用字符已失效。')
       const length = block.runs[index]!.text.length
       blockTextLock(scoped, block.id, reference.offset, reference.offset + length)
-      transformContentControlsForBlockEdit(scoped, block.id, reference.offset, reference.offset + length, 0)
-      transformDocumentTextFieldsForBlockEdit(block, reference.offset, reference.offset + length, '', undefined, scoped)
-      block.runs.splice(index, 1)
-      if (!block.runs.length) block.runs = [createRun()]
-      transformDocumentCommentAnchorsForTextEdit(scoped, block.id, reference.offset, reference.offset + length, '')
+      const sourceNoteReferences = documentNoteReferenceOffsets(block.runs)
+      const futureRuns = block.runs.filter((_run, position) => position !== index)
+      if (!futureRuns.length) futureRuns.push(createRun())
+      transformContentControlsForBlockEdit(scoped, block.id, reference.offset, reference.offset + length, 0, undefined, false,
+        { projectedNoteReferences: documentNoteReferenceOffsets(futureRuns) })
+      transformDocumentTextFieldsForBlockEdit(block, reference.offset, reference.offset + length, '', undefined, scoped, documentNoteReferenceOffsets(futureRuns))
+      block.runs = futureRuns
+      transformDocumentCommentAnchorsForTextEdit(scoped, block.id, reference.offset, reference.offset + length, '', Date.now(), sourceNoteReferences)
       for (const ancestor of documentBlockAncestry(scoped, block.id) ?? []) delete ancestor.metadata.html
       if (reference.host) applyDocumentBlockHostModel(candidate, reference.host, scoped)
     }

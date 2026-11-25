@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Button, Form, InputNumber } from 'antdv-next'
-import { listKind, listMarker, listPresets, type ListKind, type ListPreset } from '../../features/document/model/document-lists'
+import { listMarker, listPickerPresets, type ListKind, type ListPreset } from '../../features/document/model/document-lists'
 
 const props = defineProps<{ kind: ListKind; active?: ListPreset; title: string; canRestart?: boolean; canContinue?: boolean }>()
 const emit = defineEmits<{ insert: [value: ListPreset]; execute: [commandId: string, params?: Record<string, unknown>] }>()
@@ -17,7 +17,7 @@ function onNumberingKeydown(event: KeyboardEvent) {
     event.stopPropagation()
   }
 }
-const cards = computed(() => listPresets.filter(p => listKind(p) === props.kind).map(preset => ({
+const cards = computed(() => listPickerPresets[props.kind].map(preset => ({
   preset, preview: [0, 1, 2, 0].map(level => ({ level, glyph: listMarker(preset, level) })),
 })))
 </script>

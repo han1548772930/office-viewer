@@ -364,6 +364,60 @@ export type ChartColor = string | ChartLinearGradient
 export interface ChartLabelPattern { type: 'pattern'; preset: string; foregroundColor: string; backgroundColor: string }
 export interface ChartTreemapLabelOptions extends ChartLabelOptions { backgroundColor?: ChartColor | ChartLabelPattern }
 export interface ChartTreemapOptions { parentLabelLayout?: 'banner' | 'overlapping' | 'none'; label?: ChartTreemapLabelOptions }
+export type ChartSunburstLabelPosition = 'inside' | 'outside'
+export interface ChartSunburstLabelOptions extends ChartLabelOptions {
+  position?: ChartSunburstLabelPosition
+  backgroundColor?: ChartColor | ChartLabelPattern
+}
+export interface ChartSunburstCenterLabelOptions extends ChartFontOptions {
+  visible?: boolean
+  format?: string
+  /** Earlier project snapshots stored center-label fonts in this object. */
+  font?: ChartFontOptions
+}
+export interface ChartSunburstOptions { label?: ChartSunburstLabelOptions; centerLabel?: ChartSunburstCenterLabelOptions }
+/** Source/Target identity uses the final display label; Value omission counts rows. */
+export interface ChartChordMapping { sourceIndex: number; targetIndex: number; valueIndex?: number }
+export interface ChartChordLayoutOptions {
+  startAngle?: number
+  clockwise?: boolean
+  padAngle?: number
+  minAngle?: number
+  innerRadiusRatio?: number
+  outerRadiusRatio?: number
+}
+export interface ChartChordNodeOptions {
+  color?: string
+  opacity?: number
+  borderColor?: string
+  borderWidth?: number
+  borderType?: 'solid' | 'dashed' | 'dotted'
+}
+export type ChartChordLabelPosition = 'inside' | 'outside'
+export interface ChartChordLabelOptions extends ChartFontOptions {
+  visible?: boolean
+  position?: ChartChordLabelPosition
+  rotation?: number
+  distance?: number
+}
+export type ChartChordRibbonColorMode = 'source' | 'target' | 'gradient'
+export interface ChartChordRibbonOptions {
+  color?: ChartChordRibbonColorMode
+  opacity?: number
+  width?: number
+  type?: 'solid' | 'dashed' | 'dotted'
+}
+export type ChartChordFocusMode = 'adjacency' | 'self' | 'none'
+export interface ChartChordEmphasisOptions { focus?: ChartChordFocusMode }
+export interface ChartChordOptions extends ChartChordLayoutOptions {
+  layout?: ChartChordLayoutOptions
+  node?: ChartChordNodeOptions
+  label?: ChartChordLabelOptions
+  ribbon?: ChartChordRibbonOptions
+  emphasis?: ChartChordEmphasisOptions
+  /** Historical flat layout and ribbonOpacity are read by the runtime only. */
+  ribbonOpacity?: number
+}
 export type ChartPointShape = 'dot' | 'dash' | 'circle' | 'square' | 'triangle' | 'diamond' | 'rect' | 'roundRect' | 'pin' | 'arrow' | 'none'
   | 'emptyCircle' | 'emptySquare' | 'emptyTriangle' | 'emptyDiamond' | 'emptyRect' | 'emptyRoundRect' | 'emptyPin' | 'emptyArrow'
 export interface ChartPointOptions { shape?: ChartPointShape; size?: number; color?: string }
@@ -533,6 +587,7 @@ export interface ChartSemanticOptions {
     hierarchyIndexes?: number[]
     bubble?: ChartBubbleMappingOptions
     edge?: { sourceIndex: number; targetIndex: number; valueIndex?: number }
+    chord?: ChartChordMapping
     candlestick?: ChartCandlestickMappingOptions
     gauge?: { valueIndex: number; labelIndex?: number }
   }
@@ -556,9 +611,9 @@ export interface ChartSemanticOptions {
   candlestick?: ChartCandlestickOptions
   heatmap?: { visualMapType?: 'continuous' | 'piecewise'; min?: number; max?: number; unit?: string; label?: ChartLabelOptions }
   treemap?: ChartTreemapOptions
-  sunburst?: { label?: ChartLabelOptions; centerLabel?: { visible?: boolean; font?: ChartFontOptions } }
+  sunburst?: ChartSunburstOptions
   gauge?: ChartGaugeOptions
-  chord?: { startAngle?: number; clockwise?: boolean; padAngle?: number; innerRadiusRatio?: number; outerRadiusRatio?: number; ribbonOpacity?: number; label?: ChartLabelOptions }
+  chord?: ChartChordOptions
   wordCloud?: { shape?: 'cloud' | 'rect' | 'circle' | 'cardioid' | 'heart' | 'diamond' | 'triangle-forward' | 'triangle' | 'pentagon' | 'star'; repeat?: boolean; minFontSize?: number; maxFontSize?: number; rotation?: number }
   aggregation?: { aggregate?: boolean; topN?: { count: number; includeOthers?: boolean; othersLabel?: string } }
 }
@@ -843,6 +898,9 @@ export interface DocumentContentControl {
   blockId: string
   startOffset: number
   endOffset: number
+  /** Cumulative note-reference boundaries within the owning paragraph. */
+  startNoteReferenceCount?: number
+  endNoteReferenceCount?: number
   placement?: DocumentContentControlPlacement
   alias?: string
   title?: string
@@ -991,6 +1049,10 @@ export interface DocumentCommentAnchorSegment {
   blockId: string
   startOffset: number
   endOffset: number
+  /** Cumulative paragraph note references before the endpoint. Distinguishes
+   * positions around references with an empty display label at the same offset. */
+  startNoteReferenceCount?: number
+  endNoteReferenceCount?: number
   text: string
 }
 

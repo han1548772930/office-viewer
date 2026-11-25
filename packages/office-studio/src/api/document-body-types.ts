@@ -1,4 +1,4 @@
-import type { DocumentBlock, DocumentContentControl, DocumentDefaultStyle, DocumentStoryContent } from '../domain/model'
+import type { DocumentBlock, DocumentContentControl, DocumentDefaultStyle, DocumentSectionSetup, DocumentStoryContent } from '../domain/model'
 import type { UniverBodyRecord } from './document-body-style'
 
 /** Public v1.6.0 bodies use UTF-16 stream coordinates, independently of Canvas geometry. */
@@ -34,12 +34,40 @@ export const DOCUMENT_BODY_TOKENS = {
   groupStart: '\x12', columnStart: '\x13', columnEnd: '\x14', groupEnd: '\x15',
 } as const
 
-export interface DocumentBodyTextSpan { sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number }
+export interface DocumentBodyTextSpan { sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number; noteReference?: boolean }
 export interface DocumentBodyParagraphPosition {
   block: DocumentBlock
   start: number
   end: number
   spans: DocumentBodyTextSpan[]
+}
+/** Ephemeral structural boundaries. They reference the same decoded tree and
+ * never become a second persisted block or table model. */
+export interface DocumentBodyBlockPosition {
+  block: DocumentBlock
+  container: readonly DocumentBlock[]
+  start: number
+  end: number
+}
+export interface DocumentBodyRowPosition {
+  tableBlock: DocumentBlock
+  rowId: string
+  rowIndex: number
+  start: number
+  end: number
+}
+export interface DocumentBodyCellPosition {
+  tableBlock: DocumentBlock
+  rowId: string
+  cellId: string
+  blocks: readonly DocumentBlock[]
+  start: number
+  end: number
+}
+export interface DocumentBodyStructureIndex {
+  blocks: DocumentBodyBlockPosition[]
+  rows: DocumentBodyRowPosition[]
+  cells: DocumentBodyCellPosition[]
 }
 export interface DocumentBodyDecodeResult {
   content: DocumentStoryContent
@@ -50,10 +78,18 @@ export interface DocumentBodyEncodeResult {
   data: UniverDocumentBodyData
   positions: DocumentBodyParagraphPosition[]
 }
+export interface DocumentBodyEncodeOptions {
+  initialSection?: { id: string; setup: DocumentSectionSetup }
+  note?: { kind: 'footnote' | 'endnote'; id: string }
+  /** The complete snapshot already carries main-body metadata at unit scope. */
+  includeMetadata?: boolean
+}
 export interface DocumentBodyDecodeOptions {
   defaults: DocumentDefaultStyle
   allowSections?: boolean
   styles?: Record<string, UniverBodyRecord>
+  defaultParagraphStyleId?: string
+  note?: { kind: 'footnote' | 'endnote'; id?: string }
 }
 
 export function documentBodyArray(value: unknown, label: string): UniverBodyRecord[] {

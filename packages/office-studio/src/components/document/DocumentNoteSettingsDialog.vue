@@ -113,7 +113,7 @@ function resetDecoration(host: DocumentNoteDecorationHost) {
 </script>
 
 <template>
-  <Modal :open="open" :title="title" :width="760" :closable="!markComposing" :keyboard="!markComposing" :mask-closable="false" destroy-on-hidden @cancel="emit('update:open', false)" @after-close="emit('closed')">
+  <Modal :open="open" :title="title" :width="760" :closable="!markComposing" :keyboard="!markComposing" :mask-closable="false" :focus-trigger-after-close="false" :after-close="() => emit('closed')" destroy-on-hidden @cancel="emit('update:open', false)">
     <Alert v-if="error || draftError || stale" type="error" show-icon :message="error || draftError || '文档已变化，请重新打开注释设置以保留最新内容。'" />
     <Alert v-else-if="!settingsState.available" type="info" show-icon :message="settingsState.reason" />
     <Form :model="form" layout="vertical" class="note-settings-form" :disabled="!settingsState.available || stale || disabled">
@@ -132,7 +132,7 @@ function resetDecoration(host: DocumentNoteDecorationHost) {
     <section v-if="scope === 'document'" class="note-decorations">
       <p :style="{ color: token.colorTextSecondary }">分隔内容通过独立检查画布编辑，修改使用文档的命令、撤销和保存。{{ settingsChanged ? '请先应用当前设置，再进入内容检查。' : pendingMark ? '请先插入注释或清空标记草稿，再进入内容检查。' : '' }}</p>
       <div v-for="entry in decorations" :key="entry.key" class="note-decoration-row" :data-document-note-decoration="entry.key">
-        <span>{{ entry.label }}{{ entry.nativeId === undefined ? '' : '（原生 ID ' + entry.nativeId + '）' }}</span><span :style="{ color: token.colorTextSecondary }">{{ entry.dormant ? '保留来源内容' : entry.custom ? '自定义内容' : '默认' }}</span>
+        <span>{{ entry.label }}{{ entry.publicId !== undefined ? '（公开 ID ' + entry.publicId + '）' : '' }}{{ entry.nativeId !== undefined ? '（原生 ID ' + entry.nativeId + '）' : '' }}</span><span :style="{ color: token.colorTextSecondary }">{{ entry.dormant ? '保留来源内容' : entry.custom ? '自定义内容' : '默认' }}</span>
         <Tooltip :title="entry.inspect.reason"><Button size="small" :disabled="!entry.inspect.available" @click="inspectDecoration(entry.host)">在画布中编辑</Button></Tooltip>
         <Tooltip v-if="!entry.dormant" :title="entry.reset.reason"><Button size="small" :disabled="!settingsState.available || !entry.reset.available || !entry.custom" @click="resetDecoration(entry.host)">恢复默认</Button></Tooltip>
       </div>

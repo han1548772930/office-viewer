@@ -62,7 +62,16 @@ fn target(part: &str, block: &str, start: Position, end: Position) -> DocumentCo
 fn append_range(part: &str, block: &str, active: &BTreeSet<String>, start: Position, end: Position,
     output: &mut BTreeMap<String, Vec<DocumentCommentTargetPayload>>) {
     if start == end { return; }
-    for id in active { output.entry(id.clone()).or_default().push(target(part, block, start, end)); }
+    for id in active {
+        let targets = output.entry(id.clone()).or_default();
+        // Another comment's endpoint cannot split this owner's continuous
+        // range. Merge only when both literal position and note rank meet.
+        if let Some(previous) = targets.last_mut().filter(|previous| previous.node_id == block && previous.part_name == part
+            && previous.end == Some(start.offset) && previous.end_note_reference_count == Some(start.rank)) {
+            previous.end = Some(end.offset);
+            previous.end_note_reference_count = Some(end.rank);
+        } else { targets.push(target(part, block, start, end)); }
+    }
 }
 
 /// Source text is compared with the actual extracted paragraph before any

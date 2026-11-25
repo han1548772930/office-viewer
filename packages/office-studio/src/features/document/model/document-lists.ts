@@ -7,8 +7,14 @@ import { numberingOrdinal } from './document-numbering-format'
 
 export type ListPreset = keyof typeof definitions
 export type ListKind = 'bullet' | 'numbered'
-type Definition = { symbols?: string[]; formats?: string[]; suffix?: string; compound?: boolean; levels?: number }
+type Definition = { symbols?: string[]; formats?: string[]; suffix?: string; compound?: boolean; levels?: number; firstFormat?: string; firstSuffix?: string }
 export const listPresets = Object.keys(definitions) as ListPreset[]
+/** Fixed v1.6.0 picker entries. Quick-typing presets belong to the input/API
+ * catalogue and do not add duplicate cards to the two six-item galleries. */
+export const listPickerPresets: Readonly<Record<ListKind, readonly ListPreset[]>> = Object.freeze({
+  bullet: Object.freeze(['BULLET_LIST', 'BULLET_LIST_1', 'BULLET_LIST_2', 'BULLET_LIST_3', 'BULLET_LIST_4', 'BULLET_LIST_5'] as const),
+  numbered: Object.freeze(['ORDER_LIST', 'ORDER_LIST_1', 'ORDER_LIST_2', 'ORDER_LIST_3', 'ORDER_LIST_4', 'ORDER_LIST_5'] as const),
+})
 export const isListPreset = (value: unknown): value is ListPreset => typeof value === 'string' && Object.hasOwn(definitions, value)
 export const listKind = (preset: ListPreset): ListKind => preset.startsWith('BULLET_') ? 'bullet' : 'numbered'
 export function blockListPreset(block: DocumentBlock): ListPreset | undefined {
@@ -23,8 +29,8 @@ export function listLevelSpec(preset: ListPreset, level: number) {
   const def: Definition = definitions[preset]
   const index = Math.max(0, Math.min((def.levels ?? 9) - 1, Math.trunc(level) || 0))
   const symbol = def.symbols?.[index % def.symbols.length]
-  const format = def.formats?.[index % def.formats.length] ?? 'bullet'
-  const pattern = symbol ?? (def.compound ? Array.from({ length: index + 1 }, (_, i) => `%${i + 1}`).join('.') : `%${index + 1}`) + def.suffix
+  const format = index === 0 && def.firstFormat ? def.firstFormat : def.formats?.[index % def.formats.length] ?? 'bullet'
+  const pattern = symbol ?? (def.compound ? Array.from({ length: index + 1 }, (_, i) => `%${i + 1}`).join('.') : `%${index + 1}`) + (index === 0 ? def.firstSuffix ?? def.suffix : def.suffix)
   return { index, format, pattern }
 }
 export function formatListOrdinal(value: number, format: string, minimumDigits = 0, customFormat?: string): string {
@@ -57,6 +63,7 @@ export interface ParagraphListMarker {
   ordinal?: number
   inset: number
   markerIndent: number
+  alignment?: DocumentNumberingLevel['alignment']
   rightIndent: number
   gap: number
   fontFamily: string
@@ -85,6 +92,7 @@ function markerAppearance(block: DocumentBlock, level: DocumentNumberingLevel | 
   const firstLine = finite(block.style.indentFirstLine, finite(indent.firstLineTwips) / 15)
   return {
     inset: left, markerIndent: left - hanging + firstLine, rightIndent: finite(block.style.indentEnd, finite(indent.rightTwips) / 15),
+    alignment: level?.alignment,
     gap: level?.suffix === 'nothing' ? 0 : level?.suffix === 'space' ? 4 : 6,
     fontFamily: text(level?.bulletFontFamily, text(style.fontFamilyAscii, text(style.resolvedFontFamilyAscii, text(style.fontFamily, run?.fontFamily || 'Arial')))),
     fontSize: Math.max(1, finite(style.fontSizePt, run?.fontSize ?? 11)), color: text(level?.bulletColor, text(style.color, run?.color ?? '#1f2937')),

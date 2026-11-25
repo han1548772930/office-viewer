@@ -8,6 +8,7 @@ import { EChartsCanvasRenderer, type EChartsCanvasFrame } from '../features/char
 import { chartAxisPointerLocalPoint } from '../features/charts/chart-axis-pointer'
 import type { ChartVector } from '../features/charts/chart-geometry'
 import type { ChartComputedStatistics } from '../features/charts/chart-derived'
+import type { ChartChordContentTooltip } from '../features/charts/chart-chord-interaction'
 import { useChartStatistics } from '../features/charts/views/use-chart-statistics'
 import { canEditWorksheetProtection } from '../features/sheet-protection/range-protection'
 import type { DrawCommand } from '../rendering/contracts'
@@ -59,6 +60,7 @@ const pointerError = ref('')
 const renderedFrames = ref<Record<string, { version: number; width: number; height: number }>>({})
 const drafts = ref<Record<string, Pick<ChartDisplay, 'position' | 'size'>>>({})
 const drag = shallowRef<DragState | null>(null)
+const contentTooltip = shallowRef<{ chartId: string; point: ChartVector; content: ChartChordContentTooltip }>()
 let scroller: HTMLElement | null = null
 let resizeObserver: ResizeObserver | undefined
 let frameRequest: number | undefined
@@ -101,6 +103,11 @@ const overlayStyle = computed(() => ({
   '--chart-surface': token.value.colorBgContainer,
 }))
 const renderedChartIds = computed(() => new Set(sheetCharts.value.map(chart => chart.id)))
+const contentTooltipText = computed(() => contentTooltip.value ? [contentTooltip.value.content.title, ...contentTooltip.value.content.lines].join('\n') : '')
+const contentTooltipStyle = computed(() => {
+  const tooltip = contentTooltip.value, item = displayCharts.value.find(item => item.chart.id === tooltip?.chartId)
+  return tooltip && item ? { left: `${viewportX(item.position.x + tooltip.point.x)}px`, top: `${viewportY(item.position.y + tooltip.point.y)}px` } : {}
+})
 
 function renderCommands(): DrawCommand[] {
   const host = root.value
@@ -181,7 +188,8 @@ function hoverChart(event: PointerEvent, item: ChartDisplay): void {
 }
 
 function clearChartPointer(chartId?: string): void {
-  if (chartId !== undefined && desiredPointer?.chartId !== chartId) return
+  if (chartId !== undefined && desiredPointer?.chartId !== chartId && activePointerId !== chartId && contentTooltip.value?.chartId !== chartId) return
+  contentTooltip.value = undefined
   if (!desiredPointer && !activePointerId && !pointerDirty) return
   desiredPointer = undefined
   pointerDirty = true
@@ -196,6 +204,7 @@ function updatePointerFrame(chartId: string, frame: EChartsCanvasFrame | undefin
 }
 
 function updatePointerFrames(): void {
+  if (desiredPointer && !commandIndexes.has(desiredPointer.chartId)) desiredPointer = undefined
   if (activePointerId && activePointerId !== desiredPointer?.chartId) {
     updatePointerFrame(activePointerId, chartRenderer.updatePointer(activePointerId))
     activePointerId = undefined
@@ -203,8 +212,10 @@ function updatePointerFrames(): void {
   if (desiredPointer && commandIndexes.has(desiredPointer.chartId)) {
     updatePointerFrame(desiredPointer.chartId, chartRenderer.updatePointer(desiredPointer.chartId, desiredPointer.point))
     activePointerId = desiredPointer.chartId
+    const content = chartRenderer.getContentTooltip(desiredPointer.chartId, desiredPointer.point)
+    contentTooltip.value = content ? { chartId: desiredPointer.chartId, point: { ...desiredPointer.point }, content } : undefined
     pointerError.value = ''
-  }
+  } else contentTooltip.value = undefined
 }
 
 function removeChart(event: KeyboardEvent, chartId: string): void {
@@ -349,7 +360,8 @@ function onPointerCancel(event?: Event): void {
 }
 
 function onDragKeyDown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || !drag.value) return
+  if (event.key !== 'Escape') return
+  if (!drag.value) { if (contentTooltip.value) clearChartPointer(); return }
   event.preventDefault(); event.stopPropagation()
   onPointerCancel()
 }
@@ -394,6 +406,7 @@ function queueOverlayFrame(): void {
         pointerError.value = reason instanceof Error ? reason.message : '图表指示器绘制失败'
         desiredPointer = undefined
         activePointerId = undefined
+        contentTooltip.value = undefined
         chartRenderer.invalidate()
         publishOverlayCommands()
       }
@@ -418,6 +431,7 @@ watch([displayCharts, chartTheme, () => props.zoom], publishOverlayCommands, { d
 watch(statistics, publishOverlayCommands, { flush: 'post' })
 watch([() => props.workbook, () => props.studio, () => props.zoom, chartTheme, statistics], () => {
   if (drag.value) onPointerCancel()
+  clearChartPointer()
 }, { deep: true, flush: 'sync' })
 watch(() => props.activeSheetId, () => {
   onPointerCancel()
@@ -463,6 +477,7 @@ onDeactivated(() => {
   pixelRatioQuery?.removeEventListener('change', watchPixelRatio)
   desiredPointer = undefined
   activePointerId = undefined
+  contentTooltip.value = undefined
   pointerError.value = ''
   pointerDirty = false
   contentDirty = true
@@ -480,6 +495,7 @@ onUnmounted(() => {
   mounted = false
   desiredPointer = undefined
   activePointerId = undefined
+  contentTooltip.value = undefined
   contentCommands = []
   commandIndexes.clear()
   if (frameRequest !== undefined) window.cancelAnimationFrame(frameRequest)
@@ -536,12 +552,17 @@ onUnmounted(() => {
         @keydown="resizeChartWithKeyboard($event, item)" />
       </Tooltip>
     </div>
+    <Tooltip :open="Boolean(contentTooltip)" :title="contentTooltipText" :trigger="[]" :unique="false" placement="top" :arrow="false" fresh
+      :mouse-enter-delay="0" :mouse-leave-delay="0" :styles="{ root: { pointerEvents: 'none' }, container: { whiteSpace: 'pre-line' } }">
+      <span class="chart-content-tooltip-anchor" :style="contentTooltipStyle" aria-hidden="true" />
+    </Tooltip>
   </div>
 </template>
 
 <style scoped>
 .chart-overlay { position: absolute; z-index: 2; inset: 0; overflow: hidden; clip-path: inset(26px 0 0 44px); pointer-events: none; }
 .chart-object { position: absolute; pointer-events: none; }
+.chart-content-tooltip-anchor { position: absolute; width: 1px; height: 1px; pointer-events: none; }
 .chart-hitbox { position: absolute; inset: 0; width: 100%; height: 100%; display: block; box-sizing: border-box; margin: 0; border: 1px solid transparent; padding: 0; color: inherit; background: transparent; pointer-events: auto; cursor: move; outline: none; text-align: left; }
 .chart-hitbox:hover, .chart-hitbox:focus-visible { background: transparent; }
 .chart-hitbox.chart-view-only { cursor: default; }

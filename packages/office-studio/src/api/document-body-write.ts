@@ -6,14 +6,19 @@ import { documentTableContinuationEntries } from '../features/document/model/doc
 import { documentTextFields } from '../features/document/model/document-text-fields'
 import { migrateDocumentStoryBlocks } from '../features/document/model/document-story-blocks'
 import { documentParagraphToBody, documentBodyListForBlock } from './document-body-paragraph'
+import { DocumentBodyListResources, documentBodyListInstanceIds } from './document-body-lists'
+import { documentBodyNoteStreamOffset } from './document-body-note-boundaries'
+import { DOCUMENT_BODY_SECTION_TYPES, documentSectionSetupToBody } from './document-body-section'
 import { bodyRecord, documentRunStyleToBody, type UniverBodyRecord } from './document-body-style'
 import { documentTableCellToBody, documentTableRowToBody, documentTableToBody } from './document-body-table'
-import { DOCUMENT_BODY_TOKENS as T, documentBodyLocalOffset, type DocumentBodyParagraphPosition, type DocumentBodyTextSpan,
+import { documentBodyBlockSource, documentBodyRunSource, documentBodySourceMetadata } from './document-body-source'
+import { documentBodyControlSource, documentBodyPublicControlPlacement, documentBodyStructuralControlBounds } from './document-body-control-ranges'
+import { DOCUMENT_BODY_TOKENS as T, documentBodyLocalOffset, type DocumentBodyEncodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyTextSpan,
   type UniverDocumentBody, type UniverDocumentBodyData, type UniverDocumentCustomBlock, type UniverDocumentCustomRange,
-  type UniverDocumentCustomTable, type UniverDocumentParagraph, type UniverDocumentTextRun } from './document-body-types'
+  type DocumentBodyStructureIndex, type UniverDocumentCustomTable, type UniverDocumentParagraph, type UniverDocumentTextRun } from './document-body-types'
 
 interface ParagraphMap { block: DocumentBlock; start: number; end: number; spans: DocumentBodyTextSpan[] }
-interface PendingRange { id: string; type: number; startBlockId: string; endBlockId: string; start: number; end: number; properties: UniverBodyRecord; source?: UniverBodyRecord }
+interface PendingRange { id: string; type: number; startBlockId: string; endBlockId: string; start: number; end: number; startNoteReferenceCount?: number; endNoteReferenceCount?: number; properties: UniverBodyRecord; source?: UniverBodyRecord; atomic?: boolean; absolute?: { start: number; end: number } }
 interface RangeMarker { offset: number; end: number; text: string; order: number; sourceIndex?: number }
 
 /** Rebase an imported, unmodeled annotation through the changed paragraph text. */
@@ -34,96 +39,133 @@ function noteIdentity(run: InlineRun): { id: string; kind: 'footnote' | 'endnote
 function controlProperties(control: DocumentContentControl): UniverBodyRecord {
   const source = bodyRecord(control.metadata?.univerBodySdtSource), raw = cloneModel(bodyRecord(source.properties))
   raw.kind = control.type; raw.placement = control.placement ?? 'inline'
-  for (const key of ['alias', 'tag', 'appearance', 'color', 'placeholder', 'placeholderDocPart', 'showingPlaceholder', 'temporary', 'lock', 'repeatingSection', 'docPart', 'dataBinding', 'rawSdtPr', 'rawSdtEndPr'] as const) {
+  for (const key of ['alias', 'title', 'tag', 'appearance', 'color', 'placeholder', 'placeholderDocPart', 'showingPlaceholder', 'temporary', 'lock', 'value', 'repeatingSection', 'docPart', 'dataBinding', 'rawSdtPr', 'rawSdtEndPr'] as const) {
     if (control[key] !== undefined) raw[key] = cloneModel(control[key]); else delete raw[key]
   }
   if (control.checkbox || control.checked !== undefined) raw.checkbox = { ...control.checkbox, checked: control.checked ?? control.checkbox?.checked ?? false }
   else delete raw.checkbox
   if (control.multiLine !== undefined) raw.text = { ...bodyRecord(raw.text), multiLine: control.multiLine }
-  if (control.dateValue !== undefined || control.dateFormat !== undefined) raw.date = { ...bodyRecord(raw.date), fullDate: control.dateValue, format: control.dateFormat,
+  else if (raw.text !== undefined) { const text = { ...bodyRecord(raw.text) }; delete text.multiLine; raw.text = text }
+  if ([control.dateValue, control.dateFormat, control.dateLocale, control.dateCalendar, control.dateStorage].some(value => value !== undefined)) raw.date = { ...bodyRecord(raw.date), fullDate: control.dateValue, format: control.dateFormat,
     locale: control.dateLocale, calendar: control.dateCalendar, storage: control.dateStorage }
+  else delete raw.date
   if (control.items) raw.listItems = cloneModel(control.items); else delete raw.listItems
   return raw
 }
 
 /** The stream is rebuilt from current blocks; source arrays never override authored text. */
 export function writeDocumentBody(input: DocumentStoryContent, defaults: DocumentDefaultStyle, contentControls: readonly DocumentContentControl[] = [],
-  positionOutput?: DocumentBodyParagraphPosition[]): UniverDocumentBodyData {
+  positionOutput?: DocumentBodyParagraphPosition[], options: DocumentBodyEncodeOptions = {}): UniverDocumentBodyData {
   const content = input.blocks === undefined ? migrateDocumentStoryBlocks(cloneModel(input), [], { kind: 'note', noteKind: 'footnote', noteId: 'public-body' }, defaults) : input
   const provenance = bodyRecord(content.metadata?.univerBodySource), sourceBody = cloneModel(bodyRecord(provenance.body)), sourceResources = bodyRecord(provenance.resources)
   const paragraphs: UniverDocumentParagraph[] = [], textRuns: UniverDocumentTextRun[] = [], tables: UniverDocumentCustomTable[] = [], customBlocks: UniverDocumentCustomBlock[] = [], rawCustomBlocks: UniverDocumentCustomBlock[] = []
-  const tableSource: Record<string, UniverBodyRecord> = {}, drawings = cloneModel(bodyRecord(sourceResources.drawings)) as Record<string, UniverBodyRecord>, lists: Record<string, UniverBodyRecord> = {}
+  const tableSource = cloneModel(bodyRecord(sourceResources.tableSource)) as Record<string, UniverBodyRecord>,
+    drawings = cloneModel(bodyRecord(sourceResources.drawings)) as Record<string, UniverBodyRecord>, lists = cloneModel(bodyRecord(sourceResources.lists)) as Record<string, UniverBodyRecord>
+  const sourceTableIds = new Set(documentArray(sourceBody.tables).map(raw => raw.tableId).filter((id): id is string => typeof id === 'string'))
+  const writtenTableIds = new Set<string>()
+  const writtenLists = new DocumentBodyListResources(), sourceListIds = new Set(documentArray(sourceBody.paragraphs)
+    .map(paragraph => bodyRecord(paragraph.bullet).listType).filter((id): id is string => typeof id === 'string'))
   const writtenDrawingIds = new Set<string>(), drawingAliases = new Map<string, string>()
   const sourceDrawingIds = new Set([...documentArray(sourceBody.customBlocks), ...documentArray(sourceBody.docxRawCustomBlocks)]
     .map(raw => raw.blockId).filter((id): id is string => typeof id === 'string' && drawings[id] !== undefined))
   const maps = new Map<string, ParagraphMap>(), ranges: PendingRange[] = [], sections: UniverBodyRecord[] = [], chunks: string[] = []
+  const structures: DocumentBodyStructureIndex = { blocks: [], rows: [], cells: [] }
+  const listInstanceIds = documentBodyListInstanceIds(content.blocks!)
+  const sourceModeledRangeIds = new Set(Array.isArray(provenance.modeledRangeIds) ? provenance.modeledRangeIds.filter((id): id is string => typeof id === 'string') : [])
+  const retainedSourceRangeIds = new Set<string>()
   const sourceCustomTokens = new Map<UniverDocumentCustomBlock, number>()
+  const sourceRangeTokens = new Map<UniverDocumentCustomRange, number>()
   const renderedPageBreaks: number[] = []
   let offset = 0
+  let currentSection = documentSectionSetupToBody(options.initialSection?.setup, content.metadata?.univerBodyFirstSectionSource)
+  if (options.initialSection) currentSection.sectionId = options.initialSection.id
   const append = (text: string) => { chunks.push(text); offset += text.length }
+  const appendSection = (required = false) => {
+    if (required || Object.keys(currentSection).length) sections.push({ ...cloneModel(currentSection),
+      sectionId: typeof currentSection.sectionId === 'string' ? currentSection.sectionId : 'first', startIndex: offset })
+    append(T.section)
+  }
   const registerDrawing = (id: string, drawing: UniverBodyRecord, sourceId?: unknown) => {
     drawings[id] = { ...drawing, drawingId: id }; writtenDrawingIds.add(id)
     if (typeof sourceId === 'string' && sourceId !== id) drawingAliases.set(sourceId, id)
   }
-  const writeBlocks = (blocks: readonly DocumentBlock[]) => {
+  const writeBlocks = (blocks: readonly DocumentBlock[], depth = 0) => {
     for (const block of blocks) {
       const table = tableForBlock(block)
       if (table) {
         const start = offset, source = bodyRecord(block.metadata.univerBodyTableSource), grid = documentTableGrid(table), rows: UniverBodyRecord[] = []
         append(T.tableStart)
         for (const [rowIndex, row] of table.rows.entries()) {
-          append(T.rowStart); const cells: UniverBodyRecord[] = []
+          const rowStart = offset; append(T.rowStart); const cells: UniverBodyRecord[] = []
           for (let column = 0; column < grid.columnCount; column++) {
             const owner = grid.cellAt(rowIndex, column)!
             if (owner.cell.style.univerBodyOmittedCell) continue
-            append(T.cellStart)
+            const cellStart = offset; append(T.cellStart)
             if (owner.row === rowIndex && owner.column === column) {
-              writeBlocks(owner.cell.blocks); cells.push(documentTableCellToBody(owner.cell))
+              writeBlocks(owner.cell.blocks, depth + 1); cells.push(documentTableCellToBody(owner.cell))
             } else {
               const continuation = documentTableContinuationEntries(owner.cell).find(entry => entry.offset === rowIndex - owner.row)
-              if (owner.column === column && continuation) writeBlocks(continuation.content.blocks)
+              if (owner.column === column && continuation) writeBlocks(continuation.content.blocks, depth + 1)
               else append(T.paragraph)
-              cells.push({ ...cloneModel(bodyRecord(continuation?.content.source?.univerBodyCellSource)), rowSpan: 0, columnSpan: 0 })
+              cells.push({ ...cloneModel(bodyRecord(continuation?.content.source?.univerBodyCellSource)), rowSpan: 0, columnSpan: 0,
+                officeStudio: { version: 1, ...(continuation ? { continuationSource: documentBodySourceMetadata(continuation.content.source, '续格', ['univerBodyCellSource']) } : {}) } })
             }
             append(T.cellEnd)
+            if (owner.row === rowIndex && owner.column === column) structures.cells.push({ tableBlock: block, rowId: row.id, cellId: owner.cell.id,
+              blocks: owner.cell.blocks, start: cellStart, end: offset })
           }
           rows.push(documentTableRowToBody(table, rowIndex, cells)); append(T.rowEnd)
+          structures.rows.push({ tableBlock: block, rowId: row.id, rowIndex, start: rowStart, end: offset })
         }
         append(T.tableEnd)
-        tables.push({ ...source, startIndex: start, endIndex: offset, tableId: block.id }); tableSource[block.id] = documentTableToBody(table, block.id, rows)
+        tables.push({ ...source, startIndex: start, endIndex: offset, tableId: block.id, officeStudio: documentBodyBlockSource(block) }); tableSource[block.id] = documentTableToBody(table, block.id, rows)
+        writtenTableIds.add(block.id)
+        structures.blocks.push({ block, container: blocks, start, end: offset })
         continue
       }
       const image = imageForBlock(block)
       if (image) {
         const source = bodyRecord(block.metadata.univerBodyCustomBlock), drawing = cloneModel(bodyRecord(block.metadata.univerBodyDrawingSource)), start = offset
-        append(T.customBlock); customBlocks.push({ ...source, startIndex: start, blockId: block.id })
+        append(T.customBlock); customBlocks.push({ ...source, startIndex: start, blockId: block.id, officeStudio: documentBodyBlockSource(block) })
         drawing.drawingId = block.id; drawing.drawingType = 0; drawing.source = image.src; drawing.description = image.alt
         drawing.docTransform = { ...bodyRecord(drawing.docTransform), size: { ...bodyRecord(bodyRecord(drawing.docTransform).size), width: image.width, height: image.height } }
-        registerDrawing(block.id, drawing, source.blockId); continue
+        registerDrawing(block.id, drawing, source.blockId); structures.blocks.push({ block, container: blocks, start, end: offset }); continue
       }
       if (block.type === 'sectionBreak') {
-        const section = cloneModel(bodyRecord(block.metadata.univerBodySectionSource)), types = ['unspecified', 'continuous', 'nextColumn', 'nextPage', 'evenPage', 'oddPage']
-        section.startIndex = offset; section.sectionId = block.id; section.sectionType = types.indexOf(block.sectionBreak?.type ?? 'unspecified')
-        sections.push(section); append(T.section); continue
+        if (depth > 0) throw new RangeError('单元格中不能导出独立分节。')
+        const start = offset; appendSection(true); structures.blocks.push({ block, container: blocks, start, end: offset })
+        currentSection = documentSectionSetupToBody(block.sectionBreak?.setup, block.metadata.univerBodySectionSource)
+        currentSection.sectionId = block.id
+        currentSection.sectionType = DOCUMENT_BODY_SECTION_TYPES.indexOf(block.sectionBreak?.type ?? 'unspecified')
+        continue
       }
       if (block.type === 'pageBreak' || block.type === 'columnBreak') {
+        const start = offset
         if (block.type === 'pageBreak' && bodyRecord(block.metadata.univerBodyBreakSource).soft === true) renderedPageBreaks.push(offset)
-        append(block.type === 'pageBreak' ? T.pageBreak : T.columnBreak); continue
+        append(block.type === 'pageBreak' ? T.pageBreak : T.columnBreak); structures.blocks.push({ block, container: blocks, start, end: offset }); continue
       }
-      if (block.type === 'divider') { append(T.paragraph); paragraphs.push({ startIndex: offset - 1, paragraphId: block.id, paragraphStyle: { borderBottom: { width: 0.75, color: { rgb: 'auto' }, dashStyle: 1, padding: 0 } } }); continue }
+      if (block.type === 'divider') { const start = offset; append(T.paragraph); paragraphs.push({ startIndex: offset - 1, paragraphId: block.id,
+        officeStudio: documentBodyBlockSource(block), paragraphStyle: { borderBottom: { width: 0.75, color: { rgb: 'auto' }, dashStyle: 1, padding: 0 } } })
+        structures.blocks.push({ block, container: blocks, start, end: offset }); continue }
       const start = offset, spans: DocumentBodyTextSpan[] = [], source = bodyRecord(block.metadata.univerBodyParagraphSource)
       let local = 0
       for (const run of block.runs) {
         const from = offset, note = noteIdentity(run), sourceCustom = bodyRecord(run.metadata?.univerBodyCustomBlock), runSource = bodyRecord(run.metadata?.univerBodyRunSource), publicRun = bodyRecord(runSource.textRun)
-        if (note || Object.keys(sourceCustom).length || run.metadata?.univerBodyDrawingSource) {
+        if (note) {
+          const raw = bodyRecord(run.metadata?.univerBodyNoteRangeSource)
+          append('\uFFFC')
+          ranges.push({ id: typeof raw.rangeId === 'string' ? raw.rangeId : `note:${run.id}`, type: note.kind === 'footnote' ? 8 : 9,
+            startBlockId: block.id, endBlockId: block.id, start: local, end: local + run.text.length,
+            properties: { ...bodyRecord(raw.properties), noteId: note.id }, source: raw, atomic: true, absolute: { start: from, end: offset } })
+        } else if (Object.keys(sourceCustom).length || run.metadata?.univerBodyDrawingSource) {
           const copied = typeof runSource.runId === 'string' && runSource.runId !== run.id
           const blockId = !copied && typeof sourceCustom.blockId === 'string' ? sourceCustom.blockId : run.id
-          append(T.customBlock); (run.metadata?.univerBodyRawCustomBlock === true ? rawCustomBlocks : customBlocks).push({ ...sourceCustom, startIndex: from, blockId,
-            ...(note ? { noteType: note.kind, noteId: note.id } : {}) })
-          if (run.metadata?.univerBodyDrawingSource) registerDrawing(blockId, cloneModel(bodyRecord(run.metadata.univerBodyDrawingSource)), sourceCustom.blockId)
+          append(T.customBlock); (run.metadata?.univerBodyRawCustomBlock === true ? rawCustomBlocks : customBlocks).push({ ...sourceCustom, startIndex: from, blockId })
+          const drawing = run.metadata?.univerBodyDrawingSource ?? (typeof sourceCustom.blockId === 'string' ? drawings[sourceCustom.blockId] : undefined)
+          if (drawing) registerDrawing(blockId, cloneModel(bodyRecord(drawing)), sourceCustom.blockId)
         } else append(run.text)
-        spans.push({ sourceStart: local, sourceEnd: local + run.text.length, targetStart: from, targetEnd: offset })
-        if (offset > from) textRuns.push({ ...publicRun, st: from, ed: offset, ts: documentRunStyleToBody(run) })
+        spans.push({ sourceStart: local, sourceEnd: local + run.text.length, targetStart: from, targetEnd: offset, ...(note ? { noteReference: true } : {}) })
+        if (offset > from) textRuns.push({ ...publicRun, st: from, ed: offset, ts: documentRunStyleToBody(run), officeStudio: documentBodyRunSource(run) })
         const href = Reflect.get(run, 'href') ?? bodyRecord(run.metadata?.link).target
         if (typeof href === 'string' && href) {
           const raw = bodyRecord(run.metadata?.univerBodyHyperlinkSource), id = typeof raw.rangeId === 'string' ? raw.rangeId : `hyperlink:${run.id}`
@@ -135,30 +177,36 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
         local += run.text.length
       }
       const end = offset; maps.set(block.id, { block, start, end, spans })
-      if (source.terminated !== false) { paragraphs.push({ ...documentParagraphToBody(block, offset), startIndex: offset, paragraphId: block.id }); append(T.paragraph) }
-      const list = documentBodyListForBlock(block); if (list) lists[list.id] = list.value
+      if (source.terminated !== false) {
+        const paragraph = documentParagraphToBody(block, offset, listInstanceIds.get(block.id))
+        const mark = block.metadata.univerBodyParagraphMarkTextStyle ?? bodyRecord(paragraph.paragraphStyle).paragraphMarkTextStyle
+        if (mark !== undefined) textRuns.push({ st: offset, ed: offset + 1, ts: cloneModel(bodyRecord(mark)) })
+        paragraphs.push({ ...paragraph, startIndex: offset, paragraphId: block.id }); append(T.paragraph)
+      }
+      structures.blocks.push({ block, container: blocks, start, end: offset })
+      const list = documentBodyListForBlock(block, listInstanceIds.get(block.id)); if (list) writtenLists.add(list)
       for (const field of documentTextFields(block)) {
         const raw = bodyRecord(field.metadata?.univerBodyFieldSource)
         ranges.push({ id: field.id, type: 1, startBlockId: block.id, endBlockId: field.endBlockId ?? block.id, start: field.startOffset, end: field.endOffset,
+          startNoteReferenceCount: field.startNoteReferenceCount, endNoteReferenceCount: field.endNoteReferenceCount,
           properties: { ...bodyRecord(raw.properties), ...bodyRecord(bodyRecord(field.metadata?.source).properties), instruction: field.instruction ?? field.field,
-            fieldType: field.field, cachedResult: field.cachedResult, locked: field.locked }, source: raw })
+            fieldType: field.field, cachedResult: field.cachedResult, locked: field.locked },
+          source: { ...raw, officeStudio: { version: 1, metadata: documentBodySourceMetadata(field.metadata, '字段', ['univerBodyFieldSource']) } } })
       }
     }
   }
   writeBlocks(content.blocks!)
-  if (chunks.at(-1) !== T.section) {
-    if (!chunks.length) { append(T.paragraph); paragraphs.push({ startIndex: 0, paragraphId: documentId('paragraph') }) }
-    append(T.section)
+  if (!chunks.length || chunks.at(-1) === T.section) {
+    append(T.paragraph); paragraphs.push({ startIndex: offset - 1, paragraphId: documentId('paragraph') })
   }
+  appendSection(sections.length > 0)
   const baseStream = chunks.join('')
   const sourceStream = typeof sourceBody.dataStream === 'string' ? sourceBody.dataStream : ''
-  const finalSection = (Array.isArray(sourceBody.sectionBreaks) ? sourceBody.sectionBreaks : []).map(bodyRecord).find(raw =>
-    raw.startIndex === sourceStream.length - 1 && sourceStream.endsWith(T.section))
-  if (finalSection) sections.push({ ...cloneModel(finalSection), startIndex: baseStream.length - 1 })
-  const atLocal = (id: string, local: number, affinity: 'start' | 'end' = 'start') => {
+  const atLocal = (id: string, local: number, affinity: 'start' | 'end' = 'start', rank?: number) => {
     const map = maps.get(id)
     if (!map) throw new RangeError(`文档导出范围的块不存在：${id}`)
-    return documentBodyLocalOffset({ block: map.block, start: 0, end: runText(map.block.runs).length, spans: map.spans }, local, affinity)
+    const fallback = documentBodyLocalOffset({ block: map.block, start: 0, end: runText(map.block.runs).length, spans: map.spans }, local, affinity)
+    return documentBodyNoteStreamOffset(map.block, map.spans, local, fallback, rank)
   }
   const atSource = (old: number, affinity: 'start' | 'end') => {
     for (const map of maps.values()) {
@@ -173,9 +221,13 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   }
   for (const control of contentControls) {
     const firstId = control.blockRange?.blockIds[0] ?? control.blockId, lastId = control.blockRange?.blockIds.at(-1) ?? control.blockId
-    if (!maps.has(firstId) || !maps.has(lastId)) continue
+    const absolute = documentBodyStructuralControlBounds(control, structures)
+    if (!absolute && (!maps.has(firstId) || !maps.has(lastId))) throw new RangeError('公开内容控件缺少真实文字或结构范围：' + control.id)
+    const properties = controlProperties(control); properties.placement = documentBodyPublicControlPlacement(control, structures)
     ranges.push({ id: control.id, type: 2, startBlockId: firstId, endBlockId: lastId, start: control.blockRange ? 0 : control.startOffset,
-      end: control.blockRange ? runText(maps.get(lastId)!.block.runs).length : control.endOffset, properties: controlProperties(control), source: bodyRecord(control.metadata?.univerBodySdtSource) })
+      startNoteReferenceCount: control.startNoteReferenceCount, endNoteReferenceCount: control.endNoteReferenceCount,
+      end: absolute ? 0 : control.blockRange ? runText(maps.get(lastId)!.block.runs).length : control.endOffset, properties,
+      ...(absolute ? { absolute } : {}), source: { ...bodyRecord(control.metadata?.univerBodySdtSource), officeStudio: documentBodyControlSource(control) } })
   }
   for (const range of ranges) if (range.type === 1) {
     const paragraphs = [...maps.values()], first = paragraphs.findIndex(map => map.block.id === range.startBlockId), last = paragraphs.findIndex(map => map.block.id === range.endBlockId)
@@ -186,24 +238,59 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   const markers: RangeMarker[] = [], customRanges: UniverDocumentCustomRange[] = [], generatedIds = new Set(ranges.map(range => range.id))
   for (const map of maps.values()) {
     const source = bodyRecord(map.block.metadata.univerBodyParagraphSource), before = typeof source.baselineText === 'string' ? source.baselineText : runText(map.block.runs)
+    let hasSeparator = false
     for (const value of Array.isArray(source.boundaryTokens) ? source.boundaryTokens : []) {
       const token = bodyRecord(value)
       if (typeof token.offset !== 'number' || typeof token.text !== 'string' || token.text.length !== 1
-        || !Object.values(T).includes(token.text as typeof T[keyof typeof T]) || typeof token.sourceIndex !== 'number') throw new TypeError('文档保留的结构标记无效。')
+        || token.text !== '\uFFFC' && !Object.values(T).includes(token.text as typeof T[keyof typeof T]) || typeof token.sourceIndex !== 'number') throw new TypeError('文档保留的结构标记无效。')
+      if (typeof token.sourceRangeId === 'string' && sourceModeledRangeIds.has(token.sourceRangeId)) {
+        if (bodyRecord(map.block.metadata.noteSeparator).version !== 1) continue
+        retainedSourceRangeIds.add(token.sourceRangeId)
+      }
       const position = atLocal(map.block.id, rebasedOffset(before, runText(map.block.runs), token.offset, 'start'))
       markers.push({ offset: position, end: position, text: token.text, order: -1, sourceIndex: token.sourceIndex })
+      if (token.text === '\uFFFC') {
+        const raw = documentArray(sourceBody.customRanges).find(raw => raw.rangeId === token.sourceRangeId && raw.startIndex === token.sourceIndex)
+        if (!raw) throw new RangeError('文档生成标记缺少来源范围。')
+        const field = bodyRecord(raw.properties).fieldType
+        hasSeparator ||= field === 'FOOTNOTE_SEPARATOR' || field === 'FOOTNOTE_CONTINUATION_SEPARATOR'
+      }
       if (token.text === T.customBlock) {
         const raw = [...(Array.isArray(sourceBody.customBlocks) ? sourceBody.customBlocks : []),
           ...(Array.isArray(sourceBody.docxRawCustomBlocks) ? sourceBody.docxRawCustomBlocks : [])].map(bodyRecord).find(raw => raw.startIndex === token.sourceIndex)
         if (!raw || typeof raw.blockId !== 'string') throw new RangeError('文档保留的 customBlock 缺少来源定义。')
-        const descriptor = { ...raw, startIndex: position, blockId: raw.blockId }; customBlocks.push(descriptor); sourceCustomTokens.set(descriptor, token.sourceIndex)
+        hasSeparator ||= raw.noteType === 'separator' || raw.noteType === 'continuationSeparator'
+        const descriptor = { ...raw, startIndex: position, blockId: raw.blockId,
+          ...(options.note && raw.noteType === options.note.kind ? { noteId: options.note.id } : {}) }
+        customBlocks.push(descriptor); sourceCustomTokens.set(descriptor, token.sourceIndex)
+        if (drawings[raw.blockId]) writtenDrawingIds.add(raw.blockId)
       }
+    }
+    const separator = bodyRecord(map.block.metadata.noteSeparator)
+    if (separator.version === 1 && !hasSeparator) {
+      const raw = bodyRecord(map.block.metadata.univerNoteSeparatorRangeSource), id = typeof raw.rangeId === 'string' ? raw.rangeId : `${map.block.id}:note-separator`
+      if (generatedIds.has(id)) throw new TypeError('注释分隔范围身份重复：' + id)
+      generatedIds.add(id)
+      const tokenId = -1 - markers.length, at = map.start
+      markers.push({ offset: at, end: at, text: '\uFFFC', order: -1, sourceIndex: tokenId })
+      const range: UniverDocumentCustomRange = { ...raw, rangeId: id, rangeType: 1, startIndex: at, endIndex: at, wholeEntity: true,
+        properties: { ...bodyRecord(raw.properties), fieldType: separator.widthFraction === 1 ? 'FOOTNOTE_CONTINUATION_SEPARATOR' : 'FOOTNOTE_SEPARATOR' } }
+      customRanges.push(range); sourceRangeTokens.set(range, tokenId)
     }
   }
   for (const raw of Array.isArray(sourceBody.customRanges) ? sourceBody.customRanges : []) {
     const range = bodyRecord(raw)
     if (typeof range.rangeId !== 'string' || generatedIds.has(range.rangeId)) continue
+    if (sourceModeledRangeIds.has(range.rangeId) && !retainedSourceRangeIds.has(range.rangeId)) continue
     if (typeof range.startIndex !== 'number' || typeof range.endIndex !== 'number' || typeof range.rangeType !== 'number') continue
+    const sourceToken = markers.find(marker => marker.text === '\uFFFC' && marker.sourceIndex === range.startIndex && range.endIndex === range.startIndex)
+    if (sourceToken) {
+      const publicRange: UniverDocumentCustomRange = { ...range, rangeId: range.rangeId, rangeType: range.rangeType,
+        startIndex: sourceToken.offset, endIndex: sourceToken.offset,
+        ...(options.note && (range.rangeType === 8 || range.rangeType === 9)
+          ? { properties: { ...bodyRecord(range.properties), noteId: options.note.id } } : {}) }
+      customRanges.push(publicRange); sourceRangeTokens.set(publicRange, range.startIndex); continue
+    }
     const start = atSource(range.startIndex, 'start'), end = atSource(range.endIndex + 1, 'end')
     const index = customRanges.length
     customRanges.push({ ...range, rangeId: range.rangeId, rangeType: range.rangeType, startIndex: start,
@@ -212,11 +299,12 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     if (sourceStream[range.endIndex] === T.rangeEnd) markers.push({ offset: end, end: start, text: T.rangeEnd, order: index })
   }
   for (const range of ranges) {
-    const start = atLocal(range.startBlockId, range.start), end = atLocal(range.endBlockId, range.end, 'end')
+    const start = range.absolute?.start ?? atLocal(range.startBlockId, range.start, 'start', range.startNoteReferenceCount), end = range.absolute?.end ?? atLocal(range.endBlockId, range.end, 'end', range.endNoteReferenceCount)
     if (end < start) throw new RangeError('文档导出自定义范围方向无效。')
     const index = customRanges.length
-    customRanges.push({ ...range.source, startIndex: start, endIndex: end, rangeId: range.id, rangeType: range.type, properties: range.properties })
-    markers.push({ offset: start, end, text: T.rangeStart, order: index }, { offset: end, end: start, text: T.rangeEnd, order: index })
+    customRanges.push({ ...range.source, startIndex: start, endIndex: range.atomic ? Math.max(start, end - 1) : end,
+      rangeId: range.id, rangeType: range.type, properties: range.properties, ...(range.atomic ? { wholeEntity: true } : {}) })
+    if (!range.atomic) markers.push({ offset: start, end, text: T.rangeStart, order: index }, { offset: end, end: start, text: T.rangeEnd, order: index })
   }
   const markerPriority = (marker: RangeMarker) => marker.sourceIndex !== undefined ? 1 : marker.offset === marker.end ? 2 : marker.text === T.rangeEnd ? 0 : 3
   markers.sort((a, b) => a.offset - b.offset || markerPriority(a) - markerPriority(b)
@@ -248,6 +336,8 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   for (const section of sections) section.startIndex = afterMarker(Number(section.startIndex))
   for (const [index, position] of renderedPageBreaks.entries()) renderedPageBreaks[index] = afterMarker(position)
   for (const [index, range] of customRanges.entries()) {
+    const token = sourceRangeTokens.get(range)
+    if (token !== undefined) { range.startIndex = sourceTokenPosition(token)!; range.endIndex = range.startIndex; continue }
     const beginMarker = markers.findIndex(marker => marker.order === index && marker.text === T.rangeStart), endMarker = markers.findIndex(marker => marker.order === index && marker.text === T.rangeEnd)
     range.startIndex = beginMarker >= 0 ? range.startIndex + beginMarker : afterMarker(range.startIndex)
     range.endIndex = endMarker >= 0 ? range.endIndex + endMarker : beforeMarker(range.endIndex + 1) - 1
@@ -266,7 +356,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
         const start = cuts[index]!, end = cuts[index + 1]!
         if (end <= start) continue
         spans.push({ sourceStart: afterMarker(start), sourceEnd: beforeMarker(end),
-          targetStart: localAt(span, start, 'start'), targetEnd: localAt(span, end, 'end') })
+          targetStart: localAt(span, start, 'start'), targetEnd: localAt(span, end, 'end'), ...(span.noteReference ? { noteReference: true } : {}) })
       }
     }
     for (let index = markerCount(map.start, false); index < markerCount(map.end, true); index++) {
@@ -282,15 +372,27 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     ...(rawCustomBlocks.length ? { docxRawCustomBlocks: rawCustomBlocks } : { docxRawCustomBlocks: undefined }),
     ...(renderedPageBreaks.length ? { renderedPageBreaks } : { renderedPageBreaks: undefined }),
     ...(customRanges.length ? { customRanges } : { customRanges: undefined }), ...(sections.length ? { sectionBreaks: sections } : { sectionBreaks: undefined }) }
-  for (const key of ['customDecorations', 'docxRawBlocks', 'docxExportExcludedRanges', 'columnGroups', 'blockRanges'] as const) if (Array.isArray(sourceBody[key])) body[key] = sourceBody[key].map(value => {
+  const metadata = options.includeMetadata === false ? {} : documentBodySourceMetadata(content.metadata, '正文',
+    ['univerBodySource', 'univerBodyFirstSectionSource', 'univerDocumentSource', 'documentEditingBlockHost', 'documentEditingBlockSourceId', 'documentEditingSectionId', 'documentEditingSectionIds'])
+  body.officeStudio = Object.keys(metadata).length ? { version: 1, metadata } : undefined
+  for (const key of ['customDecorations', 'docxRawBlocks', 'columnGroups', 'blockRanges'] as const) if (Array.isArray(sourceBody[key])) body[key] = sourceBody[key].map(value => {
     const raw = cloneModel(bodyRecord(value))
     if (typeof raw.startIndex === 'number') raw.startIndex = sourceTokenPosition(raw.startIndex) ?? afterMarker(atSource(raw.startIndex, 'start'))
     if (typeof raw.endIndex === 'number') raw.endIndex = sourceTokenPosition(raw.endIndex) ?? beforeMarker(atSource(raw.endIndex + 1, 'end')) - 1
     return raw
   })
+  if (Array.isArray(sourceBody.docxExportExcludedRanges)) body.docxExportExcludedRanges = sourceBody.docxExportExcludedRanges.map(value => {
+    const raw = cloneModel(bodyRecord(value))
+    if (typeof raw.start === 'number') raw.start = sourceTokenPosition(raw.start) ?? afterMarker(atSource(raw.start, 'start'))
+    if (typeof raw.end === 'number') raw.end = sourceTokenPosition(raw.end) ?? beforeMarker(atSource(raw.end, 'end'))
+    return raw
+  })
   // Remove old custom-block resources after deletion/copy, while retaining source
   // resources that never belonged to a modeled custom block (e.g. group parts).
+  for (const id of sourceTableIds) if (!writtenTableIds.has(id)) delete tableSource[id]
   for (const id of sourceDrawingIds) if (!writtenDrawingIds.has(id)) delete drawings[id]
+  for (const id of sourceListIds) delete lists[id]
+  Object.assign(lists, writtenLists.finish())
   const drawingOrder = Array.isArray(sourceResources.drawingsOrder) ? sourceResources.drawingsOrder
     .filter((id): id is string => typeof id === 'string').map(id => drawings[id] ? id : drawingAliases.get(id) ?? id).filter(id => drawings[id]) : []
   const drawingsOrder = [...new Set([...drawingOrder, ...Object.keys(drawings)])]

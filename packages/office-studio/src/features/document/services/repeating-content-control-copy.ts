@@ -10,6 +10,9 @@ import { documentFieldLocked, documentTextFieldRanges, documentTextFields, setDo
 import { migrateDocumentStoryBlocks, projectDocumentStoryBlocks } from '../model/document-story-blocks'
 import { documentStoryParagraphs, isDocumentTextBoundary } from '../model/document-story'
 import { copyDocumentBlocksForPaste } from './document-block-paste'
+import { documentContentControlNoteBoundaryRanks, partitionDocumentContentControlNoteRuns } from '../model/content-control-note-boundary'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets, remapDocumentNoteReferenceBoundary } from '../model/document-note-boundary'
+import { compareDocumentNoteBoundaries } from '../model/document-note-boundary-edit'
 
 export interface DocumentRepeatingContentControlCopyIds {
   block: Map<string, string>
@@ -26,35 +29,49 @@ export interface DocumentRepeatingContentControlInlineCopyRange {
   blockId: string
   startOffset: number
   endOffset: number
+  startNoteReferenceCount?: number
+  endNoteReferenceCount?: number
   insertionOffset: number
+  insertionNoteReferenceCount?: number
 }
 
 /** Extract a borrowed inline source; the common clipboard copier still allocates every new ID. */
-export function documentRepeatingContentControlInlineCopySource(block: DocumentBlock, start: number, end: number): DocumentBlock {
+export function documentRepeatingContentControlInlineCopySource(block: DocumentBlock, start: number, end: number,
+  startNoteReferenceCount?: number, endNoteReferenceCount?: number): DocumentBlock {
   const text = runText(block.runs)
   if (!isDocumentTextBoundary(text, start) || !isDocumentTextBoundary(text, end) || end < start) throw new RangeError('重复项目复制范围不是合法的 UTF-16 区间。')
-  const runs: DocumentRun[] = []
-  let offset = 0
-  for (const run of block.runs) {
-    const from = offset, to = from + run.text.length
-    offset = to
-    if (!run.text.length) {
-      // The editor's replacement splitter leaves boundary entities in the source exactly once.
-      if (from > start && from < end) runs.push(cloneModel(run))
-      continue
-    }
-    const a = Math.max(from, start), b = Math.min(to, end)
-    if (a >= b) continue
-    if ((a !== from || b !== to) && (run.metadata?.note || run.metadata?.noteReference || run.metadata?.latexFormula)) {
-      throw new RangeError('重复项目复制不能切开注释引用或公式实体。')
-    }
-    runs.push({ ...cloneModel(run), text: run.text.slice(a - from, b - from) })
-  }
+  const range = { startOffset: start, endOffset: end, startNoteReferenceCount, endNoteReferenceCount }
+  const references = documentNoteReferenceOffsets(block.runs), boundary = documentContentControlNoteBoundaryRanks(range, references)
+  const runs = cloneModel(partitionDocumentContentControlNoteRuns(block.runs, range).selected)
   const source = { ...cloneModel(block), runs }
   delete source.metadata.html
-  const fields = documentTextFields(block).filter(field => (field.endBlockId === undefined || field.endBlockId === block.id)
-    && (field.startOffset === field.endOffset ? field.startOffset > start && field.endOffset < end : field.startOffset >= start && field.endOffset <= end)).map(field => ({ ...cloneModel(field),
-      startOffset: field.startOffset - start, endOffset: field.endOffset - start }))
+  const local = documentTextFields(block).filter(field => field.endBlockId === undefined || field.endBlockId === block.id)
+  const selected = new Set<string>()
+  const contained = local.map(field => ({ field,
+    start: assertDocumentNoteReferenceBoundaryRank(references, field.startOffset, field.startNoteReferenceCount),
+    end: assertDocumentNoteReferenceBoundaryRank(references, field.endOffset, field.endNoteReferenceCount) })).filter(entry =>
+    compareDocumentNoteBoundaries(start, boundary.start, entry.field.startOffset, entry.start) <= 0
+    && compareDocumentNoteBoundaries(entry.field.endOffset, entry.end, end, boundary.end) <= 0)
+  for (const { field, start: first, end: last } of contained) if (compareDocumentNoteBoundaries(field.startOffset, first, field.endOffset, last) < 0
+    || compareDocumentNoteBoundaries(start, boundary.start, field.startOffset, first) < 0
+      && compareDocumentNoteBoundaries(field.endOffset, last, end, boundary.end) < 0) selected.add(field.id)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const { field } of contained) {
+      const source = field.metadata?.source
+      if (source && typeof source === 'object' && !Array.isArray(source) && typeof Reflect.get(source, 'parentFieldId') === 'string'
+        && selected.has(Reflect.get(source, 'parentFieldId')) && !selected.has(field.id)) { selected.add(field.id); changed = true }
+    }
+  }
+  const targetReferences = documentNoteReferenceOffsets(runs)
+  const fields = contained.filter(({ field }) => selected.has(field.id)).map(({ field }) => {
+    const { startNoteReferenceCount: startRank, endNoteReferenceCount: endRank, ...definition } = cloneModel(field)
+    const from = remapDocumentNoteReferenceBoundary(references, targetReferences, field.startOffset, field.startOffset - start, startRank)
+    const to = remapDocumentNoteReferenceBoundary(references, targetReferences, field.endOffset, field.endOffset - start, endRank)
+    return { ...definition, startOffset: from.offset, endOffset: to.offset,
+      ...(from.rank === undefined ? {} : { startNoteReferenceCount: from.rank }), ...(to.rank === undefined ? {} : { endNoteReferenceCount: to.rank }) }
+  })
   setDocumentTextFields(source, fields)
   return source
 }

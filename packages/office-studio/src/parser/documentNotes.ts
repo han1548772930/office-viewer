@@ -10,7 +10,8 @@ import { documentTableCellContentContainers } from '../features/document/model/d
 import { claimParsedDocumentStoryBlocks, normalizeParsedDocumentBlockGroup, type ParsedDocumentBlockNormalizer } from './documentAuxiliaryContent'
 import { projectParsedDocumentFieldRanges } from './documentTextProjection'
 import { array, record } from './validation'
-import { runText } from '../features/document/model/document-model'
+import { documentNoteDecorationSourceIdentity } from '../features/document/model/document-note-decoration-host'
+import { removeParsedDocumentNoteBodyMarkerText } from './documentNoteBodyMarkers'
 
 type NoteKind = 'footnote' | 'endnote'
 type ReferenceStyleNormalizer = (value: unknown) => DocumentDefaultStyle['text']
@@ -23,7 +24,10 @@ function decorationContent(value: unknown, kind: NoteKind, contents: Map<string,
   const id = String(source.noteId), content = contents.get(id)
   if (!content) throw new TypeError(`注释分隔内容 ${kind}:${id} 缺少对应的块树。`)
   contents.delete(id)
-  return projectDocumentStoryBlocks({ ...content, metadata: { ...content.metadata, decorationSource: cloneModel(source) } }, 'display').content
+  const next: DocumentStoryContent = { ...content, metadata: { ...content.metadata, decorationSource: cloneModel(source),
+    ...(raw.univerNoteDecorationSource === undefined ? {} : { univerNoteDecorationSource: cloneModel(raw.univerNoteDecorationSource) }) } }
+  documentNoteDecorationSourceIdentity(next, kind, source.type as typeof DOCUMENT_NOTE_DECORATION_KEYS[number])
+  return projectDocumentStoryBlocks(next, 'display').content
 }
 
 function settingsProperties(value: unknown, kind: NoteKind, sectionId?: string): DocumentNoteSettingsValue {
@@ -68,34 +72,19 @@ function normalizeSourceReferenceStyles(blocks: readonly DocumentBlock[], normal
 function noteSourceData(value: unknown, normalize: ReferenceStyleNormalizer): unknown {
   const normalizeValue = (value: unknown) => {
     const raw = record(value)
-    return { ...raw, ...(raw.referenceTextStyle !== undefined ? { referenceTextStyle: normalize(raw.referenceTextStyle) } : {}) }
+    const source = record(record(raw.metadata).officeNoteSource)
+    const baseline = source.referenceTextStyleBaseline
+    if (baseline !== undefined && (!baseline || typeof baseline !== 'object' || Array.isArray(baseline))) {
+      throw new TypeError('原生注释引用样式来源基线无效。')
+    }
+    return { ...raw, ...(raw.referenceTextStyle !== undefined ? { referenceTextStyle: normalize(raw.referenceTextStyle) } : {}),
+      ...(baseline === undefined ? {} : { metadata: { ...record(raw.metadata), officeNoteSource: {
+        ...source, referenceTextStyleBaseline: normalize(baseline),
+      } } }) }
   }
   if (Array.isArray(value)) return value.map(normalizeValue)
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(record(value)).map(([id, value]) => [id, normalizeValue(value)]))
   return value
-}
-
-/** A native custom body marker is generated decoration, just like footnoteRef.
- * Keep source coordinates for fields/SDTs while removing its duplicate text. */
-function removeParsedBodyMarkers(blocks: readonly DocumentBlock[], kind: NoteKind): void {
-  for (const block of blocks) {
-    const grouped = new Map<number, DocumentBlock['runs']>()
-    for (const run of block.runs) {
-      const source = record(run.metadata?.officeParsedRunSource), marker = record(run.metadata?.noteBodyMarker)
-      if (!Object.keys(marker).length) continue
-      if (marker.version !== 1 || marker.kind !== kind || typeof marker.text !== 'string' || marker.text.length > 4096
-        || source.version !== 1 || typeof source.index !== 'number' || !Number.isSafeInteger(source.index)) throw new TypeError('原生注释正文标记来源无效。')
-      const group = grouped.get(source.index) ?? []; group.push(run); grouped.set(source.index, group)
-    }
-    for (const runs of grouped.values()) {
-      const marker = record(runs[0]!.metadata?.noteBodyMarker), text = marker.text as string
-      if (!runText(runs).startsWith(text)) throw new RangeError('原生注释正文标记与来源文字不一致。')
-      let remaining = text.length
-      for (const run of runs) { const consumed = Math.min(remaining, run.text.length); run.text = run.text.slice(consumed); remaining -= consumed }
-      runs[0]!.metadata = { ...runs[0]!.metadata, officeNoteBodyMarkerSource: { version: 1, text, length: text.length } }
-    }
-    for (const row of tableForBlock(block)?.rows ?? []) for (const cell of row.cells) for (const content of documentTableCellContentContainers(cell)) removeParsedBodyMarkers(content, kind)
-  }
 }
 
 /** Claim ordinary and special native stories before indexing references. Rich
@@ -114,7 +103,7 @@ export function normalizeParsedDocumentNotes(model: DocumentModel, data: Record<
     const contents = new Map<string, DocumentStoryContent>()
     for (const [id, raw] of rawGroups) {
       const parsed = normalizeParsedDocumentBlockGroup(raw, `${kind}-${id}`, normalizeBlock)
-      removeParsedBodyMarkers(parsed, kind)
+      removeParsedDocumentNoteBodyMarkerText(parsed, kind)
       projectParsedDocumentFieldRanges(parsed)
       const owned = claimParsedDocumentStoryBlocks(parsed, claimed)
       contents.set(id, { blocks: owned.blocks, runs: [], paragraphs: [], metadata: {

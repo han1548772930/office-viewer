@@ -22,6 +22,8 @@ pub(crate) struct NativeNoteDefinition {
     pub show_body_reference: bool,
     pub custom_mark: Option<String>,
     pub reference_style: Option<TextStyle>,
+    pub body_marker_source: Option<Value>,
+    pub body_marker_layout: Option<Value>,
 }
 
 #[derive(Default)]
@@ -44,9 +46,14 @@ impl NativeNotes {
             custom_mark: native.and_then(|note| note.custom_mark.clone()),
             reference_text_style: native.and_then(|note| note.reference_style.clone()),
             show_body_reference: native.map(|note| note.show_body_reference),
-            metadata: native.map(|note| json!({ "officeNoteSource": { "version": 1, "partName": note.part_name,
-                "nativeId": native_id,
-                "noteType": note.note_type, "openingXml": note.opening_xml } })),
+            metadata: native.map(|note| {
+                let mut source = json!({ "version": 1, "partName": note.part_name, "nativeId": native_id,
+                    "noteType": note.note_type, "openingXml": note.opening_xml });
+                if let Some(style) = &note.reference_style { source["referenceTextStyleBaseline"] = json!(style); }
+                if let Some(marker) = &note.body_marker_source { source["bodyMarkerSource"] = marker.clone(); }
+                if let Some(layout) = &note.body_marker_layout { source["bodyMarkerLayout"] = layout.clone(); }
+                json!({ "officeNoteSource": source })
+            }),
         }
     }
 
@@ -135,6 +142,7 @@ pub(crate) fn read(package: Option<&OoxmlPackage>, source: &mut DocModel, styles
             binary_assets: &package.binary_assets, style_sheet: styles, warnings: RefCell::new(Vec::new()) };
         let notes = if kind == DocumentNoteKind::Footnote { &mut source.metadata.footnotes } else { &mut source.metadata.endnotes };
         let mut decorations = Vec::new();
+        let mut public_ids = BTreeMap::new();
         for (raw, node) in raw.children.iter().zip(&root.children).filter(|(_, node)| word(node, kind.name())) {
             let id = word_attribute(node, "id").and_then(|value| value.parse::<i64>().ok())
                 .filter(|value| value.unsigned_abs() <= document_note_source::NOTE_SAFE_INTEGER)
@@ -146,9 +154,16 @@ pub(crate) fn read(package: Option<&OoxmlPackage>, source: &mut DocModel, styles
             let xml = complete_fragment(&part.content, raw, &scope(raw, &inherited))?;
             let native = NativeNoteDefinition { note_type: note_type.into(), part_name: part_name.clone(), opening_xml: opening_fragment(&xml)?,
                 show_body_reference: node.descendants(kind.body_reference_tag()).into_iter().any(|node| word(node, kind.body_reference_tag())),
-                custom_mark: None, reference_style: None };
+                custom_mark: None, reference_style: None, body_marker_source: None, body_marker_layout: None };
             if result.definitions.insert((kind, id), native).is_some() { return Err("DOCX_NOTE_INVALID: duplicate note ID in its owning part".into()); }
             if note_type == "normal" { continue; }
+            let public_source = node.attribute_ns(NOTE_EXTENSION_NAMESPACE, "sourceIdHex")
+                .map(document_note_source::decode_public_note_source_id).transpose()?;
+            if let Some(public_id) = &public_source {
+                if public_ids.insert(public_id.clone(), id).is_some() {
+                    return Err("DOCX_NOTE_SOURCE_INVALID: special definitions share a public source identity".into());
+                }
+            }
             let canonical = crate::document_format_sidecar::canonical_resource(&xml, &format!("w:{}", kind.name()))?;
             let nodes = parse_document_xml(&canonical, &context);
             let text = native_node_text(&nodes);
@@ -158,7 +173,8 @@ pub(crate) fn read(package: Option<&OoxmlPackage>, source: &mut DocModel, styles
             notes.get_or_insert_with(Vec::new).push(DocumentNoteDefinition { id, text: text.clone(), nodes: Some(nodes) });
             let marker = ["separator", "continuationSeparator"].into_iter().find(|name| node.descendants(name).into_iter().any(|node| word(node, name)));
             decorations.push((id, note_type.to_owned(), DocumentNoteDecorationPayload { text, decoration_source: json!({ "version": 1, "kind": kind,
-                "type": note_type, "noteId": id, "partName": part_name, "sourceXml": xml, "marker": marker }) }));
+                "type": note_type, "noteId": id, "partName": part_name, "sourceXml": xml, "marker": marker }),
+                univer_note_decoration_source: public_source.map(|public_id| json!({ "version": 1, "kind": kind, "type": note_type, "noteId": public_id })) }));
         }
         let selectors = selected_decorations.get(&kind);
         let mut active = BTreeMap::new();

@@ -88,7 +88,7 @@ import { documentStoryTextFormattingState, prepareDocumentStoryTextFormatting } 
 import { documentTextFormattingState } from '../features/document/services/document-text-formatting'
 import { DOCUMENT_STORY_KEYS, clampDocumentTextRange, type DocumentStoryKey, type DocumentStoryRange } from '../features/document/model/document-story'
 import type { DocumentInputSession, DocumentStoryInputCommit } from '../features/document/model/document-input-session'
-import { sanitizeDocumentInputSelection } from '../features/document/model/document-input-session'
+import { sameDocumentInputLocation, sanitizeDocumentInputSelection } from '../features/document/model/document-input-session'
 import { cloneDocumentSelection, documentTableSelectedTextTargets, sameDocumentTableViewSelection } from '../features/document/model/document-table-selection'
 import { documentBlockHostForId, documentBlockHostId, sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host'
 import { applyDocumentBlockHostModel, documentBlockHostSelectionFromLegacyRange, documentModelForBlockHost, resolveDocumentBlockHost } from '../features/document/services/document-block-host'
@@ -270,6 +270,7 @@ const notesError = ref('')
 const noteSettings = shallowRef<{ open: boolean; kind: DocumentNoteKind; source: DocumentModel; selection: DocumentSelection; sectionId: string }>()
 const noteNavigationMemory = new DocumentNoteNavigationMemory()
 let noteUiVersion = 0
+let notesClosingFocus: (() => void) | undefined, noteSettingsClosingFocus: (() => void) | undefined
 watch([notesPanelOpen, noteSettings], () => { noteUiVersion++ }, { flush: 'sync' })
 const permissionPanelOpen = ref(false)
 const commentsPanelOpen = ref(false)
@@ -820,6 +821,42 @@ function scheduleInputFocus(focus: () => void) {
     if (inputStateActive && epoch === inputStateEpoch && documentId === model.value.id && api === props.documentApi) focus()
   })
 }
+function captureNoteOverlayFocus(): () => void {
+  const api = props.documentApi, source = model.value, session = api?.getInputState()
+  const epoch = inputStateEpoch, uiVersion = noteUiVersion, selected = cloneDocumentSelection(selection.value)
+  const host = editingHost.value && { ...editingHost.value }
+  return () => {
+    if (!inputStateActive || documentInputComposing.value || epoch !== inputStateEpoch || uiVersion !== noteUiVersion
+      || api !== props.documentApi || source.id !== model.value.id || notesPanelOpen.value || noteSettings.value?.open
+      || modalOpen.value || tableProperties.value?.open || pageSettingsOpen.value || headerFooterPanelOpen.value
+      || permissionPanelOpen.value || tocDialog.value.open || !sameDocumentBlockHost(host, editingHost.value)
+      || JSON.stringify(selected) !== JSON.stringify(selection.value)) return
+    const latest = api?.getInputState()
+    if (api ? !session?.valid || !latest?.valid || latest.generation !== session.generation
+      || latest.modelRevision !== session.modelRevision || api.getModelRevision() !== session.modelRevision
+      || !sameDocumentInputLocation(latest.location, session.location) : source !== model.value) return
+    if (!resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'view',
+      permissionTargetsForSelection(editingModel.value, selected)).allowed) return
+    canvasRef.value?.focus()
+  }
+}
+function setNotesPanelOpen(open: boolean) {
+  notesPanelOpen.value = open
+  notesClosingFocus = open ? undefined : captureNoteOverlayFocus()
+}
+function onNotesPanelClosed() {
+  const focus = notesClosingFocus; notesClosingFocus = undefined
+  if (focus) scheduleInputFocus(focus)
+}
+function setNoteSettingsOpen(open: boolean) {
+  if (!noteSettings.value) return
+  noteSettings.value = { ...noteSettings.value, open }
+  noteSettingsClosingFocus = open ? undefined : captureNoteOverlayFocus()
+}
+function onNoteSettingsClosed() {
+  const focus = noteSettingsClosingFocus; noteSettingsClosingFocus = undefined
+  if (focus) scheduleInputFocus(focus)
+}
 function syncCurrentInput(api: FDocument) {
   if (!inputStateActive || api !== props.documentApi || api.id !== model.value.id) return
   inputStateEpoch++
@@ -1131,6 +1168,9 @@ function openBlockHostInspection(source: DocumentModel, host: DocumentAuxiliaryB
 }
 function activateNotePosition(position: DocumentNoteNavigationPosition, inspect = false) {
   const source = model.value, api = props.documentApi
+  const previousSession = api?.getInputState(), closingNotes = notesPanelOpen.value
+  if (api && (api.id !== source.id || !previousSession?.valid)) return
+  const revision = api?.getModelRevision()
   const body = !editingHost.value && !legacyStoryActive.value ? sanitizeDocumentInputSelection(source, selection.value) : returnBodySelection.value
   const scoped = position.host ? documentModelForBlockHost(source, position.host) : source
   if (!resolveDocumentPermission(source.permissionRules ?? [], permissionContext.value, 'view', permissionTargetsForSelection(scoped, position.selection)).allowed) {
@@ -1139,6 +1179,9 @@ function activateNotePosition(position: DocumentNoteNavigationPosition, inspect 
   noteNavigationMemory.observe(source, { selection: selection.value, host: editingHost.value })
   canvasRef.value?.cancelInput(false); clearInputMarks()
   if (source !== model.value || api !== props.documentApi || !inputStateActive) return
+  const afterMarks = api?.getInputState()
+  if (api && (!afterMarks?.valid || api.getModelRevision() !== revision || previousSession?.valid
+    && !sameDocumentInputLocation(previousSession.location, afterMarks.location))) return
   if (!editingHost.value && !storyLocation.value) previousStoryTab.value = activeTab.value
   clipboardRequest++; imageRequest++; inputStateEpoch++
   updateBlockHostInspection(source, position.host, inspect)
@@ -1147,12 +1190,17 @@ function activateNotePosition(position: DocumentNoteNavigationPosition, inspect 
   selection.value = cloneDocumentSelection(position.selection); activeContentControlId.value = undefined
   notesPanelOpen.value = false; documentContextMenu.value = undefined; activeTab.value = 'references'
   searchScopeSelection.value = undefined; searchInSelection.value = false
-  api?.setInputSelection(position.selection, undefined, position.host)
+  if (api && !api.setInputSelection(position.selection, undefined, position.host)) { syncCurrentInput(api); return }
   const session = api?.getInputState(), epoch = inputStateEpoch
+  const positionCurrent = sameDocumentBlockHost(position.host, editingHost.value)
+    && JSON.stringify(position.selection) === JSON.stringify(selection.value)
+    && (!api || session?.valid && api.getModelRevision() === revision && session.location.kind === 'body'
+      && sameDocumentBlockHost(session.location.host, position.host) && JSON.stringify(session.location.selection) === JSON.stringify(position.selection))
+  if (closingNotes) notesClosingFocus = positionCurrent ? captureNoteOverlayFocus() : undefined
   scheduleInputFocus(() => {
     const current = api?.getInputState()
     if (epoch === inputStateEpoch && api === props.documentApi && inputStateActive && !documentInputComposing.value
-      && (api ? api.id === model.value.id && current?.valid && current.generation === session?.generation
+      && (api ? api.id === model.value.id && current?.valid && api.getModelRevision() === revision && current.generation === session?.generation
         && current.modelRevision === session?.modelRevision && api.getModelRevision() === session?.modelRevision : source === model.value)
       && sameDocumentBlockHost(position.host, editingHost.value) && JSON.stringify(position.selection) === JSON.stringify(selection.value)) canvasRef.value?.focus()
   })
@@ -1171,6 +1219,7 @@ function openNoteSettings(kind: DocumentNoteKind) {
   const sectionId = editingHost.value?.kind === 'story' ? editingHost.value.sectionId
     : reference?.sectionId ?? currentStoryRange.value?.sectionId ?? sectionIdForBlock(model.value, returnBodySelection.value?.focus.blockId ?? selection.value.focus.blockId)
   notesError.value = ''
+  noteSettingsClosingFocus = undefined
   noteSettings.value = { open: true, kind, sectionId, source: model.value, selection: cloneDocumentSelection(selection.value) }
 }
 function applyNoteSettings(source: DocumentModel, request: DocumentNoteMutationRequest) {
@@ -1987,7 +2036,14 @@ function closeStory(refocus = true) {
   if (!storyLocation.value && !editingHost.value && !blockHostInspection.value) return
   const restore = returnBodySelection.value
   const inspection = blockHostInspection.value
+  const api = props.documentApi, documentId = model.value.id, previousSession = api?.getInputState()
+  const revision = previousSession ? api?.getModelRevision() : undefined
+  canvasRef.value?.cancelInput(false)
   clearInputMarks()
+  const afterMarks = api?.getInputState()
+  if (inputStateActive && api && (api !== props.documentApi || documentId !== model.value.id
+    || previousSession?.valid && (!afterMarks?.valid || api.getModelRevision() !== revision
+      || !sameDocumentInputLocation(previousSession.location, afterMarks.location)))) return
   blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined
   storyLocation.value = undefined
   editingHost.value = undefined
@@ -1998,10 +2054,16 @@ function closeStory(refocus = true) {
   clipboardRequest++; imageRequest++
   searchScopeSelection.value = undefined; searchInSelection.value = false
   if (activeTab.value === 'header-footer' || activeTab.value === 'table' || activeTab.value === 'content-control') activeTab.value = previousStoryTab.value
-  const api = props.documentApi
-  if (inputStateActive && api?.getInputState()) api.setInputSelection(selection.value)
+  const restoredSelection = cloneDocumentSelection(selection.value)
+  if (inputStateActive && api?.getInputState() && !api.setInputSelection(restoredSelection)) { syncCurrentInput(api); return }
+  const session = api?.getInputState()
   if (refocus) scheduleInputFocus(() => {
-    if (storyLocation.value || editingHost.value) return
+    if (storyLocation.value || editingHost.value || documentInputComposing.value || documentId !== model.value.id || api !== props.documentApi
+      || JSON.stringify(selection.value) !== JSON.stringify(restoredSelection)) return
+    const current = api?.getInputState()
+    if (api && (!session?.valid || !current?.valid || current.generation !== session.generation
+      || current.modelRevision !== session.modelRevision || api.getModelRevision() !== revision
+      || !sameDocumentInputLocation(current.location, { kind: 'body', selection: restoredSelection }))) return
     canvasRef.value?.focus()
     if (inspection?.documentId === model.value.id && inspection.scroll) {
       const ratio = zoom.value / inspection.zoom
@@ -2323,7 +2385,7 @@ function onRibbonExecute(id: string, params?: unknown) {
       if (kind && noteId) navigateNote(kind, noteId, toReference)
       break
     }
-    case 'doc.operation.open-notes': notesError.value = ''; notesPanelOpen.value = true; break
+    case 'doc.operation.open-notes': notesError.value = ''; setNotesPanelOpen(true); break
     case 'doc.operation.open-permissions': permissionPanelOpen.value = true; break
     case 'doc.operation.insert-code-block': openCodeBlockPanel(); break
     case 'doc.operation.open-latex': latexPanelOpen.value = true; break
@@ -2572,10 +2634,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
-    <DocumentNotesPanel v-model:open="notesPanelOpen" :model="model" :labels="layoutSource === model ? layout.noteLabels : undefined" :permission="permissionContext" :disabled="documentInputComposing" :error="notesError" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" @edit="openNoteCanvas" />
+    <DocumentNotesPanel :open="notesPanelOpen" :model="model" :labels="layoutSource === model ? layout.noteLabels : undefined" :permission="permissionContext" :disabled="documentInputComposing" :error="notesError" @update:open="setNotesPanelOpen" @closed="onNotesPanelClosed" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" @edit="openNoteCanvas" />
     <DocumentNoteSettingsDialog v-if="noteSettings" :open="noteSettings.open" :model="model" :kind="noteSettings.kind" :section-id="noteSettings.sectionId" :selection="noteSettings.selection"
       :permission="permissionContext" :disabled="documentInputComposing" :insert-disabled="!!editingHost || legacyStoryActive" :error="notesError"
-      @update:open="open => { if (noteSettings) noteSettings = { ...noteSettings, open } }" @submit="applyNoteSettings" @inspect="openBlockHostInspection" @closed="scheduleInputFocus(() => canvasRef?.focus())" />
+      @update:open="setNoteSettingsOpen" @submit="applyNoteSettings" @inspect="openBlockHostInspection" @closed="onNoteSettingsClosed" />
     <DocumentPermissionPanel :open="permissionPanelOpen" :rules="model.permissionRules ?? []" :targets="permissionTargets" :read-only="!canManagePermissionRules" @update:open="permissionPanelOpen = $event" @save="savePermissionRules" />
     <DocumentTableOfContentsDialog
       v-model:open="tocDialog.open"

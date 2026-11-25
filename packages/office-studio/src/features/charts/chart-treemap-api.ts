@@ -1,27 +1,18 @@
 import type { ChartNullablePatch, ChartTreemapLabelOptions, ChartTreemapOptions, ChartType } from '../../domain/model'
 import { chartNullableValues } from './chart-cartesian-api'
 import { cloneChartOptions } from './chart-options'
+import { chartHierarchyFields, chartHierarchyWeightField } from './chart-hierarchy-api'
 
 export function assertChartTreemapType(type: ChartType): void {
   if (type !== 'treemap') throw new TypeError('树图专属设置仅适用于树图。')
 }
 
 export function chartTreemapHierarchyFields(indexes: readonly number[]): number[] {
-  if (!Array.isArray(indexes) || !indexes.length || new Set(indexes).size !== indexes.length) {
-    throw new RangeError('树图层级字段须为非空、有序且不重复的非负字段索引。')
-  }
-  for (let position = 0; position < indexes.length; position++) {
-    const index = indexes[position]
-    if (!Object.hasOwn(indexes, position) || index === undefined || !Number.isSafeInteger(index) || index < 0 || index > 1_048_575) {
-      throw new RangeError('树图层级字段须为非空、有序且不重复的非负字段索引。')
-    }
-  }
-  return [...indexes]
+  return chartHierarchyFields(indexes)
 }
 
 export function chartTreemapValueField(index: number): number {
-  if (!Number.isSafeInteger(index) || index < 0 || index > 1_048_575) throw new RangeError('树图权重字段需要非负字段索引。')
-  return index
+  return chartHierarchyWeightField(index)
 }
 
 export function chartTreemapParentLabelLayout(layout: NonNullable<ChartTreemapOptions['parentLabelLayout']>): NonNullable<ChartTreemapOptions['parentLabelLayout']> {

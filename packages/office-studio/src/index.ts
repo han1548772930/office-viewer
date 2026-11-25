@@ -9,7 +9,12 @@ export { DOCUMENT_NOTE_COMMANDS, DocumentNoteCommandRejectedError, type Document
   type DocumentNoteCommandContext, type DocumentNoteCommandParams } from './api/document-note-commands'
 export type { DocumentNoteMutationRequest, DocumentNoteInsertOptions, DocumentNoteKind, DocumentNotePatch } from './features/document/notes/document-note-types'
 export { decodeDocumentBody, encodeDocumentBody } from './api/document-body-codec'
-export type { UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources, DocumentBodyDecodeResult } from './api/document-body-codec'
+export type { UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources, DocumentBodyDecodeResult,
+  DocumentBodyDecodeOptions, DocumentBodyEncodeOptions, DocumentBodyEncodeResult } from './api/document-body-codec'
+export { documentToPublicSnapshot } from './api/document-output'
+export type { UniverDocumentData, UniverDocumentNoteData, UniverDocumentNoteSource, OfficeDocumentSnapshotSource } from './api/document-snapshot-types'
+export type { UniverDocumentTextStyle, UniverDocumentTextStyleRun, UniverDocumentTextRangeDescription,
+  UniverDocumentColorStyle, UniverDocumentTextDecoration } from './api/document-text-style'
 export type { DocumentNoteContentInput, PublicDocumentNoteInput, PublicDocumentNoteDecoration,
   PublicDocumentFootnoteSettings, PublicDocumentEndnoteSettings } from './api/document-note-body'
 export { DocumentCustomXmlError, normalizeDocumentCustomXmlParts, canonicalDocumentCustomXmlPartName, isDocumentCustomXmlContentType,

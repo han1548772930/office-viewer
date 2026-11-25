@@ -73,11 +73,21 @@ const emit = defineEmits<{
 const { token } = theme.useToken()
 const scrollRef = ref<HTMLDivElement | null>(null)
 const hostRef = ref<HTMLDivElement | null>(null)
-const inputRef = ref<{ focus: (options?: { preventScroll?: boolean; cursor?: 'start' | 'end' | 'all' }) => void; blur: () => void; $el: HTMLElement } | null>(null)
-function inputElement(): HTMLTextAreaElement | null {
-  const element = inputRef.value?.$el
-  return element instanceof HTMLTextAreaElement ? element : element?.querySelector('textarea') ?? null
+interface DocumentTextAreaBridgeRef { blur: () => void; nativeElement?: HTMLElement; $el?: Node }
+const inputRef = ref<DocumentTextAreaBridgeRef | null>(null)
+function bridgeTextArea(bridge: DocumentTextAreaBridgeRef | null | undefined): HTMLTextAreaElement | null {
+  // Prefer antdv-next's exposed nativeElement. A component root may be a
+  // wrapper or a fragment comment, so $el alone is not a stable input handle.
+  for (const element of [bridge?.nativeElement, bridge?.$el]) {
+    if (element instanceof HTMLTextAreaElement) return element
+    if (element instanceof HTMLElement) {
+      const input = element.querySelector('textarea')
+      if (input) return input
+    }
+  }
+  return null
 }
+function inputElement(): HTMLTextAreaElement | null { return bridgeTextArea(inputRef.value) }
 const layout = shallowRef<DocumentLayout>(emptyLayout())
 const inspectionActive = computed(() => !!props.inspectionHost && sameDocumentBlockHost(props.inspectionHost, props.host))
 const tableOverlay = ref<{ cancelGesture: () => void; cancelInteraction: () => void; continueGesture: (pointer: DocumentTableDragPointer) => void }>()
@@ -87,11 +97,8 @@ const hoverTable = shallowRef<DocumentTableHit>()
 const noteHover = shallowRef<{ source: DocumentModel; glyph: DocumentNoteGlyphHit; preview: DocumentNotePreview }>()
 let noteHoverHide: ReturnType<typeof setTimeout> | undefined
 const tablePreview = shallowRef<DocumentTableGesturePreview>()
-const storyRef = ref<{ $el: HTMLElement; focus: (options?: { preventScroll?: boolean }) => void }>()
-function storyElement() {
-  const el = storyRef.value?.$el
-  return el instanceof HTMLTextAreaElement ? el : el?.querySelector('textarea')
-}
+const storyRef = ref<DocumentTextAreaBridgeRef>()
+function storyElement() { return bridgeTextArea(storyRef.value) ?? undefined }
 function storyBeforeInput(event: InputEvent) {
   if (!storyEventIsCurrent(event) || props.storyReadonly) { event.preventDefault(); return }
   captureStoryInput(event)
@@ -166,6 +173,7 @@ let compositionControlId: string | undefined
 let blockedBodyInput: HTMLTextAreaElement | null | undefined
 let disposed = false
 let active = true
+let viewportRestoreVersion = 0
 let pendingContentControlFocus: DocumentContentControlFocusToken | undefined
 const measurer = createTextMeasurer()
 const { inputValue: storyInputValue, composing: storyComposing, bridgeVersion: storyBridgeVersion, storyRange, storyEventIsCurrent, syncStorySelection, focusStory, storyInputChanged,
@@ -281,12 +289,13 @@ watch(() => props.model, () => { clearNoteHover(); hoverTable.value = undefined;
 watch(() => props.story, story => { if (story && composing.value) cancelBodyComposition(); hoverTable.value = undefined; cancelSelectionDrag(); tableKeyboardCursor = undefined; requestDraw() })
 watch(() => [props.host, props.inspectionHost], () => {
   clearNoteHover(); cancelInput(false); preview.value = null; hoverTable.value = undefined; relayout()
-  const source = props.model, host = props.host && { ...props.host }, session = props.captureInputSession?.()
+  const source = props.model, host = props.host && { ...props.host }, session = props.captureInputSession?.(), restoreVersion = viewportRestoreVersion
   void nextTick(() => {
     const current = props.captureInputSession?.()
     if (disposed || !active || source !== props.model || !sameDocumentBlockHost(host, props.host)
       || session && (!current?.valid || current.generation !== session.generation || current.modelRevision !== session.modelRevision)) return
-    focus(); ensureCaretVisible()
+    focus()
+    if (restoreVersion === viewportRestoreVersion) ensureCaretVisible()
   })
 }, { deep: true })
 watch(() => props.selection, () => {
@@ -295,7 +304,8 @@ watch(() => props.selection, () => {
   if (tableKeyboardCursor && (!view || view.tableId !== tableKeyboardCursor.tableId || view.range.startRow !== range!.startRow
     || view.range.endRow !== range!.endRow || view.range.startColumn !== range!.startColumn || view.range.endColumn !== range!.endColumn)) tableKeyboardCursor = undefined
   if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition()
-  caretVisible.value = true; requestDraw(); void nextTick(ensureCaretVisible)
+  const restoreVersion = viewportRestoreVersion
+  caretVisible.value = true; requestDraw(); void nextTick(() => { if (restoreVersion === viewportRestoreVersion) ensureCaretVisible() })
 }, { deep: true })
 watch(() => props.captureInputSession?.(), () => {
   clearNoteHover()
@@ -315,10 +325,11 @@ watch(() => props.zoom, (zoom) => {
   cancelSelectionDrag()
   tableOverlay.value?.cancelInteraction()
   const offset = zoomedDocumentScrollOffset(layout.value, viewport.value, zoom)
+  const restoreVersion = viewportRestoreVersion
   viewport.value = { ...viewport.value, zoom }
   requestDraw()
   void nextTick(() => {
-    if (disposed || props.zoom !== zoom || !scrollRef.value) return
+    if (disposed || props.zoom !== zoom || !scrollRef.value || restoreVersion !== viewportRestoreVersion) return
     scrollRef.value.scrollLeft = offset.left
     scrollRef.value.scrollTop = offset.top
     syncViewport('zoom')
@@ -500,7 +511,15 @@ function select(selection: DocumentSelection) {
   requestDraw()
 }
 
-function focus() { if (!active || disposed) return; if (legacyStoryActive.value) { focusStory(); return }; inputRef.value?.focus({ preventScroll: true }); focused.value = true; requestDraw() }
+function focus() {
+  if (!active || disposed) return
+  if (legacyStoryActive.value) { focusStory(); return }
+  // antdv-next 1.8.2 TextArea.focus() does not forward focus options. Keep the
+  // library bridge, but focus its native textarea so returning to a story does
+  // not scroll the document before its captured viewport is restored.
+  inputElement()?.focus({ preventScroll: true })
+  focused.value = true; requestDraw()
+}
 
 function keepNoteHover() { if (noteHoverHide) clearTimeout(noteHoverHide); noteHoverHide = undefined }
 function clearNoteHover() { keepNoteHover(); noteHover.value = undefined }
@@ -918,7 +937,7 @@ function cancelBodyComposition(refocus = true) {
   if (hadComposition) {
     blockedBodyInput = input
     bodyBridgeVersion.value++
-    if (refocus) void nextTick(() => { if (active && !disposed && !legacyStoryActive.value) inputRef.value?.focus({ preventScroll: true }) })
+    if (refocus) void nextTick(() => { if (active && !disposed && !legacyStoryActive.value) inputElement()?.focus({ preventScroll: true }) })
   }
 }
 
@@ -1117,6 +1136,9 @@ function captureScrollOffset(): DocumentScrollOffset | undefined {
 function restoreScrollOffset(offset: DocumentScrollOffset) {
   const element = scrollRef.value
   if (!element || !active || disposed || !Number.isFinite(offset.left) || !Number.isFinite(offset.top)) return
+  // A captured body viewport takes precedence over caret/zoom reveals queued
+  // by the same host transition. The next user selection captures this version.
+  viewportRestoreVersion++
   element.scrollLeft = Math.max(0, offset.left); element.scrollTop = Math.max(0, offset.top)
   syncViewport('selection')
 }

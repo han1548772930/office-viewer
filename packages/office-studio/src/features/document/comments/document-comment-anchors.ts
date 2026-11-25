@@ -1,11 +1,13 @@
 import type { DocumentCommentAnchorSegment, DocumentModel, DocumentThreadComment } from '../../../domain/model'
 import { documentTextFieldParagraphs } from '../model/document-text-fields'
 import { isDocumentTextBoundary } from '../model/document-story'
+import { assertDocumentNoteReferenceBoundaryRank, remapDocumentNoteReferenceBoundary, type DocumentNoteReferenceOffset } from '../model/document-note-boundary'
 
 interface SourceParagraph {
   block: { id: string }
   absoluteStart: number
   absoluteEnd: number
+  noteReferences?: readonly DocumentNoteReferenceOffset[]
 }
 
 interface DestinationParagraph extends SourceParagraph { text: string }
@@ -72,14 +74,26 @@ function mergeAnchors(
   let pending: DocumentCommentAnchorSegment[] = []
   const flush = () => {
     const groupStart = result.length
+    const rank = (anchor: DocumentCommentAnchorSegment, endpoint: 'start' | 'end') => assertDocumentNoteReferenceBoundaryRank(
+      paragraphs.get(anchor.blockId)!.noteReferences ?? [], anchor[`${endpoint}Offset`], anchor[`${endpoint}NoteReferenceCount`])
     pending.sort((left, right) => paragraphs.get(left.blockId)!.absoluteStart - paragraphs.get(right.blockId)!.absoluteStart
-      || left.startOffset - right.startOffset || left.endOffset - right.endOffset)
+      || left.startOffset - right.startOffset || rank(left, 'start') - rank(right, 'start')
+      || left.endOffset - right.endOffset || rank(left, 'end') - rank(right, 'end'))
     for (const anchor of pending) {
       const previous = result.length > groupStart ? result.at(-1) : undefined, paragraph = paragraphs.get(anchor.blockId)!
-      if (previous && previous.blockId === anchor.blockId && anchor.startOffset <= previous.endOffset
+      if (previous && previous.blockId === anchor.blockId && (anchor.startOffset < previous.endOffset
+        || anchor.startOffset === previous.endOffset && rank(anchor, 'start') <= rank(previous, 'end'))
         && previous.startOffset <= anchor.endOffset) {
-        previous.startOffset = Math.min(previous.startOffset, anchor.startOffset)
-        previous.endOffset = Math.max(previous.endOffset, anchor.endOffset)
+        if (anchor.startOffset < previous.startOffset || anchor.startOffset === previous.startOffset && rank(anchor, 'start') < rank(previous, 'start')) {
+          previous.startOffset = anchor.startOffset
+          if (anchor.startNoteReferenceCount === undefined) delete previous.startNoteReferenceCount
+          else previous.startNoteReferenceCount = anchor.startNoteReferenceCount
+        }
+        if (anchor.endOffset > previous.endOffset || anchor.endOffset === previous.endOffset && rank(anchor, 'end') > rank(previous, 'end')) {
+          previous.endOffset = anchor.endOffset
+          if (anchor.endNoteReferenceCount === undefined) delete previous.endNoteReferenceCount
+          else previous.endNoteReferenceCount = anchor.endNoteReferenceCount
+        }
         previous.text = paragraph.text.slice(previous.startOffset, previous.endOffset)
       } else result.push({ ...anchor })
     }
@@ -118,7 +132,31 @@ function transformKnownCommentAnchors(
         || anchor.endOffset < anchor.startOffset || anchor.endOffset > paragraph.absoluteEnd - paragraph.absoluteStart) {
         throw new RangeError(`批注 ${comment.id} 的源 UTF-16 锚点无效。`)
       }
-      return map(anchor, paragraph)
+      const mapped = map(anchor, paragraph)
+      return mapped.map((next, index) => {
+        const { startNoteReferenceCount: _startRank, endNoteReferenceCount: _endRank, ...result } = next
+        const target = destination.get(result.blockId)
+        if (!target) throw new RangeError('批注编辑后的注释引用宿主不存在。')
+        const references = target.noteReferences ?? []
+        // A split keeps source bookmarks only at its outside endpoints.
+        const first = index === 0 && paragraph.noteReferences
+          ? remapDocumentNoteReferenceBoundary(paragraph.noteReferences, references, anchor.startOffset, result.startOffset, anchor.startNoteReferenceCount)
+          : { offset: result.startOffset, rank: undefined }
+        const last = index === mapped.length - 1 && paragraph.noteReferences
+          ? remapDocumentNoteReferenceBoundary(paragraph.noteReferences, references, anchor.endOffset, result.endOffset, anchor.endNoteReferenceCount)
+          : { offset: result.endOffset, rank: undefined }
+        const start = assertDocumentNoteReferenceBoundaryRank(references, first.offset, first.rank)
+        const end = assertDocumentNoteReferenceBoundaryRank(references, last.offset, last.rank)
+        result.startOffset = first.offset
+        result.endOffset = Math.max(first.offset, last.offset)
+        result.text = target.text.slice(result.startOffset, result.endOffset)
+        if (first.offset > last.offset || first.offset === last.offset && end < start) {
+          // Deleting a range collapses both bookmarks to the same current position.
+          return { ...result, ...(first.rank === undefined ? {} : { startNoteReferenceCount: first.rank, endNoteReferenceCount: first.rank }) }
+        }
+        return { ...result, ...(first.rank === undefined ? {} : { startNoteReferenceCount: first.rank }),
+          ...(last.rank === undefined ? {} : { endNoteReferenceCount: last.rank }) }
+      })
     })
     const anchor = mergeAnchors(mapped, destination, preserved)
     if (JSON.stringify(anchor) !== JSON.stringify(comment.anchor)) plans.push({ comment, anchor })
@@ -181,6 +219,7 @@ export function transformDocumentCommentAnchorsForTextEdit(
   endOffset: number,
   insertedText: string,
   timestamp = Date.now(),
+  sourceNoteReferences?: readonly DocumentNoteReferenceOffset[],
 ): void {
   if (!Object.keys(model.comments ?? {}).length) return
   const destination = documentTextFieldParagraphs(model)
@@ -188,7 +227,7 @@ export function transformDocumentCommentAnchorsForTextEdit(
   if (!paragraph) return
   const delta = insertedText.length - (endOffset - startOffset)
   const source = destination.map(current => current.block.id === blockId
-    ? { ...current, absoluteEnd: current.absoluteEnd - delta }
+    ? { ...current, absoluteEnd: current.absoluteEnd - delta, noteReferences: sourceNoteReferences }
     : current.absoluteStart > paragraph.absoluteStart ? { ...current, absoluteStart: current.absoluteStart - delta, absoluteEnd: current.absoluteEnd - delta } : current)
   transformDocumentCommentAnchorsForBodyRangeEdit(model, source, destination,
     paragraph.absoluteStart + startOffset, paragraph.absoluteStart + endOffset, insertedText, timestamp)

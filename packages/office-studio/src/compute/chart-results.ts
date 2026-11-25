@@ -73,6 +73,15 @@ export function readChartStatisticsOutput(value: unknown, params: ChartStatistic
         if (candidate.valueLength !== params.rowCount * 3 || candidate.indexLength !== params.rowCount * 2
           || candidate.available !== (params.rowCount > 0)) return null
         break
+      case 'chord': {
+        if (candidate.indexLength < 2) return null
+        const nodes = value.indices[candidate.indexOffset], links = value.indices[candidate.indexOffset + 1]
+        if (nodes === undefined || links === undefined || nodes > candidate.validSampleCount * 2 || links > candidate.validSampleCount
+          || candidate.valueLength !== nodes * 3 + links * 5 || candidate.indexLength !== 2 + nodes + links * 2
+          || candidate.available !== (links > 0) || (nodes === 0) !== (links === 0) || links > 0 && nodes < 2
+          || links === 0 && candidate.validSampleCount !== 0) return null
+        break
+      }
       case 'waterfallLayout': {
         const points = params.rowCount === 0 ? 0 : params.rowCount * job.seriesIndices.length
           + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)

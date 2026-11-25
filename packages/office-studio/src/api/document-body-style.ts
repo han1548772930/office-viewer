@@ -75,14 +75,36 @@ export function documentRunStyleFromBody(value: unknown): RunPatch {
   return result
 }
 
+const RUN_STYLE_KEYS = ['bold', 'italic', 'underline', 'strike', 'fontFamily', 'eastAsiaFontFamily', 'fontSize', 'color', 'highlight', 'verticalAlign'] as const
+const PUBLIC_RUN_STYLE_KEYS = ['bl', 'it', 'ul', 'st', 'ff', 'eastAsiaFontFamily', 'fs', 'cl', 'bg', 'va'] as const
+/** Capture resolved values separately from direct authored public properties.
+ * Later ordinary UI patches are detected against this baseline at export. */
+export function documentRunStyleBaseline(run: InlineRun): UniverBodyRecord {
+  return Object.fromEntries(RUN_STYLE_KEYS.map(key => [key, key === 'verticalAlign' ? run.verticalAlign ?? 'baseline' : run[key]]))
+}
+export function documentRunStyleSource(run: InlineRun, explicit: unknown, inherited: unknown): UniverBodyRecord {
+  return { univerTextStyle: cloneModel(bodyRecord(explicit)), univerTextStyleResolution: {
+    version: 1, inherited: cloneModel(bodyRecord(inherited)), baseline: documentRunStyleBaseline(run),
+  } }
+}
+
 export function documentRunStyleToBody(run: InlineRun): UniverBodyRecord {
   const raw = cloneModel(bodyRecord(run.metadata?.univerTextStyle))
-  return { ...raw, ff: run.fontFamily, ...(run.eastAsiaFontFamily ? { eastAsiaFontFamily: run.eastAsiaFontFamily } : {}),
+  const full: UniverBodyRecord = { ...raw, ff: run.fontFamily, ...(run.eastAsiaFontFamily ? { eastAsiaFontFamily: run.eastAsiaFontFamily } : {}),
     fs: run.fontSize, bl: Number(run.bold), it: Number(run.italic),
     ul: { ...bodyRecord(raw.ul), s: Number(run.underline), t: run.underline && bodyRecord(raw.ul).t !== 11 ? bodyRecord(raw.ul).t ?? 12 : 11 },
     st: { ...bodyRecord(raw.st), s: Number(run.strike) }, cl: run.color === 'auto' ? { auto: 1 } : { rgb: run.color },
     ...(run.highlight === undefined ? { bg: undefined } : { bg: { rgb: run.highlight } }),
     va: run.verticalAlign === 'subscript' ? 2 : run.verticalAlign === 'superscript' ? 3 : 1 }
+  const source = bodyRecord(run.metadata?.univerTextStyleResolution)
+  if (source.version !== 1) return full
+  const baseline = bodyRecord(source.baseline), current = documentRunStyleBaseline(run)
+  for (const [index, key] of RUN_STYLE_KEYS.entries()) if (current[key] !== baseline[key]) {
+    const publicKey = PUBLIC_RUN_STYLE_KEYS[index]!
+    if (full[publicKey] === undefined) delete raw[publicKey]
+    else raw[publicKey] = full[publicKey]
+  }
+  return raw
 }
 
 export function documentParagraphStyleFromBody(value: unknown, defaults: DocumentDefaultStyle): DocumentParagraphStyle {

@@ -1,15 +1,17 @@
 import type { DocumentBlock, InlineRun } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
-import { createParagraph, createRun, runText } from '../features/document/model/document-model'
+import { createParagraph, createRun, documentId, runText, tableForBlock } from '../features/document/model/document-model'
 import { isDocumentTextBoundary } from '../features/document/model/document-story'
-import { bodyNumber, bodyRecord, documentRunStyleFromBody, type UniverBodyRecord } from './document-body-style'
-import { documentBodyParagraphMarks, documentParagraphFromBody } from './document-body-paragraph'
+import { bodyNumber, bodyRecord, documentRunStyleFromBody, documentRunStyleSource, type UniverBodyRecord } from './document-body-style'
+import { documentBodyNamedStyle, documentBodyParagraphMarks, documentParagraphFromBody } from './document-body-paragraph'
+import { documentSectionSetupFromBody, documentSectionTypeFromBody } from './document-body-section'
 import { documentTableFromBody } from './document-body-table'
+import { applyDocumentBodyBlockSource, documentBodyOfficeSource, documentBodyRunMetadata } from './document-body-source'
 import { DOCUMENT_BODY_TOKENS as T, documentBodyArray, documentBodyIdentity, documentBodyOffset,
-  type DocumentBodyDecodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyTextSpan, type UniverDocumentBodyResources } from './document-body-types'
+  type DocumentBodyDecodeOptions, type DocumentBodyParagraphPosition, type DocumentBodyStructureIndex, type DocumentBodyTextSpan, type UniverDocumentBodyResources } from './document-body-types'
 
 interface TextPart { text: string; start: number; end: number; source?: UniverBodyRecord; metadata?: UniverBodyRecord }
-interface ReadBodyResult { blocks: DocumentBlock[]; positions: DocumentBodyParagraphPosition[]; diagnostics: string[] }
+interface ReadBodyResult { blocks: DocumentBlock[]; positions: DocumentBodyParagraphPosition[]; structures: DocumentBodyStructureIndex; diagnostics: string[]; initialSection?: UniverBodyRecord }
 const containerEnds = new Set<string>([T.cellEnd, T.rowEnd, T.tableEnd])
 const nonprinting = new Set<string>([T.rangeStart, T.rangeEnd, T.blockStart, T.blockEnd, T.groupStart, T.columnStart, T.columnEnd, T.groupEnd])
 const flowTokens = new Set<string>([T.paragraph, T.section, T.tableStart, T.pageBreak, T.columnBreak, T.customBlock])
@@ -22,6 +24,8 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   if (stream.length * 2 > 32 * 1024 * 1024) throw new RangeError('文档公开内容超过单次文本预算。')
   const paragraphs = new Map<number, UniverBodyRecord>(), tables = new Map<number, UniverBodyRecord>(), customBlocks = new Map<number, UniverBodyRecord>()
   const rawCustomOffsets = new Set<number>(), sections = new Map<number, UniverBodyRecord>(), softBreaks = new Set<number>()
+  const generatedRanges = new Map<number, { rangeId: string; separator?: 'separator' | 'continuationSeparator' }>()
+  const noteRanges = new Map<number, { kind: 'footnote' | 'endnote'; id: string; source: UniverBodyRecord }>()
   const checkPosition = (value: unknown, label: string) => {
     const offset = documentBodyOffset(value, stream.length, label)
     if (!isDocumentTextBoundary(stream, offset)) throw new RangeError(`${label} 不能截断 UTF-16 字符。`)
@@ -40,6 +44,38 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   mapEntries(body.docxRawCustomBlocks, customBlocks, T.customBlock, 'docxRawCustomBlocks')
   for (const raw of documentBodyArray(body.docxRawCustomBlocks, 'docxRawCustomBlocks')) rawCustomOffsets.add(Number(raw.startIndex))
   mapEntries(body.sectionBreaks, sections, T.section, 'sectionBreaks')
+  // The fixed upstream default separator is a FIELD over U+FFFC, rather
+  // than a customBlock. Its marker belongs to layout, never editable text.
+  for (const raw of documentBodyArray(body.customRanges, 'customRanges')) {
+    const properties = bodyRecord(raw.properties), field = properties.fieldType
+    const separator = raw.rangeType === 1 && field === 'FOOTNOTE_SEPARATOR' ? 'separator'
+      : raw.rangeType === 1 && field === 'FOOTNOTE_CONTINUATION_SEPARATOR' ? 'continuationSeparator' : undefined
+    const kind = raw.rangeType === 8 ? 'footnote' : raw.rangeType === 9 ? 'endnote' : undefined
+    const ownReference = kind !== undefined && options.note?.kind === kind
+      && (options.note.id === undefined || options.note.id === properties.noteId)
+    if (!separator && !ownReference) {
+      if (kind !== undefined) {
+        const at = checkPosition(raw.startIndex, '注释引用')
+        if (raw.endIndex === at && stream[at] === '\uFFFC') {
+          if (noteRanges.has(at)) throw new RangeError('同一公开原子不能对应多个注释引用。')
+          noteRanges.set(at, { kind, id: documentBodyIdentity(properties.noteId, '注释'), source: raw })
+        }
+      }
+      continue
+    }
+    const at = checkPosition(raw.startIndex, '生成标记')
+    if (raw.endIndex !== at || stream[at] !== '\uFFFC') throw new RangeError('注释生成标记必须对应一个 U+FFFC。')
+    if (generatedRanges.has(at)) throw new RangeError('注释生成标记位置重复。')
+    generatedRanges.set(at, { rangeId: documentBodyIdentity(raw.rangeId, '生成标记'), ...(separator ? { separator } : {}) })
+  }
+  const sectionSources: UniverBodyRecord[] = [], sectionIds = new Set<string>()
+  for (let at = stream.indexOf(T.section); at >= 0; at = stream.indexOf(T.section, at + 1)) {
+    const raw = sections.get(at) ?? {}, sectionId = documentBodyIdentity(raw.sectionId ?? documentId('section'), '分节')
+    if (sectionIds.has(sectionId)) throw new TypeError(`分节标识重复：${sectionId}`)
+    sectionIds.add(sectionId); documentSectionTypeFromBody(raw.sectionType)
+    sectionSources.push({ ...cloneModel(raw), startIndex: at, sectionId })
+  }
+  const nextSections = new Map(sectionSources.slice(0, -1).map((section, index) => [Number(section.startIndex), sectionSources[index + 1]!]))
   if (body.renderedPageBreaks !== undefined) {
     if (!Array.isArray(body.renderedPageBreaks)) throw new TypeError('软分页位置必须为数组。')
     for (const value of body.renderedPageBreaks) {
@@ -55,6 +91,8 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   })
   const boundaries = [...new Set(textRuns.flatMap(run => [run.start, run.end]))].sort((a, b) => a - b)
   const positions: DocumentBodyParagraphPosition[] = [], diagnostics: string[] = [], identities = new Set<string>()
+  const structures: DocumentBodyStructureIndex = { blocks: [], rows: [], cells: [] }
+  const runSourceIds = new Map<string, string>()
   let cursor = 0, count = 0
   const reserve = (block: DocumentBlock) => {
     if (++count > 250_000) throw new RangeError('文档公开内容超过块预算。')
@@ -68,27 +106,49 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   const readBlocks = (until?: string, depth = 0): DocumentBlock[] => {
     if (depth > 64) throw new RangeError('文档表格嵌套超过预算。')
     const blocks: DocumentBlock[] = []
-    let start = cursor, parts: TextPart[] = [], spans: DocumentBodyTextSpan[] = [], length = 0, pendingTokens: Array<{ offset: number; text: string; sourceIndex: number }> = []
+    let start = cursor, parts: TextPart[] = [], spans: DocumentBodyTextSpan[] = [], length = 0
+    let pendingTokens: Array<{ offset: number; text: string; sourceIndex: number; sourceRangeId?: string }> = []
+    let pendingSeparator: 'separator' | 'continuationSeparator' | undefined
     const flush = (end: number, terminal: boolean, force = false) => {
       if (!force && !parts.length && !pendingTokens.length) { start = cursor; return }
       const raw = terminal ? paragraphs.get(end) ?? {} : paragraphAt(start), marks = documentBodyParagraphMarks(raw, options)
       const runs: InlineRun[] = parts.map(part => {
-        const style = documentRunStyleFromBody({ ...marks, ...bodyRecord(part.source?.ts) })
+        const character = documentBodyNamedStyle(part.source?.sId, options.styles)
+        const inherited = { ...marks, ...bodyRecord(character.textStyle) }, explicit = bodyRecord(part.source?.ts)
+        const style = documentRunStyleFromBody({ ...inherited, ...explicit })
         const run = createRun(part.text, { ...options.defaults.text, ...style })
-        run.metadata = { ...run.metadata, ...part.metadata, univerBodyRunSource: { version: 1, runId: run.id, start: part.start, end: part.end,
+        const identity = part.source && documentBodyOfficeSource(part.source, '运行').runId
+        if (identity !== undefined) {
+          const id = documentBodyIdentity(identity, '运行'), key = `${part.source!.st}:${part.source!.ed}`
+          const previous = runSourceIds.get(id)
+          if (previous !== undefined && previous !== key) throw new TypeError('公开运行身份被不同文字范围重复使用：' + id)
+          if (previous === undefined) run.id = id
+          runSourceIds.set(id, key)
+        }
+        run.metadata = { ...documentBodyRunMetadata(part.source), ...run.metadata, ...documentRunStyleSource(run, explicit, inherited),
+          ...part.metadata, univerBodyRunSource: { version: 1, runId: run.id, start: part.start, end: part.end,
           ...(part.source ? { textRun: cloneModel(part.source) } : {}) } }
         return run
       })
       const paragraph = documentParagraphFromBody(terminal ? raw : { ...raw, paragraphId: undefined }, runs, options, resources.lists)
+      if (terminal) {
+        const markRuns = textRuns.filter(run => run.start <= end && run.end > end)
+        if (markRuns.length) paragraph.metadata.univerBodyParagraphMarkTextStyle = Object.assign({}, ...markRuns.map(run => bodyRecord(run.raw.ts)))
+      }
+      if (pendingSeparator) paragraph.metadata.noteSeparator = { version: 1, widthFraction: pendingSeparator === 'separator' ? 1 / 3 : 1 }
       const source = bodyRecord(paragraph.metadata.univerBodyParagraphSource)
       paragraph.metadata.univerBodyParagraphSource = { ...source, start, end, spans: cloneModel(spans), terminated: terminal, baselineText: runText(paragraph.runs),
         ...(pendingTokens.length ? { boundaryTokens: pendingTokens } : {}) }
       reserve(paragraph); blocks.push(paragraph); positions.push({ block: paragraph, start, end, spans })
-      parts = []; spans = []; length = 0; pendingTokens = []; start = cursor
+      structures.blocks.push({ block: paragraph, container: blocks, start, end: terminal ? end + 1 : end })
+      parts = []; spans = []; length = 0; pendingTokens = []; pendingSeparator = undefined; start = cursor
     }
     const append = (text: string, from: number, to: number, metadata?: UniverBodyRecord) => {
       if (metadata) {
-        parts.push({ text, start: from, end: to, metadata }); spans.push({ sourceStart: from, sourceEnd: to, targetStart: length, targetEnd: length + text.length }); length += text.length; return
+        const active = textRuns.filter(run => run.start <= from && run.end >= to)
+        const source = active.length ? { ...active.at(-1)!.raw, ts: Object.assign({}, ...active.map(run => bodyRecord(run.raw.ts))) } : undefined
+        parts.push({ text, start: from, end: to, metadata, source }); spans.push({ sourceStart: from, sourceEnd: to, targetStart: length, targetEnd: length + text.length,
+          ...(metadata.noteReference || metadata.note ? { noteReference: true } : {}) }); length += text.length; return
       }
       const cuts = [from, ...boundaries.filter(boundary => boundary > from && boundary < to), to]
       for (let index = 0; index < cuts.length - 1; index++) {
@@ -101,19 +161,31 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
     while (cursor < stream.length) {
       const token = stream[cursor]!
       if (token === until) { flush(cursor, false); cursor++; return blocks }
+      const generated = generatedRanges.get(cursor)
+      if (generated) {
+        spans.push({ sourceStart: cursor, sourceEnd: cursor + 1, targetStart: length, targetEnd: length })
+        pendingTokens.push({ offset: length, text: token, sourceIndex: cursor, sourceRangeId: generated.rangeId })
+        pendingSeparator ??= generated.separator
+        cursor++; continue
+      }
+      const reference = noteRanges.get(cursor)
+      if (reference) {
+        const from = cursor++
+        append('\uFFFC', from, cursor, { noteReference: { kind: reference.kind, noteId: reference.id }, univerBodyNoteRangeSource: cloneModel(reference.source) })
+        continue
+      }
       if (containerEnds.has(token)) throw new RangeError('文档表格标记未正确闭合。')
       if (token === T.paragraph) { const end = cursor++; flush(end, true, true); start = cursor; continue }
       if (token === T.section) {
         flush(cursor, false); const offset = cursor++
         if (cursor < stream.length) {
           if (!options.allowSections || depth > 0) throw new RangeError('注释或单元格内容不能包含独立分节。')
-          const section = sections.get(offset) ?? {}
-          const sectionTypes = ['unspecified', 'continuous', 'nextColumn', 'nextPage', 'evenPage', 'oddPage'] as const
-          const type = bodyNumber(section.sectionType) ?? 0
-          if (!Number.isSafeInteger(type) || !sectionTypes[type]) throw new RangeError('文档分节类型无效。')
-          const block = createParagraph(); block.runs = []; block.type = 'sectionBreak'; block.sectionBreak = { type: sectionTypes[type]! }
-          if (section.sectionId !== undefined) block.id = documentBodyIdentity(section.sectionId, '分节')
+          const section = nextSections.get(offset) ?? { sectionId: documentId('section') }
+          const block = createParagraph(); block.runs = []; block.type = 'sectionBreak'
+          block.sectionBreak = { type: documentSectionTypeFromBody(section.sectionType), setup: documentSectionSetupFromBody(section) }
+          block.id = documentBodyIdentity(section.sectionId, '分节')
           block.metadata.univerBodySectionSource = cloneModel(section); blocks.push(reserve(block))
+          structures.blocks.push({ block, container: blocks, start: offset, end: cursor })
         }
         start = cursor; continue
       }
@@ -122,23 +194,41 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         if (!descriptor) throw new RangeError('内容流中的表格缺少 tables 描述。')
         const id = documentBodyIdentity(descriptor.tableId, '表格'), source = resources.tableSource?.[id]
         if (!source) throw new RangeError(`表格 ${id} 缺少 tableSource。`)
-        const rows: DocumentBlock[][][] = []
+        const rows: DocumentBlock[][][] = [], bounds: Array<{ start: number; end: number; cells: Array<{ start: number; end: number }> }> = []
+        // Row and cell SDTs may place custom-range sentinels between table
+        // tokens. Those delimiters are coordinates, not additional rows.
+        const skipRangeMarkers = () => { while (stream[cursor] === T.rangeStart || stream[cursor] === T.rangeEnd) cursor++ }
+        skipRangeMarkers()
         while (stream[cursor] === T.rowStart) {
-          cursor++; const cells: DocumentBlock[][] = []
-          while (stream[cursor] === T.cellStart) { cursor++; cells.push(readBlocks(T.cellEnd, depth + 1)) }
+          const rowStart = cursor++; const cells: DocumentBlock[][] = [], cellBounds: Array<{ start: number; end: number }> = []
+          skipRangeMarkers()
+          while (stream[cursor] === T.cellStart) {
+            const cellStart = cursor++; cells.push(readBlocks(T.cellEnd, depth + 1)); cellBounds.push({ start: cellStart, end: cursor }); skipRangeMarkers()
+          }
           if (stream[cursor++] !== T.rowEnd) throw new RangeError('表格行缺少结束标记。')
-          rows.push(cells)
+          rows.push(cells); bounds.push({ start: rowStart, end: cursor, cells: cellBounds }); skipRangeMarkers()
         }
         if (stream[cursor++] !== T.tableEnd || descriptor.endIndex !== cursor) throw new RangeError('表格结束边界与 tables 描述不匹配。')
         const block = createParagraph(); block.id = id; block.type = 'table'; block.runs = []
         block.metadata = { table: documentTableFromBody(source, rows, options.defaults), univerBodyTableSource: cloneModel(descriptor) }
-        blocks.push(reserve(block)); start = cursor; continue
+        applyDocumentBodyBlockSource(block, descriptor)
+        blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: offset, end: cursor })
+        const table = tableForBlock(block)!
+        for (const [rowIndex, bound] of bounds.entries()) {
+          const row = table.rows[rowIndex]!
+          structures.rows.push({ tableBlock: block, rowId: row.id, rowIndex, start: bound.start, end: bound.end })
+          for (const [cellIndex, cellBound] of bound.cells.entries()) {
+            const cell = row.cells.find(cell => cell.blocks === rows[rowIndex]![cellIndex])
+            if (cell) structures.cells.push({ tableBlock: block, rowId: row.id, cellId: cell.id, blocks: cell.blocks, start: cellBound.start, end: cellBound.end })
+          }
+        }
+        start = cursor; continue
       }
       if (token === T.pageBreak || token === T.columnBreak) {
         if (!options.allowSections) throw new RangeError('注释内容不能包含独立分页或分栏符。')
         flush(cursor, false); const offset = cursor++, block = createParagraph(); block.runs = []; block.type = token === T.pageBreak ? 'pageBreak' : 'columnBreak'
         block.metadata.univerBodyBreakSource = { startIndex: offset, soft: softBreaks.has(offset) }
-        blocks.push(reserve(block)); start = cursor; continue
+        blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: offset, end: cursor }); start = cursor; continue
       }
       if (token === T.customBlock) {
         const from = cursor++, raw = customBlocks.get(from)
@@ -150,9 +240,14 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         }
         if (noteType === 'footnote' || noteType === 'endnote') {
           const noteId = documentBodyIdentity(raw.noteId, '注释')
+          if (options.note?.kind === noteType && (options.note.id === undefined || options.note.id === noteId)) {
+            spans.push({ sourceStart: from, sourceEnd: cursor, targetStart: length, targetEnd: length })
+            pendingTokens.push({ offset: length, text: token, sourceIndex: from }); continue
+          }
           append('\uFFFC', from, cursor, { noteReference: { kind: noteType, noteId }, univerBodyCustomBlock: cloneModel(raw) }); continue
         }
         if (noteType === 'separator' || noteType === 'continuationSeparator') {
+          pendingSeparator ??= noteType
           spans.push({ sourceStart: from, sourceEnd: cursor, targetStart: length, targetEnd: length }); pendingTokens.push({ offset: length, text: token, sourceIndex: from }); continue
         }
         const drawing = resources.drawings?.[id]
@@ -168,7 +263,8 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
           const block = createParagraph(); block.id = id; block.type = 'image'; block.runs = []
           block.metadata = { image: { src: source, alt: typeof drawing.description === 'string' ? drawing.description : '', width, height },
             univerBodyCustomBlock: cloneModel(raw), univerBodyDrawingSource: cloneModel(drawing) }
-          blocks.push(reserve(block)); start = cursor
+          applyDocumentBodyBlockSource(block, raw)
+          blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: from, end: cursor }); start = cursor
           if (drawing.layoutType === 0 || drawing.layoutType === undefined) diagnostics.push(`行内绘图 ${id} 已保留图像和源锚点，当前编辑块布局与源段内环绕尚需对齐。`)
           continue
         }
@@ -182,7 +278,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
       }
       const from = cursor
       do { cursor++ } while (cursor < stream.length && stream[cursor] !== until && !containerEnds.has(stream[cursor]!)
-        && !nonprinting.has(stream[cursor]!) && !flowTokens.has(stream[cursor]!))
+        && !nonprinting.has(stream[cursor]!) && !flowTokens.has(stream[cursor]!) && !generatedRanges.has(cursor) && !noteRanges.has(cursor))
       append(stream.slice(from, cursor), from, cursor)
     }
     if (until) throw new RangeError('文档表格单元格缺少结束标记。')
@@ -192,6 +288,7 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
   const blocks = readBlocks()
   if (!blocks.length) {
     const block = reserve(createParagraph('', options.defaults.text)); blocks.push(block); positions.push({ block, start: 0, end: 0, spans: [] })
+    structures.blocks.push({ block, container: blocks, start: 0, end: 0 })
   }
-  return { blocks, positions, diagnostics }
+  return { blocks, positions, structures, diagnostics, ...(sectionSources[0] ? { initialSection: sectionSources[0] } : {}) }
 }

@@ -14,6 +14,7 @@ import { supportsChartExplicitGradient } from './chart-gradient'
 import { chartHistogramCategories } from './chart-histogram'
 import { chartCandlestickStyle } from './chart-candlestick'
 import { chartTreemapShade } from './chart-treemap'
+import { chartSunburstShade } from './chart-sunburst'
 import { ComputeError } from '../../compute/errors'
 import {
   chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, CHART_WATERFALL_GLOBAL_SERIES,
@@ -175,7 +176,8 @@ export function chartBubblePointSize(style: ChartSeriesOptions, value: number, m
 export function chartHierarchyPointStyle(chart: ChartModel, field: number, item: Pick<ChartHierarchyItem, 'pointIndex' | 'rootIndex' | 'depth'>, palette: readonly string[], sourceName?: string): ChartSeriesOptions {
   const base = chartSeriesStyle(chart, field, item.rootIndex, palette, sourceName)
   if (!chartSeriesColorIsAuthored(chart, field, sourceName)) {
-    base.color = chart.type === 'treemap' ? chartTreemapShade(base.color!, item.depth) : chartShade(base.color!, 1 - Math.min(0.4, item.depth * 0.08))
+    base.color = chart.type === 'treemap' ? chartTreemapShade(base.color!, item.depth)
+      : chart.type === 'sunburst' ? chartSunburstShade(base.color!, item.depth) : chartShade(base.color!, 1 - Math.min(0.4, item.depth * 0.08))
   }
   return chartPointStyle(base, item.pointIndex, chart.type)
 }

@@ -4,6 +4,10 @@ import type { ChartComputedStatistics } from './chart-derived'
 import type { ChartStatisticsOutput } from '../../compute/chart-protocol.ts'
 import { CHART_PREPARATION_CHUNK, consumeChartPreparation, type ChartComputePreparationContext } from './chart-compute-lifecycle'
 import { CHART_DATE_AXIS_MAX_TICKS } from './chart-date-calendar'
+import { chartSunburstTotal } from './chart-sunburst'
+import { isChartLinearGradient } from './chart-color'
+import { CHART_GRADIENT_COMMAND_BUDGET, CHART_GRADIENT_MAX_STRIPS } from './chart-gradient-geometry'
+import { resolveChartChordOptions } from './chart-chord'
 
 /** Admission estimates deliberately include JS object/reference overhead.
  * They are not measured heap figures or a zero-copy claim. */
@@ -55,8 +59,25 @@ function* chartDataMemorySteps(data: ChartData): Generator<void, number, void> {
       if (++work % CHART_PREPARATION_CHUNK === 0) yield
     }
   }
-  for (const node of data.graph?.nodes ?? []) { bytes += 96 + node.name.length * 2; if (++work % CHART_PREPARATION_CHUNK === 0) yield }
-  for (const edge of data.graph?.links ?? []) { bytes += 128 + (edge.source.length + edge.target.length) * 2; if (++work % CHART_PREPARATION_CHUNK === 0) yield }
+  if (data.chord) {
+    bytes += 256 + data.chord.valueFieldName.length * 2
+    for (const node of data.chord.nodes) {
+      bytes += 256 + (node.id.length + node.name.length + node.formattedValue.length) * 2
+      if (++work % CHART_PREPARATION_CHUNK === 0) yield
+    }
+    for (const link of data.chord.links) {
+      bytes += 384 + (link.id.length + link.sourceId.length + link.targetId.length + link.source.length + link.target.length + link.formattedValue.length) * 2
+      if (++work % CHART_PREPARATION_CHUNK === 0) yield
+    }
+  }
+  // The graph compatibility projection references Chord's same arrays. Count
+  // those owned facts once; unrelated graph arrays still receive their budget.
+  if (data.graph?.nodes !== data.chord?.nodes) for (const node of data.graph?.nodes ?? []) {
+    bytes += 96 + node.name.length * 2; if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
+  if (data.graph?.links !== data.chord?.links) for (const edge of data.graph?.links ?? []) {
+    bytes += 128 + (edge.source.length + edge.target.length) * 2; if (++work % CHART_PREPARATION_CHUNK === 0) yield
+  }
   const stack = [...(data.hierarchy ?? [])]
   while (stack.length) {
     const node = stack.pop()!
@@ -73,6 +94,15 @@ function* chartDataMemorySteps(data: ChartData): Generator<void, number, void> {
 export function estimateChartDecodedMemory(output: ChartStatisticsOutput): number {
   let bytes = 1024 + output.segments.length * 512
   for (const segment of output.segments) {
+    if (segment.kind === 'chord') {
+      const nodes = output.indices[segment.indexOffset] ?? 0, links = output.indices[segment.indexOffset + 1] ?? 0
+      bytes += nodes * 512 + links * 512
+      continue
+    }
+    if (segment.kind === 'hierarchy') {
+      bytes += (output.indices[segment.indexOffset] ?? 0) * 512
+      continue
+    }
     if (segment.kind === 'waterfallLayout') {
       const points = output.indices[segment.indexOffset] ?? 0, connectors = output.indices[segment.indexOffset + 1] ?? 0
       bytes += points * 192 + connectors * 128
@@ -113,9 +143,64 @@ export function estimateChartFinalLayoutMemory(source: ChartData, chart: ChartMo
   for (const error of statistics.errorBars ?? []) errorPoints += error.intervals.length
   const dateBytes = chart.options?.mapping?.useDateAxis
     ? categories * 192 + 2 * CHART_DATE_AXIS_MAX_TICKS * 160 : 0
+  let hierarchyBytes = 0
+  const sunburstTotal = chart.type === 'sunburst' ? chartSunburstTotal(source.hierarchy ?? []) : 0
+  const labelBackground = chart.options?.sunburst?.label?.backgroundColor
+  // A rotated label quad can become two triangles, with up to three clipped
+  // triangles per gradient band. This estimates both staging and final paint.
+  const sunburstLabelPaintBytes = isChartLinearGradient(labelBackground)
+    ? 6 * (CHART_GRADIENT_MAX_STRIPS + labelBackground.stops.length + 2) * 384 : 0
+  const sunburstSectorBytes = (value: number): number => {
+    const slices = Math.max(2, Math.ceil(Math.min(1, sunburstTotal > 0 ? value / sunburstTotal : 0) * 96))
+    // Each annular slice has two filled triangles plus inner/outer outline
+    // segments; retained arc points and triangle staging can coexist.
+    return slices * 1024 + 1024
+  }
+  const hierarchy = [...(source.hierarchy ?? [])]
+  while (hierarchy.length) {
+    const node = hierarchy.pop()!
+    // Source items, render nodes, native option nodes and rectangle/label
+    // staging can coexist. Parent-owned facts add one synthetic render leaf.
+    hierarchyBytes += 2048 + (node.path?.length ?? 0) * 32
+    if ((chart.type === 'treemap' || chart.type === 'sunburst') && node.children?.length && node.selfValue > 0) {
+      hierarchyBytes += 1024
+      if (chart.type === 'sunburst') hierarchyBytes += sunburstSectorBytes(node.selfValue)
+    }
+    if (chart.type === 'sunburst') {
+      hierarchyBytes += sunburstSectorBytes(node.value)
+      if (sunburstTotal > 0 && node.value / sunburstTotal >= 0.04) hierarchyBytes += sunburstLabelPaintBytes
+    }
+    for (const child of node.children ?? []) hierarchy.push(child)
+  }
   // Raw and projected point objects, stacked extents, numeric-X arrays and
   // source/derived category references can coexist during layout construction.
-  return 4 * 1024 * 1024 + categories * 128 + seriesCount * 1024
+  // At most 128 native 16px pattern tiles at DPR 4 remain in the adapter cache.
+  const nativePatternBytes = chart.type === 'treemap' || chart.type === 'sunburst' ? 128 * 64 * 64 * 4 : 0
+  let chordBytes = 0
+  if (chart.type === 'chord' && source.chord) {
+    const options = resolveChartChordOptions(chart.options?.chord, chart.options?.appearance?.font)
+    let bandVertices = 0, triangles = 0, sectorSlices = 0
+    for (const node of source.chord.nodes) sectorSlices += Math.max(2, Math.ceil(Math.abs(node.end - node.start) / (Math.PI / 48)))
+    for (const link of source.chord.links) {
+      // Two authoritative endpoint arcs plus two 32-segment center curves.
+      const vertices = Math.max(2, Math.ceil(Math.abs(link.sourceEnd - link.sourceStart) / (Math.PI / 48)))
+        + Math.max(2, Math.ceil(Math.abs(link.targetEnd - link.targetStart) / (Math.PI / 48))) + 65
+      bandVertices += vertices; triangles += Math.max(0, vertices - 2)
+    }
+    const hasPattern = chart.options?.allSeriesStyle?.fillPattern !== undefined
+      || Object.values(chart.options?.series ?? {}).some(style => style.fillPattern !== undefined || Object.values(style.dataPoints ?? {}).some(point => point.fillPattern !== undefined))
+      || (chart.options?.namedSeries ?? []).some(entry => entry.style.fillPattern !== undefined || Object.values(entry.style.dataPoints ?? {}).some(point => point.fillPattern !== undefined))
+    // A clipped gradient band can produce three triangles per input triangle;
+    // the exact whole-scene command cap also applies to patterned paint.
+    const fills = triangles * (options.ribbon.color === 'gradient' ? 3 * (CHART_GRADIENT_MAX_STRIPS + 2) : 1)
+    const commands = hasPattern ? CHART_GRADIENT_COMMAND_BUDGET
+      : Math.min(CHART_GRADIENT_COMMAND_BUDGET, fills + sectorSlices * 4 + source.chord.nodes.length * 4 + bandVertices)
+    // Retained bands/bounds, triangulation/gradient staging, native graphics,
+    // focus copies, measured label quads and sparse incident lists coexist.
+    // These object allowances are estimates, not measured JS/native/GPU heap.
+    chordBytes = bandVertices * 192 + commands * 768 + source.chord.nodes.length * 1024 + source.chord.links.length * 512
+  }
+  return 4 * 1024 * 1024 + nativePatternBytes + categories * 128 + seriesCount * 1024
     + points * 512 + extraSeriesPoints * 256 + summaryValues * 128
-    + trendPoints * 96 + errorPoints * 192 + dateBytes
+    + trendPoints * 96 + errorPoints * 192 + dateBytes + hierarchyBytes + chordBytes
 }

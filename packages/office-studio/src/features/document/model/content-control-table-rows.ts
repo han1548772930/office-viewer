@@ -6,6 +6,9 @@ import { documentTableCellBlocks, documentTableContinuationEntries } from './doc
 import { createDocumentTableViewSelection, documentTableDescendantIds, resolveDocumentTableViewSelection } from './document-table-selection'
 import { isDocumentTextBoundary } from './document-story'
 import { documentBlockContentControlContains, documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from './content-control-block-range'
+import { documentContentControlNoteBoundaryRanks, reanchorDocumentContentControlNoteParagraph } from './content-control-note-boundary'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets } from './document-note-boundary'
+import { compareDocumentNoteBoundaries } from './document-note-boundary-edit'
 
 export type DocumentContentControlTableRowRange = NonNullable<DocumentContentControl['tableRowRange']>
 export interface DocumentContentControlTableRows {
@@ -63,8 +66,14 @@ export function documentContentControlContains(model: DocumentModel, parent: Doc
     if (child.blockRange && !findDocumentBlock(model, child.blockRange.blockIds[0]!)) return false
     return documentBlockContentControlContains(model, parent, child)
   }
-  if (!parent.tableRowRange) return !child.tableRowRange && !child.blockRange && parent.blockId === child.blockId
-    && parent.startOffset <= child.startOffset && parent.endOffset >= child.endOffset
+  if (!parent.tableRowRange) {
+    if (child.tableRowRange || child.blockRange || parent.blockId !== child.blockId) return false
+    const block = findDocumentBlock(model, parent.blockId)
+    if (!block) return false
+    const references = documentNoteReferenceOffsets(block.runs), outer = documentContentControlNoteBoundaryRanks(parent, references), inner = documentContentControlNoteBoundaryRanks(child, references)
+    return compareDocumentNoteBoundaries(parent.startOffset, outer.start, child.startOffset, inner.start) <= 0
+      && compareDocumentNoteBoundaries(parent.endOffset, outer.end, child.endOffset, inner.end) >= 0
+  }
   if (!findDocumentBlock(model, parent.tableRowRange.tableId)) return false
   const rows = resolveDocumentContentControlTableRows(model, parent.tableRowRange)
   if (child.tableRowRange?.tableId === parent.tableRowRange.tableId) {
@@ -79,7 +88,7 @@ export function documentContentControlContains(model: DocumentModel, parent: Doc
 
 /** The paragraph range is local input; a row wrapper owns every physical content container in its rows. */
 export function documentContentControlContainsBlockRange(model: DocumentModel, control: DocumentContentControl, blockId: string,
-  startOffset: number, endOffset: number): boolean {
+  startOffset: number, endOffset: number, startRank?: number, endRank?: number): boolean {
   if (!Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset) || startOffset < 0 || endOffset < startOffset) return false
   const block = findDocumentBlock(model, blockId)
   if (!block || !isDocumentTextBoundary(runText(block.runs), startOffset) || !isDocumentTextBoundary(runText(block.runs), endOffset)) return false
@@ -87,7 +96,14 @@ export function documentContentControlContainsBlockRange(model: DocumentModel, c
     if (control.tableRowRange || !findDocumentBlock(model, control.blockRange.blockIds[0]!)) return false
     return documentContentControlOwnedBlockIds(resolveDocumentContentControlBlocks(model, control.blockRange)).has(blockId)
   }
-  if (!control.tableRowRange) return control.blockId === blockId && startOffset >= control.startOffset && endOffset <= control.endOffset
+  if (!control.tableRowRange) {
+    if (control.blockId !== blockId) return false
+    const references = documentNoteReferenceOffsets(block.runs), outer = documentContentControlNoteBoundaryRanks(control, references)
+    const from = assertDocumentNoteReferenceBoundaryRank(references, startOffset, startRank), to = assertDocumentNoteReferenceBoundaryRank(references, endOffset, endRank)
+    return compareDocumentNoteBoundaries(control.startOffset, outer.start, startOffset, from) <= 0
+      && compareDocumentNoteBoundaries(endOffset, to, control.endOffset, outer.end) <= 0
+      && compareDocumentNoteBoundaries(startOffset, from, endOffset, to) <= 0
+  }
   // Stored controls from another story/note are outside the current input model.
   if (!findDocumentBlock(model, control.tableRowRange.tableId)) return false
   return documentContentControlOwnedRowBlockIds(resolveDocumentContentControlTableRows(model, control.tableRowRange)).has(blockId)
@@ -142,9 +158,8 @@ export function documentContentControlContainsSelection(model: DocumentModel, co
         .every(target => owned.has(target.cellBlockId ?? target.blockId))
     }
     if (!control.tableRowRange) return !selection.tableSelection && sameTarget(selection.anchor, selection.focus)
-      && (selection.focus.cellBlockId ?? selection.focus.blockId) === control.blockId
-      && Math.min(selection.anchor.offset, selection.focus.offset) >= control.startOffset
-      && Math.max(selection.anchor.offset, selection.focus.offset) <= control.endOffset
+      && documentContentControlContainsBlockRange(model, control, selection.focus.cellBlockId ?? selection.focus.blockId,
+        Math.min(selection.anchor.offset, selection.focus.offset), Math.max(selection.anchor.offset, selection.focus.offset))
     if (selection.tableSelection) {
       const expected = documentContentControlTableRowSelection(model, control.tableRowRange), view = resolveDocumentTableViewSelection(model, selection.tableSelection)
       const canonical = createDocumentTableViewSelection(model, view.tableId, view.range, view.kind, view.pageAffinity, selection)
@@ -233,16 +248,12 @@ export function reanchorDocumentContentControlTableRows(model: DocumentModel, co
   const rows = resolveDocumentContentControlTableRows(model, control.tableRowRange), owned = documentContentControlTableRowBlockIds(rows)
   const targets = textTargets(model), current = targets.find(target => (target.cellBlockId ?? target.blockId) === control.blockId)
   if (current && owned.has(control.blockId)) {
-    const text = runText(runsForTarget(model, current))
-    if (control.startOffset <= control.endOffset && isDocumentTextBoundary(text, control.startOffset) && isDocumentTextBoundary(text, control.endOffset)) return
-    control.startOffset = 0; control.endOffset = text.length; return
+    reanchorDocumentContentControlNoteParagraph(control, control.blockId, runsForTarget(model, current)); return
   }
   const physical = documentContentControlOwnedRowBlockIds(rows)
   const target = targets.find(target => physical.has(target.cellBlockId ?? target.blockId)) ?? targets.find(target => owned.has(target.cellBlockId ?? target.blockId))
   if (!target) throw new RangeError('重复行必须保留合法的输入段落。')
-  control.blockId = target.cellBlockId ?? target.blockId
-  control.startOffset = 0
-  control.endOffset = runText(runsForTarget(model, target)).length
+  reanchorDocumentContentControlNoteParagraph(control, target.cellBlockId ?? target.blockId, runsForTarget(model, target))
 }
 
 /** Regular table mutations update row wrappers by surviving identities before paragraph anchors are reconciled. */

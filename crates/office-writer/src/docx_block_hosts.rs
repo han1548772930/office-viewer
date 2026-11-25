@@ -144,7 +144,8 @@ pub(super) fn append_locks(context: &mut WriteContext<'_>, hosts: &[AuxiliaryCon
                 let numeric_id = context.next_story_control;
                 context.next_story_control = numeric_id.checked_add(1).ok_or_else(|| ExportError::invalid("辅助内容区内容控件数量超出容量。"))?;
                 context.controls_by_block.entry(paragraph.id.clone()).or_default().push(ContentControl { id: control_id.clone(), kind: "richText".into(),
-                    numeric_id, start: from, end: to, value: json!({ "id": control_id, "type": "richText", "blockId": paragraph.id,
+                    numeric_id, start: from, end: to, start_note_reference_count: None, end_note_reference_count: None,
+                    value: json!({ "id": control_id, "type": "richText", "blockId": paragraph.id,
                         "startOffset": from, "endOffset": to, "lock": kind, "tag": super::story_writer::lock_tag(id), "placement": "inline", "metadata": { "officeStoryLockSource": { "version": 1, "id": id, "hostId": host.key } } }) });
                 mapped = true;
             }

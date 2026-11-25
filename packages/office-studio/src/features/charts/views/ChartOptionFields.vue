@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Alert, Button, ColorPicker, FormItem, Input, InputNumber, Select, Switch } from 'antdv-next'
+import { Alert, Button, ColorPicker, FormItem, Input, InputNumber, Select, Switch, theme } from 'antdv-next'
 import type { ChartConfig } from '../chart-engine'
 import type { ChartSettingControl } from '../chart-settings-controls'
 import { cloneChartDraftConfig, type ChartSettingsField } from '../chart-settings-draft'
 import { validateChartColor } from '../chart-color'
 import { supportsChartExplicitGradient } from '../chart-gradient'
+import { resolveChartChordColor } from '../chart-chord-color'
 import ChartColorInput from './ChartColorInput.vue'
 
 const props = defineProps<{ config: ChartConfig; controls: readonly ChartSettingControl[]; fields?: ChartSettingsField[]; categories?: string[]; fieldCount?: number; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:config': [value: ChartConfig] }>()
 const error = ref('')
+const { token } = theme.useToken()
 const visibleControls = computed(() => props.controls.filter(control => control.visible?.(props.config) !== false))
 
 function choices(control: ChartSettingControl): ChartSettingsField[] {
@@ -21,6 +23,14 @@ function numericValue(control: ChartSettingControl): number | undefined {
   return control.read(props.config) ?? (control.kind === 'number' ? control.fallback : undefined)
 }
 function textValue(control: ChartSettingControl): string | undefined { return control.kind === 'text' || control.kind === 'color' || control.kind === 'select' ? control.read(props.config) : undefined }
+function colorValue(control: ChartSettingControl): string | undefined {
+  const value = textValue(control)
+  // A ColorPicker displays CSS while the author retains the original theme
+  // token until an explicit edit. Reading or switching theme never writes it.
+  return value !== undefined && props.config.type === 'chord' && control.key.startsWith('chord.')
+    ? resolveChartChordColor(value, { backgroundColor: props.config.options?.appearance?.background ?? token.value.colorBgContainer,
+      textColor: token.value.colorText }) : value
+}
 function selectionValue(control: ChartSettingControl): string[] { return control.kind === 'multiselect' ? control.read(props.config) ?? control.fallback ?? [] : [] }
 function fieldList(control: ChartSettingControl): number[] { return control.kind === 'fields' || control.kind === 'points' ? control.read(props.config) ?? [] : [] }
 function setValue(control: ChartSettingControl, value: unknown): void {
@@ -73,7 +83,7 @@ function resetValue(control: ChartSettingControl): void {
     <FormItem v-for="control in visibleControls" :key="control.key" :label="control.label" :extra="control.extra" :class="{ 'chart-option-color-field': control.kind === 'chart-color' }">
       <Switch v-if="control.kind === 'switch'" :checked="control.read(config) ?? control.fallback ?? false" :aria-label="control.label" :disabled="disabled" @update:checked="setValue(control, $event)" />
       <InputNumber v-else-if="control.kind === 'number'" :value="numericValue(control)" :min="control.min" :max="control.max" :step="control.step ?? (control.max === 1 ? 0.05 : 1)" :precision="control.precision" :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
-      <ColorPicker v-else-if="control.kind === 'color'" :value="textValue(control)" format="hex" value-format="rgb" allow-clear show-text :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" @clear="setValue(control, undefined)" />
+      <ColorPicker v-else-if="control.kind === 'color'" :value="colorValue(control)" format="hex" value-format="rgb" allow-clear show-text :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" @clear="setValue(control, undefined)" />
       <ChartColorInput v-else-if="control.kind === 'chart-color'" :value="control.read(config)" :fallback="control.fallback?.(config)" :label="control.label" :gradient-allowed="supportsChartExplicitGradient(config.type, control.target)" :disabled="disabled" @update:value="setValue(control, $event)" />
       <Input v-else-if="control.kind === 'text'" :value="textValue(control)" allow-clear :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />
       <Select v-else-if="control.kind === 'select'" :value="textValue(control) ?? control.fallback" :options="control.choices" allow-clear :aria-label="control.label" :disabled="disabled" @update:value="setValue(control, $event)" />

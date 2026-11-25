@@ -1,25 +1,14 @@
 import type { DocumentModel } from '../../../domain/model'
 import { documentBlockAncestry, tableForBlock } from '../model/document-model'
 import { documentNoteReferenceRunMatches } from '../model/document-note-reference'
+import { documentNoteReferenceOffsets } from '../model/document-note-boundary'
 import { transformDocumentTextFieldsForBlockEdit } from '../model/document-text-fields'
 import { transformDocumentCommentAnchorsForTextEdit } from '../comments/thread-comments'
 import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../services/document-block-host'
 import { documentTableCellContentContainers } from '../model/document-table-continuations'
+import { transformContentControlsForBlockEdit } from '../services/content-controls'
 import { documentNoteReferenceHosts } from './document-note-references'
 import { resolveDocumentNoteLabels, type DocumentNoteLabel } from './document-note-numbering'
-
-/** Generated labels resize enclosing wrappers without deleting their identities. */
-function remapControlOffsets(model: DocumentModel, blockId: string, start: number, end: number, length: number): void {
-  const delta = length - (end - start)
-  for (const control of model.contentControls ?? []) {
-    if (control.blockId !== blockId) continue
-    if (end <= control.startOffset) { control.startOffset += delta; control.endOffset += delta }
-    else if (start < control.endOffset && end > control.startOffset || start === end && start >= control.startOffset && start <= control.endOffset) {
-      control.startOffset = Math.min(control.startOffset, start)
-      control.endOffset = Math.max(control.startOffset, control.endOffset >= end ? control.endOffset + delta : start + length)
-    }
-  }
-}
 
 /** Source text is a compatibility cache. eachPage uses physical-page labels in the layout DTO. */
 export function renumberDocumentNotes(model: DocumentModel): void {
@@ -43,10 +32,13 @@ export function renumberDocumentNotes(model: DocumentModel): void {
             note.referenceBlockId = block.id; note.referenceRunId = run.id
             if (label.label !== run.text) {
               const end = offset + run.text.length
-              transformDocumentTextFieldsForBlockEdit(block, offset, end, label.label, undefined, scoped)
-              remapControlOffsets(scoped, block.id, offset, end, label.label.length)
+              const futureNoteReferences = documentNoteReferenceOffsets(block.runs.map(entry => entry === run ? { ...entry, text: label.label } : entry))
+              transformDocumentTextFieldsForBlockEdit(block, offset, end, label.label, undefined, scoped, futureNoteReferences)
+              transformContentControlsForBlockEdit(scoped, block.id, offset, end, label.label.length, undefined, true,
+                { projectedNoteReferences: futureNoteReferences, noteReferenceLabelRunId: run.id })
+              const sourceNoteReferences = documentNoteReferenceOffsets(block.runs)
               run.text = label.label
-              transformDocumentCommentAnchorsForTextEdit(scoped, block.id, offset, end, label.label)
+              transformDocumentCommentAnchorsForTextEdit(scoped, block.id, offset, end, label.label, Date.now(), sourceNoteReferences)
               for (const ancestor of documentBlockAncestry(scoped, block.id) ?? []) delete ancestor.metadata.html
               changed = true
             }

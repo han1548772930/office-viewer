@@ -134,7 +134,7 @@ export function chartCommonControls(config?: ChartConfig): ChartSettingControl[]
     selectControl('invalidValueStrategy', '空值处理', [['break', '断开'], ['link', '连接'], ['zero', '按零值']], config => config.options?.invalidValueStrategy, (config, value) => { (config.options ??= {}).invalidValueStrategy = value }, 'break'),
     numberControl('size.width', '宽度', config => config.size.width, (config, value) => { if (value !== undefined) config.size.width = value }, 1, 100_000),
     numberControl('size.height', '高度', config => config.size.height, (config, value) => { if (value !== undefined) config.size.height = value }, 1, 100_000),
-  ].filter(control => config?.type !== 'treemap' || !control.key.startsWith('legend.'))
+  ].filter(control => config?.type !== 'treemap' && config?.type !== 'sunburst' && config?.type !== 'chord' || !control.key.startsWith('legend.'))
 }
 
 /** Fixed chart-ui Hs fields: line color, line type, label background, label text. */
@@ -194,7 +194,7 @@ export function chartSeriesControls(selector?: ChartSeriesSelector, combination 
     selectControl(`${key}.point.shape`, '标记形状', CHART_POINT_SHAPE_CHOICES, config => read(config)?.point?.shape, (config, value) => { (write(config).point ??= {}).shape = value }),
     numberControl(`${key}.point.size`, '标记大小', config => read(config)?.point?.size, (config, value) => { (write(config).point ??= {}).size = value }, 0, 256),
     colorControl(`${key}.point.color`, '标记颜色', config => read(config)?.point?.color, (config, value) => { (write(config).point ??= {}).color = value }),
-  ].map(control => ({ ...control, visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' }))
+  ].map(control => ({ ...control, visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' && config.type !== 'sunburst' }))
   const label = (config: ChartConfig): ChartLabelOptions | undefined => config.type === 'sankey'
     ? { visible: true, contentType: 'category', position: 'auto', ...definedChartStyleFields(effective(config)?.label) } : read(config)?.label
   return [
@@ -207,7 +207,7 @@ export function chartSeriesControls(selector?: ChartSeriesSelector, combination 
     ...markers,
     ...chartLineControls(`${key}.border`, config => read(config)?.border, config => write(config).border ??= {}),
     ...chartLabelControls(`${key}.label`, label, config => write(config).label ??= {}, false, bubbleLabels).map(control => ({ ...control,
-      visible: (config: ChartConfig) => config.type !== 'treemap' && (config.type !== 'heatmap' || control.key.endsWith('.visible')
+      visible: (config: ChartConfig) => config.type !== 'treemap' && config.type !== 'sunburst' && (config.type !== 'heatmap' || control.key.endsWith('.visible')
         || !control.key.endsWith('.contentType') && resolveChartHeatmapLabel(config, effective(config)?.label).visible) })),
   ]
 }

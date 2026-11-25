@@ -7,6 +7,7 @@ import { documentModelForBlockHost, resolveDocumentBlockHost } from '../features
 import { findDocumentParagraphs, flattenDocumentBody, type DocumentParagraphInfo } from '../features/document/services/document-facade'
 import { encodeDocumentBodyWithPositions, documentBodyContentControls } from './document-body-codec'
 import { documentBodyLocalOffset, type DocumentBodyEncodeResult } from './document-body-types'
+import { bodyRecord } from './document-body-style'
 import { documentSelectionAtBodyRange } from './document-indexed-input'
 
 export interface DocumentPublicBodyIndex extends DocumentBodyEncodeResult { model: DocumentModel }
@@ -16,7 +17,10 @@ export function documentPublicBodyIndex(model: DocumentModel, host?: DocumentAux
   const scoped = host ? documentModelForBlockHost(model, host) : model
   const content: DocumentStoryContent = host ? resolveDocumentBlockHost(model, host).content
     : { blocks: model.blocks, runs: [], paragraphs: [], metadata: model.metadata }
-  return { ...encodeDocumentBodyWithPositions(content, documentDefaultStyle(scoped), documentBodyContentControls(content, scoped.contentControls)), model: scoped }
+  const first = bodyRecord(content.metadata?.univerBodyFirstSectionSource)
+  const options = host ? host.kind === 'note' ? { note: { kind: host.noteKind, id: host.noteId } } : {}
+    : { initialSection: { id: typeof first.sectionId === 'string' ? first.sectionId : 'first', setup: { ...model.page, ...model.sectionSetup } }, includeMetadata: false }
+  return { ...encodeDocumentBodyWithPositions(content, documentDefaultStyle(scoped), documentBodyContentControls(content, scoped.contentControls), options), model: scoped }
 }
 
 export function assertDocumentPublicRange(index: DocumentPublicBodyIndex, start: number, end: number): void {

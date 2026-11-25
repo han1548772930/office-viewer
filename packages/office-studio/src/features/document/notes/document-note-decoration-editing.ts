@@ -42,7 +42,8 @@ export function assertDocumentNoteDecorationRemovable(model: DocumentModel, host
 export function preserveDocumentNoteDecorationSource(previous: DocumentStoryContent | undefined, next: DocumentStoryContent): DocumentStoryContent {
   if (!previous?.metadata) return next
   return { ...next, metadata: { ...previous.metadata, ...next.metadata,
-    ...(previous.metadata.decorationSource === undefined ? {} : { decorationSource: previous.metadata.decorationSource }) } }
+    ...(previous.metadata.decorationSource === undefined ? {} : { decorationSource: previous.metadata.decorationSource }),
+    ...(previous.metadata.univerNoteDecorationSource === undefined ? {} : { univerNoteDecorationSource: previous.metadata.univerNoteDecorationSource }) } }
 }
 
 /** Called only after all replacement plans passed validation, on a detached document candidate. */

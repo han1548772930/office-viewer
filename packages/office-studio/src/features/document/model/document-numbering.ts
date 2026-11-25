@@ -15,6 +15,7 @@ export interface DocumentNumberingLevel extends Record<string, unknown> {
   text?: string
   minimumDigits?: number
   suffix?: 'tab' | 'space' | 'nothing'
+  alignment?: 'left' | 'center' | 'right' | 'start' | 'end'
   lvlRestart?: number
   isLgl?: boolean
   indent?: Record<string, unknown>
@@ -51,6 +52,7 @@ export function normalizeNumberingLevel(value: unknown): DocumentNumberingLevel 
     minimumDigits: positive(raw.minimumDigits), lvlRestart: integer(raw.lvlRestart),
     isLgl: typeof raw.isLgl === 'boolean' ? raw.isLgl : undefined,
     suffix: raw.suffix === 'tab' || raw.suffix === 'space' || raw.suffix === 'nothing' ? raw.suffix : undefined,
+    alignment: raw.alignment === 'left' || raw.alignment === 'center' || raw.alignment === 'right' || raw.alignment === 'start' || raw.alignment === 'end' ? raw.alignment : undefined,
     indent: Object.keys(numberingRecord(raw.indent)).length ? numberingRecord(raw.indent) : undefined,
     runStyle: Object.keys(numberingRecord(raw.runStyle)).length ? numberingRecord(raw.runStyle) : undefined,
     bulletFontFamily: string(raw.bulletFontFamily), bulletColor: string(raw.bulletColor),

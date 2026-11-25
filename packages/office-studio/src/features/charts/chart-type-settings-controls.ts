@@ -8,6 +8,7 @@ import { chartHeatmapSettingsControls } from './chart-heatmap-settings-controls'
 import { chartBoxplotStatisticOptions } from './chart-boxplot-options'
 import { chartHistogramStyleControls } from './chart-histogram-settings-controls'
 import { chartCandlestickSettingsMapping } from './chart-candlestick'
+import { chartChordMappingControls } from './chart-chord-settings-controls'
 
 type Mapping = NonNullable<ChartSemanticOptions['mapping']>
 function resetBoxplotField(control: ChartSettingControl, field: keyof NonNullable<ChartSemanticOptions['boxplot']>): ChartSettingControl {
@@ -29,6 +30,7 @@ export function chartDataMappingControls(config: ChartConfig, fieldCount: number
   const values = fieldsControl('valueFields', descriptor.dataShape === 'distribution' ? '样本字段' : descriptor.dataShape === 'xy' ? 'Y 系列字段' : descriptor.dataShape === 'heatmap' ? '横轴数值字段' : '数值系列字段', item => item.valueFields, (item, value) => { item.valueFields = value })
   if (config.type === 'histogram') return [fieldControl('valueFields.histogram', '样本字段', item => item.valueFields?.[0],
     (item, value) => { item.valueFields = value === undefined ? [] : [value] })]
+  if (config.type === 'chord') return chartChordMappingControls(fieldCount)
   if (descriptor.dataShape === 'bubble') return [
     fieldControl('mapping.bubble.xIndex', 'X 数值字段', item => item.options?.mapping?.bubble?.xIndex ?? item.categoryField ?? 0, (item, value) => { bubble(item).xIndex = value ?? 0 }),
     fieldControl('mapping.bubble.yIndex', 'Y 数值字段', item => item.options?.mapping?.bubble?.yIndex ?? item.valueFields?.[0] ?? 1, (item, value) => { bubble(item).yIndex = value ?? 1 }),
@@ -143,20 +145,7 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
       visible: item => chartBoxplotStatisticOptions(item.options?.boxplot).whiskerMethod === 'iqr' },
   )
   if (descriptor.family === 'heatmap') controls.push(...chartHeatmapSettingsControls())
-  if (descriptor.family === 'sunburst') controls.push(
-    switchControl('sunburst.centerLabel.visible', '显示中心标题', item => item.options?.sunburst?.centerLabel?.visible, (item, value) => { (optionGroup(item, 'sunburst').centerLabel ??= {}).visible = value }),
-    ...chartLabelControls('sunburst.label', item => item.options?.sunburst?.label, item => optionGroup(item, 'sunburst').label ??= {}, true),
-  )
   if (descriptor.family === 'gauge') controls.push(...chartGaugeSettingsControls(config, fieldCount, sourceName))
-  if (descriptor.family === 'chord') controls.push(
-    numberControl('chord.startAngle', '和弦起始角', item => item.options?.chord?.startAngle, (item, value) => { optionGroup(item, 'chord').startAngle = value }, -360, 360, -90),
-    switchControl('chord.clockwise', '顺时针', item => item.options?.chord?.clockwise, (item, value) => { optionGroup(item, 'chord').clockwise = value }, true),
-    numberControl('chord.padAngle', '节点间隔角', item => item.options?.chord?.padAngle, (item, value) => { optionGroup(item, 'chord').padAngle = value }, 0, 45, 3),
-    numberControl('chord.innerRadiusRatio', '内半径比例', item => item.options?.chord?.innerRadiusRatio, (item, value) => { optionGroup(item, 'chord').innerRadiusRatio = value }, 0.05, 0.95, 0.66),
-    numberControl('chord.outerRadiusRatio', '外半径比例', item => item.options?.chord?.outerRadiusRatio, (item, value) => { optionGroup(item, 'chord').outerRadiusRatio = value }, 0.05, 1, 0.73),
-    numberControl('chord.ribbonOpacity', '弦带不透明度', item => item.options?.chord?.ribbonOpacity, (item, value) => { optionGroup(item, 'chord').ribbonOpacity = value }, 0, 1, 0.55),
-    ...chartLabelControls('chord.label', item => item.options?.chord?.label, item => optionGroup(item, 'chord').label ??= {}, true),
-  )
   if (descriptor.family === 'wordCloud') controls.push(
     selectControl('wordCloud.shape', '词云形状', [['cloud', '云形'], ['rect', '矩形'], ['circle', '圆形'], ['cardioid', '心迹线'], ['heart', '心形'], ['diamond', '菱形'], ['triangle-forward', '右三角'], ['triangle', '三角形'], ['pentagon', '五边形'], ['star', '星形']], item => item.options?.wordCloud?.shape, (item, value) => { optionGroup(item, 'wordCloud').shape = value }, 'cloud'),
     switchControl('wordCloud.repeat', '重复填充词语', item => item.options?.wordCloud?.repeat, (item, value) => { optionGroup(item, 'wordCloud').repeat = value }),

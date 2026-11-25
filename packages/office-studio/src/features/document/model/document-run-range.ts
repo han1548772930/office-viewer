@@ -79,7 +79,9 @@ export function splitDocumentRunRange(runs: readonly DocumentRun[], start: numbe
     const from = offset, to = from + run.text.length
     offset = to
     if (!run.text.length) {
-      if (from <= start) before.push(run)
+      // A boundary entity belongs to the half-open suffix once, matching
+      // sliceRuns and the before-reference default used by public body ranges.
+      if (from < start) before.push(run)
       else if (from >= end) after.push(run)
       continue
     }

@@ -98,6 +98,7 @@ export function contentControlPropertyDraftPatch(baseline: DocumentContentContro
 export function assertContentControlPropertyDraftCurrent(baseline: DocumentContentControl, current: DocumentContentControl, patch: ContentControlPatch): void {
   if (current.id !== baseline.id || current.type !== baseline.type || current.blockId !== baseline.blockId
     || current.startOffset !== baseline.startOffset || current.endOffset !== baseline.endOffset
+    || current.startNoteReferenceCount !== baseline.startNoteReferenceCount || current.endNoteReferenceCount !== baseline.endNoteReferenceCount
     || JSON.stringify(current.tableRowRange) !== JSON.stringify(baseline.tableRowRange)
     || JSON.stringify(current.blockRange) !== JSON.stringify(baseline.blockRange)) throw new Error('内容控件位置或类型已变化，请重新打开属性。')
   for (const key of propertyKeys) {

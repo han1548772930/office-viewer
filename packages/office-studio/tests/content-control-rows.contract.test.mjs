@@ -280,7 +280,7 @@ test('registered row add, duplicate, undo/redo and snapshot reopen share one con
     assert.equal(inserted.selection.tableSelection.kind, 'row'); assert.equal(document.getContentControl(inserted.controlId).duplicateRepeatingItem(), true)
     assert.equal(table(document.getModel()).rows.length, 6); assert.equal(studio.editor.history.units[document.id].undo.length, 2)
     document.undo(); assert.equal(table(document.getModel()).rows.length, 4); document.redo(); assert.equal(table(document.getModel()).rows.length, 6)
-    const saved = copy(document.save()), reopened = new api.OfficeStudio({ document: saved, currentUserId: 'editor' })
+    const saved = copy(document.saveModel()), reopened = new api.OfficeStudio({ document: saved, currentUserId: 'editor' })
     try { assert.deepEqual(new api.FDocument(reopened, saved.id).getModel().contentControls, saved.contentControls) } finally { reopened.dispose() }
   } finally { studio.dispose() }
 })

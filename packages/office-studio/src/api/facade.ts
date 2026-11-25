@@ -20,6 +20,14 @@ import type {
   ChartCandlestickStateStyleOptions,
   ChartTreemapOptions,
   ChartTreemapLabelOptions,
+  ChartSunburstLabelOptions,
+  ChartSunburstCenterLabelOptions,
+  ChartChordMapping,
+  ChartChordLayoutOptions,
+  ChartChordNodeOptions,
+  ChartChordLabelOptions,
+  ChartChordRibbonOptions,
+  ChartChordEmphasisOptions,
   ChartTrendlineOptions,
   ChartErrorBarOptions,
   ChartGaugeOptions,
@@ -89,6 +97,10 @@ import { assertChartCandlestickType, chartCandleWidth, chartCandlestickFields, c
 import { assertChartHistogramType, isChartHistogramAuthoredNumber } from '../features/charts/chart-histogram-api'
 import { assertChartTreemapType, chartTreemapHierarchyFields, chartTreemapValueField, chartTreemapParentLabelLayout,
   chartTreemapLabelValues } from '../features/charts/chart-treemap-api'
+import { assertChartSunburstType, chartSunburstHierarchyFields, chartSunburstValueField, chartSunburstLabelValues,
+  chartSunburstCenterLabelValues } from '../features/charts/chart-sunburst-api'
+import { assertChartChordType, chartChordMappingValues, chartChordLayoutPatch, chartChordNodeValues,
+  chartChordLabelValues, chartChordRibbonPatch, chartChordEmphasisValues } from '../features/charts/chart-chord-api'
 import { ChartGaugeModes, ChartGaugePointerShapes, chartGaugePresetOptions, type ChartGaugePreset } from '../features/charts/chart-gauge'
 import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/chart-radar'
 import { assertChartWaterfallType, chartWaterfallConnectorValues, patchChartWaterfallStyle } from '../features/charts/chart-waterfall'
@@ -152,6 +164,12 @@ import { DocumentNoteCommandRejectedError, type DocumentNoteCommandResult } from
 import { assertDocumentPublicRange, documentPublicBodyIndex, documentPublicOffsetAtFlat, documentPublicParagraphs, documentPublicRangeToFlat,
   documentSelectionAtPublicBodyRange, type DocumentPublicBodyIndex } from './document-public-body'
 import type { UniverDocumentBody, UniverDocumentBodyData } from './document-body-types'
+import type { UniverDocumentData } from './document-snapshot-types'
+import { documentToPublicSnapshot } from './document-output'
+import { assertDocumentSnapshotViewPermission } from './document-snapshot-permissions'
+import { commonPublicDocumentExplicitTextStyle, isLocalDocumentTextStyle, publicDocumentExplicitTextStyleRuns,
+  setPublicDocumentTextStyle, validatePublicDocumentTextStyle, type UniverDocumentTextStyle, type UniverDocumentTextStyleRun,
+  type UniverDocumentTextRangeDescription } from './document-text-style'
 import type { DocumentNoteKind, DocumentNoteMutationRequest } from '../features/document/notes/document-note-types'
 import { getDocumentNotesInReferenceOrder } from '../features/document/notes/document-note-references'
 import { getDocumentNoteSettings } from '../features/document/notes/document-note-settings'
@@ -239,6 +257,10 @@ export class FOffice {
   readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
     ChartGaugeMode: ChartGaugeModes, ChartGaugePointerShape: ChartGaugePointerShapes, ChartRadarShape: ChartRadarShapes,
     ChartVisualMapType: ChartVisualMapTypes,
+    ChartSunburstLabelPosition: Object.freeze({ Inside: 'inside', Outside: 'outside' } as const),
+    ChartChordLabelPosition: Object.freeze({ Inside: 'inside', Outside: 'outside' } as const),
+    ChartChordRibbonColorMode: Object.freeze({ Source: 'source', Target: 'target', Gradient: 'gradient' } as const),
+    ChartChordFocusMode: Object.freeze({ Adjacency: 'adjacency', Self: 'self', None: 'none' } as const),
     ChartAxisTarget: ChartAxisTargets, ChartSeriesClearTarget: ChartSeriesClearTargets, ChartAllSeriesStyleTarget: ChartAllSeriesStyleTargets,
     ChartAxisPointerTarget: ChartAxisPointerTargets, AxisAlignEnum: ChartAxisTitleAlignments,
     DocsTableSelectionKind: DocsTableSelectionKinds, DocsTableRowInsertPosition: DocsTableRowInsertPositions,
@@ -1034,12 +1056,42 @@ export class ChartConfigBuilder {
   clearOverflowThreshold(): this { assertChartHistogramType(this.value.type); return this.setOption('histogram', { overflowThreshold: undefined }) }
   setBinGap(value: number): this { assertChartHistogramType(this.value.type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { binGap: value }) : this }
   resetBinGap(): this { assertChartHistogramType(this.value.type); return this.setOption('histogram', { binGap: undefined }) }
-  setHierarchyFields(indexes: readonly number[]): this { assertChartTreemapType(this.value.type); return this.setOption('mapping', { hierarchyIndexes: chartTreemapHierarchyFields(indexes) }) }
-  setValueField(index: number): this { assertChartTreemapType(this.value.type); return this.setValueFields([chartTreemapValueField(index)]) }
+  setHierarchyFields(indexes: readonly number[]): this {
+    const fields = this.value.type === 'sunburst' ? chartSunburstHierarchyFields(indexes)
+      : (assertChartTreemapType(this.value.type), chartTreemapHierarchyFields(indexes))
+    return this.setOption('mapping', { hierarchyIndexes: fields })
+  }
+  setValueField(index: number): this {
+    const field = this.value.type === 'sunburst' ? chartSunburstValueField(index)
+      : (assertChartTreemapType(this.value.type), chartTreemapValueField(index))
+    return this.setValueFields([field])
+  }
   setParentLabelLayout(layout: NonNullable<ChartTreemapOptions['parentLabelLayout']>): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { parentLabelLayout: chartTreemapParentLabelLayout(layout) }) }
   resetParentLabelLayout(): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { parentLabelLayout: undefined }) }
   setTreemapLabel(label: ChartNullablePatch<ChartTreemapLabelOptions>): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { label: chartTreemapLabelValues(label) }) }
   resetTreemapLabel(): this { assertChartTreemapType(this.value.type); return this.setOption('treemap', { label: undefined }) }
+  setSunburstLabel(label: ChartNullablePatch<ChartSunburstLabelOptions>): this { assertChartSunburstType(this.value.type); return this.setOption('sunburst', { label: chartSunburstLabelValues(label) }) }
+  resetSunburstLabel(): this { assertChartSunburstType(this.value.type); return this.setOption('sunburst', { label: undefined }) }
+  setCenterLabel(label: ChartNullablePatch<ChartSunburstCenterLabelOptions>): this { assertChartSunburstType(this.value.type); return this.setOption('sunburst', { centerLabel: chartSunburstCenterLabelValues(label) }) }
+  resetCenterLabel(): this { assertChartSunburstType(this.value.type); return this.setOption('sunburst', { centerLabel: undefined }) }
+  setChordMapping(mapping: ChartChordMapping): this { assertChartChordType(this.value.type); return this.setOption('mapping', { chord: { ...chartChordMappingValues(mapping), valueIndex: mapping.valueIndex }, edge: undefined }) }
+  setChordLayout(layout: ChartNullablePatch<ChartChordLayoutOptions>): this {
+    assertChartChordType(this.value.type)
+    return this.setOption('chord', chartChordLayoutPatch(this.value.options?.chord, layout))
+  }
+  resetChordLayout(): this {
+    assertChartChordType(this.value.type)
+    return this.setOption('chord', { layout: undefined, startAngle: undefined, clockwise: undefined,
+      padAngle: undefined, minAngle: undefined, innerRadiusRatio: undefined, outerRadiusRatio: undefined })
+  }
+  setChordNode(node: ChartNullablePatch<ChartChordNodeOptions>): this { assertChartChordType(this.value.type); return this.setOption('chord', { node: chartChordNodeValues(node) }) }
+  resetChordNode(): this { assertChartChordType(this.value.type); return this.setOption('chord', { node: undefined }) }
+  setChordLabel(label: ChartNullablePatch<ChartChordLabelOptions>): this { assertChartChordType(this.value.type); return this.setOption('chord', { label: chartChordLabelValues(label) }) }
+  resetChordLabel(): this { assertChartChordType(this.value.type); return this.setOption('chord', { label: undefined }) }
+  setChordRibbon(ribbon: ChartNullablePatch<ChartChordRibbonOptions>): this { assertChartChordType(this.value.type); return this.setOption('chord', chartChordRibbonPatch(this.value.options?.chord, ribbon)) }
+  resetChordRibbon(): this { assertChartChordType(this.value.type); return this.setOption('chord', { ribbon: undefined, ribbonOpacity: undefined }) }
+  setChordEmphasis(emphasis: ChartNullablePatch<ChartChordEmphasisOptions>): this { assertChartChordType(this.value.type); return this.setOption('chord', { emphasis: chartChordEmphasisValues(emphasis) }) }
+  resetChordEmphasis(): this { assertChartChordType(this.value.type); return this.setOption('chord', { emphasis: undefined }) }
   setCandlestickFields(fields: ChartCandlestickMappingOptions): this { assertChartCandlestickType(this.value.type); return this.setOption('mapping', { candlestick: chartCandlestickFields(fields) }) }
   clearCandlestickFields(): this { assertChartCandlestickType(this.value.type); return this.setOption('mapping', { candlestick: undefined }) }
   setRisingStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): this { assertChartCandlestickType(this.value.type); return this.setOption('candlestick', { rising: chartCandlestickStateStyleValues(style) }) }
@@ -1291,12 +1343,42 @@ export class FChart {
   async clearOverflowThreshold(): Promise<this> { assertChartHistogramType(this.model().type); return this.setOption('histogram', { overflowThreshold: undefined }) }
   async setBinGap(value: number): Promise<this> { assertChartHistogramType(this.model().type); return isChartHistogramAuthoredNumber(value) ? this.setOption('histogram', { binGap: value }) : this }
   async resetBinGap(): Promise<this> { assertChartHistogramType(this.model().type); return this.setOption('histogram', { binGap: undefined }) }
-  async setHierarchyFields(indexes: readonly number[]): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('mapping', { hierarchyIndexes: chartTreemapHierarchyFields(indexes) }) }
-  async setValueField(index: number): Promise<this> { assertChartTreemapType(this.model().type); return this.setValueFields([chartTreemapValueField(index)]) }
+  async setHierarchyFields(indexes: readonly number[]): Promise<this> {
+    const type = this.model().type, fields = type === 'sunburst' ? chartSunburstHierarchyFields(indexes)
+      : (assertChartTreemapType(type), chartTreemapHierarchyFields(indexes))
+    return this.setOption('mapping', { hierarchyIndexes: fields })
+  }
+  async setValueField(index: number): Promise<this> {
+    const type = this.model().type, field = type === 'sunburst' ? chartSunburstValueField(index)
+      : (assertChartTreemapType(type), chartTreemapValueField(index))
+    return this.setValueFields([field])
+  }
   async setParentLabelLayout(layout: NonNullable<ChartTreemapOptions['parentLabelLayout']>): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { parentLabelLayout: chartTreemapParentLabelLayout(layout) }) }
   async resetParentLabelLayout(): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { parentLabelLayout: undefined }) }
   async setTreemapLabel(label: ChartNullablePatch<ChartTreemapLabelOptions>): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { label: chartTreemapLabelValues(label) }) }
   async resetTreemapLabel(): Promise<this> { assertChartTreemapType(this.model().type); return this.setOption('treemap', { label: undefined }) }
+  async setSunburstLabel(label: ChartNullablePatch<ChartSunburstLabelOptions>): Promise<this> { assertChartSunburstType(this.model().type); return this.setOption('sunburst', { label: chartSunburstLabelValues(label) }) }
+  async resetSunburstLabel(): Promise<this> { assertChartSunburstType(this.model().type); return this.setOption('sunburst', { label: undefined }) }
+  async setCenterLabel(label: ChartNullablePatch<ChartSunburstCenterLabelOptions>): Promise<this> { assertChartSunburstType(this.model().type); return this.setOption('sunburst', { centerLabel: chartSunburstCenterLabelValues(label) }) }
+  async resetCenterLabel(): Promise<this> { assertChartSunburstType(this.model().type); return this.setOption('sunburst', { centerLabel: undefined }) }
+  async setChordMapping(mapping: ChartChordMapping): Promise<this> { assertChartChordType(this.model().type); return this.setOption('mapping', { chord: { ...chartChordMappingValues(mapping), valueIndex: mapping.valueIndex }, edge: undefined }) }
+  async setChordLayout(layout: ChartNullablePatch<ChartChordLayoutOptions>): Promise<this> {
+    const model = this.model(); assertChartChordType(model.type)
+    return this.setOption('chord', chartChordLayoutPatch(model.options?.chord, layout))
+  }
+  async resetChordLayout(): Promise<this> {
+    assertChartChordType(this.model().type)
+    return this.setOption('chord', { layout: undefined, startAngle: undefined, clockwise: undefined,
+      padAngle: undefined, minAngle: undefined, innerRadiusRatio: undefined, outerRadiusRatio: undefined })
+  }
+  async setChordNode(node: ChartNullablePatch<ChartChordNodeOptions>): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { node: chartChordNodeValues(node) }) }
+  async resetChordNode(): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { node: undefined }) }
+  async setChordLabel(label: ChartNullablePatch<ChartChordLabelOptions>): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { label: chartChordLabelValues(label) }) }
+  async resetChordLabel(): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { label: undefined }) }
+  async setChordRibbon(ribbon: ChartNullablePatch<ChartChordRibbonOptions>): Promise<this> { const model = this.model(); assertChartChordType(model.type); return this.setOption('chord', chartChordRibbonPatch(model.options?.chord, ribbon)) }
+  async resetChordRibbon(): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { ribbon: undefined, ribbonOpacity: undefined }) }
+  async setChordEmphasis(emphasis: ChartNullablePatch<ChartChordEmphasisOptions>): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { emphasis: chartChordEmphasisValues(emphasis) }) }
+  async resetChordEmphasis(): Promise<this> { assertChartChordType(this.model().type); return this.setOption('chord', { emphasis: undefined }) }
   async setCandlestickFields(fields: ChartCandlestickMappingOptions): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('mapping', { candlestick: chartCandlestickFields(fields) }) }
   async clearCandlestickFields(): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('mapping', { candlestick: undefined }) }
   async setRisingStyle(style: ChartNullablePatch<ChartCandlestickStateStyleOptions>): Promise<this> { assertChartCandlestickType(this.model().type); return this.setOption('candlestick', { rising: chartCandlestickStateStyleValues(style) }) }
@@ -1905,7 +1987,20 @@ export class FDocument {
   getPermissionAdminUserId(): string { return this.api.permissionAdminUserId }
   getName(): string { return this.model().name }
   setName(name: string): this { this.api.executeCommandSync('doc.command.set-name', { unitId: this.id, name }); return this }
-  save(): DocumentModel {
+  /** Read the complete detached public snapshot without creating a savepoint. */
+  getSnapshot(): UniverDocumentData {
+    const model = this.model()
+    assertDocumentSnapshotViewPermission(model, this.getCurrentUserId())
+    return documentToPublicSnapshot(model, this.getModelRevision())
+  }
+  save(): UniverDocumentData {
+    const snapshot = this.getSnapshot()
+    this.api.markSaved('document', this.id)
+    return snapshot
+  }
+  /** Project model snapshot for internal persistence and native Office writing. */
+  saveModel(): DocumentModel {
+    assertDocumentSnapshotViewPermission(this.model(), this.getCurrentUserId())
     const snapshot = saveDocumentSnapshot(this.model())
     this.api.markSaved('document', this.id)
     return snapshot
@@ -2082,7 +2177,7 @@ export class FDocument {
     let selection: DocumentSelection | undefined, options: ReturnType<typeof documentNoteInputFromPublic>
     try {
       selection = documentSelectionAtPublicBodyRange(this.model(), offset, offset)
-      options = documentNoteInputFromPublic(this.model(), input)
+      options = documentNoteInputFromPublic(this.model(), input, { kind })
     } catch (error) { if (error instanceof TypeError || error instanceof RangeError) return null; throw error }
     if (!selection) return null
     const result = this.tryNoteMutation({ type: 'insert', kind, selection, ...(options === undefined ? {} : { options }) })
@@ -2161,7 +2256,7 @@ export class FDocumentTextRange {
     this.endOffset = endOffset
     this.segmentId = segmentId
   }
-  getRange(): { startOffset: number; endOffset: number } { return { startOffset: this.startOffset, endOffset: this.endOffset } }
+  getRange(): { startOffset: number; endOffset: number; segmentId: string } { return { startOffset: this.startOffset, endOffset: this.endOffset, segmentId: this.segmentId } }
   getText(): string {
     const index = this.document.getPublicBodyIndex(this.segmentId)
     assertDocumentPublicRange(index, this.startOffset, this.endOffset)
@@ -2178,10 +2273,23 @@ export class FDocumentTextRange {
     const index = this.document.getPublicBodyIndex(this.segmentId), range = documentPublicRangeToFlat(index, this.startOffset, this.endOffset)
     return getCommonDocumentTextStyle(index.model, range.startOffset, range.endOffset)
   }
-  setTextStyle(style: DocumentTextStylePatch): boolean {
-    const range = documentPublicRangeToFlat(this.document.getPublicBodyIndex(this.segmentId), this.startOffset, this.endOffset)
+  getExplicitTextStyleRuns(): UniverDocumentTextStyleRun[] {
+    return publicDocumentExplicitTextStyleRuns(this.document.getPublicBodyIndex(this.segmentId), this.startOffset, this.endOffset)
+  }
+  getCommonExplicitTextStyle(): UniverDocumentTextStyle {
+    return commonPublicDocumentExplicitTextStyle(this.document.getPublicBodyIndex(this.segmentId), this.startOffset, this.endOffset)
+  }
+  describe(): UniverDocumentTextRangeDescription {
+    return { ...this.getRange(), text: this.getText(), length: this.endOffset - this.startOffset,
+      explicitTextStyleRuns: this.getExplicitTextStyleRuns(), commonExplicitTextStyle: this.getCommonExplicitTextStyle() }
+  }
+  setTextStyle(style: UniverDocumentTextStyle | DocumentTextStylePatch): boolean {
+    if (this.startOffset === this.endOffset) return false
+    const local = isLocalDocumentTextStyle(style), patch = local ? style : validatePublicDocumentTextStyle(style)
+    const index = this.document.getPublicBodyIndex(this.segmentId), range = documentPublicRangeToFlat(index, this.startOffset, this.endOffset)
     return this.document.mutateSegment('Set document text style', 'doc.command.set-text-style', (model) => {
-      setDocumentTextStyle(model, range.startOffset, range.endOffset, style)
+      if (local) setDocumentTextStyle(model, range.startOffset, range.endOffset, patch as DocumentTextStylePatch)
+      else setPublicDocumentTextStyle(model, index, this.startOffset, this.endOffset, patch as UniverDocumentTextStyle)
     }, this.segmentId)
   }
 }
@@ -2210,7 +2318,7 @@ export class FDocumentParagraph {
   setText(text: string): boolean { return this.getTextRange().setText(text) }
   appendText(text: string): boolean { return this.document.insertText(this.getInfo().endOffset, text, this.segmentId) }
   getTextStyle(): DocumentTextStyle { return this.getTextRange().getTextStyle() }
-  setTextStyle(style: DocumentTextStylePatch): boolean { return this.getTextRange().setTextStyle(style) }
+  setTextStyle(style: UniverDocumentTextStyle | DocumentTextStylePatch): boolean { return this.getTextRange().setTextStyle(style) }
   getParagraphStyle(): DocumentParagraphStyle {
     const style = getDocumentParagraphStyle(this.document.getSegmentModel(this.segmentId), this.identity())
     if (!style) throw new Error(`Document paragraph with id ${this.info.paragraphId} not found`)

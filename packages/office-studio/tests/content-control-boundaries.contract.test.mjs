@@ -124,7 +124,7 @@ test('the public facade preserves moved anchors through undo, redo, save and reo
   assert.deepEqual(control.getRange(), { blockId: 'paragraph-1', startOffset: 2, endOffset: 6 })
   assert.equal(document.redo(), true)
   assert.deepEqual(control.getRange(), moved)
-  const snapshot = document.save()
+  const snapshot = document.saveModel()
   const reopened = new api.OfficeStudio({ document: snapshot })
   assert.equal(api.FOffice.newAPI(reopened).getActiveDocument().getContentControl('name').getText(), 'NAME')
   const before = structuredClone(document.getModel())

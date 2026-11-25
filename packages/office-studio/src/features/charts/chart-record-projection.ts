@@ -6,6 +6,7 @@ import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPrep
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 import { chartMapSteps, chartNumericFieldSteps, chartProjectionSourceBytes } from './chart-data-preparation'
 import { chartHierarchyChartDataSteps, chartHierarchyFields, chartHierarchyNumber, chartHierarchyResultAsync } from './chart-hierarchy-data'
+import { chartChordChartDataSteps, chartChordResultAsync } from './chart-chord-data'
 
 interface ChartRecordProjection {
   source: ChartRecords; binding: ChartDataBinding; categories: number[]; fields: number[]; values: number[]
@@ -21,6 +22,10 @@ export async function projectChartRecordsAsync(source: ChartRecords, chart: Char
   context: ChartComputePreparationContext = {}): Promise<ChartData> {
   const plan = await consumeChartPreparation(prepareChartRecordProjectionSteps(source, chart, undefined, context), context)
   if (plan.empty) return plan.empty
+  if (chart.type === 'chord') {
+    const result = await chartChordResultAsync(plan.source, plan.binding, context)
+    return consumeChartPreparation(chartChordChartDataSteps(plan.source, result), context)
+  }
   if (resolveChartType(chart.type).dataShape === 'hierarchy') {
     const binding = { ...plan.binding, valueFields: plan.values }
     const valueField = chartHierarchyValueField(plan.source, binding)
@@ -40,7 +45,7 @@ function* prepareChartRecordProjectionSteps(source: ChartRecords, chart: ChartDa
   context: ChartComputePreparationContext = {}): Generator<void, ChartRecordProjection, void> {
   assertChartPreparationMemory(chartProjectionSourceBytes(source.records.length, source.fields.length), context)
   const descriptor = resolveChartType(chart.type), shape = descriptor.dataShape
-  const sourceNumericFields = shape === 'hierarchy' ? yield* chartNumericFieldSteps(source.records, source.fields.length, chartHierarchyNumber)
+  const sourceNumericFields = shape === 'hierarchy' || chart.type === 'chord' ? yield* chartNumericFieldSteps(source.records, source.fields.length, chartHierarchyNumber)
     : source.sourceNumericFields ?? (yield* chartNumericFieldSteps(source.records, source.fields.length, chartNumber))
   source = { ...source, sourceNumericFields }
   const categories = chart.options?.mapping?.categoryIndexes

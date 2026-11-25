@@ -119,6 +119,9 @@ fn patch_raw_level(level: &mut Value, xml: &Element) {
         if let Some(value) = format.attribute("val") { level["format"] = json!(value); }
         if let Some(pattern) = format.attribute("format") { level["customFormat"] = json!(pattern); }
     }
+    if let Some(value) = xml.child("lvlJc").and_then(|alignment| alignment.attribute("val")) {
+        if matches!(value, "left" | "center" | "right" | "start" | "end") { level["alignment"] = json!(value); }
+    }
 }
 
 fn enhance_native_definitions(definitions: &mut Value, root: &Element) {

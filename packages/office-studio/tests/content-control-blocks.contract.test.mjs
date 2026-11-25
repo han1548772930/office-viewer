@@ -244,7 +244,7 @@ test('registered block insertion, copy, delete, undo/redo and snapshot reopen sh
     assert.equal(document.getContentControl(copied.id).deleteRepeatingItem(), true)
     assert.equal(studio.editor.history.units[document.id].undo.length, 3); assert.equal(document.getModel().blocks.length, 5)
     document.undo(); assert.equal(document.getModel().blocks.length, 8); document.redo(); assert.equal(document.getModel().blocks.length, 5)
-    const saved = copy(document.save()), reopened = new api.OfficeStudio({ document: saved, currentUserId: 'editor' })
+    const saved = copy(document.saveModel()), reopened = new api.OfficeStudio({ document: saved, currentUserId: 'editor' })
     try { assert.deepEqual(new api.FDocument(reopened, saved.id).getModel().contentControls, saved.contentControls) } finally { reopened.dispose() }
   } finally { studio.dispose() }
 })

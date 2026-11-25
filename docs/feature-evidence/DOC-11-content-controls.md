@@ -6,6 +6,14 @@
 
 关联：[功能对齐清单](../UNIVER_FEATURE_PARITY.md)、[引用规则](../UNIVER_REFERENCE_RULES.md)、[执行标准](../../PROJECT_EXECUTION_STANDARD.md)、[渲染与计算标准](../RENDERING_AND_COMPUTE_STANDARD.md)。
 
+## 注释与分隔故事的控件所有权补充
+
+2026-11-25 新增 `prepareDocumentNoteContentWithControls`，让 note / 三个 settings decoration 的块树和 SDT 使用实际 clipboard copy map 一起复制，包含 parentId、blockRange、tableRowRange 的表格行、字段与图片 live anchors；未知 nested source metadata 保持来源值。`contentControls` 与来源 content 同次提供，`decorationContentControls` 是 settings 请求临时 payload，不进入持久化模型。foreign parent/范围/实时锚点、非法 UTF-16、临时 story-lock 控件或后续第二个故事无效均拒绝整批候选；完整替换遵守所有锁并保留外部控件/批注段。
+
+活动/默认/额外特殊故事使用真实 `noteDecoration` host 与独立检查 Canvas，不造普通注释编号/引用。公开额外定义使用 `metadata.univerNoteDecorationSource` 的字符串 ID，原生 `decorationSource` 保留数字 ID 与部件/XML；二者各自校验，替换保留旧来源。scoped view 独立于 edit，检查/preview/panel/nav 已接本地判断；权限目标选择包含 note/decoration 段落和实体。整个 Canvas 内容遮蔽和服务 ACL 仍有缺口。
+
+新增 `tests/document-note-controls.contract.test.mjs`、`tests/document-note-inspection.contract.test.mjs`、`tests/document-note-pagination.contract.test.mjs` 与真实 Workbench 的 `tests/document-note-workbench.browser.test.mjs`，更新 notes 与 permissions 契约草稿；均未运行。Notes / Settings Modal 完全关闭回调用 `antdv-next` 的 `afterClose` prop，关闭默认 trigger 焦点归还，由工作台输入会话守卫处理。Canvas 保留库管理的 TextArea；本地 1.8.2 exposed focus 不转发参数，因此只在其实际 textarea 上使用原生 `focus({preventScroll:true})`。真实动画/焦点/主题/IME/Office 文件样本均未验收。完整说明见 [DOC-12 注释证据](DOC-12-footnotes-endnotes.md)。
+
 ## 来源与版本
 
 | 编号 | 实际查阅来源 | 可复查锚点与用途 |
@@ -233,7 +241,7 @@ setter 默认捕获当前 revision/history generation；getter 先检查查看�
 
 最终业务命令通过 `OfficeStudio` 的文档提交和按文档隔离的内容历史执行，支持 BeforeCommandExecute 取消。普通选区、展开浮层与取消草稿不写内容历史。服务的正文/属性/相邻范围在同一个候选内提交；表格内控件从权威 model 重读 paragraph，不继续使用发布前的旧 table/block 引用。
 
-`FDocument.save()` / 重新构造 `OfficeStudio` 是内部模型快照闭环，**不是 DOCX 文件往返验证**。本次主任务另行扩展项目 Rust parser/writer 的 SDT、story 和 note 数据链；本记录不能把这些尚未运行检查和文件样本的在途改动标为已经保真。`rawSdtPr` / `rawSdtEndPr`、未知 metadata、dataBinding 和内容控件范围保留于项目模型，XML 未知语义和跨结构写出仍须用 Office 样本验收。
+`FDocument.getSnapshot()` / `save()` 已由主任务改为公开 `UniverDocumentData` 返回值；本记录的内容控件/custom XML 契约与浏览器草稿使用 `saveModel()` / 重新构造 `OfficeStudio` 验证本地 `DocumentModel` 保存入口。内部快照重开**不是 DOCX 文件往返验证**，也不能代替公开 Body/snapshot 验证。本次主任务另行扩展项目 Rust parser/writer 的 SDT、story 和 note 数据链；本记录不能把这些尚未运行检查和文件样本的在途改动标为已经保真。`rawSdtPr` / `rawSdtEndPr`、未知 metadata、dataBinding 和内容控件范围保留于项目模型，XML 未知语义和跨结构写出仍须用 Office 样本验收。
 
 ## 未运行的测试草稿
 

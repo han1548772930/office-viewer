@@ -1,21 +1,20 @@
 import type { ChartModel, ChartSemanticOptions } from '../../domain/model'
 import type { RenderRect } from '../../rendering/contracts'
 import type { ChartGraphData, ChartHierarchyNode } from './chart-data'
-import { chartHierarchyItems } from './chart-data'
 import type { ChartData } from './chart-engine'
 import { chartBezier, chartPolar, type ChartVector } from './chart-geometry'
 import type { ChartTreemapRenderNode } from './chart-treemap'
 export { chartSankeyLayout } from './chart-sankey-layout'
 export { chartTreemapLayout } from './chart-treemap-layout'
+export { chartSunburstLayout } from './chart-sunburst-layout'
+export { chartChordLayout } from './chart-chord-layout'
+export type { ChartChordLayout, ChartChordNodeLayout, ChartChordLinkLayout } from './chart-chord-layout'
+export type { ChartSunburstSector } from './chart-sunburst-layout'
 
 export interface ChartGraphNodeLayout extends ChartVector { name: string; value: number; width: number; height: number; index: number }
 export interface ChartGraphLinkLayout { source: string; target: string; value: number; width: number; points: ChartVector[]; colorIndex: number }
 export interface ChartGraphLayout { nodes: ChartGraphNodeLayout[]; links: ChartGraphLinkLayout[] }
-export interface ChartChordNodeLayout { name: string; value: number; start: number; end: number; index: number }
-export interface ChartChordLinkLayout { sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number; value: number; sourceIndex: number; targetIndex: number }
-export interface ChartChordLayout { center: ChartVector; innerRadius: number; outerRadius: number; nodes: ChartChordNodeLayout[]; links: ChartChordLinkLayout[] }
 export interface ChartTreeRect extends RenderRect { node: ChartHierarchyNode; renderNode: ChartTreemapRenderNode; pointIndex: number; rootIndex: number; depth: number; colorIndex: number; path: string[]; labelHeight: number }
-export interface ChartSunburstSector { node: ChartHierarchyNode; pointIndex: number; rootIndex: number; start: number; end: number; inner: number; outer: number; depth: number; colorIndex: number; path: string[] }
 export interface ChartCloudWord extends RenderRect { text: string; value: number; categoryIndex: number; fontSize: number; rotation: number }
 
 /** Fixed-order, deterministic graph coordinates, shared by both Canvas APIs. */
@@ -83,42 +82,6 @@ export function chartRibbon(points: readonly ChartVector[], width: number): Char
     first.push({ x: point.x + x, y: point.y + y }); second.push({ x: point.x - x, y: point.y - y })
   })
   return [...first, ...second.reverse()]
-}
-
-export function chartChordLayout(graph: ChartGraphData, chart: ChartModel, plot: RenderRect): ChartChordLayout {
-  const options = chart.options?.chord, clockwise = options?.clockwise !== false ? 1 : -1
-  const radius = Math.max(1, Math.min(plot.width, plot.height) / 2), innerRadius = radius * (options?.innerRadiusRatio ?? 0.66), outerRadius = radius * (options?.outerRadiusRatio ?? 0.73)
-  const padding = Math.min(Math.PI / Math.max(1, graph.nodes.length), (options?.padAngle ?? 3) * Math.PI / 180)
-  const weightScale = graph.nodes.reduce((max, node) => Math.max(max, node.value), 0) || 1
-  const total = graph.nodes.reduce((sum, node) => sum + node.value / weightScale, 0)
-  const anglePerWeight = Math.max(0, Math.PI * 2 - graph.nodes.length * padding) / Math.max(1e-9, total)
-  let angle = (options?.startAngle ?? -90) * Math.PI / 180
-  const nodes = graph.nodes.map((node, index) => { const start = angle, end = start + clockwise * (node.value / weightScale) * anglePerWeight; angle = end + clockwise * padding; return { ...node, start, end, index } })
-  const byName = new Map(nodes.map(node => [node.name, node])), offsets = new Map(nodes.map(node => [node.name, node.start]))
-  const links = graph.links.map(link => {
-    const source = byName.get(link.source)!, target = byName.get(link.target)!
-    const sourceStart = offsets.get(source.name)!, sourceEnd = sourceStart + clockwise * (link.value / weightScale) * anglePerWeight; offsets.set(source.name, sourceEnd)
-    const targetStart = offsets.get(target.name)!, targetEnd = targetStart + clockwise * (link.value / weightScale) * anglePerWeight; offsets.set(target.name, targetEnd)
-    return { sourceStart, sourceEnd, targetStart, targetEnd, value: link.value, sourceIndex: source.index, targetIndex: target.index }
-  })
-  return { center: { x: plot.x + plot.width / 2, y: plot.y + plot.height / 2 }, innerRadius, outerRadius, nodes, links }
-}
-
-export function chartSunburstLayout(nodes: ChartHierarchyNode[], plot: RenderRect): ChartSunburstSector[] {
-  const output: ChartSunburstSector[] = [], hierarchy = chartHierarchyItems(nodes), items = new Map(hierarchy.map(item => [item.node, item]))
-  const depthCount = Math.max(1, hierarchy.reduce((max, item) => Math.max(max, item.depth + 1), 0)), radius = Math.max(1, Math.min(plot.width, plot.height) * 0.43), step = radius / (depthCount + 1)
-  function layout(siblings: ChartHierarchyNode[], start: number, end: number): void {
-    const scale = siblings.reduce((max, node) => Math.max(max, node.value), 0) || 1, total = siblings.reduce((sum, node) => sum + node.value / scale, 0); let angle = start
-    siblings.forEach(node => {
-      if (node.value <= 0 || total <= 0) return
-      const next = angle + (end - start) * (node.value / scale) / total, item = items.get(node)!
-      output.push({ ...item, start: angle, end: next, inner: step * (item.depth + 1), outer: step * (item.depth + 2), colorIndex: item.rootIndex })
-      if (node.children?.length) layout(node.children, angle, next)
-      angle = next
-    })
-  }
-  layout(nodes, -Math.PI / 2, Math.PI * 1.5)
-  return output
 }
 
 export function chartWordCloudLayout(data: ChartData, options: ChartSemanticOptions['wordCloud'], plot: RenderRect): ChartCloudWord[] {

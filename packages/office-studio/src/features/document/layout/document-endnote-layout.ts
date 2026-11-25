@@ -4,6 +4,7 @@ import { documentSectionIds } from '../services/section-header-footer'
 import { documentSectionSuppressesEndnotes } from '../notes/document-note-settings'
 import type { DocumentNoteLabel } from '../notes/document-note-numbering'
 import { appendDocumentBlocks } from './document-block-layout'
+import { DocumentNoteStoryPagination } from './document-note-story-pagination'
 import { createDocumentFlowResult, documentNoteBodyDisplay, documentNoteContentFragments, documentNoteFirstHeight,
   positionDocumentNoteDecoration, type DocumentNoteDecorationLayout } from './document-note-layout-common'
 import type { DocumentSectionFlow, DocumentAuxiliaryFlowSegment } from './document-section-flow'
@@ -28,6 +29,10 @@ export class DocumentEndnoteLayout {
       && (final || label.settings.position === 'sectEnd' && !documentSectionSuppressesEndnotes(this.model, sectionId)
         && this.sections.indexOf(label.reference.sectionId) <= sectionIndex))
     if (!references.length) return
+    if (this.decorations.requiresPagination('endnote', flow.page.content.width, sectionId, flow.fullPageContentHeight)) {
+      this.finishPaginatedSection(flow, result, sectionId, references)
+      return
+    }
     const separatorPages = new Set<number>(), groupPages = new Set<number>(), prefix = new Map<number, number>()
     let firstPage: number | undefined
     const measure = (page: LayoutPage, key: 'separator' | 'continuationSeparator' | 'continuationNotice') =>
@@ -74,5 +79,28 @@ export class DocumentEndnoteLayout {
       result.noteDecorations!.push(positionDocumentNoteDecoration(notice, page, page.content.x, bottom))
     }
     flow.endAuxiliarySegment()
+  }
+
+  private finishPaginatedSection(flow: DocumentSectionFlow, result: DocumentLayout, sectionId: string, references: readonly DocumentNoteLabel[]): void {
+    const rawNotes: DocumentLayout[] = [], segment: DocumentAuxiliaryFlowSegment = {}
+    const pagination = new DocumentNoteStoryPagination(rawNotes, (target, key) => this.decorations.append(target, result, 'endnote', key, sectionId))
+    segment.beforePageOverflow = target => pagination.beforePageOverflow(target)
+    segment.onPageStart = target => pagination.onPageStart(target)
+    flow.beginAuxiliarySegment(segment)
+    try {
+      pagination.appendInitialSeparator(flow)
+      for (const label of references) {
+        const scoped = documentModelForBlockHost(this.model, { kind: 'note', noteKind: 'endnote', noteId: label.reference.note.id })
+        const body = createDocumentFlowResult(flow)
+        rawNotes.push(body)
+        appendDocumentBlocks(scoped.blocks, flow, body, this.measurer, { textDisplay: documentNoteBodyDisplay(this.model, label, this.display) })
+        result.auxiliaryContent!.push(...documentNoteContentFragments(body, flow, label))
+        this.placed.add(label.reference.note.id)
+      }
+      for (const page of pagination.noticePages) this.noticePages.add(page)
+    } finally { flow.endAuxiliarySegment() }
+    result.diagnostics ??= []
+    result.diagnostics.push({ code: 'DOCUMENT_NOTE_DECORATION_PAGINATED', noteKind: 'endnote',
+      message: '超页尾注分隔故事按真实块流跨页显示；最终 Office 续页位置尚待文件样本验收。' })
   }
 }

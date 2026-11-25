@@ -3,6 +3,11 @@ import { cloneModel } from '../../../domain/serialization'
 import { documentId, runText, tableForBlock } from './document-model'
 import { documentTableCellContentContainers } from './document-table-continuations'
 import { isDocumentTextBoundary } from './document-story'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets, remapDocumentNoteReferenceBoundary, type DocumentNoteReferenceOffset } from './document-note-boundary'
+import { assertDocumentNoteReferenceOffsets, compareDocumentNoteBoundaries, remapDocumentNoteBoundaryParagraph, type DocumentNoteEditRanks } from './document-note-boundary-edit'
+import { documentTextFieldTopologyParents } from './document-text-field-topology'
+import { assertDocumentNoteReferenceParagraphIds, documentNoteEmptyReplacementBoundary, documentNoteInsertionBoundary,
+  documentNoteReferenceEmptyRemovalRange, documentNoteReferenceEmptyReplacementAffinity, documentNoteReferenceInsertionAffinity } from './document-note-insertion-affinity'
 
 /** A native field result is ordinary Canvas text; offsets exclude file-format delimiters. */
 export interface DocumentTextField {
@@ -15,6 +20,9 @@ export interface DocumentTextField {
   startOffset: number
   /** UTF-16 result end in endBlockId, or in the owning paragraph when absent. */
   endOffset: number
+  /** Cumulative paragraph note count; empty labels retain distinct native boundaries. */
+  startNoteReferenceCount?: number
+  endNoteReferenceCount?: number
   endBlockId?: string
   locked?: boolean
   containsNestedFields?: boolean
@@ -31,7 +39,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function validateFields(fields: readonly DocumentTextField[], text: string, blockId?: string): void {
+function validateFields(fields: readonly DocumentTextField[], text: string, blockId?: string, references: readonly DocumentNoteReferenceOffset[] = []): void {
   const ids = new Set<string>()
   for (const field of fields) {
     if (!isRecord(field) || typeof field.id !== 'string' || !field.id.trim() || ids.has(field.id)
@@ -41,6 +49,14 @@ function validateFields(fields: readonly DocumentTextField[], text: string, bloc
     if (!isDocumentTextBoundary(text, field.startOffset) || !Number.isSafeInteger(field.endOffset) || field.endOffset < 0
       || (field.endBlockId === undefined || field.endBlockId === blockId) && (!isDocumentTextBoundary(text, field.endOffset) || field.endOffset < field.startOffset)) {
       throw new RangeError(`正文字段 ${field.id} 的 UTF-16 范围无效。`)
+    }
+    for (const key of ['startNoteReferenceCount', 'endNoteReferenceCount'] as const) {
+      if (field[key] !== undefined && (!Number.isSafeInteger(field[key]) || field[key]! < 0)) throw new RangeError(`正文字段 ${field.id} 的累计注释引用序号无效。`)
+    }
+    const startRank = assertDocumentNoteReferenceBoundaryRank(references, field.startOffset, field.startNoteReferenceCount)
+    if (field.endBlockId === undefined || field.endBlockId === blockId) {
+      const endRank = assertDocumentNoteReferenceBoundaryRank(references, field.endOffset, field.endNoteReferenceCount)
+      if (compareDocumentNoteBoundaries(field.startOffset, startRank, field.endOffset, endRank) > 0) throw new RangeError(`正文字段 ${field.id} 的注释引用端点顺序相反。`)
     }
     for (const key of ['instruction', 'cachedResult', 'language'] as const) {
       if (field[key] !== undefined && typeof field[key] !== 'string') throw new TypeError(`正文字段 ${field.id} 的 ${key} 无效。`)
@@ -52,13 +68,18 @@ function validateFields(fields: readonly DocumentTextField[], text: string, bloc
   }
   // A paragraph alone cannot order endpoints in another paragraph. The model
   // validator below checks those ranges together with ordinary local fields.
-  const sorted = fields.filter(field => field.endBlockId === undefined || field.endBlockId === blockId).sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset)
-  const enclosing: DocumentTextField[] = []
-  for (const field of sorted) {
-    while (enclosing.length && enclosing.at(-1)!.endOffset <= field.startOffset) enclosing.pop()
+  const sorted = fields.filter(field => field.endBlockId === undefined || field.endBlockId === blockId).map(field => ({ field,
+    startRank: assertDocumentNoteReferenceBoundaryRank(references, field.startOffset, field.startNoteReferenceCount),
+    endRank: assertDocumentNoteReferenceBoundaryRank(references, field.endOffset, field.endNoteReferenceCount) }))
+    .sort((a, b) => compareDocumentNoteBoundaries(a.field.startOffset, a.startRank, b.field.startOffset, b.startRank)
+      || compareDocumentNoteBoundaries(b.field.endOffset, b.endRank, a.field.endOffset, a.endRank))
+  const enclosing: typeof sorted = []
+  for (const candidate of sorted) {
+    const field = candidate.field
+    while (enclosing.length && compareDocumentNoteBoundaries(enclosing.at(-1)!.field.endOffset, enclosing.at(-1)!.endRank, field.startOffset, candidate.startRank) <= 0) enclosing.pop()
     const parent = enclosing.at(-1)
-    if (parent && field.endOffset > parent.endOffset) throw new RangeError(`正文字段 ${field.id} 与 ${parent.id} 部分交叉。`)
-    enclosing.push(field)
+    if (parent && compareDocumentNoteBoundaries(field.endOffset, candidate.endRank, parent.field.endOffset, parent.endRank) > 0) throw new RangeError(`正文字段 ${field.id} 与 ${parent.field.id} 部分交叉。`)
+    if (compareDocumentNoteBoundaries(field.startOffset, candidate.startRank, field.endOffset, candidate.endRank) < 0) enclosing.push(candidate)
   }
 }
 
@@ -68,12 +89,14 @@ export function documentTextFields(block: DocumentBlock): readonly DocumentTextF
   if (collection === undefined) return []
   if (!isRecord(collection) || collection.version !== 1 || !Array.isArray(collection.fields)) throw new TypeError('正文字段集合版本或结构无效。')
   const fields = collection.fields as DocumentTextField[]
-  validateFields(fields, runText(block.runs), block.id)
+  validateFields(fields, runText(block.runs), block.id, documentNoteReferenceOffsets(block.runs))
   return fields
 }
 
-export function setDocumentTextFields(block: DocumentBlock, fields: readonly DocumentTextField[], projectedText = runText(block.runs)): void {
-  validateFields(fields, projectedText, block.id)
+export function setDocumentTextFields(block: DocumentBlock, fields: readonly DocumentTextField[], projectedText = runText(block.runs),
+  projectedNoteReferences: readonly DocumentNoteReferenceOffset[] = documentNoteReferenceOffsets(block.runs)): void {
+  assertDocumentNoteReferenceOffsets(projectedNoteReferences, projectedText)
+  validateFields(fields, projectedText, block.id, projectedNoteReferences)
   if (!fields.length && block.metadata.documentTextFields === undefined) return
   const source = block.metadata.documentTextFields
   block.metadata = { ...block.metadata, documentTextFields: {
@@ -89,6 +112,8 @@ export interface DocumentTextFieldParagraph {
   /** Computed positions include one synthetic newline between text paragraphs. */
   absoluteStart: number
   absoluteEnd: number
+  /** Captured before edits mutate the referenced block's runs. */
+  noteReferences: readonly DocumentNoteReferenceOffset[]
 }
 
 export interface DocumentTextFieldRange {
@@ -98,6 +123,8 @@ export interface DocumentTextFieldRange {
   endParagraph: DocumentTextFieldParagraph
   absoluteStart: number
   absoluteEnd: number
+  startNoteReferenceCount: number
+  endNoteReferenceCount: number
 }
 
 const NON_TEXT_BLOCK_TYPES = new Set(['table', 'image', 'divider', 'pageBreak', 'columnBreak', 'sectionBreak'])
@@ -110,7 +137,8 @@ export function documentTextFieldParagraphs(model: Pick<DocumentModel, 'blocks'>
     for (const [index, block] of blocks.entries()) {
       if (!NON_TEXT_BLOCK_TYPES.has(block.type)) {
         const text = runText(block.runs)
-        paragraphs.push({ block, container: blocks, index, text, absoluteStart: offset, absoluteEnd: offset + text.length })
+        paragraphs.push({ block, container: blocks, index, text, absoluteStart: offset, absoluteEnd: offset + text.length,
+          noteReferences: documentNoteReferenceOffsets(block.runs) })
         offset += text.length + 1
       } else if (block.metadata.documentTextFields !== undefined && documentTextFields(block).length) {
         throw new TypeError(`正文字段起始位置必须属于文本段落：${block.id}`)
@@ -123,6 +151,7 @@ export function documentTextFieldParagraphs(model: Pick<DocumentModel, 'blocks'>
 }
 
 function rangesForParagraphs(paragraphs: readonly DocumentTextFieldParagraph[], planned?: ReadonlyMap<string, readonly DocumentTextField[]>): DocumentTextFieldRange[] {
+  assertDocumentNoteReferenceParagraphIds(paragraphs)
   const byId = new Map<string, DocumentTextFieldParagraph>()
   for (const paragraph of paragraphs) {
     if (byId.has(paragraph.block.id)) throw new TypeError(`正文字段段落标识重复：${paragraph.block.id}`)
@@ -131,7 +160,7 @@ function rangesForParagraphs(paragraphs: readonly DocumentTextFieldParagraph[], 
   const ids = new Set<string>(), ranges: DocumentTextFieldRange[] = []
   for (const paragraph of paragraphs) {
     const fields = planned?.get(paragraph.block.id) ?? documentTextFields(paragraph.block)
-    validateFields(fields, paragraph.text, paragraph.block.id)
+    validateFields(fields, paragraph.text, paragraph.block.id, paragraph.noteReferences)
     for (const field of fields) {
       if (ids.has(field.id)) throw new TypeError(`正文字段标识重复：${field.id}`)
       ids.add(field.id)
@@ -139,17 +168,16 @@ function rangesForParagraphs(paragraphs: readonly DocumentTextFieldParagraph[], 
       if (!end) throw new RangeError(`正文字段 ${field.id} 的末段不存在：${field.endBlockId}`)
       if (!isDocumentTextBoundary(end.text, field.endOffset)
         || end.absoluteStart + field.endOffset < paragraph.absoluteStart + field.startOffset) throw new RangeError(`正文字段 ${field.id} 的跨段 UTF-16 范围无效。`)
+      const startNoteReferenceCount = assertDocumentNoteReferenceBoundaryRank(paragraph.noteReferences, field.startOffset, field.startNoteReferenceCount)
+      const endNoteReferenceCount = assertDocumentNoteReferenceBoundaryRank(end.noteReferences, field.endOffset, field.endNoteReferenceCount)
+      if (compareDocumentNoteBoundaries(paragraph.absoluteStart + field.startOffset, startNoteReferenceCount, end.absoluteStart + field.endOffset, endNoteReferenceCount) > 0) {
+        throw new RangeError(`正文字段 ${field.id} 的跨段注释引用端点顺序相反。`)
+      }
       ranges.push({ block: paragraph.block, field, startParagraph: paragraph, endParagraph: end,
-        absoluteStart: paragraph.absoluteStart + field.startOffset, absoluteEnd: end.absoluteStart + field.endOffset })
+        absoluteStart: paragraph.absoluteStart + field.startOffset, absoluteEnd: end.absoluteStart + field.endOffset, startNoteReferenceCount, endNoteReferenceCount })
     }
   }
-  const enclosing: DocumentTextFieldRange[] = []
-  for (const range of [...ranges].sort((a, b) => a.absoluteStart - b.absoluteStart || b.absoluteEnd - a.absoluteEnd)) {
-    while (enclosing.length && enclosing.at(-1)!.absoluteEnd <= range.absoluteStart) enclosing.pop()
-    const parent = enclosing.at(-1)
-    if (parent && range.absoluteEnd > parent.absoluteEnd) throw new RangeError(`正文字段 ${range.field.id} 与 ${parent.field.id} 部分交叉。`)
-    enclosing.push(range)
-  }
+  documentTextFieldTopologyParents(ranges)
   return ranges
 }
 
@@ -191,46 +219,75 @@ export function documentFieldAutomaticRefreshBlocked(field: RefreshField): boole
   return documentFieldLocked(field) || nativeFlag(field, 'containsNestedFields') || documentFieldRetainsNestedFields(field)
 }
 
-export function documentTextFieldContainsNestedRange(field: DocumentTextField, fields: readonly DocumentTextField[]): boolean {
-  return nativeFlag(field, 'containsNestedFields') || documentFieldRetainsNestedFields(field) || fields.some(inner => inner !== field && field.endBlockId === inner.endBlockId
-    && inner.startOffset >= field.startOffset && inner.endOffset <= field.endOffset
-    && (inner.startOffset > field.startOffset || inner.endOffset < field.endOffset))
+export function documentTextFieldContainsNestedRange(field: DocumentTextField, fields: readonly DocumentTextField[], references?: readonly DocumentNoteReferenceOffset[]): boolean {
+  const rank = (candidate: DocumentTextField, edge: 'start' | 'end') => references
+    ? assertDocumentNoteReferenceBoundaryRank(references, edge === 'start' ? candidate.startOffset : candidate.endOffset,
+      edge === 'start' ? candidate.startNoteReferenceCount : candidate.endNoteReferenceCount)
+    : (edge === 'start' ? candidate.startNoteReferenceCount : candidate.endNoteReferenceCount) ?? 0
+  return nativeFlag(field, 'containsNestedFields') || documentFieldRetainsNestedFields(field) || fields.some(inner => inner.id !== field.id
+    && (isRecord(inner.metadata?.source) && inner.metadata.source.parentFieldId === field.id
+      || field.endBlockId === inner.endBlockId
+        && compareDocumentNoteBoundaries(inner.startOffset, rank(inner, 'start'), field.startOffset, rank(field, 'start')) >= 0
+        && compareDocumentNoteBoundaries(inner.endOffset, rank(inner, 'end'), field.endOffset, rank(field, 'end')) <= 0
+        && (compareDocumentNoteBoundaries(inner.startOffset, rank(inner, 'start'), field.startOffset, rank(field, 'start')) > 0
+          || compareDocumentNoteBoundaries(inner.endOffset, rank(inner, 'end'), field.endOffset, rank(field, 'end')) < 0)))
 }
 
 export function documentTextFieldRangeContainsNested(range: DocumentTextFieldRange, ranges: readonly DocumentTextFieldRange[]): boolean {
   return nativeFlag(range.field, 'containsNestedFields') || documentFieldRetainsNestedFields(range.field) || ranges.some(inner => inner.field.id !== range.field.id
-    && inner.absoluteStart >= range.absoluteStart && inner.absoluteEnd <= range.absoluteEnd
-    && (inner.absoluteStart > range.absoluteStart || inner.absoluteEnd < range.absoluteEnd))
+    && (isRecord(inner.field.metadata?.source) && inner.field.metadata.source.parentFieldId === range.field.id
+      || compareDocumentNoteBoundaries(inner.absoluteStart, inner.startNoteReferenceCount, range.absoluteStart, range.startNoteReferenceCount) >= 0
+        && compareDocumentNoteBoundaries(inner.absoluteEnd, inner.endNoteReferenceCount, range.absoluteEnd, range.endNoteReferenceCount) <= 0
+        && (compareDocumentNoteBoundaries(inner.absoluteStart, inner.startNoteReferenceCount, range.absoluteStart, range.startNoteReferenceCount) > 0
+          || compareDocumentNoteBoundaries(inner.absoluteEnd, inner.endNoteReferenceCount, range.absoluteEnd, range.endNoteReferenceCount) < 0)))
 }
 
-export function documentTextFieldRangeIntersects(range: DocumentTextFieldRange, start: number, end: number): boolean {
-  return start === end
-    ? start >= range.absoluteStart && (start < range.absoluteEnd || range.absoluteStart === range.absoluteEnd && start === range.absoluteStart)
-    : start < range.absoluteEnd && range.absoluteStart < end
+function intersectsBoundaries(from: number, fromRank: number, to: number, toRank: number, start: number, startRank: number, end: number, endRank: number): boolean {
+  const collapsed = compareDocumentNoteBoundaries(start, startRank, end, endRank) === 0
+  return collapsed
+    ? compareDocumentNoteBoundaries(start, startRank, from, fromRank) >= 0
+      && (compareDocumentNoteBoundaries(start, startRank, to, toRank) < 0
+        || compareDocumentNoteBoundaries(from, fromRank, to, toRank) === 0 && compareDocumentNoteBoundaries(start, startRank, from, fromRank) === 0)
+    : compareDocumentNoteBoundaries(start, startRank, to, toRank) < 0 && compareDocumentNoteBoundaries(from, fromRank, end, endRank) < 0
 }
 
-export function documentTextFieldIntersects(field: DocumentTextField, start: number, end: number): boolean {
-  return start === end
-    ? start >= field.startOffset && (start < field.endOffset || field.startOffset === field.endOffset && start === field.startOffset)
-    : start < field.endOffset && field.startOffset < end
+export function documentTextFieldRangeIntersects(range: DocumentTextFieldRange, start: number, end: number, startRank?: number, endRank?: number): boolean {
+  const resolved = (offset: number, rank: number | undefined) => {
+    const paragraph = [range.startParagraph, range.endParagraph].find(paragraph => offset >= paragraph.absoluteStart && offset <= paragraph.absoluteEnd)
+    return paragraph ? assertDocumentNoteReferenceBoundaryRank(paragraph.noteReferences, offset - paragraph.absoluteStart, rank) : rank ?? 0
+  }
+  return intersectsBoundaries(range.absoluteStart, range.startNoteReferenceCount, range.absoluteEnd, range.endNoteReferenceCount,
+    start, resolved(start, startRank), end, resolved(end, endRank))
+}
+
+export function documentTextFieldIntersects(field: DocumentTextField, start: number, end: number,
+  startRank?: number, endRank?: number, references?: readonly DocumentNoteReferenceOffset[]): boolean {
+  const resolved = (offset: number, rank: number | undefined) => references ? assertDocumentNoteReferenceBoundaryRank(references, offset, rank) : rank ?? 0
+  return intersectsBoundaries(field.startOffset, resolved(field.startOffset, field.startNoteReferenceCount), field.endOffset, resolved(field.endOffset, field.endNoteReferenceCount),
+    start, resolved(start, startRank), end, resolved(end, endRank))
 }
 
 interface FieldRange { startOffset: number; endOffset: number }
 
 /** Editing a result preserves its definition/cache; a larger deletion removes the enclosed field. */
-function editedRange(field: FieldRange & { id: string }, start: number, end: number, length: number, preserveFieldId?: string): FieldRange | undefined {
+function editedRange(field: FieldRange & { id: string; startNoteReferenceCount: number; endNoteReferenceCount: number },
+  start: number, end: number, length: number, startRank: number, endRank: number, preserveFieldId?: string): FieldRange | undefined {
   const from = field.startOffset, to = field.endOffset, delta = length - (end - start)
+  const startFrom = compareDocumentNoteBoundaries(start, startRank, from, field.startNoteReferenceCount)
+  const startTo = compareDocumentNoteBoundaries(start, startRank, to, field.endNoteReferenceCount)
+  const endFrom = compareDocumentNoteBoundaries(end, endRank, from, field.startNoteReferenceCount)
+  const endTo = compareDocumentNoteBoundaries(end, endRank, to, field.endNoteReferenceCount)
   if (field.id === preserveFieldId) return { startOffset: from, endOffset: to + delta }
-  if (start === end) {
-    if (start <= from) return { startOffset: from + length, endOffset: to + length }
-    return { startOffset: from, endOffset: start < to ? to + length : to }
+  if (compareDocumentNoteBoundaries(start, startRank, end, endRank) === 0) {
+    if (startFrom <= 0) return { startOffset: from + length, endOffset: to + length }
+    return { startOffset: from, endOffset: startTo < 0 ? to + length : to }
   }
-  if (end <= from) return { startOffset: from + delta, endOffset: to + delta }
-  if (start >= to) return { startOffset: from, endOffset: to }
-  if (start <= from && end >= to && (start < from || end > to)) return undefined
+  if (endFrom <= 0) return { startOffset: from + delta, endOffset: to + delta }
+  if (startTo >= 0) return { startOffset: from, endOffset: to }
+  if (startFrom <= 0 && endTo >= 0 && (startFrom < 0 || endTo > 0)) return undefined
   return {
-    startOffset: from < start ? from : from >= end ? from + delta : start,
-    endOffset: to >= end ? to + delta : to > start ? start + length : to,
+    startOffset: startFrom > 0 ? from : endFrom <= 0 ? from + delta : start,
+    endOffset: endTo <= 0 ? to + delta : startTo < 0 ? start + length : to,
   }
 }
 
@@ -247,6 +304,7 @@ function sameFieldEndpoints(before: readonly DocumentTextField[], after: readonl
   return before.length === after.length && before.every((field, index) => {
     const next = after[index]!
     return field.id === next.id && field.startOffset === next.startOffset && field.endOffset === next.endOffset && field.endBlockId === next.endBlockId
+      && field.startNoteReferenceCount === next.startNoteReferenceCount && field.endNoteReferenceCount === next.endNoteReferenceCount
   })
 }
 
@@ -259,6 +317,8 @@ export function transformDocumentTextFieldsForBlockRangeEdit(
   inputs: readonly DocumentBlock[], startOffset: number, endOffset: number, text: string,
   outputs: readonly DocumentBlock[] = inputs.slice(0, 1), preserveFieldId?: string,
   model?: Pick<DocumentModel, 'blocks'>,
+  projectedNoteReferences?: readonly (readonly DocumentNoteReferenceOffset[])[],
+  sourceNoteRanks?: DocumentNoteEditRanks,
 ): void {
   if (!inputs.length || !outputs.length) throw new RangeError('正文字段编辑缺少段落。')
   const inputParagraphs = documentTextFieldParagraphs({ blocks: [...inputs] })
@@ -266,7 +326,7 @@ export function transformDocumentTextFieldsForBlockRangeEdit(
   const overrides = new Map(inputParagraphs.map(paragraph => [paragraph.block.id, paragraph]))
   const source = rebaseParagraphs(documentTextFieldParagraphs(model ?? { blocks: [...inputs] }).map(paragraph => {
     const override = overrides.get(paragraph.block.id)
-    return override ? { ...paragraph, block: override.block, text: override.text } : paragraph
+    return override ? { ...paragraph, block: override.block, text: override.text, noteReferences: override.noteReferences } : paragraph
   }))
   const ranges = rangesForParagraphs(source)
   if (!ranges.length) return
@@ -282,20 +342,84 @@ export function transformDocumentTextFieldsForBlockRangeEdit(
   const projectedTexts = outputs.length === 1 ? [prefix + text + suffix] : parts.map((part, index) =>
     `${index === 0 ? prefix : ''}${part}${index === parts.length - 1 ? suffix : ''}`)
   if (projectedTexts.length !== outputs.length) throw new RangeError('正文字段编辑的段落映射无效。')
+  if (projectedNoteReferences !== undefined && projectedNoteReferences.length !== outputs.length) throw new RangeError('正文字段编辑的注释引用目的段落数量不一致。')
+  const sourceStartRank = assertDocumentNoteReferenceBoundaryRank(firstParagraph.noteReferences, startOffset, sourceNoteRanks?.start)
+  const sourceEndRank = assertDocumentNoteReferenceBoundaryRank(lastParagraph.noteReferences, endOffset, sourceNoteRanks?.end)
+  const prefixReferences = firstParagraph.noteReferences.filter((reference, index) =>
+    compareDocumentNoteBoundaries(reference.endOffset, index + 1, startOffset, sourceStartRank) <= 0).map(reference => ({ ...reference }))
+  const suffixBase = projectedTexts.at(-1)!.length - suffix.length
+  const suffixReferences = lastParagraph.noteReferences.filter((reference, index) =>
+    compareDocumentNoteBoundaries(reference.startOffset, index, endOffset, sourceEndRank) >= 0).map(reference => ({ ...reference,
+    startOffset: suffixBase + reference.startOffset - endOffset, endOffset: suffixBase + reference.endOffset - endOffset }))
+  // Equal display text does not prove equal future atom identity: replacing a
+  // reference label by the same plain text still removes the note entity.
+  const actualOutputGeometry = outputs.every((block, index) => !inputs.includes(block) && runText(block.runs) === projectedTexts[index])
+  const outputReferences = outputs.map((block, index) => projectedNoteReferences?.[index] ?? (actualOutputGeometry ? documentNoteReferenceOffsets(block.runs)
+    : [...(index === 0 ? prefixReferences : []), ...(index + 1 === outputs.length ? suffixReferences : [])]))
+  for (const [index, references] of outputReferences.entries()) assertDocumentNoteReferenceOffsets(references, projectedTexts[index]!)
   const projected = rebaseParagraphs([...source.slice(0, first), ...outputs.map((block, index) => ({
     block, container: [...outputs], index, text: projectedTexts[index]!, absoluteStart: 0, absoluteEnd: 0,
+    noteReferences: outputReferences[index]!,
   })), ...source.slice(last + 1)])
   const plans = new Map(projected.map(paragraph => [paragraph.block.id, [] as DocumentTextField[]]))
-  for (const { field, absoluteStart, absoluteEnd } of ranges) {
-    const edited = editedRange({ id: field.id, startOffset: absoluteStart, endOffset: absoluteEnd }, start, end, text.length, preserveFieldId)
+  const targets = projected.map(paragraph => ({ ...paragraph, id: paragraph.block.id }))
+  assertDocumentNoteReferenceParagraphIds(targets)
+  let editStartRank = sourceStartRank
+  let editEndRank = sourceEndRank
+  const outputsForEdit = targets.slice(first, first + outputs.length)
+  const emptyRemoval = start === end ? documentNoteReferenceEmptyRemovalRange(firstParagraph.noteReferences,
+    new Set(outputsForEdit.flatMap(paragraph => paragraph.noteReferences.map(reference => reference.runId))), startOffset) : undefined
+  const insertionAffinity = start === end && !emptyRemoval
+    ? documentNoteReferenceInsertionAffinity(firstParagraph.noteReferences, outputsForEdit, startOffset, text.length) : undefined
+  const replacementAffinity = emptyRemoval
+    ? documentNoteReferenceEmptyReplacementAffinity(firstParagraph.noteReferences, outputsForEdit, startOffset, text.length, emptyRemoval) : undefined
+  if (sourceNoteRanks && (emptyRemoval && (editStartRank !== emptyRemoval.startRank || editEndRank !== emptyRemoval.endRank)
+    || insertionAffinity && (editStartRank !== insertionAffinity.sourceRank || editEndRank !== insertionAffinity.sourceRank))) {
+    throw new RangeError('正文字段编辑的源注释引用端点与真实目的内容不一致。')
+  }
+  if (emptyRemoval) { editStartRank = emptyRemoval.startRank; editEndRank = emptyRemoval.endRank }
+  else if (insertionAffinity) editStartRank = editEndRank = insertionAffinity.sourceRank
+  if (compareDocumentNoteBoundaries(start, editStartRank, end, editEndRank) > 0) throw new RangeError('正文字段编辑的源注释引用端点倒置。')
+  const parents = insertionAffinity ? documentTextFieldTopologyParents(ranges) : []
+  const pointAtParentEnd = (index: number): boolean => {
+    if (!insertionAffinity || ranges[index]!.startParagraph.block.id !== firstParagraph.block.id
+      || ranges[index]!.field.startOffset !== insertionAffinity.sourceOffset || ranges[index]!.startNoteReferenceCount !== insertionAffinity.sourceRank) return false
+    let parent = parents[index]
+    while (parent !== undefined) {
+      const enclosing = ranges[parent]!
+      if (enclosing.field.id === preserveFieldId || enclosing.endParagraph.block.id !== firstParagraph.block.id
+        || enclosing.field.endOffset !== insertionAffinity.sourceOffset || enclosing.endNoteReferenceCount !== insertionAffinity.sourceRank) return false
+      if (compareDocumentNoteBoundaries(enclosing.absoluteStart, enclosing.startNoteReferenceCount, enclosing.absoluteEnd, enclosing.endNoteReferenceCount) < 0) return true
+      parent = parents[parent]
+    }
+    return false
+  }
+  for (const [index, range] of ranges.entries()) {
+    const { field, absoluteStart, absoluteEnd, startParagraph, endParagraph, startNoteReferenceCount, endNoteReferenceCount } = range
+    const edited = editedRange({ id: field.id, startOffset: absoluteStart, endOffset: absoluteEnd, startNoteReferenceCount, endNoteReferenceCount },
+      start, end, text.length, editStartRank, editEndRank, preserveFieldId)
     if (!edited) continue
     const from = projected.find(paragraph => edited.startOffset >= paragraph.absoluteStart && edited.startOffset <= paragraph.absoluteEnd)
     const to = projected.find(paragraph => edited.endOffset >= paragraph.absoluteStart && edited.endOffset <= paragraph.absoluteEnd)
     if (!from || !to) throw new RangeError(`正文字段 ${field.id} 的编辑后端点无法映射。`)
-    const { endBlockId: _endBlockId, ...definition } = field
-    plans.get(from.block.id)!.push({ ...definition,
-      startOffset: edited.startOffset - from.absoluteStart, endOffset: edited.endOffset - to.absoluteStart,
-      ...(from.block.id === to.block.id ? {} : { endBlockId: to.block.id }),
+    let mappedStart = remapDocumentNoteBoundaryParagraph(startParagraph.noteReferences, field.startOffset, field.startNoteReferenceCount, targets,
+      { paragraph: targets.find(paragraph => paragraph.block.id === from.block.id)!, offset: edited.startOffset - from.absoluteStart })
+    let mappedEnd = remapDocumentNoteBoundaryParagraph(endParagraph.noteReferences, field.endOffset, field.endNoteReferenceCount, targets,
+      { paragraph: targets.find(paragraph => paragraph.block.id === to.block.id)!, offset: edited.endOffset - to.absoluteStart })
+    const point = compareDocumentNoteBoundaries(absoluteStart, startNoteReferenceCount, absoluteEnd, endNoteReferenceCount) === 0
+    const pointBefore = point && field.id !== preserveFieldId && pointAtParentEnd(index)
+    if (startParagraph.block.id === firstParagraph.block.id) mappedStart = documentNoteEmptyReplacementBoundary(replacementAffinity,
+      field.startOffset, startNoteReferenceCount, 'start') ?? (pointBefore ? insertionAffinity?.before
+      : documentNoteInsertionBoundary(insertionAffinity, field.startOffset, startNoteReferenceCount, 'start', point, field.id === preserveFieldId)) ?? mappedStart
+    if (endParagraph.block.id === firstParagraph.block.id) mappedEnd = documentNoteEmptyReplacementBoundary(replacementAffinity,
+      field.endOffset, endNoteReferenceCount, 'end') ?? (pointBefore ? insertionAffinity?.before
+      : documentNoteInsertionBoundary(insertionAffinity, field.endOffset, endNoteReferenceCount, 'end', point, field.id === preserveFieldId)) ?? mappedEnd
+    const { endBlockId: _endBlockId, startNoteReferenceCount: _startRank, endNoteReferenceCount: _endRank, ...definition } = field
+    plans.get(mappedStart.paragraph.block.id)!.push({ ...definition,
+      startOffset: mappedStart.offset, endOffset: mappedEnd.offset,
+      ...(mappedStart.rank === undefined ? {} : { startNoteReferenceCount: mappedStart.rank }),
+      ...(mappedEnd.rank === undefined ? {} : { endNoteReferenceCount: mappedEnd.rank }),
+      ...(mappedStart.paragraph.block.id === mappedEnd.paragraph.block.id ? {} : { endBlockId: mappedEnd.paragraph.block.id }),
     })
   }
   rangesForParagraphs(projected, plans)
@@ -303,12 +427,14 @@ export function transformDocumentTextFieldsForBlockRangeEdit(
   const outputIds = new Set(outputs.map(block => block.id))
   for (const paragraph of projected) {
     const plan = plans.get(paragraph.block.id)!
-    if (outputIds.has(paragraph.block.id) || !sameFieldEndpoints(before.get(paragraph.block.id) ?? [], plan)) setDocumentTextFields(paragraph.block, plan, paragraph.text)
+    if (outputIds.has(paragraph.block.id) || !sameFieldEndpoints(before.get(paragraph.block.id) ?? [], plan)) setDocumentTextFields(paragraph.block, plan, paragraph.text, paragraph.noteReferences)
   }
 }
 
-export function transformDocumentTextFieldsForBlockEdit(block: DocumentBlock, start: number, end: number, text: string, preserveFieldId?: string, model?: Pick<DocumentModel, 'blocks'>): void {
-  transformDocumentTextFieldsForBlockRangeEdit([block], start, end, text, [block], preserveFieldId, model)
+export function transformDocumentTextFieldsForBlockEdit(block: DocumentBlock, start: number, end: number, text: string, preserveFieldId?: string, model?: Pick<DocumentModel, 'blocks'>,
+  projectedNoteReferences?: readonly DocumentNoteReferenceOffset[], sourceNoteRanks?: DocumentNoteEditRanks): void {
+  transformDocumentTextFieldsForBlockRangeEdit([block], start, end, text, [block], preserveFieldId, model,
+    projectedNoteReferences === undefined ? undefined : [projectedNoteReferences], sourceNoteRanks)
 }
 
 export function remapDocumentTextFieldIds(block: DocumentBlock, blockIds?: ReadonlyMap<string, string>, fieldIds?: ReadonlyMap<string, string>): void {
@@ -332,10 +458,18 @@ export function remapDocumentTextFieldIds(block: DocumentBlock, blockIds?: Reado
   }))
 }
 
-export function insertDocumentTextFields(block: DocumentBlock, fields: readonly DocumentTextField[], offset: number): void {
+export function insertDocumentTextFields(block: DocumentBlock, fields: readonly DocumentTextField[], offset: number,
+  sourceNoteReferences: readonly DocumentNoteReferenceOffset[] = []): void {
   if (!fields.length) return
-  setDocumentTextFields(block, [...documentTextFields(block), ...fields.map(field => ({
-    ...cloneModel(field), startOffset: offset + field.startOffset,
-    endOffset: field.endBlockId !== undefined && field.endBlockId !== block.id ? field.endOffset : offset + field.endOffset,
-  }))])
+  const references = documentNoteReferenceOffsets(block.runs)
+  setDocumentTextFields(block, [...documentTextFields(block), ...fields.map(field => {
+    const { startNoteReferenceCount, endNoteReferenceCount, ...definition } = cloneModel(field)
+    const start = remapDocumentNoteReferenceBoundary(sourceNoteReferences, references, field.startOffset, offset + field.startOffset, startNoteReferenceCount)
+    const localEnd = field.endBlockId === undefined || field.endBlockId === block.id
+    const end = localEnd ? remapDocumentNoteReferenceBoundary(sourceNoteReferences, references, field.endOffset, offset + field.endOffset, endNoteReferenceCount)
+      : { offset: field.endOffset, rank: endNoteReferenceCount }
+    return { ...definition, startOffset: start.offset, endOffset: end.offset,
+      ...(start.rank === undefined ? {} : { startNoteReferenceCount: start.rank }),
+      ...(end.rank === undefined ? {} : { endNoteReferenceCount: end.rank }) }
+  })])
 }

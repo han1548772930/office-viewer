@@ -36,6 +36,7 @@ import { blockListLevel, blockListPreset, isListPreset, listKind, presetNumberin
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, cloneNumberingDefinition, consecutiveNumberingGroup, copyBlockNumbering, numberingDefinitionFromParts, numberingRecord } from '../model/document-numbering'
 import { officeNumberingPrefixLength } from '../model/document-office-numbering-marker'
 import { documentTextFieldParagraphs, documentTextFieldRanges, documentTextFields, insertDocumentTextFields, transformDocumentTextFieldsForBlockEdit, transformDocumentTextFieldsForBlockRangeEdit } from '../model/document-text-fields'
+import { documentNoteReferenceOffsets } from '../model/document-note-boundary'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
@@ -176,13 +177,14 @@ function replaceImportedNumberingMarkers(model: DocumentModel, targets: readonly
       // Cached labels may precede zero-length footnote/field objects. Keep
       // those identities when the label is explicitly replaced or cleared.
       transformDocumentTextFieldsForBlockEdit(block, 0, length, '', undefined, model)
+      const sourceNoteReferences = documentNoteReferenceOffsets(block.runs)
       block.runs = bodyRuns.length ? bodyRuns : [createRun()]
       delete block.metadata.html
       if (target.row !== undefined) {
         const container = findDocumentBlock(model, target.blockId)
         if (container) delete container.metadata.html
       }
-      transformDocumentCommentAnchorsForTextEdit(model, target.cellBlockId ?? target.blockId, 0, length, '')
+      transformDocumentCommentAnchorsForTextEdit(model, target.cellBlockId ?? target.blockId, 0, length, '', Date.now(), sourceNoteReferences)
     }
     delete block.metadata.officeNumberingMarker
   }
@@ -616,7 +618,7 @@ function executeDocumentCommandMutation(
         const next = replaceSelectionText(model, selection, text, undefined, { activeControlId: command.activeContentControlId })
         if (text) setEditingRuns(model, next.focus, [...before, ...paragraph.runs as DocumentRun[], ...after], {})
         const destination = blockAtPoint(model, next.focus)
-        if (destination) insertDocumentTextFields(destination, fields, start.offset)
+        if (destination) insertDocumentTextFields(destination, fields, start.offset, documentNoteReferenceOffsets(paragraph.runs))
         return next
       }
       return insertBlocks(model, selection, blocks, { activeControlId: command.activeContentControlId })

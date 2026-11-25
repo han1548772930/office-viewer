@@ -13,71 +13,19 @@ use crate::ExportError;
 const DECORATIONS: [&str; 3] = ["separator", "continuationSeparator", "continuationNotice"];
 const MC_NAMESPACE: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 
+#[path = "docx_note_decorations.rs"]
+mod decoration_writer;
+pub(super) use decoration_writer::{decoration_contents, reserved_ids};
+#[path = "docx_note_markers.rs"]
+mod marker_writer;
+pub(super) use marker_writer::{ReferenceProperties, reference_run};
+use marker_writer::body_marker;
+#[path = "docx_note_positions.rs"]
+mod positions;
+pub(super) use positions::{EventScope, NoteBoundary, NotePositions, optional_reference_count};
+
 fn native_kind(kind: NoteKind) -> DocumentNoteKind {
     if kind == NoteKind::Footnote { DocumentNoteKind::Footnote } else { DocumentNoteKind::Endnote }
-}
-
-#[derive(Clone, Default)]
-pub(super) struct ReferenceProperties {
-    authored: bool,
-    custom_mark: Option<String>,
-    text_style: Option<Value>,
-}
-
-impl ReferenceProperties {
-    pub fn read(value: &Value) -> Result<Self, ExportError> {
-        let custom_mark = value.get("customMark").map(|value| value.as_str().map(str::to_owned)
-            .ok_or_else(|| ExportError::invalid("注释自定义标记必须是字符串。"))).transpose()?;
-        if custom_mark.as_ref().is_some_and(|mark| mark.encode_utf16().count() > 4096) { return Err(ExportError::invalid("注释自定义标记超过长度预算。")); }
-        let text_style = value.get("referenceTextStyle").map(|value| if value.is_object() { Ok(value.clone()) }
-            else { Err(ExportError::invalid("注释引用文字样式必须是对象。")) }).transpose()?;
-        if value.get("showBodyReference").is_some_and(|value| !value.is_boolean()) { return Err(ExportError::invalid("注释正文标记显隐必须是布尔值。")); }
-        Ok(Self { authored: true, custom_mark, text_style })
-    }
-}
-
-fn reference_style(kind: NoteKind) -> &'static str {
-    if kind == NoteKind::Footnote { "FootnoteReference" } else { "EndnoteReference" }
-}
-
-fn marker_properties(context: &mut WriteContext<'_>, run: &Value, kind: NoteKind, style: Option<&Value>) -> Result<String, ExportError> {
-    let mut author = run.as_object().cloned().unwrap_or_default();
-    if let Some(style) = style.and_then(Value::as_object) { for (key, value) in style { author.insert(key.clone(), value.clone()); } }
-    let mut properties = context.run_properties(&Value::Object(author))?;
-    if properties.child("rStyle").is_none() {
-        let mut style = Element::word("rStyle"); style.set_word_attribute("val", reference_style(kind));
-        properties.content.insert(0, Content::Element(style));
-    }
-    Ok(properties.render(None))
-}
-
-pub(super) fn reference_run(context: &mut WriteContext<'_>, run: &Value, kind: NoteKind, id: i64, author: &ReferenceProperties) -> Result<String, ExportError> {
-    let source = get(get(run, "metadata"), "noteReference");
-    let custom_mark = if author.authored { author.custom_mark.as_deref() } else { get(source, "customMark").as_str() };
-    let properties = marker_properties(context, run, kind, author.text_style.as_ref())?;
-    let mut reference = if let Some(xml) = get(source, "sourceXml").as_str() {
-        source_xml::parse_xml(xml, false).map_err(ExportError::invalid)?
-    } else { Element::word(kind.reference_tag()) };
-    source_xml::canonicalize_office_namespaces(&mut reference).map_err(ExportError::invalid)?;
-    if !reference.is_word("footnoteReference") && !reference.is_word("endnoteReference") { return Err(ExportError::invalid("注释引用来源类型无效。")); }
-    // Converting a note keeps unknown native attributes while changing its
-    // reference element to the destination story kind.
-    reference.name = format!("w:{}", kind.reference_tag());
-    reference.local = kind.reference_tag().into();
-    reference.set_word_attribute("id", id.to_string());
-    reference.attributes.retain(|attribute| attribute.namespace != source_xml::WORD_NAMESPACE || attribute.local != "customMarkFollows");
-    if custom_mark.is_some() { reference.set_word_attribute("customMarkFollows", "1"); }
-    let custom = custom_mark.map_or_else(String::new, |mark| format!("<w:t xml:space=\"preserve\">{}</w:t>", xml_text(mark)));
-    Ok(format!("<w:r>{properties}{}{custom}</w:r>", reference.render(None)))
-}
-
-fn body_marker(context: &mut WriteContext<'_>, value: &Value, kind: NoteKind) -> Result<String, ExportError> {
-    if get(value, "showBodyReference").as_bool() == Some(false) { return Ok(String::new()); }
-    let author = ReferenceProperties::read(value)?;
-    let properties = marker_properties(context, &json!({}), kind, author.text_style.as_ref())?;
-    let marker = author.custom_mark.map_or_else(|| format!("<w:{}/>", kind.body_reference_tag()),
-        |mark| format!("<w:t xml:space=\"preserve\">{}</w:t>", xml_text(&mark)));
-    Ok(format!("<w:r>{properties}{marker}</w:r>"))
 }
 
 pub(super) fn allocate_id(next: &mut i64, used: &mut BTreeSet<i64>) -> Result<i64, ExportError> {
@@ -87,63 +35,6 @@ pub(super) fn allocate_id(next: &mut i64, used: &mut BTreeSet<i64>) -> Result<i6
     used.insert(id);
     *next = id.checked_add(1).ok_or_else(|| ExportError::invalid("注释标识超出容量。"))?;
     Ok(id)
-}
-
-/** Includes inactive native definitions so their dependencies and XML survive a save. */
-pub(super) fn decoration_contents<'a>(settings: &'a Value, kind: NoteKind) -> Result<Vec<(&'static str, &'a Value)>, ExportError> {
-    let mut result = Vec::new();
-    for key in DECORATIONS { if let Some(content) = settings.get(key) {
-        if !content.is_object() { return Err(ExportError::invalid("注释分隔内容必须为对象。")); }
-        result.push((key, content));
-    } }
-    let dormant = get(get(settings, "metadata"), "officeDormantNoteDecorations");
-    if !dormant.is_null() {
-        if get(dormant, "version").as_u64() != Some(1) { return Err(ExportError::invalid("休眠注释分隔内容版本无效。")); }
-        let contents = get(dormant, "contents").as_array().ok_or_else(|| ExportError::invalid("休眠注释分隔内容必须为数组。"))?;
-        for content in contents {
-            let source = get(get(content, "metadata"), "decorationSource");
-            if get(source, "version").as_u64() != Some(1) || get(source, "kind").as_str() != Some(native_kind(kind).name()) {
-                return Err(ExportError::invalid("休眠注释分隔内容来源无效。"));
-            }
-            let key = match get(source, "type").as_str() {
-                Some("separator") => "separator", Some("continuationSeparator") => "continuationSeparator", Some("continuationNotice") => "continuationNotice",
-                _ => return Err(ExportError::invalid("休眠注释分隔内容类型无效。")),
-            };
-            result.push((key, content));
-        }
-    }
-    Ok(result)
-}
-
-struct Decoration<'a> { id: i64, kind: &'static str, content: Option<&'a Value>, active: bool }
-
-fn decorations(settings: &Value, kind: NoteKind) -> Result<Vec<Decoration<'_>>, ExportError> {
-    let contents = decoration_contents(settings, kind)?;
-    let mut used = BTreeSet::new();
-    let mut result = Vec::new();
-    let mut next = -1i64;
-    for (key, content) in contents {
-        let source = get(get(content, "metadata"), "decorationSource");
-        let preferred = get(source, "noteId").as_i64().filter(|id| id.unsigned_abs() <= NOTE_SAFE_INTEGER && !used.contains(id));
-        let id = if let Some(id) = preferred { id } else {
-            while used.contains(&next) { next -= 1; }
-            if next.unsigned_abs() > NOTE_SAFE_INTEGER { return Err(ExportError::invalid("注释分隔内容标识超出安全范围。")); }
-            next
-        };
-        used.insert(id);
-        let active = settings.get(key).is_some_and(|active| std::ptr::eq(active, content));
-        result.push(Decoration { id, kind: key, content: Some(content), active });
-    }
-    for (key, preferred) in [("separator", -1), ("continuationSeparator", 0)] {
-        if result.iter().any(|decoration| decoration.active && decoration.kind == key) { continue; }
-        let id = if !used.contains(&preferred) { preferred } else { while used.contains(&next) { next -= 1; } next };
-        used.insert(id); result.push(Decoration { id, kind: key, content: None, active: true });
-    }
-    Ok(result)
-}
-
-pub(super) fn reserved_ids(model: &Value, kind: NoteKind) -> Result<BTreeSet<i64>, ExportError> {
-    decorations(get(get(model, "noteSettings"), native_kind(kind).name()), kind).map(|values| values.into_iter().map(|value| value.id).collect())
 }
 
 fn append_marker(output: &mut String, marker: &str) -> Result<bool, ExportError> {
@@ -187,7 +78,7 @@ fn legacy_body(context: &mut WriteContext<'_>, value: &Value, kind: NoteKind, ma
     Ok(result)
 }
 
-fn note_element(source: &Value, kind: NoteKind, id: i64, note_type: Option<&str>, body: &str) -> Result<String, ExportError> {
+fn note_element(source: &Value, kind: NoteKind, id: i64, note_type: Option<&str>, public_id: Option<&str>, body: &str) -> Result<String, ExportError> {
     let opening = source.as_str().map(|xml| source_xml::parse_xml(xml, false)).transpose().map_err(ExportError::invalid)?;
     let mut element = opening.unwrap_or_else(|| Element::word(native_kind(kind).name()));
     source_xml::canonicalize_office_namespaces(&mut element).map_err(ExportError::invalid)?;
@@ -195,6 +86,9 @@ fn note_element(source: &Value, kind: NoteKind, id: i64, note_type: Option<&str>
     element.set_word_attribute("id", id.to_string());
     if let Some(note_type) = note_type { element.set_word_attribute("type", note_type); }
     else { element.attributes.retain(|attribute| attribute.namespace != source_xml::WORD_NAMESPACE || attribute.local != "type"); }
+    if let Some(public_id) = public_id {
+        extension_attribute(&mut element, "sourceIdHex", &document_note_source::encode_public_note_source_id(public_id));
+    }
     Ok(format!("{}{body}</{}>", element.opening(None, false), element.name))
 }
 
@@ -203,7 +97,7 @@ pub(super) fn notes_xml(context: &mut WriteContext<'_>, kind: NoteKind, notes: &
     context.with_relationship_owner(&path, |context| {
         let mut body = String::new();
         let empty_content = Value::Null;
-        for decoration in decorations(settings, kind)? {
+        for decoration in decoration_writer::decorations(settings, kind)? {
             let content = decoration.content.unwrap_or(&empty_content);
             let source = get(get(content, "metadata"), "decorationSource");
             let marker = if decoration.content.is_none() || get(source, "marker").as_str().is_some_and(|marker| marker == "separator" || marker == "continuationSeparator") {
@@ -211,13 +105,13 @@ pub(super) fn notes_xml(context: &mut WriteContext<'_>, kind: NoteKind, notes: &
             } else { String::new() };
             let paragraphs = if let Some(blocks) = block_hosts::content_blocks(content)? { block_body(context, blocks, &marker)? }
                 else { format!("<w:p>{marker}</w:p>") };
-            body.push_str(&note_element(get(source, "sourceXml"), kind, decoration.id, Some(decoration.kind), &paragraphs)?);
+            body.push_str(&note_element(get(source, "sourceXml"), kind, decoration.id, Some(decoration.kind), decoration.public_id, &paragraphs)?);
         }
         for note in notes {
             let marker = body_marker(context, &note.value, kind)?;
             let paragraphs = if let Some(blocks) = block_hosts::content_blocks(get(&note.value, "content"))? { block_body(context, blocks, &marker)? }
                 else { legacy_body(context, &note.value, kind, &marker)? };
-            body.push_str(&note_element(get(get(get(&note.value, "metadata"), "officeNoteSource"), "openingXml"), kind, note.id, None, &paragraphs)?);
+            body.push_str(&note_element(get(get(get(&note.value, "metadata"), "officeNoteSource"), "openingXml"), kind, note.id, None, None, &paragraphs)?);
         }
         Ok(format!("{}<w:{} {CONTENT_NAMESPACES}>{body}</w:{}>", xml::DECL, kind.collection(), kind.collection()))
     })
@@ -293,7 +187,7 @@ pub(super) fn document_properties(settings: &Value, notes: &NoteBundle) -> Resul
     for (kind, entries) in [(NoteKind::Footnote, &notes.footnotes), (NoteKind::Endnote, &notes.endnotes)] {
         let value = get(settings, native_kind(kind).name());
         if value.is_null() && entries.is_empty() { continue; }
-        let active_ids = decorations(value, kind)?.into_iter().filter(|value| value.active).map(|value| value.id).collect::<Vec<_>>();
+        let active_ids = decoration_writer::decorations(value, kind)?.into_iter().filter(|value| value.active).map(|value| value.id).collect::<Vec<_>>();
         result.push_str(&property_xml(value, kind, Some(&active_ids))?);
     }
     Ok(result)

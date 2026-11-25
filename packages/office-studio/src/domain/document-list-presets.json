@@ -10,5 +10,10 @@
   "ORDER_LIST_2": { "formats": ["decimal"], "suffix": ".", "compound": true, "levels": 7 },
   "ORDER_LIST_3": { "formats": ["upperLetter", "lowerLetter", "lowerRoman"], "suffix": "." },
   "ORDER_LIST_4": { "formats": ["upperLetter", "decimal", "lowerRoman"], "suffix": "." },
-  "ORDER_LIST_5": { "formats": ["decimalZero", "lowerLetter", "lowerRoman"], "suffix": "." }
+  "ORDER_LIST_5": { "formats": ["decimalZero", "lowerLetter", "lowerRoman"], "suffix": "." },
+  "ORDER_LIST_QUICK_2": { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": ".", "firstSuffix": ")" },
+  "ORDER_LIST_QUICK_3": { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": ".", "firstFormat": "lowerLetter" },
+  "ORDER_LIST_QUICK_4": { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": ".", "firstFormat": "lowerRoman" },
+  "ORDER_LIST_QUICK_5": { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": ".", "firstFormat": "upperLetter" },
+  "ORDER_LIST_QUICK_6": { "formats": ["decimal", "lowerLetter", "lowerRoman"], "suffix": ".", "firstFormat": "upperRoman" }
 }

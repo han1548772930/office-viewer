@@ -92,7 +92,7 @@ test('generic source mutation refreshes XPath aliases, caches, word count and XM
       const after = f.state(opened)
       opened.document.undo(); const undone = f.state(opened)
       opened.document.redo(); const redone = f.state(opened)
-      reopened = f.open(f.copy(opened.document.save()))
+      reopened = f.open(f.copy(opened.document.saveModel()))
       return { before, changed, after, undone, redone, reopened: f.state(reopened), value }
     } finally { opened.dispose(); reopened?.dispose() }
   })

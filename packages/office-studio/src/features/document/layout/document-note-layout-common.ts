@@ -98,7 +98,7 @@ export class DocumentNoteDecorationLayout {
     const source = this.content(kind, decoration)
     if (!source) { this.cache.set(key, undefined); return undefined }
     const defaults = documentDefaultStyle(this.model)
-    const content = migrateDocumentStoryBlocks(cloneModel(source), [], { kind: 'note', noteKind: kind, noteId: `decoration:${decoration}` }, defaults)
+    const content = migrateDocumentStoryBlocks(cloneModel(source), [], { kind: 'noteDecoration', noteKind: kind, decoration }, defaults)
     const setup = documentEffectiveSectionSetup(this.model, sectionId)
     const scoped: DocumentModel = { ...this.model, blocks: content.blocks!, sectionSetup: { columnCount: 1, columnGap: 0 },
       sectionHeaderFooters: undefined, footnotes: undefined, endnotes: undefined,
@@ -131,9 +131,12 @@ export function translateDocumentNoteDecoration(content: LayoutNoteDecoration, d
 
 export function positionDocumentNoteDecoration(source: LayoutNoteDecoration, page: LayoutPage, x: number, y: number): LayoutNoteDecoration {
   const clip = { ...page.content }
+  const host: DocumentAuxiliaryBlockHost = { kind: 'noteDecoration', noteKind: source.noteKind, decoration: source.kind }
   const rect = <T extends LayoutRect & { clip?: LayoutRect }>(item: T): T => ({ ...translateTableRect(item, x, y),
+    host: { ...host }, sectionId: page.sectionId,
     clip: item.clip ? intersectTableRect(translateTableRect(item.clip, x, y), clip) : { ...clip } })
   return { ...source, x, y, page: page.index, lines: source.lines.map(line => ({ ...translateTableLine(line, x, y), page: page.index,
+    host: { ...host }, sectionId: page.sectionId,
     clip: line.clip ? intersectTableRect(translateTableRect(line.clip, x, y), clip) : { ...clip } })),
     cells: source.cells.map(item => ({ ...rect(item), page: page.index })), images: source.images.map(item => ({ ...rect(item), page: page.index })),
     dividers: source.dividers.map(item => ({ ...rect(item), page: page.index })), tableFragments: source.tableFragments.map(item => ({ ...rect(item),

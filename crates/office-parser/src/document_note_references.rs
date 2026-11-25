@@ -11,13 +11,65 @@ use crate::{document_format_sidecar::{Element, parse_xml}, document_native_xml::
     document_story_source::{SourceAddress, collect, stories}};
 use super::NativeNotes;
 
+#[path = "document_note_body_markers.rs"]
+mod body_markers;
+
 struct Reference {
     kind: DocumentNoteKind,
     id: i64,
     custom_mark_follows: bool,
     custom_mark: Option<String>,
+    custom_mark_source: Option<Value>,
     source_format: Value,
     source_xml: String,
+}
+
+struct SourceRun<'a> { raw: &'a Element, node: &'a Node, namespaces: BTreeMap<String, String> }
+
+fn collect_runs<'a>(raw: &'a Element, node: &'a Node, inherited: &BTreeMap<String, String>, result: &mut Vec<SourceRun<'a>>) {
+    let namespaces = scope(raw, inherited);
+    if word(node, "r") {
+        result.push(SourceRun { raw, node, namespaces });
+        return;
+    }
+    if ["pPr", "rPr", "del", "moveFrom", "drawing", "pict", "object", "txbxContent"].iter().any(|name| word(node, name)) { return; }
+    for (raw, child) in raw.children.iter().zip(&node.children) { collect_runs(raw, child, &namespaces, result); }
+}
+
+fn paragraph_style(root: &Node) -> Option<&str> {
+    root.children.iter().find(|node| word(node, "pPr")).and_then(|properties| properties.children.iter()
+        .find(|node| word(node, "pStyle"))).and_then(|style| word_attribute(style, "val"))
+}
+
+fn source_format(run: &SourceRun<'_>, xml: &str, paragraph_style: Option<&str>) -> Value {
+    let properties = run.raw.children.iter().zip(&run.node.children).find(|(_, node)| word(node, "rPr")).map(|(raw, _)| raw);
+    let mut format = json!({ "version": 1, "propertiesXml": properties.map(|properties| xml[properties.start..properties.end].to_owned()).unwrap_or_else(|| "<w:rPr/>".into()),
+        "namespaces": properties.map(|properties| scope(properties, &run.namespaces)).unwrap_or_else(|| run.namespaces.clone()) });
+    if let Some(style) = paragraph_style { format["paragraphStyleId"] = json!(style); }
+    format
+}
+
+struct Marker { text: String, source: Value }
+
+fn marker_text(run: &SourceRun<'_>, from: usize, xml: &str, paragraph_style: Option<&str>) -> Result<Option<Marker>, String> {
+    let mut text = String::new();
+    let mut content = String::new();
+    let mut present = false;
+    for (raw, child) in run.raw.children.iter().zip(&run.node.children).skip(from) {
+        if word(child, "rPr") { continue; }
+        if !word(child, "t") && !word(child, "sym") { break; }
+        present = true;
+        let fragment = complete_fragment(xml, raw, &scope(raw, &run.namespaces))?;
+        let local = if word(child, "sym") { "sym" } else { "t" };
+        let canonical = crate::document_format_sidecar::canonical_resource(&fragment, &format!("w:{local}"))?;
+        if word(child, "t") { text.push_str(&child.text.replace("\r\n", " ").replace(['\r', '\n'], " ")); }
+        else { text.extend(duke_pages::parse::parse_run_text_tokens(&format!("<w:r>{canonical}</w:r>")).into_iter().map(|token| token.text)); }
+        content.push_str(&canonical);
+    }
+    if !present { return Ok(None); }
+    let format = source_format(run, xml, paragraph_style);
+    Ok(Some(Marker { text, source: json!({ "sourceFormat": format,
+        "sourceXml": format!("<w:r xmlns:w=\"{}\">{content}</w:r>", office_io_common::document_content_controls::WORD_NAMESPACE) }) }))
 }
 
 fn references(xml: &str, inherited: &BTreeMap<String, String>) -> Result<Vec<Reference>, String> {
@@ -25,38 +77,11 @@ fn references(xml: &str, inherited: &BTreeMap<String, String>) -> Result<Vec<Ref
     let xml = complete_fragment(xml, &raw, &scope(&raw, inherited))?;
     let raw = parse_xml(&xml)?;
     let root = chart_xml::parse(&xml)?;
-    struct SourceRun<'a> { raw: &'a Element, node: &'a Node, namespaces: BTreeMap<String, String> }
-    fn collect_runs<'a>(raw: &'a Element, node: &'a Node, inherited: &BTreeMap<String, String>, result: &mut Vec<SourceRun<'a>>) {
-        let namespaces = scope(raw, inherited);
-        if word(node, "r") {
-            result.push(SourceRun { raw, node, namespaces });
-            return;
-        }
-        if ["pPr", "rPr", "del", "moveFrom", "drawing", "pict", "txbxContent"].iter().any(|name| word(node, name)) { return; }
-        for (raw, child) in raw.children.iter().zip(&node.children) { collect_runs(raw, child, &namespaces, result); }
-    }
-    fn marker_text(run: &SourceRun<'_>, from: usize, xml: &str) -> Result<Option<String>, String> {
-        let mut text = String::new();
-        let mut present = false;
-        for (raw, child) in run.raw.children.iter().zip(&run.node.children).skip(from) {
-            if word(child, "rPr") { continue; }
-            if word(child, "t") { present = true; text.push_str(&child.text); }
-            else if word(child, "sym") {
-                present = true;
-                let fragment = complete_fragment(xml, raw, &scope(raw, &run.namespaces))?;
-                let canonical = crate::document_format_sidecar::canonical_resource(&fragment, "w:sym")?;
-                text.extend(duke_pages::parse::parse_run_text_tokens(&format!("<w:r>{canonical}</w:r>")).into_iter().map(|token| token.text));
-            } else { break; }
-        }
-        Ok(present.then_some(text))
-    }
     let mut runs = Vec::new();
     collect_runs(&raw, &root, &BTreeMap::new(), &mut runs);
     let mut result = Vec::new();
     for (run_index, run) in runs.iter().enumerate() {
-            let properties = run.raw.children.iter().zip(&run.node.children).find(|(_, node)| word(node, "rPr")).map(|(raw, _)| raw);
-            let format = json!({ "version": 1, "propertiesXml": properties.map(|properties| xml[properties.start..properties.end].to_owned()).unwrap_or_else(|| "<w:rPr/>".into()),
-                "namespaces": properties.map(|properties| scope(properties, &run.namespaces)).unwrap_or_else(|| run.namespaces.clone()) });
+            let format = source_format(run, &xml, paragraph_style(&root));
             for (index, (source, child)) in run.raw.children.iter().zip(&run.node.children).enumerate() {
                 let kind = if word(child, "footnoteReference") { DocumentNoteKind::Footnote }
                     else if word(child, "endnoteReference") { DocumentNoteKind::Endnote } else { continue; };
@@ -65,13 +90,15 @@ fn references(xml: &str, inherited: &BTreeMap<String, String>) -> Result<Vec<Ref
                     .ok_or("DOCX_NOTE_INVALID: reference ID is not a safe integer")?;
                 let follows = word_attribute(child, "customMarkFollows").map(|value| document_note_source::on_off(Some(value))).transpose()?.unwrap_or(false);
                 let custom_mark = if follows {
-                    match marker_text(run, index + 1, &xml)? {
+                    match marker_text(run, index + 1, &xml, paragraph_style(&root))? {
                         Some(mark) => Some(mark),
-                        None => runs.get(run_index + 1).map(|next| marker_text(next, 0, &xml)).transpose()?.flatten(),
+                        None => runs.get(run_index + 1).map(|next| marker_text(next, 0, &xml, paragraph_style(&root))).transpose()?.flatten(),
                     }
                 } else { None };
                 result.push(Reference { kind, id, custom_mark_follows: follows,
-                    custom_mark, source_format: format.clone(), source_xml: complete_fragment(&xml, source, &scope(source, &run.namespaces))? });
+                    custom_mark: custom_mark.as_ref().map(|mark| mark.text.clone()),
+                    custom_mark_source: custom_mark.map(|mark| json!({ "version": 1, "text": mark.text, "runs": [mark.source] })),
+                    source_format: format.clone(), source_xml: complete_fragment(&xml, source, &scope(source, &run.namespaces))? });
             }
     }
     Ok(result)
@@ -111,6 +138,7 @@ pub(super) fn restore(native: &mut NativeNotes, document: &mut StructuredDocumen
                         inline["noteReference"]["customMarkFollows"] = json!(reference.custom_mark_follows);
                         inline["noteReference"]["sourceXml"] = json!(reference.source_xml);
                         if let Some(mark) = &reference.custom_mark { inline["noteReference"]["customMark"] = json!(mark); }
+                        if let Some(source) = &reference.custom_mark_source { inline["noteReference"]["customMarkSource"] = source.clone(); }
                         if let Some(definition) = native.definitions.get_mut(&(reference.kind, reference.id)) {
                             if let Some(mark) = &reference.custom_mark {
                                 if definition.custom_mark.as_ref().is_some_and(|existing| existing != mark) {
@@ -132,48 +160,5 @@ pub(super) fn restore(native: &mut NativeNotes, document: &mut StructuredDocumen
         Ok(())
     }
     visit(&mut document.blocks, None, &indexed, native)?;
-    let mut body_markers = HashMap::<SourceAddress, (DocumentNoteKind, String)>::new();
-    for story in stories(source) {
-        let Some(id) = story.note_id else { continue; };
-        let kind = if story.story == "footnote" { DocumentNoteKind::Footnote } else if story.story == "endnote" { DocumentNoteKind::Endnote } else { continue; };
-        let Some(mark) = native.definitions.get(&(kind, id)).and_then(|definition| definition.custom_mark.as_ref()).filter(|mark| !mark.is_empty()).cloned() else { continue; };
-        let hosts = collect(&story);
-        let Some((address, paragraph)) = hosts.paragraphs.first() else { continue; };
-        let Some(xml) = paragraph.source_xml.as_deref() else { continue; };
-        let mut inherited = native.namespaces.get(story.part).cloned().unwrap_or_default();
-        inherited.extend(standard_word_namespaces());
-        let raw = parse_xml(xml)?;
-        let xml = complete_fragment(xml, &raw, &scope(&raw, &inherited))?;
-        let root = chart_xml::parse(&xml)?;
-        let Some(run) = root.descendants("r").into_iter().find(|node| word(node, "r")) else { continue; };
-        let reference_style = if kind == DocumentNoteKind::Footnote { "FootnoteReference" } else { "EndnoteReference" };
-        let styled = run.children.iter().find(|node| word(node, "rPr")).is_some_and(|properties| properties.children.iter()
-            .any(|node| word(node, "rStyle") && word_attribute(node, "val") == Some(reference_style)));
-        let mut text = String::new();
-        for child in run.children.iter().filter(|node| !word(node, "rPr")) {
-            if word(child, "t") { text.push_str(&child.text); } else { text.clear(); break; }
-        }
-        if styled && text == mark {
-            body_markers.insert(address.clone(), (kind, mark));
-            if let Some(definition) = native.definitions.get_mut(&(kind, id)) { definition.show_body_reference = true; }
-        }
-    }
-    fn annotate_body(blocks: &mut [DocumentBlock], inherited_note: Option<i64>, markers: &HashMap<SourceAddress, (DocumentNoteKind, String)>) -> Result<(), String> {
-        for block in blocks {
-            let note = block.note_id.or(inherited_note);
-            if let Some((kind, marker)) = block.source_refs.iter().find_map(|source| markers.get(&SourceAddress::from_ref(source, note))) {
-                let mut details = block.details.to_json_value();
-                if let Some(inline) = details.get_mut("inlines").and_then(Value::as_array_mut).and_then(|inlines| inlines.iter_mut()
-                    .find(|inline| matches!(inline["type"].as_str(), Some("text" | "form_field")) && !inline["text"].as_str().unwrap_or_default().is_empty())) {
-                    if inline["text"].as_str().is_some_and(|text| text.starts_with(marker)) {
-                        inline["noteBodyMarker"] = json!({ "version": 1, "kind": kind, "text": marker });
-                        block.details = BlockDetails::Raw(details);
-                    }
-                }
-            }
-            annotate_body(&mut block.children, note, markers)?;
-        }
-        Ok(())
-    }
-    annotate_body(&mut document.blocks, None, &body_markers)
+    body_markers::restore(native, document, source)
 }

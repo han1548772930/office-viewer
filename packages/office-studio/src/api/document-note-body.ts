@@ -9,7 +9,8 @@ import type { DocumentNoteDecorationControls, DocumentNoteInsertOptions } from '
 export type { DocumentNoteDecorationControls } from '../features/document/notes/document-note-types'
 import { decodeDocumentBody, documentBodyContentControls, encodeDocumentBody } from './document-body-codec'
 import { bodyRecord, documentRunStyleFromBody, documentRunStyleToBody, type UniverBodyRecord } from './document-body-style'
-import type { UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources } from './document-body-types'
+import { documentBodyOfficeSource, documentBodySourceMetadata } from './document-body-source'
+import type { DocumentBodyDecodeOptions, UniverDocumentBody, UniverDocumentBodyData, UniverDocumentBodyResources } from './document-body-types'
 
 /** Fixed core IDocumentNote input; domain-shaped input remains available for local clients. */
 export interface PublicDocumentNoteInput extends UniverDocumentBodyResources {
@@ -17,6 +18,7 @@ export interface PublicDocumentNoteInput extends UniverDocumentBodyResources {
   customMark?: string
   referenceTextStyle?: UniverBodyRecord
   showBodyReference?: boolean
+  officeStudio?: UniverBodyRecord
 }
 export type DocumentNoteContentInput = PublicDocumentNoteInput | DocumentNoteInsertOptions
 export interface PublicDocumentNoteDecoration extends UniverDocumentBody, UniverDocumentBodyResources {}
@@ -53,15 +55,18 @@ function referenceStyleFrom(value: unknown, defaults: DocumentDefaultStyle): Doc
   return result
 }
 
-export function documentNoteInputFromPublic(model: DocumentModel, input?: DocumentNoteContentInput): DocumentNoteInsertOptions | undefined {
+export function documentNoteInputFromPublic(model: DocumentModel, input?: DocumentNoteContentInput, note?: DocumentBodyDecodeOptions['note'], bodyOptions: Partial<DocumentBodyDecodeOptions> = {}): DocumentNoteInsertOptions | undefined {
   if (input === undefined) return undefined
   assertDocumentNoteSerializable(input)
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('注释输入必须为对象。')
   const raw = bodyRecord(input), defaults = documentDefaultStyle(model)
   const next = cloneModel(raw)
+  const provenance = documentBodyOfficeSource(raw, '注释')
+  if (Object.keys(provenance).length) next.metadata = { ...documentBodySourceMetadata(provenance.metadata, '注释', ['univerDocumentSource', 'univerBodySource']), ...bodyRecord(raw.metadata) }
+  delete next.officeStudio
   if (raw.body !== undefined) {
     if (raw.content !== undefined || raw.text !== undefined) throw new TypeError('公开注释 body 与本地文字/块输入不能同时提供。')
-    const decoded = decodeDocumentBody(raw.body, resourcesFrom(raw), { defaults })
+    const decoded = decodeDocumentBody(raw.body, resourcesFrom(raw), { ...bodyOptions, defaults, note })
     next.content = decoded.content
     if (decoded.contentControls.length) next.contentControls = decoded.contentControls
     delete next.body
@@ -71,7 +76,7 @@ export function documentNoteInputFromPublic(model: DocumentModel, input?: Docume
   for (const key of ['tableSource', 'drawings', 'drawingsOrder', 'lists']) delete next[key]
   if (raw.referenceTextStyle !== undefined) {
     next.referenceTextStyle = referenceStyleFrom(raw.referenceTextStyle, defaults)
-    next.metadata = { ...bodyRecord(raw.metadata), univerReferenceTextStyle: cloneModel(raw.referenceTextStyle) }
+    next.metadata = { ...bodyRecord(next.metadata), univerReferenceTextStyle: cloneModel(raw.referenceTextStyle) }
   }
   if (raw.settings !== undefined) {
     const decoded = documentNoteSettingsFromPublic(model, raw.settings as DocumentNoteSettingsInput | null)
@@ -85,7 +90,7 @@ export function documentNoteInputFromPublic(model: DocumentModel, input?: Docume
 export function documentNoteToPublic(model: DocumentModel, note: DocumentNote, type: 'footnote' | 'endnote'): DocumentNoteInfo {
   const defaults = documentDefaultStyle(model), detached = cloneModel(note)
   const content = detached.content ?? { blocks: [createParagraph(note.text, defaults.text)], runs: [], paragraphs: [] }
-  const publicData = encodeDocumentBody(content, defaults, documentBodyContentControls(content, model.contentControls))
+  const publicData = encodeDocumentBody(content, defaults, documentBodyContentControls(content, model.contentControls), { note: { kind: type, id: note.id } })
   const style = detached.referenceTextStyle === undefined ? undefined : {
     ...cloneModel(bodyRecord(detached.metadata?.univerReferenceTextStyle)), ...detached.referenceTextStyle,
     ...documentRunStyleToBody(createRun('', detached.referenceTextStyle)),
@@ -94,7 +99,7 @@ export function documentNoteToPublic(model: DocumentModel, note: DocumentNote, t
 }
 
 /** Decorations use a direct IDocumentBody with tableSource, rather than a nested body wrapper. */
-export function documentNoteSettingsFromPublic(model: DocumentModel, input: DocumentNoteSettingsInput | null): {
+export function documentNoteSettingsFromPublic(model: DocumentModel, input: DocumentNoteSettingsInput | null, bodyOptions: Partial<DocumentBodyDecodeOptions> = {}): {
   settings: DocumentNoteSettingsValue | null
   decorationContentControls?: DocumentNoteDecorationControls
 } {
@@ -108,7 +113,7 @@ export function documentNoteSettingsFromPublic(model: DocumentModel, input: Docu
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('注释分隔内容必须为对象。')
     const raw = bodyRecord(value)
     if (Object.hasOwn(raw, 'dataStream')) {
-      const decoded = decodeDocumentBody(raw, resourcesFrom(raw), { defaults: documentDefaultStyle(model) })
+      const decoded = decodeDocumentBody(raw, resourcesFrom(raw), { ...bodyOptions, defaults: documentDefaultStyle(model) })
       settings[key] = decoded.content
       if (decoded.contentControls.length) controls[key] = decoded.contentControls
     }

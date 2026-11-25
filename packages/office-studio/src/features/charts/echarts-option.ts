@@ -36,6 +36,10 @@ import { createChartSankeyHitIndex, createChartSankeyTopology, type ChartSankeyP
 import { chartHeatmapExtent } from './chart-heatmap'
 import { chartHistogramBinGap } from './chart-histogram'
 import { chartCandlestickMode, chartCandlestickState, chartCandlestickStyle } from './chart-candlestick'
+import type { ChartTreemapPointerRuntime } from './echarts-treemap-option'
+import type { ChartSunburstPointerRuntime } from './echarts-sunburst-option'
+import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
+import { createChartChordHitIndex, createChartChordTopology, type ChartChordPointerRuntime } from './chart-chord-interaction'
 
 export type ChartEChartsOption = ComposeOption<
   | BarSeriesOption | LineSeriesOption | PieSeriesOption | RadarSeriesOption | ScatterSeriesOption | BoxplotSeriesOption
@@ -46,7 +50,7 @@ export type ChartEChartsOption = ComposeOption<
   /** Authored dependencies used by the bitmap cache, including formatter closures. Removed before ECharts.setOption. */
   officeChartKey?: string
   /** Transient surface interaction metadata. Removed before signature generation and setOption. */
-  officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime
+  officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime
 }
 
 export type ChartEChartsTheme = ChartRenderTheme
@@ -69,15 +73,19 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     const layout = layoutDerivedChartData(derived, localChart, palette)
     const sankeyScene = layout.sankey ? createChartSankeyScene(data, localChart, layout.sankey,
       chart.options?.appearance?.font?.color ?? theme.textColor ?? '#64748b', palette, layout.frame) : undefined
-    const commands = drawDerivedChartData(derived, localChart, theme, palette, layout, sankeyScene)
-    const sankeyGraphics = sankeyScene?.commands.length ? chartSankeyGraphics(commands, sankeyScene, chart.id) : undefined
-    const pointerRuntime: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | undefined = sankeyGraphics
-      ? { mode: 'sankey', groupId: sankeyGraphics.groupId, zOffset: sankeyGraphics.zOffset, scene: sankeyScene!,
+    const chordScene = layout.chord ? createChartChordScene(data, localChart, layout.chord, theme, palette, layout.frame) : undefined
+    const commands = drawDerivedChartData(derived, localChart, theme, palette, layout, sankeyScene, chordScene)
+    const contentGraphics = sankeyScene?.commands.length ? chartContentGraphics(commands, sankeyScene, chart.id, 'sankey')
+      : chordScene?.commands.length ? chartContentGraphics(commands, chordScene, chart.id, 'chord') : undefined
+    const pointerRuntime: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartChordPointerRuntime | undefined = contentGraphics && sankeyScene
+      ? { mode: 'sankey', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: sankeyScene,
         hitIndex: createChartSankeyHitIndex(sankeyScene!.layout), topology: createChartSankeyTopology(sankeyScene!.layout) }
-      : pointerEnabled ? { mode: 'graphic', geometry: chartAxisPointerGeometry(data, localChart, layout, theme) } : undefined
+      : contentGraphics && chordScene ? { mode: 'chord', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: chordScene,
+        hitIndex: createChartChordHitIndex(chordScene.layout), topology: createChartChordTopology(chordScene.layout) }
+        : pointerEnabled ? { mode: 'graphic', geometry: chartAxisPointerGeometry(data, localChart, layout, theme) } : undefined
     return {
       animation: false, backgroundColor: chart.options?.appearance?.background ?? theme.backgroundColor ?? 'transparent',
-      graphic: { elements: sankeyGraphics?.elements ?? chartGraphics(commands, chart.id) }, officeChartKey,
+      graphic: { elements: contentGraphics?.elements ?? chartGraphics(commands, chart.id) }, officeChartKey,
       ...(pointerRuntime ? { officeChartPointer: pointerRuntime } : {}),
     }
   }
@@ -108,7 +116,8 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   // ECharts tooltip.axisPointer has priority over the component defaults for both cross axes.
   if (pointerConfig) tooltip.axisPointer = { type: 'cross', lineStyle: pointerConfig.lineStyle, crossStyle: pointerConfig.lineStyle,
     label: pointerConfig.label, animation: false }
-  const pointerRuntime: ChartAxisPointerRuntime | undefined = pointerEnabled ? isRadar || chart.type === 'heatmap' || dates
+  const pointerRuntime: ChartAxisPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | undefined = chart.type === 'treemap' ? { mode: 'treemap' }
+    : chart.type === 'sunburst' ? { mode: 'sunburst' } : pointerEnabled ? isRadar || chart.type === 'heatmap' || dates
     ? { mode: 'graphic', geometry: chartAxisPointerGeometry(data, localChart, sharedLayout!, theme) }
     : { mode: 'native' } : undefined
   if (pointerRuntime?.mode === 'graphic' && pointerRuntime.geometry.heatmap) context.heatmapScale = pointerRuntime.geometry.heatmap.scale
@@ -192,6 +201,9 @@ function requiresGraphicLabel(label: ChartLabelOptions | undefined): boolean {
 }
 
 function requiresGraphicChart(chart: ChartModel, data: ChartData, boxes?: readonly ChartBoxplotDistribution[], cumulativePercent?: readonly number[]): boolean {
+  // Marked hierarchy adapters provide complete labels/backgrounds and native
+  // pattern tiles, retaining native hit/ancestor semantics for these styles.
+  if (chart.type === 'treemap' || chart.type === 'sunburst') return false
   const radar = chart.type === 'radar' ? chartRadarExtent(data, chart.yAxis) : undefined
   const pareto = chart.type === 'pareto' ? chartParetoCumulativeStyle(chart, chartPalette(chart)) : undefined
   const cumulativeAxis = chart.options?.rightYAxis
@@ -284,12 +296,12 @@ export function chartGraphics(commands: DrawCommand[], chartId: string, zOffset 
 
 /** Only this group is replaced on hover/drag; the frame, titles and legend
  * keep their existing graphic elements and the authored cache signature. */
-function chartSankeyGraphics(commands: DrawCommand[], scene: ChartSankeyScene, chartId: string): {
+function chartContentGraphics(commands: DrawCommand[], scene: ChartSankeyScene | ChartChordScene, chartId: string, mode: 'sankey' | 'chord'): {
   elements: NonNullable<GraphicComponentOption['elements']>; groupId: string; zOffset: number
 } {
   const start = commands.indexOf(scene.commands[0]!), end = start + scene.commands.length
-  if (start < 0) throw new TypeError('桑基图场景与绘制命令不匹配。')
-  const groupId = `${chartId}:sankey-content`, elements = chartGraphics(commands.slice(0, start), chartId)
+  if (start < 0) throw new TypeError('图表内容场景与绘制命令不匹配。')
+  const groupId = `${chartId}:${mode}-content`, elements = chartGraphics(commands.slice(0, start), chartId)
   elements.push({ type: 'group', id: groupId, silent: true, children: chartGraphics(scene.commands, groupId, start) })
   for (const element of chartGraphics(commands.slice(end), `${chartId}:chrome`, end)) elements.push(element)
   return { elements, groupId, zOffset: start }

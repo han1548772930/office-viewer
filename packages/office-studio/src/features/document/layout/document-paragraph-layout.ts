@@ -32,6 +32,8 @@ export function paragraphGeometry(block: DocumentBlock, list: ParagraphListMarke
     markerFont = runFont(createRun('', { fontFamily: list.fontFamily, fontSize: list.fontSize, bold: list.bold, italic: list.italic }))
     markerHeight = list.picture ? list.picture.heightPx ?? list.fontSize * 4 / 3 : list.fontSize * 4 / 3
     markerWidth = list.picture ? list.picture.widthPx ?? markerHeight : measurer.measure(list.marker, markerFont)
+    if (list.alignment === 'center') markerIndent -= markerWidth / 2
+    else if (list.alignment === 'right' || list.alignment === 'end') markerIndent -= markerWidth
     firstIndent = Math.max(indent, markerIndent + markerWidth + (markerWidth ? list.gap : 0))
   } else if (block.type === 'checklist') {
     indent += 28 * (block.level + 1)

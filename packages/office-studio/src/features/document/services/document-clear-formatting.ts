@@ -142,6 +142,8 @@ function clearedRun(run: DocumentRun, defaults: DocumentDefaultStyle['text'], di
   if (run.metadata) {
     const metadata = { ...run.metadata }
     for (const key of ['bold', 'italic', 'underline', 'strike', 'color', 'fontFamily', 'eastAsiaFontFamily', 'fontSize', 'highlight', 'verticalAlign']) delete metadata[key]
+    delete metadata.univerTextStyle
+    delete metadata.univerTextStyleResolution
     if (defaults.highlight) metadata.highlight = defaults.highlight
     if (disableCodeSyntax) metadata.codeSyntaxHighlight = false
     if (hasStorySourceFormat(metadata)) metadata.officeStoryTextFormatCleared = true

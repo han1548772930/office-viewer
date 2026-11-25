@@ -85,7 +85,7 @@ test('namespace and leaf-text aliases update a header peer, XML and caches in on
       const changed = opened.document.getContentControl('origin').setValue(value), after = f.copy(opened.document.getModel()), stack = f.history(opened)
       opened.document.undo(); const undone = f.copy(opened.document.getModel())
       opened.document.redo(); const redone = f.copy(opened.document.getModel())
-      const saved = f.copy(opened.document.save()); reopened = f.open(saved)
+      const saved = f.copy(opened.document.saveModel()); reopened = f.open(saved)
       return { changed, before, after, undone, redone, stack, values: f.xmlValues(after), headerText: f.text(after, 'header'),
         reopened: f.copy(reopened.document.getModel()), reopenedStack: f.history(reopened), errors: opened.studio.getEventListenerErrors().length }
     } finally { opened.dispose(); reopened?.dispose() }

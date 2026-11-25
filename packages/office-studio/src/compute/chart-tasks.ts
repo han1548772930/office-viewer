@@ -49,6 +49,11 @@ function isJob(value: unknown): value is ChartStatisticsJob {
         && index(value.labelCount, COMPUTE_LIMITS.maxElements)
     case 'waterfall':
       return keys(value, [...common, 'totalColumn']) && optionalIndex(value.totalColumn)
+    case 'chord':
+      return keys(value, [...common, 'sourceColumn', 'targetColumn', 'labelCount', 'startAngle', 'clockwise', 'padAngle', 'minAngle'])
+        && index(value.sourceColumn) && index(value.targetColumn) && index(value.labelCount, COMPUTE_LIMITS.maxRows * 2)
+        && finite(value.startAngle) && typeof value.clockwise === 'boolean'
+        && finite(value.padAngle) && value.padAngle >= 0 && finite(value.minAngle) && value.minAngle >= 0
     case 'waterfallLayout':
       return keys(value, [...common, 'seriesIndices', 'stackType', 'useSubtotal', 'totalColumns'])
         && isBoundedDenseArray(value.seriesIndices, CHART_COMPUTE_LIMITS.maxSeries,
@@ -97,6 +102,11 @@ export function isChartStatisticsParams(value: unknown): value is ChartStatistic
       if (columns.some(column => column >= value.columnCount) || new Set(columns).size !== columns.length
         || job.keyCount > value.rowCount * job.hierarchyColumns.length || job.labelCount > value.rowCount * job.hierarchyColumns.length) return false
     }
+    if (job.kind === 'chord') {
+      const columns = [job.sourceColumn, job.targetColumn, value.series[job.seriesIndex]!.column]
+      if (columns.some(column => column >= value.columnCount) || new Set(columns).size !== columns.length
+        || job.labelCount > value.rowCount * 2) return false
+    }
     if (job.kind === 'errorBars') {
       if (job.direction === 'x' && value.series[job.seriesIndex]?.xColumn === undefined) return false
       if (job.valueType === 'cust') {
@@ -125,6 +135,7 @@ export function chartOutputCapacity(job: ChartStatisticsJob, rows: number): { va
       const nodes = rows * job.hierarchyColumns.length
       return { values: nodes * 2, indices: 2 + nodes * 4 + rows, scratch: nodes * 256 + (job.hierarchyColumns.length + 1) * 64 }
     }
+    case 'chord': return { values: rows * 11, indices: 2 + rows * 4, scratch: rows * 1024 }
     case 'waterfall': return { values: rows * 3, indices: rows * 2, scratch: 0 }
     case 'waterfallLayout': {
       const points = rows === 0 ? 0 : rows * job.seriesIndices.length + (job.useSubtotal ? job.stackType === 'stacked' ? 1 : job.seriesIndices.length : 0)

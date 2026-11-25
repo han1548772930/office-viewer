@@ -9,7 +9,7 @@ import type { DocumentPermissionContext } from '../../features/document/permissi
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
 const props = defineProps<{ open: boolean; model: DocumentModel; labels?: Record<string, string>; permission?: DocumentPermissionContext; disabled?: boolean; error?: string }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [kind: DocumentNoteKind, values: Record<string, string>]; remove: [kind: DocumentNoteKind, id: string]; navigate: [kind: DocumentNoteKind, id: string]; edit: [kind: DocumentNoteKind, id: string] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [kind: DocumentNoteKind, values: Record<string, string>]; remove: [kind: DocumentNoteKind, id: string]; navigate: [kind: DocumentNoteKind, id: string]; edit: [kind: DocumentNoteKind, id: string]; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const { token } = theme.useToken()
 const active = ref<DocumentNoteKind>('footnote')
@@ -37,7 +37,7 @@ function apply() {
 </script>
 
 <template>
-  <Modal :open="open" :title="t('doc.notes.title', '脚注和尾注')" :width="720" @cancel="emit('update:open', false)">
+  <Modal :open="open" :title="t('doc.notes.title', '脚注和尾注')" :width="720" :focus-trigger-after-close="false" :after-close="() => emit('closed')" @cancel="emit('update:open', false)">
     <Tabs v-model:active-key="active" :items="[{ key: 'footnote', label: `${t('doc.notes.footnotes', '脚注')} (${Object.keys(model.footnotes ?? {}).length})` }, { key: 'endnote', label: `${t('doc.notes.endnotes', '尾注')} (${Object.keys(model.endnotes ?? {}).length})` }]" />
     <Alert v-if="error || conflicts.length" type="error" show-icon :message="error || '注释已被其他操作修改，请在画布中核对后再应用。'" />
     <Form :model="drafts" class="notes-list" layout="vertical" @submit.prevent>

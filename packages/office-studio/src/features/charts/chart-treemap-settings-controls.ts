@@ -42,7 +42,8 @@ export function chartTreemapPattern(config: ChartConfig): ChartLabelPattern | un
   return value && typeof value === 'object' && value.type === 'pattern' ? value : undefined
 }
 export function setChartTreemapBackground(config: ChartConfig, value: ChartTreemapLabelOptions['backgroundColor']): void {
-  label(config).backgroundColor = value === undefined ? undefined : cloneChartOptions({ treemap: { label: { backgroundColor: value } } })!.treemap!.label!.backgroundColor
+  const next = value === undefined ? undefined : cloneChartOptions({ treemap: { label: { backgroundColor: value } } })!.treemap!.label!.backgroundColor
+  label(config).backgroundColor = next
 }
 export function setChartTreemapBackgroundMode(config: ChartConfig, mode: ChartTreemapBackgroundMode): void {
   if (mode === chartTreemapBackgroundMode(config)) return

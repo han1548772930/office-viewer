@@ -6,6 +6,7 @@ import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPrep
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 import { chartMapSteps, chartNumericFieldSteps, chartProjectionSourceBytes } from './chart-data-preparation'
 import { chartHierarchyChartDataSteps, chartHierarchyResultSteps, chartHierarchyValueField } from './chart-hierarchy-data'
+import { chartChordChartDataSteps, chartChordMapping, chartChordResultSteps } from './chart-chord-data'
 export { chartHierarchyData, chartHierarchyDataSteps, chartHierarchyValueField } from './chart-hierarchy-data'
 
 export interface ChartRecords {
@@ -72,6 +73,10 @@ export function readSpecialChartData(source: ChartRecords, chart: ChartDataBindi
 export function* readSpecialChartDataSteps(source: ChartRecords, chart: ChartDataBinding,
   context: ChartComputePreparationContext = {}): Generator<void, ChartData | undefined, void> {
   const shape = resolveChartType(chart.type).dataShape
+  if (chart.type === 'chord') {
+    const result = yield* chartChordResultSteps(source, chart, context)
+    return yield* chartChordChartDataSteps(source, result)
+  }
   if (shape === 'bubble') {
     const mapping = chartBubbleMapping(source, chart)
     const groups = new Map<string, { field: number; name: string; values: Array<number | null>; xValues: Array<number | null>; sizeValues: Array<number | null> }>()
@@ -155,6 +160,7 @@ export function chartBubbleMapping(source: ChartRecords, chart: ChartDataBinding
 }
 
 export function chartEdgeMapping(source: ChartRecords, chart: ChartDataBinding): NonNullable<NonNullable<ChartSemanticOptions['mapping']>['edge']> {
+  if (chart.type === 'chord') return chartChordMapping(source, chart)
   const mapping = chart.options?.mapping?.edge ?? { sourceIndex: chart.categoryField, targetIndex: chart.valueFields[0] ?? 1, valueIndex: chart.valueFields[1] ?? (source.fields.length > 2 ? 2 : undefined) }
   chartField(source, mapping.sourceIndex, '来源字段'); chartField(source, mapping.targetIndex, '目标字段')
   if (mapping.sourceIndex === mapping.targetIndex) throw new RangeError('来源和目标须使用不同字段。')
@@ -168,10 +174,13 @@ export function chartGraphData(source: ChartRecords, chart: ChartDataBinding): C
 
 export function* chartGraphDataSteps(source: ChartRecords, chart: ChartDataBinding,
   context: ChartComputePreparationContext = {}): Generator<void, ChartGraphData, void> {
+  if (chart.type === 'chord') {
+    const result = yield* chartChordResultSteps(source, chart, context)
+    return { nodes: result.nodes, links: result.links, cyclic: false }
+  }
   const mapping = chartEdgeMapping(source, chart)
   const weights = new Map<string, number>(), links = new Map<string, ChartEdge>()
   const flows = chart.type === 'sankey' ? new Map<string, { incoming: number; outgoing: number }>() : undefined
-  const undirected = chart.type === 'chord'
   const sourceBytes = chartProjectionSourceBytes(source.records.length, source.fields.length)
   let work = 0, nameBytes = 0
   for (const row of source.records) {
@@ -183,7 +192,7 @@ export function* chartGraphDataSteps(source: ChartRecords, chart: ChartDataBindi
     if (value < 0) throw new RangeError('关系图的权重不能为负数。')
     if (!weights.has(first)) nameBytes += first.length * 2
     if (!weights.has(second)) nameBytes += second.length * 2
-    const [sourceName, targetName] = undirected && first > second ? [second, first] : [first, second]
+    const [sourceName, targetName] = [first, second]
     const key = JSON.stringify([sourceName, targetName])
     const link = links.get(key) ?? { source: sourceName, target: targetName, value: 0 }
     link.value = finiteChartValue(link.value + value, '关系边权重合计'); links.set(key, link)

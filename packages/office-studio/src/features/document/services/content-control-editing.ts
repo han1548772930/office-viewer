@@ -10,6 +10,10 @@ import { contentControlCheckboxGlyph, formatContentControlDate, parseContentCont
 import { documentContentControlContainsSelection, documentContentControlTableRowContentSignature } from '../model/content-control-table-rows'
 import { documentContentControlBlockContentSignature, documentContentControlBlocksSelection, documentContentControlBlockTextTargets } from '../model/content-control-block-range'
 import { documentContentControlGroupEditAllowed } from '../model/content-control-group-lock'
+import type { DocumentNoteReferenceOffset } from '../model/document-note-boundary'
+import { compareDocumentNoteBoundaries, remapDocumentNoteBoundaryParagraph } from '../model/document-note-boundary-edit'
+import { documentNoteInsertionBoundary, documentNoteReferenceInsertionAffinity } from '../model/document-note-insertion-affinity'
+import { assignDocumentContentControlNoteBoundaries, documentContentControlNoteBoundaryRanks } from '../model/content-control-note-boundary'
 
 /** Derived caches, property changes and formatting never use the ordinary input finalizer. */
 export const DOCUMENT_CONTENT_CONTROL_TEXT_INPUT_COMMAND_IDS = [
@@ -58,6 +62,7 @@ interface ControlParagraph {
   text: string
   scopeId: string
   blocks: DocumentBlock[]
+  noteReferences: readonly DocumentNoteReferenceOffset[]
 }
 
 function paragraphs(model: DocumentModel): Map<string, ControlParagraph> {
@@ -68,7 +73,7 @@ function paragraphs(model: DocumentModel): Map<string, ControlParagraph> {
   for (const scope of scopes) {
     for (const paragraph of documentTextFieldParagraphs({ blocks: scope.blocks })) {
       if (result.has(paragraph.block.id)) throw new RangeError('内容控件段落 ID 在不同内容区重复：' + paragraph.block.id)
-      result.set(paragraph.block.id, { block: paragraph.block, text: paragraph.text, scopeId: scope.scopeId, blocks: scope.blocks })
+      result.set(paragraph.block.id, { block: paragraph.block, text: paragraph.text, scopeId: scope.scopeId, blocks: scope.blocks, noteReferences: paragraph.noteReferences })
     }
   }
   return result
@@ -81,7 +86,19 @@ function rangeText(paragraph: ControlParagraph | undefined, control: DocumentCon
     || !isDocumentTextBoundary(paragraph.text, start) || !isDocumentTextBoundary(paragraph.text, end)) {
     throw new RangeError('内容控件输入范围不是有效的 UTF-16 区间：' + control.id)
   }
+  documentContentControlNoteBoundaryRanks(control, paragraph.noteReferences)
   return paragraph.text.slice(start, end)
+}
+
+/** Empty reference entities are content even when the displayed string is unchanged. */
+function rangeNoteSignature(paragraph: ControlParagraph, control: DocumentContentControl): string {
+  const range = documentContentControlNoteBoundaryRanks(control, paragraph.noteReferences)
+  const runs = new Map(paragraph.block.runs.map(run => [run.id, run]))
+  return JSON.stringify(paragraph.noteReferences.slice(range.start, range.end).map(reference => {
+    const run = runs.get(reference.runId)
+    if (!run) throw new RangeError('内容控件引用身份不属于真实段落。')
+    return { runId: run.id, noteReference: run.metadata?.noteReference, note: run.metadata?.note }
+  }))
 }
 
 function wrapperLocked(control: DocumentContentControl): boolean {
@@ -184,15 +201,23 @@ function repairInsideInsertion(
     || !sameTarget(selection.anchor, selection.focus) || selection.anchor.offset !== selection.focus.offset) return
   const blockId = selection.focus.cellBlockId ?? selection.focus.blockId, offset = selection.focus.offset
   const original = before.contentControls ?? [], index = new Map(original.map(control => [control.id, control]))
-  const selected = original.filter(control => !control.blockRange && !control.tableRowRange && control.blockId === blockId && !control.metadata?.officeStoryLockSource
-    && (options.activeControlId ? control.id === options.activeControlId && offset >= control.startOffset && offset <= control.endOffset
-      : control.startOffset === offset && control.endOffset === offset))
-    .sort((left, right) => depth(right, index) - depth(left, index))[0]
   const from = source.get(blockId), to = destination.get(blockId)
-  if (!selected || !from || !to || from.scopeId !== to.scopeId) return
+  if (!from || !to || from.scopeId !== to.scopeId) return
   const added = to.text.length - from.text.length
-  if (added <= 0 || to.text.slice(0, offset) !== from.text.slice(0, offset)
+  if (added < 0 || to.text.slice(0, offset) !== from.text.slice(0, offset)
     || to.text.slice(offset + added) !== from.text.slice(offset)) return
+  const target = { id: blockId, text: to.text, noteReferences: to.noteReferences }
+  const affinity = documentNoteReferenceInsertionAffinity(from.noteReferences, [target], offset, added)
+  if (!affinity) return
+  const selected = original.filter(control => {
+    if (control.blockRange || control.tableRowRange || control.blockId !== blockId || control.metadata?.officeStoryLockSource) return false
+    const range = documentContentControlNoteBoundaryRanks(control, from.noteReferences)
+    return options.activeControlId ? control.id === options.activeControlId
+      && compareDocumentNoteBoundaries(control.startOffset, range.start, offset, affinity.sourceRank) <= 0
+      && compareDocumentNoteBoundaries(offset, affinity.sourceRank, control.endOffset, range.end) <= 0
+      : control.startOffset === offset && control.endOffset === offset && range.start === affinity.sourceRank && range.end === affinity.sourceRank
+  }).sort((left, right) => depth(right, index) - depth(left, index))[0]
+  if (!selected) return
   let current: DocumentContentControl | undefined = selected
   const seen = new Set<string>()
   while (current && !seen.has(current.id)) {
@@ -200,9 +225,18 @@ function repairInsideInsertion(
     const mapped = controls.find(control => control.id === current!.id)
     if (!mapped) break
     if (!mapped.blockRange && !mapped.tableRowRange) {
-      if (mapped.blockId !== blockId || current.startOffset > offset || current.endOffset < offset) break
-      mapped.startOffset = current.startOffset
-      mapped.endOffset = current.endOffset + added
+      const range = documentContentControlNoteBoundaryRanks(current, from.noteReferences)
+      if (mapped.blockId !== blockId || compareDocumentNoteBoundaries(current.startOffset, range.start, offset, affinity.sourceRank) > 0
+        || compareDocumentNoteBoundaries(offset, affinity.sourceRank, current.endOffset, range.end) > 0) break
+      let start = remapDocumentNoteBoundaryParagraph(from.noteReferences, current.startOffset, current.startNoteReferenceCount, [target],
+        { paragraph: target, offset: current.startOffset })
+      let end = remapDocumentNoteBoundaryParagraph(from.noteReferences, current.endOffset, current.endNoteReferenceCount, [target],
+        { paragraph: target, offset: current.endOffset + added })
+      const point = compareDocumentNoteBoundaries(current.startOffset, range.start, current.endOffset, range.end) === 0
+      start = documentNoteInsertionBoundary(affinity, current.startOffset, range.start, 'start', point, true) ?? start
+      end = documentNoteInsertionBoundary(affinity, current.endOffset, range.end, 'end', point, true) ?? end
+      assignDocumentContentControlNoteBoundaries(mapped, start, end)
+      documentContentControlNoteBoundaryRanks(mapped, to.noteReferences)
     }
     current = current.parentId ? index.get(current.parentId) : undefined
   }
@@ -322,7 +356,8 @@ export function synchronizeDocumentContentControlsAfterEdit(
     if (!previous || control.metadata?.officeStoryLockSource) continue
     if (previous.type !== control.type) throw new RangeError('正文输入不能改变内容控件类型：' + control.id)
     const from = source.get(previous.blockId), to = destination.get(control.blockId)
-    if (!from && !to && previous.blockId === control.blockId && previous.startOffset === control.startOffset && previous.endOffset === control.endOffset) continue
+    if (!from && !to && previous.blockId === control.blockId && previous.startOffset === control.startOffset && previous.endOffset === control.endOffset
+      && previous.startNoteReferenceCount === control.startNoteReferenceCount && previous.endNoteReferenceCount === control.endNoteReferenceCount) continue
     if (!from || !to || from.scopeId !== to.scopeId) throw new RangeError('正文输入不能把内容控件移到其他内容区：' + control.id)
     if (previous.tableRowRange || control.tableRowRange) {
       if (!previous.tableRowRange || !control.tableRowRange) throw new RangeError('正文输入不能改变内容控件的持久行范围类型：' + control.id)
@@ -340,7 +375,7 @@ export function synchronizeDocumentContentControlsAfterEdit(
       }
       continue
     }
-    let oldText: string, text: string, structureChanged = false
+    let oldText: string, text: string, structureChanged = false, noteEntitiesChanged = false
     if (previous.blockRange || control.blockRange) {
       if (!previous.blockRange || !control.blockRange) throw new RangeError('正文输入不能改变完整块内容控件的范围类型：' + control.id)
       rangeText(from, previous); rangeText(to, control)
@@ -348,8 +383,11 @@ export function synchronizeDocumentContentControlsAfterEdit(
       structureChanged = documentContentControlBlockContentSignature(fromModel, previous.blockRange) !== documentContentControlBlockContentSignature(toModel, control.blockRange)
       oldText = documentContentControlBlockTextTargets(fromModel, previous.blockRange).map(target => runText(runsForTarget(fromModel, target))).join('\n')
       text = documentContentControlBlockTextTargets(toModel, control.blockRange).map(target => runText(runsForTarget(toModel, target))).join('\n')
-    } else { oldText = rangeText(from, previous); text = rangeText(to, control) }
-    if (!structureChanged && oldText === text && !explicitValueChanged(previous, control, options)) continue
+    } else {
+      oldText = rangeText(from, previous); text = rangeText(to, control)
+      noteEntitiesChanged = rangeNoteSignature(from, previous) !== rangeNoteSignature(to, control)
+    }
+    if (!structureChanged && !noteEntitiesChanged && oldText === text && !explicitValueChanged(previous, control, options)) continue
     assertContentEditable(previous, original, before, draft, source, destination, options)
     const explicit = options.origin === 'control-value' && options.controlId === control.id
     const placeholder = explicit && options.placeholderText !== undefined

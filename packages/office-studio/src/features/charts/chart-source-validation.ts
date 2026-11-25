@@ -36,6 +36,7 @@ export function* chartSourceValidationSteps(chart: ChartModel, source: ChartData
   if (type === 'radar' && axis.scaleType !== 'linear') throw new TypeError('Radar charts require a linear value axis')
   if (data.visibleFields !== undefined && (!data.categories.length || !data.series.length)) return
   if (descriptor.dataShape === 'hierarchy' && data.hierarchy && !data.hierarchy.length && data.series.length === 1) return
+  if (type === 'chord' && data.chord && !data.chord.links.length && data.series.length === 1) return
   if (!data.categories.length || !data.series.length) throw new RangeError('Chart source must contain at least one category and value series')
   if (type === 'radar' && data.categories.length < 3) throw new RangeError('Radar charts require at least three categories')
   const paired = type === 'scatter' || type === 'bubble'

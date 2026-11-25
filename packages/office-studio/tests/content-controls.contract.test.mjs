@@ -51,7 +51,7 @@ test('text content controls preserve their range and values through the public f
   assert.equal(control.getText(), 'World')
   assert.equal(document.redo(), true)
   assert.equal(document.getText(), 'Hello Mira')
-  assert.equal(document.save().contentControls[0].value, 'Mira')
+  assert.equal(document.saveModel().contentControls[0].value, 'Mira')
   studio.dispose()
 })
 

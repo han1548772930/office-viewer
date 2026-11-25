@@ -4,6 +4,7 @@ import { isChartFillPatternPreset } from './chart-fill-pattern'
 import { validateChartPlotArea } from './chart-plot-area'
 import { CHART_POINT_SHAPES } from './chart-markers'
 import { CHART_LABEL_POSITION_CHOICES, chartLabelContentMask } from './chart-labels'
+import { validateChartChordColor } from './chart-chord-color'
 
 export function validateChartPalette(palette: readonly string[] | undefined): void {
   if (palette === undefined) return
@@ -13,7 +14,7 @@ export function validateChartPalette(palette: readonly string[] | undefined): vo
 
 /** Validate authored values before cloning, reading data or committing a
  * candidate. Unknown serializable fields are retained for future snapshots. */
-export function validateChartOptions(options: ChartSemanticOptions): void {
+export function validateChartOptions(options: ChartSemanticOptions, { partial = false }: { partial?: boolean } = {}): void {
   plain(options, '图表配置')
   visitValues(options)
   enumeration(options.invalidValueStrategy, ['zero', 'break', 'link'], '空值处理')
@@ -57,12 +58,18 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   if (mapping) {
     boolean(mapping.useDateAxis, '使用日期轴')
     indexes(mapping.categoryIndexes, '分类字段', true); indexes(mapping.hierarchyIndexes, '层级字段', true)
-    for (const key of ['bubble', 'edge', 'candlestick', 'gauge'] as const) {
+    for (const key of ['bubble', 'edge', 'chord', 'candlestick', 'gauge'] as const) {
       const role = mapping[key]
       optionalObject(role, `${key} 字段映射`)
       if (role) for (const [name, value] of Object.entries(role)) if (name.endsWith('Index')) optionalInteger(value, 0, 1_048_575, `${key}.${name}`)
     }
     if (mapping.bubble) { integer(mapping.bubble.xIndex, 0, 1_048_575, 'bubble.xIndex'); integer(mapping.bubble.yIndex, 0, 1_048_575, 'bubble.yIndex') }
+    if (mapping.chord) {
+      integer(mapping.chord.sourceIndex, 0, 1_048_575, 'chord.sourceIndex')
+      integer(mapping.chord.targetIndex, 0, 1_048_575, 'chord.targetIndex')
+      if (mapping.chord.sourceIndex === mapping.chord.targetIndex || mapping.chord.valueIndex === mapping.chord.sourceIndex
+        || mapping.chord.valueIndex === mapping.chord.targetIndex) throw new RangeError('和弦来源、目标和权重须使用互不重复的字段。')
+    }
   }
   const threeD = options.threeD
   if (threeD) {
@@ -184,7 +191,11 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   if (options.heatmap?.min !== undefined && options.heatmap.max !== undefined && options.heatmap.min > options.heatmap.max) throw new RangeError('热力图最小值不能大于最大值。')
   enumeration(options.treemap?.parentLabelLayout, ['banner', 'overlapping', 'none'], '树图父级标签'); label(options.treemap?.label, '树图标签')
   validateChartTreemapBackground(options.treemap?.label?.backgroundColor)
-  label(options.sunburst?.label, '旭日图标签'); optionalObject(options.sunburst?.centerLabel, '旭日图中心标签'); boolean(options.sunburst?.centerLabel?.visible, '旭日图中心标签显隐'); font(options.sunburst?.centerLabel?.font, '旭日图中心字体')
+  label(options.sunburst?.label, '旭日图标签')
+  enumeration(options.sunburst?.label?.position, ['inside', 'outside'], '旭日图标签位置')
+  validateChartTreemapBackground(options.sunburst?.label?.backgroundColor, '旭日图标签背景')
+  font(options.sunburst?.centerLabel, '旭日图中心标签'); boolean(options.sunburst?.centerLabel?.visible, '旭日图中心标签显隐')
+  string(options.sunburst?.centerLabel?.format, '旭日图中心数字格式'); font(options.sunburst?.centerLabel?.font, '旭日图中心旧版字体')
   const gauge = options.gauge
   if (gauge) {
     enumeration(gauge.mode, ['modern', 'classic', 'pointer', 'progress'], '仪表模式'); optionalNumber(gauge.min, -Number.MAX_VALUE, Number.MAX_VALUE, '仪表最小刻度'); optionalNumber(gauge.max, -Number.MAX_VALUE, Number.MAX_VALUE, '仪表最大刻度')
@@ -211,10 +222,31 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
   }
   const chord = options.chord
   if (chord) {
-    optionalNumber(chord.startAngle, -360, 360, '和弦图起始角'); boolean(chord.clockwise, '和弦图方向'); optionalNumber(chord.padAngle, 0, 45, '和弦图节点间距')
-    optionalNumber(chord.innerRadiusRatio, 0.05, 0.95, '和弦图内半径'); optionalNumber(chord.outerRadiusRatio, 0.05, 1, '和弦图外半径'); optionalNumber(chord.ribbonOpacity, 0, 1, '和弦带不透明度')
-    if ((chord.innerRadiusRatio ?? 0.66) >= (chord.outerRadiusRatio ?? 0.73)) throw new RangeError('和弦图内半径须小于外半径，包括未设置端使用的默认值。')
-    label(chord.label, '和弦图标签')
+    optionalObject(chord.layout, '和弦图布局'); optionalObject(chord.node, '和弦图节点')
+    optionalObject(chord.ribbon, '和弦图连接带'); optionalObject(chord.emphasis, '和弦图悬浮强调')
+    for (const layout of [chord, chord.layout]) {
+      if (!layout) continue
+      optionalNumber(layout.startAngle, -Number.MAX_VALUE, Number.MAX_VALUE, '和弦图起始角'); boolean(layout.clockwise, '和弦图方向')
+      optionalNumber(layout.padAngle, 0, Number.MAX_VALUE, '和弦图节点间距'); optionalNumber(layout.minAngle, 0, Number.MAX_VALUE, '和弦图最小角度')
+      optionalNumber(layout.innerRadiusRatio, 0, 1, '和弦图内半径'); optionalNumber(layout.outerRadiusRatio, 0, 1, '和弦图外半径')
+    }
+    // Partial setters can change one radius while retaining the other authored
+    // radius. Validate their relationship only after the candidate is merged.
+    const inner = chord.layout?.innerRadiusRatio ?? chord.innerRadiusRatio ?? 0.58
+    const outer = chord.layout?.outerRadiusRatio ?? chord.outerRadiusRatio ?? 0.78
+    if (!partial && inner >= outer) throw new RangeError('和弦图内半径须小于外半径，包括未设置端使用的默认值。')
+    validateChartChordColor(chord.node?.color, '和弦图节点颜色'); optionalNumber(chord.node?.opacity, 0, 1, '和弦图节点不透明度')
+    validateChartChordColor(chord.node?.borderColor, '和弦图节点边框颜色'); optionalNumber(chord.node?.borderWidth, 0, Number.MAX_VALUE, '和弦图节点边框宽度')
+    enumeration(chord.node?.borderType, ['solid', 'dashed', 'dotted'], '和弦图节点边框线型')
+    font(chord.label, '和弦图标签', 0, Number.MAX_VALUE, validateChartChordColor); boolean(chord.label?.visible, '和弦图标签显隐')
+    if (chord.label?.family !== undefined && !chord.label.family.trim()) throw new TypeError('和弦图标签字体须为非空字符串。')
+    enumeration(chord.label?.position, ['inside', 'outside'], '和弦图标签位置')
+    optionalNumber(chord.label?.rotation, -Number.MAX_VALUE, Number.MAX_VALUE, '和弦图标签旋转')
+    optionalNumber(chord.label?.distance, 0, Number.MAX_VALUE, '和弦图标签距离')
+    optionalNumber(chord.ribbonOpacity, 0, 1, '和弦带旧版不透明度'); optionalNumber(chord.ribbon?.opacity, 0, 1, '和弦带不透明度')
+    enumeration(chord.ribbon?.color, ['source', 'target', 'gradient'], '和弦带颜色方式')
+    optionalNumber(chord.ribbon?.width, 0, Number.MAX_VALUE, '和弦带边框宽度'); enumeration(chord.ribbon?.type, ['solid', 'dashed', 'dotted'], '和弦带边框线型')
+    enumeration(chord.emphasis?.focus, ['adjacency', 'self', 'none'], '和弦图悬浮焦点')
   }
   const wordCloud = options.wordCloud
   if (wordCloud) {
@@ -244,15 +276,14 @@ export function validateChartOptions(options: ChartSemanticOptions): void {
 export function validateChartAxis(axisOptions: ChartAxisOptions | undefined, name: string): void { axis(axisOptions, name) }
 export function validateChartFont(fontOptions: ChartFontOptions | undefined, name: string): void { font(fontOptions, name) }
 
-/** Public label backgrounds retain gradients and imported pattern names. The
- * renderer follows the fixed mean-color treatment for patterns. */
-export function validateChartTreemapBackground(value: unknown): void {
+/** Both hierarchy chart labels accept public colors, gradients and patterns. */
+export function validateChartTreemapBackground(value: unknown, name = '树图标签背景'): void {
   if (value === undefined) return
   if (value && typeof value === 'object' && 'type' in value && value.type === 'pattern') {
-    plain(value, '树图标签背景图案')
-    if (typeof value.preset !== 'string' || !value.preset.trim() || value.preset.length > 128) throw new TypeError('树图标签背景图案需要有效预设名称。')
-    color(value.foregroundColor, '树图标签图案前景色', true); color(value.backgroundColor, '树图标签图案背景色', true)
-  } else validateChartColor(value, '树图标签背景')
+    plain(value, `${name}图案`)
+    if (typeof value.preset !== 'string' || !value.preset.trim() || value.preset.length > 128) throw new TypeError(`${name}图案需要有效预设名称。`)
+    color(value.foregroundColor, `${name}图案前景色`, true); color(value.backgroundColor, `${name}图案底色`, true)
+  } else validateChartColor(value, name)
 }
 
 function visitValues(options: unknown): void {
@@ -271,10 +302,10 @@ function visitValues(options: unknown): void {
   }
   visit(options, '图表', 0)
 }
-function font(value: ChartFontOptions | undefined, name: string): void {
+function font(value: ChartFontOptions | undefined, name: string, minFontSize = 1, maxFontSize = 256, validateColor = color): void {
   optionalObject(value, name)
   if (!value) return
-  string(value.family, `${name}字体`); color(value.color, `${name}颜色`); optionalNumber(value.fontSize, 1, 256, `${name}字号`); boolean(value.bold, `${name}粗体`); boolean(value.italic, `${name}斜体`)
+  string(value.family, `${name}字体`); validateColor(value.color, `${name}颜色`); optionalNumber(value.fontSize, minFontSize, maxFontSize, `${name}字号`); boolean(value.bold, `${name}粗体`); boolean(value.italic, `${name}斜体`)
 }
 function line(value: ChartLineOptions | undefined, name: string): void {
   optionalObject(value, name)

@@ -1,0 +1,64 @@
+{
+  "phase": "P26 implementation drafts; not executed",
+  "cases": [
+    {
+      "name": "signed-parent-facts-palette-and-invalid-weight-carry",
+      "depth": 2,
+      "keyCount": 5,
+      "rows": [
+        { "weight": 5, "keys": [0, 1] },
+        { "weight": -2, "keys": [0, 1] },
+        { "weight": 20, "keys": [2, 3] },
+        { "weight": 4, "keys": [0, null] },
+        { "weight": -3, "keys": [2, null] },
+        { "weight": -10, "keys": [0, 4] },
+        { "weight": 0, "keys": [2, null] },
+        { "weight": null, "keys": [2, 3] },
+        { "weight": 2, "keys": [null, null] }
+      ],
+      "values": [19, -3, 22, 22, 11, 4, 7, 7],
+      "indices": [4, 2, 4294967295, 2, 2, 2, 0, 3, 3, 3, 4294967295, 0, 0, 0, 2, 1, 1, 1, 2, 0],
+      "validSampleCount": 8,
+      "available": true
+    },
+    {
+      "name": "scoped-carry-rejects-leaking-descendants-and-keeps-terminal-parent-facts",
+      "depth": 3,
+      "keyCount": 11,
+      "rows": [
+        { "weight": 10, "keys": [null, 9, 10] },
+        { "weight": 5, "keys": [0, 1, 2] },
+        { "weight": 7, "keys": [null, null, 3] },
+        { "weight": 10, "keys": [4, null, 6] },
+        { "weight": 3, "keys": [null, 5, null] },
+        { "weight": null, "keys": [4, 5, 7] },
+        { "weight": 4, "keys": [null, null, null] },
+        { "weight": -2, "keys": [4, 8, null] }
+      ],
+      "values": [12, 0, 12, 0, 7, 7, 5, 5, 7, 0, 7, 3, 4, 4],
+      "indices": [7, 2, 4294967295, 0, 0, 0, 0, 1, 1, 1, 1, 3, 3, 3, 1, 2, 2, 2, 4294967295, 4, 4, 4, 4, 5, 5, 5, 5, 7, 7, 6, 0, 4],
+      "validSampleCount": 5,
+      "available": true
+    },
+    {
+      "name": "equal-weights-keep-first-creation-order",
+      "depth": 1,
+      "keyCount": 2,
+      "rows": [{ "weight": 5, "keys": [0] }, { "weight": 5, "keys": [1] }],
+      "values": [5, 5, 5, 5],
+      "indices": [2, 2, 4294967295, 0, 0, 0, 4294967295, 1, 1, 1, 0, 1],
+      "validSampleCount": 2,
+      "available": true
+    },
+    {
+      "name": "zero-and-signed-duplicates-can-prune-the-entire-forest",
+      "depth": 1,
+      "keyCount": 2,
+      "rows": [{ "weight": 0, "keys": [0] }, { "weight": -2, "keys": [1] }, { "weight": 2, "keys": [1] }],
+      "values": [],
+      "indices": [0, 0],
+      "validSampleCount": 3,
+      "available": false
+    }
+  ]
+}

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { test, afterAll } from 'vitest'
 import { createServer } from 'vite'
 import { createBlankDocument } from '../src/domain/model.ts'
-import { createParagraph, createRun, createTable, runsForTarget } from '../src/features/document/model/document-model.ts'
+import { createParagraph, createRun, createTable, runsForTarget, tableForBlock } from '../src/features/document/model/document-model.ts'
+
+// Updated contract drafts. This batch has not run tests, a browser or Office file acceptance.
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { deleteDocumentNote, insertDocumentNote, normalizeDocumentNotes, noteReferencePoint, updateDocumentNote } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/notes/document-notes.ts')
@@ -16,26 +18,42 @@ test('footnote and endnote references, definitions, navigation, and deletion sha
 
   const insertedFootnote = insertDocumentNote(model, selected, 'footnote')
   updateDocumentNote(model, 'footnote', insertedFootnote.note.id, 'Footnote body')
-  const insertedEndnote = insertDocumentNote(model, insertedFootnote.selection, 'endnote')
+  assert.equal(insertedFootnote.host.kind, 'note')
+  assert.equal(insertedFootnote.selection.focus.blockId, model.footnotes[insertedFootnote.note.id].content.blocks[0].id)
+  const footnotePoint = noteReferencePoint(model, model.footnotes[insertedFootnote.note.id])
+  const next = { ...footnotePoint, offset: footnotePoint.offset + 1 }
+  const insertedEndnote = insertDocumentNote(model, { anchor: next, focus: next }, 'endnote')
   updateDocumentNote(model, 'endnote', insertedEndnote.note.id, 'Endnote body')
 
   assert.equal(model.footnotes[insertedFootnote.note.id].text, 'Footnote body')
   assert.equal(model.endnotes[insertedEndnote.note.id].text, 'Endnote body')
   assert.deepEqual(noteReferencePoint(model, insertedFootnote.note), { blockId: paragraph.id, offset: 10 })
-  assert.equal(paragraph.runs.some(run => run.metadata?.note?.noteId === insertedFootnote.note.id), true)
+  assert.equal(model.blocks[0].runs.some(run => run.metadata?.note?.noteId === insertedFootnote.note.id), true)
   assert.equal(deleteDocumentNote(model, 'footnote', insertedFootnote.note.id), true)
   assert.equal(model.footnotes[insertedFootnote.note.id], undefined)
-  assert.equal(paragraph.runs.some(run => run.metadata?.note?.noteId === insertedFootnote.note.id), false)
+  assert.equal(model.blocks[0].runs.some(run => run.metadata?.note?.noteId === insertedFootnote.note.id), false)
 })
 
-test('note insertion rejects selections crossing paragraph or cell boundaries without partial mutation', () => {
+test('cross-paragraph insertion preserves selected text and uses the logical end in either selection direction', () => {
+  for (const reverse of [false, true]) {
   const model = createBlankDocument()
-  const before = structuredClone(model)
   const first = model.blocks[0]
+  first.runs[0].text = 'First paragraph'
   const second = createParagraph('Second paragraph')
   model.blocks.push(second)
-  assert.throws(() => insertDocumentNote(model, { anchor: { blockId: first.id, offset: 0 }, focus: { blockId: second.id, offset: 0 } }, 'footnote'))
-  before.blocks.push(second)
+  const start = { blockId: first.id, offset: 2 }, end = { blockId: second.id, offset: 6 }
+  const inserted = insertDocumentNote(model, reverse ? { anchor: end, focus: start } : { anchor: start, focus: end }, 'footnote')
+  assert.deepEqual(noteReferencePoint(model, inserted.note), end)
+  assert.equal(model.blocks[0].runs.map(run => run.text).join(''), 'First paragraph')
+  assert.equal(model.blocks[1].runs.filter(run => !run.metadata?.note).map(run => run.text).join(''), 'Second paragraph')
+  assert.equal(inserted.host.noteId, inserted.note.id)
+  }
+})
+
+test('insertion rejects a split UTF-16 character without changing any content', () => {
+  const model = createBlankDocument(); model.blocks[0].runs[0].text = 'A😀B'
+  const before = structuredClone(model), point = { blockId: model.blocks[0].id, offset: 2 }
+  assert.throws(() => insertDocumentNote(model, { anchor: point, focus: point }, 'footnote'), /UTF-16/)
   assert.deepEqual(model, before)
 })
 
@@ -74,19 +92,17 @@ test('Univer note records are separated by kind and retain data-stream paragraph
   assert.equal(notes.endnotes['endnote-1'].referenceRunId, endnoteReference.id)
 })
 
-test('explicit parser note collections take precedence when merging Univer note records', () => {
+test('conflicting definitions for the same note kind and identity are rejected instead of discarding one body', () => {
   const model = createBlankDocument()
-  const notes = normalizeDocumentNotes({
+  const before = structuredClone(model.blocks)
+  assert.throws(() => normalizeDocumentNotes({
     footnotes: [{ id: 'shared', text: 'Parser definition' }],
     notes: {
       sharedKey: { noteId: 'shared', type: 'footnote', body: { dataStream: 'Fallback definition\r\n' } },
       extraKey: { noteId: 'extra', type: 'footnote', body: { dataStream: 'Extra definition\r\n' } },
     },
-  }, model.blocks)
-
-  assert.deepEqual(Object.keys(notes.footnotes), ['shared', 'extra'])
-  assert.equal(notes.footnotes.shared.text, 'Parser definition')
-  assert.equal(notes.footnotes.extra.text, 'Extra definition')
+  }, model.blocks), /冲突|重复|conflict/i)
+  assert.deepEqual(model.blocks, before)
 })
 
 test('deleting an imported orphan definition never removes unrelated text', () => {
@@ -96,7 +112,7 @@ test('deleting an imported orphan definition never removes unrelated text', () =
   model.footnotes = { orphan: { id: 'orphan', text: 'Unlinked body', referenceBlockId: '', referenceRunId: '' } }
 
   assert.equal(deleteDocumentNote(model, 'footnote', 'orphan'), true)
-  assert.equal(paragraph.runs[0].text, 'Keep this text')
+  assert.equal(model.blocks[0].runs[0].text, 'Keep this text')
   assert.equal(model.footnotes.orphan, undefined)
 })
 
@@ -130,21 +146,26 @@ test('renumbering preserves legacy references identified only by run id', () => 
 
   assert.equal(deleteDocumentNote(model, 'footnote', 'first'), true)
 
-  assert.equal(second.runs[0].text, '1')
+  assert.equal(model.blocks.find(block => block.id === second.id).runs[0].text, '1')
   assert.deepEqual(noteReferencePoint(model, model.footnotes.second), { blockId: second.id, offset: 0 })
 })
 
-test('inserting a two-digit note keeps the caret after the full reference', () => {
+test('insertion enters the actual note body while callers can advance after a complete two-digit reference', () => {
   const model = createBlankDocument()
   const paragraph = model.blocks[0]
   let selection = { anchor: { blockId: paragraph.id, offset: 0 }, focus: { blockId: paragraph.id, offset: 0 } }
   let inserted
   for (let index = 0; index < 10; index++) {
     inserted = insertDocumentNote(model, selection, 'footnote')
-    selection = inserted.selection
+    assert.equal(inserted.host.noteId, inserted.note.id)
+    assert.equal(inserted.selection.focus.blockId, inserted.note.content.blocks[0].id)
+    const point = noteReferencePoint(model, inserted.note)
+    const reference = model.blocks[0].runs.find(run => run.id === inserted.note.referenceRunId)
+    const after = { ...point, offset: point.offset + reference.text.length }
+    selection = { anchor: after, focus: after }
   }
 
-  assert.equal(paragraph.runs.map(run => run.text).join(''), '12345678910')
+  assert.equal(model.blocks[0].runs.map(run => run.text).join(''), '12345678910')
   assert.deepEqual(selection.focus, { blockId: paragraph.id, offset: 11 })
   assert.deepEqual(noteReferencePoint(model, inserted.note), { blockId: paragraph.id, offset: 9 })
 })
@@ -173,8 +194,9 @@ test('deleting a note removes its reference from a nested table paragraph', () =
   assert.equal(noteReferencePoint(model, model.footnotes.nested), undefined)
   assert.equal(noteReferencePoint(model, model.footnotes.later), undefined)
   assert.equal(deleteDocumentNote(model, 'footnote', 'nested'), true)
-  assert.equal(nestedReference.runs.some(run => run.metadata?.note?.noteId === 'nested'), false)
-  assert.deepEqual(nestedReference.runs.map(run => run.text), [''])
-  assert.equal(laterReference.runs[0].text, '1')
+  const liveNested = tableForBlock(tableForBlock(model.blocks[0]).rows[0].cells[0].blocks[0]).rows[0].cells[0].blocks
+  assert.equal(liveNested[0].runs.some(run => run.metadata?.note?.noteId === 'nested'), false)
+  assert.deepEqual(liveNested[0].runs.map(run => run.text), [''])
+  assert.equal(liveNested[1].runs[0].text, '1')
   assert.equal(model.footnotes.nested, undefined)
 })

@@ -51,7 +51,10 @@ test('all 45 catalog entries retain a finite empty-data scene and an explicit em
 })
 
 test('source hierarchy DFS indices survive treemap area ordering and retain full paths', () => {
-  const nodes = [{ name: 'Small', value: 1, children: [{ name: 'Leaf', value: 1 }] }, { name: 'Large', value: 9, children: [{ name: 'Leaf', value: 9 }] }]
+  const nodes = [
+    { id: 'Small', name: 'Small', value: 1, selfValue: 0, path: ['Small'], children: [{ id: 'Small/Leaf', name: 'Leaf', value: 1, selfValue: 1, path: ['Small', 'Leaf'] }] },
+    { id: 'Large', name: 'Large', value: 9, selfValue: 0, path: ['Large'], children: [{ id: 'Large/Leaf', name: 'Leaf', value: 9, selfValue: 9, path: ['Large', 'Leaf'] }] },
+  ]
   const items = dataModel.chartHierarchyItems(nodes)
   assert.deepEqual(items.map(item => [item.pointIndex, item.rootIndex, item.path]), [[0, 0, ['Small']], [1, 0, ['Small', 'Leaf']], [2, 1, ['Large']], [3, 1, ['Large', 'Leaf']]])
   const rectangles = special.chartTreemapLayout(nodes, { x: 10, y: 20, width: 300, height: 200 })
@@ -64,11 +67,14 @@ test('source hierarchy DFS indices survive treemap area ordering and retain full
 })
 
 test('every hierarchy node resolves the same point color, opacity and border in both adapters', () => {
-  const nodes = [{ name: 'Small', value: 1 }, { name: 'Large', value: 9, children: [{ name: 'Leaf', value: 9 }] }]
+  const nodes = [
+    { id: 'Small', name: 'Small', value: 1, selfValue: 1, path: ['Small'] },
+    { id: 'Large', name: 'Large', value: 9, selfValue: 0, path: ['Large'], children: [{ id: 'Large/Leaf', name: 'Leaf', value: 9, selfValue: 9, path: ['Large', 'Leaf'] }] },
+  ]
   for (const type of ['treemap', 'sunburst']) {
     const model = chart(type, { options: { series: { 1: { dataPoints: { 2: { color: 'magenta', fillOpacity: 0.4, border: { color: 'navy', width: 3 } } } } } } })
     const source = { categories: ['Small', 'Large'], hierarchy: nodes, series: [{ field: 1, name: 'Weight', values: [1, 9] }] }
-    const leaf = option(source, model).series[0].data[1].children[0]
+    const leaf = option(source, model).series[0].data.find(node => node.name === 'Large').children[0]
     assert.equal(color.normalizeChartColor(leaf.itemStyle.color), 'rgba(255, 0, 255, 1)')
     assert.equal(leaf.itemStyle.opacity, 0.4)
     assert.equal(leaf.itemStyle.borderWidth, 3)
@@ -823,14 +829,20 @@ test('waterfall right-axis values use their own extent and reversed connectors r
   assert.ok(wide.some(command => command.kind === 'line' && command.color === 'rgba(254, 220, 186, 1)' && command.x2 < command.x1))
 })
 
-test('large independent weights produce finite pie, hierarchy and directed-link geometries', () => {
+test('large independent weights keep representable geometries and reject an unrepresentable Sunburst semantic total', () => {
   const maximum = Number.MAX_VALUE, source = { categories: ['A', 'B'], series: [{ field: 1, name: 'Weight', values: [maximum, maximum] }] }
   for (const type of ['pie', 'pie3D']) finiteCommands(commands(source, chart(type)))
-  const nodes = [{ name: 'A', value: maximum }, { name: 'B', value: maximum }], graph = { nodes, links: [{ source: 'A', target: 'B', value: maximum }], cyclic: false }
+  const nodes = [{ id: 'A', name: 'A', value: maximum, selfValue: maximum, path: ['A'] }, { id: 'B', name: 'B', value: maximum, selfValue: maximum, path: ['B'] }]
+  const graph = { nodes, links: [{ source: 'A', target: 'B', value: maximum }], cyclic: false }
   assert.ok(special.chartTreemapLayout(nodes, { x: 0, y: 0, width: 300, height: 200 }).every(rect => [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)))
-  assert.ok(special.chartSunburstLayout(nodes, { x: 0, y: 0, width: 300, height: 200 }).every(sector => [sector.start, sector.end, sector.inner, sector.outer].every(Number.isFinite)))
+  assert.throws(() => special.chartSunburstLayout(nodes, { x: 0, y: 0, width: 300, height: 200 }), /旭日图层级总量/)
+  const representable = nodes.map(node => ({ ...node, value: maximum / 4, selfValue: maximum / 4 }))
+  assert.ok(special.chartSunburstLayout(representable, { x: 0, y: 0, width: 300, height: 200 }).every(sector => [sector.start, sector.end, sector.inner, sector.outer].every(Number.isFinite)))
   finiteCommands(commands({ ...source, graph }, chart('sankey')))
-  finiteCommands(commands({ ...source, graph }, chart('chord')))
+  const chord = chart('chord', { valueFields: [1, 2], options: { mapping: { chord: { sourceIndex: 0, targetIndex: 1, valueIndex: 2 } } } })
+  const chordData = dataModel.readSpecialChartData({ fields: ['Source', 'Target', 'Weight'], records: [['A', 'B', maximum]] }, chord)
+  assert.equal(chordData.chord.nodes[0].value, maximum)
+  finiteCommands(commands(chordData, chord))
 })
 
 test('3D pie uses distinct category colors and preserves explicit fill opacity', () => {

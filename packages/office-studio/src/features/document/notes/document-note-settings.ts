@@ -3,7 +3,8 @@ import { cloneModel } from '../../../domain/serialization'
 import { DEFAULT_DOCUMENT_SECTION_ID, documentSectionIds } from '../services/section-header-footer'
 import { appendDocumentNoteContentControls, assertDocumentNoteSerializable, prepareDocumentNoteContentWithControls, validateDocumentNoteContent } from './document-note-content'
 import type { DocumentNoteDecorationControls, DocumentNoteKind } from './document-note-types'
-import { DOCUMENT_NOTE_DECORATION_HOST_KEYS } from '../model/document-note-decoration-host'
+import { documentDormantNoteDecorationHost, documentDormantNoteDecorations, documentNoteDecorationSourceIdentity,
+  DOCUMENT_NOTE_DECORATION_HOST_KEYS } from '../model/document-note-decoration-host'
 import { assertDocumentNoteDecorationRemovable, preserveDocumentNoteDecorationSource, removeDocumentNoteDecorationAnchors } from './document-note-decoration-editing'
 import { documentModelForBlockHost } from '../services/document-block-host'
 import { validateDocumentContentControlRanges } from '../services/content-controls'
@@ -51,7 +52,15 @@ export function validateDocumentNoteSettings(settings: DocumentNoteSettingsValue
   if (settings.numberFormat !== undefined && (typeof settings.numberFormat !== 'string' || !settings.numberFormat || settings.numberFormat.length > 4096)) throw new TypeError('注释编号格式无效。')
   if ('columnCount' in settings && settings.columnCount !== undefined && (!Number.isInteger(settings.columnCount) || settings.columnCount < 0 || settings.columnCount > 4)) throw new RangeError('脚注列数需要在 0 到 4 之间。')
   if (settings.metadata !== undefined && (!settings.metadata || typeof settings.metadata !== 'object' || Array.isArray(settings.metadata))) throw new TypeError('注释来源元数据无效。')
-  for (const key of DOCUMENT_NOTE_DECORATION_KEYS) if (settings[key] !== undefined) validateDocumentNoteContent(settings[key]!, kind, `${kind}:${key}`)
+  for (const key of DOCUMENT_NOTE_DECORATION_KEYS) if (settings[key] !== undefined) {
+    validateDocumentNoteContent(settings[key]!, kind, `${kind}:${key}`)
+    documentNoteDecorationSourceIdentity(settings[key]!, kind, key)
+  }
+  const noteSettings = kind === 'footnote' ? { footnote: settings as DocumentFootnoteSettings } : { endnote: settings as DocumentEndnoteSettings }
+  for (const [index, content] of documentDormantNoteDecorations({ noteSettings }, kind).entries()) {
+    documentDormantNoteDecorationHost({ noteSettings }, kind, index)
+    validateDocumentNoteContent(content, kind, `${kind}:dormant:${index}`)
+  }
 }
 
 function validateDecorationControlsPayload(settings: DocumentNoteSettingsValue | null, payload: DocumentNoteDecorationControls | undefined, sectionId?: string): void {

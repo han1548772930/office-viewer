@@ -29,6 +29,9 @@ import { validateChartGradientAuthoring } from './chart-gradient'
 import { initializeChartWaterfallOptions } from './chart-waterfall'
 import type { ChartSankeyLayout } from './chart-sankey-layout'
 import type { ChartTreeRect } from './chart-special-layout'
+import type { ChartSunburstSector } from './chart-sunburst-layout'
+import type { ChartChordData } from './chart-chord-data'
+import type { ChartChordLayout } from './chart-chord-layout'
 import { validateChartSourceData } from './chart-source-validation'
 
 export interface ChartConfig {
@@ -84,6 +87,7 @@ export interface ChartData {
   visibleFields?: number[]
   syntheticValues?: boolean
   graph?: ChartGraphData
+  chord?: ChartChordData
   hierarchy?: ChartHierarchyNode[]
   hierarchyPaletteOrder?: string[]
   hierarchyValueFieldName?: string
@@ -136,7 +140,9 @@ export interface ChartLayout {
   categories: string[]
   series: ChartSeriesLayout[]
   sankey?: ChartSankeyLayout
+  chord?: ChartChordLayout
   treemap?: ChartTreeRect[]
+  sunburst?: ChartSunburstSector[]
   waterfall?: {
     points: ChartWaterfallPointLayout[]
     connectors: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>
@@ -144,7 +150,7 @@ export interface ChartLayout {
 }
 
 const DEFAULT_LEGEND: ChartLegendOptions = { visible: true, position: 'bottom' }
-const defaultChartLegend = (type: ChartType): ChartLegendOptions => ({ ...DEFAULT_LEGEND, visible: !['histogram', 'candlestick', 'treemap'].includes(type) })
+const defaultChartLegend = (type: ChartType): ChartLegendOptions => ({ ...DEFAULT_LEGEND, visible: !['histogram', 'candlestick', 'treemap', 'sunburst', 'chord'].includes(type) })
 const DEFAULT_AXIS: ChartAxisOptions = { scaleType: 'linear' }
 
 /** Normalize authored configuration without reading its source. Read-only

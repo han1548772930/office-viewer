@@ -483,7 +483,7 @@ function prepareScopedDocumentStoryFieldRefresh(model: DocumentModel, request: D
     if (crossParagraph) {
       transformContentControlsForBodyRangeEdit(candidate, paragraphs, range.absoluteStart, range.absoluteEnd, result.length)
       transformDocumentCommentAnchorsForBodyRangeEdit(candidate, paragraphs, documentTextFieldParagraphs(candidate), range.absoluteStart, range.absoluteEnd, result, request.timestamp)
-    } else transformDocumentCommentAnchorsForTextEdit(candidate, block.id, field.startOffset, field.endOffset, result, request.timestamp)
+    } else transformDocumentCommentAnchorsForTextEdit(candidate, block.id, field.startOffset, field.endOffset, result, request.timestamp, first.noteReferences)
     nextSelection = mappedSelection
     nextAdditionalBodySelections = mappedAdditionalBodySelections
     updatedFields++

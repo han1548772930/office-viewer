@@ -10,6 +10,7 @@ export type ChartStatisticsJob =
   | ChartJobKey & { kind: 'boxplot'; quartileMethod: 'medianOfHalves' | 'inclusive' | 'exclusive'; whiskerMethod?: 'range' | 'iqr'; whiskerMultiplier: number }
   | ChartJobKey & { kind: 'pareto'; includeZeroValues: boolean }
   | ChartJobKey & { kind: 'hierarchy'; hierarchyColumns: number[]; labelColumns: number[]; keyCount: number; labelCount: number }
+  | ChartJobKey & { kind: 'chord'; sourceColumn: number; targetColumn: number; labelCount: number; startAngle: number; clockwise: boolean; padAngle: number; minAngle: number }
   | ChartJobKey & { kind: 'waterfall'; totalColumn?: number }
   | ChartJobKey & { kind: 'waterfallLayout'; seriesIndices: number[]; stackType: 'arrangement' | 'stacked'; useSubtotal: boolean; totalColumns?: Array<number | null> }
   | ChartJobKey & { kind: 'trendline'; type: 'exp' | 'linear' | 'log' | 'movingAvg' | 'poly' | 'pow'; order?: number; period?: number }
@@ -42,6 +43,10 @@ export interface ChartStatisticsSegment {
  * Pareto: values[value,cumulativePercent], indices[dictionaryId].
  * Hierarchy: values[value,selfValue]; indices[N,R,...N*(parent,key,label,sourceOrder),...R*(rootIndex)].
  * The root parent is 0xffffffff; nodes use sorted preorder and rootIndex uses first-source order.
+ * Chord: values[N*(value,start,end),...E*(value,sourceStart,sourceEnd,targetStart,targetEnd)];
+ * indices[N,E,...N*(displayLabelId),...E*(sourceNodeIndex,targetNodeIndex)]. Angles are radians,
+ * in first-valid-source order. Undirected duplicates keep the first endpoint direction.
+ * Strings and pixel geometry stay with the owner; only numeric IDs and normalized angles transfer.
  * Waterfall: values[start,end,value], indices[categoryIndex,isTotal].
  * WaterfallLayout: values[finalCumulative,...N*(start,end,value),...C*(fromValue,toValue)];
  * indices[N,C,...N*(seriesPosition,dataPointIndex,visibleCategoryIndex,flags),...C*(fromCategory,toCategory)].

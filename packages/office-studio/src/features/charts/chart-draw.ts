@@ -1,5 +1,5 @@
-import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartModel, ChartSeriesFillPattern, ChartSeriesOptions } from '../../domain/model'
-import type { DrawCommand, RenderRect } from '../../rendering/contracts'
+import type { ChartAxisOptions, ChartFontOptions, ChartLabelOptions, ChartModel, ChartSeriesOptions } from '../../domain/model'
+import type { DrawCommand } from '../../rendering/contracts'
 import { ComputeError } from '../../compute/errors'
 import type { ChartData, ChartLayout, ChartPoint } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
@@ -22,11 +22,10 @@ import { chartRectangularAxisTitleCommands } from './chart-axis-title'
 import { chartDateCoordinate } from './chart-date-axis'
 import { chartDateAxisCommands } from './chart-date-axis-draw'
 import { chartFillPatternPaint } from './chart-fill-pattern'
-import type { ChartAutomaticGradient } from './chart-auto-gradient'
 import { chartSeriesGradientBounds, createChartMarkGradient } from './chart-gradient'
 import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativeMarkerStyle, chartParetoCumulativePointStyle, chartParetoCumulativeStyle, chartParetoValuePercentages } from './chart-pareto'
 import { chartPointLabelAnchor } from './chart-labels'
-import { chartChordLayout, chartRelationLayout, chartRibbon, chartSunburstLayout, chartWordCloudLayout } from './chart-special-layout'
+import { chartRelationLayout, chartRibbon, chartWordCloudLayout } from './chart-special-layout'
 import { createChartSankeyScene, type ChartSankeyScene } from './chart-sankey-draw'
 import { CHART_WATERFALL_GLOBAL_SERIES } from './chart-statistics'
 import { chartWaterfallConnector, chartWaterfallRoleStyles } from './chart-waterfall'
@@ -37,13 +36,18 @@ import { chartMarkerShape } from './chart-markers'
 import { chartHistogramBinGap } from './chart-histogram'
 import { drawChartCandlesticks } from './chart-candlestick-draw'
 import { drawChartTreemap } from './chart-treemap-draw'
+import { drawChartSunburst } from './chart-sunburst-draw'
+import { drawChartSector } from './chart-sector-draw'
+import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
+
+export { drawChartSector } from './chart-sector-draw'
 
 export function drawChartData(source: ChartData, chart: ChartModel, theme: ChartRenderTheme = {}, computed?: ChartComputedStatistics): DrawCommand[] {
   const palette = chartPalette(chart, theme.palette), derived = deriveChartData(source, chart, computed)
   return drawDerivedChartData(derived, chart, theme, palette)
 }
 
-export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartModel, theme: ChartRenderTheme = {}, palette = chartPalette(chart, theme.palette), preparedLayout?: ChartLayout, preparedSankeyScene?: ChartSankeyScene): DrawCommand[] {
+export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartModel, theme: ChartRenderTheme = {}, palette = chartPalette(chart, theme.palette), preparedLayout?: ChartLayout, preparedSankeyScene?: ChartSankeyScene, preparedChordScene?: ChartChordScene): DrawCommand[] {
   const data = derived.data, layout = preparedLayout ?? layoutDerivedChartData(derived, chart, palette), descriptor = resolveChartType(chart.type)
   const heatmapScale = chart.type === 'heatmap' ? createChartHeatmapScale(chartHeatmapExtent(data, chart), palette, chart.options?.heatmap?.visualMapType) : undefined
   const background = chart.options?.appearance?.background ?? theme.backgroundColor ?? '#ffffff', textColor = chart.options?.appearance?.font?.color ?? theme.textColor ?? (chart.type === 'heatmap' ? '#334155' : '#64748b')
@@ -73,10 +77,14 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
     for (const command of scene.commands) commands.push(command)
   }
   else if (descriptor.family === 'relation') drawGraph(commands, data, chart, layout, textColor, palette)
-  else if (descriptor.family === 'chord') drawChord(commands, data, chart, layout, textColor, palette)
+  else if (descriptor.family === 'chord') {
+    if (!layout.chord) throw new TypeError('和弦图绘制需要匹配的角度布局。')
+    const scene = preparedChordScene ?? createChartChordScene(data, chart, layout.chord, theme, palette, layout.frame)
+    for (const command of scene.commands) commands.push(command)
+  }
   else if (descriptor.family === 'wordCloud') drawWordCloud(commands, data, chart, layout, palette)
   else if (descriptor.family === 'treemap') drawChartTreemap(commands, data, chart, layout, textColor, palette, background)
-  else if (descriptor.family === 'sunburst') drawSunburst(commands, data, chart, layout, textColor, palette)
+  else if (descriptor.family === 'sunburst') drawChartSunburst(commands, data, chart, layout, textColor, palette, background)
   else if (descriptor.family === 'gauge') drawGauge(commands, data, chart, layout, textColor, palette, theme)
   else if (descriptor.family === 'funnel') drawFunnel(commands, data, chart, layout, textColor, palette)
   else {
@@ -384,20 +392,6 @@ function drawRadar(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
   for (const command of chartRectangularAxisTitleCommands(chart, layout, color)) commands.push(command)
 }
 
-export function drawChartSector(commands: DrawCommand[], center: ChartVector, inner: number, outer: number, start: number, end: number, color: string, border?: ChartSeriesOptions['border'], clip?: RenderRect, pattern?: ChartSeriesFillPattern, gradient?: ChartAutomaticGradient): void {
-  const count = Math.max(2, Math.ceil(Math.abs(end - start) / (Math.PI / 48)))
-  const paint = gradient && { ...gradient, bounds: gradient.bounds ?? { x: center.x - outer, y: center.y - outer, width: outer * 2, height: outer * 2 } }
-  for (let index = 0; index < count; index++) {
-    const a = start + (end - start) * index / count, b = start + (end - start) * (index + 1) / count
-    chartPolygon(commands, inner > 0 ? [chartPolar(center, inner, a), chartPolar(center, outer, a), chartPolar(center, outer, b), chartPolar(center, inner, b)] : [center, chartPolar(center, outer, a), chartPolar(center, outer, b)], color, undefined, clip, pattern, paint)
-  }
-  if (border && border.visible !== false) {
-    const outerArc = chartArc(center, outer, start, end), innerArc = inner > 0 ? chartArc(center, inner, start, end) : [center]
-    for (const arc of [outerArc, innerArc]) for (let index = 1; index < arc.length; index++) chartLine(commands, arc[index - 1]!, arc[index]!, border, color, clip)
-    chartLine(commands, outerArc[0]!, innerArc[0]!, border, color, clip); chartLine(commands, outerArc.at(-1)!, innerArc.at(-1)!, border, color, clip)
-  }
-}
-
 function drawPie(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
   const pie = chartPieLayout(data, chart, layout.plot), field = data.series[0]!.field
   for (const [start, end] of pie.connectors) chartLine(commands, start, end, { color, width: 1 }, color)
@@ -508,39 +502,12 @@ function drawGraph(commands: DrawCommand[], data: ChartData, chart: ChartModel, 
   }
 }
 
-function drawChord(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
-  const chord = chartChordLayout(data.graph!, chart, layout.plot)
-  for (const link of chord.links) {
-    const source = chartArc(chord.center, chord.innerRadius, link.sourceStart, link.sourceEnd), target = chartArc(chord.center, chord.innerRadius, link.targetStart, link.targetEnd)
-    const first = chartBezier(source.at(-1)!, chord.center, chord.center, target[0]!), second = chartBezier(target.at(-1)!, chord.center, chord.center, source[0]!)
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, link.sourceIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), link.sourceIndex, chart.type)
-    chartPolygon(commands, [...source, ...first.slice(1), ...target.slice(1), ...second.slice(1)], chartColorOpacity(style.color!, (chart.options?.chord?.ribbonOpacity ?? 0.55) * (style.fillOpacity ?? 1)), undefined, layout.plot,
-      chartFillPatternPaint(style.fillPattern, (chart.options?.chord?.ribbonOpacity ?? 0.55) * (style.fillOpacity ?? 1)))
-  }
-  for (const node of chord.nodes) {
-    const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, node.index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), node.index, chart.type), label = { contentType: 'category' as const, ...style.label, ...chart.options?.chord?.label }
-    drawChartSector(commands, chord.center, chord.innerRadius, chord.outerRadius, node.start, node.end, chartColorOpacity(style.color!, style.fillOpacity ?? 1), style.border, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
-    if (label.visible !== false) commands.push({ kind: 'text', ...chartPolar(chord.center, chord.outerRadius + 10, (node.start + node.end) / 2), text: chartLabelText(label, node.value, node.name, data.series[0]!.name), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', clip: layout.plot })
-  }
-}
-
 function drawWordCloud(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, palette: string[]): void {
   const words = chartWordCloudLayout(data, chart.options?.wordCloud, layout.plot)
   for (const word of words) {
     const style = chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, word.categoryIndex, palette, data.series[0]!.sourceName ?? data.series[0]!.name), word.categoryIndex, chart.type)
     commands.push({ kind: 'text', x: word.x + word.width / 2, y: word.y + word.height / 2, text: word.text, font: chartFont({ ...chart.options?.appearance?.font, ...style.label, fontSize: word.fontSize }), color: chartColorOpacity(style.color ?? palette[word.categoryIndex % palette.length]!, style.fillOpacity ?? 1), align: 'center', baseline: 'middle', rotation: word.rotation, clip: layout.plot })
   }
-}
-
-function drawSunburst(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[]): void {
-  const sectors = chartSunburstLayout(data.hierarchy!, layout.plot), center = { x: layout.plot.x + layout.plot.width / 2, y: layout.plot.y + layout.plot.height / 2 }
-  const scale = data.hierarchy!.reduce((max, node) => Math.max(max, node.value), 0) || 1, total = data.hierarchy!.reduce((sum, node) => sum + node.value / scale, 0)
-  for (const sector of sectors) {
-    const style = chartHierarchyPointStyle(chart, data.series[0]!.field, sector, palette, data.series[0]!.sourceName ?? data.series[0]!.name), label = { contentType: 'category' as const, ...style.label, ...chart.options?.sunburst?.label }
-    drawChartSector(commands, center, sector.inner, sector.outer, sector.start, sector.end, chartColorOpacity(style.color!, style.fillOpacity ?? 1), { color: chart.options?.appearance?.background ?? '#ffffff', width: 0.7, ...style.border }, layout.plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1))
-    if (label.visible !== false && sector.end - sector.start > 0.06) commands.push({ kind: 'text', ...chartPolar(center, (sector.inner + sector.outer) / 2, (sector.start + sector.end) / 2), text: chartLabelText(label, sector.node.value, sector.node.name, data.series[0]!.name, total ? (sector.node.value / scale) / total * 100 : 0), font: chartFont(label, 10), color: label.color ?? color, align: 'center', baseline: 'middle', maxWidth: Math.max(1, (sector.end - sector.start) * (sector.inner + sector.outer) / 2), clip: layout.plot })
-  }
-  if (chart.options?.sunburst?.centerLabel?.visible) commands.push({ kind: 'text', ...center, text: data.series[0]!.name, font: chartFont(chart.options.sunburst.centerLabel.font, 11), color: chart.options.sunburst.centerLabel.font?.color ?? color, align: 'center', baseline: 'middle', maxWidth: sectors[0] ? sectors[0].inner * 1.5 : layout.plot.width, clip: layout.plot })
 }
 
 function drawGauge(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[], theme: ChartRenderTheme): void {
@@ -627,7 +594,7 @@ function boxplotLegendItems(derived: ChartDerivedData, chart: ChartModel, layout
 }
 
 function drawLegend(commands: DrawCommand[], derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[], heatmapScale?: ChartHeatmapScale): void {
-  if (!chart.legend.visible || chart.type === 'treemap') return
+  if (!chart.legend.visible || chart.type === 'treemap' || chart.type === 'sunburst' || chart.type === 'chord') return
   if (heatmapScale) { for (const command of createChartHeatmapLegend(chart, layout, heatmapScale, color).commands) commands.push(command); return }
   const data = derived.data
   const family = resolveChartType(chart.type).family

@@ -143,6 +143,8 @@ pub struct DocumentNoteSettingsKindPayload {
 pub struct DocumentNoteDecorationPayload {
     pub text: String,
     pub decoration_source: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub univer_note_decoration_source: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]

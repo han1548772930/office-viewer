@@ -18,6 +18,7 @@ import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
 import { normalizeNativeDocumentContentControls } from './documentContentControls'
 import { parsedDocumentTextProjection, projectParsedDocumentFieldRanges } from './documentTextProjection'
 import { normalizeParsedDocumentNotes, parsedDocumentSectionNoteSetup, projectParsedDocumentNoteStories } from './documentNotes'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets } from '../features/document/model/document-note-boundary'
 
 const pointToPixel = (value: number): number => value * 96 / 72
 const optionalNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -430,14 +431,32 @@ function normalizeDocumentComments(value: unknown, blocks: DocumentBlock[]): Rec
       const sourceStart = optionalNumber(target.start), sourceEnd = optionalNumber(target.end)
       if (sourceStart === undefined || sourceEnd === undefined || !Number.isSafeInteger(sourceStart) || !Number.isSafeInteger(sourceEnd) || sourceStart < 0 || sourceEnd < sourceStart) return []
       const projection = parsedDocumentTextProjection(block)
-      const rank = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
-      const startOffset = projection.mapBoundary(sourceStart, rank(target.startNoteReferenceCount)), endOffset = projection.mapBoundary(sourceEnd, rank(target.endNoteReferenceCount))
-      if (startOffset === undefined || endOffset === undefined) return []
+      const rank = (value: unknown): number | undefined => {
+        if (value === undefined) return undefined
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError('导入批注的注释引用序号必须为非负安全整数。')
+        return value
+      }
+      const startNoteReferenceCount = rank(target.startNoteReferenceCount), endNoteReferenceCount = rank(target.endNoteReferenceCount)
+      if (sourceStart === sourceEnd && startNoteReferenceCount !== undefined && endNoteReferenceCount !== undefined && startNoteReferenceCount > endNoteReferenceCount) {
+        throw new RangeError('导入批注的注释引用序号端点顺序相反。')
+      }
+      const startOffset = projection.mapBoundary(sourceStart, startNoteReferenceCount), endOffset = projection.mapBoundary(sourceEnd, endNoteReferenceCount)
+      if (startOffset === undefined || endOffset === undefined) {
+        if (startNoteReferenceCount !== undefined || endNoteReferenceCount !== undefined) throw new RangeError('导入批注的注释引用序号与原始段落位置不一致。')
+        return []
+      }
+      const references = documentNoteReferenceOffsets(block.runs)
+      const startRank = assertDocumentNoteReferenceBoundaryRank(references, startOffset, startNoteReferenceCount)
+      const endRank = assertDocumentNoteReferenceBoundaryRank(references, endOffset, endNoteReferenceCount)
+      if (startOffset > endOffset || startOffset === endOffset && startRank > endRank) throw new RangeError('导入批注映射后的注释引用端点顺序相反。')
       const sourceText = block.runs.map(run => run.text).join('')
       if (startOffset > sourceText.length || !validBoundary(sourceText, startOffset) || !validBoundary(sourceText, endOffset)) return []
       const anchorText = sourceText.slice(startOffset, endOffset)
       if (!anchorText && endOffset !== startOffset) return []
-      return [{ blockId: block.id, startOffset, endOffset: startOffset + anchorText.length, text: anchorText }]
+      return [{ blockId: block.id, startOffset, endOffset: startOffset + anchorText.length, text: anchorText,
+        ...(startNoteReferenceCount === undefined ? {} : { startNoteReferenceCount }),
+        ...(endNoteReferenceCount === undefined ? {} : { endNoteReferenceCount }),
+      }]
     })
     const rootMessage = importedCommentMessage(raw, id)
     const replies = rawComments.filter(reply => String(reply.parentId ?? '') === id).map(reply => importedCommentMessage(reply, text(reply.id)))

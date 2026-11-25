@@ -135,7 +135,7 @@ mod tests {
             let mut contents = vec!["<w:p/>".into(), "<w:p/>".into()];
             let mut controls = HashMap::new();
             let control = ContentControl { value: document["contentControls"][0].clone(), id: "picture".into(),
-                kind: "picture".into(), start: 0, end: 0, numeric_id: 1 };
+                kind: "picture".into(), start: 0, end: 0, start_note_reference_count: None, end_note_reference_count: None, numeric_id: 1 };
             controls.insert("anchor".into(), vec![control]);
             merge_contents(blocks, &mut contents, &controls).unwrap();
             assert_eq!(contents, vec!["<w:p/>", "<w:p/>"]);

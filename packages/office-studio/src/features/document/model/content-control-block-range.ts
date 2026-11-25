@@ -1,6 +1,8 @@
 import type { DocumentBlock, DocumentContentControl, DocumentModel } from '../../../domain/model'
 import { runText, runsForTarget, tableForBlock, textTargets, type DocumentSelection, type TextTarget } from './document-model'
 import { documentTableCellContentContainers } from './document-table-continuations'
+import { reanchorDocumentContentControlNoteParagraph } from './content-control-note-boundary'
+import { documentNoteReferenceOffsets } from './document-note-boundary'
 
 export type DocumentContentControlBlockRange = NonNullable<DocumentContentControl['blockRange']>
 export interface DocumentContentControlBlocks {
@@ -81,9 +83,7 @@ export function reanchorDocumentBlockContentControl(model: DocumentModel, contro
   if (!control.blockRange) return
   const target = documentContentControlBlockTextTargets(model, control.blockRange)[0]
   if (!target) throw new RangeError('内容控件块范围没有可用的文字输入宿主。')
-  control.blockId = target.cellBlockId ?? target.blockId
-  control.startOffset = 0
-  control.endOffset = runText(runsForTarget(model, target)).length
+  reanchorDocumentContentControlNoteParagraph(control, target.cellBlockId ?? target.blockId, runsForTarget(model, target))
 }
 
 /** Structural planners update block IDs first; this validates and restores every resulting fallback atomically. */
@@ -93,7 +93,11 @@ export function reconcileDocumentBlockContentControlRanges(model: DocumentModel)
     if (control.tableRowRange || control.placement !== 'block') throw new TypeError('完整块范围不能同时属于物理表格行。')
     const target = documentContentControlBlockTextTargets(model, control.blockRange!)[0]
     if (!target) throw new RangeError('内容控件块范围没有可用的文字输入宿主。')
-    return { control, blockId: target.cellBlockId ?? target.blockId, endOffset: runText(runsForTarget(model, target)).length }
+    const runs = runsForTarget(model, target)
+    return { control, blockId: target.cellBlockId ?? target.blockId, endOffset: runText(runs).length, endRank: documentNoteReferenceOffsets(runs).length }
   })
-  for (const { control, blockId, endOffset } of fallbacks) { control.blockId = blockId; control.startOffset = 0; control.endOffset = endOffset }
+  for (const { control, blockId, endOffset, endRank } of fallbacks) {
+    control.blockId = blockId; control.startOffset = 0; control.endOffset = endOffset
+    control.startNoteReferenceCount = 0; control.endNoteReferenceCount = endRank
+  }
 }

@@ -8,6 +8,48 @@ use crate::{chart_xml, document_content_controls::{word, word_attribute}};
 pub const WORD_2013_NAMESPACE: &str = "http://schemas.microsoft.com/office/word/2012/wordml";
 pub const NOTE_EXTENSION_NAMESPACE: &str = "urn:office-studio:document-notes:1";
 pub const NOTE_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+pub const NOTE_DECORATION_TYPES: [&str; 3] = ["separator", "continuationSeparator", "continuationNotice"];
+
+/// Public note IDs are UTF-16 strings, independent of the native numeric ID.
+pub fn validate_public_note_source_id(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.encode_utf16().count() > 4096 || value.contains(['\r', '\n', '\0']) {
+        return Err("DOCX_NOTE_SOURCE_INVALID: public source ID must be a nonempty bounded string without CR, LF or NUL".into());
+    }
+    Ok(())
+}
+
+pub fn public_note_decoration_source_id<'a>(value: &'a Value, kind: DocumentNoteKind, note_type: &str) -> Result<&'a str, String> {
+    if !value.is_object() || value.get("version").and_then(Value::as_u64) != Some(1)
+        || value.get("kind").and_then(Value::as_str) != Some(kind.name())
+        || !NOTE_DECORATION_TYPES.contains(&note_type)
+        || value.get("type").and_then(Value::as_str) != Some(note_type) {
+        return Err("DOCX_NOTE_SOURCE_INVALID: public decoration source version, kind or type is invalid".into());
+    }
+    let id = value.get("noteId").and_then(Value::as_str).ok_or("DOCX_NOTE_SOURCE_INVALID: public decoration source ID must be a string")?;
+    validate_public_note_source_id(id)?;
+    Ok(id)
+}
+
+/// XML attributes normalize literal whitespace and cannot carry every valid
+/// public ID character. Hex encodes the exact UTF-8 ID without normalizing it.
+pub fn encode_public_note_source_id(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    value.as_bytes().iter().flat_map(|byte| [HEX[(byte >> 4) as usize] as char, HEX[(byte & 15) as usize] as char]).collect()
+}
+
+pub fn decode_public_note_source_id(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.len() > 4096 * 4 * 2 || value.len() % 2 != 0 {
+        return Err("DOCX_NOTE_SOURCE_INVALID: public source ID encoding exceeds its contract".into());
+    }
+    let bytes = value.as_bytes().chunks_exact(2).map(|pair| {
+        let high = (pair[0] as char).to_digit(16).ok_or("DOCX_NOTE_SOURCE_INVALID: public source ID encoding is not hexadecimal")?;
+        let low = (pair[1] as char).to_digit(16).ok_or("DOCX_NOTE_SOURCE_INVALID: public source ID encoding is not hexadecimal")?;
+        Ok((high * 16 + low) as u8)
+    }).collect::<Result<Vec<_>, String>>()?;
+    let id = String::from_utf8(bytes).map_err(|_| "DOCX_NOTE_SOURCE_INVALID: public source ID encoding is not UTF-8")?;
+    validate_public_note_source_id(&id)?;
+    Ok(id)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -131,6 +173,23 @@ mod tests {
     use super::*;
 
     // Drafts for the unified verification stage.
+    #[test]
+    fn public_source_ids_keep_unicode_and_attribute_whitespace_without_native_id_coercion() {
+        for id in ["-1", "0007", "引用 😀", "\t source\tid "] {
+            let encoded = encode_public_note_source_id(id);
+            assert_eq!(decode_public_note_source_id(&encoded).unwrap(), id);
+            let source = json!({ "version": 1, "kind": "footnote", "type": "separator", "noteId": id });
+            assert_eq!(public_note_decoration_source_id(&source, DocumentNoteKind::Footnote, "separator").unwrap(), id);
+        }
+        for id in ["", " \t", "a\nb", "a\rb", "a\0b"] { assert!(validate_public_note_source_id(id).is_err()); }
+        assert!(validate_public_note_source_id(&"😀".repeat(2048)).is_ok());
+        assert!(validate_public_note_source_id(&"😀".repeat(2049)).is_err());
+        for encoded in ["0", "zz", "ff", "c080", "00"] { assert!(decode_public_note_source_id(encoded).is_err()); }
+        let source = json!({ "version": 1, "kind": "footnote", "type": "separator", "noteId": "-1" });
+        assert!(public_note_decoration_source_id(&source, DocumentNoteKind::Endnote, "separator").is_err());
+        assert!(public_note_decoration_source_id(&source, DocumentNoteKind::Footnote, "continuationSeparator").is_err());
+    }
+
     #[test]
     fn properties_use_expanded_names_and_preserve_unknown_formats_and_extensions() {
         let xml = "<x:footnotePr xmlns:x='http://purl.oclc.org/ooxml/wordprocessingml/main' xmlns:q='urn:extension'><q:numStart q:val='900'/><x:numStart x:val='100000'/><x:numFmt x:val='hebrew1'/><x:pos x:val='beneathText'/><x:numRestart x:val='eachPage'/></x:footnotePr>";

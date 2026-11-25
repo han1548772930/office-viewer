@@ -15,7 +15,8 @@ export function cloneChartOptions(options: ChartSemanticOptions | undefined): Ch
 /** Omitted groups are retained. Collections and normalized plot rectangles replace atomically. */
 export function mergeChartOptions(current: ChartSemanticOptions | undefined, patch: ChartSemanticOptions | undefined): ChartSemanticOptions | undefined {
   if (patch === undefined) return cloneChartOptions(current)
-  const merged: ChartSemanticOptions = { ...cloneChartOptions(current), ...cloneChartOptions(patch) }
+  validateChartOptions(patch, { partial: true })
+  const merged: ChartSemanticOptions = { ...cloneChartOptions(current), ...cloneOptionValue(patch) as ChartSemanticOptions }
   for (const key of ['appearance', 'titleStyle', 'subtitleStyle', 'allSeriesStyle', 'axisPointer', 'rightYAxis', 'depthAxis', 'mapping', 'threeD', 'bar', 'area', 'pie', 'radar', 'bubble', 'funnel', 'relation', 'waterfall', 'pareto', 'histogram', 'boxplot', 'candlestick', 'heatmap', 'treemap', 'sunburst', 'gauge', 'chord', 'wordCloud', 'aggregation'] as const) {
     if (current?.[key] && patch[key]) Object.assign(merged, { [key]: mergeOptionGroup(current[key], patch[key]) })
   }

@@ -1,11 +1,10 @@
-import type { BoxplotSeriesOption, FunnelSeriesOption, GaugeSeriesOption, HeatmapSeriesOption, ScatterSeriesOption, SunburstSeriesOption } from 'echarts/charts'
+import type { BoxplotSeriesOption, FunnelSeriesOption, GaugeSeriesOption, HeatmapSeriesOption, ScatterSeriesOption } from 'echarts/charts'
 import type { ChartModel } from '../../domain/model'
 import type { ChartDateAxis } from './chart-date-axis'
 import type { ChartData } from './chart-engine'
 import type { ChartDerivedData } from './chart-derived'
 import type { ChartEChartsOption } from './echarts-option'
-import { chartHeatmapExtent, chartHeatmapPointStyle, chartHierarchyPointStyle, chartPointStyle } from './chart-derived'
-import { chartHierarchyItems, type ChartHierarchyNode } from './chart-data'
+import { chartHeatmapExtent, chartHeatmapPointStyle, chartPointStyle } from './chart-derived'
 import { chartSeriesStyle } from './chart-options'
 import { chartEChartsAxisStyle, chartEChartsFont, chartEChartsItemStyle, chartEChartsMarkerStyle, chartEChartsPointLabel } from './echarts-style'
 import { chartColorOpacity, chartLabelText, formatChartNumber } from './chart-geometry'
@@ -17,6 +16,7 @@ import { chartHeatmapCellRect, chartHeatmapFieldNames, chartHeatmapLabelAnchor, 
   createChartHeatmapScale, resolveChartHeatmapLabel, type ChartHeatmapScale } from './chart-heatmap'
 import { createChartCandlestickEChartsSeries } from './echarts-candlestick-option'
 import { chartTreemapTooltip, createChartTreemapEChartsSeries } from './echarts-treemap-option'
+import { chartSunburstCenterGraphic, chartSunburstTooltip, createChartSunburstEChartsSeries } from './echarts-sunburst-option'
 
 export interface ChartEChartsContext {
   palette: string[]
@@ -27,15 +27,6 @@ export interface ChartEChartsContext {
   dateAxis?: ChartDateAxis
   heatmapScale?: ChartHeatmapScale
   grid: { left: number; right: number; top: number; bottom: number; containLabel: boolean }
-}
-
-interface HierarchyEChartsNode {
-  id: string
-  name: string
-  value: number
-  children?: HierarchyEChartsNode[]
-  itemStyle: ReturnType<typeof chartEChartsItemStyle> & { borderColor: string; borderWidth: number; gapWidth: number }
-  label: ReturnType<typeof chartEChartsFont> & { show: boolean; formatter: string }
 }
 
 /** A one-value native Gauge still assigns overlap-progress z2 from its value. Split
@@ -50,25 +41,6 @@ function chartGaugeEChartsLayers(series: GaugeSeriesOption, id: string): GaugeSe
     axisLine: { show: false, lineStyle: { width: series.progress.width } }, progress: { ...series.progress, overlap: false } })
   layers.push({ ...series, id: `${id}:foreground`, z: 3, axisLine: { ...series.axisLine, show: false }, progress: { ...series.progress, show: false } })
   return layers
-}
-
-/** ECharts does not inherit Sunburst parent styles; explicitly style every source node. */
-function chartSunburstEChartsData(data: ChartData, chart: ChartModel, context: ChartEChartsContext): HierarchyEChartsNode[] {
-  const hierarchy = data.hierarchy ?? [], items = new Map(chartHierarchyItems(hierarchy).map(item => [item.node, item])), source = data.series[0]!
-  const scale = hierarchy.reduce((max, node) => Math.max(max, node.value), 0) || 1, total = hierarchy.reduce((sum, node) => sum + node.value / scale, 0)
-  const options = chart.options?.sunburst?.label
-  function nodeOption(node: ChartHierarchyNode): HierarchyEChartsNode {
-    const item = items.get(node)!, style = chartHierarchyPointStyle(chart, source.field, item, context.palette, source.sourceName ?? source.name)
-    const label = { contentType: 'category' as const, ...style.label, ...options }
-    const formatter = chartLabelText(label, node.value, node.name, source.name, total ? (node.value / scale) / total * 100 : 0)
-    const font = chartEChartsFont(label, context.color, 10)
-    return { id: `${chart.id}:node:${item.pointIndex}`, name: node.name, value: node.value,
-      itemStyle: { ...chartEChartsItemStyle(style), borderColor: chartColorOpacity(style.border?.color ?? chart.options?.appearance?.background ?? 'transparent', style.border?.opacity ?? 1), borderWidth: style.border?.visible === false ? 0 : style.border?.width ?? 1, gapWidth: 2 },
-      label: { ...font, show: label.visible !== false, formatter },
-      ...(node.children?.length ? { children: node.children.map(nodeOption) } : {}),
-    }
-  }
-  return hierarchy.map(nodeOption)
 }
 
 export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerivedData, chart: ChartModel, context: ChartEChartsContext): Partial<ChartEChartsOption> | undefined {
@@ -146,16 +118,12 @@ export function chartSpecialEChartsOption(data: ChartData, derived: ChartDerived
     }
     case 'treemap': {
       return { xAxis: undefined, yAxis: undefined, grid: undefined, animation: false, legend: { show: false },
-        tooltip: chartTreemapTooltip(data), series: [createChartTreemapEChartsSeries(data, chart, context)] }
+        tooltip: chartTreemapTooltip(data, context), series: [createChartTreemapEChartsSeries(data, chart, context)] }
     }
     case 'sunburst': {
-      const options = chart.options?.sunburst, series: SunburstSeriesOption = { type: 'sunburst', name: data.series[0]!.name, data: chartSunburstEChartsData(data, chart, context),
-        center: [(chart.size.width + grid.left - grid.right) / 2, (chart.size.height + grid.top - grid.bottom) / 2], radius: ['16%', '74%'], sort: null, nodeClick: false,
-        label: { show: options?.label?.visible !== false, rotate: 'radial', ...chartEChartsFont(options?.label, color, 10), formatter: options?.label?.contentType === 'value' ? '{c}' : '{b}' },
-        itemStyle: { borderWidth: 1, borderColor: chart.options?.appearance?.background ?? 'transparent' },
-      }
-      return { xAxis: undefined, yAxis: undefined, grid: undefined, series: [series], ...(options?.centerLabel?.visible ? { graphic: { elements: [{ type: 'text', x: (chart.size.width + grid.left - grid.right) / 2, y: (chart.size.height + grid.top - grid.bottom) / 2,
-        style: { text: data.series[0]!.name, fill: options.centerLabel.font?.color ?? color, fontSize: options.centerLabel.font?.fontSize ?? 11, fontFamily: options.centerLabel.font?.family, align: 'center', verticalAlign: 'middle' } }] } } : {}) }
+      const graphic = chartSunburstCenterGraphic(data, chart, context)
+      return { xAxis: undefined, yAxis: undefined, grid: undefined, animation: false, legend: { show: false },
+        tooltip: chartSunburstTooltip(data, chart, context), series: [createChartSunburstEChartsSeries(data, chart, context)], ...(graphic ? { graphic } : {}) }
     }
     case 'gauge': {
       const authored = chart.options?.gauge, source = data.series[0]!

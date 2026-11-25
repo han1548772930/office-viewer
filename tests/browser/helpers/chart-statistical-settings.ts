@@ -45,10 +45,14 @@ export async function statisticalChartSnapshot(page: Page, reopen = false) {
     const resource = performance.getEntriesByType('resource').find(entry => /\/src\/runtime\.ts(?:\?|$)/.test(entry.name))!
     const { officeAPI } = await import(resource.name), current = officeAPI.getActiveWorkbook()!
     const workbook = createCopy ? officeAPI.createWorkbook({ ...current.save(), id: crypto.randomUUID() }, { makeCurrent: false }) : current
-    const chart = workbook.getActiveSheet()!.getCharts()[0]!, info = chart.getInfo()
-    const [raw, layout, commands] = await Promise.all([chart.getComputedData(), chart.getComputedLayout(), chart.getComputedRenderCommands()])
-    return { contents: JSON.stringify(workbook.save()), revision: info.revision, legend: info.legend, valueFields: info.valueFields,
-      options: JSON.parse(JSON.stringify(chart.getOptions())), raw: JSON.parse(JSON.stringify(raw)), layout, paint: JSON.stringify(commands) }
+    try {
+      const chart = workbook.getActiveSheet()!.getCharts()[0]!, info = chart.getInfo()
+      const [raw, layout, commands] = await Promise.all([chart.getComputedData(), chart.getComputedLayout(), chart.getComputedRenderCommands()])
+      return { contents: JSON.stringify(workbook.save()), revision: info.revision, legend: info.legend, valueFields: info.valueFields,
+        options: JSON.parse(JSON.stringify(chart.getOptions())), raw: JSON.parse(JSON.stringify(raw)), layout, paint: JSON.stringify(commands) }
+    } finally {
+      if (createCopy) officeAPI.disposeUnit(workbook.getId())
+    }
   }, reopen)
 }
 export async function statisticalChartHistory(page: Page, action: 'undo' | 'redo') {

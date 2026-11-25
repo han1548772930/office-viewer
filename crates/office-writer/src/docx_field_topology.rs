@@ -115,9 +115,13 @@ mod tests {
     use serde_json::json;
 
     fn field(id: &str, start: usize, end: usize, parent: Option<Value>, sequence: u32) -> Field {
+        native_field(id, (start, 0), (end, 0), parent, sequence)
+    }
+
+    fn native_field(id: &str, start: (usize, usize), end: (usize, usize), parent: Option<Value>, sequence: u32) -> Field {
         let mut value = json!({ "id": id, "metadata": { "source": {} } });
         if let Some(parent) = parent { value["metadata"]["source"]["parentFieldId"] = parent; }
-        Field { value, start, end, first: 0, last: 0, local_start: start, local_end: end,
+        Field { value, start, end, first: 0, last: 0, local_start: start.0, local_end: end.0,
             bookmark: sequence, bookmark_name: id.into(), begin_sequence: None }
     }
 
@@ -161,5 +165,62 @@ mod tests {
             vec![field("a", 0, 1, Some(Value::Null), 0), field("b", 0, 2, Some(json!("a")), 1)],
             vec![field("a", 0, 4, Some(Value::Null), 0), field("b", 1, 3, Some(Value::Null), 1)],
         ] { assert!(resolve(&fields).is_err()); }
+    }
+
+    #[test]
+    fn adjacent_empty_note_result_ranges_keep_native_tuple_order_and_parent_edges() {
+        let fields = vec![native_field("outer", (2, 1), (2, 3), Some(Value::Null), 0),
+            native_field("first", (2, 1), (2, 2), Some(json!("outer")), 1),
+            native_field("second", (2, 2), (2, 3), Some(json!("outer")), 2),
+            native_field("point-child", (2, 3), (2, 3), Some(json!("outer")), 3),
+            native_field("point-root", (2, 3), (2, 3), Some(Value::Null), 4),
+            native_field("following", (2, 3), (3, 3), Some(Value::Null), 5)];
+        assert_eq!(resolve(&fields).unwrap().depths, vec![0, 1, 1, 1, 0, 0]);
+        assert_eq!(event_ids(&fields), vec![("outer", false), ("first", false), ("first", true),
+            ("second", false), ("second", true), ("point-child", false), ("point-child", true),
+            ("outer", true), ("point-root", false), ("point-root", true), ("following", false), ("following", true)]);
+        let roots = vec![native_field("first", (2, 1), (2, 2), None, 0),
+            native_field("second", (2, 2), (2, 3), None, 1)];
+        assert_eq!(resolve(&roots).unwrap().depths, vec![0, 0]);
+    }
+
+    #[test]
+    fn equal_native_ranges_preserve_explicit_parent_and_inferred_source_sequence() {
+        for (start, end) in [((2, 1), (2, 3)), ((2, 2), (2, 2))] {
+            let fields = vec![native_field("inner", start, end, Some(json!("outer")), 0),
+                native_field("outer", start, end, Some(Value::Null), 1)];
+            assert_eq!(event_ids(&fields), vec![("outer", false), ("inner", false), ("inner", true), ("outer", true)]);
+        }
+        let mut fields = vec![native_field("later", (2, 1), (2, 3), None, 0),
+            native_field("earlier", (2, 1), (2, 3), None, 1)];
+        fields[0].begin_sequence = Some(20); fields[1].begin_sequence = Some(10);
+        assert_eq!(event_ids(&fields), vec![("earlier", false), ("later", false), ("later", true), ("earlier", true)]);
+        assert_eq!(resolve(&fields).unwrap().depths, vec![1, 0]);
+    }
+
+    #[test]
+    fn same_display_offset_does_not_hide_native_parent_or_sibling_crossing() {
+        for fields in [
+            vec![native_field("outer", (2, 1), (2, 2), Some(Value::Null), 0),
+                native_field("outside", (2, 1), (2, 3), Some(json!("outer")), 1)],
+            vec![native_field("first", (2, 1), (2, 3), Some(Value::Null), 0),
+                native_field("second", (2, 2), (2, 3), Some(Value::Null), 1)],
+            vec![native_field("first", (2, 1), (2, 3), None, 0),
+                native_field("second", (2, 2), (3, 3), None, 1)],
+        ] { assert!(resolve(&fields).is_err()); }
+    }
+
+    #[test]
+    fn root_zero_depth_allows_513_explicit_or_inferred_fields_and_rejects_the_next_level() {
+        let mut explicit: Vec<Field> = (0..=512).map(|index| native_field(&format!("f{index}"), (2, 1), (2, 1),
+            Some(if index == 0 { Value::Null } else { json!(format!("f{}", index - 1)) }), index)).collect();
+        let result = resolve(&explicit).unwrap();
+        assert_eq!(result.depths[512], 512); assert_eq!(result.events.len(), 1026);
+        explicit.push(native_field("f513", (2, 1), (2, 1), Some(json!("f512")), 513));
+        assert!(resolve(&explicit).is_err());
+        let mut inferred: Vec<Field> = (0..=512).map(|index| native_field(&format!("g{index}"), (2, 1), (2, 3), None, index)).collect();
+        assert_eq!(resolve(&inferred).unwrap().depths[512], 512);
+        inferred.push(native_field("g513", (2, 1), (2, 3), None, 513));
+        assert!(resolve(&inferred).is_err());
     }
 }

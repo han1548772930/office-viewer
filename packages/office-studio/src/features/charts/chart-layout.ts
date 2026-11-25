@@ -31,7 +31,7 @@ export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: Chart
   const frame = { x: chart.position.x, y: chart.position.y, width: chart.size.width, height: chart.size.height }
   const manual = chartManualPlotFrame(chart.type, frame, chart.options?.plotArea)
   if (manual) return { frame, plot: manual }
-  const legend = { visible: true, position: 'bottom', ...chart.legend, ...(chart.type === 'treemap' ? { visible: false } : {}) }
+  const legend = { visible: true, position: 'bottom', ...chart.legend, ...(['treemap', 'sunburst', 'chord'].includes(chart.type) ? { visible: false } : {}) }
   const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(frame.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend?.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11) : 24
   const topLegend = legend.visible && legend.position === 'top' ? legendBand : 0, bottomLegend = legend.visible && legend.position === 'bottom' ? legendBand : 0
   const inheritedSize = chart.options?.appearance?.font?.fontSize
@@ -68,6 +68,14 @@ export function layoutChartData(data: ChartData, chart: ChartModel, computed?: C
 export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartModel, palette = chartPalette(chart)): ChartLayout {
   const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series)
   if (derived.waterfallLayout) return layoutChartWaterfall(data, chart, derived.waterfallLayout, frame, plot, palette)
+  if (descriptor.family === 'chord') {
+    const chord = data.chord ? chartChordLayout(data.chord, chart, plot) : undefined, source = data.series[0]
+    if (data.categories.length && source && !chord) throw new TypeError('和弦布局需要同一任务的聚合与角度结果。')
+    return { frame, plot, min: 0, max: 1, categories: data.categories, ...(chord ? { chord } : {}),
+      series: source ? [{ field: source.field, name: source.name, color: palette[0] ?? '#5470c6',
+        points: (chord?.nodes ?? []).map(node => ({ ...chartPolar(chord!.center, (chord!.innerRadius + chord!.outerRadius) / 2, (node.start + node.end) / 2),
+          value: node.value, category: node.name, categoryIndex: node.index })) }] : [] }
+  }
   if (chart.type === 'heatmap') {
     const extent = chartHeatmapExtent(data, chart), names = chartHeatmapFieldNames(data, chart)
     return { frame, plot, ...extent, categories: data.categories, series: data.series.map((source, seriesPosition) => {
@@ -226,9 +234,6 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
   } else if (descriptor.family === 'relation') {
     const graph = chartRelationLayout(data.graph!, chart, plot)
     layout.series[0]!.points = graph.nodes.map(node => ({ x: node.x, y: node.y, value: node.value, category: node.name, categoryIndex: node.index }))
-  } else if (descriptor.family === 'chord') {
-    const chord = chartChordLayout(data.graph!, chart, plot)
-    layout.series[0]!.points = chord.nodes.map((node, categoryIndex) => ({ ...chartPolar(chord.center, (chord.innerRadius + chord.outerRadius) / 2, (node.start + node.end) / 2), value: node.value, category: node.name, categoryIndex }))
   } else if (descriptor.family === 'wordCloud') {
     const words = chartWordCloudLayout(data, chart.options?.wordCloud, plot)
     layout.series[0]!.points = words.map(word => ({ x: word.x + word.width / 2, y: word.y + word.height / 2, value: word.value, category: word.text, categoryIndex: word.categoryIndex, size: word.fontSize }))
@@ -240,8 +245,9 @@ export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartMo
     layout.series[0]!.points = rectangles.filter(rect => !rect.renderNode.isTreemapResidual).map(rect => ({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, value: rect.node.value, category: layout.categories[rect.pointIndex]!, categoryIndex: rect.pointIndex }))
   } else if (descriptor.family === 'sunburst') {
     const sectors = chartSunburstLayout(data.hierarchy!, plot), center = { x: plot.x + plot.width / 2, y: plot.y + plot.height / 2 }
+    layout.sunburst = sectors
     layout.categories = chartHierarchyItems(data.hierarchy!).map(item => item.path.join(' / '))
-    layout.series[0]!.points = sectors.map(sector => ({ ...chartPolar(center, (sector.inner + sector.outer) / 2, (sector.start + sector.end) / 2), value: sector.node.value, category: layout.categories[sector.pointIndex]!, categoryIndex: sector.pointIndex }))
+    layout.series[0]!.points = sectors.filter(sector => !sector.isSunburstResidual).map(sector => ({ ...chartPolar(center, (sector.inner + sector.outer) / 2, (sector.start + sector.end) / 2), value: sector.node.value, category: layout.categories[sector.pointIndex]!, categoryIndex: sector.pointIndex }))
   }
   if (derived.pareto) {
     const style = chartParetoCumulativeStyle(chart, palette)

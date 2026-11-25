@@ -1,11 +1,16 @@
 mod distribution;
 mod hierarchy;
+mod chord;
 mod errors;
 mod math;
 mod trendline;
 mod waterfall;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod hierarchy_tests;
+#[cfg(test)]
+mod chord_tests;
 
 use crate::{ComputeError, MAX_ELEMENTS, MAX_ROWS};
 use serde::{Deserialize, Serialize};
@@ -71,6 +76,8 @@ pub enum ChartJob {
         #[serde(default)] whisker_method: WhiskerMethod, whisker_multiplier: f64 },
     Pareto { series_index: u32, slot: u32, include_zero_values: bool },
     Hierarchy { series_index: u32, slot: u32, hierarchy_columns: Vec<u32>, label_columns: Vec<u32>, key_count: u32, label_count: u32 },
+    Chord { series_index: u32, slot: u32, source_column: u32, target_column: u32, label_count: u32,
+        start_angle: f64, clockwise: bool, pad_angle: f64, min_angle: f64 },
     /// Total/change flags share the columnar numeric input, avoiding a large
     /// per-point control DTO. Only exact 0/1 flags are accepted.
     Waterfall { series_index: u32, slot: u32, total_column: Option<u32> },
@@ -90,6 +97,7 @@ impl ChartJob {
             Self::Boxplot { series_index, slot, .. } => ("boxplot", *series_index, *slot),
             Self::Pareto { series_index, slot, .. } => ("pareto", *series_index, *slot),
             Self::Hierarchy { series_index, slot, .. } => ("hierarchy", *series_index, *slot),
+            Self::Chord { series_index, slot, .. } => ("chord", *series_index, *slot),
             Self::Waterfall { series_index, slot, .. } => ("waterfall", *series_index, *slot),
             Self::WaterfallLayout { series_index, slot, .. } => ("waterfallLayout", *series_index, *slot),
             Self::Trendline { series_index, slot, .. } => ("trendline", *series_index, *slot),
@@ -109,6 +117,8 @@ impl ChartJob {
                     nodes.checked_mul(4).and_then(|size| size.checked_add(rows + 2)).ok_or_else(ComputeError::memory)?)
             }
             Self::Waterfall { .. } => (rows * 3, rows * 2),
+            Self::Chord { .. } => (rows.checked_mul(11).ok_or_else(ComputeError::memory)?,
+                rows.checked_mul(4).and_then(|size| size.checked_add(2)).ok_or_else(ComputeError::memory)?),
             Self::WaterfallLayout { series_indices, stack_type, use_subtotal, .. } => {
                 return waterfall::output_capacity(rows, series_indices.len(), *stack_type, *use_subtotal);
             }
@@ -124,6 +134,7 @@ impl ChartJob {
             Self::Boxplot { .. } => rows * 16,
             Self::Pareto { .. } => rows * 16,
             Self::Hierarchy { hierarchy_columns, .. } => rows * hierarchy_columns.len() * 256 + (hierarchy_columns.len() + 1) * 64,
+            Self::Chord { .. } => rows * 1024,
             // Each of the two stacks reserves at most period nodes; a node is
             // <=56 bytes natively and <=48 on wasm32.
             Self::Trendline { trend_type: TrendType::MovingAvg, period, .. } =>
@@ -207,6 +218,15 @@ impl ChartStatisticsParams {
                             .any(|column| *column >= self.column_count || !selected.insert(*column))
                         || *key_count as usize > rows * hierarchy_columns.len() || *label_count as usize > rows * hierarchy_columns.len() {
                         return Err(ComputeError::invalid("Hierarchy key/label/value columns are missing, duplicated or out of range"));
+                    }
+                }
+                ChartJob::Chord { source_column, target_column, label_count, start_angle, pad_angle, min_angle, .. } => {
+                    let columns = [*source_column, *target_column, self.series[series as usize].column];
+                    if columns.iter().any(|column| *column >= self.column_count)
+                        || columns[0] == columns[1] || columns[0] == columns[2] || columns[1] == columns[2]
+                        || *label_count as usize > rows * 2 || !start_angle.is_finite()
+                        || !pad_angle.is_finite() || *pad_angle < 0.0 || !min_angle.is_finite() || *min_angle < 0.0 {
+                        return Err(ComputeError::invalid("Chord endpoint/value columns, label count or angle settings are invalid"));
                     }
                 }
                 ChartJob::Waterfall { total_column, .. } => {
@@ -425,6 +445,8 @@ impl ChartStatistics {
                     distribution::pareto(&input, series, *include_zero_values, result),
                 ChartJob::Hierarchy { hierarchy_columns, label_columns, key_count, label_count, .. } =>
                     hierarchy::build(&input, series, hierarchy_columns, label_columns, *key_count, *label_count, result),
+                ChartJob::Chord { source_column, target_column, label_count, start_angle, clockwise, pad_angle, min_angle, .. } =>
+                    chord::build(&input, series, *source_column, *target_column, *label_count, *start_angle, *clockwise, *pad_angle, *min_angle, result),
                 ChartJob::Waterfall { total_column, .. } =>
                     distribution::waterfall(&input, series, *total_column, result),
                 ChartJob::WaterfallLayout { series_indices, stack_type, use_subtotal, total_columns, .. } =>

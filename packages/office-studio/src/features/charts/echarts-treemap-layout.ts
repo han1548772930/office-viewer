@@ -1,8 +1,10 @@
 import { registerLayout, registerPostUpdate } from 'echarts/core'
 import { chartTreemapLabelFits } from './chart-treemap'
+import { applyChartHierarchyPattern, CHART_HIERARCHY_PATTERN_KEY } from './echarts-hierarchy-pattern'
 
 export const CHART_TREEMAP_OVERLAP_KEY = '__officeTreemapOverlappingParentLabel'
 export const CHART_TREEMAP_FIT_KEY = '__officeTreemapCompleteLabelFit'
+export const CHART_TREEMAP_BACKGROUND_KEY = '__officeTreemapLabelBackgroundGradient'
 interface NodeRect { x: number; y: number; width: number; height: number; borderWidth?: number; upperLabelHeight?: number }
 interface RuntimeNode {
   dataIndex: number; viewChildren?: RuntimeNode[]
@@ -11,14 +13,14 @@ interface RuntimeNode {
   getModel(): { get(path: string[]): unknown }
 }
 interface RuntimeGraphic {
-  z2?: number; ignore?: boolean
+  type?: string; z2?: number; ignore?: boolean
   shape?: { width?: number; height?: number }
   style?: { padding?: number | number[] }
   beforeUpdate?: (...args: unknown[]) => void
   getTextContent?(): RuntimeGraphic | undefined
   getBoundingRect?(): { width: number; height: number }
   setStyle?(style: Record<string, unknown>): void
-  ensureState?(name: string): { ignore?: boolean }
+  ensureState?(name: string): { ignore?: boolean; style?: Record<string, unknown> }
   traverse?(visit: (graphic: RuntimeGraphic) => void): void
   markRedraw?(): void
 }
@@ -68,7 +70,7 @@ function overlap(root: RuntimeNode): void {
   }
 }
 
-function labels(data: RuntimeData, overlapping: boolean): void {
+function labels(data: RuntimeData, overlapping: boolean, devicePixelRatio: number): void {
   const hierarchy = nodes(data.tree.root), subtreeZ = new Map<RuntimeNode, number>()
   for (let index = hierarchy.length - 1; index >= 0; index--) {
     const node = hierarchy[index]!, children = node.viewChildren ?? []
@@ -82,6 +84,17 @@ function labels(data: RuntimeData, overlapping: boolean): void {
     // TreemapView registers parent backgrounds directly, but leaf graphics are
     // groups with text attached to their content rectangle.
     if (!parent) graphic?.traverse?.(entry => { if (entry !== graphic && entry.getTextContent?.()) hosts.push(entry) })
+    if (!parent) {
+      // Label.show=false in every state can omit Text entirely. The locked
+      // leaf group always has a background/border Rect and a higher-z2 content
+      // Rect. Paint the actual content independently of its text host, and
+      // keep the background's authored outline color intact.
+      let content: RuntimeGraphic | undefined
+      graphic?.traverse?.(entry => {
+        if (entry.type === 'rect' && (!content || (entry.z2 ?? 0) > (content.z2 ?? 0))) content = entry
+      })
+      if (content) applyChartHierarchyPattern(content, node.getModel().get([CHART_HIERARCHY_PATTERN_KEY]), devicePixelRatio)
+    }
     for (const host of hosts) {
       const text = host.getTextContent?.()
       if (!text || !rect) continue
@@ -93,7 +106,12 @@ function labels(data: RuntimeData, overlapping: boolean): void {
       const raw = text.style?.padding, padding = typeof raw === 'number' ? [raw, raw, raw, raw] : raw ?? []
       const horizontal = padding.length === 1 ? 2 * padding[0]! : padding.length < 4 ? 2 * (padding[1] ?? 0) : padding[1]! + padding[3]!
       text.beforeUpdate = undefined
-      text.setStyle?.({ width: Math.max(0, area.width - horizontal), lineOverflow: undefined, height: undefined, overflow: 'break' })
+      // ECharts' public label type accepts a string or image. The locked
+      // zrender Text renderer also accepts gradients, so this marked adapter
+      // supplies the real gradient directly after the normal label style.
+      const background = parent ? undefined : node.getModel().get([CHART_TREEMAP_BACKGROUND_KEY])
+      text.setStyle?.({ width: Math.max(0, area.width - horizontal), lineOverflow: undefined, height: undefined, overflow: 'break',
+        ...(background ? { backgroundColor: background } : {}) })
       const bounds = text.getBoundingRect?.()
       const visible = node.getModel().get([parent ? 'upperLabel' : 'label', 'show']) !== false
       const hidden = !visible || !chartTreemapLabelFits(area, bounds)
@@ -115,7 +133,7 @@ export function registerChartTreemapLayout(): void {
   registerLayout(model => (model as unknown as RuntimeModel).eachSeriesByType('treemap', series => {
     if (series.option[CHART_TREEMAP_OVERLAP_KEY]) overlap(series.getData().tree.root)
   }))
-  registerPostUpdate(model => (model as unknown as RuntimeModel).eachSeriesByType('treemap', series => {
-    if (series.option[CHART_TREEMAP_FIT_KEY]) labels(series.getData(), Boolean(series.option[CHART_TREEMAP_OVERLAP_KEY]))
+  registerPostUpdate((model, api) => (model as unknown as RuntimeModel).eachSeriesByType('treemap', series => {
+    if (series.option[CHART_TREEMAP_FIT_KEY]) labels(series.getData(), Boolean(series.option[CHART_TREEMAP_OVERLAP_KEY]), api.getDevicePixelRatio())
   }))
 }

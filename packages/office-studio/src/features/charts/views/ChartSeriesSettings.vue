@@ -37,9 +37,9 @@ const pointControls = computed<ChartSettingControl[]>(() => {
     ...chartFillPatternControls('point', read, write, effective, '项目'),
     numberControl('point.fillOpacity', '项目填充不透明度', config => read(config)?.fillOpacity, (config, value) => { write(config).fillOpacity = value }, 0, 1),
     { ...numberControl('point.size', '项目标记大小', config => read(config)?.size, (config, value) => { write(config).size = value }, 0, 256),
-      visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' },
+      visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' && config.type !== 'sunburst' },
     { ...selectControl('point.shape', '项目标记形状', CHART_POINT_SHAPE_CHOICES, config => read(config)?.shape, (config, value) => { write(config).shape = value }),
-      visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' },
+      visible: (config: ChartConfig) => config.type !== 'sankey' && config.type !== 'heatmap' && config.type !== 'treemap' && config.type !== 'sunburst' },
     colorControl('point.border.color', '项目边框颜色', config => read(config)?.border?.color, (config, value) => { (write(config).border ??= {}).color = value }),
     numberControl('point.border.width', '项目边框宽度', config => read(config)?.border?.width, (config, value) => { (write(config).border ??= {}).width = value }, 0, 30),
   ]

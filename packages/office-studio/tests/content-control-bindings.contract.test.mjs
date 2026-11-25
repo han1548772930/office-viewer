@@ -559,7 +559,7 @@ test('one facade transaction includes source unwrapping and every host peer thro
     const changed = copy(document.getModel().contentControls)
     document.undo(); assert.deepEqual(document.getModel().contentControls, before.contentControls)
     document.redo(); assert.deepEqual(document.getModel().contentControls, changed); assertHosted(document.getModel(), 'new😀', ['body'])
-    reopened = open(copy(document.save()))
+    reopened = open(copy(document.saveModel()))
     assert.deepEqual(reopened.document.getModel().contentControls, changed); assertHosted(reopened.document.getModel(), 'new😀', ['body'])
     assert.deepEqual(history(reopened.studio, document.id), { undo: 0, redo: 0 })
   } finally { studio.dispose(); reopened?.studio.dispose() }

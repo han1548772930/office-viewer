@@ -338,7 +338,8 @@ fn level_xml(level: &Value, pictures: &HashMap<String, NumberingPicture>) -> Str
     if let Some(suffix) = get(level, "suffix").as_str() { properties.push_str(&format!("<w:suff w:val=\"{}\"/>", xml_attribute(suffix))); }
     if let Some(text) = get(level, "text").as_str() { properties.push_str(&format!("<w:lvlText w:val=\"{}\"/>", xml_attribute(text))); }
     if let Some(picture) = picture_key(level).and_then(|key| pictures.get(&key)) { properties.push_str(&format!("<w:lvlPicBulletId w:val=\"{}\"/>", picture.id)); }
-    properties.push_str("<w:lvlJc w:val=\"left\"/>");
+    let alignment = get(level, "alignment").as_str().filter(|value| matches!(*value, "left" | "center" | "right" | "start" | "end")).unwrap_or("left");
+    properties.push_str(&format!("<w:lvlJc w:val=\"{alignment}\"/>"));
     let indent = get(level, "indent");
     let mut indentation = String::new();
     for (field, attribute) in [("leftTwips", "left"), ("rightTwips", "right")] {

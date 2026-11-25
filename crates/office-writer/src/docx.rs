@@ -24,6 +24,7 @@ mod table_writer;
 mod block_hosts;
 #[path = "docx_notes.rs"]
 mod note_writer;
+use note_writer::{EventScope, NoteBoundary};
 #[path = "docx_custom_xml.rs"]
 mod custom_xml;
 #[path = "docx_content_controls.rs"]
@@ -160,13 +161,15 @@ struct CommentAnchor {
     id: u32,
     start: usize,
     end: usize,
+    start_note_reference_count: Option<usize>,
+    end_note_reference_count: Option<usize>,
     starts_here: bool,
     ends_here: bool,
 }
 
 #[derive(Default)]
 struct CommentEventCursor {
-    events: Vec<(usize, String)>,
+    events: Vec<(NoteBoundary, String, EventScope)>,
     next: usize,
 }
 
@@ -185,7 +188,14 @@ struct ContentControl {
     numeric_id: u32,
     start: usize,
     end: usize,
+    start_note_reference_count: Option<usize>,
+    end_note_reference_count: Option<usize>,
     value: Value,
+}
+
+impl ContentControl {
+    fn start_boundary(&self) -> NoteBoundary { (self.start, self.start_note_reference_count.unwrap_or(0)) }
+    fn end_boundary(&self) -> NoteBoundary { (self.end, self.end_note_reference_count.unwrap_or(0)) }
 }
 
 #[derive(Clone, Copy)]
@@ -429,28 +439,69 @@ impl<'a> WriteContext<'a> {
             control.start = control.start.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("内容控件与重放编号域重叠。"))?;
             control.end = control.end.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("内容控件与重放编号域重叠。"))?;
         }
-        let body_length = runs.iter().map(|run| string(get(run, "text")).unwrap_or_default().encode_utf16().count()).sum::<usize>();
-        let total = prefix_length + body_length;
-        let mut events = Vec::<(usize, u8, i64, String)>::new();
+        let note_positions = note_writer::NotePositions::from_runs(runs)?;
+        let body_length = note_positions.length();
+        let total = prefix_length.checked_add(body_length)
+            .filter(|length| *length as u64 <= office_io_common::document_note_source::NOTE_SAFE_INTEGER)
+            .ok_or_else(|| ExportError::invalid("正文与编号前缀的 UTF-16 长度超出安全范围。"))?;
+        let boundary_rank = |offset: usize, explicit: Option<usize>| {
+            if offset < prefix_length {
+                if explicit.unwrap_or(0) != 0 { return Err(ExportError::invalid("原始编号前缀不包含可寻址的注释引用序号。")); }
+                Ok(0)
+            } else { note_positions.boundary_rank(offset - prefix_length, explicit) }
+        };
+        for control in &mut controls {
+            control.start_note_reference_count = Some(note_positions.boundary_rank(control.start, control.start_note_reference_count)?);
+            control.end_note_reference_count = Some(note_positions.boundary_rank(control.end, control.end_note_reference_count)?);
+            if control.start_boundary() > control.end_boundary() { return Err(ExportError::invalid("内容控件的注释引用端点顺序相反。")); }
+        }
+        let mut events = Vec::<(usize, usize, u8, std::cmp::Reverse<(u8, usize, usize)>, i64, String, EventScope)>::new();
         for event in self.text_fields.take_boundaries(&block_id) {
             if event.offset < prefix_length {
                 return Err(ExportError::invalid("正文字段结果与原始编号域重叠；不能重复写出两个权威字段。"));
             }
-            events.push((event.offset, event.priority, event.order, event.xml));
+            let range = event.range.map(|(start, end)| {
+                let from = start.0.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("正文字段起点与原始编号域重叠。"))?;
+                let to = end.0.checked_sub(prefix_length).ok_or_else(|| ExportError::invalid("正文字段终点与原始编号域重叠。"))?;
+                Ok::<_, ExportError>(((from, start.1), (to, end.1)))
+            }).transpose()?;
+            events.push((event.offset, boundary_rank(event.offset, Some(event.note_reference_count))?, event.priority,
+                std::cmp::Reverse((0, 0, 0)), event.order, event.xml, EventScope::Field(range)));
         }
         for mark in marks {
             if mark.start > mark.end || mark.end > total {
                 self.warn("DOCX_COMMENT_RANGE_INVALID", format!("Comment range for comment {} exceeds paragraph {block_id:?} and was omitted.", mark.id));
                 continue;
             }
-            if mark.starts_here {
-                events.push((mark.start, 2, i64::from(mark.id), format!("<w:commentRangeStart w:id=\"{}\"/>", mark.id)));
+            let start_rank = boundary_rank(mark.start, mark.start_note_reference_count)?;
+            let end_rank = boundary_rank(mark.end, mark.end_note_reference_count)?;
+            if (mark.start, start_rank) > (mark.end, end_rank) {
+                return Err(ExportError::invalid("批注端点的注释引用序号顺序相反。"));
             }
-            if mark.ends_here {
-                let collapsed = mark.starts_here && mark.start == mark.end;
-                events.push((mark.end, if collapsed { 3 } else { 0 }, i64::from(mark.id), format!("<w:commentRangeEnd w:id=\"{}\"/>", mark.id)));
-                events.push((mark.end, if collapsed { 4 } else { 1 }, i64::from(mark.id), format!("<w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id)));
+            let start = format!("<w:commentRangeStart w:id=\"{}\"/>", mark.id);
+            let end = format!("<w:commentRangeEnd w:id=\"{}\"/><w:r><w:commentReference w:id=\"{}\"/></w:r>", mark.id, mark.id);
+            let collapsed = mark.starts_here && mark.ends_here && (mark.start, start_rank) == (mark.end, end_rank);
+            if collapsed {
+                // Keep each point's start/end/reference together at its stable
+                // source rank, between ending ranges and newly opening ranges.
+                events.push((mark.start, start_rank, 1, std::cmp::Reverse((0, 0, 0)), i64::from(mark.id), format!("{start}{end}"), EventScope::Marker));
+            } else {
+                if mark.starts_here {
+                    let containing_end = (u8::from(!mark.ends_here), mark.end, end_rank);
+                    events.push((mark.start, start_rank, 2, std::cmp::Reverse(containing_end), i64::from(mark.id), start, EventScope::Marker));
+                }
+                if mark.ends_here {
+                    let contained_start = (u8::from(mark.starts_here), mark.start, start_rank);
+                    events.push((mark.end, end_rank, 0, std::cmp::Reverse(contained_start), -i64::from(mark.id), end, EventScope::Marker));
+                }
             }
+        }
+        // Empty references and other empty runs keep their source order at a
+        // text/rank boundary instead of being repeated by numeric slicing.
+        for reference in &note_positions.zero_runs {
+            let marker = self.runs(std::slice::from_ref(&runs[reference.run_index]))?;
+            let order = i64::try_from(reference.run_index).map_err(|_| ExportError::invalid("注释引用事件数量超出范围。"))?;
+            events.push((prefix_length + reference.offset, reference.rank, 5, std::cmp::Reverse((0, 0, 0)), order, marker, EventScope::ZeroRun));
         }
         if get(get(block, "metadata"), "codeBlock").get("source").is_some() {
             let source = get(get(block, "metadata"), "codeBlock")["source"].as_str().ok_or_else(|| ExportError::invalid("代码块源文本无效。"))?;
@@ -463,24 +514,32 @@ impl<'a> WriteContext<'a> {
                     let id = self.sequences.next_bookmark;
                     self.sequences.next_bookmark = id.checked_add(1).ok_or_else(|| ExportError::invalid("Too many paragraph bookmarks."))?;
                     let name = format!("office_code_plain_v1_{}_{}", offset - prefix_length, offset - prefix_length + length);
-                    events.push((offset, 2, i64::from(id), format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}\"/>")));
-                    events.push((offset + length, 0, i64::from(id), format!("<w:bookmarkEnd w:id=\"{id}\"/>")));
+                    let start_rank = boundary_rank(offset, None)?;
+                    let end_rank = boundary_rank(offset + length, None)?;
+                    events.push((offset, start_rank, 2, std::cmp::Reverse((0, offset + length, end_rank)), i64::from(id), format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}\"/>"), EventScope::Marker));
+                    events.push((offset + length, end_rank, 0, std::cmp::Reverse((1, offset, start_rank)), -i64::from(id), format!("<w:bookmarkEnd w:id=\"{id}\"/>"), EventScope::Marker));
                 }
                 offset += length;
             }
         }
-        events.sort_by_key(|event| (event.0, event.1, event.2));
+        // Containing ranges open first; contained ranges close first. Equal
+        // ranges close in the reverse of their stable source opening order.
+        events.sort_by_key(|event| (event.0, event.1, event.2, event.3, event.4));
         let mut rendered = String::new();
-        let prefix_events = if preserved.is_some() { events.partition_point(|event| event.0 <= prefix_length) } else { 0 };
+        let prefix_events = if preserved.is_some() { events.partition_point(|event| event.0 < prefix_length) } else { 0 };
         if let Some(paragraph) = preserved {
-            let events = events[..prefix_events].iter().map(|event| (event.0, event.3.clone())).collect::<Vec<_>>();
+            let events = events[..prefix_events].iter().map(|event| (event.0, event.5.clone())).collect::<Vec<_>>();
             rendered.push_str(&paragraph.render(&events)?);
         }
         let mut comments = CommentEventCursor {
-            events: events.into_iter().skip(prefix_events).map(|(offset, _, _, marker)| (offset - prefix_length, marker)).collect(),
+            events: events.into_iter().skip(prefix_events).map(|(offset, rank, _, _, _, marker, scope)| ((offset - prefix_length, rank), marker, scope)).collect(),
             next: 0,
         };
-        rendered.push_str(&self.render_control_range(runs, &controls, 0, body_length, None, 0, true, &mut comments)?);
+        let render_runs = if note_positions.zero_runs.is_empty() { None } else {
+            let zero_indices = note_positions.zero_runs.iter().map(|reference| reference.run_index).collect::<HashSet<_>>();
+            Some(runs.iter().enumerate().filter(|(index, _)| !zero_indices.contains(index)).map(|(_, run)| run.clone()).collect::<Vec<_>>())
+        };
+        rendered.push_str(&self.render_control_range(render_runs.as_deref().unwrap_or(runs), &controls, (0, 0), (body_length, note_positions.reference_count()), None, 0, true, &mut comments)?);
         if rendered.is_empty() {
             rendered.push_str("<w:r><w:t></w:t></w:r>");
         }
@@ -491,8 +550,8 @@ impl<'a> WriteContext<'a> {
         &mut self,
         runs: &[Value],
         controls: &[ContentControl],
-        start: usize,
-        end: usize,
+        start: NoteBoundary,
+        end: NoteBoundary,
         parent_id: Option<&str>,
         depth: usize,
         include_end_objects: bool,
@@ -512,18 +571,18 @@ impl<'a> WriteContext<'a> {
             })
             .cloned()
             .collect::<Vec<_>>();
-        children.sort_by_key(|control| (control.start, control.end, control.id.clone()));
+        children.sort_by_key(|control| (control.start_boundary(), control.end_boundary(), control.id.clone()));
         let mut cursor = start;
         let mut result = String::new();
         for control in children {
-            if control.start < start || control.end > end || control.start > control.end {
+            if control.start_boundary() < start || control.end_boundary() > end || control.start_boundary() > control.end_boundary() {
                 self.warn(
                     "DOCX_CONTENT_CONTROL_RANGE",
                     format!("Content control {:?} has a range outside its paragraph or parent; its wrapper was omitted.", control.id),
                 );
                 continue;
             }
-            if control.start < cursor {
+            if control.start_boundary() < cursor {
                 self.warn(
                     "DOCX_CONTENT_CONTROL_OVERLAP",
                     format!(
@@ -533,12 +592,13 @@ impl<'a> WriteContext<'a> {
                 );
                 continue;
             }
-            result.push_str(&self.render_annotated_run_range(runs, cursor, control.start, false, comments)?);
+            result.push_str(&self.render_annotated_run_range(runs, cursor, control.start_boundary(), false,
+                (start, end), Some((control.start_boundary(), control.end_boundary())), comments)?);
             let content = self.render_control_range(
                 runs,
                 controls,
-                control.start,
-                control.end,
+                control.start_boundary(),
+                control.end_boundary(),
                 Some(&control.id),
                 depth + 1,
                 false,
@@ -560,35 +620,44 @@ impl<'a> WriteContext<'a> {
                 );
                 result.push_str(&content);
             }
-            cursor = control.end;
+            cursor = control.end_boundary();
         }
-        result.push_str(&self.render_annotated_run_range(runs, cursor, end, include_end_objects, comments)?);
+        result.push_str(&self.render_annotated_run_range(runs, cursor, end, include_end_objects, (start, end), None, comments)?);
         Ok(result)
     }
 
     fn render_annotated_run_range(
         &mut self,
         runs: &[Value],
-        start: usize,
-        end: usize,
+        start: NoteBoundary,
+        end: NoteBoundary,
         include_end_objects: bool,
+        owner: (NoteBoundary, NoteBoundary),
+        following: Option<(NoteBoundary, NoteBoundary)>,
         comments: &mut CommentEventCursor,
     ) -> Result<String, ExportError> {
         let mut cursor = start;
         let mut result = String::new();
-        while let Some((offset, marker)) = comments.events.get(comments.next) {
-            // Each boundary belongs to its following interval. The paragraph's
-            // final interval also owns ending comments and zero-length objects.
-            if *offset > end || *offset == end && !include_end_objects { break; }
-            if *offset < cursor {
+        while let Some((position, marker, scope)) = comments.events.get(comments.next) {
+            if *position > end { break; }
+            if *position == end && !include_end_objects {
+                let contains = |outer: (NoteBoundary, NoteBoundary), inner: (NoteBoundary, NoteBoundary)| outer.0 <= inner.0 && inner.1 <= outer.1;
+                let belongs = match scope {
+                    EventScope::Marker => true,
+                    EventScope::ZeroRun | EventScope::Field(None) => false,
+                    EventScope::Field(Some(range)) => contains(owner, *range) && !following.is_some_and(|following| contains(following, *range)),
+                };
+                if !belongs { break; }
+            }
+            if *position < cursor {
                 return Err(ExportError::invalid("Comment events are not ordered within the content control ranges."));
             }
-            result.push_str(&self.render_run_range(runs, cursor, *offset, false)?);
+            result.push_str(&self.render_run_range(runs, cursor.0, position.0, false)?);
             result.push_str(marker);
-            cursor = *offset;
+            cursor = *position;
             comments.next += 1;
         }
-        result.push_str(&self.render_run_range(runs, cursor, end, include_end_objects)?);
+        result.push_str(&self.render_run_range(runs, cursor.0, end.0, include_end_objects)?);
         Ok(result)
     }
 
@@ -999,6 +1068,8 @@ fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Re
             numeric_id,
             start,
             end,
+            start_note_reference_count: note_writer::optional_reference_count(value, "startNoteReferenceCount")?,
+            end_note_reference_count: note_writer::optional_reference_count(value, "endNoteReferenceCount")?,
             value: value.clone(),
         });
     }
@@ -1380,10 +1451,17 @@ fn collect_comments(
                         warnings.push(ExportWarning::new("DOCX_COMMENT_RANGE_INVALID", "A comment range without a block ID or with reversed offsets was omitted."));
                         continue;
                     }
+                    let start_note_reference_count = note_writer::optional_reference_count(range, "startNoteReferenceCount")?;
+                    let end_note_reference_count = note_writer::optional_reference_count(range, "endNoteReferenceCount")?;
+                    if start == end && start_note_reference_count.zip(end_note_reference_count).is_some_and(|(start, end)| start > end) {
+                        return Err(ExportError::invalid("Comment anchor note-reference ranks are reversed at the same text boundary."));
+                    }
                     anchors.entry(block_id).or_default().push(CommentAnchor {
                         id: root_id,
                         start,
                         end,
+                        start_note_reference_count,
+                        end_note_reference_count,
                         starts_here: range_index == 0,
                         ends_here: range_index + 1 == ranges.len(),
                     });

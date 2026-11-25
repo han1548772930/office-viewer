@@ -14,6 +14,7 @@ import { documentId, findDocumentBlock, runText, runsForTarget, tableForBlock } 
 import { flattenDocumentBody } from '../services/document-facade'
 import type { DocumentSelection } from '../model/document-model'
 import { isDocumentTextBoundary } from '../model/document-story'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets } from '../model/document-note-boundary'
 import { createDocumentTableViewSelection, documentTableSelectedTextTargets, resolveDocumentTableViewSelection } from '../model/document-table-selection'
 import { documentTableCellsInRange, documentTableGrid, expandDocumentTableRange } from '../model/document-table-grid'
 import { documentTableCellContentContainers } from '../model/document-table-continuations'
@@ -54,8 +55,14 @@ function anchorForRange(model: DocumentModel, startOffset: number, endOffset: nu
     const start = Math.max(startOffset, segment.startOffset)
     const end = Math.min(endOffset, segment.endOffset)
     if (start >= end) continue
+    const blockId = segment.cellBlockId ?? segment.blockId
+    const paragraph = findDocumentBlock(model, blockId)
+    if (!paragraph) throw new RangeError('Comment anchor paragraph does not exist.')
+    const references = documentNoteReferenceOffsets(paragraph.runs)
+    assertDocumentNoteReferenceBoundaryRank(references, start - segment.startOffset)
+    assertDocumentNoteReferenceBoundaryRank(references, end - segment.startOffset)
     anchor.push({
-      blockId: segment.cellBlockId ?? segment.blockId,
+      blockId,
       startOffset: start - segment.startOffset,
       endOffset: end - segment.startOffset,
       text: segment.text.slice(start - segment.startOffset, end - segment.startOffset),
@@ -270,6 +277,12 @@ export function documentThreadCommentAnchorStatus(model: DocumentModel, comment:
     if (!Number.isSafeInteger(anchor.startOffset) || !Number.isSafeInteger(anchor.endOffset) || anchor.startOffset < 0 || anchor.endOffset < anchor.startOffset || anchor.endOffset > sourceText.length) return 'stale'
     const current = sourceText.slice(anchor.startOffset, anchor.endOffset)
     if (current !== anchor.text) return 'stale'
+    try {
+      const references = documentNoteReferenceOffsets(paragraph.runs)
+      const start = assertDocumentNoteReferenceBoundaryRank(references, anchor.startOffset, anchor.startNoteReferenceCount)
+      const end = assertDocumentNoteReferenceBoundaryRank(references, anchor.endOffset, anchor.endNoteReferenceCount)
+      if (anchor.startOffset === anchor.endOffset && end < start) return 'stale'
+    } catch { return 'stale' }
     resolved += current.length
   }
   return resolved === comment.referenceText.replaceAll('\n', '').length ? 'current' : 'stale'

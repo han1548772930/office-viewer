@@ -2,12 +2,12 @@ import type { ChartColor, ChartLabelOptions, ChartTreemapLabelOptions, ChartTree
 import type { RenderRect } from '../../rendering/contracts'
 import type { ChartHierarchyItem, ChartHierarchyNode } from './chart-data'
 import { chartHierarchyItems } from './chart-data'
-import { chartColorChannels, chartColorRepresentative, chartSolidColorOpacity, isChartLinearGradient } from './chart-color'
+import { chartColorRepresentative } from './chart-color'
 import { definedChartStyleFields } from './chart-options'
 import { chartLabelContentMask } from './chart-labels'
 import { finiteChartValue } from './chart-math'
 import { formatSheetValue } from '../sheet-workbench/sheet-number-format'
-import type { ChartAutomaticGradient } from './chart-auto-gradient'
+export { chartLabelBackground as chartTreemapLabelBackground, chartLabelBackgroundPaint as chartTreemapBackgroundPaint } from './chart-label-background'
 
 export const CHART_TREEMAP_DEFAULT_FONT_SIZE = 12
 export const CHART_TREEMAP_RESIDUAL_PREFIX = '__univer_treemap_residual__:'
@@ -78,22 +78,6 @@ export function chartTreemapLabelText(node: ChartTreemapRenderNode, label: Chart
   if (mask & 8) content.push(chartTreemapValueText(node.isTreemapResidual ? node.value : node.node.value,
     node.isTreemapResidual ? node.node.formattedSelfValue : node.node.formattedValue, label.format, date1904))
   return content.join('\n')
-}
-
-/** Fixed wp represents label patterns by their mean color; the authored pattern
- * remains independent from text color and is preserved in the model. */
-export function chartTreemapLabelBackground(background: ChartTreemapLabelOptions['backgroundColor']): ChartColor | undefined {
-  if (background === undefined || typeof background === 'string' || isChartLinearGradient(background)) return background
-  const foreground = chartColorChannels(background.foregroundColor), base = chartColorChannels(background.backgroundColor)
-  const percent = /^pct(\d+)$/.exec(background.preset), ratio = percent ? Math.min(100, Number(percent[1])) / 100 : 0.5
-  const channels = base.map((channel, index) => channel + (foreground[index]! - channel) * ratio)
-  return `rgba(${Math.round(channels[0]! * 255)}, ${Math.round(channels[1]! * 255)}, ${Math.round(channels[2]! * 255)}, ${channels[3]})`
-}
-
-export function chartTreemapBackgroundPaint(background: ChartColor | undefined, bounds: RenderRect): ChartAutomaticGradient | undefined {
-  if (!isChartLinearGradient(background)) return undefined
-  return { authored: true, start: { ...background.start }, end: { ...background.end }, bounds: { ...bounds },
-    stops: background.stops.map(stop => ({ offset: stop.offset, color: chartSolidColorOpacity(stop.color, stop.opacity ?? 1) })).sort((a, b) => a.offset - b.offset) }
 }
 
 export function chartTreemapLabelFits(rect: Pick<RenderRect, 'width' | 'height'> | undefined,

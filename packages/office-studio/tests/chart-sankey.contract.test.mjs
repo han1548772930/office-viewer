@@ -57,7 +57,7 @@ test('self loops count one carried flow and complete cycle detection includes cy
   const graph = chartGraphData(records([['A', 'B', 3], ['B', 'C', 3], ['C', 'A', 3]]), model())
   assert.equal(graph.cyclic, true); assert.deepEqual(graph.nodes.map(node => node.value), [3, 3, 3])
   const chord = chartGraphData(records([['A', 'B', 2], ['B', 'A', 3]]), { ...model(), type: 'chord' })
-  assert.deepEqual(chord.links, [{ source: 'A', target: 'B', value: 5 }])
+  assert.deepEqual(chord.links.map(({ source, target, value }) => ({ source, target, value })), [{ source: 'A', target: 'B', value: 5 }])
 })
 
 test('missing weight counts occurrences, numeric endpoints are names, and negative or overflowing node flows fail explicitly', () => {

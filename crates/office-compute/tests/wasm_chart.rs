@@ -1,6 +1,6 @@
 #![cfg(target_arch = "wasm32")]
 
-use js_sys::{Float64Array, Object, Reflect, Uint8Array, Uint32Array, WebAssembly};
+use js_sys::{Array, Float64Array, Function, Object, Reflect, Uint8Array, Uint32Array, WebAssembly};
 use office_compute::{create_chart_statistics, compute_protocol_version};
 use office_wasm_bridge::{CONTROL_VERSION, TaskBudget, TaskControl, TaskKind, from_control, to_control};
 use wasm_bindgen::{JsCast, JsValue};
@@ -127,4 +127,70 @@ fn empty_chart_jobs_have_empty_independent_results_and_no_bulk_copy_count() {
     assert_eq!(metadata["segments"][0]["validSampleCount"], 0);
     assert_eq!(metadata["transfer"]["inputCopies"], 0);
     assert_eq!(metadata["transfer"]["outputCopies"], 0);
+}
+
+fn chord_inputs() -> (Float64Array, Uint8Array, Uint32Array) {
+    let values = Float64Array::new_with_length(6);
+    for (index, value) in [2.0, 3.0, 0.0, 1.0, 1.0, 0.0].into_iter().enumerate() { values.set_index(index as u32, value); }
+    let states = Uint8Array::new_with_length(6); states.fill(1, 0, 6);
+    (values, states, Uint32Array::new_with_length(2))
+}
+fn chord_control() -> JsValue {
+    to_control(&serde_json::json!({ "context": context(), "params": {
+        "rowCount": 2, "columnCount": 3, "categoryCount": 1,
+        "series": [{ "field": 2, "seriesPosition": 0, "column": 0 }],
+        "jobs": [{ "kind": "chord", "seriesIndex": 0, "slot": 0, "sourceColumn": 1, "targetColumn": 2,
+            "labelCount": 2, "startAngle": 90, "clockwise": true, "padAngle": 0, "minAngle": 0 }]
+    } })).unwrap()
+}
+
+#[wasm_bindgen_test]
+fn chord_real_bulk_copies_have_one_owner_survive_growth_and_transfer_only_independent_intervals() {
+    let (input, states, categories) = chord_inputs();
+    let mut task = create_chart_statistics(input.clone(), states.clone(), categories.clone(), chord_control()).unwrap();
+    input.set_index(0, 99.0); states.set_index(0, 0);
+    assert!(task.step(1).unwrap());
+    let mut result = task.finish().unwrap();
+    assert_eq!(code(match task.finish() { Ok(_) => panic!("double consume"), Err(error) => error }), "COMPUTE_RESULT_CONSUMED");
+    let values = result.copy_values().unwrap(); let indices = result.copy_indices().unwrap();
+    assert_eq!(values.length(), 11); assert_eq!(values.get_index(0), 5.0);
+    assert_eq!(indices.to_vec(), vec![2,1,0,1,0,1]);
+    let metadata: serde_json::Value = from_control(result.metadata().unwrap()).unwrap();
+    assert_eq!(metadata["segments"][0]["kind"], "chord");
+    assert_eq!(metadata["transfer"]["inputCopies"], 3); assert_eq!(metadata["transfer"]["inputBytes"], 62);
+    assert_eq!(metadata["transfer"]["outputCopies"], 2); assert_eq!(metadata["transfer"]["outputBytes"], 112);
+    assert_eq!(metadata["transfer"]["rustBufferClones"], 0);
+    let memory: WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
+    assert!(!Object::is(&values.buffer(), &memory.buffer())); assert!(!Object::is(&indices.buffer(), &memory.buffer()));
+    drop(result); memory.grow(0); assert_eq!(values.get_index(0), 5.0);
+    let packet = Object::new();
+    Reflect::set(&packet, &JsValue::from_str("values"), &values).unwrap();
+    Reflect::set(&packet, &JsValue::from_str("indices"), &indices).unwrap();
+    let transfer = Array::new(); transfer.push(&values.buffer()); transfer.push(&indices.buffer());
+    let options = Object::new(); Reflect::set(&options, &JsValue::from_str("transfer"), &transfer).unwrap();
+    let global = js_sys::global();
+    let structured_clone: Function = Reflect::get(&global, &JsValue::from_str("structuredClone")).unwrap().dyn_into().unwrap();
+    let received = structured_clone.call2(&global, &packet, &options).unwrap();
+    assert_eq!(values.buffer().byte_length(), 0); assert_eq!(indices.buffer().byte_length(), 0);
+    let received_values: Float64Array = Reflect::get(&received, &JsValue::from_str("values")).unwrap().dyn_into().unwrap();
+    assert_eq!(received_values.get_index(0), 5.0);
+}
+
+#[wasm_bindgen_test]
+fn chord_rejects_linear_memory_input_and_failure_never_publishes_a_result() {
+    let (values, states, categories) = chord_inputs();
+    states.set_index(2, 2);
+    let mut invalid = create_chart_statistics(values, states, categories, chord_control()).unwrap();
+    assert_eq!(code(invalid.step(1).unwrap_err()), "COMPUTE_INVALID_INPUT");
+    assert_eq!(code(match invalid.finish() { Ok(_) => panic!("partial result"), Err(error) => error }), "COMPUTE_RESULT_CONSUMED");
+    let (_, states, categories) = chord_inputs();
+    let control = chord_control();
+    let memory: WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
+    // All allocating preparation precedes this view. Invoke the synchronous
+    // boundary immediately, without an intervening WASM call or await.
+    let raw_memory_view = Float64Array::new_with_byte_offset_and_length(&memory.buffer(), 0, 6);
+    let error = match create_chart_statistics(raw_memory_view, states, categories, control) {
+        Ok(_) => panic!("linear memory input accepted"), Err(error) => error,
+    };
+    assert_eq!(code(error), "WASM_INPUT_ALIAS");
 }

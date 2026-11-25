@@ -3,6 +3,7 @@ import { documentModelForBlockHost } from '../services/document-block-host'
 import { documentEffectiveSectionSetup } from '../services/document-settings'
 import type { DocumentNoteLabel } from '../notes/document-note-numbering'
 import { appendDocumentBlocks } from './document-block-layout'
+import { layoutDocumentPaginatedFootnotes } from './document-footnote-story-flow'
 import { DocumentSectionFlow, type DocumentFlowPageFrame } from './document-section-flow'
 import { createDocumentFlowResult, documentNoteBodyDisplay, documentNoteContentFragments, positionDocumentNoteDecoration,
   translateDocumentNoteContent, type DocumentNoteDecorationLayout } from './document-note-layout-common'
@@ -29,6 +30,10 @@ export function layoutDocumentFootnotes(model: DocumentModel, bodyFlow: Document
   for (const line of [...result.lines, ...(result.auxiliaryContent ?? []).flatMap(content => content.lines)]) {
     if (line.repeatedHeader || !line.glyphs.some(glyph => glyph.note?.role === 'reference' && glyph.note.noteKind === 'footnote')) continue
     minimumBody.set(line.page, Math.max(minimumBody.get(line.page) ?? 0, line.height))
+  }
+  if (bodyFlow.pages.some(page => page.index >= ordered[0]!.page && !page.isParityBlank && decorations.requiresPagination('footnote',
+    page.content.width, page.sectionId, page.content.height - Math.min(Math.max(0, page.content.height - 1), minimumBody.get(page.index) ?? 0)))) {
+    return layoutDocumentPaginatedFootnotes(model, bodyFlow, result, measurer, labels, display, ordered, minimumBody, decorations)
   }
   const streams: FootnoteStream[] = []
   let current: FootnoteStream | undefined

@@ -11,6 +11,7 @@ import { assertDocumentContentControlBlockRange, documentBlockContentControlCont
 import { validateContentControlPropertyPatch } from '../features/document/services/content-control-properties'
 import type { ContentControlPatch } from '../features/document/services/content-controls'
 import { parsedDocumentTextProjection } from './documentTextProjection'
+import { assertDocumentNoteReferenceBoundaryRank, documentNoteReferenceOffsets } from '../features/document/model/document-note-boundary'
 
 interface BlockAddress { block: DocumentBlock; scoped: DocumentModel; container: DocumentBlock[]; position: number; host?: DocumentAuxiliaryBlockHost }
 export interface NativeContentControlHydration {
@@ -135,7 +136,7 @@ export function normalizeNativeDocumentContentControls(model: DocumentModel, val
     if (!properties.type) throw new TypeError('原生内容控件缺少类型。')
     if (checked !== undefined && typeof checked !== 'boolean' || dateValue !== undefined && typeof dateValue !== 'string') throw new TypeError('原生控件值字段无效。')
     let address: BlockAddress | undefined
-    let range: { blockId: string; startOffset: number; endOffset: number } | undefined
+    let range: { blockId: string; startOffset: number; endOffset: number; startNoteReferenceCount?: number; endNoteReferenceCount?: number } | undefined
     let rowRange: DocumentContentControl['tableRowRange']
     let blockRange: DocumentContentControl['blockRange']
     let reason: string | undefined
@@ -148,7 +149,8 @@ export function normalizeNativeDocumentContentControls(model: DocumentModel, val
         const rows = resolveDocumentContentControlTableRows(address.scoped, rowRange), owned = documentContentControlTableRowBlockIds(rows)
         const target = textTargets(address.scoped).find(target => owned.has(target.cellBlockId ?? target.blockId))
         if (!target) reason = 'row SDT 没有可用的真实文字输入锚点。'
-        else range = { blockId: target.cellBlockId ?? target.blockId, startOffset: 0, endOffset: runText(runsForTarget(address.scoped, target)).length }
+        else range = { blockId: target.cellBlockId ?? target.blockId, startOffset: 0, endOffset: runText(runsForTarget(address.scoped, target)).length,
+          startNoteReferenceCount: 0, endNoteReferenceCount: documentNoteReferenceOffsets(runsForTarget(address.scoped, target)).length }
       }
     } else if (dto.blockIds) {
       const blocks = dto.blockIds.map(id => resolveAddress(index, id, dto))
@@ -159,7 +161,8 @@ export function normalizeNativeDocumentContentControls(model: DocumentModel, val
         resolveDocumentContentControlBlocks(address.scoped, blockRange)
         const target = documentContentControlBlockTextTargets(address.scoped, blockRange)[0]
         if (!target) reason = 'block SDT 没有可用的真实文字输入锚点。'
-        else range = { blockId: target.cellBlockId ?? target.blockId, startOffset: 0, endOffset: runText(runsForTarget(address.scoped, target)).length }
+        else range = { blockId: target.cellBlockId ?? target.blockId, startOffset: 0, endOffset: runText(runsForTarget(address.scoped, target)).length,
+          startNoteReferenceCount: 0, endNoteReferenceCount: documentNoteReferenceOffsets(runsForTarget(address.scoped, target)).length }
       }
     } else if (dto.textRanges.length === 1) {
       const source = dto.textRanges[0]!
@@ -169,10 +172,19 @@ export function normalizeNativeDocumentContentControls(model: DocumentModel, val
         const projection = parsedDocumentTextProjection(address.block)
         const startOffset = projection.mapBoundary(source.startOffset, source.startNoteReferenceCount), endOffset = projection.mapBoundary(source.endOffset, source.endNoteReferenceCount)
         if (startOffset === undefined || endOffset === undefined) {
+          if (source.startNoteReferenceCount !== undefined || source.endNoteReferenceCount !== undefined) throw new RangeError('原生控件累计注释引用序号与源文字位置不一致。')
           if (!projection.changed) throw new RangeError('原生控件文字范围超过真实段落或拆分代理项。')
           reason = '原生控件边界缺少有效的公式或注释引用来源映射；完整来源保留。'
         } else if (!isDocumentTextBoundary(text, startOffset) || !isDocumentTextBoundary(text, endOffset)) throw new RangeError('原生控件公式投影后的 UTF-16 范围无效。')
-        else range = { blockId: address.block.id, startOffset, endOffset }
+        else {
+          const references = documentNoteReferenceOffsets(address.block.runs)
+          const startRank = assertDocumentNoteReferenceBoundaryRank(references, startOffset, source.startNoteReferenceCount)
+          const endRank = assertDocumentNoteReferenceBoundaryRank(references, endOffset, source.endNoteReferenceCount)
+          if (startOffset > endOffset || startOffset === endOffset && startRank > endRank) throw new RangeError('原生控件投影后的累计注释引用端点顺序相反。')
+          range = { blockId: address.block.id, startOffset, endOffset,
+            ...(source.startNoteReferenceCount === undefined ? {} : { startNoteReferenceCount: source.startNoteReferenceCount }),
+            ...(source.endNoteReferenceCount === undefined ? {} : { endNoteReferenceCount: source.endNoteReferenceCount }) }
+        }
       } else reason = '原生控件文字宿主尚未映射为可输入段落。'
     } else reason = dto.textRanges.length ? '跨段或跨单元格的原生 SDT 结构范围仍需接入统一控件服务。' : '原生 SDT 尚无经过核实的文字或物理行范围。'
     let picture: DocumentBlock | undefined

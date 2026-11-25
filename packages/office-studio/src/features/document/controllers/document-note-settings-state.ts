@@ -1,6 +1,6 @@
-import type { DocumentModel } from '../../../domain/model'
+import type { DocumentModel, DocumentStoryContent } from '../../../domain/model'
 import type { DocumentNoteDecorationHost } from '../model/document-block-host'
-import { documentDormantNoteDecorationHost, documentDormantNoteDecorations } from '../model/document-note-decoration-host'
+import { documentDormantNoteDecorationHost, documentDormantNoteDecorations, documentNoteDecorationSourceIdentity } from '../model/document-note-decoration-host'
 import { DOCUMENT_NOTE_DECORATION_KEYS } from '../notes/document-note-settings'
 import { assertDocumentNoteDecorationRemovable } from '../notes/document-note-decoration-editing'
 import type { DocumentNoteKind } from '../notes/document-note-types'
@@ -9,20 +9,34 @@ import { resolveDocumentPermission, type DocumentPermissionContext } from '../pe
 
 export const DOCUMENT_NOTE_DECORATION_NAMES = { separator: '分隔符', continuationSeparator: '续页分隔符', continuationNotice: '续页提示' } as const
 export interface DocumentNoteDecorationEntry {
-  key: string; host: DocumentNoteDecorationHost; label: string; custom: boolean; dormant: boolean; nativeId?: string | number
+  key: string; host: DocumentNoteDecorationHost; label: string; custom: boolean; dormant: boolean; nativeId?: string | number; publicId?: string
 }
 export interface DocumentNoteDecorationUiContext { permission: DocumentPermissionContext; disabled?: boolean; pendingSettings?: boolean; pendingMark?: boolean }
+
+function decorationSourceIds(content: DocumentStoryContent | undefined, kind: DocumentNoteKind,
+  decoration: DocumentNoteDecorationHost['decoration']): Pick<DocumentNoteDecorationEntry, 'nativeId' | 'publicId'> {
+  if (!content) return {}
+  // Validate both provenance markers before showing either identity. A public
+  // marker cannot hide invalid native provenance, and a retained DOCX ID is
+  // not replaced by the public snapshot's independently assigned string ID.
+  const source = documentNoteDecorationSourceIdentity(content, kind, decoration)
+  if (!source) return {}
+  const native = content.metadata?.decorationSource
+  const nativeId = native && typeof native === 'object' && !Array.isArray(native) ? Reflect.get(native, 'noteId') : undefined
+  return { ...(typeof nativeId === 'number' ? { nativeId } : {}),
+    ...(source.format === 'univer' ? { publicId: String(source.noteId) } : {}) }
+}
 
 /** Active/default stories and every imported dormant story remain distinct addresses. */
 export function documentNoteDecorationEntries(model: DocumentModel, kind: DocumentNoteKind): DocumentNoteDecorationEntry[] {
   const active: DocumentNoteDecorationEntry[] = DOCUMENT_NOTE_DECORATION_KEYS.map(decoration => ({ key: decoration,
     host: { kind: 'noteDecoration', noteKind: kind, decoration }, label: DOCUMENT_NOTE_DECORATION_NAMES[decoration],
-    custom: model.noteSettings?.[kind]?.[decoration] !== undefined, dormant: false }))
+    custom: model.noteSettings?.[kind]?.[decoration] !== undefined, dormant: false,
+    ...decorationSourceIds(model.noteSettings?.[kind]?.[decoration], kind, decoration) }))
   return [...active, ...documentDormantNoteDecorations(model, kind).map((content, index) => {
-    const host = documentDormantNoteDecorationHost(model, kind, index), raw = content.metadata?.decorationSource
-    const nativeId = raw && typeof raw === 'object' ? Reflect.get(raw, 'noteId') : undefined
+    const host = documentDormantNoteDecorationHost(model, kind, index)
     return { key: 'dormant:' + index, host, label: '休眠' + DOCUMENT_NOTE_DECORATION_NAMES[host.decoration], custom: true, dormant: true,
-      ...(typeof nativeId === 'string' || typeof nativeId === 'number' ? { nativeId } : {}) }
+      ...decorationSourceIds(content, kind, host.decoration) }
   })]
 }
 
