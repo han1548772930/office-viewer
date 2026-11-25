@@ -12,12 +12,14 @@ type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
 const props = defineProps<{ open: boolean; chart: ChartModel | null; sheet?: ChartSettingsSourceSheet; sheets?: ChartSettingsSourceSheet[]; data?: ChartData | ChartSettingsProvidedData; date1904?: boolean; sourceRevision?: ChartSettingsSourceRevision; loadSource?: ChartSettingsSourceLoader; loadStatistics?: ChartSettingsStatisticsLoader; busy?: boolean; error?: string }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [patch: ChartPatch]; closed: [] }>()
 const draft = ref<ChartSettingsDraft>()
+const imageSession = ref(0), imageLoading = ref(false)
 const localError = ref('')
 const sourceSheets = computed(() => props.sheets ?? (props.sheet ? [props.sheet] : []))
 
 watch([() => props.open, () => props.chart?.id, () => props.chart?.revision], ([open]) => {
   if (!open || !props.chart) return
   draft.value = createChartSettingsDraft(props.chart)
+  imageSession.value++; imageLoading.value = false
   localError.value = ''
 }, { immediate: true })
 
@@ -28,7 +30,7 @@ const { projection, loading: sourceLoading, assertReady, reload } = useChartSett
 })
 
 function apply(): void {
-  if (!props.chart || !draft.value || props.busy) return
+  if (!props.chart || !draft.value || props.busy || imageLoading.value) return
   try {
     const patch = chartSettingsPatch(draft.value)
     assertReady()
@@ -43,13 +45,13 @@ function opened(value: boolean): void { if (!value && !props.open) emit('closed'
 <template>
   <Drawer :open="open" title="图表设置" placement="right" :size="560" :footer="null" :mask-closable="!busy" :keyboard="!busy" :closable="{ disabled: busy }" @close="close" @after-open-change="opened">
     <Form v-if="draft" layout="vertical" class="chart-editor-form" @submit.prevent="apply">
-      <ChartSettingsFields v-model:draft="draft" :sheets="sourceSheets" :host-sheet-id="chart?.sheetId" :projection="projection" :date1904="date1904 ?? projection.data?.date1904" :disabled="busy" />
+      <ChartSettingsFields v-model:draft="draft" :sheets="sourceSheets" :host-sheet-id="chart?.sheetId" :projection="projection" :date1904="date1904 ?? projection.data?.date1904" :active="open" :session-key="imageSession" :disabled="busy" @resource-loading="imageLoading = $event" />
       <Alert v-if="sourceLoading" type="info" message="正在读取图表数据源…" show-icon role="status" />
       <Button v-if="projection.error && (loadSource || loadStatistics)" :disabled="busy || sourceLoading" @click="reload">重新读取数据源</Button>
       <Alert v-if="localError || error" type="error" :message="localError || error" show-icon />
       <div class="chart-editor-actions">
         <Button :disabled="busy" @click="close">关闭</Button>
-        <Button type="primary" :loading="busy" :disabled="sourceLoading" @click="apply">应用</Button>
+        <Button type="primary" :loading="busy" :disabled="sourceLoading || imageLoading" @click="apply">应用</Button>
       </div>
     </Form>
   </Drawer>

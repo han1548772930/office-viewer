@@ -337,6 +337,11 @@ export type ChartAxisTitleAlignment = 'start' | 'center' | 'end'
 export type ChartAxisTimeUnit = 'days' | 'months' | 'years'
 
 export interface ChartFontOptions { color?: string; fontSize?: number; bold?: boolean; italic?: boolean; family?: string }
+
+export type ChartTitlePosition = 'top' | 'bottom' | 'left' | 'right' | 'hide'
+export type ChartTextAlignment = 'left' | 'center' | 'right'
+export interface ChartTitleStyleOptions extends ChartFontOptions { visible?: boolean; position?: ChartTitlePosition; alignment?: ChartTextAlignment }
+export interface ChartSubtitleStyleOptions extends ChartFontOptions { alignment?: ChartTextAlignment }
 export interface ChartLineOptions { visible?: boolean; color?: string; width?: number; opacity?: number; dashType?: 'solid' | 'dashed' | 'dotted' }
 export interface ChartLabelOptions extends ChartFontOptions {
   visible?: boolean
@@ -562,11 +567,22 @@ export interface ChartCandlestickOptions {
 }
 /** Renderer-independent authored configuration. Derived statistics and geometries are not saved here. */
 export type ChartWordCloudShape = 'cloud' | 'rect' | 'circle' | 'cardioid' | 'heart' | 'diamond' | 'triangle-forward' | 'triangle' | 'pentagon' | 'star'
+/** Persisted by the chart resource adapter; browser handles never enter this DTO. */
+export interface ChartImageResource {
+  id: string
+  sourceType: 'dataUrl' | 'url'
+  source: string
+  mimeType: string
+  sizeBytes?: number
+  name?: string
+}
 export interface ChartWordCloudOptions {
   shape?: ChartWordCloudShape
   maskImageId?: string
   /** Legacy authored alias; canonical writes and resets clear it. */
   maskImage?: string
+  /** Detached upload payload. Publication moves it to the workbook registry. */
+  maskImageResource?: ChartImageResource
   repeat?: boolean
   /** Local runtime authoring extensions; fixed published defaults are 16..56. */
   minFontSize?: number
@@ -591,8 +607,8 @@ export interface ChartSemanticOptions {
   autoGradientFill?: boolean
   plotArea?: ChartPlotAreaOptions
   appearance?: { background?: string; border?: ChartLineOptions; font?: ChartFontOptions }
-  titleStyle?: ChartFontOptions
-  subtitleStyle?: ChartFontOptions
+  titleStyle?: ChartTitleStyleOptions
+  subtitleStyle?: ChartSubtitleStyleOptions
   allSeriesStyle?: ChartSeriesOptions
   /** Keys identify source fields, so a series keeps its style after other series are removed. */
   series?: Record<number, ChartSeriesOptions>
@@ -673,10 +689,16 @@ export interface ChartAxisOptions {
   format?: string
 }
 
+export type ChartLegendSelectMode = 'single' | 'multiple' | 'close'
+
 export interface ChartLegendOptions {
   visible: boolean
   position: ChartLegendPosition
   font?: ChartFontOptions
+  /** Authored capability; the selected names belong to the surface view. */
+  selectMode?: ChartLegendSelectMode
+  /** Horizontal legends wrap; side legends retain pagination. */
+  wrap?: boolean
 }
 
 export type ChartDepthAxisOptions = Omit<ChartAxisOptions, 'scaleType' | 'logBase' | 'min' | 'max' | 'format' | 'baseTimeUnit' | 'majorTimeUnit' | 'majorUnit'>
@@ -847,6 +869,9 @@ export interface DocumentColumnGroup {
   version: 1
   columns: DocumentColumn[]
   gap: number
+  /** CSS pixels; omitted values use the fixed Univer defaults. */
+  horizontalPadding?: number
+  minHeight?: number
   layout: 'fixed' | 'auto'
   responsive: 'stack' | 'shrink'
 }

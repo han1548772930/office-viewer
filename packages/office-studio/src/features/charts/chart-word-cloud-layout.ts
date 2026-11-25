@@ -105,7 +105,12 @@ export async function prepareChartWordCloudLayout(data: ChartData, chart: ChartM
   if (width > 4096 || height > 4096) throw new ComputeError('COMPUTE_MEMORY_LIMIT', '词云画布尺寸超出排布预算')
   const words = chartWordCloudData(data, chart.options?.wordCloud).filter(word => word.text.trim())
   if (words.length > 10_000) throw new ComputeError('COMPUTE_MEMORY_LIMIT', '词云词条数量超出排布预算')
-  if (!words.length) return { ...data, wordCloud: { width: width * grid, height: height * grid, words: [], omittedRepeats: 0 } }
+  if (!words.length) {
+    // Authored image references must resolve/decode even before words exist;
+    // empty data cannot turn a broken resource into a publishable candidate.
+    if (chartWordCloudEffectiveMask(chart.options?.wordCloud).type === 'image') await rasterMask(chart, width, height, grid, context)
+    return { ...data, wordCloud: { width: width * grid, height: height * grid, words: [], omittedRepeats: 0 } }
+  }
   if (!context.runChartTask) throw new ComputeError('COMPUTE_WASM_API_MISSING', '词云排布需要图表 Worker/Rust 计算服务')
   let minimum = Infinity, maximum = 0
   for (const word of words) { minimum = Math.min(minimum, word.value); maximum = Math.max(maximum, word.value) }

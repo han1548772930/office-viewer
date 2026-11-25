@@ -196,9 +196,28 @@ export class SheetCellInputEditRecorder {
   get compositionHost(): SheetCellNativeInputEvent['host'] | undefined {
     return this.composition ? this.hosts.get(this.composition.hostId) : undefined
   }
+  get canUndoDraft(): boolean { return !this.composition && this.cursor > 0 }
+  get canRedoDraft(): boolean { return !this.composition && this.cursor < this.journal.length }
   get trace(): SheetCellInputEditTrace {
     return { version: 1, sessionId: this.sessionId, source: this.source,
       operations: this.journal.slice(0, this.cursor).map(operation => ({ ...operation })) }
+  }
+
+  /** Ribbon history revisits the same input journal; document history receives only the eventual commit. */
+  moveDraftHistory(direction: -1 | 1): { value: string; selection: { start: number; end: number } } | undefined {
+    const cursor = this.cursor + direction
+    if (this.composition || cursor < 0 || cursor > this.journal.length) return undefined
+    let value = this.source
+    for (const operation of this.journal.slice(0, cursor)) {
+      const next = applySheetCellTextEdit(value, operation)
+      if (next === undefined) return undefined
+      value = next
+    }
+    const operation = this.journal[direction < 0 ? this.cursor - 1 : this.cursor]!
+    const offset = operation.start + (direction < 0 ? operation.deletedText.length : operation.text.length)
+    this.cursor = cursor; this.current = value
+    this.pending = undefined; this.completedComposition = undefined; this.selections.clear()
+    return { value, selection: { start: offset, end: offset } }
   }
 
   handle(event: SheetCellNativeInputEvent): boolean {

@@ -63,7 +63,7 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 
 固定版还有 MAIN_AREA、COL_HEADER、ROW_HEADER、FOOTER_TABS、绘图对象上下文菜单。脚本记录 Sheets 130 个右键/浮动层级节点，包含父子层级，不当作根数。本地行列右键已经显式传入命中 sheetId/index；标签复制、颜色与保护亦有实现切片，关联资源、veryHidden 和全部权限/保存闭环仍未验收。具体来源和差异见 Sheets 清点文档。
 
-填充柄外观现已统一到 1 CSS px 选区/预览边框，测试覆盖 0.75、1 和 1.5 缩放。当前已接入双击自动推断向下填充范围，并在计划层支持 COPY/SERIES/ONLY_FORMAT/NO_FORMAT；定向契约记录见 [SHEET-02 自动填充证据](SHEET-02-auto-fill.md)。填充选项尚无画布菜单，画布当前只触发 SERIES；序列规则仅覆盖规则数值和数值日期序列，缺工作日/月份/中文及文本数字扩展、Refill 重应用和拖出视口后的自动滚动。浏览器交互与 Office 文件往返尚未验证，SHEET-02 仍未验收。
+填充柄外观使用 1 CSS px 选区/预览边框，2026-11-21 历史描边测试覆盖 0.75、1 和 1.5 缩放，不覆盖后续修改。2026-11-25 已补共享 AutoFill/Refill/CopyDown/CopyRight/AutoClear、FRange 和 Ctrl/Cmd+D/R；Canvas 使用 antdv-next 四模式选项，拖动和双击共用推断默认、单向范围和内缩清尾。序列新增数值线性/等比、文本数字/补零、中文数字/星期、英文星期/月份及其他循环；筛选行、合并、CF/DV、权限与验证进入同一候选事务。重填修订同一历史，等价内容只更新选区/菜单；边缘自动滚动沿用现有调度。见 [SHEET-02 自动填充证据](SHEET-02-auto-fill.md)。本批草稿未执行，standalone 重填 receipt、超过同步预算的 Worker、完整日期/公式边界、真实 IME/冻结/主题/滚动和 Office 往返仍未验收。
 
 ## 顶部入口对应功能闭环
 
@@ -128,7 +128,7 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 - [ ] SHEET-29 Office 导入与导出。
 - [ ] SHEET-30 工作簿、工作表和范围保护。
 
-SHEET-02 的填充柄预览描边契约已通过定向测试，但双击填充、序列推断、填充选项、重填和视口外拖动仍为未实现项，不能因为填充柄可命中/可拖动就关闭该 ID。
+SHEET-02 的早期填充柄预览描边有历史定向测试结果；双击、序列推断、填充选项、重填和视口外拖动已有后续代码及未运行草稿。standalone 重填 receipt、大范围 Worker、完整序列/文件样本与浏览器验收仍未完成，不能因为填充柄可命中/可拖动就关闭该 ID。
 
 ## Microsoft Office 可补充功能
 

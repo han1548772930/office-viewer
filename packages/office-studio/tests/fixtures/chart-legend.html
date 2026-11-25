@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><style>
+body { margin: 0; }
+#stage { position: relative; width: 900px; height: 640px; margin: 16px; }
+.fixture-scroll { position: absolute; inset: 0; overflow: auto; }
+.fixture-extent { width: 1800px; height: 1000px; }
+</style></head>
+<body><div id="stage"></div><script type="module">
+import { createApp, h, nextTick, ref } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { getInstanceByDom } from 'echarts/core'
+import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model.ts'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { createChart, readChartData } from '/packages/office-studio/src/features/charts/chart-engine.ts'
+import { chartEChartsOption } from '/packages/office-studio/src/features/charts/echarts-option.ts'
+import { EChartsCanvasRenderer } from '/packages/office-studio/src/features/charts/echarts-renderer.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import ChartOverlay from '/packages/office-studio/src/components/ChartOverlay.vue'
+import '/packages/office-studio/src/style.css'
+
+// The fixture uses real ECharts surfaces and the production Overlay. It supplies
+// current prepared data to isolate view operations from unrelated WASM readiness.
+const surfaces = new Map(), render = EChartsCanvasRenderer.prototype.render
+EChartsCanvasRenderer.prototype.render = function (id, ...args) {
+  const frame = render.call(this, id, ...args)
+  surfaces.set(id, { renderer: this, frame, instance: getInstanceByDom(frame.source) })
+  return frame
+}
+const renderer = new EChartsCanvasRenderer()
+const size = { width: 520, height: 360, devicePixelRatio: 1 }
+function model({ type = 'bar', count = 3, legend = {}, shared = false, width = 520 } = {}) {
+  const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+  const table = [['Region', ...Array.from({ length: count }, (_, index) => 'Series ' + index)],
+    ['North', ...Array.from({ length: count }, (_, index) => index + 2)], ['South', ...Array.from({ length: count }, (_, index) => index + 4)]]
+  sheet.cells = Object.fromEntries(table.flatMap((row, r) => row.map((value, c) => [r + ':' + c, createCell(r, c, value)])))
+  const chart = createChart(workbook, sheet.id, { type, categoryField: 0, valueFields: Array.from({ length: count }, (_, index) => index + 1),
+    source: { range: { startRow: 0, startCol: 0, endRow: 2, endCol: count }, orientation: 'columns' },
+    position: { x: 48, y: 36 }, size: { width, height: size.height }, legend: { visible: true, position: 'bottom', selectMode: 'multiple', ...legend },
+    ...(shared ? { options: { allSeriesStyle: { label: { visible: true, position: 'insideEnd' } } } } : {}) })
+  workbook.charts = [chart]
+  return { workbook, chart, data: readChartData(workbook, chart) }
+}
+function prepare(value) {
+  return chartEChartsOption(value.workbook, value.chart, {}, { preparedData: value.data })
+}
+function paint(value, scale = 1, colors = {}) {
+  const frame = renderer.render(value.chart.id, prepare(value), { width: value.chart.size.width, height: value.chart.size.height, devicePixelRatio: scale }, colors)
+  return { frame, instance: getInstanceByDom(frame.source) }
+}
+function center(element) {
+  const rect = element.getBoundingRect().clone(), transform = element.getComputedTransform()
+  if (transform) rect.applyTransform(transform)
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+}
+function hitPoint(id, wanted) {
+  const surface = surfaces.get(id)
+  let found
+  for (const root of surface.instance.getZr().storage.getRoots()) root.traverse(element => {
+    if (found || !('__legendDataIndex' in element) && element.name !== 'pagePrev' && element.name !== 'pageNext') return
+    const point = center(element), hit = surface.renderer.getLegendHit(id, point)
+    if (hit && (hit.kind === 'item' ? hit.name === wanted : (hit.direction === 'next' ? 'pageNext' : 'pagePrev') === wanted)) found = point
+  })
+  if (!found) throw new Error('Visible legend target was not found: ' + wanted)
+  return found
+}
+function graphicRectangles(instance) {
+  const graphic = instance.getOption().graphic?.[0]?.elements ?? []
+  const result = []
+  const visit = element => {
+    if (element.type === 'rect' && element.style?.fill && element.shape?.width < 300) result.push(element)
+    for (const child of element.children ?? []) visit(child)
+  }
+  graphic.forEach(visit)
+  return result
+}
+
+let app, studio, overlay, zoom = ref(100), dark = ref(false), updates = [], removals = []
+async function mountOverlay({ scale = 150, readonly = false, shared = false } = {}) {
+  app?.unmount(); studio?.dispose()
+  overlay = model({ shared }); zoom.value = scale; dark.value = false; updates = []; removals = []
+  if (readonly) overlay.workbook.sheets[0].worksheetProtection = { id: 'read-only', permissionId: 'permission', unitType: 'worksheet',
+    ownerUserId: 'other-user', allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView' }
+  studio = new OfficeStudio({ workbook: overlay.workbook })
+  const view = toExcelWorkbookView(studio.getWorkbookModel(overlay.workbook.id))
+  const prepared = { [overlay.chart.id]: { preparedData: overlay.data } }
+  app = createApp({ setup: () => () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, () =>
+    h('div', { style: 'position:absolute;inset:0' }, [h('div', { class: 'canvas-scroll fixture-scroll' }, [h('div', { class: 'fixture-extent' })]),
+      h(ChartOverlay, { workbook: view, activeSheetId: view.activeSheetId, studio, zoom: zoom.value, computedStatistics: prepared,
+        onUpdateChart: event => updates.push(event), onRemoveChart: id => removals.push(id) })])) })
+  app.mount('#stage')
+  await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  return { id: overlay.chart.id, revision: studio.getWorkbookRevision(overlay.workbook.id), author: JSON.stringify(studio.getWorkbookModel(overlay.workbook.id).charts) }
+}
+function overlayPoint(name) {
+  const point = hitPoint(overlay.chart.id, name), rect = document.querySelector('.chart-hitbox').getBoundingClientRect(), scale = zoom.value / 100
+  return { x: rect.left + point.x * scale, y: rect.top + point.y * scale }
+}
+function overlayState() {
+  const surface = surfaces.get(overlay.chart.id)
+  return { ...surface.renderer.getLegendView(overlay.chart.id), updates: updates.length, removals: removals.length,
+    revision: studio.getWorkbookRevision(overlay.workbook.id), author: JSON.stringify(studio.getWorkbookModel(overlay.workbook.id).charts),
+    sourceVersion: Number(document.querySelector('.chart-hitbox').dataset.sourceVersion), bitmapWidth: surface.frame.source.width, bitmapHeight: surface.frame.source.height,
+    expectedWidth: Math.round(overlay.chart.size.width * Math.max(0.1, window.devicePixelRatio || 1) * zoom.value / 100),
+    expectedHeight: Math.round(overlay.chart.size.height * Math.max(0.1, window.devicePixelRatio || 1) * zoom.value / 100),
+    zoom: zoom.value, dark: dark.value, readOnly: document.querySelector('.chart-hitbox').classList.contains('chart-view-only') }
+}
+window.chartLegendFixture = { renderer, size, model, prepare, paint, hitPoint, graphicRectangles, getInstanceByDom, surfaces,
+  mountOverlay, overlayPoint, overlayState, async setDark(value) { dark.value = value; await nextTick() },
+  async setZoom(value) { zoom.value = value; await nextTick() }, dispose() { app?.unmount(); studio?.dispose(); renderer.dispose(); surfaces.clear() } }
+</script></body></html>

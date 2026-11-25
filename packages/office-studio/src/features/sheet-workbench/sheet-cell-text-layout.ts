@@ -21,6 +21,8 @@ export interface SheetTextLayoutOptions {
   lineHeight: number
   wrap: boolean
   measure: (text: string) => number
+  /** Rich text uses exact source offsets; repeated words can have different fonts. */
+  measureRange?: (text: string, start: number, end: number) => number
 }
 export type SheetTextMeasure = (text: string, font: string) => number
 export interface SheetCellTextFontOverrides { bold?: boolean; italic?: boolean }
@@ -75,27 +77,28 @@ function textParagraphs(text: string): Array<{ text: string; start: number }> {
 export function layoutSheetCellText(text: string, options: SheetTextLayoutOptions): SheetTextLayout {
   const width = Math.max(0, options.width), lineHeight = Math.max(0, options.lineHeight)
   const lines: SheetTextLine[] = []
-  const measure = (value: string) => {
-    const measured = options.measure(value)
+  const measure = (value: string, start: number) => {
+    const measured = options.measureRange?.(value, start, start + value.length) ?? options.measure(value)
     return Number.isFinite(measured) ? Math.max(0, measured) : 0
   }
   for (const { text: paragraph, start: offset } of textParagraphs(text)) {
     const glyphs = sheetTextGraphemes(paragraph)
-    if (!options.wrap || !glyphs.length) lines.push({ text: paragraph, width: measure(paragraph), start: offset, end: offset + paragraph.length, paragraphEnd: true })
+    if (!options.wrap || !glyphs.length) lines.push({ text: paragraph, width: measure(paragraph, offset), start: offset, end: offset + paragraph.length, paragraphEnd: true })
     else {
       const breaks = glyphs.flatMap((glyph, index) => breakBetween(glyph.text, glyphs[index + 1]?.text) ? [index + 1] : [])
       const candidate = (start: number, end: number) => paragraph.slice(glyphs[start]!.offset, glyphs[end - 1]!.offset + glyphs[end - 1]!.text.length)
+      const candidateWidth = (start: number, end: number) => measure(candidate(start, end), offset + glyphs[start]!.offset)
       const fitEnd = (start: number) => {
         let best = start + 1, upper = Math.min(glyphs.length, start + 2)
-        if (measure(candidate(start, best)) > width || best === glyphs.length) return best
-        while (measure(candidate(start, upper)) <= width) {
+        if (candidateWidth(start, best) > width || best === glyphs.length) return best
+        while (candidateWidth(start, upper) <= width) {
           best = upper
           if (upper === glyphs.length) return upper
           upper = Math.min(glyphs.length, start + (upper - start) * 2)
         }
         while (best + 1 < upper) {
           const middle = Math.floor((best + upper) / 2)
-          if (measure(candidate(start, middle)) <= width) best = middle
+          if (candidateWidth(start, middle) <= width) best = middle
           else upper = middle
         }
         return best
@@ -117,7 +120,7 @@ export function layoutSheetCellText(text: string, options: SheetTextLayoutOption
         const startOffset = glyphs[start]!.offset
         const endOffset = glyphs[boundary - 1]!.offset + glyphs[boundary - 1]!.text.length
         const value = paragraph.slice(startOffset, endOffset)
-        lines.push({ text: value, width: measure(value), start: offset + startOffset, end: offset + endOffset, paragraphEnd: boundary === glyphs.length })
+        lines.push({ text: value, width: measure(value, offset + startOffset), start: offset + startOffset, end: offset + endOffset, paragraphEnd: boundary === glyphs.length })
         start = boundary
       }
     }
@@ -133,19 +136,35 @@ export interface SheetStackedTextColumn {
 export interface SheetStackedTextLayout { columns: SheetStackedTextColumn[]; width: number; height: number; lineHeight: number }
 
 /** Stacked text uses one grapheme per row and separate columns for explicit breaks or height wrapping. */
-export function layoutSheetStackedText(text: string, options: { height: number; lineHeight: number; wrap: boolean; measure: (text: string) => number }): SheetStackedTextLayout {
+export function layoutSheetStackedText(text: string, options: { height: number; lineHeight: number; wrap: boolean; measure: (text: string) => number;
+  measureRange?: (text: string, start: number, end: number) => number;
+  glyphHeight?: (start: number, end: number) => number }): SheetStackedTextLayout {
   const columns: SheetStackedTextColumn[] = [], lineHeight = Math.max(0, options.lineHeight)
+  const glyphHeight = (start: number, end: number) => {
+    const height = options.glyphHeight?.(start, end)
+    return height !== undefined && Number.isFinite(height) && height > 0 ? height : lineHeight
+  }
   const capacity = options.wrap && Number.isFinite(options.height) && lineHeight > 0 ? Math.max(1, Math.floor(Math.max(0, options.height) / lineHeight)) : Infinity
   for (const paragraph of textParagraphs(text)) {
     const glyphs = sheetTextGraphemes(paragraph.text).map(glyph => ({ text: glyph.text, start: paragraph.start + glyph.offset, end: paragraph.start + glyph.offset + glyph.text.length }))
     if (!glyphs.length) { columns.push({ glyphs: [], width: lineHeight, height: lineHeight }); continue }
     for (let offset = 0; offset < glyphs.length;) {
-      const column = glyphs.slice(offset, offset + capacity)
+      let end = Math.min(glyphs.length, offset + capacity)
+      if (options.glyphHeight) {
+        let height = 0; end = offset
+        while (end < glyphs.length) {
+          const glyph = glyphs[end]!, nextHeight = glyphHeight(glyph.start, glyph.end)
+          if (end > offset && options.wrap && height + nextHeight > Math.max(0, options.height)) break
+          height += nextHeight; end++
+        }
+      }
+      const column = glyphs.slice(offset, end)
       const width = column.reduce((maximum, glyph) => {
-        const measured = options.measure(glyph.text)
+        const measured = options.measureRange?.(glyph.text, glyph.start, glyph.end) ?? options.measure(glyph.text)
         return Math.max(maximum, Number.isFinite(measured) ? Math.max(0, measured) : 0)
       }, 0)
-      columns.push({ glyphs: column, width: Math.max(0, width), height: column.length * lineHeight })
+      columns.push({ glyphs: column, width: Math.max(0, width), height: options.glyphHeight
+        ? column.reduce((sum, glyph) => sum + glyphHeight(glyph.start, glyph.end), 0) : column.length * lineHeight })
       offset += column.length
     }
   }

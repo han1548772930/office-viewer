@@ -1,4 +1,4 @@
-import type { DocumentBlock, DocumentSectionBreakType } from '../../../domain/model'
+import type { DocumentBlock, DocumentCodeConfig, DocumentSectionBreakType } from '../../../domain/model'
 import { paragraphListMarkers, type ParagraphListMarker } from '../model/document-lists'
 import { imageForBlock } from '../model/document-model'
 import { balanceDocumentSection } from './document-column-balance'
@@ -14,6 +14,7 @@ export interface DocumentBlockLayoutOptions {
   markers?: Map<string, ParagraphListMarker>
   beforeSectionBreak?: (sectionId: string, type: DocumentSectionBreakType) => void
   textDisplay?: DocumentTextLayoutDisplay
+  code?: DocumentCodeConfig
 }
 
 /** Body, notes and separator drafts share paragraph/table/object pagination. */
@@ -36,7 +37,7 @@ export function appendDocumentBlocks(blocks: DocumentBlock[], flow: DocumentSect
     const inputAnchor = pictureAnchors.get(block.id), style = inputAnchor?.style ?? block.style
     flow.addSpace(style.spaceBefore)
     if (isDocumentStructuredBlock(block)) layoutDocumentStructuredBlock(block, flow, result,
-      (children, childFlow) => appendDocumentBlocks(children, childFlow, result, measurer, { ...options, markers }))
+      (children, childFlow) => appendDocumentBlocks(children, childFlow, result, measurer, { ...options, markers, code: block.code ?? options.code }))
     else if (block.type === 'table') layoutDocumentTable(block, markers, flow, result, measurer, options.textDisplay)
     else if (block.type === 'image') {
       const image = imageForBlock(block)
@@ -69,7 +70,7 @@ export function appendDocumentBlocks(blocks: DocumentBlock[], flow: DocumentSect
       result.dividers.push({ x: flow.column.x, y: flow.cursor + 9, width: flow.column.width * fraction, height: 1, page: flow.page.index, ...flow.location,
         ...(typeof block.metadata.noteSeparatorColor === 'string' ? { color: block.metadata.noteSeparatorColor } : {}) })
       flow.consume(18)
-    } else layoutDocumentParagraph(block, markers.get(block.id), flow, result, measurer, options.textDisplay)
+    } else layoutDocumentParagraph(block, markers.get(block.id), flow, result, measurer, options.textDisplay, options.code)
     flow.addSpace(style.spaceAfter)
   }
 }

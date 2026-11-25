@@ -1,4 +1,4 @@
-import type { DocumentBlock } from '../../../domain/model'
+import type { DocumentBlock, DocumentCodeConfig } from '../../../domain/model'
 import { imageForBlock, tableForBlock, type DocumentRun } from '../model/document-model'
 import { documentTableCellTarget, documentTableGrid, type DocumentTableGridCell } from '../model/document-table-grid'
 import { documentTableCellBorders, documentTableCellFill, documentTableCellMargin,
@@ -14,8 +14,9 @@ import { documentTableCellBlocks, documentTableCellContentContainers } from '../
 import { documentPictureInputAnchors, layoutDocumentPictureInputAnchor } from './document-picture-input-anchor'
 import { isDocumentStructuredBlock } from '../model/document-structural-blocks'
 import { documentTextFieldParagraphs } from '../model/document-text-fields'
-import { documentColumnWidths } from './document-structural-layout'
+import { documentColumnMetrics, documentColumnWidths } from './document-structural-layout'
 import type { LayoutContainerDecoration } from './document-layout-types'
+import { documentQuoteLineColor } from '../model/document-structured-appearance'
 
 export interface TableVerticalInterval { start: number; end: number; kind: 'line' | 'image' | 'row' }
 export interface MeasuredDocumentTable extends LayoutRect {
@@ -75,7 +76,7 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
     const contentWidth = Math.max(1, width - margin.left - margin.right)
     const content: CellContent = { owner, width, x: columns[owner.column]!, height: 0, lines: [], cells: [], images: [], dividers: [], tables: [], containers: [], indivisible: [] }
     let cursor = 0
-    const appendBlocks = (blocks: readonly DocumentBlock[], left: number, contentWidth: number, nesting = 0) => {
+    const appendBlocks = (blocks: readonly DocumentBlock[], left: number, contentWidth: number, nesting = 0, parentCode?: DocumentCodeConfig) => {
     if (nesting > 64) throw new RangeError('表格内高级块嵌套超过预算。')
     const pictureAnchors = documentPictureInputAnchors(blocks)
     const anchorIds = new Set([...pictureAnchors.values()].map(block => block.id))
@@ -86,29 +87,38 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
       if (isDocumentStructuredBlock(paragraph)) {
         const top = cursor, firstLine = content.lines.length
         if (paragraph.type === 'columns') {
-          const dimensions = documentColumnWidths(paragraph.columns!, contentWidth), endings: number[] = []
+          const dimensions = documentColumnWidths(paragraph.columns!, contentWidth), metrics = documentColumnMetrics(paragraph.columns!), endings: number[] = []
           let x = left
           for (const [index, column] of paragraph.columns!.columns.entries()) {
             if (!dimensions.stacked) cursor = top
-            appendBlocks(column.blocks, dimensions.stacked ? left : x, dimensions.widths[index]!, nesting + 1)
+            else if (index) cursor += dimensions.gap
+            const begin = cursor, width = dimensions.widths[index]!, inset = Math.min(metrics.horizontalPadding, Math.max(0, width - 1) / 2)
+            appendBlocks(column.blocks, (dimensions.stacked ? left : x) + inset, Math.max(1, width - inset * 2), nesting + 1, parentCode)
+            cursor = Math.max(cursor, begin + metrics.minHeight)
             endings.push(cursor)
-            if (dimensions.stacked) cursor += dimensions.gap
-            else x += dimensions.widths[index]! + dimensions.gap
+            if (!dimensions.stacked) x += dimensions.widths[index]! + dimensions.gap
           }
           if (!dimensions.stacked) cursor = Math.max(top, ...endings)
+          content.containers.push({ blockId: paragraph.id, kind: 'columns', x: left, y: top, width: contentWidth,
+            height: Math.max(1, cursor - top), page: 0, first: true, last: true, tableDepth: depth + 1,
+            columnGroup: { columnIds: paragraph.columns!.columns.map(column => column.id), ...dimensions, ...metrics } })
         } else {
           const config = paragraph.callout, paddingLeft = config ? config.paddingLeft + (config.showIcon ? config.iconSize + config.iconGap : 0)
             : paragraph.type === 'code' ? paragraph.code?.showLineNumbers ? 44 : 12 : 18
-          const paddingRight = config?.paddingRight ?? 12, paddingTop = config?.paddingTop ?? 8, paddingBottom = config?.paddingBottom ?? 8
+          const paddingRight = config?.paddingRight ?? 12, paddingTop = config?.paddingTop ?? 8,
+            paddingBottom = config?.paddingBottom ?? (paragraph.type === 'code' && !paragraph.code?.wrap ? 24 : 8)
           cursor += paddingTop
-          appendBlocks(paragraph.children!, left + Math.min(paddingLeft, Math.max(0, contentWidth - 1)), Math.max(1, contentWidth - paddingLeft - paddingRight), nesting + 1)
+          appendBlocks(paragraph.children!, left + Math.min(paddingLeft, Math.max(0, contentWidth - 1)), Math.max(1, contentWidth - paddingLeft - paddingRight), nesting + 1, paragraph.code ?? parentCode)
           cursor += paddingBottom
           content.containers.push({ blockId: paragraph.id, kind: paragraph.type as 'quote' | 'callout' | 'code', x: left, y: top, width: contentWidth,
-            height: Math.max(1, cursor - top), page: 0, first: true, last: true, tableDepth: depth + 1, ...(config ? { callout: { ...config } } : {}) })
+            height: Math.max(1, cursor - top), page: 0, first: true, last: true, tableDepth: depth + 1, ...(config ? { callout: { ...config } } : {}),
+            ...(paragraph.code ? { codeWrap: paragraph.code.wrap } : {}),
+            ...(paragraph.type === 'quote' ? { quoteLineColor: documentQuoteLineColor(paragraph) } : {}) })
           if (paragraph.type === 'code') {
             const paragraphs = documentTextFieldParagraphs({ blocks: paragraph.children! }), source = paragraphs.map(value => value.text).join('\n')
             const byId = new Map(paragraphs.map(value => [value.block.id, value]))
             for (const line of content.lines.slice(firstLine)) {
+              if (line.codeBlock?.containerId && line.codeBlock.containerId !== paragraph.id) continue
               const value = byId.get(line.target.cellBlockId ?? line.target.blockId)
               if (!value) continue
               const offset = value.absoluteStart + line.start
@@ -154,9 +164,11 @@ export function measureDocumentTable(block: DocumentBlock, available: number, ma
         const list = markers.get(paragraph.id), geometry = paragraphGeometry(paragraph, list, contentWidth, measurer), pageTab = documentTocPageTab(paragraph)
         const rightTabs = (index: number) => pageTab ? pageTab.stops.map(stop => ({ ...stop, offset: pageTab.offset,
           ...(stop.right === undefined ? {} : { right: Math.max(0, stop.right - (index === 0 ? geometry.firstIndent : geometry.indent)) }) })) : []
-        const rawLines = wrapRuns(paragraph.runs as DocumentRun[], geometry.width, measurer, paragraph.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined,
-          { references: display?.references, leading: display?.leadingLabels?.get(paragraph.id) })
         const code = codeBlockData(paragraph)
+        const wrapping = parentCode ? { softWrap: parentCode.wrap, tabSize: parentCode.tabSize }
+          : code ? { softWrap: code.wrap ?? true, tabSize: code.tabSize ?? 4 } : undefined
+        const rawLines = wrapRuns(paragraph.runs as DocumentRun[], geometry.width, measurer, paragraph.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined,
+          { references: display?.references, leading: display?.leadingLabels?.get(paragraph.id) }, wrapping)
         for (const [index, raw] of rawLines.entries()) {
           const height = paragraphLineHeight(Math.max(raw.fontHeight, index === 0 ? geometry.markerHeight : 0), paragraph.style)
           const indent = index === 0 ? geometry.firstIndent : geometry.indent

@@ -87,6 +87,22 @@ export { createSheetCellEditSession, getSheetCellEditConflict, resolveSheetDate1
   type SheetCellEditSession, type SheetCellEditContext, type SheetCellEditConflict } from './features/sheet-workbench/sheet-cell-edit-session.ts'
 export { sheetCellContentKey, sheetCellInputText, createSheetCellEditorStart } from './features/sheet-workbench/sheet-cell-edit.ts'
 export { editSheetCellRichText } from './features/sheet-workbench/sheet-cell-rich-text-edit.ts'
+export { sheetCellRichTextFontValue, sheetCellRichTextRunView, sheetCellFontValues, setSheetCellRichTextFont,
+  type SheetRichTextFontField, type SheetRichTextFontValue } from './features/sheet-workbench/sheet-cell-rich-text-style.ts'
+export { layoutSheetCellRichText, type SheetCellRichTextLayout, type SheetCellRichTextLayoutOptions,
+  type SheetRichTextFragment, type SheetRichTextLine, type SheetRichTextColumn } from './features/sheet-workbench/sheet-cell-rich-text-layout.ts'
+export { formatSheetCellRichTextRange, replaySheetCellInlineFormats, readSheetCellInlineFormats, SheetCellInlineFormatDraft,
+  type SheetCellInlineFormatEdit, type SheetCellInlineFormatReplay } from './features/sheet-workbench/sheet-cell-inline-format.ts'
+export { FORMAT_SHEET_CELL_INPUT_OPERATION, FORMAT_SHEET_CELL_RICH_TEXT_COMMAND, planSheetCellInlineFontFormat, planSheetCellInlineStyle,
+  type SheetCellInlineStylePatch, type SheetCellInlineStyleCommandInput, type SheetCellInlineFontFormatInput,
+  type SheetCellInlineFontFormatResult } from './features/sheet-workbench/sheet-cell-inline-format-command.ts'
+export { SHEET_AUTO_FILL_COMMAND, SHEET_REFILL_COMMAND, SHEET_COPY_DOWN_COMMAND, SHEET_COPY_RIGHT_COMMAND,
+  SHEET_AUTO_CLEAR_COMMAND, SHEET_FILL_COMMAND_IDS, SHEET_FILL_SYNC_CELL_BUDGET, createSheetAutoFillPlan,
+  type SheetAutoFillResult, type SheetAutoFillPlan } from './features/sheet-workbench/sheet-auto-fill.ts'
+export { parseSheetFillCommandInput, sheetFillApplyType, type SheetFillCommandInput } from './features/sheet-workbench/sheet-fill-command.ts'
+export { resolveSheetFillTarget, sheetFillPointerTarget, sheetCopyFillRanges, type SheetFillTarget } from './features/sheet-workbench/sheet-fill-target.ts'
+export type { SheetFillApplyType } from './features/sheet-workbench/sheet-fill.ts'
+export type { SheetFillOptionsView } from './features/sheet-workbench/sheet-fill-store.ts'
 export { SHEET_CLEAR_COMMANDS, SHEET_CLEAR_COMMAND_ALIASES, type SheetClearOptions, type SheetClearMode,
   type SheetClearCommandInput } from './features/sheet-workbench/sheet-clear-command.ts'
 export { SHEET_MERGE_COMMANDS, SHEET_MERGE_COMMAND_ALIASES, type SheetMergeOptions, type SheetMergeMode,
@@ -122,6 +138,14 @@ export type { DocumentEditorCommandRequest, DocumentEditorCommandResult } from '
 export type { DocumentFieldCacheAdapter, DocumentFieldCacheState, DocumentFieldCacheRefreshRequest,
   DocumentFieldCacheRefreshResult } from './features/document/services/document-field-open-refresh.ts'
 export type { DocumentCommand } from './features/document/commands/document-commands.ts'
+export type { DocumentStructureCommand, DocumentColumnGroupCreateOptions } from './features/document/commands/document-structure-commands.ts'
+export { FDocumentStructuredBlock, FDocumentQuote, FDocumentCallout, FDocumentCode,
+  type DocumentStructuredKind, type DocumentStructuredFindQuery, type DocumentStructuredRange, type DocumentStructuredInsertOptions,
+  type DocumentQuoteInsertOptions, type DocumentCalloutInsertOptions, type DocumentCodeInsertOptions,
+  type DocumentQuoteStyle, type DocumentCalloutStyle, type DocumentCalloutBorderStyle, type DocumentCalloutBorderPatch } from './api/document-structured-blocks.ts'
+export { FDocumentColumnGroup, FDocumentColumn, DocsColumnPositions,
+  type DocumentColumnFindQuery, type DocumentColumnInsertOptions, type DocumentColumnOffsetRange,
+  type DocumentColumnGroupOffsetRange, type DocumentColumnContentRange } from './api/document-columns.ts'
 export type { DocumentPoint, DocumentSelection, DocumentTableViewSelection, DocumentTable, DocumentTableRow, DocumentCell, DocumentTableContinuationContent,
   DocumentTableStyle, DocumentTableCellStyle, DocumentTableBorder, DocumentTableBorders, DocumentTableCellMargin,
   DocumentTableColumnTypeConfig, RunPatch, DocumentRunClearField } from './features/document/model/document-model.ts'
@@ -246,6 +270,9 @@ export { readChartRecordsAsync } from './features/charts/chart-source-compute.ts
 export type { ChartComputePreparationContext } from './features/charts/chart-compute-lifecycle.ts'
 export type { ChartComputedStatistics } from './features/charts/chart-derived.ts'
 export type { ChartConfig, ChartData, ChartSeriesData } from './features/charts/chart-engine.ts'
+export { ChartLegendPositions, ChartLegendSelectModes, type ChartLegendSpec } from './features/charts/chart-legend.ts'
+export { ChartTitlePositions, ChartTextAlignments, type ChartTitleSpec, type ChartSubtitleSpec } from './features/charts/chart-titles.ts'
+export type { ChartTitlePosition, ChartTextAlignment, ChartTitleStyleOptions, ChartSubtitleStyleOptions } from './domain/model'
 export { describeChartConfiguration, chartDescriptionFieldIndexes,
   type ChartDescription, type ChartDescriptionType, type ChartDescriptionContext, type ChartDescriptionConfig,
   type ChartSeriesDescription, type ChartAxisBindingDescription, type ChartDescriptionAxis } from './features/charts/chart-description.ts'

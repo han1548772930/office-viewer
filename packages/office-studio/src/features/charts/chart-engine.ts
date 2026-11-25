@@ -17,7 +17,7 @@ import { randomId } from '../../api/model-utils'
 import { resolveChartType } from './chart-catalog'
 import { type ChartCandle, type ChartGraphData, type ChartHierarchyNode, type ChartRecords } from './chart-data'
 import { cloneChartSeriesCategories, projectChartRecords } from './chart-record-projection'
-import { cloneChartOptions, mergeChartOptions, validateChartPalette, validateChartAxis, validateChartFont } from './chart-options'
+import { cloneChartOptions, definedChartStyleFields, mergeChartOptions, validateChartPalette, validateChartAxis } from './chart-options'
 import { validateChartNamedSeriesBindings } from './chart-series-selector'
 import type { ChartComputedStatistics } from './chart-derived'
 import { convertChartType } from './chart-type-conversion'
@@ -36,6 +36,7 @@ import type { ChartCloudWord, ChartWordCloudLayoutResult } from './chart-word-cl
 import type { ChartRelationGraphLayout, ChartRelationLayoutResult } from './chart-relation-layout'
 import { validateChartSourceData } from './chart-source-validation'
 import { assertChartSourcePresent } from './chart-source-diagnostic'
+import { chartLegendPatch } from './chart-legend'
 
 export interface ChartConfig {
   type: ChartType
@@ -159,7 +160,7 @@ export interface ChartLayout {
 }
 
 const DEFAULT_LEGEND: ChartLegendOptions = { visible: true, position: 'bottom' }
-const defaultChartLegend = (type: ChartType): ChartLegendOptions => ({ ...DEFAULT_LEGEND, visible: !['histogram', 'candlestick', 'treemap', 'sunburst', 'chord'].includes(type) })
+export const defaultChartLegend = (type: ChartType): ChartLegendOptions => ({ ...DEFAULT_LEGEND, visible: !['histogram', 'candlestick', 'treemap', 'sunburst', 'chord', 'wordCloud'].includes(type) })
 const DEFAULT_AXIS: ChartAxisOptions = { scaleType: 'linear' }
 
 /** Normalize authored configuration without reading its source. Read-only
@@ -340,8 +341,7 @@ function cloneChartAxis(axis: ChartAxisOptions): ChartAxisOptions {
 
 function cloneChartLegend(legend: ChartLegendOptions): ChartLegendOptions {
   if (typeof legend.visible !== 'boolean' || !['top', 'right', 'bottom', 'left'].includes(legend.position)) throw new TypeError('Invalid chart legend')
-  validateChartFont(legend.font, '图例字体')
-  return { ...legend, ...(legend.font ? { font: { ...legend.font } } : {}) }
+  return { visible: legend.visible, position: legend.position, ...definedChartStyleFields(chartLegendPatch(undefined, legend)) }
 }
 
 function validateChartText(value: string | undefined, name: string): void {

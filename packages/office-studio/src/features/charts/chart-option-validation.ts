@@ -5,6 +5,7 @@ import { validateChartPlotArea } from './chart-plot-area'
 import { CHART_POINT_SHAPES } from './chart-markers'
 import { CHART_LABEL_POSITION_CHOICES, chartLabelContentMask } from './chart-labels'
 import { validateChartChordColor } from './chart-chord-color'
+import { normalizeChartImageResource } from './chart-image-resources'
 
 export function validateChartPalette(palette: readonly string[] | undefined): void {
   if (palette === undefined) return
@@ -26,6 +27,12 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
     color(options.appearance.background, '图表背景'); line(options.appearance.border, '图表边框'); font(options.appearance.font, '图表字体')
   }
   font(options.titleStyle, '标题字体'); font(options.subtitleStyle, '副标题字体')
+  if (options.titleStyle) {
+    boolean(options.titleStyle.visible, '标题显隐')
+    enumeration(options.titleStyle.position, ['top', 'bottom', 'left', 'right', 'hide'], '标题位置')
+    enumeration(options.titleStyle.alignment, ['left', 'center', 'right'], '标题对齐')
+  }
+  if (options.subtitleStyle) enumeration(options.subtitleStyle.alignment, ['left', 'center', 'right'], '副标题对齐')
   if (options.axisPointer) {
     color(options.axisPointer.indicatorLineColor, '轴指示线颜色'); color(options.axisPointer.indicatorLabelColor, '轴指示标签背景')
     color(options.axisPointer.indicatorLabelTextColor, '轴指示标签文字'); enumeration(options.axisPointer.indicatorLineType, ['solid', 'dashed', 'dotted'], '轴指示线型')
@@ -257,6 +264,10 @@ export function validateChartOptions(options: ChartSemanticOptions, { partial = 
     for (const [name, value] of [['maskImageId', wordCloud.maskImageId], ['maskImage', wordCloud.maskImage]] as const) {
       if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new TypeError(`词云 ${name} 必须是非空图片资源标识。`)
     }
+    if (wordCloud.maskImageResource !== undefined) {
+      const resource = normalizeChartImageResource(wordCloud.maskImageResource)
+      if (!partial && resource.id !== (wordCloud.maskImageId ?? wordCloud.maskImage)) throw new TypeError('词云遮罩引用与候选图片资源不一致。')
+    }
     optionalNumber(wordCloud.minFontSize, 1, 256, '词云最小字号'); optionalNumber(wordCloud.maxFontSize, 1, 256, '词云最大字号'); optionalNumber(wordCloud.rotation, -90, 90, '词云旋转角')
     if (!partial && (wordCloud.minFontSize ?? 16) > (wordCloud.maxFontSize ?? 56)) throw new RangeError('词云最小字号不能大于最大字号，包括未设置端使用的默认值。')
   }
@@ -297,7 +308,13 @@ function visitValues(options: unknown): void {
   function visit(value: unknown, path: string, depth: number): void {
     if (++nodes > 200_000 || depth > 12) throw new RangeError('图表配置超出允许的大小或嵌套深度。')
     if (value === undefined || value === null || typeof value === 'boolean') return
-    if (typeof value === 'string') { characters += value.length; if (characters > 1_000_000) throw new RangeError('图表配置文本超出允许大小。'); return }
+    if (typeof value === 'string') {
+      // The detached image payload has its own MIME/byte budget; it is moved
+      // to workbook resources when the chart candidate is published.
+      if (path !== '图表.wordCloud.maskImageResource.source') characters += value.length
+      if (characters > 1_000_000) throw new RangeError('图表配置文本超出允许大小。')
+      return
+    }
     if (typeof value === 'number') { if (!Number.isFinite(value)) throw new RangeError(`${path}须为有限数值。`); return }
     if (Array.isArray(value)) { value.forEach((entry, index) => visit(entry, `${path}[${index}]`, depth + 1)); return }
     plain(value, path)

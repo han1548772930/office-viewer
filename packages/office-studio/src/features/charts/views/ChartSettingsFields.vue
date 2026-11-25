@@ -3,12 +3,14 @@ import { computed } from 'vue'
 import { Alert, Collapse, CollapsePanel, FormItem, Input, Select } from 'antdv-next'
 import type { ChartConfig, ChartData } from '../chart-engine'
 import { chartDataHint, chartTypeSelectOptions, isChartType, resolveChartType, supportsChartErrorDirection, supportsChartStatistics } from '../chart-catalog'
-import { chartAxisControls, chartAxisPointerControls, chartCommonControls, chartDateAxisControls, chartFontControls, chartLegendFont, chartLineControls, chartSeriesControls, optionGroup } from '../chart-settings-controls'
+import { chartAxisControls, chartAxisPointerControls, chartCommonControls, chartDateAxisControls, chartFontControls, chartLegendFont, chartLineControls, chartSeriesControls, chartTitleFontControls, optionGroup } from '../chart-settings-controls'
 import { chartAggregationControls, chartDataMappingControls, chartTypeSettingsControls } from '../chart-type-settings-controls'
 import { chartDraftFieldCount, chartDraftFields, cloneChartDraftConfig, type ChartSettingsDraft, type ChartSettingsField, type ChartSettingsSourceSheet } from '../chart-settings-draft'
 import { chartSettingsDateAxisError, projectChartSettings, type ChartSettingsProjection } from '../chart-settings-data'
+import { chartRelationSourceFormat } from '../chart-relation-data'
 import { supportsChartDateAxis } from '../chart-date-axis'
 import { supportsChartAxisPointer } from '../chart-axis-pointer'
+import { chartHasLegend } from '../chart-legend'
 import { chartHierarchyItems, chartNumber } from '../chart-data'
 import { chartGaugeSettingsMapping } from '../chart-gauge-settings-controls'
 import { chartRadarCategoryAxisControls, chartRadarValueAxisControls } from '../chart-radar-settings-controls'
@@ -29,14 +31,15 @@ import ChartCandlestickSettings from './ChartCandlestickSettings.vue'
 import ChartTreemapSettings from './ChartTreemapSettings.vue'
 import ChartSunburstSettings from './ChartSunburstSettings.vue'
 import ChartChordSettings from './ChartChordSettings.vue'
+import ChartWordCloudSettings from './ChartWordCloudSettings.vue'
 import ChartChordMappingFields from './ChartChordMappingFields.vue'
 import { chartChordSettingsMapping } from '../chart-chord-settings-controls'
 import ChartHierarchyMappingFields from './ChartHierarchyMappingFields.vue'
 import ChartStatisticsSettings from './ChartStatisticsSettings.vue'
 import ChartCollectionSettings from './ChartCollectionSettings.vue'
 
-const props = defineProps<{ draft: ChartSettingsDraft; sheets?: ChartSettingsSourceSheet[]; hostSheetId?: string; data?: ChartData; projection?: ChartSettingsProjection; date1904?: boolean; lockedSource?: boolean; disabled?: boolean }>()
-const emit = defineEmits<{ 'update:draft': [value: ChartSettingsDraft] }>()
+const props = defineProps<{ draft: ChartSettingsDraft; sheets?: ChartSettingsSourceSheet[]; hostSheetId?: string; data?: ChartData; projection?: ChartSettingsProjection; date1904?: boolean; lockedSource?: boolean; active?: boolean; sessionKey?: number | string; disabled?: boolean }>()
+const emit = defineEmits<{ 'update:draft': [value: ChartSettingsDraft]; 'resource-loading': [value: boolean] }>()
 const config = computed(() => props.draft.config), descriptor = computed(() => resolveChartType(config.value.type))
 const sourceSheetId = computed(() => config.value.source.sheetId ?? props.hostSheetId)
 const sourceSheet = computed(() => props.sheets?.find(sheet => sheet.id === sourceSheetId.value))
@@ -60,6 +63,7 @@ const fields = computed<ChartSettingsField[]>(() => {
   return sourceFields ? sourceFields.map((label, value) => ({ label: label || `字段 ${value + 1}`, value })) : chartDraftFields(props.draft, sourceSheet.value)
 })
 const categories = computed(() => projection.value.data?.categories ?? [])
+const relationFormat = computed(() => chartRelationSourceFormat(config.value, projection.value.source ?? projection.value.data))
 const pointCategories = computed(() => {
   if (descriptor.value.family === 'histogram') return chartHistogramCategories(projection.value.statistics?.histogram)
   if (descriptor.value.family === 'pareto') {
@@ -110,8 +114,8 @@ const statisticsFields = computed(() => seriesFields.value.filter((field, index)
   : supportsChartStatistics(config.value, field.value, index)))
 const typeOptions = chartTypeSelectOptions()
 const textFontControls = chartFontControls('appearance.font', item => item.options?.appearance?.font, item => optionGroup(item, 'appearance').font ??= {})
-const titleControls = chartFontControls('titleStyle', item => item.options?.titleStyle, item => optionGroup(item, 'titleStyle'))
-const subtitleControls = chartFontControls('subtitleStyle', item => item.options?.subtitleStyle, item => optionGroup(item, 'subtitleStyle'))
+const titleControls = chartTitleFontControls('title')
+const subtitleControls = chartTitleFontControls('subtitle')
 const legendControls = chartFontControls('legend.font', item => item.legend?.font, chartLegendFont)
 const borderControls = chartLineControls('appearance.border', item => item.options?.appearance?.border, item => optionGroup(item, 'appearance').border ??= {})
 
@@ -137,7 +141,8 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
         <FormItem label="系列方向"><Select :value="config.source.orientation" :options="[{ value: 'columns', label: '按列，首行为字段名' }, { value: 'rows', label: '按行，首列为字段名' }]" aria-label="图表系列方向" :disabled="sourceLocked || disabled" @update:value="orientation" /></FormItem>
         <ChartHierarchyMappingFields v-if="descriptor.dataShape === 'hierarchy'" :config="config" :fields="fields" :numeric-fields="numericFields" :field-count="fieldCount" :disabled="disabled" @update:config="change" />
         <ChartChordMappingFields v-else-if="config.type === 'chord'" :config="config" :fields="fields" :numeric-fields="numericFields" :field-count="fieldCount" :disabled="disabled" @update:config="change" />
-        <ChartOptionFields v-else :config="config" :controls="chartDataMappingControls(config, fieldCount, projection.data)" :fields="fields" :field-count="fieldCount" :disabled="disabled" @update:config="change" />
+        <ChartOptionFields v-else :config="config" :controls="chartDataMappingControls(config, fieldCount, projection.data, projection.source)" :fields="fields" :field-count="fieldCount" :disabled="disabled" @update:config="change" />
+        <Alert v-if="config.type === 'relation' && !config.options?.mapping?.relationFormat" type="info" :message="relationFormat === 'coWordMatrix' ? '当前识别为共词矩阵，行节点与矩阵列标题对应。' : '当前使用来源、目标和权重数据。'" show-icon />
         <ChartOptionFields v-if="config.type === 'histogram'" :config="config" :controls="chartHistogramDataControls(config)" :disabled="disabled" @update:config="change" />
         <Alert v-if="sourceLocked" type="info" message="数据区域由关联的数据透视表管理，字段与样式在此编辑。" />
       </CollapsePanel>
@@ -147,7 +152,7 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
           <CollapsePanel key="text" header="图表字体"><ChartOptionFields :config="config" :controls="textFontControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="title" header="标题字体"><ChartOptionFields :config="config" :controls="titleControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="subtitle" header="副标题字体"><ChartOptionFields :config="config" :controls="subtitleControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
-          <CollapsePanel v-if="config.type !== 'treemap' && config.type !== 'sunburst' && config.type !== 'chord'" key="legend" header="图例字体"><ChartOptionFields :config="config" :controls="legendControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
+          <CollapsePanel v-if="chartHasLegend(config.type)" key="legend" header="图例字体"><ChartOptionFields :config="config" :controls="legendControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
           <CollapsePanel key="border" header="图表边框"><ChartOptionFields :config="config" :controls="borderControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
         </Collapse>
       </CollapsePanel>
@@ -160,6 +165,7 @@ function chartType(value: unknown): void { if (isChartType(value)) change(conver
         <ChartTreemapSettings v-if="config.type === 'treemap'" :config="config" :disabled="disabled" @update:config="change" />
         <ChartSunburstSettings v-if="config.type === 'sunburst'" :config="config" :disabled="disabled" @update:config="change" />
         <ChartChordSettings v-if="config.type === 'chord'" :config="config" :disabled="disabled" @update:config="change" />
+        <ChartWordCloudSettings v-if="config.type === 'wordCloud'" :config="config" :active="active" :session-key="sessionKey" :disabled="disabled" @update:config="change" @resource-loading="emit('resource-loading', $event)" />
       </CollapsePanel>
       <CollapsePanel v-if="supportsChartPlotArea(config.type)" key="plot-area" header="绘图区"><ChartOptionFields :config="config" :controls="plotAreaControls" :disabled="disabled" @update:config="change" /></CollapsePanel>
       <CollapsePanel key="series" header="系列、标记与数据标签">

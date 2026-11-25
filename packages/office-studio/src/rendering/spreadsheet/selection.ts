@@ -1,6 +1,7 @@
 import type { GridRange, GridViewport, SpreadsheetGeometry } from './layout.ts'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from './layout.ts'
 import type { LineCommand, RenderRect } from '../contracts.ts'
+import { resolveSheetFillTarget, sheetFillPointerTarget } from '../../features/sheet-workbench/sheet-fill-target.ts'
 
 export const SHEET_SELECTION_STROKE_WIDTH = 1
 export const SHEET_SELECTION_HANDLE_SIZE = 6
@@ -55,14 +56,10 @@ export function fillPreviewRange(
   source: GridRange,
   target: { row: number; column: number },
 ): GridRange | undefined {
-  if (target.row >= source.startRow && target.row <= source.endRow
-      && target.column >= source.startColumn && target.column <= source.endColumn) return undefined
-  return {
-    startRow: Math.min(source.startRow, target.row),
-    endRow: Math.max(source.endRow, target.row),
-    startColumn: Math.min(source.startColumn, target.column),
-    endColumn: Math.max(source.endColumn, target.column),
-  }
+  const range = { startRow: source.startRow, endRow: source.endRow, startCol: source.startColumn, endCol: source.endColumn }
+  const selection = sheetFillPointerTarget(range, target.row, target.column)
+  if (!resolveSheetFillTarget(range, selection)) return undefined
+  return { startRow: selection.startRow, endRow: selection.endRow, startColumn: selection.startCol, endColumn: selection.endCol }
 }
 
 export function selectionFillHandleHitRect(

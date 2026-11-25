@@ -13,6 +13,7 @@ import { documentTableClipboardData, documentTablePasteCommand, type DocumentCli
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
+import { documentStructuredBlockAtSelection } from '../../features/document/commands/document-structure-commands'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
 import type { StoryLocation } from '../../features/document/services/story-editor'
 import { documentFormattingWordRange } from '../../features/document/services/document-format-painter'
@@ -1048,15 +1049,16 @@ function keydown(event: KeyboardEvent) {
     return
   }
   const activeBlock = blockAtPoint(editingModel.value, props.selection.focus)
-  if (!props.selection.tableSelection && activeBlock && codeBlockData(activeBlock)) {
+  const codeBlock = documentStructuredBlockAtSelection(editingModel.value, props.selection, 'code') ?? activeBlock
+  if (!props.selection.tableSelection && codeBlock && codeBlockData(codeBlock)) {
     if (command && event.key === 'Enter') {
       event.preventDefault()
-      emit('code-block-exit', activeBlock.id)
+      emit('code-block-exit', codeBlock.id)
       return
     }
     if (event.key === 'Tab' && !command) {
       event.preventDefault()
-      dispatchCommand({ id: 'doc.command.insert-text', text: '\t' })
+      dispatchCommand({ id: 'doc.command.indent-code-block', blockId: codeBlock.id, direction: event.shiftKey ? -1 : 1 })
       return
     }
   }
@@ -1112,7 +1114,8 @@ function paste(event: ClipboardEvent) {
   if (!bodyEventIsCurrent(event)) return
   event.preventDefault()
   const activeBlock = blockAtPoint(editingModel.value, props.selection.focus)
-  if (!props.selection.tableSelection && activeBlock && codeBlockData(activeBlock)) {
+  const codeBlock = documentStructuredBlockAtSelection(editingModel.value, props.selection, 'code') ?? activeBlock
+  if (!props.selection.tableSelection && codeBlock && codeBlockData(codeBlock)) {
     dispatchCommand({ id: 'doc.command.insert-text', text: event.clipboardData?.getData('text/plain') ?? '' })
     return
   }

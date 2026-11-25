@@ -3,8 +3,7 @@ import type { DrawCommand } from '../../rendering/contracts'
 import { ComputeError } from '../../compute/errors'
 import type { ChartData, ChartLayout, ChartPoint } from './chart-engine'
 import { resolveChartType } from './chart-catalog'
-import { deriveChartData, chartBubblePointSize, chartHierarchyPointStyle, chartPointStyle, type ChartComputedStatistics, type ChartDerivedData } from './chart-derived'
-import { chartHierarchyItems } from './chart-data'
+import { deriveChartData, chartBubblePointSize, chartPointStyle, type ChartComputedStatistics, type ChartDerivedData } from './chart-derived'
 import { isChartLinearGradient, normalizeChartColor } from './chart-color'
 import { chartInterpolate, chartLinearRatio } from './chart-math'
 import { layoutDerivedChartData } from './chart-layout'
@@ -29,7 +28,7 @@ import { createChartSankeyScene, type ChartSankeyScene } from './chart-sankey-dr
 import { CHART_WATERFALL_GLOBAL_SERIES } from './chart-statistics'
 import { chartWaterfallConnector, chartWaterfallRoleStyles } from './chart-waterfall'
 import type { ChartRenderTheme } from './chart-theme'
-import { chartHeatmapExtent, createChartHeatmapScale, type ChartHeatmapScale } from './chart-heatmap'
+import { chartHeatmapExtent, chartHeatmapLegendBand, createChartHeatmapScale, type ChartHeatmapScale } from './chart-heatmap'
 import { createChartHeatmapLegend, drawChartHeatmapAxes, drawChartHeatmapCells } from './chart-heatmap-draw'
 import { chartMarkerShape } from './chart-markers'
 import { chartHistogramBinGap } from './chart-histogram'
@@ -39,6 +38,8 @@ import { drawChartSunburst } from './chart-sunburst-draw'
 import { drawChartSector } from './chart-sector-draw'
 import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
 import { createChartRelationScene, type ChartRelationScene } from './chart-relation-draw'
+import { chartHasLegend, chartLegendDataCount, chartLegendGeometry, chartLegendItems } from './chart-legend'
+import { chartTitleCommands, chartTitleGeometry } from './chart-titles'
 
 export { drawChartSector } from './chart-sector-draw'
 
@@ -54,10 +55,9 @@ export function drawDerivedChartData(derived: ChartDerivedData, chart: ChartMode
   const border = chart.options?.appearance?.border
   const commands: DrawCommand[] = [{ kind: 'rect', ...layout.frame, fill: background,
     ...(border?.visible === false ? {} : { stroke: border?.color ?? theme.axisColor ?? '#cbd5e1', strokeWidth: border?.width ?? 1 }) }]
-  const titleFont = { ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(chart.options?.titleStyle) }, subtitleFont = { ...definedChartStyleFields(chart.options?.appearance?.font), ...definedChartStyleFields(chart.options?.subtitleStyle) }
-  const titleSize = titleFont.fontSize ?? 14, subtitleSize = subtitleFont.fontSize ?? 11, titleBand = chart.title ? Math.max(28, titleSize + 14) : 0
-  if (chart.title) commands.push({ kind: 'text', x: layout.frame.x + layout.frame.width / 2, y: layout.frame.y + Math.max(20, 12 + titleSize / 2), text: chart.title, font: chartFont({ bold: true, ...titleFont }, 14), color: titleFont.color ?? textColor, align: 'center', baseline: 'middle', maxWidth: Math.max(1, layout.frame.width - 20), clip: layout.frame })
-  if (chart.subtitle) commands.push({ kind: 'text', x: layout.frame.x + layout.frame.width / 2, y: layout.frame.y + titleBand + Math.max(20, 12 + subtitleSize / 2), text: chart.subtitle, font: chartFont(subtitleFont, 11), color: subtitleFont.color ?? textColor, align: 'center', baseline: 'middle', maxWidth: Math.max(1, layout.frame.width - 20), clip: layout.frame })
+  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(chart.size.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11)
+    : chartLegendGeometry(chart, chartLegendDataCount(data, chart)).band
+  commands.push(...chartTitleCommands(chart, textColor, legendBand))
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite)) {
     commands.push({ kind: 'text', x: layout.plot.x + layout.plot.width / 2, y: layout.plot.y + layout.plot.height / 2,
       text: data.hierarchyDiagnostic ?? data.graph?.diagnostic ?? '暂无可绘制数据', font: chartFont(chart.options?.appearance?.font, 11), color: textColor, align: 'center', baseline: 'middle', maxWidth: layout.plot.width })
@@ -191,7 +191,7 @@ function drawAxes(commands: DrawCommand[], data: ChartData, chart: ChartModel, l
 
 function drawCartesian(commands: DrawCommand[], data: ChartData, chart: ChartModel, layout: ChartLayout, palette: string[]): void {
   const { plot } = layout, horizontal = layout.horizontal, categoryStep = layout.categoryBandwidth ?? (horizontal ? plot.height : plot.width) / Math.max(1, layout.categories.length)
-  const bars = layout.series.filter(series => series.type === 'column' || series.type === 'bar')
+  const bars = layout.series.filter(series => series.points.length && (series.type === 'column' || series.type === 'bar'))
   const barGroups = [...new Set(bars.map(series => series.stacked ? `stack:${series.rightAxis ? 'right' : 'left'}` : `field:${series.field}`))]
   const gap = chart.type === 'histogram' ? chartHistogramBinGap(chart.options?.histogram) : (chart.options?.bar?.gapWidth ?? 150) / 100
   const groupWidth = categoryStep * (chart.type === 'histogram' ? 1 - gap : 1 / (1 + gap)), overlap = (chart.options?.bar?.overlap ?? 0) / 100
@@ -425,7 +425,7 @@ function drawBoxplot(commands: DrawCommand[], derived: ChartDerivedData, chart: 
     if (!box.statistics) return
     const style = chartBoxplotStyle(chart, box, index, palette), statistics = box.statistics, color = style.color ?? palette[box.seriesPosition % palette.length]!
     const geometry = chartBoxplotGeometry(chart, layout, style, index, boxes.length), { x, width } = geometry, summary = geometry.summary(statistics)
-    if (summary) {
+    if (summary && derived.legendSelection?.['样本分布'] !== false) {
       const top = Math.min(summary.q1, summary.q3), bottom = Math.max(summary.q1, summary.q3), border = { color, width: 1.5, ...style.border }
       chartRect(commands, { x: x - width / 2, y: top, width, height: bottom - top }, chartColorOpacity(color, style.fillOpacity ?? 0.45), undefined, plot, chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 0.45))
       chartLine(commands, { x, y: summary.min }, { x, y: summary.q1 }, border, color, plot)
@@ -443,7 +443,7 @@ function drawBoxplot(commands: DrawCommand[], derived: ChartDerivedData, chart: 
           align: label.position === 'left' ? 'right' : label.position === 'right' ? 'left' : 'center', baseline: 'middle', clip: plot })
       }
     }
-    if (chart.options?.boxplot?.showOutliers !== false) for (const outlier of chartBoxplotOutliers(box)) {
+    if (chart.options?.boxplot?.showOutliers !== false && derived.legendSelection?.['异常值'] !== false) for (const outlier of chartBoxplotOutliers(box)) {
       const pointStyle = chartBoxplotOutlierStyle(style, outlier.sourceIndex)
       const y = geometry.y(outlier.value), size = pointStyle.point?.size ?? 4, shape = pointStyle.point?.shape ?? 'circle'
       if (y === undefined || size <= 0 || shape === 'none') continue
@@ -553,61 +553,20 @@ function drawFunnel(commands: DrawCommand[], data: ChartData, chart: ChartModel,
   }
 }
 
-function waterfallLegendItems(derived: ChartDerivedData, chart: ChartModel, palette: string[]) {
-  const computed = derived.waterfallLayout, explicitTotals = new Set<number>()
-  for (const point of computed?.points ?? []) if (point.role === 'total' && !point.synthetic) explicitTotals.add(point.seriesPosition)
-  const items = derived.data.series.flatMap((source, index) => {
-    const roles = chartWaterfallRoleStyles(chart, source.field, index, palette, source.sourceName ?? source.name)
-    const targets = computed?.stackType !== 'stacked' && (computed?.useSubtotal || explicitTotals.has(index))
-      ? ['positive', 'negative', 'subtotal'] as const : ['positive', 'negative'] as const
-    return targets.map(target => ({ name: roles[target].name ?? source.name, color: chartColorOpacity(roles[target].color!, roles[target].fillOpacity ?? 1),
-      pattern: chartFillPatternPaint(roles[target].fillPattern, roles[target].fillOpacity ?? 1) }))
-  })
-  if (computed?.stackType === 'stacked' && computed.useSubtotal) {
-    const style = chartWaterfallRoleStyles(chart, undefined, 0, palette).subtotal
-    items.push({ name: style.name ?? '合计', color: chartColorOpacity(style.color!, style.fillOpacity ?? 1), pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) })
-  }
-  return items
-}
-
-function boxplotLegendItems(derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, palette: string[]) {
-  const box = derived.boxes?.[0], first = derived.data.series[0]
-  const style = box ? chartBoxplotStyle(chart, box, 0, palette) : chartSeriesStyle(chart, first?.field ?? 0, 0, palette, first?.sourceName ?? first?.name)
-  const items = [{ name: '样本分布', color: layout.series[0]?.color ?? palette[0]!, pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 0.45) }]
-  if (chart.options?.boxplot?.showOutliers !== false) items.push({ name: '异常值', color: style.point?.color ?? layout.series[0]?.color ?? palette[0]!, pattern: undefined })
-  return items
-}
-
 function drawLegend(commands: DrawCommand[], derived: ChartDerivedData, chart: ChartModel, layout: ChartLayout, color: string, palette: string[], heatmapScale?: ChartHeatmapScale): void {
-  if (!chart.legend.visible || chart.type === 'treemap' || chart.type === 'sunburst' || chart.type === 'chord') return
+  if (!chart.legend.visible || !chartHasLegend(chart.type)) return
   if (heatmapScale) { for (const command of createChartHeatmapLegend(chart, layout, heatmapScale, color).commands) commands.push(command); return }
-  const data = derived.data
-  const family = resolveChartType(chart.type).family
-  const categoryLegend = ['pie', 'funnel', 'gauge', 'chord', 'relation', 'sankey', 'treemap', 'sunburst'].includes(family)
-  const roots = data.hierarchy ? chartHierarchyItems(data.hierarchy).filter(item => item.depth === 0) : undefined
-  const items = family === 'relation' ? (data.graph?.categories ?? []).map((name, index) => {
-    const source = data.series[0]!, style = chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name)
-    return { name, color: chartColorOpacity(style.point?.color ?? style.color!, style.fillOpacity ?? 1),
-      pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) }
-  }) : categoryLegend ? data.categories.flatMap((name, index) => {
-    if (family === 'gauge' && !Number.isFinite(data.series[0]?.values[index])) return []
-    const style = roots?.[index] ? chartHierarchyPointStyle(chart, data.series[0]!.field, roots[index]!, palette, data.series[0]!.sourceName ?? data.series[0]!.name)
-      : chartPointStyle(chartSeriesStyle(chart, data.series[0]!.field, index, palette, data.series[0]!.sourceName ?? data.series[0]!.name), index, chart.type)
-    return [{ name, color: chartColorOpacity(family === 'relation' ? style.point?.color ?? style.color! : style.color!, style.fillOpacity ?? 1), pattern: chartFillPatternPaint(style.fillPattern, style.fillOpacity ?? 1) }]
-  }) : chart.type === 'waterfall' ? waterfallLegendItems(derived, chart, palette) : chart.type === 'boxplot' ? boxplotLegendItems(derived, chart, layout, palette)
-    : layout.series.map((series, index) => {
-      const source = data.series[index], style = source ? chart.type === 'pareto' ? chartParetoBarStyle(chart, source.field, index, palette, source.sourceName ?? source.name)
-        : chartSeriesStyle(chart, source.field, index, palette, source.sourceName ?? source.name) : chart.type === 'pareto' ? chartParetoCumulativeStyle(chart, palette) : undefined
-      return { name: series.name, color: chartColorOpacity(series.color, style?.fillOpacity ?? 1), pattern: chartFillPatternPaint(style?.fillPattern, style?.fillOpacity ?? 1) }
-    })
-  const font: ChartFontOptions = { ...chart.options?.appearance?.font, ...chart.legend.font }, fontSize = font.fontSize ?? 11
-  const horizontal = chart.legend.position === 'top' || chart.legend.position === 'bottom', itemWidth = Math.max(72, Math.min(140, layout.frame.width / Math.max(1, items.length)))
-  const perRow = Math.max(1, Math.floor((layout.frame.width - 24) / itemWidth))
-  items.forEach((item, index) => {
-    const x = horizontal ? layout.frame.x + 12 + index % perRow * itemWidth : chart.legend.position === 'left' ? layout.frame.x + 8 : layout.plot.x + layout.plot.width + 12
-    const y = horizontal ? chart.legend.position === 'top' ? layout.plot.y - 14 + Math.floor(index / perRow) * (fontSize + 4) : layout.frame.y + layout.frame.height - 12 - Math.floor(index / perRow) * (fontSize + 4)
-      : layout.plot.y + 10 + index * (fontSize + 6)
+  const items = [...new Map(chartLegendItems(derived, chart, layout, palette).map(item => [item.name, item])).values()]
+  const font: ChartFontOptions = { ...chart.options?.appearance?.font, ...chart.legend.font }
+  const geometry = chartLegendGeometry(chart, items.length), { horizontal, perRow, itemWidth, rowHeight } = geometry
+  const titles = chartTitleGeometry(chart, geometry.band).bands
+  const limit = horizontal ? geometry.wrap ? items.length : perRow : Math.max(1, Math.floor(layout.plot.height / rowHeight))
+  items.slice(0, limit).forEach((item, index) => {
+    const x = horizontal ? layout.frame.x + geometry.startX + index % perRow * itemWidth : chart.legend.position === 'left' ? layout.frame.x + titles.left + 8
+      : layout.frame.x + layout.frame.width - titles.right - Math.min(96, layout.frame.width * 0.24) + 8
+    const y = horizontal ? chart.legend.position === 'top' ? layout.frame.y + titles.top + 12 + Math.floor(index / perRow) * rowHeight
+      : layout.frame.y + layout.frame.height - titles.bottom - geometry.band + 12 + Math.floor(index / perRow) * rowHeight : layout.plot.y + 10 + index * rowHeight
     chartRect(commands, { x, y: y - 5, width: 10, height: 10 }, item.color, undefined, layout.frame, item.pattern)
-    commands.push({ kind: 'text', x: x + 15, y, text: item.name, font: chartFont(font, 11), color: font.color ?? color, baseline: 'middle', maxWidth: horizontal ? itemWidth - 20 : Math.max(1, layout.frame.width * 0.24 - 22), clip: layout.frame })
+    commands.push({ kind: 'text', x: x + 15, y, text: item.name, font: chartFont(font, 11), color: font.color ?? color, baseline: 'middle', maxWidth: geometry.textWidth, clip: layout.frame })
   })
 }

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, toRaw, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, provide, ref, shallowRef, toRaw, useId, watch } from 'vue'
 import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
+import { RibbonEditorFocusScopeKey } from '../platform/ribbon/ribbon-popup-scope'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme.ts'
 import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import { FOffice, type FChart } from '../api/facade'
@@ -42,10 +43,14 @@ import { applySheetViewFontFormatCommand, fontFormatActionForCommand, sheetFontF
 import { applySheetViewBorderFormatCommand, borderFormatActionForCommand, createSheetBorderFormatState, SHEET_BORDER_FORMAT_COMMAND_IDS, SHEET_BORDER_FORMAT_COMMANDS, sheetBorderFormatCommandInput, sheetBorderFormatOptions, type SheetBorderFormatCommandInput, type SheetBorderFormatState } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { rememberSheetColor, sheetBorderColor, sheetOpaqueColorHex, type SheetColorField, type SheetColorMemory } from '../features/sheet-workbench/sheet-colors.ts'
 import { sheetCellNumberPattern, sheetCellNumberValue } from '../features/sheet-workbench/sheet-number-presentation.ts'
-import { createSheetCellEditorStart, editSheetCellText, sheetCellContentKey, sheetCellInputText } from '../features/sheet-workbench/sheet-cell-edit.ts'
+import { createSheetCellEditorStart, editSheetCellInlineText, editSheetCellText, sheetCellContentKey, sheetCellInputText } from '../features/sheet-workbench/sheet-cell-edit.ts'
 import { sheetCellInputActionForKey } from '../features/sheet-workbench/sheet-cell-edit-input.ts'
 import { createSheetCellEditSession, getSheetCellEditConflict, resolveSheetDate1904, type SheetCellEditSession } from '../features/sheet-workbench/sheet-cell-edit-session.ts'
 import { SheetCellInputEditRecorder, type SheetCellInputEditTrace, type SheetCellNativeInputEvent } from '../features/sheet-workbench/sheet-cell-input-trace.ts'
+import { sheetCellFontValues, type SheetRichTextFontField } from '../features/sheet-workbench/sheet-cell-rich-text-style.ts'
+import { replaySheetCellInlineFormats, SheetCellInlineFormatDraft, type SheetCellInlineFormatEdit } from '../features/sheet-workbench/sheet-cell-inline-format.ts'
+import { FORMAT_SHEET_CELL_INPUT_OPERATION, planSheetCellInlineFontFormat,
+  type SheetCellInlineFontFormatInput, type SheetCellInlineFontFormatResult } from '../features/sheet-workbench/sheet-cell-inline-format-command.ts'
 import { applySheetViewLayoutFormatCommand, getSheetViewLayoutFormatState, layoutFormatActionForCommand, SHEET_LAYOUT_FORMAT_COMMAND_IDS, type SheetLayoutFormatCommandInput } from '../features/sheet-workbench/sheet-layout-format-command.ts'
 import { clearModeForCommand, SHEET_CLEAR_COMMAND_IDS, SHEET_CLEAR_COMMANDS } from '../features/sheet-workbench/sheet-clear-command.ts'
 import { SHEET_MERGE_COMMAND_IDS } from '../features/sheet-workbench/sheet-merge-command.ts'
@@ -70,7 +75,8 @@ import { formatValidationRange } from '../features/sheet-validation/validation-p
 import { resolveSheetClipboardCommand } from '../features/sheet-workbench/sheet-clipboard.ts'
 import { useSheetClipboard } from './spreadsheet/use-sheet-clipboard.ts'
 import type { SheetClipboardCapabilitiesInput, SheetClipboardPermissionEvaluator } from '../features/sheet-workbench/sheet-clipboard-capabilities.ts'
-import { createSheetFillPlan, type SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
+import { SHEET_FILL_COMMAND_IDS } from '../features/sheet-workbench/sheet-auto-fill.ts'
+import { useSheetAutoFill } from './spreadsheet/use-sheet-auto-fill.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
 import { SHEET_FORMAT_PAINTER_COMMAND_IDS } from '../features/sheet-workbench/sheet-format-painter-session.ts'
 import { useSheetFormatPainter } from './spreadsheet/use-sheet-format-painter.ts'
@@ -212,6 +218,11 @@ const editingKey = ref<string | null>(null)
 const editValue = ref('')
 const editSession = shallowRef<SheetCellEditSession | null>(null)
 let editRecorder: SheetCellInputEditRecorder | undefined
+let editInlineDraft: SheetCellInlineFormatDraft | undefined
+const editFontRevision = ref(0)
+const editTextSelection = ref<{ start: number; end: number; host: 'cell' | 'formula' }>({ start: 0, end: 0, host: 'cell' })
+const ribbonEditorOwner = useId()
+provide(RibbonEditorFocusScopeKey, { ownerId: ribbonEditorOwner })
 let editSessionStudio: OfficeStudio | undefined
 const cellInputContext = () => ({ sessionId: editSession.value?.sessionId, value: editRecorder?.value ?? editValue.value })
 const cellEditorComposing = ref(false), formulaEditorComposing = ref(false)
@@ -375,14 +386,54 @@ const totalRows = computed(() => activeSheet.value?.rowCount ?? 100)
 const freezeRows = computed(() => activeSheet.value?.freeze?.rows ?? 0)
 const freezeColumnsCount = computed(() => activeSheet.value?.freeze?.columns ?? 0)
 const isFrozen = computed(() => freezeRows.value > 0 || freezeColumnsCount.value > 0)
-const canUndo = computed(() => props.canUndo ?? false)
-const canRedo = computed(() => props.canRedo ?? false)
+const canUndo = computed(() => {
+  editFontRevision.value
+  return editingKey.value && editRecorder ? !editComposing.value && (editRecorder.canUndoDraft || editInlineDraft?.canUndo(editRecorder.trace) === true) : props.canUndo ?? false
+})
+const canRedo = computed(() => {
+  editFontRevision.value
+  return editingKey.value && editRecorder ? !editComposing.value && (editRecorder.canRedoDraft || editInlineDraft?.canRedo(editRecorder.trace) === true) : props.canRedo ?? false
+})
 const selectedStatistics = computed(() => calculateSelectionStatistics(activeSheet.value ?? { id: '', name: '', cells: {}, rowCount: 0, columnCount: 0 }, selectedRanges.value))
+const inlineDraftReplay = computed(() => {
+  editFontRevision.value
+  const session = editSession.value, recorder = editRecorder, draft = editInlineDraft
+  if (!session || !recorder || !draft || editingKey.value !== session.key || session.sheetId !== activeSheetId.value) return undefined
+  const trace = recorder.trace
+  return replaySheetCellInlineFormats(activeSheet.value?.cells[session.key], trace, draft.formats(trace),
+    { numberFormat: session.source.numberFormat, overwrite: session.mode === 'overwrite' })
+})
+const inlineFontEditable = computed(() => {
+  const session = editSession.value
+  if (!session || !inlineDraftReplay.value || !activeSheet.value) return false
+  const cell = editSheetCellInlineText(activeSheet.value.cells[session.key], editValue.value, session.date1904, session.region, session.currentYear)
+  return !cell.formula && (typeof cell.rawValue === 'string' || cell.rawValue === null)
+})
+const richTextEditorCell = computed<ExcelCellView | undefined>(() => {
+  const replay = inlineFontEditable.value ? inlineDraftReplay.value : undefined
+  if (!replay?.cell.richText?.length) return undefined
+  const cell = replay.cell, raw = String(cell.rawValue ?? '')
+  const prefix = editValue.value.length - raw.length
+  if (prefix !== 0 && !(prefix === 1 && editValue.value === "'" + raw)) return undefined
+  // The editor escape is a view-only run; it never becomes a stored run or acquires a source ID.
+  return { ...cell, value: editValue.value, rawValue: editValue.value,
+    richText: prefix ? [{ text: "'" }, ...cell.richText] : cell.richText }
+})
 const selectionFormat = computed(() => {
   const keys = selectedExistingKeys()
   function common<K extends keyof ExcelCell>(property: K, fallback: ExcelCell[K]): ExcelCell[K] | undefined {
     const values = keys.map(key => sheetCells.value[key]?.[property] ?? fallback)
     if (selectedCount.value > keys.length || !values.length) values.push(fallback)
+    return values.every(value => value === values[0]) ? values[0] : undefined
+  }
+  function commonFont<K extends SheetRichTextFontField>(field: K, fallback: import('../domain/model.ts').FontStyle[K]) {
+    const replay = inlineFontEditable.value ? inlineDraftReplay.value : undefined
+    const prefix = replay ? editValue.value.length - String(replay.cell.rawValue ?? '').length : 0
+    const selection = { start: Math.max(0, editTextSelection.value.start - prefix), end: Math.max(0, editTextSelection.value.end - prefix) }
+    const typing = replay?.typing && selection.start === selection.end && replay.typing.position === selection.start ? replay.typing.font[field] : undefined
+    const values = replay ? typing === undefined ? sheetCellFontValues(replay.cell, field, selection) : [typing]
+      : keys.flatMap(key => sheetCellFontValues(sheetCells.value[key], field))
+    if (!replay && (selectedCount.value > keys.length || !values.length)) values.push(fallback)
     return values.every(value => value === values[0]) ? values[0] : undefined
   }
   const formats = keys.map(key => sheetCells.value[key]?.rawNumberFormat ?? SHEET_NUMBER_FORMATS[sheetCells.value[key]?.numberFormat ?? 'general'])
@@ -393,13 +444,13 @@ const selectionFormat = computed(() => {
   if (selectedCount.value > keys.length || !borderColors.length) borderColors.push(null)
   const borderColor = borderColors.every(color => color === borderColors[0]) ? borderColors[0] : undefined
   return {
-    fontFamily: common('fontFamily', 'Aptos') ?? null,
-    fontSize: common('fontSize', 11) ?? null,
+    fontFamily: commonFont('family', 'Aptos') ?? null,
+    fontSize: commonFont('size', 11) ?? null,
     numberFormat: numberFormatKind === 'custom' ? null : numberFormatKind,
     numberFormatPattern,
-    bold: common('bold', false), italic: common('italic', false), underline: common('underline', false), strike: common('strike', false),
+    bold: commonFont('bold', false), italic: commonFont('italic', false), underline: commonFont('underline', false), strike: commonFont('strike', false),
     ...getSheetViewLayoutFormatState(activeSheet.value, selectedModelRanges()),
-    color: common('color', null), background: common('background', null),
+    color: commonFont('color', null), background: common('background', null),
     borderColor,
   }
 })
@@ -493,6 +544,27 @@ const { capabilities: clipboardCapabilities, copyRange: clipboardCopyRange, past
   focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value) spreadsheetCanvas.value?.focus() },
   notify: value => emit('notify', value),
 })
+const { fillOptions: sheetFillOptions, fillSelection, refill: refillSelection, runFillCommand, handleFillKeydown } = useSheetAutoFill({
+  studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
+  range: () => selectedModelRanges()[activeSelectionIndex.value] ?? selectedModelRanges().at(-1),
+  userId: () => userId.value, region: () => officeRegion.value,
+  active: () => workbenchActive.value, editing: () => Boolean(editingKey.value), finishEdit,
+  prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
+  selection: range => {
+    selectedRanges.value = [{ startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol }]
+    selectedKey.value = `${columnName(range.startCol)}${range.startRow + 1}`
+    selectionAnchor.value = selectedKey.value
+    activeSelectionIndex.value = 0
+    syncApiSelection()
+  },
+  changed: options => {
+    if (!options.current()) return
+    clearPainterSession()
+    if (options.current()) commitHistory({ ...options, prepared: true })
+  },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value) spreadsheetCanvas.value?.focus() },
+  notify: value => emit('notify', value),
+})
 const canEditValidationSelection = computed(() => Boolean(props.studio && workbook.value.id && activeSheet.value && selectedRanges.value.length
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)))
 const borderFormatState = ref<SheetBorderFormatState>(createSheetBorderFormatState())
@@ -571,7 +643,7 @@ const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, 
 const ribbonTabs = computed(() => createSheetRibbon({
   clipboardCapabilities: clipboardCapabilities.value,
   region: officeRegion.value,
-  fontList: officeFonts?.value, fontEditable: canFormatSelection.value,
+  fontList: officeFonts?.value, fontEditable: canFormatSelection.value && !editComposing.value,
   painterActive: painterActive.value, painterUnavailable: painterUnavailable.value,
   borderOptions: borderOptions.value, borderPreset: borderPreset.value, onBorderOptions: changeBorderOptions,
   lastTextColor: activeColorMemory.value.color, lastBackgroundColor: activeColorMemory.value.background,
@@ -1036,12 +1108,13 @@ async function removeChart(chartId: string) {
 }
 
 function setCellValue(key: string, value: string, region = officeRegion.value, date1904 = activeDate1904.value,
-  currentYear = new Date().getFullYear(), session?: SheetCellEditSession, editTrace?: SheetCellInputEditTrace): boolean {
+  currentYear = new Date().getFullYear(), session?: SheetCellEditSession, editTrace?: SheetCellInputEditTrace, inlineFormats?: SheetCellInlineFormatEdit[]): boolean {
   const sheet = activeSheet.value
   if (!sheet) return false
   const unitId = workbook.value.id, [column, row] = splitKey(key)
   const input: SheetCellInputCommandInput = { unitId: unitId ?? 'standalone-input', sheetId: sheet.id,
-    row: row - 1, column, input: value, region, date1904, currentYear, ...(session ? { session } : {}), ...(editTrace ? { editTrace } : {}) }
+    row: row - 1, column, input: value, region, date1904, currentYear, ...(session ? { session } : {}), ...(editTrace ? { editTrace } : {}),
+    ...(inlineFormats?.length ? { inlineFormats } : {}) }
   const studio = props.studio
   const sameTarget = () => props.studio === studio && workbook.value.id === unitId && activeSheetId.value === sheet.id
     && workbenchActive.value && (!studio || !unitId || studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook'
@@ -1173,6 +1246,9 @@ function beginEdit(key = selectedKey.value, initialValue?: string, target: 'cell
   const start = createSheetCellEditorStart(currentSheet.cells[key], initialValue, session.date1904, session.region)
   const source = sheetCellInputText(currentSheet.cells[key], session.date1904, session.region)
   editRecorder = new SheetCellInputEditRecorder(session.sessionId!, source)
+  editInlineDraft = new SheetCellInlineFormatDraft()
+  editTextSelection.value = { ...start.selection, host: target }
+  editFontRevision.value++
   if (initialValue !== undefined) {
     const event = { sessionId: session.sessionId!, hostId: `initial-${session.sessionId}`, host: 'cell' as const,
       value: source, start: 0, end: source.length }
@@ -1204,6 +1280,10 @@ function handleCellNativeInput(event: SheetCellNativeInputEvent): void {
     || !workbenchActive.value || props.studio && session.documentId && (props.studio.activeWorkbookId !== session.documentId
       || props.studio.editor.state.activeKind !== 'workbook')) return
   if (!recorder.handle(event)) return
+  editInlineDraft?.reconcile(recorder.trace)
+  const caret = event.phase === 'replace' ? event.start + (event.text?.length ?? 0) : undefined
+  editTextSelection.value = { start: caret ?? event.start, end: caret ?? event.end, host: event.host }
+  editFontRevision.value++
   editValue.value = recorder.value
   cellEditorComposing.value = recorder.compositionHost === 'cell'
   formulaEditorComposing.value = recorder.compositionHost === 'formula'
@@ -1254,7 +1334,9 @@ function finishEdit(): boolean {
     return false
   }
   const navigation = inputNavigationState()
-  if (!session || !setCellValue(editingKey.value, editValue.value, session.region, session.date1904, session.currentYear, session, editRecorder?.trace)) return false
+  const trace = editRecorder?.trace
+  if (!session || !setCellValue(editingKey.value, editValue.value, session.region, session.date1904, session.currentYear, session, trace,
+    trace ? editInlineDraft?.formats(trace) : undefined)) return false
   if (editSession.value !== session || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId) return false
   const continueAction = navigation === inputNavigationState()
   cancelEdit()
@@ -1278,6 +1360,8 @@ function cancelEdit() {
   editingKey.value = null
   editSession.value = null
   editRecorder = undefined
+  editInlineDraft = undefined
+  editFontRevision.value++
   editSessionStudio = undefined
   cellEditorComposing.value = false
   formulaEditorComposing.value = false
@@ -1337,6 +1421,11 @@ function handleGridKeydown(event: KeyboardEvent) {
     switchNextSheet()
     return
   }
+  if (handleInlineFormatHistoryKey(event)) return
+  const fontCommand = sheetFontFormatCommandForShortcut(event)
+  if (fontCommand) {
+    event.preventDefault(); void executeRibbon(fontCommand); return
+  }
   if (editingKey.value) {
     const action = sheetCellInputActionForKey(event, editComposing.value)
     if (action === 'line-break') {
@@ -1354,12 +1443,7 @@ function handleGridKeydown(event: KeyboardEvent) {
     return
   }
   if (handleClipboardKeydown(event)) return
-  const fontCommand = sheetFontFormatCommandForShortcut(event)
-  if (fontCommand) {
-    event.preventDefault()
-    void executeRibbon(fontCommand)
-    return
-  }
+  if (handleFillKeydown(event)) return
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     void executeRibbon('sheet.operation.insert-hyperlink')
@@ -1427,61 +1511,102 @@ function applyToSelection(action: (key: string) => void): boolean {
 function selectedExistingKeys(): string[] {
   return Object.keys(sheetCells.value).filter(key => { const [column, row] = splitKey(key); return containsCell(selectedRanges.value, row - 1, column) })
 }
-function fillSelection(source: GridRange, target: { row: number; column: number }, applyType: SheetFillApplyType = 'SERIES') {
-  const sheet = activeSheet.value
-  if (!sheet) return
-  const sourceCells = Array.from({ length: source.endRow - source.startRow + 1 }, (_, rowOffset) =>
-    Array.from({ length: source.endColumn - source.startColumn + 1 }, (_, columnOffset) => {
-      const key = `${columnName(source.startColumn + columnOffset)}${source.startRow + rowOffset + 1}`
-      return { ...getCell(key) }
-    }),
-  )
-  const targetRange = {
-    startRow: Math.min(source.startRow, target.row),
-    endRow: Math.max(source.endRow, target.row),
-    startColumn: Math.min(source.startColumn, target.column),
-    endColumn: Math.max(source.endColumn, target.column),
-  }
-  const targetCells = Array.from({ length: targetRange.endRow - targetRange.startRow + 1 }, (_, rowOffset) =>
-    Array.from({ length: targetRange.endColumn - targetRange.startColumn + 1 }, (_, columnOffset) => {
-      const key = `${columnName(targetRange.startColumn + columnOffset)}${targetRange.startRow + rowOffset + 1}`
-      return sheet.cells[key]
-    }),
-  )
-  const plan = createSheetFillPlan(source, target, sourceCells, { applyType, targetCells })
-  if (!plan.cellPatches.length || !checkDirectSelection(plan.cellPatches.length)) return
-  const destinations = plan.cellPatches.map(({ row, column }) => ({ startRow: row, endRow: row, startCol: column, endCol: column }))
-  if (!canEditProtectedRanges(sheet, destinations, props.studio?.currentUserId ?? 'local-user')) {
-    emit('notify', { type: 'warning', message: '填充范围包含受保护单元格，未修改数据。' })
-    return
-  }
-  const entries = plan.cellPatches.map(({ row, column, cell }) => ({
-    key: `${columnName(column)}${row + 1}`,
-    value: cell.formula ?? String(cell.rawValue ?? cell.value ?? ''),
-  }))
-  if (applyType !== 'ONLY_FORMAT' && !validateIncomingValues(entries)) return
-  const before = cloneWorkbook(workbook.value)
-  try {
-    for (const { row, column, cell } of plan.cellPatches) {
-      sheet.cells[`${columnName(column)}${row + 1}`] = cell
-    }
-    recalculateFormulas()
-    selectedRanges.value = [plan.range]
-    selectedKey.value = `${columnName(target.column)}${target.row + 1}`
-    selectionAnchor.value = selectedKey.value
-    commitHistory()
-  } catch (error) {
-    workbook.value = before
-    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '填充操作未能提交' })
-  }
-}
-
 function undo() {
+  if (editingKey.value) { runCellDraftHistory(-1, true); return }
   emit('undo', workbook.value.id ? { workbookId: workbook.value.id } : undefined)
 }
 
 function redo() {
+  if (editingKey.value) { runCellDraftHistory(1, true); return }
   emit('redo', workbook.value.id ? { workbookId: workbook.value.id } : undefined)
+}
+
+function keepCellEditFocus(target: Element | null): boolean {
+  const session = editSession.value
+  if (!target || !session || !workbenchActive.value || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId) return false
+  if (target.closest('[data-ribbon-editor-owner]')?.getAttribute('data-ribbon-editor-owner') === ribbonEditorOwner) return true
+  const popup = target.closest('.ant-select-dropdown, .ant-popover, .ant-dropdown, .ant-color-picker')
+  return [...(popup?.querySelectorAll('[data-ribbon-editor-owner]') ?? [])]
+    .some(element => element.getAttribute('data-ribbon-editor-owner') === ribbonEditorOwner)
+}
+
+function restoreCellInputFocus(session: SheetCellEditSession, selection = { ...editTextSelection.value }): void {
+  const studio = props.studio
+  // Popup controls restore their trigger after closing; restore the input after that flush.
+  void nextTick(() => nextTick(() => {
+    if (editSession.value !== session || props.studio !== studio || !workbenchActive.value || editComposing.value
+      || editingKey.value !== session.key || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId
+      || studio && session.documentId && (studio.activeWorkbookId !== session.documentId || studio.editor.state.activeKind !== 'workbook')) return
+    const focused = document.activeElement
+    if (focused instanceof Element && focused !== document.body && !keepCellEditFocus(focused)
+      && !focused.closest('.canvas-cell-input, .formula-toolbar')) return
+    if (selection.host === 'formula') formulaInput.value?.focus(selection)
+    else spreadsheetCanvas.value?.focusEditor(selection)
+  }))
+}
+
+function runCellDraftHistory(direction: -1 | 1, includeText = false): boolean {
+  const session = editSession.value, recorder = editRecorder, draft = editInlineDraft
+  if (!session || !recorder || !draft || editComposing.value || !workbenchActive.value) return false
+  const formatted = direction < 0 ? draft.undo(recorder.trace) : draft.redo(recorder.trace)
+  if (!formatted) {
+    if (!includeText) return false
+    const restored = recorder.moveDraftHistory(direction)
+    if (!restored) return false
+    editValue.value = restored.value
+    editTextSelection.value = { ...restored.selection, host: editTextSelection.value.host }
+    draft.reconcile(recorder.trace)
+  }
+  editFontRevision.value++
+  restoreCellInputFocus(session)
+  return true
+}
+
+function handleInlineFormatHistoryKey(event: KeyboardEvent): boolean {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || !editingKey.value || (!event.ctrlKey && !event.metaKey)) return false
+  const key = event.key.toLowerCase()
+  const direction = key === 'z' ? event.shiftKey ? 1 : -1 : key === 'y' && !event.shiftKey ? 1 : undefined
+  if (!direction || !runCellDraftHistory(direction)) return false
+  event.preventDefault(); event.stopPropagation(); return true
+}
+
+function runInlineFontFormatCommand(commandId: string, params?: unknown): boolean {
+  const session = editSession.value, recorder = editRecorder, draft = editInlineDraft, sheet = activeSheet.value
+  if (!editingKey.value || !session || !recorder || !draft || !sheet) return false
+  try {
+    const action = fontFormatActionForCommand(commandId, params)
+    if (!action || action.kind === 'color' && action.field !== 'color') return false
+    const trace = recorder.trace
+    if (!inlineFontEditable.value) {
+      if (!draft.formats(trace).length) return false
+      emit('notify', { type: 'warning', message: '当前草稿包含局部文字格式，请保持文本类型后继续；草稿已保留。' })
+      return true
+    }
+    if (editComposing.value || !canFormatSelection.value || !workbenchActive.value) return true
+    const unitId = workbook.value.id, studio = props.studio, [column, row] = splitKey(session.key)
+    const input: SheetCellInlineFontFormatInput = { unitId: unitId ?? 'standalone-input', sheetId: session.sheetId,
+      row: row - 1, column, input: recorder.value, session, editTrace: trace, inlineFormats: draft.formats(trace),
+      commandId, params, selection: { start: editTextSelection.value.start, end: editTextSelection.value.end } }
+    const result = studio && unitId ? studio.executeCommandSync<SheetCellInlineFontFormatInput, SheetCellInlineFontFormatResult>(FORMAT_SHEET_CELL_INPUT_OPERATION, input)
+      : planSheetCellInlineFontFormat({ ...applyExcelWorkbookView(createBlankWorkbook(), workbook.value, session.region), date1904: session.date1904 }, input,
+        { region: session.region, currentYear: session.currentYear, userId: userId.value })
+    if (editSession.value !== session || editInlineDraft !== draft || props.studio !== studio || workbook.value.id !== unitId
+      || activeSheetId.value !== session.sheetId || !workbenchActive.value) return true
+    if (!result.accepted || !result.edit) {
+      if (result.message) emit('notify', { type: 'warning', message: result.message })
+      return true
+    }
+    const currentCell = activeSheet.value?.cells[session.key]
+    if (getSheetCellEditConflict(session, { documentId: workbook.value.id, sheetId: session.sheetId, key: session.key, date1904: activeDate1904.value, cell: currentCell })) return true
+    draft.append(trace, result.edit)
+    editFontRevision.value++
+    if (action.kind === 'color' && action.value !== null) rememberColor(action.field, action.value)
+    restoreCellInputFocus(session)
+    return true
+  } catch (error) {
+    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法应用局部文字格式。' })
+    return true
+  }
 }
 
 function runFontFormatCommand(commandId: string, params?: unknown): boolean {
@@ -2310,6 +2435,8 @@ function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 's
 
 async function executeRibbon(commandId: string, params?: unknown) {
   if (resolveSheetClipboardCommand(commandId)) { await runClipboardCommand(commandId, params); return }
+  if (SHEET_FILL_COMMAND_IDS.some(id => id === commandId)) { runFillCommand(commandId, params); return }
+  if (SHEET_FONT_FORMAT_COMMAND_IDS.includes(commandId) && runInlineFontFormatCommand(commandId, params)) return
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo' && !finishEdit()) return
   const commands: Record<string, () => void | Promise<void>> = {
     'sheet.command.undo': undo, 'sheet.command.redo': redo,
@@ -2554,8 +2681,8 @@ onActivated(() => { workbenchActive.value = true })
       </div>
     </header>
 
-    <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :tabs="ribbonTabs" :variant="props.ribbonVariant" @execute="executeRibbon" />
-    <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
+    <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :data-ribbon-editor-owner="ribbonEditorOwner" :tabs="ribbonTabs" :variant="props.ribbonVariant" @execute="executeRibbon" />
+    <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @format-command="executeRibbon" @format-keydown="handleInlineFormatHistoryKey" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
       <div class="find-input-row">
@@ -2580,16 +2707,17 @@ onActivated(() => { workbenchActive.value = true })
 
     <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" :styles="sheetSplitterStyles" orientation="horizontal" @resize="resizeSheetSidebar">
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
-    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :prepare-fill="prepareCanvasFillGesture"
+    <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :keep-edit-focus="keepCellEditFocus" :prepare-fill="prepareCanvasFillGesture"
+      :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection"
       :sheet="activeRenderSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
       :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview"
-      :copy-range="clipboardCopyRange" :paste-options="clipboardPasteOptions" :clipboard-capabilities="clipboardCapabilities"
+      :copy-range="clipboardCopyRange" :paste-options="clipboardPasteOptions" :fill-options="sheetFillOptions" :clipboard-capabilities="clipboardCapabilities"
       :paste-options-capabilities="clipboardPasteOptionsCapabilities"
       :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId"
       @select-cell="startCellSelection" @extend-selection="extendCellSelection" @extend-header-selection="extendHeaderSelection"
-      @selection-end="finishCanvasSelection" @fill-selection="fillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit"
+      @selection-end="finishCanvasSelection" @fill-selection="fillSelection" @refill-selection="refillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit"
       @input-event="handleCellNativeInput" @editor-keydown="handleGridKeydown" @copy="handleSheetCopy" @cut="event => handleSheetCopy(event, true)" @paste="handleSheetPaste" @resize-axis="resizeAxis"
       @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectedSlicerId = $event"
       @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo"

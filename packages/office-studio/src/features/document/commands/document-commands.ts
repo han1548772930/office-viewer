@@ -39,6 +39,7 @@ import { documentTextFieldParagraphs, documentTextFieldRanges, documentTextField
 import { documentNoteReferenceOffsets } from '../model/document-note-boundary'
 import { executeDocumentStructureCommand, isDocumentStructureCommand, type DocumentStructureCommand } from './document-structure-commands'
 import { documentBlockChildContainers, isDocumentStructuredBlock } from '../model/document-structural-blocks'
+import { codeBlockData, exitCodeBlock, updateCodeBlockWithSelection } from '../code-blocks/code-blocks'
 export { blockAtPoint } from '../model/document-model'
 import {
   applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
@@ -342,7 +343,19 @@ function executeDocumentCommandMutation(
   permissionContext?: DocumentPermissionContext,
 ): DocumentSelection {
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
-  if (command.id === 'doc.command.update-code-block') return executeDocumentStructureCommand(model, selection, command, context)
+  if (command.id === 'doc.command.indent-code-block') return executeDocumentStructureCommand(model, selection, command, context)
+  if (command.id === 'doc.command.update-code-block') {
+    const scoped = command.host ? documentModelForBlockHost(model, command.host) : model
+    const block = findDocumentBlock(scoped, command.blockId)
+    if (block && block.type !== 'code' && codeBlockData(block)) {
+      return updateCodeBlockWithSelection(model, command.blockId, { ...(command.source === undefined ? {} : { source: command.source }),
+        ...(command.patch?.language === undefined ? {} : { language: command.patch.language }),
+        ...(command.patch?.showLineNumbers === undefined ? {} : { lineNumbers: command.patch.showLineNumbers }),
+        ...(command.patch?.tabSize === undefined ? {} : { tabSize: command.patch.tabSize }),
+        ...(command.patch?.wrap === undefined ? {} : { wrap: command.patch.wrap }) }, selection, context).selection ?? selection
+    }
+    return executeDocumentStructureCommand(model, selection, command, context)
+  }
   if (command.host) {
     const host = command.host
     if (!documentCommandSupportsBlockHost(command)
@@ -373,11 +386,19 @@ function executeDocumentCommandMutation(
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
   } else if (command.id !== 'doc.command.change-paragraph-indent' && command.id !== 'doc.command.refresh-header-footer-fields' && command.id !== 'doc.command.update-selected-fields'
-    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command)
+    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command) && !isDocumentStructureCommand(command)
     && !(selection.tableSelection && command.id === 'doc.command.paste-blocks') && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   if (isDocumentTableCommand(command)) return executeDocumentTableCommand(model, selection, command, context)
+  if (command.id === 'doc.command.exit-structured-block') {
+    const block = findDocumentBlock(model, command.blockId)
+    if (block && !isDocumentStructuredBlock(block) && codeBlockData(block)) {
+      const paragraph = exitCodeBlock(model, block.id), target = paragraph && textTargets(model).find(target => (target.cellBlockId ?? target.blockId) === paragraph.id)
+      if (!target) throw new RangeError('代码块退出位置不存在。')
+      return collapsedSelection({ ...target, offset: 0 })
+    }
+  }
   if (isDocumentStructureCommand(command)) return executeDocumentStructureCommand(model, selection, command, context)
   if (selection.tableSelection && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.delete')) {
     const view = selection.tableSelection

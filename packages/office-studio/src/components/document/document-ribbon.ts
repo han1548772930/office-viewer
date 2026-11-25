@@ -5,7 +5,7 @@ import {
   IndentDecrease, IndentIncrease, Italic, Layers2, Link, List, ListOrdered, ListTodo, ListTree, LockKeyhole, MessageSquarePlus,
   Minimize, Omega, Palette, PanelTop, Printer, Redo2, RemoveFormatting, Scissors, Search, FileText,
   PaintBucket, SeparatorHorizontal, ShieldCheck, Sigma, Smile, SquareCheckBig, Strikethrough, Subscript, Superscript,
-  TextCursorInput, Trash2, Underline, Undo2, X,
+  TextCursorInput, Trash2, Underline, Undo2, X, Quote, MessageSquareText,
 } from 'lucide-vue-next'
 import type { DocumentCommand } from '../../features/document/commands/document-commands'
 import { DOCUMENT_PASTE_OPTIONS } from '../../features/document/services/document-clipboard'
@@ -28,10 +28,12 @@ import { createDocumentTableRibbon, type DocumentTableRibbonContext } from './do
 import { documentTableCommandFromRibbon } from './document-table-command-parser'
 import { isDocumentTableCommand } from '../../features/document/commands/table-command-types'
 import { createDocumentNoteRibbon, type DocumentNoteRibbonContext } from './document-note-ribbon'
+import { createDocumentStructureRibbon, type DocumentStructureRibbonContext } from './document-structure-ribbon'
 
 export interface DocumentTocContextActionStates { update: DocumentTocActionState; delete: DocumentTocActionState }
 
 export interface DocumentRibbonContext {
+  structuredBlock?: DocumentStructureRibbonContext
   notes?: DocumentNoteRibbonContext
   table?: DocumentTableRibbonContext
   fontList?: OfficeFontList
@@ -176,7 +178,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       { id: 'doc-layout-extensions', title: '段落工具', order: 4, items: [
         { id: 'doc-extra-styles', type: 'menu', title: '更多段落样式', icon: FileText, order: 10, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 }, children: [
           action('doc-heading-six', tocLabel('options.doc.doc-block-style.H6', '标题 6'), undefined, 'doc.command.set-block-type', { type: 'heading', level: 6 }, { activated: state.blockStyle === 'H6' }),
-          action('doc-quote', tocLabel('options.doc.doc-block-style.quote', '引用'), undefined, 'doc.command.set-block-type', { type: 'quote' }, { activated: state.blockStyle === 'quote' }),
+          action('doc-quote', tocLabel('options.doc.doc-block-style.quote', '引用'), undefined, 'doc.operation.insert-quote', undefined, { activated: context.structuredBlock?.type === 'quote' || state.blockStyle === 'quote' }),
         ] },
         action('doc-indent-less', '减少缩进', IndentDecrease, 'doc.command.change-paragraph-indent', { direction: -1 }, { disabled: context.editingDisabled || !(context.indentation?.canDecrease ?? ((state.paragraph.indentFirstLine ?? 0) > 0)), disabledReason: '选中段落已达到缩进下限', gridLayout: { row: 1, column: 1 } }),
         action('doc-indent-more', '增加缩进', IndentIncrease, 'doc.command.change-paragraph-indent', { direction: 1 }, { disabled: context.editingDisabled || !(context.indentation?.canIncrease ?? ((state.paragraph.indentFirstLine ?? 0) < 100)), disabledReason: '选中段落已达到缩进上限', gridLayout: { row: 2, column: 1 } }),
@@ -250,6 +252,15 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           { type: 'docPartObj', title: '文档部件控件', icon: FileCog },
         ].map((item) => action(`doc-controls-${item.type}`, item.title, item.icon, 'doc.operation.insert-content-control', item.type)),
       ] },
+      ] },
+      { id: 'doc-insert-structured-blocks', title: '高级块', order: 2, items: [
+        action('doc-insert-quote', '引用块', Quote, 'doc.operation.insert-quote', undefined, { order: 0, disabled: context.editingDisabled, gridLayout: { row: 1, column: 1, showLabel: true } }),
+        action('doc-insert-callout', '标注块', MessageSquareText, 'doc.operation.insert-callout', undefined, { order: 1, disabled: context.editingDisabled, gridLayout: { row: 2, column: 1, showLabel: true } }),
+        { ...action('doc-insert-column-group', '多栏组', Columns3, 'doc.operation.insert-column-group', undefined, { order: 2, disabled: context.editingDisabled,
+          gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }), type: 'split', children: [
+          ...[2, 3, 4, 5].map(columnCount => action(`doc-insert-column-group-${columnCount}`, `${columnCount} 栏`, undefined, 'doc.operation.insert-column-group', { columnCount })),
+          action('doc-insert-column-group-custom', '设置比例和间距', undefined, 'doc.operation.insert-column-group'),
+        ] },
       ] },
       { id: 'doc-insert-extensions', title: '更多', order: 3, items: [
       action('doc-comment-toggle', '评论', MessageSquarePlus, 'docs.operation.toggle-comment-panel', undefined, { activated: context.commentsPanelOpen, gridLayout: { row: 1, column: 1, showLabel: true } }),
@@ -407,6 +418,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
   if (tableTab) tabs.push(tableTab)
   const noteTab = context.notes && createDocumentNoteRibbon(context.notes)
   if (noteTab) tabs.push(noteTab)
+  if (context.structuredBlock) tabs.push(createDocumentStructureRibbon(context.structuredBlock))
   return translate ? localizeRibbon(tabs, 'doc', translate) : tabs
 }
 

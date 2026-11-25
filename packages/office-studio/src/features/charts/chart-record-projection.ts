@@ -7,6 +7,7 @@ import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPrep
 import { chartMapSteps, chartNumericFieldSteps, chartProjectionSourceBytes } from './chart-data-preparation'
 import { chartHierarchyChartDataSteps, chartHierarchyFields, chartHierarchyNumber, chartHierarchyResultAsync } from './chart-hierarchy-data'
 import { chartChordChartDataSteps, chartChordResultAsync } from './chart-chord-data'
+import { chartRelationSourceFormat } from './chart-relation-data'
 
 interface ChartRecordProjection {
   source: ChartRecords; binding: ChartDataBinding; categories: number[]; fields: number[]; values: number[]
@@ -128,7 +129,7 @@ function* projectPreparedChartRecordSteps(plan: ChartRecordProjection,
 
 function primaryFields(source: ChartRecords, chart: ChartDataBinding, categories: number[]): number[] {
   const shape = resolveChartType(chart.type).dataShape
-  if (chart.type === 'relation' && chart.options?.mapping?.relationFormat === 'coWordMatrix') return source.fields.map((_field, index) => index)
+  if (chart.type === 'relation' && chartRelationSourceFormat(chart, source) === 'coWordMatrix') return source.fields.map((_field, index) => index)
   if (shape === 'bubble') return Object.values(chartBubbleMapping(source, chart)).filter((field): field is number => field !== undefined)
   if (shape === 'edge') return Object.values(chartEdgeMapping(source, chart)).filter((field): field is number => field !== undefined)
   if (shape === 'ohlc') return [chart.categoryField, ...Object.values(chartCandlestickMapping(source, chart)).filter((field): field is number => field !== undefined)]

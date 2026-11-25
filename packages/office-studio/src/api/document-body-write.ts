@@ -5,6 +5,7 @@ import { documentTableGrid } from '../features/document/model/document-table-gri
 import { documentTableContinuationEntries } from '../features/document/model/document-table-continuations'
 import { documentTextFields } from '../features/document/model/document-text-fields'
 import { isDocumentStructuredBlock, validateDocumentStructuredBlock } from '../features/document/model/document-structural-blocks'
+import { documentQuoteLineColor, documentQuoteParagraphBorderSource } from '../features/document/model/document-structured-appearance'
 import { migrateDocumentStoryBlocks } from '../features/document/model/document-story-blocks'
 import { documentParagraphToBody, documentBodyListForBlock } from './document-body-paragraph'
 import { DocumentBodyListResources, documentBodyListInstanceIds } from './document-body-lists'
@@ -96,7 +97,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
     drawings[id] = { ...drawing, drawingId: id }; writtenDrawingIds.add(id)
     if (typeof sourceId === 'string' && sourceId !== id) drawingAliases.set(sourceId, id)
   }
-  const writeBlocks = (blocks: readonly DocumentBlock[], depth = 0) => {
+  const writeBlocks = (blocks: readonly DocumentBlock[], depth = 0, quote?: { id: string; lineColor: string }) => {
     if (depth > 64) throw new RangeError('文档导出结构嵌套超过预算。')
     for (const block of blocks) {
       if (isDocumentStructuredBlock(block)) {
@@ -104,11 +105,11 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
         const start = offset
         if (block.type === 'columns') {
           append(T.groupStart)
-          for (const column of block.columns!.columns) { append(T.columnStart); writeBlocks(column.blocks, depth + 1); append(T.columnEnd) }
+          for (const column of block.columns!.columns) { append(T.columnStart); writeBlocks(column.blocks, depth + 1, quote); append(T.columnEnd) }
           append(T.groupEnd)
           columnGroups.push({ ...documentColumnGroupToBody(block), startIndex: start, endIndex: offset - 1, columnGroupId: block.id, officeStudio: documentBodyBlockSource(block) })
         } else {
-          append(T.blockStart); writeBlocks(block.children!, depth + 1); append(T.blockEnd)
+          append(T.blockStart); writeBlocks(block.children!, depth + 1, block.type === 'quote' ? { id: block.id, lineColor: documentQuoteLineColor(block) } : quote); append(T.blockEnd)
           blockRanges.push({ ...bodyRecord(block.metadata.univerBodyBlockRangeSource), startIndex: start, endIndex: offset - 1,
             blockId: block.id, blockType: block.type as 'quote' | 'callout' | 'code', officeStudio: documentBodyBlockSource(block) })
           if (block.type === 'callout') { callouts[block.id] = documentCalloutToBody(block.callout!, block.metadata.univerBodyCalloutSource); writtenCallouts.add(block.id) }
@@ -133,10 +134,10 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
             if (owner.cell.style.univerBodyOmittedCell) continue
             const cellStart = offset; append(T.cellStart)
             if (owner.row === rowIndex && owner.column === column) {
-              writeBlocks(owner.cell.blocks, depth + 1); cells.push(documentTableCellToBody(owner.cell))
+              writeBlocks(owner.cell.blocks, depth + 1, quote); cells.push(documentTableCellToBody(owner.cell))
             } else {
               const continuation = documentTableContinuationEntries(owner.cell).find(entry => entry.offset === rowIndex - owner.row)
-              if (owner.column === column && continuation) writeBlocks(continuation.content.blocks, depth + 1)
+              if (owner.column === column && continuation) writeBlocks(continuation.content.blocks, depth + 1, quote)
               else append(T.paragraph)
               cells.push({ ...cloneModel(bodyRecord(continuation?.content.source?.univerBodyCellSource)), rowSpan: 0, columnSpan: 0,
                 officeStudio: { version: 1, ...(continuation ? { continuationSource: documentBodySourceMetadata(continuation.content.source, '续格', ['univerBodyCellSource']) } : {}) } })
@@ -213,6 +214,13 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
       const end = offset; maps.set(block.id, { block, start, end, spans })
       if (source.terminated !== false) {
         const paragraph = documentParagraphToBody(block, offset, listInstanceIds.get(block.id))
+        if (quote) {
+          const style = bodyRecord(paragraph.paragraphStyle), border = bodyRecord(style.borderLeft)
+          const generated = { ...border, color: { rgb: quote.lineColor }, width: border.width ?? 2, dashStyle: border.dashStyle ?? 1, padding: border.padding ?? 0 }
+          paragraph.paragraphStyle = { ...style, borderLeft: generated }
+          const extension = bodyRecord(paragraph.officeStudio)
+          paragraph.officeStudio = { ...extension, metadata: { ...bodyRecord(extension.metadata), documentQuoteBorderSource: documentQuoteParagraphBorderSource(block, quote.id, generated) } }
+        }
         const mark = block.metadata.univerBodyParagraphMarkTextStyle ?? bodyRecord(paragraph.paragraphStyle).paragraphMarkTextStyle
         if (mark !== undefined) textRuns.push({ st: offset, ed: offset + 1, ts: cloneModel(bodyRecord(mark)) })
         paragraphs.push({ ...paragraph, startIndex: offset, paragraphId: block.id }); append(T.paragraph)

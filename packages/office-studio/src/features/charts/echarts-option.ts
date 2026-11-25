@@ -33,7 +33,7 @@ import { CHART_PARETO_CUMULATIVE_NAME, chartParetoBarStyle, chartParetoCumulativ
 import { chartMarkerRequiresSharedGeometry, chartNativeMarkerSymbol } from './chart-markers'
 import { createChartSankeyScene, type ChartSankeyScene } from './chart-sankey-draw'
 import { createChartSankeyHitIndex, createChartSankeyTopology, type ChartSankeyPointerRuntime } from './chart-sankey-interaction'
-import { chartHeatmapExtent } from './chart-heatmap'
+import { chartHeatmapExtent, chartHeatmapLegendBand } from './chart-heatmap'
 import { chartHistogramBinGap } from './chart-histogram'
 import { chartCandlestickMode, chartCandlestickState, chartCandlestickStyle } from './chart-candlestick'
 import type { ChartTreemapPointerRuntime } from './echarts-treemap-option'
@@ -41,8 +41,14 @@ import type { ChartSunburstPointerRuntime } from './echarts-sunburst-option'
 import { createChartChordScene, type ChartChordScene } from './chart-chord-draw'
 import { createChartChordHitIndex, createChartChordTopology, type ChartChordPointerRuntime } from './chart-chord-interaction'
 import { assertChartSourcePresent } from './chart-source-diagnostic'
-import { createChartRelationScene, type ChartRelationScene } from './chart-relation-draw'
+import { createChartRelationScene, transformChartRelationScene, type ChartRelationScene } from './chart-relation-draw'
 import { createChartRelationHitIndex, createChartRelationTopology, type ChartRelationPointerRuntime } from './chart-relation-interaction'
+import { chartHasLegend, chartLegendDataCount, chartLegendGeometry, chartLegendItems, chartLegendRelationScene, chartLegendSankeyScene,
+  chartLegendSelectMode, chartLegendViewData, chartLegendViewLayout, type ChartLegendItem, type ChartLegendSelection } from './chart-legend'
+import { chartNativeLegendNames, type ChartCanvasLegendRuntime, type ChartCanvasLegendFrameOption } from './echarts-legend'
+import { chartTitleCommands, chartTitleGeometry, type ChartTitleGeometry } from './chart-titles'
+
+export type ChartEChartsPointerRuntime = ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
 
 export type ChartEChartsOption = ComposeOption<
   | BarSeriesOption | LineSeriesOption | PieSeriesOption | RadarSeriesOption | ScatterSeriesOption | BoxplotSeriesOption
@@ -53,7 +59,8 @@ export type ChartEChartsOption = ComposeOption<
   /** Authored dependencies used by the bitmap cache, including formatter closures. Removed before ECharts.setOption. */
   officeChartKey?: string
   /** Transient surface interaction metadata. Removed before signature generation and setOption. */
-  officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
+  officeChartPointer?: ChartEChartsPointerRuntime
+  officeChartLegend?: ChartCanvasLegendRuntime
 }
 
 export type ChartEChartsTheme = ChartRenderTheme
@@ -68,46 +75,61 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   const localChart = { ...chart, position: { x: 0, y: 0 } }
   const officeChartKey = JSON.stringify([localChart, theme, Boolean(data.date1904)])
   const pointerEnabled = supportsChartAxisPointer(chart) && data.categories.length > 0 && data.series.length > 0
-  const frame = chartPlotFrame(localChart, derived.boxes ?? data.series), grid = {
+  const frame = chartPlotFrame(localChart, derived.boxes ?? data.series, chartLegendDataCount(data, chart)), grid = {
     left: frame.plot.x, right: Math.max(0, chart.size.width - frame.plot.x - frame.plot.width),
     // chartPlotFrame already reserves automatic label/title bands; authored bounds are exact.
     top: frame.plot.y, bottom: Math.max(0, chart.size.height - frame.plot.y - frame.plot.height), containLabel: false,
   }
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite) || requiresGraphicChart(chart, data, derived.boxes, derived.pareto?.cumulativePercent)) {
-    const layout = layoutDerivedChartData(derived, localChart, palette)
-    const sankeyScene = layout.sankey ? createChartSankeyScene(data, localChart, layout.sankey,
-      chart.options?.appearance?.font?.color ?? theme.textColor ?? '#64748b', palette, layout.frame) : undefined
-    const chordScene = layout.chord ? createChartChordScene(data, localChart, layout.chord, theme, palette, layout.frame) : undefined
-    const relationScene = layout.relation ? createChartRelationScene(data, localChart, layout.relation, theme, palette, layout.frame) : undefined
-    const commands = drawDerivedChartData(derived, localChart, theme, palette, layout, sankeyScene, chordScene, relationScene)
-    const contentGraphics = sankeyScene?.commands.length ? chartContentGraphics(commands, sankeyScene, chart.id, 'sankey')
-      : chordScene?.commands.length ? chartContentGraphics(commands, chordScene, chart.id, 'chord')
-      : relationScene?.commands.length ? chartContentGraphics(commands, relationScene, chart.id, 'relation') : undefined
-    const pointerRuntime: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime | undefined = contentGraphics && sankeyScene
-      ? { mode: 'sankey', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: sankeyScene,
-        hitIndex: createChartSankeyHitIndex(sankeyScene!.layout), topology: createChartSankeyTopology(sankeyScene!.layout) }
-      : contentGraphics && chordScene ? { mode: 'chord', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: chordScene,
-        hitIndex: createChartChordHitIndex(chordScene.layout), topology: createChartChordTopology(chordScene.layout) }
-        : contentGraphics && relationScene ? { mode: 'relation', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset,
-          scene: relationScene, baseScene: relationScene, hitIndex: createChartRelationHitIndex(relationScene),
-          topology: createChartRelationTopology(relationScene.layout), viewport: { scale: 1, x: 0, y: 0 } }
-        : pointerEnabled ? { mode: 'graphic', geometry: chartAxisPointerGeometry(data, localChart, layout, theme) } : undefined
-    return {
-      animation: false, backgroundColor: chart.options?.appearance?.background ?? theme.backgroundColor ?? 'transparent',
-      graphic: { elements: contentGraphics?.elements ?? chartGraphics(commands, chart.id) }, officeChartKey,
-      ...(pointerRuntime ? { officeChartPointer: pointerRuntime } : {}),
+    const originalLayout = layoutDerivedChartData(derived, localChart, palette)
+    const originalSankeyScene = originalLayout.sankey ? createChartSankeyScene(data, localChart, originalLayout.sankey,
+      chart.options?.appearance?.font?.color ?? theme.textColor ?? '#64748b', palette, originalLayout.frame) : undefined
+    const chordScene = originalLayout.chord ? createChartChordScene(data, localChart, originalLayout.chord, theme, palette, originalLayout.frame) : undefined
+    const originalRelationScene = originalLayout.relation ? createChartRelationScene(data, localChart, originalLayout.relation, theme, palette, originalLayout.frame) : undefined
+    const items = [...new Map(chartLegendItems(derived, localChart, originalLayout, palette).map(item => [item.name, item])).values()]
+    const nativeLegend = chart.legend.visible && chartHasLegend(chart.type) && chart.type !== 'heatmap' && items.length > 0
+    const buildGraphicView = (selected: ChartLegendSelection, retainedPointer?: ChartEChartsPointerRuntime): ChartCanvasLegendFrameOption => {
+      const view = chartLegendViewData(derived, localChart, selected, palette)
+      const layout = chartLegendViewLayout(view === derived ? originalLayout : layoutDerivedChartData(view, localChart, palette), derived, localChart, selected, palette)
+      const baseSankeyScene = retainedPointer?.mode === 'sankey' ? retainedPointer.baseScene ?? retainedPointer.scene : originalSankeyScene
+      const sankeyScene = baseSankeyScene ? chartLegendSankeyScene(baseSankeyScene, selected) : undefined
+      const baseRelationScene = originalRelationScene ? chartLegendRelationScene(originalRelationScene, selected) : undefined
+      const relationViewport = retainedPointer?.mode === 'relation' ? retainedPointer.viewport : { scale: 1, x: 0, y: 0 }
+      const relationScene = baseRelationScene ? transformChartRelationScene(baseRelationScene, relationViewport) : undefined
+      const paintChart = nativeLegend ? { ...localChart, legend: { ...localChart.legend, visible: false } } : localChart
+      const commands = drawDerivedChartData(view, paintChart, theme, palette, layout, sankeyScene, chordScene, relationScene)
+      const contentGraphics = sankeyScene ? chartContentGraphics(commands, sankeyScene, chart.id, 'sankey')
+        : chordScene ? chartContentGraphics(commands, chordScene, chart.id, 'chord')
+        : relationScene ? chartContentGraphics(commands, relationScene, chart.id, 'relation') : undefined
+      const pointerRuntime: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime | undefined = contentGraphics && sankeyScene
+        ? { mode: 'sankey', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: sankeyScene, baseScene: baseSankeyScene,
+          hitIndex: createChartSankeyHitIndex(sankeyScene.layout), topology: createChartSankeyTopology(sankeyScene.layout) }
+        : contentGraphics && chordScene ? { mode: 'chord', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset, scene: chordScene,
+          hitIndex: createChartChordHitIndex(chordScene.layout), topology: createChartChordTopology(chordScene.layout) }
+          : contentGraphics && relationScene ? { mode: 'relation', groupId: contentGraphics.groupId, zOffset: contentGraphics.zOffset,
+            scene: relationScene, baseScene: baseRelationScene!, hitIndex: createChartRelationHitIndex(relationScene),
+            topology: createChartRelationTopology(relationScene.layout), viewport: relationViewport }
+          : pointerEnabled ? { mode: 'graphic', geometry: chartAxisPointerGeometry(view.data, localChart, layout, theme) } : undefined
+      return { option: {
+        animation: false, backgroundColor: chart.options?.appearance?.background ?? theme.backgroundColor ?? 'transparent',
+        graphic: { elements: contentGraphics?.elements ?? chartGraphics(commands, chart.id) },
+        ...(nativeLegend ? { legend: { ...nativeChartLegend(localChart, items, theme), selected: { ...selected } },
+          // Empty native series give the public legend actions their name contract;
+          // the visible content continues to come from the shared Canvas scene.
+          series: items.map(item => ({ type: 'pie' as const, name: item.name, data: [], radius: 0, silent: true,
+            legendHoverLink: false, tooltip: { show: false }, itemStyle: { color: item.color } })) } : {}),
+      }, ...(pointerRuntime ? { pointer: pointerRuntime } : {}) }
     }
+    const initial = buildGraphicView({}), legendRuntime: ChartCanvasLegendRuntime | undefined = nativeLegend
+      ? { names: items.map(item => item.name), selectMode: chartLegendSelectMode(chart), rebuild: buildGraphicView } : undefined
+    return { ...initial.option, officeChartKey, ...(initial.pointer ? { officeChartPointer: initial.pointer } : {}),
+      ...(legendRuntime ? { officeChartLegend: legendRuntime } : {}) }
   }
   const isPie = descriptor.family === 'pie', isScatter = chart.type === 'scatter' || chart.type === 'bubble', isRadar = chart.type === 'radar', horizontal = descriptor.family === 'bar'
   const dates = chartDateAxis(data, chart), inheritedFont = chart.options?.appearance?.font
   const sharedLayout = dates || chart.type === 'candlestick' || pointerEnabled && (isRadar || chart.type === 'heatmap') ? layoutDerivedChartData(derived, localChart, palette) : undefined
   const context: ChartEChartsContext = { palette, color, axisColor, splitLineColor, grid, dateAxis: dates, backgroundColor: chart.options?.appearance?.background ?? theme.backgroundColor }
   const seriesNames = data.series.map((series, index) => chartSeriesStyle(chart, series.field, index, palette, series.sourceName ?? series.name).name ?? series.name)
-  const titleHeight = (chart.title ? Math.max(28, (chart.options?.titleStyle?.fontSize ?? inheritedFont?.fontSize ?? 14) + 14) : 0)
-    + (chart.subtitle ? Math.max(18, (chart.options?.subtitleStyle?.fontSize ?? inheritedFont?.fontSize ?? 11) + 7) : 0), title: TitleComponentOption[] = []
-  if (chart.title || chart.subtitle) title.push({ text: chart.title ?? '', subtext: chart.subtitle, left: 'center', top: 8,
-    textStyle: chartEChartsFont({ bold: true, ...definedChartStyleFields(inheritedFont), ...definedChartStyleFields(chart.options?.titleStyle) }, color, 14),
-    subtextStyle: chartEChartsFont({ ...definedChartStyleFields(inheritedFont), ...definedChartStyleFields(chart.options?.subtitleStyle) }, color, 11) })
   const categoryLegend = ['pie', 'funnel', 'gauge', 'treemap', 'sunburst'].includes(descriptor.family)
   const right = data.series.some((series, index) => chartSeriesStyle(chart, series.field, index, palette, series.sourceName ?? series.name).rightAxis)
   const valueAxis = { ...numericAxis(chart.yAxis, axisColor, splitLineColor, horizontal ? 'x' : 'y', descriptor.percent ?? false, inheritedFont),
@@ -133,9 +155,7 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   const option: ChartEChartsOption = {
     animation: false, backgroundColor: chart.options?.appearance?.background ?? theme.backgroundColor ?? 'transparent',
     color: palette, textStyle: chartEChartsFont(chart.options?.appearance?.font, color),
-    ...(title.length ? { title: title.length === 1 ? title[0] : title } : {}),
-    legend: { show: chart.legend.visible, data: categoryLegend ? data.categories : seriesNames, ...legendPosition(chart.legend.position, titleHeight),
-      textStyle: chartEChartsFont(chart.legend.font, color, 11) },
+    legend: nativeChartLegend(localChart, (categoryLegend ? data.categories : seriesNames).map(name => ({ name, color })), theme),
     tooltip,
     ...(pointerConfig ? { axisPointer: pointerConfig } : {}),
     ...(isPie || isRadar ? {} : {
@@ -199,9 +219,26 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     const current = option.graphic
     option.graphic = { elements: [graphic, ...(!Array.isArray(current) ? current?.elements ?? [] : [])] }
   }
+  const titleLegendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(chart.size.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend.font?.fontSize ?? inheritedFont?.fontSize ?? 11)
+    : chartLegendGeometry(localChart, chartLegendDataCount(data, chart)).band
+  const titles = chartTitleCommands(localChart, color, titleLegendBand)
+  if (titles.length) {
+    const current = option.graphic
+    option.graphic = { elements: [...(!Array.isArray(current) ? current?.elements ?? [] : []), ...chartGraphics(titles, `${chart.id}:titles`)] }
+  }
   // Specialized adapters can supply their own tooltip; raster surfaces receive pointer actions explicitly.
   if (option.tooltip && !Array.isArray(option.tooltip)) option.tooltip = { ...option.tooltip, showContent: false, triggerOn: 'none',
     ...(pointerConfig ? { axisPointer: tooltip.axisPointer } : {}) }
+  const legendNames = chartNativeLegendNames(option)
+  if (legendNames.length && chartHasLegend(chart.type) && chart.type !== 'heatmap') {
+    option.officeChartLegend = { names: legendNames, selectMode: chartLegendSelectMode(chart),
+      ...(pointerRuntime?.mode === 'graphic' ? { preparePointer: (selected: ChartLegendSelection): ChartAxisPointerRuntime => {
+        const view = chartLegendViewData(derived, localChart, selected, palette)
+        // Native date axes and radar indicators retain their authored-frame
+        // bounds after legend actions. Keep those positions/extents for guides.
+        return { mode: 'graphic', geometry: { ...pointerRuntime.geometry, data: view.data } }
+      } } : {}) }
+  }
   return option
 }
 
@@ -308,7 +345,7 @@ export function chartGraphics(commands: DrawCommand[], chartId: string, zOffset 
 function chartContentGraphics(commands: DrawCommand[], scene: ChartSankeyScene | ChartChordScene | ChartRelationScene, chartId: string, mode: 'sankey' | 'chord' | 'relation'): {
   elements: NonNullable<GraphicComponentOption['elements']>; groupId: string; zOffset: number
 } {
-  const start = commands.indexOf(scene.commands[0]!), end = start + scene.commands.length
+  const start = scene.commands.length ? commands.indexOf(scene.commands[0]!) : commands.length, end = start + scene.commands.length
   if (start < 0) throw new TypeError('图表内容场景与绘制命令不匹配。')
   const groupId = `${chartId}:${mode}-content`, elements = chartGraphics(commands.slice(0, start), chartId)
   elements.push({ type: 'group', id: groupId, silent: true, children: chartGraphics(scene.commands, groupId, start) })
@@ -339,13 +376,31 @@ function radarSeries(data: ChartData, chart: ChartModel, context: ChartEChartsCo
   })
 }
 
-function legendPosition(position: ChartModel['legend']['position'], titleHeight: number): Pick<LegendComponentOption, 'top' | 'right' | 'bottom' | 'left' | 'orient'> {
+function legendPosition(position: ChartModel['legend']['position'], titles: ChartTitleGeometry['bands']): Pick<LegendComponentOption, 'top' | 'right' | 'bottom' | 'left' | 'orient'> {
+  const horizontal = titles.left || titles.right ? { left: 12 + titles.left, right: 12 + titles.right } : { left: 'center' as const }
+  const vertical = titles.top || titles.bottom ? { top: 12 + titles.top, bottom: 12 + titles.bottom } : { top: 'middle' as const }
   switch (position) {
-    case 'top': return { top: 8 + titleHeight, left: 'center', orient: 'horizontal' }
-    case 'right': return { right: 8, top: 'middle', orient: 'vertical' }
-    case 'left': return { left: 8, top: 'middle', orient: 'vertical' }
-    case 'bottom': return { bottom: 8, left: 'center', orient: 'horizontal' }
+    case 'top': return { top: 8 + titles.top, ...horizontal, orient: 'horizontal' }
+    case 'right': return { right: 8 + titles.right, ...vertical, orient: 'vertical' }
+    case 'left': return { left: 8 + titles.left, ...vertical, orient: 'vertical' }
+    case 'bottom': return { bottom: 8 + titles.bottom, ...horizontal, orient: 'horizontal' }
   }
+}
+
+function nativeChartLegend(chart: ChartModel, items: readonly Pick<ChartLegendItem, 'name'>[], theme: ChartEChartsTheme): LegendComponentOption {
+  const inherited = chart.options?.appearance?.font, geometry = chartLegendGeometry(chart, items.length)
+  const titles = chartTitleGeometry(chart, geometry.band).bands
+  const color = inherited?.color ?? theme.textColor ?? '#334155'
+  const selectMode = chartLegendSelectMode(chart)
+  return { show: chart.legend.visible && chartHasLegend(chart.type), data: items.map(item => item.name),
+    selectedMode: selectMode === 'close' ? false : selectMode,
+    type: geometry.wrap ? 'plain' : 'scroll', ...legendPosition(chart.legend.position, titles),
+    ...(geometry.horizontal ? { width: geometry.availableWidth } : { height: Math.max(1, chart.size.height - 24 - titles.top - titles.bottom) }),
+    z: 1_000_000, itemWidth: 10, itemHeight: 10, itemGap: 8, padding: 0,
+    textStyle: { ...chartEChartsFont({ ...definedChartStyleFields(inherited), ...definedChartStyleFields(chart.legend.font) }, color, 11),
+      width: geometry.textWidth, overflow: 'truncate' },
+    pageTextStyle: chartEChartsFont({ ...definedChartStyleFields(inherited), ...definedChartStyleFields(chart.legend.font) }, color, 11),
+    pageIconColor: theme.axisColor ?? color, pageIconInactiveColor: theme.splitLineColor ?? '#cbd5e1', animation: false }
 }
 
 function categoryAxis(categories: string[], axis: ChartAxisOptions, axisColor: string, splitLineColor: string, inheritedFont?: ChartFontOptions): XAxisComponentOption {

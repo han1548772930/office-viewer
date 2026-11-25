@@ -16,6 +16,7 @@ import { chartCandlestickStyle } from './chart-candlestick'
 import { chartTreemapShade } from './chart-treemap'
 import { chartSunburstShade } from './chart-sunburst'
 import { ComputeError } from '../../compute/errors'
+import type { ChartLegendSelection } from './chart-legend'
 import {
   chartBoxplot, chartErrorIntervals, chartHistogram, chartPareto, chartTrendline, CHART_WATERFALL_GLOBAL_SERIES,
   type BoxplotData, type ChartErrorInterval, type HistogramData, type ParetoData, type TrendlineData, type WaterfallPoint, type WaterfallLayoutData, type WaterfallLayoutPoint,
@@ -23,6 +24,8 @@ import {
 
 export interface ChartDerivedData {
   data: ChartData
+  /** Surface operation only, excluded from snapshots and compute DTOs. */
+  legendSelection?: ChartLegendSelection
   histogram?: HistogramData
   boxes?: Array<{ field: number; seriesPosition: number; sourceName: string; name: string; statistics?: BoxplotData }>
   waterfalls?: WaterfallLayoutPoint[][]

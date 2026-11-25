@@ -1,6 +1,7 @@
 import type { OfficeStudio } from './office-studio.ts'
 import type { Disposable } from './events.ts'
 import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
+import { pruneChartImageResources } from '../features/charts/chart-image-resources.ts'
 import { COPY_WORKSHEET_COMMAND, planWorksheetCopy, type CopyWorksheetCommandInput } from '../features/sheet-workbench/sheet-worksheet-copy.ts'
 import { WORKSHEET_LIFECYCLE_COMMANDS, planWorksheetLifecycle, type WorksheetLifecycleCommandInput } from '../features/sheet-workbench/sheet-worksheet-lifecycle.ts'
 
@@ -72,7 +73,10 @@ export function registerSheetLifecycleCommands(api: OfficeStudio): Disposable {
       if (!currentHost() || api.currentUserId !== userId || api.getWorkbookRevision(unitId) !== revision
         || api.editor.history.captureSavepoint(unitId).generation !== history.generation) throw new Error('重命名前的工作簿上下文已更改，请重新执行。')
     }
-    const changed = api.commitWorkbook(unitId, labels[kind as keyof typeof labels], model => Object.assign(model, plan.workbook), {
+    const changed = api.commitWorkbook(unitId, labels[kind as keyof typeof labels], model => {
+      Object.assign(model, plan.workbook)
+      if (id === WORKSHEET_LIFECYCLE_COMMANDS.remove) pruneChartImageResources(model)
+    }, {
       expectedRevision: revision, expectedHistoryGeneration: history.generation,
       ...(id === WORKSHEET_LIFECYCLE_COMMANDS.hidden || id === WORKSHEET_LIFECYCLE_COMMANDS.show || id === WORKSHEET_LIFECYCLE_COMMANDS.tabColor ? { recalculate: false } : {}),
       prepareView: model => { toExcelWorkbookView(model) },

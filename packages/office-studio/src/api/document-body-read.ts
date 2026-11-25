@@ -267,7 +267,8 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         if (stream[cursor++] !== T.groupEnd || descriptor.endIndex !== cursor - 1) throw new RangeError('多栏组结束边界与 columnGroups 不匹配。')
         const block = createParagraph(); block.id = documentBodyIdentity(descriptor.columnGroupId, '多栏组'); block.type = 'columns'; block.runs = []
         block.columns = documentColumnGroupFromBody(descriptor, children, options)
-        block.metadata = { univerBodyColumnGroupSource: cloneModel(descriptor), univerBodyColumnGroupBaseline: { gap: block.columns.gap, fontSize: options.defaults.text.fontSize } }
+        block.metadata = { univerBodyColumnGroupSource: cloneModel(descriptor), univerBodyColumnGroupBaseline: { gap: block.columns.gap,
+          horizontalPadding: block.columns.horizontalPadding, minHeight: block.columns.minHeight, fontSize: options.defaults.text.fontSize } }
         applyDocumentBodyBlockSource(block, descriptor)
         blocks.push(reserve(block)); structures.blocks.push({ block, container: blocks, start: from, end: cursor }); start = cursor; continue
       }

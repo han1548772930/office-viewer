@@ -1,5 +1,5 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model.ts'
-import { blockAtPoint, collapsedSelection, createParagraph, createRun, findDocumentBlock, findDocumentBlockContainer, orderedSelection,
+import { blockAtPoint, clampPoint, collapsedSelection, createParagraph, createRun, findDocumentBlock, findDocumentBlockContainer, orderedSelection,
   runText, sameTarget, selectionCollapsed, textTargets, type DocumentSelection, type RunPatch } from '../model/document-model.ts'
 import { replaceDocumentRunRange } from '../model/document-run-range'
 import { documentDefaultStyle } from '../model/document-default-style'
@@ -13,9 +13,9 @@ import { mapDocumentContentControlBindingSelection, synchronizeDocumentContentCo
 import { documentBlockHostForId, documentEditingBlockHost } from '../model/document-block-host'
 import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../services/document-block-host'
 import { assertDocumentPermission, permissionTargetsForChangedBlocks, type DocumentPermissionContext } from '../permissions/document-permissions'
-import { visitDocumentBlocks } from '../model/document-structural-blocks'
+import { validateDocumentCodeConfig, visitDocumentBlocks } from '../model/document-structural-blocks'
 import { updateDocumentStructuredCodeBlock } from '../services/document-code-editing'
-import { documentCodeSourceEdit as codeSourceEdit, normalizeDocumentCodeSource as normalizeCodeSource } from '../model/document-code-source'
+import { documentCodeSourceEdit as codeSourceEdit, documentCodeIndentEdits, normalizeDocumentCodeSource as normalizeCodeSource } from '../model/document-code-source'
 
 export type DocumentCodeLanguage = 'plain' | 'javascript' | 'typescript' | 'json' | 'css' | 'html' | 'python' | 'sql' | 'rust'
 export type CodeTokenKind = 'keyword' | 'string' | 'number' | 'comment' | 'operator' | 'punctuation' | 'plain'
@@ -74,6 +74,50 @@ export function updateCodeBlock(model: DocumentModel, blockId: string, patch: Pa
   return updateCodeBlockWithSelection(model, blockId, patch).changed
 }
 
+/** Keyboard indentation shares source editing, control locks, binding updates and one outer history item. */
+export function indentCodeBlockWithSelection(model: DocumentModel, blockId: string, selection: DocumentSelection, direction: -1 | 1,
+  context: DocumentPermissionContext): DocumentSelection {
+  if (selection.tableSelection) throw new RangeError('代码缩进需要文字选区。')
+  const host = documentBlockHostForId(model, blockId), scoped = host ? documentModelForBlockHost(model, host, true) : model
+  const block = findDocumentBlock(scoped, blockId), data = block && codeBlockData(block)
+  if (!block || !data) throw new RangeError('代码块已不存在。')
+  const { start, end } = orderedSelection(scoped, selection)
+  const paragraphs = block.type === 'code' ? documentTextFieldParagraphs({ blocks: block.children! }) : documentTextFieldParagraphs({ blocks: [block] })
+  const sourceOffset = (point: DocumentSelection['focus']) => {
+    const paragraph = paragraphs.find(value => value.block.id === (point.cellBlockId ?? point.blockId))
+    if (!paragraph) throw new RangeError('代码缩进不能跨出当前代码块。')
+    return paragraph.absoluteStart + point.offset
+  }
+  const edits = documentCodeIndentEdits(data.source, sourceOffset(start), sourceOffset(end), direction, data.tabSize ?? 4)
+  if (!edits.length) return cloneModel(selection)
+  const candidate = cloneModel(model)
+  let nextSelection = cloneModel(selection), source = data.source
+  for (const edit of edits) {
+    source = source.slice(0, edit.startOffset) + edit.text + source.slice(edit.endOffset)
+    const updated = updateCodeBlockWithSelection(candidate, blockId, { source }, nextSelection, context)
+    nextSelection = updated.selection ?? nextSelection
+    const currentHost = host ? documentModelForBlockHost(candidate, host, true) : candidate
+    const currentBlock = findDocumentBlock(currentHost, blockId)
+    if (!currentBlock || codeBlockData(currentBlock)?.source !== source) throw new RangeError('内容绑定改变了代码源文本，请重新选择后缩进。')
+  }
+  const currentHost = host ? documentModelForBlockHost(candidate, host, true) : candidate, currentBlock = findDocumentBlock(currentHost, blockId)!
+  const currentParagraphs = documentTextFieldParagraphs({ blocks: currentBlock.type === 'code' ? currentBlock.children! : [currentBlock] })
+  const mapPoint = (point: DocumentSelection['focus']) => {
+    let offset = sourceOffset(point)
+    for (const edit of edits) {
+      if (offset >= edit.endOffset) offset += edit.text.length - (edit.endOffset - edit.startOffset)
+      else if (offset > edit.startOffset) offset = edit.startOffset + edit.text.length
+    }
+    const paragraph = currentParagraphs.find(value => value.block.id === (point.cellBlockId ?? point.blockId))
+    if (!paragraph) throw new RangeError('代码缩进后的输入段落已不存在。')
+    return clampPoint(currentHost, { ...point, offset: Math.max(0, offset - paragraph.absoluteStart) })
+  }
+  nextSelection = { anchor: mapPoint(selection.anchor), focus: mapPoint(selection.focus) }
+  assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+  Object.assign(model, candidate)
+  return nextSelection
+}
+
 /** Source edits and linked controls share the full document candidate, including auxiliary hosts. */
 export function updateCodeBlockWithSelection(model: DocumentModel, blockId: string, patch: Partial<DocumentCodeBlockData>,
   sourceSelection?: DocumentSelection, permissionContext?: DocumentPermissionContext): { changed: boolean; selection?: DocumentSelection } {
@@ -94,10 +138,13 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
     return { changed: result.changed, ...(sourceSelection ? { selection: result.selection } : {}) }
   }
   const next: DocumentCodeBlockData = {
+    ...current,
     source: patch.source === undefined ? current.source : normalizeCodeSource(patch.source),
     language: patch.language === undefined ? current.language : normalizeCodeLanguage(patch.language),
     lineNumbers: patch.lineNumbers === undefined ? current.lineNumbers : patch.lineNumbers === true,
+    ...(patch.tabSize === undefined ? {} : { tabSize: patch.tabSize }), ...(patch.wrap === undefined ? {} : { wrap: patch.wrap }),
   }
+  validateDocumentCodeConfig({ language: next.language, showLineNumbers: next.lineNumbers, tabSize: next.tabSize ?? 4, wrap: next.wrap ?? true })
   if (host || permissionContext || current.source !== next.source && model.contentControls?.length) {
     const candidate = cloneModel(model), scoped = host ? documentModelForBlockHost(candidate, host, true) : candidate
     const change = codeSourceEdit(current.source, next.source)
@@ -134,7 +181,8 @@ export function updateCodeBlockWithSelection(model: DocumentModel, blockId: stri
 interface CodeSourceEdit { startOffset: number; endOffset: number; text: string }
 
 function applyCodeBlockUpdate(model: DocumentModel, block: DocumentBlock, current: DocumentCodeBlockData, next: DocumentCodeBlockData, edit?: CodeSourceEdit, marks: RunPatch = {}, controlEdit: ContentControlRangeEditOptions = {}): boolean {
-  if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers) return false
+  if (current.source === next.source && current.language === next.language && current.lineNumbers === next.lineNumbers
+    && current.tabSize === next.tabSize && current.wrap === next.wrap) return false
   if (current.source !== next.source) {
     const change = edit ?? codeSourceEdit(current.source, next.source)
     if (runText(block.runs) !== current.source) throw new Error('代码源文本与格式范围不一致。')
@@ -226,7 +274,8 @@ export function codeBlockPlainText(block: DocumentBlock): string {
 
 /** Token ranges are UTF-16 offsets into the authoritative source string. */
 export function tokenizeCode(source: string, languageValue: string): CodeToken[] {
-  const language = normalizeCodeLanguage(languageValue)
+  const alias = languageValue.trim().toLowerCase()
+  const language = normalizeCodeLanguage(alias === 'plaintext' ? 'plain' : alias === 'markup' ? 'html' : languageValue)
   const text = normalizeCodeSource(source)
   if (language === 'plain') return text ? [{ kind: 'plain', text, start: 0, end: text.length }] : []
   const tokens: CodeToken[] = []

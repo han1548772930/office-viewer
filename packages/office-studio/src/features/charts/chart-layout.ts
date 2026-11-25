@@ -20,33 +20,34 @@ import { chartDateAxis, chartDateCoordinate, chartDateSerial, chartDateSeriesOrd
 import { chartWaterfallUsesSecondaryAxis } from './chart-waterfall'
 import { layoutChartWaterfall } from './chart-waterfall-layout'
 import { chartHeatmapCellRect, chartHeatmapExtent, chartHeatmapFieldNames, chartHeatmapLegendBand } from './chart-heatmap'
+import { chartHasLegend, chartLegendDataCount, chartLegendGeometry } from './chart-legend'
+import { chartTitleGeometry } from './chart-titles'
 import { chartChordLayout, chartRelationLayout, chartSankeyLayout, chartSunburstLayout, chartTreemapLayout, chartWordCloudLayout } from './chart-special-layout'
 
 export type ChartPlotFrameSource = Pick<ChartConfig, 'type' | 'position' | 'size' | 'title' | 'subtitle' | 'options' | 'legend' | 'xAxis' | 'yAxis'>
-export type ChartPlotSourceSeries = readonly { field: number; name: string; sourceName?: string }[]
+export type ChartPlotSourceSeries = readonly { field: number; name: string; sourceName?: string; values?: readonly (number | null)[] }[]
 
-export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: ChartPlotSourceSeries): { frame: RenderRect; plot: RenderRect } {
+export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: ChartPlotSourceSeries, legendCount?: number): { frame: RenderRect; plot: RenderRect } {
   const descriptor = resolveChartType(chart.type)
   const axes = ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination', 'waterfall', 'pareto', 'heatmap', 'boxplot', 'candlestick', 'histogram', 'radar'].includes(descriptor.family)
   const frame = { x: chart.position.x, y: chart.position.y, width: chart.size.width, height: chart.size.height }
   const manual = chartManualPlotFrame(chart.type, frame, chart.options?.plotArea)
   if (manual) return { frame, plot: manual }
-  const legend = { visible: true, position: 'bottom', ...chart.legend, ...(['treemap', 'sunburst', 'chord'].includes(chart.type) ? { visible: false } : {}) }
-  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(frame.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend?.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11) : 24
+  const legend = { visible: true, position: 'bottom', ...chart.legend, ...(!chartHasLegend(chart.type) ? { visible: false } : {}) }
+  const count = legendCount ?? (['pie', 'funnel', 'gauge', 'sankey'].includes(descriptor.family) ? sourceSeries?.[0]?.values?.length : sourceSeries?.length) ?? 0
+  const legendBand = chart.type === 'heatmap' ? chartHeatmapLegendBand(frame.width, chart.options?.heatmap?.visualMapType ?? 'continuous', chart.legend?.font?.fontSize ?? chart.options?.appearance?.font?.fontSize ?? 11) : chartLegendGeometry(chart, count).band
   const topLegend = legend.visible && legend.position === 'top' ? legendBand : 0, bottomLegend = legend.visible && legend.position === 'bottom' ? legendBand : 0
-  const inheritedSize = chart.options?.appearance?.font?.fontSize
-  const title = chart.title ? Math.max(28, (chart.options?.titleStyle?.fontSize ?? inheritedSize ?? 14) + 14) : 0
-  const subtitle = chart.subtitle ? Math.max(18, (chart.options?.subtitleStyle?.fontSize ?? inheritedSize ?? 11) + 7) : 0
+  const titles = chartTitleGeometry(chart, legendBand).bands
   const sideLegend = legend.visible && ['left', 'right'].includes(legend.position) ? chart.type === 'heatmap' ? Math.min(132, frame.width * 0.28) : Math.min(96, frame.width * 0.24) : 0
   const secondary = chart.type !== 'heatmap' && (chart.type === 'pareto' || chartWaterfallUsesSecondaryAxis(chart, sourceSeries) || (sourceSeries
     ? sourceSeries.some((series, index) => chartSeriesStyle(chart, series.field, index, undefined, series.sourceName ?? series.name).rightAxis)
     : Object.values(chart.options?.series ?? {}).some(style => style.rightAxis) || chart.options?.namedSeries?.some(entry => entry.style.rightAxis) || chart.options?.allSeriesStyle?.rightAxis))
   const horizontal = descriptor.family === 'bar', sideAxis = (horizontal ? chart.xAxis : chart.yAxis) ?? {}, bottomAxis = (horizontal ? chart.yAxis : chart.xAxis) ?? {}
   const rightAxis = chart.options?.rightYAxis ?? { scaleType: 'linear' }
-  const left = (axes ? 54 + chartAxisTitleSpace(chart, sideAxis) : 14) + (legend.position === 'left' ? sideLegend : 0)
-  const right = (secondary && !horizontal ? 54 + chartAxisTitleSpace(chart, rightAxis) : 12) + (legend.position === 'right' ? sideLegend : 0)
-  const top = 12 + title + subtitle + topLegend + (secondary && horizontal ? 40 + chartAxisTitleSpace(chart, rightAxis) : 0)
-  const bottom = (axes ? 40 + chartAxisTitleSpace(chart, bottomAxis) : 14) + bottomLegend
+  const left = (axes ? 54 + chartAxisTitleSpace(chart, sideAxis) : 14) + (legend.position === 'left' ? sideLegend : 0) + titles.left
+  const right = (secondary && !horizontal ? 54 + chartAxisTitleSpace(chart, rightAxis) : 12) + (legend.position === 'right' ? sideLegend : 0) + titles.right
+  const top = 12 + titles.top + topLegend + (secondary && horizontal ? 40 + chartAxisTitleSpace(chart, rightAxis) : 0)
+  const bottom = (axes ? 40 + chartAxisTitleSpace(chart, bottomAxis) : 14) + bottomLegend + titles.bottom
   return { frame, plot: { x: frame.x + left, y: frame.y + top, width: Math.max(1, frame.width - left - right), height: Math.max(1, frame.height - top - bottom) } }
 }
 
@@ -66,7 +67,7 @@ export function layoutChartData(data: ChartData, chart: ChartModel, computed?: C
 }
 
 export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartModel, palette = chartPalette(chart)): ChartLayout {
-  const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series)
+  const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series, chartLegendDataCount(data, chart))
   if (derived.waterfallLayout) return layoutChartWaterfall(data, chart, derived.waterfallLayout, frame, plot, palette)
   if (descriptor.family === 'relation') {
     const relation = chartRelationLayout(data, chart, plot), source = data.series[0]

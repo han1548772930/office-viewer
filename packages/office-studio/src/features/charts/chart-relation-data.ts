@@ -6,8 +6,25 @@ import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, type ChartComput
 import { finiteChartValue } from './chart-math'
 
 export type ChartRelationSourceFormat = 'edgeList' | 'coWordMatrix'
-export function chartRelationSourceFormat(chart: ChartDataBinding): ChartRelationSourceFormat {
-  return chart.options?.mapping?.relationFormat ?? 'edgeList'
+/** The local row-major adapter requires a complete square and matching node
+ * labels. It preserves the upstream matrix-before-edge recognition contract
+ * without applying its irregular converted column DTO to ordinary cells. */
+export function isChartRelationCoWordMatrix(source: ChartRecords): boolean {
+  const count = source.records.length
+  if (!count || source.fields.length !== count + 2) return false
+  const names = new Set<string>()
+  for (let index = 0; index < count; index++) {
+    const record = source.records[index], name = source.fields[index + 2]
+    if (!record || record.length !== count + 2 || !endpoint(name) || record[0] !== name || names.has(name)) return false
+    names.add(name)
+  }
+  return true
+}
+export function chartRelationSourceFormat(chart: Pick<ChartDataBinding, 'options'>, source?: ChartRecords): ChartRelationSourceFormat {
+  const mapping = chart.options?.mapping
+  if (mapping?.relationFormat) return mapping.relationFormat
+  if (mapping?.edge) return 'edgeList'
+  return source && isChartRelationCoWordMatrix(source) ? 'coWordMatrix' : 'edgeList'
 }
 export function chartRelationMapping(source: ChartRecords, chart: ChartDataBinding): { sourceIndex: number; targetIndex: number; valueIndex?: number } {
   const mapping = chart.options?.mapping?.edge ?? { sourceIndex: 0, targetIndex: 1, valueIndex: source.fields.length > 2 ? 2 : undefined }
@@ -26,7 +43,7 @@ const weight = (value: CellScalar | undefined): value is number => typeof value 
 
 export function* chartRelationGraphSteps(source: ChartRecords, chart: ChartDataBinding,
   context: ChartComputePreparationContext = {}): Generator<void, ChartGraphData, void> {
-  if (chartRelationSourceFormat(chart) === 'coWordMatrix') return yield* chartRelationMatrixSteps(source, context)
+  if (chartRelationSourceFormat(chart, source) === 'coWordMatrix') return yield* chartRelationMatrixSteps(source, context)
   const mapping = chartRelationMapping(source, chart), categories = mapping.valueIndex === undefined || !source.fields[mapping.valueIndex]
     ? [] : [source.fields[mapping.valueIndex]!]
   if (!source.records.length) return empty('edgeList', '关系来源需要至少一条有效连线。')

@@ -26,7 +26,7 @@ export interface LayoutLine extends LayoutRect, Partial<LayoutFlowLocation> {
   /** A physical input line shares this image's bounds while retaining paragraph markers outside them. */
   pictureInputAnchorImageId?: string
   marker?: string; markerStyle?: { x: number; font: string; color: string }
-  checklist?: { blockId: string; checked: boolean }; codeBlock?: { language: string; lineNumber: number; containerId?: string; sourceOffset?: number; showLineNumbers?: boolean; numberVisible?: boolean }
+  checklist?: { blockId: string; checked: boolean }; codeBlock?: { language: string; lineNumber: number; containerId?: string; sourceOffset?: number; showLineNumbers?: boolean; numberVisible?: boolean; gutterX?: number; gutterClip?: LayoutRect }
 }
 export interface LayoutColumn extends LayoutRect { index: number; usedHeight: number; full: boolean }
 /** A physical page can contain several sections, including a NEXT_COLUMN fragment. */
@@ -50,7 +50,9 @@ export interface LayoutImage extends LayoutRect, Partial<LayoutFlowLocation> {
 export interface LayoutDivider extends LayoutRect, Partial<LayoutFlowLocation> { page: number; clip?: LayoutRect; host?: DocumentAuxiliaryBlockHost; color?: string }
 export interface LayoutContainerDecoration extends LayoutRect, Partial<LayoutFlowLocation> {
   blockId: string; kind: 'quote' | 'callout' | 'code' | 'columns'; page: number; host?: DocumentAuxiliaryBlockHost; clip?: LayoutRect
-  callout?: DocumentCalloutConfig; first: boolean; last: boolean; tableDepth?: number
+  callout?: DocumentCalloutConfig; quoteLineColor?: string; first: boolean; last: boolean; tableDepth?: number
+  codeWrap?: boolean
+  columnGroup?: { columnIds: string[]; widths: number[]; gap: number; horizontalPadding: number; minHeight: number; stacked: boolean }
 }
 export interface LayoutTableRowMetric { row: number; id: string; y: number; height: number; contentHeight?: number }
 /** A table can have several fragments on pages/columns; repeated headers share model IDs. */

@@ -23,6 +23,8 @@ export interface ChartSankeyPointerRuntime {
   groupId: string
   zOffset: number
   scene: ChartSankeyScene
+  /** Unfiltered view positions survive legend filtering and subsequent drags. */
+  baseScene?: ChartSankeyScene
   hitIndex: ChartSankeyHitIndex
   topology: ChartSankeyTopology
 }
@@ -58,6 +60,7 @@ export function hitChartSankey(index: ChartSankeyHitIndex, point: ChartVector | 
 export function createChartSankeyTopology(layout: ChartSankeyLayout): ChartSankeyTopology {
   const topology: ChartSankeyTopology = { incoming: layout.nodes.map(() => []), outgoing: layout.nodes.map(() => []), links: new Map() }
   for (const link of layout.links) {
+    if (link.width <= 0) continue
     topology.links.set(link.index, { source: link.sourceIndex, target: link.targetIndex })
     topology.incoming[link.targetIndex]!.push(link.index); topology.outgoing[link.sourceIndex]!.push(link.index)
   }

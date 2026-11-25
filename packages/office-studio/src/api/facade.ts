@@ -2,8 +2,8 @@ import type {
   CellScalar,
   ChartAxisOptions,
   ChartAxisPointerOptions,
-  ChartLegendOptions,
   ChartModel,
+  ChartImageResource,
   ChartPlotAreaOptions,
   ChartParetoBarStyleOptions,
   ChartParetoLineStyleOptions,
@@ -90,6 +90,10 @@ import type {
 import { createCell } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { worksheetHiddenState, type WorksheetHiddenState } from '../features/sheet-workbench/sheet-worksheet-lifecycle.ts'
+import { SHEET_AUTO_FILL_COMMAND } from '../features/sheet-workbench/sheet-auto-fill.ts'
+import { resolveSheetFillTarget } from '../features/sheet-workbench/sheet-fill-target.ts'
+import { sheetFillApplyType } from '../features/sheet-workbench/sheet-fill-command.ts'
+import type { SheetFillApplyType } from '../features/sheet-workbench/sheet-fill.ts'
 import { normalizeDocumentCustomXmlParts } from '../domain/document-custom-xml'
 import { SET_DOCUMENT_CUSTOM_XML_PARTS_COMMAND, type DocumentCustomXmlPartsWriteOptions } from './document-custom-xml-commands'
 import { assertDocumentPermission } from '../features/document/permissions/document-permissions'
@@ -110,6 +114,7 @@ import { ChartGaugeModes, ChartGaugePointerShapes, chartGaugePresetOptions, type
 import { ChartRadarShapes, patchChartRadarOptions } from '../features/charts/chart-radar'
 import { ChartWordCloudShapes, ChartWordCloudShapeSources, assertChartWordCloudType, chartWordCloudShape,
   chartWordCloudMaskImageId, chartWordCloudRepeat } from '../features/charts/chart-word-cloud'
+import { normalizeChartImageResource } from '../features/charts/chart-image-resources'
 import { ChartRelationLayouts, assertChartRelationType, chartRelationLayoutValue, chartRelationBoolean,
   chartRelationForce, chartRelationNodeShape } from '../features/charts/chart-relation'
 import { assertChartWaterfallType, chartWaterfallConnectorValues, patchChartWaterfallStyle } from '../features/charts/chart-waterfall'
@@ -167,6 +172,10 @@ import { FDocumentTable, getDocumentTables, findDocumentTables, getDocumentTable
   DocsTableColumnTypes, DocsTableRowHeightRules, DocsTableBorderPresets,
   type DocumentTableFindQuery } from './document-tables.ts'
 import type { DocumentTableInsertOptions } from '../features/document/commands/table-command-types.ts'
+import { FDocumentQuote, FDocumentCallout, FDocumentCode, documentStructuredBlocks, findDocumentStructuredBlocks, documentStructuredBlockAt,
+  insertDocumentQuote, insertDocumentCallout, insertDocumentCode, type DocumentStructuredFindQuery,
+  type DocumentQuoteInsertOptions, type DocumentCalloutInsertOptions, type DocumentCodeInsertOptions } from './document-structured-blocks'
+import { FDocumentColumnGroup, insertDocumentColumnGroup, type DocumentColumnFindQuery, type DocumentColumnInsertOptions } from './document-columns'
 import { parseSheetA1Range, splitSheetA1Reference } from '../features/sheet-workbench/sheet-a1-reference.ts'
 import type { DocumentEditorCommandResult } from './document-editor-commands.ts'
 import { DocumentNoteCommandRejectedError, type DocumentNoteCommandResult } from './document-note-commands'
@@ -195,6 +204,7 @@ import { createSparklineGroupPatches, type SparklineGroupRequest } from '../feat
 import { parseSheetHyperlinkTarget } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCellInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { SHEET_FONT_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-font-format-command.ts'
+import { FORMAT_SHEET_CELL_RICH_TEXT_COMMAND, type SheetCellInlineStylePatch } from '../features/sheet-workbench/sheet-cell-inline-format-command.ts'
 import { SHEET_BORDER_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { SheetBorderTypes, SheetBorderStyleTypes, type SheetBorderType, type SheetBorderPreset, type SheetBorderStyleType, type SheetBorderLineStyle } from '../features/sheet-workbench/sheet-cell-border.ts'
 import { SHEET_LAYOUT_FORMAT_COMMANDS, sheetCellTextRotation, sheetCellWrapStrategy, type SheetTextRotation, type SheetWrapStrategy } from '../features/sheet-workbench/sheet-layout-format-command.ts'
@@ -229,10 +239,13 @@ import {
   chartLayout,
   chartRenderCommands,
   createChartDefinition,
+  defaultChartLegend,
   readChartData,
   type ChartData,
   type ChartConfig,
 } from '../features/charts/chart-engine'
+import { ChartLegendPositions, ChartLegendSelectModes, chartLegendPatch, type ChartLegendSpec } from '../features/charts/chart-legend'
+import { ChartTitlePositions, ChartTextAlignments, chartTitlePatch, type ChartTitleSpec, type ChartSubtitleSpec } from '../features/charts/chart-titles'
 import { getSlicer, getSlicerItems, type SlicerCreateInput } from '../features/slicer/slicer-engine'
 import { expandVisibleSortOrder, getFilteredRows, getNumericSortColumns, getSortedRowOrder, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 import { createSheetDataValidationRule, sheetDataValidationOptions, validateSheetDataValidationChanges, type SheetDataValidationDraft, type SheetValidationIssue } from '../features/sheet-validation/validation-engine.ts'
@@ -265,10 +278,15 @@ export class FOffice {
   readonly Event = new FEventName()
   readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
     WorksheetHiddenState: Object.freeze({ VISIBLE: 0, HIDDEN: 1, VERY_HIDDEN: 2 } as const),
+    AUTO_FILL_APPLY_TYPE: Object.freeze({ COPY: 'COPY', SERIES: 'SERIES', ONLY_FORMAT: 'ONLY_FORMAT', NO_FORMAT: 'NO_FORMAT' } as const),
     ChartGaugeMode: ChartGaugeModes, ChartGaugePointerShape: ChartGaugePointerShapes, ChartRadarShape: ChartRadarShapes,
     ChartWordCloudShapeEnum: ChartWordCloudShapes, ChartWordCloudShapeSource: ChartWordCloudShapeSources,
     ChartRelationChartLayoutEnum: ChartRelationLayouts,
     ChartVisualMapType: ChartVisualMapTypes,
+    ChartSelectModeEnum: ChartLegendSelectModes,
+    ChartLegendPositionEnum: ChartLegendPositions,
+    ChartTitlePositionEnum: ChartTitlePositions,
+    ChartLabelAlignEnum: ChartTextAlignments,
     ChartSunburstLabelPosition: Object.freeze({ Inside: 'inside', Outside: 'outside' } as const),
     ChartChordLabelPosition: Object.freeze({ Inside: 'inside', Outside: 'outside' } as const),
     ChartChordRibbonColorMode: Object.freeze({ Source: 'source', Target: 'target', Gradient: 'gradient' } as const),
@@ -1052,8 +1070,10 @@ export class ChartConfigBuilder {
     this.value = { ...this.value, seriesToCategory: Object.fromEntries(Object.entries(mapping).map(([field, categories]) => [field, [...categories]])) }
     return this
   }
-  setTitle(title: string): this { this.value = { ...this.value, title }; return this }
-  setSubtitle(subtitle: string): this { this.value = { ...this.value, subtitle }; return this }
+  setTitle(title: ChartTitleSpec | undefined): this { const patch = chartTitlePatch(title); this.value = { ...this.value, ...patch, options: mergeChartOptions(this.value.options, patch.options) }; return this }
+  clearTitle(): this { return this.setTitle(undefined) }
+  setSubtitle(subtitle: ChartSubtitleSpec | undefined): this { const patch = chartTitlePatch(subtitle, 'subtitle'); this.value = { ...this.value, ...patch, options: mergeChartOptions(this.value.options, patch.options) }; return this }
+  clearSubtitle(): this { return this.setSubtitle(undefined) }
   setPalette(palette: readonly string[]): this { this.value = { ...this.value, palette: [...palette] }; return this }
   setOptions(options: ChartSemanticOptions): this {
     const next = mergeChartOptions(this.value.options, options)
@@ -1240,8 +1260,10 @@ export class ChartConfigBuilder {
     return this.setRadar({ shape: value })
   }
   resetShape(): this { return this.value.type === 'wordCloud' ? this.setOption('wordCloud', { shape: undefined }) : this.setRadar({ shape: undefined }) }
-  setMaskImage(resourceId: string): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { maskImageId: chartWordCloudMaskImageId(resourceId), maskImage: undefined }) }
-  clearMaskImage(): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { maskImageId: undefined, maskImage: undefined }) }
+  setMaskImage(resourceId: string): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { maskImageId: chartWordCloudMaskImageId(resourceId), maskImage: undefined, maskImageResource: undefined }) }
+  /** Local host resource adapter; upstream setMaskImage keeps its ID contract. */
+  setMaskImageResource(value: ChartImageResource): this { assertChartWordCloudType(this.value.type); const resource = normalizeChartImageResource(value); return this.setOption('wordCloud', { maskImageId: resource.id, maskImage: undefined, maskImageResource: resource }) }
+  clearMaskImage(): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { maskImageId: undefined, maskImage: undefined, maskImageResource: undefined }) }
   setRepeat(value: boolean): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { repeat: chartWordCloudRepeat(value) }) }
   resetRepeat(): this { assertChartWordCloudType(this.value.type); return this.setOption('wordCloud', { repeat: undefined }) }
   setLayout(value: ChartRelationLayout): this { assertChartRelationType(this.value.type); return this.setOption('relation', { layout: chartRelationLayoutValue(value) }) }
@@ -1294,7 +1316,8 @@ export class ChartConfigBuilder {
   resetGaugeTitle(): this { return this.setGauge({ title: undefined }) }
   setGaugeDetail(value: ChartGaugeNullablePatch<ChartGaugeDetailOptions>): this { return this.setGauge({ detail: chartGaugeNullableValues<ChartGaugeDetailOptions>(value) }) }
   resetGaugeDetail(): this { return this.setGauge({ detail: undefined }) }
-  setLegend(legend: Partial<ChartLegendOptions>): this { this.value = { ...this.value, legend: { ...this.value.legend, ...legend } }; return this }
+  setLegend(legend: ChartLegendSpec): this { this.value = { ...this.value, legend: chartLegendPatch(this.value.legend, legend) }; return this }
+  clearLegend(): this { this.value = { ...this.value, legend: undefined }; return this }
   setXAxis(axis: ChartNullablePatch<ChartAxisOptions>): this { this.value = { ...this.value, xAxis: chartAxisPatch(this.value.xAxis, axis) }; return this }
   setYAxis(axis: ChartNullablePatch<ChartAxisOptions>): this { this.value = { ...this.value, yAxis: chartAxisPatch(this.value.yAxis, axis) }; return this }
   clearXAxis(target?: ChartAxisTarget): this { this.value = { ...this.value, xAxis: clearChartAxis(this.value.xAxis, target) }; return this }
@@ -1364,8 +1387,10 @@ export class FChart {
   }
   async setDataSource(source: ChartSource): Promise<this> { return this.update({ source }) }
   async setType(type: ChartType): Promise<this> { resolveChartType(type); return this.update({ type }) }
-  async setTitle(title: string | undefined): Promise<this> { return this.update({ title }) }
-  async setSubtitle(subtitle: string | undefined): Promise<this> { return this.update({ subtitle }) }
+  async setTitle(title: ChartTitleSpec | undefined): Promise<this> { return this.update(chartTitlePatch(title)) }
+  async clearTitle(): Promise<this> { return this.setTitle(undefined) }
+  async setSubtitle(subtitle: ChartSubtitleSpec | undefined): Promise<this> { return this.update(chartTitlePatch(subtitle, 'subtitle')) }
+  async clearSubtitle(): Promise<this> { return this.setSubtitle(undefined) }
   async setPalette(palette: readonly string[]): Promise<this> { return this.update({ palette: [...palette] }) }
   async setOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
   async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.setOptions(chartOptionPatch(key, value)) }
@@ -1543,8 +1568,9 @@ export class FChart {
     return this.setRadar({ shape: value })
   }
   async resetShape(): Promise<this> { return this.model().type === 'wordCloud' ? this.setOption('wordCloud', { shape: undefined }) : this.setRadar({ shape: undefined }) }
-  async setMaskImage(resourceId: string): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { maskImageId: chartWordCloudMaskImageId(resourceId), maskImage: undefined }) }
-  async clearMaskImage(): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { maskImageId: undefined, maskImage: undefined }) }
+  async setMaskImage(resourceId: string): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { maskImageId: chartWordCloudMaskImageId(resourceId), maskImage: undefined, maskImageResource: undefined }) }
+  async setMaskImageResource(value: ChartImageResource): Promise<this> { assertChartWordCloudType(this.model().type); const resource = normalizeChartImageResource(value); return this.setOption('wordCloud', { maskImageId: resource.id, maskImage: undefined, maskImageResource: resource }) }
+  async clearMaskImage(): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { maskImageId: undefined, maskImage: undefined, maskImageResource: undefined }) }
   async setRepeat(value: boolean): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { repeat: chartWordCloudRepeat(value) }) }
   async resetRepeat(): Promise<this> { assertChartWordCloudType(this.model().type); return this.setOption('wordCloud', { repeat: undefined }) }
   async setLayout(value: ChartRelationLayout): Promise<this> { assertChartRelationType(this.model().type); return this.setOption('relation', { layout: chartRelationLayoutValue(value) }) }
@@ -1596,7 +1622,8 @@ export class FChart {
   async resetGaugeTitle(): Promise<this> { return this.setGauge({ title: undefined }) }
   async setGaugeDetail(value: ChartGaugeNullablePatch<ChartGaugeDetailOptions>): Promise<this> { return this.setGauge({ detail: chartGaugeNullableValues<ChartGaugeDetailOptions>(value) }) }
   async resetGaugeDetail(): Promise<this> { return this.setGauge({ detail: undefined }) }
-  async setLegend(legend: Partial<ChartLegendOptions>): Promise<this> { return this.update({ legend: { ...this.model().legend, ...legend } }) }
+  async setLegend(legend: ChartLegendSpec): Promise<this> { return this.update({ legend: { ...this.model().legend, ...chartLegendPatch(this.model().legend, legend) } }) }
+  async clearLegend(): Promise<this> { return this.update({ legend: { ...defaultChartLegend(this.model().type), font: undefined, selectMode: undefined, wrap: undefined } }) }
   async setXAxis(axis: ChartNullablePatch<ChartAxisOptions>): Promise<this> { return this.update({ xAxis: chartAxisPatch(this.model().xAxis, axis) }) }
   async setYAxis(axis: ChartNullablePatch<ChartAxisOptions>): Promise<this> { return this.update({ yAxis: chartAxisPatch(this.model().yAxis, axis) }) }
   async clearXAxis(target?: ChartAxisTarget): Promise<this> { return this.update({ xAxis: clearChartAxis(this.model().xAxis, target) }) }
@@ -1707,6 +1734,18 @@ export class FRange {
   getDisplayValues(): string[][] { return this.mapCells(cell => this.formattedCell(cell)) }
   getFormula(): string { return this.cellAt(this.range.startRow, this.range.startColumn)?.formula ?? '' }
   getFormulas(): string[][] { return this.mapCells((cell) => cell?.formula ?? '') }
+  autoFill(targetRange: FRange, applyType?: SheetFillApplyType): Promise<boolean> {
+    if (!(targetRange instanceof FRange) || targetRange.api !== this.api || targetRange.unitId !== this.unitId || targetRange.sheetId !== this.sheetId) {
+      throw new TypeError('自动填充的源范围和目标范围必须属于同一工作簿及工作表。')
+    }
+    const source = toCellRange(this.range), target = toCellRange(targetRange.getRange())
+    if (target.startRow > source.startRow || target.endRow < source.endRow || target.startCol > source.startCol || target.endCol < source.endCol) {
+      throw new RangeError('自动填充的目标必须包含源范围。')
+    }
+    resolveSheetFillTarget(source, target, false)
+    return this.api.executeCommand(SHEET_AUTO_FILL_COMMAND, { unitId: this.unitId, subUnitId: this.sheetId,
+      sourceRange: source, targetRange: target, applyType: sheetFillApplyType(applyType) })
+  }
   getDataValidation(): DataValidationRule | null { return new FWorksheet(this.api, this.unitId, this.sheetId).getDataValidation(this.range) }
   setDataValidation(rule: DataValidationRuleInput | null): this {
     new FWorksheet(this.api, this.unitId, this.sheetId).setDataValidation(this.range, rule)
@@ -1797,6 +1836,16 @@ export class FRange {
   setFontStyle(style: 'normal' | 'italic' | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontStyle, style) }
   setFontFamily(family: string | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontFamily, family) }
   setFontSize(size: number | null): this { return this.formatFont(SHEET_FONT_FORMAT_COMMANDS.fontSize, size) }
+  /** UTF-16 offsets in a text cell; shares the editor's font/runs planner and workbook history. */
+  setRichTextStyle(start: number, end: number, style: SheetCellInlineStylePatch): SheetCellInputCommandResult {
+    if (this.getHeight() !== 1 || this.getWidth() !== 1) {
+      const merge = this.sheet().mergedRanges.find(item => item.startRow === this.range.startRow && item.endRow === this.range.endRow
+        && item.startCol === this.range.startColumn && item.endCol === this.range.endColumn)
+      if (!merge) throw new RangeError('局部文字格式需要单个文本单元格或完整合并区。')
+    }
+    return this.api.executeCommandSync(FORMAT_SHEET_CELL_RICH_TEXT_COMMAND, { unitId: this.unitId, sheetId: this.sheetId,
+      row: this.range.startRow, column: this.range.startColumn, start, end, style })
+  }
   setFontColor(color: string | null): this { return this.formatFont(color === null ? SHEET_FONT_FORMAT_COMMANDS.resetTextColor : SHEET_FONT_FORMAT_COMMANDS.fontColor, color) }
   setBackground(color: string | null): this { return this.formatFont(color === null ? SHEET_FONT_FORMAT_COMMANDS.resetBackground : SHEET_FONT_FORMAT_COMMANDS.background, color) }
   /** Border topology is relative to this complete range, including merged cells and shared edges. */
@@ -2110,6 +2159,49 @@ export class FDocument {
     return this.getParagraphs(segmentId).at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  getQuotes(segmentId = ''): FDocumentQuote[] { return documentStructuredBlocks(this, 'quote', segmentId).map(block => new FDocumentQuote(this, block.id, segmentId)) }
+  getQuote(blockId: string, segmentId = ''): FDocumentQuote | null { return this.findQuotes({ blockId }, segmentId)[0] ?? null }
+  getQuoteAt(offset: number, segmentId = ''): FDocumentQuote | null {
+    const block = documentStructuredBlockAt(this, 'quote', offset, segmentId); return block ? new FDocumentQuote(this, block.id, segmentId) : null
+  }
+  findQuotes(query: string | DocumentStructuredFindQuery, segmentId = ''): FDocumentQuote[] { return findDocumentStructuredBlocks(this, 'quote', query, segmentId).map(block => new FDocumentQuote(this, block.id, segmentId)) }
+  findQuoteByText(text: string, segmentId = ''): FDocumentQuote | null { return this.findQuotes(text, segmentId)[0] ?? null }
+  insertQuote(paragraph: FDocumentParagraph, options?: DocumentQuoteInsertOptions): FDocumentQuote | null
+  insertQuote(options?: DocumentQuoteInsertOptions): FDocumentQuote | null
+  insertQuote(paragraphOrOptions: FDocumentParagraph | DocumentQuoteInsertOptions = {}, options: DocumentQuoteInsertOptions = {}): FDocumentQuote | null { return insertDocumentQuote(this, paragraphOrOptions, options) }
+  getCallouts(segmentId = ''): FDocumentCallout[] { return documentStructuredBlocks(this, 'callout', segmentId).map(block => new FDocumentCallout(this, block.id, segmentId)) }
+  getCallout(blockId: string, segmentId = ''): FDocumentCallout | null { return this.findCallouts({ blockId }, segmentId)[0] ?? null }
+  getCalloutAt(offset: number, segmentId = ''): FDocumentCallout | null {
+    const block = documentStructuredBlockAt(this, 'callout', offset, segmentId); return block ? new FDocumentCallout(this, block.id, segmentId) : null
+  }
+  findCallouts(query: string | DocumentStructuredFindQuery, segmentId = ''): FDocumentCallout[] { return findDocumentStructuredBlocks(this, 'callout', query, segmentId).map(block => new FDocumentCallout(this, block.id, segmentId)) }
+  findCalloutByText(text: string, segmentId = ''): FDocumentCallout | null { return this.findCallouts(text, segmentId)[0] ?? null }
+  insertCallout(paragraph: FDocumentParagraph, options?: DocumentCalloutInsertOptions): FDocumentCallout | null
+  insertCallout(options?: DocumentCalloutInsertOptions): FDocumentCallout | null
+  insertCallout(paragraphOrOptions: FDocumentParagraph | DocumentCalloutInsertOptions = {}, options: DocumentCalloutInsertOptions = {}): FDocumentCallout | null { return insertDocumentCallout(this, paragraphOrOptions, options) }
+  getCodes(segmentId = ''): FDocumentCode[] { return documentStructuredBlocks(this, 'code', segmentId).map(block => new FDocumentCode(this, block.id, segmentId)) }
+  getCode(blockId: string, segmentId = ''): FDocumentCode | null { return this.findCodes({ blockId }, segmentId)[0] ?? null }
+  getCodeAt(offset: number, segmentId = ''): FDocumentCode | null {
+    const block = documentStructuredBlockAt(this, 'code', offset, segmentId); return block ? new FDocumentCode(this, block.id, segmentId) : null
+  }
+  findCodes(query: string | DocumentStructuredFindQuery, segmentId = ''): FDocumentCode[] { return findDocumentStructuredBlocks(this, 'code', query, segmentId).map(block => new FDocumentCode(this, block.id, segmentId)) }
+  findCodeByText(text: string, segmentId = ''): FDocumentCode | null { return this.findCodes(text, segmentId)[0] ?? null }
+  insertCode(paragraph: FDocumentParagraph, options?: DocumentCodeInsertOptions): FDocumentCode | null
+  insertCode(options?: DocumentCodeInsertOptions): FDocumentCode | null
+  insertCode(paragraphOrOptions: FDocumentParagraph | DocumentCodeInsertOptions = {}, options: DocumentCodeInsertOptions = {}): FDocumentCode | null { return insertDocumentCode(this, paragraphOrOptions, options) }
+  getColumnGroups(segmentId = ''): FDocumentColumnGroup[] { return documentStructuredBlocks(this, 'columns', segmentId).map(block => new FDocumentColumnGroup(this, block.id, segmentId)) }
+  getColumnGroup(columnGroupId: string, segmentId = ''): FDocumentColumnGroup | null { return this.findColumnGroups({ columnGroupId }, segmentId)[0] ?? null }
+  getColumnGroupAt(offset: number, segmentId = ''): FDocumentColumnGroup | null {
+    const block = documentStructuredBlockAt(this, 'columns', offset, segmentId); return block ? new FDocumentColumnGroup(this, block.id, segmentId) : null
+  }
+  findColumnGroups(query: string | DocumentColumnFindQuery, segmentId = ''): FDocumentColumnGroup[] {
+    const filter: DocumentColumnFindQuery = typeof query === 'string' ? { text: query } : query
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter)
+      || [filter.columnGroupId, filter.text].some(value => value !== undefined && typeof value !== 'string')) throw new TypeError('多栏组查询参数无效。')
+    return findDocumentStructuredBlocks(this, 'columns', { blockId: filter.columnGroupId, text: filter.text }, segmentId).map(block => new FDocumentColumnGroup(this, block.id, segmentId))
+  }
+  findColumnGroupByText(text: string, segmentId = ''): FDocumentColumnGroup | null { return this.findColumnGroups(text, segmentId)[0] ?? null }
+  insertColumnGroup(columnCount: number, options: DocumentColumnInsertOptions = {}): FDocumentColumnGroup | null { return insertDocumentColumnGroup(this, columnCount, options) }
   getTables(segmentId = ''): FDocumentTable[] { return getDocumentTables(this, segmentId) }
   getTable(tableId: string, segmentId = ''): FDocumentTable | null {
     return findDocumentTables(this, { tableId }, segmentId)[0] ?? null
@@ -2373,6 +2465,7 @@ export class FDocumentParagraph {
     this.segmentId = segmentId
   }
   getId(): string { return this.info.paragraphId }
+  getDocumentId(): string { return this.document.getId() }
   getInfo(): DocumentParagraphInfo {
     const current = this.document.getParagraphInfos(this.segmentId).find(info => info.paragraphId === this.info.paragraphId)
     if (!current) throw new Error(`Document paragraph with id ${this.info.paragraphId} not found`)

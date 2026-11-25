@@ -10,8 +10,13 @@ import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometr
 import { createSpreadsheetScene, displayCell, sheetNumberFormatPreviewPatternAt } from '../../rendering/spreadsheet/scene'
 import type { SheetNumberFormatPreview } from '../../rendering/spreadsheet/scene'
 import { createCellEditorLayout, hitCellEditorFillHandle } from '../../rendering/spreadsheet/editor-layout'
+import { createSheetRichTextEditorScene, hitSheetRichTextEditor, moveSheetRichTextEditorCaret,
+  sheetRichTextEditorCaret, sheetRichTextEditorWord } from '../../rendering/spreadsheet/rich-text-editor.ts'
+import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH, sheetRangeDashedOutlineCommands } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
+import { resolveSheetFillTarget, sheetFillPointerTarget } from '../../features/sheet-workbench/sheet-fill-target.ts'
+import type { SheetFillOptionsView } from '../../features/sheet-workbench/sheet-fill-store.ts'
 import { canResumeSheetFillGesture, sheetFillGestureSelectionMatches, sheetFillGestureStillCurrent, snapshotSheetFillGesture,
   type SheetFillCommitContext, type SheetFillGestureContext } from '../../features/sheet-workbench/sheet-fill-gesture.ts'
 import type { SheetFormatPainterCanvasState } from '../../features/sheet-workbench/sheet-format-painter.ts'
@@ -26,10 +31,12 @@ import { createSheetCellNativeInputBridge, type SheetCellInputBridgeContext } fr
 import type { SheetCellNativeInputEvent } from '../../features/sheet-workbench/sheet-cell-input-trace.ts'
 import { sheetCellWrapStrategy } from '../../features/sheet-workbench/sheet-cell-layout.ts'
 import { layoutSheetCellText, sheetCellTextFont } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
+import { layoutSheetCellRichText } from '../../features/sheet-workbench/sheet-cell-rich-text-layout.ts'
 import { measureSpreadsheetText } from '../../rendering/spreadsheet/text-metrics.ts'
 import { ChevronDown, ClipboardPaste, Minus, Plus } from 'lucide-vue-next'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
 import SheetContextMenu from './SheetContextMenu.vue'
+import SheetFillOptions from './SheetFillOptions.vue'
 import { sheetContextStructureTarget } from './sheet-context-menu.ts'
 import { sheetAxisVisibilityTargetHasHidden } from '../../features/sheet-workbench/sheet-axis-visibility.ts'
 import { OfficeTranslatorKey, useOfficeRegion } from '../../i18n/office-i18n'
@@ -40,12 +47,13 @@ import { SHEET_CLIPBOARD_PASTE_OPTIONS, sheetClipboardGridRange, sheetClipboardO
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; inputContext?: () => SheetCellInputBridgeContext; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ sheet: SpreadsheetRenderSheet; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
   (event: 'selection-end', value: { canceled: boolean; ranges: GridRange[]; key: string }): void
   (event: 'fill-selection', source: GridRange, target: { row: number; column: number }, applyType?: SheetFillApplyType): void
+  (event: 'refill-selection', value: { sessionId: string; applyType: SheetFillApplyType }): void
   (event: 'select-header', hit: GridHit, pointer: PointerEvent): void
   (event: 'extend-header-selection', axis: 'row' | 'column', index: number): void
   (event: 'edit-cell', key: string): void
@@ -100,6 +108,7 @@ const scene = computed(() => {
   if (props.copyRange && !props.editingKey) result.commands.push(...sheetRangeDashedOutlineCommands(
     geometry.value, sheetClipboardGridRange(props.copyRange), viewport.value, token.value.colorPrimary,
   ))
+  result.commands.push(...(richTextEditorScene.value?.commands ?? []))
   return result
 })
 const selectedCellText = computed(() => {
@@ -125,20 +134,42 @@ const outlineLevelButtons = computed(() => {
 })
 const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editedCell = computed(() => props.sheet.cells[props.editingKey ?? ''])
+const editorScroll = ref({ left: 0, top: 0 })
+const editorFocused = ref(false)
+const editorRichLayout = computed(() => {
+  const cell = props.richTextEditorCell, position = props.editingKey ? parseAddress(props.editingKey) : undefined
+  if (!cell || cell.value !== props.editValue || !position) return undefined
+  const rect = geometry.value.cellRect(position.row, position.column, viewport.value)
+  return layoutSheetCellRichText(cell, props.editValue, { width: Math.max(1, rect.width - 12 * viewport.value.zoom),
+    height: Infinity, wrap: sheetCellWrapStrategy(cell) === 'wrap', zoom: viewport.value.zoom, measure: measureSpreadsheetText })
+})
+const useRichTextEditor = computed(() => Boolean(editorRichLayout.value))
 const retainedMultiline = ref(false)
-const useMultilineEditor = computed(() => sheetCellNeedsMultilineEditor(editedCell.value, props.editValue, retainedMultiline.value))
+const useMultilineEditor = computed(() => useRichTextEditor.value || sheetCellNeedsMultilineEditor(editedCell.value, props.editValue, retainedMultiline.value))
 const editFont = computed(() => sheetCellTextFont(editedCell.value, viewport.value.zoom))
 const editLayout = computed(() => {
   if (!props.editingKey) return undefined
   const position = parseAddress(props.editingKey)
   if (!useMultilineEditor.value || !position) return createCellEditorLayout(geometry.value, props.editingKey, viewport.value)
   const rect = geometry.value.cellRect(position.row, position.column, viewport.value)
-  const layout = layoutSheetCellText(props.editValue, { width: Math.max(1, rect.width - 12 * viewport.value.zoom),
+  const layout = editorRichLayout.value ?? layoutSheetCellText(props.editValue, { width: Math.max(1, rect.width - 12 * viewport.value.zoom),
     lineHeight: editFont.value.lineHeight, wrap: sheetCellWrapStrategy(editedCell.value) === 'wrap',
     measure: text => measureSpreadsheetText(text, editFont.value.font) })
   return createCellEditorLayout(geometry.value, props.editingKey, viewport.value, { contentHeight: layout.height + 6 * viewport.value.zoom })
 })
 const { token } = theme.useToken()
+const richTextEditorScene = computed(() => {
+  const layout = editLayout.value, cell = props.richTextEditorCell
+  if (!layout || !cell || !useRichTextEditor.value) return undefined
+  const inset = SHEET_SELECTION_STROKE_WIDTH / 2
+  const rect = { x: layout.rect.x + inset, y: layout.rect.y + inset,
+    width: Math.max(0, layout.rect.width - 2 * inset), height: Math.max(0, layout.rect.height - 2 * inset) }
+  return createSheetRichTextEditorScene(cell, rect, layout.clip, viewport.value.zoom, props.editSelection ?? { start: 0, end: 0 }, {
+    background: cell.background ?? token.value.colorBgContainer, color: token.value.colorText, accent: token.value.colorPrimary,
+    selectionColor: token.value.colorPrimaryBgHover, scrollLeft: editorScroll.value.left, scrollTop: editorScroll.value.top,
+    composing: composing.value, focused: editorFocused.value,
+  })
+})
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const pasteOptionsOpen = ref(false)
 const pasteOptionsOwner = useId().replace(/:/g, '-')
@@ -147,6 +178,10 @@ let pasteOptionsFocusRequest = 0, pasteOptionsFocusFrame = 0
 const pasteOptionsPosition = computed(() => props.editingKey ? undefined : sheetClipboardOverlayPosition(geometry.value, viewport.value, props.pasteOptions?.range))
 const pasteOptionsStyle = computed(() => pasteOptionsPosition.value
   ? { left: `${pasteOptionsPosition.value.left}px`, top: `${pasteOptionsPosition.value.top}px` } : undefined)
+const fillOptionsPosition = computed(() => props.editingKey || props.formatPainter || props.fillOptions?.sheetId !== props.sheet.id
+  ? undefined : sheetClipboardOverlayPosition(geometry.value, viewport.value, props.fillOptions?.range))
+const fillOptionsStyle = computed(() => fillOptionsPosition.value
+  ? { left: `${fillOptionsPosition.value.left}px`, top: `${fillOptionsPosition.value.top}px` } : undefined)
 const pasteOptionsMenu = computed(() => ({
   items: SHEET_CLIPBOARD_PASTE_OPTIONS.flatMap(option => {
     const entry = props.pasteOptionsCapabilities && sheetClipboardCommandCapability(props.pasteOptionsCapabilities, SHEET_CLIPBOARD_COMMANDS.optionalPaste, option.mode)
@@ -233,18 +268,21 @@ const editInputStyles = computed(() => ({
     minHeight: 0,
     border: `${SHEET_SELECTION_STROKE_WIDTH}px solid ${token.value.colorPrimary}`,
     borderRadius: 0,
-    background: editedCell.value?.background ?? token.value.colorBgContainer,
+    background: useRichTextEditor.value ? 'transparent' : editedCell.value?.background ?? token.value.colorBgContainer,
     boxShadow: 'none',
   },
   input: { boxSizing: 'border-box' as const, height: '100%', padding: 0,
-    color: editedCell.value?.color ?? token.value.colorText,
+    color: useRichTextEditor.value && !composing.value ? 'transparent' : editedCell.value?.color ?? token.value.colorText,
+    caretColor: useRichTextEditor.value && !composing.value ? 'transparent' : token.value.colorPrimary,
     font: 'inherit', textAlign: sheetCellTextAlignment(editedCell.value) },
 }))
 const editTextAreaStyles = computed(() => ({
   root: { boxSizing: 'border-box' as const, height: '100%', minHeight: 0, border: 0, borderRadius: 0, background: 'transparent', boxShadow: 'none' },
   textarea: { ...editInputStyles.value.input, minHeight: 0, border: 0, borderRadius: 0, resize: 'none' as const,
     lineHeight: `${editFont.value.lineHeight}px`, whiteSpace: sheetCellWrapStrategy(editedCell.value) === 'wrap' ? 'pre-wrap' as const : 'pre' as const,
-    overflow: 'auto', background: 'transparent', boxShadow: 'none' },
+    overflow: useRichTextEditor.value && !composing.value ? 'hidden' : 'auto', background: 'transparent', boxShadow: 'none',
+    paddingTop: `${Math.max(0, 3 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px`,
+    paddingBottom: `${Math.max(0, 3 * viewport.value.zoom - SHEET_SELECTION_STROKE_WIDTH / 2)}px` },
 }))
 const editStyle = computed(() => editLayout.value ? {
   left: `${editLayout.value.rect.x}px`, top: `${editLayout.value.rect.y}px`,
@@ -326,6 +364,8 @@ let pendingFillPress: { pointerId: number; source: GridRange; origin: SheetFillG
 let selectionPress: { pointerId: number; sheetId: string; painter: boolean } | undefined
 let headerSelectionDrag: { axis: 'row' | 'column' } | undefined
 let gesturePointerId: number | undefined
+let richTextPress: { pointerId: number; sessionId?: string; sheetId: string; key: string; value: string; anchor: number } | undefined
+let preferredEditorX: number | undefined
 let painterDoubleClickUntil = 0
 let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; startPoint: { x: number; y: number } } | undefined
 const slicerAnchor = new Map<string, number>()
@@ -390,6 +430,87 @@ function restoreViewport() {
   onScroll()
 }
 function point(event: MouseEvent) { const rect = root.value!.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top } }
+function editorElement(): HTMLInputElement | HTMLTextAreaElement | undefined {
+  const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
+  return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element : undefined
+}
+function selectEditorText(start: number, end = start): void {
+  const element = editorElement()
+  if (!element || composing.value) return
+  element.focus({ preventScroll: true })
+  element.setSelectionRange(Math.min(start, end), Math.max(start, end), start > end ? 'backward' : 'forward')
+  // A library-owned input remains the authority for native offsets and the shared edit trace.
+  element.dispatchEvent(new Event('select', { bubbles: true }))
+}
+function scrollRichEditor(left: number, top: number): void {
+  const scene = richTextEditorScene.value, layout = editLayout.value
+  if (!scene || !layout) return
+  const next = {
+    left: Math.max(0, Math.min(Math.max(0, scene.contentWidth - layout.clip.width), left)),
+    top: Math.max(0, Math.min(Math.max(0, scene.contentHeight - layout.clip.height), top)),
+  }
+  if (next.left !== editorScroll.value.left || next.top !== editorScroll.value.top) editorScroll.value = next
+}
+function ensureRichEditorCaretVisible(): void {
+  const scene = richTextEditorScene.value, layout = editLayout.value
+  if (!scene || !layout || composing.value || richTextPress) return
+  const element = editorElement()
+  const selection = props.editSelection ?? { start: 0, end: 0 }
+  const offset = element === document.activeElement && element?.selectionDirection === 'backward' ? selection.start : selection.end
+  const caret = sheetRichTextEditorCaret(scene, offset)
+  if (!caret) return
+  const margin = 3 * viewport.value.zoom, clip = layout.clip
+  const left = editorScroll.value.left + (caret.x < clip.x + margin ? caret.x - clip.x - margin
+    : caret.x > clip.x + clip.width - margin ? caret.x - clip.x - clip.width + margin : 0)
+  const top = editorScroll.value.top + (caret.top < clip.y + margin ? caret.top - clip.y - margin
+    : caret.top + caret.height > clip.y + clip.height - margin ? caret.top + caret.height - clip.y - clip.height + margin : 0)
+  scrollRichEditor(left, top)
+}
+function onEditorSelectionCapture(event: Event): void {
+  nativeInput.capture(event, 'selection')
+  const target = event.target
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
+  editorFocused.value = target === document.activeElement
+  if (event.type === 'keyup' && !['ArrowUp', 'ArrowDown'].includes((event as KeyboardEvent).key)) preferredEditorX = undefined
+  void nextTick(ensureRichEditorCaretVisible)
+}
+function onEditorScrollCapture(event: Event): void {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
+  // Canvas owns rich-text scrolling because native uniform-font scroll extents can differ.
+  if (!useRichTextEditor.value || composing.value) editorScroll.value = { left: target.scrollLeft, top: target.scrollTop }
+}
+function richPressIsCurrent(): boolean {
+  return !!richTextPress && richTextPress.sessionId === inputSessionId() && richTextPress.sheetId === props.sheet.id
+    && richTextPress.key === props.editingKey && richTextPress.value === props.editValue
+}
+function updateRichTextPointer(position: { x: number; y: number }): void {
+  if (!richPressIsCurrent() || composing.value) { clearPointerGesture(); return }
+  const scene = richTextEditorScene.value, layout = editLayout.value
+  if (!scene || !layout || !richTextPress) return
+  const clip = layout.clip
+  scrollRichEditor(editorScroll.value.left + (position.x < clip.x ? -12 : position.x > clip.x + clip.width ? 12 : 0),
+    editorScroll.value.top + (position.y < clip.y ? -12 : position.y > clip.y + clip.height ? 12 : 0))
+  const offset = hitSheetRichTextEditor(richTextEditorScene.value ?? scene, position.x, position.y)
+  if (offset !== undefined) selectEditorText(richTextPress.anchor, offset)
+}
+function onEditorPointerDownCapture(event: PointerEvent): void {
+  onEditorFillPointerDown(event)
+  if (event.defaultPrevented || event.button !== 0 || !active || disposed || composing.value || gesturePointerId !== undefined) return
+  const scene = richTextEditorScene.value, element = editorElement(), key = props.editingKey
+  if (!scene || !element || !key) return
+  const position = point(event), clip = scene.clip
+  if (position.x < clip.x || position.x > clip.x + clip.width || position.y < clip.y || position.y > clip.y + clip.height) return
+  const offset = hitSheetRichTextEditor(scene, position.x, position.y)
+  if (offset === undefined) return
+  event.preventDefault(); event.stopPropagation()
+  const anchor = event.shiftKey ? element.selectionDirection === 'backward' ? element.selectionEnd ?? offset : element.selectionStart ?? offset : offset
+  preferredEditorX = undefined
+  selectEditorText(anchor, offset)
+  richTextPress = { pointerId: event.pointerId, sessionId: inputSessionId(), sheetId: props.sheet.id, key, value: props.editValue, anchor }
+  gesturePointerId = event.pointerId
+  root.value?.setPointerCapture(event.pointerId)
+}
 function selectedAxisMoveSource(hit: GridHit): SheetAxisHeaderMoveSource | undefined {
   if (props.editingKey || props.formatPainter || !canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')) return undefined
   const axis = hit.kind === 'row' ? 'row' : hit.kind === 'column' ? 'column' : undefined
@@ -539,6 +660,7 @@ function onPointerDown(event: PointerEvent) {
 }
 function onPointerMove(event: PointerEvent) {
   if (!active || disposed || gesturePointerId !== undefined && gesturePointerId !== event.pointerId) return
+  if (richTextPress) { updateRichTextPointer(point(event)); return }
   const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
   if (pendingFillPress) { pendingFillPress.position = position; return }
@@ -563,6 +685,7 @@ function onPointerMove(event: PointerEvent) {
 }
 function onPointerUp(event: PointerEvent) {
   if (gesturePointerId !== event.pointerId) return
+  if (richTextPress) { clearPointerGesture(); return }
   if (pendingFillPress) { clearPointerGesture(); return }
   gesturePointerId = undefined
   const canceled = event.type !== 'pointerup'
@@ -665,8 +788,8 @@ function onPointerUp(event: PointerEvent) {
   fillPreview.value = undefined
   if (completedFill?.moved && !canceled && completedFill.target) {
     const { source, target } = completedFill
-    const insideSource = target.row >= source.startRow && target.row <= source.endRow && target.column >= source.startColumn && target.column <= source.endColumn
-    if (!insideSource) emit('fill-selection', source, target)
+    const range = { startRow: source.startRow, endRow: source.endRow, startCol: source.startColumn, endCol: source.endColumn }
+    if (resolveSheetFillTarget(range, sheetFillPointerTarget(range, target.row, target.column))) emit('fill-selection', source, target)
   }
   if (resizeDrag && !canceled) {
     const position = point(event), delta = ((resizeDrag.axis === 'column' ? position.x : position.y) - resizeDrag.origin) / viewport.value.zoom
@@ -693,6 +816,7 @@ function onPointerUp(event: PointerEvent) {
 function clearPointerGesture() {
   const pointerId = gesturePointerId
   gesturePointerId = undefined
+  richTextPress = undefined
   selectionPress = undefined; dragging = false; fillDrag = undefined; pendingFillPress = undefined; fillPreview.value = undefined; fillHandleHovered.value = false; lastPointer = undefined; resizeDrag = undefined; slicerPress = undefined
   headerDrag.value = undefined; headerSelectionDrag = undefined
   if (root.value) root.value.style.cursor = ''
@@ -700,6 +824,18 @@ function clearPointerGesture() {
   queueRender()
 }
 function onDoubleClick(event: MouseEvent) {
+  if (richTextEditorScene.value && props.editingKey && !composing.value) {
+    const position = point(event), scene = richTextEditorScene.value, clip = scene.clip
+    if (position.x >= clip.x && position.x <= clip.x + clip.width && position.y >= clip.y && position.y <= clip.y + clip.height) {
+      const offset = hitSheetRichTextEditor(scene, position.x, position.y)
+      if (offset !== undefined) {
+        const word = sheetRichTextEditorWord(props.editValue, Math.min(offset, Math.max(0, props.editValue.length - 1)))
+        event.preventDefault(); event.stopPropagation(); preferredEditorX = undefined
+        selectEditorText(word.start, word.end)
+      }
+      return
+    }
+  }
   if ((event.target as HTMLElement).closest('input, textarea')) return
   if (props.formatPainter || event.timeStamp < painterDoubleClickUntil) { event.preventDefault(); return }
   const p = point(event)
@@ -709,7 +845,7 @@ function onDoubleClick(event: MouseEvent) {
   const source = hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, p.x, p.y)
   if (source) {
     const targetRow = detectSheetFillDownEndRow(source, props.sheet)
-    if (targetRow !== undefined) emit('fill-selection', source, { row: targetRow, column: source.endColumn }, 'SERIES')
+    if (targetRow !== undefined) emit('fill-selection', source, { row: targetRow, column: source.endColumn })
     return
   }
   const hit = geometry.value.hitTest(p.x, p.y, viewport.value)
@@ -751,6 +887,20 @@ function onEditorKeydownCapture(event: KeyboardEvent): void {
   nativeInput.capture(event, 'selection')
   // Capture before AutoComplete's option list can interpret an IME Enter or Alt+Enter as a choice.
   if (composing.value || event.isComposing || event.keyCode === 229) { event.stopPropagation(); return }
+  const scene = richTextEditorScene.value, element = editorElement()
+  if (scene && element && !event.ctrlKey && !event.metaKey && !event.altKey
+    && (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Home' || event.key === 'End')) {
+    const backward = element.selectionDirection === 'backward', start = element.selectionStart ?? 0, end = element.selectionEnd ?? start
+    const current = backward ? start : end
+    const next = moveSheetRichTextEditorCaret(scene, current, event.key, preferredEditorX === undefined ? undefined : preferredEditorX - editorScroll.value.left)
+    if (next) {
+      event.preventDefault(); event.stopPropagation()
+      preferredEditorX = next.preferredX === undefined ? undefined : next.preferredX + editorScroll.value.left
+      selectEditorText(event.shiftKey ? backward ? end : start : next.offset, next.offset)
+    }
+    return
+  }
+  preferredEditorX = undefined
   if (sheetCellInputActionForKey(event) === 'line-break') { event.stopPropagation(); emit('editor-keydown', event) }
 }
 function onEditValueChange(value: unknown): void {
@@ -769,12 +919,17 @@ function onNativeInputCapture(event: Event): void {
     if (target.closest('.canvas-cell-input') && /[\r\n]/u.test(target.value)) retainedMultiline.value = true
   }
   nativeInput.capture(event, 'input')
+  preferredEditorX = undefined
+  void nextTick(ensureRichEditorCaretVisible)
 }
 function onCompositionCapture(event: CompositionEvent, value: boolean): void {
   const target = event.target
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || !target.closest('.canvas-cell-input')) return
   nativeInput.capture(event, value ? 'compositionstart' : 'compositionend')
+  if (value && richTextPress) clearPointerGesture()
   changeInputComposition(value)
+  if (value) editorScroll.value = { left: target.scrollLeft, top: target.scrollTop }
+  else void nextTick(ensureRichEditorCaretVisible)
 }
 function onAutoCompleteSelect(value: unknown): void {
   if (!inputSessionId()) { onEditValueChange(value); return }
@@ -800,13 +955,16 @@ function onEditorPasteCapture(event: ClipboardEvent): void {
 }
 function onEditorBlur(event: FocusEvent): void {
   if (!(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
+  editorFocused.value = false
   const next = event.relatedTarget
   if (next instanceof HTMLElement && next.closest('.canvas-cell-input, .formula-toolbar')) return
+  if (props.keepEditFocus?.(next instanceof Element ? next : null)) return
   const key = props.editingKey, sessionId = inputSessionId()
   void nextTick(() => {
     if (!key || props.editingKey !== key || inputSessionId() !== sessionId || composing.value || swappingEditor) return
     const focused = document.activeElement
     if (focused instanceof HTMLElement && focused.closest('.canvas-cell-input, .formula-toolbar')) return
+    if (props.keepEditFocus?.(focused)) return
     emit('finish-edit')
   })
 }
@@ -818,6 +976,13 @@ function onClipboard(event: ClipboardEvent, kind: 'copy' | 'cut' | 'paste'): voi
   else emit('paste', event)
 }
 function onWheel(event: WheelEvent) {
+  if (richTextEditorScene.value && !composing.value && (event.target as HTMLElement).closest('.canvas-cell-input')) {
+    event.preventDefault()
+    const scale = event.deltaMode === 1 ? editFont.value.lineHeight : event.deltaMode === 2 ? editLayout.value?.clip.height ?? 1 : 1
+    scrollRichEditor(editorScroll.value.left + (event.deltaX || (event.shiftKey ? event.deltaY : 0)) * scale,
+      editorScroll.value.top + (event.shiftKey ? 0 : event.deltaY * scale))
+    return
+  }
   if ((event.target as HTMLElement).closest('input, textarea')) return
   const position = point(event)
   const content = slicerObjectContentPoint(position.x, position.y, viewport.value)
@@ -912,6 +1077,7 @@ function focusEditor(selection?: { start: number; end: number }) {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
       element.focus({ preventScroll: true })
       if (selection && !composing.value) element.setSelectionRange(selection.start, selection.end)
+      element.dispatchEvent(new Event('select', { bubbles: true }))
     }
   })
 }
@@ -940,9 +1106,17 @@ watch(fullSize, () => { void nextTick(resize) })
 watch(() => props.zoom, () => { viewport.value = { ...viewport.value, zoom: props.zoom / 100 }; void nextTick(() => { resize(); ensureVisible(props.selectedKey) }) })
 watch([() => props.editingKey, () => props.editSessionId], ([key]) => {
   changeInputComposition(false); retainedMultiline.value = false; editorHasPendingFocus = false; editorFocusRequest++
+  editorScroll.value = { left: 0, top: 0 }; editorFocused.value = false; preferredEditorX = undefined
+  if (richTextPress) clearPointerGesture()
   if (key) ensureVisible(key)
 }, { flush: 'sync' })
-watch(() => props.editValue, draft => { if (props.editingKey && /[\r\n]/u.test(draft)) retainedMultiline.value = true }, { flush: 'sync' })
+watch(() => props.editValue, draft => {
+  if (props.editingKey && /[\r\n]/u.test(draft)) retainedMultiline.value = true
+  if (richTextPress && !richPressIsCurrent()) clearPointerGesture()
+}, { flush: 'sync' })
+watch([() => props.richTextEditorCell, () => props.editSelection, () => props.zoom], () => {
+  void nextTick(ensureRichEditorCaretVisible)
+})
 watch(useMultilineEditor, () => {
   if (!props.editingKey) return
   const element = root.value?.querySelector('.canvas-cell-input input, .canvas-cell-input textarea')
@@ -973,7 +1147,7 @@ watch([() => props.selectedKey, () => props.selectedRanges], () => {
     || fillDrag && !sheetFillGestureStillCurrent(fillDrag.context, current)) clearPointerGesture()
 }, { flush: 'sync' })
 watch([() => props.zoom, () => props.formatPainter], () => {
-  if (fillDrag || pendingFillPress) clearPointerGesture()
+  if (fillDrag || pendingFillPress || richTextPress) clearPointerGesture()
 }, { flush: 'sync' })
 watch([pasteOptionsPosition, () => props.pasteOptions], () => { pasteOptionsOpen.value = false })
 onMounted(async () => {
@@ -1006,9 +1180,24 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
 </script>
 
 <template>
-  <div ref="root" class="spreadsheet-canvas" :class="{ 'format-painter-active': Boolean(formatPainter), 'fill-handle-hovered': fillHandleHovered }" :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0" @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="onNativeInputCapture" @compositionstart.capture="onCompositionCapture($event, true)" @compositionend.capture="onCompositionCapture($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')" @pointerdown.capture="onEditorFillPointerDown" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu" @copy="event => onClipboard(event, 'copy')" @cut="event => onClipboard(event, 'cut')" @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
+  <div ref="root" class="spreadsheet-canvas"
+    :class="{ 'format-painter-active': Boolean(formatPainter), 'fill-handle-hovered': fillHandleHovered, 'rich-text-editor-active': useRichTextEditor && !composing }"
+    :style="themeStyle" role="grid" aria-label="工作表画布" :aria-rowcount="sheet.rowCount" :aria-colcount="sheet.columnCount" tabindex="0"
+    @keydown.capture="onEditorKeydownCapture" @keydown="onKeydown" @keyup.capture="onEditorSelectionCapture"
+    @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="onNativeInputCapture"
+    @compositionstart.capture="onCompositionCapture($event, true)" @compositionend.capture="onCompositionCapture($event, false)"
+    @focusin.capture="onEditorSelectionCapture" @select.capture="onEditorSelectionCapture" @scroll.capture="onEditorScrollCapture"
+    @pointerdown.capture="onEditorPointerDownCapture" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
+    @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu"
+    @copy="event => onClipboard(event, 'copy')" @cut="event => onClipboard(event, 'cut')"
+    @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
+    <SheetFillOptions v-if="fillOptionsStyle && fillOptions" :options="fillOptions" :position="fillOptionsStyle"
+      :revision="workbookRevision" :selection-key="JSON.stringify(selectedRanges)" :label="translate('sheet.fill-options', '自动填充选项')"
+      :labels="{ COPY: translate('sheet.fill.copy', '复制单元格'), SERIES: translate('sheet.fill.series', '填充序列'),
+        ONLY_FORMAT: translate('sheet.fill.only-format', '仅填充格式'), NO_FORMAT: translate('sheet.fill.no-format', '不带格式填充') }"
+      @refill="emit('refill-selection', $event)" @restore-focus="root?.focus({ preventScroll: true })" />
     <Dropdown v-if="pasteOptionsPosition && pasteOptions" :open="pasteOptionsOpen" :trigger="['click']" :menu="pasteOptionsMenu" :popup-render="pasteOptionsPopup" :classes="{ root: `sheet-paste-options-popup ${pasteOptionsPopupClass}` }" :auto-focus="false" :auto-adjust-overflow="true" :destroy-on-hidden="true" placement="bottomLeft" @open-change="onPasteOptionsOpenChange">
       <Tooltip :title="translate('sheet.paste-options', '粘贴选项')" :open="pasteOptionsOpen ? false : undefined">
         <Button class="sheet-paste-options" :data-sheet-paste-options-owner="pasteOptionsOwner" :style="pasteOptionsStyle" size="small" :aria-label="translate('sheet.paste-options', '粘贴选项')" :aria-expanded="pasteOptionsOpen" aria-haspopup="menu" @pointerdown.stop @keydown.stop="onPasteOptionsKeydown" @dblclick.stop @contextmenu.stop>
@@ -1091,6 +1280,8 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
 .canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; touch-action: auto; }
 .canvas-cell-input :deep(.ant-select-input) { height: 100%; }
 .canvas-cell-input :deep(.ant-select-content) { height: 100%; min-height: 0; }
+.rich-text-editor-active :deep(.canvas-cell-input input), .rich-text-editor-active :deep(.canvas-cell-input textarea) { -webkit-text-fill-color: transparent; }
+.rich-text-editor-active :deep(.canvas-cell-input input::selection), .rich-text-editor-active :deep(.canvas-cell-input textarea::selection) { color: transparent; background: transparent; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
 .fill-handle-hovered :deep(.canvas-cell-input input), .fill-handle-hovered :deep(.canvas-cell-input textarea) { cursor: crosshair; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }

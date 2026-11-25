@@ -8,6 +8,7 @@ import type { ChartData } from './chart-engine'
 import type { ChartGraphData } from './chart-data'
 import type { ChartGraphLayout, ChartGraphLinkLayout, ChartGraphNodeLayout } from './chart-special-layout'
 import { chartPlotFrame } from './chart-layout'
+import { chartLegendDataCount } from './chart-legend'
 import { chartBezier, type ChartVector } from './chart-geometry'
 import { CHART_RELATION_DEFAULTS, chartRelationNameSeed, resolvedChartRelationForce } from './chart-relation'
 import { assertChartPreparationCurrent, assertChartPreparationMemory, yieldChartPreparation,
@@ -33,7 +34,7 @@ export async function prepareChartRelationLayout(data: ChartData, chart: ChartMo
   context: ChartComputePreparationContext): Promise<ChartData> {
   if (chart.type !== 'relation') return data
   assertChartPreparationCurrent(context)
-  const graph = data.graph, plot = chartPlotFrame(chart, data.series).plot
+  const graph = data.graph, plot = chartPlotFrame(chart, data.series, chartLegendDataCount(data, chart)).plot
   if (!graph) throw new ComputeError('COMPUTE_INVALID_INPUT', '关系图缺少同一版本的节点和连线数据')
   if (!graph.nodes.length) return { ...data, relation: { width: plot.width, height: plot.height, nodes: [] } }
   if (!context.runChartTask) throw new ComputeError('COMPUTE_WASM_API_MISSING', '关系图排布需要图表 Worker/Rust 计算服务')

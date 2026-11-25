@@ -6,7 +6,7 @@ import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUn
 import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { selectionFontPatch } from '../features/document/model/document-font'
-import type { DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
+import type { DocumentBlock, DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
 import type { ApiEventMap } from '../api/events'
 import { applyDocumentEditorCommand } from '../api/document-editor-commands'
@@ -18,6 +18,9 @@ import DocumentFooter from './document/DocumentFooter.vue'
 import DocumentPageSettings from './document/DocumentPageSettings.vue'
 import DocumentHeaderFooterPanel from './document/DocumentHeaderFooterPanel.vue'
 import DocumentCodeBlockPanel from './document/DocumentCodeBlockPanel.vue'
+import DocumentStructuredBlockPanel from './document/DocumentStructuredBlockPanel.vue'
+import { documentStandaloneStructureTargetCurrent, type DocumentStructurePanelValue } from './document/document-structure-panel-state'
+import { documentStructureContextItems } from './document/document-structure-ribbon'
 import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
 import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
 import DocumentNoteSettingsDialog from './document/DocumentNoteSettingsDialog.vue'
@@ -64,7 +67,8 @@ import { contentControlPictureCommandState, contentControlRepeatingItemCommandSt
 import { captureDocumentContentControlFocusToken, documentContentControlFocusCurrent, documentContentControlInteractionCurrent, documentContentControlParentSelection, documentContentControlSelectionAfterRepeatingItemEdit, documentContentControlSelectionAfterValueEdit, documentContentControlSelectionForId, type DocumentContentControlFocusToken } from '../features/document/controllers/content-control-interaction'
 import { documentContentControlInputForSelection, documentContentControlSelectionAfterInsertion } from '../features/document/controllers/content-control-insertion'
 import { documentContentControlCommandIsTextInput, documentContentControlCommandUsesWholeCellInput, resolveDocumentContentControlTextInputId } from '../features/document/services/content-control-editing'
-import { codeBlockData, exitCodeBlock, insertCodeBlock, updateCodeBlock, updateCodeBlockWithSelection, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
+import { codeBlockData, type DocumentCodeBlockData } from '../features/document/code-blocks/code-blocks.ts'
+import { documentStructuredBlockAtSelection, isDocumentStructureCommand, type DocumentStructureCommand } from '../features/document/commands/document-structure-commands'
 import { getLatexFormula, insertLatexFormula, updateLatexFormula, type LatexFormulaMode } from '../features/document/latex/latex-formula.ts'
 import { documentSupportsNotes } from '../features/document/notes/document-note-editing'
 import { prepareDocumentNoteMutation } from '../features/document/notes/document-note-mutations'
@@ -265,6 +269,22 @@ const activeSectionSetup = computed(() => documentSectionSetup(model.value, head
 const sectionOptions = computed(() => documentSectionIds(model.value).map((value, index) => ({ value, label: `#${index + 1}` })))
 const pageMode = computed<DocumentPageMode>(() => documentOutlineEnabled(model.value) ? 'modern' : 'traditional')
 const codeBlockPanelOpen = ref(false)
+interface StructureDialogTarget {
+  unitId: string
+  source: DocumentModel
+  api?: FDocument
+  revision?: number
+  historyGeneration?: number
+  inputGeneration?: number
+  standaloneSnapshot?: string
+  standaloneEpoch?: number
+  standaloneParentSource?: DocumentModel | string
+  selection: DocumentSelection
+  host?: DocumentAuxiliaryBlockHost
+}
+const codeDialogTarget = shallowRef<StructureDialogTarget>()
+const codeDialogData = shallowRef<DocumentCodeBlockData>()
+const structureDialog = shallowRef<{ open: boolean; kind: 'quote' | 'callout' | 'columns'; block?: DocumentBlock; target: StructureDialogTarget }>()
 const latexPanelOpen = ref(false)
 const notesPanelOpen = ref(false)
 const notesError = ref('')
@@ -319,10 +339,12 @@ const canCreateComment = computed(() => {
 const deletableCommentIds = computed(() => Object.values(model.value.comments ?? {})
   .filter(comment => canComment.value && comment.messages[0]?.authorId === permissionContext.value.userId)
   .map(comment => comment.id))
-const activeCodeBlock = computed(() => !selection.value.tableSelection && !legacyStoryActive.value ? blockAtPoint(editingModel.value, selection.value.focus) : undefined)
+const activeTextBlock = computed(() => !selection.value.tableSelection && !legacyStoryActive.value ? blockAtPoint(editingModel.value, selection.value.focus) : undefined)
+const activeStructuredBlock = computed(() => legacyStoryActive.value ? undefined : documentStructuredBlockAtSelection(editingModel.value, selection.value))
+const activeCodeBlock = computed(() => legacyStoryActive.value ? undefined : documentStructuredBlockAtSelection(editingModel.value, selection.value, 'code') ?? activeTextBlock.value)
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
 const activeLatexFormula = computed(() => {
-  const block = activeCodeBlock.value
+  const block = activeTextBlock.value
   if (!block || !sameTarget(selection.value.anchor, selection.value.focus)) return undefined
   const start = Math.min(selection.value.anchor.offset, selection.value.focus.offset)
   const end = Math.max(selection.value.anchor.offset, selection.value.focus.offset)
@@ -481,7 +503,11 @@ const contextMenuActions = computed(() => {
   const noteActions = editingHost.value?.kind === 'note'
     ? [{ ...documentNoteReturnContextItem(editingHost.value.noteKind, editingHost.value.noteId, documentInputComposing.value), group: 'layout' as const }]
     : []
-  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...layoutActions, ...tocActions, ...tableActions, ...noteActions]
+  const structured = activeStructuredBlock.value
+  const structuredActions = structured && (structured.type === 'quote' || structured.type === 'callout' || structured.type === 'code' || structured.type === 'columns')
+    ? documentStructureContextItems({ blockId: structured.id, type: structured.type,
+      disabled: !inputStateActive || documentInputComposing.value || !canEditContextSelection.value }).map(action => ({ ...action, group: 'layout' as const })) : []
+  return [...quickActions, ...pasteSpecialActions, ...fieldActions, ...structuredActions, ...layoutActions, ...tocActions, ...tableActions, ...noteActions]
 })
 const documentContextMenuItems = computed<MenuItemType[]>(() => {
   const quickItems = contextMenuActions.value.filter(item => item.group === 'quick')
@@ -536,6 +562,8 @@ const ribbonTabs = computed(() => {
   const deleteItem = control && contentControlRepeatingItemCommandState(model.value,
     { id: 'doc.command.delete-repeating-section-item', params: { controlId: control.id } }, repeatingOptions)
   return createDocumentRibbon({
+    structuredBlock: activeStructuredBlock.value && ['quote', 'callout', 'code', 'columns'].includes(activeStructuredBlock.value.type)
+      ? { blockId: activeStructuredBlock.value.id, type: activeStructuredBlock.value.type as 'quote' | 'callout' | 'code' | 'columns', disabled: !canEditContextSelection.value || documentInputComposing.value } : undefined,
     notes: { visible: documentSupportsNotes(model.value), insert: noteInsertState.value,
       settings: documentNoteSettingsState(model.value, { permission: permissionContext.value, disabled: !inputStateActive || documentInputComposing.value }),
       adjacent: noteAdjacent.value, disabled: !inputStateActive || documentInputComposing.value },
@@ -637,6 +665,9 @@ onDeactivated(() => {
   sectionSettingsPanelOpen.value = false
   commentsPanelOpen.value = false
   latexPanelOpen.value = false
+  codeBlockPanelOpen.value = false
+  codeDialogTarget.value = undefined
+  structureDialog.value = undefined
   notesPanelOpen.value = false
   noteSettings.value = undefined
   showFind.value = false
@@ -901,6 +932,7 @@ function refreshStandaloneDocumentFieldCaches(locale: string, timestamp: number,
   return true
 }
 function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number }) {
+  if (isDocumentStructureCommand(command) && (!inputStateActive || documentInputComposing.value)) return false
   if (!command.host && legacyStoryActive.value && documentCommandSupportsBlockHost(command)
     && command.id !== 'doc.command.format-text' && command.id !== 'doc.command.clear-formatting') activateStoryBlockEditing()
   if (editingHost.value && documentCommandSupportsBlockHost(command)) {
@@ -1000,32 +1032,66 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     return false
   }
 }
-function openCodeBlockPanel() { codeBlockPanelOpen.value = true }
-function applyCodeBlock(data: DocumentCodeBlockData) {
-  if (documentInputComposing.value || selection.value.tableSelection) { notify('请先在段落或单元格文字中定位代码块插入位置'); return }
+function captureStructureTarget(): StructureDialogTarget | undefined {
+  if (!inputStateActive || documentInputComposing.value || !canEditContextSelection.value) return undefined
   if (legacyStoryActive.value) activateStoryBlockEditing()
-  if (!canEditContextSelection.value) return
-  if (!canDocumentPermission('edit', permissionTargetsForSelection(editingModel.value, selection.value))) return
-  const next = cloneDocument(model.value)
-  let scoped = editingCandidate(next)
-  try {
-    const existing = blockAtPoint(scoped, selection.value.focus)
-    if (existing && codeBlockData(existing)) {
-      const result = updateCodeBlockWithSelection(next, existing.id, data, selection.value, permissionContext.value)
-      if (!result.changed) { codeBlockPanelOpen.value = false; return }
-      if (result.selection) selection.value = result.selection
-      scoped = editingCandidate(next)
-    } else {
-      const block = insertCodeBlock(scoped, selection.value.focus.cellBlockId ?? selection.value.focus.blockId, data.source, data.language)
-      updateCodeBlock(scoped, block.id, data)
-      const target = textTargets(scoped).find(target => (target.cellBlockId ?? target.blockId) === block.id)
-      if (!target) throw new RangeError('代码块插入定位失败')
-      selection.value = collapsedSelection({ ...target, offset: 0 })
-    }
-    if (!publishEditingCandidate(next, scoped)) return
-    void nextTick(() => canvasRef.value?.focus())
-  } catch (error) {
-    notify(error instanceof Error ? error.message : String(error))
+  const api = props.documentApi, source = model.value, input = api && captureInputSession(source)
+  if (api && (!input?.valid || input.location.kind !== 'body' || api.id !== source.id)) return undefined
+  return { unitId: source.id ?? '', source, api, ...(api ? { revision: api.getModelRevision(), historyGeneration: api.getHistoryGeneration(), inputGeneration: input!.generation }
+    : { standaloneSnapshot: JSON.stringify(source), standaloneEpoch: inputStateEpoch, standaloneParentSource: props.modelValue }), selection: cloneDocumentSelection(selection.value), ...(editingHost.value ? { host: { ...editingHost.value } } : {}) }
+}
+function structureTargetCurrent(target: StructureDialogTarget): boolean {
+  if (!inputStateActive || documentInputComposing.value || target.unitId !== (model.value.id ?? '') || target.api !== props.documentApi
+    || !sameDocumentBlockHost(target.host, editingHost.value) || JSON.stringify(target.selection) !== JSON.stringify(selection.value)) return false
+  if (!target.api) return documentStandaloneStructureTargetCurrent(target, { model: model.value, epoch: inputStateEpoch, parentSource: props.modelValue })
+  const state = captureInputSession()
+  return !!state?.valid && state.location.kind === 'body' && state.generation === target.inputGeneration
+    && target.api.getModelRevision() === target.revision && target.api.getHistoryGeneration() === target.historyGeneration
+}
+function closeStructureDialog(target?: StructureDialogTarget) {
+  if (target && structureTargetCurrent(target)) {
+    scheduleInputFocus(() => { if (structureTargetCurrent(target)) canvasRef.value?.focus() })
+  }
+}
+function openCodeBlockPanel() {
+  const target = captureStructureTarget()
+  if (!target || selection.value.tableSelection) return
+  codeDialogTarget.value = target; codeDialogData.value = activeCodeBlockData.value && { ...activeCodeBlockData.value }; codeBlockPanelOpen.value = true
+}
+function applyCodeBlock(data: DocumentCodeBlockData) {
+  const target = codeDialogTarget.value
+  if (!target || !structureTargetCurrent(target)) { notify('文档或代码块输入位置已变化，请重新打开代码块设置。'); return }
+  const existing = activeCodeBlock.value, patch = { language: data.language, showLineNumbers: data.lineNumbers, tabSize: data.tabSize ?? 4, wrap: data.wrap ?? true }
+  const command: DocumentCommand = existing && codeBlockData(existing)
+    ? { id: 'doc.command.update-code-block', blockId: existing.id, source: data.source, patch }
+    : { id: 'doc.command.insert-structured-block', blockType: 'code', source: data.source, code: patch }
+  if (execute(command)) codeBlockPanelOpen.value = false
+}
+function openStructurePanel(kind: 'quote' | 'callout' | 'columns') {
+  const target = captureStructureTarget()
+  if (!target) return
+  const block = documentStructuredBlockAtSelection(editingModel.value, target.selection, kind)
+  structureDialog.value = { open: true, kind, ...(block ? { block: cloneDocument(block) } : {}), target }
+}
+function executeStructurePanelCommand(command: DocumentStructureCommand) {
+  const dialog = structureDialog.value
+  if (!dialog || !structureTargetCurrent(dialog.target)) { notify('文档或高级块范围已变化，请重新打开设置。'); return }
+  if (execute(command)) structureDialog.value = { ...dialog, open: false }
+}
+function applyStructurePanel(value: DocumentStructurePanelValue) {
+  const dialog = structureDialog.value
+  if (!dialog || value.kind !== dialog.kind) return
+  if (value.kind === 'callout') executeStructurePanelCommand(dialog.block
+    ? { id: 'doc.command.update-callout', blockId: dialog.block.id, patch: value.config, ...(value.textColor === undefined ? {} : { textColor: value.textColor }) }
+    : { id: 'doc.command.wrap-structured-block', blockType: 'callout', callout: value.config, ...(value.textColor === undefined ? {} : { textColor: value.textColor }) })
+  else if (value.kind === 'quote') executeStructurePanelCommand(dialog.block
+    ? { id: 'doc.command.update-quote-style', blockId: dialog.block.id, patch: value.style }
+    : { id: 'doc.command.wrap-structured-block', blockType: 'quote', quote: value.style })
+  else {
+    const { columnCount, gap, horizontalPadding, minHeight, layout: columnLayout, responsive, widthRatios, minWidths } = value
+    executeStructurePanelCommand(dialog.block ? { id: 'doc.command.update-column-group', blockId: dialog.block.id,
+      patch: { gap, horizontalPadding, minHeight, layout: columnLayout, responsive }, widthRatios, minWidths }
+      : { id: 'doc.command.wrap-column-group', columnCount, gap, horizontalPadding, minHeight, layout: columnLayout, responsive, widthRatios, minWidths })
   }
 }
 function applyLatexFormula(data: { latex: string; mode: LatexFormulaMode }) {
@@ -1228,14 +1294,7 @@ function applyNoteSettings(source: DocumentModel, request: DocumentNoteMutationR
   if (dialog && dialog.source === source && executeNoteMutation(request, source) && noteSettings.value === dialog) noteSettings.value = undefined
 }
 function leaveCodeBlock(blockId: string) {
-  if (!canDocumentPermission('edit', permissionTargetsForSelection(editingModel.value, selection.value))) return
-  const next = cloneDocument(model.value), scoped = editingCandidate(next)
-  const paragraph = exitCodeBlock(scoped, blockId)
-  if (!paragraph) return
-  const target = textTargets(scoped).find(target => (target.cellBlockId ?? target.blockId) === paragraph.id)
-  if (!target) return
-  selection.value = collapsedSelection({ ...target, offset: 0 })
-  publishEditingCandidate(next, scoped)
+  execute({ id: 'doc.command.exit-structured-block', blockId })
 }
 function onSelection(value: DocumentSelection) {
   activeContentControlId.value = undefined
@@ -2349,6 +2408,8 @@ function applyPainter(format?: DocumentPainterFormat) {
   if (execute({ id: 'doc.command.apply-format-painter', format }) && !painter.value?.continuous) painter.value = undefined
 }
 function onRibbonExecute(id: string, params?: unknown) {
+  if ((id === 'doc.command.unwrap-structured-block' || id === 'doc.command.exit-structured-block' || id === 'doc.command.remove-structured-block')
+    && params && typeof params === 'object' && 'blockId' in params && typeof params.blockId === 'string') { execute({ id, blockId: params.blockId }); return }
   if (id === 'doc.operation.open-table-properties') { openTableProperties(params); return }
   if (id === 'doc.operation.toggle-table-floating-toolbar') { tableFloatingToolbarOpen.value = !tableFloatingToolbarOpen.value; return }
   if (id === 'ui.operation.activate-format-painter' || id === 'ui.operation.continuous-format-painter') { activatePainter(id === 'ui.operation.continuous-format-painter'); return }
@@ -2391,6 +2452,20 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.open-notes': notesError.value = ''; setNotesPanelOpen(true); break
     case 'doc.operation.open-permissions': permissionPanelOpen.value = true; break
     case 'doc.operation.insert-code-block': openCodeBlockPanel(); break
+    case 'doc.operation.insert-quote': execute({ id: 'doc.command.wrap-structured-block', blockType: 'quote' }); break
+    case 'doc.operation.insert-callout': openStructurePanel('callout'); break
+    case 'doc.operation.insert-column-group': {
+      const count = params && typeof params === 'object' && 'columnCount' in params ? params.columnCount : undefined
+      if (typeof count === 'number' && Number.isInteger(count) && count >= 2 && count <= 5) execute({ id: 'doc.command.wrap-column-group', columnCount: count })
+      else openStructurePanel('columns')
+      break
+    }
+    case 'doc.operation.edit-structured-block': {
+      const block = activeStructuredBlock.value
+      if (block?.type === 'code') openCodeBlockPanel()
+      else if (block?.type === 'quote' || block?.type === 'callout' || block?.type === 'columns') openStructurePanel(block.type)
+      break
+    }
     case 'doc.operation.open-latex': latexPanelOpen.value = true; break
     case 'doc.command.copy': void copySelection(); break
     case 'doc.command.cut': void copySelection(true); break
@@ -2637,7 +2712,10 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :read-only="!canEditHeaderFooterSection" :editable-stories="editableHeaderFooterStories" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
-    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="activeCodeBlockData" @apply="applyCodeBlock" />
+    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="codeDialogData" @apply="applyCodeBlock" @closed="closeStructureDialog(codeDialogTarget)" />
+    <DocumentStructuredBlockPanel v-if="structureDialog" :open="structureDialog.open" :kind="structureDialog.kind" :block="structureDialog.block"
+      :read-only="!canEditContextSelection || documentInputComposing" @submit="applyStructurePanel" @command="executeStructurePanelCommand"
+      @update:open="open => { if (structureDialog) structureDialog = { ...structureDialog, open } }" @closed="closeStructureDialog(structureDialog?.target)" />
     <DocumentLatexPanel v-model:open="latexPanelOpen" :initial="activeLatexFormula?.formula" @apply="applyLatexFormula" />
     <DocumentNotesPanel :open="notesPanelOpen" :model="model" :labels="layoutSource === model ? layout.noteLabels : undefined" :permission="permissionContext" :disabled="documentInputComposing" :error="notesError" @update:open="setNotesPanelOpen" @closed="onNotesPanelClosed" @apply="applyNotes" @remove="removeNote" @navigate="navigateToNote" @edit="openNoteCanvas" />
     <DocumentNoteSettingsDialog v-if="noteSettings" :open="noteSettings.open" :model="model" :kind="noteSettings.kind" :section-id="noteSettings.sectionId" :selection="noteSettings.selection"

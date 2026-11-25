@@ -1,4 +1,4 @@
-import type { DocumentBlock } from '../../../domain/model'
+import type { DocumentBlock, DocumentCodeConfig } from '../../../domain/model'
 import { createRun, runText, sliceRuns, type DocumentRun } from '../model/document-model'
 import type { ParagraphListMarker } from '../model/document-lists'
 import { codeBlockData } from '../code-blocks/code-blocks'
@@ -56,8 +56,10 @@ export function appendListMarker(line: LayoutLine, block: DocumentBlock, list: P
 }
 
 export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphListMarker | undefined, flow: DocumentSectionFlow, result: DocumentLayout, measurer: LayoutMeasurer,
-  display?: DocumentTextLayoutDisplay): void {
+  display?: DocumentTextLayoutDisplay, parentCode?: DocumentCodeConfig): void {
   const codeData = codeBlockData(block), text = runText(block.runs)
+  const code = parentCode ?? (codeData ? { language: codeData.language, showLineNumbers: codeData.lineNumbers, tabSize: codeData.tabSize ?? 4, wrap: codeData.wrap ?? true } : undefined)
+  const wrapping = code ? { softWrap: code.wrap, tabSize: code.tabSize } : undefined
   let available = flow.column.width, geometry = paragraphGeometry(block, list, available, measurer)
   let rawIndex = 0, lineIndex = 0, baseOffset = 0
   const pageTab = documentTocPageTab(block)
@@ -66,7 +68,7 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
     ...(stop.right === undefined ? {} : { right: Math.max(0, stop.right - (index + lineIndex === 0 ? geometry.firstIndent : geometry.indent)) }),
   }))
   const textDisplay = () => ({ references: display?.references, leading: lineIndex === 0 && baseOffset === 0 ? display?.leadingLabels?.get(block.id) : undefined })
-  let lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined, textDisplay())
+  let lines = wrapRuns(block.runs as DocumentRun[], geometry.width, measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined, textDisplay(), wrapping)
   while (rawIndex < lines.length) {
     const raw = lines[rawIndex]!
     const height = paragraphLineHeight(Math.max(raw.fontHeight, lineIndex === 0 ? geometry.markerHeight : 0), block.style)
@@ -80,7 +82,7 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
       geometry = paragraphGeometry(block, list, available, measurer)
       const remaining = sliceRuns(block.runs as DocumentRun[], baseOffset, text.length)
       if (!remaining.length && block.runs.length) remaining.push({ ...block.runs.at(-1)!, text: '' })
-      lines = wrapRuns(remaining, index => geometry.width(index + lineIndex), measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined, textDisplay())
+      lines = wrapRuns(remaining, index => geometry.width(index + lineIndex), measurer, block.style.wordWrap === true, undefined, pageTab ? rightTabs : undefined, textDisplay(), wrapping)
       rawIndex = 0
       continue
     }

@@ -7,6 +7,7 @@ import { chartEChartsOption } from '../features/charts/echarts-option'
 import { EChartsCanvasRenderer, type EChartsCanvasFrame } from '../features/charts/echarts-renderer'
 import { chartAxisPointerLocalPoint } from '../features/charts/chart-axis-pointer'
 import type { ChartVector } from '../features/charts/chart-geometry'
+import type { ChartCanvasLegendHit } from '../features/charts/echarts-legend'
 import type { ChartComputedStatistics } from '../features/charts/chart-derived'
 import type { ChartChordContentTooltip } from '../features/charts/chart-chord-interaction'
 import { useChartStatistics } from '../features/charts/views/use-chart-statistics'
@@ -36,7 +37,8 @@ interface ChartDisplay {
 }
 interface DragState {
   chartId: string
-  mode: 'move' | 'resize' | 'sankey-node'
+  mode: 'move' | 'resize' | 'sankey-node' | 'legend'
+  legendHit?: ChartCanvasLegendHit
   pointerId: number
   target: HTMLElement | null
   workbookId?: string
@@ -255,21 +257,28 @@ function beginDrag(event: PointerEvent, item: ChartDisplay, mode: 'move' | 'resi
   const point = pointerPoint(event)
   const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   let dragMode: DragState['mode'] = mode
+  let legendHit: ChartCanvasLegendHit | undefined
   if (mode === 'move') {
     try {
-      const content = chartRenderer.beginContentDrag(item.chart.id, chartAxisPointerLocalPoint(point, item.position,
-        { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }))
-      if (content) { dragMode = content.kind; updatePointerFrame(item.chart.id, content.frame); queueOverlayFrame() }
+      const local = chartAxisPointerLocalPoint(point, item.position,
+        { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value })
+      legendHit = chartRenderer.getLegendHit(item.chart.id, local)
+      if (legendHit) dragMode = 'legend'
+      else {
+        const content = chartRenderer.beginContentDrag(item.chart.id, local)
+        if (content) { dragMode = content.kind; updatePointerFrame(item.chart.id, content.frame); queueOverlayFrame() }
+      }
     } catch (error) {
       pointerError.value = error instanceof Error ? error.message : '图表内容拖动失败'
       return
     }
   }
-  if (dragMode !== 'sankey-node' && !canEditChart(item.chart)) return
+  if (dragMode !== 'sankey-node' && dragMode !== 'legend' && !canEditChart(item.chart)) return
   const workbookId = props.workbook.id
   drag.value = {
     chartId: item.chart.id,
     mode: dragMode,
+    ...(legendHit ? { legendHit } : {}),
     pointerId: event.pointerId,
     target,
     workbookId,
@@ -296,7 +305,7 @@ function dragIsCurrent(active: DragState): boolean {
   return active.studio === props.studio && active.workbookId === props.workbook.id && active.sheetId === props.activeSheetId
     && (active.modelRevision === undefined || !props.studio || !active.workbookId || props.studio.getWorkbookRevision(active.workbookId) === active.modelRevision)
     && JSON.stringify(chart) === active.chartSnapshot
-    && !!chart && (active.mode === 'sankey-node' || canEditChart(chart))
+    && !!chart && (active.mode === 'sankey-node' || active.mode === 'legend' || canEditChart(chart))
 }
 
 function releaseDragPointer(active: DragState): void {
@@ -319,6 +328,7 @@ function onPointerMove(event: PointerEvent): void {
   if (!active || event.pointerId !== active.pointerId) return
   if (!dragIsCurrent(active)) { onPointerCancel(); return }
   const point = pointerPoint(event)
+  if (active.mode === 'legend') return
   if (active.mode === 'sankey-node') {
     desiredContentDrag = { chartId: active.chartId, pointerId: active.pointerId, point: chartAxisPointerLocalPoint(point, active.position,
       { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }) }
@@ -341,6 +351,23 @@ function onPointerUp(event: PointerEvent): void {
   const active = drag.value
   if (!active || event.pointerId !== active.pointerId) return
   if (!dragIsCurrent(active)) { onPointerCancel(); return }
+  if (active.mode === 'legend') {
+    const point = pointerPoint(event), local = chartAxisPointerLocalPoint(point, active.position,
+      { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value })
+    drag.value = null
+    releaseDragPointer(active)
+    if (Math.hypot(point.x - active.originX, point.y - active.originY) > 4
+      || JSON.stringify(chartRenderer.getLegendHit(active.chartId, local)) !== JSON.stringify(active.legendHit)) return
+    try {
+      updatePointerFrame(active.chartId, chartRenderer.activateLegend(active.chartId, local))
+      desiredPointer = { chartId: active.chartId, point: local }; pointerDirty = true
+      queueOverlayFrame()
+    } catch (error) {
+      publishOverlayCommands()
+      pointerError.value = error instanceof Error ? error.message : '图例交互失败'
+    }
+    return
+  }
   if (active.mode === 'sankey-node') {
     desiredContentDrag = { chartId: active.chartId, pointerId: active.pointerId, point: chartAxisPointerLocalPoint(pointerPoint(event), active.position,
       { zoom: props.zoom, scrollLeft: scrollLeft.value, scrollTop: scrollTop.value }) }

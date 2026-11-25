@@ -1,6 +1,6 @@
 import * as echarts from 'echarts/core'
 import { BarChart, BoxplotChart, CandlestickChart, FunnelChart, GaugeChart, GraphChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart, SunburstChart, TreemapChart } from 'echarts/charts'
-import { AxisPointerComponent, GraphicComponent, GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent, VisualMapComponent } from 'echarts/components'
+import { AxisPointerComponent, GraphicComponent, GridComponent, LegendComponent, LegendScrollComponent, RadarComponent, TitleComponent, TooltipComponent, VisualMapComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { GraphicComponentOption } from 'echarts/components'
@@ -20,10 +20,14 @@ import type { TextCommand } from '../../rendering/contracts'
 import { transformChartRelationScene } from './chart-relation-draw'
 import { chartRelationContentTooltip, chartRelationFocusedCommands, chartRelationFocusSelection,
   createChartRelationHitIndex, hitChartRelation, type ChartRelationContentTooltip, type ChartRelationHit, type ChartRelationPointerRuntime } from './chart-relation-interaction'
+import { reconcileChartLegendSelection, toggleChartLegendSelection } from './chart-legend'
+import { chartNativeLegendHit, chartNativeLegendScrollIndex, chartNativeLegendSelection,
+  type ChartCanvasLegendHit, type ChartCanvasLegendRuntime } from './echarts-legend'
+import type { ChartEChartsPointerRuntime } from './echarts-option'
 
 echarts.use([
   BarChart, BoxplotChart, CandlestickChart, FunnelChart, GaugeChart, GraphChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart, SunburstChart, TreemapChart,
-  AxisPointerComponent, GraphicComponent, GridComponent, LegendComponent, RadarComponent, TitleComponent, TooltipComponent, VisualMapComponent, CanvasRenderer,
+  AxisPointerComponent, GraphicComponent, GridComponent, LegendComponent, LegendScrollComponent, RadarComponent, TitleComponent, TooltipComponent, VisualMapComponent, CanvasRenderer,
 ])
 registerChartTreemapLayout()
 registerChartSunburstLayout()
@@ -49,6 +53,7 @@ interface SankeyContentDrag {
   nodeIndex: number
   offset: ChartVector
   originalScene: ChartSankeyScene
+  originalBaseScene?: ChartSankeyScene
 }
 
 interface ChartEntry {
@@ -61,6 +66,10 @@ interface ChartEntry {
   height: number
   pointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
   pointerSignature: string
+  legend?: ChartCanvasLegendRuntime
+  legendSelection: Record<string, boolean>
+  legendScrollDataIndex: number
+  legendRecoverySignature?: string
   contentDrag?: SankeyContentDrag
 }
 
@@ -68,14 +77,23 @@ interface ChartEntry {
 export class EChartsCanvasRenderer {
   private readonly charts = new Map<string, ChartEntry>()
 
-  render(chartId: string, option: EChartsOption & { officeChartKey?: string; officeChartPointer?: ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime }, size: EChartsCanvasSize, theme: ChartEChartsTheme = {}): EChartsCanvasFrame {
+  render(chartId: string, option: EChartsOption & { officeChartKey?: string; officeChartPointer?: ChartEChartsPointerRuntime; officeChartLegend?: ChartCanvasLegendRuntime }, size: EChartsCanvasSize, theme: ChartEChartsTheme = {}): EChartsCanvasFrame {
     if (![size.width, size.height, size.devicePixelRatio].every(value => Number.isFinite(value) && value > 0)) {
       throw new RangeError('图表尺寸和像素比例必须为有效正数。')
     }
-    const { officeChartKey, officeChartPointer, ...renderOption } = option
+    const { officeChartKey, officeChartPointer: authoredPointer, officeChartLegend, ...renderOption } = option
     const signature = JSON.stringify([officeChartKey, renderOption, size.width, size.height, size.devicePixelRatio, theme])
     let entry = this.charts.get(chartId)
+    const legendSelection = officeChartLegend ? reconcileChartLegendSelection(officeChartLegend.names, officeChartLegend.selectMode,
+      entry?.legend?.selectMode === officeChartLegend.selectMode ? entry.legendSelection : {}) : {}
+    const oldScrollName = entry?.legend?.names[entry.legendScrollDataIndex]
+    const legendScrollDataIndex = oldScrollName !== undefined && officeChartLegend ? Math.max(0, officeChartLegend.names.indexOf(oldScrollName)) : 0
+    const view = officeChartLegend?.rebuild && (Object.values(legendSelection).some(selected => selected === false) || entry?.legendRecoverySignature === signature)
+      ? officeChartLegend.rebuild(legendSelection, entry && (entry.signature === signature || entry.legendRecoverySignature === signature) ? entry.pointer : undefined) : undefined
+    const officeChartPointer = view ? view.pointer : officeChartLegend?.preparePointer?.(legendSelection) ?? authoredPointer
     if (entry?.signature === signature) {
+      entry.legend = officeChartLegend
+      entry.legendSelection = legendSelection
       // The retained Sankey scene owns view-only node positions. Preparing the
       // same authored option again must not replace it with the automatic seed.
       if (entry.pointer?.mode === 'chord' && officeChartPointer?.mode === 'chord') {
@@ -117,6 +135,8 @@ export class EChartsCanvasRenderer {
         width: size.width,
         height: size.height,
         pointerSignature: '',
+        legendSelection: {},
+        legendScrollDataIndex: 0,
       }
       this.charts.set(chartId, entry)
     }
@@ -124,13 +144,18 @@ export class EChartsCanvasRenderer {
       if (entry.width !== size.width || entry.height !== size.height) {
         entry.instance.resize({ width: size.width, height: size.height, silent: true, animation: { duration: 0 } })
       }
-      entry.instance.setOption({ ...renderOption, animation: false }, { notMerge: true, lazyUpdate: false, silent: true })
+      const paintedOption = officeChartLegend ? chartNativeLegendSelection(view?.option ?? renderOption, legendSelection, legendScrollDataIndex) : renderOption
+      entry.instance.setOption({ ...paintedOption, animation: false }, { notMerge: true, lazyUpdate: false, silent: true })
       entry.instance.getZr().refreshImmediately()
       entry.signature = signature
       entry.sourceVersion += 1
       entry.width = size.width
       entry.height = size.height
       entry.pointer = officeChartPointer
+      entry.legend = officeChartLegend
+      entry.legendSelection = legendSelection
+      entry.legendScrollDataIndex = legendScrollDataIndex
+      entry.legendRecoverySignature = undefined
       if (officeChartPointer?.mode === 'chord') this.measureChordLabels(entry, officeChartPointer)
       if (officeChartPointer?.mode === 'relation') this.measureContentLabels(entry, officeChartPointer)
       entry.pointerSignature = ''
@@ -143,6 +168,75 @@ export class EChartsCanvasRenderer {
       throw error
     }
     return { source: entry.canvas, sourceVersion: entry.sourceVersion }
+  }
+
+  /** Real Canvas item and pagination hits have priority over object dragging. */
+  getLegendHit(chartId: string, point: ChartVector): ChartCanvasLegendHit | undefined {
+    const entry = this.charts.get(chartId)
+    if (!entry?.legend || ![point.x, point.y].every(Number.isFinite) || point.x < 0 || point.y < 0 || point.x >= entry.width || point.y >= entry.height) return undefined
+    return chartNativeLegendHit(entry.instance.getZr().findHover(point.x, point.y).topTarget, entry.legend.names)
+  }
+
+  /** Toggle/paginate the retained view. No author model, Worker request,
+   * mutation, undo record or savepoint is produced. */
+  activateLegend(chartId: string, point: ChartVector): EChartsCanvasFrame | undefined {
+    const entry = this.charts.get(chartId), hit = this.getLegendHit(chartId, point)
+    if (!entry?.legend || !hit || entry.contentDrag) return undefined
+    const previousSelection = entry.legendSelection, previousScroll = entry.legendScrollDataIndex, previousPointer = entry.pointer
+    let selected = previousSelection, scrollDataIndex = previousScroll
+    try {
+      const cleared = this.updatePointer(chartId)
+      if (hit.kind === 'page') {
+        const previous = chartNativeLegendScrollIndex(entry.instance.getOption())
+        const zr = entry.instance.getZr()
+        zr.handler.dispatch('click', { type: 'click', zrX: point.x, zrY: point.y })
+        scrollDataIndex = chartNativeLegendScrollIndex(entry.instance.getOption())
+        if (previous === scrollDataIndex) return cleared
+      } else {
+        if (entry.legend.selectMode === 'close') return cleared
+        selected = toggleChartLegendSelection(entry.legend.names, entry.legend.selectMode, previousSelection, hit.name)
+        if (JSON.stringify(selected) === JSON.stringify(previousSelection)) return cleared
+        const view = entry.legend.rebuild?.(selected, entry.pointer)
+        const nextPointer = view?.pointer ?? entry.legend.preparePointer?.(selected)
+        entry.instance.dispatchAction({ type: entry.legend.selectMode === 'single' ? 'legendSelect' : 'legendToggleSelect', name: hit.name })
+        if (view) {
+          const previous = entry.pointer
+          entry.instance.setOption(chartNativeLegendSelection(view.option, selected, previousScroll), { notMerge: true, lazyUpdate: false, silent: true })
+          entry.pointer = view.pointer
+          if (previous?.mode === 'relation' && entry.pointer?.mode === 'relation') {
+            const pointer = entry.pointer
+            pointer.viewport = previous.viewport
+            pointer.scene = transformChartRelationScene(pointer.baseScene, pointer.viewport)
+            pointer.hitIndex = createChartRelationHitIndex(pointer.scene)
+            entry.instance.setOption({ graphic: { elements: [{ type: 'group', id: pointer.groupId, $action: 'replace', silent: true,
+              children: chartGraphics(pointer.scene.commands, pointer.groupId, pointer.zOffset) }] } }, { notMerge: false, lazyUpdate: false, silent: true })
+          }
+        } else if (entry.legend.preparePointer) entry.pointer = nextPointer
+        if (entry.pointer?.mode === 'relation') this.measureContentLabels(entry, entry.pointer)
+        if (entry.pointer?.mode === 'chord') this.measureChordLabels(entry, entry.pointer)
+      }
+      entry.instance.getZr().refreshImmediately()
+      entry.legendSelection = selected
+      entry.legendScrollDataIndex = scrollDataIndex
+      entry.pointerSignature = ''
+      entry.sourceVersion++
+      return { source: entry.canvas, sourceVersion: entry.sourceVersion }
+    } catch (error) {
+      entry.legendSelection = previousSelection
+      entry.legendScrollDataIndex = previousScroll
+      entry.pointer = previousPointer
+      entry.pointerSignature = ''
+      // The native action may have painted partially. The next render must
+      // replace that frame, while retaining view-only scene positions.
+      entry.legendRecoverySignature = entry.signature || entry.legendRecoverySignature
+      entry.signature = ''
+      throw error
+    }
+  }
+
+  getLegendView(chartId: string): { selected: Record<string, boolean>; scrollDataIndex: number } | undefined {
+    const entry = this.charts.get(chartId)
+    return entry?.legend ? { selected: { ...entry.legendSelection }, scrollDataIndex: entry.legendScrollDataIndex } : undefined
   }
 
   /** Update only the transient indicator. Content preparation and setOption signatures stay cached. */
@@ -294,7 +388,7 @@ export class EChartsCanvasRenderer {
     const hit = hitChartSankey(pointer.hitIndex, point)
     if (hit?.kind !== 'node') return undefined
     const node = pointer.scene.layout.nodes[hit.index]!
-    entry.contentDrag = { nodeIndex: hit.index, offset: { x: point.x - node.x, y: point.y - node.y }, originalScene: pointer.scene }
+    entry.contentDrag = { nodeIndex: hit.index, offset: { x: point.x - node.x, y: point.y - node.y }, originalScene: pointer.scene, originalBaseScene: pointer.baseScene }
     const frame = this.updateSankeyGraphic(entry, pointer, hit)
     return { kind: 'sankey-node', nodeIndex: hit.index, ...(frame ? { frame } : {}) }
   }
@@ -306,6 +400,7 @@ export class EChartsCanvasRenderer {
     const before = pointer.scene.layout.nodes[drag.nodeIndex]!, after = scene.layout.nodes[drag.nodeIndex]!
     if (before.x === after.x && before.y === after.y) return undefined
     pointer.scene = scene; pointer.hitIndex = createChartSankeyHitIndex(scene.layout)
+    if (drag.originalBaseScene) pointer.baseScene = moveChartSankeyScene(drag.originalBaseScene, drag.nodeIndex, { x: point.x - drag.offset.x, y: point.y - drag.offset.y })
     return this.updateSankeyGraphic(entry, pointer, { kind: 'node', index: drag.nodeIndex }, true)
   }
 
@@ -314,7 +409,7 @@ export class EChartsCanvasRenderer {
   endContentDrag(chartId: string, cancelled = false): EChartsCanvasFrame | undefined {
     const entry = this.charts.get(chartId), pointer = entry?.pointer, drag = entry?.contentDrag
     if (!entry || pointer?.mode !== 'sankey' || !drag) return undefined
-    if (cancelled) { pointer.scene = drag.originalScene; pointer.hitIndex = createChartSankeyHitIndex(pointer.scene.layout) }
+    if (cancelled) { pointer.scene = drag.originalScene; pointer.baseScene = drag.originalBaseScene; pointer.hitIndex = createChartSankeyHitIndex(pointer.scene.layout) }
     entry.contentDrag = undefined
     return this.updateSankeyGraphic(entry, pointer, undefined, true)
   }

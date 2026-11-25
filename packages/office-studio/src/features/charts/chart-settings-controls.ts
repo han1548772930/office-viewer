@@ -10,6 +10,8 @@ import { CHART_LABEL_CONTENT_CHOICES, CHART_LABEL_POSITION_CHOICES, chartLabelCo
 import { resolveChartHeatmapLabel } from './chart-heatmap'
 import { chartAxisTitleFont, CHART_AXIS_TITLE_DEFAULT_FONT_SIZE } from './chart-axis-title'
 import { supportsChartDateAxis } from './chart-date-axis'
+import { chartHasLegend, chartHasLegendSelection } from './chart-legend'
+import { chartTitleFont, type ChartTitleKind } from './chart-titles'
 
 interface ControlBase { key: string; label: string; extra?: string; visible?: (config: ChartConfig) => boolean;
   reset?: (config: ChartConfig) => void; resetLabel?: string; canReset?: (config: ChartConfig) => boolean }
@@ -121,10 +123,19 @@ export function chartLabelControls(key: string, read: (config: ChartConfig) => C
 
 export function chartCommonControls(config?: ChartConfig): ChartSettingControl[] {
   return [
-    textControl('title', '图表标题', config => config.title, (config, value) => { config.title = value }),
-    textControl('subtitle', '副标题', config => config.subtitle, (config, value) => { config.subtitle = value }),
+    ...chartTitleControls('title'),
+    ...chartTitleControls('subtitle'),
     switchControl('legend.visible', '显示图例', config => config.legend?.visible, (config, value) => { (config.legend ??= {}).visible = value }, true),
     selectControl('legend.position', '图例位置', [['top', '上方'], ['right', '右侧'], ['bottom', '下方'], ['left', '左侧']], config => config.legend?.position, (config, value) => { (config.legend ??= {}).position = value }, 'bottom'),
+    { ...switchControl('legend.wrap', '图例换行', config => config.legend?.wrap, (config, value) => { (config.legend ??= {}).wrap = value }),
+      visible: (config: ChartConfig) => config.type !== 'heatmap' && (!config.legend?.position || ['top', 'bottom'].includes(config.legend.position)),
+      canReset: (config: ChartConfig) => config.legend?.wrap !== undefined,
+      reset: (config: ChartConfig) => { if (config.legend) config.legend.wrap = undefined } },
+    { ...selectControl('legend.selectMode', '图例选择模式', [['single', '单选'], ['multiple', '多选'], ['close', '关闭']],
+      config => config.legend?.selectMode, (config, value) => { (config.legend ??= {}).selectMode = value }, 'close'),
+      visible: (config: ChartConfig) => chartHasLegendSelection(config.type),
+      canReset: (config: ChartConfig) => config.legend?.selectMode !== undefined,
+      reset: (config: ChartConfig) => { if (config.legend) config.legend.selectMode = undefined } },
     ...(config?.type === 'heatmap' ? [{ ...selectControl('heatmap.visualMapType', '色阶类型', [['continuous', '连续'], ['piecewise', '分段']],
       config => config.options?.heatmap?.visualMapType, (config, value) => { optionGroup(config, 'heatmap').visualMapType = value }, 'continuous'),
       canReset: (config: ChartConfig) => config.options?.heatmap?.visualMapType !== undefined,
@@ -134,7 +145,39 @@ export function chartCommonControls(config?: ChartConfig): ChartSettingControl[]
     selectControl('invalidValueStrategy', '空值处理', [['break', '断开'], ['link', '连接'], ['zero', '按零值']], config => config.options?.invalidValueStrategy, (config, value) => { (config.options ??= {}).invalidValueStrategy = value }, 'break'),
     numberControl('size.width', '宽度', config => config.size.width, (config, value) => { if (value !== undefined) config.size.width = value }, 1, 100_000),
     numberControl('size.height', '高度', config => config.size.height, (config, value) => { if (value !== undefined) config.size.height = value }, 1, 100_000),
-  ].filter(control => config?.type !== 'treemap' && config?.type !== 'sunburst' && config?.type !== 'chord' || !control.key.startsWith('legend.'))
+  ].filter(control => !config || chartHasLegend(config.type) || !control.key.startsWith('legend.'))
+}
+
+export function chartTitleControls(kind: ChartTitleKind): ChartSettingControl[] {
+  const group = kind === 'title' ? 'titleStyle' : 'subtitleStyle'
+  const alignments = [['left', '靠左'], ['center', '居中'], ['right', '靠右']] as const
+  const resetField = (field: 'alignment' | 'position'): Pick<ControlBase, 'reset' | 'canReset'> => ({
+    canReset: config => field === 'position' ? config.options?.titleStyle?.position !== undefined || config.options?.titleStyle?.visible !== undefined
+      : config.options?.[group]?.alignment !== undefined,
+    reset: config => { const style = config.options?.[group]; if (!style) return
+      if (field === 'position' && group === 'titleStyle') { config.options!.titleStyle!.position = undefined; config.options!.titleStyle!.visible = undefined }
+      else style.alignment = undefined },
+  })
+  return [
+    { ...textControl(kind, kind === 'title' ? '图表标题' : '副标题', config => config[kind], (config, value) => { config[kind] = value }),
+      canReset: config => config[kind] !== undefined || config.options?.[group] !== undefined,
+      reset: config => { config[kind] = undefined; if (config.options) config.options[group] = undefined } },
+    ...(kind === 'title' ? [{ ...selectControl('titleStyle.position', '标题位置', [['top', '上方'], ['bottom', '下方'], ['left', '左侧'], ['right', '右侧'], ['hide', '隐藏']],
+      config => config.options?.titleStyle?.visible === false ? 'hide' : config.options?.titleStyle?.position,
+      (config, value) => { const style = optionGroup(config, 'titleStyle'); style.visible = value === undefined ? undefined : value !== 'hide'; if (value !== 'hide') style.position = value }, 'top'),
+      ...resetField('position') }] : []),
+    { ...selectControl(`${group}.alignment`, kind === 'title' ? '标题对齐' : '副标题对齐', alignments,
+      config => config.options?.[group]?.alignment, (config, value) => { optionGroup(config, group).alignment = value }, 'center'), ...resetField('alignment') },
+  ]
+}
+
+export function chartTitleFontControls(kind: ChartTitleKind): ChartSettingControl[] {
+  const group = kind === 'title' ? 'titleStyle' : 'subtitleStyle'
+  return chartFontControls(group, config => chartTitleFont(config, kind), config => optionGroup(config, group)).map(control => {
+    const field = control.key.slice(group.length + 1) as keyof ChartFontOptions
+    return { ...control, canReset: (config: ChartConfig) => config.options?.[group]?.[field] !== undefined,
+      reset: (config: ChartConfig) => { const style = config.options?.[group]; if (style) style[field] = undefined } }
+  })
 }
 
 /** Fixed chart-ui Hs fields: line color, line type, label background, label text. */

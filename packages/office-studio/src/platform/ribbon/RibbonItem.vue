@@ -5,7 +5,7 @@ import type { MenuInfo, MenuRef } from 'antdv-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { CLASSIC_RIBBON, GRID_RIBBON, ribbonInvocation, visibleRibbonItems, type RibbonItem } from './ribbon-schema'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n'
-import { provideRibbonPopupScope, RibbonPopupScopeKey } from './ribbon-popup-scope'
+import { provideRibbonPopupScope, RibbonPopupScopeKey, RibbonEditorFocusScopeKey } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
 import { createRibbonMenuModel, ribbonMenuInvocation } from './ribbon-command-menu'
 import RibbonEditableSelect from './RibbonEditableSelect.vue'
@@ -19,6 +19,7 @@ const panel = ref<HTMLElement>()
 const menuRef = ref<MenuRef | null>(null)
 const popupId = useId()
 const popupScope = inject(RibbonPopupScopeKey, undefined)
+const editorFocusScope = inject(RibbonEditorFocusScopeKey, undefined)
 const childPopupScope = provideRibbonPopupScope(popupScope?.direction)
 const direction = childPopupScope.direction
 const themeStyle = useRibbonTheme()
@@ -108,7 +109,7 @@ onBeforeUnmount(() => { open.value = false })
 </script>
 
 <template>
-  <span ref="root" class="workbench-ribbon-item" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
+  <span ref="root" class="workbench-ribbon-item" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
     <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" :measurement="measurement" :grid="grid" :overflow="overflow" :icon-size="iconSize" :open="open" @update:open="(value: boolean) => { open = value }" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
     <Tooltip v-else :title="measurement ? undefined : description" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
       <span v-if="item.type === 'select'" class="ribbon-select-wrap">
@@ -121,7 +122,7 @@ onBeforeUnmount(() => { open.value = false })
           class="ribbon-select" :style="{ width: overflow ? '150px' : grid && fullWidth ? '100%' : `${item.width ?? 96}px`, height: `${grid && !overflow ? GRID_RIBBON.rowHeight : CLASSIC_RIBBON.selectorHeight}px`, alignItems: 'center', flex: overflow ? '1 1 0' : undefined, minWidth: overflow || (grid && fullWidth) ? '0' : undefined, maxWidth: overflow ? '150px' : undefined }" :popup-match-select-width="false"
           :open="open" @open-change="value => { open = value }" @change="execute"
         >
-          <template #optionRender="{ option }"><span :style="option.data.preview">{{ option.data.label }}</span></template>
+          <template #optionRender="{ option }"><span :data-ribbon-editor-owner="editorFocusScope?.ownerId" :style="option.data.preview">{{ option.data.label }}</span></template>
         </Select>
       </span>
       <span v-else-if="isDropdown" class="ribbon-dropdown" :class="{ 'ribbon-split': item.type === 'split' }">
@@ -134,10 +135,10 @@ onBeforeUnmount(() => { open.value = false })
             <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
           </Button>
           <template #content>
-            <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
+            <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
               <component :is="item.popupComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
             </div>
-            <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selected-keys="menuModel.selectedKeys" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
+            <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selected-keys="menuModel.selectedKeys" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
           </template>
         </Popover>
       </span>

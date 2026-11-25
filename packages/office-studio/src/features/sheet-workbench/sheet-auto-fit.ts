@@ -6,6 +6,7 @@ import { layoutSheetCellText, layoutSheetStackedText, rotatedSheetTextSize, shee
 import { hiddenSheetRows, isSheetRowVisible } from './sheet-row-visibility.ts'
 import { positionSheetNumberFormatRuns } from './number-format-render.ts'
 import { sheetColumnWidth, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
+import { layoutSheetCellRichText } from './sheet-cell-rich-text-layout.ts'
 
 export interface SheetAutoFitOptions {
   measure: SheetTextMeasure
@@ -51,14 +52,16 @@ export function calculateSheetAxisAutoFit(sheet: ExcelSheetView, axis: 'row' | '
     }
     const availableWidth = Math.max(0, columnWidth - 12 - indent)
     const widthOf = (text: string) => options.measure(text, base.font)
-    const layout = layoutSheetCellText(presentation.text, { width: availableWidth, lineHeight: base.lineHeight,
+    const rich = layoutSheetCellRichText(cell, presentation.text, { width: availableWidth, height: Infinity,
+      wrap: axis === 'row' && sheetCellWrapStrategy(cell) === 'wrap', stacked: direction === 'v', measure: options.measure })
+    const layout = rich ?? layoutSheetCellText(presentation.text, { width: availableWidth, lineHeight: base.lineHeight,
       wrap: axis === 'row' && sheetCellWrapStrategy(cell) === 'wrap', measure: widthOf })
-    const stacked = direction === 'v' ? layoutSheetStackedText(presentation.text, { height: Infinity, lineHeight: base.fontSize, wrap: false, measure: widthOf }) : undefined
+    const stacked = !rich && direction === 'v' ? layoutSheetStackedText(presentation.text, { height: Infinity, lineHeight: base.fontSize, wrap: false, measure: widthOf }) : undefined
     // Fill characters consume the current column's free space; they do not force a wider column.
-    const runs = !stacked && !/[\r\n]/u.test(presentation.text) && presentation.runs
+    const runs = !rich && !stacked && !/[\r\n]/u.test(presentation.text) && presentation.runs
       ? positionSheetNumberFormatRuns(presentation.runs, axis === 'column' ? 0 : availableWidth, widthOf) : undefined
-    const width = stacked?.width ?? runs?.width ?? layout.width
-    const height = stacked?.height ?? (runs ? base.lineHeight : layout.height)
+    const width = rich?.width ?? stacked?.width ?? runs?.width ?? layout.width
+    const height = rich?.height ?? stacked?.height ?? (runs ? base.lineHeight : layout.height)
     const size = rotatedSheetTextSize(width, height, direction === 'v' ? 0 : direction)
     const shrink = axis === 'row' && sheetCellShrinkToFit(cell) && size.width > availableWidth && size.width > 0
       ? availableWidth / size.width : 1

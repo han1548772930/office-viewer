@@ -38,7 +38,9 @@ import { applyCellValue, documentFromInput, workbookFromInput } from './model-ut
 import { EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type Disposable } from './events'
 import { registerSheetRangeEditorCommands } from './sheet-range-editor-commands.ts'
 import { registerSheetCellInputCommands } from './sheet-cell-input-commands.ts'
+import { registerSheetCellInlineFormatCommands } from './sheet-cell-inline-format-commands.ts'
 import { registerSheetClipboardCommands } from './sheet-clipboard-commands.ts'
+import { registerSheetFillCommands } from './sheet-fill-commands.ts'
 import { registerSheetLifecycleCommands } from './sheet-lifecycle-commands.ts'
 import { CONTENT_HISTORY_COMMAND_IDS, CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget } from './content-history-commands.ts'
 import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND, parseSheetSelectionOperation, parseSheetSelectionShortcut, SELECT_SHEET_RANGE_COMMAND, SET_SHEET_SELECTIONS_OPERATION } from './sheet-selection-commands.ts'
@@ -54,6 +56,7 @@ import { registerSheetFormatPainterCommands } from './sheet-format-painter-comma
 import { useSheetFormatPainterStore } from '../features/sheet-workbench/sheet-format-painter-store.ts'
 import { useSheetSelectionStore } from '../features/sheet-workbench/sheet-selection-store.ts'
 import { useSheetClipboardStore } from '../features/sheet-workbench/sheet-clipboard-store.ts'
+import { useSheetFillStore } from '../features/sheet-workbench/sheet-fill-store.ts'
 import type { HistorySavepoint } from '../platform/history/history-types.ts'
 import { normalizeSheetSelection, resolveVisibleSheetSelection, type SheetSelectionOptions, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
 import { planSheetSelectionShortcut } from '../features/sheet-workbench/sheet-selection-navigation.ts'
@@ -76,6 +79,7 @@ import {
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
 import { createChartDefinition, updateChartDefinition, type ChartConfig, type ChartUpdatePatch } from '../features/charts/chart-engine'
+import { publishChartImageResourceCandidate, pruneChartImageResources } from '../features/charts/chart-image-resources.ts'
 import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
 import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, updateSlicerPresentation, type SlicerCreateInput, type SlicerPresentationPatch } from '../features/slicer/slicer-engine'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
@@ -145,6 +149,7 @@ export class OfficeStudio {
   readonly sheetFormatPainter: ReturnType<typeof useSheetFormatPainterStore>
   readonly sheetSelections: ReturnType<typeof useSheetSelectionStore>
   readonly sheetClipboard: ReturnType<typeof useSheetClipboardStore>
+  readonly sheetFill: ReturnType<typeof useSheetFillStore>
   readonly documentInput: ReturnType<typeof useDocumentInputStore>
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
@@ -180,6 +185,7 @@ export class OfficeStudio {
     this.sheetFormatPainter = useSheetFormatPainterStore(this.pinia)
     this.sheetSelections = useSheetSelectionStore(this.pinia)
     this.sheetClipboard = useSheetClipboardStore(this.pinia)
+    this.sheetFill = useSheetFillStore(this.pinia)
     this.documentInput = useDocumentInputStore(this.pinia)
     const workbook = workbookFromInput(options.workbook ?? this.editor.workbook.model)
     const document = documentFromInput(options.document ?? this.editor.document.model)
@@ -684,6 +690,7 @@ export class OfficeStudio {
       throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '图表准备结果与候选身份不匹配')
     }
     Object.assign(seed, cloneModel(chart))
+    publishChartImageResourceCandidate(plan.candidate, seed)
     return plan.publish()
   }
 
@@ -1088,6 +1095,7 @@ export class OfficeStudio {
     this.assertAlive()
     if (this.workbooks.has(id)) {
       this.sheetClipboard.clearUnit(id)
+      this.sheetFill.clear(id)
       this.sheetSelections.removeUnit(id)
       this.chartStatisticsService.forgetDocument(id)
       this.computeClient.forgetDocument(id)
@@ -1136,6 +1144,8 @@ export class OfficeStudio {
     this.sheetSelections.$dispose()
     this.sheetClipboard.clear()
     this.sheetClipboard.$dispose()
+    this.sheetFill.clear()
+    this.sheetFill.$dispose()
     this.documentInput.clear()
     this.pendingDocumentInputPublications.clear()
     this.documentInput.$dispose()
@@ -1216,6 +1226,7 @@ export class OfficeStudio {
   private advanceWorkbookRevision(id: string): void {
     const revision = (this.workbookRevisions.get(id) ?? 0) + 1
     this.workbookRevisions.set(id, revision)
+    this.sheetFill.clearSession(id)
     this.numericIndexService.setDocumentRevision(id, revision)
     this.chartStatisticsService.setDocumentRevision(id, revision)
   }
@@ -1498,7 +1509,9 @@ export class OfficeStudio {
     })
     registerSheetRangeEditorCommands(this)
     this.stopModelSync.push(registerSheetCellInputCommands(this).dispose)
+    this.stopModelSync.push(registerSheetCellInlineFormatCommands(this).dispose)
     this.stopModelSync.push(registerSheetClipboardCommands(this).dispose)
+    this.stopModelSync.push(registerSheetFillCommands(this).dispose)
     this.stopModelSync.push(registerSheetLifecycleCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisDimensionCommands(this).dispose)
     this.stopModelSync.push(registerSheetAxisVisibilityCommands(this).dispose)
@@ -1773,6 +1786,7 @@ export class OfficeStudio {
       const chart = requireChart(model, chartId)
       this.assertCanEditWorksheet(unitId, chart.sheetId)
       model.charts = model.charts?.filter((item) => item.id !== chartId)
+      pruneChartImageResources(model)
     }))
     this.registerCommand<{ unitId: string; pivotTableId: string; source: PivotTableSourceInput; anchor: PivotTableAnchorInput }, boolean>('sheet.command.add-pivot-table', ({ unitId, pivotTableId, source, anchor }) => this.commitPivotChange(unitId, pivotTableId, anchor.subUnitId, 'sheet.command.add-pivot-table', 'Add pivot table', (model) => {
       if (model.pivotTables?.some((pivot) => pivot.id === pivotTableId)) throw new Error(`Pivot table already exists: ${pivotTableId}`)

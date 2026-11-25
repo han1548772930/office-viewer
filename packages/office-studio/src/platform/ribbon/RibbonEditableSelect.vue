@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { AutoComplete } from 'antdv-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { confirmRibbonDraft } from './ribbon-fonts'
 import type { RibbonItem } from './ribbon-schema'
+import { RibbonEditorFocusScopeKey } from './ribbon-popup-scope'
 
 const props = defineProps<{ item: RibbonItem; open: boolean; measurement: boolean; inputId: string }>()
 const emit = defineEmits<{ execute: [value: string | number]; 'update:open': [value: boolean] }>()
 const draft = ref<string>()
 const navigating = ref(false)
+const editorFocusScope = inject(RibbonEditorFocusScopeKey, undefined)
 const options = computed(() => (props.item.options ?? []).map(option => ({ ...option, value: String(option.value), source: option.value })))
 const displayValue = computed(() => draft.value ?? options.value.find(o => o.source === props.item.value)?.label ?? String(props.item.value ?? ''))
 function reset() { draft.value = undefined; navigating.value = false }
@@ -35,7 +37,7 @@ function onKey(event: KeyboardEvent) {
       :style="{ fontFamily: item.edit?.kind === 'font' && typeof item.value === 'string' ? item.value : undefined }"
       @search="value => { draft = value; navigating = false }" @blur="reset" @open-change="value => emit('update:open', value)"
       @select="value => finish(options.find(option => option.value === value)?.source)">
-      <template #optionRender="{ option }"><span :style="option.data.preview">{{ option.data.label }}</span></template>
+      <template #optionRender="{ option }"><span :data-ribbon-editor-owner="editorFocusScope?.ownerId" :style="option.data.preview">{{ option.data.label }}</span></template>
       <template #suffix><ChevronDown :size="12" aria-hidden="true" /></template>
     </AutoComplete>
   </span>

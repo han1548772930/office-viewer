@@ -33,6 +33,7 @@ export function createTextMeasurer(): LayoutMeasurer {
 
 export type RawGlyph = Omit<LayoutGlyph, 'x' | 'y' | 'height'>
 export interface RawLine { glyphs: RawGlyph[]; start: number; end: number; width: number; fontHeight: number }
+export interface TextWrappingOptions { softWrap?: boolean; tabSize?: number }
 
 /** Leader text is measured decoration; the original tab remains one UTF-16 glyph. */
 function tabLeaderGlyph(width: number, leader: LayoutTabLeader, font: string, measurer: LayoutMeasurer): LayoutTabGlyph {
@@ -55,7 +56,8 @@ function tabLeaderGlyph(width: number, leader: LayoutTabLeader, font: string, me
 
 export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: number) => number), measurer: LayoutMeasurer, wordWrap = false, minimumFontHeight = 14.67,
   rightTabs?: readonly LayoutRightTabStop[] | ((line: number) => readonly LayoutRightTabStop[]),
-  display?: { references?: ReadonlyMap<string, LayoutNoteGlyphDisplay>; leading?: LayoutNoteGlyphDisplay }): RawLine[] {
+  display?: { references?: ReadonlyMap<string, LayoutNoteGlyphDisplay>; leading?: LayoutNoteGlyphDisplay },
+  options: TextWrappingOptions = {}): RawLine[] {
   const tokens: RawGlyph[] = []
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
   let offset = 0
@@ -114,6 +116,13 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
   for (let index = 0; index < tokens.length;) {
     const token = tokens[index]!
     if (token.text === '\n' || token.text === '\u2028') { commit(token.offset); lineStart = token.end; index++; continue }
+    if (token.text === '\t' && options.tabSize !== undefined) {
+      const step = Math.max(1, measurer.measure(' '.repeat(options.tabSize), token.font))
+      let advance = step - lineWidth % step
+      if (options.softWrap !== false && lineWidth > 0 && lineWidth + advance > availableWidth()) { commit(token.offset); advance = step }
+      glyphs.push({ ...token, width: advance, tab: { leader: 'none', leaderText: '', leaderWidth: 0 } })
+      lineWidth += advance; index++; continue
+    }
     let tab = token.text === '\t' ? currentRightTab(token.offset) : undefined
     if (tab) {
       let followingWidth = 0
@@ -137,9 +146,9 @@ export function wrapRuns(runs: readonly DocumentRun[], width: number | ((line: n
     if (!wordWrap && joinsWord(token)) while (end < tokens.length && joinsWord(tokens[end]!)) end++
     const word = tokens.slice(index, end)
     const wordWidth = word.reduce((sum, glyph) => sum + glyph.width, 0)
-    if (lineWidth > 0 && lineWidth + wordWidth > availableWidth()) commit(token.offset)
+    if (options.softWrap !== false && lineWidth > 0 && lineWidth + wordWidth > availableWidth()) commit(token.offset)
     for (const glyph of word) {
-      if (lineWidth > 0 && lineWidth + glyph.width > availableWidth()) commit(glyph.offset)
+      if (options.softWrap !== false && lineWidth > 0 && lineWidth + glyph.width > availableWidth()) commit(glyph.offset)
       glyphs.push(glyph); lineWidth += glyph.width
     }
     index = end

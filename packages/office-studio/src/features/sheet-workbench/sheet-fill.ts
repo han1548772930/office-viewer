@@ -1,7 +1,8 @@
-import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { applyExcelCellView, toExcelCellView, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
-import { translateFormulaReferences } from '../formula/formula-references.ts'
-import { sheetCellNumberValue } from './sheet-number-presentation.ts'
+import { createBlankWorkbook, createCell } from '../../domain/model.ts'
+import { createSheetAutoFillPlan, SHEET_FILL_SYNC_CELL_BUDGET } from './sheet-auto-fill.ts'
+import { resolveSheetFillTarget, sheetFillPointerTarget } from './sheet-fill-target.ts'
 
 export interface SheetFillCellPatch {
   row: number
@@ -48,7 +49,7 @@ export function detectSheetFillDownEndRow(source: GridRange, sheet: Pick<ExcelSh
 function hasCellContent(sheet: Pick<ExcelSheetView, 'cells'>, column: number, row: number): boolean {
   const address = `${columnName(column)}${row + 1}`
   const cell = sheet.cells[address]
-  return Boolean(cell?.formula || cell?.value)
+  return Boolean(cell?.formula || cell && (cell.rawValue !== undefined && cell.rawValue !== null && cell.rawValue !== '' || cell.value !== ''))
 }
 
 function columnName(index: number): string {
@@ -57,136 +58,44 @@ function columnName(index: number): string {
   return result
 }
 
+/** View-only compatibility adapter delegates to the same domain planner. It
+ * cannot carry workbook resources; Canvas authoring uses the complete model. */
 export function createSheetFillPlan(
   source: GridRange,
   target: { row: number; column: number },
   sourceCells: readonly (readonly (ExcelCellView | undefined)[])[],
   options: SheetFillOptions = {},
 ): SheetFillPlan {
-  const range = {
-    startRow: Math.min(source.startRow, target.row),
-    endRow: Math.max(source.endRow, target.row),
-    startColumn: Math.min(source.startColumn, target.column),
-    endColumn: Math.max(source.endColumn, target.column),
+  const sourceRange = { startRow: source.startRow, endRow: source.endRow, startCol: source.startColumn, endCol: source.endColumn }
+  const selection = sheetFillPointerTarget(sourceRange, target.row, target.column)
+  const resolved = resolveSheetFillTarget(sourceRange, selection)
+  const range = { startRow: selection.startRow, endRow: selection.endRow, startColumn: selection.startCol, endColumn: selection.endCol }
+  if (!resolved) return { range, cellPatches: [] }
+  const work = (selection.endRow - selection.startRow + 1) * (selection.endCol - selection.startCol + 1)
+  if (work > SHEET_FILL_SYNC_CELL_BUDGET) throw new RangeError('?????????????')
+  const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]!
+  sheet.rowCount = Math.max(sheet.rowCount ?? 1, source.endRow + 1, selection.endRow + 1)
+  sheet.columnCount = Math.max(sheet.columnCount ?? 1, source.endColumn + 1, selection.endCol + 1)
+  for (let r = 0; r < (options.targetCells?.length ?? 0); r++) {
+    const row = options.targetCells![r]!
+    for (let c = 0; c < row.length; c++) if (row[c]) {
+      const position = { row: selection.startRow + r, col: selection.startCol + c }
+      sheet.cells[`${position.row}:${position.col}`] = applyExcelCellView(position, row[c]!)
+    }
   }
-  const sourceHeight = source.endRow - source.startRow + 1
-  const sourceWidth = source.endColumn - source.startColumn + 1
-  const applyType = options.applyType ?? 'SERIES'
-  const verticalSeries = sourceWidth === 1 && target.column === source.startColumn
-  const horizontalSeries = sourceHeight === 1 && target.row === source.startRow
-  const seriesStep = applyType === 'SERIES'
-    ? inferNumericStep(sourceCells, verticalSeries ? 'vertical' : horizontalSeries ? 'horizontal' : undefined)
-    : undefined
+  for (let r = 0; r <= source.endRow - source.startRow; r++) for (let c = 0; c <= source.endColumn - source.startColumn; c++) {
+    const cell = sourceCells[r]?.[c], position = { row: source.startRow + r, col: source.startColumn + c }, key = `${position.row}:${position.col}`
+    if (cell) sheet.cells[key] = applyExcelCellView(position, cell)
+    else delete sheet.cells[key]
+  }
+  const plan = createSheetAutoFillPlan(workbook, sheet.id, sourceRange, selection, { applyType: options.applyType })
+  if (!plan.sheet || !plan.result.accepted) return { range, cellPatches: [] }
   const cellPatches: SheetFillCellPatch[] = []
-
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      if (row >= source.startRow && row <= source.endRow && column >= source.startColumn && column <= source.endColumn) continue
-      const sourceRow = source.startRow + ((row - source.startRow) % sourceHeight + sourceHeight) % sourceHeight
-      const sourceColumn = source.startColumn + ((column - source.startColumn) % sourceWidth + sourceWidth) % sourceWidth
-      const cell = sourceCells[sourceRow - source.startRow]?.[sourceColumn - source.startColumn]
-      if (!cell) continue
-      const existing = options.targetCells?.[row - range.startRow]?.[column - range.startColumn]
-      const copy = applyType === 'ONLY_FORMAT'
-        ? mergeCellFormat(existing, cell)
-        : applyType === 'NO_FORMAT'
-          ? mergeCellContent(existing, cell)
-          : cloneCell(cell)
-      if (applyType !== 'ONLY_FORMAT' && copy.formula) {
-        translateFormula(copy, row - sourceRow, column - sourceColumn)
-      } else if (applyType === 'SERIES' && seriesStep !== undefined && (verticalSeries || horizontalSeries)) {
-        const index = verticalSeries ? row - source.startRow : column - source.startColumn
-        const generated = seriesValue(sourceCells, verticalSeries ? 'vertical' : 'horizontal', index, seriesStep)
-        if (generated !== undefined) setLiteralValue(copy, generated)
-      }
-      cellPatches.push({ row, column, cell: copy })
+  for (const destination of plan.result.ranges) for (let row = destination.startRow; row <= destination.endRow; row++) {
+    for (let column = destination.startCol; column <= destination.endCol; column++) {
+      const cell = plan.sheet.cells[`${row}:${column}`] ?? createCell(row, column, null)
+      cellPatches.push({ row, column, cell: toExcelCellView(cell) })
     }
   }
-
   return { range, cellPatches }
-}
-
-/** Generates a formula-free number series for one-dimensional numeric input. */
-function inferNumericStep(cells: readonly (readonly (ExcelCellView | undefined)[])[], axis?: 'vertical' | 'horizontal'): number | undefined {
-  if (!axis || !cells.length) return undefined
-  const values = axis === 'vertical' ? cells.map(row => numericValue(row[0])) : cells[0]!.map(numericValue)
-  if (values.some(value => value === undefined)) return undefined
-  if (values.length === 1) return 1
-  const step = values[values.length - 1]! - values[values.length - 2]!
-  if (values.slice(1).some((value, index) => value! - values[index]! !== step)) return undefined
-  return step
-}
-
-function numericValue(cell: ExcelCellView | undefined): number | undefined {
-  if (!cell || cell.formula) return undefined
-  const value = sheetCellNumberValue(cell)
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  return undefined
-}
-
-function seriesValue(
-  cells: readonly (readonly (ExcelCellView | undefined)[])[],
-  axis: 'vertical' | 'horizontal',
-  index: number,
-  step: number,
-): number | undefined {
-  const seeds = axis === 'vertical' ? cells.map(row => numericValue(row[0])) : cells[0]!.map(numericValue)
-  const first = seeds[0]
-  return first === undefined ? undefined : first + step * index
-}
-
-function setLiteralValue(cell: ExcelCellView, value: number): void {
-  cell.value = String(value)
-  cell.rawValue = value
-  cell.formula = undefined
-  cell.dataType = 'number'
-  cell.cachedDataType = null
-  cell.cachedValue = undefined
-  cell.displayValue = undefined
-}
-
-function translateFormula(cell: ExcelCellView, rowOffset: number, columnOffset: number): void {
-  cell.formula = translateFormulaReferences(cell.formula!, rowOffset, columnOffset)
-  cell.value = ''
-  cell.cachedValue = undefined
-  cell.rawValue = null
-  cell.dataType = 'formula'
-  cell.cachedDataType = null
-  cell.displayValue = undefined
-}
-
-const CELL_FORMAT_KEYS = [
-  'bold', 'italic', 'underline', 'strike', 'align', 'vertical', 'background', 'color', 'fontSize',
-  'numberFormat', 'rawNumberFormat', 'fontFamily', 'wrap', 'wrapStrategy', 'border', 'rotation', 'rotationVertical', 'indent', 'shrinkToFit',
-] as const
-
-function mergeCellFormat(target: ExcelCellView | undefined, source: ExcelCellView): ExcelCellView {
-  const result = cloneCell(target ?? { value: '' })
-  for (const key of CELL_FORMAT_KEYS) {
-    if (source[key] !== undefined) Object.assign(result, { [key]: source[key] })
-  }
-  return result
-}
-
-function mergeCellContent(target: ExcelCellView | undefined, source: ExcelCellView): ExcelCellView {
-  const result = cloneCell(source)
-  if (target) {
-    for (const key of CELL_FORMAT_KEYS) {
-      if (target[key] !== undefined) Object.assign(result, { [key]: target[key] })
-      else delete result[key]
-    }
-  } else {
-    for (const key of CELL_FORMAT_KEYS) delete result[key]
-  }
-  return result
-}
-
-function cloneCell(cell: ExcelCellView): ExcelCellView {
-  return {
-    ...cell,
-    border: cell.border ? Object.fromEntries(Object.entries(cell.border).map(([side, value]) => [
-      side,
-      typeof value === 'object' && value !== null ? { ...value } : value,
-    ])) : undefined,
-  }
 }

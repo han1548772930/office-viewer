@@ -1,6 +1,7 @@
-import type { ChartWordCloudShape } from '../../domain/model'
+import type { ChartImageResource, ChartWordCloudShape } from '../../domain/model'
 import { ComputeError } from '../../compute/errors'
-import { assertChartPreparationCurrent, assertChartPreparationMemory, type ChartComputePreparationContext } from './chart-compute-lifecycle'
+import { assertChartPreparationCurrent, assertChartPreparationMemory, chartPreparationBudget, type ChartComputePreparationContext } from './chart-compute-lifecycle'
+import { CHART_IMAGE_MAX_BYTES, chartImageMimeType, chartImageUrl, normalizeChartImageResource } from './chart-image-resources'
 
 export const CHART_WORD_CLOUD_MASK_CHOICES = [
   ['ArrowLeft', '左箭头'], ['ArrowRight', '右箭头'], ['Book', '书本'], ['Brain', '大脑'], ['ChatBubbles', '对话气泡'],
@@ -120,7 +121,10 @@ export function drawChartWordCloudShape(context: RasterContext, shape: ChartWord
 async function cancellable<T>(promise: Promise<T>, context: ChartComputePreparationContext, discard?: (value: T) => void): Promise<T> {
   assertChartPreparationCurrent(context)
   const signal = context.signal
-  if (!signal) { const result = await promise; assertChartPreparationCurrent(context); return result }
+  if (!signal) {
+    const result = await promise
+    try { assertChartPreparationCurrent(context); return result } catch (error) { discard?.(result); throw error }
+  }
   return new Promise<T>((resolve, reject) => {
     let cancelled = false
     const abort = () => { cancelled = true; reject(new ComputeError('COMPUTE_CANCELLED', '词云资源准备已取消')) }
@@ -138,29 +142,97 @@ export function waitChartWordCloudFont(font: string, text: string, context: Char
   return typeof document !== 'undefined' && document.fonts ? cancellable(document.fonts.load(font, text), context) : Promise.resolve()
 }
 
+/** Only explicit locators are fetched. Host resource IDs must resolve through
+ * the owning workbook; a missing ID never becomes a relative network path. */
+type MaskImageResource = Omit<ChartImageResource, 'mimeType'> & { mimeType?: string }
+function maskImageResource(imageId: string, context: ChartComputePreparationContext): MaskImageResource | undefined {
+  const registered = context.resolveImageResource?.(imageId)
+  if (registered) {
+    const resource = normalizeChartImageResource(registered)
+    if (resource.id !== imageId) throw new ComputeError('COMPUTE_INVALID_INPUT', '词云遮罩图片资源 ID 与引用不一致')
+    return resource
+  }
+  if (CHART_WORD_CLOUD_MASK_CHOICES.some(([id]) => id === imageId)) return undefined
+  if (/^data:/i.test(imageId)) {
+    const mimeType = /^data:([^;,]+);base64,/.exec(imageId)?.[1]
+    return normalizeChartImageResource({ id: 'inline:word-cloud-mask', sourceType: 'dataUrl', source: imageId, mimeType })
+  }
+  try { return { id: 'url:word-cloud-mask', sourceType: 'url', source: chartImageUrl(imageId) } }
+  catch { throw new ComputeError('COMPUTE_INVALID_INPUT', `词云遮罩图片资源不存在：${imageId}`) }
+}
+
+/** Stream with a hard byte ceiling before constructing the decode Blob. The
+ * budget includes the retained data URL and the chunk/Blob boundary copy. */
+async function readMaskImageBlob(resource: MaskImageResource, canvasBytes: number,
+  context: ChartComputePreparationContext): Promise<Blob> {
+  const retainedBytes = canvasBytes + (resource.sourceType === 'dataUrl' ? resource.source.length * 2 : 0)
+  assertChartPreparationMemory(retainedBytes, context)
+  const limit = Math.min(CHART_IMAGE_MAX_BYTES, Math.floor((chartPreparationBudget(context) - retainedBytes) / 2))
+  if (limit <= 0) throw new ComputeError('COMPUTE_MEMORY_LIMIT', '词云遮罩图片没有可用的解码内存')
+  const response = await cancellable(fetch(resource.source, { signal: context.signal, credentials: 'omit' }), context,
+    value => { void value.body?.cancel().catch(() => {}) })
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new ComputeError('COMPUTE_INVALID_INPUT', `词云遮罩图片加载失败（${response.status}）`)
+  }
+  let mimeType: string
+  try {
+    mimeType = chartImageMimeType(response.headers.get('content-type') ?? resource.mimeType)
+    if (resource.mimeType && resource.mimeType !== mimeType) throw new TypeError('词云遮罩响应 MIME 与注册资源不一致。')
+    const declared = response.headers.get('content-length')
+    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) throw new RangeError('词云遮罩图片超过 8 MiB 或当前内存预算。')
+  } catch (error) { await response.body?.cancel(); throw error }
+  const reader = response.body?.getReader()
+  if (!reader) throw new ComputeError('COMPUTE_UNSUPPORTED_TYPE', '浏览器无法有界读取词云遮罩图片')
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  let size = 0, complete = false
+  try {
+    for (;;) {
+      const next = await cancellable(reader.read(), context)
+      if (next.done) { complete = true; break }
+      size += next.value.byteLength
+      if (!Number.isSafeInteger(size) || size > limit) throw new ComputeError('COMPUTE_MEMORY_LIMIT', '词云遮罩图片超过 8 MiB 或当前内存预算')
+      assertChartPreparationMemory(retainedBytes + size * 2, context)
+      chunks.push(next.value)
+    }
+    if (!size || resource.sizeBytes !== undefined && resource.sizeBytes !== size) throw new ComputeError('COMPUTE_INVALID_INPUT', '词云遮罩图片实际长度与资源声明不一致')
+    return new Blob(chunks, { type: mimeType })
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {})
+    reader.releaseLock()
+    chunks.length = 0
+  }
+}
+
 export async function drawChartWordCloudMaskImage(owner: ChartWordCloudCanvas, imageId: string, context: ChartComputePreparationContext): Promise<void> {
   const { canvas, context: drawing } = owner
-  drawing.save(); drawing.translate(canvas.width / 2, canvas.height / 2); drawing.scale(canvas.width * 0.48, canvas.height * 0.48); drawing.fillStyle = '#000'
-  const builtin = builtinMask(drawing, imageId)
-  drawing.restore()
-  if (builtin) return
   let bitmap: ImageBitmap | undefined
   let image: HTMLImageElement | undefined
   let objectUrl: string | undefined
   try {
-    const response = await fetch(imageId, { signal: context.signal, credentials: 'omit' })
-    if (!response.ok) throw new ComputeError('COMPUTE_INVALID_INPUT', `词云遮罩图片加载失败（${response.status}）`)
-    const blob = await response.blob()
-    assertChartPreparationCurrent(context); assertChartPreparationMemory(blob.size + canvas.width * canvas.height * 8, context)
+    assertChartPreparationCurrent(context)
+    const resource = maskImageResource(imageId, context)
+    if (!resource) {
+      drawing.save()
+      try {
+        drawing.translate(canvas.width / 2, canvas.height / 2); drawing.scale(canvas.width * 0.48, canvas.height * 0.48); drawing.fillStyle = '#000'
+        builtinMask(drawing, imageId)
+      } finally { drawing.restore() }
+      return
+    }
+    const canvasBytes = canvas.width * canvas.height * 8
+    const blob = await readMaskImageBlob(resource, canvasBytes, context)
+    const retainedBytes = blob.size + canvasBytes + (resource.sourceType === 'dataUrl' ? resource.source.length * 2 : 0)
+    assertChartPreparationCurrent(context); assertChartPreparationMemory(retainedBytes, context)
     if (typeof createImageBitmap === 'function') {
       bitmap = await cancellable(createImageBitmap(blob), context, value => value.close())
-      assertChartPreparationMemory(blob.size + bitmap.width * bitmap.height * 4 + canvas.width * canvas.height * 8, context)
+      assertChartPreparationMemory(retainedBytes + bitmap.width * bitmap.height * 4, context)
       drawing.drawImage(bitmap, canvas.width * 0.02, canvas.height * 0.02, canvas.width * 0.96, canvas.height * 0.96)
     } else {
       if (typeof document === 'undefined') throw new ComputeError('COMPUTE_UNSUPPORTED_TYPE', '浏览器无法解码词云遮罩图片')
       objectUrl = URL.createObjectURL(blob); image = document.createElement('img'); image.src = objectUrl
       await cancellable(image.decode(), context)
-      assertChartPreparationMemory(blob.size + image.naturalWidth * image.naturalHeight * 4 + canvas.width * canvas.height * 8, context)
+      assertChartPreparationMemory(retainedBytes + image.naturalWidth * image.naturalHeight * 4, context)
       drawing.drawImage(image, canvas.width * 0.02, canvas.height * 0.02, canvas.width * 0.96, canvas.height * 0.96)
     }
   } catch (error) {

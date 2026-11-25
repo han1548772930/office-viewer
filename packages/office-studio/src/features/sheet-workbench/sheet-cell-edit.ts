@@ -65,3 +65,15 @@ export function editSheetCellText(cell: ExcelCellView | undefined, input: string
     ...(parsed?.numberFormat ? { rawNumberFormat: parsed.numberFormat, numberFormat: detectedFormat === 'custom' ? undefined : detectedFormat } : {}),
     displayValue: formatSheetValue(value, numberPattern, date1904, region) ?? (value === null ? '' : String(value)) }
 }
+
+/** Rich text remains text when an existing text cell happens to contain a number or date. */
+export function editSheetCellInlineText(cell: ExcelCellView | undefined, input: string, date1904 = false, region = 'zh-CN', currentYear?: number): ExcelCellView {
+  const edited = editSheetCellText(cell, input, date1904, region, currentYear)
+  if (edited.formula || typeof cell?.rawValue !== 'string'
+    || typeof edited.rawValue !== 'number' && typeof edited.rawValue !== 'boolean') return edited
+  const pattern = sheetCellNumberPattern(cell)
+  const text = !isSheetTextNumberFormat(pattern) && input.startsWith("'") ? input.slice(1) : input
+  return { ...cell, value: text, rawValue: text, formula: undefined,
+    dataType: isForcedSheetCellValueType(cell.dataType) ? 'force_string' : 'text', cachedDataType: null,
+    cachedValue: undefined, displayValue: formatSheetValue(text, pattern, date1904, region) ?? text }
+}

@@ -66,6 +66,9 @@ window.selectionInputFixture = {
       revision: studio.getWorkbookRevision(id), dirty: studio.editor.history.isDirty(id) }
   },
   commands: () => copy(commands), notifications: () => copy(notices),
+  fillSession: () => copy(studio.sheetFill.getView(studio.activeWorkbookId) ?? null),
+  fillCommand: (id, params = {}) => api.executeCommandSync(id, { unitId: studio.activeWorkbookId,
+    subUnitId: current().activeSheetId, ...params }),
   errors: () => studio.getEventListenerErrors().map(item => ({ name: item.eventName, error: String(item.error) })),
   appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
   cancel: value => { canceled = value }, observer: mode => { observerMode = mode },
@@ -77,10 +80,12 @@ window.selectionInputFixture = {
   seed: ({ entries = [], merges = [], hiddenRows = [], hiddenColumns = [], rowHiddenSpans, columnHiddenSpans, freeze } = {}) => {
     const next = copy(current()), sheet = next.sheets.find(item => item.id === next.activeSheetId)
     sheet.cells = {}
-    for (const { row = 0, column = 0, value, richText, pattern = 'General' } of entries) {
+    for (const { row = 0, column = 0, value, richText, formula, style, pattern = 'General' } of entries) {
       const cell = createCell(row, column, value)
       cell.style.numberFormat = pattern
       if (richText) cell.richText = copy(richText)
+      if (formula) { cell.formula = formula; cell.dataType = 'formula'; cell.cachedDataType = null; cell.display = formula }
+      if (style) cell.style = { ...cell.style, ...copy(style), font: { ...cell.style.font, ...copy(style.font ?? {}) } }
       sheet.cells[row + ':' + column] = cell
     }
     sheet.mergedRanges = merges; sheet.hiddenRows = hiddenRows; sheet.hiddenColumns = hiddenColumns

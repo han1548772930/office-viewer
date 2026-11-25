@@ -5,7 +5,7 @@ import { ChevronDown } from 'lucide-vue-next'
 import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { SHEET_COLOR_PRESETS, sheetColorDraftValue, sheetColorHex, sheetOpaqueColorHex, type SheetColorField, type SheetColorInputFormat } from '../../features/sheet-workbench/sheet-colors'
 import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme'
-import { RibbonPopupScopeKey } from '../../platform/ribbon/ribbon-popup-scope'
+import { RibbonPopupScopeKey, RibbonEditorFocusScopeKey } from '../../platform/ribbon/ribbon-popup-scope'
 
 const props = withDefaults(defineProps<{
   title: string; field: SheetColorField | 'border'; commandId: string; icon?: Component;
@@ -27,6 +27,7 @@ const automaticTitle = computed(() => props.field === 'background' ? translate('
 const optionsTitle = computed(() => props.split ? translate('sheet.color.options', '{title}选项').replace('{title}', props.title) : props.title)
 const popupId = useId(), inputId = `${popupId}-value`
 const popupScope = inject(RibbonPopupScopeKey, undefined)
+const editorFocusScope = inject(RibbonEditorFocusScopeKey, undefined)
 const root = ref<HTMLElement>(), palette = ref<HTMLElement>(), trigger = ref<HTMLElement>(), more = ref<HTMLElement>()
 const localOpen = ref(false), custom = ref(false), composing = ref(false)
 const unavailable = computed(() => props.disabled || props.measurement)
@@ -196,7 +197,7 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
         </Tooltip>
       </span>
       <template #panelRender="{ panel }">
-        <div :id="popupId" ref="palette" class="sheet-color-panel" role="dialog" :aria-label="optionsTitle" :dir="direction" :style="themeStyle" @keydown="onPanelKeydown" @compositionstart.capture="composing = true" @compositionend.capture="onCompositionEnd">
+        <div :id="popupId" ref="palette" class="sheet-color-panel" :data-ribbon-editor-owner="editorFocusScope?.ownerId" role="dialog" :aria-label="optionsTitle" :dir="direction" :style="themeStyle" @keydown="onPanelKeydown" @compositionstart.capture="composing = true" @compositionend.capture="onCompositionEnd">
           <span v-if="mixed" class="sheet-color-state">{{ translate('sheet.color.mixed', '混合') }}</span>
           <span v-else-if="automatic" class="sheet-color-state">{{ automaticTitle }}</span>
           <Form v-if="custom" :model="draftForm" layout="vertical" class="sheet-color-custom" @input.capture="onDraftInput" @pointerdown.capture="onCustomPointerDown" @finish="confirmCustom">

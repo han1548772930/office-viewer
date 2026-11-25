@@ -7,12 +7,15 @@ import { sheetCellInputActionForKey } from '../../features/sheet-workbench/sheet
 import { replaceSheetCellInputSelection } from '../../features/sheet-workbench/sheet-cell-edit-input.ts'
 import { createSheetCellNativeInputBridge, type SheetCellInputBridgeContext } from '../../features/sheet-workbench/sheet-cell-native-input.ts'
 import type { SheetCellNativeInputEvent } from '../../features/sheet-workbench/sheet-cell-input-trace.ts'
+import { sheetFontFormatCommandForShortcut } from '../../features/sheet-workbench/sheet-font-format-command.ts'
 
 const props = defineProps<{ address: string; value: string; editing: boolean; editSessionId?: string; inputContext?: () => SheetCellInputBridgeContext; composing?: boolean; error?: string }>()
 const emit = defineEmits<{
   (event: 'update:value', value: string): void
   (event: 'begin', selection?: { start: number; end: number }): void
   (event: 'input-event', value: SheetCellNativeInputEvent): void
+  (event: 'format-command', commandId: string): void
+  (event: 'format-keydown', value: KeyboardEvent): void
   (event: 'confirm', navigation?: { key: 'Enter' | 'Tab'; shift: boolean }): void
   (event: 'cancel'): void
   (event: 'navigate', address: string): void
@@ -67,6 +70,10 @@ function onFormulaValue(value: string): void {
 
 function onKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented || !(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
+  emit('format-keydown', event)
+  if (event.defaultPrevented) return
+  const fontCommand = sheetFontFormatCommandForShortcut(event)
+  if (fontCommand) { event.preventDefault(); emit('format-command', fontCommand); return }
   const action = sheetCellInputActionForKey(event, formulaComposing.value || props.composing)
   if (action === 'cancel') {
     event.preventDefault()
@@ -130,12 +137,13 @@ function focus(selection?: { start: number; end: number }) {
   editor.value?.focus({ preventScroll: true })
   const element = formulaElement()
   if (element && selection && !formulaComposing.value && !props.composing) element.setSelectionRange(selection.start, selection.end)
+  element?.dispatchEvent(new Event('select', { bubbles: true }))
 }
 defineExpose({ focus })
 </script>
 
 <template>
-  <div ref="root" class="formula-toolbar" :class="{ expanded }" :style="colors" data-testid="sheet-formula-bar" @keydown.stop @keydown.capture="nativeInput.capture($event, 'selection')" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="nativeInput.capture($event, 'input')" @compositionstart.capture="onFormulaComposition($event, true)" @compositionend.capture="onFormulaComposition($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')">
+  <div ref="root" class="formula-toolbar" :class="{ expanded }" :style="colors" data-testid="sheet-formula-bar" @keydown.stop @keydown.capture="nativeInput.capture($event, 'selection')" @keyup.capture="nativeInput.capture($event, 'selection')" @beforeinput.capture="nativeInput.capture($event, 'beforeinput')" @input.capture="nativeInput.capture($event, 'input')" @compositionstart.capture="onFormulaComposition($event, true)" @compositionend.capture="onFormulaComposition($event, false)" @focusin.capture="nativeInput.capture($event, 'selection')" @select.capture="nativeInput.capture($event, 'selection')">
     <Input
       v-model:value="addressDraft"
       class="name-box"

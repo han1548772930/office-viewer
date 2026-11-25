@@ -1,8 +1,9 @@
 import { createCell, defaultCellStyle, type CellRange, type SpreadsheetSheet } from '../../domain/model.ts'
-import { cellKey, parseCellKey, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { cellKey, parseCellKey, toExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { RESET_BACKGROUND_COLOR, RESET_TEXT_COLOR } from './sheet-color-reset.ts'
 import { sheetColorHex, type SheetColorField } from './sheet-colors.ts'
+import { setSheetCellRichTextFont, sheetCellFontValues } from './sheet-cell-rich-text-style.ts'
 
 export type SheetFontMark = 'bold' | 'italic' | 'underline' | 'strike'
 export type SheetFontFormatAction = { kind: 'mark'; field: SheetFontMark; value?: boolean }
@@ -199,9 +200,12 @@ export function applySheetFontFormatCommand(sheet: SpreadsheetSheet, ranges: rea
     let changed = false
     for (const { row, col } of targets) {
       const key = `${row}:${col}`, current = sheet.cells[key]
-      if ('family' in property ? (current?.style.font.family ?? fontDefaults.family) === property.family : (current?.style.font.size ?? fontDefaults.size) === property.size) continue
+      const rich = setSheetCellRichTextFont(current?.richText, 'family' in property ? 'family' : 'size', reset ? null : 'family' in property ? property.family : property.size)
+      const same = 'family' in property ? (current?.style.font.family ?? fontDefaults.family) === property.family : (current?.style.font.size ?? fontDefaults.size) === property.size
+      if (same && !rich.changed) continue
       const cell = current ?? createCell(row, col)
       cell.style.font = { ...cell.style.font, ...property }
+      if (rich.changed) cell.richText = rich.runs ?? undefined
       sheet.cells[key] = cell
       changed = true
     }
@@ -211,24 +215,32 @@ export function applySheetFontFormatCommand(sheet: SpreadsheetSheet, ranges: rea
     let changed = false
     for (const cell of Object.values(sheet.cells)) {
       if (filtered.has(cell.row) || !inScope(ranges, cell.row, cell.col)) continue
-      if (action.field === 'color' ? cell.style.font.color == null : cell.style.fill == null) continue
+      const rich = action.field === 'color' ? setSheetCellRichTextFont(cell.richText, 'color', null) : undefined
+      if ((action.field === 'color' ? cell.style.font.color == null : cell.style.fill == null) && !rich?.changed) continue
       if (action.field === 'color') cell.style.font.color = null
       else cell.style.fill = null
+      if (rich?.changed) cell.richText = rich.runs ?? undefined
       changed = true
     }
     return changed
   }
   const targets = [...positions(ranges, filtered)]
-  const value = action.kind === 'mark' ? action.value ?? !targets.every(({ row, col }) => sheet.cells[`${row}:${col}`]?.style.font[action.field] === true) : action.value
+  const value = action.kind === 'mark' ? action.value ?? !targets.every(({ row, col }) => {
+    const cell = sheet.cells[`${row}:${col}`]
+    return sheetCellFontValues(cell ? toExcelCellView(cell) : undefined, action.field).every(value => value === true)
+  }) : action.value
   let changed = false
   for (const { row, col } of targets) {
     const key = `${row}:${col}`, current = sheet.cells[key]
     const previous = action.kind === 'mark' ? current?.style.font[action.field] ?? false : action.field === 'color' ? current?.style.font.color ?? null : current?.style.fill ?? null
-    if (previous === value) continue
+    const rich = action.kind === 'mark' ? setSheetCellRichTextFont(current?.richText, action.field, value === true)
+      : action.field === 'color' ? setSheetCellRichTextFont(current?.richText, 'color', action.value) : undefined
+    if (previous === value && !rich?.changed) continue
     const cell = current ?? createCell(row, col)
     if (action.kind === 'mark') cell.style.font[action.field] = value === true
     else if (action.field === 'color') cell.style.font.color = action.value
     else cell.style.fill = action.value
+    if (rich?.changed) cell.richText = rich.runs ?? undefined
     sheet.cells[key] = cell
     changed = true
   }
@@ -248,8 +260,11 @@ export function applySheetViewFontFormatCommand(sheet: ExcelSheetView, ranges: r
     let changed = false
     for (const { row, col } of targets) {
       const key = cellKey(row, col), current = sheet.cells[key]
-      if ('family' in property ? (current?.fontFamily ?? fontDefaults.family) === property.family : (current?.fontSize ?? fontDefaults.size) === property.size) continue
-      sheet.cells[key] = { ...(current ?? { value: '' }), ...('family' in property ? { fontFamily: property.family } : { fontSize: property.size }) }
+      const rich = setSheetCellRichTextFont(current?.richText, 'family' in property ? 'family' : 'size', reset ? null : 'family' in property ? property.family : property.size)
+      const same = 'family' in property ? (current?.fontFamily ?? fontDefaults.family) === property.family : (current?.fontSize ?? fontDefaults.size) === property.size
+      if (same && !rich.changed) continue
+      sheet.cells[key] = { ...(current ?? { value: '' }), ...('family' in property ? { fontFamily: property.family } : { fontSize: property.size }),
+        ...(rich.changed ? { richText: rich.runs } : {}) }
       changed = true
     }
     return changed
@@ -258,19 +273,24 @@ export function applySheetViewFontFormatCommand(sheet: ExcelSheetView, ranges: r
     let changed = false
     for (const [key, cell] of Object.entries(sheet.cells)) {
       const position = parseCellKey(key)
-      if (!position || filtered.has(position.row) || !inScope(ranges, position.row, position.col) || cell[action.field] == null) continue
-      sheet.cells[key] = { ...cell, [action.field]: null }
+      if (!position || filtered.has(position.row) || !inScope(ranges, position.row, position.col)) continue
+      const rich = action.field === 'color' ? setSheetCellRichTextFont(cell.richText, 'color', null) : undefined
+      if (cell[action.field] == null && !rich?.changed) continue
+      sheet.cells[key] = { ...cell, [action.field]: null, ...(rich?.changed ? { richText: rich.runs } : {}) }
       changed = true
     }
     return changed
   }
   const targets = [...positions(ranges, filtered)]
-  const value = action.kind === 'mark' ? action.value ?? !targets.every(({ row, col }) => sheet.cells[cellKey(row, col)]?.[action.field] === true) : action.value
+  const value = action.kind === 'mark' ? action.value ?? !targets.every(({ row, col }) =>
+    sheetCellFontValues(sheet.cells[cellKey(row, col)], action.field).every(value => value === true)) : action.value
   let changed = false
   for (const { row, col } of targets) {
     const key = cellKey(row, col), cell = sheet.cells[key]
-    if ((cell?.[action.field] ?? (action.kind === 'mark' ? false : null)) === value) continue
-    sheet.cells[key] = { ...(cell ?? { value: '' }), [action.field]: value }
+    const rich = action.kind === 'mark' ? setSheetCellRichTextFont(cell?.richText, action.field, value === true)
+      : action.field === 'color' ? setSheetCellRichTextFont(cell?.richText, 'color', action.value) : undefined
+    if ((cell?.[action.field] ?? (action.kind === 'mark' ? false : null)) === value && !rich?.changed) continue
+    sheet.cells[key] = { ...(cell ?? { value: '' }), [action.field]: value, ...(rich?.changed ? { richText: rich.runs } : {}) }
     changed = true
   }
   return changed

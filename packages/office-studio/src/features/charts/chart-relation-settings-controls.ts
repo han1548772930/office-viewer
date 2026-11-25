@@ -3,21 +3,23 @@ import type { ChartRelationOptions } from '../../domain/model'
 import { CHART_RELATION_DEFAULTS } from './chart-relation'
 import { CHART_POINT_SHAPE_CHOICES } from './chart-markers'
 import { fieldControl, numberControl, optionGroup, selectControl, switchControl, type ChartSettingControl } from './chart-settings-controls'
+import { chartRelationSourceFormat } from './chart-relation-data'
+import type { ChartRecords } from './chart-data'
 
 function reset(control: ChartSettingControl, key: keyof ChartRelationOptions): ChartSettingControl {
   return { ...control, canReset: config => config.options?.relation?.[key] !== undefined,
     reset: config => { if (config.options?.relation) config.options.relation[key] = undefined } }
 }
-export function chartRelationMappingControls(fieldCount: number): ChartSettingControl[] {
-  const edgeOnly = (item: ChartConfig) => item.options?.mapping?.relationFormat !== 'coWordMatrix'
+export function chartRelationMappingControls(fieldCount: number, source?: ChartRecords): ChartSettingControl[] {
+  const edgeOnly = (item: ChartConfig) => chartRelationSourceFormat(item, source) !== 'coWordMatrix'
   const edge = (item: ChartConfig) => (optionGroup(item, 'mapping').edge ??= { sourceIndex: 0, targetIndex: 1,
     valueIndex: fieldCount > 2 ? 2 : undefined })
   return [
-    { ...selectControl('mapping.relationFormat', '关系数据格式', [['edgeList', '来源、目标、权重'], ['coWordMatrix', '共词矩阵']],
-      item => item.options?.mapping?.relationFormat, (item, value) => { optionGroup(item, 'mapping').relationFormat = value }, 'edgeList'),
-      extra: '共词矩阵使用名称、分类两列，后续列标题为节点名称、数值为关系权重。',
+    { ...selectControl('mapping.relationFormat', '关系数据格式', [['auto', '自动识别（方阵优先）'], ['edgeList', '来源、目标、权重'], ['coWordMatrix', '共词矩阵']],
+      item => item.options?.mapping?.relationFormat ?? 'auto', (item, value) => { optionGroup(item, 'mapping').relationFormat = value === 'auto' ? undefined : value }, 'auto'),
+      extra: '共词矩阵使用名称、分类两列，后续列标题须与节点名称对应。已指定的边字段优先于自动识别。',
       canReset: item => item.options?.mapping?.relationFormat !== undefined,
-      reset: item => { if (item.options?.mapping) item.options.mapping.relationFormat = undefined } },
+      reset: item => { if (item.options?.mapping) item.options.mapping.relationFormat = undefined }, resetLabel: '恢复自动识别' },
     { ...fieldControl('mapping.edge.sourceIndex', '来源字段', item => item.options?.mapping?.edge?.sourceIndex ?? 0,
       (item, value) => { edge(item).sourceIndex = value ?? 0 }), visible: edgeOnly },
     { ...fieldControl('mapping.edge.targetIndex', '目标字段', item => item.options?.mapping?.edge?.targetIndex ?? 1,

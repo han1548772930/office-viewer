@@ -1,6 +1,7 @@
 import { ComputeError } from '../../compute/errors.ts'
 import { COMPUTE_LIMITS } from '../../compute/protocol.ts'
 import type { ChartStatisticsOutput, ChartStatisticsTask } from '../../compute/chart-protocol'
+import type { ChartImageResource } from '../../domain/model'
 
 export interface ChartComputePreparationContext {
   signal?: AbortSignal
@@ -10,6 +11,8 @@ export interface ChartComputePreparationContext {
   /** The owning service supplies document/revision/cancellation and transferable
    * scheduling; preparation retains only the string dictionaries on this side. */
   runChartTask?: (task: ChartStatisticsTask) => Promise<ChartStatisticsOutput>
+  /** Synchronous host registry lookup; returned data remains owned by the model. */
+  resolveImageResource?: (id: string) => ChartImageResource | undefined
 }
 
 export const CHART_PREPARATION_CHUNK = 8192

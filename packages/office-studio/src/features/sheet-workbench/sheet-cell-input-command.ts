@@ -4,12 +4,13 @@ import { normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { applyExcelCellView, cellKey, parseCellKey, toExcelCellView } from '../../services/excelViewAdapter.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { validateSheetDataValidationChanges, type SheetValidationIssue } from '../sheet-validation/validation-engine.ts'
-import { editSheetCellText, sheetCellInputText } from './sheet-cell-edit.ts'
+import { editSheetCellInlineText, editSheetCellText, sheetCellInputText } from './sheet-cell-edit.ts'
 import { getSheetCellEditConflict, type SheetCellEditConflict, type SheetCellEditSession } from './sheet-cell-edit-session.ts'
 import { editSheetCellRichText, sheetCellRichTextMatches } from './sheet-cell-rich-text-edit.ts'
 import { projectSheetCellInputEditTrace, readSheetCellInputEditTrace, replaySheetCellInputEditTrace,
   type SheetCellInputEditTrace } from './sheet-cell-input-trace.ts'
 import { isSheetTextNumberFormat } from './sheet-number-format.ts'
+import { readSheetCellInlineFormats, replaySheetCellInlineFormats, type SheetCellInlineFormatEdit } from './sheet-cell-inline-format.ts'
 
 export const COMMIT_SHEET_CELL_INPUT_COMMAND = 'sheet.command.commit-cell-input'
 export interface SheetCellInputCommandInput {
@@ -20,16 +21,17 @@ export interface SheetCellInputCommandInput {
   input: string
   session?: SheetCellEditSession
   editTrace?: SheetCellInputEditTrace
+  inlineFormats?: SheetCellInlineFormatEdit[]
   region?: string
   date1904?: boolean
   currentYear?: number
 }
-export type SheetCellInputOptions = Pick<SheetCellInputCommandInput, 'session' | 'editTrace' | 'region' | 'date1904' | 'currentYear'>
+export type SheetCellInputOptions = Pick<SheetCellInputCommandInput, 'session' | 'editTrace' | 'inlineFormats' | 'region' | 'date1904' | 'currentYear'>
 export interface SheetCellInputCommandResult {
   accepted: boolean
   changed: boolean
   issues: SheetValidationIssue[]
-  reason?: 'conflict' | 'validation' | 'rich-text-source' | 'edit-trace'
+  reason?: 'conflict' | 'validation' | 'rich-text-source' | 'edit-trace' | 'inline-format'
   conflict?: SheetCellEditConflict
   message?: string
 }
@@ -104,9 +106,11 @@ export function sheetCellInputCommandInput(value: unknown): SheetCellInputComman
   const editTrace = source.editTrace === undefined ? undefined : readSheetCellInputEditTrace(source.editTrace)
   if (editTrace && (!session?.sessionId || editTrace.sessionId !== session.sessionId)) throw new TypeError('输入范围轨迹必须绑定当前编辑会话。')
   if (editTrace && replaySheetCellInputEditTrace(editTrace) !== source.input) throw new TypeError('输入范围轨迹与最终输入不一致。')
+  if (source.inlineFormats !== undefined && (!editTrace || !session)) throw new TypeError('局部文字格式必须绑定当前编辑会话和输入轨迹。')
+  const inlineFormats = source.inlineFormats === undefined ? undefined : readSheetCellInlineFormats(source.inlineFormats, editTrace!)
   const parsed: SheetCellInputCommandInput = { unitId: identifier(source.unitId, '工作簿标识'), sheetId,
     row: coordinate(source.row, 1_048_576), column: coordinate(source.column ?? source.col, 16_384), input: source.input,
-    ...(session ? { session } : {}), ...(editTrace ? { editTrace } : {}) }
+    ...(session ? { session } : {}), ...(editTrace ? { editTrace } : {}), ...(inlineFormats ? { inlineFormats } : {}) }
   if (source.region !== undefined) parsed.region = region(source.region)
   if (source.currentYear !== undefined) parsed.currentYear = year(source.currentYear)
   if (source.date1904 !== undefined) {
@@ -150,13 +154,24 @@ export function planSheetCellInput(workbook: WorkbookModel, value: unknown, defa
   }
   if (!canViewWorksheetProtection(sheet, defaults.userId)) throw new Error('当前用户没有查看此工作表的权限。')
   const overwritesRichText = previous?.richText?.length && (!input.session || input.session.mode === 'overwrite')
-  if (!overwritesRichText && !input.editTrace?.operations.length
+  if (!overwritesRichText && !input.editTrace?.operations.length && !input.inlineFormats?.length
     && sheetCellInputText(view, date1904, interpretation.region) === input.input) return { position, result: { accepted: true, changed: false, issues: [] } }
   if (!canEditWorksheetProtection(sheet, defaults.userId)) throw new Error('此工作表受保护，当前用户没有编辑权限。')
   const range = merge ?? { startRow: position.row, endRow: position.row, startCol: position.column, endCol: position.column }
   if (!canEditProtectedRanges(sheet, [range], defaults.userId)) throw new Error('目标单元格受保护，当前用户没有编辑权限。')
-  const edited = editSheetCellText(view, input.input, date1904, interpretation.region, interpretation.currentYear)
-  if (previous?.richText?.length) {
+  const editor = input.inlineFormats?.length || previous?.richText?.length && input.session?.mode !== 'overwrite'
+    ? editSheetCellInlineText : editSheetCellText
+  const edited = editor(view, input.input, date1904, interpretation.region, interpretation.currentYear)
+  if (input.inlineFormats?.length && input.editTrace && input.session) {
+    const replay = replaySheetCellInlineFormats(view, input.editTrace, input.inlineFormats,
+      { numberFormat: input.session.source.numberFormat, overwrite: input.session.mode === 'overwrite' })
+    if (!replay || edited.formula || typeof edited.rawValue !== 'string' && edited.rawValue !== null
+      || replay.cell.rawValue !== (edited.rawValue ?? '')) {
+      return { position, result: { accepted: false, changed: false, issues: [], reason: 'inline-format',
+        message: '局部文字格式无法应用到当前输入。请保持文本类型，或取消局部格式后提交；草稿已保留。' } }
+    }
+    edited.richText = replay.cell.richText ?? (previous?.richText?.length ? null : undefined)
+  } else if (previous?.richText?.length) {
     if (input.session?.mode !== 'overwrite' && input.session && typeof edited.rawValue === 'string' && !edited.formula) {
       const operations = input.editTrace ? projectSheetCellInputEditTrace(input.editTrace, String(previous.value ?? ''), edited.rawValue,
         isSheetTextNumberFormat(input.session.source.numberFormat)) : undefined
@@ -170,7 +185,9 @@ export function planSheetCellInput(workbook: WorkbookModel, value: unknown, defa
     { date1904, previousDate1904: date1904, numberFormatLocale: interpretation.region }))
   const candidate = { ...workbook, sheets: workbook.sheets.map(item => item.id === sheet.id
     ? { ...sheet, cells: { ...sheet.cells, [cell.id]: cell } } : item) }
-  const validation = validateSheetDataValidationChanges(candidate, sheet.id, [position])
+  const formattingOnly = input.inlineFormats?.length && previous && Object.is(previous.value, cell.value)
+    && previous.formula === cell.formula && normalizeSheetCellValueType(previous.dataType) === normalizeSheetCellValueType(cell.dataType)
+  const validation = formattingOnly ? { blocked: false, issues: [] } : validateSheetDataValidationChanges(candidate, sheet.id, [position])
   if (validation.blocked) {
     const issue = validation.issues.find(item => item.severity === 'stop')!
     return { position, result: { accepted: false, changed: false, reason: 'validation', issues: cloneModel(validation.issues), message: `${issue.title}：${issue.message}` } }

@@ -21,6 +21,7 @@ export interface SheetFillSeriesPattern {
 }
 
 const CHINESE_DIGITS = '零一二三四五六七八九'
+const CHINESE_SMALL_UNITS: Readonly<Record<string, number>> = { 十: 10, 百: 100, 千: 1000 }
 const CYCLES: readonly (readonly string[])[] = [
   ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
   ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
@@ -46,7 +47,7 @@ function chineseNumber(text: string): number | undefined {
     for (const char of value) {
       const index = CHINESE_DIGITS.indexOf(char)
       if (index >= 0) digit = index
-      else { result += (digit || 1) * ({ 十: 10, 百: 100, 千: 1000 }[char] ?? 0); digit = 0 }
+      else { result += (digit || 1) * (CHINESE_SMALL_UNITS[char] ?? 0); digit = 0 }
     }
     return result + digit
   }
@@ -94,12 +95,13 @@ function classify(seed: SheetFillSeriesSeed, preferredCycle?: readonly string[])
   if (match) {
     const value = Number(match[0]), prefix = seed.value.slice(0, match.index), suffix = seed.value.slice(match.index! + match[0].length)
     if (Number.isSafeInteger(value)) return { kind: 'extend', key: JSON.stringify(['extend', prefix, suffix]), value, prefix, suffix,
-      padding: /^0\d/u.test(match[0]) ? match[0].length : 0 }
+      padding: match[0].length }
   }
-  const cycle = preferredCycle?.includes(seed.value) ? preferredCycle : CYCLES.find(items => items.includes(seed.value as string))
-  if (cycle) return { kind: 'cycle', key: 'cycle:' + CYCLES.indexOf(cycle), value: cycle.indexOf(seed.value), cycle }
   const value = chineseNumber(seed.value)
-  return value === undefined ? { kind: 'copy', key: 'other' } : { kind: 'chinese', key: 'chinese', value }
+  if (value !== undefined || seed.value === '日') return { kind: 'chinese', key: 'chinese', value: value ?? 7 }
+  const cycle = preferredCycle?.includes(seed.value) ? preferredCycle : CYCLES.find(items => items.includes(seed.value as string))
+  return cycle ? { kind: 'cycle', key: 'cycle:' + CYCLES.indexOf(cycle), value: cycle.indexOf(seed.value), cycle }
+    : { kind: 'copy', key: 'other' }
 }
 
 /** Serializable lane patterns are shared by model fills and the legacy view adapter. */
@@ -117,16 +119,24 @@ export function createSheetFillSeriesPattern(seeds: readonly SheetFillSeriesSeed
       if (first.cycle && values.length) {
         const previous = values.at(-1)!, length = first.cycle.length
         let difference = value - modulo(previous, length)
-        if (difference > length / 2) difference -= length
-        if (difference < -length / 2) difference += length
+        if (difference < 0) difference += length
         value = previous + difference
       }
       values.push(value); padding.push(classified[index]!.padding ?? 0)
     }
     const length = end - start, group: SheetFillSeriesGroup = { start, length, kind: first.kind, intercept: values[0]!, step: 1,
       cycle: first.cycle, prefix: first.prefix, suffix: first.suffix, padding }
+    // Fixed rules.ts also treats multi-seed 一/二 and 五/六 as weekday lanes.
+    const hasWeek = seeds.slice(start, end).some(seed => seed.value === '日')
+    const chineseWeek = length === 1 ? values[0]! > 0 && values[0]! < 7 || hasWeek
+      : hasWeek || values.at(-1)! < 6 && values[0]! > 0 || values[0]! < 6 && values.at(-1)! > 0
+    if (first.kind === 'chinese' && chineseWeek) {
+      group.kind = 'cycle'; group.cycle = CYCLES[11]; group.intercept = values[0]! - 1
+      for (let index = 1; index < values.length; index++) {
+        if (values[index]! < modulo(values[index - 1]! - 1, 7) + 1) values[index] = values[index]! + Math.floor((values[index - 1]! - 1) / 7 + 1) * 7
+      }
+    }
     if (length > 1) {
-      const step = values[1]! - values[0]!
       if (first.kind === 'number' || first.kind === 'date') {
         const ratio = values[0] === 0 ? NaN : values[1]! / values[0]!
         if (length > 2 && Number.isFinite(ratio) && ratio !== 0 && values.slice(1).every((value, index) => close(value, values[index]! * ratio))) group.ratio = ratio
@@ -136,7 +146,7 @@ export function createSheetFillSeriesPattern(seeds: readonly SheetFillSeriesSeed
           for (let index = 0; index < length; index++) { covariance += (index - meanX) * (values[index]! - meanY); variance += (index - meanX) ** 2 }
           group.step = covariance / variance; group.intercept = meanY - group.step * meanX
         }
-      } else if (values.slice(1).every((value, index) => close(value - values[index]!, step))) group.step = step
+      } else if (values.slice(1).every((value, index) => close(value - values[index]!, values[1]! - values[0]!))) group.step = values[1]! - values[0]!
       else group.kind = 'copy'
     }
     groups.push(group); start = end
@@ -153,7 +163,7 @@ export function sheetFillSeriesValueAt(pattern: SheetFillSeriesPattern, index: n
   const ordinal = Math.floor(index / pattern.length) * group.length + position - group.start
   const value = group.ratio === undefined ? group.intercept + group.step * ordinal : group.intercept * group.ratio ** ordinal
   if (!Number.isFinite(value)) return undefined
-  if (group.kind === 'number' || group.kind === 'date') return value
+  if (group.kind === 'number' || group.kind === 'date') return group.ratio === undefined ? Math.round(value * 100000) / 100000 : value
   if (group.kind === 'cycle') return group.cycle![modulo(Math.round(value), group.cycle!.length)]
   if (group.kind === 'chinese') return formatChineseNumber(value)
   if (!Number.isSafeInteger(value)) return undefined

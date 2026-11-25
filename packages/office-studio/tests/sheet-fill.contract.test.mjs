@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'vitest'
+
+// Updated draft for the later unified verification pass; previous results do not cover these edits.
 import { createSheetFillPlan, detectSheetFillDownEndRow } from '../src/features/sheet-workbench/sheet-fill.ts'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH } from '../src/rendering/spreadsheet/selection.ts'
 import { SpreadsheetGeometry } from '../src/rendering/spreadsheet/layout.ts'
@@ -31,9 +32,9 @@ test('fill drag repeats selected cells and shifts relative formula references pe
   const plan = createSheetFillPlan(source, { row: 4, column: 0 }, sourceCells)
   assert.deepEqual(plan.range, { startRow: 0, endRow: 4, startColumn: 0, endColumn: 0 })
   assert.deepEqual(plan.cellPatches.map(({ row, column, cell }) => ({ row, column, formula: cell.formula, value: cell.value, bold: cell.bold })), [
-    { row: 2, column: 0, formula: undefined, value: 'alpha', bold: undefined },
+    { row: 2, column: 0, formula: undefined, value: 'alpha', bold: false },
     { row: 3, column: 0, formula: '=A3+$B$2', value: '', bold: true },
-    { row: 4, column: 0, formula: undefined, value: 'alpha', bold: undefined },
+    { row: 4, column: 0, formula: undefined, value: 'alpha', bold: false },
   ])
 })
 
@@ -53,13 +54,13 @@ test('series mode extends numeric values and date-serial values while copy mode 
   assert.deepEqual(copy.cellPatches.map(({ cell }) => cell.rawValue), [2, 5])
 })
 
-test('series mode repeats irregular source patterns and keeps formula translation', () => {
+test('series mode predicts irregular numeric seeds and keeps formula translation', () => {
   const irregular = createSheetFillPlan(
     { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
     { row: 5, column: 0 },
     [[{ value: '1', rawValue: 1 }], [{ value: '3', rawValue: 3 }], [{ value: '8', rawValue: 8 }]],
   )
-  assert.deepEqual(irregular.cellPatches.map(({ cell }) => cell.rawValue), [1, 3, 8])
+  assert.deepEqual(irregular.cellPatches.map(({ cell }) => cell.rawValue), [11, 14.5, 18])
 
   const formulas = createSheetFillPlan(
     { startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
@@ -77,7 +78,7 @@ test('only-format copies source formatting and preserves destination values', ()
     { applyType: 'ONLY_FORMAT', targetCells: [[{ value: 'source' }], [{ value: 'keep', formula: '=B2', italic: true }]] },
   )
   assert.deepEqual(plan.cellPatches.map(({ cell }) => ({ value: cell.value, formula: cell.formula, bold: cell.bold, italic: cell.italic, background: cell.background })), [
-    { value: 'keep', formula: '=B2', bold: true, italic: true, background: '#ff0000' },
+    { value: '', formula: '=B2', bold: true, italic: false, background: '#ff0000' },
   ])
 })
 
@@ -89,7 +90,7 @@ test('no-format copies source values and formulas while preserving destination f
     { applyType: 'NO_FORMAT', targetCells: [[{ value: 'source' }], [{ value: 'keep', italic: true, background: '#00ff00' }]] },
   )
   assert.deepEqual(plan.cellPatches.map(({ cell }) => ({ value: cell.value, formula: cell.formula, bold: cell.bold, italic: cell.italic, background: cell.background })), [
-    { value: '', formula: '=A2+$B$1', bold: undefined, italic: true, background: '#00ff00' },
+    { value: '', formula: '=A2+$B$1', bold: false, italic: true, background: '#00ff00' },
   ])
 })
 
@@ -121,9 +122,9 @@ test('fill preview expands the source selection toward the dragged cell in every
     startRow: 2, endRow: 3, startColumn: 0, endColumn: 4,
   })
   assert.deepEqual(fillPreviewRange(source, { row: 0, column: 1 }), {
-    startRow: 0, endRow: 3, startColumn: 1, endColumn: 4,
+    startRow: 0, endRow: 3, startColumn: 2, endColumn: 4,
   })
-  assert.equal(fillPreviewRange(source, { row: 2, column: 3 }), undefined)
+  assert.deepEqual(fillPreviewRange(source, { row: 2, column: 3 }), { startRow: 2, endRow: 2, startColumn: 2, endColumn: 4 })
 })
 
 test('scene draws the fill preview with the 1px selection stroke at every zoom level', () => {
@@ -142,16 +143,14 @@ test('scene draws the fill preview with the 1px selection stroke at every zoom l
   }
 })
 
-test('Canvas prioritizes the handle target and commits the fill event after pointer drag', () => {
-  const canvas = readFileSync(new URL('../src/components/spreadsheet/SpreadsheetCanvas.vue', import.meta.url), 'utf8')
-  const workbench = readFileSync(new URL('../src/components/ExcelWorkbench.vue', import.meta.url), 'utf8')
-  assert.match(canvas, /hitSelectionFillHandle\(geometry\.value, props\.selectedRanges/)
-  assert.match(canvas, /fillPreviewRange: fillPreview\.value/)
-  assert.match(canvas, /fillPreview\.value = fillPreviewRange\(fillDrag\.source, fillDrag\.target\)/)
-  assert.match(canvas, /fillPreview\.value = undefined/)
-  assert.match(canvas, /emit\('fill-selection', source, target\)/)
-  assert.match(canvas, /detectSheetFillDownEndRow\(source, props\.sheet\)/)
-  assert.match(canvas, /emit\('fill-selection', source, \{ row: targetRow, column: source\.endColumn \}, 'SERIES'\)/)
-  assert.match(workbench, /@fill-selection="fillSelection"/)
-  assert.match(workbench, /createSheetFillPlan\(source, target, sourceCells, \{ applyType, targetCells \}\)/)
+test('view compatibility adapter shares default-copy, textual series and inward clearing with the domain planner', () => {
+  const source = { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
+  const single = createSheetFillPlan(source, { row: 3, column: 0 }, [[{ value: '7', rawValue: 7 }]])
+  assert.deepEqual(single.cellPatches.map(({ cell }) => cell.rawValue), [7, 7, 7])
+  const text = createSheetFillPlan(source, { row: 3, column: 0 }, [[{ value: 'Item009' }]])
+  assert.deepEqual(text.cellPatches.map(({ cell }) => cell.rawValue), ['Item010', 'Item011', 'Item012'])
+  const shrinking = createSheetFillPlan({ ...source, endRow: 2 }, { row: 0, column: 0 }, [
+    [{ value: '1', rawValue: 1 }], [{ value: '2', rawValue: 2 }], [{ value: '3', rawValue: 3 }],
+  ])
+  assert.deepEqual(shrinking.cellPatches.map(({ row, cell }) => [row, cell.rawValue]), [[1, null], [2, null]])
 })

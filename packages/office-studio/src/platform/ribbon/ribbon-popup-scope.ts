@@ -7,6 +7,8 @@ interface RibbonPopupScope {
 }
 
 export const RibbonPopupScopeKey: InjectionKey<RibbonPopupScope> = Symbol('RibbonPopupScope')
+/** A workbench may retain an input draft while focus visits its ribbon or teleported controls. */
+export const RibbonEditorFocusScopeKey: InjectionKey<{ ownerId: string }> = Symbol('RibbonEditorFocusScope')
 
 /** Keep one ribbon popup open per scope, with independent nested menu scopes. */
 export function provideRibbonPopupScope(direction: Readonly<Ref<'ltr' | 'rtl'>> = ref('ltr')): RibbonPopupScope {

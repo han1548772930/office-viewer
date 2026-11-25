@@ -10,7 +10,7 @@ import { chartHistogramStyleControls } from './chart-histogram-settings-controls
 import { chartCandlestickSettingsMapping } from './chart-candlestick'
 import { chartChordMappingControls } from './chart-chord-settings-controls'
 import { chartRelationMappingControls, chartRelationSettingsControls } from './chart-relation-settings-controls'
-import { CHART_WORD_CLOUD_MASK_CHOICES } from './chart-word-cloud-mask'
+import type { ChartRecords } from './chart-data'
 
 type Mapping = NonNullable<ChartSemanticOptions['mapping']>
 function resetBoxplotField(control: ChartSettingControl, field: keyof NonNullable<ChartSemanticOptions['boxplot']>): ChartSettingControl {
@@ -27,13 +27,13 @@ function gaugeMapping(config: ChartConfig, fieldCount: number): NonNullable<Mapp
 function secondary(config: ChartConfig): NonNullable<NonNullable<ChartSemanticOptions['pie']>['secondaryPlot']> { return optionGroup(config, 'pie').secondaryPlot ??= {} }
 function split(config: ChartConfig): NonNullable<NonNullable<NonNullable<ChartSemanticOptions['pie']>['secondaryPlot']>['split']> { return secondary(config).split ??= { type: 'auto' } }
 
-export function chartDataMappingControls(config: ChartConfig, fieldCount: number, data?: ChartData): ChartSettingControl[] {
+export function chartDataMappingControls(config: ChartConfig, fieldCount: number, data?: ChartData, source?: ChartRecords): ChartSettingControl[] {
   const descriptor = resolveChartType(config.type), category = fieldControl('categoryField', descriptor.dataShape === 'xy' ? '共享 X 字段' : descriptor.dataShape === 'heatmap' ? '纵轴分类字段' : '分类字段', item => item.categoryField, (item, value) => { item.categoryField = value ?? 0 })
   const values = fieldsControl('valueFields', descriptor.dataShape === 'distribution' ? '样本字段' : descriptor.dataShape === 'xy' ? 'Y 系列字段' : descriptor.dataShape === 'heatmap' ? '横轴数值字段' : '数值系列字段', item => item.valueFields, (item, value) => { item.valueFields = value })
   if (config.type === 'histogram') return [fieldControl('valueFields.histogram', '样本字段', item => item.valueFields?.[0],
     (item, value) => { item.valueFields = value === undefined ? [] : [value] })]
   if (config.type === 'chord') return chartChordMappingControls(fieldCount)
-  if (config.type === 'relation') return chartRelationMappingControls(fieldCount)
+  if (config.type === 'relation') return chartRelationMappingControls(fieldCount, source ?? data)
   if (descriptor.dataShape === 'bubble') return [
     fieldControl('mapping.bubble.xIndex', 'X 数值字段', item => item.options?.mapping?.bubble?.xIndex ?? item.categoryField ?? 0, (item, value) => { bubble(item).xIndex = value ?? 0 }),
     fieldControl('mapping.bubble.yIndex', 'Y 数值字段', item => item.options?.mapping?.bubble?.yIndex ?? item.valueFields?.[0] ?? 1, (item, value) => { bubble(item).yIndex = value ?? 1 }),
@@ -143,19 +143,6 @@ export function chartTypeSettingsControls(config: ChartConfig, fieldCount?: numb
   )
   if (descriptor.family === 'heatmap') controls.push(...chartHeatmapSettingsControls())
   if (descriptor.family === 'gauge') controls.push(...chartGaugeSettingsControls(config, fieldCount, sourceName))
-  if (descriptor.family === 'wordCloud') controls.push(
-    selectControl('wordCloud.shape', '词云形状', [['cloud', '云形'], ['rect', '矩形'], ['circle', '圆形'], ['cardioid', '心迹线'], ['heart', '心形'], ['diamond', '菱形'], ['triangle-forward', '右三角'], ['triangle', '三角形'], ['pentagon', '五边形'], ['star', '星形']], item => item.options?.wordCloud?.shape, (item, value) => { optionGroup(item, 'wordCloud').shape = value }, 'cloud'),
-    switchControl('wordCloud.repeat', '重复填充词语', item => item.options?.wordCloud?.repeat, (item, value) => { optionGroup(item, 'wordCloud').repeat = value }),
-    selectControl('wordCloud.maskImageId.builtin', '遮罩图形', CHART_WORD_CLOUD_MASK_CHOICES,
-      item => CHART_WORD_CLOUD_MASK_CHOICES.find(([id]) => id === (item.options?.wordCloud?.maskImageId ?? item.options?.wordCloud?.maskImage))?.[0],
-      (item, value) => { const options = optionGroup(item, 'wordCloud'); options.maskImageId = value; options.maskImage = undefined }),
-    { ...textControl('wordCloud.maskImageId', '遮罩图片资源', item => item.options?.wordCloud?.maskImageId ?? item.options?.wordCloud?.maskImage,
-      (item, value) => { const options = optionGroup(item, 'wordCloud'); options.maskImageId = value; options.maskImage = undefined }),
-      extra: '图片遮罩优先于词云形状；清空后恢复形状。', reset: item => { const options = optionGroup(item, 'wordCloud'); options.maskImageId = undefined; options.maskImage = undefined }, resetLabel: '清除遮罩' },
-    numberControl('wordCloud.minFontSize', '最小字号', item => item.options?.wordCloud?.minFontSize, (item, value) => { optionGroup(item, 'wordCloud').minFontSize = value }, 1, 256, 16),
-    numberControl('wordCloud.maxFontSize', '最大字号', item => item.options?.wordCloud?.maxFontSize, (item, value) => { optionGroup(item, 'wordCloud').maxFontSize = value }, 1, 256, 56),
-    numberControl('wordCloud.rotation', '词语旋转角', item => item.options?.wordCloud?.rotation, (item, value) => { optionGroup(item, 'wordCloud').rotation = value }, -90, 90, 0),
-  )
   return controls
 }
 

@@ -18,7 +18,7 @@ export function appendDocumentContainerDecoration(commands: DrawCommand[], conta
   if (container.kind === 'columns') return
   if (container.kind === 'quote') {
     commands.push({ kind: 'line', x1: rectangle.x + 3 * scale, y1: rectangle.y, x2: rectangle.x + 3 * scale,
-      y2: rectangle.y + rectangle.height, color: '#8796aa', width: 3 * scale, clip })
+      y2: rectangle.y + rectangle.height, color: container.quoteLineColor ?? '#8796aa', width: 3 * scale, clip })
     return
   }
   const config = container.callout, points = roundedPoints(rectangle, (config?.borderRadius ?? 4) * scale)

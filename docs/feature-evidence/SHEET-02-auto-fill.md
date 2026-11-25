@@ -1,34 +1,49 @@
 # SHEET-02 Auto-Fill Evidence
 
-Review date: 2026-11-21  
+Review date: 2026-11-25（代码续作；未执行本批验证）  
 Reference revision: `dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 
 ## Fixed-source contract
 
-The reference exposes `COPY`, `SERIES`, `ONLY_FORMAT`, and `NO_FORMAT` in `packages/sheets/src/services/auto-fill/type.ts`. `AutoFillService` defaults to `SERIES` and exposes these four choices in its apply menu. Fill rules in `packages/sheets/src/services/auto-fill/rules.ts` infer number/date and other recognized sequences, while formula references translate with the destination. `packages/sheets-ui/src/controllers/auto-fill-ui.controller.ts` runs the same fill command for drag and double-click. Double-click uses adjacent data to detect a downward range, prefers the left neighboring column, falls back to the right, and stops before an already occupied source cell.
+The reference exposes `COPY`, `SERIES`, `ONLY_FORMAT`, and `NO_FORMAT` in `packages/sheets/src/services/auto-fill/type.ts`. `AutoFillService` starts with `SERIES`, then uses active hooks to choose the actual default; a single ordinary numeric seed prefers `COPY`. `packages/sheets/src/commands/commands/auto-fill.command.ts` registers auto-fill, copy-down/right and shrink-to-clear; `refill.command.ts` accepts `{ type }`. `AutoFillService.fillData()` returns success after applying a prepared fill and updates the menu even when content is equivalent. `rules.ts` and `tools.ts` define numeric/date, text-number, Chinese-number/weekday and cycling names. The Chinese multi-seed branch recognizes 一/二 and 五/六 as weekdays, while 十/十一 continue as Chinese numbers.
+
+`packages/sheets-ui/src/controllers/auto-fill-ui.controller.ts` runs the same fill command for drag and double-click. Double-click uses adjacent data to detect a downward range, prefers the left neighboring column, falls back to the right, and stops before an already occupied source cell. `selection-shape-extension.ts` supplies the handle gesture and preview contract. CF and validation resource hooks follow the same fixed-version clipboard resource contracts; the local implementation reuses its existing clipboard resource projection.
 
 ## Local implementation
 
-- `packages/office-studio/src/features/sheet-workbench/sheet-fill.ts` now defines the four apply modes. `SERIES` extends a regular one-dimensional numeric pattern and numeric date serials, translates formulas, and falls back to repeating the source pattern when numeric continuation cannot be inferred. `COPY` repeats values/formulas and translates formulas. `ONLY_FORMAT` overlays source formatting while retaining destination values/formulas. `NO_FORMAT` copies source values/formulas and retains destination formatting.
-- `detectSheetFillDownEndRow()` implements downward adjacent-data detection with left-first/right-fallback selection and stops before occupied cells in the fill columns.
-- `SpreadsheetCanvas.vue` recognizes double-click on the selection fill handle and emits a `SERIES` fill for the detected range. Pointer-drag also emits a fill event.
-- `ExcelWorkbench.vue` snapshots the target cell grid for the plan, validates non-format fills against data validation, checks protected ranges, applies the plan to the workbook view, recalculates formulas, and commits through the existing workbook history.
-- Contract tests cover numeric and date serial continuation, irregular pattern repetition, formula translation, format-only/value-only behavior, double-click range detection, drag preview and event wiring.
+- `features/sheet-workbench/sheet-auto-fill.ts` prepares one detached model candidate for upwards/downwards/left/right extension or trailing-content clear. `sheet-fill-target.ts` supplies the same geometry to command, Facade and Canvas preview; ranges cannot expand both axes or both directions at once.
+- `sheet-fill-series.ts` infers each row/column lane independently: numeric least-squares continuation rounded to five decimal places, geometric continuation with at least three matching seeds, numeric date serials, the last text-number segment and padding, Chinese numbers/weekdays, English weekdays/months, Chinese months, 时辰/天干/季度 loops. Unrecognized groups repeat their seed. A single ordinary number defaults to COPY; explicit SERIES remains available.
+- COPY repeats complete content/style and translates relative formulas. SERIES generates recognized values and repeats unrecognized seeds. ONLY_FORMAT replaces the complete source style and applies CF/merge resources while retaining destination content and validation. NO_FORMAT generates/copies content and validation while retaining destination styles, CF and merge structure. The planner reuses `sheet-clipboard-cell.ts` and `sheet-clipboard-resources.ts`; formula cache, rich-text, sparkline, partial/backward resource tiles and per-cell formula anchors follow those shared contracts.
+- Source/target filter-hidden rows are excluded; manually hidden and outline-hidden rows remain in the fill. Permissions are checked before preparation and publication. Partial merges and merges crossing filter holes are rejected. Non-format candidates are validated atomically; stop issues reject and warning/information issues remain in the detailed result.
+- `api/sheet-fill-commands.ts` registers `sheet.command.auto-fill`, `refill`, `copy-down`, `copy-right` and `auto-clear-content`. `FRange.autoFill(target, applyType?)` uses the same command; `FOffice.Enum.AUTO_FILL_APPLY_TYPE` and public command/types are exported. Both `type` and `applyType` are normalized for refill; conflicting values are rejected.
+- `sheet-fill-store.ts` keeps the transient original sheet, selection, user, unit/sheet IDs, revision and history receipt in Pinia. Refill replaces the exact applied top history entry and preserves the initial undo. Equivalent mode switches update the menu without manufacturing a content edit. An initially unchanged fill succeeds and updates the selection; its later changing refill creates a new entry, so it cannot amend an unrelated earlier edit. Later content revisions release the obsolete session. The transient session is absent from saved snapshots.
+- `use-sheet-auto-fill.ts` captures host/revision before executing and only publishes a current prepared view. `ExcelWorkbench.vue` uses this bridge for Canvas, Ribbon and Ctrl/Cmd+D/R. `SpreadsheetCanvas.vue` displays `SheetFillOptions.vue`, an antdv-next Button/Dropdown with four modes, SERIES capability, selected state and focus restoration. Frozen-pane/viewport placement reuses `sheetClipboardOverlayPosition`; internal/external ConfigProvider and theme tokens continue to apply.
+- `detectSheetFillDownEndRow()` retains left-first/right-fallback and treats raw 0/false as occupied. Double-click uses the shared inferred default. Shrink gestures clear only trailing content, and the existing viewport-edge scroll scheduler recalculates the same preview/target.
+- The old `createSheetFillPlan()` is now a compatibility adapter to this same planner. The standalone controlled workbench uses the same model planner and its existing change/history callback; it does not create a private undo stack.
 
 ## Gaps and unverified behavior
 
-- There is no visible post-fill options menu yet, so users cannot choose COPY, ONLY_FORMAT, or NO_FORMAT from the canvas. The planner accepts these modes for the shared command path, but only SERIES is currently emitted by the canvas.
-- Sequence detection currently covers regular numeric values and numeric date serials only. Weekday/month names, textual numeric suffixes, Chinese numeral sequences, date increments by calendar unit, and formula series rules remain unimplemented.
-- Fill range detection and fill preview have not been browser-verified. Viewport-edge auto-scroll was added in the 2026-11-23 continuation below, and remains unverified.
-- Undo/redo is committed through existing workbook history, but no browser or Office file round-trip validation was performed for this operation.
+- The synchronous source-plus-destination budget is 100,000 cells. Larger fills explicitly require the still-pending chunked Worker/Rust/WASM path; no large-range support or performance target is claimed.
+- The standalone controlled workbench has no refill options because its external history currently does not supply an amendment receipt. This remains an interface/behavior gap, not a final scope reduction.
+- All sequence families, mixed groups, reverse/wrapped boundaries, date calendar-unit behavior and formula edge cases still require unified comparison against samples. Numeric date serial continuation does not establish full calendar filling semantics.
+- True Windows IME, theme/popup focus, frozen/merged placement, edge auto-scroll, permission changes, observer reentry and memory lifetime require browser verification. Model/Facade snapshot drafts are not independent Office export/reopen evidence.
 
-## Verification
+## Historical verification — 2026-11-21 only
 
 - `pnpm.cmd exec vitest run packages/office-studio/tests/sheet-fill.contract.test.mjs`: 11 tests passed.
 - `pnpm.cmd --filter @office-studio/office-studio check:types`: passed.
 - `git diff --check` on changed implementation and test files: passed.
 
-SHEET-02 remains **not accepted** until the fill-options UI, additional sequence families, browser interaction, and persistence/Office round-trip cases are covered.
+These historical results apply to the earlier implementation only. They do not validate the 2026-11-23 or 2026-11-25 changes.
+
+## 2026-11-25 verification drafts — none executed
+
+- `tests/sheet-auto-fill-model.contract.test.mjs`: independent lanes, numeric/geometric/reverse series, Chinese/text/name families, formula/rich-text translation, format contracts, filter/manual/outline hiding, shrink clear, merge rejection, validation, permissions and budget; partial/backward CF/DV tiles in both axes preserve per-cell formulas.
+- `tests/sheet-auto-fill-api.contract.test.mjs`: Facade/Enum/canonical command results, four-mode amendment and undo/redo, snapshots, cancellation/reentry, stale revisions/receipts, initially unchanged fill and equivalent switches.
+- `tests/sheet-auto-fill-ui.contract.test.mjs`: prepared publication, current selection/options, shortcuts, equivalent switches without a second content callback, standalone host and preparation/reentry failures.
+- `tests/sheet-auto-fill.browser.test.mjs` plus the updated selection-input fixture/browser draft: gesture, options, shortcuts, shrink, frozen positioning, theme and focus behavior. `sheet-fill.contract.test.mjs` now checks the shared planner behavior.
+
+Per the user's deferred verification instruction, no tests, type checks, builds, Cargo/WASM, dev server, browser or benchmark were run. SHEET-02 remains **未验收**, with the gaps above preserved.
 
 ## 2026-11-23 编辑态填充柄续作（未执行验证）
 
@@ -50,4 +65,4 @@ SHEET-02 remains **not accepted** until the fill-options UI, additional sequence
 - `tests/rendering/spreadsheet-editor-layout.test.mjs`：方块内外两半、不同缩放、合并源范围、冻结裁剪、离屏和非有限坐标。
 - `tests/sheet-selection-input.browser.test.mjs`：同 pointer 提交/拖填、单击不填、公式引用、撤销/重做/内部快照重开、验证/命令取消/组合输入阻止填充、观察者重入、Escape 和后续选区改变。
 
-按用户要求后置统一验证，本轮仅落盘及静态回读，**未启动 dev/浏览器，未执行测试、类型检查、构建、Rust/WASM 或基准**。前一节列出的 2026-11-21 历史验证不覆盖本轮修改。真实 Windows 输入法、边缘自动滚动、冻结/合并后的填充模型保真、明暗主题与焦点恢复、Office 写出/独立重开仍为未验收；上述其他序列家族和填充后选项菜单缺口继续保留。
+按用户要求后置统一验证，本轮仅落盘及静态回读，**未启动 dev/浏览器，未执行测试、类型检查、构建、Rust/WASM 或基准**。前一节列出的 2026-11-21 历史验证不覆盖本轮修改。真实 Windows 输入法、边缘自动滚动、冻结/合并后的填充模型保真、明暗主题与焦点恢复、Office 写出/独立重开仍为未验收；当时保留的其他序列家族和填充后选项菜单缺口已在 2026-11-25 补代码，当前边界以上面的更新为准，仍未验收。

@@ -4,6 +4,11 @@ import { documentTableCellContentContainers } from './document-table-continuatio
 
 export type DocumentDecoratedBlockType = 'quote' | 'callout' | 'code'
 export const DOCUMENT_DECORATED_BLOCK_TYPES: readonly DocumentDecoratedBlockType[] = ['quote', 'callout', 'code']
+/** Fixed v1.6.0 docs-column public contract; section columns have separate bounds. */
+export const DOCUMENT_COLUMN_GROUP_MIN_COLUMNS = 2
+export const DOCUMENT_COLUMN_GROUP_MAX_COLUMNS = 5
+export const DOCUMENT_COLUMN_HORIZONTAL_PADDING = 8
+export const DOCUMENT_COLUMN_MIN_HEIGHT = 72
 
 export function defaultDocumentCalloutConfig(): DocumentCalloutConfig {
   return { icon: '💡', showIcon: true, backgroundColor: '#eef6ff', borderColor: '#a8c7e8', borderWidth: 1,
@@ -76,9 +81,11 @@ export function validateDocumentCodeConfig(config: DocumentCodeConfig): void {
 }
 
 export function validateDocumentColumnGroup(config: DocumentColumnGroup): void {
-  if (!record(config) || config.version !== 1 || !Array.isArray(config.columns) || config.columns.length < 1 || config.columns.length > 12
+  if (!record(config) || config.version !== 1 || !Array.isArray(config.columns) || config.columns.length < DOCUMENT_COLUMN_GROUP_MIN_COLUMNS || config.columns.length > DOCUMENT_COLUMN_GROUP_MAX_COLUMNS
     || !['fixed', 'auto'].includes(config.layout) || !['stack', 'shrink'].includes(config.responsive)) throw new TypeError('多栏组配置无效。')
   finite(config.gap, 0, 4096, '栏间距')
+  if (config.horizontalPadding !== undefined) finite(config.horizontalPadding, 0, 4096, '栏水平内边距')
+  if (config.minHeight !== undefined) finite(config.minHeight, 0, 1e6, '栏最小高度')
   const ids = new Set<string>()
   for (const column of config.columns) {
     if (!record(column) || !text(column.id, 4096, '栏标识').trim() || ids.has(column.id) || !Array.isArray(column.blocks)) throw new TypeError('多栏组必须有独立的栏标识与内容。')

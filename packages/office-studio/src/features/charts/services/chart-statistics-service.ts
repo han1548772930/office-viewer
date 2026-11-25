@@ -20,6 +20,7 @@ import { layoutChartData } from '../chart-layout'
 import { prepareChartWordCloudLayout } from '../chart-word-cloud-layout'
 import { prepareChartRelationLayout } from '../chart-relation-layout'
 import { assertChartSourcePresent, chartSourceNotFoundDiagnostic, ChartSourceNotFoundError } from '../chart-source-diagnostic'
+import { resolveChartImageResource } from '../chart-image-resources'
 
 export interface ChartStatisticsRequestContext extends ChartComputePreparationContext {
   documentId: string
@@ -342,6 +343,7 @@ export class ChartStatisticsService {
     let hierarchyMetrics: ComputeMetrics | undefined
     const preparation: ChartComputePreparationContext = { signal: entry.controller.signal, memoryBudgetBytes: available,
       assertCurrent: () => { this.assertEntryCurrent(entry); assertChartReadPermission(workbook, chart, entry.userId) },
+      resolveImageResource: id => resolveChartImageResource(workbook, chart, id),
       runChartTask: async task => {
         this.assertEntryCurrent(entry)
         const result = await this.client.submit(task, { documentId: entry.documentId, modelRevision: entry.modelRevision,
@@ -371,12 +373,12 @@ export class ChartStatisticsService {
     data = await prepareChartComputeInputs(data, chart, preparation)
     let dataBytes = await estimateChartDataMemory(data, preparation)
     assertChartPreparationMemory(dataBytes, preparation)
-    if (chart.type === 'wordCloud' && !entry.sourceOnly && !entry.authoring) {
+    if (chart.type === 'wordCloud' && !entry.sourceOnly) {
       data = await prepareChartWordCloudLayout(data, chart, { ...preparation, memoryBudgetBytes: Math.max(1, available - dataBytes) })
       dataBytes = await estimateChartDataMemory(data, preparation)
       assertChartPreparationMemory(dataBytes, preparation)
     }
-    if (chart.type === 'relation' && !entry.sourceOnly && !entry.authoring) {
+    if (chart.type === 'relation' && !entry.sourceOnly) {
       data = await prepareChartRelationLayout(data, chart, { ...preparation, memoryBudgetBytes: Math.max(1, available - dataBytes) })
       dataBytes = await estimateChartDataMemory(data, preparation)
       assertChartPreparationMemory(dataBytes, preparation)

@@ -45,6 +45,7 @@ export interface DocumentBodyParagraphPosition {
   block: DocumentBlock
   start: number
   end: number
+  /** Source is the public stream; target is paragraph-local UTF-16 text, in both decode and encode output. */
   spans: DocumentBodyTextSpan[]
 }
 /** Ephemeral structural boundaries. They reference the same decoded tree and
